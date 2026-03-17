@@ -13,3 +13,6 @@ vendors/dell/vllm-lmcache-hipfile/scripts/configs/*.txt
 # Debian package files
 *.deb
 
+#Codespell disctionary cache
+dictionary.dic
+
