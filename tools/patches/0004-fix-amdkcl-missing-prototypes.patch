@@ -1,0 +1,8 @@
+--- a/amd/amdkcl/main.c
++++ b/amd/amdkcl/main.c
+@@ -13,1 +13,4 @@
+ int __init amdkcl_init(void)
++int __init amdkcl_init(void);
++void __exit amdkcl_exit(void);
++
++int __init amdkcl_init(void)
