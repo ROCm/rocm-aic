@@ -12,6 +12,10 @@ analogous approaches on AMD hardware.
 
 ```
 vendors/
+  dell/       Dell-originated benchmarks and tooling
+    vllm-lmcache-hipfile/
+              vLLM KV-cache offload benchmarks
+              (CPU RAM vs hipFile/AIS on MI325X)
   weka/       WEKA-FS proof-of-concept (Ansible, Docker,
               shell scripts for cluster deployment)
 ```

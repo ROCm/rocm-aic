@@ -127,7 +127,7 @@ echo "Creating containers..."
 next_core=1
 
 # Primary container (default) — has frontends
-p_ids=$(core_id_list $next_core $P_CORES)
+p_ids=$(core_id_list "$next_core" "$P_CORES")
 next_core=$(( next_core + P_CORES ))
 
 frontend_flags="--frontend-dedicated-cores $P_FRONTEND"
@@ -135,6 +135,7 @@ if [ "$P_FRONTEND" -eq 0 ]; then
     frontend_flags="--no-frontends"
 fi
 
+# shellcheck disable=SC2086
 sudo weka local setup container \
     --name default \
     --net "$NET_ARG" \
@@ -148,7 +149,7 @@ sudo weka local setup container \
 
 # Secondary containers (default1–default5)
 for idx in $(seq 1 $(( NUM_CONTAINERS - 1 ))); do
-    s_ids=$(core_id_list $next_core $S_CORES)
+    s_ids=$(core_id_list "$next_core" "$S_CORES")
     next_core=$(( next_core + S_CORES ))
     port=$(( 14000 + idx * 1000 ))
 
@@ -157,6 +158,7 @@ for idx in $(seq 1 $(( NUM_CONTAINERS - 1 ))); do
         compute_flag="--compute-dedicated-cores $S_COMPUTE"
     fi
 
+    # shellcheck disable=SC2086
     sudo weka local setup container \
         --name "default${idx}" \
         --net "$NET_ARG" \

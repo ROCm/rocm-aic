@@ -1,0 +1,28 @@
+# hadolint configuration
+#
+# These Dockerfiles are exploratory/dev tooling built
+# on rolling base images; strict packaging hygiene is
+# impractical and not a priority.
+#
+# DL3003: Use WORKDIR -- impractical in multi-step
+#         clone-and-build RUN blocks
+# DL3007: Pin FROM tag -- upstream ROCm images are
+#         intentionally unpinned during dev
+# DL3008: Pin apt versions -- base image is rolling
+# DL3009: Delete apt lists -- handled where practical
+# DL3013: Pin pip versions -- from upstream reqs files
+# DL3015: --no-install-recommends -- not always desired
+# DL3059: Consolidate RUN -- readability over layers
+# DL4006: pipefail -- added where needed; not all
+#         Dockerfiles use pipes
+# SC2028: echo escape sequences -- intentional
+ignored:
+  - DL3003
+  - DL3007
+  - DL3008
+  - DL3009
+  - DL3013
+  - DL3015
+  - DL3059
+  - DL4006
+  - SC2028

@@ -5,3 +5,11 @@ __pycache__
 # Large archives
 vendors/weka/weka-drops/*.tar
 vendors/weka/weka-drops/*.squashfs
+*.tgz
+
+# Generated benchmark corpus (downloaded on demand)
+vendors/dell/vllm-lmcache-hipfile/scripts/configs/*.txt
+
+# Debian package files
+*.deb
+
