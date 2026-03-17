@@ -69,7 +69,7 @@ wait_for "sudo weka status &>/dev/null" "cluster API reachable" 20 3
 echo "Adding drives to containers..."
 for i in {0..5}; do
     base=$(( (i % 3) * 2 ))
-    sudo weka cluster drive add $i /dev/nvme${base}n1 /dev/nvme$((base+1))n1 &
+    sudo weka cluster drive add "$i" /dev/nvme${base}n1 /dev/nvme$((base+1))n1 &
 done
 wait
 
@@ -90,6 +90,7 @@ wait_for \
 # ── Create filesystem group and FS ───────────────────────────────────────────
 echo "Creating default FS group and default FS..."
 sudo weka fs group create default
-sudo weka fs create default default $(sudo weka status -J | jq .capacity.unprovisioned_bytes)
+sudo weka fs create default default \
+    "$(sudo weka status -J | jq .capacity.unprovisioned_bytes)"
 
 echo "Done."

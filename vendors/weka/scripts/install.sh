@@ -57,12 +57,14 @@ check_sha256sum() {
     fi
 
     set +e
-    sha256_output=$(
+    sha256_output="$(
         cd "$SRC_DIR" && \
         echo "$sums_and_files" | \
         sha256sum --quiet -c --status - 2>&1
-    )
+    )"
     sha256sum_exit_code=$?
+    # sha256_output kept for diagnostic use
+    export sha256_output
     set -e
 
     if [[ $sha256sum_exit_code -ne 0 ]]; then
@@ -92,7 +94,7 @@ echo "WekaIO CLI ${CLI_VERSION} is now installed" \
 mkdir -p /opt/weka/dist/release /opt/weka/dist/image
 cp "$SRC_DIR"/*.squashfs /opt/weka/dist/image
 
-for f in "$SRC_DIR"/${CLI_VERSION}-*; do
+for f in "$SRC_DIR/${CLI_VERSION}"-*; do
     bf=$(basename "$f")
     if [ -f "$f" ] && \
        [ ! -f "/opt/weka/dist/image/$bf" ]; then

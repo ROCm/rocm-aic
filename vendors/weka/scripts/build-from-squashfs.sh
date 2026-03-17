@@ -10,7 +10,7 @@ set -u
 readonly DEFAULT_SQUASHFS="weka-drops/weka-driver-995ca4aed98e13aa.squashfs"
 SCRIPT_ROOT="$(cd "$(dirname "$0")" && pwd)"
 WEKA_MOUNT_DIR_CREATED=0
-WEKA_BUILD_WORK_DIR_CREATED=0
+export WEKA_BUILD_WORK_DIR_CREATED=0
 EXIT_CODE=0
 
 die() {
@@ -89,7 +89,7 @@ if [[ ! -d "${WEKA_KERNEL_BUILD_DIR}" ]]; then
   echo "Kernel build dir missing: ${WEKA_KERNEL_BUILD_DIR}" >&2
   echo "Install kernel headers for your target kernel (e.g. linux-headers-*)" >&2
   if [[ -d /lib/modules ]]; then
-    echo "Available under /lib/modules: $(ls /lib/modules 2>/dev/null | tr '\n' ' ')" >&2
+    echo "Available under /lib/modules: $(find /lib/modules -maxdepth 1 -mindepth 1 -printf '%f ' 2>/dev/null)" >&2
   fi
   die "Set WEKA_KERNEL_BUILD_DIR to an existing path, or install headers."
 fi

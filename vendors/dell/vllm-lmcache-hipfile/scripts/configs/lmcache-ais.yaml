@@ -1,0 +1,26 @@
+# --- LMCache Configuration for AIS Storage ---
+
+# The number of tokens in each cache chunk.
+# 256 is the standard for balancing granularity
+# and performance.
+chunk_size: 256
+
+save_decode_cache: True
+
+# Disable or limit CPU RAM caching to force/prioritize
+# disk usage
+local_cpu: false
+
+# --- AIS Storage Configuration ---
+# Path where the KV cache chunks will be stored
+gds_path: "/data/lmcache"
+cufile_buffer_size: 8192
+
+# Enable hipFile
+extra_config:
+  use_hipfile: true
+  use_cufile: false
+  use_direct_io: true
+
+# Remote storage (Set to null for local-only caching)
+remote_url: null

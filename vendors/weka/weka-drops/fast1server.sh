@@ -48,7 +48,7 @@ wait_for "sudo weka status &>/dev/null" "cluster API reachable" 20 3
 
 # ── Add drives IN PARALLEL ───────────────────────────────────────────────────
 echo "Adding drives to containers..."
-for i in {0..5}; do sudo weka cluster drive add $i /dev/nvme$((i+1))n1 & done
+for i in {0..5}; do sudo weka cluster drive add "$i" /dev/nvme$((i+1))n1 & done
 wait
 
 # ── Cluster config — synchronous, no waits needed ───────────────────────────
