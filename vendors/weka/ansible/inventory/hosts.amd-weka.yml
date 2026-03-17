@@ -1,0 +1,31 @@
+---
+# AMD-Oracle Weka cluster inventory.
+#
+# amd-arad  up infinite 1 down* useocpm2m-097-021
+# amd-arad  up infinite 7 idle useocpm2m-097-[...]
+
+all:
+  children:
+
+    weka_servers:
+      hosts:
+        weka-server-vm-1:
+          ansible_host: useocpm2m-097-114
+          ansible_port: 2030
+    weka_clients:
+      hosts:
+        weka-client-1:
+          ansible_host: useocpm2m-097-113
+
+  vars:
+    ansible_user: stebates
+    ansible_python_interpreter: /usr/bin/python3
+    ansible_ssh_common_args: >-
+      -o RequestTTY=no
+      -o RemoteCommand=none
+    weka_cluster_fs_group: amd-weka-test-cluster
+    weka_cluster_tar_path: >-
+      /home/stebates/Projects/amd-weka-fs/weka-drops/weka-5.1.0.547.tar
+    weka_cluster_use_loop_devices: true
+    weka_cluster_force_install: true
+    weka_cluster_wipe_drives: true

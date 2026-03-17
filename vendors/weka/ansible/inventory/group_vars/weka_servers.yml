@@ -1,0 +1,8 @@
+---
+# Defaults for server nodes that contribute storage.
+# Override individual values per host in the
+# inventory file under host_vars.
+weka_cluster_nic: "udp"
+weka_cluster_num_containers: 6
+weka_cluster_primary_mem: "4GB"
+weka_cluster_secondary_mem: "1536MB"

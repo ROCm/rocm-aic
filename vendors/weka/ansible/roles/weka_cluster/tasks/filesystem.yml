@@ -1,0 +1,101 @@
+---
+# Start IO and create the default filesystem.
+# All tasks delegate to the first server host.
+
+- name: Identify delegate host
+  ansible.builtin.set_fact:
+    weka_cluster_delegate: >-
+      {{ ((groups['weka_servers'] | default([]))
+          + (groups['weka_both']
+             | default([])))[0] }}
+  run_once: true
+
+# ── Start IO ─────────────────────────────────────
+
+- name: Start cluster IO
+  ansible.builtin.command:
+    cmd: weka cluster start-io
+  become: true
+  delegate_to: "{{ weka_cluster_delegate }}"
+  run_once: true
+  register: weka_cluster_start_io
+  retries: 5
+  delay: 10
+  until: weka_cluster_start_io.rc == 0
+  changed_when: true
+
+- name: Wait for IO status STARTED
+  ansible.builtin.shell: |
+    set -o pipefail
+    weka status -J 2>/dev/null \
+      | jq -e '.io_status == "STARTED"' \
+        >/dev/null 2>&1
+  args:
+    executable: /bin/bash
+  become: true
+  delegate_to: "{{ weka_cluster_delegate }}"
+  run_once: true
+  register: weka_cluster_io_status
+  retries: "{{ weka_cluster_io_wait_retries }}"
+  delay: "{{ weka_cluster_io_wait_delay }}"
+  until: weka_cluster_io_status.rc == 0
+  changed_when: false
+
+# ── Create filesystem group and filesystem ───────
+
+- name: Create filesystem group
+  ansible.builtin.command:
+    cmd: >-
+      weka fs group create
+      {{ weka_cluster_fs_group }}
+  become: true
+  delegate_to: "{{ weka_cluster_delegate }}"
+  run_once: true
+  changed_when: true
+
+- name: Query unprovisioned capacity
+  ansible.builtin.shell: |
+    set -o pipefail
+    weka status -J \
+      | jq -r '.capacity.unprovisioned_bytes'
+  args:
+    executable: /bin/bash
+  become: true
+  delegate_to: "{{ weka_cluster_delegate }}"
+  run_once: true
+  register: weka_cluster_unprov_bytes
+  changed_when: false
+  when: weka_cluster_fs_size == "auto"
+
+- name: Resolve filesystem size
+  ansible.builtin.set_fact:
+    weka_cluster_resolved_fs_size: >-
+      {%- if weka_cluster_fs_size == "auto" -%}
+        {{ weka_cluster_unprov_bytes.stdout
+           | trim }}
+      {%- else -%}
+        {{ weka_cluster_fs_size }}
+      {%- endif -%}
+  run_once: true
+
+- name: Create filesystem
+  ansible.builtin.command:
+    cmd: >-
+      weka fs create
+      {{ weka_cluster_fs_name }}
+      {{ weka_cluster_fs_group }}
+      {{ weka_cluster_resolved_fs_size | trim }}
+  become: true
+  delegate_to: "{{ weka_cluster_delegate }}"
+  run_once: true
+  changed_when: true
+
+- name: Confirm filesystem created
+  ansible.builtin.debug:
+    msg: >-
+      Filesystem '{{ weka_cluster_fs_name }}'
+      created in group
+      '{{ weka_cluster_fs_group }}'
+      (size: {{ weka_cluster_resolved_fs_size
+                | trim }})
+  run_once: true

@@ -1,0 +1,7 @@
+# Python related
+.venv
+__pycache__
+
+# Large archives
+vendors/weka/weka-drops/*.tar
+vendors/weka/weka-drops/*.squashfs

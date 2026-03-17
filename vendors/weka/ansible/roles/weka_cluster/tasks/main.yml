@@ -1,0 +1,36 @@
+---
+# Orchestrate the Weka cluster deployment.
+# Each phase can be run independently via tags.
+
+- name: Gather hardware facts
+  ansible.builtin.import_tasks: gather_facts.yml
+  tags: [facts]
+
+- name: Run pre-flight checks
+  ansible.builtin.import_tasks: preflight.yml
+  tags: [preflight]
+
+- name: Install Weka software
+  ansible.builtin.import_tasks: install.yml
+  tags: [install]
+
+- name: Set up Weka containers
+  ansible.builtin.import_tasks: containers.yml
+  tags: [containers]
+  when: >-
+    'weka_servers' in group_names
+    or 'weka_both' in group_names
+
+- name: Form cluster and add drives
+  ansible.builtin.import_tasks: cluster.yml
+  tags: [cluster]
+  when: >-
+    'weka_servers' in group_names
+    or 'weka_both' in group_names
+
+- name: Start IO and create filesystem
+  ansible.builtin.import_tasks: filesystem.yml
+  tags: [filesystem]
+  when: >-
+    'weka_servers' in group_names
+    or 'weka_both' in group_names

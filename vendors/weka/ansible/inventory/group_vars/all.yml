@@ -1,0 +1,8 @@
+---
+# Variables shared by every host in the inventory.
+#
+# weka_cluster_tar_path is required and has no
+# default.  Set it here or pass via -e on the
+# command line.
+# weka_cluster_tar_path: \
+#   /mnt/nfs/weka-5.1.0.516.tar

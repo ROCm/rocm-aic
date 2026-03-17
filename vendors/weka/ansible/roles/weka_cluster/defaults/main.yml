@@ -1,0 +1,69 @@
+---
+# ── Weka install source ──────────────────────────
+# Required. Absolute path on the shared NFS mount
+# to the Weka install tar visible from every host.
+# weka_cluster_tar_path: /mnt/nfs/weka-5.1.0.516.tar
+
+# Weka software version string.  Must match the
+# version embedded in the tar.
+weka_cluster_version: "5.1.0.547"
+
+# Allow installing over an existing Weka version.
+# When false (default), the playbook fails if weka
+# is already installed.  Set to true to permit
+# re-install or upgrade.
+weka_cluster_force_install: false
+
+# ── Networking ────────────────────────────────────
+# "udp"            – kernel UDP networking (default)
+# "<iface>"        – DPDK via resolved PCI address
+# "0000:xx:yy.z"   – DPDK with explicit PCI address
+# Override per-host in host_vars when needed.
+weka_cluster_nic: "udp"
+
+# Number of NIC queues (and therefore cores) per
+# container.  Each core needs its own queue.
+weka_cluster_nic_queues: 1
+
+# ── Container layout ─────────────────────────────
+# Containers per server host (primary + secondaries).
+weka_cluster_num_containers: 6
+
+# Memory allocated to the primary (has frontends)
+# and each secondary container.
+weka_cluster_primary_mem: "4GB"
+weka_cluster_secondary_mem: "1536MB"
+
+# ── Cluster settings ─────────────────────────────
+weka_cluster_name: "weka-cluster"
+weka_cluster_data_drives: 3
+weka_cluster_parity_drives: 2
+weka_cluster_hot_spare: 0
+
+# ── Filesystem defaults ──────────────────────────
+weka_cluster_fs_group: "default"
+weka_cluster_fs_name: "default"
+# "auto" means use all unprovisioned capacity.
+weka_cluster_fs_size: "auto"
+
+# ── NVMe drives ──────────────────────────────────
+# List of NVMe block device paths to use on each
+# server host.  When empty the role auto-detects
+# /dev/nvme*n1 devices during fact gathering.
+# Override per-host in host_vars as needed.
+# Example: ["/dev/nvme0n1", "/dev/nvme1n1"]
+weka_cluster_nvme_drives: []
+
+# When true, dirty NVMe drives (partitions, LVM,
+# mounts) are automatically unmounted, wiped, and
+# cleaned during preflight instead of failing.
+# USE WITH CAUTION -- this destroys data.
+weka_cluster_wipe_drives: false
+
+# ── Timeouts (seconds) ───────────────────────────
+weka_cluster_container_wait_retries: 30
+weka_cluster_container_wait_delay: 3
+weka_cluster_wait_retries: 20
+weka_cluster_wait_delay: 3
+weka_cluster_io_wait_retries: 30
+weka_cluster_io_wait_delay: 3

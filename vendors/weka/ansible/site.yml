@@ -1,0 +1,19 @@
+---
+# Deploy a Weka cluster across inventory hosts.
+#
+# Usage:
+#   ansible-playbook -i inventory/hosts.yml \
+#     site.yml \
+#     -e weka_tar_path=/mnt/nfs/weka-5.1.0.516.tar
+#
+# Run a single phase with tags:
+#   ansible-playbook ... --tags install
+#   ansible-playbook ... --tags containers
+#   ansible-playbook ... --tags cluster
+
+- name: Deploy Weka cluster
+  hosts: all
+  become: true
+  gather_facts: true
+  roles:
+    - weka_cluster

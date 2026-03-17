@@ -1,0 +1,308 @@
+---
+# Pre-flight checks for server nodes.
+#   - NVMe drives must be clean (no mounts, LVM, or
+#     partitions).
+#   - The Weka install tar must be reachable.
+#   - jq must be available (used by install.sh).
+
+- name: Verify weka_cluster_tar_path is defined
+  ansible.builtin.assert:
+    that:
+      - weka_cluster_tar_path is defined
+      - weka_cluster_tar_path | length > 0
+    fail_msg: >-
+      weka_cluster_tar_path is required.  Set it in
+      group_vars/all.yml or pass
+      -e weka_cluster_tar_path=...
+
+- name: Verify install tar is accessible
+  ansible.builtin.stat:
+    path: "{{ weka_cluster_tar_path }}"
+  register: weka_cluster_tar_stat
+
+- name: Fail if install tar is missing
+  ansible.builtin.fail:
+    msg: >-
+      {{ weka_cluster_tar_path }} is not accessible
+      on {{ inventory_hostname }}.  Ensure the NFS
+      share is mounted.
+  when: not weka_cluster_tar_stat.stat.exists
+
+- name: Check jq is installed
+  ansible.builtin.command: jq --version
+  register: weka_cluster_jq_check
+  changed_when: false
+  failed_when: false
+  check_mode: false
+
+- name: Fail if jq is missing
+  ansible.builtin.fail:
+    msg: >-
+      jq is required by the Weka installer but is
+      not installed on {{ inventory_hostname }}.
+      Install it with: apt-get install -y jq
+  when: weka_cluster_jq_check.rc != 0
+
+# ── Existing Weka installation check ────────────
+
+- name: Check for existing weka binary
+  ansible.builtin.command: which weka
+  register: weka_cluster_which_check
+  changed_when: false
+  failed_when: false
+  check_mode: false
+
+- name: Check existing weka version
+  ansible.builtin.command: weka version current
+  register: weka_cluster_existing_ver
+  changed_when: false
+  failed_when: false
+  check_mode: false
+  become: true
+  when: weka_cluster_which_check.rc == 0
+
+- name: Store existing install status
+  ansible.builtin.set_fact:
+    weka_cluster_already_installed: >-
+      {{ weka_cluster_which_check.rc == 0 }}
+    weka_cluster_installed_version: >-
+      {{ weka_cluster_existing_ver.stdout
+         | default('') | trim }}
+
+- name: Report existing Weka installation
+  ansible.builtin.debug:
+    msg: >-
+      Weka {{ weka_cluster_installed_version }}
+      is already installed on
+      {{ inventory_hostname }}
+  when: weka_cluster_already_installed | bool
+
+- name: Fail if Weka already installed
+  ansible.builtin.fail:
+    msg: >-
+      Weka {{ weka_cluster_installed_version }}
+      is already installed on
+      {{ inventory_hostname }}.
+      Set weka_cluster_force_install: true to
+      allow re-install or upgrade.
+  when:
+    - weka_cluster_already_installed | bool
+    - not weka_cluster_force_install
+
+# ── NVMe readiness probe (server nodes only) ──
+# QEMU-emulated NVMe controllers may return
+# NS_NOT_READY (sc 0x13) transiently after boot
+# or heavy I/O.  Probe each drive with a small
+# read before doing any real work.
+
+- name: Wait for NVMe drives to accept I/O
+  ansible.builtin.shell: |
+    set -o pipefail
+    dd if={{ item }} of=/dev/null \
+      bs=4k count=1 2>/dev/null
+  args:
+    executable: /bin/bash
+  loop: "{{ weka_cluster_active_nvme }}"
+  register: weka_cluster_nvme_ready
+  retries: 10
+  delay: 5
+  until: weka_cluster_nvme_ready.rc == 0
+  changed_when: false
+  check_mode: false
+  become: true
+  when: >-
+    'weka_servers' in group_names
+    or 'weka_both' in group_names
+
+# ── NVMe cleanliness checks (server nodes only) ──
+
+- name: Check for mounted filesystems on NVMe drives
+  ansible.builtin.shell: |
+    set -o pipefail
+    mount | grep -E "^{{ item }}[p ]|^{{ item }}$" \
+      || true
+  args:
+    executable: /bin/bash
+  loop: "{{ weka_cluster_active_nvme }}"
+  register: weka_cluster_nvme_mount_check
+  changed_when: false
+  check_mode: false
+  when: >-
+    'weka_servers' in group_names
+    or 'weka_both' in group_names
+
+- name: Check for LVM physical volumes on NVMe drives
+  ansible.builtin.shell: |
+    set -o pipefail
+    pvs --noheadings 2>/dev/null \
+      | grep "{{ item }}" || true
+  args:
+    executable: /bin/bash
+  loop: "{{ weka_cluster_active_nvme }}"
+  register: weka_cluster_nvme_lvm_check
+  changed_when: false
+  check_mode: false
+  when: >-
+    'weka_servers' in group_names
+    or 'weka_both' in group_names
+
+- name: Check for partitions on NVMe drives
+  ansible.builtin.shell: |
+    set -o pipefail
+    lsblk -n "{{ item }}" 2>/dev/null \
+      | tail -n +2 | head -1 || true
+  args:
+    executable: /bin/bash
+  loop: "{{ weka_cluster_active_nvme }}"
+  register: weka_cluster_nvme_part_check
+  changed_when: false
+  check_mode: false
+  when: >-
+    'weka_servers' in group_names
+    or 'weka_both' in group_names
+
+- name: Build list of dirty NVMe devices
+  ansible.builtin.set_fact:
+    weka_cluster_dirty_drives: >-
+      {%- set dirty = [] -%}
+      {%- for i in range(
+            weka_cluster_active_nvme | length) -%}
+        {%- set dev =
+              weka_cluster_active_nvme[i] -%}
+        {%- set reasons = [] -%}
+        {%- if weka_cluster_nvme_mount_check
+              .results[i].stdout
+              | default('') | trim
+              | length > 0 -%}
+          {%- set _ = reasons.append(
+                'mounted') -%}
+        {%- endif -%}
+        {%- if weka_cluster_nvme_lvm_check
+              .results[i].stdout
+              | default('') | trim
+              | length > 0 -%}
+          {%- set _ = reasons.append(
+                'LVM PV') -%}
+        {%- endif -%}
+        {%- if weka_cluster_nvme_part_check
+              .results[i].stdout
+              | default('') | trim
+              | length > 0 -%}
+          {%- set _ = reasons.append(
+                'partitions') -%}
+        {%- endif -%}
+        {%- if reasons | length > 0 -%}
+          {%- set _ = dirty.append(
+                dev ~ ' ('
+                ~ reasons | join(', ')
+                ~ ')') -%}
+        {%- endif -%}
+      {%- endfor -%}
+      {{ dirty }}
+  when: >-
+    'weka_servers' in group_names
+    or 'weka_both' in group_names
+
+# ── Auto-wipe dirty drives when requested ────────
+
+- name: Report dirty drives to be wiped
+  ansible.builtin.debug:
+    msg: >-
+      Wiping dirty NVMe drives on
+      {{ inventory_hostname }}:
+      {{ weka_cluster_dirty_drives | join('; ') }}
+  when:
+    - >-
+      'weka_servers' in group_names
+      or 'weka_both' in group_names
+    - >-
+      weka_cluster_dirty_drives
+      | default([]) | length > 0
+    - weka_cluster_wipe_drives | bool
+
+- name: Unmount filesystems on dirty NVMe drives
+  ansible.builtin.shell: |
+    set -o pipefail
+    for mnt in $(
+      mount | grep -oP "^{{ item }}\S*"
+    ); do
+      umount -f "$mnt" 2>/dev/null || true
+    done
+  args:
+    executable: /bin/bash
+  become: true
+  loop: "{{ weka_cluster_active_nvme }}"
+  changed_when: true
+  when:
+    - >-
+      'weka_servers' in group_names
+      or 'weka_both' in group_names
+    - >-
+      weka_cluster_dirty_drives
+      | default([]) | length > 0
+    - weka_cluster_wipe_drives | bool
+
+- name: Remove LVM PVs on dirty NVMe drives
+  ansible.builtin.shell: |
+    set -o pipefail
+    if pvs --noheadings 2>/dev/null \
+       | grep -q "{{ item }}"; then
+      pvremove -ff -y "{{ item }}" 2>/dev/null \
+        || true
+    fi
+  args:
+    executable: /bin/bash
+  become: true
+  loop: "{{ weka_cluster_active_nvme }}"
+  changed_when: true
+  when:
+    - >-
+      'weka_servers' in group_names
+      or 'weka_both' in group_names
+    - >-
+      weka_cluster_dirty_drives
+      | default([]) | length > 0
+    - weka_cluster_wipe_drives | bool
+
+- name: Wipe partition tables and signatures
+  ansible.builtin.command:
+    cmd: wipefs -a -f {{ item }}
+  become: true
+  loop: "{{ weka_cluster_active_nvme }}"
+  changed_when: true
+  when:
+    - >-
+      'weka_servers' in group_names
+      or 'weka_both' in group_names
+    - >-
+      weka_cluster_dirty_drives
+      | default([]) | length > 0
+    - weka_cluster_wipe_drives | bool
+
+- name: Clear dirty list after wipe
+  ansible.builtin.set_fact:
+    weka_cluster_dirty_drives: []
+  when:
+    - >-
+      'weka_servers' in group_names
+      or 'weka_both' in group_names
+    - weka_cluster_wipe_drives | bool
+
+- name: Fail if any NVMe drives are not clean
+  ansible.builtin.fail:
+    msg: >-
+      The following NVMe devices on
+      {{ inventory_hostname }} are not clean and
+      must be prepared before Weka can use them:
+      {{ weka_cluster_dirty_drives | join('; ') }}.
+      Unmount filesystems, remove LVM volumes, and
+      wipe partition tables, then re-run the
+      playbook.  Or set weka_cluster_wipe_drives:
+      true to auto-clean them.
+  when:
+    - >-
+      'weka_servers' in group_names
+      or 'weka_both' in group_names
+    - >-
+      weka_cluster_dirty_drives
+      | default([]) | length > 0

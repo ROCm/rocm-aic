@@ -1,0 +1,204 @@
+---
+# Form the Weka cluster, add drives, and configure
+# stripe settings.  All tasks delegate to the first
+# server host and run once.
+
+- name: Identify all server hosts
+  ansible.builtin.set_fact:
+    weka_cluster_server_hosts: >-
+      {{ (groups['weka_servers'] | default([]))
+         + (groups['weka_both'] | default([])) }}
+  run_once: true
+
+- name: Set delegate host
+  ansible.builtin.set_fact:
+    weka_cluster_delegate: >-
+      {{ weka_cluster_server_hosts[0] }}
+  run_once: true
+
+# ── Build host-ips and container names ───────────
+
+- name: Build cluster create arguments
+  ansible.builtin.set_fact:
+    weka_cluster_host_ips: >-
+      {%- set parts = [] -%}
+      {%- for host in
+            weka_cluster_server_hosts -%}
+        {%- set ip = hostvars[host]
+              .weka_cluster_mgmt_ip -%}
+        {%- set nc = hostvars[host]
+              .weka_cluster_num_containers
+              | int -%}
+        {%- for c in range(nc) -%}
+          {%- set port = 14000 + c * 1000 -%}
+          {%- set _ = parts.append(
+                ip ~ ':' ~ port) -%}
+        {%- endfor -%}
+      {%- endfor -%}
+      {{ parts | join(',') }}
+    weka_cluster_total_containers: >-
+      {%- set total = [] -%}
+      {%- for host in
+            weka_cluster_server_hosts -%}
+        {%- set _ = total.append(
+              hostvars[host]
+              .weka_cluster_num_containers
+              | int) -%}
+      {%- endfor -%}
+      {{ total | sum }}
+  run_once: true
+
+- name: Build container name list
+  ansible.builtin.set_fact:
+    weka_cluster_container_names: >-
+      {%- set names = [] -%}
+      {%- for i in range(
+            weka_cluster_total_containers
+            | int) -%}
+        {%- set _ = names.append(
+              'weka' ~ (i + 1)) -%}
+      {%- endfor -%}
+      {{ names | join(' ') }}
+  run_once: true
+
+- name: Display cluster formation parameters
+  ansible.builtin.debug:
+    msg: |
+      Servers    : {{ weka_cluster_server_hosts
+                      | join(', ') }}
+      Containers : {{ weka_cluster_total_containers
+                    }}
+      Names      : {{ weka_cluster_container_names
+                    }}
+      Host IPs   : {{ weka_cluster_host_ips }}
+  run_once: true
+
+# ── Create the cluster ───────────────────────────
+
+- name: Form Weka cluster
+  ansible.builtin.shell: |
+    set -eo pipefail
+    weka cluster create \
+      {{ weka_cluster_container_names }} \
+      --host-ips="{{ weka_cluster_host_ips }}"
+  args:
+    executable: /bin/bash
+  become: true
+  delegate_to: "{{ weka_cluster_delegate }}"
+  run_once: true
+  changed_when: true
+
+- name: Wait for cluster API to become reachable
+  ansible.builtin.command:
+    cmd: weka status
+  become: true
+  delegate_to: "{{ weka_cluster_delegate }}"
+  run_once: true
+  register: weka_cluster_api_check
+  retries: "{{ weka_cluster_wait_retries }}"
+  delay: "{{ weka_cluster_wait_delay }}"
+  until: weka_cluster_api_check.rc == 0
+  changed_when: false
+
+# ── Add drives to containers ─────────────────────
+
+- name: Collect all NVMe drives for wiping
+  ansible.builtin.set_fact:
+    weka_cluster_all_drives: >-
+      {%- set devs = [] -%}
+      {%- for host in
+            weka_cluster_server_hosts -%}
+        {%- for d in hostvars[host]
+              .weka_cluster_active_nvme -%}
+          {%- set _ = devs.append(d) -%}
+        {%- endfor -%}
+      {%- endfor -%}
+      {{ devs }}
+  run_once: true
+  when: weka_cluster_wipe_drives | bool
+
+- name: Wipe stale Weka signatures from drives
+  ansible.builtin.command:
+    cmd: wipefs -a -f {{ item }}
+  become: true
+  delegate_to: "{{ weka_cluster_delegate }}"
+  loop: "{{ weka_cluster_all_drives }}"
+  changed_when: true
+  run_once: true
+  when: weka_cluster_wipe_drives | bool
+
+- name: Build drive-add commands
+  ansible.builtin.set_fact:
+    weka_cluster_drive_cmds: >-
+      {%- set cmds = [] -%}
+      {%- set gidx = [0] -%}
+      {%- for host in
+            weka_cluster_server_hosts -%}
+        {%- set drives = hostvars[host]
+              .weka_cluster_active_nvme -%}
+        {%- set nc = hostvars[host]
+              .weka_cluster_num_containers
+              | int -%}
+        {%- set dpc =
+              (drives | length) // nc -%}
+        {%- for c in range(nc) -%}
+          {%- set start = c * dpc -%}
+          {%- set devs =
+                drives[start:start + dpc]
+                | join(' ') -%}
+          {%- if devs | length > 0 -%}
+            {%- set _ = cmds.append(
+                  'weka cluster drive add '
+                  ~ gidx[0] ~ ' '
+                  ~ devs) -%}
+          {%- endif -%}
+          {%- if gidx.append(
+                gidx.pop() + 1) -%}
+          {%- endif -%}
+        {%- endfor -%}
+      {%- endfor -%}
+      {{ cmds }}
+  run_once: true
+
+- name: Add drives to containers (sequential)
+  ansible.builtin.command:
+    cmd: "{{ item }}"
+  become: true
+  delegate_to: "{{ weka_cluster_delegate }}"
+  loop: "{{ weka_cluster_drive_cmds }}"
+  register: weka_cluster_drive_results
+  retries: 3
+  delay: 10
+  until: weka_cluster_drive_results.rc == 0
+  run_once: true
+  changed_when: true
+
+- name: Pause for drives to settle
+  ansible.builtin.pause:
+    seconds: 5
+  run_once: true
+
+# ── Configure cluster ────────────────────────────
+
+- name: Set cluster name and stripe configuration
+  ansible.builtin.command:
+    cmd: >-
+      weka cluster update
+      --cluster-name {{ weka_cluster_name }}
+      --data-drives={{ weka_cluster_data_drives }}
+      --parity-drives={{
+        weka_cluster_parity_drives }}
+  become: true
+  delegate_to: "{{ weka_cluster_delegate }}"
+  run_once: true
+  changed_when: true
+
+- name: Set hot spare count
+  ansible.builtin.command:
+    cmd: >-
+      weka cluster hot-spare
+      {{ weka_cluster_hot_spare }}
+  become: true
+  delegate_to: "{{ weka_cluster_delegate }}"
+  run_once: true
+  changed_when: true
