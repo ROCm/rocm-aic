@@ -1,24 +1,10 @@
 # rocm-icms
 
-AMD internal exploration of storage infrastructure for
-ROCm-based GPU clusters, inspired by NVIDIA's
-[Inference Context Memory Storage (ICMS)][icms] platform
-(recently rebranded **CMX**). ICMS uses BlueField-4 DPUs
-and disaggregated NVMe flash to create a shared KV-cache
-tier for large-scale AI inference; this repo investigates
-analogous approaches on AMD hardware.
-
-## Repository Layout
-
-```
-vendors/
-  dell/       Dell-originated benchmarks and tooling
-    vllm-lmcache-hipfile/
-              vLLM KV-cache offload benchmarks
-              (CPU RAM vs hipFile/AIS on MI325X)
-  weka/       WEKA-FS proof-of-concept (Ansible, Docker,
-              shell scripts for cluster deployment)
-```
+AMD internal exploration of storage infrastructure for ROCm-based GPU clusters,
+inspired by NVIDIA's [Inference Context Memory Storage (ICMS)][icms] platform
+(recently rebranded **CMX**). ICMS uses BlueField-4 DPUs and disaggregated NVMe
+flash to create a shared KV-cache tier for large-scale AI inference; this repo
+investigates analogous approaches on AMD hardware.
 
 ## References
 
