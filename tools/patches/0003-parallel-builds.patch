@@ -1,0 +1,8 @@
+--- a/amd/dkms/pre-build.sh
++++ b/amd/dkms/pre-build.sh
+@@ -96,3 +96,5 @@
+ unset TMPDIR
+ 
++export MAKEFLAGS="-j$(nproc)"
++
+ # Provide vmlinux for BTF generation when building out-of-tree (e.g. DKMS)

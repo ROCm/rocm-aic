@@ -1,0 +1,9 @@
+--- a/amd/dkms/pre-build.sh
++++ b/amd/dkms/pre-build.sh
+@@ -96,5 +96,5 @@
+ unset TMPDIR
+ 
+-(cd $SRC && ./configure CC=${CC})
++(cd $SRC && ./configure CC=${CC} > /tmp/amdgpu-configure.$$.log 2>&1; r=$?; grep -v 'checking for nproc\.\.\. (cached) yes' /tmp/amdgpu-configure.$$.log; rm -f /tmp/amdgpu-configure.$$.log; exit $r)
+ 
+ # rename CFLAGS_ target.o / CFLAGS_REMOVE_ to CFLAGS_target.o
