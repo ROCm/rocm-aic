@@ -1,5 +1,30 @@
 # AMD WEKA-FS Proof of Concept
 
+## Stephen - Notes from Weka Call (March 18 2026)
+
+Stephen to add more compute containers to the cluster. Use the same steps as
+per the drive based container 
+
+```
+$ creation --cores 2 --flag 
+$ weka local setup container --name default6 --net $NIC --cores 2 \
+  --cores-ids 12,13 --drives-dedicated-cores 1 \
+  --compute-dedicated-cores 1 --no-frontends --base-port 17000 \
+  --memory 16GB --failure-domain fd7
+```
+Only the first container needs a frontend to access the filesystem. Add to the
+existing containers. Add a frontend to the first container. Be sure to update
+the --core-ids.
+
+weka cluster process
+CPU is the core id.
+
+weka status
+weka cloud enable (this will send heuristics to Weka)
+
+
+
+
 ## Introduction
 
 ## Useful Commands

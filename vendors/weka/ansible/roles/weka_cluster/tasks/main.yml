@@ -14,6 +14,13 @@
   ansible.builtin.import_tasks: install.yml
   tags: [install]
 
+- name: Validate core allocation
+  ansible.builtin.import_tasks: validate_cores.yml
+  tags: [validate, containers]
+  when: >-
+    'weka_servers' in group_names
+    or 'weka_both' in group_names
+
 - name: Set up Weka containers
   ansible.builtin.import_tasks: containers.yml
   tags: [containers]

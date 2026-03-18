@@ -1,0 +1,102 @@
+---
+# Validate core-allocation variables before
+# creating containers.  Catches misconfigurations
+# early with clear error messages.
+
+- name: Compute total cores per container type
+  ansible.builtin.set_fact:
+    weka_cluster_primary_total_cores: >-
+      {{ (weka_cluster_primary_drive_cores | int)
+         + (weka_cluster_primary_frontend_cores
+            | int)
+         + (weka_cluster_primary_compute_cores
+            | int) }}
+    weka_cluster_secondary_total_cores: >-
+      {{ (weka_cluster_secondary_drive_cores
+          | int)
+         + (weka_cluster_secondary_frontend_cores
+            | int)
+         + (weka_cluster_secondary_compute_cores
+            | int) }}
+
+- name: Assert drive cores >= 1
+  ansible.builtin.assert:
+    that:
+      - >-
+        (weka_cluster_primary_drive_cores | int)
+        >= 1
+      - >-
+        (weka_cluster_secondary_drive_cores | int)
+        >= 1
+    fail_msg: >-
+      Every container must have at least 1 drive
+      core.  Got primary_drive_cores={{
+      weka_cluster_primary_drive_cores }},
+      secondary_drive_cores={{
+      weka_cluster_secondary_drive_cores }}.
+
+- name: Assert primary has at least 1 frontend core
+  ansible.builtin.assert:
+    that:
+      - >-
+        (weka_cluster_primary_frontend_cores
+         | int) >= 1
+    fail_msg: >-
+      The primary container must have at least 1
+      frontend core to access the filesystem.
+      Got primary_frontend_cores={{
+      weka_cluster_primary_frontend_cores }}.
+
+- name: Assert secondaries have no frontend cores
+  ansible.builtin.assert:
+    that:
+      - >-
+        (weka_cluster_secondary_frontend_cores
+         | int) == 0
+    fail_msg: >-
+      Only the primary container should have
+      frontend cores.  Got
+      secondary_frontend_cores={{
+      weka_cluster_secondary_frontend_cores }}.
+      Set to 0 for secondary containers.
+
+- name: Assert total cores per container >= 2
+  ansible.builtin.assert:
+    that:
+      - >-
+        (weka_cluster_primary_total_cores | int)
+        >= 2
+      - >-
+        (weka_cluster_secondary_total_cores | int)
+        >= 2
+    fail_msg: >-
+      Each container needs at least 2 cores (1
+      drive + 1 other role).  Got
+      primary_total={{
+      weka_cluster_primary_total_cores }},
+      secondary_total={{
+      weka_cluster_secondary_total_cores }}.
+
+- name: Compute total cores needed on host
+  ansible.builtin.set_fact:
+    weka_cluster_total_host_cores: >-
+      {{ (weka_cluster_primary_total_cores | int)
+         + ((weka_cluster_num_containers | int)
+            - 1)
+           * (weka_cluster_secondary_total_cores
+              | int) }}
+
+- name: Assert total cores fit within vCPU budget
+  ansible.builtin.assert:
+    that:
+      - >-
+        (weka_cluster_total_host_cores | int)
+        < (ansible_processor_vcpus | int)
+    fail_msg: >-
+      Weka containers need {{
+      weka_cluster_total_host_cores }} cores but
+      {{ inventory_hostname }} has only {{
+      ansible_processor_vcpus }} vCPUs (at least
+      1 must remain for the OS).  Reduce
+      cores-per-container or
+      weka_cluster_num_containers.

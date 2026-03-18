@@ -6,8 +6,9 @@
 - name: Identify all server hosts
   ansible.builtin.set_fact:
     weka_cluster_server_hosts: >-
-      {{ (groups['weka_servers'] | default([]))
-         + (groups['weka_both'] | default([])) }}
+      {{ ((groups['weka_servers'] | default([]))
+         + (groups['weka_both'] | default([])))
+         | intersect(ansible_play_hosts) }}
   run_once: true
 
 - name: Set delegate host
@@ -56,7 +57,8 @@
             weka_cluster_total_containers
             | int) -%}
         {%- set _ = names.append(
-              'weka' ~ (i + 1)) -%}
+              weka_cluster_container_prefix
+              ~ '-' ~ (i + 1)) -%}
       {%- endfor -%}
       {{ names | join(' ') }}
   run_once: true
