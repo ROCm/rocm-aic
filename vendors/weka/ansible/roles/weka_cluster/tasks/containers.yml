@@ -69,61 +69,45 @@
     weka_cluster_net_arg: >-
       {{ weka_cluster_net_arg_raw.stdout | trim }}
 
-# ── Compute core/role splits ─────────────────────
+# ── Core totals ──────────────────────────────────
 
-- name: Compute role allocation per container
+- name: Compute total cores per container type
   ansible.builtin.set_fact:
-    weka_cluster_p_drive: 1
-    weka_cluster_p_remaining: >-
-      {{ (weka_cluster_nic_queues | int) - 1 }}
-
-- name: Compute primary frontend and compute cores
-  ansible.builtin.set_fact:
-    weka_cluster_p_frontend: >-
-      {%- if (weka_cluster_p_remaining | int)
-            >= 2 -%}
-        {{ (weka_cluster_p_remaining | int)
-           // 2 }}
-      {%- elif (weka_cluster_p_remaining | int)
-            == 1 -%}
-        1
-      {%- else -%}
-        0
-      {%- endif -%}
-    weka_cluster_p_compute: >-
-      {%- if (weka_cluster_p_remaining | int)
-            >= 2 -%}
-        {{ (weka_cluster_p_remaining | int)
-           - ((weka_cluster_p_remaining | int)
-              // 2) }}
-      {%- else -%}
-        0
-      {%- endif -%}
-
-- name: Compute secondary role allocation
-  ansible.builtin.set_fact:
-    weka_cluster_s_drive: 1
-    weka_cluster_s_compute: >-
-      {{ (weka_cluster_nic_queues | int) - 1 }}
+    weka_cluster_primary_total_cores: >-
+      {{ (weka_cluster_primary_drive_cores | int)
+         + (weka_cluster_primary_frontend_cores
+            | int)
+         + (weka_cluster_primary_compute_cores
+            | int) }}
+    weka_cluster_secondary_total_cores: >-
+      {{ (weka_cluster_secondary_drive_cores
+          | int)
+         + (weka_cluster_secondary_frontend_cores
+            | int)
+         + (weka_cluster_secondary_compute_cores
+            | int) }}
 
 - name: Log container layout
   ansible.builtin.debug:
     msg: |
       Host       : {{ inventory_hostname }}
       Net        : {{ weka_cluster_net_arg }}
-      Queues     : {{ weka_cluster_nic_queues }}
-      Primary    : {{ weka_cluster_nic_queues }}
-                   cores
-                   ({{ weka_cluster_p_drive }} drv,
-                    {{ weka_cluster_p_compute
-                       | trim }} cmp,
-                    {{ weka_cluster_p_frontend
-                       | trim }} fe)
-      Secondary  : {{ weka_cluster_nic_queues }}
-                   cores
-                   ({{ weka_cluster_s_drive }} drv,
-                    {{ weka_cluster_s_compute
-                       | trim }} cmp)
+      Primary    : {{
+        weka_cluster_primary_total_cores
+        | trim }} cores
+        ({{ weka_cluster_primary_drive_cores
+         }} drv,
+         {{ weka_cluster_primary_compute_cores
+         }} cmp,
+         {{ weka_cluster_primary_frontend_cores
+         }} fe)
+      Secondary  : {{
+        weka_cluster_secondary_total_cores
+        | trim }} cores
+        ({{ weka_cluster_secondary_drive_cores
+         }} drv,
+         {{ weka_cluster_secondary_compute_cores
+         }} cmp)
 
 # ── Create primary container ─────────────────────
 
@@ -131,33 +115,36 @@
   ansible.builtin.set_fact:
     weka_cluster_primary_core_ids: >-
       {{ range(1,
-         (weka_cluster_nic_queues | int) + 1)
+         (weka_cluster_primary_total_cores
+          | int) + 1)
          | join(',') }}
 
 - name: Determine primary frontend flags
   ansible.builtin.set_fact:
     weka_cluster_fe_flags: >-
-      {%- if (weka_cluster_p_frontend | int)
-            > 0 -%}
-        --frontend-dedicated-cores
-        {{ weka_cluster_p_frontend | trim }}
-      {%- else -%}
-        --no-frontends
-      {%- endif -%}
+      {%- if (weka_cluster_primary_frontend_cores
+      | int) > 0 -%}
+      --frontend-dedicated-cores
+      {{ weka_cluster_primary_frontend_cores
+      }}{%- else -%}
+      --no-frontends{%- endif -%}
 
 - name: Create primary container
   ansible.builtin.shell: |
     set -eo pipefail
     weka local setup container \
-      --name default \
+      --name "{{ weka_cluster_container_prefix }}-1" \
       --net "{{ weka_cluster_net_arg }}" \
-      --cores {{ weka_cluster_nic_queues }} \
+      --cores {{
+        weka_cluster_primary_total_cores
+        | trim }} \
       --cores-ids \
         "{{ weka_cluster_primary_core_ids }}" \
       --drives-dedicated-cores \
-        {{ weka_cluster_p_drive }} \
+        {{ weka_cluster_primary_drive_cores }} \
       --compute-dedicated-cores \
-        {{ weka_cluster_p_compute | trim }} \
+        {{ weka_cluster_primary_compute_cores
+        }} \
       {{ weka_cluster_fe_flags | trim }} \
       --memory "{{ weka_cluster_primary_mem }}" \
       --failure-domain \
@@ -171,22 +158,29 @@
 
 - name: Create secondary containers
   ansible.builtin.shell: |
-    {% set q = weka_cluster_nic_queues | int %}
-    {% set start = 1 + (item | int) * q %}
-    {% set ids = range(start, start + q)
+    {% set tc = weka_cluster_secondary_total_cores
+                | int %}
+    {% set pc = weka_cluster_primary_total_cores
+                | int %}
+    {% set start = 1 + pc
+                   + ((item | int) - 1) * tc %}
+    {% set ids = range(start, start + tc)
                  | join(',') %}
     {% set port = 14000 + (item | int) * 1000 %}
     {% set fd = (weka_cluster_fd_base | int)
                 + (item | int) + 1 %}
-    {% set cmp = weka_cluster_s_compute | int %}
+    {% set cmp =
+       weka_cluster_secondary_compute_cores
+       | int %}
     set -eo pipefail
     weka local setup container \
-      --name "default{{ item }}" \
+      --name "{{ weka_cluster_container_prefix }}-{{ item + 1 }}" \
       --net "{{ weka_cluster_net_arg }}" \
-      --cores {{ q }} \
+      --cores {{ tc }} \
       --cores-ids "{{ ids }}" \
       --drives-dedicated-cores \
-        {{ weka_cluster_s_drive }} \
+        {{ weka_cluster_secondary_drive_cores
+        }} \
       {% if cmp > 0 %}
       --compute-dedicated-cores {{ cmp }} \
       {% endif %}
