@@ -2,31 +2,125 @@
 // SPDX-License-Identifier: MIT
 
 BEGIN {
-    printf("start_ns,type,size_bytes,file_offset,dev_offset,duration_us,return_code\n");
+    printf("start_ns,type,filename,size_bytes,file_offset,dev_offset,duration_us,return_code\n");
 }
 
-uprobe:$1:hipFileRead,
-uprobe:$1:hipFileWrite
+// Track POSIX open() to map fd -> filename
+// filename is only available on sys_enter; the fd (return value) is only on sys_exit.
+// We stash the filename per-thread on enter, then pair it with the fd on exit.
+tracepoint:syscalls:sys_enter_openat
 {
-    /* elapsed is ns since bpftrace started; nsecs is ns since boot */
+    @pending_filename[tid] = str(args->filename);
+}
+
+tracepoint:syscalls:sys_exit_openat
+/args->ret >= 0/
+{
+    @fd_to_filename[pid, args->ret] = @pending_filename[tid];
+    delete(@pending_filename[tid]);
+}
+
+tracepoint:syscalls:sys_exit_openat
+/args->ret < 0/
+{
+    delete(@pending_filename[tid]);
+}
+
+// Track hipFileHandleRegister to map hipFileHandle_t -> fd -> filename
+// hipFileError_t hipFileHandleRegister(hipFileHandle_t *fh, hipFileDescr_t *descr);
+// We need to track the descr->handle.fd (which is at offset 8 in hipFileDescr_t)
+uprobe:$1:hipFileHandleRegister
+{
+    // arg0 = hipFileHandle_t *fh (output)
+    // arg1 = hipFileDescr_t *descr (input)
+    // descr->type is at offset 0 (4 bytes)
+    // descr->handle.fd is at offset 8 (int, 4 bytes) - assuming hipFileHandleTypeOpaqueFD
+    $fd = *(int32*)(arg1 + 8);
+    @pending_reg_fd[tid] = $fd;
+    @pending_reg_fh_ptr[tid] = arg0;
+}
+
+uretprobe:$1:hipFileHandleRegister
+/@pending_reg_fh_ptr[tid]/
+{
+    // Only create the mapping if the call succeeded (retval == 0).
+    // On failure the output handle may be uninitialized.
+    if (retval == 0) {
+        $fd = @pending_reg_fd[tid];
+        $fh_ptr = @pending_reg_fh_ptr[tid];
+
+        // Read the hipFileHandle_t value that was written to *fh
+        $fh = *(uint64*)$fh_ptr;
+
+        // Map hipFileHandle_t -> filename via fd
+        $filename = @fd_to_filename[pid, $fd];
+        if ($filename != "") {
+            @handle_to_filename[$fh] = $filename;
+        }
+    }
+
+    delete(@pending_reg_fd[tid]);
+    delete(@pending_reg_fh_ptr[tid]);
+}
+
+// Track hipFileHandleDeregister to clean up the mapping
+uprobe:$1:hipFileHandleDeregister
+{
+    delete(@handle_to_filename[arg0]);
+}
+
+// Track POSIX close() to clean up fd -> filename mapping
+// Only delete on successful close to avoid dropping the mapping if close() fails.
+tracepoint:syscalls:sys_enter_close
+{
+    @pending_close_fd[tid] = args->fd;
+    @pending_close[tid] = 1;
+}
+
+tracepoint:syscalls:sys_exit_close
+/@pending_close[tid]/
+{
+    if (args->ret == 0) {
+        delete(@fd_to_filename[pid, @pending_close_fd[tid]]);
+    }
+    delete(@pending_close_fd[tid]);
+    delete(@pending_close[tid]);
+}
+
+// Track hipFileRead - ssize_t hipFileRead(hipFileHandle_t fh, void *buffer_base, size_t size, hoff_t file_offset, hoff_t buffer_offset)
+uprobe:$1:hipFileRead
+{
     @start_ts[tid] = elapsed;
-    @info[tid]     = (arg2, arg3, arg4);
+    @info[tid] = (arg0, arg2, arg3, arg4);  // fh, size, file_offset, buffer_offset
 }
 
 uretprobe:$1:hipFileRead
-/@start_ts[tid]/ 
+/@start_ts[tid]/
 {
     $now = elapsed;
     $duration_us = ($now - @start_ts[tid]) / 1000;
-    $sz = @info[tid].0; 
-    $fo = @info[tid].1; 
-    $do = @info[tid].2;
+    $fh = @info[tid].0;
+    $sz = @info[tid].1;
+    $fo = @info[tid].2;
+    $bo = @info[tid].3;
 
-    printf("%llu,READ,%lu,%lld,%lld,%lu,%ld\n", 
-           @start_ts[tid], $sz, $fo, $do, $duration_us, retval);
-    
+    $filename = @handle_to_filename[$fh];
+    if ($filename == "") {
+        $filename = "unknown";
+    }
+
+    printf("%llu,READ,%s,%lu,%lld,%lld,%lu,%ld\n",
+           @start_ts[tid], $filename, $sz, $fo, $bo, $duration_us, retval);
+
     delete(@start_ts[tid]);
     delete(@info[tid]);
+}
+
+// Track hipFileWrite - ssize_t hipFileWrite(hipFileHandle_t fh, const void *buffer_base, size_t size, hoff_t file_offset, hoff_t buffer_offset)
+uprobe:$1:hipFileWrite
+{
+    @start_ts[tid] = elapsed;
+    @info[tid] = (arg0, arg2, arg3, arg4);  // fh, size, file_offset, buffer_offset
 }
 
 uretprobe:$1:hipFileWrite
@@ -34,13 +128,19 @@ uretprobe:$1:hipFileWrite
 {
     $now = elapsed;
     $duration_us = ($now - @start_ts[tid]) / 1000;
-    $sz = @info[tid].0; 
-    $fo = @info[tid].1; 
-    $do = @info[tid].2;
+    $fh = @info[tid].0;
+    $sz = @info[tid].1;
+    $fo = @info[tid].2;
+    $bo = @info[tid].3;
 
-    printf("%llu,WRITE,%lu,%lld,%lld,%lu,%ld\n", 
-           @start_ts[tid], $sz, $fo, $do, $duration_us, retval);
-    
+    $filename = @handle_to_filename[$fh];
+    if ($filename == "") {
+        $filename = "unknown";
+    }
+
+    printf("%llu,WRITE,%s,%lu,%lld,%lld,%lu,%ld\n",
+           @start_ts[tid], $filename, $sz, $fo, $bo, $duration_us, retval);
+
     delete(@start_ts[tid]);
     delete(@info[tid]);
 }
@@ -48,4 +148,11 @@ uretprobe:$1:hipFileWrite
 END {
     clear(@start_ts);
     clear(@info);
+    clear(@handle_to_filename);
+    clear(@fd_to_filename);
+    clear(@pending_reg_fd);
+    clear(@pending_reg_fh_ptr);
+    clear(@pending_filename);
+    clear(@pending_close_fd);
+    clear(@pending_close);
 }
