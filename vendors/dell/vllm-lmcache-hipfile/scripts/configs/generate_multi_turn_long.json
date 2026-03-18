@@ -1,7 +1,7 @@
 {
     "filetype": "generate_conversations",
     "num_conversations": 240,
-    "text_files": ["configs/books.txt"],
+    "text_files": ["scripts/configs/books.txt"],
     "print_stats": false,
     "prompt_input": {
         "num_turns": {

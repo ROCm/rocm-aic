@@ -9,13 +9,22 @@ WORKDIR /app
 
 # Setup prerequisites
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends \
-        cmake libmount-dev libboost-all-dev vim && \
-    rm -rf /var/lib/apt/lists/*
+	apt-get install -y --no-install-recommends \
+	cmake bpftrace libmount-dev libboost-all-dev vim && \
+	rm -rf /var/lib/apt/lists/*
+
+# Pinned SHAs for deterministic builds
+ARG HIPFILE_BASE_SHA=5a7d275
+ARG HIPFILE_PATCH_SHA=0d07c19
+ARG LMCACHE_SHA=542bb9b
+ARG VLLM_SHA=a913b612d
 
 # Build & install hipFile libs, headers, and python bindings
-RUN git clone https://github.com/glimchb/hipFile.git && \
-    	cd hipFile && git checkout origin/python && \
+RUN git clone https://github.com/ROCm/hipFile.git && \
+	cd hipFile && \
+	git config user.email "noone@example.com" && git config user.name "No User" && \
+	git remote add dell https://github.com/glimchb/hipFile.git && git fetch dell && git fetch origin && \
+	git checkout "${HIPFILE_BASE_SHA}" && git cherry-pick "${HIPFILE_PATCH_SHA}" && \
 	mkdir build && cd build && \
 	cmake .. && cmake --build . -j && cpack -G DEB && \
 	dpkg -i hipfile*deb && \
@@ -25,7 +34,7 @@ RUN git clone https://github.com/glimchb/hipFile.git && \
 
 # Build & install LMCache
 RUN git clone https://github.com/glimchb/LMCache.git && \
-    	cd LMCache && git checkout origin/hipFile && \
+	cd LMCache && git checkout "${LMCACHE_SHA}" && \
 	pip install --no-cache-dir \
 	    -r requirements/build.txt && \
 	PYTORCH_ROCM_ARCH=$(rocm_agent_enumerator | head -n 1) \
@@ -57,7 +66,8 @@ RUN git clone https://github.com/glimchb/LMCache.git && \
 
 # Build vLLM
 RUN git clone https://github.com/vllm-project/vllm.git && \
-    	cd vllm && \
+	cd vllm && \
+	git checkout "${VLLM_SHA}" && \
 	pip install --no-cache-dir /opt/rocm/share/amd_smi && \
 	pip install --no-cache-dir --upgrade numba \
 	    scipy \

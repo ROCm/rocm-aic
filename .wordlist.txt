@@ -2,6 +2,7 @@ AIS
 AMD
 Ansible
 BlueField
+BPF
 CMX
 DPUs
 Dockerfile
@@ -36,6 +37,7 @@ cli
 configs
 contenteditable
 cpu
+csv
 debian
 dkms
 disaggregated
