@@ -56,12 +56,25 @@ docker run -it --rm \
     --ulimit memlock=-1 \
     --ulimit stack=67108864 \
     --cap-add IPC_LOCK \
-    --cap-add CAP_SYS_PTRACE \
+    --cap-add SYS_PTRACE \
+    --cap-add SYS_ADMIN \
+    --cap-add BPF \
+    --cap-add PERFMON \
     -v "$HOME:$HOME" \
     -v /data:/data \
     --env-file ~/docker.env \
+    -v /lib/modules:/lib/modules:ro \
+    -v /usr/src:/usr/src:ro \
+    -v /etc/localtime:/etc/localtime:ro \
+    -v /sys/kernel/debug/:/sys/kernel/debug/ \
+    -v /sys/kernel/btf:/sys/kernel/btf:ro \
     "$(whoami)-hipfile"
 ```
+
+If your Docker/kernel setup does not support the fine-grained
+`BPF`/`PERFMON` capabilities and you still encounter permission
+errors when collecting BPF traces, you can temporarily add
+`--privileged` to the `docker run` command as a last resort.
 
 ### 4. Serve the model
 
@@ -90,6 +103,13 @@ In a second shell inside the same container:
 ./scripts/bench_multi_turn_long.sh
 ```
 
+### 6. Collect hipFile traces with BPF
+
+```bash
+# Trace hipFile IO with BPF
+./scripts/trace_hipfile.sh [<custom libhipfile.so location>] > data.csv
+```
+
 ## Directory layout
 
 ```
@@ -101,6 +121,8 @@ scripts/
   serve_ais_cache.sh           LMCache -> hipFile/AIS
   bench_multi_turn_short.sh    short benchmark
   bench_multi_turn_long.sh     long benchmark
+  trace_hipfile.sh             BPF tracing script
+  hipfile.bt                   BPF tracing recipe
   configs/
     lmcache-cpu.yaml           CPU cache config
     lmcache-ais.yaml           AIS cache config

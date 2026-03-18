@@ -1,0 +1,51 @@
+// SPDX-FileCopyrightText: 2026 Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: MIT
+
+BEGIN {
+    printf("start_ns,type,size_bytes,file_offset,dev_offset,duration_us,return_code\n");
+}
+
+uprobe:$1:hipFileRead,
+uprobe:$1:hipFileWrite
+{
+    /* elapsed is ns since bpftrace started; nsecs is ns since boot */
+    @start_ts[tid] = elapsed;
+    @info[tid]     = (arg2, arg3, arg4);
+}
+
+uretprobe:$1:hipFileRead
+/@start_ts[tid]/ 
+{
+    $now = elapsed;
+    $duration_us = ($now - @start_ts[tid]) / 1000;
+    $sz = @info[tid].0; 
+    $fo = @info[tid].1; 
+    $do = @info[tid].2;
+
+    printf("%llu,READ,%lu,%lld,%lld,%lu,%ld\n", 
+           @start_ts[tid], $sz, $fo, $do, $duration_us, retval);
+    
+    delete(@start_ts[tid]);
+    delete(@info[tid]);
+}
+
+uretprobe:$1:hipFileWrite
+/@start_ts[tid]/
+{
+    $now = elapsed;
+    $duration_us = ($now - @start_ts[tid]) / 1000;
+    $sz = @info[tid].0; 
+    $fo = @info[tid].1; 
+    $do = @info[tid].2;
+
+    printf("%llu,WRITE,%lu,%lld,%lld,%lu,%ld\n", 
+           @start_ts[tid], $sz, $fo, $do, $duration_us, retval);
+    
+    delete(@start_ts[tid]);
+    delete(@info[tid]);
+}
+
+END {
+    clear(@start_ts);
+    clear(@info);
+}
