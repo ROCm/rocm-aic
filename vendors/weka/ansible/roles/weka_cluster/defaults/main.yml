@@ -14,6 +14,25 @@ weka_cluster_version: "5.1.0.547"
 # re-install or upgrade.
 weka_cluster_force_install: false
 
+# ── Tarball download ─────────────────────────
+# URL to fetch the Weka install tar when it is
+# not already present at weka_cluster_tar_path.
+# The version is templated so bumping
+# weka_cluster_version updates the URL too.
+# Credentials are kept in a separate variable
+# so they can be vault-encrypted independently.
+weka_cluster_tar_url: >-
+  https://get.weka.io/dist/v1/pkg/weka-{{
+  weka_cluster_version }}.tar
+
+# Auth token for the Weka download endpoint.
+# Override via vault-encrypted var for safety.
+weka_cluster_download_token: "o4mwdKIJCVOwthRc"
+
+# When true, automatically download the tarball
+# from weka_cluster_tar_url if it is missing.
+weka_cluster_auto_download: true
+
 # ── Networking ────────────────────────────────────
 # "udp"            – kernel UDP networking (default)
 # "<iface>"        – DPDK via resolved PCI address
@@ -25,9 +44,25 @@ weka_cluster_nic: "udp"
 # container.  Each core needs its own queue.
 weka_cluster_nic_queues: 1
 
+# ── Core allocation ──────────────────────────────
+# Cores dedicated to each role, per container.
+# Total cores per container = drive + frontend +
+# compute.  The primary container is the first one
+# on each host; secondaries are the rest.
+weka_cluster_primary_drive_cores: 1
+weka_cluster_primary_frontend_cores: 1
+weka_cluster_primary_compute_cores: 0
+weka_cluster_secondary_drive_cores: 1
+weka_cluster_secondary_frontend_cores: 0
+weka_cluster_secondary_compute_cores: 1
+
 # ── Container layout ─────────────────────────────
 # Containers per server host (primary + secondaries).
 weka_cluster_num_containers: 6
+
+# Prefix for local and cluster container names.
+# Containers are named <prefix>-1, <prefix>-2, etc.
+weka_cluster_container_prefix: "weka"
 
 # Memory allocated to the primary (has frontends)
 # and each secondary container.

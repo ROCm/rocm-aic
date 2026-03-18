@@ -30,6 +30,7 @@ UID
 VPN
 VRAM
 WEKA
+Weka
 amdgpu
 ais
 buildx
@@ -42,6 +43,8 @@ debian
 dkms
 disaggregated
 env
+filesystem
+frontend
 gfx
 gid
 gitignored
@@ -66,4 +69,5 @@ shm
 uid
 vLLM
 venv
+weka
 whoami

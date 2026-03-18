@@ -6,8 +6,9 @@
   ansible.builtin.set_fact:
     weka_cluster_delegate: >-
       {{ ((groups['weka_servers'] | default([]))
-          + (groups['weka_both']
-             | default([])))[0] }}
+          + (groups['weka_both'] | default([])))
+         | intersect(ansible_play_hosts)
+         | first }}
   run_once: true
 
 # ── Start IO ─────────────────────────────────────

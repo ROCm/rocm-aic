@@ -4,5 +4,11 @@
 # inventory file under host_vars.
 weka_cluster_nic: "udp"
 weka_cluster_num_containers: 6
+weka_cluster_container_prefix: "stebates-weka-poc"
+weka_cluster_primary_drive_cores: 1
+weka_cluster_primary_frontend_cores: 1
+weka_cluster_primary_compute_cores: 0
+weka_cluster_secondary_drive_cores: 1
+weka_cluster_secondary_compute_cores: 1
 weka_cluster_primary_mem: "4GB"
-weka_cluster_secondary_mem: "1536MB"
+weka_cluster_secondary_mem: "2GB"
