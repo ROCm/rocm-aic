@@ -28,16 +28,27 @@ tracepoint:syscalls:sys_exit_openat
 
 // Track hipFileHandleRegister to map hipFileHandle_t -> fd -> filename
 // hipFileError_t hipFileHandleRegister(hipFileHandle_t *fh, hipFileDescr_t *descr);
-// We need to track the descr->handle.fd (which is at offset 8 in hipFileDescr_t)
+//
+// hipFileDescr_t layout (from hipfile.h, ROCm hipFile API):
+//   +0x00  type   (hipFileHandleType_t / int32, 4 bytes)
+//   +0x04  flags  (uint32, 4 bytes)
+//   +0x08  handle (union: fd int32 at +0x08 for hipFileHandleTypeOpaqueFD)
+//
+// Note: bpftrace cannot resolve user-space struct fields via DWARF; the offsets
+// above are derived from hipfile.h and must be updated if the struct ABI changes.
 uprobe:$1:hipFileHandleRegister
 {
     // arg0 = hipFileHandle_t *fh (output)
     // arg1 = hipFileDescr_t *descr (input)
-    // descr->type is at offset 0 (4 bytes)
-    // descr->handle.fd is at offset 8 (int, 4 bytes) - assuming hipFileHandleTypeOpaqueFD
-    $fd = *(int32*)(arg1 + 8);
-    @pending_reg_fd[tid] = $fd;
-    @pending_reg_fh_ptr[tid] = arg0;
+    $descr_type = *(int32*)(arg1 + 0);  // hipFileHandleType_t at offset 0
+
+    // hipFileHandleTypeOpaqueFD == 0; only this type carries a file descriptor.
+    // Skip other handle types to avoid reading garbage into the fd slot.
+    if ($descr_type == 0) {
+        $fd = *(int32*)(arg1 + 8);      // handle.fd at offset 8 (OpaqueFD only)
+        @pending_reg_fd[tid] = $fd;
+        @pending_reg_fh_ptr[tid] = arg0;
+    }
 }
 
 uretprobe:$1:hipFileHandleRegister
