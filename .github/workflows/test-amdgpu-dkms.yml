@@ -1,0 +1,43 @@
+name: Test amdgpu-dkms repack
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'tools/amdgpu-dkms/**'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'tools/amdgpu-dkms/**'
+
+jobs:
+  test-repack:
+    name: Repack and verify
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download public amdgpu-dkms .deb
+        run: |
+          set -euo pipefail
+          DEB_URL="https://repo.radeon.com/amdgpu/latest/ubuntu/pool/main/a/amdgpu-dkms/amdgpu-dkms_6.16.13.30300000-2278356.24.04_all.deb"
+          DEB_PATH="/tmp/amdgpu-dkms.deb"
+          # Pinned SHA256 checksum for the expected .deb artifact
+          EXPECTED_SHA256="d171577ba9f31eeb84b6067505026124dd44fec0fbaf2145106aa4c931356e89"
+
+          echo "Downloading amdgpu-dkms package from ${DEB_URL}..."
+          wget -q --retry-connrefused --waitretry=5 --tries=3 -O "${DEB_PATH}" "${DEB_URL}"
+
+          echo "Verifying SHA256 checksum of downloaded package..."
+          ACTUAL_SHA256="$(sha256sum "${DEB_PATH}" | cut -d' ' -f1)"
+          echo "Expected SHA256: ${EXPECTED_SHA256}"
+          echo "Actual SHA256:   ${ACTUAL_SHA256}"
+          if [ "${ACTUAL_SHA256}" != "${EXPECTED_SHA256}" ]; then
+            echo "ERROR: Checksum verification failed for ${DEB_PATH}" >&2
+            exit 1
+          fi
+
+      - name: Install fakeroot
+        run: sudo apt-get install -y fakeroot
+
+      - name: Run repack verification
+        run: bash tools/amdgpu-dkms/test/test-repack.sh /tmp/amdgpu-dkms.deb
