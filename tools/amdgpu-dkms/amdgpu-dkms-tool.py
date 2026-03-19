@@ -1,17 +1,20 @@
 #!/usr/bin/env python3
 """
-Repack a .deb: extract, optionally apply patches, bump version in DEBIAN/control,
-and build a new .deb with the new version in the filename.
+Repack a .deb: extract, optionally apply patches, bump version
+in DEBIAN/control, DEBIAN/postinst, DEBIAN/prerm, every
+dkms.conf, and the usr/src/ directory name, then build a new
+.deb. This lets DKMS treat the repacked module as a distinct
+version that can coexist with the original.
 
 Input may be a local path or a URL (http/https). When given a URL, the .deb is
 downloaded to debs/ by default; use --download-dir to save elsewhere.
 
 Example (local file):
-  ./amdgpu-dkms-repack.py debs/amdgpu-dkms_6.18.8.31200000-2295296.24.04_all.deb \\
+  ./amdgpu-dkms-tool.py debs/amdgpu-dkms_6.18.8.31200000-2295296.24.04_all.deb \\
     --suffix +local1 --patch ./patches --output amdgpu-dkms_..._all.deb
 
 Example (URL; downloads to debs/ then repacks):
-  ./amdgpu-dkms-repack.py <artifactory-url-to-amdgpu-dkms.deb> \\
+  ./amdgpu-dkms-tool.py <artifactory-url-to-amdgpu-dkms.deb> \\
     --version 6.18.8.31200000-2295296.24.05 --patch ./patches --output out.deb
 
 Patches are applied from inside the single usr/src/amdgpu-<label>/ directory,
@@ -167,21 +170,144 @@ def main():
                     )
                     return 6
 
-        # 3. Bump version and update control
+        # 3. Compute new version from DEBIAN/control
         with open(control_path, "r", encoding="utf-8") as f:
             control_content = f.read()
-        version_match = re.search(r"^Version:\s*(.+)\s*$", control_content, re.MULTILINE)
+        version_match = re.search(
+            r"^Version:\s*(.+)\s*$",
+            control_content,
+            re.MULTILINE,
+        )
         if not version_match:
-            sys.stderr.write("Error: no Version line in DEBIAN/control\n")
+            sys.stderr.write(
+                "Error: no Version line in DEBIAN/control\n"
+            )
             return 7
         current_version = version_match.group(1).strip()
         if args.version:
             new_version = args.version
         else:
             new_version = current_version + args.suffix
-        control_content = control_content.replace(current_version, new_version)
+
+        # 3a. Update DEBIAN/control
+        control_content, n = re.subn(
+            r"^(Version:\s*)" + re.escape(current_version)
+            + r"(\s*)$",
+            r"\g<1>" + new_version + r"\g<2>",
+            control_content,
+            count=1,
+            flags=re.MULTILINE,
+        )
+        if not n:
+            sys.stderr.write(
+                "Error: failed to update Version in "
+                "DEBIAN/control\n"
+            )
+            return 7
         with open(control_path, "w", encoding="utf-8") as f:
             f.write(control_content)
+        print(
+            f"DEBIAN/control: {current_version} -> {new_version}",
+            flush=True,
+        )
+
+        # 3b. Locate the amdgpu source directory and read the
+        #     DKMS version (may differ from the control version)
+        usr_src = os.path.join(extract_dir, "usr", "src")
+        amdgpu_dirs = [
+            d for d in os.listdir(usr_src)
+            if os.path.isdir(os.path.join(usr_src, d))
+            and d.startswith("amdgpu-")
+        ] if os.path.isdir(usr_src) else []
+        if len(amdgpu_dirs) != 1:
+            sys.stderr.write(
+                "Error: expected exactly one "
+                f"usr/src/amdgpu-* dir, got {len(amdgpu_dirs)}\n"
+            )
+            return 5
+        old_src_dir = os.path.join(usr_src, amdgpu_dirs[0])
+        old_dkms_ver = amdgpu_dirs[0].removeprefix("amdgpu-")
+
+        # 3c. Update PACKAGE_VERSION in every dkms.conf
+        for root, _dirs, files in os.walk(old_src_dir):
+            for fname in files:
+                if fname != "dkms.conf":
+                    continue
+                p = os.path.join(root, fname)
+                with open(p, "r", encoding="utf-8") as f:
+                    txt = f.read()
+                m = re.search(
+                    r'^PACKAGE_VERSION="([^"]+)"',
+                    txt,
+                    re.MULTILINE,
+                )
+                if not m:
+                    continue
+                txt = txt.replace(
+                    f'PACKAGE_VERSION="{m.group(1)}"',
+                    f'PACKAGE_VERSION="{new_version}"',
+                )
+                with open(p, "w", encoding="utf-8") as f:
+                    f.write(txt)
+                rel = os.path.relpath(p, extract_dir)
+                print(
+                    f"{rel}: {m.group(1)} -> {new_version}",
+                    flush=True,
+                )
+
+        # 3d. Update CVERSION in DEBIAN/postinst
+        postinst = os.path.join(
+            extract_dir, "DEBIAN", "postinst"
+        )
+        if os.path.isfile(postinst):
+            with open(postinst, "r", encoding="utf-8") as f:
+                txt = f.read()
+            txt, n = re.subn(
+                r'^(CVERSION=).*$',
+                rf'\g<1>{new_version}',
+                txt,
+                flags=re.MULTILINE,
+            )
+            if n:
+                with open(postinst, "w", encoding="utf-8") as f:
+                    f.write(txt)
+                print(
+                    f"DEBIAN/postinst CVERSION: "
+                    f"{old_dkms_ver} -> {new_version}",
+                    flush=True,
+                )
+
+        # 3e. Update VERSION in DEBIAN/prerm
+        prerm = os.path.join(extract_dir, "DEBIAN", "prerm")
+        if os.path.isfile(prerm):
+            with open(prerm, "r", encoding="utf-8") as f:
+                txt = f.read()
+            txt, n = re.subn(
+                r'^(VERSION=).*$',
+                rf'\g<1>{new_version}',
+                txt,
+                flags=re.MULTILINE,
+            )
+            if n:
+                with open(prerm, "w", encoding="utf-8") as f:
+                    f.write(txt)
+                print(
+                    f"DEBIAN/prerm VERSION: "
+                    f"{old_dkms_ver} -> {new_version}",
+                    flush=True,
+                )
+
+        # 3f. Rename usr/src/amdgpu-<old> -> amdgpu-<new>
+        new_src_dir = os.path.join(
+            usr_src, f"amdgpu-{new_version}"
+        )
+        if old_src_dir != new_src_dir:
+            os.rename(old_src_dir, new_src_dir)
+            print(
+                f"Renamed amdgpu-{old_dkms_ver} -> "
+                f"amdgpu-{new_version}",
+                flush=True,
+            )
 
         # 4. Build the new .deb
         if args.output:
