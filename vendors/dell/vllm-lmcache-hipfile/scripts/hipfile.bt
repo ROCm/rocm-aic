@@ -55,7 +55,7 @@ uretprobe:$1:hipFileHandleRegister
         // Map hipFileHandle_t -> filename via fd
         $filename = @fd_to_filename[pid, $fd];
         if ($filename != "") {
-            @handle_to_filename[$fh] = $filename;
+            @handle_to_filename[pid, $fh] = $filename;
         }
     }
 
@@ -66,7 +66,7 @@ uretprobe:$1:hipFileHandleRegister
 // Track hipFileHandleDeregister to clean up the mapping
 uprobe:$1:hipFileHandleDeregister
 {
-    delete(@handle_to_filename[arg0]);
+    delete(@handle_to_filename[pid, arg0]);
 }
 
 // Track POSIX close() to clean up fd -> filename mapping
@@ -104,7 +104,7 @@ uretprobe:$1:hipFileRead
     $fo = @info[tid].2;
     $bo = @info[tid].3;
 
-    $filename = @handle_to_filename[$fh];
+    $filename = @handle_to_filename[pid, $fh];
     if ($filename == "") {
         $filename = "unknown";
     }
@@ -133,7 +133,7 @@ uretprobe:$1:hipFileWrite
     $fo = @info[tid].2;
     $bo = @info[tid].3;
 
-    $filename = @handle_to_filename[$fh];
+    $filename = @handle_to_filename[pid, $fh];
     if ($filename == "") {
         $filename = "unknown";
     }
