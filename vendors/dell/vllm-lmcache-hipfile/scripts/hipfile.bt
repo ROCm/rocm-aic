@@ -109,7 +109,7 @@ uretprobe:$1:hipFileRead
         $filename = "unknown";
     }
 
-    printf("%llu,READ,%s,%lu,%lld,%lld,%lu,%ld\n",
+    printf("%llu,READ,\"%s\",%lu,%lld,%lld,%lu,%ld\n",
            @start_ts[tid], $filename, $sz, $fo, $bo, $duration_us, retval);
 
     delete(@start_ts[tid]);
@@ -138,7 +138,7 @@ uretprobe:$1:hipFileWrite
         $filename = "unknown";
     }
 
-    printf("%llu,WRITE,%s,%lu,%lld,%lld,%lu,%ld\n",
+    printf("%llu,WRITE,\"%s\",%lu,%lld,%lld,%lu,%ld\n",
            @start_ts[tid], $filename, $sz, $fo, $bo, $duration_us, retval);
 
     delete(@start_ts[tid]);
