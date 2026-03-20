@@ -1,0 +1,30 @@
+# LLM-D specific configuration
+# This file contains settings specific to llm-d based deployments
+
+# LLM-D version and images
+llm_d:
+  version: v0.5.1
+  images:
+    rocm: ghcr.io/llm-d/llm-d-rocm:v0.5.1
+    standard: ghcr.io/llm-d/llm-d:v0.5.1
+
+# Chart versions
+charts:
+  inferencepool: v1.3.1
+  llm_d_infra: v1.3.6
+  llm_d_modelservice: v0.4.7
+
+# Chart repositories
+repositories:
+  inferencepool: oci://registry.k8s.io/gateway-api-inference-extension/charts/inferencepool
+  llm_d_modelservice: https://llm-d-incubation.github.io/llm-d-modelservice/
+  llm_d_infra: https://llm-d-incubation.github.io/llm-d-infra/
+
+# AMD GPU configuration
+amd:
+  gpu_resource: amd.com/gpu
+  default_gpu_per_pod: 2
+  default_memory: 400Gi
+
+# Default namespace prefix for llm-d deployments
+namespace_prefix: llm-d
