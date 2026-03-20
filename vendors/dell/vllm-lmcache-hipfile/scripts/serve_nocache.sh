@@ -6,4 +6,9 @@
 #  GPU KV cache size: 157,200 tokens
 #
 
-vllm serve openai/gpt-oss-120b --gpu-memory-utilization 0.3
+# Set default values for GPU memory utilization and tensor parallel size
+GPU_MEMORY_UTILIZATION=${GPU_MEMORY_UTILIZATION:-0.32}
+TENSOR_PARALLEL_SIZE=${TENSOR_PARALLEL_SIZE:-1}
+
+vllm serve openai/gpt-oss-120b --gpu-memory-utilization "${GPU_MEMORY_UTILIZATION}" \
+     --tensor-parallel-size "${TENSOR_PARALLEL_SIZE}"

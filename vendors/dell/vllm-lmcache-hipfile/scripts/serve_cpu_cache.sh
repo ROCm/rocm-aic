@@ -12,5 +12,10 @@ export LMCACHE_LOG_LEVEL=WARNING
 export PYTHONHASHSEED=42
 export LMCACHE_CONFIG_FILE="${SCRIPT_DIR}/configs/lmcache-cpu.yaml"
 
-vllm serve openai/gpt-oss-120b --gpu-memory-utilization 0.32 \
+# Set default values for GPU memory utilization and tensor parallel size
+GPU_MEMORY_UTILIZATION=${GPU_MEMORY_UTILIZATION:-0.32}
+TENSOR_PARALLEL_SIZE=${TENSOR_PARALLEL_SIZE:-1}
+
+vllm serve openai/gpt-oss-120b --gpu-memory-utilization "${GPU_MEMORY_UTILIZATION}" \
+     --tensor-parallel-size "${TENSOR_PARALLEL_SIZE}" \
      --kv-transfer-config '{"kv_connector":"LMCacheConnectorV1", "kv_role":"kv_both"}'
