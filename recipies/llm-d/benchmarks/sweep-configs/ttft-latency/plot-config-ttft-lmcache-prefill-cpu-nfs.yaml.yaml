@@ -1,0 +1,117 @@
+# Multi-source comparison: Native vLLM Offloading vs LMCache Offloading
+# Focuses only on CPU KV cache hit performance for cleaner comparison
+
+sources:
+  # Source 1: Native vLLM offloading - CPU cache hit only
+  - name: lmcache_prefill
+    extraction:
+      input: ./results-runner-ttft/lmcache_nfs_aggregated_results.json
+      fields:
+        isl: config._load_params.random_input_len
+        tp: config.tensor_parallel_size
+        ttft: benchmark_run.metrics.ttft.mean_ms
+        chunk_size: config.lmcache_args.chunk_size
+        run_label: benchmark_run.run_label
+      run_strategy: all
+    preparation:
+      # Filter to only run1 (GPU prefill)
+      filters:
+        - "run_label==run1"
+        - "isl<=128000"
+        - "tp<=8"
+      transformations:
+        strategy: "'GPU Prefill'"
+
+  # Source 2: LMCache offloading - CPU cache hit only
+  - name: lmcache_cpu
+    extraction:
+      input: ./results-runner-ttft/lmcache_cpu_aggregated_results.json
+      fields:
+        isl: config._load_params.random_input_len
+        tp: config.tensor_parallel_size
+        ttft: benchmark_run.metrics.ttft.mean_ms
+        chunk_size: config.lmcache_args.chunk_size
+        run_label: benchmark_run.run_label
+      run_strategy: all
+    preparation:
+      # Filter to only run2 (CPU KV cache hit)
+      filters:
+        - "run_label==run2"
+        - "isl<=128000"
+        - "tp<=8"
+      transformations:
+        strategy: "'LMCache CPU cache'"
+
+  # Source 3 LMCache offloading - NFS cache hit only
+  - name: lmcache_nfs_tp1
+    extraction:
+      input: ./results-runner-ttft/lmcache_nfs_aggregated_results.json
+      fields:
+        isl: config._load_params.random_input_len
+        tp: config.tensor_parallel_size
+        ttft: benchmark_run.metrics.ttft.mean_ms
+        chunk_size: config.lmcache_args.chunk_size
+        run_label: benchmark_run.run_label
+      run_strategy: all
+    preparation:
+      # Filter to only run2 (NFS KV cache hit)
+      filters:
+        - "run_label==run2"
+        - "isl<=128000"
+        - "tp<=8"
+      transformations:
+        strategy: "'LMCache NFS/RDMA cache'"
+
+# Global preparation
+merge_preparation:
+  sort_by: [strategy, tp, isl]
+
+export:
+  output: ttft_lmcache_prefill_cpu_nfs_rdma.json
+  x: isl
+  y: ttft
+
+  # Group by strategy and TP
+  series_by: [strategy, tp, chunk_size]
+  series_label_format: "{strategy} (TP={tp}) (LM_Chunk={chunk_size})"
+
+  # Different markers per strategy
+  marker_by: tp
+  series_markers:
+    "1": "o"
+    "8": "^"
+
+  # Different colors per strategy
+  color_by: strategy
+  series_colors:
+    "GPU Prefill": "#1f77b4"              # Blue
+    "LMCache CPU cache": "#ff7f0e"        # Orange
+    "LMCache NFS/RDMA cache": "#8000FF"  # Purple
+
+  axes:
+    x_scale: log
+    y_scale: log
+
+  style:
+    legend_outside: true
+    minor_grid: true
+    markersize: 8
+    linewidth: 2
+    show_value_labels: true
+    value_label_format: "{y:.0f}"
+    value_label_fontsize: 7
+    value_label_offset: [0, 8]
+
+  metadata:
+    title: "TTFT latency - GPU Prefill vs CPU cache hit vs NFS/RDMA cache hit - Random GPU"
+    x_label: "Input Sequence Length (tokens)"
+    y_label: "Time to First Token (ms)"
+    description: "Comparing CPU and NFS/RDMA KV cache hit reuse performance"
+
+  figure:
+    width: 12
+    height: 7
+    dpi: 300
+
+plot:
+  output: ttft_lmcache_prefill_cpu_nfs_rdma.png

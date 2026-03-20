@@ -1,0 +1,68 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - ../../../../../../../submodules/llm-d/guides/optimized-baseline/modelserver/amd/vllm
+
+# Configure vLLM for tiered prefix cache with offloading connector
+patches:
+  # Update replicas
+  - target:
+      kind: Deployment
+      name: decode
+    patch: |-
+      - op: replace
+        path: /spec/replicas
+        value: 1
+
+  # Override image with LMCache-enabled build
+  - target:
+      kind: Deployment
+      name: decode
+    patch: |-
+      - op: replace
+        path: /spec/template/spec/containers/0/image
+        value: ghcr.io/vcave/vllm:rocm_721-vllm_0190-lmcache_20260514_92fe433a
+
+  # Configure vLLM server with offloading connector
+  - target:
+      kind: Deployment
+      name: decode
+    patch: |-
+      - op: replace
+        path: /spec/template/spec/containers/0/args
+        value:
+          - "Qwen/Qwen3-0.6B"
+          - "--host=0.0.0.0"
+          - "--port=8000"
+          - "--tensor-parallel-size=2"
+          - "--kv-transfer-config={\"kv_connector\":\"OffloadingConnector\",\"kv_role\":\"kv_both\",\"kv_connector_extra_config\":{\"cpu_bytes_to_use\":107374182400}}"
+          - "--max-num-seq=1024"
+          - "--enable_prefix_caching"
+          - "--disable-access-log-for-endpoints=/health,/metrics,/v1/models"
+
+  # Update resources for large CPU cache tier
+  # NOTE: GPU count can be customized here to override upstream defaults
+  - target:
+      kind: Deployment
+      name: decode
+    patch: |-
+      - op: replace
+        path: /spec/template/spec/containers/0/resources
+        value:
+          limits:
+            amd.com/gpu: 2
+            cpu: "32"
+            memory: 400Gi
+          requests:
+            amd.com/gpu: 2
+            cpu: "32"
+            memory: 400Gi
+
+# Add tiered-prefix-cache specific labels
+labels:
+  - pairs:
+      llm-d.ai/deployment: tiered-prefix-cache
+      llm-d.ai/connector: offloading
+    includeSelectors: true
+    includeTemplates: true

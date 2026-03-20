@@ -1,0 +1,28 @@
+From 3e7749b83eafab298fdc902ec7486f645a503132 Mon Sep 17 00:00:00 2001
+From: Kurt McMillan <Kurt.McMillan@amd.com>
+Date: Fri, 15 May 2026 08:43:34 -0600
+Subject: [PATCH] Log MB/s when loading chunks in the GDS backend
+
+---
+ lmcache/v1/storage_backend/gds_backend.py | 3 ++-
+ 1 file changed, 2 insertions(+), 1 deletion(-)
+
+diff --git a/lmcache/v1/storage_backend/gds_backend.py b/lmcache/v1/storage_backend/gds_backend.py
+index ebb5f8a2..c2c0106a 100644
+--- a/lmcache/v1/storage_backend/gds_backend.py
++++ b/lmcache/v1/storage_backend/gds_backend.py
+@@ -913,9 +913,10 @@ class GdsBackend(AllocatorBackendInterface):
+             )
+         )
+         total_time = time.perf_counter() - start_time
++        gds_read_gb = gds_read_bytes / 1024**3
+         logger.info(
+             f"Time taken for batched_get_blocking: {total_time:.3f}s |"
+-            f" {gds_read_bytes / 1024 / 1024}MiB | {gds_reads} ops."
++            f" {gds_read_gb:.1f}GiB | {gds_read_gb / total_time:.1f}GiB/s | {gds_reads} ops."
+         )
+         return results
+ 
+-- 
+2.50.1 (Apple Git-155)
+

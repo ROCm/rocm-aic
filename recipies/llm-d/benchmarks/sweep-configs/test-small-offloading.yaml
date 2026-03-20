@@ -1,0 +1,32 @@
+name: "test-small-offloading"
+description: "Test a tiered-prefix-cache-offloading single run with CPU"
+deployment: "tiered-prefix-cache-offloading"
+
+parameters:
+  model:
+    type: fixed
+    value: "Qwen/Qwen3-32B"
+  tensor_parallel_size:
+    type: fixed
+    value: 1
+  vllm_args:
+    type: combinations
+    args:
+      max_num_seq: 1024
+      disable_uvicorn_access_log: true
+      gpu_memory_utilization:
+        values: [0.30]
+      kv_connector:
+        values:
+          - type: "offloading"
+            cpu_bytes: 107374182400
+            role: "kv_both"
+
+load_generation:
+  tool: "multi-turn-benchmark"
+  image: "ghcr.io/vcave/vllm:rocm_721-vllm_0190-lmcache_20260514_92fe433a"
+  workload_file: "small_multi_turn.json"
+  benchmark_args:
+    num_clients: 5
+    max_active_conversations: 5
+    verbose: false

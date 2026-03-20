@@ -1,0 +1,82 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: decode
+spec:
+  template:
+    spec:
+      hostIPC: true
+      # Uncomment to force node assignment
+      #nodeName: g04u13
+      containers:
+        - name: modelserver
+          imagePullPolicy: Always
+          securityContext:
+            capabilities:
+              add:
+                - IPC_LOCK
+                - SYS_PTRACE
+                - SYS_ADMIN
+                - BPF
+                - PERFMON
+            seccompProfile:
+              type: Unconfined
+          env:
+            - name: HIPFILE_UNSUPPORTED_FILE_SYSTEMS
+              value: "true"
+            - name: HIPFILE_ALLOW_COMPAT_MODE
+              value: "false"
+            - name: VLLM_CACHE_ROOT
+              value: "/cache"
+          volumeMounts:
+            - name: lib-modules
+              mountPath: /lib/modules
+              readOnly: true
+            - name: usr-src
+              mountPath: /usr/src
+              readOnly: true
+            - name: localtime
+              mountPath: /etc/localtime
+              readOnly: true
+            - name: kernel-debug
+              mountPath: /sys/kernel/debug
+            - name: kernel-btf
+              mountPath: /sys/kernel/btf
+              readOnly: true
+            - name: boot
+              mountPath: /boot
+              readOnly: true
+            # AIC NFS/RDMA mount
+            - name: hipfile-of
+              mountPath: /hipfile-of
+            # Cache graph compilation 
+            - name: cache
+              mountPath: /cache
+      volumes:
+        - name: boot
+          hostPath:
+            path: /boot
+        - name: lib-modules
+          hostPath:
+            path: /lib/modules
+        - name: usr-src
+          hostPath:
+            path: /usr/src
+        - name: localtime
+          hostPath:
+            path: /etc/localtime
+        - name: kernel-debug
+          hostPath:
+            path: /sys/kernel/debug
+        - name: kernel-btf
+          hostPath:
+            path: /sys/kernel/btf
+        #TODO: figure out better way to handle these
+        - name: hipfile-of
+          hostPath:
+            path: /mnt/rocm-icms-cache/pfc
+            type: Directory
+        - name: cache
+          hostPath:
+            path: /tmp/pfc/cache
+            type: DirectoryOrCreate

@@ -1,0 +1,55 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# SGLang inference scheduling template
+resources:
+  - ../../../../../../../../submodules/llm-d/guides/optimized-baseline/modelserver/amd/sglang
+
+components:
+  - ../../../../../../tiered-prefix-cache/manifests/vllm/components/hostpath-models
+
+patches:
+  - target:
+      kind: Deployment
+      name: decode
+    patch: |-
+      - op: replace
+        path: /spec/replicas
+        value: {{replicas}}
+      - op: replace
+        path: /spec/template/spec/containers/0/image
+        value: {{image}}
+      - op: replace
+        path: /spec/template/spec/containers/0/command
+        value: ["sglang", "serve"]
+      - op: replace
+        path: /spec/template/spec/containers/0/args
+        value:
+          - "--model-path={{model}}"
+          - "--host=0.0.0.0"
+          - "--port=8000"
+          - "--enable-metrics"
+          - "--log-level-http=warning"
+          - "--tensor-parallel-size={{tensor_parallel_size}}"
+          {{ENGINE_ARGS_ARRAY}}
+      # Inject environment variables from sweep config
+      {{ENV_VARS_PATCH}}
+      - op: replace
+        path: /spec/template/spec/containers/0/resources/limits/amd.com~1gpu
+        value: "{{tensor_parallel_size}}"
+      - op: replace
+        path: /spec/template/spec/containers/0/resources/requests/amd.com~1gpu
+        value: "{{tensor_parallel_size}}"
+      - op: replace
+        path: /spec/template/spec/containers/0/resources/limits/cpu
+        value: "{{cpu}}"
+      - op: replace
+        path: /spec/template/spec/containers/0/resources/requests/cpu
+        value: "{{cpu}}"
+      - op: replace
+        path: /spec/template/spec/containers/0/resources/limits/memory
+        value: {{memory}}
+      - op: replace
+        path: /spec/template/spec/containers/0/resources/requests/memory
+        value: {{memory}}
+              

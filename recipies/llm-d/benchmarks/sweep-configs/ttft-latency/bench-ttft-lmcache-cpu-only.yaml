@@ -1,0 +1,79 @@
+name: "ttft-lmcache-cpu-only"
+description: "Test a tiered-prefix-cache-lmcache single run with CPU"
+deployment: "tiered-prefix-cache-lmcache"
+# uses hipfile template but 'lmcache_args' overrides to cpu (avoids config proliferation)
+deployment_template: "tiered-prefix-cache-lmcache-hipfile-kustomization.yaml.tmpl"
+
+env_vars:
+  # Remove HF-related settings for actual model loading
+  HF_HOME: "/root/hf_home_dummy"
+  HUGGINGFACE_HUB_CACHE: "/root/hf_hub_dummy"
+
+parameters:
+  image:
+    type: categorical
+    values:
+      - "ghcr.io/vcave/vllm:rocm_721-vllm_0190-lmcache_20260514_92fe433a"
+  model:
+    type: fixed
+    value: "openai/gpt-oss-120b"
+  replicas:
+    type: categorical
+    values: [1]
+  memory:
+    type: fixed
+    value: "1500Gi"
+  cpu:
+    type: fixed # 112 available
+    value: "100"
+
+  tensor_parallel_size:
+    type: categorical
+    values: [1,8]
+
+  vllm_args:
+    type: combinations
+    args:
+      # Remove HF-related settings for actual model loading
+      load-format: "dummy"
+      disable_uvicorn_access_log: true
+      no_enable_prefix_caching: true # disable GPU prefix caching
+      gpu_memory_utilization: 0.80
+      kv_connector:
+        values:
+          - type: "lmcache"
+            role: "kv_both"
+
+  lmcache_args:
+    type: combinations
+    args:
+      chunk_size: 256 * {tensor_parallel_size}
+      save_decode_cache: false
+      local_cpu: true
+      # Set per process instance memory through trial and error:
+      # - Requesting too much memory in the TP=1 can cause vLLM to hang somehow
+      # - Requesting too few leads to early evictions skewing results.
+      # This is enough to accomodate the benchmark sweep below at TP=1 and TP=8 (8*165GB)
+      max_local_cpu_size: 165
+      local_disk: null
+      remote_url: null
+
+load_generation:
+  tool: "vllm-bench-serve"
+  image: "ghcr.io/vcave/vllm:rocm_721-vllm_0190-lmcache_20260514_92fe433a"
+  # Run benchmark twice: first run populates the cache, second run cache hits.
+  clone_run: true
+  benchmark_args:
+    type: combinations
+    combination_mode: pairwise
+    args:
+      dataset_name: random 
+      # Note: When tweaking settings, make sure the cache size is large enough
+      random_input_len: # 128K*17 ~ 153GB @ TP=1
+        values: [256, 512, 1024, 2048, 4096, 8192, 16384, 32768, 65536, 128000]
+      random_output_len: 1
+      max_concurrency: 1
+      num_prompts:
+        values: [40, 40, 40, 30, 30, 30, 30, 30, 30, 17]
+      ignore_eos: true
+      # seed is auto-generated
