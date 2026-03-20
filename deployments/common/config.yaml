@@ -1,0 +1,20 @@
+# Global configuration for all deployments
+# This file contains settings that apply across all deployment types
+
+# Monitoring configuration
+monitoring:
+  namespace: llm-d-monitoring
+  prometheus:
+    port: 9090
+  grafana:
+    port: 3000
+
+# Default resource quotas (can be overridden per deployment)
+resources:
+  default_cpu_limit: "4"
+  default_memory_limit: "8Gi"
+
+# Cluster information
+cluster:
+  # Add cluster-specific settings here if needed
+  verify_connection: true

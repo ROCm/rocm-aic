@@ -1,0 +1,249 @@
+# Justfile for inference-scheduling deployment with AMD GPUs
+# Uses Helmfile to deploy 3 charts: llm-d-infra, inferencepool, llm-d-modelservice
+
+# Import common utilities
+import? "../../common/prerequisites.justfile"
+import? "../../common/monitoring.justfile"
+import? "../common/llm-d-helpers.justfile"
+
+# Deployment-specific configuration
+NAMESPACE := env_var_or_default('NAMESPACE', 'llm-d-inference-scheduling-amd')
+VALUES_FILE := env_var_or_default('VALUES_FILE', 'amd-default.yaml')
+
+# Path to llm-d guide
+LLM_D_GUIDE := "../../../submodules/llm-d/guides/inference-scheduling"
+
+# Default recipe - show available commands
+default:
+    @just --list
+
+# Deploy using llm-d guide helmfile with custom values file
+deploy: verify-all verify-llm-d-submodule create-namespace deploy-helmfile deploy-httproute
+    @echo "✅ Full deployment complete!"
+    @echo "Run 'just status' to check deployment status"
+    @echo "Run 'just port-forward-start' to access services"
+
+# Deploy Helmfile releases (infrastructure, inferencepool, modelservice)
+deploy-helmfile:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    echo "🚀 Deploying with llm-d guide helmfile (environment: amd)..."
+    echo "Namespace: {{NAMESPACE}}"
+    echo "Using custom values: values/{{VALUES_FILE}}"
+    # Create temporary directory for custom values
+    TEMP_VALUES_DIR=$(mktemp -d)
+    trap "rm -rf $TEMP_VALUES_DIR" EXIT
+    # Copy our custom values to llm-d guide structure location
+    cp "$PWD/values/{{VALUES_FILE}}" "$TEMP_VALUES_DIR/values_amd.yaml"
+    # Deploy from llm-d guide directory with custom values
+    cd {{LLM_D_GUIDE}}
+    # Temporarily replace llm-d's values_amd.yaml with ours
+    mv ms-inference-scheduling/values_amd.yaml ms-inference-scheduling/values_amd.yaml.backup || true
+    cp "$TEMP_VALUES_DIR/values_amd.yaml" ms-inference-scheduling/values_amd.yaml
+    helmfile apply -e amd -n {{NAMESPACE}}
+    # Restore original
+    mv ms-inference-scheduling/values_amd.yaml.backup ms-inference-scheduling/values_amd.yaml || true
+    echo "✅ Helmfile deployment complete!"
+
+# Deploy HTTPRoute for gateway routing
+deploy-httproute:
+    @echo "🚀 Deploying HTTPRoute..."
+    kubectl apply -f {{LLM_D_GUIDE}}/httproute.yaml -n {{NAMESPACE}} || exit 1
+    @echo "✅ HTTPRoute deployed"
+
+# Teardown everything using llm-d guide helmfile
+teardown: teardown-httproute teardown-helmfile
+    @echo "✅ Full teardown complete!"
+
+# Teardown HTTPRoute
+teardown-httproute:
+    @echo "🗑️  Removing HTTPRoute..."
+    -kubectl delete -f {{LLM_D_GUIDE}}/httproute.yaml -n {{NAMESPACE}}
+    @echo "✅ HTTPRoute removed"
+
+# Teardown Helmfile releases
+teardown-helmfile:
+    @echo "🗑️  Tearing down Helmfile releases..."
+    cd {{LLM_D_GUIDE}} && helmfile destroy -e amd -n {{NAMESPACE}}
+    @echo "✅ Helmfile teardown complete!"
+
+# Check deployment status
+status:
+    @echo "📊 Deployment Status in namespace: {{NAMESPACE}}"
+    @echo ""
+    @echo "=== Helm Releases ==="
+    helm list -n {{NAMESPACE}}
+    @echo ""
+    @echo "=== All Resources ==="
+    kubectl -n {{NAMESPACE}} get all
+    @echo ""
+    @echo "=== Gateway ==="
+    kubectl get gateway -n {{NAMESPACE}} || echo "No gateway found"
+    @echo ""
+    @echo "=== InferencePool ==="
+    kubectl get inferencepool -n {{NAMESPACE}} || echo "No InferencePool found"
+    @echo ""
+    @echo "=== HTTPRoute ==="
+    kubectl get httproute -n {{NAMESPACE}} || echo "No HTTPRoute found"
+    @echo ""
+    @echo "=== PodMonitor ==="
+    kubectl get podmonitor -n {{NAMESPACE}} || echo "No PodMonitor found"
+
+# Wait for deployment to be ready
+wait:
+    @echo "⏳ Waiting for deployment to be ready..."
+    @echo "Waiting for gateway..."
+    @just _wait-for-deployment {{NAMESPACE}} infra-inference-scheduling-inference-gateway-istio 300s
+    @echo "Waiting for endpoint picker..."
+    @just _wait-for-deployment {{NAMESPACE}} gaie-inference-scheduling-epp 300s
+    @echo "Waiting for model servers (this may take several minutes)..."
+    @kubectl wait --for=condition=ready pod -l llm-d.ai/inference-serving=true -n {{NAMESPACE}} --timeout=900s || echo "⚠️  Some model servers may still be starting"
+    @echo "✅ Deployment ready!"
+
+# View logs from model server pods
+logs:
+    @echo "📜 Model server logs:"
+    @just _get-logs-by-label {{NAMESPACE}} "llm-d.ai/inference-serving=true" 50
+
+# Follow logs from model server pods
+logs-follow:
+    @echo "📜 Following model server logs (Ctrl+C to stop)..."
+    @just _follow-logs-by-label {{NAMESPACE}} "llm-d.ai/inference-serving=true"
+
+# Start all port-forwards in background
+port-forward-start:
+    @echo "🔌 Starting port-forwards..."
+    @just _port-forward-gateway-is
+    @just _port-forward-prometheus
+    @just _port-forward-grafana
+    @echo "✅ Port-forwards started:"
+    @echo "  🌐 Istio Gateway: http://localhost:8080"
+    @echo "  📊 Prometheus: http://localhost:9090"
+    @echo "  📈 Grafana: http://localhost:3000"
+    @echo "Run 'just port-forward-stop' to stop them"
+
+# Internal: Start Istio Gateway port-forward
+_port-forward-gateway-is:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    # Kill existing port-forward if running
+    pkill -f "port-forward.*gateway-istio.*8080" 2>/dev/null || true
+    sleep 1
+    # Start new port-forward
+    kubectl port-forward -n {{NAMESPACE}} svc/infra-inference-scheduling-inference-gateway-istio 8080:80 > /dev/null 2>&1 &
+    echo "  ✅ Istio Gateway port-forward started (PID: $!)"
+
+# Stop all port-forwards
+port-forward-stop:
+    @echo "🔌 Stopping port-forwards..."
+    -pkill -f "port-forward.*gateway-istio.*8080"
+    @just stop-monitoring-port-forwards
+
+# Create namespace if it doesn't exist
+create-namespace:
+    @just _create-namespace {{NAMESPACE}}
+
+# Delete namespace (WARNING: deletes everything!)
+delete-namespace:
+    @just _delete-namespace {{NAMESPACE}}
+
+# Complete setup: create namespace, deploy, and wait
+setup: deploy wait
+    @echo "🎉 Setup complete!"
+    @just status
+
+# Complete cleanup: teardown and stop port-forwards
+cleanup: teardown port-forward-stop
+    @echo "🧹 Cleanup complete!"
+    @echo "Run 'just delete-namespace' if you want to delete the namespace entirely"
+
+# Sync Helmfile (update releases without recreating)
+sync:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    echo "🔄 Syncing Helmfile releases..."
+    TEMP_VALUES_DIR=$(mktemp -d)
+    trap "rm -rf $TEMP_VALUES_DIR" EXIT
+    cp "$PWD/values/{{VALUES_FILE}}" "$TEMP_VALUES_DIR/values_amd.yaml"
+    cd {{LLM_D_GUIDE}}
+    mv ms-inference-scheduling/values_amd.yaml ms-inference-scheduling/values_amd.yaml.backup || true
+    cp "$TEMP_VALUES_DIR/values_amd.yaml" ms-inference-scheduling/values_amd.yaml
+    helmfile sync -e amd -n {{NAMESPACE}}
+    mv ms-inference-scheduling/values_amd.yaml.backup ms-inference-scheduling/values_amd.yaml || true
+    echo "✅ Sync complete!"
+
+# Show Helmfile diff
+diff:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    echo "🔍 Showing Helmfile diff..."
+    TEMP_VALUES_DIR=$(mktemp -d)
+    trap "rm -rf $TEMP_VALUES_DIR" EXIT
+    cp "$PWD/values/{{VALUES_FILE}}" "$TEMP_VALUES_DIR/values_amd.yaml"
+    cd {{LLM_D_GUIDE}}
+    mv ms-inference-scheduling/values_amd.yaml ms-inference-scheduling/values_amd.yaml.backup || true
+    cp "$TEMP_VALUES_DIR/values_amd.yaml" ms-inference-scheduling/values_amd.yaml
+    helmfile diff -e amd -n {{NAMESPACE}}
+    mv ms-inference-scheduling/values_amd.yaml.backup ms-inference-scheduling/values_amd.yaml || true
+
+# Quick deployment check
+check:
+    @echo "🔍 Quick deployment check..."
+    @echo "Helm releases:"
+    @helm list -n {{NAMESPACE}} --short
+    @echo ""
+    @echo "Gateway pods:"
+    @kubectl get pods -n {{NAMESPACE}} -l app.kubernetes.io/name=llm-d-infra --no-headers 2>/dev/null | wc -l | xargs -I {} echo "  {} running"
+    @echo "Model server pods:"
+    @kubectl get pods -n {{NAMESPACE}} -l llm-d.ai/inference-serving=true --no-headers 2>/dev/null | wc -l | xargs -I {} echo "  {} running"
+    @echo "Endpoint picker pods:"
+    @kubectl get pods -n {{NAMESPACE}} -l inferencepool --no-headers 2>/dev/null | wc -l | xargs -I {} echo "  {} running"
+    @echo ""
+    @echo "All pods:"
+    @kubectl get pods -n {{NAMESPACE}} --no-headers 2>/dev/null | wc -l | xargs -I {} echo "  {} total"
+
+# Test metrics endpoint from a model server pod
+test-metrics:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    POD_NAME=$(kubectl get pods -n {{NAMESPACE}} -l llm-d.ai/inference-serving=true -o jsonpath='{.items[0].metadata.name}')
+    if [ -n "$POD_NAME" ]; then
+        echo "📊 Testing metrics from pod: $POD_NAME"
+        kubectl exec -n {{NAMESPACE}} ${POD_NAME} -c vllm -- curl -s http://localhost:8000/metrics | head -20
+    else
+        echo "❌ No vLLM pods found"
+        exit 1
+    fi
+
+# Parse and show vLLM configuration from logs (deduplicated across pods)
+show-config:
+    @echo "Parsing vLLM configuration from pod logs..."
+    @just _parse-vllm-all {{NAMESPACE}} "llm-d.ai/inference-serving=true" "true"
+
+# Show vLLM configuration for all pods separately (no deduplication)
+show-config-all:
+    @echo "Parsing vLLM configuration from all pods (no deduplication)..."
+    @just _parse-vllm-all {{NAMESPACE}} "llm-d.ai/inference-serving=true" "false"
+
+# Show vLLM configuration for a specific pod
+show-config-pod POD_NAME:
+    @echo "Parsing vLLM configuration from pod {{POD_NAME}}..."
+    @just _parse-vllm-pod {{NAMESPACE}} {{POD_NAME}}
+
+# Show current deployment configuration
+show-deployment-config:
+    @echo "Deployment configuration:"
+    @echo "  Namespace: {{NAMESPACE}}"
+    @echo "  Helmfile: {{LLM_D_GUIDE}}/helmfile.yaml.gotmpl"
+    @echo "  Environment: amd"
+    @echo "  Values file: values/{{VALUES_FILE}}"
+    @echo ""
+    @echo "Override with:"
+    @echo "  NAMESPACE=my-namespace just deploy"
+    @echo "  VALUES_FILE=amd-small.yaml just deploy"
+
+# Load Grafana dashboards (llm-d defaults + rocm-icms custom)
+load-dashboards:
+    @echo "📊 Loading Grafana dashboards..."
+    @just _load-dashboards
+    @echo "✅ Dashboards loaded. Access Grafana at http://localhost:3000"

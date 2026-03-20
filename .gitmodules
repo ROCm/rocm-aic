@@ -1,0 +1,3 @@
+[submodule "submodules/llm-d"]
+	path = submodules/llm-d
+	url = https://github.com/vcave/llm-d.git
