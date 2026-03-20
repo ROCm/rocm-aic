@@ -1,0 +1,92 @@
+# Multi-source comparison: Native vLLM Offloading vs LMCache Offloading
+# Focuses only on GPU prefill performance for cleaner comparison
+
+sources:
+  # Source 1: Native vLLM offloading - GPU prefill only
+  - name: native_offload
+    extraction:
+      input: ./results/ttft-latency/vllm_offloading_cpu_aggregated_results.json
+      fields:
+        isl: config._load_params.random_input_len
+        tp: config.tensor_parallel_size
+        ttft: benchmark_run.metrics.ttft.mean_ms
+        run_label: benchmark_run.run_label
+      run_strategy: all
+    preparation:
+      # Filter to only run1 (GPU prefill)
+      filters:
+        - "run_label==run1"
+        - "isl<80000"
+      transformations:
+        strategy: "'Native vLLM Offloading'"
+
+  # Source 2: LMCache offloading - GPU prefill only
+  - name: lmcache_offload
+    extraction:
+      input: ./results/ttft-latency/lmcache_cpu_aggregated_results.json
+      fields:
+        isl: config._load_params.random_input_len
+        tp: config.tensor_parallel_size
+        ttft: benchmark_run.metrics.ttft.mean_ms
+        run_label: benchmark_run.run_label
+      run_strategy: all
+    preparation:
+      # Filter to only run1 (GPU prefill)
+      filters:
+        - "run_label==run1"
+        - "isl<80000"
+      transformations:
+        strategy: "'LMCache Offloading'"
+
+# Global preparation
+merge_preparation:
+  sort_by: [strategy, tp, isl]
+
+export:
+  output: ttft_gpu_prefill_vllm_vs_lmcache.json
+  x: isl
+  y: ttft
+
+  # Group by strategy and TP
+  series_by: [strategy, tp]
+  series_label_format: "{strategy} (TP={tp})"
+
+  # Different markers per strategy
+  marker_by: strategy
+  series_markers:
+    "Native vLLM Offloading": "o"
+    "LMCache Offloading": "^"
+
+  # Different colors per strategy
+  color_by: strategy
+  series_colors:
+    "Native vLLM Offloading": "#1f77b4"   # Blue
+    "LMCache Offloading": "#ff7f0e"       # Orange
+
+  axes:
+    x_scale: log
+    y_scale: log
+
+  style:
+    legend_outside: true
+    minor_grid: true
+    markersize: 8
+    linewidth: 2
+    show_value_labels: true
+    value_label_format: "{y:.0f}"
+    value_label_fontsize: 7
+    value_label_offset: [0, 8]
+
+  metadata:
+    title: "GPU Prefill TTFT: Native vLLM vs LMCache - Sanity check"
+    x_label: "Input Sequence Length (tokens)"
+    y_label: "Time to First Token (ms)"
+    description: "Comparing GPU prefill compute performance"
+
+  figure:
+    width: 12
+    height: 7
+    dpi: 300
+
+plot:
+  output: ttft_gpu_prefill_vllm_vs_lmcache.png

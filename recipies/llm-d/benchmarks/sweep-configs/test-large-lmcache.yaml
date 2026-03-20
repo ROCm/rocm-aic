@@ -1,0 +1,41 @@
+name: "test-large-lmcache"
+description: "Test a tiered-prefix-cache-lmcache single run with CPU"
+deployment: "tiered-prefix-cache-lmcache"
+
+parameters:
+  model:
+    type: fixed
+    value: "Qwen/Qwen3-32B"
+  tensor_parallel_size:
+    type: fixed
+    # tp>1 hang
+    value: 1
+  vllm_args:
+    type: combinations
+    args:
+      max_num_seq: 1024
+      disable_uvicorn_access_log: true
+      gpu_memory_utilization:
+        values: [0.30]
+      kv_connector:
+        values:
+          - type: "lmcache"
+            role: "kv_both"
+  lmcache_args:
+    type: combinations
+    args:
+      chunk_size: 256
+      save_decode_cache: True
+      local_cpu: true
+      max_local_cpu_size: 100.0
+      local_disk: null
+      remote_url: null
+
+load_generation:
+  tool: "multi-turn-benchmark"
+  image: "ghcr.io/vcave/vllm:rocm_721-vllm_0190-lmcache_20260514_92fe433a"
+  workload_file: "agent_multi_turn.json"
+  benchmark_args:
+    num_clients: 100
+    max_active_conversations: 100
+    verbose: false

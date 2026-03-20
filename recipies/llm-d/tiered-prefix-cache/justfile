@@ -1,0 +1,295 @@
+# Justfile for tiered-prefix-cache deployment with AMD GPUs
+# Supports both offloading-connector and lmcache-connector variants
+# Usage: just <recipe>
+
+# Default recipe - show available commands
+default:
+    @just --list
+
+# Import common utilities
+import? "../setup/justfile"
+import? "../common/monitoring.justfile"
+import? "../common/llm-d-helpers.justfile"
+
+# Deployment-specific configuration
+USER      := `whoami`
+NAMESPACE_DEFAULT   := USER + "-llm-d-pfc-cpu-amd"
+NAMESPACE := env_var_or_default('NAMESPACE', NAMESPACE_DEFAULT)
+CONNECTOR := env_var_or_default('CONNECTOR', 'offloading')
+MANIFEST_DIR := env_var_or_default('MANIFEST_DIR', '')
+
+# How to find deployments, pods, that are serving engines
+MODEL_SERVING_LABEL := "llm-d.ai/role=decode"
+
+# Deploy everything with default connector (offloading)
+deploy: deploy-offloading
+
+# Deploy with offloading-connector (default)
+deploy-offloading: verify-llm-d-submodule deploy-gateway deploy-model-server-offloading deploy-inferencepool
+    @echo "✅ Deployment complete with offloading-connector!"
+    @echo "Run 'just status' to check deployment status"
+    @echo "Run 'just port-forward-start' to access Prometheus and Grafana"
+
+# Deploy with lmcache-connector
+deploy-lmcache: verify-llm-d-submodule deploy-gateway deploy-model-server-lmcache deploy-inferencepool
+    @echo "✅ Deployment complete with lmcache-connector!"
+    @echo "Run 'just status' to check deployment status"
+    @echo "Run 'just port-forward-start' to access Prometheus and Grafana"
+
+# Deploy with lmcache-connector, hostpath model, and hipfile
+deploy-lmcache-hipfile: verify-llm-d-submodule deploy-gateway deploy-model-server-lmcache-hipfile deploy-inferencepool
+    @echo "✅ Deployment complete with lmcache-connector + hipfile!"
+    @echo "Run 'just status' to check deployment status"
+    @echo "Run 'just port-forward-start' to access Prometheus and Grafana"
+
+# Deploy Istio gateway (from llm-d submodule)
+deploy-gateway:
+    @echo "🚀 Deploying Istio gateway..."
+    kubectl apply -k {{LLM_D_PATH}}/guides/recipes/gateway/istio -n {{NAMESPACE}} || exit 1
+    @echo "✅ Gateway deployed"
+
+# Internal deployment helper recipe
+_deploy-internal dir:
+    @echo "🚀 Deploying with manifests from: {{ if MANIFEST_DIR != "" { MANIFEST_DIR } else { dir } }}..."
+    #!/usr/bin/env bash
+    TARGET="{{ if MANIFEST_DIR != "" { MANIFEST_DIR } else { dir } }}"; \
+    kustomize build "$TARGET" | kubectl apply -n {{NAMESPACE}} -f -
+    @echo "✅ Deployment complete"
+
+# Deploy AMD vLLM model server with lmcache connector and hipfile
+deploy-model-server-lmcache:
+    @echo "Targeting: LMCache connector"
+    @just _deploy-internal "./manifests/vllm/flavors/lmcache"
+
+# Deploy AMD vLLM model server with lmcache connector and hipfile
+deploy-model-server-lmcache-hipfile:
+    @echo "Targeting: LMCache connector + Hipfile"
+    @just _deploy-internal "./manifests/vllm/flavors/lmcache-hipfile"
+
+# Deploy AMD vLLM model server with offloading connector
+deploy-model-server-offloading:
+    @echo "Targeting: Offloading connector"
+    @just _deploy-internal "./manifests/vllm/flavors/offloading"
+
+# Deploy InferencePool with Istio provider
+deploy-inferencepool:
+    @echo "🚀 Deploying InferencePool..."
+    helm install llm-d-infpool \
+      {{INFERENCEPOOL_CHART}} \
+      -f {{LLM_D_PATH}}/guides/recipes/scheduler/base.values.yaml \
+      -f {{LLM_D_PATH}}/guides/recipes/scheduler/features/monitoring.values.yaml \
+      -f {{LLM_D_PATH}}/guides/optimized-baseline/scheduler/optimized-baseline.values.yaml \
+      --set experimentalHttpRoute.enabled=true \
+      --set experimentalHttpRoute.inferenceGatewayName=llm-d-inference-gateway \
+      --set provider.name=istio \
+      -n {{NAMESPACE}} \
+      --version {{INFERENCEPOOL_VERSION}} || exit 1
+    @echo "✅ InferencePool deployed"
+
+
+# Teardown everything (offloading variant)
+teardown: teardown-offloading
+
+# Teardown offloading-connector deployment
+teardown-offloading: teardown-inferencepool teardown-model-server-offloading teardown-gateway
+    @echo "✅ Teardown complete (offloading-connector)!"
+
+# Teardown lmcache-connector deployment
+teardown-lmcache: teardown-inferencepool teardown-model-server-lmcache teardown-gateway
+    @echo "✅ Teardown complete (lmcache-connector)!"
+
+teardown-inferencepool:
+    @echo "🗑️  Removing InferencePool..."
+    -helm uninstall llm-d-infpool -n {{NAMESPACE}}
+    @echo "✅ InferencePool removed"
+
+# Internal teardown helper recipe
+_teardown-internal dir:
+    @echo "🚀 Tearing down with manifests from: {{ if MANIFEST_DIR != "" { MANIFEST_DIR } else { dir } }}..."
+    #!/usr/bin/env bash
+    TARGET="{{ if MANIFEST_DIR != "" { MANIFEST_DIR } else { dir } }}"; \
+    kustomize build "$TARGET" | kubectl delete -n {{NAMESPACE}} -f -
+    @echo "✅ Teardown complete"
+
+# Teardown AMD vLLM model server with lmcache connector
+teardown-model-server-lmcache:
+    @echo "Targeting: LMCache connector"
+    @just _teardown-internal "./manifests/vllm/flavors/lmcache"
+
+# Teardown AMD vLLM model server with lmcache connector and hipfile
+teardown-model-server-lmcache-hipfile:
+    @echo "Targeting: LMCache connector + Hipfile"
+    @just _teardown-internal "./manifests/vllm/flavors/lmcache-hipfile"
+
+# Teardown AMD vLLM model server with offloading connector
+teardown-model-server-offloading:
+    @echo "Targeting: Offloading connector"
+    @just _teardown-internal "./manifests/vllm/flavors/offloading"
+
+# Remove gateway
+teardown-gateway:
+    @echo "🗑️  Removing gateway..."
+    -kubectl delete -k {{LLM_D_PATH}}/guides/recipes/gateway/istio -n {{NAMESPACE}}
+    @echo "✅ Gateway removed"
+
+# Start all port-forwards in background
+port-forward-start:
+    @echo "🔌 Starting port-forwards..."
+    @just _port-forward-gateway
+    @just _port-forward-prometheus
+    @just _port-forward-grafana
+    @echo "✅ Port-forwards started:"
+    @echo "  🌐 Istio Gateway: http://localhost:8080"
+    @echo "  📊 Prometheus: http://localhost:9090"
+    @echo "  📈 Grafana: http://localhost:3000"
+    @echo "Run 'just port-forward-stop' to stop them"
+
+# Internal: Start Istio Gateway port-forward
+_port-forward-gateway:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    # Kill existing port-forward if running
+    pkill -f "port-forward.*gateway-istio.*8080" 2>/dev/null || true
+    sleep 1
+    # Start new port-forward
+    kubectl port-forward -n {{NAMESPACE}} svc/llm-d-inference-gateway-istio 8080:80 > /dev/null 2>&1 &
+    echo "  ✅ Istio Gateway port-forward started (PID: $!)"
+
+# Stop all port-forwards
+port-forward-stop:
+    @echo "🔌 Stopping port-forwards..."
+    -pkill -f "port-forward.*gateway-istio.*8080"
+    @just stop-monitoring-port-forwards
+
+# Check deployment status
+status:
+    @echo "📊 Deployment Status in namespace: {{NAMESPACE}}"
+    @echo ""
+    @echo "=== All Resources ==="
+    kubectl -n {{NAMESPACE}} get all
+    @echo ""
+    @echo "=== Gateway ==="
+    kubectl get gateway -n {{NAMESPACE}} || echo "No gateway found"
+    @echo ""
+    @echo "=== InferencePool ==="
+    kubectl get inferencepool -n {{NAMESPACE}} || echo "No InferencePool found"
+    @echo ""
+
+# Wait for deployment to be ready
+wait:
+    #!/usr/bin/env bash
+    echo "⏳ Waiting for deployment to be ready..."
+    just _wait-for-deployment {{NAMESPACE}} llm-d-inference-gateway-istio "available" 300s
+    DEPLOYMENTS=$(kubectl -n {{NAMESPACE}} get deployments -l {{MODEL_SERVING_LABEL}} -o jsonpath='{.items[*].metadata.name}')
+    for name in $DEPLOYMENTS; do
+      just _wait-for-deployment {{NAMESPACE}} ${name} "available" 600s
+    done
+    just _wait-for-deployment {{NAMESPACE}} llm-d-infpool-epp  "available" 300s
+    echo "✅ All deployments ready!"
+
+# View logs from model server pods
+logs:
+    @echo "📜 Model server logs:"
+    @just _get-logs-by-label {{NAMESPACE}} "{{MODEL_SERVING_LABEL}}" 50
+
+# View description from model server pods
+describe:
+    @echo "📜 Model server description:"
+    @just _get-describe-by-label {{NAMESPACE}} {{MODEL_SERVING_LABEL}}
+
+# Follow logs from model server pods
+logs-follow:
+    @echo "📜 Following model server logs (Ctrl+C to stop)..."
+    @just _follow-logs-by-label {{NAMESPACE}} "{{MODEL_SERVING_LABEL}}"
+
+# Test metrics endpoint
+test-metrics:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    POD_NAME=$(kubectl get pods -n {{NAMESPACE}} -l {{MODEL_SERVING_LABEL}} -o jsonpath='{.items[0].metadata.name}')
+    if [ -n "$POD_NAME" ]; then
+        echo "📊 Testing metrics from pod: $POD_NAME"
+        kubectl exec -n {{NAMESPACE}} ${POD_NAME} -- curl -s http://localhost:8000/metrics | head -20
+    else
+        echo "❌ No vLLM pods found"
+        exit 1
+    fi
+
+# Create namespace if it doesn't exist, and ensure HF token secret is configured
+create-namespace:
+    #!/usr/bin/env bash
+    set -euo pipefail
+
+    # Check if namespace exists
+    if kubectl get namespace {{NAMESPACE}} &>/dev/null; then
+        echo "⚠️  Warning: Namespace {{NAMESPACE}} already exists, continuing..."
+    else
+        echo "📦 Creating namespace {{NAMESPACE}}..."
+        kubectl create namespace {{NAMESPACE}}
+        echo "✅ Namespace {{NAMESPACE}} created"
+    fi
+
+    # Check if HF token secret exists
+    if kubectl get secret {{HF_TOKEN_NAME}} -n {{NAMESPACE}} &>/dev/null; then
+        echo "✅ HuggingFace token secret '{{HF_TOKEN_NAME}}' already exists in namespace {{NAMESPACE}}"
+    else
+        echo "⚠️  HuggingFace token secret '{{HF_TOKEN_NAME}}' not found in namespace {{NAMESPACE}}"
+        echo "📝 Setting up HuggingFace token using llm-d-helpers..."
+        just register-hf-token {{NAMESPACE}} || { echo "❌ Failed to register HF token. You may need to set HF_TOKEN environment variable and run: just register-hf-token {{NAMESPACE}}"; exit 1;}
+    fi
+
+# Delete namespace (WARNING: deletes everything!)
+delete-namespace:
+    @just _delete-namespace {{NAMESPACE}}
+
+# Complete setup with offloading-connector: create namespace, deploy everything, and wait
+setup: verify-prereqs create-namespace deploy-offloading wait
+    @echo "🎉 Setup complete!"
+    @just status
+
+# Complete setup with lmcache-connector
+setup-lmcache: verify-prereqs create-namespace deploy-lmcache wait
+    @echo "🎉 Setup complete with LMCache!"
+    @just status
+
+# Complete setup with lmcache-connector
+setup-lmcache-hipfile: verify-prereqs create-namespace deploy-lmcache-hipfile wait
+    @echo "🎉 Setup complete with LMCache!"
+    @just status
+
+# Complete cleanup: teardown and stop port-forwards
+clean: teardown port-forward-stop
+    @echo "🧹 Cleanup complete!"
+    @echo "Run 'just delete-namespace' if you want to delete the namespace entirely"
+
+
+squeaky-clean: teardown port-forward-stop delete-namespace
+    @echo "🧹 Cleanup complete!"
+
+# Show which connector variant is being used
+show-variant:
+    @echo "Current connector variant: {{CONNECTOR}}"
+    @echo "To use a different variant:"
+    @echo "  - Offloading: just deploy-offloading"
+    @echo "  - LMCache:    just deploy-lmcache"
+
+# Parse and show vLLM configuration from logs (deduplicated across pods)
+show-config:
+    @echo "Parsing vLLM configuration from pod logs..."
+    @just _parse-vllm-all {{NAMESPACE}} "{{MODEL_SERVING_LABEL}}" "true"
+
+# Show vLLM configuration for all pods separately (no deduplication)
+show-config-all:
+    @echo "Parsing vLLM configuration from all pods (no deduplication)..."
+    @just _parse-vllm-all {{NAMESPACE}} "{{MODEL_SERVING_LABEL}}" "false"
+
+# Show vLLM configuration for a specific pod
+show-config-pod POD_NAME:
+    @echo "Parsing vLLM configuration from pod {{POD_NAME}}..."
+    @just _parse-vllm-pod {{NAMESPACE}} {{POD_NAME}}
+
+# Load Grafana dashboards (llm-d defaults + rocm-aic custom)
+load-dashboards:
+    @echo "📊 Loading Grafana dashboards..."
+    @just _load-dashboards
+    @echo "✅ Dashboards loaded. Access Grafana at http://localhost:3000"

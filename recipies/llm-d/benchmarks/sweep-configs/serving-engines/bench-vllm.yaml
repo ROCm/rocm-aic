@@ -1,0 +1,36 @@
+name: "inference-scheduling-vllm"
+description: "vLLM serving engine benchmark"
+deployment: "inference-scheduling-vllm"
+deployment_template: "inference-scheduling-vllm-kustomization.yaml.tmpl"
+
+parameters:
+  model:
+    type: categorical
+    values:
+      - "openai/gpt-oss-120b"
+  # Need at least TP=4 for large models
+  tensor_parallel_size:
+    type: categorical
+    values: [4]
+  vllm_args:
+    type: combinations
+    args:
+      trust-remote-code: true # for kimi
+      gpu_memory_utilization:
+        values: [0.90]
+
+load_generation:
+  tool: "vllm-bench-serve"
+  image: "ghcr.io/vcave/vllm:rocm_721-vllm_0190-lmcache_20260514_92fe433a"
+  benchmark_args:
+    type: combinations
+    args:
+      dataset_name: random
+      random_input_len:
+        values: [8000]
+      random_output_len: 1000
+      max_concurrency:
+        values: [8, 16, 32, 64]
+      num_prompts: 10 * {max_concurrency}
+      ignore_eos: true
+      # seed is auto-generated

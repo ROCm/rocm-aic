@@ -1,0 +1,244 @@
+# Justfile for benchmark sweep orchestration
+
+# Environment variables with defaults
+SWEEP_RESULTS_DIR := env_var_or_default('SWEEP_RESULTS_DIR', 'results/sweeps')
+
+# Default recipe - show available commands
+default:
+    @just --list
+
+# Run a sweep from configuration file (sequential by default)
+sweep CONFIG OUTPUT_DIR='' *ARGS='':
+    #!/usr/bin/env bash
+    set +e  # Don't exit on error - let Python handle it
+    echo "Starting sweep: {{CONFIG}}"
+
+    # Trap SIGINT/SIGTERM and forward to Python process
+    # Use stderr to avoid BrokenPipeError when piped to tee
+    trap 'echo "" >&2; echo "Forwarding interrupt to sweep script..." >&2; kill -INT $PID 2>/dev/null; wait $PID' INT TERM
+
+    # Build arguments - add --output-dir if OUTPUT_DIR is provided
+    SWEEP_ARGS="{{ARGS}}"
+    if [ -n "{{OUTPUT_DIR}}" ]; then
+        SWEEP_ARGS="--output-dir {{OUTPUT_DIR}} $SWEEP_ARGS"
+    fi
+
+    # Run Python script in background and wait for it
+    python3 -u scripts/run-sweep.py {{CONFIG}} $SWEEP_ARGS &
+    PID=$!
+    wait $PID
+    EXIT_CODE=$?
+
+    # Clean up trap
+    trap - INT TERM
+
+    exit $EXIT_CODE
+
+# Run a parallel sweep with GPU budgeting
+sweep-parallel CONFIG GPU_BUDGET MAX_CONCURRENT='4' OUTPUT_DIR='' *ARGS='':
+    #!/usr/bin/env bash
+    set +e
+    echo "Starting parallel sweep: {{CONFIG}} (GPU Budget: {{GPU_BUDGET}}, Max Concurrent: {{MAX_CONCURRENT}})"
+
+    trap 'echo "" >&2; echo "Forwarding interrupt to sweep script..." >&2; kill -INT $PID 2>/dev/null; wait $PID' INT TERM
+
+    # Build arguments - add --output-dir if OUTPUT_DIR is provided
+    SWEEP_ARGS="{{ARGS}}"
+    if [ -n "{{OUTPUT_DIR}}" ]; then
+        SWEEP_ARGS="--output-dir {{OUTPUT_DIR}} $SWEEP_ARGS"
+    fi
+
+    python3 -u scripts/run-sweep.py {{CONFIG}} --gpu-budget {{GPU_BUDGET}} --max-concurrent {{MAX_CONCURRENT}} $SWEEP_ARGS &
+    PID=$!
+    wait $PID
+    EXIT_CODE=$?
+
+    trap - INT TERM
+    exit $EXIT_CODE
+
+# Run sweep in exclusive mode (pods request max GPUs per node)
+sweep-exclusive CONFIG GPU_BUDGET MAX_CONCURRENT='4' OUTPUT_DIR='' *ARGS='':
+    #!/usr/bin/env bash
+    set +e
+    echo "Starting exclusive mode sweep: {{CONFIG}} (GPU Budget: {{GPU_BUDGET}})"
+
+    trap 'echo "" >&2; echo "Forwarding interrupt to sweep script..." >&2; kill -INT $PID 2>/dev/null; wait $PID' INT TERM
+
+    # Build arguments - add --output-dir if OUTPUT_DIR is provided
+    SWEEP_ARGS="{{ARGS}}"
+    if [ -n "{{OUTPUT_DIR}}" ]; then
+        SWEEP_ARGS="--output-dir {{OUTPUT_DIR}} $SWEEP_ARGS"
+    fi
+
+    python3 -u scripts/run-sweep.py {{CONFIG}} --gpu-budget {{GPU_BUDGET}} --max-concurrent {{MAX_CONCURRENT}} --exclusive-mode $SWEEP_ARGS &
+    PID=$!
+    wait $PID
+    EXIT_CODE=$?
+
+    trap - INT TERM
+    exit $EXIT_CODE
+
+# Preview sweep configurations without executing (dry-run)
+dry-run CONFIG OUTPUT_DIR='' *ARGS='':
+    #!/usr/bin/env bash
+    SWEEP_ARGS="{{ARGS}}"
+    if [ -n "{{OUTPUT_DIR}}" ]; then
+        SWEEP_ARGS="--output-dir {{OUTPUT_DIR}} $SWEEP_ARGS"
+    fi
+    python3 scripts/run-sweep.py {{CONFIG}} --dry-run $SWEEP_ARGS
+
+# List available sweep configurations
+list-sweeps:
+    @echo "Available sweep configurations:"
+    @ls -1 sweep-configs/*.yaml 2>/dev/null | xargs -n1 basename || echo "No sweep configs found"
+
+# Validate sweep configuration syntax
+validate CONFIG:
+    @echo "Validating sweep configuration: {{CONFIG}}"
+    @python3 -c "import yaml; yaml.safe_load(open('sweep-configs/{{CONFIG}}'))" && echo "✓ Valid YAML syntax"
+
+# List recent sweep results
+list-results:
+    @echo "Recent sweep results:"
+    @ls -dt {{SWEEP_RESULTS_DIR}}/*/ 2>/dev/null | head -10 || echo "No results found"
+
+# Show summary of a sweep run
+show-summary SWEEP_DIR:
+    @echo "Summary for: {{SWEEP_DIR}}"
+    @cat {{SWEEP_RESULTS_DIR}}/{{SWEEP_DIR}}/summary.json 2>/dev/null || echo "Summary not found"
+
+# generate summary.json from a completed sweep
+generate-summary SWEEP_DIR:
+    @echo "🔄 Generating summary for: {{SWEEP_DIR}}"
+    @python3 scripts/generate_summary.py {{SWEEP_DIR}}
+
+# View configuration of a specific run
+show-run-config SWEEP_DIR RUN_ID:
+    @echo "Configuration for run {{RUN_ID}} in {{SWEEP_DIR}}:"
+    @cat {{SWEEP_RESULTS_DIR}}/{{SWEEP_DIR}}/run-{{RUN_ID}}/config.yaml 2>/dev/null || echo "Config not found"
+
+# View logs from a specific run
+show-logs SWEEP_DIR RUN_ID:
+    @echo "Logs for run {{RUN_ID}} in {{SWEEP_DIR}}:"
+    @ls -1 {{SWEEP_RESULTS_DIR}}/{{SWEEP_DIR}}/run-{{RUN_ID}}/logs/*.log 2>/dev/null | while read log; do \
+        echo "=== $$log ==="; \
+        cat "$$log"; \
+        echo ""; \
+    done || echo "No logs found"
+
+# Clean up all benchmark results
+clean-results:
+    @echo "Cleaning up benchmark results..."
+    @rm -rf {{SWEEP_RESULTS_DIR}}/*
+    @echo "✓ Results cleaned"
+
+# Create the results directory structure
+setup:
+    @echo "Setting up benchmark directories..."
+    @mkdir -p {{SWEEP_RESULTS_DIR}}
+    @mkdir -p load-generators/multi-turn-benchmark/workloads
+    @echo "✓ Setup complete"
+
+# Show current status of a sweep (running, pending, completed configurations with GPU allocations)
+current SWEEP_NAME='':
+    @python3 scripts/show-sweep-status.py {{SWEEP_NAME}}
+
+# Show current status with detailed completed runs
+current-verbose SWEEP_NAME='':
+    @python3 scripts/show-sweep-status.py {{SWEEP_NAME}} --verbose
+
+# Legacy: List currently active namespaces for a sweep (deprecated, use 'current' instead)
+current-namespaces CONFIG:
+    @echo "🔍 Finding active namespaces for sweep: {{CONFIG}}"
+    @python3 scripts/current-namespace.py sweep-configs/{{CONFIG}}
+
+# Internal helper: Get deployment type from namespace (via Kubernetes label)
+_get-deployment NAMESPACE:
+    #!/usr/bin/env bash
+    python3 scripts/get-deployment-from-namespace.py {{NAMESPACE}}
+
+# View logs from specified namespace (auto-detects deployment type from namespace label)
+logs NAMESPACE:
+    #!/usr/bin/env bash
+    set -e
+    DEPLOYMENT=$(just _get-deployment {{NAMESPACE}})
+    if [ $? -ne 0 ] || [ -z "$DEPLOYMENT" ]; then
+        echo "Error: Could not determine deployment type for namespace: {{NAMESPACE}}" >&2
+        exit 1
+    fi
+    echo "📜 Viewing logs from namespace: {{NAMESPACE}} (deployment: $DEPLOYMENT)"
+    cd ../$DEPLOYMENT && NAMESPACE={{NAMESPACE}} just logs
+
+# Follow logs from specified namespace (auto-detects deployment type from namespace label)
+logs-follow NAMESPACE:
+    #!/usr/bin/env bash
+    set -e
+    DEPLOYMENT=$(just _get-deployment {{NAMESPACE}})
+    if [ $? -ne 0 ] || [ -z "$DEPLOYMENT" ]; then
+        echo "Error: Could not determine deployment type for namespace: {{NAMESPACE}}" >&2
+        exit 1
+    fi
+    echo "📜 Following logs from namespace: {{NAMESPACE}} (deployment: $DEPLOYMENT)"
+    cd ../$DEPLOYMENT && NAMESPACE={{NAMESPACE}} just logs-follow
+
+describe NAMESPACE:
+    #!/usr/bin/env bash
+    set -e
+    DEPLOYMENT=$(just _get-deployment {{NAMESPACE}})
+    if [ $? -ne 0 ] || [ -z "$DEPLOYMENT" ]; then
+        echo "Error: Could not determine deployment type for namespace: {{NAMESPACE}}" >&2
+        exit 1
+    fi
+    echo "📜 Viewing pod description from namespace: {{NAMESPACE}} (deployment: $DEPLOYMENT)"
+    cd ../$DEPLOYMENT && NAMESPACE={{NAMESPACE}} just describe
+
+# Show vLLM configuration from specified namespace (auto-detects deployment type from namespace label)
+show-config NAMESPACE:
+    #!/usr/bin/env bash
+    set -e
+    DEPLOYMENT=$(just _get-deployment {{NAMESPACE}})
+    if [ $? -ne 0 ] || [ -z "$DEPLOYMENT" ]; then
+        echo "Error: Could not determine deployment type for namespace: {{NAMESPACE}}" >&2
+        exit 1
+    fi
+    echo "⚙️  Showing config from namespace: {{NAMESPACE}} (deployment: $DEPLOYMENT)"
+    cd ../$DEPLOYMENT && NAMESPACE={{NAMESPACE}} just show-config
+
+# Show deployment status for specified namespace (auto-detects deployment type from namespace label)
+status NAMESPACE:
+    #!/usr/bin/env bash
+    set -e
+    DEPLOYMENT=$(just _get-deployment {{NAMESPACE}})
+    if [ $? -ne 0 ] || [ -z "$DEPLOYMENT" ]; then
+        echo "Error: Could not determine deployment type for namespace: {{NAMESPACE}}" >&2
+        exit 1
+    fi
+    echo "📊 Checking status of namespace: {{NAMESPACE}} (deployment: $DEPLOYMENT)"
+    cd ../$DEPLOYMENT && NAMESPACE={{NAMESPACE}} just status
+
+# Retry failed configurations from a previous sweep
+retry-failed SWEEP_DIR:
+    #!/usr/bin/env bash
+    set +e
+    echo "🔄 Retrying failed configurations from: {{SWEEP_DIR}}"
+
+    trap 'echo "" >&2; echo "Forwarding interrupt to retry script..." >&2; kill -INT $PID 2>/dev/null; wait $PID' INT TERM
+
+    python3 -u scripts/retry-failed.py {{SWEEP_RESULTS_DIR}}/{{SWEEP_DIR}} &
+    PID=$!
+    wait $PID
+    EXIT_CODE=$?
+
+    trap - INT TERM
+    exit $EXIT_CODE
+
+# Aggregate benchmark results from a sweep directory
+results-aggregate SWEEP_DIR *ARGS='':
+    @echo "📊 Aggregating results from: {{SWEEP_DIR}}"
+    @python3 scripts/aggregate-sweep-results.py {{SWEEP_RESULTS_DIR}}/{{SWEEP_DIR}} {{ARGS}}
+
+# Merge multiple aggregated_results.json files into one
+results-merge OUTPUT *FILES:
+    @echo "🔗 Merging aggregated results..."
+    @python3 scripts/merge-aggregated-results.py {{FILES}} --output {{OUTPUT}} --pretty
+    @echo "✓ Merged results saved to: {{OUTPUT}}"

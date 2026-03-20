@@ -1,0 +1,287 @@
+# Justfile for inference-scheduling deployment with AMD GPUs
+
+# Default recipe - show available commands
+default:
+    @just --list
+
+# Import common utilities
+import? "../setup/justfile"
+import? "../common/monitoring.justfile"
+import? "../common/llm-d-helpers.justfile"
+
+# Deployment-specific configuration
+USER      := `whoami`
+NAMESPACE_DEFAULT   := USER + "-llm-d-inference-scheduling-amd"
+NAMESPACE := env_var_or_default('NAMESPACE', NAMESPACE_DEFAULT)
+MANIFEST_DIR := env_var_or_default('MANIFEST_DIR', './manifests/vllm')
+VLLM_MANIFEST_DIR := env_var_or_default('VLLM_MANIFEST_DIR', env_var_or_default('MANIFEST_DIR', './manifests/vllm'))
+SGLANG_MANIFEST_DIR := env_var_or_default('SGLANG_MANIFEST_DIR', env_var_or_default('MANIFEST_DIR', './manifests/sglang'))
+
+# How to find deployments, pods, that are serving engines
+MODEL_SERVING_LABEL := "llm-d.ai/role=decode"
+
+# Complete setup: prereqs + namespace + deploy + wait (vllm variant)
+setup: setup-vllm
+
+# Complete setup with vllm
+setup-vllm: verify-prereqs create-namespace deploy-vllm wait
+    @echo "✅ vLLM setup complete!"
+    @echo "Run 'just status' to check deployment status"
+    @echo "Run 'just port-forward-start' to access services"
+
+# Complete setup with sglang
+setup-sglang: verify-prereqs create-namespace deploy-sglang wait
+    @echo "✅ SGLang setup complete!"
+    @echo "Run 'just status' to check deployment status"
+    @echo "Run 'just port-forward-start' to access services"
+
+# Deploy with vllm
+deploy-vllm: deploy-gateway deploy-model-server-vllm deploy-inferencepool
+    @echo "✅ vLLM deployment created!"
+
+# Deploy with sglang
+deploy-sglang: deploy-gateway deploy-model-server-sglang deploy-inferencepool
+    @echo "✅ SGLang deployment created!"
+
+# Create namespace if it doesn't exist, and ensure HF token secret is configured
+create-namespace:
+    #!/usr/bin/env bash
+    set -euo pipefail
+
+    # Check if namespace exists
+    if kubectl get namespace {{NAMESPACE}} &>/dev/null; then
+        echo "⚠️  Warning: Namespace {{NAMESPACE}} already exists, continuing..."
+    else
+        echo "📦 Creating namespace {{NAMESPACE}}..."
+        kubectl create namespace {{NAMESPACE}}
+        echo "✅ Namespace {{NAMESPACE}} created"
+    fi
+
+    # Check if HF token secret exists
+    if kubectl get secret {{HF_TOKEN_NAME}} -n {{NAMESPACE}} &>/dev/null; then
+        echo "✅ HuggingFace token secret '{{HF_TOKEN_NAME}}' already exists in namespace {{NAMESPACE}}"
+    else
+        echo "⚠️  HuggingFace token secret '{{HF_TOKEN_NAME}}' not found in namespace {{NAMESPACE}}"
+        echo "📝 Setting up HuggingFace token using llm-d-helpers..."
+        just register-hf-token {{NAMESPACE}} || { echo "❌ Failed to register HF token. You may need to set HF_TOKEN environment variable and run: just register-hf-token {{NAMESPACE}}"; exit 1;}
+    fi
+
+# Delete namespace (WARNING: deletes everything!)
+delete-namespace:
+    @just _delete-namespace {{NAMESPACE}}
+
+# Deploy Istio gateway (from llm-d submodule)
+deploy-gateway:
+    @echo "🚀 Deploying Istio gateway..."
+    kubectl apply -k {{LLM_D_PATH}}/guides/recipes/gateway/istio -n {{NAMESPACE}} || exit 1
+    @echo "✅ Gateway deployed"
+
+# Deploy vLLM model servers
+deploy-model-server-vllm:
+    @echo "🚀 Deploying AMD vLLM model servers"
+    kustomize build {{VLLM_MANIFEST_DIR}} | kubectl apply -n {{NAMESPACE}} -f - || exit 1
+    @echo "✅ vLLM model servers deployed"
+
+# Deploy SGLang model servers
+deploy-model-server-sglang:
+    @echo "🚀 Deploying AMD SGLang model servers"
+    kustomize build {{SGLANG_MANIFEST_DIR}} | kubectl apply -n {{NAMESPACE}} -f - || exit 1
+    @echo "✅ SGLang model servers deployed"
+
+# Deploy InferencePool for intelligent routing
+deploy-inferencepool:
+    @echo "🚀 Deploying InferencePool..."
+    helm install llm-d-infpool \
+      {{INFERENCEPOOL_CHART}} \
+      -f {{LLM_D_PATH}}/guides/recipes/scheduler/base.values.yaml \
+      -f {{LLM_D_PATH}}/guides/recipes/scheduler/features/monitoring.values.yaml \
+      -f {{LLM_D_PATH}}/guides/optimized-baseline/scheduler/optimized-baseline.values.yaml \
+      --set provider.name=istio \
+      --set experimentalHttpRoute.enabled=true \
+      --set experimentalHttpRoute.inferenceGatewayName=llm-d-inference-gateway \
+      -n {{NAMESPACE}} \
+      --version {{INFERENCEPOOL_VERSION}} || exit 1
+    @echo "✅ InferencePool deployed"
+
+# Teardown everything (vllm variant by default)
+teardown: teardown-vllm
+
+# Teardown vllm deployment
+teardown-vllm: teardown-inferencepool teardown-model-server-vllm teardown-gateway
+    @echo "✅ vLLM teardown complete!"
+
+# Teardown sglang deployment
+teardown-sglang: teardown-inferencepool teardown-model-server-sglang teardown-gateway
+    @echo "✅ SGLang teardown complete!"
+
+# Teardown InferencePool
+teardown-inferencepool:
+    @echo "🗑️  Removing InferencePool..."
+    -helm uninstall llm-d-infpool -n {{NAMESPACE}}
+    @echo "✅ InferencePool removed"
+
+# Teardown vLLM model servers
+teardown-model-server-vllm:
+    @echo "🗑️  Removing vLLM model servers..."
+    -kubectl delete -k {{VLLM_MANIFEST_DIR}} -n {{NAMESPACE}}
+    @echo "✅ vLLM model servers removed"
+
+# Teardown SGLang model servers
+teardown-model-server-sglang:
+    @echo "🗑️  Removing SGLang model servers..."
+    -kubectl delete -k {{SGLANG_MANIFEST_DIR}} -n {{NAMESPACE}}
+    @echo "✅ SGLang model servers removed"
+
+# Teardown gateway
+teardown-gateway:
+    @echo "🗑️  Removing gateway..."
+    -kubectl delete -k {{LLM_D_PATH}}/guides/recipes/gateway/istio -n {{NAMESPACE}}
+    @echo "✅ Gateway removed"
+
+# Check deployment status
+status:
+    @echo "📊 Deployment Status in namespace: {{NAMESPACE}}"
+    @echo ""
+    @echo "=== Helm Releases ==="
+    -helm list -n {{NAMESPACE}}
+    @echo ""
+    @echo "=== Deployments ==="
+    kubectl -n {{NAMESPACE}} get deployments
+    @echo ""
+    @echo "=== Pods ==="
+    kubectl -n {{NAMESPACE}} get pods -o wide
+    @echo ""
+    @echo "=== Services ==="
+    kubectl -n {{NAMESPACE}} get svc
+
+# Wait for deployment to be ready
+wait:
+    #!/usr/bin/env bash
+    echo "⏳ Waiting for deployment to be ready..."
+    just _wait-for-deployment {{NAMESPACE}} llm-d-inference-gateway-istio "available" 300s
+    DEPLOYMENTS=$(kubectl -n {{NAMESPACE}} get deployments -l {{MODEL_SERVING_LABEL}} -o jsonpath='{.items[*].metadata.name}')
+    for name in $DEPLOYMENTS; do
+      just _wait-for-deployment {{NAMESPACE}} ${name} "available" 600s
+    done
+    just _wait-for-deployment {{NAMESPACE}} llm-d-infpool-epp  "available" 300s
+    echo "✅ All deployments ready!"
+
+# View logs from model server pods
+logs:
+    @echo "📜 Model server logs:"
+    @just _get-logs-by-label {{NAMESPACE}} {{MODEL_SERVING_LABEL}} 50
+
+# View description from model server pods
+describe:
+    @echo "📜 Model server description:"
+    @just _get-describe-by-label {{NAMESPACE}} {{MODEL_SERVING_LABEL}}
+
+# Follow logs from model server pods
+logs-follow:
+    @echo "📜 Following model server logs (Ctrl+C to stop)..."
+    @just _follow-logs-by-label {{NAMESPACE}} {{MODEL_SERVING_LABEL}}
+
+# Test the deployment with a simple curl
+test:
+    @echo "🧪 Testing deployment..."
+    @echo "Make sure port-forward is active (just port-forward-start)"
+    curl -s localhost:8080/v1/models | jq .
+
+# Start all port-forwards in background
+port-forward-start:
+    @echo "🔌 Starting port-forwards..."
+    @just _port-forward-gateway-is
+    @just _port-forward-prometheus
+    @just _port-forward-grafana
+    @echo "✅ Port-forwards started:"
+    @echo "  🌐 Istio Gateway: http://localhost:8080"
+    @echo "  📊 Prometheus: http://localhost:9090"
+    @echo "  📈 Grafana: http://localhost:3000"
+    @echo "Run 'just port-forward-stop' to stop them"
+
+# Internal: Start Istio Gateway port-forward
+_port-forward-gateway-is:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    # Kill existing port-forward if running
+    pkill -f "port-forward.*gateway-istio.*8080" 2>/dev/null || true
+    sleep 1
+    # Start new port-forward
+    kubectl port-forward -n {{NAMESPACE}} svc/llm-d-inference-gateway-istio 8080:80 > /dev/null 2>&1 &
+    echo "  ✅ Istio Gateway port-forward started (PID: $!)"
+
+# Stop all port-forwards
+port-forward-stop:
+    @echo "🔌 Stopping port-forwards..."
+    -pkill -f "port-forward.*gateway-istio.*8080"
+    @just stop-monitoring-port-forwards
+
+# Complete cleanup: teardown and stop port-forwards
+clean: teardown port-forward-stop
+    @echo "🧹 Cleanup complete!"
+    @echo "Run 'just delete-namespace' if you want to delete the namespace entirely"
+
+squeaky-clean: teardown port-forward-stop delete-namespace
+    @echo "🧹 Cleanup complete!"
+
+# Test metrics endpoint from a vLLM model server pod
+test-metrics-vllm:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    POD_NAME=$(kubectl get pods -n {{NAMESPACE}} -l llm-d.ai/role=decode -o jsonpath='{.items[0].metadata.name}')
+    if [ -n "$POD_NAME" ]; then
+        echo "📊 Testing vLLM metrics from pod: $POD_NAME"
+        kubectl exec -n {{NAMESPACE}} ${POD_NAME} -c vllm -- curl -s http://localhost:8000/metrics | head -20
+    else
+        echo "❌ No vLLM pods found"
+        exit 1
+    fi
+
+# Test metrics endpoint from an SGLang model server pod
+test-metrics-sglang:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    POD_NAME=$(kubectl get pods -n {{NAMESPACE}} -l llm-d.ai/role=decode -o jsonpath='{.items[0].metadata.name}')
+    if [ -n "$POD_NAME" ]; then
+        echo "📊 Testing SGLang metrics from pod: $POD_NAME"
+        kubectl exec -n {{NAMESPACE}} ${POD_NAME} -c sglang -- curl -s http://localhost:8000/metrics | head -20
+    else
+        echo "❌ No SGLang pods found"
+        exit 1
+    fi
+
+# Parse and show vLLM configuration from logs (deduplicated across pods)
+show-config-vllm:
+    @echo "Parsing vLLM configuration from pod logs..."
+    @just _parse-vllm-all {{NAMESPACE}} {{MODEL_SERVING_LABEL}} "true"
+
+# Show vLLM configuration for all pods separately (no deduplication)
+show-config-vllm-all:
+    @echo "Parsing vLLM configuration from all pods (no deduplication)..."
+    @just _parse-vllm-all {{NAMESPACE}} {{MODEL_SERVING_LABEL}} "false"
+
+# Show vLLM configuration for a specific pod
+show-config-vllm-pod POD_NAME:
+    @echo "Parsing vLLM configuration from pod {{POD_NAME}}..."
+    @just _parse-vllm-pod {{NAMESPACE}} {{POD_NAME}}
+
+# Parse and show SGLang configuration from logs (deduplicated across pods)
+show-config-sglang:
+    @echo "Parsing SGLang configuration from pod logs..."
+    @just _parse-sglang-all {{NAMESPACE}} {{MODEL_SERVING_LABEL}} "true"
+
+# Show SGLang configuration for all pods separately (no deduplication)
+show-config-sglang-all:
+    @echo "Parsing SGLang configuration from all pods (no deduplication)..."
+    @just _parse-sglang-all {{NAMESPACE}} {{MODEL_SERVING_LABEL}} "false"
+
+# Show SGLang configuration for a specific pod
+show-config-sglang-pod POD_NAME:
+    @echo "Parsing SGLang configuration from pod {{POD_NAME}}..."
+    @just _parse-sglang-pod {{NAMESPACE}} {{POD_NAME}}
+
+# Load Grafana dashboards (llm-d defaults + rocm-aic custom)
+load-dashboards:
+    @echo "📊 Loading Grafana dashboards..."
+    @just _load-dashboards
+    @echo "✅ Dashboards loaded. Access Grafana at http://localhost:3000"

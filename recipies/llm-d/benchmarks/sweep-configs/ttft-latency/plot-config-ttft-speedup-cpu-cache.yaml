@@ -1,0 +1,99 @@
+# Speedup calculation: GPU prefill vs CPU KV cache hit
+# Uses merge strategy to join run1 and run2 data, then calculate speedup
+
+sources:
+  # Source 1: GPU prefill (run1)
+  - name: gpu_prefill
+    extraction:
+      input: ./results/ttft-latency/lmcache_cpu_aggregated_results.json
+      fields:
+        isl: config._load_params.random_input_len
+        tp: config.tensor_parallel_size
+        ttft: benchmark_run.metrics.ttft.mean_ms
+        run_label: benchmark_run.run_label
+      run_strategy: all
+    preparation:
+      # Filter to only run1 (GPU prefill)
+      filters:
+        - "run_label==run1"
+      # No need to keep run_label after filtering
+
+  # Source 2: CPU KV cache hit (run2)
+  - name: cpu_cache
+    extraction:
+      input: ./results/ttft-latency/lmcache_cpu_aggregated_results.json
+      fields:
+        isl: config._load_params.random_input_len
+        tp: config.tensor_parallel_size
+        ttft: benchmark_run.metrics.ttft.mean_ms
+        run_label: benchmark_run.run_label
+      run_strategy: all
+    preparation:
+      # Filter to only run2 (CPU KV cache hit)
+      filters:
+        - "run_label==run2"
+        - "isl<128000"
+
+# Use join strategy to merge the two sources
+merge_strategy: join
+merge_on: [isl, tp]  # Join on input sequence length and tensor parallel size
+merge_how: inner     # Only keep rows that exist in both sources
+
+# After merging, columns will be:
+# - isl, tp (join keys)
+# - ttft_gpu_prefill (from source 1)
+# - ttft_cpu_cache (from source 2)
+# - run_label_gpu_prefill, run_label_cpu_cache (if not dropped)
+
+merge_preparation:
+  transformations:
+    # Calculate speedup: GPU time / CPU cache time
+    # Speedup > 1 means CPU cache is faster
+    speedup: "ttft_gpu_prefill / ttft_cpu_cache"
+    # Also calculate percentage improvement
+    improvement_pct: "(ttft_gpu_prefill - ttft_cpu_cache) / ttft_gpu_prefill * 100"
+  sort_by: [tp, isl]
+
+export:
+  output: ttft_speedup_cpu_cache_vs_gpu_prefill.json
+  x: isl
+  y: speedup
+
+  # Group by tensor parallel size
+  series_by: [tp]
+  series_label_format: "TP={tp}"
+
+  # Different markers per TP
+  marker_by: tp
+  series_markers:
+    "1": "o"
+    "2": "^"
+    "4": "s"
+
+  axes:
+    x_scale: log
+    y_scale: linear
+
+  style:
+    legend_outside: true
+    minor_grid: true
+    markersize: 8
+    linewidth: 2
+    show_value_labels: true
+    value_label_format: "{y:.2f}x"  # Show speedup with 2 decimals
+    value_label_fontsize: 8
+    value_label_offset: [0, 10]
+
+  metadata:
+    title: "Speedup CPU KV Cache Hit vs GPU Prefill - LMCache"
+    x_label: "Input Sequence Length (tokens)"
+    y_label: "Speedup (GPU time / CPU cache time)"
+    description: "Speedup > 1 means CPU KV cache hit is faster than GPU prefill"
+
+  figure:
+    width: 12
+    height: 7
+    dpi: 300
+
+plot:
+  output: ttft_speedup_cpu_cache_vs_gpu_prefill.png
