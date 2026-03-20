@@ -81,6 +81,10 @@ errors when collecting BPF traces, you can temporarily add
 Pick one of the three modes from inside the container:
 
 ```bash
+# --gpu-memory-utilization and --tensor-parallel-size vLLM parameters can be set via env variables, such as: 
+export GPU_MEMORY_UTILIZATION=0.5
+export TENSOR_PARALLEL_SIZE=$(rocm-smi -i | grep "Instinct" | wc -l)
+
 # Baseline (no external cache)
 ./scripts/serve_nocache.sh
 

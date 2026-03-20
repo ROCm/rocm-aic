@@ -91,3 +91,6 @@ venv
 vmlinux
 weka
 whoami
+gpu
+smi
+wc
