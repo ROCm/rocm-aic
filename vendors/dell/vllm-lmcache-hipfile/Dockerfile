@@ -10,7 +10,11 @@ WORKDIR /app
 # Setup prerequisites
 RUN apt-get update && \
 	apt-get install -y --no-install-recommends \
-	cmake bpftrace libmount-dev libboost-all-dev vim && \
+	cmake bpftrace \
+	      libboost-all-dev \
+	      libmount-dev \
+	      ninja-build \
+	      vim && \
 	rm -rf /var/lib/apt/lists/*
 
 # Pinned SHAs for deterministic builds
@@ -18,6 +22,16 @@ ARG HIPFILE_BASE_SHA=5a7d275
 ARG HIPFILE_PATCH_SHA=0d07c19
 ARG LMCACHE_SHA=542bb9b
 ARG VLLM_SHA=a913b612d
+ARG FLASH_ATTN_SHA=0e60e394
+ARG AITER_TAG=c3708fb7
+ARG GPU_ARCHS
+
+# Scan GPUs if no GPU_ARCHS specified for the build
+RUN if [[ -z "${GPU_ARCHS}" ]]; then \
+		rocm_agent_enumerator | sort -u | xargs echo | tr ' ' ';' > /app/gpu_archs.txt; \
+	else \
+		echo ${GPU_ARCHS} > /app/gpu_archs.txt; \
+	fi
 
 # Build & install hipFile libs, headers, and python bindings
 RUN git clone https://github.com/ROCm/hipFile.git && \
@@ -37,7 +51,7 @@ RUN git clone https://github.com/glimchb/LMCache.git && \
 	cd LMCache && git checkout "${LMCACHE_SHA}" && \
 	pip install --no-cache-dir \
 	    -r requirements/build.txt && \
-	PYTORCH_ROCM_ARCH=$(rocm_agent_enumerator | head -n 1) \
+	PYTORCH_ROCM_ARCH=$(cat /app/gpu_archs.txt) \
 		TORCH_DONT_CHECK_COMPILER_ABI=1 \
 		CXX=hipcc \
 		BUILD_WITH_HIP=1 \
@@ -45,21 +59,24 @@ RUN git clone https://github.com/glimchb/LMCache.git && \
 		    --no-build-isolation -e . && \
 	cd ..
 
-# Build CK
-#RUN git clone https://github.com/ROCm/composable_kernel.git && \
-#    	cd composable_kernel && mkdir build && cd build && \
-#	cmake -D CMAKE_PREFIX_PATH=/opt/rocm \
-#	      -D CMAKE_CXX_COMPILER=/opt/rocm/bin/hipcc \
-#	      -D CMAKE_BUILD_TYPE=Release \
-#	      -D GPU_TARGETS=$(rocm_agent_enumerator | head -n 1) .. && \
-#	      make -j $(nproc --ignore 2) && make install && \
-#	      cd ../..
+# Build AITER (provides the kernels for vLLM's ROCM_AITER_FA backend)
+# SHA pinned to match tag in vLLM's docker/Dockerfile.rocm_base
+RUN git clone https://github.com/ROCm/aiter.git && \
+	cd aiter && \
+	git checkout "${AITER_TAG}" && \
+	git submodule update --init --recursive && \
+	pip install --no-cache-dir -r requirements.txt && \
+	GPU_ARCHS=$(cat /app/gpu_archs.txt) python3 setup.py install && \
+	cd ..
 
-# Build flash-attention
-# TODO, if needed later
-
-# Build AITER
-# TODO, if needed later
+# Build flash-attention (CK backend, used by vLLM ROCM_AITER_FA)
+# SHA pinned to match vLLM's docker/Dockerfile.rocm_base
+RUN git clone https://github.com/Dao-AILab/flash-attention.git && \
+	cd flash-attention && \
+	git checkout "${FLASH_ATTN_SHA}" && \
+	git submodule update --init && \
+	GPU_ARCHS=$(cat /app/gpu_archs.txt) python3 setup.py install && \
+	cd ..
 
 # Build MORI
 # TODO, if needed later
@@ -74,7 +91,7 @@ RUN git clone https://github.com/vllm-project/vllm.git && \
 	    'huggingface-hub[cli,hf_transfer]' \
 	    setuptools_scm && \
 	pip install --no-cache-dir -r requirements/rocm.txt && \
-	PYTORCH_ROCM_ARCH="gfx942" python3 setup.py develop
+	PYTORCH_ROCM_ARCH=$(cat /app/gpu_archs.txt) python3 setup.py develop
 
 # Transfer configs & run scripts, then fetch corpus
 COPY scripts/ /app/scripts/
