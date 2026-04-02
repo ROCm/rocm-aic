@@ -1,0 +1,11 @@
+# Ignore benchmark results
+results/
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+
+# Temporary files
+*.tmp
+*.log

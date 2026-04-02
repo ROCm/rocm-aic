@@ -10,6 +10,7 @@ import? "../common/llm-d-helpers.justfile"
 # Deployment-specific configuration
 NAMESPACE := env_var_or_default('NAMESPACE', 'llm-d-pfc-cpu-amd')
 CONNECTOR := env_var_or_default('CONNECTOR', 'offloading')
+MANIFEST_DIR := env_var_or_default('MANIFEST_DIR', '')
 
 # Default recipe - show available commands
 default:
@@ -39,13 +40,25 @@ deploy-gateway:
 # Deploy AMD vLLM model server with offloading connector
 deploy-model-server-offloading:
     @echo "🚀 Deploying AMD vLLM model server with offloading connector..."
-    kubectl apply -k ./manifests/vllm/offloading-connector-amd -n {{NAMESPACE}} || exit 1
+    #!/usr/bin/env bash
+    if [ -n "{{MANIFEST_DIR}}" ]; then \
+        echo "  Using custom manifest directory: {{MANIFEST_DIR}}"; \
+        kubectl apply -k {{MANIFEST_DIR}} -n {{NAMESPACE}} || exit 1; \
+    else \
+        kubectl apply -k ./manifests/vllm/offloading-connector-amd -n {{NAMESPACE}} || exit 1; \
+    fi
     @echo "✅ Model server (offloading-connector) deployed"
 
 # Deploy AMD vLLM model server with lmcache connector
 deploy-model-server-lmcache:
     @echo "🚀 Deploying AMD vLLM model server with LMCache connector..."
-    kubectl apply -k ./manifests/vllm/lmcache-connector-amd -n {{NAMESPACE}} || exit 1
+    #!/usr/bin/env bash
+    if [ -n "{{MANIFEST_DIR}}" ]; then \
+        echo "  Using custom manifest directory: {{MANIFEST_DIR}}"; \
+        kubectl apply -k {{MANIFEST_DIR}} -n {{NAMESPACE}} || exit 1; \
+    else \
+        kubectl apply -k ./manifests/vllm/lmcache-connector-amd -n {{NAMESPACE}} || exit 1; \
+    fi
     @echo "✅ Model server (lmcache-connector) deployed"
 
 # Deploy InferencePool with Istio provider
@@ -91,13 +104,25 @@ teardown-inferencepool:
 # Remove model server (offloading-connector)
 teardown-model-server-offloading:
     @echo "🗑️  Removing model server (offloading-connector)..."
-    -kubectl delete -k ./manifests/vllm/offloading-connector-amd -n {{NAMESPACE}}
+    #!/usr/bin/env bash
+    if [ -n "{{MANIFEST_DIR}}" ]; then \
+        echo "  Using custom manifest directory: {{MANIFEST_DIR}}"; \
+        kubectl delete -k {{MANIFEST_DIR}} -n {{NAMESPACE}} 2>/dev/null || true; \
+    else \
+        kubectl delete -k ./manifests/vllm/offloading-connector-amd -n {{NAMESPACE}} 2>/dev/null || true; \
+    fi
     @echo "✅ Model server removed"
 
 # Remove model server (lmcache-connector)
 teardown-model-server-lmcache:
     @echo "🗑️  Removing model server (lmcache-connector)..."
-    -kubectl delete -k ./manifests/vllm/lmcache-connector-amd -n {{NAMESPACE}}
+    #!/usr/bin/env bash
+    if [ -n "{{MANIFEST_DIR}}" ]; then \
+        echo "  Using custom manifest directory: {{MANIFEST_DIR}}"; \
+        kubectl delete -k {{MANIFEST_DIR}} -n {{NAMESPACE}} 2>/dev/null || true; \
+    else \
+        kubectl delete -k ./manifests/vllm/lmcache-connector-amd -n {{NAMESPACE}} 2>/dev/null || true; \
+    fi
     @echo "✅ Model server removed"
 
 # Remove gateway

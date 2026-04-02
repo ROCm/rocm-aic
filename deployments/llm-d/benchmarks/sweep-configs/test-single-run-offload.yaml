@@ -1,0 +1,39 @@
+# Example sweep configuration
+# Tests different KV cache configurations with a single model
+
+# Keep name short and K8s namespace compliant
+name: "test-offload"
+description: "Test a tiered-prefix-cache single run with CPU"
+deployment: "tiered-prefix-cache-offloading"
+namespace: "llm-d-benchmark"
+
+parameters:
+  model:
+    type: fixed
+    value: "Qwen/Qwen3-32B"
+  tensor_parallel_size:
+    type: fixed
+    value: 1
+  vllm_args:
+    type: combinations
+    args:
+      max_num_seq: 1024
+      disable_uvicorn_access_log: true
+      gpu_memory_utilization:
+        values: [0.30]
+      kv_connector:
+        values:
+          # CPU offloading with 100GB
+          - type: "offloading"
+            cpu_bytes: 107374182400
+            role: "kv_both"
+
+load_generation:
+  tool: "multi-turn-benchmark"
+  image: "ghcr.io/vcave/vllm:rocm_721-vllm_20260401-lmcache"
+  workload_file: "agent_multi_turn.json"
+  benchmark_args:
+    num_clients: 50
+    max_active_conversations: 50
+    request_timeout_sec: 300
+    verbose: false

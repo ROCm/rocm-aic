@@ -5,7 +5,62 @@ kind: Kustomization
 resources:
   - ../../../../../../submodules/llm-d/guides/tiered-prefix-cache/cpu/manifests/vllm/lmcache-connector-amd
 
-# Add any ROCm-ICMS specific patches or configurations here if needed
-# Example:
-# patchesStrategicMerge:
-#   - custom-patches.yaml
+patches:
+  - target:
+      kind: Deployment
+      name: llm-d-model-server
+    patch: |-
+      - op: replace
+        path: /spec/template/spec/containers/0/image
+        value: ghcr.io/vcave/vllm:rocm_721-vllm_20260401-lmcache
+      - op: replace
+        path: /spec/template/spec/containers/0/args/0
+        value: |-
+          exec vllm serve \
+            Qwen/Qwen3-32B \
+            --tensor-parallel-size 1 \
+            --kv-transfer-config '{"kv_connector":"LMCacheConnectorV1","kv_role":"kv_both"}' \
+            --port 8000 \
+            --max-num-seq 1024 \
+            --gpu-memory-utilization 0.25 \
+            --disable-uvicorn-access-log \
+            --enable_prefix_caching
+      - op: add
+        path: /spec/template/spec/containers/0/env/-
+        value:
+          name: LMCACHE_MAX_LOCAL_CPU_SIZE
+          value: "200.0"
+      - op: add
+        path: /spec/template/spec/containers/0/env/-
+        value:
+          name: PYTHONHASHSEED
+          value: "123"
+      - op: add
+        path: /spec/template/spec/containers/0/env/-
+        value:
+          name: PROMETHEUS_MULTIPROC_DIR
+          value: "/tmp/lmcache_prometheus"
+      - op: add
+        path: /spec/template/spec/containers/0/resources
+        value:
+          limits:
+            amd.com/gpu: 1
+          requests:
+            amd.com/gpu: 1
+            memory: 400G
+
+  # Mount an emptyDir to collect prometheus metrics
+  - target:
+      kind: Deployment
+      name: llm-d-model-server
+    patch: |-
+      - op: add
+        path: /spec/template/spec/volumes/-
+        value:
+          name: lmcache-prometheus-metrics
+          emptyDir: {}
+      - op: add
+        path: /spec/template/spec/containers/0/volumeMounts/-
+        value:
+          name: lmcache-prometheus-metrics
+          mountPath: /tmp/lmcache_prometheus

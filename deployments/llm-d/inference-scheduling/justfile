@@ -9,6 +9,7 @@ import? "../common/llm-d-helpers.justfile"
 # Deployment-specific configuration
 NAMESPACE := env_var_or_default('NAMESPACE', 'llm-d-inference-scheduling-amd')
 VALUES_FILE := env_var_or_default('VALUES_FILE', 'amd-default.yaml')
+MANIFEST_DIR := env_var_or_default('MANIFEST_DIR', '')
 
 # Path to llm-d guide
 LLM_D_GUIDE := "../../../submodules/llm-d/guides/inference-scheduling"
