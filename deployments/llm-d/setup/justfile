@@ -1,0 +1,378 @@
+# Prerequisites setup for LLM-D deployment
+# This justfile helps install and configure all required tools and cluster components
+
+# Root path to ROCM_ICMS repository
+ROCM_ICMS := justfile_directory() / ".." / ".." / ".."
+
+# Default namespace for LLM-D
+NAMESPACE := env_var_or_default("NAMESPACE", "llm-d")
+
+# HuggingFace token secret name
+HF_TOKEN_NAME := env_var_or_default("HF_TOKEN_NAME", "llm-d-hf-token")
+
+# Minikube binary path
+MINIKUBE_BIN := "/usr/local/bin/minikube"
+
+# Color output helpers
+RED := "\\033[0;31m"
+GREEN := "\\033[0;32m"
+YELLOW := "\\033[1;33m"
+NC := "\\033[0m"
+
+# Default recipe - show available targets
+default:
+    @just --list
+
+# ============================================================================
+# Minikube Installation & Setup
+# ============================================================================
+
+# Download and install minikube to /usr/local/bin
+minikube-install:
+    #!/usr/bin/env bash
+    set -euo pipefail
+
+    echo -e "{{GREEN}}Installing minikube...{{NC}}"
+
+    if command -v minikube &> /dev/null; then
+        echo -e "{{YELLOW}}minikube already installed: $(minikube version --short){{NC}}"
+        exit 0
+    fi
+
+    # Download latest minikube for Linux AMD64
+    echo "Downloading minikube..."
+    if ! curl -Lo /tmp/minikube https://storage.googleapis.com/minikube/releases/latest/minikube-linux-amd64; then
+        echo -e "{{RED}}Error: Failed to download minikube{{NC}}" >&2
+        echo -e "{{YELLOW}}Completed: none{{NC}}"
+        echo -e "{{YELLOW}}Remaining: minikube-install{{NC}}"
+        exit 1
+    fi
+
+    # Install minikube
+    echo "Installing to {{MINIKUBE_BIN}}..."
+    if ! sudo install /tmp/minikube {{MINIKUBE_BIN}}; then
+        rm -f /tmp/minikube
+        echo -e "{{RED}}Error: Failed to install minikube to {{MINIKUBE_BIN}}{{NC}}" >&2
+        echo -e "{{YELLOW}}Completed: download{{NC}}"
+        echo -e "{{YELLOW}}Remaining: installation to {{MINIKUBE_BIN}}{{NC}}"
+        exit 1
+    fi
+
+    # Cleanup
+    rm -f /tmp/minikube
+
+    echo -e "{{GREEN}}✅ minikube installed successfully: $({{MINIKUBE_BIN}} version --short){{NC}}"
+
+# Start minikube with Docker driver and AMD GPU support
+minikube-start:
+    #!/usr/bin/env bash
+    set -euo pipefail
+
+    if ! command -v minikube &> /dev/null; then
+        echo -e "{{RED}}Error: minikube not found. Run 'just minikube-install' first{{NC}}" >&2
+        exit 1
+    fi
+
+    # Check if minikube is already running
+    if {{MINIKUBE_BIN}} status &> /dev/null; then
+        echo -e "{{RED}}Error: minikube is already running{{NC}}" >&2
+        echo ""
+        echo "Current status:"
+        {{MINIKUBE_BIN}} status
+        echo ""
+        echo "To restart minikube, first run 'just minikube-stop'"
+        exit 1
+    fi
+
+    echo -e "{{GREEN}}Starting minikube with AMD GPU support...{{NC}}"
+    if ! {{MINIKUBE_BIN}} start --driver=docker --container-runtime=docker --gpus amd; then
+        echo -e "{{RED}}Error: Failed to start minikube{{NC}}" >&2
+        exit 1
+    fi
+
+    echo -e "{{GREEN}}✅ minikube started successfully{{NC}}"
+    {{MINIKUBE_BIN}} status
+
+# Stop minikube
+minikube-stop:
+    #!/usr/bin/env bash
+    set -euo pipefail
+
+    if ! command -v minikube &> /dev/null; then
+        echo -e "{{RED}}Error: minikube not found{{NC}}" >&2
+        exit 1
+    fi
+
+    echo -e "{{YELLOW}}Stopping minikube...{{NC}}"
+    if ! {{MINIKUBE_BIN}} stop; then
+        echo -e "{{RED}}Error: Failed to stop minikube{{NC}}" >&2
+        exit 1
+    fi
+
+    echo -e "{{GREEN}}✅ minikube stopped{{NC}}"
+
+# Install AMD GPU device plugin daemon set in the cluster
+minikube-setup:
+    #!/usr/bin/env bash
+    set -euo pipefail
+
+    # Check if minikube is installed, install if not
+    if ! command -v minikube &> /dev/null; then
+        echo -e "{{YELLOW}}minikube not found, installing...{{NC}}"
+        just minikube-install
+    fi
+
+    echo -e "{{GREEN}}Installing AMD GPU device plugin...{{NC}}"
+
+    # Verify kubectl can connect
+    if ! kubectl cluster-info &> /dev/null; then
+        echo -e "{{RED}}Error: Cannot connect to Kubernetes cluster{{NC}}" >&2
+        echo -e "{{YELLOW}}Is minikube running? Try 'just minikube-start'{{NC}}"
+        exit 1
+    fi
+
+    # Install AMD GPU device plugin
+    if ! kubectl create -f https://raw.githubusercontent.com/ROCm/k8s-device-plugin/master/k8s-ds-amdgpu-dp.yaml; then
+        # Check if it already exists
+        if kubectl get daemonset amd-gpu-device-plugin -n kube-system &> /dev/null; then
+            echo -e "{{YELLOW}}AMD GPU device plugin already installed{{NC}}"
+        else
+            echo -e "{{RED}}Error: Failed to install AMD GPU device plugin{{NC}}" >&2
+            echo -e "{{YELLOW}}Completed: none{{NC}}"
+            echo -e "{{YELLOW}}Remaining: AMD GPU device plugin installation{{NC}}"
+            exit 1
+        fi
+    fi
+
+    echo -e "{{GREEN}}✅ AMD GPU device plugin installed{{NC}}"
+    echo "Waiting for daemon set to be ready..."
+    kubectl rollout status daemonset/amd-gpu-device-plugin -n kube-system --timeout=60s || true
+
+# ============================================================================
+# LLM-D Cluster Setup
+# ============================================================================
+
+# Register HuggingFace token as Kubernetes secret
+register-hf-token:
+    #!/usr/bin/env bash
+    set -euo pipefail
+
+    echo -e "{{GREEN}}Registering HuggingFace token...{{NC}}"
+
+    # Check if HF_TOKEN is set
+    if [ -z "${HF_TOKEN:-}" ]; then
+        echo -e "{{RED}}Error: HF_TOKEN environment variable is not set{{NC}}" >&2
+        echo ""
+        echo "Please set HF_TOKEN before running this target:"
+        echo "  export HF_TOKEN=your_token_here"
+        echo "  just register-hf-token"
+        exit 1
+    fi
+
+    # Verify kubectl can connect
+    if ! kubectl cluster-info &> /dev/null; then
+        echo -e "{{RED}}Error: Cannot connect to Kubernetes cluster{{NC}}" >&2
+        exit 1
+    fi
+
+    # Create namespace if it doesn't exist
+    kubectl create namespace {{NAMESPACE}} 2>/dev/null || echo "Namespace {{NAMESPACE}} already exists"
+
+    # Create or update secret
+    echo "Creating secret {{HF_TOKEN_NAME}} in namespace {{NAMESPACE}}..."
+    if ! kubectl create secret generic {{HF_TOKEN_NAME}} \
+        --from-literal="HF_TOKEN=${HF_TOKEN}" \
+        --namespace "{{NAMESPACE}}" \
+        --dry-run=client -o yaml | kubectl apply -f -; then
+        echo -e "{{RED}}Error: Failed to create HuggingFace token secret{{NC}}" >&2
+        echo -e "{{YELLOW}}Completed: namespace creation{{NC}}"
+        echo -e "{{YELLOW}}Remaining: secret creation{{NC}}"
+        exit 1
+    fi
+
+    echo -e "{{GREEN}}✅ HuggingFace token registered as {{HF_TOKEN_NAME}}{{NC}}"
+
+# Install Prometheus and Grafana monitoring stack
+install-monitoring:
+    #!/usr/bin/env bash
+    set -euo pipefail
+
+    echo -e "{{GREEN}}Installing Prometheus and Grafana...{{NC}}"
+
+    MONITORING_DIR="{{ROCM_ICMS}}/submodules/llm-d/docs/monitoring"
+
+    # Verify monitoring directory exists
+    if [ ! -d "$MONITORING_DIR" ]; then
+        echo -e "{{RED}}Error: Monitoring directory not found: $MONITORING_DIR{{NC}}" >&2
+        echo -e "{{YELLOW}}Is the llm-d submodule initialized?{{NC}}"
+        exit 1
+    fi
+
+    # Verify install script exists
+    if [ ! -f "$MONITORING_DIR/scripts/install-prometheus-grafana.sh" ]; then
+        echo -e "{{RED}}Error: Install script not found{{NC}}" >&2
+        echo -e "{{YELLOW}}Path: $MONITORING_DIR/scripts/install-prometheus-grafana.sh{{NC}}"
+        exit 1
+    fi
+
+    # Run installation script
+    cd "$MONITORING_DIR"
+    if ! ./scripts/install-prometheus-grafana.sh --enable-tls; then
+        echo -e "{{RED}}Error: Failed to install monitoring stack{{NC}}" >&2
+        echo -e "{{YELLOW}}Completed: validation{{NC}}"
+        echo -e "{{YELLOW}}Remaining: Prometheus/Grafana installation{{NC}}"
+        exit 1
+    fi
+
+    echo -e "{{GREEN}}✅ Monitoring stack installed{{NC}}"
+
+# Install gateway provider and dependencies
+install-gateway-provider:
+    #!/usr/bin/env bash
+    set -euo pipefail
+
+    echo -e "{{GREEN}}Installing gateway provider...{{NC}}"
+
+    GATEWAY_DIR="{{ROCM_ICMS}}/submodules/llm-d/guides/prereq/gateway-provider"
+
+    # Verify gateway provider directory exists
+    if [ ! -d "$GATEWAY_DIR" ]; then
+        echo -e "{{RED}}Error: Gateway provider directory not found: $GATEWAY_DIR{{NC}}" >&2
+        echo -e "{{YELLOW}}Is the llm-d submodule initialized?{{NC}}"
+        exit 1
+    fi
+
+    # Verify install script exists
+    if [ ! -f "$GATEWAY_DIR/install-gateway-provider-dependencies.sh" ]; then
+        echo -e "{{RED}}Error: Gateway provider install script not found{{NC}}" >&2
+        exit 1
+    fi
+
+    # Verify helmfile exists
+    if [ ! -f "$GATEWAY_DIR/istio.helmfile.yaml" ]; then
+        echo -e "{{RED}}Error: istio.helmfile.yaml not found{{NC}}" >&2
+        exit 1
+    fi
+
+    # Install dependencies
+    cd "$GATEWAY_DIR"
+    echo "Installing gateway provider dependencies..."
+    if ! ./install-gateway-provider-dependencies.sh; then
+        echo -e "{{RED}}Error: Failed to install gateway provider dependencies{{NC}}" >&2
+        echo -e "{{YELLOW}}Completed: validation{{NC}}"
+        echo -e "{{YELLOW}}Remaining: dependency installation, helmfile apply{{NC}}"
+        exit 1
+    fi
+
+    # Apply helmfile
+    echo "Applying Istio helmfile..."
+    if ! helmfile apply -f istio.helmfile.yaml; then
+        echo -e "{{RED}}Error: Failed to apply Istio helmfile{{NC}}" >&2
+        echo -e "{{YELLOW}}Completed: gateway provider dependencies{{NC}}"
+        echo -e "{{YELLOW}}Remaining: Istio helmfile apply{{NC}}"
+        exit 1
+    fi
+
+    echo -e "{{GREEN}}✅ Gateway provider installed{{NC}}"
+
+# Complete LLM-D cluster setup (runs all setup steps)
+llm-d-setup: register-hf-token install-monitoring install-gateway-provider
+    @echo -e "{{GREEN}}✅ LLM-D cluster setup complete!{{NC}}"
+    @echo ""
+    @echo "Setup completed:"
+    @echo "  ✅ HuggingFace token registered"
+    @echo "  ✅ Monitoring stack (Prometheus/Grafana) installed"
+    @echo "  ✅ Gateway provider installed"
+
+# ============================================================================
+# Verification & Status
+# ============================================================================
+
+# Verify all prerequisites are installed
+verify-prereqs:
+    #!/usr/bin/env bash
+    set -euo pipefail
+
+    echo "Checking prerequisites..."
+    echo ""
+
+    MISSING=0
+
+    # Check just
+    if command -v just &> /dev/null; then
+        echo -e "{{GREEN}}✅ just: $(just --version){{NC}}"
+    else
+        echo -e "{{RED}}❌ just not found{{NC}}"
+        MISSING=1
+    fi
+
+    # Check helm
+    if command -v helm &> /dev/null; then
+        echo -e "{{GREEN}}✅ helm: $(helm version --short){{NC}}"
+    else
+        echo -e "{{RED}}❌ helm not found{{NC}}"
+        MISSING=1
+    fi
+
+    # Check helmfile
+    if command -v helmfile &> /dev/null; then
+        echo -e "{{GREEN}}✅ helmfile: $(helmfile --version){{NC}}"
+    else
+        echo -e "{{RED}}❌ helmfile not found{{NC}}"
+        MISSING=1
+    fi
+
+    # Check kubectl
+    if command -v kubectl &> /dev/null; then
+        echo -e "{{GREEN}}✅ kubectl: $(kubectl version --client --short 2>/dev/null || kubectl version --client){{NC}}"
+    else
+        echo -e "{{RED}}❌ kubectl not found{{NC}}"
+        MISSING=1
+    fi
+
+    # Check minikube
+    if command -v minikube &> /dev/null; then
+        echo -e "{{GREEN}}✅ minikube: $(minikube version --short){{NC}}"
+    else
+        echo -e "{{YELLOW}}⚠️  minikube not found (run 'just minikube-install'){{NC}}"
+    fi
+
+    echo ""
+
+    if [ $MISSING -eq 1 ]; then
+        echo -e "{{YELLOW}}Some prerequisites are missing. Run './prereqs.sh -y' to install them.{{NC}}"
+        exit 1
+    else
+        echo -e "{{GREEN}}All prerequisites verified!{{NC}}"
+    fi
+
+# Show cluster status
+cluster-status:
+    #!/usr/bin/env bash
+    set -euo pipefail
+
+    echo -e "{{GREEN}}Cluster Status:{{NC}}"
+    echo ""
+
+    # Minikube status
+    if command -v minikube &> /dev/null; then
+        echo "Minikube:"
+        {{MINIKUBE_BIN}} status || echo "  Not running"
+        echo ""
+    fi
+
+    # Kubectl cluster info
+    if kubectl cluster-info &> /dev/null; then
+        echo "Cluster Info:"
+        kubectl cluster-info
+        echo ""
+
+        echo "Nodes:"
+        kubectl get nodes
+        echo ""
+
+        echo "Namespaces:"
+        kubectl get namespaces
+    else
+        echo -e "{{YELLOW}}Cannot connect to cluster{{NC}}"
+    fi

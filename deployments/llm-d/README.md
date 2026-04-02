@@ -56,17 +56,6 @@ All llm-d deployments:
 
 ## Prerequisites
 
-### Required Tools
-- `kubectl` - Kubernetes CLI
-- `helm` - Helm package manager
-- `helmfile` - (inference-scheduling only)
-- `just` - Command runner
-
-### Kubernetes Cluster
-- AMD GPU nodes with `amd.com/gpu` resource
-- StorageClass for persistent volumes
-- Sufficient CPU and memory resources
-
 ### LLM-D Submodule
 Initialize from repository root:
 ```bash
@@ -74,17 +63,52 @@ cd /path/to/rocm-icms
 just setup-submodules
 ```
 
-### Monitoring Stack
-Deploy Prometheus and Grafana to `llm-d-monitoring` namespace:
-- Follow llm-d monitoring setup guide
-- Or use existing monitoring infrastructure
+### Required Tools
+- `kubectl` - Kubernetes CLI
+- `helm` - Helm package manager
+- `helmfile` - (inference-scheduling only)
+- `just` - Command runner
 
-### HuggingFace Token (Optional)
-For private models, create a secret in each deployment namespace:
+Install required tools using:
 ```bash
-kubectl create secret generic llm-d-hf-token \
-  --from-literal=token=YOUR_HF_TOKEN \
-  -n NAMESPACE
+cd /path/to/rocm-icms/deployments/llm-d/setup
+./prereq.sh
+```
+
+### Kubernetes Cluster
+- AMD GPU nodes with `amd.com/gpu` resource
+- StorageClass for persistent volumes
+- Sufficient CPU and memory resources
+
+For testing purpose, a minikube environment can be setup as follow:
+```bash
+cd /path/to/rocm-icms/deployments/llm-d/setup
+
+# Install minikube
+just minikube-install
+
+# Install prerequisite (AMD GPU daemonset, etc...)
+just minikube-setup
+
+# Start minikube with AMD GPU support
+just minikube-start
+
+# Stop minikube
+just minikube-stop
+```
+
+### Setup LLM-D
+
+Setup LLM-D deployments pre-requisites:
+* Huggingface token secret in `llm-d-hf-token`.
+* Prometheus and Grafana to `llm-d-monitoring` namespace.
+* ISTIO gateway to `istio-system` namespace.
+
+This step requires the `HF_TOKEN` environment variable to be set.
+
+```bash
+cd /path/to/rocm-icms/deployments/llm-d/setup
+just llm-d-setup
 ```
 
 ## Deployment Methods
