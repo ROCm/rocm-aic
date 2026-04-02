@@ -1,0 +1,119 @@
+# Justfile for benchmark sweep orchestration
+
+# Default recipe - show available commands
+default:
+    @just --list
+
+# Run a sweep from configuration file
+sweep CONFIG:
+    @echo "Starting sweep: {{CONFIG}}"
+    python3 -u scripts/run-sweep.py sweep-configs/{{CONFIG}}
+
+# Preview sweep configurations without executing (dry-run)
+dry-run CONFIG:
+    @python3 scripts/run-sweep.py sweep-configs/{{CONFIG}} --dry-run
+
+# List available sweep configurations
+list-sweeps:
+    @echo "Available sweep configurations:"
+    @ls -1 sweep-configs/*.yaml 2>/dev/null | xargs -n1 basename || echo "No sweep configs found"
+
+# Validate sweep configuration syntax
+validate CONFIG:
+    @echo "Validating sweep configuration: {{CONFIG}}"
+    @python3 -c "import yaml; yaml.safe_load(open('sweep-configs/{{CONFIG}}'))" && echo "✓ Valid YAML syntax"
+
+# List recent sweep results
+list-results:
+    @echo "Recent sweep results:"
+    @ls -dt results/sweeps/*/ 2>/dev/null | head -10 || echo "No results found"
+
+# Show summary of a sweep run
+show-summary SWEEP_DIR:
+    @echo "Summary for: {{SWEEP_DIR}}"
+    @cat results/sweeps/{{SWEEP_DIR}}/summary.json 2>/dev/null || echo "Summary not found"
+
+# View configuration of a specific run
+show-run-config SWEEP_DIR RUN_ID:
+    @echo "Configuration for run {{RUN_ID}} in {{SWEEP_DIR}}:"
+    @cat results/sweeps/{{SWEEP_DIR}}/run-{{RUN_ID}}/config.yaml 2>/dev/null || echo "Config not found"
+
+# View logs from a specific run
+show-logs SWEEP_DIR RUN_ID:
+    @echo "Logs for run {{RUN_ID}} in {{SWEEP_DIR}}:"
+    @ls -1 results/sweeps/{{SWEEP_DIR}}/run-{{RUN_ID}}/logs/*.log 2>/dev/null | while read log; do \
+        echo "=== $$log ==="; \
+        cat "$$log"; \
+        echo ""; \
+    done || echo "No logs found"
+
+# Clean up all benchmark results
+clean-results:
+    @echo "Cleaning up benchmark results..."
+    @rm -rf results/sweeps/*
+    @echo "✓ Results cleaned"
+
+# Create the results directory structure
+setup:
+    @echo "Setting up benchmark directories..."
+    @mkdir -p results/sweeps
+    @mkdir -p load-generators/multi-turn-benchmark/workloads
+    @echo "✓ Setup complete"
+
+# List currently active namespaces for a sweep
+current CONFIG:
+    @echo "🔍 Finding active namespaces for sweep: {{CONFIG}}"
+    @python3 scripts/current-namespace.py sweep-configs/{{CONFIG}}
+
+# Internal helper: Get deployment type from namespace (via Kubernetes label)
+_get-deployment NAMESPACE:
+    #!/usr/bin/env bash
+    python3 scripts/get-deployment-from-namespace.py {{NAMESPACE}}
+
+# View logs from specified namespace (auto-detects deployment type from namespace label)
+logs NAMESPACE:
+    #!/usr/bin/env bash
+    set -e
+    DEPLOYMENT=$(just _get-deployment {{NAMESPACE}})
+    if [ $? -ne 0 ] || [ -z "$DEPLOYMENT" ]; then
+        echo "Error: Could not determine deployment type for namespace: {{NAMESPACE}}" >&2
+        exit 1
+    fi
+    echo "📜 Viewing logs from namespace: {{NAMESPACE}} (deployment: $DEPLOYMENT)"
+    cd ../$DEPLOYMENT && NAMESPACE={{NAMESPACE}} just logs
+
+# Follow logs from specified namespace (auto-detects deployment type from namespace label)
+logs-follow NAMESPACE:
+    #!/usr/bin/env bash
+    set -e
+    DEPLOYMENT=$(just _get-deployment {{NAMESPACE}})
+    if [ $? -ne 0 ] || [ -z "$DEPLOYMENT" ]; then
+        echo "Error: Could not determine deployment type for namespace: {{NAMESPACE}}" >&2
+        exit 1
+    fi
+    echo "📜 Following logs from namespace: {{NAMESPACE}} (deployment: $DEPLOYMENT)"
+    cd ../$DEPLOYMENT && NAMESPACE={{NAMESPACE}} just logs-follow
+
+# Show vLLM configuration from specified namespace (auto-detects deployment type from namespace label)
+show-config NAMESPACE:
+    #!/usr/bin/env bash
+    set -e
+    DEPLOYMENT=$(just _get-deployment {{NAMESPACE}})
+    if [ $? -ne 0 ] || [ -z "$DEPLOYMENT" ]; then
+        echo "Error: Could not determine deployment type for namespace: {{NAMESPACE}}" >&2
+        exit 1
+    fi
+    echo "⚙️  Showing config from namespace: {{NAMESPACE}} (deployment: $DEPLOYMENT)"
+    cd ../$DEPLOYMENT && NAMESPACE={{NAMESPACE}} just show-config
+
+# Show deployment status for specified namespace (auto-detects deployment type from namespace label)
+status NAMESPACE:
+    #!/usr/bin/env bash
+    set -e
+    DEPLOYMENT=$(just _get-deployment {{NAMESPACE}})
+    if [ $? -ne 0 ] || [ -z "$DEPLOYMENT" ]; then
+        echo "Error: Could not determine deployment type for namespace: {{NAMESPACE}}" >&2
+        exit 1
+    fi
+    echo "📊 Checking status of namespace: {{NAMESPACE}} (deployment: $DEPLOYMENT)"
+    cd ../$DEPLOYMENT && NAMESPACE={{NAMESPACE}} just status

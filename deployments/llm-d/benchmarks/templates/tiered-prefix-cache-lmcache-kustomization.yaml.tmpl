@@ -1,0 +1,87 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+# Bypass tiered-prefix guide and directly reference the vllm recipe.
+# This is to avoid inheriting env settings we do not want which would
+# have to be detected and removed when doing the kustomization.
+  - ../../../../../../../../submodules/llm-d/guides/recipes/vllm/amd
+
+# The `lmcache_config.yaml` gets automatically patched based on the sweep's configuration `lmcache_args`
+configMapGenerator:
+  - name: config-map
+    literals:
+      - |
+        lmcache_config.yaml=chunk_size: 256
+        save_decode_cache: True
+        local_cpu: true
+        max_local_cpu_size: 100.0
+        local_disk: null
+        remote_url: null
+
+patches:
+  - target:
+      kind: Deployment
+      name: llm-d-model-server
+    patch: |-
+      - op: replace
+        path: /spec/template/spec/containers/0/image
+        value: ghcr.io/vcave/vllm:rocm_721-vllm_20260401-lmcache
+      - op: replace
+        path: /spec/template/spec/containers/0/args/0
+        value: |-
+          exec vllm serve {{model}} \
+            --tensor-parallel-size {{tensor_parallel_size}} \
+            --port 8000 \
+            {{VLLM_ARGS}}
+      - op: add
+        path: /spec/template/spec/containers/0/env/-
+        value:
+          name: PYTHONHASHSEED
+          value: "123"
+      - op: add
+        path: /spec/template/spec/containers/0/env/-
+        value:
+          name: PROMETHEUS_MULTIPROC_DIR
+          value: "/tmp/lmcache_prometheus"
+      - op: add
+        path: /spec/template/spec/containers/0/env/-
+        value:
+          name: LMCACHE_CONFIG_FILE
+          value: "/opt/configs/lmcache_config.yaml"
+      - op: add
+        path: /spec/template/spec/volumes/-
+        value:
+          name: config-dir-volume
+          configMap:
+            name: config-map
+      - op: add
+        path: /spec/template/spec/containers/0/volumeMounts/-
+        value:
+          name: config-dir-volume
+          mountPath: /opt/configs
+          readOnly: true
+      - op: add
+        path: /spec/template/spec/containers/0/resources
+        value:
+          limits:
+            amd.com/gpu: "{{tensor_parallel_size}}"
+          requests:
+            amd.com/gpu: "{{tensor_parallel_size}}"
+            memory: 400G
+
+  # Mount an emptyDir to collect prometheus metrics
+  - target:
+      kind: Deployment
+      name: llm-d-model-server
+    patch: |-
+      - op: add
+        path: /spec/template/spec/volumes/-
+        value:
+          name: lmcache-prometheus-metrics
+          emptyDir: {}
+      - op: add
+        path: /spec/template/spec/containers/0/volumeMounts/-
+        value:
+          name: lmcache-prometheus-metrics
+          mountPath: /tmp/lmcache_prometheus

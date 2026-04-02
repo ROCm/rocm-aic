@@ -3,7 +3,7 @@ kind: Kustomization
 
 # Reference the base manifest from llm-d submodule
 resources:
-  - ../../../../../../submodules/llm-d/guides/tiered-prefix-cache/cpu/manifests/vllm/offloading-connector-amd
+  - ../../../../../../../../submodules/llm-d/guides/tiered-prefix-cache/cpu/manifests/vllm/offloading-connector-amd
 
 # Override or add vLLM serve arguments
 patches:

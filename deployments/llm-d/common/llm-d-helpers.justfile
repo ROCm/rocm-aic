@@ -10,7 +10,7 @@ INFERENCEPOOL_CHART := "oci://registry.k8s.io/gateway-api-inference-extension/ch
 
 # Verify llm-d submodule is initialized
 verify-llm-d-submodule:
-    @if [ ! -f "{{LLM_D_PATH}}/.git" ]; then \
+    @if [ ! -e "{{LLM_D_PATH}}/.git" ]; then \
         echo "❌ llm-d submodule not initialized"; \
         echo "   Run 'just setup-submodules' from repository root"; \
         exit 1; \
