@@ -12,13 +12,13 @@ export HF_TOKEN=your_huggingface_token_here
 just list-sweeps
 
 # Preview what a sweep will do (dry-run)
-just dry-run test-small-offloading
+just dry-run test-small-offloading.yaml
 
 # Run the example sweep
-just sweep test-small-offloading
+just sweep test-small-offloading.yaml
 
 # Currently executing namespaces
-just current test-small-offloading
+just current test-small-offloading.yaml
 
 # Status of a currently executing namespace
 just status <namespace executing>
@@ -183,7 +183,7 @@ SUMMARY: 3 configurations would be executed
 
 ```bash
 # Run a sweep
-just sweep test-small-offloading
+just sweep test-small-offloading.yaml
 
 # The sweep will:
 # 1. Generate all parameter combinations

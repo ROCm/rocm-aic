@@ -118,11 +118,10 @@ class SweepOrchestrator:
             elif spec['type'] == 'categorical':
                 variable[name] = spec['values']
             elif spec['type'] == 'combinations':
-                # Handle args combinations (vllm_args, lmcache_args, etc.)
-                if name in ['vllm_args', 'lmcache_args', 'benchmark_args']:
-                    # Generate combinations using generic method
-                    args_combinations = self._generate_args_combinations(spec['args'])
-                    variable[name] = args_combinations
+                # Handle all args combinations (vllm_args, lmcache_args, custom args, etc.)
+                # Generate combinations using generic method
+                args_combinations = self._generate_args_combinations(spec['args'])
+                variable[name] = args_combinations
 
         # Generate all combinations of variable parameters
         if variable:
@@ -271,6 +270,11 @@ class SweepOrchestrator:
 
         # Prepare template parameters
         template_params = params.copy()
+
+        # Debug: Show what parameters we received (helps diagnose issues)
+        print(f"    Template rendering - received params: {list(params.keys())}")
+        if 'lmcache_args' in params:
+            print(f"    lmcache_args present: {params['lmcache_args']}")
 
         # Process vllm_args if present
         if "vllm_args" in params:
@@ -775,18 +779,89 @@ class SweepOrchestrator:
                     print(f"  Run {run['run_id']}: {run.get('error', 'Unknown error')}")
 
 
+def resolve_config_path(config_arg: str) -> str:
+    """
+    Resolve the configuration file path from various input formats.
+
+    Supports:
+    1. Absolute or relative path to existing file (e.g., /path/to/config.yaml)
+    2. Filename with .yaml extension (assumes sweep-configs/ directory)
+    3. Basename without extension (assumes sweep-configs/ directory and adds .yaml)
+
+    Args:
+        config_arg: Configuration file argument from command line
+
+    Returns:
+        Resolved path to configuration file
+
+    Raises:
+        FileNotFoundError: If the configuration file cannot be found
+    """
+    config_path = Path(config_arg)
+
+    # Case 1: File exists at the given path (absolute or relative)
+    if config_path.exists() and config_path.is_file():
+        return str(config_path)
+
+    # Get script directory to locate sweep-configs
+    script_dir = Path(__file__).parent.parent
+    sweep_configs_dir = script_dir / "sweep-configs"
+
+    # Case 2: Filename with .yaml extension - check in sweep-configs/
+    if config_arg.endswith('.yaml'):
+        candidate = sweep_configs_dir / config_arg
+        if candidate.exists() and candidate.is_file():
+            return str(candidate)
+
+    # Case 3: Basename without extension - add .yaml and check in sweep-configs/
+    candidate = sweep_configs_dir / f"{config_arg}.yaml"
+    if candidate.exists() and candidate.is_file():
+        return str(candidate)
+
+    # If we get here, file was not found
+    # Provide helpful error message
+    raise FileNotFoundError(
+        f"Configuration file not found: {config_arg}\n"
+        f"Tried:\n"
+        f"  1. Direct path: {config_path.absolute()}\n"
+        f"  2. In sweep-configs: {sweep_configs_dir / config_arg}\n"
+        f"  3. In sweep-configs with .yaml: {sweep_configs_dir / f'{config_arg}.yaml' if not config_arg.endswith('.yaml') else 'N/A'}"
+    )
+
+
 if __name__ == "__main__":
     import argparse
 
-    parser = argparse.ArgumentParser(description="Run benchmarking sweep")
-    parser.add_argument("config", help="Sweep configuration file")
-    parser.add_argument("--dry-run", action="store_true",
-                        help="Show configurations without executing")
+    parser = argparse.ArgumentParser(
+        description="Run benchmarking sweep",
+        epilog="""
+Examples:
+  %(prog)s my-sweep                           # Uses sweep-configs/my-sweep.yaml
+  %(prog)s my-sweep.yaml                      # Uses sweep-configs/my-sweep.yaml
+  %(prog)s sweep-configs/my-sweep.yaml        # Uses relative path
+  %(prog)s /absolute/path/to/my-sweep.yaml    # Uses absolute path
+        """,
+        formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    parser.add_argument(
+        "config",
+        help="Sweep configuration file (basename, filename, or path)"
+    )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Show configurations without executing"
+    )
     args = parser.parse_args()
 
-    orchestrator = SweepOrchestrator(args.config)
+    try:
+        config_file = resolve_config_path(args.config)
+        orchestrator = SweepOrchestrator(config_file)
 
-    if args.dry_run:
-        orchestrator.dry_run()
-    else:
-        orchestrator.run_sweep()
+        if args.dry_run:
+            orchestrator.dry_run()
+        else:
+            orchestrator.run_sweep()
+    except FileNotFoundError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        sys.exit(1)

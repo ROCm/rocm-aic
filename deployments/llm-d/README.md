@@ -58,7 +58,6 @@ just minikube-setup
 just minikube-stop
 ```
 
-
 ### Kubernetes cluster setup for LLM-D
 
 This step assumes the following Kubernetes cluster setup:
@@ -79,6 +78,10 @@ just llm-d-setup
 ```
 
 ## Available Deployments
+
+Two types of deployments are available
+* Tiered prefix cache targeting either LLM-D/vLLM native offloading or LMCache.
+* Inference scheduling for baseline without any tiering features enabled.
 
 ### 1. Tiered Prefix Cache
 
@@ -136,7 +139,6 @@ All llm-d deployments:
 - Provide consistent justfile recipes
 - Reference llm-d submodule for base manifests
 
-
 ## Deployment Methods
 
 ### Tiered Prefix Cache
@@ -162,7 +164,6 @@ Override with environment variable:
 ```bash
 NAMESPACE=my-namespace just deploy
 ```
-
 ### Common Configuration
 
 Shared LLM-D settings in `common/config.yaml`:
@@ -226,37 +227,10 @@ kubectl get nodes -o custom-columns=NAME:.metadata.name,AMD_GPUS:.status.capacit
 # Check monitoring namespace
 kubectl get pods -n llm-d-monitoring
 
-# Deploy monitoring stack from llm-d guides
-cd ../../../submodules/llm-d/guides/prereq/monitoring
-kubectl apply -k .
+# Setup LLM-D monitoring stack
+cd setup/
+just install-monitoring
 ```
-
-## Performance Tuning
-
-### Tiered Prefix Cache
-- Adjust `cpu_bytes_to_use` for CPU cache size
-- Tune InferencePool scorer weights
-- Modify GPU memory utilization
-
-### Inference Scheduling
-- Adjust vLLM parameters in value files
-- Tune InferencePool scorer weights
-
-## Adding More Deployments
-
-To add another llm-d guide:
-
-1. Create directory: `deployments/llm-d/new-guide/`
-2. Create `justfile` with standard recipes
-3. Import common utilities:
-   ```just
-   import? "../../common/prerequisites.justfile"
-   import? "../../common/monitoring.justfile"
-   import? "../common/llm-d-helpers.justfile"
-   ```
-4. Create manifests or Helmfile referencing llm-d submodule
-5. Document in `README.md`
-6. Update this file
 
 ## References
 
