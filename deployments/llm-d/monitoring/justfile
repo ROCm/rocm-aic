@@ -2,8 +2,8 @@
 # Handles Grafana dashboard installation and monitoring setup
 
 # Import common utilities
-import? "../../common/prerequisites.justfile"
-import? "../../common/monitoring.justfile"
+import? "../setup/justfile"
+import? "../../common/llm-d/monitoring.justfile"
 
 # Monitoring namespace
 MONITORING_NAMESPACE := env_var_or_default('MONITORING_NAMESPACE', 'llm-d-monitoring')

@@ -2,19 +2,19 @@
 # Supports both offloading-connector and lmcache-connector variants
 # Usage: just <recipe>
 
+# Default recipe - show available commands
+default:
+    @just --list
+
 # Import common utilities
-import? "../../common/prerequisites.justfile"
-import? "../../common/monitoring.justfile"
+import? "../setup/justfile"
+import? "../../common/llm-d/monitoring.justfile"
 import? "../common/llm-d-helpers.justfile"
 
 # Deployment-specific configuration
 NAMESPACE := env_var_or_default('NAMESPACE', 'llm-d-pfc-cpu-amd')
 CONNECTOR := env_var_or_default('CONNECTOR', 'offloading')
 MANIFEST_DIR := env_var_or_default('MANIFEST_DIR', '')
-
-# Default recipe - show available commands
-default:
-    @just --list
 
 # Deploy everything with default connector (offloading)
 deploy: deploy-offloading
@@ -216,12 +216,12 @@ delete-namespace:
     @just _delete-namespace {{NAMESPACE}}
 
 # Complete setup with offloading-connector: create namespace, deploy everything, and wait
-setup: verify-all create-namespace deploy-offloading wait
+setup: verify-prereqs create-namespace deploy-offloading wait
     @echo "🎉 Setup complete!"
     @just status
 
 # Complete setup with lmcache-connector
-setup-lmcache: verify-all create-namespace deploy-lmcache wait
+setup-lmcache: verify-prereqs create-namespace deploy-lmcache wait
     @echo "🎉 Setup complete with LMCache!"
     @just status
 

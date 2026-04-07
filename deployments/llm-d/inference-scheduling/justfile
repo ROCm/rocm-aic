@@ -2,8 +2,8 @@
 # Uses Helmfile to deploy 3 charts: llm-d-infra, inferencepool, llm-d-modelservice
 
 # Import common utilities
-import? "../../common/prerequisites.justfile"
-import? "../../common/monitoring.justfile"
+import? "../setup/justfile"
+import? "../../common/llm-d/monitoring.justfile"
 import? "../common/llm-d-helpers.justfile"
 
 # Deployment-specific configuration

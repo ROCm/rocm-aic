@@ -8,6 +8,15 @@ LLM_D_PATH := "../../../submodules/llm-d"
 INFERENCEPOOL_VERSION := "v1.3.1"
 INFERENCEPOOL_CHART := "oci://registry.k8s.io/gateway-api-inference-extension/charts/inferencepool"
 
+# HuggingFace token secret name
+HF_TOKEN_NAME := env_var_or_default("HF_TOKEN_NAME", "llm-d-hf-token")
+
+# Color output helpers
+RED := env_var_or_default("RED", "\\033[0;31m")
+GREEN := env_var_or_default("GREEN", "\\033[0;32m")
+YELLOW := env_var_or_default("YELLOW", "\\033[1;33m")
+NC := env_var_or_default("NC", "\\033[0m")
+
 # Verify llm-d submodule is initialized
 verify-llm-d-submodule:
     @if [ ! -e "{{LLM_D_PATH}}/.git" ]; then \
@@ -51,3 +60,43 @@ _get-logs-by-label NAMESPACE LABEL_SELECTOR TAIL="50":
 # Helper: Follow logs from pods with a specific label
 _follow-logs-by-label NAMESPACE LABEL_SELECTOR:
     @kubectl logs -n {{NAMESPACE}} -l {{LABEL_SELECTOR}} -f --prefix=true
+
+# Register HuggingFace token as Kubernetes secret in the specified namespace
+register-hf-token NAMESPACE:
+    #!/usr/bin/env bash
+    set -euo pipefail
+
+    echo -e "{{GREEN}}Registering HuggingFace token in namespace {{NAMESPACE}}...{{NC}}"
+
+    # Check if HF_TOKEN is set
+    if [ -z "${HF_TOKEN:-}" ]; then
+        echo -e "{{RED}}Error: HF_TOKEN environment variable is not set{{NC}}" >&2
+        echo ""
+        echo "Please set HF_TOKEN before running this target:"
+        echo "  export HF_TOKEN=your_token_here"
+        echo "  just register-hf-token {{NAMESPACE}}"
+        exit 1
+    fi
+
+    # Verify kubectl can connect
+    if ! kubectl cluster-info &> /dev/null; then
+        echo -e "{{RED}}Error: Cannot connect to Kubernetes cluster{{NC}}" >&2
+        exit 1
+    fi
+
+    # Create namespace if it doesn't exist
+    kubectl create namespace {{NAMESPACE}} 2>/dev/null || echo "Namespace {{NAMESPACE}} already exists"
+
+    # Create or update secret
+    echo "Creating secret {{HF_TOKEN_NAME}} in namespace {{NAMESPACE}}..."
+    if ! kubectl create secret generic {{HF_TOKEN_NAME}} \
+        --from-literal="HF_TOKEN=${HF_TOKEN}" \
+        --namespace "{{NAMESPACE}}" \
+        --dry-run=client -o yaml | kubectl apply -f -; then
+        echo -e "{{RED}}Error: Failed to create HuggingFace token secret{{NC}}" >&2
+        echo -e "{{YELLOW}}Completed: namespace creation{{NC}}"
+        echo -e "{{YELLOW}}Remaining: secret creation{{NC}}"
+        exit 1
+    fi
+
+    echo -e "{{GREEN}}✅ HuggingFace token registered as {{HF_TOKEN_NAME}} in namespace {{NAMESPACE}}{{NC}}"
