@@ -15,6 +15,8 @@ from pathlib import Path
 from datetime import datetime
 from typing import Dict, List, Any
 
+from load_generators import get_load_generator
+
 
 class SweepOrchestrator:
     # Map deployment types to their justfile directories
@@ -104,11 +106,22 @@ class SweepOrchestrator:
         return ns
 
     def generate_parameter_combinations(self) -> List[Dict[str, Any]]:
-        """Generate all parameter combinations to test."""
-        params = self.config['parameters']
-        combinations = []
+        """
+        Generate all parameter combinations to test.
 
-        # Separate fixed and variable parameters
+        This generates the Cartesian product of:
+        - Deployment parameter combinations (vllm_args, lmcache_args, etc.)
+        - Load generation benchmark_args combinations (if type: combinations)
+
+        Supports the consistent pattern where benchmark_args can have:
+        - type: combinations with mixed sweepable (values) and fixed parameters
+        - Direct dict (backward compatibility)
+        - sweep_args (backward compatibility - deprecated)
+        """
+        params = self.config['parameters']
+        deployment_combinations = []
+
+        # Separate fixed and variable deployment parameters
         fixed = {}
         variable = {}
 
@@ -123,18 +136,43 @@ class SweepOrchestrator:
                 args_combinations = self._generate_args_combinations(spec['args'])
                 variable[name] = args_combinations
 
-        # Generate all combinations of variable parameters
+        # Generate all combinations of variable deployment parameters
         if variable:
             keys = list(variable.keys())
             values = [variable[k] for k in keys]
             for combo in itertools.product(*values):
                 config = fixed.copy()
                 config.update(dict(zip(keys, combo)))
-                combinations.append(config)
+                deployment_combinations.append(config)
         else:
-            combinations = [fixed]
+            deployment_combinations = [fixed]
 
-        return combinations
+        # Check if load_generation has benchmark_args with type: combinations
+        load_config = self.config.get('load_generation', {})
+        benchmark_args_spec = load_config.get('benchmark_args', {})
+
+        load_combinations = []
+
+        # New pattern: benchmark_args with type: combinations
+        if isinstance(benchmark_args_spec, dict) and benchmark_args_spec.get('type') == 'combinations':
+            load_combinations = self._generate_args_combinations(benchmark_args_spec['args'])
+        # Backward compatibility: sweep_args (deprecated)
+        elif 'sweep_args' in load_config:
+            load_combinations = self._generate_args_combinations(load_config['sweep_args'])
+        # No sweep - single run
+        else:
+            load_combinations = [{}]
+
+        # Cartesian product: Each deployment config × Each load config
+        full_combinations = []
+        for deploy_params in deployment_combinations:
+            for load_params in load_combinations:
+                combo = deploy_params.copy()
+                # Store load params separately to merge into benchmark_args later
+                combo['_load_params'] = load_params
+                full_combinations.append(combo)
+
+        return full_combinations
 
     def _generate_args_combinations(self, args_spec: Dict[str, Any]) -> List[Dict[str, Any]]:
         """
@@ -231,21 +269,42 @@ class SweepOrchestrator:
 
         return " \\\n            ".join(args)
 
-    def build_benchmark_args(self, benchmark_args: Dict[str, Any], model: str, url: str) -> List[str]:
-        """Convert benchmark_args dict to command-line arguments."""
-        args = [
-            "--model", model,
-            "--url", url
-        ]
+    def generate_timestamp_seed(self) -> int:
+        """
+        Generate a seed from current timestamp.
 
-        for key, value in benchmark_args.items():
-            # Convert underscore to hyphen for benchmark arguments
+        Uses HHMMSS format (hour, minute, second) to create a 6-digit integer.
+        This provides reasonable uniqueness while being deterministic within a second.
+
+        Returns:
+            Integer seed (e.g., 145934 for 14:59:34)
+        """
+        return int(time.strftime("%H%M%S"))
+
+    def _convert_args_dict(self, args_dict: Dict[str, Any]) -> List[str]:
+        """
+        Convert a dictionary to command-line arguments (tool-agnostic).
+
+        Handles:
+        - Underscore to hyphen conversion
+        - Boolean flags (present if True, omitted if False)
+        - Regular key-value pairs
+        - Null values (skipped)
+        """
+        args = []
+
+        for key, value in args_dict.items():
+            # Convert underscore to hyphen
             arg_name = key.replace("_", "-")
 
             # Handle boolean flags
             if isinstance(value, bool):
                 if value:
                     args.append(f"--{arg_name}")
+                continue
+
+            # Handle null values (skip them)
+            if value is None:
                 continue
 
             # Handle regular key-value arguments
@@ -261,10 +320,20 @@ class SweepOrchestrator:
         - Template variable replacement ({{model}}, {{tensor_parallel_size}}, etc.)
         - vllm_args expansion
         - lmcache_args expansion with ConfigMap injection
+        - Optional deployment_template override for custom template filenames
         """
         # Get absolute path to template file (relative to benchmarks directory)
         script_dir = Path(__file__).parent.parent
-        template_file = script_dir / "templates" / f"{self.deployment}-kustomization.yaml.tmpl"
+
+        # Check if user provided a custom deployment_template
+        deployment_template = self.config.get('deployment_template')
+        if deployment_template:
+            # Use the provided template filename directly
+            template_file = script_dir / "templates" / deployment_template
+        else:
+            # Use automatic inference based on deployment name
+            template_file = script_dir / "templates" / f"{self.deployment}-kustomization.yaml.tmpl"
+
         output_dir = run_dir / "manifests"
         output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -463,78 +532,29 @@ class SweepOrchestrator:
         print(f"  Deployment ready! (justfile)")
 
     def run_load_generation(self, run_dir: Path, params: Dict[str, Any], namespace: str) -> Dict[str, Any]:
-        """Run load generation and return results."""
+        """
+        Run load generation using pluggable load generator modules.
+
+        Args:
+            run_dir: Directory for saving results
+            params: Deployment parameters
+            namespace: Kubernetes namespace
+
+        Returns:
+            Dictionary with results from the load generator
+        """
         load_config = self.config['load_generation']
         tool = load_config['tool']
 
         print(f"  Running load generation with {tool}...")
 
-        if tool == "multi-turn-benchmark":
-            result = self._run_multi_turn_benchmark(load_config, run_dir, params, namespace)
-        else:
-            raise ValueError(f"Unknown load generation tool: {tool}")
+        # Get the appropriate load generator
+        generator = get_load_generator(tool, self)
+
+        # Run the load generator
+        result = generator.run(load_config, run_dir, params, namespace)
 
         return result
-
-    def _run_multi_turn_benchmark(self, config: Dict[str, Any], run_dir: Path,
-                                   params: Dict[str, Any], namespace: str) -> Dict[str, Any]:
-        """Run vLLM multi-turn chat benchmark."""
-
-        # Get configuration
-        image = config.get('image', 'vllm/vllm-openai:latest')
-        workload_file = config.get('workload_file', 'agent_multi_turn.json')
-        benchmark_args = config.get('benchmark_args', {})
-
-        # Resolve workload file path
-        workload_path = Path(f"load-generators/multi-turn-benchmark/workloads/{workload_file}")
-        if not workload_path.exists():
-            raise FileNotFoundError(f"Workload file not found: {workload_path}")
-
-        # Get model and construct service URL
-        model = params.get('model')
-        service_url = f"http://llm-d-inference-gateway-istio.{namespace}.svc.cluster.local:80"
-
-        # Build script arguments (for run-benchmark.sh)
-        script_args = [
-            "--image", image,
-            "--namespace", namespace,
-            "--workload-file", str(workload_path.absolute()),
-            "--output-dir", str(run_dir.absolute())
-        ]
-
-        # Build benchmark arguments (passed to container after --)
-        benchmark_cmd_args = self.build_benchmark_args(benchmark_args, model, service_url)
-
-        # Add input-file pointing to mounted path
-        benchmark_cmd_args.extend([
-            "--input-file", f"/workload/{workload_file}"
-        ])
-
-        # Build full command
-        cmd = ["./load-generators/multi-turn-benchmark/run-benchmark.sh"]
-        cmd.extend(script_args)
-        cmd.append("--")  # Separator
-        cmd.extend(benchmark_cmd_args)
-
-        print(f"  Running benchmark in pod (image: {image})...")
-
-        # Execute
-        result = subprocess.run(cmd, capture_output=True, text=True)
-
-        if result.returncode != 0:
-            print(f"  Warning: Benchmark exited with code {result.returncode}")
-
-        #TODO do this properly
-        with open(str(run_dir / "benchmark_runner_output.txt"), "w") as f:
-            f.write(result.stdout)
-            f.write(result.stderr)
-
-        return {
-            "output_file": str(run_dir / "benchmark_output.txt"),
-            "exit_code": result.returncode,
-            "image": image,
-            "workload_file": workload_file
-        }
 
     def collect_pod_logs(self, run_dir: Path, namespace: str):
         """Collect vLLM pod logs."""
