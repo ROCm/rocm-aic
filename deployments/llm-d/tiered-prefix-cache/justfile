@@ -8,7 +8,7 @@ default:
 
 # Import common utilities
 import? "../setup/justfile"
-import? "../../common/llm-d/monitoring.justfile"
+import? "../../common/monitoring.justfile"
 import? "../common/llm-d-helpers.justfile"
 
 # Deployment-specific configuration
@@ -207,9 +207,32 @@ test-metrics:
         exit 1
     fi
 
-# Create namespace if it doesn't exist
+# Create namespace if it doesn't exist, and ensure HF token secret is configured
 create-namespace:
-    @just _create-namespace {{NAMESPACE}}
+    #!/usr/bin/env bash
+    set -euo pipefail
+
+    # Check if namespace exists
+    if kubectl get namespace {{NAMESPACE}} &>/dev/null; then
+        echo "⚠️  Warning: Namespace {{NAMESPACE}} already exists, continuing..."
+    else
+        echo "📦 Creating namespace {{NAMESPACE}}..."
+        kubectl create namespace {{NAMESPACE}}
+        echo "✅ Namespace {{NAMESPACE}} created"
+    fi
+
+    # Check if HF token secret exists
+    if kubectl get secret {{HF_TOKEN_NAME}} -n {{NAMESPACE}} &>/dev/null; then
+        echo "✅ HuggingFace token secret '{{HF_TOKEN_NAME}}' already exists in namespace {{NAMESPACE}}"
+    else
+        echo "⚠️  HuggingFace token secret '{{HF_TOKEN_NAME}}' not found in namespace {{NAMESPACE}}"
+        echo "📝 Setting up HuggingFace token using llm-d-helpers..."
+        just register-hf-token {{NAMESPACE}} || echo "❌ Failed to register HF token. You may need to set HF_TOKEN environment variable and run: just register-hf-token {{NAMESPACE}}"
+    fi
+
+# Create namespace if it doesn't exist
+#create-namespace:
+#    @just _create-namespace {{NAMESPACE}}
 
 # Delete namespace (WARNING: deletes everything!)
 delete-namespace:
