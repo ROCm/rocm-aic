@@ -1,0 +1,108 @@
+# Example plotting configuration for benchmark sweep results
+#
+# This configuration file demonstrates how to extract, prepare, and plot
+# benchmark data from aggregated_results.json files.
+#
+# Usage:
+#   python -m vllm.benchmarks.sweep.plot_config plot_config_example.yaml
+
+# Phase 1: Data Extraction
+extraction:
+  # Input file path
+  input: results/sweeps/ttft-lmcache-cpu-only-isl-tp-sweep_2026-04-11/aggregated_results.json
+
+  # Field specifications using JSONPath syntax
+  # Format: output_field_name: json.path.to.field
+  fields:
+    # Configuration parameters
+    tensor_parallel_size: config.tensor_parallel_size
+    model: config.model
+    isl: config._load_params.random_input_len
+    osl: config._load_params.random_output_len
+
+    # Metrics - using [*] to average across multiple benchmark runs
+    ttft_mean: benchmark.runs[*].metrics.ttft.mean_ms
+    ttft_median: benchmark.runs[*].metrics.ttft.median_ms
+    ttft_p99: benchmark.runs[*].metrics.ttft.p99_ms
+
+    tpot_mean: benchmark.runs[*].metrics.tpot.mean_ms
+    tpot_median: benchmark.runs[*].metrics.tpot.median_ms
+
+    throughput: benchmark.runs[*].metrics.total_token_throughput
+    request_throughput: benchmark.runs[*].metrics.request_throughput
+
+  # How to handle multiple benchmark runs per configuration
+  # Options: "average", "all", "first", "last"
+  run_strategy: average
+
+  # Filter out failed runs
+  filter_failed: true
+
+# Phase 2: Data Preparation (optional)
+preparation:
+  # Filter expressions (comma-separated or list)
+  filters:
+    - "tensor_parallel_size<=4"
+    - "isl<128000"
+
+  # Transformations to create derived columns
+  transformations:
+    ttft_sec: ttft_mean / 1000
+    throughput_k: throughput / 1000
+    tp_label: "'TP=' + tensor_parallel_size.astype(str)"
+
+  # Drop rows with null values
+  drop_nulls: true
+
+  # Sort the data
+  sort_by:
+    - tensor_parallel_size
+    - isl
+
+# Phase 3: Plot Generation
+plots:
+  # Plot 1: TTFT vs ISL by Tensor Parallel Size
+  - name: ttft_vs_isl_by_tp
+    x_axis: isl
+    y_axis: ttft_mean
+    series_by:
+      - tensor_parallel_size
+    title: "Time to First Token vs Input Sequence Length"
+    x_label: "Input Sequence Length (tokens)"
+    y_label: "TTFT (ms)"
+    x_scale: log
+    y_scale: linear
+    show_error_bars: true
+    show_legend: true
+    show_grid: true
+    fig_width: 12
+    fig_height: 7
+
+  # Plot 2: Throughput vs ISL
+  - name: throughput_vs_isl
+    x_axis: isl
+    y_axis: throughput
+    series_by:
+      - tensor_parallel_size
+    title: "Token Throughput vs Input Sequence Length"
+    x_label: "Input Sequence Length (tokens)"
+    y_label: "Total Token Throughput (tokens/s)"
+    x_scale: log
+    show_grid: true
+
+  # Plot 3: Multi-metric comparison (if you want separate plots by metric)
+  - name: ttft_percentiles
+    x_axis: isl
+    y_axis: ttft_median
+    series_by:
+      - tensor_parallel_size
+    title: "TTFT Median vs Input Length"
+    x_label: "Input Sequence Length (tokens)"
+    y_label: "TTFT Median (ms)"
+    x_scale: log
+
+# Output configuration
+output:
+  directory: plots/
+  backend: seaborn  # Options: "seaborn", "matplotlib"
+  dpi: 300
