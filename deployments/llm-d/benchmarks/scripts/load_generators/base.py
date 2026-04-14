@@ -55,3 +55,30 @@ class LoadGeneratorBase(ABC):
             List of command-line arguments
         """
         pass
+
+    @abstractmethod
+    def parse_metrics(self, output_file: Path) -> Dict[str, Any]:
+        """
+        Parse metrics from load generator output file.
+
+        This method extracts performance metrics from the tool's output file
+        and returns them in a structured format. Implementations must handle
+        all exceptions gracefully and never raise errors.
+
+        Args:
+            output_file: Path to the output file to parse
+
+        Returns:
+            Dictionary containing:
+                - metrics: Dict of parsed metrics (structure varies by tool)
+                - parsing_status: "success", "partial", or "failed"
+                - parsing_errors: Optional list of error messages (if parsing_status != "success")
+
+        Implementation guidelines:
+            - Return empty metrics dict with parsing_status="failed" if file doesn't exist
+            - Catch all exceptions and return parsing_status="failed" with error details
+            - Never raise exceptions - ensure graceful degradation
+            - Return parsing_status="partial" if some but not all metrics were extracted
+            - Include parsing_errors list for debugging when parsing fails/is partial
+        """
+        pass
