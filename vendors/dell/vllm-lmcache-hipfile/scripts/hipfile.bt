@@ -129,70 +129,81 @@ tracepoint:sched:sched_process_exit
     delete(@pending_filename[tid]);
     delete(@pending_close_fd[tid]);
     delete(@start_ts[tid]);
-    delete(@info[tid]);
+    delete(@io_sz[tid]);
+    delete(@io_fo[tid]);
+    delete(@io_bo[tid]);
+    delete(@io_filename[tid]);
 }
 
 // Track hipFileRead - ssize_t hipFileRead(hipFileHandle_t fh, void *buffer_base, size_t size, hoff_t file_offset, hoff_t buffer_offset)
 uprobe:$1:hipFileRead
 {
     @start_ts[tid] = elapsed;
-    @info[tid] = (arg0, arg2, arg3, arg4);  // fh, size, file_offset, buffer_offset
+    @io_sz[tid] = arg2;
+    @io_fo[tid] = arg3;
+    @io_bo[tid] = arg4;
+
+    // Resolve filename now (uprobe has more stack headroom than uretprobe)
+    $filename = @handle_to_filename[pid, arg0];
+    if ($filename == "") {
+        @io_filename[tid] = "unknown";
+    } else {
+        @io_filename[tid] = $filename;
+    }
 }
 
 uretprobe:$1:hipFileRead
 /@start_ts[tid]/
 {
-    $now = elapsed;
-    $duration_us = ($now - @start_ts[tid]) / 1000;
-    $fh = @info[tid].0;
-    $sz = @info[tid].1;
-    $fo = @info[tid].2;
-    $bo = @info[tid].3;
-
-    $filename = @handle_to_filename[pid, $fh];
-    if ($filename == "") {
-        $filename = "unknown";
-    }
+    $duration_us = (elapsed - @start_ts[tid]) / 1000;
 
     printf("%llu,READ,\"%s\",%lu,%lld,%lld,%lu,%ld\n",
-           @start_ts[tid], $filename, $sz, $fo, $bo, $duration_us, retval);
+           @start_ts[tid], @io_filename[tid], @io_sz[tid], @io_fo[tid], @io_bo[tid], $duration_us, retval);
 
     delete(@start_ts[tid]);
-    delete(@info[tid]);
+    delete(@io_sz[tid]);
+    delete(@io_fo[tid]);
+    delete(@io_bo[tid]);
+    delete(@io_filename[tid]);
 }
 
 // Track hipFileWrite - ssize_t hipFileWrite(hipFileHandle_t fh, const void *buffer_base, size_t size, hoff_t file_offset, hoff_t buffer_offset)
 uprobe:$1:hipFileWrite
 {
     @start_ts[tid] = elapsed;
-    @info[tid] = (arg0, arg2, arg3, arg4);  // fh, size, file_offset, buffer_offset
+    @io_sz[tid] = arg2;
+    @io_fo[tid] = arg3;
+    @io_bo[tid] = arg4;
+
+    $filename = @handle_to_filename[pid, arg0];
+    if ($filename == "") {
+        @io_filename[tid] = "unknown";
+    } else {
+        @io_filename[tid] = $filename;
+    }
 }
 
 uretprobe:$1:hipFileWrite
 /@start_ts[tid]/
 {
-    $now = elapsed;
-    $duration_us = ($now - @start_ts[tid]) / 1000;
-    $fh = @info[tid].0;
-    $sz = @info[tid].1;
-    $fo = @info[tid].2;
-    $bo = @info[tid].3;
-
-    $filename = @handle_to_filename[pid, $fh];
-    if ($filename == "") {
-        $filename = "unknown";
-    }
+    $duration_us = (elapsed - @start_ts[tid]) / 1000;
 
     printf("%llu,WRITE,\"%s\",%lu,%lld,%lld,%lu,%ld\n",
-           @start_ts[tid], $filename, $sz, $fo, $bo, $duration_us, retval);
+           @start_ts[tid], @io_filename[tid], @io_sz[tid], @io_fo[tid], @io_bo[tid], $duration_us, retval);
 
     delete(@start_ts[tid]);
-    delete(@info[tid]);
+    delete(@io_sz[tid]);
+    delete(@io_fo[tid]);
+    delete(@io_bo[tid]);
+    delete(@io_filename[tid]);
 }
 
 END {
     clear(@start_ts);
-    clear(@info);
+    clear(@io_sz);
+    clear(@io_fo);
+    clear(@io_bo);
+    clear(@io_filename);
     clear(@handle_to_filename);
     clear(@fd_to_filename);
     clear(@pending_reg_fd);
