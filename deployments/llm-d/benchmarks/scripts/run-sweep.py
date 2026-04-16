@@ -2,6 +2,8 @@
 """
 Benchmarking sweep orchestrator.
 Runs parameterized deployments, load generation, and result collection.
+
+Supports both sequential and parallel execution with GPU budgeting.
 """
 
 import yaml
@@ -11,11 +13,154 @@ import json
 import sys
 import itertools
 import os
+import threading
+import signal
 from pathlib import Path
 from datetime import datetime
-from typing import Dict, List, Any
+from typing import Dict, List, Any, Optional
+from dataclasses import dataclass, asdict
+from enum import Enum
 
 from load_generators import get_load_generator
+
+
+class RunStatus(Enum):
+    """Status of a configuration run."""
+    PENDING = "pending"
+    RUNNING = "running"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
+
+
+@dataclass
+class RunState:
+    """State information for a single configuration run."""
+    run_id: int
+    namespace: str
+    parameters: Dict[str, Any]
+    gpu_claim: int
+    status: RunStatus
+    start_time: Optional[float] = None
+    end_time: Optional[float] = None
+    error: Optional[str] = None
+    benchmark_results: Optional[Dict[str, Any]] = None
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert to dictionary for JSON serialization."""
+        result = asdict(self)
+        result['status'] = self.status.value
+        return result
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> 'RunState':
+        """Create from dictionary loaded from JSON."""
+        data['status'] = RunStatus(data['status'])
+        return cls(**data)
+
+
+class GPUBudgetScheduler:
+    """Manages GPU budget and schedules configurations based on available resources."""
+
+    def __init__(self, total_budget: int, max_concurrent: int, max_gpus_per_node: int = 8):
+        """
+        Initialize the GPU budget scheduler.
+
+        Args:
+            total_budget: Total number of GPUs available across the cluster
+            max_concurrent: Maximum number of configurations to run concurrently (0 = unlimited)
+            max_gpus_per_node: Maximum GPUs per node (for exclusive mode)
+        """
+        self.total_budget = total_budget
+        self.max_concurrent = max_concurrent if max_concurrent > 0 else 999999
+        self.max_gpus_per_node = max_gpus_per_node
+        self.available_budget = total_budget
+        self.lock = threading.Lock()
+        self.budget_released = threading.Event()
+        self.pending_queue: List[RunState] = []
+        self.running: Dict[int, RunState] = {}  # run_id -> RunState
+        self.completed: List[RunState] = []
+        self.shutdown_requested = False
+
+    def add_pending(self, run_state: RunState):
+        """Add a configuration to the pending queue."""
+        with self.lock:
+            self.pending_queue.append(run_state)
+            # Sort by GPU claim (smallest first) to maximize throughput
+            self.pending_queue.sort(key=lambda x: x.gpu_claim)
+
+    def try_schedule_next(self) -> Optional[RunState]:
+        """
+        Try to schedule the next configuration that fits in the budget.
+
+        Returns:
+            RunState if a configuration was scheduled, None otherwise
+        """
+        with self.lock:
+            if self.shutdown_requested:
+                return None
+
+            # Check concurrent limit
+            if len(self.running) >= self.max_concurrent:
+                return None
+
+            for i, run_state in enumerate(self.pending_queue):
+                if run_state.gpu_claim <= self.available_budget:
+                    # Schedule this configuration
+                    self.pending_queue.pop(i)
+                    self.available_budget -= run_state.gpu_claim
+                    run_state.status = RunStatus.RUNNING
+                    run_state.start_time = time.time()
+                    self.running[run_state.run_id] = run_state
+                    return run_state
+
+            return None
+
+    def release_resources(self, run_state: RunState):
+        """Release GPU resources when a configuration completes."""
+        with self.lock:
+            if run_state.run_id in self.running:
+                del self.running[run_state.run_id]
+
+            run_state.end_time = time.time()
+            self.completed.append(run_state)
+            self.available_budget += run_state.gpu_claim
+
+        # Signal that budget was released
+        self.budget_released.set()
+
+    def request_shutdown(self):
+        """Request shutdown of the scheduler."""
+        with self.lock:
+            self.shutdown_requested = True
+            # Cancel all pending runs
+            for run_state in self.pending_queue:
+                run_state.status = RunStatus.CANCELLED
+                self.completed.append(run_state)
+            self.pending_queue.clear()
+
+        # Wake up any waiting threads
+        self.budget_released.set()
+
+    def get_running_states(self) -> List[RunState]:
+        """Get list of currently running configurations."""
+        with self.lock:
+            return list(self.running.values())
+
+    def get_pending_states(self) -> List[RunState]:
+        """Get list of pending configurations."""
+        with self.lock:
+            return list(self.pending_queue)
+
+    def get_completed_states(self) -> List[RunState]:
+        """Get list of completed configurations."""
+        with self.lock:
+            return list(self.completed)
+
+    def is_shutdown_requested(self) -> bool:
+        """Check if shutdown has been requested."""
+        with self.lock:
+            return self.shutdown_requested
 
 
 class SweepOrchestrator:
@@ -42,7 +187,19 @@ class SweepOrchestrator:
         }
     }
 
-    def __init__(self, config_file: str):
+    def __init__(self, config_file: str, gpu_budget: Optional[int] = None,
+                 max_concurrent: int = 1, exclusive_mode: bool = False,
+                 max_gpus_per_node: int = 8):
+        """
+        Initialize the orchestrator.
+
+        Args:
+            config_file: Path to sweep configuration file
+            gpu_budget: Total GPU budget (None = unlimited)
+            max_concurrent: Maximum concurrent configurations (1 = sequential, 0 = unlimited)
+            exclusive_mode: If True, pods request max GPUs per node
+            max_gpus_per_node: Maximum GPUs available per node
+        """
         with open(config_file) as f:
             self.config = yaml.safe_load(f)
 
@@ -52,15 +209,51 @@ class SweepOrchestrator:
         self.results_dir = Path(f"results/sweeps/{self.sweep_name}_{self.timestamp}")
         self.results_dir.mkdir(parents=True, exist_ok=True)
 
+        self.exclusive_mode = exclusive_mode
+        self.max_gpus_per_node = max_gpus_per_node
+        self.parallel_mode = max_concurrent != 1
+
         # Get current user for namespace prefix
         self.user_id = self._get_user_id()
 
         # Get deployment configuration
         self.deployment_config = self._get_deployment_config()
 
-        # Save sweep metadata
+        # Initialize GPU budget scheduler (even for sequential mode)
+        if gpu_budget is None:
+            gpu_budget = 999999  # Effectively unlimited
+        self.scheduler = GPUBudgetScheduler(gpu_budget, max_concurrent, max_gpus_per_node)
+
+        # Save sweep metadata with runtime configuration
+        metadata = self.config.copy()
+        metadata['_runtime_config'] = {
+            'gpu_budget': gpu_budget,
+            'max_concurrent': max_concurrent,
+            'exclusive_mode': exclusive_mode,
+            'max_gpus_per_node': max_gpus_per_node,
+            'user_id': self.user_id,
+            'timestamp': self.timestamp
+        }
         with open(self.results_dir / "metadata.yaml", 'w') as f:
-            yaml.dump(self.config, f)
+            yaml.dump(metadata, f)
+
+        # State file for tracking runs
+        self.state_file = self.results_dir / "state.json"
+
+        # Setup signal handlers for graceful shutdown
+        signal.signal(signal.SIGINT, self._signal_handler)
+        signal.signal(signal.SIGTERM, self._signal_handler)
+
+        self.shutdown_event = threading.Event()
+
+    def _signal_handler(self, signum, frame):
+        """Handle interrupt signals gracefully."""
+        print("\n" + "="*70)
+        print("INTERRUPT RECEIVED - Initiating graceful shutdown...")
+        print("="*70)
+        print("Cancelling pending configurations and cleaning up running ones...")
+        self.shutdown_event.set()
+        self.scheduler.request_shutdown()
 
     def _get_user_id(self) -> str:
         """Get current user ID for namespace prefix."""
@@ -382,6 +575,83 @@ class SweepOrchestrator:
 
         return output_dir
 
+    def calculate_gpu_claim(self, params: Dict[str, Any], manifest_dir: Path) -> int:
+        """
+        Calculate GPU claim for a configuration.
+
+        In exclusive mode, returns replicas * max_gpus_per_node.
+        Otherwise, parses the tensor_parallel_size from parameters.
+
+        Args:
+            params: Configuration parameters
+            manifest_dir: Directory containing rendered manifests
+
+        Returns:
+            Number of GPUs claimed by this configuration
+        """
+        if self.exclusive_mode:
+            # In exclusive mode, each replica claims the full node
+            # Assume 1 replica for now (can be extended to parse replica count)
+            replicas = 1
+            return replicas * self.max_gpus_per_node
+
+        # Parse the tensor_parallel_size from parameters
+        # This is the standard way GPU count is specified
+        tensor_parallel_size = params.get('tensor_parallel_size', 1)
+
+        # For now, assume 1 replica. This could be extended to parse
+        # the kustomization.yaml for replica count if needed.
+        replicas = 1
+
+        return replicas * tensor_parallel_size
+
+    def apply_exclusive_mode_patches(self, manifest_dir: Path):
+        """
+        Apply exclusive mode patches to rendered kustomization.
+
+        Modifies GPU resource requests to max_gpus_per_node while preserving
+        all vllm arguments and other configuration.
+
+        Args:
+            manifest_dir: Directory containing kustomization.yaml
+        """
+        kustomization_file = manifest_dir / "kustomization.yaml"
+
+        if not kustomization_file.exists():
+            return
+
+        # Read the kustomization
+        with open(kustomization_file) as f:
+            content = f.read()
+
+        # Replace GPU resource limits/requests with max_gpus_per_node
+        # This uses string replacement to preserve the YAML structure
+        import re
+
+        # Pattern to match the GPU resource in the patches section
+        # We look for: amd.com/gpu: "NUMBER"
+        pattern = r'(amd\.com/gpu:\s*")[0-9]+"'
+        replacement = f'\\1{self.max_gpus_per_node}"'
+
+        modified_content = re.sub(pattern, replacement, content)
+
+        # Write back the modified kustomization
+        with open(kustomization_file, 'w') as f:
+            f.write(modified_content)
+
+        print(f"    Applied exclusive mode: GPU resources set to {self.max_gpus_per_node}")
+
+    def save_state(self):
+        """Save current state to JSON file."""
+        state = {
+            'pending': [rs.to_dict() for rs in self.scheduler.get_pending_states()],
+            'running': [rs.to_dict() for rs in self.scheduler.get_running_states()],
+            'completed': [rs.to_dict() for rs in self.scheduler.get_completed_states()]
+        }
+
+        with open(self.state_file, 'w') as f:
+            json.dump(state, f, indent=2)
+
     def create_namespace(self, namespace: str):
         """Create a Kubernetes namespace with deployment labels."""
         print(f"  Creating namespace {namespace}...")
@@ -607,7 +877,7 @@ class SweepOrchestrator:
         self.delete_namespace(namespace)
 
     def dry_run(self):
-        """Print sweep configuration without executing."""
+        """Print sweep configuration with GPU budget analysis."""
         combinations = self.generate_parameter_combinations()
 
         print("=" * 70)
@@ -616,6 +886,12 @@ class SweepOrchestrator:
         print(f"Description: {self.config['description']}")
         print(f"Deployment: {self.deployment}")
         print(f"User ID: {self.user_id}")
+        print(f"GPU Budget: {self.scheduler.total_budget}")
+        print(f"Max Concurrent: {self.scheduler.max_concurrent if self.scheduler.max_concurrent < 999999 else 'unlimited'}")
+        print(f"Execution Mode: {'Parallel' if self.parallel_mode else 'Sequential'}")
+        print(f"Exclusive Mode: {self.exclusive_mode}")
+        if self.exclusive_mode:
+            print(f"Max GPUs per Node: {self.max_gpus_per_node}")
         print(f"Total configurations: {len(combinations)}")
         print("=" * 70)
         print()
@@ -680,110 +956,309 @@ class SweepOrchestrator:
                 
             print()
 
-        print("=" * 70)
-        print(f"SUMMARY: {len(combinations)} configurations would be executed")
-        print("=" * 70)
-
-    def run_sweep(self):
-        """Execute the full sweep."""
-        combinations = self.generate_parameter_combinations()
-
-        print(f"Starting sweep '{self.sweep_name}'")
-        print(f"User ID: {self.user_id}")
-        print(f"Total configurations to test: {len(combinations)}")
-        print(f"Results directory: {self.results_dir}")
-        print()
-
-        results_summary = []
+        # Add GPU budget analysis
+        total_gpu_claim = 0
+        max_gpu_claim = 0
+        gpu_distribution = {}
 
         for i, params in enumerate(combinations, 1):
-            # Generate unique namespace for this run
+            # Create a temporary run dir to render template
+            temp_run_dir = self.results_dir / f"_dry_run_{i}"
+            temp_run_dir.mkdir(exist_ok=True)
+
+            try:
+                manifest_dir = self.render_template(params, temp_run_dir)
+                gpu_claim = self.calculate_gpu_claim(params, manifest_dir)
+
+                if self.exclusive_mode:
+                    # Recalculate for exclusive mode
+                    gpu_claim = self.max_gpus_per_node
+
+                total_gpu_claim += gpu_claim
+                max_gpu_claim = max(max_gpu_claim, gpu_claim)
+
+                if gpu_claim not in gpu_distribution:
+                    gpu_distribution[gpu_claim] = 0
+                gpu_distribution[gpu_claim] += 1
+
+                print(f"  gpu_claim: {gpu_claim}")
+
+            finally:
+                # Clean up temporary directory
+                import shutil
+                if temp_run_dir.exists():
+                    shutil.rmtree(temp_run_dir)
+
+        print("=" * 70)
+        print("GPU BUDGET ANALYSIS")
+        print("=" * 70)
+        print(f"Total GPU Budget: {self.scheduler.total_budget}")
+        print(f"Maximum single config GPU claim: {max_gpu_claim}")
+        print(f"Total GPU claims (if all run sequentially): {total_gpu_claim}")
+        print(f"\nGPU Distribution:")
+        for gpu_count in sorted(gpu_distribution.keys()):
+            count = gpu_distribution[gpu_count]
+            print(f"  {gpu_count} GPUs: {count} configurations")
+
+        print("\nBUDGET VALIDATION:")
+        if max_gpu_claim > self.scheduler.total_budget:
+            print(f"  ✗ ERROR: At least one configuration requires {max_gpu_claim} GPUs")
+            print(f"           but budget is only {self.scheduler.total_budget} GPUs")
+            print(f"           These configurations cannot run!")
+            sys.exit(1)
+        else:
+            print(f"  ✓ All configurations fit within budget")
+
+        if self.parallel_mode:
+            print("\nESTIMATED PARALLELISM:")
+            avg_claim = total_gpu_claim / len(combinations)
+            estimated_parallel = int(self.scheduler.total_budget / avg_claim)
+            print(f"  Average GPU claim per config: {avg_claim:.1f}")
+            print(f"  Estimated average parallelism: {estimated_parallel} configs")
+
+        print("=" * 70)
+        print(f"SUMMARY: {len(combinations)} configurations validated")
+        print("=" * 70)
+
+    def execute_run(self, run_state: RunState):
+        """
+        Execute a single configuration run.
+
+        This is called for each configuration (in a worker thread for parallel mode).
+        """
+        run_id = run_state.run_id
+        namespace = run_state.namespace
+        params = run_state.parameters
+
+        prefix = f"[Run {run_id}]" if self.parallel_mode else f"Run {run_id}/{self.scheduler.get_pending_states().__len__() + self.scheduler.get_running_states().__len__() + run_id}"
+
+        print(f"\n{prefix} Starting execution (GPUs: {run_state.gpu_claim})")
+        print(f"{prefix} Namespace: {namespace}")
+
+        run_dir = self.results_dir / f"run-{run_id:03d}"
+        run_dir.mkdir(exist_ok=True)
+
+        # Save configuration with namespace and GPU claim
+        config_to_save = params.copy()
+        config_to_save['namespace'] = namespace
+        config_to_save['gpu_claim'] = run_state.gpu_claim
+        config_to_save['exclusive_mode'] = self.exclusive_mode
+        with open(run_dir / "config.yaml", 'w') as f:
+            yaml.dump(config_to_save, f)
+
+        try:
+            # Check for shutdown before each major step
+            if self.shutdown_event.is_set():
+                raise InterruptedError("Shutdown requested")
+
+            print(f"{prefix} Creating namespace...")
+            self.create_namespace(namespace)
+
+            if self.shutdown_event.is_set():
+                raise InterruptedError("Shutdown requested")
+
+            print(f"{prefix} Injecting HF token secret...")
+            self.inject_hf_token_secret(namespace)
+
+            if self.shutdown_event.is_set():
+                raise InterruptedError("Shutdown requested")
+
+            print(f"{prefix} Rendering deployment templates...")
+            manifest_dir = self.render_template(params, run_dir)
+
+            # Apply exclusive mode patches if needed
+            if self.exclusive_mode:
+                self.apply_exclusive_mode_patches(manifest_dir)
+
+            if self.shutdown_event.is_set():
+                raise InterruptedError("Shutdown requested")
+
+            print(f"{prefix} Deploying to Kubernetes...")
+            self.deploy(manifest_dir, namespace)
+
+            if self.shutdown_event.is_set():
+                raise InterruptedError("Shutdown requested")
+
+            print(f"{prefix} Waiting for deployment to be ready...")
+            self.wait_for_deployment(namespace)
+
+            if self.shutdown_event.is_set():
+                raise InterruptedError("Shutdown requested")
+
+            print(f"{prefix} Running load generation...")
+            benchmark_results = self.run_load_generation(run_dir, params, namespace)
+
+            if self.shutdown_event.is_set():
+                raise InterruptedError("Shutdown requested")
+
+            print(f"{prefix} Collecting pod logs...")
+            self.collect_pod_logs(run_dir, namespace)
+
+            # Update run state
+            run_state.benchmark_results = benchmark_results
+            if benchmark_results['exit_code'] == 0:
+                run_state.status = RunStatus.COMPLETED
+                print(f"{prefix} ✓ Completed successfully")
+            else:
+                run_state.status = RunStatus.FAILED
+                run_state.error = "Benchmark failed"
+                print(f"{prefix} ✗ Benchmark failed")
+
+        except InterruptedError:
+            run_state.status = RunStatus.CANCELLED
+            run_state.error = "Cancelled by user"
+            print(f"{prefix} ✗ Cancelled")
+
+        except Exception as e:
+            run_state.status = RunStatus.FAILED
+            run_state.error = str(e)
+            print(f"{prefix} ✗ Failed: {e}")
+
+        finally:
+            # Always teardown and release resources
+            try:
+                print(f"{prefix} Tearing down...")
+                self.teardown(namespace)
+            except Exception as e:
+                print(f"{prefix} Warning: Teardown failed: {e}")
+
+            # Release GPU resources
+            self.scheduler.release_resources(run_state)
+
+            # Save state after each completion
+            self.save_state()
+
+    def worker_thread(self):
+        """Worker thread that continuously tries to schedule and execute runs."""
+        while not self.shutdown_event.is_set():
+            # Try to schedule next run
+            run_state = self.scheduler.try_schedule_next()
+
+            if run_state is not None:
+                # Execute the run
+                self.execute_run(run_state)
+            else:
+                # No run could be scheduled, wait for budget to be released
+                # or shutdown to be requested
+                self.scheduler.budget_released.wait(timeout=1.0)
+                self.scheduler.budget_released.clear()
+
+            # Check if all work is done
+            with self.scheduler.lock:
+                if (len(self.scheduler.pending_queue) == 0 and
+                    len(self.scheduler.running) == 0):
+                    break
+
+    def run_sweep(self):
+        """Execute the full sweep (sequential or parallel based on max_concurrent)."""
+        combinations = self.generate_parameter_combinations()
+
+        print("=" * 70)
+        mode_str = "Sequential" if not self.parallel_mode else f"Parallel ({self.scheduler.max_concurrent} max concurrent)"
+        print(f"Starting {mode_str} Sweep: '{self.sweep_name}'")
+        print("=" * 70)
+        print(f"User ID: {self.user_id}")
+        print(f"Total configurations: {len(combinations)}")
+        print(f"GPU Budget: {self.scheduler.total_budget}")
+        if self.exclusive_mode:
+            print(f"Exclusive Mode: ON (requesting {self.max_gpus_per_node} GPUs per pod)")
+        print(f"Results directory: {self.results_dir}")
+        print("=" * 70)
+        print()
+
+        # Prepare all run states
+        for i, params in enumerate(combinations, 1):
             namespace = self._generate_namespace(i)
 
-            print(f"Run {i}/{len(combinations)}")
-            print(f"  Namespace: {namespace}")
-            print(f"  Parameters: {params}")
-
+            # Render template to calculate GPU claim
             run_dir = self.results_dir / f"run-{i:03d}"
             run_dir.mkdir(exist_ok=True)
 
-            # Save configuration with namespace
-            config_to_save = params.copy()
-            config_to_save['namespace'] = namespace
-            with open(run_dir / "config.yaml", 'w') as f:
-                yaml.dump(config_to_save, f)
+            manifest_dir = self.render_template(params, run_dir)
+            gpu_claim = self.calculate_gpu_claim(params, manifest_dir)
 
-            manifest_dir = None
+            if self.exclusive_mode:
+                gpu_claim = self.max_gpus_per_node
 
-            try:
-                # Create namespace
-                self.create_namespace(namespace)
+            run_state = RunState(
+                run_id=i,
+                namespace=namespace,
+                parameters=params,
+                gpu_claim=gpu_claim,
+                status=RunStatus.PENDING
+            )
 
-                # Inject HF token secret
-                self.inject_hf_token_secret(namespace)
+            self.scheduler.add_pending(run_state)
 
-                # Generate manifests (if needed for backwards compatibility)
-                manifest_dir = self.render_template(params, run_dir)
+        print(f"Queued {len(combinations)} configurations\n")
 
-                # Deploy using justfile
-                self.deploy(manifest_dir, namespace)
+        # Save initial state
+        self.save_state()
 
-                # Wait for deployment to be ready
-                self.wait_for_deployment(namespace)
+        if self.parallel_mode:
+            # Parallel execution with worker threads
+            num_workers = min(self.scheduler.max_concurrent, len(combinations))
+            print(f"Starting {num_workers} worker threads...\n")
 
-                # Run load generation
-                benchmark_results = self.run_load_generation(run_dir, params, namespace)
+            workers = []
+            for i in range(num_workers):
+                worker = threading.Thread(target=self.worker_thread, name=f"Worker-{i+1}")
+                worker.start()
+                workers.append(worker)
 
-                print(benchmark_results)
-                # Collect pod logs
-                self.collect_pod_logs(run_dir, namespace)
+            # Wait for all workers to complete
+            for worker in workers:
+                worker.join()
+        else:
+            # Sequential execution
+            while True:
+                run_state = self.scheduler.try_schedule_next()
+                if run_state is None:
+                    break
+                self.execute_run(run_state)
 
-                # Success
-                run_result = {
-                    'run_id': i,
-                    'namespace': namespace,
-                    'parameters': params,
-                    'benchmark': benchmark_results,
-                    'status': 'success' if benchmark_results['exit_code'] == 0 else 'failed'
-                }
+        # Save final state
+        self.save_state()
 
-                results_summary.append(run_result)
-                if run_result['status'] == 'success':
-                    print(f"  ✓ Run {i} completed successfully")
-                else:
-                    print(f"  ✗ Run {i} failed")
+        # Generate summary from completed states
+        completed_states = self.scheduler.get_completed_states()
 
-            except Exception as e:
-                print(f"  ✗ Run {i} failed: {e}")
-                run_result = {
-                    'run_id': i,
-                    'namespace': namespace,
-                    'parameters': params,
-                    'status': 'failed',
-                    'error': str(e)
-                }
-                results_summary.append(run_result)
+        summary = []
+        for run_state in completed_states:
+            run_result = {
+                'run_id': run_state.run_id,
+                'namespace': run_state.namespace,
+                'parameters': run_state.parameters,
+                'gpu_claim': run_state.gpu_claim,
+                'status': run_state.status.value,
+                'start_time': run_state.start_time,
+                'end_time': run_state.end_time,
+                'duration': run_state.end_time - run_state.start_time if run_state.end_time and run_state.start_time else None,
+            }
 
-            finally:
-                # Always teardown - delete the namespace
-                try:
-                    self.teardown(namespace)
-                except Exception as e:
-                    print(f"  Warning: Teardown failed: {e}")
+            if run_state.benchmark_results:
+                run_result['benchmark'] = run_state.benchmark_results
 
-            print()
+            if run_state.error:
+                run_result['error'] = run_state.error
+
+            summary.append(run_result)
 
         # Save summary
         with open(self.results_dir / "summary.json", 'w') as f:
-            json.dump(results_summary, f, indent=2)
+            json.dump(summary, f, indent=2)
 
-        print(f"Sweep completed! Results saved to {self.results_dir}")
-        self.print_summary(results_summary)
+        print("\n" + "=" * 70)
+        print("SWEEP COMPLETED")
+        print("=" * 70)
+        self.print_summary(summary)
+        print(f"\nResults saved to: {self.results_dir}")
 
     def print_summary(self, results: List[Dict[str, Any]]):
         """Print sweep summary."""
-        successful = sum(1 for r in results if r['status'] == 'success')
-        failed = len(results) - successful
+        successful = sum(1 for r in results if r['status'] in ['success', 'completed'])
+        failed = sum(1 for r in results if r['status'] == 'failed')
+        cancelled = sum(1 for r in results if r['status'] == 'cancelled')
 
         print("\n" + "="*60)
         print("SWEEP SUMMARY")
@@ -791,12 +1266,20 @@ class SweepOrchestrator:
         print(f"Total runs: {len(results)}")
         print(f"Successful: {successful}")
         print(f"Failed: {failed}")
+        if cancelled > 0:
+            print(f"Cancelled: {cancelled}")
 
         if failed > 0:
             print("\nFailed runs:")
             for run in results:
                 if run['status'] == 'failed':
                     print(f"  Run {run['run_id']}: {run.get('error', 'Unknown error')}")
+
+        if cancelled > 0:
+            print("\nCancelled runs:")
+            for run in results:
+                if run['status'] == 'cancelled':
+                    print(f"  Run {run['run_id']}")
 
 
 def resolve_config_path(config_arg: str) -> str:
@@ -853,13 +1336,23 @@ if __name__ == "__main__":
     import argparse
 
     parser = argparse.ArgumentParser(
-        description="Run benchmarking sweep",
+        description="Run benchmarking sweep with parallel execution and GPU budgeting",
         epilog="""
 Examples:
-  %(prog)s my-sweep                           # Uses sweep-configs/my-sweep.yaml
-  %(prog)s my-sweep.yaml                      # Uses sweep-configs/my-sweep.yaml
-  %(prog)s sweep-configs/my-sweep.yaml        # Uses relative path
-  %(prog)s /absolute/path/to/my-sweep.yaml    # Uses absolute path
+  # Sequential execution (backward compatible):
+  %(prog)s my-sweep
+
+  # Parallel execution with GPU budget:
+  %(prog)s my-sweep --gpu-budget 16 --max-concurrent 4
+
+  # Exclusive mode (request full node regardless of TP size):
+  %(prog)s my-sweep --exclusive-mode --gpu-budget 64
+
+  # Dry-run with budget validation:
+  %(prog)s my-sweep --dry-run --gpu-budget 16
+
+  # Sequential with unlimited GPU budget:
+  %(prog)s my-sweep --max-concurrent 1
         """,
         formatter_class=argparse.RawDescriptionHelpFormatter
     )
@@ -870,18 +1363,55 @@ Examples:
     parser.add_argument(
         "--dry-run",
         action="store_true",
-        help="Show configurations without executing"
+        help="Show configurations and GPU budget analysis without executing"
+    )
+    parser.add_argument(
+        "--gpu-budget",
+        type=int,
+        default=None,
+        help="Total GPU budget for parallel execution (default: unlimited)"
+    )
+    parser.add_argument(
+        "--max-concurrent",
+        type=int,
+        default=1,
+        help="Maximum concurrent configurations (1=sequential, 0=unlimited, default: 1)"
+    )
+    parser.add_argument(
+        "--exclusive-mode",
+        action="store_true",
+        help="Request max GPUs per node regardless of vllm parallel config"
+    )
+    parser.add_argument(
+        "--max-gpus-per-node",
+        type=int,
+        default=8,
+        help="Maximum GPUs per node (default: 8, used in exclusive mode)"
     )
     args = parser.parse_args()
 
     try:
         config_file = resolve_config_path(args.config)
-        orchestrator = SweepOrchestrator(config_file)
+        orchestrator = SweepOrchestrator(
+            config_file,
+            gpu_budget=args.gpu_budget,
+            max_concurrent=args.max_concurrent,
+            exclusive_mode=args.exclusive_mode,
+            max_gpus_per_node=args.max_gpus_per_node
+        )
 
         if args.dry_run:
             orchestrator.dry_run()
         else:
+            if args.gpu_budget is None and args.max_concurrent > 1:
+                print("Warning: No GPU budget specified for parallel execution")
+                print("Use --gpu-budget to limit GPU usage across parallel configs")
+                print()
+
             orchestrator.run_sweep()
     except FileNotFoundError as e:
         print(f"Error: {e}", file=sys.stderr)
         sys.exit(1)
+    except KeyboardInterrupt:
+        print("\nInterrupted by user")
+        sys.exit(130)

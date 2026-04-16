@@ -4,14 +4,24 @@
 default:
     @just --list
 
-# Run a sweep from configuration file
-sweep CONFIG:
+# Run a sweep from configuration file (sequential by default)
+sweep CONFIG *ARGS='':
     @echo "Starting sweep: {{CONFIG}}"
-    python3 -u scripts/run-sweep.py sweep-configs/{{CONFIG}}
+    python3 -u scripts/run-sweep.py {{CONFIG}} {{ARGS}}
+
+# Run a parallel sweep with GPU budgeting
+sweep-parallel CONFIG GPU_BUDGET MAX_CONCURRENT='4' *ARGS='':
+    @echo "Starting parallel sweep: {{CONFIG}} (GPU Budget: {{GPU_BUDGET}}, Max Concurrent: {{MAX_CONCURRENT}})"
+    python3 -u scripts/run-sweep.py {{CONFIG}} --gpu-budget {{GPU_BUDGET}} --max-concurrent {{MAX_CONCURRENT}} {{ARGS}}
+
+# Run sweep in exclusive mode (pods request max GPUs per node)
+sweep-exclusive CONFIG GPU_BUDGET MAX_CONCURRENT='4' *ARGS='':
+    @echo "Starting exclusive mode sweep: {{CONFIG}} (GPU Budget: {{GPU_BUDGET}})"
+    python3 -u scripts/run-sweep.py {{CONFIG}} --gpu-budget {{GPU_BUDGET}} --max-concurrent {{MAX_CONCURRENT}} --exclusive-mode {{ARGS}}
 
 # Preview sweep configurations without executing (dry-run)
-dry-run CONFIG:
-    @python3 scripts/run-sweep.py sweep-configs/{{CONFIG}} --dry-run
+dry-run CONFIG *ARGS='':
+    @python3 scripts/run-sweep.py {{CONFIG}} --dry-run {{ARGS}}
 
 # List available sweep configurations
 list-sweeps:
@@ -60,8 +70,16 @@ setup:
     @mkdir -p load-generators/multi-turn-benchmark/workloads
     @echo "✓ Setup complete"
 
-# List currently active namespaces for a sweep
-current CONFIG:
+# Show current status of a sweep (running, pending, completed configurations with GPU allocations)
+current SWEEP_NAME='':
+    @python3 scripts/show-sweep-status.py {{SWEEP_NAME}}
+
+# Show current status with detailed completed runs
+current-verbose SWEEP_NAME='':
+    @python3 scripts/show-sweep-status.py {{SWEEP_NAME}} --verbose
+
+# Legacy: List currently active namespaces for a sweep (deprecated, use 'current' instead)
+current-namespaces CONFIG:
     @echo "🔍 Finding active namespaces for sweep: {{CONFIG}}"
     @python3 scripts/current-namespace.py sweep-configs/{{CONFIG}}
 
