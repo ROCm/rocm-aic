@@ -117,3 +117,8 @@ status NAMESPACE:
     fi
     echo "📊 Checking status of namespace: {{NAMESPACE}} (deployment: $DEPLOYMENT)"
     cd ../$DEPLOYMENT && NAMESPACE={{NAMESPACE}} just status
+
+# Retry failed configurations from a previous sweep
+retry-failed SWEEP_DIR:
+    @echo "🔄 Retrying failed configurations from: {{SWEEP_DIR}}"
+    @python3 -u scripts/retry-failed.py results/sweeps/{{SWEEP_DIR}}
