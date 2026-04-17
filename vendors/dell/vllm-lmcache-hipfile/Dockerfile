@@ -1,5 +1,5 @@
 # Base image providing ROCm 7.2 and matching PyTorch
-FROM rocm/pytorch:latest
+FROM rocm/vllm-dev:nightly_main_20260415
 
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 
@@ -7,10 +7,19 @@ SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 RUN mkdir -p /app
 WORKDIR /app
 
+# Setup debug symbols repository
+RUN apt-get update && apt-get install -y --no-install-recommends ubuntu-dbgsym-keyring && \
+	(echo "deb http://ddebs.ubuntu.com $(lsb_release -cs) main restricted universe multiverse" && \
+	 echo "deb http://ddebs.ubuntu.com $(lsb_release -cs)-updates main restricted universe multiverse" && \
+	 echo "deb http://ddebs.ubuntu.com $(lsb_release -cs)-proposed main restricted universe multiverse") | \
+	tee /etc/apt/sources.list.d/ddebs.list && \
+	rm -rf /var/lib/apt/lists/*
+
 # Setup prerequisites
 RUN apt-get update && \
 	apt-get install -y --no-install-recommends \
-	cmake bpftrace \
+	cmake bpftrace-dbgsym \
+	      gdb \
 	      libboost-all-dev \
 	      libmount-dev \
 	      ninja-build \
@@ -18,12 +27,8 @@ RUN apt-get update && \
 	rm -rf /var/lib/apt/lists/*
 
 # Pinned SHAs for deterministic builds
-ARG HIPFILE_BASE_SHA=5a7d275
-ARG HIPFILE_PATCH_SHA=0d07c19
-ARG LMCACHE_SHA=542bb9b
-ARG VLLM_SHA=a913b612d
-ARG FLASH_ATTN_SHA=0e60e394
-ARG AITER_TAG=c3708fb7
+ARG HIPFILE_SHA=b2509f2
+ARG LMCACHE_SHA=bef2e13
 ARG GPU_ARCHS
 
 # Scan GPUs if no GPU_ARCHS specified for the build
@@ -34,20 +39,23 @@ RUN if [[ -z "${GPU_ARCHS}" ]]; then \
 	fi
 
 # Build & install hipFile libs, headers, and python bindings
-RUN git clone https://github.com/ROCm/hipFile.git && \
-	cd hipFile && \
-	git config user.email "noone@example.com" && git config user.name "No User" && \
-	git remote add dell https://github.com/glimchb/hipFile.git && git fetch dell && git fetch origin && \
-	git checkout "${HIPFILE_BASE_SHA}" && git cherry-pick "${HIPFILE_PATCH_SHA}" && \
+RUN git clone --no-checkout --filter=blob:none https://github.com/ROCm/rocm-systems.git && \
+	cd rocm-systems && \
+	git sparse-checkout set --cone projects/hipfile && \
+	git checkout "${HIPFILE_SHA}" && \
+	cd projects/hipfile && \
 	mkdir build && cd build && \
-	cmake .. && cmake --build . -j && cpack -G DEB && \
+	cmake -DCMAKE_HIP_PLATFORM=amd .. && \
+	cmake --build . -j && \
+	cpack -G DEB && \
 	dpkg -i hipfile*deb && \
-	cd ../python && python -m build --wheel && \
-	pip install --no-cache-dir dist/hipfile*whl && \
-	cd ../..
+	cd ../python && \
+	pip install --no-cache-dir -e . -Ccmake.define.HIPFILE_INCLUDE_DIR=../include -Ccmake.define.HIP_INCLUDE_DIR=/opt/rocm/include
 
 # Build & install LMCache
-RUN git clone https://github.com/glimchb/LMCache.git && \
+# NOTE: Remove NIXL wheels pulled by upstream LMCache unconditionally. If they remain, VLLM
+# tries to import non-existent CUDA shared object at runtime.
+RUN git clone https://github.com/amd-ivaganev/LMCache.git && \
 	cd LMCache && git checkout "${LMCACHE_SHA}" && \
 	pip install --no-cache-dir \
 	    -r requirements/build.txt && \
@@ -57,41 +65,7 @@ RUN git clone https://github.com/glimchb/LMCache.git && \
 		BUILD_WITH_HIP=1 \
 		python3 -m pip install --no-cache-dir \
 		    --no-build-isolation -e . && \
-	cd ..
-
-# Build AITER (provides the kernels for vLLM's ROCM_AITER_FA backend)
-# SHA pinned to match tag in vLLM's docker/Dockerfile.rocm_base
-RUN git clone https://github.com/ROCm/aiter.git && \
-	cd aiter && \
-	git checkout "${AITER_TAG}" && \
-	git submodule update --init --recursive && \
-	pip install --no-cache-dir -r requirements.txt && \
-	GPU_ARCHS=$(cat /app/gpu_archs.txt) python3 setup.py install && \
-	cd ..
-
-# Build flash-attention (CK backend, used by vLLM ROCM_AITER_FA)
-# SHA pinned to match vLLM's docker/Dockerfile.rocm_base
-RUN git clone https://github.com/Dao-AILab/flash-attention.git && \
-	cd flash-attention && \
-	git checkout "${FLASH_ATTN_SHA}" && \
-	git submodule update --init && \
-	GPU_ARCHS=$(cat /app/gpu_archs.txt) python3 setup.py install && \
-	cd ..
-
-# Build MORI
-# TODO, if needed later
-
-# Build vLLM
-RUN git clone https://github.com/vllm-project/vllm.git && \
-	cd vllm && \
-	git checkout "${VLLM_SHA}" && \
-	pip install --no-cache-dir /opt/rocm/share/amd_smi && \
-	pip install --no-cache-dir --upgrade numba \
-	    scipy \
-	    'huggingface-hub[cli,hf_transfer]' \
-	    setuptools_scm && \
-	pip install --no-cache-dir -r requirements/rocm.txt && \
-	PYTORCH_ROCM_ARCH=$(cat /app/gpu_archs.txt) python3 setup.py develop
+	pip uninstall -y nixl nixl-cu12
 
 # Transfer configs & run scripts, then fetch corpus
 COPY scripts/ /app/scripts/
