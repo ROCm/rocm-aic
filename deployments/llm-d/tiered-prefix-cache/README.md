@@ -14,32 +14,78 @@ This deployment supports two connector variants:
 
 ## Prerequisites
 
-- Kubernetes cluster with AMD GPU nodes
-- `kubectl`, `helm`, and `just` installed
-- llm-d submodule initialized (run `just setup-submodules` from repository root)
-- Monitoring stack deployed (Prometheus + Grafana in `llm-d-monitoring` namespace)
+Check ../README.md for prerequisites
 
 ## Quick Start
 
-### Using Offloading Connector (Default)
+### Deploying with the Offloading Connector (Default)
 
+Setup and deploy:
 ```bash
-# From this directory
 just setup
 ```
 
 This will:
-1. Create namespace `llm-d-tiered-prefix-cache-amd`
+1. Create namespace `llm-d-pfc-cpu-amd`
 2. Deploy Istio gateway
-3. Deploy vLLM with offloading connector
+3. Deploy vLLM with offloading connector (2 replicas each with TP=2)
 4. Deploy InferencePool with tiered cache scoring
 5. Deploy monitoring (PodMonitor)
 6. Wait for all components to be ready
 
-### Using LMCache Connector
+After usage, tear the deployment down:
+```bash
+just teardown
+```
 
+### Deploying with the LMCache Connector
+
+Setup and deploy:
 ```bash
 just setup-lmcache
+```
+
+This will:
+1. Create namespace `llm-d-pfc-cpu-amd`
+2. Deploy Istio gateway
+3. Deploy vLLM with LMCache connector (2 replicas each with TP=2)
+4. Deploy InferencePool with tiered cache scoring
+5. Deploy monitoring (PodMonitor)
+6. Wait for all components to be ready
+
+After usage, tear the deployment down:
+```bash
+just teardown-lmcache
+```
+
+### Interacting with a deployment
+
+Start port-forwarding to access the gateway from the local host:
+```bash
+just port-forward-start
+```
+
+Issue curl model list test command:
+```bash
+curl localhost:8080/v1/models
+```
+
+Issue curl chat completion test command:
+```bash
+curl localhost:8080/v1/chat/completions   -H "Content-Type: application/json"   -d '{
+    "model": "Qwen/Qwen3-32B",
+    "messages": [
+    {
+        "role": "user",
+        "content": "Say hello to the world!"
+    }
+    ]
+   }'
+```
+
+Stop port forwarding:
+```bash
+just port-forward-stop
 ```
 
 ## Available Recipes
@@ -60,7 +106,6 @@ just setup-lmcache
 - `just port-forward-start` - Start port forwards (Gateway:8080, Prometheus:9090, Grafana:3000)
 - `just port-forward-stop` - Stop all port forwards
 - `just test-metrics` - Test metrics endpoint
-- `just check` - Quick pod count check
 - `just show-config` - Parse and display vLLM configuration from logs (deduplicated)
 - `just show-config-all` - Show config for each pod separately
 - `just show-config-pod POD_NAME` - Show config for specific pod

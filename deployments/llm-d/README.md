@@ -13,15 +13,9 @@ llm-d/
 
 ## Setup
 
-### LLM-D Submodule
-Initialize from repository root:
-```bash
-cd /path/to/rocm-icms
-just setup-submodules
-```
-
 ### Pre-requisite tools
 
+One time setup on your workstation:
 - `kubectl` - Kubernetes CLI; not installed automatically
 - `helm` - Helm package manager
 - `helmfile` - (inference-scheduling only)
@@ -36,6 +30,14 @@ cd setup/
 
 # install all pre-requisites without prompting
 ./prereqs.sh -y
+```
+
+### LLM-D Submodule
+Initialize from repository root:
+```bash
+TODO: pull this into llm-d setup somewhere
+cd ${ROCM_ICMS}
+just setup-submodules
 ```
 
 ### Minikube setup
@@ -60,18 +62,23 @@ just minikube-stop
 
 ### Kubernetes cluster setup for LLM-D
 
+One time setup
+
 This step assumes the following Kubernetes cluster setup:
 - AMD GPU nodes with `amd.com/gpu` resource
+
+```bash
+kubectl get nodes -oyaml | grep "amd.com/gpu"
+```
 
 Setup LLM-D deployments pre-requisites:
 * Huggingface token secret in `llm-d-hf-token`.
 * Prometheus and Grafana to `llm-d-monitoring` namespace.
-* ISTIO gateway to `istio-system` namespace.
 
 This step requires the `HF_TOKEN` environment variable to be set.
 
 ```bash
-cd setup/
+cd ${ROCM_ICMS}/deployments/llm-d/setup/
 
 # Setup LLM-D pre-requisites on the cluster (Minikube or else)
 just llm-d-setup
@@ -97,7 +104,7 @@ Offload KV cache from GPU HBM to CPU RAM for improved cache hit rates and perfor
 
 **Quick Start:**
 ```bash
-cd tiered-prefix-cache
+cd ${ROCM_ICMS}/deployments/llm-d/tiered-prefix-cache
 just setup
 ```
 
@@ -118,7 +125,7 @@ Intelligent load-aware and prefix-cache aware request routing for reduced tail l
 
 **Quick Start:**
 ```bash
-cd inference-scheduling
+cd ${ROCM_ICMS}/deployments/llm-d/inference-scheduling
 just setup
 ```
 

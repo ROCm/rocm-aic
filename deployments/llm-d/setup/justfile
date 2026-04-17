@@ -233,8 +233,6 @@ llm-d-setup: install-monitoring install-gateway-provider
     @echo "  ✅ Monitoring stack (Prometheus/Grafana) installed"
     @echo "  ✅ Gateway provider installed (includes Istio service mesh)"
     @echo ""
-    @echo "Note: Register HuggingFace token for your deployment namespace with:"
-    @echo "  just register-hf-token <namespace>"
 
 # ============================================================================
 # Verification & Status
@@ -316,7 +314,8 @@ verify-llm-d-prereqs:
     fi
 
     # Check AMD GPU device plugin
-    if kubectl get daemonset amd-gpu-device-plugin -n kube-system &> /dev/null; then
+    if kubectl get daemonset amd-gpu-device-plugin -n kube-system &> /dev/null || \
+       kubectl get daemonset default-device-plugin -n kube-amd-gpu &> /dev/null; then
         echo -e "{{GREEN}}✅ AMD GPU device plugin installed{{NC}}"
     else
         echo -e "{{RED}}❌ AMD GPU device plugin not found{{NC}}"
