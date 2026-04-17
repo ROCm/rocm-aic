@@ -3,191 +3,120 @@
 Measure **Time-To-First-Token (TTFT)** on AMD ROCm GPUs using
 [llama.cpp][llamacpp]'s built-in slot save/restore API.  Compares
 cold prefill (no cache) against warm restore (slot loaded from
-disk or RAM-backed tmpfs).
+tmpfs/RAM or disk) across multiple context sizes.
 
 This benchmark works on both AMD Instinct (CDNA) and Radeon
 (RDNA) GPUs, since llama.cpp supports both via HIP.
 
-## How it works
-
-1. **Cold run** -- start llama-server, send a long prompt, measure
-   TTFT from scratch, then save the slot to disk via
-   `POST /slots/0?action=save`.
-2. **Warm run** -- restart llama-server (cold GPU), restore the
-   slot via `POST /slots/0?action=restore`, send the
-   **identical** prompt, measure TTFT.
-
-The storage tier for saved slots is controlled by the Docker
-mount at `/slots`:
-
-| Tier | Docker flag | Latency |
-|------|-------------|---------|
-| CPU RAM | `--tmpfs /slots:rw,size=4g` | Sub-ms |
-| Local disk | `-v /path:/slots` | ~10-50 ms |
-| NVMe | `-v /mnt/nvme:/slots` | ~10-20 ms |
-| NFS | `-v /nfs/share:/slots` | Network-dependent |
-
-## Prerequisites
-
-* Docker with ROCm GPU pass-through (`/dev/kfd`, `/dev/dri`)
-* A GGUF model file (e.g., from HuggingFace)
-* Sufficient VRAM for the model + context
-
-## Quick start
-
-### 1. Build the Docker image
+## Quick start (Slurm)
 
 ```bash
-./scripts/docker-build.sh
+sbatch .slurm/ttft-llamacpp.sbatch
 ```
 
-To include the experimental `--cache-disk` patch:
-
-```bash
-APPLY_CACHE_DISK_PATCH=1 ./scripts/docker-build.sh
-```
-
-### 2. Launch the container
-
-```bash
-MODEL_DIR=$HOME/models ./scripts/docker-run.sh
-```
-
-For RAM-speed slot storage (tmpfs):
-
-```bash
-MODEL_DIR=$HOME/models SLOT_TMPFS=1 ./scripts/docker-run.sh
-```
-
-### 3. Run the benchmark
-
-Inside the container:
-
-```bash
-MODEL=/models/qwen3-8b-q4_k_m.gguf ./scripts/run-bench.sh
-```
+The job auto-detects the GPU, downloads the model if needed,
+builds llama.cpp (cached for subsequent runs), and sweeps
+three context sizes with 10 repeats each.  Results and
+graphs land in `.slurm/logs/`.
 
 Override defaults via env vars:
 
 ```bash
-MODEL=/models/llama-3.1-8b-q4.gguf \
-CONTEXT_CHARS=60000 \
-REPEATS=5 \
-SEED=123 \
-    ./scripts/run-bench.sh
+REPEATS=5 SEED=123 sbatch .slurm/ttft-llamacpp.sbatch
 ```
 
-### 4. Read results
+## Manual usage
 
-A summary table is printed at the end:
+```bash
+# install deps
+pip install openai matplotlib
+
+# run the benchmark
+python3 ttft_bench.py run \
+    --model /path/to/model.gguf \
+    --context-chars 400 4000 40000 \
+    --repeats 10 \
+    --output results.jsonl
+
+# generate report from existing results
+python3 ttft_bench.py report results.jsonl \
+    --gpu "AMD Instinct MI308X"
+```
+
+## How it works
+
+For each context size:
+
+1. **Cold runs** -- start a fresh llama-server, send a long
+   prompt, measure TTFT from scratch, save the slot to disk.
+   Server is restarted between each repeat.
+2. **Warm tmpfs** -- copy the slot file to `/dev/shm` (RAM),
+   start the server once, then repeat: erase slot, restore
+   from tmpfs, measure TTFT.
+3. **Warm disk** -- same but restore from a local disk path
+   with page cache evicted between repeats.
+
+Warm phases keep the server running across repeats (slot
+erase + restore clears KV state without restart), cutting
+total runtime significantly.
+
+## Output
+
+The `run` subcommand produces:
+
+- `results.jsonl` -- per-measurement records with TTFT,
+  disk IO, startup timing, GPU, and model metadata
+- Summary table printed to stdout
+- `summary.csv`, `ttft_bars.png`, `speedup.png`,
+  `disk_io.png`, `report_meta.json`
+
+Example output:
 
 ```
-=== TTFT Summary ===
-  Cold (no cache):     n=3  mean=6200.3ms  min=6100.1ms  max=6300.5ms
-  Warm (slot restore): n=3  mean=148.2ms   min=142.0ms   max=155.1ms
-  Speedup:             41.8x  (6052ms saved)
+GPU:   AMD Instinct MI308X
+Model: Qwen3-8B-Q4_K_M.gguf
 
-Full results: /app/results.jsonl
+ctx_chars  phase            n    mean_ms     min_ms     max_ms  speedup
+-----------------------------------------------------------------------
+400        cold            10      156.5      151.6      161.7
+400        warm-tmpfs      10       90.7       86.2       94.3     1.7x
+400        warm-disk       10       88.7       85.9       92.3     1.8x
+4000       cold            10      779.3      643.4      946.4
+4000       warm-tmpfs      10       93.8       90.9       95.7     8.3x
+4000       warm-disk       10       93.8       88.6       96.3     8.3x
+40000      cold            10    12724.6    12409.4    14722.9
+40000      warm-tmpfs      10      123.5      114.1      132.6   103.0x
+40000      warm-disk       10      120.9      110.7      131.7   105.3x
 ```
+
+## Build-time optimisation
+
+The sbatch caches the llama.cpp build at
+`~/.cache/llama.cpp-{tag}-{arch}`.  First run builds with
+`-DGGML_HIP_FA=OFF` (disables flash attention templates,
+~2 min build).  Subsequent runs skip the build entirely.
+
+Set `LLAMACPP_FA=ON` to enable flash attention (slower build,
+slightly better decode throughput -- does not affect TTFT).
 
 ## cache-disk patch
 
-The `patches/0001-cache-disk.patch` adds two new CLI flags
-to llama-server:
-
-- `--cache-disk <path>` -- directory for disk-backed prompt
-  cache; evicted RAM entries are written here instead of
-  being destroyed
-- `--cache-disk-max <MiB>` -- maximum disk cache size
-  (default: 0 = unlimited)
-
-### What it does
-
-When the RAM prompt cache (`--cache-ram`) is full and must
-evict an entry, instead of destroying the KV state, the
-patch serialises it to a file in the `--cache-disk`
-directory.  On a subsequent prefix match, the state is
-read back from disk and restored.
-
-This is useful on:
-
-- **UMA systems** (AMD Strix Halo, Apple Silicon) where RAM
-  is VRAM and prompt caching competes with model weights
-- **Multi-user servers** where many distinct conversations
-  need cached context
-- **Large context windows** (100k+ tokens) where KV state
-  is hundreds of MiB per slot
-
-### Serialisation format
-
-Each disk file uses a simple binary layout:
-
-```
-uint32  magic    = 0x4C4C4344  ("LLCD")
-uint32  version  = 1
-uint64  n_tokens
-int32[] tokens[n_tokens]
-uint64  data_size
-uint8[] data[data_size]
-uint32  n_checkpoints
-Per checkpoint:
-  int32   pos_min
-  int32   pos_max
-  int64   n_tokens
-  uint64  ckpt_data_size
-  uint8[] ckpt_data[ckpt_data_size]
-```
-
-### Files modified
-
-- `common/common.h` -- `cache_disk`, `cache_disk_max_mib`
-- `common/arg.cpp` -- `--cache-disk`, `--cache-disk-max`
-- `tools/server/server-task.h` -- disk-tier fields/methods
-- `tools/server/server-task.cpp` -- offload/reload/eviction
-- `tools/server/server-context.cpp` -- initialisation
-
-### Building with the patch
-
-```bash
-APPLY_CACHE_DISK_PATCH=1 ./scripts/docker-build.sh
-```
-
-Then use it inside the container:
-
-```bash
-llama-server \
-    --model /models/my-model.gguf \
-    --cache-ram 4096 \
-    --cache-disk /slots/disk-cache \
-    --cache-disk-max 8192 \
-    --slot-save-path /slots
-```
-
-## Reproducibility
-
-| What | Controlled by |
-|------|---------------|
-| Corpus excerpt offset | `bench_ttft.py --seed` |
-| Server hashing | Same prompt each run |
-| Slot save/restore | Deterministic binary state |
-
-Two runs with the same `SEED` and `MODEL` produce identical
-prompts and slot saves.
+The `patches/0001-cache-disk.patch` adds `--cache-disk` and
+`--cache-disk-max` to llama-server for automatic disk-tier
+prompt caching.  See the patch header for details.
 
 ## Directory layout
 
 ```
 Dockerfile                    ROCm + llama.cpp (HIP) build
 README.md                     This file
-requirements.txt              Python deps (openai)
-bench_ttft.py                 TTFT measurement script
+requirements.txt              Python deps (openai, matplotlib)
+ttft_bench.py                 Unified CLI: run + report
 corpus.txt                    (generated, gitignored)
 scripts/
-  docker-build.sh             Build the image
+  docker-build.sh             Build the Docker image
   docker-run.sh               Launch with ROCm flags
   fetch-corpus.sh             Download Gutenberg corpus
-  serve.sh                    Start llama-server
-  run-bench.sh                Cold/warm orchestrator
 patches/
   0001-cache-disk.patch       --cache-disk feature patch
 ```

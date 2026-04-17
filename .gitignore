@@ -21,9 +21,9 @@ summary.csv
 report_meta.json
 *.png
 
-# Slurm logs and job scripts
+# Slurm logs
+.slurm/logs/*.log
 ttft-llamacpp-*.log
-ttft-job.sh
 
 # Debian package files
 *.deb
