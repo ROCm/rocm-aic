@@ -5,13 +5,14 @@ kind: Kustomization
 resources:
   - ../../../../../../submodules/llm-d/guides/tiered-prefix-cache/cpu/manifests/vllm/offloading-connector-amd
 
-# Override or add vLLM serve arguments
 patches:
-  # Override the vLLM serve command arguments
   - target:
       kind: Deployment
       name: llm-d-model-server
     patch: |-
+      - op: replace
+        path: /spec/replicas
+        value: 2
       - op: replace
         path: /spec/template/spec/containers/0/args/0
         value: |-
@@ -23,12 +24,11 @@ patches:
             --max-num-seq 1024 \
             --gpu-memory-utilization 0.25 \
             --disable-uvicorn-access-log
-
-  # Example: Override GPU/memory resources (optional - uncomment to use)
-  # - target:
-  #     kind: Deployment
-  #     name: llm-d-model-server
-  #   patch: |-
-  #     - op: replace
-  #       path: /spec/template/spec/containers/0/resources/requests/memory
-  #       value: 500G
+      - op: replace
+        path: /spec/template/spec/containers/0/resources
+        value:
+          limits:
+            amd.com/gpu: 2
+          requests:
+            amd.com/gpu: 2
+            memory: 400G

@@ -1,9 +1,13 @@
 # Justfile for inference-scheduling deployment with AMD GPUs
 # Uses Helmfile to deploy 3 charts: llm-d-infra, inferencepool, llm-d-modelservice
 
+# Default recipe - show available commands
+default:
+    @just --list
+
 # Import common utilities
 import? "../setup/justfile"
-import? "../../common/llm-d/monitoring.justfile"
+import? "../common/monitoring.justfile"
 import? "../common/llm-d-helpers.justfile"
 
 # Deployment-specific configuration
@@ -12,14 +16,11 @@ VALUES_FILE := env_var_or_default('VALUES_FILE', 'amd-default.yaml')
 MANIFEST_DIR := env_var_or_default('MANIFEST_DIR', '')
 
 # Path to llm-d guide
-LLM_D_GUIDE := "../../../submodules/llm-d/guides/inference-scheduling"
-
-# Default recipe - show available commands
-default:
-    @just --list
+LLM_D_PATH := "/path/llm-d
+LLM_D_GUIDE := "{{LLM_D_PATH}}/guides/inference-scheduling"
 
 # Deploy using llm-d guide helmfile with custom values file
-deploy: verify-all verify-llm-d-submodule create-namespace deploy-helmfile deploy-httproute
+deploy: verify-prereqs create-namespace deploy-helmfile deploy-httproute
     @echo "✅ Full deployment complete!"
     @echo "Run 'just status' to check deployment status"
     @echo "Run 'just port-forward-start' to access services"
@@ -140,9 +141,28 @@ port-forward-stop:
     -pkill -f "port-forward.*gateway-istio.*8080"
     @just stop-monitoring-port-forwards
 
-# Create namespace if it doesn't exist
+# Create namespace if it doesn't exist, and ensure HF token secret is configured
 create-namespace:
-    @just _create-namespace {{NAMESPACE}}
+    #!/usr/bin/env bash
+    set -euo pipefail
+
+    # Check if namespace exists
+    if kubectl get namespace {{NAMESPACE}} &>/dev/null; then
+        echo "⚠️  Warning: Namespace {{NAMESPACE}} already exists, continuing..."
+    else
+        echo "📦 Creating namespace {{NAMESPACE}}..."
+        kubectl create namespace {{NAMESPACE}}
+        echo "✅ Namespace {{NAMESPACE}} created"
+    fi
+
+    # Check if HF token secret exists
+    if kubectl get secret {{HF_TOKEN_NAME}} -n {{NAMESPACE}} &>/dev/null; then
+        echo "✅ HuggingFace token secret '{{HF_TOKEN_NAME}}' already exists in namespace {{NAMESPACE}}"
+    else
+        echo "⚠️  HuggingFace token secret '{{HF_TOKEN_NAME}}' not found in namespace {{NAMESPACE}}"
+        echo "📝 Setting up HuggingFace token using llm-d-helpers..."
+        just register-hf-token {{NAMESPACE}} || { echo "❌ Failed to register HF token. You may need to set HF_TOKEN environment variable and run: just register-hf-token {{NAMESPACE}}"; exit 1}
+    fi
 
 # Delete namespace (WARNING: deletes everything!)
 delete-namespace:
@@ -186,22 +206,6 @@ diff:
     cp "$TEMP_VALUES_DIR/values_amd.yaml" ms-inference-scheduling/values_amd.yaml
     helmfile diff -e amd -n {{NAMESPACE}}
     mv ms-inference-scheduling/values_amd.yaml.backup ms-inference-scheduling/values_amd.yaml || true
-
-# Quick deployment check
-check:
-    @echo "🔍 Quick deployment check..."
-    @echo "Helm releases:"
-    @helm list -n {{NAMESPACE}} --short
-    @echo ""
-    @echo "Gateway pods:"
-    @kubectl get pods -n {{NAMESPACE}} -l app.kubernetes.io/name=llm-d-infra --no-headers 2>/dev/null | wc -l | xargs -I {} echo "  {} running"
-    @echo "Model server pods:"
-    @kubectl get pods -n {{NAMESPACE}} -l llm-d.ai/inference-serving=true --no-headers 2>/dev/null | wc -l | xargs -I {} echo "  {} running"
-    @echo "Endpoint picker pods:"
-    @kubectl get pods -n {{NAMESPACE}} -l inferencepool --no-headers 2>/dev/null | wc -l | xargs -I {} echo "  {} running"
-    @echo ""
-    @echo "All pods:"
-    @kubectl get pods -n {{NAMESPACE}} --no-headers 2>/dev/null | wc -l | xargs -I {} echo "  {} total"
 
 # Test metrics endpoint from a model server pod
 test-metrics:

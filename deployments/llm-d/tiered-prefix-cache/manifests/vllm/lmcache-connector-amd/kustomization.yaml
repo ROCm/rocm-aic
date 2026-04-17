@@ -11,6 +11,9 @@ patches:
       name: llm-d-model-server
     patch: |-
       - op: replace
+        path: /spec/replicas
+        value: 2
+      - op: replace
         path: /spec/template/spec/containers/0/image
         value: ghcr.io/vcave/vllm:rocm_721-vllm_20260401-lmcache
       - op: replace
@@ -18,7 +21,7 @@ patches:
         value: |-
           exec vllm serve \
             Qwen/Qwen3-32B \
-            --tensor-parallel-size 1 \
+            --tensor-parallel-size 2 \
             --kv-transfer-config '{"kv_connector":"LMCacheConnectorV1","kv_role":"kv_both"}' \
             --port 8000 \
             --max-num-seq 1024 \
@@ -29,7 +32,7 @@ patches:
         path: /spec/template/spec/containers/0/env/-
         value:
           name: LMCACHE_MAX_LOCAL_CPU_SIZE
-          value: "200.0"
+          value: "100.0"
       - op: add
         path: /spec/template/spec/containers/0/env/-
         value:
@@ -40,27 +43,11 @@ patches:
         value:
           name: PROMETHEUS_MULTIPROC_DIR
           value: "/tmp/lmcache_prometheus"
-      - op: add
+      - op: replace
         path: /spec/template/spec/containers/0/resources
         value:
           limits:
-            amd.com/gpu: 1
+            amd.com/gpu: 2
           requests:
-            amd.com/gpu: 1
+            amd.com/gpu: 2
             memory: 400G
-
-  # Mount an emptyDir to collect prometheus metrics
-  - target:
-      kind: Deployment
-      name: llm-d-model-server
-    patch: |-
-      - op: add
-        path: /spec/template/spec/volumes/-
-        value:
-          name: lmcache-prometheus-metrics
-          emptyDir: {}
-      - op: add
-        path: /spec/template/spec/containers/0/volumeMounts/-
-        value:
-          name: lmcache-prometheus-metrics
-          mountPath: /tmp/lmcache_prometheus

@@ -8,7 +8,7 @@ default:
 
 # Import common utilities
 import? "../setup/justfile"
-import? "../../common/monitoring.justfile"
+import? "../common/monitoring.justfile"
 import? "../common/llm-d-helpers.justfile"
 
 # Deployment-specific configuration
@@ -227,12 +227,8 @@ create-namespace:
     else
         echo "⚠️  HuggingFace token secret '{{HF_TOKEN_NAME}}' not found in namespace {{NAMESPACE}}"
         echo "📝 Setting up HuggingFace token using llm-d-helpers..."
-        just register-hf-token {{NAMESPACE}} || echo "❌ Failed to register HF token. You may need to set HF_TOKEN environment variable and run: just register-hf-token {{NAMESPACE}}"
+        just register-hf-token {{NAMESPACE}} || { echo "❌ Failed to register HF token. You may need to set HF_TOKEN environment variable and run: just register-hf-token {{NAMESPACE}}"; exit 1}
     fi
-
-# Create namespace if it doesn't exist
-#create-namespace:
-#    @just _create-namespace {{NAMESPACE}}
 
 # Delete namespace (WARNING: deletes everything!)
 delete-namespace:
@@ -252,16 +248,6 @@ setup-lmcache: verify-prereqs create-namespace deploy-lmcache wait
 cleanup: teardown port-forward-stop
     @echo "🧹 Cleanup complete!"
     @echo "Run 'just delete-namespace' if you want to delete the namespace entirely"
-
-# Quick deployment check
-check:
-    @echo "🔍 Quick deployment check..."
-    @echo "Gateway pods:"
-    @kubectl get pods -n {{NAMESPACE}} -l app.kubernetes.io/name=llm-d-inference-gateway-istio --no-headers | wc -l | xargs -I {} echo "  {} running"
-    @echo "Model server pods:"
-    @kubectl get pods -n {{NAMESPACE}} -l llm-d.ai/inference-serving=true --no-headers | wc -l | xargs -I {} echo "  {} running"
-    @echo "InferencePool pods:"
-    @kubectl get pods -n {{NAMESPACE}} -l app.kubernetes.io/component=endpoint-picker --no-headers | wc -l | xargs -I {} echo "  {} running"
 
 # Show which connector variant is being used
 show-variant:

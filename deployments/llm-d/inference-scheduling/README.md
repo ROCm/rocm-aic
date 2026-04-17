@@ -95,7 +95,6 @@ This will:
 - `just port-forward-start` - Start port forwards (Gateway:8080, Prometheus:9090, Grafana:3000)
 - `just port-forward-stop` - Stop all port forwards
 - `just test-metrics` - Test metrics endpoint from a model server pod
-- `just check` - Quick pod and release count check
 - `just show-config` - Parse and display vLLM configuration from logs (deduplicated)
 - `just show-config-all` - Show config for each pod separately
 - `just show-config-pod POD_NAME` - Show config for specific pod
