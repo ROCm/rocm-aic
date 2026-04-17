@@ -140,3 +140,8 @@ status NAMESPACE:
 retry-failed SWEEP_DIR:
     @echo "🔄 Retrying failed configurations from: {{SWEEP_DIR}}"
     @python3 -u scripts/retry-failed.py results/sweeps/{{SWEEP_DIR}}
+
+# Aggregate benchmark results from a sweep directory
+results-aggregate SWEEP_DIR *ARGS='':
+    @echo "📊 Aggregating results from: {{SWEEP_DIR}}"
+    @python3 scripts/aggregate-sweep-results.py results/sweeps/{{SWEEP_DIR}} {{ARGS}}
