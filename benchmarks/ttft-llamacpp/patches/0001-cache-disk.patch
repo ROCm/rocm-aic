@@ -1,0 +1,348 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: AMD ICMS <icms@amd.com>
+Date: Wed, 16 Apr 2026 00:00:00 +0000
+Subject: [PATCH] server: add --cache-disk for disk-backed prompt caching
+
+Add --cache-disk <path> and --cache-disk-max <MiB> options to
+llama-server.  When the RAM prompt cache evicts an entry, the KV
+state blob is written to a file on disk instead of being destroyed.
+On a subsequent cache lookup, if the best match has been offloaded
+to disk, the state is read back and restored.
+
+This is particularly useful on UMA systems (AMD Strix Halo, Apple
+Silicon) where RAM used for prompt caching competes with VRAM, and
+on multi-user servers where the number of cached contexts can exceed
+available RAM.
+
+The implementation keeps lightweight metadata (tokens, checkpoint
+positions, file path) in RAM and offloads only the heavy KV state
+blob to disk.
+
+Relates-to: https://github.com/ggml-org/llama.cpp/issues/20697
+---
+ common/arg.cpp                   | 18 +++++
+ common/common.h                  |  3 +
+ tools/server/server-context.cpp  | 13 +++-
+ tools/server/server-task.cpp     | 99 +++++++++++++++++++++++++++++-
+ tools/server/server-task.h       | 20 +++++-
+ 5 files changed, 148 insertions(+), 5 deletions(-)
+
+diff --git a/common/common.h b/common/common.h
+index 1111111..2222222 100644
+--- a/common/common.h
++++ b/common/common.h
+@@ -585,6 +585,9 @@ struct common_params {
+     int32_t cache_ram_mib       = 8192;  // -1 = no limit, 0 - disable, 1 = 1 MiB, etc.
+ 
++    std::string cache_disk;             // directory for disk-backed prompt cache (empty = disabled)
++    int32_t cache_disk_max_mib  = 0;    // max disk cache size in MiB (0 = unlimited)
++
+     std::string hostname      = "127.0.0.1";
+     std::string public_path   = "";                                                                         // NOLINT
+diff --git a/common/arg.cpp b/common/arg.cpp
+index 3333333..4444444 100644
+--- a/common/arg.cpp
++++ b/common/arg.cpp
+@@ -1308,6 +1308,24 @@ add_opt(common_arg(
+             params.cache_ram_mib = value;
+         }
+     ).set_env("LLAMA_ARG_CACHE_RAM").set_examples({LLAMA_EXAMPLE_SERVER, LLAMA_EXAMPLE_CLI}));
++    add_opt(common_arg(
++        {"-cdisk", "--cache-disk"}, "PATH",
++        "directory for disk-backed prompt cache; evicted RAM entries are "
++        "written here instead of being destroyed (default: disabled)",
++        [](common_params & params, const std::string & value) {
++            params.cache_disk = value;
++        }
++    ).set_env("LLAMA_ARG_CACHE_DISK").set_examples({LLAMA_EXAMPLE_SERVER, LLAMA_EXAMPLE_CLI}));
++    add_opt(common_arg(
++        {"-cdiskmax", "--cache-disk-max"}, "N",
++        string_format(
++            "maximum disk cache size in MiB (default: %d, 0 = unlimited)",
++            params.cache_disk_max_mib),
++        [](common_params & params, int value) {
++            params.cache_disk_max_mib = value;
++        }
++    ).set_env("LLAMA_ARG_CACHE_DISK_MAX").set_examples({LLAMA_EXAMPLE_SERVER, LLAMA_EXAMPLE_CLI}));
+     add_opt(common_arg(
+         {"-kvu", "--kv-unified"},
+         {"-no-kvu", "--no-kv-unified"},
+diff --git a/tools/server/server-task.h b/tools/server/server-task.h
+index 5555555..6666666 100644
+--- a/tools/server/server-task.h
++++ b/tools/server/server-task.h
+@@ -1,5 +1,7 @@
+ #pragma once
+ 
++#include <filesystem>
++
+ #include "common.h"
+ #include "llama.h"
+ 
+@@ -YYY,6 +YYY,10 @@ struct server_prompt {
+ 
+     std::list<server_prompt_checkpoint> checkpoints;
+ 
++    // disk offload state
++    std::string disk_path;     // non-empty when data has been offloaded to disk
++    bool data_on_disk = false; // true when data lives on disk, not in RAM
++
+     size_t size() const {
+         size_t res = data.size();
+ 
+@@ -ZZZ,9 +ZZZ,13 @@ struct server_prompt {
+ struct server_prompt_cache {
+     server_prompt_cache(int32_t limit_size_mib, size_t limit_tokens) {
+         this->limit_size = 1024ull*1024ull*(limit_size_mib < 0 ? 0 : limit_size_mib);
+         this->limit_tokens = limit_tokens;
+     }
+ 
++    void set_disk_cache(const std::string & dir, int32_t max_mib);
++    void offload_to_disk(server_prompt & p);
++    bool reload_from_disk(server_prompt & p);
++
+     std::list<server_prompt> states;
+ 
+     // in bytes, 0 = no limit
+@@ -ZZZ,6 +ZZZ,12 @@ struct server_prompt_cache {
+     // in tokens, 0 = no limit
+     size_t limit_tokens = 0;
+ 
++    // disk tier
++    std::string disk_dir;
++    size_t disk_limit = 0;   // bytes, 0 = unlimited
++    size_t disk_usage = 0;   // current bytes on disk
++    uint64_t disk_seq = 0;   // monotonic counter for unique filenames
++
+     size_t size() const;
+ 
+     size_t n_tokens() const;
+diff --git a/tools/server/server-task.cpp b/tools/server/server-task.cpp
+index 7777777..8888888 100644
+--- a/tools/server/server-task.cpp
++++ b/tools/server/server-task.cpp
+@@ -1964,6 +1964,89 @@ json server_task_result_apply_lora::to_json() {
+ //
+ // server_prompt_cache
+ //
++
++static constexpr uint32_t LLCD_MAGIC   = 0x4C4C4344; // "LLCD"
++static constexpr uint32_t LLCD_VERSION = 1;
++
++void server_prompt_cache::set_disk_cache(const std::string & dir, int32_t max_mib) {
++    disk_dir = dir;
++    disk_limit = max_mib > 0 ? (size_t)max_mib * 1024ull * 1024ull : 0;
++    disk_usage = 0;
++    disk_seq = 0;
++
++    if (!disk_dir.empty()) {
++        std::filesystem::create_directories(disk_dir);
++        SRV_WRN("disk cache enabled: %s (limit: %s)\n",
++                 disk_dir.c_str(),
++                 disk_limit > 0
++                     ? string_format("%.0f MiB", disk_limit / (1024.0 * 1024.0)).c_str()
++                     : "unlimited");
++    }
++}
++
++void server_prompt_cache::offload_to_disk(server_prompt & p) {
++    if (disk_dir.empty() || p.data.empty()) {
++        return;
++    }
++
++    std::string path = disk_dir + "/prompt_" + std::to_string(disk_seq++) + ".llcd";
++
++    FILE * fp = fopen(path.c_str(), "wb");
++    if (!fp) {
++        SRV_WRN("disk cache: failed to open %s for writing\n", path.c_str());
++        return;
++    }
++
++    uint32_t magic = LLCD_MAGIC;
++    uint32_t version = LLCD_VERSION;
++    const auto & text_tokens = p.tokens.get_text_tokens();
++    uint64_t n_tokens = text_tokens.size();
++    uint64_t data_size = p.data.size();
++    uint32_t n_checkpoints = (uint32_t)p.checkpoints.size();
++
++    fwrite(&magic,   sizeof(magic),   1, fp);
++    fwrite(&version, sizeof(version), 1, fp);
++    fwrite(&n_tokens, sizeof(n_tokens), 1, fp);
++    fwrite(text_tokens.data(), sizeof(llama_token), n_tokens, fp);
++    fwrite(&data_size, sizeof(data_size), 1, fp);
++    fwrite(p.data.data(), 1, data_size, fp);
++    fwrite(&n_checkpoints, sizeof(n_checkpoints), 1, fp);
++
++    for (const auto & ckpt : p.checkpoints) {
++        fwrite(&ckpt.pos_min, sizeof(ckpt.pos_min), 1, fp);
++        fwrite(&ckpt.pos_max, sizeof(ckpt.pos_max), 1, fp);
++        fwrite(&ckpt.n_tokens, sizeof(ckpt.n_tokens), 1, fp);
++        uint64_t ckpt_size = ckpt.data.size();
++        fwrite(&ckpt_size, sizeof(ckpt_size), 1, fp);
++        fwrite(ckpt.data.data(), 1, ckpt_size, fp);
++    }
++
++    fclose(fp);
++
++    size_t file_size = std::filesystem::file_size(path);
++    disk_usage += file_size;
++
++    p.data.clear();
++    p.data.shrink_to_fit();
++    p.disk_path = path;
++    p.data_on_disk = true;
++
++    SRV_WRN("disk cache: offloaded %.3f MiB to %s\n",
++             file_size / (1024.0 * 1024.0), path.c_str());
++
++    // evict oldest disk entries if over budget
++    if (disk_limit > 0) {
++        while (disk_usage > disk_limit && !states.empty()) {
++            auto it = states.begin();
++            while (it != states.end() && !it->data_on_disk) {
++                ++it;
++            }
++            if (it == states.end()) {
++                break;
++            }
++            if (!it->disk_path.empty()) {
++                size_t sz = 0;
++                try { sz = std::filesystem::file_size(it->disk_path); } catch (...) {}
++                std::filesystem::remove(it->disk_path);
++                disk_usage -= std::min(disk_usage, sz);
++                SRV_WRN("disk cache: evicted %s (%.3f MiB)\n",
++                         it->disk_path.c_str(), sz / (1024.0 * 1024.0));
++            }
++            states.erase(it);
++        }
++    }
++}
++
++bool server_prompt_cache::reload_from_disk(server_prompt & p) {
++    if (!p.data_on_disk || p.disk_path.empty()) {
++        return false;
++    }
++
++    FILE * fp = fopen(p.disk_path.c_str(), "rb");
++    if (!fp) {
++        SRV_WRN("disk cache: failed to open %s for reading\n", p.disk_path.c_str());
++        return false;
++    }
++
++    uint32_t magic = 0, version = 0;
++    fread(&magic,   sizeof(magic),   1, fp);
++    fread(&version, sizeof(version), 1, fp);
++
++    if (magic != LLCD_MAGIC || version != LLCD_VERSION) {
++        SRV_WRN("disk cache: invalid file %s (magic=0x%08x, ver=%u)\n",
++                 p.disk_path.c_str(), magic, version);
++        fclose(fp);
++        return false;
++    }
++
++    uint64_t n_tokens = 0;
++    fread(&n_tokens, sizeof(n_tokens), 1, fp);
++    fseek(fp, (long)(n_tokens * sizeof(llama_token)), SEEK_CUR);
++
++    uint64_t data_size = 0;
++    fread(&data_size, sizeof(data_size), 1, fp);
++    p.data.resize(data_size);
++    fread(p.data.data(), 1, data_size, fp);
++
++    uint32_t n_checkpoints = 0;
++    fread(&n_checkpoints, sizeof(n_checkpoints), 1, fp);
++    p.checkpoints.clear();
++
++    for (uint32_t i = 0; i < n_checkpoints; ++i) {
++        server_prompt_checkpoint ckpt;
++        fread(&ckpt.pos_min, sizeof(ckpt.pos_min), 1, fp);
++        fread(&ckpt.pos_max, sizeof(ckpt.pos_max), 1, fp);
++        fread(&ckpt.n_tokens, sizeof(ckpt.n_tokens), 1, fp);
++        uint64_t ckpt_size = 0;
++        fread(&ckpt_size, sizeof(ckpt_size), 1, fp);
++        ckpt.data.resize(ckpt_size);
++        fread(ckpt.data.data(), 1, ckpt_size, fp);
++        p.checkpoints.push_back(std::move(ckpt));
++    }
++
++    fclose(fp);
++
++    size_t sz = 0;
++    try { sz = std::filesystem::file_size(p.disk_path); } catch (...) {}
++    std::filesystem::remove(p.disk_path);
++    disk_usage -= std::min(disk_usage, sz);
++
++    p.data_on_disk = false;
++    p.disk_path.clear();
++
++    SRV_WRN("disk cache: reloaded %.3f MiB from disk\n",
++             data_size / (1024.0 * 1024.0));
++
++    return true;
++}
++
+ size_t server_prompt_cache::size() const {
+     size_t res = 0;
+ 
+@@ -2090,11 +2173,19 @@ void server_prompt_cache::update() {
+     if (limit_size > 0) {
+         // always keep at least one state, regardless of the limits
+         while (states.size() > 1 && size() > limit_size) {
+-            if (states.empty()) {
+-                break;
+-            }
++            auto & front = states.front();
+ 
+-            SRV_WRN(" - cache size limit reached, removing oldest entry (size = %.3f MiB)\n", states.front().size() / (1024.0 * 1024.0));
++            // if disk cache is available, offload instead of destroying
++            if (!disk_dir.empty() && !front.data_on_disk && !front.data.empty()) {
++                SRV_WRN(" - cache size limit reached, offloading oldest entry to disk (size = %.3f MiB)\n",
++                         front.size() / (1024.0 * 1024.0));
++                offload_to_disk(front);
++                // the entry stays in states with data_on_disk=true
++                // move it to the back so we don't keep trying to evict it
++                states.splice(states.end(), states, states.begin());
++                continue;
++            }
++
++            SRV_WRN(" - cache size limit reached, removing oldest entry (size = %.3f MiB)\n", front.size() / (1024.0 * 1024.0));
+ 
+             states.pop_front();
+         }
+@@ -2038,6 +2121,12 @@ bool server_prompt_cache::load(...) {
+     if (it_best != states.end()) {
+         SRV_WRN(" - found better prompt with f_keep = %.3f, sim = %.3f\n", f_keep_best, sim_best);
+ 
++        // reload from disk if needed
++        if (it_best->data_on_disk) {
++            if (!reload_from_disk(*it_best)) {
++                return false;
++            }
++        }
++
+         const size_t size = it_best->data.size();
+         const size_t n = llama_state_seq_set_data_ext(ctx, it_best->data.data(), size, id_slot, 0);
+diff --git a/tools/server/server-context.cpp b/tools/server/server-context.cpp
+index 9999999..AAAAAAA 100644
+--- a/tools/server/server-context.cpp
++++ b/tools/server/server-context.cpp
+@@ -833,6 +833,18 @@ if (params_base.cache_ram_mib != 0) {
+ 
+         prompt_cache = std::make_unique<server_prompt_cache>(params_base.cache_ram_mib, n_ctx);
++
++        // initialise disk tier if configured
++        if (!params_base.cache_disk.empty()) {
++            prompt_cache->set_disk_cache(
++                params_base.cache_disk,
++                params_base.cache_disk_max_mib);
++        }
+     } else {
+         SRV_WRN("%s", "prompt cache is disabled - use `--cache-ram N` to enable it\n");
++
++        if (!params_base.cache_disk.empty()) {
++            SRV_WRN("%s", "WARNING: --cache-disk requires --cache-ram to be enabled; disk cache will not be used\n");
++        }
+     }
+-- 
+2.39.0
+

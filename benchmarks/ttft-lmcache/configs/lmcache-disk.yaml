@@ -1,0 +1,19 @@
+# Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+#
+# LMCache config -- local disk backend (ext4/xfs/tmpfs)
+#
+# KV cache chunks are stored as .pt files under /cache/lmcache/.
+# Mount any block device or tmpfs at /cache inside the container.
+
+chunk_size: 256
+save_decode_cache: true
+enable_blending: true
+blend_recompute_ratios: 0.15
+
+local_cpu: false
+local_disk: "file:///cache/lmcache/"
+max_local_disk_size: 50.0
+
+remote_url: null
