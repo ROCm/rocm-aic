@@ -15,6 +15,11 @@ SLOT_SAVE_PATH="${SLOT_SAVE_PATH:-/slots}"
 HOST="${LLAMA_HOST:-0.0.0.0}"
 PORT="${LLAMA_PORT:-8080}"
 
+# pin to a single GPU if not already restricted
+if [[ -z "${HIP_VISIBLE_DEVICES:-}" ]] && [[ -z "${ROCR_VISIBLE_DEVICES:-}" ]]; then
+    export HIP_VISIBLE_DEVICES=0
+fi
+
 echo "=== serve.sh ==="
 echo "  MODEL          = ${MODEL}"
 echo "  CTX_SIZE       = ${CTX_SIZE}"

@@ -51,8 +51,13 @@ def build_prompt(corpus_path: Path, context_chars: int,
 
 
 def measure_ttft(client: OpenAI, model: str,
-                 prompt: str) -> tuple[float, str]:
-    """Send a streaming chat completion and return (ttft_seconds, reply)."""
+                 prompt: str, slot_id: int = 0) -> tuple[float, str]:
+    """Send a streaming chat completion and return (ttft_seconds, reply).
+
+    Handles models that use a thinking/reasoning phase (e.g., Qwen3)
+    where the first tokens may arrive in a reasoning field rather
+    than the content field.
+    """
     start = time.perf_counter()
     ttft: float | None = None
     fragments: list[str] = []
@@ -63,14 +68,23 @@ def measure_ttft(client: OpenAI, model: str,
         temperature=0.7,
         max_tokens=64,
         stream=True,
+        extra_body={"id_slot": slot_id},
     )
 
     for chunk in stream:
-        delta = chunk.choices[0].delta.content
-        if delta is not None:
+        choice = chunk.choices[0]
+        text = choice.delta.content
+
+        if text is None:
+            reasoning = getattr(choice.delta, "reasoning_content", None)
+            if reasoning is None:
+                reasoning = getattr(choice.delta, "reasoning", None)
+            text = reasoning
+
+        if text is not None:
             if ttft is None:
                 ttft = time.perf_counter() - start
-            fragments.append(delta)
+            fragments.append(text)
 
     if ttft is None:
         raise RuntimeError("Server returned no content tokens")
@@ -79,10 +93,10 @@ def measure_ttft(client: OpenAI, model: str,
 
 
 def slot_action(server_url: str, slot_id: int,
-                action: str, filename: str) -> None:
-    """POST /slots/{slot_id}?action={save|restore} to llama-server."""
+                action: str, filename: str = "") -> None:
+    """POST /slots/{slot_id}?action={save|restore|erase}."""
     url = f"{server_url}/slots/{slot_id}?action={action}"
-    body = json.dumps({"filename": filename}).encode()
+    body = json.dumps({"filename": filename}).encode() if filename else b"{}"
     req = Request(url, data=body,
                   headers={"Content-Type": "application/json"},
                   method="POST")
@@ -138,6 +152,12 @@ def main() -> None:
     print(f"[bench_ttft] tag={args.tag}  model={model}  "
           f"context_chars={args.context_chars}  seed={args.seed}")
 
+    # erase slot to clear any warmup prompt residue
+    try:
+        slot_action(args.server_url, args.slot_id, "erase")
+    except Exception:
+        pass
+
     if args.restore_slot:
         print(f"[bench_ttft] restoring slot {args.slot_id} "
               f"from {args.restore_slot}")
@@ -149,7 +169,8 @@ def main() -> None:
 
     print(f"[bench_ttft] prompt length: {len(prompt)} chars")
 
-    ttft_s, reply = measure_ttft(client, model, prompt)
+    ttft_s, reply = measure_ttft(client, model, prompt,
+                                  slot_id=args.slot_id)
     ttft_ms = ttft_s * 1000.0
 
     print(f"[bench_ttft] TTFT = {ttft_ms:.1f} ms")

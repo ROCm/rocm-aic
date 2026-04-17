@@ -12,9 +12,18 @@ vendors/dell/vllm-lmcache-hipfile/scripts/configs/*.txt
 benchmarks/ttft-lmcache/configs/books.txt
 benchmarks/ttft-llamacpp/corpus.txt
 
-# Benchmark results
+# Benchmark results and reports
 benchmarks/ttft-lmcache/results.jsonl
 benchmarks/ttft-llamacpp/results.jsonl
+results-*.jsonl
+report-*/
+summary.csv
+report_meta.json
+*.png
+
+# Slurm logs and job scripts
+ttft-llamacpp-*.log
+ttft-job.sh
 
 # Debian package files
 *.deb

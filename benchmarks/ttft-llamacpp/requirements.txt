@@ -1,1 +1,2 @@
 openai>=1.40.0
+matplotlib>=3.8.0
