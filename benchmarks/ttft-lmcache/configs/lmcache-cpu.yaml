@@ -1,0 +1,20 @@
+# Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+#
+# LMCache config -- CPU RAM backend
+#
+# KV cache is held in pinned host memory.  No disk persistence,
+# so the sweep orchestrator can only test cold (0%) vs warm
+# (100%) with this backend.
+
+chunk_size: 256
+save_decode_cache: true
+enable_blending: true
+blend_recompute_ratios: 0.15
+
+local_cpu: true
+max_local_cpu_size: 100.0
+
+local_disk: null
+remote_url: null

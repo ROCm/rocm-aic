@@ -9,6 +9,21 @@ vendors/weka/weka-drops/*.squashfs
 
 # Generated benchmark corpus (downloaded on demand)
 vendors/dell/vllm-lmcache-hipfile/scripts/configs/*.txt
+benchmarks/ttft-lmcache/configs/books.txt
+benchmarks/ttft-llamacpp/corpus.txt
+
+# Benchmark results and reports
+benchmarks/ttft-lmcache/results.jsonl
+benchmarks/ttft-llamacpp/results.jsonl
+results-*.jsonl
+report-*/
+summary.csv
+report_meta.json
+*.png
+
+# Slurm logs
+.slurm/logs/*.log
+ttft-llamacpp-*.log
 
 # Debian package files
 *.deb
