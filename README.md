@@ -6,7 +6,29 @@ inspired by NVIDIA's [Inference Context Memory Storage (ICMS)][icms] platform
 flash to create a shared KV-cache tier for large-scale AI inference; this repo
 investigates analogous approaches on AMD hardware.
 
+## Benchmarks
+
+The `benchmarks/` directory contains Dockerized TTFT
+(Time-To-First-Token) benchmarks that measure the impact
+of KV-cache offload on inference latency across different
+storage tiers (CPU RAM, NVMe, hipFile/AIS, NFS).
+
+| Benchmark | Engine | GPU support | README |
+|-----------|--------|-------------|--------|
+| [ttft-lmcache][b-lmc] | vLLM + LMCache | Instinct (CDNA) | [README][r-lmc] |
+| [ttft-llamacpp][b-lcp] | llama.cpp | Instinct + Radeon | [README][r-lcp] |
+
+The llama.cpp benchmark includes a `--cache-disk` patch
+for automatic disk-tier prompt caching (see
+[patches/0001-cache-disk.patch][patch]).
+
 ## References
+
+[b-lmc]: benchmarks/ttft-lmcache/
+[b-lcp]: benchmarks/ttft-llamacpp/
+[r-lmc]: benchmarks/ttft-lmcache/README.md
+[r-lcp]: benchmarks/ttft-llamacpp/README.md
+[patch]: benchmarks/ttft-llamacpp/patches/0001-cache-disk.patch
 
 - [NVIDIA ICMS technical blog][icms]
 - [WEKA blog on BlueField-4 and ICMS][weka]
