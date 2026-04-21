@@ -22,6 +22,16 @@ The llama.cpp benchmark includes a `--cache-disk` patch
 for automatic disk-tier prompt caching (see
 [patches/0001-cache-disk.patch][patch]).
 
+## Host Discovery
+
+The [`ansible/`][ansible-dir] directory contains an Ansible
+playbook that inventories GPU cluster nodes and produces a
+per-host JSON report covering GPUs, NVMe drives, RDMA
+NICs, Linux kernel version, ROCm version, and DKMS module
+status. A second play compares all hosts and flags any
+differences. See the [discover playbook][discover-yml]
+for details.
+
 ## References
 
 [b-lmc]: benchmarks/ttft-lmcache/
@@ -29,6 +39,8 @@ for automatic disk-tier prompt caching (see
 [r-lmc]: benchmarks/ttft-lmcache/README.md
 [r-lcp]: benchmarks/ttft-llamacpp/README.md
 [patch]: benchmarks/ttft-llamacpp/patches/0001-cache-disk.patch
+[ansible-dir]: ansible/
+[discover-yml]: ansible/discover.yml
 
 - [NVIDIA ICMS technical blog][icms]
 - [WEKA blog on BlueField-4 and ICMS][weka]

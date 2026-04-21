@@ -130,5 +130,15 @@ subcommand
 ttft
 warmup
 Dockerized
+dpkg
+fqdn
+ibstat
+InfiniBand
+iproute
 lmcache
+NICs
+lsblk
+lspci
+playbook
 README
+vCPUs

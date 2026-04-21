@@ -1,0 +1,49 @@
+# Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+
+---
+- name: List block devices (JSON)
+  ansible.builtin.command:
+    cmd: lsblk -Jd -o NAME,SIZE,MODEL,TRAN
+  register: lsblk_raw
+  changed_when: false
+  failed_when: false
+
+- name: Filter NVMe drives from lsblk
+  ansible.builtin.set_fact:
+    nvme_lsblk: >-
+      {{ (lsblk_raw.stdout | from_json).blockdevices
+         | default([])
+         | selectattr('tran', 'defined')
+         | selectattr('tran', 'equalto', 'nvme')
+         | list }}
+  when: lsblk_raw.rc == 0
+
+- name: Set empty NVMe list on lsblk failure
+  ansible.builtin.set_fact:
+    nvme_lsblk: []
+  when: lsblk_raw.rc != 0
+
+- name: Check for nvme CLI
+  ansible.builtin.command:
+    cmd: which nvme
+  register: nvme_cli_check
+  changed_when: false
+  failed_when: false
+
+- name: Query nvme list (rich detail)
+  ansible.builtin.command:
+    cmd: nvme list -o json
+  register: nvme_list_raw
+  changed_when: false
+  failed_when: false
+  when: nvme_cli_check.rc == 0
+
+- name: Build NVMe facts
+  ansible.builtin.set_fact:
+    nvme_drives: >-
+      {{ nvme_lsblk }}
+    nvme_detail: >-
+      {{ (nvme_list_raw.stdout | default('{}'))
+         if (nvme_cli_check.rc == 0) else '{}' }}
