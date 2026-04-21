@@ -30,6 +30,7 @@ ttft-llamacpp-*.log
 
 # Ansible discovery reports
 ansible/reports/
+ansible/playbooks/reports/
 
 #Codespell disctionary cache
 dictionary.dic

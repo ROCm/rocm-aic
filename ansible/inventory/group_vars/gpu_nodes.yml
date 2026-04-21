@@ -7,7 +7,16 @@
 username: "{{ ansible_user }}"
 rocm_setup_user: "{{ username }}"
 
-# Extra packages installed by playbooks/provision.yml on top of the
+# Do not let collection roles trigger unattended reboots during Ansible runs.
+rdma_setup_reboot: false
+rocm_setup_skip_reboot: true
+
+# rocminfo/HIP checks
+rocm_setup_run_checks: true
+
+rocm_setup_install_metrics_exporter: true
+
+# Extra packages installed by site.yml (host_setup role) on top of the
 # sbates130272.batesste.fave_packages base set.  Edit this
 # list to add or remove project-specific packages.
 extra_packages:

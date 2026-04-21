@@ -1,0 +1,81 @@
+# Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+
+---
+# Drop legacy one-line lists that duplicate rocm_setup deb822 rocm.sources.
+
+- name: Detect rocm.sources from rocm_setup
+  ansible.builtin.stat:
+    path: /etc/apt/sources.list.d/rocm.sources
+  register: host_setup_rocm_sources
+
+- name: Read rocm.sources when present
+  ansible.builtin.slurp:
+    path: /etc/apt/sources.list.d/rocm.sources
+  register: host_setup_rocm_sources_slurp
+  when: host_setup_rocm_sources.stat.exists
+
+- name: Set decoded rocm.sources text fact
+  ansible.builtin.set_fact:
+    host_setup_rocm_sources_text: >-
+      {{ host_setup_rocm_sources_slurp.content | b64decode }}
+  when: host_setup_rocm_sources.stat.exists
+
+- name: Stat amdgpu.list
+  ansible.builtin.stat:
+    path: /etc/apt/sources.list.d/amdgpu.list
+  register: host_setup_amdgpu_list_stat
+  when: host_setup_rocm_sources.stat.exists
+
+- name: Stat rocm.list
+  ansible.builtin.stat:
+    path: /etc/apt/sources.list.d/rocm.list
+  register: host_setup_rocm_list_stat
+  when: host_setup_rocm_sources.stat.exists
+
+- name: Back up and remove duplicate amdgpu.list
+  when:
+    - host_setup_rocm_sources.stat.exists
+    - host_setup_remove_duplicate_amdgpu_list | bool
+    - host_setup_rocm_sources_text is defined
+    - "'repo.radeon.com/amdgpu' in host_setup_rocm_sources_text"
+    - not (host_setup_amdgpu_list_stat.skipped | default(false))
+    - host_setup_amdgpu_list_stat.stat.exists
+  block:
+    - name: Back up amdgpu.list before removal
+      ansible.builtin.copy:
+        src: /etc/apt/sources.list.d/amdgpu.list
+        dest: >-
+          /etc/apt/sources.list.d/amdgpu.list.bak.{{
+          ansible_date_time.epoch }}
+        remote_src: true
+        mode: preserve
+
+    - name: Remove amdgpu.list
+      ansible.builtin.file:
+        path: /etc/apt/sources.list.d/amdgpu.list
+        state: absent
+      notify: Apt update after AMD repo dedupe
+
+- name: Back up and remove legacy rocm.list
+  when:
+    - host_setup_rocm_sources.stat.exists
+    - host_setup_remove_legacy_rocm_list | bool
+    - not (host_setup_rocm_list_stat.skipped | default(false))
+    - host_setup_rocm_list_stat.stat.exists
+  block:
+    - name: Back up rocm.list before removal
+      ansible.builtin.copy:
+        src: /etc/apt/sources.list.d/rocm.list
+        dest: >-
+          /etc/apt/sources.list.d/rocm.list.bak.{{
+          ansible_date_time.epoch }}
+        remote_src: true
+        mode: preserve
+
+    - name: Remove rocm.list
+      ansible.builtin.file:
+        path: /etc/apt/sources.list.d/rocm.list
+        state: absent
+      notify: Apt update after AMD repo dedupe

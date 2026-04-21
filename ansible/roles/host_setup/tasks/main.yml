@@ -8,7 +8,6 @@
     name: sbates130272.batesste.user_setup
   tags:
     - user_setup
-    - host_setup
 
 - name: Install preferred development packages
   ansible.builtin.include_role:
@@ -16,7 +15,6 @@
   tags:
     - fave_packages
     - packages
-    - host_setup
 
 - name: Install project-specific extra packages
   ansible.builtin.package:
@@ -26,20 +24,25 @@
   tags:
     - extra_packages
     - packages
-    - host_setup
 
 - name: Configure RDMA and InfiniBand prerequisites
   ansible.builtin.include_role:
     name: sbates130272.batesste.rdma_setup
   tags:
-    - rdma
     - rdma_setup
-    - host_setup
+
+- name: Preclean stale AMD APT lists before rocm_setup
+  ansible.builtin.include_tasks: apt_preclean_amd_repos.yml
+  tags:
+    - rocm_setup
 
 - name: Install and configure ROCm stack
   ansible.builtin.include_role:
     name: sbates130272.batesste.rocm_setup
   tags:
-    - rocm
     - rocm_setup
-    - host_setup
+
+- name: Dedupe AMD APT lists after rocm_setup
+  ansible.builtin.include_tasks: apt_dedupe_amd_repos.yml
+  tags:
+    - rocm_setup
