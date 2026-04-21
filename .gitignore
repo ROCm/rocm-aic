@@ -28,6 +28,9 @@ ttft-llamacpp-*.log
 # Debian package files
 *.deb
 
+# Ansible discovery reports
+ansible/reports/
+
 #Codespell disctionary cache
 dictionary.dic
 

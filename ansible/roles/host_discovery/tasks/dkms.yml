@@ -1,0 +1,24 @@
+# Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+
+---
+- name: Check for dkms command
+  ansible.builtin.command:
+    cmd: which dkms
+  register: dkms_cmd_check
+  changed_when: false
+  failed_when: false
+
+- name: Query DKMS module status
+  ansible.builtin.command:
+    cmd: dkms status
+  register: dkms_status_raw
+  changed_when: false
+  failed_when: false
+  when: dkms_cmd_check.rc == 0
+
+- name: Build DKMS facts
+  ansible.builtin.set_fact:
+    dkms_modules: >-
+      {{ dkms_status_raw.stdout_lines | default([]) }}

@@ -1,0 +1,51 @@
+# Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+
+---
+- name: Check for rdma command
+  ansible.builtin.command:
+    cmd: which rdma
+  register: rdma_cmd_check
+  changed_when: false
+  failed_when: false
+
+- name: List RDMA links
+  ansible.builtin.command:
+    cmd: rdma link show
+  register: rdma_link_raw
+  changed_when: false
+  failed_when: false
+  when: rdma_cmd_check.rc == 0
+
+- name: Fallback — list InfiniBand devices via sysfs
+  ansible.builtin.command:
+    cmd: ls /sys/class/infiniband/
+  register: ib_sysfs_raw
+  changed_when: false
+  failed_when: false
+  when: rdma_cmd_check.rc != 0
+
+- name: Check for ibstat command
+  ansible.builtin.command:
+    cmd: which ibstat
+  register: ibstat_cmd_check
+  changed_when: false
+  failed_when: false
+
+- name: Query ibstat for port details
+  ansible.builtin.command:
+    cmd: ibstat
+  register: ibstat_raw
+  changed_when: false
+  failed_when: false
+  when: ibstat_cmd_check.rc == 0
+
+- name: Build RDMA facts
+  ansible.builtin.set_fact:
+    rdma_links: >-
+      {{ rdma_link_raw.stdout_lines | default([]) }}
+    rdma_ib_devices: >-
+      {{ ib_sysfs_raw.stdout_lines | default([]) }}
+    rdma_ibstat: >-
+      {{ ibstat_raw.stdout_lines | default([]) }}

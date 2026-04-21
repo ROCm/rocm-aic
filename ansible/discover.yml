@@ -1,0 +1,28 @@
+# Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+
+---
+- name: Discover host hardware and software configuration
+  hosts: discovery
+  gather_facts: true
+  become: true
+  pre_tasks:
+    - name: Record play start timestamp
+      ansible.builtin.set_fact:
+        play_timestamp: >-
+          {{ ansible_date_time.iso8601_basic_short }}
+      run_once: true
+  roles:
+    - host_discovery
+
+- name: Compare hosts and report differences
+  hosts: discovery
+  gather_facts: false
+  become: false
+  tasks:
+    - name: Load cross-host comparison role
+      ansible.builtin.include_role:
+        name: host_discovery
+        tasks_from: diff.yml
+      run_once: true

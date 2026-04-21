@@ -1,0 +1,100 @@
+# Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+
+---
+- name: Build per-host comparable summary
+  ansible.builtin.set_fact:
+    _comparable: >-
+      {{ dict(ansible_play_hosts | map('extract', hostvars)
+         | map(attribute='inventory_hostname')
+         | zip(ansible_play_hosts | map('extract', hostvars)
+               | map(attribute='host_report'))) }}
+
+- name: Identify fields that differ across hosts
+  ansible.builtin.set_fact:
+    host_diffs: >-
+      {% set ns = namespace(result={}) -%}
+      {% set fields = ['kernel', 'distro', 'architecture',
+                       'cpu_model', 'cpu_count', 'memory_gb',
+                       'rocm_version'] -%}
+      {% for field in fields -%}
+        {% set vals = _comparable.values()
+                      | map(attribute=field)
+                      | list -%}
+        {% if vals | unique | list | length > 1 -%}
+          {% set per_host = {} -%}
+          {% for h in _comparable -%}
+            {% set _ = per_host.update(
+                 {h: _comparable[h][field]}) -%}
+          {% endfor -%}
+          {% set _ = ns.result.update(
+               {field: per_host}) -%}
+        {% endif -%}
+      {% endfor -%}
+      {% set gpu_counts = {} -%}
+      {% for h in _comparable -%}
+        {% set _ = gpu_counts.update(
+             {h: _comparable[h].gpus.pci_devices
+                 | length}) -%}
+      {% endfor -%}
+      {% if gpu_counts.values() | unique | list
+            | length > 1 -%}
+        {% set _ = ns.result.update(
+             {'gpu_count': gpu_counts}) -%}
+      {% endif -%}
+      {% set nvme_counts = {} -%}
+      {% for h in _comparable -%}
+        {% set _ = nvme_counts.update(
+             {h: _comparable[h].nvme.drives
+                 | length}) -%}
+      {% endfor -%}
+      {% if nvme_counts.values() | unique | list
+            | length > 1 -%}
+        {% set _ = ns.result.update(
+             {'nvme_count': nvme_counts}) -%}
+      {% endif -%}
+      {% set dkms_sets = {} -%}
+      {% for h in _comparable -%}
+        {% set _ = dkms_sets.update(
+             {h: _comparable[h].dkms | sort
+                 | join(' | ')}) -%}
+      {% endfor -%}
+      {% if dkms_sets.values() | unique | list
+            | length > 1 -%}
+        {% set _ = ns.result.update(
+             {'dkms': dkms_sets}) -%}
+      {% endif -%}
+      {{ ns.result }}
+
+- name: Print cross-host diff to stdout
+  ansible.builtin.debug:
+    msg: |
+
+      ========== CROSS-HOST DIFFERENCES ==========
+      {% if host_diffs | length == 0 %}
+      All hosts are identical across checked fields.
+      {% else %}
+      {% for field, per_host in host_diffs.items() %}
+      {{ field }}:
+      {% for h, val in per_host.items() %}
+        {{ h }}: {{ val }}
+      {% endfor %}
+      {% endfor %}
+      {% endif %}
+      ===============================================
+
+- name: Print all-identical confirmation
+  ansible.builtin.debug:
+    msg: "All hosts match on kernel, distro, arch, CPU, \
+      memory, ROCm, GPU count, NVMe count, and DKMS."
+  when: host_diffs | length == 0
+
+- name: Write cross-host diff JSON report
+  ansible.builtin.copy:
+    content: "{{ host_diffs | to_nice_json }}\n"
+    dest: >-
+      {{ hostvars[ansible_play_hosts[0]].report_dir
+      }}/diff.json
+    mode: "0644"
+  delegate_to: localhost
