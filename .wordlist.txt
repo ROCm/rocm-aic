@@ -129,6 +129,7 @@ stdout
 subcommand
 ttft
 warmup
+batesste
 Dockerized
 dpkg
 fqdn
@@ -141,4 +142,7 @@ lsblk
 lspci
 playbook
 README
+rocminfo
+sbates
 vCPUs
+yml

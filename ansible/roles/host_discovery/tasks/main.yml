@@ -18,6 +18,12 @@
 - name: Detect DKMS module status
   ansible.builtin.include_tasks: dkms.yml
 
+- name: Detect AIS (GPU Direct Storage) support
+  ansible.builtin.include_tasks: ais.yml
+
+- name: Detect ROCm agents via rocminfo
+  ansible.builtin.include_tasks: rocminfo.yml
+
 - name: Assemble host discovery report
   ansible.builtin.set_fact:
     host_report:
@@ -41,6 +47,8 @@
         ib_devices: "{{ rdma_ib_devices }}"
         ibstat: "{{ rdma_ibstat }}"
       dkms: "{{ dkms_modules }}"
+      ais: "{{ ais_results }}"
+      rocminfo: "{{ rocminfo_summary }}"
 
 - name: Print discovery summary to stdout
   ansible.builtin.debug:
@@ -89,6 +97,34 @@
       {% endfor %}
       {% if host_report.dkms | length == 0 %}
       (none detected)
+      {% endif %}
+
+      --- AIS (GPU Direct Storage) ---
+      {% if not host_report.ais.available %}
+      ais-check not found (hipFile not installed)
+      {% elif host_report.ais.error is defined %}
+      ais-check error: {{ host_report.ais.error }}
+      {% else %}
+      {% for k, v in host_report.ais.items() %}
+      {% if k != 'available' %}
+      {{ k }}: {{ v }}
+      {% endif %}
+      {% endfor %}
+      {% endif %}
+
+      --- ROCm Agents (rocminfo) ---
+      {% if not host_report.rocminfo.available %}
+      rocminfo not found
+      {% elif host_report.rocminfo.error is defined %}
+      rocminfo error: {{ host_report.rocminfo.error }}
+      {% else %}
+      CPUs: {{ host_report.rocminfo.cpu_count }}
+      GPUs: {{ host_report.rocminfo.gpu_count }}
+      {% for gpu in host_report.rocminfo.gpus %}
+      {{ gpu.name | default("?") }}
+        {{ gpu.marketing_name | default("") }}
+        pool: {{ gpu.pool_size | default("?") }}
+      {% endfor %}
       {% endif %}
 
       ===========================================================

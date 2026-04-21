@@ -4,7 +4,7 @@
 
 ---
 - name: Discover host hardware and software configuration
-  hosts: discovery
+  hosts: gpu_nodes
   gather_facts: true
   become: true
   pre_tasks:
@@ -17,7 +17,7 @@
     - host_discovery
 
 - name: Compare hosts and report differences
-  hosts: discovery
+  hosts: gpu_nodes
   gather_facts: false
   become: false
   tasks:
