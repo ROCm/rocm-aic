@@ -1,0 +1,45 @@
+# Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+
+---
+- name: Configure local user account and environment
+  ansible.builtin.include_role:
+    name: sbates130272.batesste.user_setup
+  tags:
+    - user_setup
+    - host_setup
+
+- name: Install preferred development packages
+  ansible.builtin.include_role:
+    name: sbates130272.batesste.fave_packages
+  tags:
+    - fave_packages
+    - packages
+    - host_setup
+
+- name: Install project-specific extra packages
+  ansible.builtin.package:
+    name: "{{ extra_packages }}"
+    state: present
+  when: extra_packages | length > 0
+  tags:
+    - extra_packages
+    - packages
+    - host_setup
+
+- name: Configure RDMA and InfiniBand prerequisites
+  ansible.builtin.include_role:
+    name: sbates130272.batesste.rdma_setup
+  tags:
+    - rdma
+    - rdma_setup
+    - host_setup
+
+- name: Install and configure ROCm stack
+  ansible.builtin.include_role:
+    name: sbates130272.batesste.rocm_setup
+  tags:
+    - rocm
+    - rocm_setup
+    - host_setup

@@ -1,0 +1,7 @@
+# Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+
+---
+# Overridden by inventory group_vars/gpu_nodes.yml for this project.
+extra_packages: []
