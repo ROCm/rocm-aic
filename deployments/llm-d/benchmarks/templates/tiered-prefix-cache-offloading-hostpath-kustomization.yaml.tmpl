@@ -1,0 +1,62 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - ../../../../../../../../submodules/llm-d/guides/tiered-prefix-cache/cpu/manifests/vllm/offloading-connector-amd
+
+patches:
+  - target:
+      kind: Deployment
+      name: llm-d-model-server
+    patch: |-
+      - op: replace
+        path: /spec/replicas
+        value: 1
+      - op: replace
+        path: /spec/template/spec/containers/0/image
+        value: ghcr.io/vcave/vllm:rocm_721-vllm_20260401-lmcache
+      - op: replace
+        path: /spec/template/spec/containers/0/args/0
+        value: |-
+          exec vllm serve {{model}} \
+            --tensor-parallel-size {{tensor_parallel_size}} \
+            --port 8000 \
+            {{VLLM_ARGS}}
+      - op: add
+        path: /spec/template/spec/containers/0/env/-
+        value:
+          name: HUGGINGFACE_HUB_CACHE
+          value: "/models"
+      - op: add
+        path: /spec/template/spec/volumes/-
+        value:
+          name: models
+          hostPath:
+            path: /data/models-cache
+            type: Directory
+      - op: add
+        path: /spec/template/spec/volumes/-
+        value:
+          name: torch-compile-cache
+          emptyDir: {}
+      - op: add
+        path: /spec/template/spec/containers/0/volumeMounts/-
+        value:
+          name: models
+          mountPath: "/models"
+          readOnly: true
+      - op: add
+        path: /spec/template/spec/containers/0/volumeMounts/-
+        value:
+          name: torch-compile-cache
+          mountPath: "/.cache"
+  - target:
+      kind: Deployment
+      name: llm-d-model-server
+    patch: |-
+      - op: replace
+        path: /spec/template/spec/containers/0/resources/limits/amd.com~1gpu
+        value: "{{tensor_parallel_size}}"
+      - op: replace
+        path: /spec/template/spec/containers/0/resources/requests/amd.com~1gpu
+        value: "{{tensor_parallel_size}}"
