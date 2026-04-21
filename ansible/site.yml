@@ -1,0 +1,23 @@
+# Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+
+---
+# Run from ansible/: ansible-playbook site.yml
+# Examples:
+#   ansible-playbook site.yml --tags discover
+#   ansible-playbook site.yml --tags provision
+
+- name: Discover the state of the GPU cluster nodes
+  ansible.builtin.import_playbook: playbooks/discover.yml
+  tags:
+    - discover
+
+- name: Provision the GPU cluster nodes
+  hosts: gpu_nodes
+  gather_facts: true
+  become: true
+  tags:
+    - provision
+  roles:
+    - host_setup

@@ -24,20 +24,23 @@ for automatic disk-tier prompt caching (see
 
 ## Host Discovery and Provisioning
 
-The [`ansible/`][ansible-dir] directory contains Ansible
-playbooks for managing GPU cluster nodes.
+The [`ansible/`][ansible-dir] directory contains **`site.yml`** at the repo
+`ansible/` root plus [`ansible/playbooks/`][playbooks-dir] for discovery. From
+`ansible/`, run `ansible-playbook site.yml` (or `ansible-playbook
+playbooks/discover.yml` for discovery only).
 
-- **[discover.yml][discover-yml]** -- inventories each
-  node and produces a per-host JSON report covering GPUs,
-  NVMe drives, RDMA NICs, AIS status, Linux kernel
-  version, ROCm version, and DKMS module status. A second
-  play compares all hosts and flags differences.
-- **[provision.yml][provision-yml]** -- installs a base
-  set of developer packages via the
-  [sbates130272.batesste][galaxy] Galaxy collection's
-  `fave_packages` role, then layers on project-specific
-  packages defined in
-  [`group_vars/gpu_nodes.yml`][group-vars].
+- **[discover.yml][discover-yml]** -- inventories each node and produces a
+  per-host JSON report covering GPUs, NVMe drives, RDMA NICs, AIS status,
+  Linux kernel version, ROCm version, and DKMS module status. A second play
+  compares all hosts and flags differences (plus AIS and rocminfo fields) and
+  writes `summary.json`.
+- **[site.yml][site-yml]** -- imports discovery from `playbooks/` and runs the
+  local **`host_setup`** role (**user_setup**, **fave_packages**,
+  **rdma_setup**, **rocm_setup** from [sbates130272.batesste][galaxy], plus
+  **extra_packages** from [`group_vars/gpu_nodes.yml`][group-vars]). Use
+  `--tags discover`, `--tags provision`, or tags such as `--tags rocm` or
+  `--tags user_setup` to limit work. Run `ansible-playbook site.yml
+  --list-tags` to list tags.
 
 ## References
 
@@ -47,8 +50,9 @@ playbooks for managing GPU cluster nodes.
 [r-lcp]: benchmarks/ttft-llamacpp/README.md
 [patch]: benchmarks/ttft-llamacpp/patches/0001-cache-disk.patch
 [ansible-dir]: ansible/
-[discover-yml]: ansible/discover.yml
-[provision-yml]: ansible/provision.yml
+[playbooks-dir]: ansible/playbooks/
+[discover-yml]: ansible/playbooks/discover.yml
+[site-yml]: ansible/site.yml
 [galaxy]: https://galaxy.ansible.com/ui/repo/published/sbates130272/batesste/
 [group-vars]: ansible/inventory/group_vars/gpu_nodes.yml
 

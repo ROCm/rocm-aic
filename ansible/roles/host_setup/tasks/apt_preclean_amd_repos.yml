@@ -1,0 +1,55 @@
+# Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+
+---
+# Run before rocm_setup: stale one-line rocm.list breaks the role's first
+# apt update (e.g. invalid 26.11 suites) even when rocm.sources exists.
+
+- name: Stat rocm.sources prior to rocm_setup
+  ansible.builtin.stat:
+    path: /etc/apt/sources.list.d/rocm.sources
+  register: host_setup_preclean_rocm_sources_stat
+
+- name: Stat rocm.list prior to rocm_setup
+  ansible.builtin.stat:
+    path: /etc/apt/sources.list.d/rocm.list
+  register: host_setup_preclean_rocm_list_stat
+
+- name: Read rocm.list when present
+  ansible.builtin.slurp:
+    path: /etc/apt/sources.list.d/rocm.list
+  register: host_setup_preclean_rocm_list_slurp
+  when: host_setup_preclean_rocm_list_stat.stat.exists
+
+- name: Set rocm.list text fact
+  ansible.builtin.set_fact:
+    host_setup_preclean_rocm_list_text: >-
+      {{ host_setup_preclean_rocm_list_slurp.content | b64decode }}
+  when: host_setup_preclean_rocm_list_stat.stat.exists
+
+- name: Back up and remove rocm.list before rocm_setup when unsafe or duplicate
+  when:
+    - host_setup_preclean_rocm_list | bool
+    - host_setup_preclean_rocm_list_stat.stat.exists
+    - host_setup_preclean_rocm_list_text is defined
+    - >-
+        (host_setup_remove_legacy_rocm_list | bool
+         and host_setup_preclean_rocm_sources_stat.stat.exists)
+        or (host_setup_preclean_rocm_list_text
+            | regex_search(host_setup_preclean_rocm_list_bad_regex))
+  block:
+    - name: Back up rocm.list before rocm_setup
+      ansible.builtin.copy:
+        src: /etc/apt/sources.list.d/rocm.list
+        dest: >-
+          /etc/apt/sources.list.d/rocm.list.bak.preclean.{{
+          ansible_date_time.epoch }}
+        remote_src: true
+        mode: preserve
+
+    - name: Remove stale or duplicate rocm.list
+      ansible.builtin.file:
+        path: /etc/apt/sources.list.d/rocm.list
+        state: absent
+      notify: Apt update after AMD repo dedupe
