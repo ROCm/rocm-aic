@@ -1,0 +1,50 @@
+# Compares TTFT performance between two different offloading strategies
+#
+# Each source has 2 runs:
+# - run1: GPU prefill compute
+# - run2: CPU KV cache hit reuse
+
+  extraction:
+    input: ./results/ttft-latency/lmcache_cpu_aggregated_results.json
+    fields:
+      isl: config._load_params.random_input_len
+      tp: config.tensor_parallel_size
+      ttft: benchmark_run.metrics.ttft.mean_ms
+      run_label: benchmark_run.run_label
+    run_strategy: all
+
+  preparation:
+    filters:
+      - "isl<80000"
+    transformations:
+      run_name: "run_label.str.replace('run1', 'GPU prefill').replace('run2', 'CPU KV cache hit')"
+    sort_by: [run_label, tp]
+
+  export:
+    output: plot_data.json
+    x: isl
+    y: ttft
+    series_by: [run_name, tp]
+    series_label_format: "{run_name} - (tp={tp})"
+    marker_by: run_name
+    series_markers:
+      "GPU prefill": "o"
+      "CPU KV cache hit": "^"
+    axes:
+      x_scale: log
+      y_scale: log
+    style:
+      legend_outside: true
+      minor_grid: true
+      show_value_labels: true
+      value_label_format: "{y:.0f}"  # Show TTFT as integer
+      value_label_fontsize: 7        # Smaller font for dense plots
+      value_label_offset: [0, 8]     # Offset (x, y) in points
+    metadata:
+      title: "TTFT: GPU prefill compute vs CPU KV cache hit reuse - LMCache"
+      x_label: "Input Sequence Length"
+      y_label: "TTFT (ms)"
+
+  plot:
+    output: ttft_lmcache_prefill_vs_cpu_cache.png
+    dpi: 300

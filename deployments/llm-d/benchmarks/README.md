@@ -138,6 +138,30 @@ kv_connector:
   raw_json: '{"kv_connector":"CustomConnector","kv_role":"kv_both"}'
 ```
 
+## Running Sweeps Quick start
+
+This section and implementation are still under development.
+
+Run the lmcache TTFT latency benchmark sweep:
+```bash
+just sweep sweep-configs/ttft-latency/bench-ttft-lmcache-cpu-only.yaml
+```
+
+Upon completion, locate the output folder and aggregate results into json file:
+```bash
+mkdir -p results/ttft-latency
+just results-aggregate ttft-lmcache-cpu-only_2026-04-21 -o results/ttft-latency/vllm_offloading_cpu_aggregated_results.json
+```
+
+Generate png and json description in current folder out of a plot configuration file:
+```bash
+pip install pandas typing-extensions matplotlib seaborn
+export PYTHONPATH=$PWD/scripts
+python -m plots.plot_config sweep-configs/ttft-latency/plot-config-ttft-native-vs-lmcache-gpu-only.yaml
+```
+Note the input result json file are declared in the plot configuration file and must match the path where the aggregate results file have been output.
+
+
 ## Running Sweeps
 
 ### Dry Run (Preview)
