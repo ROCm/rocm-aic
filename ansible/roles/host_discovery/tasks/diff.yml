@@ -65,6 +65,46 @@
         {% set _ = ns.result.update(
              {'dkms': dkms_sets}) -%}
       {% endif -%}
+      {% set ais_vals = {} -%}
+      {% for h in _comparable -%}
+        {% set _ = ais_vals.update(
+             {h: _comparable[h].ais
+                 | to_json}) -%}
+      {% endfor -%}
+      {% if ais_vals.values() | unique | list
+            | length > 1 -%}
+        {% set _ = ns.result.update(
+             {'ais': ais_vals}) -%}
+      {% endif -%}
+      {% set ri_gpu_counts = {} -%}
+      {% for h in _comparable -%}
+        {% set ri = _comparable[h].rocminfo -%}
+        {% set _ = ri_gpu_counts.update(
+             {h: ri.gpu_count
+                 | default(0)}) -%}
+      {% endfor -%}
+      {% if ri_gpu_counts.values() | unique | list
+            | length > 1 -%}
+        {% set _ = ns.result.update(
+             {'rocminfo_gpu_count':
+              ri_gpu_counts}) -%}
+      {% endif -%}
+      {% set ri_gpu_names = {} -%}
+      {% for h in _comparable -%}
+        {% set ri = _comparable[h].rocminfo -%}
+        {% set names = ri.gpus | default([])
+               | map(attribute='marketing_name',
+                     default='unknown')
+               | sort | join(', ') -%}
+        {% set _ = ri_gpu_names.update(
+             {h: names}) -%}
+      {% endfor -%}
+      {% if ri_gpu_names.values() | unique | list
+            | length > 1 -%}
+        {% set _ = ns.result.update(
+             {'rocminfo_gpu_models':
+              ri_gpu_names}) -%}
+      {% endif -%}
       {{ ns.result }}
 
 - name: Print cross-host diff to stdout
@@ -87,7 +127,8 @@
 - name: Print all-identical confirmation
   ansible.builtin.debug:
     msg: "All hosts match on kernel, distro, arch, CPU, \
-      memory, ROCm, GPU count, NVMe count, and DKMS."
+      memory, ROCm, GPU count, NVMe count, DKMS, \
+      AIS, and rocminfo."
   when: host_diffs | length == 0
 
 - name: Write cross-host diff JSON report
@@ -96,5 +137,84 @@
     dest: >-
       {{ hostvars[ansible_play_hosts[0]].report_dir
       }}/diff.json
+    mode: "0644"
+  delegate_to: localhost
+
+- name: Build cluster summary
+  ansible.builtin.set_fact:
+    cluster_summary: >-
+      {% set ns = namespace(hosts={}) -%}
+      {% for h in _comparable -%}
+        {% set r = _comparable[h] -%}
+        {% set ri = r.rocminfo | default({}) -%}
+        {% set gpu_names = ri.gpus | default([])
+               | map(attribute='marketing_name',
+                     default='unknown')
+               | list -%}
+        {% set gpu_gfx = ri.gpus | default([])
+               | map(attribute='name',
+                     default='unknown')
+               | list -%}
+        {% set nvme_list = [] -%}
+        {% for d in r.nvme.drives -%}
+          {% set _ = nvme_list.append(
+               {'device': d.name | default('?'),
+                'size': d.size | default('?'),
+                'model': d.model
+                         | default('?')}) -%}
+        {% endfor -%}
+        {% set rdma_active = r.rdma.links
+               | default([])
+               | select('search', 'ACTIVE')
+               | list | length -%}
+        {% set rdma_total = r.rdma.links
+               | default([])
+               | length -%}
+        {% set entry = {
+             'kernel': r.kernel,
+             'rocm_version': r.rocm_version,
+             'dkms': r.dkms,
+             'gpus': {
+               'count': ri.gpu_count | default(0),
+               'gfx_targets': gpu_gfx,
+               'models': gpu_names},
+             'nvme': {
+               'count': r.nvme.drives | length,
+               'drives': nvme_list},
+             'rdma': {
+               'total_links': rdma_total,
+               'active_links': rdma_active}
+           } -%}
+        {% set _ = ns.hosts.update(
+             {h: entry}) -%}
+      {% endfor -%}
+      {{ ns.hosts }}
+
+- name: Print cluster summary to stdout
+  ansible.builtin.debug:
+    msg: |
+
+      ========== CLUSTER SUMMARY ==========
+      {% for h, s in cluster_summary.items() %}
+      {{ h }}:
+        Kernel .... {{ s.kernel }}
+        ROCm ...... {{ s.rocm_version }}
+        GPUs ...... {{ s.gpus.count }}x {{ s.gpus.models
+                     | unique | join(', ') }}
+                    ({{ s.gpus.gfx_targets
+                     | unique | join(', ') }})
+        NVMe ...... {{ s.nvme.count }} drives
+        RDMA ...... {{ s.rdma.active_links }}/{{
+                     s.rdma.total_links }} active
+        DKMS ...... {{ s.dkms | length }} modules
+      {% endfor %}
+      =======================================
+
+- name: Write cluster summary JSON
+  ansible.builtin.copy:
+    content: "{{ cluster_summary | to_nice_json }}\n"
+    dest: >-
+      {{ hostvars[ansible_play_hosts[0]].report_dir
+      }}/summary.json
     mode: "0644"
   delegate_to: localhost

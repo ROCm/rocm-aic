@@ -1,0 +1,39 @@
+# Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+
+---
+# Extra packages installed by provision.yml on top of the
+# sbates130272.batesste.fave_packages base set.  Edit this
+# list to add or remove project-specific packages.
+extra_packages:
+  # GPU monitoring and tools
+  - nvtop
+  - numactl
+  - pciutils
+  # NVMe and storage
+  - nvme-cli
+  - gdisk
+  # RDMA and networking
+  - ibverbs-utils
+  - rdma-core
+  - rdmacm-utils
+  - infiniband-diags
+  - perftest
+  - iperf3
+  - ethtool
+  - lldpd
+  - net-tools
+  # Debugging and profiling
+  - htop
+  - lshw
+  - strace
+  - gdb
+  - valgrind
+  - dwarves
+  - trace-cmd
+  - hwloc
+  # Infrastructure
+  - ipmitool
+  - socat
+  - jq

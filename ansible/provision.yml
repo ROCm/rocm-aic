@@ -1,0 +1,21 @@
+# Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+
+---
+- name: Provision target nodes with packages
+  hosts: gpu_nodes
+  gather_facts: true
+  become: true
+  vars:
+    extra_packages: []
+  tasks:
+    - name: Install base developer packages
+      ansible.builtin.include_role:
+        name: sbates130272.batesste.fave_packages
+
+    - name: Install project-specific extra packages
+      ansible.builtin.package:
+        name: "{{ extra_packages }}"
+        state: present
+      when: extra_packages | length > 0

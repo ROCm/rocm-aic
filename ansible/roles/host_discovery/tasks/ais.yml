@@ -1,0 +1,41 @@
+# Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+
+---
+- name: Check for ais-check tool
+  ansible.builtin.stat:
+    path: /opt/rocm/bin/ais-check
+  register: ais_check_bin
+
+- name: Run ais-check
+  ansible.builtin.command:
+    cmd: /opt/rocm/bin/ais-check
+  register: ais_check_raw
+  changed_when: false
+  failed_when: false
+  when: ais_check_bin.stat.exists
+
+- name: Parse ais-check results
+  ansible.builtin.set_fact:
+    ais_results: >-
+      {% if not ais_check_bin.stat.exists -%}
+        {{ {'available': false} }}
+      {%- elif ais_check_raw.rc != 0 -%}
+        {{ {'available': true,
+            'error': ais_check_raw.stderr | trim} }}
+      {%- else -%}
+        {% set ns = namespace(d={'available': true}) -%}
+        {% for line in ais_check_raw.stdout_lines -%}
+          {% if ':' in line
+                and 'AIS support' not in line -%}
+            {% set k = line.split(':')[0]
+                   | trim | lower
+                   | replace(' ', '_') -%}
+            {% set v = line.split(':')[1]
+                   | trim -%}
+            {% set _ = ns.d.update({k: v}) -%}
+          {% endif -%}
+        {% endfor -%}
+        {{ ns.d }}
+      {%- endif %}

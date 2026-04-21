@@ -22,15 +22,22 @@ The llama.cpp benchmark includes a `--cache-disk` patch
 for automatic disk-tier prompt caching (see
 [patches/0001-cache-disk.patch][patch]).
 
-## Host Discovery
+## Host Discovery and Provisioning
 
-The [`ansible/`][ansible-dir] directory contains an Ansible
-playbook that inventories GPU cluster nodes and produces a
-per-host JSON report covering GPUs, NVMe drives, RDMA
-NICs, Linux kernel version, ROCm version, and DKMS module
-status. A second play compares all hosts and flags any
-differences. See the [discover playbook][discover-yml]
-for details.
+The [`ansible/`][ansible-dir] directory contains Ansible
+playbooks for managing GPU cluster nodes.
+
+- **[discover.yml][discover-yml]** -- inventories each
+  node and produces a per-host JSON report covering GPUs,
+  NVMe drives, RDMA NICs, AIS status, Linux kernel
+  version, ROCm version, and DKMS module status. A second
+  play compares all hosts and flags differences.
+- **[provision.yml][provision-yml]** -- installs a base
+  set of developer packages via the
+  [sbates130272.batesste][galaxy] Galaxy collection's
+  `fave_packages` role, then layers on project-specific
+  packages defined in
+  [`group_vars/gpu_nodes.yml`][group-vars].
 
 ## References
 
@@ -41,6 +48,9 @@ for details.
 [patch]: benchmarks/ttft-llamacpp/patches/0001-cache-disk.patch
 [ansible-dir]: ansible/
 [discover-yml]: ansible/discover.yml
+[provision-yml]: ansible/provision.yml
+[galaxy]: https://galaxy.ansible.com/ui/repo/published/sbates130272/batesste/
+[group-vars]: ansible/inventory/group_vars/gpu_nodes.yml
 
 - [NVIDIA ICMS technical blog][icms]
 - [WEKA blog on BlueField-4 and ICMS][weka]
