@@ -1,0 +1,35 @@
+# Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+#
+# Build (localhost): docker buildx + docker save tarball.
+#   For private NIXL over git@..., use ssh-agent + ssh-add before running.
+# Deploy (gpu_nodes): install docker.io, copy tarball, docker load.
+#
+# Examples (from ansible/):
+#   ansible-playbook playbooks/inference-image.yml --tags inference-image-build
+#   ansible-playbook playbooks/inference-image.yml --tags inference-image-deploy
+
+- name: Build ROCm inference container image
+  hosts: localhost
+  connection: local
+  gather_facts: true
+  tags:
+    - inference-image-build
+  tasks:
+    - name: Run inference image build tasks
+      ansible.builtin.import_role:
+        name: inference_container
+        tasks_from: build.yml
+
+- name: Deploy ROCm inference container image to GPU nodes
+  hosts: gpu_nodes
+  become: true
+  gather_facts: true
+  tags:
+    - inference-image-deploy
+  tasks:
+    - name: Run inference image deploy tasks
+      ansible.builtin.import_role:
+        name: inference_container
+        tasks_from: deploy.yml
