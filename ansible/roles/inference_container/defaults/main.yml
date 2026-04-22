@@ -15,8 +15,9 @@ inference_container_tarball: /tmp/rocm-inference-stack.tar
 # Path to Dockerfile directory (repo: containers/rocm-inference-stack)
 inference_container_context_path: ""
 
-# Git URLs / refs (NIXL default is SSH — requires ssh-agent for docker build)
-inference_nixl_git_url: git@github.com:ROCm/nixl.git
+# Git URLs / refs (NIXL default: public ROCm/nixl over HTTPS; no BuildKit SSH).
+# For a fixed commit or tag, set inference_nixl_git_ref.
+inference_nixl_git_url: https://github.com/ROCm/nixl.git
 inference_nixl_git_ref: ""
 inference_lmcache_git_url: https://github.com/amd-ivaganev/LMCache.git
 inference_lmcache_git_sha: bef2e13
@@ -24,6 +25,9 @@ inference_hipfile_sha: b2509f2
 inference_gpu_archs: gfx942
 inference_llm_d_git_url: https://github.com/llm-d/llm-d.git
 inference_llm_d_git_ref: main
+# Optional llm-d commit (short or full SHA): shallow-clone branch first, then
+# git fetch/checkout so charts under /opt/llm-d/src match that revision.
+inference_llm_d_git_sha: ""
 
 # Deploy: tarball on remote nodes after copy
 inference_container_remote_tarball: /var/tmp/rocm-inference-stack.tar

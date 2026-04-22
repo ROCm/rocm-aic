@@ -1,0 +1,98 @@
+# Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+
+---
+- name: Resolve install paths on target host
+  ansible.builtin.set_fact:
+    kv_cache_tester_install_dir: "{{ ansible_user_dir }}/{{ kv_cache_tester_install_basename }}"
+  when: (kv_cache_tester_install_dir | default('') | length) == 0
+
+- name: Resolve venv path
+  ansible.builtin.set_fact:
+    kv_cache_tester_venv: "{{ kv_cache_tester_install_dir }}/.venv"
+  when: (kv_cache_tester_venv | default('') | length) == 0
+
+- name: Resolve output directory
+  ansible.builtin.set_fact:
+    kv_cache_tester_output_dir: "{{ kv_cache_tester_install_dir }}/results/latest"
+  when: (kv_cache_tester_output_dir | default('') | length) == 0
+
+- name: Require inference API endpoint when run is enabled
+  ansible.builtin.assert:
+    that:
+      - (kv_cache_tester_api_endpoint | default('') | length) > 0
+    fail_msg: >-
+      Set kv_cache_tester_api_endpoint (e.g. http://10.0.0.1:8000) in
+      group_vars or with -e when kv_cache_tester_run is true.
+  when: kv_cache_tester_run | bool
+
+- name: Install git and Python venv support (Debian / Ubuntu)
+  ansible.builtin.apt:
+    name:
+      - git
+      - python3
+      - python3-pip
+      - python3-venv
+    state: present
+    update_cache: true
+  become: true
+  when: ansible_facts.os_family == 'Debian'
+
+- name: Clone or update kv-cache-tester
+  ansible.builtin.git:
+    repo: "{{ kv_cache_tester_repo_url }}"
+    dest: "{{ kv_cache_tester_install_dir }}"
+    version: "{{ kv_cache_tester_repo_ref }}"
+    update: true
+
+- name: Create Python virtualenv for kv-cache-tester
+  ansible.builtin.command:
+    argv:
+      - python3
+      - "-m"
+      - venv
+      - "{{ kv_cache_tester_venv }}"
+    creates: "{{ kv_cache_tester_venv }}/bin/python"
+
+- name: Install Python requirements into venv
+  ansible.builtin.pip:
+    requirements: "{{ kv_cache_tester_install_dir }}/requirements.txt"
+    virtualenv: "{{ kv_cache_tester_venv }}"
+    virtualenv_command: python3 -m venv
+
+- name: Record installed revision
+  ansible.builtin.command:
+    argv:
+      - git
+      - rev-parse
+      - HEAD
+    chdir: "{{ kv_cache_tester_install_dir }}"
+  register: kv_cache_tester_git_head
+  changed_when: false
+
+- name: Show kv-cache-tester checkout
+  ansible.builtin.debug:
+    msg: "kv-cache-tester @ {{ kv_cache_tester_git_head.stdout }}"
+
+- name: Ensure output directory exists
+  ansible.builtin.file:
+    path: "{{ kv_cache_tester_output_dir }}"
+    state: directory
+    mode: "0755"
+  when: kv_cache_tester_run | bool
+
+- name: Run kv-cache-tester against API endpoint
+  when: kv_cache_tester_run | bool
+  ansible.builtin.command:
+    argv: "{{ [kv_cache_tester_venv ~ '/bin/python', kv_cache_tester_install_dir ~ '/' ~ kv_cache_tester_script, '--api-endpoint', kv_cache_tester_api_endpoint, '--output-dir', kv_cache_tester_output_dir] + (kv_cache_tester_extra_args | default([])) }}"
+    chdir: "{{ kv_cache_tester_install_dir }}"
+  register: kv_cache_tester_run_result
+  changed_when: true
+
+- name: Print last lines of kv-cache-tester output
+  ansible.builtin.debug:
+    msg: "{{ kv_cache_tester_run_result.stdout_lines | default([]) | tail(40) }}"
+  when:
+    - kv_cache_tester_run | bool
+    - kv_cache_tester_run_result.stdout_lines is defined

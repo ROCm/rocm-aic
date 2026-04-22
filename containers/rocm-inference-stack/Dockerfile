@@ -3,11 +3,11 @@
 #
 # SPDX-License-Identifier: MIT
 #
-# ROCm vLLM dev base + hipFile + LMCache + NIXL (private ROCm/nixl via SSH) +
-# optional llm-d chart checkout. Build with BuildKit and SSH agent, e.g.:
+# ROCm vLLM dev base + hipFile + LMCache + NIXL (ROCm/nixl over HTTPS by
+# default; optional NIXL_REF for tag/commit) + llm-d checkout under /opt/llm-d.
+# Build with BuildKit, e.g.:
 #   export DOCKER_BUILDKIT=1
-#   eval "$(ssh-agent -s)" && ssh-add ~/.ssh/your_github_key
-#   docker buildx build --ssh=default -f Dockerfile -t rocm-inference-stack:latest .
+#   docker buildx build -f Dockerfile -t rocm-inference-stack:latest .
 #
 FROM rocm/vllm-dev:nightly_main_20260416
 
@@ -19,7 +19,6 @@ WORKDIR /app
 RUN apt-get update && \
 	apt-get install -y --no-install-recommends \
 		ca-certificates \
-		openssh-client \
 		git \
 		cmake \
 		libboost-all-dev \
@@ -34,10 +33,11 @@ ARG LMCACHE_SHA=bef2e13
 ARG GPU_ARCHS=gfx942
 ARG WITH_HIPFILE=1
 
-ARG NIXL_GIT_URL=git@github.com:ROCm/nixl.git
+ARG NIXL_GIT_URL=https://github.com/ROCm/nixl.git
 ARG NIXL_REF=
 ARG LLM_D_GIT_URL=https://github.com/llm-d/llm-d.git
 ARG LLM_D_REF=main
+ARG LLM_D_SHA=
 
 RUN echo "${GPU_ARCHS}" | tr ' ' ';' > /app/gpu_archs.txt
 
@@ -71,25 +71,11 @@ RUN git clone "${LMCACHE_GIT_URL}" /tmp/LMCache && \
 # Optional transitive nixl wheels from LMCache deps; ignore if absent.
 RUN pip uninstall -y nixl nixl-cu12 2>/dev/null || true
 
+COPY scripts/clone-nixl.sh /tmp/clone-nixl.sh
 COPY scripts/build-nixl.sh /tmp/build-nixl.sh
-RUN chmod +x /tmp/build-nixl.sh
+RUN chmod +x /tmp/clone-nixl.sh /tmp/build-nixl.sh
 
-RUN --mount=type=ssh \
-	bash -c 'set -euo pipefail; \
-		mkdir -p /root/.ssh && chmod 700 /root/.ssh; \
-		ssh-keyscan -t rsa,ecdsa,ed25519 github.com >> /root/.ssh/known_hosts 2>/dev/null || true; \
-		rm -rf /tmp/nixl; \
-		if [[ -n "${NIXL_REF}" ]]; then \
-			if git clone --depth 1 --branch "${NIXL_REF}" "${NIXL_GIT_URL}" /tmp/nixl; then \
-				:; \
-			else \
-				rm -rf /tmp/nixl; \
-				git clone "${NIXL_GIT_URL}" /tmp/nixl; \
-				cd /tmp/nixl && git checkout "${NIXL_REF}"; \
-			fi; \
-		else \
-			git clone --depth 1 "${NIXL_GIT_URL}" /tmp/nixl; \
-		fi'
+RUN NIXL_GIT_URL="${NIXL_GIT_URL}" NIXL_REF="${NIXL_REF}" /tmp/clone-nixl.sh
 
 ENV NIXL_SRC=/tmp/nixl
 ENV UCX_PREFIX=/opt/rocnixl-ucx
@@ -101,6 +87,12 @@ RUN rm -rf /opt/llm-d/src && mkdir -p /opt/llm-d && \
 	else \
 		git clone "${LLM_D_GIT_URL}" /opt/llm-d/src && \
 		cd /opt/llm-d/src && git checkout "${LLM_D_REF}"; \
+	fi
+
+RUN if [[ -n "${LLM_D_SHA:-}" ]]; then \
+		cd /opt/llm-d/src && \
+		git fetch --depth 1 origin "${LLM_D_SHA}" && \
+		git checkout FETCH_HEAD; \
 	fi
 
 RUN apt-get update && \

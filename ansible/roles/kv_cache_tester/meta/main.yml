@@ -1,0 +1,12 @@
+# Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+
+---
+galaxy_info:
+  role_name: kv_cache_tester
+  author: rocm-icms
+  description: Install kv-cache-tester and optionally run it against an HTTP API
+  license: MIT
+  min_ansible_version: "2.14"
+dependencies: []
