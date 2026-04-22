@@ -8,7 +8,9 @@
 #   ansible-playbook site.yml --tags discover
 #   ansible-playbook site.yml --tags provision
 #   ansible-playbook site.yml --skip-tags rdma-network
+#   ansible-playbook site.yml --skip-tags monitoring
 #   ansible-playbook site.yml --tags inference-container
+#   ansible-playbook site.yml --tags monitoring
 
 - name: Discover the state of the GPU cluster nodes
   ansible.builtin.import_playbook: playbooks/discover.yml
@@ -33,3 +35,8 @@
   ansible.builtin.import_playbook: playbooks/inference-image.yml
   tags:
     - inference-container
+
+- name: Install Prometheus, Grafana, and monitoring scrape configuration
+  ansible.builtin.import_playbook: playbooks/monitoring.yml
+  tags:
+    - monitoring

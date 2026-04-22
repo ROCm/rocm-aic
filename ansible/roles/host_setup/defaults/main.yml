@@ -24,3 +24,6 @@ host_setup_udev_rename: false
 # to apply rules; set true only when safe for your login path.
 host_setup_udev_rename_live_apply: false
 host_setup_udev_rules_file: 70-rocm-icms-net-rdma.rules
+
+# After extra_packages: enable systemd unit for prometheus-node-exporter.
+host_setup_enable_prometheus_node_exporter: true

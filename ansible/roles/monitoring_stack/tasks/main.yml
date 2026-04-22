@@ -1,0 +1,40 @@
+# Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+
+---
+- name: Enforce Grafana admin password policy
+  ansible.builtin.assert:
+    that:
+      - monitoring_grafana_admin_password is defined
+      - monitoring_grafana_admin_password | string | length > 0
+    fail_msg: >-
+      Set monitoring_grafana_admin_password (vault or -e) or set
+      monitoring_grafana_require_admin_password to false.
+  when: monitoring_grafana_require_admin_password | default(false) | bool
+
+- name: Install Prometheus and Grafana
+  ansible.builtin.apt:
+    name:
+      - prometheus
+      - grafana
+    state: present
+    update_cache: true
+
+- name: Configure Prometheus
+  ansible.builtin.include_tasks: prometheus.yml
+
+- name: Configure Grafana
+  ansible.builtin.include_tasks: grafana.yml
+
+- name: Enable and start Prometheus
+  ansible.builtin.service:
+    name: prometheus
+    state: started
+    enabled: true
+
+- name: Enable and start Grafana
+  ansible.builtin.service:
+    name: grafana-server
+    state: started
+    enabled: true

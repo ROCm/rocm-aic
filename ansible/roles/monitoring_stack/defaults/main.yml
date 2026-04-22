@@ -1,0 +1,26 @@
+# Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+
+---
+# Override in inventory (see group_vars/monitoring_server.yml).
+
+monitoring_grafana_admin_user: admin
+# Set via vault or -e when configuring Grafana admin password.
+monitoring_grafana_admin_password: ""
+
+monitoring_grafana_require_admin_password: false
+
+monitoring_llmd_prometheus_federate_enabled: false
+monitoring_llmd_prometheus_federate_host: ""
+monitoring_llmd_prometheus_federate_scheme: https
+monitoring_llmd_prometheus_federate_ca_file: ""
+monitoring_llmd_prometheus_federate_insecure_skip_verify: false
+monitoring_llmd_federate_match:
+  - '{__name__=~"up"}'
+
+monitoring_llmd_grafana_datasource_url: ""
+
+# Defaults for templates when hostvars omit collection role defaults.
+nvme_exporter_listen_address: ":9998"
+rocm_setup_metrics_exporter_port: 5000
