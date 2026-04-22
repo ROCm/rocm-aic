@@ -12,6 +12,9 @@
 - name: Detect RDMA NICs
   ansible.builtin.include_tasks: rdma.yml
 
+- name: Detect network interfaces
+  ansible.builtin.include_tasks: net.yml
+
 - name: Detect ROCm version
   ansible.builtin.include_tasks: rocm.yml
 
@@ -46,6 +49,10 @@
         links: "{{ rdma_links }}"
         ib_devices: "{{ rdma_ib_devices }}"
         ibstat: "{{ rdma_ibstat }}"
+      net:
+        ip_brief: "{{ net_ip_brief_lines }}"
+        active: "{{ net_iface_up }}"
+        total: "{{ net_iface_total }}"
       dkms: "{{ dkms_modules }}"
       ais: "{{ ais_results }}"
       rocminfo: "{{ rocminfo_summary }}"
@@ -90,6 +97,12 @@
       {% else %}
       (none detected)
       {% endif %}
+
+      --- NET (ip -brief link) ---
+      {{ host_report.net.active }}/{{ host_report.net.total }} up (excl. lo)
+      {% for line in host_report.net.ip_brief %}
+      {{ line }}
+      {% endfor %}
 
       --- DKMS Modules ---
       {% for line in host_report.dkms %}

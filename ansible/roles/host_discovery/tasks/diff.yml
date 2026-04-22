@@ -170,6 +170,9 @@
         {% set rdma_total = r.rdma.links
                | default([])
                | length -%}
+        {% set net_ns = r.net | default({}) -%}
+        {% set net_total = net_ns.total | default(0) | int -%}
+        {% set net_active = net_ns.active | default(0) | int -%}
         {% set entry = {
              'kernel': r.kernel,
              'rocm_version': r.rocm_version,
@@ -183,7 +186,10 @@
                'drives': nvme_list},
              'rdma': {
                'total_links': rdma_total,
-               'active_links': rdma_active}
+               'active_links': rdma_active},
+             'net': {
+               'total': net_total,
+               'active': net_active}
            } -%}
         {% set _ = ns.hosts.update(
              {h: entry}) -%}
@@ -206,7 +212,11 @@
         NVMe ...... {{ s.nvme.count }} drives
         RDMA ...... {{ s.rdma.active_links }}/{{
                      s.rdma.total_links }} active
+        NET ....... {{ s.net.active }}/{{ s.net.total }} active
         DKMS ...... {{ s.dkms | length }} modules
+        {% for line in s.dkms %}
+        {{ line }}
+        {% endfor %}
       {% endfor %}
       =======================================
 
