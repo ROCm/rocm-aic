@@ -1,8 +1,16 @@
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 
+
+# Note: paths are relative to the result folder where the final yaml is assembled
+# typically `results/sweeps/<sweep_name>/run-<run_id>/manifests`
+
+# Use the Offloading flavor from tiered-prefix-cache
 resources:
-  - ../../../../../../../../submodules/llm-d/guides/tiered-prefix-cache/cpu/manifests/vllm/offloading-connector-amd
+  - ../../../../../../tiered-prefix-cache/manifests/vllm/flavors/offloading
+
+components:
+  - ../../../../../../tiered-prefix-cache/manifests/vllm/components/hostpath-models
 
 patches:
   - target:
@@ -14,7 +22,7 @@ patches:
         value: 1
       - op: replace
         path: /spec/template/spec/containers/0/image
-        value: ghcr.io/vcave/vllm:rocm_721-vllm_20260401-lmcache
+        value: ghcr.io/vcave/vllm:rocm_721-vllm_20260417-lmcache
       - op: replace
         path: /spec/template/spec/containers/0/args/0
         value: |-
@@ -22,38 +30,6 @@ patches:
             --tensor-parallel-size {{tensor_parallel_size}} \
             --port 8000 \
             {{VLLM_ARGS}}
-      - op: add
-        path: /spec/template/spec/containers/0/env/-
-        value:
-          name: HUGGINGFACE_HUB_CACHE
-          value: "/models"
-      - op: add
-        path: /spec/template/spec/volumes/-
-        value:
-          name: models
-          hostPath:
-            path: /data/models-cache
-            type: Directory
-      - op: add
-        path: /spec/template/spec/volumes/-
-        value:
-          name: torch-compile-cache
-          emptyDir: {}
-      - op: add
-        path: /spec/template/spec/containers/0/volumeMounts/-
-        value:
-          name: models
-          mountPath: "/models"
-          readOnly: true
-      - op: add
-        path: /spec/template/spec/containers/0/volumeMounts/-
-        value:
-          name: torch-compile-cache
-          mountPath: "/.cache"
-  - target:
-      kind: Deployment
-      name: llm-d-model-server
-    patch: |-
       - op: replace
         path: /spec/template/spec/containers/0/resources/limits/amd.com~1gpu
         value: "{{tensor_parallel_size}}"
