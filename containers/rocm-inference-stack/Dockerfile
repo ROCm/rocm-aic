@@ -66,8 +66,10 @@ RUN git clone "${LMCACHE_GIT_URL}" /tmp/LMCache && \
 		TORCH_DONT_CHECK_COMPILER_ABI=1 \
 		CXX=hipcc \
 		BUILD_WITH_HIP=1 \
-		python3 -m pip install --no-cache-dir --no-build-isolation -e . && \
-	pip uninstall -y nixl nixl-cu12 2>/dev/null || true
+		python3 -m pip install --no-cache-dir --no-build-isolation -e .
+
+# Optional transitive nixl wheels from LMCache deps; ignore if absent.
+RUN pip uninstall -y nixl nixl-cu12 2>/dev/null || true
 
 COPY scripts/build-nixl.sh /tmp/build-nixl.sh
 RUN chmod +x /tmp/build-nixl.sh

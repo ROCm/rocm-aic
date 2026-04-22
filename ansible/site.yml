@@ -23,7 +23,7 @@
     - host_setup
   tags:
     - provision
-  
+
 - name: Perform RDMA network connectivity and (optional) perftest checks
   ansible.builtin.import_playbook: playbooks/rdma-network.yml
   tags:

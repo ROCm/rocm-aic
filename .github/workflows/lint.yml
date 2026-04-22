@@ -36,6 +36,6 @@ jobs:
         run: pip install yamllint
       - name: Run yamllint
         run: |
-          yamllint -d relaxed \
+          yamllint -c .yamllint \
             $(find . -name '*.yml' -o -name '*.yaml' \
               | grep -v '.git/')

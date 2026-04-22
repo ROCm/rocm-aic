@@ -10,9 +10,17 @@
   changed_when: false
   failed_when: false
 
+- name: Query IPv4 addresses per interface (brief)
+  ansible.builtin.command:
+    cmd: ip -4 -brief addr show
+  register: net_addr4_raw
+  changed_when: false
+  failed_when: false
+
 - name: Build NET facts
   ansible.builtin.set_fact:
     net_ip_brief_lines: "{{ net_link_raw.stdout_lines | default([]) }}"
+    net_ipv4_brief_lines: "{{ net_addr4_raw.stdout_lines | default([]) }}"
     net_iface_total: >-
       {{ net_link_raw.stdout_lines | default([])
          | reject('regex', '^lo\s')

@@ -41,6 +41,25 @@
   failed_when: false
   when: ibstat_cmd_check.rc == 0
 
+- name: Show RDMA devices (names, netdev, IPv4 when reported)
+  ansible.builtin.command:
+    cmd: rdma dev show
+  register: rdma_dev_show_raw
+  changed_when: false
+  failed_when: false
+  when: rdma_cmd_check.rc == 0
+
+- name: Show RDMA GID table (truncated for large hosts)
+  ansible.builtin.shell: |
+    set -o pipefail
+    rdma resource show gid 2>/dev/null | head -n 64
+  args:
+    executable: /bin/bash
+  register: rdma_gid_raw
+  changed_when: false
+  failed_when: false
+  when: rdma_cmd_check.rc == 0
+
 - name: Build RDMA facts
   ansible.builtin.set_fact:
     rdma_links: >-
@@ -49,3 +68,11 @@
       {{ ib_sysfs_raw.stdout_lines | default([]) }}
     rdma_ibstat: >-
       {{ ibstat_raw.stdout_lines | default([]) }}
+    rdma_dev_show: >-
+      {{
+        (rdma_dev_show_raw | default({}, true)).stdout_lines | default([])
+      }}
+    rdma_gid_show: >-
+      {{
+        (rdma_gid_raw | default({}, true)).stdout_lines | default([])
+      }}

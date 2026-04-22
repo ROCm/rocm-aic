@@ -146,3 +146,13 @@ rocminfo
 sbates
 vCPUs
 yml
+ARG
+amd
+BuildKit
+HTTPS
+llm
+NIXL
+repos
+rdma
+SPDX
+UCX
