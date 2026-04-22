@@ -8,7 +8,14 @@
 # monitoring`.
 
 monitoring_grafana_admin_user: admin
-monitoring_grafana_require_admin_password: admin
+# Grafana .deb from apt.grafana.com (override if you need another stable build).
+# monitoring_grafana_apt_version: "13.0.1"
+monitoring_grafana_require_admin_password: false
+
+# Grafana.com dashboards (Node Exporter Full, AMD Instinct single-node).
+# monitoring_grafana_provision_dashboards: false
+# monitoring_grafana_dashboard_node_exporter_id: "1860"
+# monitoring_grafana_dashboard_amd_gpu_id: "23434"
 
 # Optional: federate metrics from an llm-d / in-cluster Prometheus into this
 # server's Prometheus TSDB.

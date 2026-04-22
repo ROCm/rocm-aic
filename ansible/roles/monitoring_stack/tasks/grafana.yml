@@ -37,3 +37,7 @@
     group: grafana
     mode: "0640"
   notify: Reload systemd and restart grafana-server
+
+- name: Provision dashboards from Grafana.com
+  ansible.builtin.include_tasks: grafana_dashboards.yml
+  when: monitoring_grafana_provision_dashboards | default(true) | bool

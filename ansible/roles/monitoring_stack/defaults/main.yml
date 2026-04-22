@@ -6,6 +6,8 @@
 # Override in inventory (see group_vars/monitoring_server.yml).
 
 monitoring_grafana_admin_user: admin
+# Pin from apt.grafana.com stable (13.0.0 is not published; use latest 13.x).
+monitoring_grafana_apt_version: "13.0.1"
 # Set via vault or -e when configuring Grafana admin password.
 monitoring_grafana_admin_password: ""
 
@@ -20,6 +22,13 @@ monitoring_llmd_federate_match:
   - '{__name__=~"up"}'
 
 monitoring_llmd_grafana_datasource_url: ""
+
+# Grafana.com dashboard IDs (revisions/latest/download).
+monitoring_grafana_provision_dashboards: true
+monitoring_grafana_provision_node_exporter_dashboard: true
+monitoring_grafana_dashboard_node_exporter_id: "1860"
+monitoring_grafana_provision_amd_gpu_dashboard: true
+monitoring_grafana_dashboard_amd_gpu_id: "23434"
 
 # Defaults for templates when hostvars omit collection role defaults.
 nvme_exporter_listen_address: ":9998"

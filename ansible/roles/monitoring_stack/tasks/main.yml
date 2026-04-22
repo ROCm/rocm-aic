@@ -13,13 +13,14 @@
       monitoring_grafana_require_admin_password to false.
   when: monitoring_grafana_require_admin_password | default(false) | bool
 
-- name: Install Prometheus and Grafana
+- name: Install Prometheus from Ubuntu repositories
   ansible.builtin.apt:
-    name:
-      - prometheus
-      - grafana
+    name: prometheus
     state: present
     update_cache: true
+
+- name: Add Grafana apt repository and install Grafana
+  ansible.builtin.include_tasks: grafana_repo.yml
 
 - name: Configure Prometheus
   ansible.builtin.include_tasks: prometheus.yml
