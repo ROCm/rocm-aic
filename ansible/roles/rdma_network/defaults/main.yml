@@ -1,0 +1,104 @@
+# Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+
+---
+# Inventory group whose members participate in the matrix (when
+# rdma_network_hosts is empty).
+rdma_network_group: gpu_nodes
+
+# Explicit host list; when empty, uses groups[rdma_network_group].
+rdma_network_hosts: []
+
+# When set, only this CA name (perftest -d) is kept from all "rdma dev show"
+# links. When empty, every RDMA link on the host is tested against every
+# remote NIC in the host-pair matrix.
+rdma_network_device: ""
+
+# Remove discovered NIC rows with no resolvable IPv4 (facts or fallback bind).
+rdma_network_skip_nics_without_ip: true
+
+# Optional: same interface name on every host; IPv4 from gathered facts
+# (ansible_<iface>.ipv4) when rdma_network_bind_ipv4 is not set per host.
+rdma_network_bind_interface: ""
+
+# Per-host fabric IP (host_vars). When a discovered netdev has no matching
+# ansible_* IPv4 (common on some RoCE names), append_rdma_nic_row uses this
+# for every row on that host. Multi-NIC / multi-subnet sites may need
+# per-device addressing later (facts or a map), not a single bind IP.
+rdma_network_bind_ipv4: ""
+
+# Optional GID index for RoCE (-x); omit when null / empty string.
+rdma_network_gid_index: null
+
+# Pass -R (RoCE) to perftest when true.
+rdma_network_roce: true
+
+# perftest binary: ib_write_bw, ib_send_bw, ib_read_bw, etc.
+rdma_network_perftest: ib_write_bw
+
+# Extra CLI tokens appended to server and client (same on both sides).
+rdma_network_perftest_extra_args: "-n 5000 -m 4096"
+
+# directed: all ordered pairs (N * (N - 1)). undirected: each unordered
+# pair once (lexicographic server < client).
+rdma_network_pair_mode: directed
+
+# After the full ICMP / perftest mesh rows are built, shuffle each list and
+# keep at most this many rows (ICMP and perftest are sampled independently).
+# 0 = run the full mesh (default).
+rdma_network_random_subset_count: 0
+
+# Optional integer seed for a reproducible shuffle (same inventory + mesh +
+# seed yields the same subset). Leave empty for a different random sample each
+# run.
+rdma_network_random_subset_seed: ""
+
+# full_ping (default): for each host pair, ICMP from every RDMA NIC IPv4 on
+# the server host to every RDMA NIC IPv4 on the client (ping -I <src_ip>).
+# full_perftest: perftest NIC×NIC mesh. pair_pingpong: one latency row/pair.
+rdma_network_matrix_mode: full_ping
+
+# ICMP packets per ping when matrix_mode is full_ping.
+rdma_network_ping_count: 4
+
+# iputils ping -w: max wall-clock seconds for the whole ping (avoids Ansible
+# hanging on black-hole routes or wedged ARP). Raise if pings need more time.
+rdma_network_ping_deadline_sec: 5
+
+# Added to ping -w for Ansible async job ceiling (seconds). Keep small so a
+# wedged ping cannot block the play for long after -w would have expired.
+rdma_network_ping_async_slack_sec: 2
+
+# fabric: full NIC×NIC mesh with source bind (-I). management: one ping per
+# host pair to ansible_host (no -I), not RDMA paths.
+rdma_network_ping_target: fabric
+
+# Used when rdma_network_matrix_mode is pair_pingpong (latency tools).
+rdma_network_pair_pingpong_perftest: ib_send_lat
+
+# Extra CLI for pair_pingpong mode only (lighter than default BW args).
+rdma_network_pair_pingpong_extra_args: "-n 2048"
+
+# Seconds to sleep after starting async server before launching client.
+rdma_network_server_start_delay: 2
+
+# Async timeout (seconds) for perftest server job. Client async ceiling is
+# this value plus rdma_network_client_async_slack_sec.
+rdma_network_async_timeout: 120
+
+# Seconds added to rdma_network_async_timeout for the perftest client async
+# ceiling (was a fixed +30; keep a small margin over server timeout).
+rdma_network_client_async_slack_sec: 10
+
+# Write a text report under ansible/reports/<timestamp>/ on the controller.
+rdma_network_write_report: true
+
+# Write rdma-mesh-summary.json (NIC mesh, IPs, connectivity, parsed BW).
+rdma_network_json_summary: true
+
+# Max characters of perftest stdout stored per link in JSON (0 = omit).
+rdma_network_json_stdout_max: 12000
+
+# After the run, print PASS/FAIL tables for ICMP and/or perftest to stdout.
+rdma_network_print_connection_summary: true

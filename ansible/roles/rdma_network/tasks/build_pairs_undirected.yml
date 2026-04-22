@@ -1,0 +1,12 @@
+# Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+
+---
+- name: Accumulate undirected RDMA test pairs (lexicographic order)
+  ansible.builtin.set_fact:
+    rdma_network_pairs: "{{ rdma_network_pairs + [{'server': rdma_outer_server, 'client': item}] }}"
+  loop: "{{ rdma_network_host_list | difference([rdma_outer_server]) }}"
+  when: item > rdma_outer_server
+  loop_control:
+    label: "{{ rdma_outer_server }} <-> {{ item }}"

@@ -3,6 +3,10 @@
 # SPDX-License-Identifier: MIT
 
 ---
+# RDMA role: default is ICMP full_ping (inventory inherits role default).
+# Override with pair_pingpong or full_perftest when you want perftest.
+# rdma_network_matrix_mode: full_perftest
+
 # Match the SSH login (ansible_user) to user_setup and rocm_setup.
 username: "{{ ansible_user }}"
 rocm_setup_user: "{{ username }}"
