@@ -31,6 +31,18 @@
   tags:
     - rdma_setup
 
+- name: Install udev rules renaming RoCE netdevs and RDMA CA devices
+  ansible.builtin.include_tasks:
+    file: udev_rename.yml
+    apply:
+      tags:
+        - udev_rename
+        - provision
+  when: host_setup_udev_rename | bool
+  tags:
+    - udev_rename
+    - provision
+
 - name: Preclean stale AMD APT lists before rocm_setup
   ansible.builtin.include_tasks: apt_preclean_amd_repos.yml
   tags:

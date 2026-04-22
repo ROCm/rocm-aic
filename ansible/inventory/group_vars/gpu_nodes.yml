@@ -6,6 +6,10 @@
 # RDMA role: default is ICMP full_ping (inventory inherits role default).
 # Override with pair_pingpong or full_perftest when you want perftest.
 # rdma_network_matrix_mode: full_perftest
+#
+# After host_setup udev rename, fabric NICs may be mlx-eth0, bnxt-eth0, etc.
+# Set rdma_network_bind_interface to match your fabric device if needed.
+# host_setup_udev_rename_live_apply: false  # if SSH uses a NIC being renamed
 
 # Match the SSH login (ansible_user) to user_setup and rocm_setup.
 username: "{{ ansible_user }}"

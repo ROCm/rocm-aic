@@ -14,3 +14,12 @@ host_setup_preclean_rocm_list_bad_regex: "26\\.11"
 # After rocm_setup: remove one-line lists that duplicate deb822 rocm.sources.
 host_setup_remove_duplicate_amdgpu_list: true
 host_setup_remove_legacy_rocm_list: true
+
+# udev: mlx|bnxt|ionic-prefixed netdev + infiniband names (after rdma_setup).
+host_setup_udev_rename: true
+# When true, after installing rules: udevadm reload + trigger for net and
+# infiniband, then print rdma dev show / sysfs / ip -brief (live names). Set
+# false to only write rules + planned YAML (e.g. avoid SSH disruption on a
+# renamed management NIC, then reboot to apply).
+host_setup_udev_rename_live_apply: true
+host_setup_udev_rules_file: 70-rocm-icms-net-rdma.rules
