@@ -7,6 +7,8 @@
 # Examples:
 #   ansible-playbook site.yml --tags discover
 #   ansible-playbook site.yml --tags provision
+#   ansible-playbook site.yml --skip-tags rdma-network
+#   ansible-playbook site.yml --tags inference-container
 
 - name: Discover the state of the GPU cluster nodes
   ansible.builtin.import_playbook: playbooks/discover.yml
@@ -17,7 +19,17 @@
   hosts: gpu_nodes
   gather_facts: true
   become: true
-  tags:
-    - provision
   roles:
     - host_setup
+  tags:
+    - provision
+
+- name: Perform RDMA network connectivity and (optional) perftest checks
+  ansible.builtin.import_playbook: playbooks/rdma-network.yml
+  tags:
+    - rdma-network
+
+- name: Build or deploy ROCm inference stack container image
+  ansible.builtin.import_playbook: playbooks/inference-image.yml
+  tags:
+    - inference-container

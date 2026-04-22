@@ -14,3 +14,13 @@ host_setup_preclean_rocm_list_bad_regex: "26\\.11"
 # After rocm_setup: remove one-line lists that duplicate deb822 rocm.sources.
 host_setup_remove_duplicate_amdgpu_list: true
 host_setup_remove_legacy_rocm_list: true
+
+# udev: mlx|bnxt|ionic-prefixed netdev + infiniband names (after rdma_setup).
+# Default off: this path has disrupted node networking; enable deliberately
+# when naming rules and apply strategy (below) are validated for your fabric.
+host_setup_udev_rename: false
+# When udev_rename is true and this is true: udevadm reload + live trigger for
+# net and infiniband (can break SSH on a renamed NIC). Prefer false and reboot
+# to apply rules; set true only when safe for your login path.
+host_setup_udev_rename_live_apply: false
+host_setup_udev_rules_file: 70-rocm-icms-net-rdma.rules

@@ -1,0 +1,68 @@
+# Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+
+---
+# script copies from role files/ to the remote (role_path is controller-only).
+- name: Discover RDMA CA / netdev pairs for udev naming
+  ansible.builtin.script: rocm_icms_rdma_net_pair_discovery.py
+  register: host_setup_rdma_pair_discovery
+  changed_when: false
+  failed_when: host_setup_rdma_pair_discovery.rc != 0
+
+- name: Parse RDMA udev pair list
+  ansible.builtin.set_fact:
+    host_setup_rdma_udev_pairs: "{{ host_setup_rdma_pair_discovery.stdout | from_json }}"
+
+- name: Report planned netdev and RDMA CA names (udev NAME= targets)
+  ansible.builtin.debug:
+    var: host_setup_rdma_udev_pairs
+
+- name: Install udev rules for RDMA / RoCE netdev and infiniband names
+  ansible.builtin.template:
+    src: rocm-icms-net-rdma.rules.j2
+    dest: "/etc/udev/rules.d/{{ host_setup_udev_rules_file }}"
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Reload udev rules after rocm-icms RDMA naming rules
+  ansible.builtin.command: udevadm control --reload-rules
+  changed_when: true
+
+- name: Trigger udev and capture live RDMA / netdev names
+  when: host_setup_udev_rename_live_apply | bool
+  block:
+    - name: Trigger udev for net and infiniband devices
+      ansible.builtin.shell: |
+        set -e
+        udevadm trigger --subsystem-match=net --action=add
+        udevadm trigger --subsystem-match=infiniband --action=add
+      args:
+        executable: /bin/bash
+      changed_when: true
+
+    - name: Collect live RDMA and netdev snapshot (single stdout)
+      ansible.builtin.shell: |
+        printf '%s\n' "--- rdma dev show ---"
+        if command -v rdma >/dev/null 2>&1; then
+          rdma dev show || printf '%s\n' "(rdma dev show failed)"
+        else
+          printf '%s\n' "(rdma not in PATH)"
+        fi
+        printf '\n%s\n' "--- /sys/class/infiniband ---"
+        if [ -d /sys/class/infiniband ]; then
+          ls -1 /sys/class/infiniband
+        else
+          printf '%s\n' "(no /sys/class/infiniband)"
+        fi
+        printf '\n%s\n' "--- ip -brief link ---"
+        ip -brief link show
+      args:
+        executable: /bin/bash
+      register: host_setup_rdma_live_snapshot
+      changed_when: false
+
+    - name: Report live RDMA and netdev names (after udev trigger)
+      ansible.builtin.debug:
+        msg: "{{ host_setup_rdma_live_snapshot.stdout }}"

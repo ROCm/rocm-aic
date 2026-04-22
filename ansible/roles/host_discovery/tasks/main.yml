@@ -12,6 +12,9 @@
 - name: Detect RDMA NICs
   ansible.builtin.include_tasks: rdma.yml
 
+- name: Detect network interfaces
+  ansible.builtin.include_tasks: net.yml
+
 - name: Detect ROCm version
   ansible.builtin.include_tasks: rocm.yml
 
@@ -44,8 +47,15 @@
         nvme_cli: "{{ nvme_detail }}"
       rdma:
         links: "{{ rdma_links }}"
+        dev_show: "{{ rdma_dev_show }}"
+        gid_show: "{{ rdma_gid_show }}"
         ib_devices: "{{ rdma_ib_devices }}"
         ibstat: "{{ rdma_ibstat }}"
+      net:
+        ip_brief: "{{ net_ip_brief_lines }}"
+        ipv4_brief: "{{ net_ipv4_brief_lines }}"
+        active: "{{ net_iface_up }}"
+        total: "{{ net_iface_total }}"
       dkms: "{{ dkms_modules }}"
       ais: "{{ ais_results }}"
       rocminfo: "{{ rocminfo_summary }}"
@@ -81,15 +91,45 @@
       {% endif %}
 
       --- RDMA ---
+      {% if (host_report.rdma.dev_show | default([])) | length > 0 %}
+      rdma dev show (device / netdev / IPv4 when present):
+      {% for line in host_report.rdma.dev_show %}
+      {{ line }}
+      {% endfor %}
+
+      {% endif %}
+      {% if (host_report.rdma.gid_show | default([])) | length > 0 %}
+      rdma resource show gid (first 64 lines):
+      {% for line in host_report.rdma.gid_show %}
+      {{ line }}
+      {% endfor %}
+
+      {% endif %}
       {% if host_report.rdma.links | length > 0 %}
+      rdma link show:
       {% for line in host_report.rdma.links %}
       {{ line }}
       {% endfor %}
       {% elif host_report.rdma.ib_devices | length > 0 %}
-      IB devices: {{ host_report.rdma.ib_devices | join(', ') }}
-      {% else %}
+      IB devices (sysfs): {{ host_report.rdma.ib_devices | join(', ') }}
+      {% elif ((host_report.rdma.dev_show | default([])) | length == 0) and ((host_report.rdma.gid_show | default([])) | length == 0) %}
       (none detected)
       {% endif %}
+
+      --- NET (IPv4: iface, state, CIDR) ---
+      {% if (host_report.net.ipv4_brief | default([])) | length > 0 %}
+      {% for line in host_report.net.ipv4_brief %}
+      {{ line }}
+      {% endfor %}
+      {% else %}
+      (none or ip -4 -brief addr unavailable)
+      {% endif %}
+
+      --- NET (link state: ip -brief link) ---
+      {{ host_report.net.active }}/{{ host_report.net.total }} up (excl. lo)
+      {% for line in host_report.net.ip_brief %}
+      {{ line }}
+      {% endfor %}
 
       --- DKMS Modules ---
       {% for line in host_report.dkms %}

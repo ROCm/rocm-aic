@@ -1,0 +1,28 @@
+#!/bin/bash
+# Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+#
+set -euo pipefail
+cd "{{ inference_container_context_resolved }}"
+export DOCKER_BUILDKIT=1
+{% if inference_nixl_uses_ssh | bool %}
+if [[ -z "${SSH_AUTH_SOCK:-}" ]]; then
+	echo "git@ NIXL URL requires SSH_AUTH_SOCK; run: eval \"\$(ssh-agent -s)\" && ssh-add ~/.ssh/<key>" >&2
+	exit 1
+fi
+{% else %}
+eval "$(ssh-agent -s)"
+{% endif %}
+exec docker buildx build --ssh=default \
+	-f Dockerfile \
+	-t "{{ inference_container_image }}" \
+	--build-arg "HIPFILE_SHA={{ inference_hipfile_sha }}" \
+	--build-arg "LMCACHE_GIT_URL={{ inference_lmcache_git_url }}" \
+	--build-arg "LMCACHE_SHA={{ inference_lmcache_git_sha }}" \
+	--build-arg "GPU_ARCHS={{ inference_gpu_archs }}" \
+	--build-arg "NIXL_GIT_URL={{ inference_nixl_git_url }}" \
+	--build-arg "NIXL_REF={{ inference_nixl_git_ref }}" \
+	--build-arg "LLM_D_GIT_URL={{ inference_llm_d_git_url }}" \
+	--build-arg "LLM_D_REF={{ inference_llm_d_git_ref }}" \
+	.

@@ -1,0 +1,13 @@
+# Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+#
+# Managed by Ansible (host_setup). Vendor-prefixed names: mlx|bnxt|ionic.
+{% if host_setup_rdma_udev_pairs | length > 0 %}
+{% for p in host_setup_rdma_udev_pairs %}
+SUBSYSTEM=="net", ACTION=="add", ATTR{address}=="{{ p.mac }}", NAME="{{ p.eth_name }}"
+SUBSYSTEM=="infiniband", ACTION=="add", ATTR{node_guid}=="{{ p.node_guid }}", NAME="{{ p.rdma_name }}"
+{% endfor %}
+{% else %}
+# rocm-icms: no mlx5_core / bnxt_en / bnxt_re / ionic RDMA netdev pairs discovered.
+{% endif %}

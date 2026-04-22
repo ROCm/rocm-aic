@@ -1,0 +1,16 @@
+# Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+
+---
+- name: Install Docker engine packages (Ubuntu / Debian)
+  ansible.builtin.apt:
+    name: "{{ inference_docker_packages }}"
+    state: present
+    update_cache: true
+
+- name: Enable and start Docker
+  ansible.builtin.systemd:
+    name: docker
+    state: started
+    enabled: true

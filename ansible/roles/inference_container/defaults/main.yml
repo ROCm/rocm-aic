@@ -1,0 +1,37 @@
+# Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+
+---
+# Image naming
+inference_container_image_name: rocm-inference-stack
+inference_container_image_tag: latest
+inference_container_image: >-
+  {{ inference_container_image_name }}:{{ inference_container_image_tag }}
+
+# After build: tarball on the Ansible controller (localhost play)
+inference_container_tarball: /tmp/rocm-inference-stack.tar
+
+# Path to Dockerfile directory (repo: containers/rocm-inference-stack)
+inference_container_context_path: ""
+
+# Git URLs / refs (NIXL default is SSH — requires ssh-agent for docker build)
+inference_nixl_git_url: git@github.com:ROCm/nixl.git
+inference_nixl_git_ref: ""
+inference_lmcache_git_url: https://github.com/amd-ivaganev/LMCache.git
+inference_lmcache_git_sha: bef2e13
+inference_hipfile_sha: b2509f2
+inference_gpu_archs: gfx942
+inference_llm_d_git_url: https://github.com/llm-d/llm-d.git
+inference_llm_d_git_ref: main
+
+# Deploy: tarball on remote nodes after copy
+inference_container_remote_tarball: /var/tmp/rocm-inference-stack.tar
+
+# Docker packages on Ubuntu targets
+inference_docker_packages:
+  - docker.io
+
+# Optional systemd unit for a long-running container (off by default)
+inference_container_install_service: false
+inference_container_service_name: rocm-inference-stack

@@ -1,0 +1,65 @@
+# Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+
+---
+# pair_pingpong: one matrix row per host pair (first usable NIC each side,
+# stable order by RDMA device name). full_perftest: NIC×NIC product.
+
+- name: Add single-NIC ping-pong row ({{ pair.server }} -> {{ pair.client }})
+  ansible.builtin.set_fact:
+    rdma_network_matrix_tests: "{{ rdma_network_matrix_tests + [rdma_mtx_row] }}"
+  vars:
+    srv_nics: >-
+      {{
+        hostvars[pair.server].rdma_network_rdma_nics | default([])
+        | selectattr('ipv4', 'defined')
+        | rejectattr('ipv4', 'equalto', '')
+        | list
+        | sort(attribute='device')
+      }}
+    cli_nics: >-
+      {{
+        hostvars[pair.client].rdma_network_rdma_nics | default([])
+        | selectattr('ipv4', 'defined')
+        | rejectattr('ipv4', 'equalto', '')
+        | list
+        | sort(attribute='device')
+      }}
+    rdma_mtx_row:
+      server: "{{ pair.server }}"
+      client: "{{ pair.client }}"
+      server_device: "{{ srv_nics[0].device }}"
+      server_netdev: "{{ srv_nics[0].netdev }}"
+      server_bind: "{{ srv_nics[0].ipv4 }}"
+      client_device: "{{ cli_nics[0].device }}"
+      client_netdev: "{{ cli_nics[0].netdev }}"
+      client_bind: "{{ cli_nics[0].ipv4 }}"
+  when:
+    - (rdma_network_matrix_mode | default('full_ping')) == 'pair_pingpong'
+    - (srv_nics | length) > 0
+    - (cli_nics | length) > 0
+
+- name: Add full mesh device×device tests ({{ pair.server }} -> {{ pair.client }})
+  ansible.builtin.set_fact:
+    rdma_network_matrix_tests: "{{ rdma_network_matrix_tests + [rdma_mtx_row] }}"
+  loop: >-
+    {{
+      hostvars[pair.server].rdma_network_rdma_nics
+      | product(hostvars[pair.client].rdma_network_rdma_nics)
+      | list
+    }}
+  when:
+    - (rdma_network_matrix_mode | default('full_ping')) == 'full_perftest'
+    - (item.0.ipv4 | default('') | trim | length) > 0
+    - (item.1.ipv4 | default('') | trim | length) > 0
+  vars:
+    rdma_mtx_row:
+      server: "{{ pair.server }}"
+      client: "{{ pair.client }}"
+      server_device: "{{ item.0.device }}"
+      server_netdev: "{{ item.0.netdev }}"
+      server_bind: "{{ item.0.ipv4 }}"
+      client_device: "{{ item.1.device }}"
+      client_netdev: "{{ item.1.netdev }}"
+      client_bind: "{{ item.1.ipv4 }}"

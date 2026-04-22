@@ -1,0 +1,83 @@
+# Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+
+---
+- name: Reset host list accumulator for JSON
+  ansible.builtin.set_fact:
+    rdma_mesh_hosts: []
+
+- name: Build host entries for mesh JSON
+  ansible.builtin.set_fact:
+    rdma_mesh_hosts: "{{ rdma_mesh_hosts | default([]) + [rdma_mesh_host_row] }}"
+  loop: "{{ rdma_network_host_list }}"
+  vars:
+    rdma_mesh_host_row:
+      inventory_hostname: "{{ item }}"
+      management_host: "{{ hostvars[item].ansible_host | default('', true) }}"
+      rdma_nics: "{{ hostvars[item].rdma_network_rdma_nics | default([]) }}"
+
+- name: Assemble mesh summary document
+  ansible.builtin.set_fact:
+    rdma_mesh_summary:
+      schema_version: 1
+      description: >-
+        rdma_network: full_ping runs ICMP from each RDMA NIC on the source
+        host to each RDMA NIC on the peer (ping -I); full_perftest /
+        pair_pingpong use perftest; optional BW parse from client stdout.
+      generated: "{{ ansible_date_time.iso8601 }}"
+      report_timestamp: "{{ rdma_network_report_ts }}"
+      inventory_group: "{{ rdma_network_group }}"
+      pair_mode: "{{ rdma_network_pair_mode }}"
+      matrix_mode: "{{ rdma_network_matrix_mode | default('full_ping') }}"
+      ping_target: "{{ rdma_network_ping_target | default('fabric') }}"
+      perftest_tool: "{{ rdma_network_perftest_effective }}"
+      perftest_extra_args: "{{ rdma_network_perftest_extra_effective | default('') }}"
+      bandwidth_units: Gb/sec
+      host_pair_count: "{{ rdma_network_pairs | length }}"
+      random_subset:
+        enabled: "{{ (rdma_network_random_subset_count | default(0) | int) > 0 }}"
+        sample_size: "{{ rdma_network_random_subset_count | default(0) | int }}"
+        seed: "{{ rdma_network_random_subset_seed | default('', true) }}"
+        icmp_mesh_rows_before_sample: "{{ rdma_network_icmp_mesh_plan_total | default(rdma_network_ping_tests | length) }}"
+        perftest_mesh_rows_before_sample: "{{ rdma_network_perftest_mesh_plan_total | default(rdma_network_matrix_tests | length) }}"
+      icmp_ping_count: "{{ rdma_network_ping_results | default([]) | length }}"
+      icmp_reachable_count: >-
+        {{
+          rdma_network_ping_results | default([])
+          | selectattr('return_code', 'defined')
+          | map(attribute='return_code')
+          | map('int')
+          | select('equalto', 0)
+          | list
+          | length
+        }}
+      nic_link_test_count: "{{ rdma_network_matrix_tests | default([]) | length }}"
+      connected_link_count: >-
+        {{
+          rdma_network_link_results
+          | default([])
+          | selectattr('client_exit_code', 'defined')
+          | map(attribute='client_exit_code')
+          | map('int')
+          | select('equalto', 0)
+          | list
+          | length
+        }}
+      hosts: "{{ rdma_mesh_hosts | default([]) }}"
+      host_pairs: "{{ rdma_network_pairs }}"
+      icmp_pings: "{{ rdma_network_ping_results | default([]) }}"
+      links: "{{ rdma_network_link_results | default([]) }}"
+
+- name: Write rdma-mesh-summary.json on controller
+  ansible.builtin.copy:
+    dest: "{{ rdma_network_report_json_path }}"
+    mode: "0644"
+    content: "{{ rdma_mesh_summary | to_nice_json }}\n"
+  delegate_to: localhost
+  vars:
+    ansible_connection: local
+
+- name: Report JSON summary path
+  ansible.builtin.debug:
+    msg: "RDMA mesh JSON summary written to {{ rdma_network_report_json_path }}"

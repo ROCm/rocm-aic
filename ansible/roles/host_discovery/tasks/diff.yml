@@ -170,6 +170,9 @@
         {% set rdma_total = r.rdma.links
                | default([])
                | length -%}
+        {% set net_ns = r.net | default({}) -%}
+        {% set net_total = net_ns.total | default(0) | int -%}
+        {% set net_active = net_ns.active | default(0) | int -%}
         {% set entry = {
              'kernel': r.kernel,
              'rocm_version': r.rocm_version,
@@ -183,7 +186,13 @@
                'drives': nvme_list},
              'rdma': {
                'total_links': rdma_total,
-               'active_links': rdma_active}
+               'active_links': rdma_active,
+               'dev_show': r.rdma.dev_show | default([]),
+               'gid_show': r.rdma.gid_show | default([])},
+             'net': {
+               'total': net_total,
+               'active': net_active,
+               'ipv4_brief': net_ns.ipv4_brief | default([])}
            } -%}
         {% set _ = ns.hosts.update(
              {h: entry}) -%}
@@ -196,6 +205,7 @@
 
       ========== CLUSTER SUMMARY ==========
       {% for h, s in cluster_summary.items() %}
+
       {{ h }}:
         Kernel .... {{ s.kernel }}
         ROCm ...... {{ s.rocm_version }}
@@ -206,7 +216,32 @@
         NVMe ...... {{ s.nvme.count }} drives
         RDMA ...... {{ s.rdma.active_links }}/{{
                      s.rdma.total_links }} active
+        RDMA dev .. (rdma dev show)
+        {% for line in s.rdma.dev_show | default([]) %}
+        {{ line | trim }}
+        {% endfor %}
+        {% if (s.rdma.dev_show | default([])) | length == 0 %}
+        (none)
+        {% endif %}
+        RDMA GID .. (rdma resource show gid, first 64 lines)
+        {% for line in s.rdma.gid_show | default([]) %}
+        {{ line | trim }}
+        {% endfor %}
+        {% if (s.rdma.gid_show | default([])) | length == 0 %}
+        (none)
+        {% endif %}
+        NET ....... {{ s.net.active }}/{{ s.net.total }} active
+        NET IPv4 .. (ip -4 -brief addr)
+        {% for line in s.net.ipv4_brief | default([]) %}
+        {{ line | trim }}
+        {% endfor %}
+        {% if (s.net.ipv4_brief | default([])) | length == 0 %}
+        (none)
+        {% endif %}
         DKMS ...... {{ s.dkms | length }} modules
+        {% for line in s.dkms %}
+        {{ line | trim }}
+        {% endfor %}
       {% endfor %}
       =======================================
 

@@ -1,0 +1,274 @@
+# Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+
+---
+- name: Choose host list for RDMA matrix
+  ansible.builtin.set_fact:
+    rdma_network_host_list: "{{ rdma_network_hosts | default([]) | list }}"
+
+- name: Fall back to inventory group members
+  ansible.builtin.set_fact:
+    rdma_network_host_list: "{{ groups[rdma_network_group] | default([]) | list }}"
+  when: (rdma_network_host_list | length) == 0
+
+- name: Require at least two hosts for pairwise tests
+  ansible.builtin.assert:
+    that:
+      - rdma_network_host_list | length >= 2
+    fail_msg: >-
+      Need at least two hosts in rdma_network_host_list / group
+      {{ rdma_network_group }} (got {{ rdma_network_host_list | length }}).
+
+- name: Decide whether RDMA discovery is required for this matrix mode
+  ansible.builtin.set_fact:
+    rdma_network_needs_rdma_facts: >-
+      {{
+        (rdma_network_matrix_mode | default('full_ping'))
+        in ['full_ping', 'full_perftest', 'pair_pingpong']
+      }}
+
+- name: Resolve effective perftest binary and extra args for matrix mode
+  ansible.builtin.set_fact:
+    rdma_network_perftest_effective: >-
+      {{
+        'ping-icmp'
+        if (rdma_network_matrix_mode | default('full_ping')) == 'full_ping'
+        else rdma_network_pair_pingpong_perftest
+        if (rdma_network_matrix_mode | default('full_ping')) == 'pair_pingpong'
+        else rdma_network_perftest
+      }}
+    rdma_network_perftest_extra_effective: >-
+      {{
+        ''
+        if (rdma_network_matrix_mode | default('full_ping')) == 'full_ping'
+        else rdma_network_pair_pingpong_extra_args
+        if (rdma_network_matrix_mode | default('full_ping')) == 'pair_pingpong'
+        else (rdma_network_perftest_extra_args | default(''))
+      }}
+
+- name: Discover RDMA device name on each matrix host
+  ansible.builtin.include_tasks: discover_rdma_devices.yml
+  loop: "{{ rdma_network_host_list }}"
+  loop_control:
+    loop_var: rdma_discover_host
+    label: "{{ rdma_discover_host }}"
+  when: rdma_network_needs_rdma_facts | bool
+
+- name: Build per-host device summary for reports
+  ansible.builtin.set_fact:
+    rdma_network_device_report_line: >-
+      {% for h in rdma_network_host_list -%}
+      {{ h }}=[{{ hostvars[h].rdma_network_rdma_nics | default([])
+        | map(attribute='device') | join('+') }}];
+      {%- endfor %}
+  when: rdma_network_needs_rdma_facts | bool
+
+- name: Set device report line when RDMA discovery was skipped
+  ansible.builtin.set_fact:
+    rdma_network_device_report_line: >-
+      n/a (matrix_mode={{ rdma_network_matrix_mode | default('full_ping') }},
+      no RDMA discovery)
+  when: not (rdma_network_needs_rdma_facts | bool)
+
+- name: Require at least one RDMA NIC with IPv4 on each matrix host
+  ansible.builtin.assert:
+    that:
+      - hostvars[item].rdma_network_rdma_nics | default([]) | length > 0
+    fail_msg: >-
+      No usable RDMA NICs on {{ item }} (rdma dev show / infiniband sysfs,
+      facts for netdev IPv4, or rdma_network_bind_ipv4 fallback).
+  loop: "{{ rdma_network_host_list }}"
+  when: rdma_network_needs_rdma_facts | bool
+
+- name: Timestamp for report directory
+  ansible.builtin.set_fact:
+    rdma_network_report_ts: "{{ ansible_date_time.iso8601_basic_short }}"
+
+- name: Set report file path on controller
+  ansible.builtin.set_fact:
+    rdma_network_report_path: >-
+      {{ playbook_dir }}/../reports/{{ rdma_network_report_ts }}/rdma-perftest.txt
+    rdma_network_report_json_path: >-
+      {{ playbook_dir }}/../reports/{{ rdma_network_report_ts }}/rdma-mesh-summary.json
+
+- name: Create report directory on controller
+  ansible.builtin.file:
+    path: "{{ playbook_dir }}/../reports/{{ rdma_network_report_ts }}"
+    state: directory
+    mode: "0755"
+  delegate_to: localhost
+  vars:
+    ansible_connection: local
+  when: (rdma_network_write_report | bool) or (rdma_network_json_summary | bool)
+
+- name: Initialize report file with header on controller
+  ansible.builtin.copy:
+    dest: "{{ rdma_network_report_path }}"
+    mode: "0644"
+    content: |
+      # rdma_network ({{ rdma_network_perftest_effective }})
+      # matrix_mode={{ rdma_network_matrix_mode | default('full_ping') }}
+      # devices={{ rdma_network_device_report_line | trim }}
+      # pair_mode={{ rdma_network_pair_mode }}
+      # ts={{ rdma_network_report_ts }}
+      #
+  delegate_to: localhost
+  vars:
+    ansible_connection: local
+  when: rdma_network_write_report | bool
+
+- name: Initialize empty pair list
+  ansible.builtin.set_fact:
+    rdma_network_pairs: []
+
+- name: Build directed pair list
+  ansible.builtin.include_tasks: build_pairs_directed.yml
+  loop: "{{ rdma_network_host_list }}"
+  loop_control:
+    loop_var: rdma_outer_server
+  when: rdma_network_pair_mode == 'directed'
+
+- name: Build undirected pair list
+  ansible.builtin.include_tasks: build_pairs_undirected.yml
+  loop: "{{ rdma_network_host_list }}"
+  loop_control:
+    loop_var: rdma_outer_server
+  when: rdma_network_pair_mode == 'undirected'
+
+- name: Require at least one host pair
+  ansible.builtin.assert:
+    that:
+      - rdma_network_pairs | length > 0
+    fail_msg: >-
+      No host pairs (check rdma_network_pair_mode and rdma_network_host_list).
+
+- name: Initialize matrix and result accumulators
+  ansible.builtin.set_fact:
+    rdma_network_matrix_tests: []
+    rdma_network_link_results: []
+    rdma_network_ping_results: []
+    rdma_network_ping_tests: []
+
+- name: >-
+    Expand each host pair (full_perftest = all NIC×NIC;
+    pair_pingpong = one NIC per side)
+  ansible.builtin.include_tasks: expand_host_pair_devices.yml
+  loop: "{{ rdma_network_pairs }}"
+  loop_control:
+    loop_var: pair
+    label: "{{ pair.server }} -> {{ pair.client }}"
+  when: (rdma_network_matrix_mode | default('full_ping')) in ['full_perftest', 'pair_pingpong']
+
+- name: Expand ICMP tests (NIC mesh per host pair, or one row for management)
+  ansible.builtin.include_tasks: expand_ping_pair_nics.yml
+  loop: "{{ rdma_network_pairs }}"
+  loop_control:
+    loop_var: pair
+    label: "{{ pair.server }} -> {{ pair.client }}"
+  when: (rdma_network_matrix_mode | default('full_ping')) == 'full_ping'
+
+- name: Record full mesh row counts before optional random subset
+  ansible.builtin.set_fact:
+    rdma_network_icmp_mesh_plan_total: "{{ rdma_network_ping_tests | length }}"
+    rdma_network_perftest_mesh_plan_total: "{{ rdma_network_matrix_tests | length }}"
+  when: (rdma_network_random_subset_count | default(0) | int) > 0
+
+- name: Apply random subset to ICMP and perftest plan rows
+  vars:
+    rdma_subset_n: "{{ rdma_network_random_subset_count | int }}"
+    rdma_subset_use_seed: >-
+      {{
+        (rdma_network_random_subset_seed | default('', true) | string | trim | length) > 0
+      }}
+    rdma_subset_matrix_seed: "{{ (rdma_network_random_subset_seed | int) + 7919 }}"
+  ansible.builtin.set_fact:
+    rdma_network_ping_tests: >-
+      {{
+        (
+          (
+            (rdma_network_ping_tests | shuffle(seed=(rdma_network_random_subset_seed | int)))
+            if (rdma_subset_use_seed | bool)
+            else (rdma_network_ping_tests | shuffle)
+          ) | list
+        )[:rdma_subset_n | int]
+      }}
+    rdma_network_matrix_tests: >-
+      {{
+        (
+          (
+            (rdma_network_matrix_tests | shuffle(seed=(rdma_subset_matrix_seed | int)))
+            if (rdma_subset_use_seed | bool)
+            else (rdma_network_matrix_tests | shuffle)
+          ) | list
+        )[:rdma_subset_n | int]
+      }}
+  when:
+    - (rdma_network_random_subset_count | default(0) | int) > 0
+    - >-
+        (rdma_network_ping_tests | length > 0)
+        or (rdma_network_matrix_tests | length > 0)
+
+- name: Require at least one device-pair perftest row
+  ansible.builtin.assert:
+    that:
+      - rdma_network_matrix_tests | length > 0
+    fail_msg: >-
+      No perftest rows after expansion (check IPv4 on each netdev,
+      rdma_network_skip_nics_without_ip, and matrix_mode).
+  when: (rdma_network_matrix_mode | default('full_ping')) in ['full_perftest', 'pair_pingpong']
+
+- name: Require at least one ICMP test row when full_ping
+  ansible.builtin.assert:
+    that:
+      - rdma_network_ping_tests | length > 0
+    fail_msg: >-
+      full_ping: no ICMP rows (check RDMA NICs with IPv4, ping_target=fabric vs
+      management, and rdma_network_skip_nics_without_ip).
+  when: (rdma_network_matrix_mode | default('full_ping')) == 'full_ping'
+
+- name: Show computed RDMA test plan
+  ansible.builtin.debug:
+    msg: >-
+      matrix_mode={{ rdma_network_matrix_mode | default('full_ping') }}
+      pair_mode={{ rdma_network_pair_mode }}
+      host_pairs={{ rdma_network_pairs | length }}
+      perftest_rows={{ rdma_network_matrix_tests | default([]) | length }}
+      icmp_rows={{ rdma_network_ping_tests | default([]) | length }}
+      random_subset_N={{ rdma_network_random_subset_count | default(0) }}
+      icmp_mesh_plan_total={{ rdma_network_icmp_mesh_plan_total | default('n/a') }}
+      perftest_mesh_plan_total={{ rdma_network_perftest_mesh_plan_total | default('n/a') }}
+      tool={{ rdma_network_perftest_effective }}
+
+- name: Run ICMP ping for each NIC pair
+  ansible.builtin.include_tasks: run_ping_pair.yml
+  loop: "{{ rdma_network_ping_tests }}"
+  loop_control:
+    loop_var: ping
+    index_var: rdma_ping_index
+    label: >-
+      ({{ rdma_ping_index + 1 }}/{{ rdma_network_ping_tests | length }})
+      {{ ping.server }}:{{ ping.server_bind | default('', true) | trim | split('/') | first }}
+      -> {{ ping.client }}:{{ ping.client_bind | default('', true) | trim | split('/') | first }}
+  when: (rdma_network_matrix_mode | default('full_ping')) == 'full_ping'
+
+- name: Run perftest for each NIC combination
+  ansible.builtin.include_tasks: run_one_pair.yml
+  loop: "{{ rdma_network_matrix_tests }}"
+  loop_control:
+    loop_var: test
+    index_var: rdma_matrix_index
+    label: >-
+      ({{ rdma_matrix_index + 1 }}/{{ rdma_network_matrix_tests | length }})
+      {{ test.server }}:{{ test.server_device }}@{{ test.server_bind }}
+      <- {{ test.client }}:{{ test.client_device }}@{{ test.client_bind }}
+  when: (rdma_network_matrix_mode | default('full_ping')) in ['full_perftest', 'pair_pingpong']
+
+- name: Write RDMA mesh JSON summary on controller
+  ansible.builtin.include_tasks: write_mesh_json.yml
+  when: rdma_network_json_summary | bool
+
+- name: RDMA connectivity summary (stdout)
+  ansible.builtin.debug:
+    msg: "{{ lookup('template', 'connection_summary.j2') | trim | regex_replace('(\r\n|\r)', '\n') | split('\n') | map('trim') | reject('equalto', '') | list }}"
+  when: rdma_network_print_connection_summary | bool

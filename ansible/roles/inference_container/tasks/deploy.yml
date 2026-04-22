@@ -1,0 +1,39 @@
+# Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+
+---
+- name: Install Docker on target nodes
+  ansible.builtin.import_tasks: install_docker.yml
+
+- name: Stage inference image tarball on nodes
+  ansible.builtin.copy:
+    src: "{{ inference_container_tarball }}"
+    dest: "{{ inference_container_remote_tarball }}"
+    mode: "0644"
+
+- name: Load image from tarball
+  ansible.builtin.command:
+    argv:
+      - docker
+      - load
+      - "-i"
+      - "{{ inference_container_remote_tarball }}"
+  register: inference_container_docker_load
+  changed_when: "'Loaded image' in inference_container_docker_load.stdout"
+
+- name: Install systemd unit for inference container
+  when: inference_container_install_service | bool
+  block:
+    - name: Deploy systemd unit
+      ansible.builtin.template:
+        src: rocm-inference-stack.service.j2
+        dest: "/etc/systemd/system/{{ inference_container_service_name }}.service"
+        mode: "0644"
+
+    - name: Enable inference stack service
+      ansible.builtin.systemd:
+        name: "{{ inference_container_service_name }}"
+        enabled: true
+        state: started
+        daemon_reload: true
