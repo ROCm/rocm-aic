@@ -1,8 +1,8 @@
 name: "ttft-lmcache-cpu-only"
 description: "Test a tiered-prefix-cache-lmcache single run with CPU"
 deployment: "tiered-prefix-cache-lmcache"
-# override template for 
-deployment_template: "tiered-prefix-cache-lmcache-hostpath-kustomization.yaml.tmpl"
+# uses hipfile template but 'lmcache_args' overrides to cpu (avoids config proliferation)
+deployment_template: "tiered-prefix-cache-lmcache-hipfile-kustomization.yaml.tmpl"
 
 parameters:
   model:

@@ -1,7 +1,6 @@
 name: "ttft-offloading-cpu-only"
 description: "Test a tiered-prefix-cache-offloading single run with CPU"
 deployment: "tiered-prefix-cache-offloading"
-# override template for 
 deployment_template: "tiered-prefix-cache-offloading-hostpath-kustomization.yaml.tmpl"
 
 parameters:

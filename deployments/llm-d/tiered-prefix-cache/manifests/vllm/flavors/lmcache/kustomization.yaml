@@ -1,13 +1,11 @@
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 
+# Reference the base vllm AMD recipe from llm-d submodule
 resources:
-# Bypass tiered-prefix guide and directly reference the vllm recipe.
-# This is to avoid inheriting env settings we do not want which would
-# have to be detected and removed when doing the kustomization.
-  - ../../../../../../../../submodules/llm-d/guides/recipes/vllm/amd
+  - ../../../../../../../submodules/llm-d/guides/recipes/vllm/amd
 
-# The `lmcache_config.yaml` gets automatically patched based on the sweep's configuration `lmcache_args`
+# LMCache-specific configuration; can override through env variables in `llm-d-model-server` too.
 configMapGenerator:
   - name: config-map
     literals:
@@ -15,28 +13,34 @@ configMapGenerator:
         lmcache_config.yaml=chunk_size: 256
         save_decode_cache: True
         local_cpu: true
-        max_local_cpu_size: 100.0
+        max_local_cpu_size: 200.0
         local_disk: null
         remote_url: null
 
 patches:
+  # Configure LMCache connector
   - target:
       kind: Deployment
       name: llm-d-model-server
     patch: |-
       - op: replace
         path: /spec/replicas
-        value: 1
+        value: 2
       - op: replace
         path: /spec/template/spec/containers/0/image
         value: ghcr.io/vcave/vllm:rocm_721-vllm_20260401-lmcache
       - op: replace
         path: /spec/template/spec/containers/0/args/0
         value: |-
-          exec vllm serve {{model}} \
-            --tensor-parallel-size {{tensor_parallel_size}} \
+          exec vllm serve \
+            Qwen/Qwen3-32B \
+            --tensor-parallel-size 2 \
+            --kv-transfer-config '{"kv_connector":"LMCacheConnectorV1","kv_role":"kv_both"}' \
             --port 8000 \
-            {{VLLM_ARGS}}
+            --max-num-seq 1024 \
+            --gpu-memory-utilization 0.25 \
+            --disable-uvicorn-access-log \
+            --enable_prefix_caching
       - op: add
         path: /spec/template/spec/containers/0/env/-
         value:
@@ -52,6 +56,8 @@ patches:
         value:
           name: LMCACHE_CONFIG_FILE
           value: "/opt/configs/lmcache_config.yaml"
+
+      # Mount config map
       - op: add
         path: /spec/template/spec/volumes/-
         value:
@@ -64,33 +70,18 @@ patches:
           name: config-dir-volume
           mountPath: /opt/configs
           readOnly: true
+
+      # Set default resources
       - op: add
         path: /spec/template/spec/containers/0/resources
         value:
           limits:
-            amd.com/gpu: "{{tensor_parallel_size}}"
+            amd.com/gpu: 2
           requests:
-            amd.com/gpu: "{{tensor_parallel_size}}"
+            amd.com/gpu: 2
             memory: 400G
-      - op: add
-        path: /spec/template/spec/containers/0/env/-
-        value:
-          name: HUGGINGFACE_HUB_CACHE
-          value: "/models"
-      - op: add
-        path: /spec/template/spec/volumes/-
-        value:
-          name: models
-          hostPath:
-            path: /data/models-cache
-            type: Directory
-      - op: add
-        path: /spec/template/spec/containers/0/volumeMounts/-
-        value:
-          name: models
-          mountPath: "/models"
-          readOnly: true
-  # Mount an emptyDir to collect prometheus metrics
+
+  # Mount prometheus metrics volume
   - target:
       kind: Deployment
       name: llm-d-model-server

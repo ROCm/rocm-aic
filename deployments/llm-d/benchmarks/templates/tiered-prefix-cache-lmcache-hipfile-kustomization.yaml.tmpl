@@ -4,10 +4,24 @@ kind: Kustomization
 # Note: paths are relative to the result folder where the final yaml is assembled
 # typically `results/sweeps/<sweep_name>/run-<run_id>/manifests`
 
-# Use the Offloading flavor from tiered-prefix-cache
+# Use the LMCache flavor from tiered-prefix-cache
 resources:
-  - ../../../../../../tiered-prefix-cache/manifests/vllm/flavors/offloading
+  - ../../../../../../tiered-prefix-cache/manifests/vllm/flavors/lmcache
 
+# Apply components for additional functionality
+components:
+  - ../../../../../../tiered-prefix-cache/manifests/vllm/components/hostpath-models
+  - ../../../../../../tiered-prefix-cache/manifests/vllm/components/hipfile
+
+# This must be present for the benchmark harness to replace the config-map automatically
+configMapGenerator:
+  - name: config-map
+    behavior: replace
+    literals:
+      - |
+        lmcache_config.yaml=chunk_size: 256
+
+# Benchmark harness injects vLLM args and LMCache connector out of bench sweep declaration
 patches:
   - target:
       kind: Deployment
@@ -19,6 +33,7 @@ patches:
       - op: replace
         path: /spec/template/spec/containers/0/image
         value: ghcr.io/vcave/vllm:rocm_721-vllm_20260417-lmcache
+        #value: ghcr.io/amd-ivaganev/ivaganev-hipfile
       - op: replace
         path: /spec/template/spec/containers/0/args/0
         value: |-

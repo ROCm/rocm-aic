@@ -1,0 +1,64 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: llm-d-model-server
+spec:
+  template:
+    spec:
+      hostIPC: true
+      containers:
+        - name: vllm
+          securityContext:
+            privileged: true
+            capabilities:
+              add:
+                - IPC_LOCK
+                - SYS_PTRACE
+                - SYS_ADMIN
+                - BPF
+                - PERFMON
+            seccompProfile:
+              type: Unconfined
+          volumeMounts:
+            - name: lib-modules
+              mountPath: /lib/modules
+              readOnly: true
+            - name: usr-src
+              mountPath: /usr/src
+              readOnly: true
+            - name: localtime
+              mountPath: /etc/localtime
+              readOnly: true
+            - name: kernel-debug
+              mountPath: /sys/kernel/debug
+            - name: kernel-btf
+              mountPath: /sys/kernel/btf
+              readOnly: true
+            - name: boot
+              mountPath: /boot
+              readOnly: true
+            - name: hipfile
+              mountPath: /hipfile
+      volumes:
+        - name: boot
+          hostPath:
+            path: /boot
+        - name: lib-modules
+          hostPath:
+            path: /lib/modules
+        - name: usr-src
+          hostPath:
+            path: /usr/src
+        - name: localtime
+          hostPath:
+            path: /etc/localtime
+        - name: kernel-debug
+          hostPath:
+            path: /sys/kernel/debug
+        - name: kernel-btf
+          hostPath:
+            path: /sys/kernel/btf
+        - name: hipfile
+          hostPath:
+            path: /hipfile
+            type: Directory
