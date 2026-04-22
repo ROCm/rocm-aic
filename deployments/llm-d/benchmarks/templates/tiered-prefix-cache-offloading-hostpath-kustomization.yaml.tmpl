@@ -46,6 +46,19 @@ patches:
           mountPath: "/models"
           readOnly: true
       - op: add
+        path: /spec/template/spec/volumes/-
+        value:
+          name: models
+          hostPath:
+            path: /hipfile
+            type: Directory
+      - op: add
+        path: /spec/template/spec/containers/0/volumeMounts/-
+        value:
+          name: models
+          mountPath: "/hipfile"
+          readOnly: true
+      - op: add
         path: /spec/template/spec/containers/0/volumeMounts/-
         value:
           name: torch-compile-cache

@@ -90,6 +90,19 @@ patches:
           name: models
           mountPath: "/models"
           readOnly: true
+      - op: add
+        path: /spec/template/spec/volumes/-
+        value:
+          name: models
+          hostPath:
+            path: /hipfile
+            type: Directory
+      - op: add
+        path: /spec/template/spec/containers/0/volumeMounts/-
+        value:
+          name: models
+          mountPath: "/hipfile"
+          readOnly: true
   # Mount an emptyDir to collect prometheus metrics
   - target:
       kind: Deployment
