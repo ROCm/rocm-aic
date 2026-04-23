@@ -27,3 +27,7 @@ host_setup_udev_rules_file: 70-rocm-icms-net-rdma.rules
 
 # After extra_packages: enable systemd unit for prometheus-node-exporter.
 host_setup_enable_prometheus_node_exporter: true
+
+# When false, skip AMD apt preclean, sbates130272.batesste.rocm_setup, and
+# post-rocm apt dedupe (faster provision when ROCm is already installed).
+host_setup_enable_rocm_setup: true

@@ -17,6 +17,10 @@
 username: "{{ ansible_user }}"
 rocm_setup_user: "{{ username }}"
 
+# Skip the slow rocm_setup role (and related AMD apt preclean/dedupe) when ROCm
+# is already installed: set host_setup_enable_rocm_setup: false
+host_setup_enable_rocm_setup: false
+
 # Do not let collection roles trigger unattended reboots during Ansible runs.
 rdma_setup_reboot: false
 rocm_setup_skip_reboot: true
@@ -41,6 +45,7 @@ extra_packages:
   - pciutils
   # NVMe and storage
   - nvme-cli
+  - fio
   - gdisk
   # RDMA and networking
   - ibverbs-utils
