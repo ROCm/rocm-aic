@@ -1,0 +1,99 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# Reference the base vllm AMD recipe from llm-d submodule
+resources:
+  - ../../../../../../../submodules/llm-d/guides/recipes/vllm/amd
+
+# LMCache-specific configuration; can override through env variables in `llm-d-model-server` too.
+# TODO: how would this conflict
+configMapGenerator:
+  - name: config-map
+    literals:
+      - |
+        lmcache_config.yaml=chunk_size: 256
+        save_decode_cache: True
+        local_cpu: true
+        max_local_cpu_size: 200.0
+        local_disk: null
+        remote_url: null
+
+patches:
+  # Configure LMCache connector
+  - target:
+      kind: Deployment
+      name: llm-d-model-server
+    patch: |-
+      - op: replace
+        path: /spec/replicas
+        value: 2
+      - op: replace
+        path: /spec/template/spec/containers/0/image
+        value: ghcr.io/vcave/vllm:rocm_721-vllm_20260401-lmcache
+      - op: replace
+        path: /spec/template/spec/containers/0/args/0
+        value: |-
+          exec vllm serve \
+            Qwen/Qwen3-32B \
+            --tensor-parallel-size 2 \
+            --kv-transfer-config '{"kv_connector":"LMCacheConnectorV1","kv_role":"kv_both"}' \
+            --port 8000 \
+            --max-num-seq 1024 \
+            --gpu-memory-utilization 0.25 \
+            --disable-uvicorn-access-log \
+            --enable_prefix_caching
+      - op: add
+        path: /spec/template/spec/containers/0/env/-
+        value:
+          name: PYTHONHASHSEED
+          value: "123"
+      - op: add
+        path: /spec/template/spec/containers/0/env/-
+        value:
+          name: PROMETHEUS_MULTIPROC_DIR
+          value: "/tmp/lmcache_prometheus"
+      - op: add
+        path: /spec/template/spec/containers/0/env/-
+        value:
+          name: LMCACHE_CONFIG_FILE
+          value: "/opt/configs/lmcache_config.yaml"
+
+      # Mount config map
+      - op: add
+        path: /spec/template/spec/volumes/-
+        value:
+          name: config-dir-volume
+          configMap:
+            name: config-map
+      - op: add
+        path: /spec/template/spec/containers/0/volumeMounts/-
+        value:
+          name: config-dir-volume
+          mountPath: /opt/configs
+          readOnly: true
+
+      # Set default resources
+      - op: add
+        path: /spec/template/spec/containers/0/resources
+        value:
+          limits:
+            amd.com/gpu: 2
+          requests:
+            amd.com/gpu: 2
+            memory: 400G
+
+  # Mount prometheus metrics volume
+  - target:
+      kind: Deployment
+      name: llm-d-model-server
+    patch: |-
+      - op: add
+        path: /spec/template/spec/volumes/-
+        value:
+          name: lmcache-prometheus-metrics
+          emptyDir: {}
+      - op: add
+        path: /spec/template/spec/containers/0/volumeMounts/-
+        value:
+          name: lmcache-prometheus-metrics
+          mountPath: /tmp/lmcache_prometheus

@@ -31,6 +31,13 @@ deploy-lmcache: verify-llm-d-submodule deploy-gateway deploy-model-server-lmcach
     @echo "Run 'just status' to check deployment status"
     @echo "Run 'just port-forward-start' to access Prometheus and Grafana"
 
+# Deploy with lmcache-connector, hostpath model, and hipfile
+deploy-lmcache-hipfile: verify-llm-d-submodule deploy-gateway deploy-model-server-lmcache-hipfile deploy-inferencepool
+    @echo "✅ Deployment complete with lmcache-connector + hipfile!"
+    @echo "Run 'just status' to check deployment status"
+    @echo "Run 'just port-forward-start' to access Prometheus and Grafana"
+
+
 # Deploy Istio gateway (from llm-d submodule)
 deploy-gateway:
     @echo "🚀 Deploying Istio gateway..."
@@ -45,7 +52,7 @@ deploy-model-server-offloading:
         echo "  Using custom manifest directory: {{MANIFEST_DIR}}"; \
         kubectl apply -k {{MANIFEST_DIR}} -n {{NAMESPACE}} || exit 1; \
     else \
-        kubectl apply -k ./manifests/vllm/offloading-connector-amd -n {{NAMESPACE}} || exit 1; \
+        kubectl apply -k ./manifests/vllm/flavors/offloading -n {{NAMESPACE}} || exit 1; \
     fi
     @echo "✅ Model server (offloading-connector) deployed"
 
@@ -57,9 +64,21 @@ deploy-model-server-lmcache:
         echo "  Using custom manifest directory: {{MANIFEST_DIR}}"; \
         kubectl apply -k {{MANIFEST_DIR}} -n {{NAMESPACE}} || exit 1; \
     else \
-        kubectl apply -k ./manifests/vllm/lmcache-connector-amd -n {{NAMESPACE}} || exit 1; \
+        kubectl apply -k ./manifests/vllm/flavors/lmcache -n {{NAMESPACE}} || exit 1; \
     fi
     @echo "✅ Model server (lmcache-connector) deployed"
+
+# Deploy AMD vLLM model server with lmcache connector
+deploy-model-server-lmcache-hipfile:
+    @echo "🚀 Deploying AMD vLLM model server with LMCache connector and hifile..."
+    #!/usr/bin/env bash
+    if [ -n "{{MANIFEST_DIR}}" ]; then \
+        echo "  Using custom manifest directory: {{MANIFEST_DIR}}"; \
+        kubectl apply -k {{MANIFEST_DIR}} -n {{NAMESPACE}} || exit 1; \
+    else \
+        kubectl apply -k ./manifests/vllm/flavors/lmcache-hipfile -n {{NAMESPACE}} || exit 1; \
+    fi
+    @echo "✅ Model server (lmcache-connector + hipfile) deployed"
 
 # Deploy InferencePool with Istio provider
 deploy-inferencepool:
@@ -109,7 +128,7 @@ teardown-model-server-offloading:
         echo "  Using custom manifest directory: {{MANIFEST_DIR}}"; \
         kubectl delete -k {{MANIFEST_DIR}} -n {{NAMESPACE}} 2>/dev/null || true; \
     else \
-        kubectl delete -k ./manifests/vllm/offloading-connector-amd -n {{NAMESPACE}} 2>/dev/null || true; \
+        kubectl delete -k ./manifests/vllm/flavors/offloading -n {{NAMESPACE}} 2>/dev/null || true; \
     fi
     @echo "✅ Model server removed"
 
@@ -121,7 +140,7 @@ teardown-model-server-lmcache:
         echo "  Using custom manifest directory: {{MANIFEST_DIR}}"; \
         kubectl delete -k {{MANIFEST_DIR}} -n {{NAMESPACE}} 2>/dev/null || true; \
     else \
-        kubectl delete -k ./manifests/vllm/lmcache-connector-amd -n {{NAMESPACE}} 2>/dev/null || true; \
+        kubectl delete -k ./manifests/vllm/flavors/lmcache -n {{NAMESPACE}} 2>/dev/null || true; \
     fi
     @echo "✅ Model server removed"
 
@@ -227,7 +246,7 @@ create-namespace:
     else
         echo "⚠️  HuggingFace token secret '{{HF_TOKEN_NAME}}' not found in namespace {{NAMESPACE}}"
         echo "📝 Setting up HuggingFace token using llm-d-helpers..."
-        just register-hf-token {{NAMESPACE}} || { echo "❌ Failed to register HF token. You may need to set HF_TOKEN environment variable and run: just register-hf-token {{NAMESPACE}}"; exit 1}
+        just register-hf-token {{NAMESPACE}} || { echo "❌ Failed to register HF token. You may need to set HF_TOKEN environment variable and run: just register-hf-token {{NAMESPACE}}"; exit 1;}
     fi
 
 # Delete namespace (WARNING: deletes everything!)
@@ -241,6 +260,11 @@ setup: verify-prereqs create-namespace deploy-offloading wait
 
 # Complete setup with lmcache-connector
 setup-lmcache: verify-prereqs create-namespace deploy-lmcache wait
+    @echo "🎉 Setup complete with LMCache!"
+    @just status
+
+# Complete setup with lmcache-connector
+setup-lmcache-hipfile: verify-prereqs create-namespace deploy-lmcache-hipfile wait
     @echo "🎉 Setup complete with LMCache!"
     @just status
 
