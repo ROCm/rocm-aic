@@ -156,3 +156,6 @@ repos
 rdma
 SPDX
 UCX
+CUDA
+Kubernetes
+nixl
