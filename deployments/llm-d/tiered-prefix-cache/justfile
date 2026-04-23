@@ -12,7 +12,9 @@ import? "../common/monitoring.justfile"
 import? "../common/llm-d-helpers.justfile"
 
 # Deployment-specific configuration
-NAMESPACE := env_var_or_default('NAMESPACE', 'llm-d-pfc-cpu-amd')
+USER      := `whoami`
+NAMESPACE_DEFAULT   := USER + "-llm-d-pfc-cpu-amd"
+NAMESPACE := env_var_or_default('NAMESPACE', NAMESPACE_DEFAULT)
 CONNECTOR := env_var_or_default('CONNECTOR', 'offloading')
 MANIFEST_DIR := env_var_or_default('MANIFEST_DIR', '')
 
