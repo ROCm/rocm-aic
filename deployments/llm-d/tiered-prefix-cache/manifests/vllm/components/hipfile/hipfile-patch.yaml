@@ -37,6 +37,8 @@ spec:
             - name: boot
               mountPath: /boot
               readOnly: true
+            - name: hipfile
+              mountPath: /hipfile
       volumes:
         - name: boot
           hostPath:
@@ -56,3 +58,7 @@ spec:
         - name: kernel-btf
           hostPath:
             path: /sys/kernel/btf
+        - name: hipfile
+          hostPath:
+            path: /hipfile
+            type: Directory
