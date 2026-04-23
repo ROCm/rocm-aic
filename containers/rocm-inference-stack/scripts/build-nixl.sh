@@ -89,5 +89,4 @@ if [[ -f "${NIXL_SRC}/pyproject.toml" ]] && ! python3 -c "import nixl" 2>/dev/nu
 	python3 -m pip install --no-cache-dir "${NIXL_SRC}" || true
 fi
 
-python3 -c "import nixl" 2>/dev/null || \
-	echo "NOTE: import nixl check skipped or failed; verify bindings for this ref."
+python3 -c "import nixl; print('nixl import OK:', nixl.__file__)"

@@ -25,19 +25,14 @@
       Set inference_container_context_path if the tree lives elsewhere.
   when: not inference_container_dockerfile.stat.exists
 
-- name: Detect SSH-style NIXL URL
-  ansible.builtin.set_fact:
-    inference_nixl_uses_ssh: "{{ inference_nixl_git_url is match('^git@') }}"
-
-- name: Require SSH agent for git@ NIXL URL
-  ansible.builtin.assert:
-    that:
-      - (lookup('env', 'SSH_AUTH_SOCK') | default('')) | length > 0
-    fail_msg: >-
-      inference_nixl_git_url uses SSH (git@...). Start ssh-agent, ssh-add your
-      GitHub key, then run ansible-playbook from the same environment so
-      SSH_AUTH_SOCK is set for the private git clone.
-  when: inference_nixl_uses_ssh | bool
+- name: Fail when NIXL URL is SSH (default Dockerfile uses HTTPS clone only)
+  ansible.builtin.fail:
+    msg: >-
+      inference_nixl_git_url must be HTTPS (default
+      https://github.com/ROCm/nixl.git). The container clone layer does not use
+      BuildKit SSH. Use an HTTPS mirror, token-based HTTPS in CI, or fork the
+      Dockerfile if you need a private git@ remote.
+  when: inference_nixl_git_url is match('^git@')
 
 - name: Place docker build script on controller
   ansible.builtin.template:
@@ -45,7 +40,7 @@
     dest: /tmp/rocm_inference_docker_build.sh
     mode: "0755"
 
-- name: Build Docker image on controller (BuildKit; ephemeral agent if not git@)
+- name: Build Docker image on controller (BuildKit)
   ansible.builtin.command: /tmp/rocm_inference_docker_build.sh
   environment:
     DOCKER_BUILDKIT: "1"

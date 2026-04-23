@@ -25,6 +25,21 @@
     - extra_packages
     - packages
 
+- name: Enable prometheus-node-exporter service
+  ansible.builtin.include_tasks: node_exporter.yml
+  tags:
+    - node_exporter
+    - provision
+  when: host_setup_enable_prometheus_node_exporter | default(true) | bool
+
+- name: Install NVMe Prometheus exporter
+  ansible.builtin.include_role:
+    name: sbates130272.batesste.nvme_exporter_setup
+  tags:
+    - nvme_exporter
+    - provision
+  when: nvme_exporter_setup_install | default(false) | bool
+
 - name: Configure RDMA and InfiniBand prerequisites
   ansible.builtin.include_role:
     name: sbates130272.batesste.rdma_setup
@@ -45,16 +60,19 @@
 
 - name: Preclean stale AMD APT lists before rocm_setup
   ansible.builtin.include_tasks: apt_preclean_amd_repos.yml
+  when: host_setup_enable_rocm_setup | default(true) | bool
   tags:
     - rocm_setup
 
 - name: Install and configure ROCm stack
   ansible.builtin.include_role:
     name: sbates130272.batesste.rocm_setup
+  when: host_setup_enable_rocm_setup | default(true) | bool
   tags:
     - rocm_setup
 
 - name: Dedupe AMD APT lists after rocm_setup
   ansible.builtin.include_tasks: apt_dedupe_amd_repos.yml
+  when: host_setup_enable_rocm_setup | default(true) | bool
   tags:
     - rocm_setup

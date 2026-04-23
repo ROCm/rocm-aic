@@ -17,6 +17,10 @@
 username: "{{ ansible_user }}"
 rocm_setup_user: "{{ username }}"
 
+# Skip the slow rocm_setup role (and related AMD apt preclean/dedupe) when ROCm
+# is already installed: set host_setup_enable_rocm_setup: false
+host_setup_enable_rocm_setup: false
+
 # Do not let collection roles trigger unattended reboots during Ansible runs.
 rdma_setup_reboot: false
 rocm_setup_skip_reboot: true
@@ -25,6 +29,11 @@ rocm_setup_skip_reboot: true
 rocm_setup_run_checks: true
 
 rocm_setup_install_metrics_exporter: true
+
+# Prometheus node exporter (package + service; see host_setup).
+# RDMA and NVMe Prometheus exporters via batesste collection roles.
+rdma_setup_install_rdma_exporter: true
+nvme_exporter_setup_install: true
 
 # Extra packages installed by site.yml (host_setup role) on top of the
 # sbates130272.batesste.fave_packages base set.  Edit this
@@ -36,6 +45,7 @@ extra_packages:
   - pciutils
   # NVMe and storage
   - nvme-cli
+  - fio
   - gdisk
   # RDMA and networking
   - ibverbs-utils
@@ -60,9 +70,12 @@ extra_packages:
   - ipmitool
   - socat
   - jq
+  # Monitoring
+  - prometheus-node-exporter
 
 # --- Optional: ROCm inference container (playbooks/inference-image.yml) ---
-# inference_nixl_git_url: git@github.com:ROCm/nixl.git
-# inference_nixl_git_ref: ""
+# inference_nixl_git_url: https://github.com/ROCm/nixl.git
+# inference_nixl_git_ref: ""   # set tag/commit for reproducible NIXL builds
+# inference_llm_d_git_sha: "" # optional llm-d commit after branch checkout
 # inference_container_tarball: /tmp/rocm-inference-stack.tar
 # inference_container_install_service: false

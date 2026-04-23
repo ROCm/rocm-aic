@@ -8,7 +8,11 @@
 #   ansible-playbook site.yml --tags discover
 #   ansible-playbook site.yml --tags provision
 #   ansible-playbook site.yml --skip-tags rdma-network
+#   ansible-playbook site.yml --skip-tags monitoring
 #   ansible-playbook site.yml --tags inference-container
+#   ansible-playbook site.yml --tags kv-cache-tester
+#   ansible-playbook site.yml --tags nvmeof
+#   ansible-playbook site.yml --tags monitoring
 
 - name: Discover the state of the GPU cluster nodes
   ansible.builtin.import_playbook: playbooks/discover.yml
@@ -33,3 +37,18 @@
   ansible.builtin.import_playbook: playbooks/inference-image.yml
   tags:
     - inference-container
+
+- name: Install and run kv-cache-tester against an inference HTTP endpoint
+  ansible.builtin.import_playbook: playbooks/kv-cache-tester.yml
+  tags:
+    - kv-cache-tester
+
+- name: Configure NVMe-oF target and initiators (RDMA)
+  ansible.builtin.import_playbook: playbooks/nvme-of.yml
+  tags:
+    - nvmeof
+
+- name: Install Prometheus, Grafana, and monitoring scrape configuration
+  ansible.builtin.import_playbook: playbooks/monitoring.yml
+  tags:
+    - monitoring

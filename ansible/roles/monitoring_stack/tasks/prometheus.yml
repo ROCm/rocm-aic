@@ -1,0 +1,22 @@
+# Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+
+---
+- name: Validate llm-d federation host when enabled
+  ansible.builtin.assert:
+    that:
+      - monitoring_llmd_prometheus_federate_host | default('') | length > 0
+    fail_msg: >-
+      monitoring_llmd_prometheus_federate_host must be set when
+      monitoring_llmd_prometheus_federate_enabled is true.
+  when: monitoring_llmd_prometheus_federate_enabled | default(false) | bool
+
+- name: Deploy Prometheus configuration
+  ansible.builtin.template:
+    src: prometheus.yml.j2
+    dest: /etc/prometheus/prometheus.yml
+    owner: root
+    group: prometheus
+    mode: "0640"
+  notify: Reload prometheus

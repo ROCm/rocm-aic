@@ -3,10 +3,10 @@
 # SPDX-License-Identifier: MIT
 #
 # Build (localhost): docker buildx + docker save tarball.
-#   For private NIXL over git@..., use ssh-agent + ssh-add before running.
 # Deploy (gpu_nodes): install docker.io, copy tarball, docker load.
 #
 # Examples (from ansible/):
+#   ansible-playbook playbooks/inference-image.yml --tags inference-container
 #   ansible-playbook playbooks/inference-image.yml --tags inference-image-build
 #   ansible-playbook playbooks/inference-image.yml --tags inference-image-deploy
 
@@ -15,6 +15,7 @@
   connection: local
   gather_facts: true
   tags:
+    - inference-container
     - inference-image-build
   tasks:
     - name: Run inference image build tasks
@@ -27,6 +28,7 @@
   become: true
   gather_facts: true
   tags:
+    - inference-container
     - inference-image-deploy
   tasks:
     - name: Run inference image deploy tasks

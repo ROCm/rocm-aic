@@ -10,3 +10,6 @@ collections:
     version: ">=1.6.2"
   - name: community.general
     version: ">=10.0.1"
+  # Optional: docker_image / compose modules for future idempotent image pulls.
+  - name: community.docker
+    version: ">=4.0.0"

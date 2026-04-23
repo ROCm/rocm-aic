@@ -1,0 +1,43 @@
+# Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+
+---
+- name: Ensure Grafana systemd drop-in directory exists
+  ansible.builtin.file:
+    path: /etc/systemd/system/grafana-server.service.d
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Deploy Grafana systemd environment (anonymous + optional admin)
+  ansible.builtin.template:
+    src: grafana-server-environment.conf.j2
+    dest: /etc/systemd/system/grafana-server.service.d/rocm-icms.conf
+    owner: root
+    group: root
+    mode: "0644"
+  no_log: true
+  notify: Reload systemd and restart grafana-server
+
+- name: Ensure Grafana datasource provisioning directory exists
+  ansible.builtin.file:
+    path: /etc/grafana/provisioning/datasources
+    state: directory
+    owner: root
+    group: grafana
+    mode: "0750"
+
+- name: Deploy Grafana datasource provisioning
+  ansible.builtin.template:
+    src: grafana-datasources.yml.j2
+    dest: /etc/grafana/provisioning/datasources/rocm-icms.yaml
+    owner: root
+    group: grafana
+    mode: "0640"
+  notify: Reload systemd and restart grafana-server
+
+- name: Provision dashboards from Grafana.com
+  ansible.builtin.include_tasks: grafana_dashboards.yml
+  when: monitoring_grafana_provision_dashboards | default(true) | bool

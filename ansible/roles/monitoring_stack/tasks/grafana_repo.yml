@@ -1,0 +1,41 @@
+# Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+
+---
+# Grafana packages are not in default Ubuntu repos; mirror
+# sbates130272.batesste.grafana_setup (apt.grafana.com stable).
+# https://grafana.com/docs/grafana/latest/setup-grafana/installation/debian/
+
+- name: Install apt dependencies for Grafana repository
+  ansible.builtin.package:
+    name:
+      - apt-transport-https
+      - software-properties-common
+      - wget
+      - curl
+    state: present
+    update_cache: true
+
+- name: Add Grafana GPG key
+  ansible.builtin.shell:
+    cmd: |
+      set -o pipefail
+      curl -fsSL https://apt.grafana.com/gpg.key | \
+      gpg --dearmor -o /usr/share/keyrings/grafana-archive-keyring.gpg
+    executable: /bin/bash
+    creates: /usr/share/keyrings/grafana-archive-keyring.gpg
+
+- name: Add Grafana apt repository
+  ansible.builtin.apt_repository:
+    repo: >-
+      deb [signed-by=/usr/share/keyrings/grafana-archive-keyring.gpg]
+      https://apt.grafana.com stable main
+    state: present
+    filename: grafana
+
+- name: Install Grafana from Grafana apt repository
+  ansible.builtin.apt:
+    name: "grafana={{ monitoring_grafana_apt_version }}"
+    state: present
+    update_cache: true

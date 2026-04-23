@@ -1,6 +1,9 @@
 # Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
 #
 # SPDX-License-Identifier: MIT
+#
+# Use gathered facts (interfaces, IPv4) to set nvmeof_setup_target_interface or
+# fabric IPs in inventory/group_vars/nvmeof_target.yml before playbooks/nvme-of.yml.
 
 ---
 - name: Discover host hardware and software configuration
