@@ -1,21 +1,21 @@
-ARG BASE_IMAGE=rocm/vllm-dev:nightly_main_20260401
+ARG BASE_IMAGE=rocm/vllm-dev:nightly_main_20260417
 
 ARG PYTORCH_ROCM_ARCH=gfx942
 
-ARG RIXL_BRANCH="f33a5599"
+ARG RIXL_SHA="f33a5599"
 ARG RIXL_REPO="https://github.com/ROCm/RIXL.git"
-ARG UCX_BRANCH="da3fac2a"
+ARG UCX_SHA="da3fac2a"
 ARG UCX_REPO="https://github.com/ROCm/ucx.git"
-ARG ETCD_BRANCH="7c6e714"
+ARG ETCD_SHA="7c6e714"
 ARG ETCD_REPO="https://github.com/etcd-cpp-apiv3/etcd-cpp-apiv3.git"
 
-ARG HIPFILE_REPO="https://github.com/ROCm/hipFile.git"
-ARG HIPFILE_BASE_SHA=develop
-ARG HIPFILE_PATCH_SHA=0d07c19
+ARG HIPFILE_REPO="https://github.com/ROCm/rocm-systems.git"
+ARG HIPFILE_SHA=b2509f2
 
-ARG LMCACHE_REPO="https://github.com/LMCache/LMCache.git"
-# AIS patch
-ARG LMCACHE_BRANCH="18e7a008"
+ARG LMCACHE_REPO=https://github.com/amd-ivaganev/LMCache.git
+#ARG LMCACHE_REPO="https://github.com/LMCache/LMCache.git"
+ARG LMCACHE_SHA="bef2e13"
+#ARG LMCACHE_SHA="0b443774"
 
 
 ###
@@ -57,11 +57,11 @@ ENV CCACHE_DIR=/root/.cache/ccache
 
 FROM base AS build_rixl
 
-ARG UCX_BRANCH
+ARG UCX_SHA
 ARG UCX_REPO
-ARG RIXL_BRANCH
+ARG RIXL_SHA
 ARG RIXL_REPO
-ARG ETCD_BRANCH
+ARG ETCD_SHA
 ARG ETCD_REPO
 
 # ligflags-dev for nixlbench
@@ -83,7 +83,7 @@ RUN --mount=type=cache,target=/root/.cache/uv \
 RUN --mount=type=cache,target=/root/.cache/ccache \
     git clone ${ETCD_REPO} && \
     cd etcd-cpp-apiv3 && \
-    git checkout ${ETCD_BRANCH} && \
+    git checkout ${ETCD_SHA} && \
     mkdir build && cd build && \
     cmake .. && \
     make -j$(nproc) && \
@@ -93,7 +93,7 @@ RUN --mount=type=cache,target=/root/.cache/ccache \
     cd /usr/local/src && \
     git clone ${UCX_REPO} &&  \
     cd ucx && \
-    git checkout ${UCX_BRANCH} && \
+    git checkout ${UCX_SHA} && \
     ./autogen.sh && \
     mkdir build && cd build && \
     ../configure \
@@ -116,7 +116,7 @@ ENV LD_LIBRARY_PATH=${UCX_PATH}/lib:${LD_LIBRARY_PATH}
 RUN --mount=type=cache,target=/root/.cache/ccache \
     git clone ${RIXL_REPO} /opt/rixl && \
     cd /opt/rixl && \
-    git checkout ${RIXL_BRANCH} && \
+    git checkout ${RIXL_SHA} && \
     meson setup build --prefix=${RIXL_PATH} \
                      -Ducx_path=${UCX_PATH} \
                      -Drocm_path=${ROCM_PATH} && \
@@ -159,10 +159,9 @@ FROM ${BASE_IMAGE} AS build_kv
 
 ARG PYTORCH_ROCM_ARCH
 ARG HIPFILE_REPO
-ARG HIPFILE_BASE_SHA
-ARG HIPFILE_PATCH_SHA
+ARG HIPFILE_SHA
 ARG LMCACHE_REPO
-ARG LMCACHE_BRANCH
+ARG LMCACHE_SHA
 
 WORKDIR /usr/local/src
 
@@ -183,30 +182,34 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
 RUN uv pip install --system build
 
 # Clone and checkout LMCache
+# NOTE: Remove NIXL wheels pulled by upstream LMCache unconditionally. If they remain, VLLM
+# tries to import non-existent CUDA shared object at runtime.
 RUN git clone ${LMCACHE_REPO} && \
     cd LMCache && \
-    git checkout ${LMCACHE_BRANCH} && \
+    git checkout ${LMCACHE_SHA} && \
     uv pip install --system -r requirements/build.txt && \
     PYTORCH_ROCM_ARCH="${PYTORCH_ROCM_ARCH}" \
     TORCH_DONT_CHECK_COMPILER_ABI=1 \
     CXX=hipcc \
     BUILD_WITH_HIP=1 \
     python3 -m build --wheel --no-isolation && \
+    pip uninstall -y nixl nixl-cu12 && \
     cp /usr/local/src/LMCache/dist/*.whl /export/artifacts
 
 # Build & install hipFile libs, headers, and python bindings
 # invalid sha here,
 
-RUN git clone ${HIPFILE_REPO} && \
-    cd hipFile && \
-    git config user.email "noone@example.com" && git config user.name "No User" && \
-    git remote add dell https://github.com/glimchb/hipFile.git && git fetch dell && git fetch origin && \
-    git checkout "${HIPFILE_BASE_SHA}" && git cherry-pick "${HIPFILE_PATCH_SHA}" && \
+RUN git clone --no-checkout --filter=blob:none ${HIPFILE_REPO} && \
+    cd rocm-systems && \
+    git sparse-checkout set --cone projects/hipfile && \
+    git checkout "${HIPFILE_SHA}" && \
+    cd projects/hipfile && \
     mkdir build && cd build && \
-    cmake .. && cmake --build . -j && cpack -G DEB && \
+    cmake -DCMAKE_HIP_PLATFORM=amd .. && cmake --build . -j && cpack -G DEB && \
     dpkg -i hipfile*deb && \
     cp hipfile*deb /export/artifacts && \
-    cd ../python && python -m build --wheel && \
+    cd ../python && \
+    python -m build --wheel -Ccmake.define.HIPFILE_INCLUDE_DIR=../include -Ccmake.define.HIP_INCLUDE_DIR=/opt/rocm/include && \
     cp dist/hipfile-*.whl /export/artifacts
 
 
