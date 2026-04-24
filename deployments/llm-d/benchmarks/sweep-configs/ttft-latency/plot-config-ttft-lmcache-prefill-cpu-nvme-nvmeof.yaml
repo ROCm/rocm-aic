@@ -17,7 +17,7 @@ sources:
       filters:
         - "run_label==run1"
         - "isl<=128000"
-        - "tp<8"
+        - "tp<2"
       transformations:
         strategy: "'GPU Prefill'"
 
@@ -36,7 +36,7 @@ sources:
       filters:
         - "run_label==run2"
         - "isl<=128000"
-        - "tp<8"
+        - "tp<2"
       transformations:
         strategy: "'LMCache CPU cache'"
 
@@ -51,20 +51,39 @@ sources:
         run_label: benchmark_run.run_label
       run_strategy: all
     preparation:
-      # Filter to only run2 (CPU KV cache hit)
+      # Filter to only run2 (NVMe KV cache hit)
       filters:
         - "run_label==run2"
         - "isl<=128000"
-        - "tp<8"
+        - "tp<2"
       transformations:
         strategy: "'LMCache local NVMe cache'"
+
+  # Source 4 LMCache offloading - NVMe cache hit only
+  - name: lmcache_nvmeof
+    extraction:
+      input: ./results/ttft-latency/lmcache_nvmeof_aggregated_results.json
+      fields:
+        isl: config._load_params.random_input_len
+        tp: config.tensor_parallel_size
+        ttft: benchmark_run.metrics.ttft.mean_ms
+        run_label: benchmark_run.run_label
+      run_strategy: all
+    preparation:
+      # Filter to only run2 (NVMe-of KV cache hit)
+      filters:
+        - "run_label==run2"
+        - "isl<=128000"
+        - "tp<2"
+      transformations:
+        strategy: "'LMCache NVMe-of cache'"
 
 # Global preparation
 merge_preparation:
   sort_by: [strategy, tp, isl]
 
 export:
-  output: ttft_lmcache_prefill_cpu_nvme.json
+  output: ttft_lmcache_prefill_cpu_nvme_nvmeof.json
   x: isl
   y: ttft
 
@@ -78,6 +97,7 @@ export:
     "GPU Prefill": "o"
     "LMCache CPU cache": "^"
     "LMCache local NVMe cache": "s"
+    "LMCache NVMe-of cache": "d"
 
   # Different colors per strategy
   color_by: strategy
@@ -85,6 +105,7 @@ export:
     "GPU Prefill": "#1f77b4"              # Blue
     "LMCache CPU cache": "#ff7f0e"        # Orange
     "LMCache local NVMe cache": "#8000FF" # Purple
+    "LMCache NVMe-of cache": "#D30000" # Red
 
   axes:
     x_scale: log
@@ -112,4 +133,4 @@ export:
     dpi: 300
 
 plot:
-  output: ttft_lmcache_prefill_cpu_nvme.png
+  output: ttft_lmcache_prefill_cpu_nvme_nvmeof.png

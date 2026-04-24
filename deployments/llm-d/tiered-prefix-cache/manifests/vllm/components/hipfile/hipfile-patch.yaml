@@ -39,6 +39,8 @@ spec:
               readOnly: true
             - name: hipfile
               mountPath: /hipfile
+            - name: hipfile-of
+              mountPath: /hipfile-of
       volumes:
         - name: boot
           hostPath:
@@ -61,4 +63,8 @@ spec:
         - name: hipfile
           hostPath:
             path: /hipfile
+            type: Directory
+        - name: hipfile-of
+          hostPath:
+            path: /hipfile-of
             type: Directory
