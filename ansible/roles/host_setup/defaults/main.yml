@@ -31,3 +31,45 @@ host_setup_enable_prometheus_node_exporter: true
 # When false, skip AMD apt preclean, sbates130272.batesste.rocm_setup, and
 # post-rocm apt dedupe (faster provision when ROCm is already installed).
 host_setup_enable_rocm_setup: true
+
+# Sparse-checkout build of hipFile from ROCm/rocm-systems; optional ROCm/fio
+# (hipFile branch) with --enable-libhipfile. Heavy; tag hipfile_fio to scope.
+host_setup_install_hipfile_fio_stack: false
+# When true: remove the hipFile stamp and CMake build tree, then rebuild, run
+# cmake --install, and reinstall DEBs as if hipFile were not installed. Use as
+# a one-shot (e.g. -e host_setup_hipfile_force_reinstall=true); leave false for
+# normal runs so every play does not rebuild hipFile.
+host_setup_hipfile_force_reinstall: false
+# When the stack is enabled: build/install libhipfile-enabled fio (needs hipFile
+# DEBs installed first). Set false for hipFile libraries only.
+host_setup_build_fio_libhipfile: true
+host_setup_rocm_path: /opt/rocm
+# Keep aligned with ansible/roles/inference_container/defaults inference_hipfile_sha.
+# Use a full 40-char commit: git fetch origin <short> expects a branch/tag ref, not a sha.
+host_setup_hipfile_git_url: https://github.com/ROCm/rocm-systems.git
+host_setup_hipfile_git_sha: b2509f291dacff1905cdba140508fbdbc5d38b46
+host_setup_hipfile_build_dir: /var/tmp/rocm-icms-hipfile-build
+host_setup_fio_git_url: https://github.com/ROCm/fio.git
+# Pinned commit on branch hipFile for reproducible builds.
+host_setup_fio_libhipfile_git_ref: ee6ea2ebcc266f766c69df9d7990f1255e9f59f9
+host_setup_fio_libhipfile_prefix: /opt/rocm-icms/fio-libhipfile
+host_setup_fio_build_dir: /var/tmp/rocm-icms-fio-libhipfile-build
+host_setup_hipfile_build_jobs: "{{ ansible_processor_vcpus | default(2) | int }}"
+# Register distro fio and libhipfile fio with update-alternatives (distro default).
+# Uses dpkg-divert for packaged /usr/bin/fio; set false to only use full path
+# {{ host_setup_fio_libhipfile_prefix }}/bin/fio
+host_setup_fio_libhipfile_alternatives: false
+host_setup_fio_distro_divert_path: /usr/lib/rocm-icms/fio-from-distro
+host_setup_fio_alternative_priority_distro: 100
+host_setup_fio_alternative_priority_libhipfile: 50
+
+# AIS / hipFile observability (bpftrace uprobe CSV + optional node_exporter
+# textfile). rocs-internal/ais-eap has no in-tree bpftrace or exporter; this
+# ships the libhipfile.bt recipe aligned with the hipFile stack.
+host_setup_ais_hipfile_observability: false
+host_setup_ais_hipfile_install_root: /usr/lib/rocm-icms/ais-hipfile
+host_setup_ais_hipfile_textfile_metrics: true
+# Metrics appear only if prometheus-node-exporter is started with a textfile
+# collector directory (e.g. ARGS in /etc/default/prometheus-node-exporter on
+# Ubuntu). The package default often includes /var/lib/prometheus/node-exporter.
+host_setup_ais_hipfile_textfile_dir: /var/lib/prometheus/node-exporter

@@ -1,0 +1,22 @@
+#!/bin/bash
+#
+# Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+#
+# Run bpftrace hipFile I/O CSV trace. Pass libhipfile.so path as $1 if not default.
+#
+set -euo pipefail
+ROOT="{{ host_setup_ais_hipfile_install_root }}"
+DEFAULT_SO=""
+for cand in "{{ host_setup_rocm_path }}/lib/libhipfile.so.0" \
+    "{{ host_setup_rocm_path }}/lib64/libhipfile.so.0"; do
+  if [[ -e "$cand" ]]; then
+    DEFAULT_SO="$cand"
+    break
+  fi
+done
+if [[ -z "$DEFAULT_SO" ]]; then
+  DEFAULT_SO="{{ host_setup_rocm_path }}/lib/libhipfile.so.0"
+fi
+exec stdbuf -oL bpftrace -q "$ROOT/hipfile.bt" "${1:-$DEFAULT_SO}"

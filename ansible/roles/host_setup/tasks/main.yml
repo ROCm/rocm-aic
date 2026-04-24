@@ -76,3 +76,34 @@
   when: host_setup_enable_rocm_setup | default(true) | bool
   tags:
     - rocm_setup
+
+- name: Build and install hipFile and libhipfile-enabled fio
+  ansible.builtin.include_tasks:
+    file: hipfile_fio.yml
+    apply:
+      tags:
+        - hipfile_fio
+        - provision
+  when:
+    - host_setup_install_hipfile_fio_stack | default(false) | bool
+    - ansible_os_family == "Debian"
+    - ansible_pkg_mgr == "apt"
+  tags:
+    - hipfile_fio
+    - provision
+
+- name: AIS hipFile observability (bpftrace + node_exporter textfile)
+  ansible.builtin.include_tasks:
+    file: ais_hipfile_observability.yml
+    apply:
+      tags:
+        - ais_hipfile_observability
+        - provision
+  when:
+    - host_setup_install_hipfile_fio_stack | default(false) | bool
+    - host_setup_ais_hipfile_observability | default(false) | bool
+    - ansible_os_family == "Debian"
+    - ansible_pkg_mgr == "apt"
+  tags:
+    - ais_hipfile_observability
+    - provision

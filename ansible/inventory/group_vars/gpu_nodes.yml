@@ -21,6 +21,19 @@ rocm_setup_user: "{{ username }}"
 # is already installed: set host_setup_enable_rocm_setup: false
 host_setup_enable_rocm_setup: false
 
+# hipFile (sparse rocm-systems) + ROCm/fio with libhipfile; runs after ROCm
+# packages exist on the host. Default /usr/bin/fio stays distro fio; use
+# sudo update-alternatives --config fio to switch to the libhipfile build.
+host_setup_install_hipfile_fio_stack: true
+host_setup_fio_libhipfile_alternatives: true
+# Pinned refs (match ansible/roles/host_setup/defaults/main.yml unless you
+# bump them here). hipfile sha must be a full 40-char commit for git fetch.
+host_setup_hipfile_git_sha: b2509f291dacff1905cdba140508fbdbc5d38b46
+host_setup_fio_libhipfile_git_ref: ee6ea2e
+
+# bpftrace hipFile CSV trace + node_exporter textfile (see ais_hipfile_observability.yml).
+host_setup_ais_hipfile_observability: true
+
 # Do not let collection roles trigger unattended reboots during Ansible runs.
 rdma_setup_reboot: false
 rocm_setup_skip_reboot: true
