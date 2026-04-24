@@ -38,4 +38,4 @@ patches:
         value: 1
       - op: replace
         path: /spec/template/spec/containers/0/image
-        value: ghcr.io/amd-ivaganev/ivaganev-hipfile
+        value: ghcr.io/vcave/vllm:rocm_721-vllm_20260423b-lmcache

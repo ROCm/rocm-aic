@@ -33,7 +33,7 @@ parameters:
 
 load_generation:
   tool: "multi-turn-benchmark"
-  image: "ghcr.io/vcave/vllm:rocm_721-vllm_20260401-lmcache"
+  image: "ghcr.io/vcave/vllm:rocm_721-vllm_20260423b-lmcache"
   workload_file: "agent_multi_turn.json"
   benchmark_args:
     num_clients: 100

@@ -1,4 +1,4 @@
-ARG BASE_IMAGE=rocm/vllm-dev:nightly_main_20260417
+ARG BASE_IMAGE=rocm/vllm-dev:nightly_main_20260423
 
 ARG PYTORCH_ROCM_ARCH=gfx942
 
@@ -193,7 +193,6 @@ RUN git clone ${LMCACHE_REPO} && \
     CXX=hipcc \
     BUILD_WITH_HIP=1 \
     python3 -m build --wheel --no-isolation && \
-    pip uninstall -y nixl nixl-cu12 && \
     cp /usr/local/src/LMCache/dist/*.whl /export/artifacts
 
 # Build & install hipFile libs, headers, and python bindings
@@ -230,7 +229,8 @@ RUN --mount=type=bind,from=build_rixl,src=/export/wheels,target=/export/wheels \
     uv pip install --system /export/wheels/*.whl && \
     cp -r /export/packages/* /opt && \
     dpkg -i /export/artifacts/hipfile*deb && \
-    uv pip install --system /export/artifacts/*.whl
+    uv pip install --system /export/artifacts/*.whl && \
+    uv pip uninstall --system nixl nixl-cu12
 
 # Verify LMCache installation
 RUN python3 -c "import lmcache; print('LMCache installed successfully')" || \
