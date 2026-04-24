@@ -26,7 +26,7 @@ parameters:
 
 load_generation:
   tool: "vllm-bench-serve"
-  image: "ghcr.io/vcave/vllm:rocm_721-vllm_20260401-lmcache"
+  image: "ghcr.io/vcave/vllm:rocm_721-vllm_20260417-lmcache"
   # Run benchmark twice: first run populates the CPU cache, second run cache hits.
   clone_run: true
   benchmark_args:

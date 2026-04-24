@@ -15,7 +15,7 @@
 
   preparation:
     filters:
-      - "isl<80000"
+      - "isl<=128000"
     transformations:
       run_name: "run_label.str.replace('run1', 'GPU prefill').replace('run2', 'CPU KV cache hit')"
     sort_by: [run_label, tp]
