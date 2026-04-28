@@ -86,7 +86,7 @@ just llm-d-setup
 
 ## Available Deployments
 
-Two types of deployments are available
+Two types of deployments are available:
 * Tiered prefix cache targeting either LLM-D/vLLM native offloading or LMCache.
 * Inference scheduling for baseline without any tiering features enabled.
 
@@ -150,14 +150,15 @@ All llm-d deployments:
 
 ### Tiered Prefix Cache
 Uses **Kustomize + Helm**:
-- Gateway and vLLM: Kustomize overlays referencing llm-d submodule bases
+- Gateway and vLLM: Kustomize overlays referencing `optimized-baseline/modelserver/amd/vllm`
 - InferencePool: Helm chart
 
 ### Inference Scheduling
-Uses **Helmfile**:
-- 3 Helm charts: llm-d-infra, inferencepool, llm-d-modelservice
-- Single Helmfile orchestrates all releases
-- AMD-specific value files
+Uses **Kustomize + Helm** (updated April 2026):
+- Model servers: Kustomize overlay referencing `optimized-baseline/modelserver/amd/vllm`
+- InferencePool: Helm chart
+- Gateway: Kustomize from llm-d recipes
+- **Note**: Use `justfile-v2` for the new Kustomize-based deployment
 
 ## Configuration
 

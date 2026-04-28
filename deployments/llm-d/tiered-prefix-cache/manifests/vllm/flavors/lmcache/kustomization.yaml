@@ -1,9 +1,8 @@
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 
-# Reference the base vllm AMD recipe from llm-d submodule
 resources:
-  - ../../../../../../../submodules/llm-d/guides/recipes/vllm/amd
+  - ../../../../../../../submodules/llm-d/guides/optimized-baseline/modelserver/amd/vllm
 
 # LMCache-specific configuration; can override through env variables in `llm-d-model-server` too.
 configMapGenerator:
@@ -18,29 +17,46 @@ configMapGenerator:
         remote_url: null
 
 patches:
-  # Configure LMCache connector
+  # Update replicas
   - target:
       kind: Deployment
-      name: llm-d-model-server
+      name: decode
     patch: |-
       - op: replace
         path: /spec/replicas
-        value: 2
+        value: 1
+
+  # Override image with LMCache-enabled build
+  - target:
+      kind: Deployment
+      name: decode
+    patch: |-
       - op: replace
         path: /spec/template/spec/containers/0/image
-        value: ghcr.io/vcave/vllm:rocm_721-vllm_20260401-lmcache
+        value: ghcr.io/vcave/vllm:rocm_721-vllm_20260423b-lmcache
+
+  # Configure vLLM server with LMCache connector
+  - target:
+      kind: Deployment
+      name: decode
+    patch: |-
       - op: replace
-        path: /spec/template/spec/containers/0/args/0
-        value: |-
-          exec vllm serve \
-            Qwen/Qwen3-32B \
-            --tensor-parallel-size 2 \
-            --kv-transfer-config '{"kv_connector":"LMCacheConnectorV1","kv_role":"kv_both"}' \
-            --port 8000 \
-            --max-num-seq 1024 \
-            --gpu-memory-utilization 0.25 \
-            --disable-uvicorn-access-log \
-            --enable_prefix_caching
+        path: /spec/template/spec/containers/0/args
+        value:
+          - "Qwen/Qwen3-32B"
+          - "--host=0.0.0.0"
+          - "--port=8000"
+          - "--tensor-parallel-size=2"
+          - "--kv-transfer-config={\"kv_connector\":\"LMCacheConnectorV1\",\"kv_role\":\"kv_both\"}"
+          - "--max-num-seq=1024"
+          - "--gpu-memory-utilization=0.25"
+          - "--enable_prefix_caching"
+          - "--disable-access-log-for-endpoints=/health,/metrics,/v1/models"
+  # Add LMCache environment variables
+  - target:
+      kind: Deployment
+      name: decode
+    patch: |-
       - op: add
         path: /spec/template/spec/containers/0/env/-
         value:
@@ -57,7 +73,11 @@ patches:
           name: LMCACHE_CONFIG_FILE
           value: "/opt/configs/lmcache_config.yaml"
 
-      # Mount config map
+  # Mount config map for LMCache configuration
+  - target:
+      kind: Deployment
+      name: decode
+    patch: |-
       - op: add
         path: /spec/template/spec/volumes/-
         value:
@@ -71,20 +91,10 @@ patches:
           mountPath: /opt/configs
           readOnly: true
 
-      # Set default resources
-      - op: add
-        path: /spec/template/spec/containers/0/resources
-        value:
-          limits:
-            amd.com/gpu: 2
-          requests:
-            amd.com/gpu: 2
-            memory: 400G
-
-  # Mount prometheus metrics volume
+  # Mount prometheus metrics volume for LMCache
   - target:
       kind: Deployment
-      name: llm-d-model-server
+      name: decode
     patch: |-
       - op: add
         path: /spec/template/spec/volumes/-
@@ -96,3 +106,29 @@ patches:
         value:
           name: lmcache-prometheus-metrics
           mountPath: /tmp/lmcache_prometheus
+
+  # Update resources for large CPU cache tier
+  # NOTE: GPU count can be customized here to override upstream defaults
+  - target:
+      kind: Deployment
+      name: decode
+    patch: |-
+      - op: replace
+        path: /spec/template/spec/containers/0/resources
+        value:
+          limits:
+            amd.com/gpu: 2
+            cpu: "32"
+            memory: 400Gi
+          requests:
+            amd.com/gpu: 2
+            cpu: "32"
+            memory: 400Gi
+
+# Add tiered-prefix-cache specific labels
+labels:
+  - pairs:
+      llm-d.ai/deployment: tiered-prefix-cache
+      llm-d.ai/connector: lmcache
+    includeSelectors: true
+    includeTemplates: true

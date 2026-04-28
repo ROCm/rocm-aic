@@ -1,5 +1,4 @@
 # Justfile for inference-scheduling deployment with AMD GPUs
-# Uses Helmfile to deploy 3 charts: llm-d-infra, inferencepool, llm-d-modelservice
 
 # Default recipe - show available commands
 default:
@@ -12,134 +11,17 @@ import? "../common/llm-d-helpers.justfile"
 
 # Deployment-specific configuration
 NAMESPACE := env_var_or_default('NAMESPACE', 'llm-d-inference-scheduling-amd')
-VALUES_FILE := env_var_or_default('VALUES_FILE', 'amd-default.yaml')
-MANIFEST_DIR := env_var_or_default('MANIFEST_DIR', '')
+MANIFEST_DIR := env_var_or_default('MANIFEST_DIR', './manifests/vllm')
 
-# Path to llm-d guide
-LLM_D_PATH := "/path/llm-d
-LLM_D_GUIDE := "{{LLM_D_PATH}}/guides/inference-scheduling"
-
-# Deploy using llm-d guide helmfile with custom values file
-deploy: verify-prereqs create-namespace deploy-helmfile deploy-httproute
-    @echo "✅ Full deployment complete!"
+# Complete setup: prereqs + namespace + deploy + wait
+setup: verify-prereqs create-namespace deploy wait
+    @echo "✅ Setup complete!"
     @echo "Run 'just status' to check deployment status"
     @echo "Run 'just port-forward-start' to access services"
 
-# Deploy Helmfile releases (infrastructure, inferencepool, modelservice)
-deploy-helmfile:
-    #!/usr/bin/env bash
-    set -euo pipefail
-    echo "🚀 Deploying with llm-d guide helmfile (environment: amd)..."
-    echo "Namespace: {{NAMESPACE}}"
-    echo "Using custom values: values/{{VALUES_FILE}}"
-    # Create temporary directory for custom values
-    TEMP_VALUES_DIR=$(mktemp -d)
-    trap "rm -rf $TEMP_VALUES_DIR" EXIT
-    # Copy our custom values to llm-d guide structure location
-    cp "$PWD/values/{{VALUES_FILE}}" "$TEMP_VALUES_DIR/values_amd.yaml"
-    # Deploy from llm-d guide directory with custom values
-    cd {{LLM_D_GUIDE}}
-    # Temporarily replace llm-d's values_amd.yaml with ours
-    mv ms-inference-scheduling/values_amd.yaml ms-inference-scheduling/values_amd.yaml.backup || true
-    cp "$TEMP_VALUES_DIR/values_amd.yaml" ms-inference-scheduling/values_amd.yaml
-    helmfile apply -e amd -n {{NAMESPACE}}
-    # Restore original
-    mv ms-inference-scheduling/values_amd.yaml.backup ms-inference-scheduling/values_amd.yaml || true
-    echo "✅ Helmfile deployment complete!"
-
-# Deploy HTTPRoute for gateway routing
-deploy-httproute:
-    @echo "🚀 Deploying HTTPRoute..."
-    kubectl apply -f {{LLM_D_GUIDE}}/httproute.yaml -n {{NAMESPACE}} || exit 1
-    @echo "✅ HTTPRoute deployed"
-
-# Teardown everything using llm-d guide helmfile
-teardown: teardown-httproute teardown-helmfile
-    @echo "✅ Full teardown complete!"
-
-# Teardown HTTPRoute
-teardown-httproute:
-    @echo "🗑️  Removing HTTPRoute..."
-    -kubectl delete -f {{LLM_D_GUIDE}}/httproute.yaml -n {{NAMESPACE}}
-    @echo "✅ HTTPRoute removed"
-
-# Teardown Helmfile releases
-teardown-helmfile:
-    @echo "🗑️  Tearing down Helmfile releases..."
-    cd {{LLM_D_GUIDE}} && helmfile destroy -e amd -n {{NAMESPACE}}
-    @echo "✅ Helmfile teardown complete!"
-
-# Check deployment status
-status:
-    @echo "📊 Deployment Status in namespace: {{NAMESPACE}}"
-    @echo ""
-    @echo "=== Helm Releases ==="
-    helm list -n {{NAMESPACE}}
-    @echo ""
-    @echo "=== All Resources ==="
-    kubectl -n {{NAMESPACE}} get all
-    @echo ""
-    @echo "=== Gateway ==="
-    kubectl get gateway -n {{NAMESPACE}} || echo "No gateway found"
-    @echo ""
-    @echo "=== InferencePool ==="
-    kubectl get inferencepool -n {{NAMESPACE}} || echo "No InferencePool found"
-    @echo ""
-    @echo "=== HTTPRoute ==="
-    kubectl get httproute -n {{NAMESPACE}} || echo "No HTTPRoute found"
-    @echo ""
-    @echo "=== PodMonitor ==="
-    kubectl get podmonitor -n {{NAMESPACE}} || echo "No PodMonitor found"
-
-# Wait for deployment to be ready
-wait:
-    @echo "⏳ Waiting for deployment to be ready..."
-    @echo "Waiting for gateway..."
-    @just _wait-for-deployment {{NAMESPACE}} infra-inference-scheduling-inference-gateway-istio 300s
-    @echo "Waiting for endpoint picker..."
-    @just _wait-for-deployment {{NAMESPACE}} gaie-inference-scheduling-epp 300s
-    @echo "Waiting for model servers (this may take several minutes)..."
-    @kubectl wait --for=condition=ready pod -l llm-d.ai/inference-serving=true -n {{NAMESPACE}} --timeout=900s || echo "⚠️  Some model servers may still be starting"
-    @echo "✅ Deployment ready!"
-
-# View logs from model server pods
-logs:
-    @echo "📜 Model server logs:"
-    @just _get-logs-by-label {{NAMESPACE}} "llm-d.ai/inference-serving=true" 50
-
-# Follow logs from model server pods
-logs-follow:
-    @echo "📜 Following model server logs (Ctrl+C to stop)..."
-    @just _follow-logs-by-label {{NAMESPACE}} "llm-d.ai/inference-serving=true"
-
-# Start all port-forwards in background
-port-forward-start:
-    @echo "🔌 Starting port-forwards..."
-    @just _port-forward-gateway-is
-    @just _port-forward-prometheus
-    @just _port-forward-grafana
-    @echo "✅ Port-forwards started:"
-    @echo "  🌐 Istio Gateway: http://localhost:8080"
-    @echo "  📊 Prometheus: http://localhost:9090"
-    @echo "  📈 Grafana: http://localhost:3000"
-    @echo "Run 'just port-forward-stop' to stop them"
-
-# Internal: Start Istio Gateway port-forward
-_port-forward-gateway-is:
-    #!/usr/bin/env bash
-    set -euo pipefail
-    # Kill existing port-forward if running
-    pkill -f "port-forward.*gateway-istio.*8080" 2>/dev/null || true
-    sleep 1
-    # Start new port-forward
-    kubectl port-forward -n {{NAMESPACE}} svc/infra-inference-scheduling-inference-gateway-istio 8080:80 > /dev/null 2>&1 &
-    echo "  ✅ Istio Gateway port-forward started (PID: $!)"
-
-# Stop all port-forwards
-port-forward-stop:
-    @echo "🔌 Stopping port-forwards..."
-    -pkill -f "port-forward.*gateway-istio.*8080"
-    @just stop-monitoring-port-forwards
+# Deploy only
+deploy: deploy-gateway deploy-model-server deploy-inferencepool
+    @echo "✅ Deployment created!"
 
 # Create namespace if it doesn't exist, and ensure HF token secret is configured
 create-namespace:
@@ -161,57 +43,142 @@ create-namespace:
     else
         echo "⚠️  HuggingFace token secret '{{HF_TOKEN_NAME}}' not found in namespace {{NAMESPACE}}"
         echo "📝 Setting up HuggingFace token using llm-d-helpers..."
-        just register-hf-token {{NAMESPACE}} || { echo "❌ Failed to register HF token. You may need to set HF_TOKEN environment variable and run: just register-hf-token {{NAMESPACE}}"; exit 1}
+        just register-hf-token {{NAMESPACE}} || { echo "❌ Failed to register HF token. You may need to set HF_TOKEN environment variable and run: just register-hf-token {{NAMESPACE}}"; exit 1;}
     fi
 
 # Delete namespace (WARNING: deletes everything!)
 delete-namespace:
     @just _delete-namespace {{NAMESPACE}}
 
-# Complete setup: create namespace, deploy, and wait
-setup: deploy wait
-    @echo "🎉 Setup complete!"
-    @just status
+# Deploy Istio gateway (from llm-d submodule)
+deploy-gateway:
+    @echo "🚀 Deploying Istio gateway..."
+    kubectl apply -k {{LLM_D_PATH}}/guides/recipes/gateway/istio -n {{NAMESPACE}} || exit 1
+    @echo "✅ Gateway deployed"
+
+# Deploy vLLM model servers using optimized-baseline structure
+deploy-model-server:
+    @echo "🚀 Deploying AMD vLLM model servers"
+    kustomize build {{MANIFEST_DIR}} | kubectl apply -n {{NAMESPACE}} -f - || exit 1
+    @echo "✅ Model servers deployed"
+
+# Deploy InferencePool for intelligent routing
+deploy-inferencepool:
+    @echo "🚀 Deploying InferencePool..."
+    helm install llm-d-infpool \
+      {{INFERENCEPOOL_CHART}} \
+      -f {{LLM_D_PATH}}/guides/recipes/scheduler/base.values.yaml \
+      -f {{LLM_D_PATH}}/guides/recipes/scheduler/features/monitoring.values.yaml \
+      -f {{LLM_D_PATH}}/guides/optimized-baseline/scheduler/optimized-baseline.values.yaml \
+      --set provider.name=istio \
+      --set experimentalHttpRoute.enabled=true \
+      --set experimentalHttpRoute.inferenceGatewayName=llm-d-inference-gateway \
+      -n {{NAMESPACE}} \
+      --version {{INFERENCEPOOL_VERSION}} || exit 1
+    @echo "✅ InferencePool deployed"
+
+# Teardown everything
+teardown: teardown-inferencepool teardown-model-server teardown-gateway
+    @echo "✅ Full teardown complete!"
+
+# Teardown InferencePool
+teardown-inferencepool:
+    @echo "🗑️  Removing InferencePool..."
+    -helm uninstall llm-d-infpool -n {{NAMESPACE}}
+    @echo "✅ InferencePool removed"
+
+# Teardown model servers
+teardown-model-server:
+    @echo "🗑️  Removing model servers..."
+    -kubectl delete -k {{MANIFEST_DIR}} -n {{NAMESPACE}}
+    @echo "✅ Model servers removed"
+
+# Teardown gateway
+teardown-gateway:
+    @echo "🗑️  Removing gateway..."
+    -kubectl delete -k {{LLM_D_PATH}}/guides/recipes/gateway/istio -n {{NAMESPACE}}
+    @echo "✅ Gateway removed"
+
+# Check deployment status
+status:
+    @echo "📊 Deployment Status in namespace: {{NAMESPACE}}"
+    @echo ""
+    @echo "=== Helm Releases ==="
+    -helm list -n {{NAMESPACE}}
+    @echo ""
+    @echo "=== Deployments ==="
+    kubectl -n {{NAMESPACE}} get deployments
+    @echo ""
+    @echo "=== Pods ==="
+    kubectl -n {{NAMESPACE}} get pods -o wide
+    @echo ""
+    @echo "=== Services ==="
+    kubectl -n {{NAMESPACE}} get svc
+
+# Wait for deployment to be ready
+wait:
+    @echo "⏳ Waiting for pods to be ready..."
+    kubectl wait --for=condition=ready pod -l llm-d.ai/role=decode -n {{NAMESPACE}} --timeout=600s || true
+    @echo "✅ Pods are ready!"
+
+# View logs from model server pods
+logs:
+    @echo "📜 Model server logs:"
+    @just _get-logs-by-label {{NAMESPACE}} "llm-d.ai/role=decode" 50
+
+# Follow logs from model server pods
+logs-follow:
+    @echo "📜 Following model server logs (Ctrl+C to stop)..."
+    @just _follow-logs-by-label {{NAMESPACE}} "llm-d.ai/role=decode"
+
+# Test the deployment with a simple curl
+test:
+    @echo "🧪 Testing deployment..."
+    @echo "Make sure port-forward is active (just port-forward-start)"
+    curl -s localhost:8080/v1/models | jq .
+
+# Start all port-forwards in background
+port-forward-start:
+    @echo "🔌 Starting port-forwards..."
+    @just _port-forward-gateway-is
+    @just _port-forward-prometheus
+    @just _port-forward-grafana
+    @echo "✅ Port-forwards started:"
+    @echo "  🌐 Istio Gateway: http://localhost:8080"
+    @echo "  📊 Prometheus: http://localhost:9090"
+    @echo "  📈 Grafana: http://localhost:3000"
+    @echo "Run 'just port-forward-stop' to stop them"
+
+# Internal: Start Istio Gateway port-forward
+_port-forward-gateway-is:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    # Kill existing port-forward if running
+    pkill -f "port-forward.*gateway-istio.*8080" 2>/dev/null || true
+    sleep 1
+    # Start new port-forward
+    kubectl port-forward -n {{NAMESPACE}} svc/llm-d-inference-gateway-istio 8080:80 > /dev/null 2>&1 &
+    echo "  ✅ Istio Gateway port-forward started (PID: $!)"
+
+# Stop all port-forwards
+port-forward-stop:
+    @echo "🔌 Stopping port-forwards..."
+    -pkill -f "port-forward.*gateway-istio.*8080"
+    @just stop-monitoring-port-forwards
 
 # Complete cleanup: teardown and stop port-forwards
-cleanup: teardown port-forward-stop
+clean: teardown port-forward-stop
     @echo "🧹 Cleanup complete!"
     @echo "Run 'just delete-namespace' if you want to delete the namespace entirely"
 
-# Sync Helmfile (update releases without recreating)
-sync:
-    #!/usr/bin/env bash
-    set -euo pipefail
-    echo "🔄 Syncing Helmfile releases..."
-    TEMP_VALUES_DIR=$(mktemp -d)
-    trap "rm -rf $TEMP_VALUES_DIR" EXIT
-    cp "$PWD/values/{{VALUES_FILE}}" "$TEMP_VALUES_DIR/values_amd.yaml"
-    cd {{LLM_D_GUIDE}}
-    mv ms-inference-scheduling/values_amd.yaml ms-inference-scheduling/values_amd.yaml.backup || true
-    cp "$TEMP_VALUES_DIR/values_amd.yaml" ms-inference-scheduling/values_amd.yaml
-    helmfile sync -e amd -n {{NAMESPACE}}
-    mv ms-inference-scheduling/values_amd.yaml.backup ms-inference-scheduling/values_amd.yaml || true
-    echo "✅ Sync complete!"
-
-# Show Helmfile diff
-diff:
-    #!/usr/bin/env bash
-    set -euo pipefail
-    echo "🔍 Showing Helmfile diff..."
-    TEMP_VALUES_DIR=$(mktemp -d)
-    trap "rm -rf $TEMP_VALUES_DIR" EXIT
-    cp "$PWD/values/{{VALUES_FILE}}" "$TEMP_VALUES_DIR/values_amd.yaml"
-    cd {{LLM_D_GUIDE}}
-    mv ms-inference-scheduling/values_amd.yaml ms-inference-scheduling/values_amd.yaml.backup || true
-    cp "$TEMP_VALUES_DIR/values_amd.yaml" ms-inference-scheduling/values_amd.yaml
-    helmfile diff -e amd -n {{NAMESPACE}}
-    mv ms-inference-scheduling/values_amd.yaml.backup ms-inference-scheduling/values_amd.yaml || true
+squeaky-clean: teardown port-forward-stop delete-namespace
+    @echo "🧹 Cleanup complete!"
 
 # Test metrics endpoint from a model server pod
 test-metrics:
     #!/usr/bin/env bash
     set -euo pipefail
-    POD_NAME=$(kubectl get pods -n {{NAMESPACE}} -l llm-d.ai/inference-serving=true -o jsonpath='{.items[0].metadata.name}')
+    POD_NAME=$(kubectl get pods -n {{NAMESPACE}} -l llm-d.ai/role=decode -o jsonpath='{.items[0].metadata.name}')
     if [ -n "$POD_NAME" ]; then
         echo "📊 Testing metrics from pod: $POD_NAME"
         kubectl exec -n {{NAMESPACE}} ${POD_NAME} -c vllm -- curl -s http://localhost:8000/metrics | head -20
@@ -223,29 +190,17 @@ test-metrics:
 # Parse and show vLLM configuration from logs (deduplicated across pods)
 show-config:
     @echo "Parsing vLLM configuration from pod logs..."
-    @just _parse-vllm-all {{NAMESPACE}} "llm-d.ai/inference-serving=true" "true"
+    @just _parse-vllm-all {{NAMESPACE}} "llm-d.ai/role=decode" "true"
 
 # Show vLLM configuration for all pods separately (no deduplication)
 show-config-all:
     @echo "Parsing vLLM configuration from all pods (no deduplication)..."
-    @just _parse-vllm-all {{NAMESPACE}} "llm-d.ai/inference-serving=true" "false"
+    @just _parse-vllm-all {{NAMESPACE}} "llm-d.ai/role=decode" "false"
 
 # Show vLLM configuration for a specific pod
 show-config-pod POD_NAME:
     @echo "Parsing vLLM configuration from pod {{POD_NAME}}..."
     @just _parse-vllm-pod {{NAMESPACE}} {{POD_NAME}}
-
-# Show current deployment configuration
-show-deployment-config:
-    @echo "Deployment configuration:"
-    @echo "  Namespace: {{NAMESPACE}}"
-    @echo "  Helmfile: {{LLM_D_GUIDE}}/helmfile.yaml.gotmpl"
-    @echo "  Environment: amd"
-    @echo "  Values file: values/{{VALUES_FILE}}"
-    @echo ""
-    @echo "Override with:"
-    @echo "  NAMESPACE=my-namespace just deploy"
-    @echo "  VALUES_FILE=amd-small.yaml just deploy"
 
 # Load Grafana dashboards (llm-d defaults + rocm-icms custom)
 load-dashboards:

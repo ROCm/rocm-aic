@@ -274,7 +274,7 @@ configMapGenerator:
 patches:
   - target:
       kind: Deployment
-      name: llm-d-model-server
+      name: decode
     patch: |-
       - op: replace
         path: /spec/template/spec/containers/0/args/0

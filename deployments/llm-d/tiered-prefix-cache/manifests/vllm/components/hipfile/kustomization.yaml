@@ -5,4 +5,4 @@ patches:
   - path: hipfile-patch.yaml
     target:
       kind: Deployment
-      name: llm-d-model-server
+      name: decode

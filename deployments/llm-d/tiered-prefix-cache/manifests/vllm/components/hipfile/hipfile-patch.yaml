@@ -1,7 +1,7 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: llm-d-model-server
+  name: decode
 spec:
   template:
     spec:

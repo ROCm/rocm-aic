@@ -5,7 +5,7 @@
 LLM_D_PATH := "../../../submodules/llm-d"
 
 # InferencePool chart configuration
-INFERENCEPOOL_VERSION := "v1.3.1"
+INFERENCEPOOL_VERSION := "v1.4.0"
 INFERENCEPOOL_CHART := "oci://registry.k8s.io/gateway-api-inference-extension/charts/inferencepool"
 
 # HuggingFace token secret name

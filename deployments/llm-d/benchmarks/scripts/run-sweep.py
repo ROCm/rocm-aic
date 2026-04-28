@@ -167,6 +167,12 @@ class SweepOrchestrator:
     # Map deployment types to their justfile directories
     # Note: Only tiered-prefix-cache variants are supported for justfile-based deployment
     DEPLOYMENT_MAP = {
+        'inference-scheduling': {
+            'justfile_dir': 'inference-scheduling',
+            'deploy_target': 'deploy',
+            'teardown_target': 'teardown',
+            'use_justfile': True
+        },
         'tiered-prefix-cache-offloading': {
             'justfile_dir': 'tiered-prefix-cache',
             'deploy_target': 'deploy-offloading',
@@ -769,9 +775,11 @@ class SweepOrchestrator:
             start_time = time.time()
 
             while time.time() - start_time < max_wait:
+                #TODO
                 result = subprocess.run([
                     "kubectl", "wait", "--for=condition=available",
-                    "deployment/llm-d-model-server",
+                    "deployment",
+                    "-l", "llm-d.ai/role=decode",
                     "-n", namespace,
                     "--timeout=30s"
                 ], capture_output=True, text=True)
@@ -837,7 +845,7 @@ class SweepOrchestrator:
         result = subprocess.run([
             "kubectl", "get", "pods",
             "-n", namespace,
-            "-l", "llm-d.ai/inference-serving=true",
+            "-l", "llm-d.ai/role=decode",
             "-o", "jsonpath={.items[*].metadata.name}"
         ], capture_output=True, text=True, check=True)
 

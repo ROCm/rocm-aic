@@ -7,7 +7,7 @@ kind: Component
 patches:
   - target:
       kind: Deployment
-      name: llm-d-model-server
+      name: decode
     patch: |-
       - op: add
         path: /spec/template/spec/containers/0/env/-

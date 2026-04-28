@@ -1,0 +1,32 @@
+name: "inference-scheduling-vllm"
+description: "vLLM serving engine benchmark"
+deployment: "inference-scheduling"
+deployment_template: "inference-scheduling-kustomization-vllm.yaml.tmpl"
+
+parameters:
+  model:
+    type: fixed
+    value: "openai/gpt-oss-120b"
+  tensor_parallel_size:
+    type: categorical
+    values: [1]
+  vllm_args:
+    type: combinations
+    args:
+      gpu_memory_utilization:
+        values: [0.90]
+
+load_generation:
+  tool: "vllm-bench-serve"
+  image: "ghcr.io/vcave/vllm:rocm_721-vllm_20260423b-lmcache"
+  benchmark_args:
+    type: combinations
+    args:
+      dataset_name: random 
+      random_input_len:
+        values: [1000]
+      random_output_len: 1
+      max_concurrency: 1
+      num_prompts: 30
+      ignore_eos: true
+      # seed is auto-generated
