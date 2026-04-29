@@ -10,18 +10,38 @@ import? "../common/monitoring.justfile"
 import? "../common/llm-d-helpers.justfile"
 
 # Deployment-specific configuration
-NAMESPACE := env_var_or_default('NAMESPACE', 'llm-d-inference-scheduling-amd')
+USER      := `whoami`
+NAMESPACE_DEFAULT   := USER + "-llm-d-inference-scheduling-amd"
+NAMESPACE := env_var_or_default('NAMESPACE', NAMESPACE_DEFAULT)
 MANIFEST_DIR := env_var_or_default('MANIFEST_DIR', './manifests/vllm')
+VLLM_MANIFEST_DIR := env_var_or_default('VLLM_MANIFEST_DIR', env_var_or_default('MANIFEST_DIR', './manifests/vllm'))
+SGLANG_MANIFEST_DIR := env_var_or_default('SGLANG_MANIFEST_DIR', env_var_or_default('MANIFEST_DIR', './manifests/sglang'))
 
-# Complete setup: prereqs + namespace + deploy + wait
-setup: verify-prereqs create-namespace deploy wait
-    @echo "✅ Setup complete!"
+# How to find deployments, pods, that are serving engines
+MODEL_SERVING_LABEL := "llm-d.ai/role=decode"
+
+# Complete setup: prereqs + namespace + deploy + wait (vllm variant)
+setup: setup-vllm
+
+# Complete setup with vllm
+setup-vllm: verify-prereqs create-namespace deploy-vllm wait
+    @echo "✅ vLLM setup complete!"
     @echo "Run 'just status' to check deployment status"
     @echo "Run 'just port-forward-start' to access services"
 
-# Deploy only
-deploy: deploy-gateway deploy-model-server deploy-inferencepool
-    @echo "✅ Deployment created!"
+# Complete setup with sglang
+setup-sglang: verify-prereqs create-namespace deploy-sglang wait
+    @echo "✅ SGLang setup complete!"
+    @echo "Run 'just status' to check deployment status"
+    @echo "Run 'just port-forward-start' to access services"
+
+# Deploy with vllm
+deploy-vllm: deploy-gateway deploy-model-server-vllm deploy-inferencepool
+    @echo "✅ vLLM deployment created!"
+
+# Deploy with sglang
+deploy-sglang: deploy-gateway deploy-model-server-sglang deploy-inferencepool
+    @echo "✅ SGLang deployment created!"
 
 # Create namespace if it doesn't exist, and ensure HF token secret is configured
 create-namespace:
@@ -56,11 +76,17 @@ deploy-gateway:
     kubectl apply -k {{LLM_D_PATH}}/guides/recipes/gateway/istio -n {{NAMESPACE}} || exit 1
     @echo "✅ Gateway deployed"
 
-# Deploy vLLM model servers using optimized-baseline structure
-deploy-model-server:
+# Deploy vLLM model servers
+deploy-model-server-vllm:
     @echo "🚀 Deploying AMD vLLM model servers"
-    kustomize build {{MANIFEST_DIR}} | kubectl apply -n {{NAMESPACE}} -f - || exit 1
-    @echo "✅ Model servers deployed"
+    kustomize build {{VLLM_MANIFEST_DIR}} | kubectl apply -n {{NAMESPACE}} -f - || exit 1
+    @echo "✅ vLLM model servers deployed"
+
+# Deploy SGLang model servers
+deploy-model-server-sglang:
+    @echo "🚀 Deploying AMD SGLang model servers"
+    kustomize build {{SGLANG_MANIFEST_DIR}} | kubectl apply -n {{NAMESPACE}} -f - || exit 1
+    @echo "✅ SGLang model servers deployed"
 
 # Deploy InferencePool for intelligent routing
 deploy-inferencepool:
@@ -77,9 +103,16 @@ deploy-inferencepool:
       --version {{INFERENCEPOOL_VERSION}} || exit 1
     @echo "✅ InferencePool deployed"
 
-# Teardown everything
-teardown: teardown-inferencepool teardown-model-server teardown-gateway
-    @echo "✅ Full teardown complete!"
+# Teardown everything (vllm variant by default)
+teardown: teardown-vllm
+
+# Teardown vllm deployment
+teardown-vllm: teardown-inferencepool teardown-model-server-vllm teardown-gateway
+    @echo "✅ vLLM teardown complete!"
+
+# Teardown sglang deployment
+teardown-sglang: teardown-inferencepool teardown-model-server-sglang teardown-gateway
+    @echo "✅ SGLang teardown complete!"
 
 # Teardown InferencePool
 teardown-inferencepool:
@@ -87,11 +120,17 @@ teardown-inferencepool:
     -helm uninstall llm-d-infpool -n {{NAMESPACE}}
     @echo "✅ InferencePool removed"
 
-# Teardown model servers
-teardown-model-server:
-    @echo "🗑️  Removing model servers..."
-    -kubectl delete -k {{MANIFEST_DIR}} -n {{NAMESPACE}}
-    @echo "✅ Model servers removed"
+# Teardown vLLM model servers
+teardown-model-server-vllm:
+    @echo "🗑️  Removing vLLM model servers..."
+    -kubectl delete -k {{VLLM_MANIFEST_DIR}} -n {{NAMESPACE}}
+    @echo "✅ vLLM model servers removed"
+
+# Teardown SGLang model servers
+teardown-model-server-sglang:
+    @echo "🗑️  Removing SGLang model servers..."
+    -kubectl delete -k {{SGLANG_MANIFEST_DIR}} -n {{NAMESPACE}}
+    @echo "✅ SGLang model servers removed"
 
 # Teardown gateway
 teardown-gateway:
@@ -118,18 +157,18 @@ status:
 # Wait for deployment to be ready
 wait:
     @echo "⏳ Waiting for pods to be ready..."
-    kubectl wait --for=condition=ready pod -l llm-d.ai/role=decode -n {{NAMESPACE}} --timeout=600s || true
+    kubectl wait --for=condition=ready pod -l {{MODEL_SERVING_LABEL}} -n {{NAMESPACE}} --timeout=600s || true
     @echo "✅ Pods are ready!"
 
 # View logs from model server pods
 logs:
     @echo "📜 Model server logs:"
-    @just _get-logs-by-label {{NAMESPACE}} "llm-d.ai/role=decode" 50
+    @just _get-logs-by-label {{NAMESPACE}} {{MODEL_SERVING_LABEL}} 50
 
 # Follow logs from model server pods
 logs-follow:
     @echo "📜 Following model server logs (Ctrl+C to stop)..."
-    @just _follow-logs-by-label {{NAMESPACE}} "llm-d.ai/role=decode"
+    @just _follow-logs-by-label {{NAMESPACE}} {{MODEL_SERVING_LABEL}}
 
 # Test the deployment with a simple curl
 test:
@@ -174,33 +213,61 @@ clean: teardown port-forward-stop
 squeaky-clean: teardown port-forward-stop delete-namespace
     @echo "🧹 Cleanup complete!"
 
-# Test metrics endpoint from a model server pod
-test-metrics:
+# Test metrics endpoint from a vLLM model server pod
+test-metrics-vllm:
     #!/usr/bin/env bash
     set -euo pipefail
     POD_NAME=$(kubectl get pods -n {{NAMESPACE}} -l llm-d.ai/role=decode -o jsonpath='{.items[0].metadata.name}')
     if [ -n "$POD_NAME" ]; then
-        echo "📊 Testing metrics from pod: $POD_NAME"
+        echo "📊 Testing vLLM metrics from pod: $POD_NAME"
         kubectl exec -n {{NAMESPACE}} ${POD_NAME} -c vllm -- curl -s http://localhost:8000/metrics | head -20
     else
         echo "❌ No vLLM pods found"
         exit 1
     fi
 
+# Test metrics endpoint from an SGLang model server pod
+test-metrics-sglang:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    POD_NAME=$(kubectl get pods -n {{NAMESPACE}} -l llm-d.ai/role=decode -o jsonpath='{.items[0].metadata.name}')
+    if [ -n "$POD_NAME" ]; then
+        echo "📊 Testing SGLang metrics from pod: $POD_NAME"
+        kubectl exec -n {{NAMESPACE}} ${POD_NAME} -c sglang -- curl -s http://localhost:8000/metrics | head -20
+    else
+        echo "❌ No SGLang pods found"
+        exit 1
+    fi
+
 # Parse and show vLLM configuration from logs (deduplicated across pods)
-show-config:
+show-config-vllm:
     @echo "Parsing vLLM configuration from pod logs..."
-    @just _parse-vllm-all {{NAMESPACE}} "llm-d.ai/role=decode" "true"
+    @just _parse-vllm-all {{NAMESPACE}} {{MODEL_SERVING_LABEL}} "true"
 
 # Show vLLM configuration for all pods separately (no deduplication)
-show-config-all:
+show-config-vllm-all:
     @echo "Parsing vLLM configuration from all pods (no deduplication)..."
-    @just _parse-vllm-all {{NAMESPACE}} "llm-d.ai/role=decode" "false"
+    @just _parse-vllm-all {{NAMESPACE}} {{MODEL_SERVING_LABEL}} "false"
 
 # Show vLLM configuration for a specific pod
-show-config-pod POD_NAME:
+show-config-vllm-pod POD_NAME:
     @echo "Parsing vLLM configuration from pod {{POD_NAME}}..."
     @just _parse-vllm-pod {{NAMESPACE}} {{POD_NAME}}
+
+# Parse and show SGLang configuration from logs (deduplicated across pods)
+show-config-sglang:
+    @echo "Parsing SGLang configuration from pod logs..."
+    @just _parse-sglang-all {{NAMESPACE}} {{MODEL_SERVING_LABEL}} "true"
+
+# Show SGLang configuration for all pods separately (no deduplication)
+show-config-sglang-all:
+    @echo "Parsing SGLang configuration from all pods (no deduplication)..."
+    @just _parse-sglang-all {{NAMESPACE}} {{MODEL_SERVING_LABEL}} "false"
+
+# Show SGLang configuration for a specific pod
+show-config-sglang-pod POD_NAME:
+    @echo "Parsing SGLang configuration from pod {{POD_NAME}}..."
+    @just _parse-sglang-pod {{NAMESPACE}} {{POD_NAME}}
 
 # Load Grafana dashboards (llm-d defaults + rocm-icms custom)
 load-dashboards:

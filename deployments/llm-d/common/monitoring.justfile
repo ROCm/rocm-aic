@@ -50,6 +50,19 @@ _parse-vllm-all NAMESPACE LABEL_SELECTOR="llm-d.ai/inference-serving=true" DEDUP
         python3 ../../common/parse-vllm-config.py -n {{NAMESPACE}} -l {{LABEL_SELECTOR}}
     fi
 
+# Parse SGLang configuration from pod logs (single pod)
+_parse-sglang-pod NAMESPACE POD_NAME:
+    @python3 ../../common/parse-sglang-config.py -n {{NAMESPACE}} -p {{POD_NAME}}
+
+# Parse SGLang configuration from all pods (with deduplication)
+_parse-sglang-all NAMESPACE LABEL_SELECTOR="llm-d.ai/inference-serving=true" DEDUPE="true":
+    #!/usr/bin/env bash
+    if [ "{{DEDUPE}}" = "true" ]; then
+        python3 ../../common/parse-sglang-config.py -n {{NAMESPACE}} -l {{LABEL_SELECTOR}} --deduplicate
+    else
+        python3 ../../common/parse-sglang-config.py -n {{NAMESPACE}} -l {{LABEL_SELECTOR}}
+    fi
+
 # Load Grafana dashboards (llm-d + rocm-icms custom)
 _load-dashboards:
     @../monitoring/load-dashboards.sh {{MONITORING_NAMESPACE}}
