@@ -1,0 +1,45 @@
+# SGLang serving engine benchmark configuration
+# Uses native SGLang argument names as they appear in SGLang documentation
+
+name: "inference-scheduling-sglang"
+description: "SGLang serving engine benchmark"
+deployment: "inference-scheduling-sglang"
+deployment_template: "inference-scheduling-sglang-kustomization.yaml.tmpl"
+serving_engine: "sglang"
+
+parameters:
+  model:
+    type: fixed
+    value: "Qwen/Qwen3-32B"
+
+  tensor_parallel_size:
+    type: categorical
+    values: [2]
+
+  # Native SGLang argument names - match SGLang CLI exactly
+  # Users can reference SGLang documentation directly
+  sglang_args:
+    type: combinations
+    args:
+      max_running_requests: 1024
+      mem_fraction_static: 0.90
+      # SGLang's prefix caching via FlashInfer
+      enable_flashinfer: true
+      # Longest Prefix Match scheduling
+      schedule_policy: "lpm"
+      chunked_prefill_size: 4096
+
+load_generation:
+  tool: "vllm-bench-serve"  # OpenAI-compatible, works with both engines
+  image: "ghcr.io/vcave/vllm:rocm_721-vllm_20260423b-lmcache"
+  benchmark_args:
+    type: combinations
+    args:
+      dataset_name: random
+      random_input_len:
+        values: [1000]
+      random_output_len: 1
+      max_concurrency: 1
+      num_prompts: 30
+      ignore_eos: true
+      # seed is auto-generated

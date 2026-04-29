@@ -22,6 +22,7 @@ from dataclasses import dataclass, asdict
 from enum import Enum
 
 from load_generators import get_load_generator
+from serving_engines import get_serving_engine, ServingEngineBase
 
 
 class RunStatus(Enum):
@@ -167,10 +168,18 @@ class SweepOrchestrator:
     # Map deployment types to their justfile directories
     # Note: Only tiered-prefix-cache variants are supported for justfile-based deployment
     DEPLOYMENT_MAP = {
-        'inference-scheduling': {
+        'inference-scheduling-vllm': {
             'justfile_dir': 'inference-scheduling',
-            'deploy_target': 'deploy',
-            'teardown_target': 'teardown',
+            'deploy_target': 'deploy-vllm',
+            'teardown_target': 'teardown-vllm',
+            'show_config_target': 'show-config-vllm',
+            'use_justfile': True
+        },
+        'inference-scheduling-sglang': {
+            'justfile_dir': 'inference-scheduling',
+            'deploy_target': 'deploy-sglang',
+            'teardown_target': 'teardown-sglang',
+            'show_config_target': 'show-config-sglang',
             'use_justfile': True
         },
         'tiered-prefix-cache-offloading': {
@@ -221,6 +230,11 @@ class SweepOrchestrator:
 
         # Get current user for namespace prefix
         self.user_id = self._get_user_id()
+
+        # Initialize serving engine adapter
+        engine_name = self.config.get('serving_engine', 'vllm')  # Default to vllm
+        self.serving_engine: ServingEngineBase = get_serving_engine(engine_name)
+        print(f"Using serving engine: {self.serving_engine.display_name}")
 
         # Get deployment configuration
         self.deployment_config = self._get_deployment_config()
@@ -419,67 +433,17 @@ class SweepOrchestrator:
 
         return combinations
 
-    def expand_kv_connector(self, connector_config: Dict[str, Any]) -> str:
-        """Expand KV connector shortcut to full --kv-transfer-config JSON."""
-        if not connector_config:
-            return ""
+    def build_engine_args(self, args: Dict[str, Any]) -> str:
+        """
+        Build CLI arguments for the current serving engine.
 
-        # Handle raw JSON pass-through
-        if "raw_json" in connector_config:
-            return f"--kv-transfer-config '{connector_config['raw_json']}'"
+        Args:
+            args: Native engine arguments (e.g., vllm_args or sglang_args)
 
-        connector_type = connector_config.get("type")
-        role = connector_config.get("role", "kv_both")
-
-        if connector_type == "offloading":
-            # Offloading connector
-            cpu_bytes = connector_config.get("cpu_bytes")
-            kv_config = {
-                "kv_connector": "OffloadingConnector",
-                "kv_role": role,
-                "kv_connector_extra_config": {
-                    "cpu_bytes_to_use": cpu_bytes
-                }
-            }
-        elif connector_type == "lmcache":
-            # LMCache connector
-            kv_config = {
-                "kv_connector": "LMCacheConnectorV1",
-                "kv_role": role
-            }
-        else:
-            raise ValueError(f"Unknown kv_connector type: {connector_type}")
-
-        return f"--kv-transfer-config '{json.dumps(kv_config)}'"
-
-    def build_vllm_args(self, vllm_args: Dict[str, Any]) -> str:
-        """Convert vllm_args dict to command-line arguments."""
-        args = []
-
-        for key, value in vllm_args.items():
-            # Convert underscore to hyphen for vLLM arguments
-            arg_name = key.replace("_", "-")
-
-            # Special handling for kv_connector
-            if key == "kv_connector":
-                if value is not None:
-                    args.append(self.expand_kv_connector(value))
-                continue
-
-            # Handle boolean flags
-            if isinstance(value, bool):
-                if value:
-                    args.append(f"--{arg_name}")
-                continue
-
-            # Handle null values (skip them)
-            if value is None:
-                continue
-
-            # Handle regular key-value arguments
-            args.append(f"--{arg_name} {value}")
-
-        return " \\\n            ".join(args)
+        Returns:
+            Formatted CLI string
+        """
+        return self.serving_engine.build_server_args(args)
 
     def generate_timestamp_seed(self) -> int:
         """
@@ -557,10 +521,18 @@ class SweepOrchestrator:
         if 'lmcache_args' in params:
             print(f"    lmcache_args present: {params['lmcache_args']}")
 
-        # Process vllm_args if present
-        if "vllm_args" in params:
-            vllm_args_str = self.build_vllm_args(params["vllm_args"])
-            template_params["VLLM_ARGS"] = vllm_args_str
+        # Process engine-specific args (vllm_args, sglang_args, etc.)
+        engine_args_key = self.serving_engine.args_key  # e.g., 'vllm_args' or 'sglang_args'
+        if engine_args_key in params:
+            engine_args_str = self.build_engine_args(params[engine_args_key])
+            template_params["ENGINE_ARGS"] = engine_args_str
+            # Also set VLLM_ARGS for backward compatibility with existing templates
+            template_params["VLLM_ARGS"] = engine_args_str
+
+            # For SGLang, also provide array format for YAML templates
+            if self.serving_engine.name == 'sglang':
+                engine_args_array = self.serving_engine.build_server_args_array(params[engine_args_key])
+                template_params["ENGINE_ARGS_ARRAY"] = engine_args_array
 
         # Extract lmcache_args for special handling
         lmcache_args = template_params.pop('lmcache_args', None)
@@ -585,7 +557,27 @@ class SweepOrchestrator:
             for key, value in template_params.items():
                 placeholder = f"{{{{{key}}}}}"
                 if placeholder in rendered:
-                    rendered = rendered.replace(placeholder, str(value))
+                    # For array values, use YAML formatting with proper indentation
+                    if isinstance(value, list):
+                        # Split into lines and process line by line
+                        lines = rendered.split('\n')
+                        new_lines = []
+
+                        for line in lines:
+                            if placeholder in line:
+                                # Get the indentation (everything before the placeholder)
+                                indent = line[:line.index(placeholder)]
+
+                                # Generate YAML list items, each properly indented
+                                for item in value:
+                                    # Add as YAML list item (quotes will be added by YAML serialization if needed)
+                                    new_lines.append(f'{indent}- {item}')
+                            else:
+                                new_lines.append(line)
+
+                        rendered = '\n'.join(new_lines)
+                    else:
+                        rendered = rendered.replace(placeholder, str(value))
 
         # Write output
         output_file = output_dir / "kustomization.yaml"

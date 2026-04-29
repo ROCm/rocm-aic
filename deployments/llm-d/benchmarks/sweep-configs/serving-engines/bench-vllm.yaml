@@ -1,7 +1,8 @@
 name: "inference-scheduling-vllm"
 description: "vLLM serving engine benchmark"
-deployment: "inference-scheduling"
+deployment: "inference-scheduling-vllm"
 deployment_template: "inference-scheduling-kustomization-vllm.yaml.tmpl"
+serving_engine: "vllm"
 
 parameters:
   model:
