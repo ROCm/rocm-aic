@@ -310,10 +310,11 @@ class SweepOrchestrator:
 
         This generates the Cartesian product of:
         - Deployment parameter combinations (vllm_args, lmcache_args, etc.)
-        - Load generation benchmark_args combinations (if type: combinations)
+        - Load generation benchmark_args combinations (if type: combinations or pairwise)
 
         Supports the consistent pattern where benchmark_args can have:
-        - type: combinations with mixed sweepable (values) and fixed parameters
+        - type: combinations - Cartesian product of mixed sweepable (values) and fixed parameters
+        - type: pairwise - Pair-wise zip of sweepable parameters (stops at shortest list)
         - Direct dict (backward compatibility)
         - sweep_args (backward compatibility - deprecated)
         """
@@ -329,10 +330,11 @@ class SweepOrchestrator:
                 fixed[name] = spec['value']
             elif spec['type'] == 'categorical':
                 variable[name] = spec['values']
-            elif spec['type'] == 'combinations':
+            elif spec['type'] in ['combinations', 'pairwise']:
                 # Handle all args combinations (vllm_args, lmcache_args, custom args, etc.)
                 # Generate combinations using generic method
-                args_combinations = self._generate_args_combinations(spec['args'])
+                combination_mode = 'pairwise' if spec['type'] == 'pairwise' else 'product'
+                args_combinations = self._generate_args_combinations(spec['args'], combination_mode)
                 variable[name] = args_combinations
 
         # Generate all combinations of variable deployment parameters
@@ -352,9 +354,10 @@ class SweepOrchestrator:
 
         load_combinations = []
 
-        # New pattern: benchmark_args with type: combinations
-        if isinstance(benchmark_args_spec, dict) and benchmark_args_spec.get('type') == 'combinations':
-            load_combinations = self._generate_args_combinations(benchmark_args_spec['args'])
+        # New pattern: benchmark_args with type: combinations or pairwise
+        if isinstance(benchmark_args_spec, dict) and benchmark_args_spec.get('type') in ['combinations', 'pairwise']:
+            combination_mode = 'pairwise' if benchmark_args_spec.get('type') == 'pairwise' else 'product'
+            load_combinations = self._generate_args_combinations(benchmark_args_spec['args'], combination_mode)
         # Backward compatibility: sweep_args (deprecated)
         elif 'sweep_args' in load_config:
             load_combinations = self._generate_args_combinations(load_config['sweep_args'])
@@ -373,7 +376,7 @@ class SweepOrchestrator:
 
         return full_combinations
 
-    def _generate_args_combinations(self, args_spec: Dict[str, Any]) -> List[Dict[str, Any]]:
+    def _generate_args_combinations(self, args_spec: Dict[str, Any], combination_mode: str = 'product') -> List[Dict[str, Any]]:
         """
         Generic expansion of args with 'values' lists into combinations.
 
@@ -384,6 +387,9 @@ class SweepOrchestrator:
             args_spec: Dictionary where values can be:
                 - Fixed values (any type)
                 - Dicts with 'values' key containing a list
+            combination_mode: How to combine sweepable parameters:
+                - 'product': Cartesian product (default)
+                - 'pairwise': Pair-wise zip of values
 
         Returns:
             List of dictionaries with all combinations
@@ -401,8 +407,15 @@ class SweepOrchestrator:
                 arg_values.append([spec])
 
         combinations = []
-        for combo in itertools.product(*arg_values):
-            combinations.append(dict(zip(arg_keys, combo)))
+
+        if combination_mode == 'pairwise':
+            # Pair-wise: zip values together (stops at shortest list)
+            for combo in zip(*arg_values):
+                combinations.append(dict(zip(arg_keys, combo)))
+        else:
+            # Default: Cartesian product
+            for combo in itertools.product(*arg_values):
+                combinations.append(dict(zip(arg_keys, combo)))
 
         return combinations
 
