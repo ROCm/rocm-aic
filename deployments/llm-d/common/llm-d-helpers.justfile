@@ -48,9 +48,9 @@ _delete-namespace NAMESPACE:
     @echo "✅ Namespace {{NAMESPACE}} deleted"
 
 # Helper: Wait for a deployment to be ready
-_wait-for-deployment NAMESPACE DEPLOYMENT_NAME TIMEOUT="300s":
+_wait-for-deployment NAMESPACE DEPLOYMENT_NAME COND TIMEOUT="300s":
     @echo "Waiting for deployment {{DEPLOYMENT_NAME}} in namespace {{NAMESPACE}}..."
-    @kubectl wait --for=condition=available --timeout={{TIMEOUT}} deployment/{{DEPLOYMENT_NAME}} -n {{NAMESPACE}} || exit 1
+    @kubectl wait --for=condition={{COND}} --timeout={{TIMEOUT}} deployment/{{DEPLOYMENT_NAME}} -n {{NAMESPACE}} || exit 1
     @echo "✅ Deployment {{DEPLOYMENT_NAME}} is ready"
 
 # Helper: Get logs from pods with a specific label

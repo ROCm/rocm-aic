@@ -198,12 +198,12 @@ status:
 wait:
     #!/usr/bin/env bash
     echo "⏳ Waiting for deployment to be ready..."
-    just _wait-for-deployment {{NAMESPACE}} llm-d-inference-gateway-istio 300s
-    DEPLOYMENTS=$(kubectl get deployments -l {{MODEL_SERVING_LABEL}} -o jsonpath='{.items[*].metadata.name}')
+    just _wait-for-deployment {{NAMESPACE}} llm-d-inference-gateway-istio "available" 300s
+    DEPLOYMENTS=$(kubectl -n {{NAMESPACE}} get deployments -l {{MODEL_SERVING_LABEL}} -o jsonpath='{.items[*].metadata.name}')
     for name in $DEPLOYMENTS; do
-      just _wait-for-deployment {{NAMESPACE}} ${name} 600s
+      just _wait-for-deployment {{NAMESPACE}} ${name} "available" 600s
     done
-    just _wait-for-deployment {{NAMESPACE}} llm-d-infpool-epp 300s
+    just _wait-for-deployment {{NAMESPACE}} llm-d-infpool-epp  "available" 300s
     echo "✅ All deployments ready!"
 
 # View logs from model server pods

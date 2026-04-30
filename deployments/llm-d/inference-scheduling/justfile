@@ -156,9 +156,15 @@ status:
 
 # Wait for deployment to be ready
 wait:
-    @echo "⏳ Waiting for pods to be ready..."
-    kubectl wait --for=condition=ready pod -l {{MODEL_SERVING_LABEL}} -n {{NAMESPACE}} --timeout=600s || true
-    @echo "✅ Pods are ready!"
+    #!/usr/bin/env bash
+    echo "⏳ Waiting for deployment to be ready..."
+    just _wait-for-deployment {{NAMESPACE}} llm-d-inference-gateway-istio "available" 300s
+    DEPLOYMENTS=$(kubectl -n {{NAMESPACE}} get deployments -l {{MODEL_SERVING_LABEL}} -o jsonpath='{.items[*].metadata.name}')
+    for name in $DEPLOYMENTS; do
+      just _wait-for-deployment {{NAMESPACE}} ${name} "available" 600s
+    done
+    just _wait-for-deployment {{NAMESPACE}} llm-d-infpool-epp  "available" 300s
+    echo "✅ All deployments ready!"
 
 # View logs from model server pods
 logs:
