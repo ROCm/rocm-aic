@@ -4,7 +4,7 @@ LMCache ConfigMap injection for existing Kustomization templates.
 
 This module provides functions to:
 1. Load existing kustomization.yaml.tmpl files
-2. Replace template variables ({{model}}, {{VLLM_ARGS}}, etc.)
+2. Replace template variables ({{model}}, {{ENGINE_ARGS_ARRAY}}, etc.)
 3. Inject dynamic ConfigMap with LMCache configuration
 4. Preserve all other template structure and patches
 """
@@ -30,7 +30,7 @@ def inject_lmcache_configmap(
 
     Args:
         template_content: Original template file content
-        params: Dictionary of template parameters (model, tensor_parallel_size, VLLM_ARGS, etc.)
+        params: Dictionary of template parameters (model, tensor_parallel_size, ENGINE_ARGS_ARRAY, etc.)
         lmcache_config_yaml: Generated LMCache YAML configuration string
 
     Returns:
@@ -38,7 +38,7 @@ def inject_lmcache_configmap(
 
     Example:
         >>> template = open('template.yaml.tmpl').read()
-        >>> params = {'model': 'Qwen/Qwen3-32B', 'VLLM_ARGS': '--max-num-seq 1024'}
+        >>> params = {'model': 'Qwen/Qwen3-32B', 'ENGINE_ARGS_ARRAY': '--max-num-seq 1024'}
         >>> lmcache_yaml = 'chunk_size: 256\\nsave_decode_cache: true'
         >>> result = inject_lmcache_configmap(template, params, lmcache_yaml)
         >>> 'chunk_size: 256' in result
@@ -186,6 +186,75 @@ def inject_lmcache_configmap_yaml_parse(
     return result
 
 
+def inject_lmcache_configmap_into_rendered(
+    rendered_content: str,
+    lmcache_args: Dict[str, Any],
+    use_yaml_parse: bool = True
+) -> str:
+    """
+    Inject LMCache ConfigMap into already-rendered kustomization content.
+
+    This function is called AFTER template variables have been replaced.
+    It only modifies the lmcache_config.yaml configMapGenerator literal.
+
+    Args:
+        rendered_content: Already-rendered kustomization.yaml content (no {{placeholders}})
+        lmcache_args: LMCache configuration dict
+        use_yaml_parse: If True, use YAML parsing; if False, use regex
+
+    Returns:
+        Content with LMCache configmap injected
+    """
+    from lmcache_support import generate_lmcache_config_yaml
+    lmcache_config_yaml = generate_lmcache_config_yaml(lmcache_args)
+
+    if use_yaml_parse:
+        # Parse, modify, dump back
+        try:
+            kustomization = yaml.safe_load(rendered_content)
+        except yaml.YAMLError as e:
+            raise ValueError(f"Failed to parse rendered content as YAML: {e}")
+
+        # Modify configMapGenerator - ONLY touch lmcache_config.yaml literal
+        if 'configMapGenerator' in kustomization:
+            for configmap in kustomization['configMapGenerator']:
+                if configmap.get('name') == 'config-map' and 'literals' in configmap:
+                    new_literals = []
+                    lmcache_found = False
+
+                    for literal in configmap['literals']:
+                        if isinstance(literal, str) and literal.startswith('lmcache_config.yaml='):
+                            new_literals.append(f'lmcache_config.yaml={lmcache_config_yaml.strip()}')
+                            lmcache_found = True
+                        else:
+                            new_literals.append(literal)
+
+                    if not lmcache_found:
+                        new_literals.append(f'lmcache_config.yaml={lmcache_config_yaml.strip()}')
+
+                    configmap['literals'] = new_literals
+
+        return yaml.dump(
+            kustomization,
+            default_flow_style=False,
+            sort_keys=False,
+            allow_unicode=True,
+            width=1000
+        )
+    else:
+        # Use regex-based replacement
+        pattern = r'(\s*)(lmcache_config\.yaml=)[^\n]*(\n\1\s+[^\n]+)*'
+
+        def replacement_func(match):
+            indent = match.group(1)
+            prefix = match.group(2)
+            # Indent the lmcache config YAML
+            indented_config = '\n'.join([indent + line for line in lmcache_config_yaml.strip().split('\n')])
+            return f"{indent}{prefix}{indented_config}"
+
+        return re.sub(pattern, replacement_func, rendered_content)
+
+
 def render_kustomization_with_lmcache(
     template_file: Path,
     params: Dict[str, Any],
@@ -197,7 +266,7 @@ def render_kustomization_with_lmcache(
 
     Args:
         template_file: Path to kustomization.yaml.tmpl file
-        params: Template parameters (model, tensor_parallel_size, VLLM_ARGS, etc.)
+        params: Template parameters (model, tensor_parallel_size, ENGINE_ARGS_ARRAY, etc.)
         lmcache_args: Optional LMCache configuration dict
         use_yaml_parse: If True, use YAML parsing approach; if False, use regex
 
@@ -210,7 +279,7 @@ def render_kustomization_with_lmcache(
         >>> params = {
         ...     'model': 'Qwen/Qwen3-32B',
         ...     'tensor_parallel_size': 1,
-        ...     'VLLM_ARGS': '--max-num-seq 1024'
+        ...     'ENGINE_ARGS_ARRAY': '--max-num-seq 1024'
         ... }
         >>> lmcache_args = {'chunk_size': 256, 'max_local_cpu_size': 100.0}
         >>> result = render_kustomization_with_lmcache(template_file, params, lmcache_args)
@@ -279,15 +348,15 @@ patches:
       - op: replace
         path: /spec/template/spec/containers/0/args/0
         value: |-
-          exec vllm serve {{model}} \\
+            {{model}} \\
             --tensor-parallel-size {{tensor_parallel_size}} \\
-            {{VLLM_ARGS}}
+            {{ENGINE_ARGS_ARRAY}}
 """
 
     params = {
         'model': 'Qwen/Qwen3-32B',
         'tensor_parallel_size': 1,
-        'VLLM_ARGS': '--max-num-seq 1024'
+        'ENGINE_ARGS_ARRAY': '--max-num-seq 1024'
     }
 
     lmcache_yaml = """chunk_size: 512
@@ -353,7 +422,7 @@ local_disk: null"""
         params_full = {
             'model': 'Qwen/Qwen3-32B',
             'tensor_parallel_size': 2,
-            'VLLM_ARGS': '--max-num-seq 2048 --gpu-memory-utilization 0.9'
+            'ENGINE_ARGS_ARRAY': '--max-num-seq 2048 --gpu-memory-utilization 0.9'
         }
 
         result = render_kustomization_with_lmcache(

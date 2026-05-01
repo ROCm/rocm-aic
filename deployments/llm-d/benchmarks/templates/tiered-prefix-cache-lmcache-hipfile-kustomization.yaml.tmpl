@@ -34,12 +34,13 @@ patches:
         path: /spec/template/spec/containers/0/image
         value: ghcr.io/vcave/vllm:rocm_721-vllm_20260423b-lmcache
       - op: replace
-        path: /spec/template/spec/containers/0/args/0
-        value: |-
-          exec vllm serve {{model}} \
-            --tensor-parallel-size {{tensor_parallel_size}} \
-            --port 8000 \
-            {{VLLM_ARGS}}
+        path: /spec/template/spec/containers/0/args
+        value:
+          - "{{model}}"
+          - "--port=8000"
+          - "--disable-access-log-for-endpoints=/health,/metrics,/v1/models"
+          - "--tensor-parallel-size={{tensor_parallel_size}}"
+          {{ENGINE_ARGS_ARRAY}}
       - op: replace
         path: /spec/template/spec/containers/0/resources/limits/amd.com~1gpu
         value: "{{tensor_parallel_size}}"

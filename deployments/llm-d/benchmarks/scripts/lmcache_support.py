@@ -207,7 +207,7 @@ def render_lmcache_template(
 
     Fills in template placeholders including:
     - Regular parameters (model, tensor_parallel_size, etc.)
-    - VLLM_ARGS
+    - ENGINE_ARGS_ARRAY
     - CONFIGMAP_SECTION (if lmcache_args present)
     - ENV_PATCHES (if lmcache_args present)
     - VOLUME_PATCHES (if lmcache_args present)

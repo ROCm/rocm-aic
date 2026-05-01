@@ -191,14 +191,14 @@ model: {{model}}
 {{CONFIGMAP_SECTION}}
 
 patches:
-  - container_args: {{VLLM_ARGS}}
+  - container_args: {{ENGINE_ARGS_ARRAY}}
 {{ENV_PATCHES}}
 {{VOLUME_PATCHES}}
 """
 
     params = {
         'model': 'Qwen/Qwen3-32B',
-        'VLLM_ARGS': '--max-num-seq 1024'
+        'ENGINE_ARGS_ARRAY': '--max-num-seq 1024'
     }
 
     lmcache_args = {

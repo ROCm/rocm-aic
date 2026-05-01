@@ -125,7 +125,7 @@ def test_with_actual_template():
     params = {
         'model': 'Qwen/Qwen3-32B',
         'tensor_parallel_size': 2,
-        'VLLM_ARGS': '--max-num-seq 2048 --gpu-memory-utilization 0.9'
+        'ENGINE_ARGS_ARRAY': '--max-num-seq 2048 --gpu-memory-utilization 0.9'
     }
 
     lmcache_args = {
@@ -150,7 +150,7 @@ def test_with_actual_template():
     # Check template variables replaced
     assert 'Qwen/Qwen3-32B' in result, "Model not replaced"
     assert 'tensor-parallel-size 2' in result, "Tensor parallel size not replaced"
-    assert '--max-num-seq 2048' in result, "VLLM_ARGS not replaced"
+    assert '--max-num-seq 2048' in result, "ENGINE_ARGS_ARRAY not replaced"
     print("  ✓ Template variables replaced")
 
     # Check ConfigMap injected
@@ -213,7 +213,7 @@ def test_parameter_sweep_integration():
     base_params = {
         'model': 'Qwen/Qwen3-32B',
         'tensor_parallel_size': 1,
-        'VLLM_ARGS': '--max-num-seq 1024'
+        'ENGINE_ARGS_ARRAY': '--max-num-seq 1024'
     }
 
     print("\nRendering templates for each configuration:")
@@ -265,7 +265,7 @@ def test_preserves_comments():
     params = {
         'model': 'test-model',
         'tensor_parallel_size': 1,
-        'VLLM_ARGS': ''
+        'ENGINE_ARGS_ARRAY': ''
     }
     lmcache_args = {'chunk_size': 256, 'save_decode_cache': True}
 

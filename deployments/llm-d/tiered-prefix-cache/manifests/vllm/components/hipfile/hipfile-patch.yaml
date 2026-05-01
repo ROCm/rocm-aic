@@ -7,7 +7,7 @@ spec:
     spec:
       hostIPC: true
       containers:
-        - name: vllm
+        - name: modelserver
           securityContext:
             privileged: true
             capabilities:

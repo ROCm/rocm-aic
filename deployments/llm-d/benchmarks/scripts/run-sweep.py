@@ -15,6 +15,9 @@ import itertools
 import os
 import threading
 import signal
+import re
+import ast
+import operator
 from pathlib import Path
 from datetime import datetime
 from typing import Dict, List, Any, Optional
@@ -23,6 +26,179 @@ from enum import Enum
 
 from load_generators import get_load_generator
 from serving_engines import get_serving_engine, ServingEngineBase
+
+
+# ============================================================================
+# Expression Evaluation for Variable Expansion
+# ============================================================================
+
+def has_variable_reference(value: Any) -> bool:
+    """
+    Check if a value contains variable references like {var_name}.
+
+    Args:
+        value: The value to check (typically string, int, float, or bool)
+
+    Returns:
+        True if the value is a string containing {variable} patterns
+    """
+    if not isinstance(value, str):
+        return False
+    return bool(re.search(r'\{[a-zA-Z_][a-zA-Z0-9_]*\}', value))
+
+
+def extract_variable_names(expression: str) -> List[str]:
+    """
+    Extract all variable names from an expression string.
+
+    Args:
+        expression: String containing {var_name} patterns
+
+    Returns:
+        List of variable names (without braces)
+
+    Example:
+        extract_variable_names("30 * {max_concurrency}") -> ["max_concurrency"]
+        extract_variable_names("{a} + {b}") -> ["a", "b"]
+    """
+    return re.findall(r'\{([a-zA-Z_][a-zA-Z0-9_]*)\}', expression)
+
+
+def safe_eval_expression(expression: str, variables: Dict[str, Any]) -> Any:
+    """
+    Safely evaluate a mathematical expression with variable substitution.
+
+    Uses Python's ast module to parse and evaluate only safe operations:
+    - Arithmetic: +, -, *, /, //, %, **
+    - Comparisons: <, <=, >, >=, ==, !=
+    - Numbers: int, float
+    - Boolean: and, or, not
+
+    Args:
+        expression: String expression with variables to evaluate
+        variables: Dict mapping variable names to their values
+
+    Returns:
+        Evaluated result (typically int or float)
+
+    Raises:
+        ValueError: If expression contains unsafe operations or undefined variables
+
+    Examples:
+        safe_eval_expression("30 * {x}", {"x": 4}) -> 120
+        safe_eval_expression("{a} + {b}", {"a": 10, "b": 20}) -> 30
+    """
+    # Replace {var} with variable values
+    for var_name, var_value in variables.items():
+        # Replace {var_name} with the actual value
+        pattern = r'\{' + re.escape(var_name) + r'\}'
+        expression = re.sub(pattern, str(var_value), expression)
+
+    # Check if any unreplaced variables remain
+    remaining_vars = extract_variable_names(expression)
+    if remaining_vars:
+        raise ValueError(f"Undefined variables in expression: {remaining_vars}")
+
+    # Parse and validate the expression using AST
+    try:
+        node = ast.parse(expression, mode='eval')
+    except SyntaxError as e:
+        raise ValueError(f"Invalid expression syntax: {expression}") from e
+
+    # Validate that only safe operations are used
+    _validate_safe_ast(node)
+
+    # Evaluate the expression
+    try:
+        result = eval(compile(node, '<string>', 'eval'), {"__builtins__": {}}, {})
+        return result
+    except Exception as e:
+        raise ValueError(f"Failed to evaluate expression '{expression}': {e}") from e
+
+
+def _validate_safe_ast(node: ast.AST) -> None:
+    """
+    Validate that an AST only contains safe operations.
+
+    Allowed:
+    - BinOp: +, -, *, /, //, %, **
+    - UnaryOp: +, -, not
+    - Compare: <, <=, >, >=, ==, !=
+    - BoolOp: and, or
+    - Constant/Num: numbers, strings, booleans
+
+    Raises:
+        ValueError: If unsafe operations are detected
+    """
+    SAFE_NODES = (
+        ast.Expression,
+        ast.BinOp,
+        ast.UnaryOp,
+        ast.Compare,
+        ast.BoolOp,
+        ast.Constant,  # Python 3.8+
+        ast.Num,       # Python 3.7 compatibility
+        ast.Str,       # Python 3.7 compatibility
+    )
+
+    SAFE_OPERATORS = (
+        ast.Add, ast.Sub, ast.Mult, ast.Div, ast.FloorDiv, ast.Mod, ast.Pow,
+        ast.UAdd, ast.USub, ast.Not,
+        ast.Lt, ast.LtE, ast.Gt, ast.GtE, ast.Eq, ast.NotEq,
+        ast.And, ast.Or,
+    )
+
+    for child in ast.walk(node):
+        if not isinstance(child, SAFE_NODES + SAFE_OPERATORS):
+            raise ValueError(
+                f"Unsafe operation in expression: {child.__class__.__name__}. "
+                f"Only arithmetic, comparison, and boolean operations are allowed."
+            )
+
+
+def evaluate_expressions_in_combination(combination: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Evaluate all expressions in a parameter combination.
+
+    Processes each value in the combination:
+    - If it contains {variable} references, evaluates the expression
+    - Otherwise, keeps the original value
+
+    Args:
+        combination: Dictionary of parameter names to values
+
+    Returns:
+        New dictionary with expressions evaluated
+
+    Example:
+        Input:  {"max_concurrency": 16, "num_prompts": "30 * {max_concurrency}"}
+        Output: {"max_concurrency": 16, "num_prompts": 480}
+    """
+    result = {}
+
+    # First pass: collect non-expression values to use as variables
+    variables = {}
+    for key, value in combination.items():
+        if not has_variable_reference(value):
+            variables[key] = value
+
+    # Second pass: evaluate expressions
+    for key, value in combination.items():
+        if has_variable_reference(value):
+            try:
+                evaluated = safe_eval_expression(value, variables)
+                result[key] = evaluated
+            except ValueError as e:
+                raise ValueError(f"Error evaluating '{key}': {e}") from e
+        else:
+            result[key] = value
+
+    return result
+
+
+# ============================================================================
+# End Expression Evaluation
+# ============================================================================
 
 
 class RunStatus(Enum):
@@ -397,16 +573,20 @@ class SweepOrchestrator:
         Works for vllm_args, lmcache_args, and any other args that follow
         the pattern of fixed values and sweepable 'values' lists.
 
+        Supports variable expansion: parameters can reference other parameters
+        using {var_name} syntax, e.g., "30 * {max_concurrency}"
+
         Args:
             args_spec: Dictionary where values can be:
                 - Fixed values (any type)
                 - Dicts with 'values' key containing a list
+                - Expressions with {var_name} references
             combination_mode: How to combine sweepable parameters:
                 - 'product': Cartesian product (default)
                 - 'pairwise': Pair-wise zip of values
 
         Returns:
-            List of dictionaries with all combinations
+            List of dictionaries with all combinations and expressions evaluated
         """
         arg_keys = []
         arg_values = []
@@ -425,11 +605,17 @@ class SweepOrchestrator:
         if combination_mode == 'pairwise':
             # Pair-wise: zip values together (stops at shortest list)
             for combo in zip(*arg_values):
-                combinations.append(dict(zip(arg_keys, combo)))
+                combo_dict = dict(zip(arg_keys, combo))
+                # Evaluate any expressions in this combination
+                combo_dict = evaluate_expressions_in_combination(combo_dict)
+                combinations.append(combo_dict)
         else:
             # Default: Cartesian product
             for combo in itertools.product(*arg_values):
-                combinations.append(dict(zip(arg_keys, combo)))
+                combo_dict = dict(zip(arg_keys, combo))
+                # Evaluate any expressions in this combination
+                combo_dict = evaluate_expressions_in_combination(combo_dict)
+                combinations.append(combo_dict)
 
         return combinations
 
@@ -488,6 +674,48 @@ class SweepOrchestrator:
 
         return args
 
+    def replace_template_variables(self, template_content: str, params: Dict[str, Any]) -> str:
+        """
+        Replace {{PLACEHOLDER}} variables in template with actual values.
+
+        Handles both simple values and list values (for ENGINE_ARGS_ARRAY).
+
+        Args:
+            template_content: Template file content with {{VAR}} placeholders
+            params: Dictionary of parameter values
+
+        Returns:
+            Rendered content with placeholders replaced
+        """
+        rendered = template_content
+
+        for key, value in params.items():
+            placeholder = f"{{{{{key}}}}}"
+            if placeholder in rendered:
+                # For array values, use YAML formatting with proper indentation
+                if isinstance(value, list):
+                    # Split into lines and process line by line
+                    lines = rendered.split('\n')
+                    new_lines = []
+
+                    for line in lines:
+                        if placeholder in line:
+                            # Get the indentation (everything before the placeholder)
+                            indent = line[:line.index(placeholder)]
+
+                            # Generate YAML list items, each properly indented
+                            for item in value:
+                                # Add as YAML list item
+                                new_lines.append(f'{indent}- {item}')
+                        else:
+                            new_lines.append(line)
+
+                    rendered = '\n'.join(new_lines)
+                else:
+                    rendered = rendered.replace(placeholder, str(value))
+
+        return rendered
+
     def render_template(self, params: Dict[str, Any], run_dir: Path) -> Path:
         """
         Render deployment template with parameters.
@@ -524,60 +752,28 @@ class SweepOrchestrator:
         # Process engine-specific args (vllm_args, sglang_args, etc.)
         engine_args_key = self.serving_engine.args_key  # e.g., 'vllm_args' or 'sglang_args'
         if engine_args_key in params:
-            engine_args_str = self.build_engine_args(params[engine_args_key])
-            template_params["ENGINE_ARGS"] = engine_args_str
-            # Also set VLLM_ARGS for backward compatibility with existing templates
-            template_params["VLLM_ARGS"] = engine_args_str
-
-            # For SGLang, also provide array format for YAML templates
-            if self.serving_engine.name == 'sglang':
-                engine_args_array = self.serving_engine.build_server_args_array(params[engine_args_key])
-                template_params["ENGINE_ARGS_ARRAY"] = engine_args_array
+            engine_args_array = self.serving_engine.build_server_args_array(params[engine_args_key])
+            template_params["ENGINE_ARGS_ARRAY"] = engine_args_array
 
         # Extract lmcache_args for special handling
         lmcache_args = template_params.pop('lmcache_args', None)
 
-        # If we have lmcache_args, use template injection
-        if lmcache_args:
-            from lmcache_template_injection import render_kustomization_with_lmcache
+        # Load template file
+        with open(template_file) as f:
+            content = f.read()
 
-            rendered = render_kustomization_with_lmcache(
-                template_file,
-                template_params,
+        # Step 1: Always do standard template variable replacement first
+        rendered = self.replace_template_variables(content, template_params)
+
+        # Step 2: If we have lmcache_args, inject the LMCache configmap
+        if lmcache_args:
+            from lmcache_template_injection import inject_lmcache_configmap_into_rendered
+
+            rendered = inject_lmcache_configmap_into_rendered(
+                rendered,
                 lmcache_args,
                 use_yaml_parse=True  # Use YAML parsing for precision
             )
-        else:
-            # Standard template rendering (no lmcache)
-            with open(template_file) as f:
-                content = f.read()
-
-            # Replace {{VAR}} with actual values
-            rendered = content
-            for key, value in template_params.items():
-                placeholder = f"{{{{{key}}}}}"
-                if placeholder in rendered:
-                    # For array values, use YAML formatting with proper indentation
-                    if isinstance(value, list):
-                        # Split into lines and process line by line
-                        lines = rendered.split('\n')
-                        new_lines = []
-
-                        for line in lines:
-                            if placeholder in line:
-                                # Get the indentation (everything before the placeholder)
-                                indent = line[:line.index(placeholder)]
-
-                                # Generate YAML list items, each properly indented
-                                for item in value:
-                                    # Add as YAML list item (quotes will be added by YAML serialization if needed)
-                                    new_lines.append(f'{indent}- {item}')
-                            else:
-                                new_lines.append(line)
-
-                        rendered = '\n'.join(new_lines)
-                    else:
-                        rendered = rendered.replace(placeholder, str(value))
 
         # Write output
         output_file = output_dir / "kustomization.yaml"
