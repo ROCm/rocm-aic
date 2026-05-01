@@ -26,6 +26,11 @@ from enum import Enum
 
 from load_generators import get_load_generator
 from serving_engines import get_serving_engine, ServingEngineBase
+from health_monitor import (
+    CentralizedHealthMonitor,
+    DeploymentHealthCheckFailure,
+    FailureInfo
+)
 
 
 # ============================================================================
@@ -222,6 +227,7 @@ class RunState:
     end_time: Optional[float] = None
     error: Optional[str] = None
     benchmark_results: Optional[Dict[str, Any]] = None
+    failure_info: Optional[Dict[str, Any]] = None  # Detailed failure information
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary for JSON serialization."""
@@ -442,6 +448,18 @@ class SweepOrchestrator:
 
         self.shutdown_event = threading.Event()
 
+        # Initialize health monitoring (configurable via config file)
+        health_config = self.config.get('health_monitoring', {})
+        self.health_monitoring_enabled = health_config.get('enabled', True)  # Default: enabled
+        if self.health_monitoring_enabled:
+            self.health_monitor = CentralizedHealthMonitor(
+                check_interval=health_config.get('check_interval', 15),
+                aggressive_timeout=health_config.get('aggressive_timeout', 60),
+                api_rate_limit=health_config.get('api_rate_limit', 10)
+            )
+        else:
+            self.health_monitor = None
+
     def _signal_handler(self, signum, frame):
         """Handle interrupt signals gracefully."""
         print("\n" + "="*70)
@@ -450,6 +468,11 @@ class SweepOrchestrator:
         print("Cancelling pending configurations and cleaning up running ones...")
         self.shutdown_event.set()
         self.scheduler.request_shutdown()
+
+        # Stop health monitor
+        if self.health_monitoring_enabled and self.health_monitor:
+            print("Stopping health monitor...")
+            self.health_monitor.stop()
 
     def _get_user_id(self) -> str:
         """Get current user ID for namespace prefix."""
@@ -966,53 +989,119 @@ class SweepOrchestrator:
 
         print(f"  Deployment command completed successfully (justfile)")
 
-    def wait_for_deployment(self, namespace: str):
-        """Wait for deployment to be ready using justfile wait target."""
+    def wait_for_deployment(self, namespace: str, run_id: int):
+        """Wait for deployment to be ready with health monitoring.
+
+        Args:
+            namespace: Kubernetes namespace
+            run_id: Run ID for health monitor tracking
+
+        Raises:
+            DeploymentHealthCheckFailure: If health check detects failure
+            RuntimeError: If wait command fails or times out
+        """
         print(f"  Waiting for deployment to be ready...")
 
-        if not self.deployment_config.get('use_justfile', False):
-            # Fall back to direct kubectl wait for non-justfile deployments
-            max_wait = 600  # 10 minutes
-            start_time = time.time()
+        # Register namespace for health monitoring
+        if self.health_monitoring_enabled and self.health_monitor:
+            self.health_monitor.register_namespace(namespace, run_id)
 
-            while time.time() - start_time < max_wait:
-                #TODO
-                result = subprocess.run([
-                    "kubectl", "wait", "--for=condition=available",
-                    "deployment",
-                    "-l", "llm-d.ai/role=decode",
-                    "-n", namespace,
-                    "--timeout=30s"
-                ], capture_output=True, text=True)
+        try:
+            # Start wait process based on deployment type
+            if not self.deployment_config.get('use_justfile', False):
+                # Direct kubectl wait for non-justfile deployments
+                wait_process = self._start_kubectl_wait_async(namespace)
+            else:
+                # Justfile-based wait
+                wait_process = self._start_justfile_wait_async(namespace)
 
-                if result.returncode == 0:
-                    print(f"  Deployment ready! (kubectl wait)")
-                    return
+            # Poll both wait process and health monitor
+            while wait_process.poll() is None:
+                # Check if health monitor detected failure
+                if self.health_monitoring_enabled and self.health_monitor:
+                    failure_info = self.health_monitor.check_namespace_health(namespace)
+                    if failure_info:
+                        # Kill the wait process
+                        wait_process.terminate()
+                        try:
+                            wait_process.wait(timeout=5)
+                        except subprocess.TimeoutExpired:
+                            wait_process.kill()
 
-                time.sleep(10)
+                        # Raise with detailed diagnostics
+                        raise DeploymentHealthCheckFailure(
+                            f"Pod health check failed: {failure_info.message}",
+                            failure_info=failure_info
+                        )
 
-            raise RuntimeError("Deployment did not become ready in time")
+                time.sleep(2)  # Poll every 2 seconds
 
-        # Use justfile-based wait
+            # Wait process completed - check exit code
+            if wait_process.returncode != 0:
+                stdout, stderr = wait_process.communicate()
+                # Collect diagnostics from health monitor
+                diagnostics = ""
+                if self.health_monitoring_enabled and self.health_monitor:
+                    diag_dict = self.health_monitor.collect_diagnostics(namespace)
+                    diagnostics = f"\n\nDiagnostics: {json.dumps(diag_dict, indent=2)}"
+
+                raise RuntimeError(f"Wait for deployment failed: {stderr}{diagnostics}")
+
+            # Success - but do final health check
+            if self.health_monitoring_enabled and self.health_monitor:
+                failure_info = self.health_monitor.check_namespace_health(namespace)
+                if failure_info:
+                    raise DeploymentHealthCheckFailure(
+                        "Health check failed after deployment reported ready",
+                        failure_info=failure_info
+                    )
+
+            mode = "justfile" if self.deployment_config.get('use_justfile', False) else "kubectl"
+            print(f"  Deployment ready! ({mode})")
+
+        except DeploymentHealthCheckFailure:
+            # Re-raise health check failures
+            raise
+        except Exception as e:
+            # For other exceptions, don't unregister yet - keep monitoring
+            raise
+
+    def _start_kubectl_wait_async(self, namespace: str) -> subprocess.Popen:
+        """Start kubectl wait as async subprocess."""
+        cmd = [
+            "kubectl", "wait", "--for=condition=available",
+            "deployment",
+            "-l", "llm-d.ai/role=decode",
+            "-n", namespace,
+            "--timeout=600s"  # 10 minutes
+        ]
+
+        return subprocess.Popen(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True
+        )
+
+    def _start_justfile_wait_async(self, namespace: str) -> subprocess.Popen:
+        """Start justfile wait as async subprocess."""
         justfile_dir = self._get_justfile_path()
 
-        # Run the wait target from the justfile
-        result = subprocess.run([
-            "just",
-            "wait"
-        ], capture_output=True, text=True, cwd=str(justfile_dir),
-           env={**os.environ, 'NAMESPACE': namespace})
+        cmd = ["just", "wait"]
+        env = {**os.environ, 'NAMESPACE': namespace}
 
-        if result.returncode != 0:
-            print(f"  Wait stdout: {result.stdout}")
-            print(f"  Wait stderr: {result.stderr}")
-            raise RuntimeError(f"Wait for deployment failed: {result.stderr}")
-
-        print(f"  Deployment ready! (justfile)")
+        return subprocess.Popen(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            cwd=str(justfile_dir),
+            env=env
+        )
 
     def run_load_generation(self, run_dir: Path, params: Dict[str, Any], namespace: str) -> Dict[str, Any]:
         """
-        Run load generation using pluggable load generator modules.
+        Run load generation using pluggable load generator modules with health monitoring.
 
         Args:
             run_dir: Directory for saving results
@@ -1021,6 +1110,9 @@ class SweepOrchestrator:
 
         Returns:
             Dictionary with results from the load generator
+
+        Raises:
+            RuntimeError: If pods fail during benchmark execution
         """
         load_config = self.config['load_generation']
         tool = load_config['tool']
@@ -1032,6 +1124,15 @@ class SweepOrchestrator:
 
         # Run the load generator
         result = generator.run(load_config, run_dir, params, namespace)
+
+        # Check for failures during benchmark
+        if self.health_monitoring_enabled and self.health_monitor:
+            failure_info = self.health_monitor.check_namespace_health(namespace)
+            if failure_info:
+                raise RuntimeError(
+                    f"Pods failed during benchmark: {failure_info.message} "
+                    f"(category: {failure_info.category}, phase: {failure_info.phase})"
+                )
 
         return result
 
@@ -1289,7 +1390,7 @@ class SweepOrchestrator:
                 raise InterruptedError("Shutdown requested")
 
             print(f"{prefix} Waiting for deployment to be ready...")
-            self.wait_for_deployment(namespace)
+            self.wait_for_deployment(namespace, run_id)
 
             if self.shutdown_event.is_set():
                 raise InterruptedError("Shutdown requested")
@@ -1318,12 +1419,30 @@ class SweepOrchestrator:
             run_state.error = "Cancelled by user"
             print(f"{prefix} ✗ Cancelled")
 
+        except DeploymentHealthCheckFailure as e:
+            # Health check detected a failure
+            run_state.status = RunStatus.FAILED
+            run_state.error = str(e)
+            run_state.failure_info = e.failure_info.to_dict() if e.failure_info else None
+            print(f"{prefix} ✗ Health check failed: {e}")
+
+            # Save detailed diagnostics to run directory
+            if e.failure_info:
+                diagnostics_file = run_dir / "failure_diagnostics.json"
+                with open(diagnostics_file, 'w') as f:
+                    json.dump(e.failure_info.to_dict(), f, indent=2)
+                print(f"{prefix}   Diagnostics saved to: {diagnostics_file}")
+
         except Exception as e:
             run_state.status = RunStatus.FAILED
             run_state.error = str(e)
             print(f"{prefix} ✗ Failed: {e}")
 
         finally:
+            # Unregister from health monitoring
+            if self.health_monitoring_enabled and self.health_monitor:
+                self.health_monitor.unregister_namespace(namespace)
+
             # Always teardown and release resources
             try:
                 print(f"{prefix} Tearing down...")
@@ -1404,27 +1523,41 @@ class SweepOrchestrator:
         # Save initial state
         self.save_state()
 
-        if self.parallel_mode:
-            # Parallel execution with worker threads
-            num_workers = min(self.scheduler.max_concurrent, len(combinations))
-            print(f"Starting {num_workers} worker threads...\n")
+        # Start centralized health monitor
+        if self.health_monitoring_enabled and self.health_monitor:
+            self.health_monitor.start()
+            print("🔍 Centralized health monitoring started")
+            print(f"   Check interval: {self.health_monitor.check_interval}s")
+            print(f"   Aggressive timeout: {self.health_monitor.aggressive_timeout}s\n")
 
-            workers = []
-            for i in range(num_workers):
-                worker = threading.Thread(target=self.worker_thread, name=f"Worker-{i+1}")
-                worker.start()
-                workers.append(worker)
+        try:
+            if self.parallel_mode:
+                # Parallel execution with worker threads
+                num_workers = min(self.scheduler.max_concurrent, len(combinations))
+                print(f"Starting {num_workers} worker threads...\n")
 
-            # Wait for all workers to complete
-            for worker in workers:
-                worker.join()
-        else:
-            # Sequential execution
-            while True:
-                run_state = self.scheduler.try_schedule_next()
-                if run_state is None:
-                    break
-                self.execute_run(run_state)
+                workers = []
+                for i in range(num_workers):
+                    worker = threading.Thread(target=self.worker_thread, name=f"Worker-{i+1}")
+                    worker.start()
+                    workers.append(worker)
+
+                # Wait for all workers to complete
+                for worker in workers:
+                    worker.join()
+            else:
+                # Sequential execution
+                while True:
+                    run_state = self.scheduler.try_schedule_next()
+                    if run_state is None:
+                        break
+                    self.execute_run(run_state)
+
+        finally:
+            # Stop health monitor when sweep completes
+            if self.health_monitoring_enabled and self.health_monitor:
+                print("\n🔍 Stopping health monitor...")
+                self.health_monitor.stop()
 
         # Save final state
         self.save_state()
