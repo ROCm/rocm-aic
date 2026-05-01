@@ -9,12 +9,14 @@ serving_engine: "sglang"
 
 parameters:
   model:
-    type: fixed
-    value: "Qwen/Qwen3-32B"
+    type: categorical
+    values:
+      - "openai/gpt-oss-120b"
 
+  # Need at least TP=4 for large models
   tensor_parallel_size:
     type: categorical
-    values: [2]
+    values: [4]
 
   # Native SGLang argument names - match SGLang CLI exactly
   # Users can reference SGLang documentation directly
@@ -30,16 +32,17 @@ parameters:
       chunked_prefill_size: 4096
 
 load_generation:
-  tool: "vllm-bench-serve"  # OpenAI-compatible, works with both engines
+  tool: "vllm-bench-serve"
   image: "ghcr.io/vcave/vllm:rocm_721-vllm_20260423b-lmcache"
   benchmark_args:
     type: combinations
     args:
       dataset_name: random
       random_input_len:
-        values: [1000]
-      random_output_len: 1
-      max_concurrency: 1
-      num_prompts: 30
+        values: [8000]
+      random_output_len: 1000
+      max_concurrency:
+        values: [8, 16, 32, 64]
+      num_prompts: 10 * {max_concurrency}
       ignore_eos: true
       # seed is auto-generated
