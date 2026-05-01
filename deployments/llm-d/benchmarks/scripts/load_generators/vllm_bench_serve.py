@@ -189,6 +189,30 @@ class VllmBenchServe(LoadGeneratorBase):
                 if "completed_requests" in metrics:
                     metrics["total_requests"] = metrics["completed_requests"] + failed
 
+            # Maximum request concurrency: "Maximum request concurrency:             8"
+            match = re.search(r'Maximum request concurrency:\s+([\d.]+)', content)
+            if match:
+                metrics["max_request_concurrency"] = float(match.group(1))
+                found_any = True
+
+            # Benchmark duration: "Benchmark duration (s):                  204.97"
+            match = re.search(r'Benchmark duration \(s\):\s+([\d.]+)', content)
+            if match:
+                metrics["benchmark_duration_s"] = float(match.group(1))
+                found_any = True
+
+            # Total input tokens: "Total input tokens:                      640000"
+            match = re.search(r'Total input tokens:\s+(\d+)', content)
+            if match:
+                metrics["total_input_tokens"] = int(match.group(1))
+                found_any = True
+
+            # Total generated tokens: "Total generated tokens:                  80000"
+            match = re.search(r'Total generated tokens:\s+(\d+)', content)
+            if match:
+                metrics["total_generated_tokens"] = int(match.group(1))
+                found_any = True
+
             # Request throughput: "Request throughput (req/s):              9.50"
             match = re.search(r'Request throughput \(req/s\):\s+([\d.]+)', content)
             if match:
@@ -199,6 +223,18 @@ class VllmBenchServe(LoadGeneratorBase):
             match = re.search(r'Output token throughput \(tok/s\):\s+([\d.]+)', content)
             if match:
                 metrics["output_throughput"] = float(match.group(1))
+                found_any = True
+
+            # Peak output token throughput: "Peak output token throughput (tok/s):    480.00"
+            match = re.search(r'Peak output token throughput \(tok/s\):\s+([\d.]+)', content)
+            if match:
+                metrics["peak_output_throughput"] = float(match.group(1))
+                found_any = True
+
+            # Peak concurrent requests: "Peak concurrent requests:                16.00"
+            match = re.search(r'Peak concurrent requests:\s+([\d.]+)', content)
+            if match:
+                metrics["peak_concurrent_requests"] = float(match.group(1))
                 found_any = True
 
             # Total token throughput: "Total token throughput (tok/s):          9506.84"
