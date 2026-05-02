@@ -112,6 +112,17 @@ logs-follow NAMESPACE:
     echo "📜 Following logs from namespace: {{NAMESPACE}} (deployment: $DEPLOYMENT)"
     cd ../$DEPLOYMENT && NAMESPACE={{NAMESPACE}} just logs-follow
 
+describe NAMESPACE:
+    #!/usr/bin/env bash
+    set -e
+    DEPLOYMENT=$(just _get-deployment {{NAMESPACE}})
+    if [ $? -ne 0 ] || [ -z "$DEPLOYMENT" ]; then
+        echo "Error: Could not determine deployment type for namespace: {{NAMESPACE}}" >&2
+        exit 1
+    fi
+    echo "📜 Viewing pod description from namespace: {{NAMESPACE}} (deployment: $DEPLOYMENT)"
+    cd ../$DEPLOYMENT && NAMESPACE={{NAMESPACE}} just describe
+
 # Show vLLM configuration from specified namespace (auto-detects deployment type from namespace label)
 show-config NAMESPACE:
     #!/usr/bin/env bash

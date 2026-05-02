@@ -59,7 +59,11 @@ _get-logs-by-label NAMESPACE LABEL_SELECTOR TAIL="50":
 
 # Helper: Follow logs from pods with a specific label
 _follow-logs-by-label NAMESPACE LABEL_SELECTOR:
-    @kubectl logs -n {{NAMESPACE}} -l {{LABEL_SELECTOR}} -f --prefix=true
+    @kubectl logs -n {{NAMESPACE}} -l {{LABEL_SELECTOR}} -f --prefix=true --tail=-1
+
+# Helper: Follow describe pods with a specific label
+_get-describe-by-label NAMESPACE LABEL_SELECTOR:
+    @kubectl describe pods -n {{NAMESPACE}} -l {{LABEL_SELECTOR}}
 
 # Register HuggingFace token as Kubernetes secret in the specified namespace
 register-hf-token NAMESPACE:

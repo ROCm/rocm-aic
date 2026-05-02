@@ -211,6 +211,11 @@ logs:
     @echo "📜 Model server logs:"
     @just _get-logs-by-label {{NAMESPACE}} "{{MODEL_SERVING_LABEL}}" 50
 
+# View description from model server pods
+describe:
+    @echo "📜 Model server description:"
+    @just _get-describe-by-label {{NAMESPACE}} {{MODEL_SERVING_LABEL}}
+
 # Follow logs from model server pods
 logs-follow:
     @echo "📜 Following model server logs (Ctrl+C to stop)..."
