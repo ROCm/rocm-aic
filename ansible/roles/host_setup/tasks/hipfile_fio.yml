@@ -3,318 +3,12 @@
 # SPDX-License-Identifier: MIT
 
 ---
-# Build hipFile from ROCm/rocm-systems (sparse projects/hipfile) and ROCm/fio
-# (hipFile branch) with libhipfile. Optional update-alternatives for /usr/bin/fio.
-
-- name: Assert ROCm layout exists for hipFile / fio libhipfile build
-  ansible.builtin.command:
-    argv:
-      - /bin/bash
-      - -c
-      - >-
-        test -f "{{ host_setup_rocm_path }}/bin/hipcc" ||
-        test -f "{{ host_setup_rocm_path }}/lib/libamdhip64.so.6" ||
-        test -f "{{ host_setup_rocm_path }}/lib/libamdhip64.so"
-  register: host_setup_rocm_probe
-  changed_when: false
-  failed_when: host_setup_rocm_probe.rc != 0
-
-- name: Create stamp and state directories under /opt/rocm-icms
-  ansible.builtin.file:
-    path: "{{ item }}"
-    state: directory
-    mode: "0755"
-  loop:
-    - /opt/rocm-icms/stamps
-    - "{{ host_setup_fio_libhipfile_prefix | dirname }}"
-
-- name: Install packages to build hipFile and fio
-  ansible.builtin.apt:
-    name:
-      - build-essential
-      - ca-certificates
-      - cmake
-      - git
-      - libaio-dev
-      - libboost-all-dev
-      - libmount-dev
-      - ninja-build
-      - pkg-config
-      - python3
-      - zlib1g-dev
-    state: present
-    update_cache: false
-
-- name: Check hipFile stamp for current git sha
-  ansible.builtin.stat:
-    path: "/opt/rocm-icms/stamps/hipfile-{{ host_setup_hipfile_git_sha }}.stamp"
-  register: host_setup_hipfile_stamp_stat
-
-- name: Force clean hipFile reinstall prep
-  when: host_setup_hipfile_force_reinstall | default(false) | bool
-  block:
-    - name: Remove hipFile install stamp when forcing reinstall
-      ansible.builtin.file:
-        path: "/opt/rocm-icms/stamps/hipfile-{{ host_setup_hipfile_git_sha }}.stamp"
-        state: absent
-
-    - name: Remove hipFile CMake build directory when forcing reinstall
-      ansible.builtin.file:
-        path: "{{ host_setup_hipfile_build_dir }}/rocm-systems/projects/hipfile/build"
-        state: absent
-
-    - name: Re-check hipFile stamp after forced cleanup
-      ansible.builtin.stat:
-        path: "/opt/rocm-icms/stamps/hipfile-{{ host_setup_hipfile_git_sha }}.stamp"
-      register: host_setup_hipfile_stamp_stat
-
-- name: Normalize hipFile stamp presence for conditionals
-  ansible.builtin.set_fact:
-    host_setup_hipfile_stamp_exists: >-
-      {{
-        (host_setup_hipfile_stamp_stat.stat is defined)
-        and (host_setup_hipfile_stamp_stat.stat.exists | default(false) | bool)
-      }}
-
-- name: Sparse clone rocm-systems and checkout hipFile tree
-  ansible.builtin.shell: |
-    set -euo pipefail
-    HIPDIR="{{ host_setup_hipfile_build_dir }}/rocm-systems"
-    mkdir -p "{{ host_setup_hipfile_build_dir }}"
-    if [[ -d "$HIPDIR/.git" ]]; then
-      cd "$HIPDIR"
-      git remote set-url origin "{{ host_setup_hipfile_git_url }}"
-      git fetch --filter=blob:none origin "{{ host_setup_hipfile_git_sha }}"
-      git checkout "{{ host_setup_hipfile_git_sha }}"
-      git sparse-checkout init --cone
-      git sparse-checkout set projects/hipfile
-    else
-      git clone --no-checkout --filter=blob:none \
-        "{{ host_setup_hipfile_git_url }}" "$HIPDIR"
-      cd "$HIPDIR"
-      git sparse-checkout init --cone
-      git sparse-checkout set projects/hipfile
-      git checkout "{{ host_setup_hipfile_git_sha }}"
-    fi
-  args:
-    executable: /bin/bash
-  when: not host_setup_hipfile_stamp_exists | bool
-
-- name: Build hipFile and produce DEB packages
-  ansible.builtin.shell: |
-    set -euo pipefail
-    cd "{{ host_setup_hipfile_build_dir }}/rocm-systems/projects/hipfile"
-    rm -rf build
-    mkdir build
-    cd build
-    cmake -DCMAKE_HIP_PLATFORM=amd -DCMAKE_INSTALL_PREFIX="{{ host_setup_rocm_path }}" ..
-    cmake --build . -j"{{ host_setup_hipfile_build_jobs }}"
-    cmake --install .
-    cpack -G DEB
-  args:
-    executable: /bin/bash
-  environment:
-    ROCM_PATH: "{{ host_setup_rocm_path }}"
-  when: not host_setup_hipfile_stamp_exists | bool
-
-- name: Find hipFile DEB artifacts
-  ansible.builtin.find:
-    paths: "{{ host_setup_hipfile_build_dir }}/rocm-systems/projects/hipfile/build"
-    patterns: "hipfile_*.deb"
-    file_type: file
-  register: host_setup_hipfile_debs
-  when: not host_setup_hipfile_stamp_exists | bool
-
-- name: Fail when hipFile cpack produced no DEB artifacts
-  ansible.builtin.fail:
-    msg: >-
-      No hipfile_*.deb under
-      {{ host_setup_hipfile_build_dir }}/rocm-systems/projects/hipfile/build
-      after cpack; inspect build logs on the target host.
-  when:
-    - not host_setup_hipfile_stamp_exists | bool
-    - host_setup_hipfile_debs is defined
-    - host_setup_hipfile_debs.files | length == 0
-
-- name: Install hipFile DEB packages
-  ansible.builtin.command:
-    argv: "{{ ['/usr/bin/dpkg', '-i'] + (host_setup_hipfile_debs.files | map(attribute='path') | sort | list) }}"
-  register: host_setup_hipfile_dpkg
-  when:
-    - not host_setup_hipfile_stamp_exists | bool
-    - host_setup_hipfile_debs is defined
-    - host_setup_hipfile_debs.files | length > 0
-
-- name: Refresh dynamic linker cache after hipFile DEB install
-  ansible.builtin.command: ldconfig
-  when:
-    - not host_setup_hipfile_stamp_exists | bool
-    - host_setup_hipfile_dpkg is defined
-    - host_setup_hipfile_dpkg.changed | default(false) | bool
-
-- name: Mark hipFile install stamp for this sha
-  ansible.builtin.copy:
-    dest: "/opt/rocm-icms/stamps/hipfile-{{ host_setup_hipfile_git_sha }}.stamp"
-    content: "{{ host_setup_hipfile_git_sha }}\n"
-    mode: "0644"
-  when: not host_setup_hipfile_stamp_exists | bool
-
-- name: Check fio libhipfile stamp for current git ref
-  ansible.builtin.stat:
-    path: "/opt/rocm-icms/stamps/fio-libhipfile-{{ host_setup_fio_libhipfile_git_ref }}.stamp"
-  register: host_setup_fio_stamp_stat
-
-- name: Normalize fio libhipfile stamp presence for conditionals
-  ansible.builtin.set_fact:
-    host_setup_fio_stamp_exists: >-
-      {{
-        (host_setup_fio_stamp_stat.stat is defined)
-        and (host_setup_fio_stamp_stat.stat.exists | default(false) | bool)
-      }}
-
-- name: Clone ROCm fio at pinned ref
-  ansible.builtin.git:
-    repo: "{{ host_setup_fio_git_url }}"
-    dest: "{{ host_setup_fio_build_dir }}/fio"
-    version: "{{ host_setup_fio_libhipfile_git_ref }}"
-    force: true
-  when:
-    - host_setup_build_fio_libhipfile | default(true) | bool
-    - not host_setup_fio_stamp_exists | bool
-
-- name: Locate libhipfile under ROCm lib or lib64
-  ansible.builtin.shell: |
-    set -euo pipefail
-    shopt -s nullglob
-    for d in "{{ host_setup_rocm_path }}/lib" "{{ host_setup_rocm_path }}/lib64"; do
-      [[ -d "$d" ]] || continue
-      for f in "$d"/libhipfile.so*; do
-        printf '%s\n' "$f"
-        exit 0
-      done
-    done
-    exit 1
-  args:
-    executable: /bin/bash
-  register: host_setup_libhipfile_probe
-  changed_when: false
-  failed_when: false
-  when:
-    - host_setup_build_fio_libhipfile | default(true) | bool
-    - not host_setup_fio_stamp_exists | bool
-
-- name: Fail when libhipfile is missing before ROCm fio configure
-  ansible.builtin.assert:
-    that:
-      - host_setup_libhipfile_probe.rc == 0
-    fail_msg: >-
-      No libhipfile.so* under {{ host_setup_rocm_path }}/lib or lib64 after
-      hipFile install; confirm hipFile DEBs installed into host_setup_rocm_path.
-  when:
-    - host_setup_build_fio_libhipfile | default(true) | bool
-    - not host_setup_fio_stamp_exists | bool
-
-# cpack-only installs often omit dev layout; `cmake --install` above fixes fresh
-# builds. If the hipFile stamp already exists but the build tree remains, re-run
-# install; otherwise sparse-copy headers as a last resort.
-- name: Ensure hipFile is visible under ROCm prefix for fio configure
-  ansible.builtin.shell: |
-    set -euo pipefail
-    ROCM="{{ host_setup_rocm_path }}"
-    BDIR="{{ host_setup_hipfile_build_dir }}/rocm-systems/projects/hipfile/build"
-    if [[ -f "$BDIR/build.ninja" || -f "$BDIR/Makefile" ]]; then
-      (cd "$BDIR" && cmake --install . --prefix "$ROCM")
-    fi
-    if [[ -f "$ROCM/include/hipfile.h" ]]; then
-      exit 0
-    fi
-    HIPDIR="{{ host_setup_hipfile_build_dir }}/rocm-systems"
-    HIPINC="$HIPDIR/projects/hipfile/include"
-    mkdir -p "$ROCM/include" "{{ host_setup_hipfile_build_dir }}"
-    if [[ -d "$HIPDIR/.git" ]]; then
-      cd "$HIPDIR"
-      git remote set-url origin "{{ host_setup_hipfile_git_url }}"
-      git fetch --filter=blob:none origin "{{ host_setup_hipfile_git_sha }}"
-      git checkout "{{ host_setup_hipfile_git_sha }}"
-      git sparse-checkout init --cone
-      git sparse-checkout set projects/hipfile
-    else
-      git clone --no-checkout --filter=blob:none \
-        "{{ host_setup_hipfile_git_url }}" "$HIPDIR"
-      cd "$HIPDIR"
-      git sparse-checkout init --cone
-      git sparse-checkout set projects/hipfile
-      git checkout "{{ host_setup_hipfile_git_sha }}"
-    fi
-    cp -af "$HIPINC/." "$ROCM/include/"
-  args:
-    executable: /bin/bash
-  when:
-    - host_setup_build_fio_libhipfile | default(true) | bool
-    - not host_setup_fio_stamp_exists | bool
-
-- name: Configure and build ROCm fio with libhipfile
-  ansible.builtin.shell: |
-    set -euo pipefail
-    cd "{{ host_setup_fio_build_dir }}/fio"
-    if [[ -f config-host.mak ]]; then
-      make distclean
-    fi
-    python3 <<'PY'
-    import pathlib
-    dol = chr(36)
-    rp = dol + "{ROCM_PATH}"
-    p = pathlib.Path("configure")
-    text = p.read_text()
-    # Stock probe uses only .../lib; add lib64 and deps libhipfile needs for link.
-    old = 'HIPFILE_LIBS="-L' + rp + "/lib -lamdhip64 -lhipfile" + '"'
-    new = (
-        'HIPFILE_LIBS="-L'
-        + rp
-        + "/lib -L"
-        + rp
-        + "/lib64 -lamdhip64 -lhipfile -lstdc++ -lmount"
-        + '"'
-    )
-    if old in text:
-        p.write_text(text.replace(old, new, 1))
-    elif new not in text:
-        raise SystemExit(
-            "hipfile_fio: fio/configure missing expected HIPFILE_LIBS probe line"
-        )
-    PY
-    ./configure --prefix="{{ host_setup_fio_libhipfile_prefix }}" --enable-libhipfile
-    make -j"{{ host_setup_hipfile_build_jobs }}"
-    make install
-  args:
-    executable: /bin/bash
-  environment:
-    ROCM_PATH: "{{ host_setup_rocm_path }}"
-  when:
-    - host_setup_build_fio_libhipfile | default(true) | bool
-    - not host_setup_fio_stamp_exists | bool
-
-- name: Mark fio libhipfile install stamp for this ref
-  ansible.builtin.copy:
-    dest: "/opt/rocm-icms/stamps/fio-libhipfile-{{ host_setup_fio_libhipfile_git_ref }}.stamp"
-    content: "{{ host_setup_fio_libhipfile_git_ref }}\n"
-    mode: "0644"
-  when:
-    - host_setup_build_fio_libhipfile | default(true) | bool
-    - not host_setup_fio_stamp_exists | bool
-
-- name: Refuse update-alternatives without libhipfile fio build
-  ansible.builtin.assert:
-    that:
-      - not (host_setup_fio_libhipfile_alternatives | bool)
-        or (host_setup_build_fio_libhipfile | default(true) | bool)
-    fail_msg: >-
-      host_setup_fio_libhipfile_alternatives requires host_setup_build_fio_libhipfile.
+# The sbates130272.batesste.rocm_hipfile_setup role builds hipFile and fio.
+# This file keeps the project-specific alternatives wiring for /usr/bin/fio.
 
 - name: Gather package facts when configuring fio alternatives
   ansible.builtin.package_facts:
     manager: auto
-  when: host_setup_fio_libhipfile_alternatives | bool
 
 - name: Require apt fio package when using update-alternatives
   ansible.builtin.assert:
@@ -323,13 +17,11 @@
     fail_msg: >-
       Install the distro fio package (e.g. extra_packages) before enabling
       host_setup_fio_libhipfile_alternatives.
-  when: host_setup_fio_libhipfile_alternatives | bool
 
 - name: Stat /usr/bin/fio for alternatives setup
   ansible.builtin.stat:
     path: /usr/bin/fio
   register: host_setup_usr_bin_fio
-  when: host_setup_fio_libhipfile_alternatives | bool
 
 - name: Check whether /usr/bin/fio is already diverted
   ansible.builtin.shell: |
@@ -339,7 +31,6 @@
     executable: /bin/bash
   register: host_setup_fio_divertgrep
   changed_when: false
-  when: host_setup_fio_libhipfile_alternatives | bool
 
 - name: Fail when /usr/bin/fio is a symlink but dpkg-divert is not registered
   ansible.builtin.fail:
@@ -348,7 +39,6 @@
       /usr/bin/fio manually, then re-run host_setup with
       host_setup_fio_libhipfile_alternatives.
   when:
-    - host_setup_fio_libhipfile_alternatives | bool
     - host_setup_usr_bin_fio.stat.exists | default(false) | bool
     - host_setup_usr_bin_fio.stat.islnk | default(false) | bool
     - host_setup_fio_divertgrep.stdout | default('') | length == 0
@@ -358,7 +48,6 @@
     path: "{{ host_setup_fio_distro_divert_path | dirname }}"
     state: directory
     mode: "0755"
-  when: host_setup_fio_libhipfile_alternatives | bool
 
 - name: Divert packaged /usr/bin/fio to stable path for alternatives
   ansible.builtin.command:
@@ -378,7 +67,6 @@
     ('already' not in host_setup_divert_fio.stderr | default('') | lower) and
     ('exists' not in host_setup_divert_fio.stderr | default('') | lower)
   when:
-    - host_setup_fio_libhipfile_alternatives | bool
     - host_setup_fio_divertgrep.stdout | default('') | length == 0
     - host_setup_usr_bin_fio.stat.exists | default(false) | bool
     - not (host_setup_usr_bin_fio.stat.islnk | default(false) | bool)
@@ -387,22 +75,18 @@
   ansible.builtin.stat:
     path: "{{ host_setup_fio_distro_divert_path }}"
   register: host_setup_fio_distro_stat
-  when: host_setup_fio_libhipfile_alternatives | bool
 
 - name: Stat libhipfile-enabled fio binary for update-alternatives
   ansible.builtin.stat:
     path: "{{ host_setup_fio_libhipfile_prefix }}/bin/fio"
   register: host_setup_fio_libhipfile_bin
-  when: host_setup_fio_libhipfile_alternatives | bool
 
 - name: Fail when libhipfile fio binary is missing but alternatives requested
   ansible.builtin.fail:
     msg: >-
       Missing {{ host_setup_fio_libhipfile_prefix }}/bin/fio; build the
       hipFile fio stack before enabling host_setup_fio_libhipfile_alternatives.
-  when:
-    - host_setup_fio_libhipfile_alternatives | bool
-    - not host_setup_fio_libhipfile_bin.stat.exists | default(false) | bool
+  when: not host_setup_fio_libhipfile_bin.stat.exists | default(false) | bool
 
 - name: Fail when diversion is registered but distro fio path is missing
   ansible.builtin.fail:
@@ -410,7 +94,6 @@
       Missing {{ host_setup_fio_distro_divert_path }} while dpkg-divert lists
       /usr/bin/fio; reinstall package fio or repair the diversion.
   when:
-    - host_setup_fio_libhipfile_alternatives | bool
     - host_setup_fio_divertgrep.stdout | default('') | length > 0
     - not host_setup_fio_distro_stat.stat.exists | default(false) | bool
 
@@ -431,7 +114,6 @@
     host_setup_alt_fio_distro.rc != 0 and
     ('already' not in host_setup_alt_fio_distro.stderr | default('') | lower)
   when:
-    - host_setup_fio_libhipfile_alternatives | bool
     - host_setup_fio_distro_stat.stat.exists | default(false) | bool
     - host_setup_fio_libhipfile_bin.stat.exists | default(false) | bool
 
@@ -452,7 +134,6 @@
     host_setup_alt_fio_hip.rc != 0 and
     ('already' not in host_setup_alt_fio_hip.stderr | default('') | lower)
   when:
-    - host_setup_fio_libhipfile_alternatives | bool
     - host_setup_fio_distro_stat.stat.exists | default(false) | bool
     - host_setup_fio_libhipfile_bin.stat.exists | default(false) | bool
 
@@ -463,6 +144,5 @@
   changed_when: false
   failed_when: false
   when:
-    - host_setup_fio_libhipfile_alternatives | bool
     - host_setup_fio_distro_stat.stat.exists | default(false) | bool
     - host_setup_fio_libhipfile_bin.stat.exists | default(false) | bool
