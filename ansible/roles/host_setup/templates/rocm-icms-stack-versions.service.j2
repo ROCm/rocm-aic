@@ -1,0 +1,13 @@
+# Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+#
+# Managed by Ansible (host_setup).
+[Unit]
+Description=Publish ROCm and AMDGPU versions for node_exporter textfile
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart={{ host_setup_rocm_icms_versions_script_path }}

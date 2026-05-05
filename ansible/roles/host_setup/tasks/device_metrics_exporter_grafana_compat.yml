@@ -1,0 +1,25 @@
+# Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+#
+# Grafana.com dashboard 23434 (AMD Instinct Single Node) queries metrics named
+# amd_gpu_* / amd_pcie_* with a hostname label. The upstream device metrics
+# exporter defaults to unprefixed gpu_* names unless CommonConfig.MetricsFieldPrefix
+# is set (see ROCm device-metrics-exporter example/config.json).
+
+---
+- name: Stat device metrics exporter config (if present)
+  ansible.builtin.stat:
+    path: "{{ rocm_setup_metrics_exporter_config_path | default('/etc/metrics/config.json') }}"
+  register: host_setup_dme_config_stat
+
+- name: Write device metrics exporter config for Grafana amd_* dashboards
+  ansible.builtin.template:
+    src: device_metrics_exporter_config.json.j2
+    dest: "{{ rocm_setup_metrics_exporter_config_path | default('/etc/metrics/config.json') }}"
+    owner: root
+    group: root
+    mode: "0644"
+  become: true
+  when: host_setup_dme_config_stat.stat.exists | bool
+  notify: Restart amd-metrics-exporter

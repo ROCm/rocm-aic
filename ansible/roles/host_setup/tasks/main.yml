@@ -32,6 +32,23 @@
     - provision
   when: host_setup_enable_prometheus_node_exporter | default(true) | bool
 
+- name: ROCm/amdgpu version textfile for node_exporter
+  ansible.builtin.include_tasks:
+    file: rocm_icms_stack_versions_textfile.yml
+    apply:
+      tags:
+        - node_exporter
+        - provision
+        - stack_versions
+  when:
+    - host_setup_rocm_icms_version_textfile | default(true) | bool
+    - host_setup_enable_prometheus_node_exporter | default(true) | bool
+    - "'prometheus-node-exporter' in (extra_packages | default([]))"
+  tags:
+    - node_exporter
+    - provision
+    - stack_versions
+
 - name: Install NVMe Prometheus exporter
   ansible.builtin.include_role:
     name: sbates130272.batesste.nvme_exporter_setup
@@ -76,3 +93,50 @@
   when: host_setup_enable_rocm_setup | default(true) | bool
   tags:
     - rocm_setup
+
+- name: Device metrics exporter config for Grafana amd_* dashboards
+  ansible.builtin.include_tasks:
+    file: device_metrics_exporter_grafana_compat.yml
+    apply:
+      tags:
+        - rocm_setup
+        - provision
+        - metrics_exporter
+  when:
+    - host_setup_amd_metrics_exporter_grafana_compat | default(true) | bool
+    - rocm_setup_install_metrics_exporter | default(false) | bool
+  tags:
+    - rocm_setup
+    - provision
+    - metrics_exporter
+
+- name: Build and install hipFile and libhipfile-enabled fio
+  ansible.builtin.include_tasks:
+    file: hipfile_fio.yml
+    apply:
+      tags:
+        - hipfile_fio
+        - provision
+  when:
+    - host_setup_install_hipfile_fio_stack | default(false) | bool
+    - ansible_os_family == "Debian"
+    - ansible_pkg_mgr == "apt"
+  tags:
+    - hipfile_fio
+    - provision
+
+- name: AIS hipFile observability (bpftrace + node_exporter textfile)
+  ansible.builtin.include_tasks:
+    file: ais_hipfile_observability.yml
+    apply:
+      tags:
+        - ais_hipfile_observability
+        - provision
+  when:
+    - host_setup_install_hipfile_fio_stack | default(false) | bool
+    - host_setup_ais_hipfile_observability | default(false) | bool
+    - ansible_os_family == "Debian"
+    - ansible_pkg_mgr == "apt"
+  tags:
+    - ais_hipfile_observability
+    - provision

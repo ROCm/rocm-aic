@@ -1,0 +1,9 @@
+# Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+# SPDX-License-Identifier: MIT
+#
+# Prometheus textfile metrics for libhipfile visibility (node_exporter
+# collector.textfile.directory).
+#
+# HELP ais_hipfile_library_present Whether libhipfile.so was resolved under ROCm.
+# TYPE ais_hipfile_library_present gauge
+ais_hipfile_library_present{rocm_path="{{ host_setup_rocm_path }}",soname="{{ host_setup_ais_hipfile_soname if (host_setup_ais_hipfile_soname | length) > 0 else 'none' }}"} {{ host_setup_ais_hipfile_lib_gauge }}

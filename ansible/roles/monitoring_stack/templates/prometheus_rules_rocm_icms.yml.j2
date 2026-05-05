@@ -1,0 +1,32 @@
+# Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+#
+# Managed by Ansible (monitoring_stack). Join keys for Grafana cluster dashboard.
+groups:
+  - name: rocm_icms_join
+    interval: 30s
+    rules:
+      - record: rocm_icms:nvme:key
+        expr: |
+          max by (job, instance, device, k) (
+            label_join(
+              node_disk_info{job="node_exporter", device=~"nvme.*"},
+              "k",
+              "@",
+              "instance",
+              "device"
+            ) * 0 + 1
+          )
+      - record: rocm_icms:rdma:key
+        expr: |
+          max by (job, instance, device, port, k) (
+            label_join(
+              rdma_port_rcv_data_total{job="rdma_exporter"},
+              "k",
+              "@",
+              "instance",
+              "device",
+              "port"
+            ) * 0 + 1
+          )

@@ -93,3 +93,13 @@
     - monitoring_grafana_provision_amd_gpu_dashboard | bool
     - monitoring_grafana_amd_dashboard_json is defined
   notify: Reload systemd and restart grafana-server
+
+- name: Install ROCm-AIC cluster summary dashboard JSON
+  ansible.builtin.copy:
+    src: grafana-rocm-aic-cluster.json
+    dest: /var/lib/grafana/dashboards/rocm-aic-cluster.json
+    owner: grafana
+    group: grafana
+    mode: "0644"
+  when: monitoring_grafana_provision_cluster_summary_dashboard | bool
+  notify: Reload systemd and restart grafana-server
