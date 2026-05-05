@@ -114,16 +114,28 @@ def get_sweep_results_dir(sweep_dir_or_name: str) -> Path:
     Raises:
         FileNotFoundError: If directory doesn't exist
     """
+    import os
+
     sweep_path = Path(sweep_dir_or_name)
 
     # Case 1: Full path provided
     if sweep_path.exists() and sweep_path.is_dir():
         return sweep_path
 
-    # Case 2: Directory name - look in results/sweeps/
-    # Get script directory to locate results
+    # Case 2: Directory name - look in configured results directory
+    # Get base results directory from environment with default fallback
+    base_results_dir = os.environ.get('SWEEP_RESULTS_DIR', 'results/sweeps')
+
+    # Get script directory to locate results (if using relative default)
     script_dir = Path(__file__).parent.parent
-    results_dir = script_dir / "results" / "sweeps" / sweep_dir_or_name
+
+    # Resolve base directory (handle both absolute and relative paths)
+    if Path(base_results_dir).is_absolute():
+        results_base = Path(base_results_dir)
+    else:
+        results_base = script_dir / base_results_dir
+
+    results_dir = results_base / sweep_dir_or_name
 
     if results_dir.exists() and results_dir.is_dir():
         return results_dir
@@ -133,5 +145,5 @@ def get_sweep_results_dir(sweep_dir_or_name: str) -> Path:
         f"Sweep directory not found: {sweep_dir_or_name}\n"
         f"Tried:\n"
         f"  1. Direct path: {sweep_path.absolute()}\n"
-        f"  2. In results/sweeps: {results_dir}"
+        f"  2. In {base_results_dir}: {results_dir}"
     )

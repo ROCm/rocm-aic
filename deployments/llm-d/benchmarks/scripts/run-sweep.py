@@ -379,7 +379,7 @@ class SweepOrchestrator:
 
     def __init__(self, config_file: str, gpu_budget: Optional[int] = None,
                  max_concurrent: int = 1, exclusive_mode: bool = False,
-                 max_gpus_per_node: int = 8):
+                 max_gpus_per_node: int = 8, output_dir: Optional[str] = None):
         """
         Initialize the orchestrator.
 
@@ -389,6 +389,7 @@ class SweepOrchestrator:
             max_concurrent: Maximum concurrent configurations (1 = sequential, 0 = unlimited)
             exclusive_mode: If True, pods request max GPUs per node
             max_gpus_per_node: Maximum GPUs available per node
+            output_dir: Custom sweep directory name (optional, overrides auto-generated name)
         """
         with open(config_file) as f:
             self.config = yaml.safe_load(f)
@@ -396,8 +397,38 @@ class SweepOrchestrator:
         self.sweep_name = self.config['name']
         self.deployment = self.config['deployment']
         self.timestamp = datetime.now().strftime('%Y-%m-%d')
-        self.results_dir = Path(f"results/sweeps/{self.sweep_name}_{self.timestamp}")
-        self.results_dir.mkdir(parents=True, exist_ok=True)
+
+        # Get base results directory from environment with default fallback
+        base_results_dir = os.environ.get('SWEEP_RESULTS_DIR', 'results/sweeps')
+        base_results_path = Path(base_results_dir)
+
+        # Determine sweep directory name
+        if output_dir:
+            # Validate custom directory name
+            if not self._is_valid_directory_name(output_dir):
+                raise ValueError(
+                    f"Invalid directory name: {output_dir}. "
+                    "Use only alphanumeric characters, hyphens, underscores, and periods."
+                )
+            sweep_dir_name = output_dir
+        else:
+            # Auto-generate from sweep name and timestamp
+            sweep_dir_name = f"{self.sweep_name}_{self.timestamp}"
+
+        # Construct full results directory path
+        self.results_dir = base_results_path / sweep_dir_name
+
+        # Check if directory already exists
+        if self.results_dir.exists():
+            raise FileExistsError(
+                f"Sweep directory already exists: {self.results_dir}\n"
+                "Use a different --output-dir name or remove the existing directory."
+            )
+
+        # Create directory (including parent directories)
+        self.results_dir.mkdir(parents=True, exist_ok=False)
+
+        print(f"Results directory: {self.results_dir}")
 
         self.exclusive_mode = exclusive_mode
         self.max_gpus_per_node = max_gpus_per_node
@@ -453,6 +484,27 @@ class SweepOrchestrator:
             )
         else:
             self.health_monitor = None
+
+    def _is_valid_directory_name(self, name: str) -> bool:
+        """
+        Validate that directory name contains only safe characters.
+
+        Args:
+            name: Directory name to validate
+
+        Returns:
+            True if valid, False otherwise
+        """
+        import re
+        # Allow alphanumeric, hyphens, underscores, and periods
+        # Disallow path separators and other special characters
+        pattern = r'^[a-zA-Z0-9._-]+$'
+        if not re.match(pattern, name):
+            return False
+        # Disallow directory names that look like paths
+        if '/' in name or '\\' in name:
+            return False
+        return True
 
     def _signal_handler(self, signum, frame):
         """Handle interrupt signals gracefully."""
@@ -1844,6 +1896,12 @@ Examples:
         default=8,
         help="Maximum GPUs per node (default: 8, used in exclusive mode)"
     )
+    parser.add_argument(
+        "--output-dir",
+        type=str,
+        default=None,
+        help="Custom sweep directory name (default: auto-generated {sweep_name}_{timestamp})"
+    )
     args = parser.parse_args()
 
     try:
@@ -1853,7 +1911,8 @@ Examples:
             gpu_budget=args.gpu_budget,
             max_concurrent=args.max_concurrent,
             exclusive_mode=args.exclusive_mode,
-            max_gpus_per_node=args.max_gpus_per_node
+            max_gpus_per_node=args.max_gpus_per_node,
+            output_dir=args.output_dir
         )
 
         if args.dry_run:

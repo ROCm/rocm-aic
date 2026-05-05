@@ -20,10 +20,12 @@ def get_latest_sweep_dir(sweep_name: str = None) -> Path:
     Returns:
         Path to the latest sweep directory
     """
-    results_dir = Path("results/sweeps")
+    import os
+    results_dir = Path(os.environ.get('SWEEP_RESULTS_DIR', 'results/sweeps'))
 
     if not results_dir.exists():
-        raise FileNotFoundError("No sweeps found in results/sweeps")
+        base_dir = os.environ.get('SWEEP_RESULTS_DIR', 'results/sweeps')
+        raise FileNotFoundError(f"No sweeps found in {base_dir}")
 
     # Get all sweep directories
     sweep_dirs = [d for d in results_dir.iterdir() if d.is_dir()]

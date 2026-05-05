@@ -1,11 +1,14 @@
 # Justfile for benchmark sweep orchestration
 
+# Environment variables with defaults
+SWEEP_RESULTS_DIR := env_var_or_default('SWEEP_RESULTS_DIR', 'results/sweeps')
+
 # Default recipe - show available commands
 default:
     @just --list
 
 # Run a sweep from configuration file (sequential by default)
-sweep CONFIG *ARGS='':
+sweep CONFIG OUTPUT_DIR='' *ARGS='':
     #!/usr/bin/env bash
     set +e  # Don't exit on error - let Python handle it
     echo "Starting sweep: {{CONFIG}}"
@@ -14,8 +17,14 @@ sweep CONFIG *ARGS='':
     # Use stderr to avoid BrokenPipeError when piped to tee
     trap 'echo "" >&2; echo "Forwarding interrupt to sweep script..." >&2; kill -INT $PID 2>/dev/null; wait $PID' INT TERM
 
+    # Build arguments - add --output-dir if OUTPUT_DIR is provided
+    SWEEP_ARGS="{{ARGS}}"
+    if [ -n "{{OUTPUT_DIR}}" ]; then
+        SWEEP_ARGS="--output-dir {{OUTPUT_DIR}} $SWEEP_ARGS"
+    fi
+
     # Run Python script in background and wait for it
-    python3 -u scripts/run-sweep.py {{CONFIG}} {{ARGS}} &
+    python3 -u scripts/run-sweep.py {{CONFIG}} $SWEEP_ARGS &
     PID=$!
     wait $PID
     EXIT_CODE=$?
@@ -26,14 +35,20 @@ sweep CONFIG *ARGS='':
     exit $EXIT_CODE
 
 # Run a parallel sweep with GPU budgeting
-sweep-parallel CONFIG GPU_BUDGET MAX_CONCURRENT='4' *ARGS='':
+sweep-parallel CONFIG GPU_BUDGET MAX_CONCURRENT='4' OUTPUT_DIR='' *ARGS='':
     #!/usr/bin/env bash
     set +e
     echo "Starting parallel sweep: {{CONFIG}} (GPU Budget: {{GPU_BUDGET}}, Max Concurrent: {{MAX_CONCURRENT}})"
 
     trap 'echo "" >&2; echo "Forwarding interrupt to sweep script..." >&2; kill -INT $PID 2>/dev/null; wait $PID' INT TERM
 
-    python3 -u scripts/run-sweep.py {{CONFIG}} --gpu-budget {{GPU_BUDGET}} --max-concurrent {{MAX_CONCURRENT}} {{ARGS}} &
+    # Build arguments - add --output-dir if OUTPUT_DIR is provided
+    SWEEP_ARGS="{{ARGS}}"
+    if [ -n "{{OUTPUT_DIR}}" ]; then
+        SWEEP_ARGS="--output-dir {{OUTPUT_DIR}} $SWEEP_ARGS"
+    fi
+
+    python3 -u scripts/run-sweep.py {{CONFIG}} --gpu-budget {{GPU_BUDGET}} --max-concurrent {{MAX_CONCURRENT}} $SWEEP_ARGS &
     PID=$!
     wait $PID
     EXIT_CODE=$?
@@ -42,14 +57,20 @@ sweep-parallel CONFIG GPU_BUDGET MAX_CONCURRENT='4' *ARGS='':
     exit $EXIT_CODE
 
 # Run sweep in exclusive mode (pods request max GPUs per node)
-sweep-exclusive CONFIG GPU_BUDGET MAX_CONCURRENT='4' *ARGS='':
+sweep-exclusive CONFIG GPU_BUDGET MAX_CONCURRENT='4' OUTPUT_DIR='' *ARGS='':
     #!/usr/bin/env bash
     set +e
     echo "Starting exclusive mode sweep: {{CONFIG}} (GPU Budget: {{GPU_BUDGET}})"
 
     trap 'echo "" >&2; echo "Forwarding interrupt to sweep script..." >&2; kill -INT $PID 2>/dev/null; wait $PID' INT TERM
 
-    python3 -u scripts/run-sweep.py {{CONFIG}} --gpu-budget {{GPU_BUDGET}} --max-concurrent {{MAX_CONCURRENT}} --exclusive-mode {{ARGS}} &
+    # Build arguments - add --output-dir if OUTPUT_DIR is provided
+    SWEEP_ARGS="{{ARGS}}"
+    if [ -n "{{OUTPUT_DIR}}" ]; then
+        SWEEP_ARGS="--output-dir {{OUTPUT_DIR}} $SWEEP_ARGS"
+    fi
+
+    python3 -u scripts/run-sweep.py {{CONFIG}} --gpu-budget {{GPU_BUDGET}} --max-concurrent {{MAX_CONCURRENT}} --exclusive-mode $SWEEP_ARGS &
     PID=$!
     wait $PID
     EXIT_CODE=$?
@@ -58,8 +79,13 @@ sweep-exclusive CONFIG GPU_BUDGET MAX_CONCURRENT='4' *ARGS='':
     exit $EXIT_CODE
 
 # Preview sweep configurations without executing (dry-run)
-dry-run CONFIG *ARGS='':
-    @python3 scripts/run-sweep.py {{CONFIG}} --dry-run {{ARGS}}
+dry-run CONFIG OUTPUT_DIR='' *ARGS='':
+    #!/usr/bin/env bash
+    SWEEP_ARGS="{{ARGS}}"
+    if [ -n "{{OUTPUT_DIR}}" ]; then
+        SWEEP_ARGS="--output-dir {{OUTPUT_DIR}} $SWEEP_ARGS"
+    fi
+    python3 scripts/run-sweep.py {{CONFIG}} --dry-run $SWEEP_ARGS
 
 # List available sweep configurations
 list-sweeps:
@@ -74,27 +100,27 @@ validate CONFIG:
 # List recent sweep results
 list-results:
     @echo "Recent sweep results:"
-    @ls -dt results/sweeps/*/ 2>/dev/null | head -10 || echo "No results found"
+    @ls -dt {{SWEEP_RESULTS_DIR}}/*/ 2>/dev/null | head -10 || echo "No results found"
 
 # Show summary of a sweep run
 show-summary SWEEP_DIR:
     @echo "Summary for: {{SWEEP_DIR}}"
-    @cat results/sweeps/{{SWEEP_DIR}}/summary.json 2>/dev/null || echo "Summary not found"
+    @cat {{SWEEP_RESULTS_DIR}}/{{SWEEP_DIR}}/summary.json 2>/dev/null || echo "Summary not found"
 
-# Regenerate summary.json from a completed sweep (useful if summary was lost or corrupted)
-regenerate-summary SWEEP_DIR:
-    @echo "🔄 Regenerating summary for: {{SWEEP_DIR}}"
+# generate summary.json from a completed sweep
+generate-summary SWEEP_DIR:
+    @echo "🔄 Generating summary for: {{SWEEP_DIR}}"
     @python3 scripts/generate_summary.py {{SWEEP_DIR}}
 
 # View configuration of a specific run
 show-run-config SWEEP_DIR RUN_ID:
     @echo "Configuration for run {{RUN_ID}} in {{SWEEP_DIR}}:"
-    @cat results/sweeps/{{SWEEP_DIR}}/run-{{RUN_ID}}/config.yaml 2>/dev/null || echo "Config not found"
+    @cat {{SWEEP_RESULTS_DIR}}/{{SWEEP_DIR}}/run-{{RUN_ID}}/config.yaml 2>/dev/null || echo "Config not found"
 
 # View logs from a specific run
 show-logs SWEEP_DIR RUN_ID:
     @echo "Logs for run {{RUN_ID}} in {{SWEEP_DIR}}:"
-    @ls -1 results/sweeps/{{SWEEP_DIR}}/run-{{RUN_ID}}/logs/*.log 2>/dev/null | while read log; do \
+    @ls -1 {{SWEEP_RESULTS_DIR}}/{{SWEEP_DIR}}/run-{{RUN_ID}}/logs/*.log 2>/dev/null | while read log; do \
         echo "=== $$log ==="; \
         cat "$$log"; \
         echo ""; \
@@ -103,13 +129,13 @@ show-logs SWEEP_DIR RUN_ID:
 # Clean up all benchmark results
 clean-results:
     @echo "Cleaning up benchmark results..."
-    @rm -rf results/sweeps/*
+    @rm -rf {{SWEEP_RESULTS_DIR}}/*
     @echo "✓ Results cleaned"
 
 # Create the results directory structure
 setup:
     @echo "Setting up benchmark directories..."
-    @mkdir -p results/sweeps
+    @mkdir -p {{SWEEP_RESULTS_DIR}}
     @mkdir -p load-generators/multi-turn-benchmark/workloads
     @echo "✓ Setup complete"
 
@@ -198,7 +224,7 @@ retry-failed SWEEP_DIR:
 
     trap 'echo "" >&2; echo "Forwarding interrupt to retry script..." >&2; kill -INT $PID 2>/dev/null; wait $PID' INT TERM
 
-    python3 -u scripts/retry-failed.py results/sweeps/{{SWEEP_DIR}} &
+    python3 -u scripts/retry-failed.py {{SWEEP_RESULTS_DIR}}/{{SWEEP_DIR}} &
     PID=$!
     wait $PID
     EXIT_CODE=$?
@@ -209,4 +235,4 @@ retry-failed SWEEP_DIR:
 # Aggregate benchmark results from a sweep directory
 results-aggregate SWEEP_DIR *ARGS='':
     @echo "📊 Aggregating results from: {{SWEEP_DIR}}"
-    @python3 scripts/aggregate-sweep-results.py results/sweeps/{{SWEEP_DIR}} {{ARGS}}
+    @python3 scripts/aggregate-sweep-results.py {{SWEEP_RESULTS_DIR}}/{{SWEEP_DIR}} {{ARGS}}
