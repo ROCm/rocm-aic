@@ -81,6 +81,11 @@ show-summary SWEEP_DIR:
     @echo "Summary for: {{SWEEP_DIR}}"
     @cat results/sweeps/{{SWEEP_DIR}}/summary.json 2>/dev/null || echo "Summary not found"
 
+# Regenerate summary.json from a completed sweep (useful if summary was lost or corrupted)
+regenerate-summary SWEEP_DIR:
+    @echo "🔄 Regenerating summary for: {{SWEEP_DIR}}"
+    @python3 scripts/generate_summary.py {{SWEEP_DIR}}
+
 # View configuration of a specific run
 show-run-config SWEEP_DIR RUN_ID:
     @echo "Configuration for run {{RUN_ID}} in {{SWEEP_DIR}}:"

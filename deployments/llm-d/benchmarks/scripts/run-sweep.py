@@ -32,6 +32,8 @@ from health_monitor import (
     FailureInfo
 )
 from namespace_snapshot import NamespaceSnapshot
+from sweep_state import RunState, RunStatus, write_state_file
+from generate_summary import generate_summary_from_states, write_summary_file
 
 
 # ============================================================================
@@ -231,42 +233,6 @@ def evaluate_expressions_in_combination(combination: Dict[str, Any]) -> Dict[str
 # ============================================================================
 # End Expression Evaluation
 # ============================================================================
-
-
-class RunStatus(Enum):
-    """Status of a configuration run."""
-    PENDING = "pending"
-    RUNNING = "running"
-    COMPLETED = "completed"
-    FAILED = "failed"
-    CANCELLED = "cancelled"
-
-
-@dataclass
-class RunState:
-    """State information for a single configuration run."""
-    run_id: int
-    namespace: str
-    parameters: Dict[str, Any]
-    gpu_claim: int
-    status: RunStatus
-    start_time: Optional[float] = None
-    end_time: Optional[float] = None
-    error: Optional[str] = None
-    benchmark_results: Optional[Dict[str, Any]] = None
-    failure_info: Optional[Dict[str, Any]] = None  # Detailed failure information
-
-    def to_dict(self) -> Dict[str, Any]:
-        """Convert to dictionary for JSON serialization."""
-        result = asdict(self)
-        result['status'] = self.status.value
-        return result
-
-    @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> 'RunState':
-        """Create from dictionary loaded from JSON."""
-        data['status'] = RunStatus(data['status'])
-        return cls(**data)
 
 
 class GPUBudgetScheduler:
@@ -928,14 +894,12 @@ class SweepOrchestrator:
 
     def save_state(self):
         """Save current state to JSON file."""
-        state = {
-            'pending': [rs.to_dict() for rs in self.scheduler.get_pending_states()],
-            'running': [rs.to_dict() for rs in self.scheduler.get_running_states()],
-            'completed': [rs.to_dict() for rs in self.scheduler.get_completed_states()]
-        }
-
-        with open(self.state_file, 'w') as f:
-            json.dump(state, f, indent=2)
+        write_state_file(
+            self.state_file,
+            pending=self.scheduler.get_pending_states(),
+            running=self.scheduler.get_running_states(),
+            completed=self.scheduler.get_completed_states()
+        )
 
     def create_namespace(self, namespace: str):
         """Create a Kubernetes namespace with deployment labels."""
@@ -1730,31 +1694,8 @@ class SweepOrchestrator:
 
         # Generate summary from completed states
         completed_states = self.scheduler.get_completed_states()
-
-        summary = []
-        for run_state in completed_states:
-            run_result = {
-                'run_id': run_state.run_id,
-                'namespace': run_state.namespace,
-                'parameters': run_state.parameters,
-                'gpu_claim': run_state.gpu_claim,
-                'status': run_state.status.value,
-                'start_time': run_state.start_time,
-                'end_time': run_state.end_time,
-                'duration': run_state.end_time - run_state.start_time if run_state.end_time and run_state.start_time else None,
-            }
-
-            if run_state.benchmark_results:
-                run_result['benchmark'] = run_state.benchmark_results
-
-            if run_state.error:
-                run_result['error'] = run_state.error
-
-            summary.append(run_result)
-
-        # Save summary
-        with open(self.results_dir / "summary.json", 'w') as f:
-            json.dump(summary, f, indent=2)
+        summary = generate_summary_from_states(completed_states)
+        write_summary_file(summary, self.results_dir / "summary.json")
 
         print("\n" + "=" * 70)
         print("SWEEP COMPLETED")
