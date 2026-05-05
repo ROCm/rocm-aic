@@ -11,42 +11,57 @@ global:
     cluster: rocm-icms
     replica: "{{ inventory_hostname }}"
 
+rule_files:
+  - /etc/prometheus/rules/rocm_icms.yml
+
 scrape_configs:
   - job_name: prometheus
     static_configs:
       - targets:
           - localhost:9090
 
-{% for host in groups['gpu_nodes'] | default([]) %}
-  - job_name: "node_exporter_{{ host }}"
+{% if groups['gpu_nodes'] | default([]) | length > 0 %}
+  - job_name: node_exporter
     static_configs:
+{% for host in groups['gpu_nodes'] %}
       - targets:
           - "{{ hostvars[host].ansible_host }}:9100"
         labels:
           instance: "{{ host }}"
+{% endfor %}
 
-  - job_name: "nvme_exporter_{{ host }}"
+  - job_name: nvme_exporter
     static_configs:
+{% for host in groups['gpu_nodes'] %}
       - targets:
           - "{{ hostvars[host].ansible_host }}:{{ (hostvars[host].nvme_exporter_listen_address | default(nvme_exporter_listen_address | default(':9998'))) | regex_replace('^.*:', '') }}"
         labels:
           instance: "{{ host }}"
+{% endfor %}
 
-  - job_name: "rdma_exporter_{{ host }}"
+  - job_name: rdma_exporter
     static_configs:
+{% for host in groups['gpu_nodes'] %}
       - targets:
           - "{{ hostvars[host].ansible_host }}:{{ (hostvars[host].rdma_exporter_listen_address | default(':9879')) | regex_replace('^.*:', '') }}"
         labels:
           instance: "{{ host }}"
+{% endfor %}
 
-  - job_name: "amd_metrics_exporter_{{ host }}"
+  # Dashboard 23434 and label_values(hostname) expect a hostname label on GPU
+  # series. The exporter may omit it or use the OS short name; attach the
+  # inventory hostname here so multi-node views and legends match Ansible.
+  - job_name: amd_metrics_exporter
+    metrics_path: /metrics
     static_configs:
+{% for host in groups['gpu_nodes'] %}
       - targets:
           - "{{ hostvars[host].ansible_host }}:{{ hostvars[host].rocm_setup_metrics_exporter_port | default(rocm_setup_metrics_exporter_port | default(5000)) }}"
-        metrics_path: /metrics
         labels:
           instance: "{{ host }}"
+          hostname: "{{ host }}"
 {% endfor %}
+{% endif %}
 
 {% if monitoring_llmd_prometheus_federate_enabled | default(false) | bool %}
   - job_name: llmd_federate

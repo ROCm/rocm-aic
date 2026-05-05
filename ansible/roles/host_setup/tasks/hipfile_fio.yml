@@ -48,7 +48,7 @@
 - name: Check hipFile stamp for current git sha
   ansible.builtin.stat:
     path: "/opt/rocm-icms/stamps/hipfile-{{ host_setup_hipfile_git_sha }}.stamp"
-  register: host_setup_hipfile_stamp
+  register: host_setup_hipfile_stamp_stat
 
 - name: Force clean hipFile reinstall prep
   when: host_setup_hipfile_force_reinstall | default(false) | bool
@@ -66,7 +66,15 @@
     - name: Re-check hipFile stamp after forced cleanup
       ansible.builtin.stat:
         path: "/opt/rocm-icms/stamps/hipfile-{{ host_setup_hipfile_git_sha }}.stamp"
-      register: host_setup_hipfile_stamp
+      register: host_setup_hipfile_stamp_stat
+
+- name: Normalize hipFile stamp presence for conditionals
+  ansible.builtin.set_fact:
+    host_setup_hipfile_stamp_exists: >-
+      {{
+        (host_setup_hipfile_stamp_stat.stat is defined)
+        and (host_setup_hipfile_stamp_stat.stat.exists | default(false) | bool)
+      }}
 
 - name: Sparse clone rocm-systems and checkout hipFile tree
   ansible.builtin.shell: |
@@ -90,7 +98,7 @@
     fi
   args:
     executable: /bin/bash
-  when: not host_setup_hipfile_stamp.stat.exists | bool
+  when: not host_setup_hipfile_stamp_exists | bool
 
 - name: Build hipFile and produce DEB packages
   ansible.builtin.shell: |
@@ -107,7 +115,7 @@
     executable: /bin/bash
   environment:
     ROCM_PATH: "{{ host_setup_rocm_path }}"
-  when: not host_setup_hipfile_stamp.stat.exists | bool
+  when: not host_setup_hipfile_stamp_exists | bool
 
 - name: Find hipFile DEB artifacts
   ansible.builtin.find:
@@ -115,7 +123,7 @@
     patterns: "hipfile_*.deb"
     file_type: file
   register: host_setup_hipfile_debs
-  when: not host_setup_hipfile_stamp.stat.exists | bool
+  when: not host_setup_hipfile_stamp_exists | bool
 
 - name: Fail when hipFile cpack produced no DEB artifacts
   ansible.builtin.fail:
@@ -124,7 +132,7 @@
       {{ host_setup_hipfile_build_dir }}/rocm-systems/projects/hipfile/build
       after cpack; inspect build logs on the target host.
   when:
-    - not host_setup_hipfile_stamp.stat.exists | bool
+    - not host_setup_hipfile_stamp_exists | bool
     - host_setup_hipfile_debs is defined
     - host_setup_hipfile_debs.files | length == 0
 
@@ -133,14 +141,14 @@
     argv: "{{ ['/usr/bin/dpkg', '-i'] + (host_setup_hipfile_debs.files | map(attribute='path') | sort | list) }}"
   register: host_setup_hipfile_dpkg
   when:
-    - not host_setup_hipfile_stamp.stat.exists | bool
+    - not host_setup_hipfile_stamp_exists | bool
     - host_setup_hipfile_debs is defined
     - host_setup_hipfile_debs.files | length > 0
 
 - name: Refresh dynamic linker cache after hipFile DEB install
   ansible.builtin.command: ldconfig
   when:
-    - not host_setup_hipfile_stamp.stat.exists | bool
+    - not host_setup_hipfile_stamp_exists | bool
     - host_setup_hipfile_dpkg is defined
     - host_setup_hipfile_dpkg.changed | default(false) | bool
 
@@ -149,12 +157,20 @@
     dest: "/opt/rocm-icms/stamps/hipfile-{{ host_setup_hipfile_git_sha }}.stamp"
     content: "{{ host_setup_hipfile_git_sha }}\n"
     mode: "0644"
-  when: not host_setup_hipfile_stamp.stat.exists | bool
+  when: not host_setup_hipfile_stamp_exists | bool
 
 - name: Check fio libhipfile stamp for current git ref
   ansible.builtin.stat:
     path: "/opt/rocm-icms/stamps/fio-libhipfile-{{ host_setup_fio_libhipfile_git_ref }}.stamp"
-  register: host_setup_fio_stamp
+  register: host_setup_fio_stamp_stat
+
+- name: Normalize fio libhipfile stamp presence for conditionals
+  ansible.builtin.set_fact:
+    host_setup_fio_stamp_exists: >-
+      {{
+        (host_setup_fio_stamp_stat.stat is defined)
+        and (host_setup_fio_stamp_stat.stat.exists | default(false) | bool)
+      }}
 
 - name: Clone ROCm fio at pinned ref
   ansible.builtin.git:
@@ -164,7 +180,7 @@
     force: true
   when:
     - host_setup_build_fio_libhipfile | default(true) | bool
-    - not host_setup_fio_stamp.stat.exists | bool
+    - not host_setup_fio_stamp_exists | bool
 
 - name: Locate libhipfile under ROCm lib or lib64
   ansible.builtin.shell: |
@@ -185,7 +201,7 @@
   failed_when: false
   when:
     - host_setup_build_fio_libhipfile | default(true) | bool
-    - not host_setup_fio_stamp.stat.exists | bool
+    - not host_setup_fio_stamp_exists | bool
 
 - name: Fail when libhipfile is missing before ROCm fio configure
   ansible.builtin.assert:
@@ -196,7 +212,7 @@
       hipFile install; confirm hipFile DEBs installed into host_setup_rocm_path.
   when:
     - host_setup_build_fio_libhipfile | default(true) | bool
-    - not host_setup_fio_stamp.stat.exists | bool
+    - not host_setup_fio_stamp_exists | bool
 
 # cpack-only installs often omit dev layout; `cmake --install` above fixes fresh
 # builds. If the hipFile stamp already exists but the build tree remains, re-run
@@ -235,7 +251,7 @@
     executable: /bin/bash
   when:
     - host_setup_build_fio_libhipfile | default(true) | bool
-    - not host_setup_fio_stamp.stat.exists | bool
+    - not host_setup_fio_stamp_exists | bool
 
 - name: Configure and build ROCm fio with libhipfile
   ansible.builtin.shell: |
@@ -276,7 +292,7 @@
     ROCM_PATH: "{{ host_setup_rocm_path }}"
   when:
     - host_setup_build_fio_libhipfile | default(true) | bool
-    - not host_setup_fio_stamp.stat.exists | bool
+    - not host_setup_fio_stamp_exists | bool
 
 - name: Mark fio libhipfile install stamp for this ref
   ansible.builtin.copy:
@@ -285,7 +301,7 @@
     mode: "0644"
   when:
     - host_setup_build_fio_libhipfile | default(true) | bool
-    - not host_setup_fio_stamp.stat.exists | bool
+    - not host_setup_fio_stamp_exists | bool
 
 - name: Refuse update-alternatives without libhipfile fio build
   ansible.builtin.assert:

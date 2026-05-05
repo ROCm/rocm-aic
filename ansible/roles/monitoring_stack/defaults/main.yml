@@ -30,6 +30,8 @@ monitoring_grafana_dashboard_node_exporter_id: "1860"
 monitoring_grafana_provision_amd_gpu_dashboard: true
 monitoring_grafana_dashboard_amd_gpu_id: "23434"
 
+monitoring_grafana_provision_cluster_summary_dashboard: true
+
 # Defaults for templates when hostvars omit collection role defaults.
 nvme_exporter_listen_address: ":9998"
 rocm_setup_metrics_exporter_port: 5000

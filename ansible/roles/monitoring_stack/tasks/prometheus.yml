@@ -12,6 +12,23 @@
       monitoring_llmd_prometheus_federate_enabled is true.
   when: monitoring_llmd_prometheus_federate_enabled | default(false) | bool
 
+- name: Ensure Prometheus rules directory exists
+  ansible.builtin.file:
+    path: /etc/prometheus/rules
+    state: directory
+    owner: root
+    group: prometheus
+    mode: "0755"
+
+- name: Deploy ROCm-ICMS Prometheus recording rules
+  ansible.builtin.template:
+    src: prometheus_rules_rocm_icms.yml.j2
+    dest: /etc/prometheus/rules/rocm_icms.yml
+    owner: root
+    group: prometheus
+    mode: "0640"
+  notify: Reload prometheus
+
 - name: Deploy Prometheus configuration
   ansible.builtin.template:
     src: prometheus.yml.j2

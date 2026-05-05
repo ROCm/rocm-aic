@@ -32,6 +32,10 @@ host_setup_enable_prometheus_node_exporter: true
 # post-rocm apt dedupe (faster provision when ROCm is already installed).
 host_setup_enable_rocm_setup: true
 
+# After rocm_setup: ensure /etc/metrics/config.json sets MetricsFieldPrefix so
+# Prometheus exposes amd_gpu_* metrics matching Grafana dashboard 23434.
+host_setup_amd_metrics_exporter_grafana_compat: true
+
 # Sparse-checkout build of hipFile from ROCm/rocm-systems; optional ROCm/fio
 # (hipFile branch) with --enable-libhipfile. Heavy; tag hipfile_fio to scope.
 host_setup_install_hipfile_fio_stack: false
@@ -73,3 +77,10 @@ host_setup_ais_hipfile_textfile_metrics: true
 # collector directory (e.g. ARGS in /etc/default/prometheus-node-exporter on
 # Ubuntu). The package default often includes /var/lib/prometheus/node-exporter.
 host_setup_ais_hipfile_textfile_dir: /var/lib/prometheus/node-exporter
+
+# Textfile metrics for Grafana cluster summary (ROCm + AMDGPU versions).
+host_setup_rocm_icms_version_textfile: true
+host_setup_rocm_icms_lib_dir: /usr/lib/rocm-icms
+host_setup_rocm_icms_versions_script_path: >-
+  {{ host_setup_rocm_icms_lib_dir }}/rocm-icms-stack-versions.sh
+host_setup_rocm_icms_textfile_dir: "{{ host_setup_ais_hipfile_textfile_dir }}"

@@ -1,0 +1,38 @@
+#!/bin/bash
+# Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+#
+# Emit rocm_icms_software_version for node_exporter textfile collector.
+set -euo pipefail
+TEXTDIR="{{ host_setup_rocm_icms_textfile_dir }}"
+OUT="${TEXTDIR}/rocm_icms_stack_versions.prom"
+TMP="${OUT}.tmp"
+mkdir -p "${TEXTDIR}"
+ROCM_VER="unknown"
+if [[ -f /opt/rocm/.info/version ]]; then
+  ROCM_VER=$(tr -d '\n' </opt/rocm/.info/version)
+elif command -v dpkg-query >/dev/null 2>&1; then
+  v=$(dpkg-query -W -f='${Version}' rocm-core 2>/dev/null || true)
+  [[ -n "${v}" ]] && ROCM_VER="${v}"
+elif command -v rpm >/dev/null 2>&1 && rpm -q rocm-core >/dev/null 2>&1; then
+  v=$(rpm -q --queryformat '%{VERSION}' rocm-core)
+  [[ -n "${v}" ]] && ROCM_VER="${v}"
+fi
+AMDGPU_VER="unknown"
+if modinfo amdgpu >/dev/null 2>&1; then
+  v=$(modinfo -F version amdgpu 2>/dev/null | head -1 || true)
+  [[ -n "${v}" ]] && AMDGPU_VER="${v}"
+fi
+rocm_icms_label_escape() {
+  echo "$1" | tr -d '\r\n' | sed 's/["\\]/_/g' | cut -c1-120
+}
+{
+  echo '# HELP rocm_icms_software_version ROCm stack component version (gauge 1).'
+  echo '# TYPE rocm_icms_software_version gauge'
+  printf 'rocm_icms_software_version{software="rocm",version="%s"} 1\n' \
+    "$(rocm_icms_label_escape "${ROCM_VER}")"
+  printf 'rocm_icms_software_version{software="amdgpu",version="%s"} 1\n' \
+    "$(rocm_icms_label_escape "${AMDGPU_VER}")"
+} >"${TMP}"
+mv -f "${TMP}" "${OUT}"

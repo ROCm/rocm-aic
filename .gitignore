@@ -32,6 +32,9 @@ ttft-llamacpp-*.log
 ansible/reports/
 ansible/playbooks/reports/
 
+# Local overrides for deploy.sh (Grafana URL / credentials)
+deploy.local.env
+
 #Codespell disctionary cache
 dictionary.dic
 
