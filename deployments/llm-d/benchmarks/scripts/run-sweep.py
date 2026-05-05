@@ -1694,7 +1694,7 @@ class SweepOrchestrator:
 
         # Generate summary from completed states
         completed_states = self.scheduler.get_completed_states()
-        summary = generate_summary_from_states(completed_states)
+        summary = generate_summary_from_states(completed_states, sweep_dir=self.results_dir)
         write_summary_file(summary, self.results_dir / "summary.json")
 
         print("\n" + "=" * 70)

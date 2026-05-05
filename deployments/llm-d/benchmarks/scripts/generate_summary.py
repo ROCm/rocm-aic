@@ -12,14 +12,16 @@ from pathlib import Path
 from typing import List, Dict, Any
 
 from sweep_state import RunState, read_state_file, get_sweep_results_dir
+from extract_pod_info import extract_pod_info_from_run
 
 
-def generate_summary_from_states(completed_states: List[RunState]) -> List[Dict[str, Any]]:
+def generate_summary_from_states(completed_states: List[RunState], sweep_dir: Path = None) -> List[Dict[str, Any]]:
     """
     Generate summary data structure from completed run states.
 
     Args:
         completed_states: List of completed RunState objects
+        sweep_dir: Path to sweep directory (optional, for extracting pod info)
 
     Returns:
         List of dictionaries containing run results suitable for JSON serialization
@@ -43,6 +45,19 @@ def generate_summary_from_states(completed_states: List[RunState]) -> List[Dict[
 
         if run_state.error:
             run_result['error'] = run_state.error
+
+        # Extract pod information if sweep_dir is provided
+        if sweep_dir:
+            run_dir = sweep_dir / f"run-{run_state.run_id:03d}"
+            if run_dir.exists():
+                try:
+                    pod_info = extract_pod_info_from_run(run_dir)
+                    if pod_info:
+                        run_result['pods'] = pod_info
+                except Exception as e:
+                    # Don't fail the entire summary generation if pod extraction fails
+                    # Just log a warning
+                    print(f"Warning: Failed to extract pod info for run {run_state.run_id}: {e}")
 
         summary.append(run_result)
 
@@ -86,7 +101,7 @@ def generate_summary(sweep_dir: Path, verbose: bool = True) -> List[Dict[str, An
 
     # Generate summary from completed states
     completed_states = state['completed']
-    summary_data = generate_summary_from_states(completed_states)
+    summary_data = generate_summary_from_states(completed_states, sweep_dir=sweep_dir)
 
     # Write summary file
     summary_file = sweep_dir / "summary.json"
