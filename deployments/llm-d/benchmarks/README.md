@@ -61,7 +61,7 @@ benchmarks/
             │   ├── manifests/
             │   ├── benchmark_runner_output.txt
             │   ├── benchmark_output.txt
-            │   └── logs/
+            │   └── snapshots/
             ├── run-002/
             └── summary.json
 ```
@@ -266,8 +266,11 @@ Each sweep run saves:
 2. **manifests/**: Rendered Kubernetes manifests
 3. **benchmark_output.txt**: Benchmark stdout
 4. **benchmark_error.txt**: Benchmark stderr
-5. **logs/**: vLLM pod logs
-   - `<pod-name>.log`: Complete logs from each vLLM pod
+5. **snapshots/**: Namespace diagnostics snapshot
+   - `<pod-name>.log`: Complete logs from each pod
+   - `<pod-name>-describe.txt`: Pod describe output
+   - `namespace-events.yaml`: Kubernetes events
+   - `metadata.json`: Snapshot collection metadata
 
 The sweep summary (`summary.json`) contains:
 - List of all runs with their parameters

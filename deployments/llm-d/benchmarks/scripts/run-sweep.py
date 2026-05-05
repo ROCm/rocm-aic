@@ -31,6 +31,33 @@ from health_monitor import (
     DeploymentHealthCheckFailure,
     FailureInfo
 )
+from namespace_snapshot import NamespaceSnapshot
+
+
+# ============================================================================
+# Safe Print Helper
+# ============================================================================
+
+def safe_print(*args, **kwargs):
+    """Print that handles BrokenPipeError gracefully during cleanup.
+
+    When stdout is broken (e.g., piped to tee which exited), tries stderr as fallback.
+    """
+    try:
+        print(*args, **kwargs)
+    except BrokenPipeError:
+        # Stdout pipe was closed (e.g., tee exited after Ctrl-C)
+        # Try stderr as fallback for critical messages
+        try:
+            # Only use stderr if explicitly not already specified
+            if kwargs.get('file') is None:
+                print(*args, **kwargs, file=sys.stderr)
+        except:
+            # Both pipes broken or stderr also specified - give up silently
+            pass
+    except Exception:
+        # Ignore other print errors during cleanup
+        pass
 
 
 # ============================================================================
@@ -447,6 +474,7 @@ class SweepOrchestrator:
         signal.signal(signal.SIGTERM, self._signal_handler)
 
         self.shutdown_event = threading.Event()
+        self.shutdown_in_progress = False  # Track if we're already shutting down
 
         # Initialize health monitoring (configurable via config file)
         health_config = self.config.get('health_monitoring', {})
@@ -462,17 +490,44 @@ class SweepOrchestrator:
 
     def _signal_handler(self, signum, frame):
         """Handle interrupt signals gracefully."""
+        # If already shutting down, ignore additional Ctrl-C to let cleanup finish
+        if self.shutdown_in_progress:
+            safe_print("\n" + "!"*70)
+            safe_print("INTERRUPT ALREADY IN PROGRESS")
+            safe_print("Please wait for cleanup to complete (deleting namespaces...)")
+            safe_print("Interrupting cleanup may leave resources orphaned!")
+            safe_print("!"*70)
+            return
+
+        # First interrupt - initiate graceful shutdown
+        self.shutdown_in_progress = True
         print("\n" + "="*70)
         print("INTERRUPT RECEIVED - Initiating graceful shutdown...")
         print("="*70)
         print("Cancelling pending configurations and cleaning up running ones...")
+        print("(Press Ctrl-C again to force exit - may leave resources orphaned)")
+        print("="*70)
+
         self.shutdown_event.set()
         self.scheduler.request_shutdown()
 
-        # Stop health monitor
+        # Signal health monitor to stop (non-blocking)
         if self.health_monitoring_enabled and self.health_monitor:
-            print("Stopping health monitor...")
-            self.health_monitor.stop()
+            print("Signaling health monitor to stop...")
+            self.health_monitor.stop_event.set()  # Just set the flag, don't wait
+
+        # Replace signal handler to warn on subsequent interrupts
+        signal.signal(signal.SIGINT, self._cleanup_signal_handler)
+        signal.signal(signal.SIGTERM, self._cleanup_signal_handler)
+
+    def _cleanup_signal_handler(self, signum, frame):
+        """Handle signals during cleanup - warn but allow force exit."""
+        safe_print("\n" + "!"*70)
+        safe_print("SECOND INTERRUPT RECEIVED - FORCING EXIT")
+        safe_print("WARNING: Cleanup interrupted - namespaces may not be deleted!")
+        safe_print("You may need to manually run teardown to clean up resources.")
+        safe_print("!"*70)
+        sys.exit(130)
 
     def _get_user_id(self) -> str:
         """Get current user ID for namespace prefix."""
@@ -943,14 +998,14 @@ class SweepOrchestrator:
 
     def delete_namespace(self, namespace: str):
         """Delete a Kubernetes namespace."""
-        print(f"  Deleting namespace {namespace}...")
+        safe_print(f"  Deleting namespace {namespace}...")
 
         result = subprocess.run([
             "kubectl", "delete", "namespace", namespace, "--wait=true"
         ], capture_output=True, text=True)
 
         if result.returncode != 0:
-            print(f"  Warning: Failed to delete namespace: {result.stderr}")
+            safe_print(f"  Warning: Failed to delete namespace: {result.stderr}")
 
     def deploy(self, manifest_dir: Path, namespace: str):
         """Deploy using justfile targets with parametrized manifests."""
@@ -1136,32 +1191,119 @@ class SweepOrchestrator:
 
         return result
 
-    def collect_pod_logs(self, run_dir: Path, namespace: str):
-        """Collect vLLM pod logs."""
-        print(f"  Collecting pod logs...")
+    def check_model_server_health(self, namespace: str) -> Optional[str]:
+        """
+        Check model server pods for errors after benchmark completion.
 
-        logs_dir = run_dir / "logs"
-        logs_dir.mkdir(exist_ok=True)
+        Returns error message if issues found, None if healthy.
+        """
+        try:
+            # Get model server pods
+            result = subprocess.run([
+                "kubectl", "get", "pods",
+                "-n", namespace,
+                "-l", "llm-d.ai/role=decode",
+                "-o", "json"
+            ], capture_output=True, text=True, timeout=10)
 
-        # Get vLLM pods
-        result = subprocess.run([
-            "kubectl", "get", "pods",
-            "-n", namespace,
-            "-l", "llm-d.ai/role=decode",
-            "-o", "jsonpath={.items[*].metadata.name}"
-        ], capture_output=True, text=True, check=True)
+            if result.returncode != 0:
+                return f"Failed to get pod status: {result.stderr}"
 
-        pod_names = result.stdout.strip().split()
+            pods_data = json.loads(result.stdout)
+            errors = []
 
-        for pod_name in pod_names:
-            # Get pod logs
-            log_file = logs_dir / f"{pod_name}.log"
-            with open(log_file, 'w') as f:
-                subprocess.run([
-                    "kubectl", "logs", pod_name, "-n", namespace
-                ], stdout=f, stderr=subprocess.STDOUT)
+            for pod in pods_data.get('items', []):
+                pod_name = pod['metadata']['name']
+                phase = pod['status'].get('phase', 'Unknown')
+                container_statuses = pod.get('status', {}).get('containerStatuses', [])
 
-            print(f"    Saved logs for {pod_name}")
+                # Check 1: Pod phase
+                if phase in ['Failed', 'Unknown']:
+                    errors.append(f"Pod {pod_name} in {phase} state")
+
+                # Check 2: Container statuses
+                for container_status in container_statuses:
+                    container_name = container_status.get('name', 'unknown')
+
+                    # Check for restarts
+                    restart_count = container_status.get('restartCount', 0)
+                    if restart_count > 0:
+                        errors.append(f"Container '{container_name}' in pod {pod_name} restarted {restart_count} time(s)")
+
+                    # Check for waiting/terminated states
+                    state = container_status.get('state', {})
+
+                    if 'waiting' in state:
+                        reason = state['waiting'].get('reason', '')
+                        message = state['waiting'].get('message', '')
+                        if reason in ['CrashLoopBackOff', 'ImagePullBackOff', 'ErrImagePull']:
+                            errors.append(f"Container '{container_name}' in pod {pod_name}: {reason} - {message}")
+
+                    if 'terminated' in state:
+                        reason = state['terminated'].get('reason', '')
+                        message = state['terminated'].get('message', '')
+                        exit_code = state['terminated'].get('exitCode', 0)
+                        if exit_code != 0:
+                            errors.append(f"Container '{container_name}' in pod {pod_name} terminated (exit {exit_code}): {reason} - {message}")
+
+                # Check 3: Recent ERROR lines in logs
+                log_result = subprocess.run([
+                    "kubectl", "logs", pod_name, "-n", namespace, "--tail=100"
+                ], capture_output=True, text=True, timeout=10)
+
+                if log_result.returncode == 0:
+                    error_lines = [
+                        line.strip() for line in log_result.stdout.split('\n')
+                        if 'ERROR' in line
+                        and 'Error retrieving safetensors' not in line
+                        and 'Could not cache non-existence' not in line
+                    ]
+
+                    if error_lines:
+                        # Take first few errors
+                        sample_errors = error_lines[:3]
+                        errors.append(f"ERROR lines found in {pod_name}: {'; '.join(sample_errors)}")
+
+            if errors:
+                return "Model server issues detected:\n  - " + "\n  - ".join(errors)
+
+            return None
+
+        except Exception as e:
+            return f"Error checking model server health: {e}"
+
+    def capture_snapshot(self, run_dir: Path, namespace: str, context: str = "unknown"):
+        """
+        Capture comprehensive namespace snapshot.
+
+        Args:
+            run_dir: Directory for this run's results
+            namespace: Kubernetes namespace to snapshot
+            context: Context for logging (e.g., "success", "failure", "health_check_failure")
+        """
+        print(f"  Capturing namespace snapshot (context: {context})...")
+
+        snapshot_dir = run_dir / "snapshots"
+        snapshot_dir.mkdir(parents=True, exist_ok=True)
+
+        # Create and execute snapshot
+        snapshot = NamespaceSnapshot()
+        results = snapshot.capture(
+            namespace=namespace,
+            output_dir=snapshot_dir,
+            label_selector="llm-d.ai/role=decode"
+        )
+
+        # Log results
+        for step_name, result in results.items():
+            if result.status == "success":
+                print(f"    ✓ {step_name}: {len(result.files_created)} files")
+            elif result.status == "partial":
+                print(f"    ⚠ {step_name}: Partial - {result.error_message}")
+            else:
+                print(f"    ✗ {step_name}: Failed - {result.error_message}")
+
+        return results
 
     def teardown(self, namespace: str):
         """Teardown deployment using justfile targets."""
@@ -1401,18 +1543,30 @@ class SweepOrchestrator:
             if self.shutdown_event.is_set():
                 raise InterruptedError("Shutdown requested")
 
-            print(f"{prefix} Collecting pod logs...")
-            self.collect_pod_logs(run_dir, namespace)
+            self.capture_snapshot(run_dir, namespace, context="success")
+
+            # Check model server health after benchmark completion
+            print(f"{prefix} Checking model server health...")
+            server_health_error = self.check_model_server_health(namespace)
 
             # Update run state
             run_state.benchmark_results = benchmark_results
-            if benchmark_results['exit_code'] == 0:
-                run_state.status = RunStatus.COMPLETED
-                print(f"{prefix} ✓ Completed successfully")
-            else:
+
+            # Fail if benchmark failed OR if model server had issues
+            if benchmark_results['exit_code'] != 0:
                 run_state.status = RunStatus.FAILED
                 run_state.error = "Benchmark failed"
                 print(f"{prefix} ✗ Benchmark failed")
+            elif server_health_error:
+                run_state.status = RunStatus.FAILED
+                run_state.error = f"Model server error: {server_health_error}"
+                print(f"{prefix} ✗ Model server errors detected:")
+                # Print each error line with indentation
+                for line in server_health_error.split('\n'):
+                    print(f"{prefix}   {line}")
+            else:
+                run_state.status = RunStatus.COMPLETED
+                print(f"{prefix} ✓ Completed successfully")
 
         except InterruptedError:
             run_state.status = RunStatus.CANCELLED
@@ -1426,6 +1580,12 @@ class SweepOrchestrator:
             run_state.failure_info = e.failure_info.to_dict() if e.failure_info else None
             print(f"{prefix} ✗ Health check failed: {e}")
 
+            # Collect snapshot for debugging
+            try:
+                self.capture_snapshot(run_dir, namespace, context="health_check_failure")
+            except Exception as log_error:
+                print(f"{prefix} Warning: Failed to capture snapshot: {log_error}")
+
             # Save detailed diagnostics to run directory
             if e.failure_info:
                 diagnostics_file = run_dir / "failure_diagnostics.json"
@@ -1438,6 +1598,12 @@ class SweepOrchestrator:
             run_state.error = str(e)
             print(f"{prefix} ✗ Failed: {e}")
 
+            # Collect snapshot for debugging
+            try:
+                self.capture_snapshot(run_dir, namespace, context="failure")
+            except Exception as log_error:
+                print(f"{prefix} Warning: Failed to capture snapshot: {log_error}")
+
         finally:
             # Unregister from health monitoring
             if self.health_monitoring_enabled and self.health_monitor:
@@ -1445,10 +1611,10 @@ class SweepOrchestrator:
 
             # Always teardown and release resources
             try:
-                print(f"{prefix} Tearing down...")
+                safe_print(f"{prefix} Tearing down...")
                 self.teardown(namespace)
             except Exception as e:
-                print(f"{prefix} Warning: Teardown failed: {e}")
+                safe_print(f"{prefix} Warning: Teardown failed: {e}")
 
             # Release GPU resources
             self.scheduler.release_resources(run_state)
@@ -1556,7 +1722,7 @@ class SweepOrchestrator:
         finally:
             # Stop health monitor when sweep completes
             if self.health_monitoring_enabled and self.health_monitor:
-                print("\n🔍 Stopping health monitor...")
+                safe_print("\n🔍 Stopping health monitor...")
                 self.health_monitor.stop()
 
         # Save final state
@@ -1677,6 +1843,13 @@ def resolve_config_path(config_arg: str) -> str:
 if __name__ == "__main__":
     import argparse
 
+    # Handle SIGPIPE gracefully (when piped output is closed)
+    try:
+        signal.signal(signal.SIGPIPE, signal.SIG_DFL)
+    except AttributeError:
+        # SIGPIPE not available on Windows
+        pass
+
     parser = argparse.ArgumentParser(
         description="Run benchmarking sweep with parallel execution and GPU budgeting",
         epilog="""
@@ -1755,5 +1928,5 @@ Examples:
         print(f"Error: {e}", file=sys.stderr)
         sys.exit(1)
     except KeyboardInterrupt:
-        print("\nInterrupted by user")
+        safe_print("\nInterrupted by user")
         sys.exit(130)

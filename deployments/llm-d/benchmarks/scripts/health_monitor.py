@@ -57,6 +57,7 @@ class NamespaceMonitorState:
     start_time: float
     last_check_time: float
     error_start_time: Optional[float]
+    unhealthy_start_time: Optional[float]
     failure_info: Optional[FailureInfo]
 
 
@@ -90,18 +91,20 @@ class CentralizedHealthMonitor:
     Thread-safe design for parallel sweep execution.
     """
 
-    def __init__(self, check_interval: int = 15, aggressive_timeout: int = 60,
-                 api_rate_limit: int = 10):
+    def __init__(self, check_interval: int = 15, aggressive_timeout: int = 180,
+                 unhealthy_timeout: int = 600, api_rate_limit: int = 10):
         """
         Initialize the centralized health monitor.
 
         Args:
             check_interval: Seconds between health checks
             aggressive_timeout: Seconds of persistent errors before failing
+            unhealthy_timeout: Seconds to wait for Unhealthy condition (model loading tolerance)
             api_rate_limit: Max Kubernetes API calls per second
         """
         self.check_interval = check_interval
         self.aggressive_timeout = aggressive_timeout
+        self.unhealthy_timeout = unhealthy_timeout
 
         # Thread-safe tracking of monitored namespaces
         self.monitored_namespaces: Dict[str, NamespaceMonitorState] = {}
@@ -134,6 +137,7 @@ class CentralizedHealthMonitor:
                 start_time=time.time(),
                 last_check_time=0,
                 error_start_time=None,
+                unhealthy_start_time=None,
                 failure_info=None
             )
         print(f"  🔍 [Run {run_id:03d}] Started health monitoring for namespace: {namespace}")
@@ -170,6 +174,8 @@ class CentralizedHealthMonitor:
         self.stop_event.set()
         if self.monitor_thread and self.monitor_thread.is_alive():
             self.monitor_thread.join(timeout=5)
+            if self.monitor_thread.is_alive():
+                print("⚠️  Warning: Health monitor thread did not stop cleanly within 5 seconds")
 
     def _monitoring_loop(self):
         """Main monitoring loop - checks all registered namespaces."""
@@ -188,7 +194,7 @@ class CentralizedHealthMonitor:
 
                 try:
                     # Perform health check
-                    failure = self._check_namespace(ns_name, ns_state)
+                    result = self._check_namespace(ns_name, ns_state)
 
                     # Update state
                     with self.lock:
@@ -198,24 +204,53 @@ class CentralizedHealthMonitor:
                         state = self.monitored_namespaces[ns_name]
                         state.last_check_time = time.time()
 
-                        if failure:
-                            # Track persistent errors
-                            if state.error_start_time is None:
-                                state.error_start_time = time.time()
-                                print(f"  ⚠️  [Run {state.run_id:03d}] Health issue detected: {failure.message}")
+                        # Skip further checks if already failed
+                        if state.failure_info is not None:
+                            continue
 
-                            # Fail if error persists
-                            error_duration = time.time() - state.error_start_time
-                            if error_duration > self.aggressive_timeout:
-                                state.failure_info = failure
-                                print(f"  ❌ [Run {state.run_id:03d}] Health check FAILED after {error_duration:.0f}s")
-                                print(f"     Category: {failure.category}, Phase: {failure.phase}")
-                                print(f"     Message: {failure.message}")
+                        if result:
+                            failure, is_unhealthy = result
+
+                            if is_unhealthy:
+                                # Handle Unhealthy condition (model loading) with separate timeout
+                                # BUT: If we already have a critical error, ignore unhealthy
+                                if state.error_start_time is not None:
+                                    # Critical error takes precedence over unhealthy
+                                    continue
+
+                                if state.unhealthy_start_time is None:
+                                    state.unhealthy_start_time = time.time()
+                                    print(f"  ⚠️  [Run {state.run_id:03d}] Unhealthy condition detected (model loading): {failure.message}")
+
+                                # Fail if unhealthy persists beyond tolerance
+                                unhealthy_duration = time.time() - state.unhealthy_start_time
+                                if unhealthy_duration > self.unhealthy_timeout:
+                                    state.failure_info = failure
+                                    print(f"  ❌ [Run {state.run_id:03d}] Unhealthy timeout FAILED after {unhealthy_duration:.0f}s")
+                                    print(f"     Category: {failure.category}, Phase: {failure.phase}")
+                                    print(f"     Message: {failure.message}")
+                            else:
+                                # Handle other critical errors with aggressive timeout
+                                # Clear unhealthy timer since we have a more serious error
+                                state.unhealthy_start_time = None
+
+                                if state.error_start_time is None:
+                                    state.error_start_time = time.time()
+                                    print(f"  ⚠️  [Run {state.run_id:03d}] Health issue detected: {failure.message}")
+
+                                # Fail if error persists
+                                error_duration = time.time() - state.error_start_time
+                                if error_duration > self.aggressive_timeout:
+                                    state.failure_info = failure
+                                    print(f"  ❌ [Run {state.run_id:03d}] Health check FAILED after {error_duration:.0f}s")
+                                    print(f"     Category: {failure.category}, Phase: {failure.phase}")
+                                    print(f"     Message: {failure.message}")
                         else:
-                            # Clear error state if recovered
-                            if state.error_start_time is not None:
+                            # Clear error states if recovered
+                            if state.error_start_time is not None or state.unhealthy_start_time is not None:
                                 print(f"  ✅ [Run {state.run_id:03d}] Health issue resolved")
                             state.error_start_time = None
+                            state.unhealthy_start_time = None
 
                 except Exception as e:
                     print(f"  ⚠️  Monitor error for {ns_name}: {e}")
@@ -223,10 +258,11 @@ class CentralizedHealthMonitor:
             # Wait before next check cycle
             self.stop_event.wait(self.check_interval)
 
-    def _check_namespace(self, namespace: str, state: NamespaceMonitorState) -> Optional[FailureInfo]:
+    def _check_namespace(self, namespace: str, state: NamespaceMonitorState) -> Optional[Tuple[FailureInfo, bool]]:
         """Check health of a single namespace.
 
-        Returns FailureInfo if failure detected, None otherwise.
+        Returns tuple (FailureInfo, is_unhealthy) if failure detected, None otherwise.
+        is_unhealthy flag indicates whether failure is due to Unhealthy condition (separate timeout).
         """
         # Get pods with model serving label
         pods = self._get_pods_by_label(namespace, "llm-d.ai/role=decode")
@@ -235,12 +271,15 @@ class CentralizedHealthMonitor:
             # No pods yet - might still be creating
             # Only fail if we've been waiting too long
             if time.time() - state.start_time > 120:  # 2 minutes
-                return FailureInfo(
-                    category=FailureCategory.DEPLOYMENT.value,
-                    phase=FailurePhase.DEPLOYMENT.value,
-                    trigger="pod_status",
-                    message="No model serving pods found after 2 minutes",
-                    timestamp=time.time()
+                return (
+                    FailureInfo(
+                        category=FailureCategory.DEPLOYMENT.value,
+                        phase=FailurePhase.DEPLOYMENT.value,
+                        trigger="pod_status",
+                        message="No model serving pods found after 2 minutes",
+                        timestamp=time.time()
+                    ),
+                    False
                 )
             return None
 
@@ -248,18 +287,18 @@ class CentralizedHealthMonitor:
             # A. Pod status check
             failure = self._check_pod_status(pod, state.run_id)
             if failure:
-                return failure
+                return (failure, False)
 
-            # B. Pod events check
-            failure = self._check_pod_events(namespace, pod['name'], state.run_id)
-            if failure:
-                return failure
+            # B. Pod events check (may return tuple with is_unhealthy flag)
+            result = self._check_pod_events(namespace, pod['name'], state.run_id)
+            if result:
+                return result  # Already a tuple (FailureInfo, is_unhealthy)
 
             # C. Log pattern check (only if pod is running)
             if pod['phase'] == "Running":
                 failure = self._check_container_logs(namespace, pod['name'], state.run_id)
                 if failure:
-                    return failure
+                    return (failure, False)
 
         return None
 
@@ -380,21 +419,45 @@ class CentralizedHealthMonitor:
             # Check restart count (NO restarts allowed)
             restart_count = container_status.get('restartCount', 0)
             if restart_count > 0:
-                return FailureInfo(
-                    category=FailureCategory.CRASH.value,
-                    phase=FailurePhase.DEPLOYMENT.value,
-                    trigger="restart",
-                    message=f"Container restarted {restart_count} time(s) - not allowed in benchmark runs",
-                    pod_name=pod_name,
-                    timestamp=time.time()
+                # Check previous container logs to determine root cause
+                container_name = container_status.get('name', '')
+                root_cause = self._check_container_logs(
+                    pod['raw']['metadata']['namespace'],
+                    pod_name,
+                    run_id,
+                    previous=True,
+                    container=container_name
                 )
+
+                if root_cause:
+                    # Found root cause in logs - report that instead
+                    return FailureInfo(
+                        category=root_cause.category,
+                        phase=root_cause.phase,
+                        trigger="log_pattern",
+                        message=f"{root_cause.message} (caused container restart)",
+                        pod_name=pod_name,
+                        timestamp=time.time(),
+                        diagnostics=root_cause.diagnostics
+                    )
+                else:
+                    # No specific cause found - report generic restart
+                    return FailureInfo(
+                        category=FailureCategory.CRASH.value,
+                        phase=FailurePhase.DEPLOYMENT.value,
+                        trigger="restart",
+                        message=f"Container restarted {restart_count} time(s) - not allowed in benchmark runs",
+                        pod_name=pod_name,
+                        timestamp=time.time()
+                    )
 
         return None
 
-    def _check_pod_events(self, namespace: str, pod_name: str, run_id: int) -> Optional[FailureInfo]:
+    def _check_pod_events(self, namespace: str, pod_name: str, run_id: int) -> Optional[Tuple[FailureInfo, bool]]:
         """Check for error/warning events in last 60 seconds.
 
-        Returns FailureInfo if critical events detected.
+        Returns tuple (FailureInfo, is_unhealthy) if critical events detected, None otherwise.
+        is_unhealthy flag is True for Unhealthy events (which get separate timeout handling).
         """
         try:
             cmd = [
@@ -417,28 +480,67 @@ class CentralizedHealthMonitor:
             data = json.loads(result.stdout)
             now = time.time()
 
+            # Collect recent events (last 60 seconds)
+            recent_events = []
             for event in data.get('items', []):
-                # Check if event is recent (last 60 seconds)
+                # Check if event is recent
                 last_timestamp = event.get('lastTimestamp') or event.get('eventTime')
                 if not last_timestamp:
                     continue
 
-                # Parse timestamp (simplified - assumes recent events)
-                # Full parsing would use dateutil, but we'll check type == Warning
+                # Parse timestamp - handle both formats
+                try:
+                    from datetime import datetime
+                    # Try ISO format (eventTime)
+                    if 'T' in last_timestamp:
+                        event_time = datetime.fromisoformat(last_timestamp.replace('Z', '+00:00'))
+                    else:
+                        # Legacy format
+                        event_time = datetime.strptime(last_timestamp, "%Y-%m-%d %H:%M:%S %z")
 
+                    event_age = (datetime.now(event_time.tzinfo) - event_time).total_seconds()
+
+                    # Only consider events from last 60 seconds
+                    if event_age > 60:
+                        continue
+                except:
+                    # If timestamp parsing fails, include the event (be conservative)
+                    pass
+
+                recent_events.append(event)
+
+            # Process recent events
+            for event in recent_events:
                 if event.get('type') == 'Warning':
                     reason = event.get('reason', '')
                     message = event.get('message', '')
 
-                    # Critical warnings
-                    if reason in ['FailedScheduling', 'FailedMount', 'BackOff', 'Unhealthy']:
-                        return FailureInfo(
-                            category=FailureCategory.CONFIG_ERROR.value,
-                            phase=FailurePhase.DEPLOYMENT.value,
-                            trigger="pod_event",
-                            message=f"Pod event: {reason} - {message}",
-                            pod_name=pod_name,
-                            timestamp=time.time()
+                    # Unhealthy events (model loading) - separate timeout
+                    if reason == 'Unhealthy':
+                        return (
+                            FailureInfo(
+                                category=FailureCategory.TIMEOUT.value,
+                                phase=FailurePhase.MODEL_LOAD.value,
+                                trigger="pod_event",
+                                message=f"Pod event: {reason} - {message}",
+                                pod_name=pod_name,
+                                timestamp=time.time()
+                            ),
+                            True  # is_unhealthy flag
+                        )
+
+                    # Other critical warnings (aggressive timeout)
+                    if reason in ['FailedScheduling', 'FailedMount', 'BackOff']:
+                        return (
+                            FailureInfo(
+                                category=FailureCategory.CONFIG_ERROR.value,
+                                phase=FailurePhase.DEPLOYMENT.value,
+                                trigger="pod_event",
+                                message=f"Pod event: {reason} - {message}",
+                                pod_name=pod_name,
+                                timestamp=time.time()
+                            ),
+                            False  # is_unhealthy flag
                         )
 
             return None
@@ -447,33 +549,12 @@ class CentralizedHealthMonitor:
             # Don't fail monitoring due to event check errors
             return None
 
-    def _check_container_logs(self, namespace: str, pod_name: str, run_id: int) -> Optional[FailureInfo]:
-        """Scan recent logs for error patterns.
+    def _scan_logs_for_patterns(self, logs: str, pod_name: str) -> Optional[FailureInfo]:
+        """Scan logs for error patterns.
 
         Returns FailureInfo if critical patterns detected.
         """
         try:
-            # Get last 100 lines of logs
-            cmd = [
-                "kubectl", "logs",
-                "-n", namespace,
-                pod_name,
-                "--tail=100"
-            ]
-
-            result = subprocess.run(
-                cmd,
-                capture_output=True,
-                text=True,
-                timeout=10
-            )
-
-            if result.returncode != 0:
-                # Log retrieval failed - might be too early, not an error
-                return None
-
-            logs = result.stdout
-
             # Check for critical patterns (from failure_patterns.py will be imported)
             from failure_patterns import ERROR_PATTERNS
 
@@ -498,6 +579,49 @@ class CentralizedHealthMonitor:
                     )
 
             return None
+
+        except Exception as e:
+            # Don't fail monitoring due to log check errors
+            return None
+
+    def _check_container_logs(self, namespace: str, pod_name: str, run_id: int,
+                              previous: bool = False, container: str = '') -> Optional[FailureInfo]:
+        """Scan container logs for error patterns.
+
+        Args:
+            namespace: Kubernetes namespace
+            pod_name: Name of the pod
+            run_id: Run identifier
+            previous: If True, fetch logs from previous container instance
+            container: Container name (optional, for multi-container pods)
+
+        Returns FailureInfo if critical patterns detected.
+        """
+        try:
+            # Build kubectl logs command
+            cmd = ["kubectl", "logs", "-n", namespace, pod_name]
+
+            if previous:
+                cmd.extend(["--previous", "--tail=-1"])
+            else:
+                cmd.append("--tail=100")
+
+            if container:
+                cmd.extend(["-c", container])
+
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=10
+            )
+
+            if result.returncode != 0:
+                # Log retrieval failed - might be too early, not an error
+                return None
+
+            logs = result.stdout
+            return self._scan_logs_for_patterns(logs, pod_name)
 
         except Exception as e:
             # Don't fail monitoring due to log check errors

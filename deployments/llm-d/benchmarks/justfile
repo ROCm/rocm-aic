@@ -6,18 +6,56 @@ default:
 
 # Run a sweep from configuration file (sequential by default)
 sweep CONFIG *ARGS='':
-    @echo "Starting sweep: {{CONFIG}}"
-    python3 -u scripts/run-sweep.py {{CONFIG}} {{ARGS}}
+    #!/usr/bin/env bash
+    set +e  # Don't exit on error - let Python handle it
+    echo "Starting sweep: {{CONFIG}}"
+
+    # Trap SIGINT/SIGTERM and forward to Python process
+    # Use stderr to avoid BrokenPipeError when piped to tee
+    trap 'echo "" >&2; echo "Forwarding interrupt to sweep script..." >&2; kill -INT $PID 2>/dev/null; wait $PID' INT TERM
+
+    # Run Python script in background and wait for it
+    python3 -u scripts/run-sweep.py {{CONFIG}} {{ARGS}} &
+    PID=$!
+    wait $PID
+    EXIT_CODE=$?
+
+    # Clean up trap
+    trap - INT TERM
+
+    exit $EXIT_CODE
 
 # Run a parallel sweep with GPU budgeting
 sweep-parallel CONFIG GPU_BUDGET MAX_CONCURRENT='4' *ARGS='':
-    @echo "Starting parallel sweep: {{CONFIG}} (GPU Budget: {{GPU_BUDGET}}, Max Concurrent: {{MAX_CONCURRENT}})"
-    python3 -u scripts/run-sweep.py {{CONFIG}} --gpu-budget {{GPU_BUDGET}} --max-concurrent {{MAX_CONCURRENT}} {{ARGS}}
+    #!/usr/bin/env bash
+    set +e
+    echo "Starting parallel sweep: {{CONFIG}} (GPU Budget: {{GPU_BUDGET}}, Max Concurrent: {{MAX_CONCURRENT}})"
+
+    trap 'echo "" >&2; echo "Forwarding interrupt to sweep script..." >&2; kill -INT $PID 2>/dev/null; wait $PID' INT TERM
+
+    python3 -u scripts/run-sweep.py {{CONFIG}} --gpu-budget {{GPU_BUDGET}} --max-concurrent {{MAX_CONCURRENT}} {{ARGS}} &
+    PID=$!
+    wait $PID
+    EXIT_CODE=$?
+
+    trap - INT TERM
+    exit $EXIT_CODE
 
 # Run sweep in exclusive mode (pods request max GPUs per node)
 sweep-exclusive CONFIG GPU_BUDGET MAX_CONCURRENT='4' *ARGS='':
-    @echo "Starting exclusive mode sweep: {{CONFIG}} (GPU Budget: {{GPU_BUDGET}})"
-    python3 -u scripts/run-sweep.py {{CONFIG}} --gpu-budget {{GPU_BUDGET}} --max-concurrent {{MAX_CONCURRENT}} --exclusive-mode {{ARGS}}
+    #!/usr/bin/env bash
+    set +e
+    echo "Starting exclusive mode sweep: {{CONFIG}} (GPU Budget: {{GPU_BUDGET}})"
+
+    trap 'echo "" >&2; echo "Forwarding interrupt to sweep script..." >&2; kill -INT $PID 2>/dev/null; wait $PID' INT TERM
+
+    python3 -u scripts/run-sweep.py {{CONFIG}} --gpu-budget {{GPU_BUDGET}} --max-concurrent {{MAX_CONCURRENT}} --exclusive-mode {{ARGS}} &
+    PID=$!
+    wait $PID
+    EXIT_CODE=$?
+
+    trap - INT TERM
+    exit $EXIT_CODE
 
 # Preview sweep configurations without executing (dry-run)
 dry-run CONFIG *ARGS='':
@@ -149,8 +187,19 @@ status NAMESPACE:
 
 # Retry failed configurations from a previous sweep
 retry-failed SWEEP_DIR:
-    @echo "🔄 Retrying failed configurations from: {{SWEEP_DIR}}"
-    @python3 -u scripts/retry-failed.py results/sweeps/{{SWEEP_DIR}}
+    #!/usr/bin/env bash
+    set +e
+    echo "🔄 Retrying failed configurations from: {{SWEEP_DIR}}"
+
+    trap 'echo "" >&2; echo "Forwarding interrupt to retry script..." >&2; kill -INT $PID 2>/dev/null; wait $PID' INT TERM
+
+    python3 -u scripts/retry-failed.py results/sweeps/{{SWEEP_DIR}} &
+    PID=$!
+    wait $PID
+    EXIT_CODE=$?
+
+    trap - INT TERM
+    exit $EXIT_CODE
 
 # Aggregate benchmark results from a sweep directory
 results-aggregate SWEEP_DIR *ARGS='':
