@@ -1,0 +1,6 @@
+# Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+
+# Managed by Ansible. Export the server-owned cache filesystem over NFS/RDMA.
+{{ nfs_rdma_export_path }}{% for client in nfs_rdma_export_clients %} {{ client }}({{ nfs_rdma_export_options }}){% endfor %}

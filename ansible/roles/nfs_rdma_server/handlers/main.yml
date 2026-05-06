@@ -1,0 +1,20 @@
+# Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+
+---
+- name: Reload systemd
+  ansible.builtin.systemd:
+    daemon_reload: true
+
+- name: Reload NFS exports
+  ansible.builtin.command:
+    argv:
+      - exportfs
+      - -ra
+  changed_when: true
+
+- name: Restart NFS server
+  ansible.builtin.service:
+    name: nfs-server
+    state: restarted

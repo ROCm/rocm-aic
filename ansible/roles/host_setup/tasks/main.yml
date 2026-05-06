@@ -111,6 +111,25 @@
     - metrics_exporter
 
 - name: Build and install hipFile and libhipfile-enabled fio
+  ansible.builtin.include_role:
+    name: sbates130272.batesste.rocm_hipfile_setup
+    apply:
+      tags:
+        - hipfile_fio
+        - provision
+  vars:
+    rocm_hipfile_setup_rocm_path: "{{ host_setup_rocm_path }}"
+    rocm_hipfile_setup_fio_install_dir: "{{ host_setup_fio_libhipfile_prefix }}"
+    rocm_hipfile_setup_parallel_jobs: "{{ host_setup_hipfile_build_jobs }}"
+  when:
+    - host_setup_install_hipfile_fio_stack | default(false) | bool
+    - ansible_os_family == "Debian"
+    - ansible_pkg_mgr == "apt"
+  tags:
+    - hipfile_fio
+    - provision
+
+- name: Configure fio update-alternatives for libhipfile-enabled build
   ansible.builtin.include_tasks:
     file: hipfile_fio.yml
     apply:
@@ -119,6 +138,7 @@
         - provision
   when:
     - host_setup_install_hipfile_fio_stack | default(false) | bool
+    - host_setup_fio_libhipfile_alternatives | default(false) | bool
     - ansible_os_family == "Debian"
     - ansible_pkg_mgr == "apt"
   tags:

@@ -1,0 +1,144 @@
+# Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+
+---
+- name: Tear down NVMe-oF initiator connections
+  when: inventory_hostname in groups.get('nvmeof_hosts', [])
+  block:
+    - name: Refuse teardown when NVMe-oF block devices are mounted
+      ansible.builtin.shell:
+        cmd: |
+          set -e
+          findmnt -rn -o SOURCE,TARGET | while read -r source target; do
+              dev_path="$(readlink -f "$source" 2>/dev/null || true)"
+              dev_name="$(basename "$dev_path")"
+              [ -n "$dev_name" ] || continue
+              sysfs="/sys/class/block/$dev_name"
+              [ -e "$sysfs" ] || continue
+
+              if [ -e "$sysfs/partition" ]; then
+                  parent="$(basename "$(readlink -f "$sysfs/..")")"
+              else
+                  parent="$dev_name"
+              fi
+
+              transport="$(cat "/sys/class/block/$parent/device/transport" \
+                  2>/dev/null || true)"
+              if [ "$transport" = rdma ]; then
+                  printf '%s %s\n' "$source" "$target"
+              fi
+          done
+        executable: /bin/bash
+      register: nvmeof_teardown_mounted_nvme
+      changed_when: false
+      failed_when: nvmeof_teardown_mounted_nvme.stdout | length > 0
+
+    - name: Disconnect configured NVMe-oF subsystems
+      ansible.builtin.command:
+        argv:
+          - nvme
+          - disconnect
+          - -n
+          - "{{ item }}"
+      loop: "{{ nvmeof_teardown_disconnect_nqns }}"
+      register: nvmeof_teardown_disconnect
+      changed_when: nvmeof_teardown_disconnect.rc == 0
+      failed_when:
+        - nvmeof_teardown_disconnect.rc != 0
+        - "'No matching controllers found' not in
+          (nvmeof_teardown_disconnect.stderr | default(''))"
+        - "'No such device' not in
+          (nvmeof_teardown_disconnect.stderr | default(''))"
+
+    - name: Verify configured NVMe-oF subsystems are disconnected
+      ansible.builtin.command:
+        argv:
+          - nvme
+          - list-subsys
+      register: nvmeof_teardown_list_subsys
+      changed_when: false
+
+    - name: Fail when an NVMe-oF subsystem remains connected
+      ansible.builtin.assert:
+        that:
+          - item not in nvmeof_teardown_list_subsys.stdout
+        fail_msg: >-
+          NVMe-oF subsystem {{ item }} is still connected on
+          {{ inventory_hostname }} after disconnect.
+      loop: "{{ nvmeof_teardown_disconnect_nqns }}"
+
+- name: Tear down NVMe-oF target configuration
+  when: inventory_hostname in groups.get('nvmeof_target', [])
+  block:
+    - name: Reload systemd before checking nvmeof-target service
+      ansible.builtin.systemd:
+        daemon_reload: true
+
+    - name: Gather service facts before disabling nvmeof-target
+      ansible.builtin.service_facts:
+
+    - name: Stop and disable nvmeof-target service
+      ansible.builtin.systemd:
+        name: "{{ nvmeof_teardown_target_service }}"
+        enabled: false
+        state: stopped
+      when: >-
+        (nvmeof_teardown_target_service ~ '.service')
+        in ansible_facts.services
+
+    - name: Remove persistent NVMe-oF target module loading
+      ansible.builtin.file:
+        path: "{{ nvmeof_teardown_target_modules_file }}"
+        state: absent
+
+    - name: Stat generated NVMe-oF cleanup script
+      ansible.builtin.stat:
+        path: "{{ nvmeof_teardown_target_cleanup_script }}"
+      register: nvmeof_teardown_cleanup_script
+
+    - name: Clear NVMe-oF target config with generated cleanup script
+      ansible.builtin.command:
+        argv:
+          - "{{ nvmeof_teardown_target_cleanup_script }}"
+      when: nvmeof_teardown_cleanup_script.stat.exists
+      changed_when: true
+
+    - name: Clear NVMe-oF target configfs state without touching LVM
+      ansible.builtin.shell:
+        cmd: |
+          set -e
+          shopt -s nullglob
+          base=/sys/kernel/config/nvmet
+          [ -d "$base" ] || exit 0
+
+          for link in "$base"/ports/*/subsystems/*; do
+              [ -L "$link" ] && rm -f "$link"
+          done
+
+          for port_dir in "$base"/ports/*/; do
+              [ -d "$port_dir" ] && rmdir "$port_dir" 2>/dev/null || true
+          done
+
+          for ns_dir in "$base"/subsystems/*/namespaces/*/; do
+              [ -d "$ns_dir" ] || continue
+              echo 0 > "$ns_dir/enable" 2>/dev/null || true
+              rmdir "$ns_dir" 2>/dev/null || true
+          done
+
+          for sub_dir in "$base"/subsystems/*/; do
+              [ -d "$sub_dir" ] || continue
+              [ "$(basename "$sub_dir")" = discovery ] && continue
+              rmdir "$sub_dir" 2>/dev/null || true
+          done
+        executable: /bin/bash
+      when: not nvmeof_teardown_cleanup_script.stat.exists
+      changed_when: true
+
+    - name: Remove generated NVMe-oF target service files when requested
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: absent
+      loop: "{{ nvmeof_teardown_target_service_files }}"
+      when: nvmeof_teardown_remove_target_service_files | bool
+      notify: Reload systemd

@@ -1,0 +1,53 @@
+# Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+#
+# Reuse the existing NVMe-oF LVM LV as an NFS/RDMA export.
+#
+# Run from ansible/:
+#   ansible-playbook playbooks/nfs-rdma.yml
+#
+# First destructive migration run, after backup:
+#   ansible-playbook playbooks/nfs-rdma.yml \
+#     -e nfs_rdma_recreate_filesystem=true
+
+---
+- name: Disconnect NVMe-oF initiators before NFS/RDMA migration
+  hosts: nvmeof_hosts
+  gather_facts: false
+  become: true
+  tags:
+    - nfs-rdma
+    - nvmeof-teardown
+  roles:
+    - role: nvmeof_teardown
+
+- name: Disable NVMe-oF target before NFS/RDMA migration
+  hosts: nvmeof_target
+  gather_facts: false
+  become: true
+  tags:
+    - nfs-rdma
+    - nvmeof-teardown
+  roles:
+    - role: nvmeof_teardown
+
+- name: Export existing LV from NFS/RDMA server
+  hosts: nfs_rdma_server
+  gather_facts: false
+  become: true
+  tags:
+    - nfs-rdma
+    - nfs-rdma-server
+  roles:
+    - role: nfs_rdma_server
+
+- name: Mount NFS/RDMA export on clients
+  hosts: nfs_rdma_clients
+  gather_facts: false
+  become: true
+  tags:
+    - nfs-rdma
+    - nfs-rdma-client
+  roles:
+    - role: nfs_rdma_client
