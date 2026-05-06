@@ -1,0 +1,71 @@
+# Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+
+---
+- name: Require explicit numeric NFS/RDMA server IP
+  ansible.builtin.assert:
+    that:
+      - nfs_rdma_server_ip | length > 0
+    fail_msg: >-
+      Set nfs_rdma_server_ip to the numeric RDMA fabric address. Do not rely on
+      node hostname resolution for NFS/RDMA mounts.
+
+- name: Install NFS/RDMA client packages
+  ansible.builtin.apt:
+    name: "{{ nfs_rdma_client_packages }}"
+    state: present
+    update_cache: true
+
+- name: Persist NFS/RDMA client kernel modules
+  ansible.builtin.copy:
+    content: "{{ nfs_rdma_client_modules | join('\n') }}\n"
+    dest: "{{ nfs_rdma_client_modules_file }}"
+    mode: "0644"
+  when: nfs_rdma_persist_modules | bool
+
+- name: Load NFS/RDMA client kernel modules
+  ansible.builtin.shell:
+    cmd: >-
+      lsmod | awk '{ print $1 }' | grep -qx {{ item | quote }}
+      || modprobe {{ item | quote }}
+    executable: /bin/bash
+  loop: "{{ nfs_rdma_client_modules }}"
+  changed_when: false
+
+- name: Ensure NFS/RDMA client mount point exists
+  ansible.builtin.file:
+    path: "{{ nfs_rdma_client_mount }}"
+    state: directory
+    mode: "0755"
+
+- name: Mount NFS export over RDMA by numeric IP
+  ansible.posix.mount:
+    path: "{{ nfs_rdma_client_mount }}"
+    src: "{{ nfs_rdma_server_ip }}:{{ nfs_rdma_export_path }}"
+    fstype: "{{ nfs_rdma_mount_fstype }}"
+    opts: "{{ nfs_rdma_mount_options }}"
+    state: mounted
+    passno: "0"
+
+- name: Inspect mounted NFS/RDMA export
+  ansible.builtin.command:
+    argv:
+      - findmnt
+      - -rn
+      - -T
+      - "{{ nfs_rdma_client_mount }}"
+      - -o
+      - SOURCE,FSTYPE,OPTIONS
+  register: nfs_rdma_client_findmnt
+  changed_when: false
+
+- name: Validate mounted export uses RDMA and numeric server IP
+  ansible.builtin.assert:
+    that:
+      - nfs_rdma_server_ip in nfs_rdma_client_findmnt.stdout
+      - "'rdma' in nfs_rdma_client_findmnt.stdout"
+    fail_msg: >-
+      {{ nfs_rdma_client_mount }} is mounted, but findmnt did not show the
+      numeric server IP and RDMA mount options:
+      {{ nfs_rdma_client_findmnt.stdout }}

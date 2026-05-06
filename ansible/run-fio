@@ -1,0 +1,73 @@
+#!/bin/bash
+# Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+#
+
+set -euo pipefail
+
+FIO_EXEC=/opt/rocm-icms/fio-libhipfile/bin/fio
+RUNTIME=${RUNTIME:-30}
+DIR=/mnt/rocm-icms-cache/stebates
+NUMJOBS=${NUMJOBS:-8}
+NRFILES=128
+FILESIZE=16M
+SIZE_PER_JOB=2048M
+GPU_DEV_IDS=0
+EXPECTED_FILES=$((NUMJOBS * NRFILES))
+
+# nrfiles is per fio job. With 8 jobs and 128 files per job fio may open
+# 1024 files, plus shared libraries and control fds, so the default 1024 limit
+# is too low.
+ulimit -n 1048576
+
+mkdir -p "${DIR}"
+
+export HIPFILE_UNSUPPORTED_FILE_SYSTEMS=true
+export LD_LIBRARY_PATH=/opt/rocs-ais/lib:/opt/rocm/lib:${LD_LIBRARY_PATH:-}
+
+current_files="$(find "${DIR}" -maxdepth 1 -type f -name 'fiofile.*.*' | wc -l)"
+if [[ "${current_files}" -ne "${EXPECTED_FILES}" ]]; then
+  echo "Preparing ${EXPECTED_FILES} files under ${DIR}"
+  "${FIO_EXEC}" \
+    --group_reporting \
+    --name=prep-hipfile-stebates \
+    --directory="${DIR}" \
+    --filename_format='fiofile.$jobnum.$filenum' \
+    --nrfiles="${NRFILES}" \
+    --filesize="${FILESIZE}" \
+    --size="${SIZE_PER_JOB}" \
+    --bs=1M \
+    --ioengine=io_uring \
+    --iodepth=32 \
+    --numjobs="${NUMJOBS}" \
+    --thread=1 \
+    --direct=1 \
+    --rw=write
+  sync
+fi
+
+"${FIO_EXEC}" \
+  --group_reporting \
+  --name=hipfile-stebates \
+  --directory="${DIR}" \
+  --filename_format='fiofile.$jobnum.$filenum' \
+  --nrfiles="${NRFILES}" \
+  --filesize="${FILESIZE}" \
+  --size="${SIZE_PER_JOB}" \
+  --blockalign=1M \
+  --time_based \
+  --runtime="${RUNTIME}" \
+  --direct=1 \
+  --ioengine=libhipfile \
+  --rocm_io=hipfile \
+  --gpu_dev_ids="${GPU_DEV_IDS}" \
+  --bs=1M \
+  --iodepth=1 \
+  --numjobs="${NUMJOBS}" \
+  --thread=1 \
+  --rw=randread \
+  --randrepeat=0 \
+  --norandommap=1 \
+  --file_service_type=random \
+  --readonly

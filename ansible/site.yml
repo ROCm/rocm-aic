@@ -12,6 +12,7 @@
 #   ansible-playbook site.yml --tags inference-container
 #   ansible-playbook site.yml --tags kv-cache-tester
 #   ansible-playbook site.yml --tags nvmeof
+#   ansible-playbook site.yml --tags nfs-rdma
 #   ansible-playbook site.yml --tags monitoring
 
 - name: Discover the state of the GPU cluster nodes
@@ -47,6 +48,12 @@
   ansible.builtin.import_playbook: playbooks/nvme-of.yml
   tags:
     - nvmeof
+
+- name: Migrate storage from NVMe-oF to NFS over RDMA
+  ansible.builtin.import_playbook: playbooks/nfs-rdma.yml
+  tags:
+    - never
+    - nfs-rdma
 
 - name: Install Prometheus, Grafana, and monitoring scrape configuration
   ansible.builtin.import_playbook: playbooks/monitoring.yml
