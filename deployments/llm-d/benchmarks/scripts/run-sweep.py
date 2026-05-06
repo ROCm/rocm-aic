@@ -18,6 +18,7 @@ import signal
 import re
 import ast
 import operator
+import fnmatch
 from pathlib import Path
 from datetime import datetime
 from typing import Dict, List, Any, Optional
@@ -394,6 +395,9 @@ class SweepOrchestrator:
         with open(config_file) as f:
             self.config = yaml.safe_load(f)
 
+        # Validate model-specific args schema early
+        self._validate_model_specific_args()
+
         self.sweep_name = self.config['name']
         self.deployment = self.config['deployment']
         self.timestamp = datetime.now().strftime('%Y-%m-%d')
@@ -547,6 +551,63 @@ class SweepOrchestrator:
         safe_print("!"*70)
         sys.exit(130)
 
+    def _validate_model_specific_args(self) -> None:
+        """
+        Validate model_specific_args schema in the configuration.
+
+        Raises ValueError if the schema is invalid.
+        """
+        model_specific = self.config.get('parameters', {}).get('model_specific_args', [])
+
+        if not model_specific:
+            return  # Optional section, no validation needed
+
+        if not isinstance(model_specific, list):
+            raise ValueError(
+                "model_specific_args must be a list of override specifications"
+            )
+
+        for idx, override in enumerate(model_specific):
+            if not isinstance(override, dict):
+                raise ValueError(
+                    f"model_specific_args[{idx}]: Each override must be a dictionary"
+                )
+
+            # Pattern is required
+            if 'pattern' not in override:
+                raise ValueError(
+                    f"model_specific_args[{idx}]: Missing required 'pattern' field"
+                )
+
+            if not isinstance(override['pattern'], str):
+                raise ValueError(
+                    f"model_specific_args[{idx}]: 'pattern' must be a string"
+                )
+
+            # Conditions is optional but must be a dict if present
+            if 'conditions' in override and not isinstance(override['conditions'], dict):
+                raise ValueError(
+                    f"model_specific_args[{idx}]: 'conditions' must be a dictionary"
+                )
+
+            # At least one engine args section (vllm_args or sglang_args) must be present
+            has_engine_args = any(
+                key in override for key in ['vllm_args', 'sglang_args']
+            )
+
+            if not has_engine_args:
+                raise ValueError(
+                    f"model_specific_args[{idx}]: Must specify at least one of "
+                    "'vllm_args' or 'sglang_args'"
+                )
+
+            # Validate engine args are dictionaries
+            for args_key in ['vllm_args', 'sglang_args']:
+                if args_key in override and not isinstance(override[args_key], dict):
+                    raise ValueError(
+                        f"model_specific_args[{idx}]: '{args_key}' must be a dictionary"
+                    )
+
     def _get_user_id(self) -> str:
         """Get current user ID for namespace prefix."""
         # Try to get from environment, fall back to whoami
@@ -589,6 +650,71 @@ class SweepOrchestrator:
         # Ensure it's valid (lowercase, alphanumeric + hyphens, starts/ends with alphanumeric)
         ns = ns[:63].rstrip('-')
         return ns
+
+    def _apply_model_specific_args(self, params: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Apply model-specific argument overrides based on pattern matching.
+
+        This allows injecting engine-specific arguments (vllm_args, sglang_args)
+        conditionally based on the model name or other parameter values.
+
+        The model_specific_args section in the config should have this structure:
+
+        model_specific_args:
+          - pattern: "amd/Qwen3-235B*"
+            vllm_args:
+              kv_cache_dtype: "fp8"
+          - pattern: "moonshotai/Kimi-K2.5"
+            conditions:
+              tensor_parallel_size: 4
+            vllm_args:
+              max_num_seqs: 256
+              block_size: 64
+
+        Args:
+            params: Parameter combination dictionary
+
+        Returns:
+            Updated parameter dictionary with model-specific args applied
+        """
+        model_specific = self.config.get('parameters', {}).get('model_specific_args', [])
+
+        if not model_specific:
+            return params
+
+        model_name = params.get('model', '')
+
+        for override in model_specific:
+            pattern = override.get('pattern', '')
+            conditions = override.get('conditions', {})
+
+            # Check if model matches the pattern (supports wildcards)
+            if not fnmatch.fnmatch(model_name, pattern):
+                continue
+
+            # Check additional conditions (e.g., tensor_parallel_size, gpu_memory_utilization)
+            conditions_met = True
+            for cond_key, cond_value in conditions.items():
+                if params.get(cond_key) != cond_value:
+                    conditions_met = False
+                    break
+
+            if not conditions_met:
+                continue
+
+            # Apply engine-specific argument overrides
+            # Support both vllm_args and sglang_args
+            for args_key in ['vllm_args', 'sglang_args']:
+                if args_key in override:
+                    # Initialize args dict if it doesn't exist
+                    if args_key not in params:
+                        params[args_key] = {}
+
+                    # Deep merge: update existing args with new ones
+                    # New values take precedence (override existing)
+                    params[args_key].update(override[args_key])
+
+        return params
 
     def generate_parameter_combinations(self) -> List[Dict[str, Any]]:
         """
@@ -659,6 +785,12 @@ class SweepOrchestrator:
                 # Store load params separately to merge into benchmark_args later
                 combo['_load_params'] = load_params
                 full_combinations.append(combo)
+
+        # Apply model-specific argument overrides
+        full_combinations = [
+            self._apply_model_specific_args(combo)
+            for combo in full_combinations
+        ]
 
         return full_combinations
 
