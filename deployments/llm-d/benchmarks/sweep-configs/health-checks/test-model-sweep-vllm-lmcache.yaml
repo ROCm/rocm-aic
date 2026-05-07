@@ -13,10 +13,9 @@ parameters:
       - "amd/gpt-oss-120b-w-mxfp4-a-fp8"
       - "openai/gpt-oss-120b"
 
-# Need at least TP=4 for large models
   tensor_parallel_size:
     type: fixed
-    value: 4
+    value: 8
   vllm_args:
     type: combinations
     args:

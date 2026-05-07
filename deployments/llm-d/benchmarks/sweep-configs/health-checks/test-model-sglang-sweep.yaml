@@ -2,6 +2,8 @@ name: "test-model-sglang-sweep"
 description: "Test health of various models against sglang (TP=4)"
 deployment: "inference-scheduling-sglang"
 serving_engine: "sglang"
+# does not require model cache
+deployment_template: "inference-scheduling-sglang-dummy-kustomization.yaml.tmpl"
 
 # Model-specific information:
 
@@ -14,27 +16,44 @@ parameters:
     type: categorical
     values:
       - "Qwen/Qwen3-32B"
-      - "amd/DeepSeek-R1-0528-MXFP4"
-      - "amd/Kimi-K2.5-MXFP4"
+      - "deepseek-ai/DeepSeek-R1-0528"
+      - "moonshotai/Kimi-K2.5"
       - "amd/Qwen3-235B-A22B-Thinking-2507_moe_w_mxfp4_a_mxfp4_kv_fp8"
-      - "amd/gpt-oss-120b-w-mxfp4-a-fp8"
       - "openai/gpt-oss-120b"
+      # MXFP4 not yet supported
+      #- "amd/Kimi-K2.5-MXFP4"
+      #- "amd/DeepSeek-R1-0528-MXFP4"
+      #- "amd/gpt-oss-120b-w-mxfp4-a-fp8"
 
-# Need at least TP=4 for large models
   tensor_parallel_size:
     type: fixed
-    value: 4
+    value: 8
+
   sglang_args:
     type: combinations
     args:
+      attention-backend: "aiter"
       trust-remote-code: true # for kimi
       max_running_requests: 1024
       mem_fraction_static: 0.90
       # SGLang's prefix caching via FlashInfer
       enable_flashinfer: true
       # Longest Prefix Match scheduling
-      schedule_policy: "lpm"
       chunked_prefill_size: 4096
+      schedule_policy: "lpm"
+      load-format: "dummy"
+
+  model_specific_args:
+    - pattern: "deepseek-ai/DeepSeek-R1-0528"
+      sglang_args:
+        kv-cache-dtype: "fp8_e4m3"
+    - pattern: "amd/Qwen3-235B-A22B-Thinking-2507_moe_w_mxfp4_a_mxfp4_kv_fp8"
+      sglang_args:
+        kv-cache-dtype: "fp8_e4m3"
+    - pattern: "moonshotai/Kimi-K2.5"
+      sglang_args:
+        kv-cache-dtype: "fp8_e4m3"
+        enable-flashinfer: true
 
 load_generation:
   tool: "multi-turn-benchmark"

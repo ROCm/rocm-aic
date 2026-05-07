@@ -1,28 +1,44 @@
 name: "test-model-vllm-sweep"
 description: "Test health of various models against vllm (TP=4)"
 deployment: "inference-scheduling-vllm"
+# does not require model cache
+deployment_template: "inference-scheduling-vllm-dummy-kustomization.yaml.tmpl"
+
+env_vars:
+  VLLM_ROCM_USE_AITER: 1
 
 parameters:
   model:
     type: categorical
     values:
       - "Qwen/Qwen3-32B"
-      - "amd/DeepSeek-R1-0528-MXFP4"
-      - "amd/Kimi-K2.5-MXFP4"
+      - "deepseek-ai/DeepSeek-R1-0528"
+      - "moonshotai/Kimi-K2.5"
       - "amd/Qwen3-235B-A22B-Thinking-2507_moe_w_mxfp4_a_mxfp4_kv_fp8"
-      - "amd/gpt-oss-120b-w-mxfp4-a-fp8"
       - "openai/gpt-oss-120b"
+      # MXFP4 not yet supported
+      #- "amd/Kimi-K2.5-MXFP4"
+      #- "amd/DeepSeek-R1-0528-MXFP4"
+      #- "amd/gpt-oss-120b-w-mxfp4-a-fp8"
 
-# Need at least TP=4 for large models
   tensor_parallel_size:
     type: fixed
-    value: 4
+    value: 8
+
   vllm_args:
     type: combinations
     args:
-      trust-remote-code: true # for kimi
+      load-format: "dummy"
+      kv_cache_dtype: "fp8"
       gpu_memory_utilization:
         values: [0.90]
+
+  model_specific_args:
+    - pattern: "moonshotai/Kimi-K2.5"
+      vllm_args:
+        block_size: 64
+        mm_encoder_tp_mode: "data"
+        trust-remote-code: True
 
 load_generation:
   tool: "multi-turn-benchmark"
