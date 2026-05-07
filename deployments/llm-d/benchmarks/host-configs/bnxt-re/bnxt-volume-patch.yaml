@@ -1,0 +1,18 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: placeholder  # Will match any deployment via kustomization target
+spec:
+  template:
+    spec:
+      volumes:
+        - name: bnxt
+          hostPath:
+            path: /usr/local/lib/libbnxt_re-rdmav34.so
+            type: File
+      containers:
+        - name: vllm  # Primary container name
+          volumeMounts:
+            - name: bnxt
+              mountPath: "/usr/lib/x86_64-linux-gnu/libibverbs/libbnxt_re-rdmav34.so"
+              readOnly: true

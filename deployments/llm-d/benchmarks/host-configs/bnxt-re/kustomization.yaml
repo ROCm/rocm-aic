@@ -1,0 +1,10 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Component
+
+# This component adds bnxt_re RDMA library support to deployments
+# by mounting the host's bnxt_re-rdmav34.so library into the container
+
+patches:
+  - path: bnxt-volume-patch.yaml
+    target:
+      kind: Deployment

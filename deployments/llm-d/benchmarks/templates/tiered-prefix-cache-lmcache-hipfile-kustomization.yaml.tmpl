@@ -12,6 +12,7 @@ resources:
 components:
   - ../../../../../../tiered-prefix-cache/manifests/vllm/components/hostpath-models
   - ../../../../../../tiered-prefix-cache/manifests/vllm/components/hipfile
+  - ../../../../../../host-configs/bnxt-re
 
 # This must be present for the benchmark harness to replace the config-map automatically
 configMapGenerator:
@@ -47,3 +48,4 @@ patches:
       - op: replace
         path: /spec/template/spec/containers/0/resources/requests/amd.com~1gpu
         value: "{{tensor_parallel_size}}"
+
