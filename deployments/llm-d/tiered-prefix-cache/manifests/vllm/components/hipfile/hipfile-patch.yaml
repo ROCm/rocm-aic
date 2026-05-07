@@ -19,6 +19,11 @@ spec:
                 - PERFMON
             seccompProfile:
               type: Unconfined
+          env:
+            - name: HIPFILE_UNSUPPORTED_FILE_SYSTEMS
+              value: "true"
+            - name: HIPFILE_ALLOW_COMPAT_MODE
+              value: "false"
           volumeMounts:
             - name: lib-modules
               mountPath: /lib/modules
@@ -37,8 +42,6 @@ spec:
             - name: boot
               mountPath: /boot
               readOnly: true
-            - name: hipfile
-              mountPath: /hipfile
             - name: hipfile-of
               mountPath: /hipfile-of
       volumes:
@@ -60,11 +63,7 @@ spec:
         - name: kernel-btf
           hostPath:
             path: /sys/kernel/btf
-        - name: hipfile
-          hostPath:
-            path: /hipfile
-            type: Directory
         - name: hipfile-of
           hostPath:
-            path: /hipfile-of
+            path: /mnt/rocm-icms-cache/bench
             type: Directory
