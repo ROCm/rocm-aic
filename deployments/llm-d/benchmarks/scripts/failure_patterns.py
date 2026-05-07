@@ -64,12 +64,6 @@ ERROR_PATTERNS = [
         'phase': FailurePhase.UNKNOWN.value,
         'description': 'Python exception traceback detected'
     },
-    {
-        'pattern': r'CRITICAL.*',
-        'category': FailureCategory.CRASH.value,
-        'phase': FailurePhase.UNKNOWN.value,
-        'description': 'Critical error logged'
-    },
 
     # Model/Config Errors
     {
