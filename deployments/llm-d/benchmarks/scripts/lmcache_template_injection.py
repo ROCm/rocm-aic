@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
 """
-LMCache ConfigMap injection for existing Kustomization templates.
+LMCache and Bench ConfigMap injection for existing Kustomization templates.
 
 This module provides functions to:
 1. Load existing kustomization.yaml.tmpl files
 2. Replace template variables ({{model}}, {{ENGINE_ARGS_ARRAY}}, etc.)
 3. Inject dynamic ConfigMap with LMCache configuration
-4. Preserve all other template structure and patches
+4. Inject dynamic ConfigMap with bench configuration
+5. Preserve all other template structure and patches
 """
 
 import yaml
@@ -255,6 +256,132 @@ def inject_lmcache_configmap_into_rendered(
         return re.sub(pattern, replacement_func, rendered_content)
 
 
+def inject_bench_configmap_yaml_parse(
+    rendered_content: str,
+    bench_args: Dict[str, Any]
+) -> str:
+    """
+    Inject bench ConfigMap into already-rendered kustomization content.
+
+    This function adds or updates the bench-config-map in the configMapGenerator section.
+
+    Args:
+        rendered_content: Already-rendered kustomization.yaml content (no {{placeholders}})
+        bench_args: Bench configuration dict
+
+    Returns:
+        Content with bench ConfigMap injected
+    """
+    from lmcache_bench_support import generate_bench_config_json
+
+    bench_config_json = generate_bench_config_json(bench_args)
+
+    # Parse YAML
+    try:
+        kustomization = yaml.safe_load(rendered_content)
+    except yaml.YAMLError as e:
+        raise ValueError(f"Failed to parse rendered content as YAML: {e}")
+
+    # Ensure configMapGenerator exists
+    if 'configMapGenerator' not in kustomization:
+        kustomization['configMapGenerator'] = []
+
+    # Find or create bench-config-map
+    bench_configmap_found = False
+    for configmap in kustomization['configMapGenerator']:
+        if configmap.get('name') == 'bench-config-map':
+            # Update existing bench configmap
+            configmap['literals'] = [f'bench_config.json={bench_config_json.strip()}']
+            bench_configmap_found = True
+            break
+
+    # If not found, add new bench configmap
+    if not bench_configmap_found:
+        kustomization['configMapGenerator'].append({
+            'name': 'bench-config-map',
+            'literals': [f'bench_config.json={bench_config_json.strip()}']
+        })
+
+    # Dump back to YAML
+    return yaml.dump(
+        kustomization,
+        default_flow_style=False,
+        sort_keys=False,
+        allow_unicode=True,
+        width=1000
+    )
+
+
+def render_kustomization_with_lmcache_and_bench(
+    template_file: Path,
+    params: Dict[str, Any],
+    lmcache_args: Optional[Dict[str, Any]] = None,
+    bench_args: Optional[Dict[str, Any]] = None,
+    use_yaml_parse: bool = True
+) -> str:
+    """
+    Main entry point: Load template and render with LMCache and/or bench config.
+
+    Args:
+        template_file: Path to kustomization.yaml.tmpl file
+        params: Template parameters (model, tensor_parallel_size, ENGINE_ARGS_ARRAY, etc.)
+        lmcache_args: Optional LMCache configuration dict
+        bench_args: Optional bench configuration dict
+        use_yaml_parse: If True, use YAML parsing approach; if False, use regex
+
+    Returns:
+        Rendered kustomization.yaml content
+
+    Example:
+        >>> template_file = Path('templates/tiered-prefix-cache-lmcache-kustomization.yaml.tmpl')
+        >>> params = {'model': 'Qwen/Qwen3-8B', 'ENGINE_ARGS_ARRAY': '--max-num-seq 1024'}
+        >>> lmcache_args = {'chunk_size': 256}
+        >>> bench_args = {'model': 'Qwen/Qwen3-8B', 'workload': 'long-doc-qa', 'kv_cache_volume': 10.0}
+        >>> result = render_kustomization_with_lmcache_and_bench(template_file, params, lmcache_args, bench_args)
+    """
+    # Read template
+    with open(template_file) as f:
+        template_content = f.read()
+
+    # Replace template variables first
+    rendered = template_content
+    for key, value in params.items():
+        placeholder = f"{{{{{key}}}}}"
+        rendered = rendered.replace(placeholder, str(value))
+
+    # If no config to inject, return rendered template
+    if not lmcache_args and not bench_args:
+        return rendered
+
+    # Inject LMCache config if present
+    if lmcache_args:
+        from lmcache_support import generate_lmcache_config_yaml
+        lmcache_config_yaml = generate_lmcache_config_yaml(lmcache_args)
+
+        if use_yaml_parse:
+            rendered = inject_lmcache_configmap_yaml_parse(
+                rendered,
+                {},  # params already replaced
+                lmcache_config_yaml
+            )
+        else:
+            # Use regex method
+            pattern = r'(\s*)(lmcache_config\.yaml=)[^\n]*(\n\1\s+[^\n]+)*'
+
+            def replacement_func(match):
+                indent = match.group(1)
+                indented_config = lmcache_config_yaml.strip().replace('\n', f'\n{indent}')
+                return f'{indent}lmcache_config.yaml={indented_config}'
+
+            rendered = re.sub(pattern, replacement_func, rendered, count=1, flags=re.MULTILINE)
+
+    # Inject bench config if present
+    if bench_args:
+        rendered = inject_bench_configmap_yaml_parse(rendered, bench_args)
+
+    return rendered
+
+
 def render_kustomization_with_lmcache(
     template_file: Path,
     params: Dict[str, Any],
@@ -263,6 +390,8 @@ def render_kustomization_with_lmcache(
 ) -> str:
     """
     Main entry point: Load template and render with LMCache config.
+
+    Kept for backward compatibility. Use render_kustomization_with_lmcache_and_bench for new code.
 
     Args:
         template_file: Path to kustomization.yaml.tmpl file
@@ -284,35 +413,14 @@ def render_kustomization_with_lmcache(
         >>> lmcache_args = {'chunk_size': 256, 'max_local_cpu_size': 100.0}
         >>> result = render_kustomization_with_lmcache(template_file, params, lmcache_args)
     """
-    # Read template
-    with open(template_file) as f:
-        template_content = f.read()
-
-    # If no lmcache_args, just do simple template replacement
-    if not lmcache_args:
-        rendered = template_content
-        for key, value in params.items():
-            placeholder = f"{{{{{key}}}}}"
-            rendered = rendered.replace(placeholder, str(value))
-        return rendered
-
-    # Generate LMCache YAML config
-    from lmcache_support import generate_lmcache_config_yaml
-    lmcache_config_yaml = generate_lmcache_config_yaml(lmcache_args)
-
-    # Choose injection method
-    if use_yaml_parse:
-        return inject_lmcache_configmap_yaml_parse(
-            template_content,
-            params,
-            lmcache_config_yaml
-        )
-    else:
-        return inject_lmcache_configmap(
-            template_content,
-            params,
-            lmcache_config_yaml
-        )
+    # Delegate to new combined function
+    return render_kustomization_with_lmcache_and_bench(
+        template_file,
+        params,
+        lmcache_args=lmcache_args,
+        bench_args=None,
+        use_yaml_parse=use_yaml_parse
+    )
 
 
 # Example usage and testing

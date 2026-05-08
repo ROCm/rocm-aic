@@ -892,8 +892,10 @@ class SweepOrchestrator:
         variable = {}
 
         for name, spec in params.items():
+            # Skip model_specific_args - it's not a regular parameter
             if name == 'model_specific_args':
                 continue
+
             if spec['type'] == 'fixed':
                 fixed[name] = spec['value']
             elif spec['type'] == 'categorical':
@@ -961,6 +963,8 @@ class SweepOrchestrator:
         Works for vllm_args, lmcache_args, and any other args that follow
         the pattern of fixed values and sweepable 'values' lists.
 
+        Now supports nested dictionaries with sweepable values (e.g., extra_config.gds_io_threads).
+
         Supports variable expansion: parameters can reference other parameters
         using {var_name} syntax, e.g., "30 * {max_concurrency}"
 
@@ -968,6 +972,7 @@ class SweepOrchestrator:
             args_spec: Dictionary where values can be:
                 - Fixed values (any type)
                 - Dicts with 'values' key containing a list
+                - Nested dicts (for complex config structures with sweepable nested values)
                 - Expressions with {var_name} references
             combination_mode: How to combine sweepable parameters:
                 - 'product': Cartesian product (default)
@@ -976,34 +981,105 @@ class SweepOrchestrator:
         Returns:
             List of dictionaries with all combinations and expressions evaluated
         """
-        arg_keys = []
-        arg_values = []
+        # Helper function to extract sweepable paths from nested dicts
+        def extract_sweepable_paths(d: Dict[str, Any], prefix: str = '') -> Dict[str, List[Any]]:
+            """Extract all paths that have 'values' lists, including nested ones."""
+            sweepable = {}
+            for key, value in d.items():
+                path = f"{prefix}.{key}" if prefix else key
+                if isinstance(value, dict):
+                    if 'values' in value:
+                        # This is a sweepable parameter
+                        sweepable[path] = value['values']
+                    else:
+                        # Recurse into nested dict
+                        sweepable.update(extract_sweepable_paths(value, path))
+            return sweepable
 
-        for key, spec in args_spec.items():
-            arg_keys.append(key)
-            if isinstance(spec, dict) and 'values' in spec:
-                # Sweepable parameter
-                arg_values.append(spec['values'])
+        # Helper function to set a value in a nested dict by path
+        def set_nested_value(d: Dict[str, Any], path: str, value: Any) -> None:
+            """Set a value in a nested dictionary using dot notation path."""
+            keys = path.split('.')
+            current = d
+            for key in keys[:-1]:
+                if key not in current:
+                    current[key] = {}
+                current = current[key]
+            current[keys[-1]] = value
+
+        # Helper function to remove sweepable paths from nested dict while preserving structure
+        def remove_sweepable_nested(d: Dict[str, Any], prefix: str, sweepable: Dict[str, List[Any]]) -> Dict[str, Any]:
+            """Remove sweepable paths from nested dict while preserving structure."""
+            import copy
+            result = {}
+            for key, value in d.items():
+                path = f"{prefix}.{key}" if prefix else key
+                if path in sweepable:
+                    # This path is sweepable, skip it
+                    continue
+                elif isinstance(value, dict):
+                    if 'values' in value:
+                        # This is a sweepable value, skip it
+                        continue
+                    else:
+                        # Recurse into nested dict
+                        cleaned = remove_sweepable_nested(value, path, sweepable)
+                        if cleaned:  # Only add if not empty
+                            result[key] = cleaned
+                else:
+                    # Fixed value
+                    result[key] = copy.deepcopy(value)
+            return result
+
+        # Extract all sweepable parameters (including nested ones)
+        sweepable = extract_sweepable_paths(args_spec)
+
+        # If no sweepable parameters, return single config
+        if not sweepable:
+            return [args_spec]
+
+        # Create a base config with all non-sweepable values (cleaned)
+        import copy
+        base_config = {}
+        for key, value in args_spec.items():
+            if isinstance(value, dict) and 'values' not in value:
+                # This is a nested dict, need to clean it recursively
+                # but preserve structure, removing only paths that will be swept
+                base_config[key] = remove_sweepable_nested(value, key, sweepable)
+            elif isinstance(value, dict) and 'values' in value:
+                # Skip - this is a top-level sweepable
+                pass
             else:
                 # Fixed value
-                arg_values.append([spec])
+                base_config[key] = value
 
+        # Generate combinations of sweepable parameters
         combinations = []
+        paths = list(sweepable.keys())
+        values_lists = [sweepable[p] for p in paths]
 
         if combination_mode == 'pairwise':
             # Pair-wise: zip values together (stops at shortest list)
-            for combo in zip(*arg_values):
-                combo_dict = dict(zip(arg_keys, combo))
+            for values in zip(*values_lists):
+                # Start with a deep copy of base config
+                config = copy.deepcopy(base_config)
+                # Set each swept value
+                for path, value in zip(paths, values):
+                    set_nested_value(config, path, value)
                 # Evaluate any expressions in this combination
-                combo_dict = evaluate_expressions_in_combination(combo_dict)
-                combinations.append(combo_dict)
+                config = evaluate_expressions_in_combination(config)
+                combinations.append(config)
         else:
             # Default: Cartesian product
-            for combo in itertools.product(*arg_values):
-                combo_dict = dict(zip(arg_keys, combo))
+            for values in itertools.product(*values_lists):
+                # Start with a deep copy of base config
+                config = copy.deepcopy(base_config)
+                # Set each swept value
+                for path, value in zip(paths, values):
+                    set_nested_value(config, path, value)
                 # Evaluate any expressions in this combination
-                combo_dict = evaluate_expressions_in_combination(combo_dict)
-                combinations.append(combo_dict)
+                config = evaluate_expressions_in_combination(config)
+                combinations.append(config)
 
         return combinations
 
@@ -1248,8 +1324,13 @@ class SweepOrchestrator:
         else:
             template_params["ENV_VARS_PATCH"] = []
 
-        # Extract lmcache_args for special handling
+        # Extract lmcache_args and bench_args for special handling
         lmcache_args = template_params.pop('lmcache_args', None)
+        bench_args = template_params.pop('bench_args', None)
+
+        # Debug: Show bench_args if present
+        if bench_args:
+            print(f"    bench_args present: {bench_args}")
 
         # Load template file
         with open(template_file) as f:
@@ -1258,15 +1339,22 @@ class SweepOrchestrator:
         # Step 1: Always do standard template variable replacement first
         rendered = self.replace_template_variables(content, template_params)
 
-        # Step 2: If we have lmcache_args, inject the LMCache configmap
-        if lmcache_args:
+        # Step 2: If we have lmcache_args or bench_args, inject the ConfigMaps
+        if lmcache_args or bench_args:
+            from lmcache_template_injection import inject_bench_configmap_yaml_parse
             from lmcache_template_injection import inject_lmcache_configmap_into_rendered
 
-            rendered = inject_lmcache_configmap_into_rendered(
-                rendered,
-                lmcache_args,
-                use_yaml_parse=True  # Use YAML parsing for precision
-            )
+            # Inject LMCache config if present
+            if lmcache_args:
+                rendered = inject_lmcache_configmap_into_rendered(
+                    rendered,
+                    lmcache_args,
+                    use_yaml_parse=True  # Use YAML parsing for precision
+                )
+
+            # Inject bench config if present
+            if bench_args:
+                rendered = inject_bench_configmap_yaml_parse(rendered, bench_args)
 
         # Write output
         output_file = output_dir / "kustomization.yaml"
@@ -1895,7 +1983,7 @@ class SweepOrchestrator:
         namespace = run_state.namespace
         params = run_state.parameters
 
-        prefix = f"[Run {run_id}]" if self.parallel_mode else f"Run {run_id}/{self.scheduler.get_pending_states().__len__() + self.scheduler.get_running_states().__len__() + run_id}"
+        prefix = f"[Run {run_id}]" if self.parallel_mode else f"Run {run_id}/{self.total_runs}"
 
         print(f"\n{prefix} Starting execution (GPUs: {run_state.gpu_claim})")
         print(f"{prefix} Namespace: {namespace}")
@@ -2059,6 +2147,7 @@ class SweepOrchestrator:
     def run_sweep(self):
         """Execute the full sweep (sequential or parallel based on max_concurrent)."""
         combinations = self.generate_parameter_combinations()
+        self.total_runs = len(combinations)
 
         print("=" * 70)
         mode_str = "Sequential" if not self.parallel_mode else f"Parallel ({self.scheduler.max_concurrent} max concurrent)"
