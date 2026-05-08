@@ -1,0 +1,67 @@
+name: LMCache IO Tester
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'tools/lmcache-io-tester/**'
+      - '.github/workflows/lmcache-io-tester.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'tools/lmcache-io-tester/**'
+      - '.github/workflows/lmcache-io-tester.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    name: Venv install and store / retrieve smoke
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        shell: bash
+        working-directory: tools/lmcache-io-tester
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: tools/lmcache-io-tester/requirements.txt
+
+      - name: Create venv and install requirements
+        run: |
+          set -euo pipefail
+          python -m venv .venv
+          ./.venv/bin/python -m pip install --upgrade pip
+          ./.venv/bin/pip install -r requirements.txt
+
+      - name: Store-only then retrieve-only on local filesystem
+        env:
+          CI_STORAGE_ROOT: ${{ runner.temp }}/lmcache-io-ci
+        run: |
+          set -euo pipefail
+          rm -rf "$CI_STORAGE_ROOT"
+          mkdir -p "$CI_STORAGE_ROOT"
+
+          ./.venv/bin/python -m src.lmcache-sim run \
+            --storage-type filesystem \
+            --storage-path "$CI_STORAGE_ROOT" \
+            --device cpu \
+            --pattern store-only \
+            --num-operations 32 \
+            --config configs/lmcache-config.yml
+
+          ./.venv/bin/python -m src.lmcache-sim run \
+            --storage-type filesystem \
+            --storage-path "$CI_STORAGE_ROOT" \
+            --device cpu \
+            --pattern retrieve-only \
+            --num-operations 32 \
+            --config configs/lmcache-config.yml
+
+          rm -rf "$CI_STORAGE_ROOT"
