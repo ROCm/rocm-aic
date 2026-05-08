@@ -1,13 +1,69 @@
 """Base workload class for LMCache simulation."""
+import hashlib
 import json
 import math
 import statistics
 import time
 from abc import ABC, abstractmethod
+from collections import defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Set
 from dataclasses import dataclass, field
+
+
+def _kv_block_identity(operation: Dict[str, Any]) -> str:
+    """Stable id for KV-block hit histograms.
+
+    Prefer a hash of ``token_ids`` when present (e.g. retrieve-only
+    uses random ``key`` per op but repeats chunk content). Otherwise
+    use the request ``key`` (store/retrieve req_id).
+    """
+    toks = operation.get("token_ids")
+    if isinstance(toks, list) and len(toks) > 0:
+        payload = json.dumps(
+            toks,
+            separators=(",", ":"),
+        ).encode()
+        digest = hashlib.blake2b(
+            payload,
+            digest_size=16,
+        ).hexdigest()
+        return f"t:{digest}"
+    key = operation.get("key")
+    if key is not None:
+        return f"k:{key}"
+    return "?"
+
+
+def _kv_block_hit_histogram_universe(
+    universe: Set[str],
+    hit_counts: Dict[str, int],
+) -> Dict[str, int]:
+    """Bucket each id in *universe* by hit count (0..10, >10)."""
+    hist: Dict[str, int] = {
+        str(i): 0 for i in range(11)
+    }
+    hist[">10"] = 0
+    for bid in universe:
+        h = hit_counts.get(bid, 0)
+        if h > 10:
+            hist[">10"] += 1
+        else:
+            hist[str(h)] += 1
+    return hist
+
+
+def _kv_block_hit_histogram(
+    stored: Set[str],
+    retrieve_seen: Set[str],
+    hit_counts: Dict[str, int],
+) -> Dict[str, int]:
+    """Bucket counts for blocks seen in store/retrieve sim universe."""
+    return _kv_block_hit_histogram_universe(
+        stored | retrieve_seen,
+        hit_counts,
+    )
 
 
 def _enrich_summary_latency_percentiles(
@@ -156,6 +212,19 @@ class WorkloadMetrics:
     retrieve_latency_samples: List[float] = field(
         default_factory=list
     )
+    stored_kv_block_ids: Set[str] = field(
+        default_factory=set
+    )
+    retrieve_seen_kv_block_ids: Set[str] = field(
+        default_factory=set
+    )
+    kv_block_hit_counts: Dict[str, int] = field(
+        default_factory=lambda: defaultdict(int)
+    )
+    #: Distinct chunk identities from the JSONL sidecar (retrieve-only).
+    chunk_index_fingerprints: Optional[frozenset[str]] = None
+    #: Resolved path to ``.lmcache_io_chunk_tokens.jsonl`` when set.
+    chunk_index_path: Optional[str] = None
 
     def record_operation(
         self,
@@ -165,6 +234,7 @@ class WorkloadMetrics:
         op_type: str = "store",
         kv_blocks: int = 0,
         data_bytes: int = 0,
+        block_identity: Optional[str] = None,
     ):
         """Record a single operation."""
         self.total_operations += 1
@@ -190,6 +260,10 @@ class WorkloadMetrics:
                 success, latency_ms, kv_blocks,
                 data_bytes=data_bytes,
             )
+            if success and block_identity is not None:
+                self.stored_kv_block_ids.add(
+                    block_identity
+                )
             if success:
                 self.store_latency_samples.append(
                     latency_ms
@@ -200,6 +274,14 @@ class WorkloadMetrics:
                 data_bytes=data_bytes,
                 cache_hit=cache_hit,
             )
+            if success and block_identity is not None:
+                self.retrieve_seen_kv_block_ids.add(
+                    block_identity
+                )
+                if cache_hit:
+                    self.kv_block_hit_counts[
+                        block_identity
+                    ] += 1
             if success:
                 self.retrieve_latency_samples.append(
                     latency_ms
@@ -243,6 +325,27 @@ class WorkloadMetrics:
             retrieve_summary,
         )
 
+        hc_plain = dict(self.kv_block_hit_counts)
+        if self.chunk_index_fingerprints is not None:
+            kv_hist = _kv_block_hit_histogram_universe(
+                set(self.chunk_index_fingerprints),
+                hc_plain,
+            )
+            chunk_distinct = len(self.chunk_index_fingerprints)
+            chunk_never = sum(
+                1
+                for fp in self.chunk_index_fingerprints
+                if hc_plain.get(fp, 0) == 0
+            )
+        else:
+            kv_hist = _kv_block_hit_histogram(
+                self.stored_kv_block_ids,
+                self.retrieve_seen_kv_block_ids,
+                hc_plain,
+            )
+            chunk_distinct = None
+            chunk_never = None
+
         summary = {
             "duration_seconds": duration,
             "total_operations": (
@@ -268,7 +371,18 @@ class WorkloadMetrics:
             "throughput_ops_per_sec": throughput,
             "store_operations": store_summary,
             "retrieve_operations": retrieve_summary,
+            "kv_block_hit_histogram": kv_hist,
         }
+        if self.chunk_index_fingerprints is not None:
+            summary["chunk_index_path"] = (
+                self.chunk_index_path
+            )
+            summary["chunk_index_distinct_chunks"] = (
+                chunk_distinct
+            )
+            summary["chunk_index_never_hit_count"] = (
+                chunk_never
+            )
         _enrich_summary_latency_percentiles(
             self.latency_samples,
             summary,
@@ -402,6 +516,9 @@ class BaseWorkload(ABC):
                     op_type=op_type,
                     kv_blocks=kv_blocks,
                     data_bytes=data_bytes,
+                    block_identity=_kv_block_identity(
+                        operation
+                    ),
                 )
                 if (
                     log_f

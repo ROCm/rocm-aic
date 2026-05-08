@@ -48,31 +48,6 @@ def _format_bytes(num_bytes: int) -> str:
     return f"{num_bytes / 1024 ** 4:.2f} TiB"
 
 
-_BAR_WIDTH = 42
-
-# Block elements for ASCII bars (Unicode).
-_BLK = "\u2588"  # full block
-_DIM = "\u2591"  # light shade
-
-
-def _ascii_ratio_bar(
-    ratio: float, width: int = _BAR_WIDTH
-) -> str:
-    """Horizontal bar for a fraction in ``[0, 1]``."""
-    ratio = max(0.0, min(1.0, float(ratio)))
-    filled = int(round(ratio * width))
-    filled = min(width, max(0, filled))
-    return _BLK * filled + _DIM * (width - filled)
-
-
-def _hits_per_block(
-    hits: int, kv_blocks: int
-) -> Optional[float]:
-    if kv_blocks <= 0:
-        return None
-    return hits / kv_blocks
-
-
 def _fmt_ms_cell(
     op: Dict[str, Any], key: str, width: int
 ) -> str:
@@ -102,7 +77,7 @@ def _print_operation_stats_table(
         f"{'OK':>{col_ok}}"
         f"{'Fail':>{col_fail}}"
         f"{'KV blk':>{col_kv}}"
-        f"{'Bytes I/O':>{col_bytes}}"
+        f"{'IO Bytes':>{col_bytes}}"
         f"{'Avg ms':>{col_ms}}"
         f"{'P99 ms':>{col_ms}}"
         f"{'P99.9 ms':>{col_ms + 1}}"
@@ -148,57 +123,74 @@ def _print_operation_stats_table(
     row("retrieve", retrieve, show_hit=True)
 
 
-def _print_cache_histograms(
+def _print_kv_block_hit_histogram(
     metrics: Dict[str, Any],
-    store: Dict[str, Any],
-    retrieve: Dict[str, Any],
 ) -> None:
-    """ASCII bars: workload hit rate, retrieve outcomes,
-    hits per KV block."""
-    print("\n--- Cache & hits / KV block ---")
-
-    ch = metrics.get("cache_hits", 0)
-    cm = metrics.get("cache_misses", 0)
-    tot_lm = ch + cm
-    overall = metrics.get("cache_hit_rate", 0.0)
-    bar_o = _ascii_ratio_bar(overall)
-    print(
-        "Workload cache hit rate (all ops) "
-        f"[{ch} hit / {cm} miss]"
-    )
-    print(f"  {bar_o}  {overall * 100:5.1f}%")
-
-    rh = retrieve.get("hits", 0)
-    rm = retrieve.get("misses", 0)
-    r_lookups = rh + rm
-    if retrieve.get("count", 0) > 0 and r_lookups > 0:
-        rr = retrieve.get("hit_rate", 0.0)
-        bar_r = _ascii_ratio_bar(rr)
+    """Print bucket counts: logical blocks with that many cache hits."""
+    hist = metrics.get("kv_block_hit_histogram")
+    if not isinstance(hist, dict):
+        return
+    idx_total = metrics.get("chunk_index_distinct_chunks")
+    total = sum(hist.values())
+    if total <= 0 and idx_total is None:
         print(
-            "\nRetrieve prefix-cache (per retrieve op) "
-            f"[{rh} hit / {rm} miss]"
+            "\nHits per KV block: n/a "
+            "(no logical blocks in sim)"
         )
-        print(f"  {bar_r}  {rr * 100:5.1f}%")
+        return
+    label_w = 12
+    cnt_w = 10
+    print("\nHits per KV block")
+    if idx_total is not None:
+        print(f"Total Unique Blocks = {idx_total}")
+    elif total > 0:
+        print(
+            f"KV blocks hit 0 times: {hist.get('0', 0)}"
+        )
+    hdr = f"{'Hits':<{label_w}}{'Blocks':>{cnt_w}}"
+    print(hdr)
+    print("-" * len(hdr))
 
-        hpb = _hits_per_block(rh, retrieve.get("kv_blocks", 0))
-        if hpb is not None:
-            # Bar scales 0–1: ratio is bounded when hits ≤ blocks.
-            bar_h = _ascii_ratio_bar(min(1.0, hpb))
-            print(
-                "\nHits per KV block read (retrieve: "
-                "hits ÷ Σ kv_blocks)"
+    # Interior buckets 0..10: omit zeros. Keep at most 9 rows so that
+    # with the mandatory final overflow line we never exceed 10 lines.
+    _MAX_DATA_LINES = 10
+    _MAX_INTERIOR = _MAX_DATA_LINES - 1
+
+    interior: list[tuple[str, int, int]] = []
+    for i in range(11):
+        k = str(i)
+        c = hist.get(k, 0)
+        if c <= 0:
+            continue
+        row_label = "0 hits" if i == 0 else k
+        interior.append((row_label, c, i))
+
+    while len(interior) > _MAX_INTERIOR:
+        interior.pop()
+
+    for row_label, c, _ in interior:
+        print(
+            f"{row_label:<{label_w}}"
+            f"{c:>{cnt_w}d}"
+        )
+
+    if interior:
+        last_i = interior[-1][2]
+        ov_sum = (
+            sum(
+                hist.get(str(j), 0)
+                for j in range(last_i + 1, 11)
             )
-            print(f"  {bar_h}  {hpb:.4f}")
-        else:
-            print(
-                "\nHits per KV block read: n/a "
-                "(no KV blocks recorded)"
-            )
+            + hist.get(">10", 0)
+        )
+        tail_label = f">{last_i}"
     else:
-        print(
-            "\n(no retrieve operations — prefix-cache / "
-            "hits-per-block charts omitted)"
+        ov_sum = (
+            sum(hist.get(str(j), 0) for j in range(11))
+            + hist.get(">10", 0)
         )
+        tail_label = ">10"
+    print(f"{tail_label:<{label_w}}{ov_sum:>{cnt_w}d}")
 
 
 class WorkloadGenerator:
@@ -479,7 +471,7 @@ class WorkloadGenerator:
         )
         print(f"Duration: {dur:.2f} s")
         print(f"Operations: {ops}")
-        print(f"Throughput: {tp:.2f} ops/sec")
+        print(f"Throughput: {tp:.2f} IOPS")
         print(f"Hit Rate: {hr:.2%}")
         if convs:
             print(f"Conversations: {convs}")
@@ -496,9 +488,9 @@ class WorkloadGenerator:
         fail = metrics["failed_operations"]
         tp = metrics["throughput_ops_per_sec"]
         print(
-            f"Duration {dur:.2f} s   operations {ops}   "
-            f"ok {ok}   failed {fail}   "
-            f"{tp:.2f} ops/s"
+            f"Duration {dur:.2f} s; operations {ops}; "
+            f"ok {ok}; failed {fail}; "
+            f"{tp:.2f} IOPS"
         )
         convs = metrics.get(
             "conversations_completed", 0
@@ -506,26 +498,14 @@ class WorkloadGenerator:
         if convs:
             print(f"Conversations completed: {convs}")
 
-        print("\n--- Combined latency (all successful ops) ---")
-        print(
-            f"avg {metrics['average_latency_ms']:.2f} ms   "
-            f"min {metrics['min_latency_ms']:.2f} ms   "
-            f"max {metrics['max_latency_ms']:.2f} ms"
-        )
-        if "latency_p99_ms" in metrics:
-            print(
-                f"std {metrics['latency_std_ms']:.2f} ms   "
-                f"P99 {metrics['latency_p99_ms']:.2f} ms   "
-                f"P99.9 {metrics['latency_p999_ms']:.2f} ms"
-            )
-
         store = metrics.get("store_operations", {})
         retrieve = metrics.get(
             "retrieve_operations", {}
         )
 
-        print("\n--- Per operation type (I/O + latency) ---")
+        print()
         _print_operation_stats_table(store, retrieve)
-        _print_cache_histograms(metrics, store, retrieve)
+
+        _print_kv_block_hit_histogram(metrics)
 
         print("=" * width + "\n")

@@ -13,9 +13,17 @@ if TYPE_CHECKING:
     from tokenizer_interface import TokenizerWrapper
 
 try:
-    from .base import BaseWorkload, WorkloadMetrics
+    from .base import (
+        BaseWorkload,
+        WorkloadMetrics,
+        _kv_block_identity,
+    )
 except ImportError:
-    from workloads.base import BaseWorkload, WorkloadMetrics
+    from workloads.base import (
+        BaseWorkload,
+        WorkloadMetrics,
+        _kv_block_identity,
+    )
 
 
 def _tokenize_input(
@@ -311,6 +319,13 @@ class RetrieveOnlyWorkload(BaseWorkload):
                 "run store-only first or populate JSONL "
                 f'with lines like {{"tokens": [1,2,...]}}'
             )
+        self.metrics.chunk_index_fingerprints = frozenset(
+            _kv_block_identity({"token_ids": row})
+            for row in self._rows
+        )
+        self.metrics.chunk_index_path = str(
+            self.index_path.resolve()
+        )
 
     def generate_operation(self) -> Dict[str, Any]:
         token_ids = random.choice(self._rows)
