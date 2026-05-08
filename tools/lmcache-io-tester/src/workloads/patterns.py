@@ -6,6 +6,9 @@ import time
 from pathlib import Path
 from typing import Dict, Any, List, Optional, TYPE_CHECKING
 
+# Sidecar written by store-only; retrieve-only reads it (same tokens as store).
+CHUNK_TOKENS_INDEX_NAME = ".lmcache_io_chunk_tokens.jsonl"
+
 if TYPE_CHECKING:
     from tokenizer_interface import TokenizerWrapper
 
@@ -170,151 +173,75 @@ class RandomWorkload(BaseWorkload):
             return False
 
 
-class SequentialWorkload(BaseWorkload):
-    """Sequential workload pattern."""
+def _load_chunk_token_index(path: Path) -> List[List[int]]:
+    """Load JSONL lines {\"tokens\": [...]} written by store-only."""
+    rows: List[List[int]] = []
+    with open(path, encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            obj = json.loads(line)
+            tok = obj.get("tokens")
+            if isinstance(tok, list) and tok:
+                rows.append([int(x) for x in tok])
+    return rows
+
+
+class StoreOnlyWorkload(BaseWorkload):
+    """Only store operations; append each chunk's token ids to a JSONL
+    sidecar so retrieve-only can replay retrieves."""
 
     def __init__(
         self,
-        engine: Any = None,
-        start_key: int = 0,
-        value_size: int = 1024,
-        tokenizer: Optional[Any] = None,
-        text_input: Optional[str] = None,
-    ):
-        super().__init__(engine)
-        self.current_key = start_key
-        self.value_size = value_size
-        self.tokenizer = tokenizer
-        self.text_input = text_input
-        self._tokenized_text = _tokenize_input(
-            tokenizer, text_input
-        )
-        self._token_offset = 0
-
-    def generate_operation(self) -> Dict[str, Any]:
-        """Generate sequential operation."""
-        key = f"key_{self.current_key}"
-        self.current_key += 1
-        return {"type": "store", "key": key}
-
-    def execute_operation(
-        self, operation: Dict[str, Any]
-    ) -> bool:
-        """Execute operation via direct engine call."""
-        try:
-            chunk_size = 256
-
-            if (
-                self._tokenized_text
-                and len(self._tokenized_text) >= 2
-            ):
-                start_idx = self._token_offset
-                if start_idx >= len(self._tokenized_text):
-                    start_idx = 0
-                    self._token_offset = 0
-            else:
-                start_idx = 0
-
-            token_ids = _build_token_ids(
-                self._tokenized_text,
-                start_idx,
-                chunk_size,
-                fallback_start=(
-                    abs(hash(operation["key"])) % 10000
-                ),
-            )
-
-            if self._tokenized_text:
-                end_idx = min(
-                    start_idx + chunk_size,
-                    len(self._tokenized_text),
-                )
-                self._token_offset = (
-                    end_idx
-                    if end_idx < len(self._tokenized_text)
-                    else 0
-                )
-
-            self.engine.store(
-                token_ids,
-                req_id=operation.get("key"),
-            )
-            blocks = (
-                len(token_ids) // chunk_size
-            ) or 1
-            bpt = getattr(
-                self.engine, "bytes_per_token", 0
-            )
-            operation["kv_blocks"] = blocks
-            operation["data_bytes"] = (
-                blocks * chunk_size * bpt
-            )
-            return True
-
-        except Exception as e:
-            if self.metrics.failed_operations < 3:
-                print(
-                    f"Engine operation failed: "
-                    f"{type(e).__name__}: {e}",
-                    file=sys.stderr,
-                )
-            return False
-
-
-class BurstWorkload(BaseWorkload):
-    """Burst workload pattern."""
-
-    def __init__(
-        self,
+        index_path: Path,
         engine: Any = None,
         key_range: int = 10000,
         value_size: int = 1024,
-        burst_size: int = 100,
-        burst_interval: float = 10.0,
         tokenizer: Optional[Any] = None,
         text_input: Optional[str] = None,
     ):
         super().__init__(engine)
+        self.index_path = Path(index_path)
         self.key_range = key_range
         self.value_size = value_size
-        self.burst_size = burst_size
-        self.burst_interval = burst_interval
-        self.burst_count = 0
-        self.last_burst_time = time.time()
         self.tokenizer = tokenizer
         self.text_input = text_input
         self._tokenized_text = _tokenize_input(
             tokenizer, text_input
         )
+        self._sidecar_truncated = False
+
+    def run(
+        self,
+        duration: Optional[float] = None,
+        num_operations: Optional[int] = None,
+        rate: Optional[float] = None,
+    ):
+        if not self._sidecar_truncated:
+            self.index_path.parent.mkdir(
+                parents=True, exist_ok=True
+            )
+            self.index_path.write_text(
+                "", encoding="utf-8"
+            )
+            self._sidecar_truncated = True
+        super().run(
+            duration=duration,
+            num_operations=num_operations,
+            rate=rate,
+        )
 
     def generate_operation(self) -> Dict[str, Any]:
-        """Generate burst operation."""
-        now = time.time()
-        if (
-            self.metrics.total_operations > 0
-            and (now - self.last_burst_time)
-            < self.burst_interval
-            and self.burst_count >= self.burst_size
-        ):
-            time.sleep(
-                self.burst_interval
-                - (now - self.last_burst_time)
-            )
-            self.burst_count = 0
-            self.last_burst_time = time.time()
-
         key = f"key_{random.randint(0, self.key_range)}"
-        self.burst_count += 1
         return {"type": "store", "key": key}
 
     def execute_operation(
         self, operation: Dict[str, Any]
     ) -> bool:
-        """Execute operation via direct engine call."""
         try:
             chunk_size = 256
             key_hash = abs(hash(operation["key"]))
-
             if (
                 self._tokenized_text
                 and len(self._tokenized_text) >= 2
@@ -326,30 +253,91 @@ class BurstWorkload(BaseWorkload):
                 start_idx = key_hash % max(1, max_start + 1)
             else:
                 start_idx = 0
-
             token_ids = _build_token_ids(
                 self._tokenized_text,
                 start_idx,
                 chunk_size,
                 fallback_start=key_hash % 10000,
             )
-
-            self.engine.store(
-                token_ids,
-                req_id=operation.get("key"),
-            )
-            blocks = (
-                len(token_ids) // chunk_size
-            ) or 1
+            req_id = operation.get("key")
             bpt = getattr(
                 self.engine, "bytes_per_token", 0
             )
+            self.engine.store(
+                token_ids, req_id=req_id
+            )
+            with open(
+                self.index_path, "a", encoding="utf-8"
+            ) as out:
+                out.write(
+                    json.dumps({"tokens": token_ids})
+                    + "\n"
+                )
+            blocks = (
+                len(token_ids) // chunk_size
+            ) or 1
             operation["kv_blocks"] = blocks
             operation["data_bytes"] = (
                 blocks * chunk_size * bpt
             )
             return True
+        except Exception as e:
+            if self.metrics.failed_operations < 3:
+                print(
+                    f"Engine operation failed: "
+                    f"{type(e).__name__}: {e}",
+                    file=sys.stderr,
+                )
+            return False
 
+
+class RetrieveOnlyWorkload(BaseWorkload):
+    """Random retrieve ops using token sequences from the JSONL sidecar
+    produced by store-only (same engine metadata required)."""
+
+    def __init__(
+        self,
+        index_path: Path,
+        engine: Any = None,
+    ):
+        super().__init__(engine)
+        self.index_path = Path(index_path)
+        self._rows = _load_chunk_token_index(
+            self.index_path
+        )
+        if not self._rows:
+            raise ValueError(
+                f"No token rows in {self.index_path}; "
+                "run store-only first or populate JSONL "
+                f'with lines like {{"tokens": [1,2,...]}}'
+            )
+
+    def generate_operation(self) -> Dict[str, Any]:
+        token_ids = random.choice(self._rows)
+        key = f"retrieve_{random.randint(0, 2**31 - 1)}"
+        return {
+            "type": "retrieve",
+            "key": key,
+            "token_ids": token_ids,
+        }
+
+    def execute_operation(
+        self, operation: Dict[str, Any]
+    ) -> bool:
+        try:
+            token_ids = operation["token_ids"]
+            req_id = operation.get("key")
+            bpt = getattr(
+                self.engine, "bytes_per_token", 0
+            )
+            num_retrieved = self.engine.retrieve(
+                token_ids, req_id=req_id
+            )
+            cache_hit = num_retrieved > 0
+            operation["cache_hit"] = cache_hit
+            operation["kv_blocks"] = num_retrieved
+            operation["data_bytes"] = num_retrieved * bpt
+            return True
         except Exception as e:
             if self.metrics.failed_operations < 3:
                 print(

@@ -215,16 +215,54 @@ Random read/write operations across a key range. Keys
 are hashed to select token slices from the tokenized
 text.
 
-### Sequential
+### Store-only (`--pattern store-only`)
 
-Sequential write operations with advancing token
-offsets, walking through the tokenized text chunk by
-chunk.
+Only `engine.store()` operations: each chunk is written
+to the cache and one JSON line `{"tokens":[...]}` is
+appended to a sidecar file. Default path is
+`<storage-path>/.lmcache_io_chunk_tokens.jsonl`; set
+`--chunk-index PATH` to choose the file explicitly.
+Use this phase to populate storage before measuring
+reads. The `workload` subcommand requires
+`--chunk-index` because there is no `--storage-path`.
 
-### Burst
+**Store timing and size stats**: Pass
+`--per-op-store-log /path/to/file.jsonl` to append one
+JSON object per successful store (`op_index`,
+`ts_unix`, `ts_iso`, `latency_ms`, `bytes_written`).
+Use `--output-format json`; the printed metrics include
+under `store_operations` the usual mean / min / max
+plus `latency_std_ms`, `latency_p99_ms`, and
+`latency_p999_ms`. Latency is wall time around
+`engine.store()`; `bytes_written` is logical KV bytes for
+that chunk (same basis as the workload summary), not a
+host OS block I/O counter. Very large `--num-operations`
+values keep all samples in RAM for percentiles.
 
-Bursts of store operations at regular intervals.
-Simulates traffic spikes during inference serving.
+### Retrieve-only (`--pattern retrieve-only`)
+
+Random `engine.retrieve()` operations. Token sequences
+are read from the JSONL sidecar produced by store-only
+(same `--storage-path` / `--chunk-index` as the store
+run, or copy the sidecar for remote backends). LMCache
+needs the original token IDs to retrieve; listing blob
+files under the cache directory is not enough.
+
+Example two-phase run on a filesystem backend:
+
+```bash
+python -m src.lmcache-sim run \
+    --storage-type filesystem \
+    --storage-path /tmp/lmcache \
+    --pattern store-only \
+    --num-operations 500
+
+python -m src.lmcache-sim run \
+    --storage-type filesystem \
+    --storage-path /tmp/lmcache \
+    --pattern retrieve-only \
+    --num-operations 500
+```
 
 ### Steady-State
 
@@ -388,6 +426,31 @@ storage type. Config files can be customized and reused.
 
 [Full configuration docs][ref-lmcache-config].
 
+### Storage backends (`--storage-type`)
+
+| Type | Required flags | LMCache `remote_url` / notes |
+|------|----------------|------------------------------|
+| `filesystem` | `--storage-path` | `fs://host:0{path}/` (remote FS
+connector) |
+| `local-disk` | `--storage-path` | `local_disk` + `file://` path; uses
+[local disk][ref-lmcache-local] backend (not `fs://`) |
+| `block-device` | `--block-device` | Mounts device; same `fs://` pattern |
+| `gds` | `--storage-path` | Sets `gds_path` and CuFile options |
+| `redis` | `--remote-url` | `redis://` or `redis-sentinel://` |
+| `s3` | `--remote-url`, `--s3-region` | `s3://bucket`; region and AWS keys
+in `extra_config` (see [S3 backend][ref-lmcache-s3]) |
+| `remote` | `--remote-url` | Any other scheme (`lm://`, `mooncakestore://`, …) |
+
+Optional **`--extra-config PATH`**: merge a YAML or JSON object into the
+generated config (nested `extra_config` keys merge with existing S3 or
+other backend settings). Optional **`--probe-remote`**: TCP reachability
+for host/port URLs before starting the engine (skipped for `s3://`).
+
+**`verify` subcommand**: one chunk `store` then `retrieve`/`lookup`; exits
+0 when hit counts match the chunk size. Set **`LMVERIFY_RELAXED=1`** to
+allow partial hits; **`LMVERIFY_MIN_RETRIEVE`** sets the minimum retrieve
+token count (defaults to chunk size).
+
 ## Cache File Format
 
 When LMCache stores KV cache data to disk (filesystem or
@@ -417,4 +480,8 @@ The tool uses `remote_serde: naive` format, which stores
 KV cache data as uncompressed binary with shape metadata
 in the file header.
 
+<!-- References -->
+
 [ref-lmcache-config]: https://docs.lmcache.ai/api_reference/configurations.html
+[ref-lmcache-local]: https://docs.lmcache.ai/kv_cache/storage_backends/local_storage.html
+[ref-lmcache-s3]: https://docs.lmcache.ai/kv_cache/storage_backends/s3.html

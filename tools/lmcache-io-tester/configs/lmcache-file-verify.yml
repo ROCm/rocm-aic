@@ -4,4 +4,5 @@ max_local_cpu_size: 5.0
 remote_serde: naive
 blocking_timeout_secs: 10
 cache_policy: LRU
-remote_url: fs://host:0/tmp/lmcache-test-fs/
+local_disk: file:///tmp/lmcache-test-file/
+max_local_disk_size: 5.0

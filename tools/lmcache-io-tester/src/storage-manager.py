@@ -1,10 +1,22 @@
 """Storage manager for handling filesystem and block device setup."""
 import os
+import shutil
+import socket
 import subprocess
 import tempfile
-import shutil
 from pathlib import Path
 from typing import Optional, Tuple
+from urllib.parse import urlparse
+
+
+_DEFAULT_SCHEME_PORTS = {
+    "redis": 6379,
+    "lm": 65432,
+    "http": 80,
+    "https": 443,
+    "mooncakestore": 50051,
+    "infinistore": 12345,
+}
 
 
 class StorageManager:
@@ -13,6 +25,64 @@ class StorageManager:
     def __init__(self):
         self.mount_points: dict[str, str] = {}
         self.temp_dirs: list[str] = []
+
+    def probe_tcp(
+        self,
+        host: str,
+        port: int,
+        timeout: float = 2.0,
+    ) -> Tuple[bool, str]:
+        """Try TCP connect to host:port."""
+        try:
+            with socket.create_connection(
+                (host, port), timeout=timeout
+            ):
+                return True, f"tcp ok {host}:{port}"
+        except OSError as e:
+            return False, f"tcp {host}:{port}: {e}"
+
+    def probe_remote_url(
+        self,
+        url: str,
+        timeout: float = 2.0,
+    ) -> Tuple[bool, str]:
+        """Best-effort TCP reachability for LMCache remote_url.
+
+        Skips ``s3://`` (use AWS checks separately). Handles
+        ``redis-sentinel://h1:26379,h2:26379`` by probing the
+        first endpoint only.
+        """
+        raw = url.strip()
+        lower = raw.lower()
+        if lower.startswith("s3://"):
+            return True, "probe skipped for s3://"
+        if lower.startswith("redis-sentinel://"):
+            body = raw.split("://", 1)[1]
+            first = body.split(",")[0].strip()
+            if ":" in first:
+                host, _, ps = first.rpartition(":")
+                try:
+                    port = int(ps)
+                except ValueError:
+                    return False, f"bad sentinel endpoint {first!r}"
+            else:
+                host, port = first, 26379
+            return self.probe_tcp(host, port, timeout)
+        parsed = urlparse(raw)
+        scheme = (parsed.scheme or "").lower()
+        host = parsed.hostname
+        if not host:
+            return False, "remote_url has no host"
+        port = parsed.port
+        if port is None:
+            port = _DEFAULT_SCHEME_PORTS.get(scheme)
+        if port is None:
+            return (
+                False,
+                f"cannot infer TCP port for scheme {scheme!r}; "
+                "include :port in remote_url",
+            )
+        return self.probe_tcp(host, port, timeout)
 
     def validate_filesystem_path(self, path: str) -> Tuple[bool, str]:
         """

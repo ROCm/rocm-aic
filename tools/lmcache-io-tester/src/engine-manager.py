@@ -3,8 +3,34 @@
 Replaces the subprocess + HTTP API approach with direct calls
 to the LMCache engine's store/retrieve/lookup/clear methods.
 """
+import importlib.util
+import sys
 import uuid
+from pathlib import Path
 from typing import Optional, List, Union
+
+
+def _sim_logging_module():
+    """Load ``sim_logging`` once (same as CLI pre-import)."""
+    key = "sim_logging"
+    if key in sys.modules:
+        return sys.modules[key]
+    p = Path(__file__).resolve().parent / "sim_logging.py"
+    if not p.is_file():
+        raise ImportError("sim_logging.py not found")
+    spec = importlib.util.spec_from_file_location(key, p)
+    if spec is None or spec.loader is None:
+        raise ImportError("sim_logging")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    sys.modules[key] = mod
+    return mod
+
+
+_sl = _sim_logging_module()
+_sl.configure_lmcache_env_defaults()
+_sl.suppress_torch_cuda_warning()
+_sl.suppress_lmcache_info()
 
 import torch
 from lmcache.v1.cache_engine import (
@@ -19,6 +45,12 @@ from lmcache.utils import (
     mock_up_broadcast_fn,
     mock_up_broadcast_object_fn,
 )
+
+
+def _suppress_lmcache_logs_after_init() -> None:
+    """Re-apply after LMCache registers child loggers."""
+    _sl.suppress_lmcache_info()
+
 
 DTYPE_MAP = {
     "float16": torch.float16,
@@ -113,6 +145,7 @@ class EngineManager:
             broadcast_object_fn=mock_up_broadcast_object_fn,
         )
         self.engine.post_init()
+        _suppress_lmcache_logs_after_init()
         return self.engine
 
     @property

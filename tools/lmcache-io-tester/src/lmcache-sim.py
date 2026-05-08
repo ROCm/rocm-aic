@@ -1,12 +1,29 @@
 #!/usr/bin/env python3
 """LMCache Simulation Tool - Main CLI entry point."""
+import json
 import os
 import sys
-import json
 import click
 import importlib.util
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
+
+
+def _load_sim_logging():
+    """Load sibling ``sim_logging`` without package path hacks."""
+    p = Path(__file__).resolve().parent / "sim_logging.py"
+    spec = importlib.util.spec_from_file_location(
+        "sim_logging", p
+    )
+    if spec is None or spec.loader is None:
+        raise ImportError("Cannot load sim_logging")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+sim_logging = _load_sim_logging()
+sim_logging.configure_default_at_import()
 
 
 def _import_module(name):
@@ -24,7 +41,6 @@ def _import_module(name):
     return module
 
 
-_engine_manager = _import_module("engine-manager")
 _config_generator = _import_module("config-generator")
 _storage_manager = _import_module("storage-manager")
 _workload_generator = _import_module("workload-generator")
@@ -36,32 +52,92 @@ _download_conversations = _import_module(
     "download-conversations"
 )
 
-EngineManager = _engine_manager.EngineManager
+# Import engine-manager lazily so `--help` never pulls in torch/CUDA.
+_engine_manager_mod = None
+
+
+def _engine_manager_class():
+    """LMCacheEngine wrapper; imports torch only when used."""
+    global _engine_manager_mod
+    if _engine_manager_mod is None:
+        _engine_manager_mod = _import_module(
+            "engine-manager"
+        )
+    return _engine_manager_mod.EngineManager
+
+
 ConfigGenerator = _config_generator.ConfigGenerator
 StorageManager = _storage_manager.StorageManager
 WorkloadGenerator = _workload_generator.WorkloadGenerator
+CHUNK_TOKENS_INDEX_NAME = (
+    _workload_generator.CHUNK_TOKENS_INDEX_NAME
+)
 ModelLoader = _model_loader.ModelLoader
 TokenizerWrapper = _tokenizer_interface.TokenizerWrapper
 
 
 CONTEXT_SETTINGS = dict(help_option_names=["-h", "--help"])
 
+STORAGE_TYPES = [
+    "filesystem",
+    "local-disk",
+    "block-device",
+    "gds",
+    "redis",
+    "s3",
+    "remote",
+]
+
 
 @click.group(context_settings=CONTEXT_SETTINGS)
 @click.version_option(version="1.0.0")
-def cli():
+@click.option(
+    "--verbose-lmcache",
+    is_flag=True,
+    help="Show LMCache library INFO logs on stderr "
+         "(default: hidden). Same as env "
+         "LMCACHE_SIM_VERBOSE_LMCACHE=1.",
+)
+def cli(verbose_lmcache: bool):
     """LMCache Simulation Tool."""
-    pass
+    # Logging is configured at import from argv/env; this
+    # option exists for discovery (see --help).
+    _ = verbose_lmcache
+
+
+@cli.command(name="help", hidden=True)
+@click.pass_context
+def help_alias(ctx: click.Context):
+    """Same as ``lmcache-sim --help``."""
+    click.echo(ctx.parent.get_help())
 
 
 @cli.command()
 @click.option(
     "--storage-type",
-    type=click.Choice(
-        ["filesystem", "block-device", "gds"]
-    ),
+    type=click.Choice(STORAGE_TYPES),
     required=True,
-    help="Storage type",
+    help="Storage backend type",
+)
+@click.option(
+    "--remote-url",
+    help="LMCache remote_url (redis, s3, remote types)",
+)
+@click.option(
+    "--s3-region",
+    help="AWS region when --storage-type is s3",
+)
+@click.option(
+    "--extra-config",
+    "extra_config_path",
+    type=click.Path(exists=True, dir_okay=False),
+    help="YAML/JSON merged into generated LMCache config",
+)
+@click.option(
+    "--probe-remote",
+    is_flag=True,
+    help="TCP check for redis/lm-style remote_url "
+    "before engine start",
 )
 @click.option(
     "--storage-path",
@@ -183,6 +259,10 @@ def cli():
 )
 def start(
     storage_type: str,
+    remote_url: Optional[str],
+    s3_region: Optional[str],
+    extra_config_path: Optional[str],
+    probe_remote: bool,
     storage_path: Optional[str],
     block_device: Optional[str],
     mount_point: Optional[str],
@@ -211,7 +291,7 @@ def start(
     try:
         storage_mgr = StorageManager()
         config_gen = ConfigGenerator()
-        engine_mgr = EngineManager()
+        engine_mgr = _engine_manager_class()()
 
         final_kv_shape = kv_shape
         final_kv_dtype = kv_dtype
@@ -241,6 +321,10 @@ def start(
             local_cpu,
             max_local_cpu_size,
             cufile_buffer_size,
+            remote_url,
+            s3_region,
+            extra_config_path,
+            probe_remote,
             storage_mgr,
             config_gen,
         )
@@ -264,11 +348,29 @@ def start(
 @cli.command()
 @click.option(
     "--storage-type",
-    type=click.Choice(
-        ["filesystem", "block-device", "gds"]
-    ),
+    type=click.Choice(STORAGE_TYPES),
     required=True,
-    help="Storage type",
+    help="Storage backend type",
+)
+@click.option(
+    "--remote-url",
+    help="LMCache remote_url (redis, s3, remote types)",
+)
+@click.option(
+    "--s3-region",
+    help="AWS region when --storage-type is s3",
+)
+@click.option(
+    "--extra-config",
+    "extra_config_path",
+    type=click.Path(exists=True, dir_okay=False),
+    help="YAML/JSON merged into generated LMCache config",
+)
+@click.option(
+    "--probe-remote",
+    is_flag=True,
+    help="TCP check for redis/lm-style remote_url "
+    "before engine start",
 )
 @click.option(
     "--storage-path",
@@ -398,12 +500,27 @@ def start(
          "pattern",
 )
 @click.option(
+    "--chunk-index",
+    "chunk_index",
+    type=click.Path(),
+    default=None,
+    help="JSONL token sidecar path; default "
+         "<storage-path>/" + CHUNK_TOKENS_INDEX_NAME
+         + " (patterns store-only / retrieve-only)",
+)
+@click.option(
     "--pattern",
     type=click.Choice(
-        ["random", "sequential", "burst",
-         "steady-state", "conversation"]
+        [
+            "random",
+            "steady-state",
+            "conversation",
+            "store-only",
+            "retrieve-only",
+        ]
     ),
-    required=True,
+    default="random",
+    show_default=True,
     help="Workload pattern",
 )
 @click.option(
@@ -425,25 +542,14 @@ def start(
     "--key-range",
     type=int,
     default=10000,
-    help="Key range for random/steady-state patterns",
+    help="Key range for random / steady-state / "
+         "store-only patterns",
 )
 @click.option(
     "--value-size",
     type=int,
     default=1024,
     help="Value size in bytes",
-)
-@click.option(
-    "--burst-size",
-    type=int,
-    default=100,
-    help="Burst size for burst pattern",
-)
-@click.option(
-    "--burst-interval",
-    type=float,
-    default=10.0,
-    help="Burst interval in seconds",
 )
 @click.option(
     "--read-ratio",
@@ -456,6 +562,13 @@ def start(
     type=click.Choice(["json", "text"]),
     default="text",
     help="Output format",
+)
+@click.option(
+    "--per-op-store-log",
+    type=click.Path(),
+    default=None,
+    help="JSONL: one object per successful store "
+         "(timestamps, latency_ms, bytes_written)",
 )
 @click.option(
     "--cleanup",
@@ -501,6 +614,10 @@ def start(
 )
 def run(
     storage_type: str,
+    remote_url: Optional[str],
+    s3_region: Optional[str],
+    extra_config_path: Optional[str],
+    probe_remote: bool,
     storage_path: Optional[str],
     block_device: Optional[str],
     mount_point: Optional[str],
@@ -526,16 +643,16 @@ def run(
     hf_token_file: Optional[str],
     text_input: Optional[str],
     conversation_file: Optional[str],
+    chunk_index: Optional[str],
     pattern: str,
     duration: Optional[float],
     num_operations: Optional[int],
     rate: Optional[float],
     key_range: int,
     value_size: int,
-    burst_size: int,
-    burst_interval: float,
     read_ratio: float,
     output_format: str,
+    per_op_store_log: Optional[str],
     cleanup: bool,
     concurrency: int,
     passes: int,
@@ -554,7 +671,16 @@ def run(
         )
         sys.exit(1)
 
-    engine_mgr = EngineManager()
+    if pattern in ("store-only", "retrieve-only"):
+        if not chunk_index and not storage_path:
+            click.echo(
+                "Error: patterns store-only / retrieve-only "
+                "require --storage-path or --chunk-index",
+                err=True,
+            )
+            sys.exit(1)
+
+    engine_mgr = _engine_manager_class()()
     storage_mgr = StorageManager()
 
     try:
@@ -603,6 +729,10 @@ def run(
             local_cpu,
             max_local_cpu_size,
             cufile_buffer_size,
+            remote_url,
+            s3_region,
+            extra_config_path,
+            probe_remote,
             storage_mgr,
             config_gen,
         )
@@ -632,12 +762,7 @@ def run(
             "key_range": key_range,
             "value_size": value_size,
         }
-        if pattern == "burst":
-            pattern_kwargs.update({
-                "burst_size": burst_size,
-                "burst_interval": burst_interval,
-            })
-        elif pattern == "steady-state":
+        if pattern == "steady-state":
             pattern_kwargs[
                 "read_ratio"
             ] = read_ratio
@@ -671,6 +796,11 @@ def run(
 
         click.echo("Starting workload...")
 
+        chunk_index_dir = (
+            storage_path if not chunk_index else None
+        )
+        chunk_index_file = chunk_index
+
         try:
             workload_gen.run_workload(
                 pattern=pattern,
@@ -679,6 +809,9 @@ def run(
                 rate=rate,
                 output_format=output_format,
                 passes=passes,
+                chunk_index_dir=chunk_index_dir,
+                chunk_index_file=chunk_index_file,
+                per_op_store_log=per_op_store_log,
                 **pattern_kwargs,
             )
         except KeyboardInterrupt:
@@ -704,12 +837,27 @@ def run(
 
 @cli.command()
 @click.option(
+    "--chunk-index",
+    "chunk_index",
+    type=click.Path(),
+    default=None,
+    required=False,
+    help="JSONL token sidecar (patterns "
+         "store-only / retrieve-only)",
+)
+@click.option(
     "--pattern",
     type=click.Choice(
-        ["random", "sequential", "burst",
-         "steady-state", "conversation"]
+        [
+            "random",
+            "steady-state",
+            "conversation",
+            "store-only",
+            "retrieve-only",
+        ]
     ),
-    required=True,
+    default="random",
+    show_default=True,
     help="Workload pattern",
 )
 @click.option(
@@ -731,25 +879,14 @@ def run(
     "--key-range",
     type=int,
     default=10000,
-    help="Key range for random/steady-state",
+    help="Key range for random / steady-state / "
+         "store-only patterns",
 )
 @click.option(
     "--value-size",
     type=int,
     default=1024,
     help="Value size in bytes",
-)
-@click.option(
-    "--burst-size",
-    type=int,
-    default=100,
-    help="Burst size for burst pattern",
-)
-@click.option(
-    "--burst-interval",
-    type=float,
-    default=10.0,
-    help="Burst interval in seconds",
 )
 @click.option(
     "--read-ratio",
@@ -762,6 +899,12 @@ def run(
     type=click.Choice(["json", "text"]),
     default="text",
     help="Output format",
+)
+@click.option(
+    "--per-op-store-log",
+    type=click.Path(),
+    default=None,
+    help="JSONL per successful store",
 )
 @click.option(
     "--hf-model-name",
@@ -882,16 +1025,16 @@ def run(
     help="RNG seed for reproducible shuffle",
 )
 def workload(
+    chunk_index: Optional[str],
     pattern: str,
     duration: Optional[float],
     num_operations: Optional[int],
     rate: Optional[float],
     key_range: int,
     value_size: int,
-    burst_size: int,
-    burst_interval: float,
     read_ratio: float,
     output_format: str,
+    per_op_store_log: Optional[str],
     hf_model_name: Optional[str],
     model_path: Optional[str],
     tokenizer_mode: str,
@@ -925,7 +1068,17 @@ def workload(
         )
         sys.exit(1)
 
-    engine_mgr = EngineManager()
+    if pattern in ("store-only", "retrieve-only"):
+        if not chunk_index:
+            click.echo(
+                "Error: patterns store-only / "
+                "retrieve-only require --chunk-index "
+                "for the workload command",
+                err=True,
+            )
+            sys.exit(1)
+
+    engine_mgr = _engine_manager_class()()
 
     try:
         tokenizer_wrapper = None
@@ -975,12 +1128,7 @@ def workload(
             "key_range": key_range,
             "value_size": value_size,
         }
-        if pattern == "burst":
-            pattern_kwargs.update({
-                "burst_size": burst_size,
-                "burst_interval": burst_interval,
-            })
-        elif pattern == "steady-state":
+        if pattern == "steady-state":
             pattern_kwargs[
                 "read_ratio"
             ] = read_ratio
@@ -1019,10 +1167,251 @@ def workload(
             rate=rate,
             output_format=output_format,
             passes=passes,
+            chunk_index_dir=None,
+            chunk_index_file=chunk_index,
+            per_op_store_log=per_op_store_log,
             **pattern_kwargs,
         )
     except Exception as e:
         click.echo(f"Error: {e}", err=True)
+        sys.exit(1)
+    finally:
+        engine_mgr.close()
+
+
+@cli.command("verify")
+@click.option(
+    "--storage-type",
+    type=click.Choice(STORAGE_TYPES),
+    required=True,
+    help="Storage backend type",
+)
+@click.option(
+    "--remote-url",
+    help="LMCache remote_url (redis, s3, remote types)",
+)
+@click.option(
+    "--s3-region",
+    help="AWS region when --storage-type is s3",
+)
+@click.option(
+    "--extra-config",
+    "extra_config_path",
+    type=click.Path(exists=True, dir_okay=False),
+    help="YAML/JSON merged into generated LMCache config",
+)
+@click.option(
+    "--probe-remote",
+    is_flag=True,
+    help="TCP check for redis/lm-style remote_url "
+    "before engine start",
+)
+@click.option(
+    "--storage-path",
+    help="Storage path (for filesystem or GDS)",
+)
+@click.option(
+    "--block-device",
+    help="Block device path (e.g., /dev/nvme0n1)",
+)
+@click.option(
+    "--mount-point",
+    help="Mount point for block device",
+)
+@click.option(
+    "--create-fs",
+    is_flag=True,
+    help="Create filesystem on block device",
+)
+@click.option(
+    "--config",
+    default="configs/lmcache-config.yml",
+    help="Config file path",
+)
+@click.option(
+    "--chunk-size",
+    type=int,
+    default=256,
+    help="KV cache chunk size",
+)
+@click.option(
+    "--local-cpu",
+    is_flag=True,
+    help="Enable local CPU caching",
+)
+@click.option(
+    "--max-local-cpu-size",
+    type=float,
+    default=5.0,
+    help="Max local CPU cache size (GB)",
+)
+@click.option(
+    "--cufile-buffer-size",
+    type=int,
+    default=8192,
+    help="CuFile buffer size (MiB) for GDS",
+)
+@click.option(
+    "--model-name",
+    default="lmcache_model",
+    help="Model name for cache identification",
+)
+@click.option(
+    "--worker-id",
+    type=int,
+    default=0,
+    help="Worker ID",
+)
+@click.option(
+    "--world-size",
+    type=int,
+    default=1,
+    help="Total workers",
+)
+@click.option(
+    "--kv-dtype",
+    type=click.Choice(
+        ["float16", "float32", "bfloat16", "uint8"]
+    ),
+    default="float16",
+    help="KV cache data type",
+)
+@click.option(
+    "--kv-shape",
+    default="2,2,256,4,16",
+    help="KV cache shape",
+)
+@click.option(
+    "--use-mla",
+    is_flag=True,
+    help="Enable Multi-Level Attention",
+)
+@click.option(
+    "--hf-model-name",
+    help="Hugging Face model identifier",
+)
+@click.option(
+    "--model-path",
+    help="Local path to model",
+)
+@click.option(
+    "--cache-dir",
+    help="Directory to cache downloaded models",
+)
+@click.option(
+    "--auto-kv-shape",
+    is_flag=True,
+    help="Auto-calculate KV shape from model config",
+)
+@click.option(
+    "--local-only",
+    is_flag=True,
+    help="Only use local models, don't download",
+)
+@click.option(
+    "--hf-token-file",
+    help="Path to Hugging Face token file",
+)
+def verify(
+    storage_type: str,
+    remote_url: Optional[str],
+    s3_region: Optional[str],
+    extra_config_path: Optional[str],
+    probe_remote: bool,
+    storage_path: Optional[str],
+    block_device: Optional[str],
+    mount_point: Optional[str],
+    create_fs: bool,
+    config: str,
+    chunk_size: int,
+    local_cpu: bool,
+    max_local_cpu_size: float,
+    cufile_buffer_size: int,
+    model_name: str,
+    worker_id: int,
+    world_size: int,
+    kv_dtype: str,
+    kv_shape: str,
+    use_mla: bool,
+    hf_model_name: Optional[str],
+    model_path: Optional[str],
+    cache_dir: Optional[str],
+    auto_kv_shape: bool,
+    local_only: bool,
+    hf_token_file: Optional[str],
+):
+    """Store then retrieve one chunk; exit 0 on success.
+
+    Success requires retrieve and lookup prefix lengths to match the
+    chunk size unless LMVERIFY_RELAXED is set. LMVERIFY_MIN_RETRIEVE
+    overrides the minimum retrieve token count (default: chunk size).
+    """
+    engine_mgr = _engine_manager_class()()
+    storage_mgr = StorageManager()
+    try:
+        config_gen = ConfigGenerator()
+
+        final_kv_shape = kv_shape
+        final_kv_dtype = kv_dtype
+
+        if hf_model_name or model_path:
+            final_kv_shape, final_kv_dtype = (
+                _load_model_params(
+                    hf_model_name,
+                    model_path,
+                    cache_dir,
+                    local_only,
+                    hf_token_file,
+                    chunk_size,
+                    kv_dtype,
+                    auto_kv_shape,
+                )
+            )
+
+        config_path = _setup_storage_and_config(
+            storage_type,
+            storage_path,
+            block_device,
+            mount_point,
+            create_fs,
+            config,
+            chunk_size,
+            local_cpu,
+            max_local_cpu_size,
+            cufile_buffer_size,
+            remote_url,
+            s3_region,
+            extra_config_path,
+            probe_remote,
+            storage_mgr,
+            config_gen,
+        )
+
+        engine_mgr.create_engine(
+            config_path=config_path,
+            model_name=model_name,
+            kv_shape=final_kv_shape,
+            kv_dtype=final_kv_dtype,
+            worker_id=worker_id,
+            world_size=world_size,
+            use_mla=use_mla,
+        )
+
+        ok = _roundtrip_verify(engine_mgr)
+        if ok:
+            click.echo("verify: OK")
+        else:
+            click.echo(
+                "verify: FAILED (set LMVERIFY_RELAXED=1 "
+                "to allow partial hits)",
+                err=True,
+            )
+        sys.exit(0 if ok else 1)
+    except Exception as e:
+        click.echo(f"Error: {e}", err=True)
+        import traceback
+
+        click.echo(traceback.format_exc(), err=True)
         sys.exit(1)
     finally:
         engine_mgr.close()
@@ -1211,15 +1600,29 @@ def _load_model_params_full(
 
 
 def _setup_storage_and_config(
-    storage_type, storage_path, block_device,
-    mount_point, create_fs, config, chunk_size,
-    local_cpu, max_local_cpu_size, cufile_buffer_size,
-    storage_mgr, config_gen,
+    storage_type,
+    storage_path,
+    block_device,
+    mount_point,
+    create_fs,
+    config,
+    chunk_size,
+    local_cpu,
+    max_local_cpu_size,
+    cufile_buffer_size,
+    remote_url,
+    s3_region,
+    extra_config_path,
+    probe_remote,
+    storage_mgr,
+    config_gen,
 ):
     """Setup storage and generate config file.
 
     Returns the config file path.
     """
+    config_dict = None
+
     if storage_type == "filesystem":
         if not storage_path:
             click.echo(
@@ -1239,6 +1642,33 @@ def _setup_storage_and_config(
 
         config_dict = (
             config_gen.generate_filesystem_config(
+                storage_path=storage_path,
+                chunk_size=chunk_size,
+                local_cpu=local_cpu,
+                max_local_cpu_size=max_local_cpu_size,
+            )
+        )
+
+    elif storage_type == "local-disk":
+        if not storage_path:
+            click.echo(
+                "Error: --storage-path required for local-disk "
+                "(LMCache local_disk / file://)",
+                err=True,
+            )
+            sys.exit(1)
+        Path(storage_path).mkdir(parents=True, exist_ok=True)
+        is_valid, error = (
+            storage_mgr.validate_filesystem_path(
+                storage_path
+            )
+        )
+        if not is_valid:
+            click.echo(f"Error: {error}", err=True)
+            sys.exit(1)
+
+        config_dict = (
+            config_gen.generate_local_disk_config(
                 storage_path=storage_path,
                 chunk_size=chunk_size,
                 local_cpu=local_cpu,
@@ -1298,9 +1728,139 @@ def _setup_storage_and_config(
             cufile_buffer_size=cufile_buffer_size,
         )
 
+    elif storage_type == "redis":
+        if not remote_url:
+            click.echo(
+                "Error: --remote-url required for redis "
+                "(e.g. redis://127.0.0.1:6379)",
+                err=True,
+            )
+            sys.exit(1)
+        ru = remote_url.strip()
+        low = ru.lower()
+        if not (
+            low.startswith("redis://")
+            or low.startswith("redis-sentinel://")
+        ):
+            click.echo(
+                "Warning: redis backend expects remote_url "
+                "to start with redis:// or "
+                "redis-sentinel://",
+                err=True,
+            )
+        if probe_remote:
+            ok, msg = storage_mgr.probe_remote_url(ru)
+            click.echo(f"probe {msg}")
+            if not ok:
+                click.echo(
+                    "Error: remote probe failed",
+                    err=True,
+                )
+                sys.exit(1)
+        config_dict = config_gen.generate_redis_config(
+            remote_url=ru,
+            chunk_size=chunk_size,
+            local_cpu=local_cpu,
+            max_local_cpu_size=max_local_cpu_size,
+        )
+
+    elif storage_type == "s3":
+        if not remote_url or not s3_region:
+            click.echo(
+                "Error: --remote-url (s3://bucket/...) and "
+                "--s3-region are required for s3",
+                err=True,
+            )
+            sys.exit(1)
+        ru = remote_url.strip()
+        if not ru.lower().startswith("s3://"):
+            click.echo(
+                "Error: S3 remote_url must start with s3://",
+                err=True,
+            )
+            sys.exit(1)
+        config_dict = config_gen.generate_s3_config(
+            remote_url=ru,
+            s3_region=s3_region.strip(),
+            chunk_size=chunk_size,
+            local_cpu=local_cpu,
+            max_local_cpu_size=max_local_cpu_size,
+        )
+
+    elif storage_type == "remote":
+        if not remote_url:
+            click.echo(
+                "Error: --remote-url required for remote "
+                "(e.g. lm://127.0.0.1:65432, "
+                "mooncakestore://host:port)",
+                err=True,
+            )
+            sys.exit(1)
+        ru = remote_url.strip()
+        if probe_remote:
+            ok, msg = storage_mgr.probe_remote_url(ru)
+            click.echo(f"probe {msg}")
+            if not ok:
+                click.echo(
+                    "Error: remote probe failed",
+                    err=True,
+                )
+                sys.exit(1)
+        config_dict = config_gen.generate_remote_config(
+            remote_url=ru,
+            chunk_size=chunk_size,
+            local_cpu=local_cpu,
+            max_local_cpu_size=max_local_cpu_size,
+        )
+
+    else:
+        click.echo(
+            f"Error: unsupported storage_type "
+            f"{storage_type!r}",
+            err=True,
+        )
+        sys.exit(1)
+
+    if extra_config_path:
+        config_gen.merge_from_path(
+            config_dict,
+            extra_config_path,
+        )
+
     config_gen.save_config(config_dict, config)
     click.echo(f"Generated config file: {config}")
     return config
+
+
+def _roundtrip_verify(engine_mgr: Any) -> bool:
+    """Store then retrieve one full chunk; check hit counts."""
+    shape = engine_mgr._kv_shape
+    if shape is None or len(shape) < 3:
+        click.echo("Error: engine has no kv_shape", err=True)
+        return False
+    cs = int(shape[2])
+    base = 10_000
+    tokens = list(range(base, base + cs))
+    req_store = "lmcache-io-verify-store"
+    req_ret = "lmcache-io-verify-retrieve"
+    engine_mgr.store(tokens, req_id=req_store)
+    retrieved = engine_mgr.retrieve(tokens, req_id=req_ret)
+    prefix_hits = engine_mgr.lookup(tokens)
+    click.echo(
+        f"verify: chunk_size={cs} retrieve_hit_tokens="
+        f"{retrieved} lookup_prefix_len={prefix_hits}"
+    )
+    min_ok = int(os.environ.get("LMVERIFY_MIN_RETRIEVE", cs))
+    if min_ok < 1:
+        min_ok = cs
+    relaxed = os.environ.get(
+        "LMVERIFY_RELAXED", ""
+    ).lower() in ("1", "true", "yes")
+    if relaxed:
+        ok = retrieved > 0 or prefix_hits > 0
+    else:
+        ok = retrieved >= min_ok and prefix_hits >= min_ok
+    return ok
 
 
 if __name__ == "__main__":

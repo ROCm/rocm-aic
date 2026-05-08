@@ -22,11 +22,16 @@ _patterns_module = _import_workload_module("patterns")
 
 BaseWorkload = _base_module.BaseWorkload
 RandomWorkload = _patterns_module.RandomWorkload
-SequentialWorkload = _patterns_module.SequentialWorkload
-BurstWorkload = _patterns_module.BurstWorkload
+StoreOnlyWorkload = _patterns_module.StoreOnlyWorkload
+RetrieveOnlyWorkload = (
+    _patterns_module.RetrieveOnlyWorkload
+)
 SteadyStateWorkload = _patterns_module.SteadyStateWorkload
 ConversationWorkload = (
     _patterns_module.ConversationWorkload
+)
+CHUNK_TOKENS_INDEX_NAME = (
+    _patterns_module.CHUNK_TOKENS_INDEX_NAME
 )
 
 
@@ -43,13 +48,164 @@ def _format_bytes(num_bytes: int) -> str:
     return f"{num_bytes / 1024 ** 4:.2f} TiB"
 
 
+_BAR_WIDTH = 42
+
+# Block elements for ASCII bars (Unicode).
+_BLK = "\u2588"  # full block
+_DIM = "\u2591"  # light shade
+
+
+def _ascii_ratio_bar(
+    ratio: float, width: int = _BAR_WIDTH
+) -> str:
+    """Horizontal bar for a fraction in ``[0, 1]``."""
+    ratio = max(0.0, min(1.0, float(ratio)))
+    filled = int(round(ratio * width))
+    filled = min(width, max(0, filled))
+    return _BLK * filled + _DIM * (width - filled)
+
+
+def _hits_per_block(
+    hits: int, kv_blocks: int
+) -> Optional[float]:
+    if kv_blocks <= 0:
+        return None
+    return hits / kv_blocks
+
+
+def _fmt_ms_cell(
+    op: Dict[str, Any], key: str, width: int
+) -> str:
+    if op.get("successful", 0) <= 0:
+        return f"{'—':>{width}s}"
+    if key not in op:
+        return f"{'—':>{width}s}"
+    return f"{op[key]:>{width}.2f}"
+
+
+def _print_operation_stats_table(
+    store: Dict[str, Any],
+    retrieve: Dict[str, Any],
+) -> None:
+    """Aligned store / retrieve rows (ops, I/O, latency)."""
+    col_op = 12
+    col_n = 8
+    col_ok = 8
+    col_fail = 7
+    col_kv = 10
+    col_bytes = 14
+    col_ms = 9
+
+    hdr = (
+        f"{'Operation':<{col_op}}"
+        f"{'Ops':>{col_n}}"
+        f"{'OK':>{col_ok}}"
+        f"{'Fail':>{col_fail}}"
+        f"{'KV blk':>{col_kv}}"
+        f"{'Bytes I/O':>{col_bytes}}"
+        f"{'Avg ms':>{col_ms}}"
+        f"{'P99 ms':>{col_ms}}"
+        f"{'P99.9 ms':>{col_ms + 1}}"
+        f"{'Hit%':>8}"
+    )
+    rule = "-" * len(hdr)
+    print(hdr)
+    print(rule)
+
+    def row(label: str, op: Dict[str, Any], show_hit: bool) -> None:
+        cnt = op.get("count", 0)
+        ok = op.get("successful", 0)
+        fail = op.get("failed", 0)
+        kv = op.get("kv_blocks", 0)
+        tb = op.get("total_bytes", 0)
+        b_str = _format_bytes(tb) if tb else "0 B"
+        if len(b_str) > col_bytes:
+            b_str = b_str[: col_bytes - 2] + ".."
+        avg = _fmt_ms_cell(op, "average_latency_ms", col_ms)
+        p99 = _fmt_ms_cell(op, "latency_p99_ms", col_ms)
+        p999 = _fmt_ms_cell(
+            op, "latency_p999_ms", col_ms + 1
+        )
+        if show_hit and cnt > 0 and ok > 0:
+            hr = op.get("hit_rate", 0.0)
+            hit_cell = f"{hr * 100:>7.1f}%"
+        else:
+            hit_cell = f"{'—':>8}"
+        print(
+            f"{label:<{col_op}}"
+            f"{cnt:>{col_n}d}"
+            f"{ok:>{col_ok}d}"
+            f"{fail:>{col_fail}d}"
+            f"{kv:>{col_kv}d}"
+            f"{b_str:>{col_bytes}s}"
+            f"{avg}"
+            f"{p99}"
+            f"{p999}"
+            f"{hit_cell}"
+        )
+
+    row("store", store, show_hit=False)
+    row("retrieve", retrieve, show_hit=True)
+
+
+def _print_cache_histograms(
+    metrics: Dict[str, Any],
+    store: Dict[str, Any],
+    retrieve: Dict[str, Any],
+) -> None:
+    """ASCII bars: workload hit rate, retrieve outcomes,
+    hits per KV block."""
+    print("\n--- Cache & hits / KV block ---")
+
+    ch = metrics.get("cache_hits", 0)
+    cm = metrics.get("cache_misses", 0)
+    tot_lm = ch + cm
+    overall = metrics.get("cache_hit_rate", 0.0)
+    bar_o = _ascii_ratio_bar(overall)
+    print(
+        "Workload cache hit rate (all ops) "
+        f"[{ch} hit / {cm} miss]"
+    )
+    print(f"  {bar_o}  {overall * 100:5.1f}%")
+
+    rh = retrieve.get("hits", 0)
+    rm = retrieve.get("misses", 0)
+    r_lookups = rh + rm
+    if retrieve.get("count", 0) > 0 and r_lookups > 0:
+        rr = retrieve.get("hit_rate", 0.0)
+        bar_r = _ascii_ratio_bar(rr)
+        print(
+            "\nRetrieve prefix-cache (per retrieve op) "
+            f"[{rh} hit / {rm} miss]"
+        )
+        print(f"  {bar_r}  {rr * 100:5.1f}%")
+
+        hpb = _hits_per_block(rh, retrieve.get("kv_blocks", 0))
+        if hpb is not None:
+            # Bar scales 0–1: ratio is bounded when hits ≤ blocks.
+            bar_h = _ascii_ratio_bar(min(1.0, hpb))
+            print(
+                "\nHits per KV block read (retrieve: "
+                "hits ÷ Σ kv_blocks)"
+            )
+            print(f"  {bar_h}  {hpb:.4f}")
+        else:
+            print(
+                "\nHits per KV block read: n/a "
+                "(no KV blocks recorded)"
+            )
+    else:
+        print(
+            "\n(no retrieve operations — prefix-cache / "
+            "hits-per-block charts omitted)"
+        )
+
+
 class WorkloadGenerator:
     """Generates and executes workloads for LMCache."""
 
     PATTERNS = {
         "random": RandomWorkload,
-        "sequential": SequentialWorkload,
-        "burst": BurstWorkload,
         "steady-state": SteadyStateWorkload,
         "conversation": ConversationWorkload,
     }
@@ -74,18 +230,71 @@ class WorkloadGenerator:
     def create_workload(
         self,
         pattern: str,
+        chunk_index_dir: Optional[str] = None,
+        chunk_index_file: Optional[str] = None,
         **kwargs,
     ) -> BaseWorkload:
         """
         Create a workload instance.
 
         Args:
-            pattern: Workload pattern name
+            pattern: Workload pattern name (includes
+                     ``store-only`` and ``retrieve-only``)
+            chunk_index_dir: Directory containing
+                CHUNK_TOKENS_INDEX_NAME (or parent of index)
+            chunk_index_file: Explicit path to JSONL index file
             **kwargs: Pattern-specific arguments
 
         Returns:
             Workload instance
         """
+        if pattern == "retrieve-only":
+            if chunk_index_file:
+                idx = Path(chunk_index_file)
+            elif chunk_index_dir:
+                idx = (
+                    Path(chunk_index_dir)
+                    / CHUNK_TOKENS_INDEX_NAME
+                )
+            else:
+                raise ValueError(
+                    "pattern retrieve-only requires "
+                    "chunk_index_file or chunk_index_dir "
+                    f"(default file {CHUNK_TOKENS_INDEX_NAME})"
+                )
+            if not idx.is_file():
+                raise ValueError(
+                    f"Chunk token index not found: {idx}"
+                )
+            return RetrieveOnlyWorkload(
+                idx, engine=self.engine
+            )
+
+        if pattern == "store-only":
+            if chunk_index_file:
+                idx_out = Path(chunk_index_file)
+            elif chunk_index_dir:
+                idx_out = (
+                    Path(chunk_index_dir)
+                    / CHUNK_TOKENS_INDEX_NAME
+                )
+            else:
+                raise ValueError(
+                    "pattern store-only requires "
+                    "chunk_index_file or chunk_index_dir "
+                    f"(default file {CHUNK_TOKENS_INDEX_NAME})"
+                )
+            if self.tokenizer is not None:
+                kwargs["tokenizer"] = self.tokenizer
+            return StoreOnlyWorkload(
+                idx_out,
+                engine=self.engine,
+                key_range=kwargs.get("key_range", 10000),
+                value_size=kwargs.get("value_size", 1024),
+                tokenizer=kwargs.get("tokenizer"),
+                text_input=kwargs.get("text_input"),
+            )
+
         if pattern not in self.PATTERNS:
             raise ValueError(
                 f"Unknown pattern: {pattern}. "
@@ -108,6 +317,9 @@ class WorkloadGenerator:
         rate: Optional[float] = None,
         output_format: str = "json",
         passes: int = 1,
+        chunk_index_dir: Optional[str] = None,
+        chunk_index_file: Optional[str] = None,
+        per_op_store_log: Optional[str] = None,
         **pattern_kwargs,
     ) -> Dict[str, Any]:
         """Run a workload pattern.
@@ -127,8 +339,15 @@ class WorkloadGenerator:
         """
         passes = max(1, passes)
         workload = self.create_workload(
-            pattern, **pattern_kwargs
+            pattern,
+            chunk_index_dir=chunk_index_dir,
+            chunk_index_file=chunk_index_file,
+            **pattern_kwargs,
         )
+        if per_op_store_log:
+            workload.per_op_store_log = (
+                per_op_store_log
+            )
 
         if passes == 1:
             workload.run(
@@ -267,95 +486,46 @@ class WorkloadGenerator:
 
     def _print_metrics(self, metrics: Dict[str, Any]):
         """Print metrics in human-readable format."""
-        print("\n" + "=" * 60)
+        width = 92
+        print("\n" + "=" * width)
         print("Workload Metrics")
-        print("=" * 60)
-        dur = metrics['duration_seconds']
-        print(f"Duration: {dur:.2f} seconds")
-        ops = metrics['total_operations']
-        print(f"Total Operations: {ops}")
-        ok = metrics['successful_operations']
-        print(f"Successful: {ok}")
-        fail = metrics['failed_operations']
-        print(f"Failed: {fail}")
-        tp = metrics['throughput_ops_per_sec']
-        print(f"Throughput: {tp:.2f} ops/sec")
+        print("=" * width)
+        dur = metrics["duration_seconds"]
+        ops = metrics["total_operations"]
+        ok = metrics["successful_operations"]
+        fail = metrics["failed_operations"]
+        tp = metrics["throughput_ops_per_sec"]
+        print(
+            f"Duration {dur:.2f} s   operations {ops}   "
+            f"ok {ok}   failed {fail}   "
+            f"{tp:.2f} ops/s"
+        )
         convs = metrics.get(
             "conversations_completed", 0
         )
         if convs:
+            print(f"Conversations completed: {convs}")
+
+        print("\n--- Combined latency (all successful ops) ---")
+        print(
+            f"avg {metrics['average_latency_ms']:.2f} ms   "
+            f"min {metrics['min_latency_ms']:.2f} ms   "
+            f"max {metrics['max_latency_ms']:.2f} ms"
+        )
+        if "latency_p99_ms" in metrics:
             print(
-                f"Conversations Completed: {convs}"
+                f"std {metrics['latency_std_ms']:.2f} ms   "
+                f"P99 {metrics['latency_p99_ms']:.2f} ms   "
+                f"P99.9 {metrics['latency_p999_ms']:.2f} ms"
             )
 
-        print("\n--- Overall Latency ---")
-        print(f"Average: {metrics['average_latency_ms']:.2f} ms")
-        print(f"Min: {metrics['min_latency_ms']:.2f} ms")
-        print(f"Max: {metrics['max_latency_ms']:.2f} ms")
-
-        # Operation type breakdown
         store = metrics.get("store_operations", {})
-        retrieve = metrics.get("retrieve_operations", {})
-
-        print("\n--- Operation Breakdown ---")
-        print(f"Store:    {store.get('count', 0):>6} total"
-              f"  ({store.get('successful', 0)} ok,"
-              f" {store.get('failed', 0)} failed)")
-        print(f"Retrieve: {retrieve.get('count', 0):>6} total"
-              f"  ({retrieve.get('successful', 0)} ok,"
-              f" {retrieve.get('failed', 0)} failed)")
-
-        if store.get("successful", 0) > 0:
-            print(f"\n--- Store Latency ---")
-            print(f"Average: {store['average_latency_ms']:.2f} ms")
-            print(f"Min: {store['min_latency_ms']:.2f} ms")
-            print(f"Max: {store['max_latency_ms']:.2f} ms")
-
-        if retrieve.get("successful", 0) > 0:
-            print(f"\n--- Retrieve Latency ---")
-            print(f"Average: {retrieve['average_latency_ms']:.2f} ms")
-            print(f"Min: {retrieve['min_latency_ms']:.2f} ms")
-            print(f"Max: {retrieve['max_latency_ms']:.2f} ms")
-
-        # KV block stats
-        print("\n--- KV Blocks ---")
-        print(
-            f"Blocks Written: "
-            f"{store.get('kv_blocks', 0)}"
-        )
-        print(
-            f"Blocks Read:    "
-            f"{retrieve.get('kv_blocks', 0)}"
+        retrieve = metrics.get(
+            "retrieve_operations", {}
         )
 
-        # Storage I/O
-        bytes_w = store.get("total_bytes", 0)
-        bytes_r = retrieve.get("total_bytes", 0)
-        if bytes_w or bytes_r:
-            print("\n--- Storage I/O ---")
-            print(
-                f"Written: {_format_bytes(bytes_w)}"
-            )
-            print(
-                f"Read:    {_format_bytes(bytes_r)}"
-            )
+        print("\n--- Per operation type (I/O + latency) ---")
+        _print_operation_stats_table(store, retrieve)
+        _print_cache_histograms(metrics, store, retrieve)
 
-        # Cache stats (overall)
-        print("\n--- Cache ---")
-        print(f"Hits:     {metrics['cache_hits']}")
-        print(f"Misses:   {metrics['cache_misses']}")
-        print(f"Hit Rate: {metrics['cache_hit_rate']:.2%}")
-
-        # Per-retrieve cache performance
-        r_hits = retrieve.get("hits", 0)
-        r_misses = retrieve.get("misses", 0)
-        r_hit_rate = retrieve.get("hit_rate", 0.0)
-        if retrieve.get("count", 0) > 0:
-            print(
-                "\n--- Retrieve Cache Performance ---"
-            )
-            print(f"Hits:     {r_hits}")
-            print(f"Misses:   {r_misses}")
-            print(f"Hit Rate: {r_hit_rate:.2%}")
-
-        print("=" * 60 + "\n")
+        print("=" * width + "\n")

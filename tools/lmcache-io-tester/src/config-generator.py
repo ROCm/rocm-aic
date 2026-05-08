@@ -1,7 +1,8 @@
 """Configuration generator for LMCache YAML config files."""
-import os
+import json
 from pathlib import Path
-from typing import Optional, Dict, Any
+from typing import Any, Dict
+
 import yaml
 from jinja2 import Template
 
@@ -49,6 +50,31 @@ class ConfigGenerator:
                 "local_cpu": local_cpu,
                 "max_local_cpu_size": max_local_cpu_size,
                 "remote_url": f"fs://host:0{storage_path}/",
+            }
+        )
+        config.update(kwargs)
+        return config
+
+    def generate_local_disk_config(
+        self,
+        storage_path: str,
+        chunk_size: int = 256,
+        local_cpu: bool = True,
+        max_local_cpu_size: float = 5.0,
+        max_local_disk_size: float = 5.0,
+        **kwargs,
+    ) -> Dict[str, Any]:
+        """LMCache local_disk tier using file:// URLs (POSIX disk offload)."""
+        resolved = Path(storage_path).resolve()
+        file_url = f"file://{resolved.as_posix()}/"
+        config = self.DEFAULT_CONFIG.copy()
+        config.update(
+            {
+                "chunk_size": chunk_size,
+                "local_cpu": local_cpu,
+                "max_local_cpu_size": max_local_cpu_size,
+                "local_disk": file_url,
+                "max_local_disk_size": max_local_disk_size,
             }
         )
         config.update(kwargs)
@@ -119,6 +145,117 @@ class ConfigGenerator:
         )
         config.update(kwargs)
         return config
+
+    def generate_redis_config(
+        self,
+        remote_url: str,
+        chunk_size: int = 256,
+        local_cpu: bool = False,
+        max_local_cpu_size: float = 5.0,
+        **kwargs,
+    ) -> Dict[str, Any]:
+        """LMCache config with Redis (or Sentinel) remote_url."""
+        config = self.DEFAULT_CONFIG.copy()
+        config.update(
+            {
+                "chunk_size": chunk_size,
+                "local_cpu": local_cpu,
+                "max_local_cpu_size": max_local_cpu_size,
+                "remote_url": remote_url,
+            }
+        )
+        config.update(kwargs)
+        return config
+
+    def generate_s3_config(
+        self,
+        remote_url: str,
+        s3_region: str,
+        chunk_size: int = 256,
+        local_cpu: bool = False,
+        max_local_cpu_size: float = 5.0,
+        **kwargs,
+    ) -> Dict[str, Any]:
+        """LMCache config for S3 or S3-compatible object storage."""
+        extra = {
+            "s3_region": s3_region,
+            "s3_num_io_threads": 64,
+            "save_chunk_meta": False,
+        }
+        kw_ex = kwargs.pop("extra_config", None)
+        if isinstance(kw_ex, dict):
+            extra.update(kw_ex)
+        config = self.DEFAULT_CONFIG.copy()
+        config.update(
+            {
+                "chunk_size": chunk_size,
+                "local_cpu": local_cpu,
+                "max_local_cpu_size": max_local_cpu_size,
+                "save_unfull_chunk": False,
+                "remote_url": remote_url,
+                "extra_config": extra,
+            }
+        )
+        config.update(kwargs)
+        return config
+
+    def generate_remote_config(
+        self,
+        remote_url: str,
+        chunk_size: int = 256,
+        local_cpu: bool = False,
+        max_local_cpu_size: float = 5.0,
+        **kwargs,
+    ) -> Dict[str, Any]:
+        """Generic remote_url-only config (lm://, mooncakestore://, …)."""
+        config = self.DEFAULT_CONFIG.copy()
+        config.update(
+            {
+                "chunk_size": chunk_size,
+                "local_cpu": local_cpu,
+                "max_local_cpu_size": max_local_cpu_size,
+                "remote_url": remote_url,
+            }
+        )
+        config.update(kwargs)
+        return config
+
+    @staticmethod
+    def merge_config_fragment(
+        base: Dict[str, Any],
+        fragment: Dict[str, Any],
+    ) -> None:
+        """Deep-merge fragment into base (nested extra_config)."""
+        for key, val in fragment.items():
+            if key == "extra_config" and isinstance(val, dict):
+                existing = base.get("extra_config")
+                if isinstance(existing, dict):
+                    merged = existing.copy()
+                    merged.update(val)
+                    base["extra_config"] = merged
+                else:
+                    base["extra_config"] = dict(val)
+            else:
+                base[key] = val
+
+    def merge_from_path(
+        self,
+        base: Dict[str, Any],
+        path: str,
+    ) -> None:
+        """Load YAML or JSON object from path and merge into base."""
+        p = Path(path)
+        with open(p, encoding="utf-8") as f:
+            if p.suffix.lower() in (".yaml", ".yml"):
+                fragment = yaml.safe_load(f)
+            else:
+                fragment = json.load(f)
+        if not isinstance(fragment, dict):
+            raise ValueError(
+                "extra-config file must contain a YAML/JSON object "
+                "at the root"
+            )
+        self.merge_config_fragment(base, fragment)
 
     def save_config(self, config: Dict[str, Any], output_path: str):
         """

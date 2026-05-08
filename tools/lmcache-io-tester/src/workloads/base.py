@@ -1,8 +1,53 @@
 """Base workload class for LMCache simulation."""
+import json
+import math
+import statistics
 import time
 from abc import ABC, abstractmethod
+from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 from dataclasses import dataclass, field
+
+
+def _enrich_summary_latency_percentiles(
+    samples: List[float],
+    summary: Dict[str, Any],
+) -> None:
+    """Add ``latency_std_ms``, ``latency_p99_ms``,
+    ``latency_p999_ms`` when ``samples`` is non-empty."""
+    if not samples:
+        return
+    svs = sorted(samples)
+    summary["latency_std_ms"] = (
+        statistics.stdev(samples)
+        if len(samples) > 1
+        else 0.0
+    )
+    summary["latency_p99_ms"] = _percentile_linear(
+        svs, 99.0
+    )
+    summary["latency_p999_ms"] = _percentile_linear(
+        svs, 99.9
+    )
+
+
+def _percentile_linear(
+    sorted_vals: List[float], p: float
+) -> float:
+    """Return the p-th percentile (0–100) with linear
+    interpolation. ``sorted_vals`` must be sorted."""
+    if not sorted_vals:
+        return 0.0
+    n = len(sorted_vals)
+    if n == 1:
+        return sorted_vals[0]
+    k = (n - 1) * (p / 100.0)
+    f = int(math.floor(k))
+    c = min(f + 1, n - 1)
+    return sorted_vals[f] + (
+        sorted_vals[c] - sorted_vals[f]
+    ) * (k - f)
 
 
 @dataclass
@@ -102,6 +147,15 @@ class WorkloadMetrics:
     )
     pass_number: int = 1
     conversations_completed: int = 0
+    latency_samples: List[float] = field(
+        default_factory=list
+    )
+    store_latency_samples: List[float] = field(
+        default_factory=list
+    )
+    retrieve_latency_samples: List[float] = field(
+        default_factory=list
+    )
 
     def record_operation(
         self,
@@ -123,6 +177,7 @@ class WorkloadMetrics:
             self.max_latency_ms = max(
                 self.max_latency_ms, latency_ms
             )
+            self.latency_samples.append(latency_ms)
             if cache_hit:
                 self.cache_hits += 1
             else:
@@ -135,12 +190,20 @@ class WorkloadMetrics:
                 success, latency_ms, kv_blocks,
                 data_bytes=data_bytes,
             )
+            if success:
+                self.store_latency_samples.append(
+                    latency_ms
+                )
         else:
             self.retrieve_metrics.record(
                 success, latency_ms, kv_blocks,
                 data_bytes=data_bytes,
                 cache_hit=cache_hit,
             )
+            if success:
+                self.retrieve_latency_samples.append(
+                    latency_ms
+                )
 
     def finalize(self):
         """Finalize metrics collection."""
@@ -167,6 +230,19 @@ class WorkloadMetrics:
             self.successful_operations / duration if duration > 0 else 0.0
         )
 
+        store_summary = self.store_metrics.get_summary()
+        _enrich_summary_latency_percentiles(
+            self.store_latency_samples,
+            store_summary,
+        )
+        retrieve_summary = (
+            self.retrieve_metrics.get_summary()
+        )
+        _enrich_summary_latency_percentiles(
+            self.retrieve_latency_samples,
+            retrieve_summary,
+        )
+
         summary = {
             "duration_seconds": duration,
             "total_operations": (
@@ -190,13 +266,13 @@ class WorkloadMetrics:
             "cache_misses": self.cache_misses,
             "cache_hit_rate": hit_rate,
             "throughput_ops_per_sec": throughput,
-            "store_operations": (
-                self.store_metrics.get_summary()
-            ),
-            "retrieve_operations": (
-                self.retrieve_metrics.get_summary()
-            ),
+            "store_operations": store_summary,
+            "retrieve_operations": retrieve_summary,
         }
+        _enrich_summary_latency_percentiles(
+            self.latency_samples,
+            summary,
+        )
         summary["pass_number"] = self.pass_number
         if self.conversations_completed > 0:
             summary["conversations_completed"] = (
@@ -264,41 +340,103 @@ class BaseWorkload(ABC):
         self.metrics.start_time = time.time()
         operation_count = 0
         start_time = time.time()
-        next_op_time = start_time  # Track when next operation should start
+        next_op_time = start_time
 
-        while True:
-            # Check duration limit
-            if duration and (time.time() - start_time) >= duration:
-                break
-
-            # Check operation count limit
-            if num_operations and operation_count >= num_operations:
-                break
-
-            # Rate limiting: wait until it's time for next operation
-            if rate:
-                current_time = time.time()
-                if current_time < next_op_time:
-                    time.sleep(next_op_time - current_time)
-                next_op_time = max(next_op_time, time.time()) + (1.0 / rate)
-
-            # Generate and execute operation
-            operation = self.generate_operation()
-            op_start = time.time()
-            success = self.execute_operation(operation)
-            op_latency = (time.time() - op_start) * 1000  # Convert to ms
-
-            # Record metrics
-            cache_hit = operation.get("cache_hit", False)
-            op_type = operation.get("type", "store")
-            kv_blocks = operation.get("kv_blocks", 0)
-            data_bytes = operation.get("data_bytes", 0)
-            self.metrics.record_operation(
-                success, op_latency, cache_hit,
-                op_type=op_type, kv_blocks=kv_blocks,
-                data_bytes=data_bytes,
+        log_path = getattr(self, "per_op_store_log", None)
+        log_f = None
+        if log_path:
+            lp = Path(log_path)
+            lp.parent.mkdir(parents=True, exist_ok=True)
+            pass_num = getattr(
+                self.metrics, "pass_number", 1
             )
-            operation_count += 1
+            mode = "a" if pass_num > 1 else "w"
+            log_f = open(lp, mode, encoding="utf-8")
+
+        try:
+            while True:
+                if duration and (
+                    time.time() - start_time
+                ) >= duration:
+                    break
+
+                if (
+                    num_operations
+                    and operation_count >= num_operations
+                ):
+                    break
+
+                if rate:
+                    current_time = time.time()
+                    if current_time < next_op_time:
+                        time.sleep(
+                            next_op_time - current_time
+                        )
+                    next_op_time = max(
+                        next_op_time, time.time()
+                    ) + (1.0 / rate)
+
+                operation = self.generate_operation()
+                op_start = time.time()
+                success = self.execute_operation(operation)
+                op_latency = (
+                    time.time() - op_start
+                ) * 1000
+
+                cache_hit = operation.get(
+                    "cache_hit", False
+                )
+                op_type = operation.get(
+                    "type", "store"
+                )
+                kv_blocks = operation.get(
+                    "kv_blocks", 0
+                )
+                data_bytes = operation.get(
+                    "data_bytes", 0
+                )
+                self.metrics.record_operation(
+                    success,
+                    op_latency,
+                    cache_hit,
+                    op_type=op_type,
+                    kv_blocks=kv_blocks,
+                    data_bytes=data_bytes,
+                )
+                if (
+                    log_f
+                    and op_type == "store"
+                    and success
+                    and self.metrics.store_latency_samples
+                    is not None
+                ):
+                    ts = time.time()
+                    ts_iso = datetime.fromtimestamp(
+                        ts, tz=timezone.utc
+                    ).isoformat()
+                    log_f.write(
+                        json.dumps(
+                            {
+                                "op_index": (
+                                    operation_count
+                                ),
+                                "ts_unix": ts,
+                                "ts_iso": ts_iso,
+                                "latency_ms": round(
+                                    op_latency, 6
+                                ),
+                                "bytes_written": (
+                                    data_bytes
+                                ),
+                            }
+                        )
+                        + "\n"
+                    )
+                    log_f.flush()
+                operation_count += 1
+        finally:
+            if log_f:
+                log_f.close()
 
         convs = getattr(
             self, "conversations_completed", 0
