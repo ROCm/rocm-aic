@@ -4,11 +4,13 @@ Load generator tools for benchmarking sweeps.
 
 from .multi_turn_benchmark import MultiTurnBenchmark
 from .vllm_bench_serve import VllmBenchServe
+from .lmcache_bench import LMCacheBenchLoadGenerator
 
 # Registry of available load generators
 LOAD_GENERATORS = {
     'multi-turn-benchmark': MultiTurnBenchmark,
     'vllm-bench-serve': VllmBenchServe,
+    'lmcache-bench': LMCacheBenchLoadGenerator,
 }
 
 
