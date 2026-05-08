@@ -38,3 +38,10 @@ deploy.local.env
 #Codespell disctionary cache
 dictionary.dic
 
+# tools/lmcache-io-tester (local logs, datasets, HF tokens)
+tools/lmcache-io-tester/logs/
+tools/lmcache-io-tester/**/*.log
+tools/lmcache-io-tester/data/sharegpt-*.json
+tools/lmcache-io-tester/data/lmsys-chat-*.json
+tools/lmcache-io-tester/data/wildchat-*.json
+tools/lmcache-io-tester/**/*.token
