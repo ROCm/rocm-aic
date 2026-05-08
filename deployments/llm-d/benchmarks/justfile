@@ -236,3 +236,9 @@ retry-failed SWEEP_DIR:
 results-aggregate SWEEP_DIR *ARGS='':
     @echo "📊 Aggregating results from: {{SWEEP_DIR}}"
     @python3 scripts/aggregate-sweep-results.py {{SWEEP_RESULTS_DIR}}/{{SWEEP_DIR}} {{ARGS}}
+
+# Merge multiple aggregated_results.json files into one
+results-merge OUTPUT *FILES:
+    @echo "🔗 Merging aggregated results..."
+    @python3 scripts/merge-aggregated-results.py {{FILES}} --output {{OUTPUT}} --pretty
+    @echo "✓ Merged results saved to: {{OUTPUT}}"
