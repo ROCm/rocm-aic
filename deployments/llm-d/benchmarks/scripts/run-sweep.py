@@ -236,6 +236,100 @@ def evaluate_expressions_in_combination(combination: Dict[str, Any]) -> Dict[str
 # ============================================================================
 
 
+# ============================================================================
+# Environment Variable Substitution for ${VAR} Syntax
+# ============================================================================
+
+def has_env_var_reference(value: Any) -> bool:
+    """
+    Check if a value contains environment variable references like ${VAR}.
+
+    Args:
+        value: The value to check (typically string)
+
+    Returns:
+        True if the value contains ${...} patterns
+    """
+    if not isinstance(value, str):
+        return False
+    return bool(re.search(r'\$\{[A-Za-z_][A-Za-z0-9_]*(?::-[^}]*)?\}', value))
+
+
+def substitute_env_vars(content: str, strict: bool = False) -> str:
+    """
+    Substitute ${VAR} and ${VAR:-default} patterns with environment variables.
+
+    Supports:
+    - ${VAR} - Direct substitution (error if missing and strict=True)
+    - ${VAR:-default} - Substitution with default value
+
+    Args:
+        content: String content with ${VAR} placeholders
+        strict: If True, raise error for undefined variables without defaults
+
+    Returns:
+        Content with environment variables substituted
+
+    Raises:
+        ValueError: If strict=True and a variable without default is undefined
+
+    Examples:
+        os.environ['API_KEY'] = 'secret123'
+        substitute_env_vars('token: ${API_KEY}') -> 'token: secret123'
+        substitute_env_vars('url: ${BASE_URL:-http://localhost}') -> 'url: http://localhost'
+    """
+    def replace_var(match):
+        var_expr = match.group(1)  # Content inside ${}
+
+        # Check for default value syntax: VAR:-default
+        if ':-' in var_expr:
+            var_name, default_value = var_expr.split(':-', 1)
+            return os.environ.get(var_name, default_value)
+        else:
+            var_name = var_expr
+            if var_name in os.environ:
+                return os.environ[var_name]
+            elif strict:
+                raise ValueError(
+                    f"Environment variable '${{{var_name}}}' is not defined. "
+                    f"Set it in your environment or use '${{VAR:-default}}' syntax."
+                )
+            else:
+                # Return unchanged if not strict
+                return match.group(0)
+
+    # Pattern: ${VAR} or ${VAR:-default}
+    pattern = r'\$\{([A-Za-z_][A-Za-z0-9_]*(?::-[^}]*)?)\}'
+    return re.sub(pattern, replace_var, content)
+
+
+def substitute_env_vars_in_dict(data: Any, strict: bool = False) -> Any:
+    """
+    Recursively substitute environment variables in a nested dictionary/list structure.
+
+    Args:
+        data: Dictionary, list, or primitive value
+        strict: If True, raise error for undefined variables
+
+    Returns:
+        Data structure with environment variables substituted
+    """
+    if isinstance(data, dict):
+        return {key: substitute_env_vars_in_dict(value, strict) for key, value in data.items()}
+    elif isinstance(data, list):
+        return [substitute_env_vars_in_dict(item, strict) for item in data]
+    elif isinstance(data, str):
+        if has_env_var_reference(data):
+            return substitute_env_vars(data, strict)
+        return data
+    else:
+        return data
+
+# ============================================================================
+# End Environment Variable Substitution
+# ============================================================================
+
+
 class GPUBudgetScheduler:
     """Manages GPU budget and schedules configurations based on available resources."""
 
@@ -392,11 +486,25 @@ class SweepOrchestrator:
             max_gpus_per_node: Maximum GPUs available per node
             output_dir: Custom sweep directory name (optional, overrides auto-generated name)
         """
+        # Load configuration with environment variable substitution
         with open(config_file) as f:
-            self.config = yaml.safe_load(f)
+            raw_content = f.read()
+
+        # Apply ${VAR} substitution to the entire YAML content
+        # Use strict=False to allow undefined variables (they remain as ${VAR})
+        substituted_content = substitute_env_vars(raw_content, strict=False)
+
+        # Parse YAML
+        self.config = yaml.safe_load(substituted_content)
 
         # Validate model-specific args schema early
         self._validate_model_specific_args()
+
+        # Validate and extract environment variables configuration
+        self._validate_and_parse_env_vars()
+
+        # Extract global env vars
+        self.global_env_vars = self.config.get('env_vars', {})
 
         self.sweep_name = self.config['name']
         self.deployment = self.config['deployment']
@@ -608,6 +716,52 @@ class SweepOrchestrator:
                         f"model_specific_args[{idx}]: '{args_key}' must be a dictionary"
                     )
 
+    def _validate_and_parse_env_vars(self) -> None:
+        """
+        Validate environment variables schema in the configuration.
+
+        Validates both:
+        - Top-level env_vars (global)
+        - Parameter-level env_vars (per-combination)
+
+        Raises ValueError if the schema is invalid.
+        """
+        # Validate top-level env_vars
+        global_env_vars = self.config.get('env_vars', {})
+
+        if global_env_vars:
+            if not isinstance(global_env_vars, dict):
+                raise ValueError("Top-level 'env_vars' must be a dictionary")
+
+            for key, value in global_env_vars.items():
+                if not isinstance(key, str):
+                    raise ValueError(f"Environment variable key must be string: {key}")
+                # Values can be any type (string, int, bool, etc.)
+                # They will be converted to strings when injected
+
+        # Validate parameter-level env_vars
+        params = self.config.get('parameters', {})
+        for param_name, param_spec in params.items():
+            if not isinstance(param_spec, dict):
+                continue
+
+            # Check if this parameter has env_vars
+            if 'env_vars' in param_spec:
+                env_vars = param_spec['env_vars']
+
+                if not isinstance(env_vars, (dict, list)):
+                    raise ValueError(
+                        f"Parameter '{param_name}': env_vars must be dict or list of dicts"
+                    )
+
+                # If it's a list (for combinations/categorical), validate each entry
+                if isinstance(env_vars, list):
+                    for idx, env_vars_entry in enumerate(env_vars):
+                        if not isinstance(env_vars_entry, dict):
+                            raise ValueError(
+                                f"Parameter '{param_name}': env_vars[{idx}] must be a dict"
+                            )
+
     def _get_user_id(self) -> str:
         """Get current user ID for namespace prefix."""
         # Try to get from environment, fall back to whoami
@@ -738,6 +892,8 @@ class SweepOrchestrator:
         variable = {}
 
         for name, spec in params.items():
+            if name == 'model_specific_args':
+                continue
             if spec['type'] == 'fixed':
                 fixed[name] = spec['value']
             elif spec['type'] == 'categorical':
@@ -784,6 +940,10 @@ class SweepOrchestrator:
                 combo = deploy_params.copy()
                 # Store load params separately to merge into benchmark_args later
                 combo['_load_params'] = load_params
+
+                # Merge environment variables (global + combination-level)
+                combo['_env_vars'] = self._merge_env_vars(combo)
+
                 full_combinations.append(combo)
 
         # Apply model-specific argument overrides
@@ -847,6 +1007,63 @@ class SweepOrchestrator:
 
         return combinations
 
+    def _merge_env_vars(self, combination: Dict[str, Any]) -> Dict[str, str]:
+        """
+        Merge global and combination-level environment variables.
+
+        Combination-level env_vars override global env_vars for same keys.
+
+        Args:
+            combination: Parameter combination dictionary
+
+        Returns:
+            Merged dictionary of environment variables (all values as strings)
+        """
+        # Start with global env vars
+        merged_env_vars = self.global_env_vars.copy()
+
+        # Get parameter configuration
+        params = self.config.get('parameters', {})
+
+        # Collect env_vars from parameters in this combination
+        for param_name, param_value in combination.items():
+            # Skip internal keys and non-parameter fields
+            if param_name.startswith('_'):
+                continue
+
+            # Get the parameter specification
+            param_spec = params.get(param_name)
+            if not param_spec or not isinstance(param_spec, dict):
+                continue
+
+            # Check if this parameter has env_vars
+            if 'env_vars' not in param_spec:
+                continue
+
+            param_env_vars = param_spec['env_vars']
+
+            # Handle dict format (for fixed parameters)
+            if isinstance(param_env_vars, dict):
+                merged_env_vars.update(param_env_vars)
+
+            # Handle list format (for categorical/combinations parameters)
+            elif isinstance(param_env_vars, list):
+                # Find the index of the current value in the parameter values
+                if param_spec['type'] == 'categorical':
+                    values = param_spec['values']
+                    try:
+                        idx = values.index(param_value)
+                        if idx < len(param_env_vars):
+                            env_vars_for_value = param_env_vars[idx]
+                            if isinstance(env_vars_for_value, dict):
+                                merged_env_vars.update(env_vars_for_value)
+                    except (ValueError, IndexError):
+                        # Value not found or index out of range, skip
+                        pass
+
+        # Convert all values to strings (required for Kubernetes env)
+        return {k: str(v) for k, v in merged_env_vars.items()}
+
     def build_engine_args(self, args: Dict[str, Any]) -> str:
         """
         Build CLI arguments for the current serving engine.
@@ -901,6 +1118,47 @@ class SweepOrchestrator:
             args.extend([f"--{arg_name}", str(value)])
 
         return args
+
+    def _generate_env_vars_patches(self, env_vars: Dict[str, str]) -> List[str]:
+        """
+        Generate Kubernetes environment variable patch operations for Kustomization.
+
+        Creates YAML-formatted patch operations to inject environment variables
+        into container spec.
+
+        Args:
+            env_vars: Dictionary of environment variable names to values
+
+        Returns:
+            List of YAML-formatted strings representing patch operations
+
+        Example:
+            Input:  {'API_KEY': 'secret', 'DEBUG': 'true'}
+            Output: ['- op: add',
+                     '  path: /spec/template/spec/containers/0/env/-',
+                     '  value:',
+                     '    name: API_KEY',
+                     '    value: "secret"',
+                     '- op: add',
+                     '  path: /spec/template/spec/containers/0/env/-',
+                     '  value:',
+                     '    name: DEBUG',
+                     '    value: "true"']
+        """
+        if not env_vars:
+            return []
+
+        patches = []
+        for name, value in sorted(env_vars.items()):  # Sort for deterministic output
+            patches.append('- op: add')
+            patches.append('  path: /spec/template/spec/containers/0/env/-')
+            patches.append('  value:')
+            patches.append(f'    name: {name}')
+            # Escape quotes in value and wrap in quotes
+            escaped_value = str(value).replace('"', '\\"')
+            patches.append(f'    value: "{escaped_value}"')
+
+        return patches
 
     def replace_template_variables(self, template_content: str, params: Dict[str, Any]) -> str:
         """
@@ -982,6 +1240,13 @@ class SweepOrchestrator:
         if engine_args_key in params:
             engine_args_array = self.serving_engine.build_server_args_array(params[engine_args_key])
             template_params["ENGINE_ARGS_ARRAY"] = engine_args_array
+
+        # Process environment variables
+        if '_env_vars' in params and params['_env_vars']:
+            env_vars_patches = self._generate_env_vars_patches(params['_env_vars'])
+            template_params["ENV_VARS_PATCH"] = env_vars_patches
+        else:
+            template_params["ENV_VARS_PATCH"] = []
 
         # Extract lmcache_args for special handling
         lmcache_args = template_params.pop('lmcache_args', None)

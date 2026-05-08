@@ -1,0 +1,53 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# SGLang inference scheduling template
+resources:
+  - ../../../../../../../../submodules/llm-d/guides/optimized-baseline/modelserver/amd/sglang
+
+components:
+  - ../../../../../../tiered-prefix-cache/manifests/vllm/components/hostpath-models
+
+patches:
+  - target:
+      kind: Deployment
+      name: decode
+    patch: |-
+      - op: replace
+        path: /spec/replicas
+        value: 1
+      - op: replace
+        path: /spec/template/spec/containers/0/image
+        value: docker.io/lmsysorg/sglang:v0.5.10.post1-rocm720-mi30x
+      - op: replace
+        path: /spec/template/spec/containers/0/command
+        value: ["sglang", "serve"]
+      - op: replace
+        path: /spec/template/spec/containers/0/args
+        value:
+          - "--model-path={{model}}"
+          - "--host=0.0.0.0"
+          - "--port=8000"
+          - "--enable-metrics"
+          - "--log-level-http=warning"
+          - "--tensor-parallel-size={{tensor_parallel_size}}"
+          {{ENGINE_ARGS_ARRAY}}
+      # This is meant for sglang with dummy model loading
+      - op: add
+        path: /spec/template/spec/containers/0/env/-
+        value:
+          name: HF_HOME
+          value: "/root/hf"
+      - op: replace
+        path: /spec/template/spec/containers/0/resources/limits/amd.com~1gpu
+        value: "{{tensor_parallel_size}}"
+      - op: replace
+        path: /spec/template/spec/containers/0/resources/requests/amd.com~1gpu
+        value: "{{tensor_parallel_size}}"
+      - op: replace
+        path: /spec/template/spec/containers/0/resources/limits/memory
+        value: "800Gi"
+      - op: replace
+        path: /spec/template/spec/containers/0/resources/requests/memory
+        value: "800Gi"
+              

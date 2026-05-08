@@ -138,6 +138,86 @@ kv_connector:
   raw_json: '{"kv_connector":"CustomConnector","kv_role":"kv_both"}'
 ```
 
+### Environment Variables
+
+The sweep orchestrator supports injecting environment variables into Kubernetes Pod containers. This feature enables configuration of runtime behavior, debugging settings, and integration with external services.
+
+#### Global Environment Variables
+
+Define environment variables at the top level to apply them to all sweep runs:
+
+```yaml
+name: "my-sweep"
+deployment: "inference-scheduling-vllm"
+
+# Global environment variables (applied to all runs)
+env_vars:
+  LOG_LEVEL: "INFO"
+  ENABLE_METRICS: "true"
+  OTEL_SERVICE_NAME: "vllm-benchmark"
+
+parameters:
+  model:
+    type: fixed
+    value: "facebook/opt-125m"
+  # ... rest of config
+```
+
+#### Per-Combination Environment Variables
+
+Override or add environment variables for specific parameter combinations:
+
+```yaml
+parameters:
+  tensor_parallel_size:
+    type: categorical
+    values: [1, 2, 4]
+    # Each entry corresponds to a value in the values list
+    env_vars:
+      - # For TP=1
+        TP_SIZE: "1"
+        CACHE_SIZE: "10GB"
+      - # For TP=2
+        TP_SIZE: "2"
+        CACHE_SIZE: "20GB"
+      - # For TP=4
+        TP_SIZE: "4"
+        CACHE_SIZE: "40GB"
+        ENABLE_TRACING: "true"  # Only for TP=4
+```
+
+**Override Semantics**: Combination-level `env_vars` override global `env_vars` for the same keys.
+
+#### Host Environment Variable Substitution
+
+Use `${VAR}` syntax to substitute values from the host environment at sweep configuration load time:
+
+```yaml
+env_vars:
+  # With default value (if HOST_VAR not set, use default)
+  API_BASE_URL: "${BASE_URL:-http://localhost:8000}"
+
+  # Without default (remains as ${VAR} if not set)
+  CUSTOM_CONFIG: "${MY_CUSTOM_CONFIG}"
+
+  # Works in any config value, not just env_vars
+model:
+  type: fixed
+  value: "${MODEL_NAME:-facebook/opt-125m}"
+```
+
+**Syntax**:
+- `${VAR}` - Substitute from host environment (remains unchanged if not set)
+- `${VAR:-default}` - Substitute with default value if VAR is not set
+
+#### Example
+
+See `sweep-configs/example-env-vars.yaml` for a complete example demonstrating:
+- Global environment variables
+- Per-combination environment variables
+- Host environment variable substitution
+- Override semantics
+
 ## Running Sweeps Quick start
 
 This section and implementation are still under development.
