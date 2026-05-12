@@ -1,4 +1,5 @@
 AIS
+AITER
 AMD
 Ansible
 BlueField
@@ -21,6 +22,7 @@ JSON
 KV
 LLM
 LMCache
+Makefile
 MI325X
 NVMe
 NVIDIA
@@ -56,7 +58,9 @@ dkms
 disaggregated
 env
 filesystem
+fio
 frontend
+GCN
 gfx
 gid
 gitignored
@@ -64,6 +68,7 @@ hipFile
 hipfile
 hipcc
 hostname
+huggingface
 icms
 ipc
 kfd
@@ -89,6 +94,7 @@ tunables
 uid
 vLLM
 venv
+vllm
 vmlinux
 weka
 whoami
@@ -106,6 +112,7 @@ TTFT
 xfs
 tmpfs
 CDNA
+CMake
 GGUF
 HuggingFace
 llama
@@ -179,6 +186,7 @@ reachability
 SGLang
 ShareGPT
 src
+srv
 TCP
 tmp
 tokenization

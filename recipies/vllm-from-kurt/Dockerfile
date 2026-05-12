@@ -28,10 +28,10 @@ RUN cd /app && \
         TORCH_DONT_CHECK_COMPILER_ABI=1 \
         CXX=hipcc \
         BUILD_WITH_HIP=1 \
-        python3 -m pip install --no-build-isolation -e .
+        python3 -m pip install --no-build-isolation --no-cache-dir -e .
 
-RUN apt update && \
-    apt install -y \
+RUN apt-get update && \
+    apt-get install -y \
         libboost-program-options-dev \
         libmount-dev
 
@@ -48,9 +48,8 @@ RUN cd /app && \
     git clone https://github.com/ROCm/fio.git && \
     cd fio && \
     git checkout origin/hipFile && \
-    HIPFILE=/app/hipFile \
-        CFLAGS="-I/opt/rocm/include -I$HIPFILE/include" \
-        LDFLAGS="-L/opt/rocm/lib -L$HIPFILE/build/src/amd_detail -Wl,-rpath,$HIPFILE/build/src/amd_detail" \
+    CFLAGS="-I/opt/rocm/include -I/app/hipFile/include" \
+        LDFLAGS="-L/opt/rocm/lib -L/app/hipFile/build/src/amd_detail -Wl,-rpath,/app/hipFile/build/src/amd_detail" \
         ./configure --enable-libhipfile && \
     make -j
 
@@ -60,8 +59,8 @@ RUN cd /app && \
 
 # Riley's hipfile bindings 2.0
 COPY hipfile-0.2.0.dev0-cp312-cp312-linux_x86_64.whl /tmp
-RUN pip install scikit-build-core
-RUN pip install /tmp/hipfile-0.2.0.dev0-cp312-cp312-linux_x86_64.whl
+RUN python3 -m pip install --no-cache-dir scikit-build-core
+RUN python3 -m pip install --no-cache-dir /tmp/hipfile-0.2.0.dev0-cp312-cp312-linux_x86_64.whl
 
 # Alex's hipfile bindings
 # COPY hipfile /usr/lib/python3/dist-packages/hipfile

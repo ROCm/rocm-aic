@@ -22,6 +22,18 @@ The llama.cpp benchmark includes a `--cache-disk` patch
 for automatic disk-tier prompt caching (see
 [patches/0001-cache-disk.patch][patch]).
 
+## Recipes
+
+The `recipies/` directory holds self-contained container recipes
+(Dockerfile and Makefile assets, plus scripts) for experiments and integration
+workflows, separate from the `benchmarks/` TTFT harnesses. Each
+recipe directory has its own README.
+
+| Recipe | Focus | README |
+|--------|-------|--------|
+| [rocm-inference-stack][d-rec-inf] | ROCm inference stack image (NIXL, LMCache, tooling) | [README][r-rec-inf] |
+| [ROCm vLLM + LMCache + hipFile][d-vllm-kurt] | Kurt-derived vLLM image build and run scripts | [README][r-vllm-kurt] |
+
 ## Host Discovery and Provisioning
 
 The [`ansible/`][ansible-dir] directory contains **`site.yml`** at the repo
@@ -49,6 +61,10 @@ playbooks/discover.yml` for discovery only).
 [r-lmc]: benchmarks/ttft-lmcache/README.md
 [r-lcp]: benchmarks/ttft-llamacpp/README.md
 [patch]: benchmarks/ttft-llamacpp/patches/0001-cache-disk.patch
+[d-rec-inf]: recipies/rocm-inference-stack/
+[d-vllm-kurt]: recipies/vllm-from-kurt/
+[r-rec-inf]: recipies/rocm-inference-stack/README.md
+[r-vllm-kurt]: recipies/vllm-from-kurt/README.md
 [ansible-dir]: ansible/
 [playbooks-dir]: ansible/playbooks/
 [discover-yml]: ansible/playbooks/discover.yml
