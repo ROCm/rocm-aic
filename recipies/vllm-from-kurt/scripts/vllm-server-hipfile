@@ -27,7 +27,7 @@ AMDGCN_USE_BUFFER_OPS=0 \
 /app/hipFile/build/tools/ais-stats/ais-stats \
 vllm serve openai/gpt-oss-120b \
     --host localhost \
-    --port ${VLLM_PORT} \
+    --port "${VLLM_PORT}" \
     --load-format dummy \
     --tensor-parallel-size 1 \
     --gpu-memory-utilization 0.90 \

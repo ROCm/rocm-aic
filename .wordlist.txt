@@ -85,6 +85,7 @@ repo
 rocm
 scipy
 seccomp
+shellcheck
 shm
 sys
 sysfs
@@ -104,8 +105,10 @@ wc
 backend
 backends
 Gutenberg
+Hadolint
 HuggingFace
 jsonl
+kurt
 NFS
 PRNG
 TTFT

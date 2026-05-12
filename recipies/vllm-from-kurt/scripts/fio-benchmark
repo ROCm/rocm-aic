@@ -2,8 +2,8 @@
 
 DATA=/data/rand1G.dat
 
-if ! [ -e $DATA ]; then
-    dd if=/dev/urandom of=$DATA bs=1G count=1
+if ! [ -e "$DATA" ]; then
+    dd if=/dev/urandom of="$DATA" bs=1G count=1
 fi
 
 HIPFILE_UNSUPPORTED_FILE_SYSTEMS=true \
@@ -12,7 +12,7 @@ HIPFILE_ALLOW_COMPAT_MODE=false \
   --time_based \
   --ramp_time=5s \
   --runtime=10s \
-  --filename=${DATA} \
+  --filename="${DATA}" \
   --direct=1 \
   --rw=read \
   --bs=128M \

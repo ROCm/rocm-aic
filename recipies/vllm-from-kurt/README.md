@@ -11,16 +11,39 @@ This recipe builds **`vllm-kurt`**, a ROCm container derived from
 hipFile I/O engine, installs the bundled **hipfile** Python wheel
 (`cp312`, `linux_x86_64`), and copies helper scripts into `/app/`.
 
+## Makefile (local checks and build)
+
+Run from **`recipies/vllm-from-kurt/`**. **`make`** (or **`make help`**)
+lists targets.
+
+| Target | Purpose |
+| ------ | ------- |
+| **`test`** / **`lint`** | Run **Hadolint** on `Dockerfile` (Hadolint runs in Docker against the repo **`.hadolint.yaml`**) and **shellcheck** on `vllm-container` and the `scripts/` shell helpers. |
+| **`lint-hadolint`** | Dockerfile only. |
+| **`lint-shell`** | Shell scripts only (requires **`shellcheck`** on the host). |
+| **`build`** / **`vllm-kurt`** | `docker build -t vllm-kurt` with **`ROCM_ARCH`** (and optional **`LMCACHE_SHA1`**). |
+
+Examples:
+
+```bash
+make test
+export ROCM_ARCH=gfx942
+make build
+```
+
 ## Prerequisites
 
 - Docker on a host with AMD GPUs (`/dev/kfd`, `/dev/dri`).
+- **`shellcheck`** installed on the host if you run **`make test`** or
+  **`make lint-shell`** (e.g. `apt install shellcheck`).
 - **`ROCM_ARCH`** matching your GPU (for example `gfx942` for MI300,
   or your GCN/CDNA target string for `PYTORCH_ROCM_ARCH` / hipFile
   CMake).
 
 ## Build
 
-From this directory:
+From this directory (after **`make test`** if you want the same static
+checks as CI for the Dockerfile and host scripts):
 
 ```bash
 export ROCM_ARCH=gfx942   # adjust for your GPU
@@ -31,12 +54,16 @@ Or use the Makefile (same requirement on **`ROCM_ARCH`**):
 
 ```bash
 export ROCM_ARCH=gfx942
-make vllm-kurt
+make build
+# or: make vllm-kurt
 ```
 
-Optional: override the LMCache commit by passing
-`--build-arg LMCACHE_SHA1=<git-sha>` (default is set in the
-`Dockerfile`).
+Optional: override the LMCache commit when building:
+
+```bash
+export ROCM_ARCH=gfx942
+make build LMCACHE_SHA1=your_git_sha_here
+```
 
 ## Run the container
 

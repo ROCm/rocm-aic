@@ -19,7 +19,7 @@ VLLM_ROCM_USE_AITER=1 \
 AMDGCN_USE_BUFFER_OPS=0 \
 vllm serve openai/gpt-oss-120b   \
     --host localhost \
-    --port ${VLLM_PORT} \
+    --port "${VLLM_PORT}" \
     --tensor-parallel-size 1 \
     --gpu-memory-utilization 0.90 \
     --block-size 64 \

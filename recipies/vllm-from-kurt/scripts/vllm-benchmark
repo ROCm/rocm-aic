@@ -5,7 +5,7 @@
 VLLM_PORT="800${ROCR_VISIBLE_DEVICES}"
 
 python3 /app/LMCache/benchmarks/long_doc_qa/long_doc_qa.py \
-    --port ${VLLM_PORT} \
+    --port "${VLLM_PORT}" \
     --model openai/gpt-oss-120b  \
     --num-documents 100 \
     --document-length 100000 \
