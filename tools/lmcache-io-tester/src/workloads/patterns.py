@@ -363,6 +363,66 @@ class RetrieveOnlyWorkload(BaseWorkload):
             return False
 
 
+class LookupOnlyWorkload(BaseWorkload):
+    """Call ``engine.lookup`` for token rows from the JSONL sidecar (same
+    file as retrieve-only). Does not load KV bytes — measures existence /
+    prefix-hit latency only."""
+
+    def __init__(
+        self,
+        index_path: Path,
+        engine: Any = None,
+    ):
+        super().__init__(engine)
+        self.index_path = Path(index_path)
+        self._rows = _load_chunk_token_index(
+            self.index_path
+        )
+        if not self._rows:
+            raise ValueError(
+                f"No token rows in {self.index_path}; "
+                "run store-only first or populate JSONL "
+                f'with lines like {{"tokens": [1,2,...]}}'
+            )
+        self.metrics.chunk_index_fingerprints = frozenset(
+            _kv_block_identity({"token_ids": row})
+            for row in self._rows
+        )
+        self.metrics.chunk_index_path = str(
+            self.index_path.resolve()
+        )
+
+    def generate_operation(self) -> Dict[str, Any]:
+        token_ids = random.choice(self._rows)
+        key = f"lookup_{random.randint(0, 2**31 - 1)}"
+        return {
+            "type": "lookup",
+            "key": key,
+            "token_ids": token_ids,
+        }
+
+    def execute_operation(
+        self, operation: Dict[str, Any]
+    ) -> bool:
+        try:
+            token_ids = operation["token_ids"]
+            prefix = self.engine.lookup(token_ids)
+            n = len(token_ids)
+            operation["cache_hit"] = prefix >= n
+            operation["lookup_prefix_tokens"] = int(prefix)
+            operation["kv_blocks"] = int(prefix)
+            operation["data_bytes"] = 0
+            return True
+        except Exception as e:
+            if self.metrics.failed_operations < 3:
+                print(
+                    f"Engine operation failed: "
+                    f"{type(e).__name__}: {e}",
+                    file=sys.stderr,
+                )
+            return False
+
+
 class SteadyStateWorkload(BaseWorkload):
     """Steady-state workload pattern."""
 

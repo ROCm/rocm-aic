@@ -26,6 +26,9 @@ StoreOnlyWorkload = _patterns_module.StoreOnlyWorkload
 RetrieveOnlyWorkload = (
     _patterns_module.RetrieveOnlyWorkload
 )
+LookupOnlyWorkload = (
+    _patterns_module.LookupOnlyWorkload
+)
 SteadyStateWorkload = _patterns_module.SteadyStateWorkload
 ConversationWorkload = (
     _patterns_module.ConversationWorkload
@@ -61,8 +64,9 @@ def _fmt_ms_cell(
 def _print_operation_stats_table(
     store: Dict[str, Any],
     retrieve: Dict[str, Any],
+    lookup: Optional[Dict[str, Any]] = None,
 ) -> None:
-    """Aligned store / retrieve rows (ops, I/O, latency)."""
+    """Aligned store / retrieve / optional lookup rows."""
     col_op = 12
     col_n = 8
     col_ok = 8
@@ -121,6 +125,8 @@ def _print_operation_stats_table(
 
     row("store", store, show_hit=False)
     row("retrieve", retrieve, show_hit=True)
+    if lookup is not None and lookup.get("count", 0) > 0:
+        row("lookup", lookup, show_hit=True)
 
 
 def _print_kv_block_hit_histogram(
@@ -259,6 +265,28 @@ class WorkloadGenerator:
                     f"Chunk token index not found: {idx}"
                 )
             return RetrieveOnlyWorkload(
+                idx, engine=self.engine
+            )
+
+        if pattern == "lookup-only":
+            if chunk_index_file:
+                idx = Path(chunk_index_file)
+            elif chunk_index_dir:
+                idx = (
+                    Path(chunk_index_dir)
+                    / CHUNK_TOKENS_INDEX_NAME
+                )
+            else:
+                raise ValueError(
+                    "pattern lookup-only requires "
+                    "chunk_index_file or chunk_index_dir "
+                    f"(default file {CHUNK_TOKENS_INDEX_NAME})"
+                )
+            if not idx.is_file():
+                raise ValueError(
+                    f"Chunk token index not found: {idx}"
+                )
+            return LookupOnlyWorkload(
                 idx, engine=self.engine
             )
 
@@ -502,9 +530,12 @@ class WorkloadGenerator:
         retrieve = metrics.get(
             "retrieve_operations", {}
         )
+        lookup = metrics.get("lookup_operations", {})
 
         print()
-        _print_operation_stats_table(store, retrieve)
+        _print_operation_stats_table(
+            store, retrieve, lookup=lookup
+        )
 
         _print_kv_block_hit_histogram(metrics)
 

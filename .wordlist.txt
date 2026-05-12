@@ -125,6 +125,7 @@ Radeon
 Reproducibility
 sbatch
 Slurm
+stderr
 stdout
 subcommand
 ttft
@@ -188,3 +189,11 @@ tokenizers
 UltraChat
 WildChat
 YAML
+checkpoint
+gpt
+gpt2
+IOPS
+kv
+ok
+odirect
+POSIX
