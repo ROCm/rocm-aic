@@ -17,7 +17,7 @@ permissions:
 
 jobs:
   smoke:
-    name: Venv install and store / retrieve smoke
+    name: Venv install and store / retrieve / lookup smoke
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -40,7 +40,7 @@ jobs:
           ./.venv/bin/python -m pip install --upgrade pip
           ./.venv/bin/pip install -r requirements.txt
 
-      - name: Store-only then retrieve-only on local filesystem
+      - name: Store-only, retrieve-only, and lookup-only on local filesystem
         env:
           CI_STORAGE_ROOT: ${{ runner.temp }}/lmcache-io-ci
         run: |
@@ -61,6 +61,14 @@ jobs:
             --storage-path "$CI_STORAGE_ROOT" \
             --device cpu \
             --pattern retrieve-only \
+            --num-operations 32 \
+            --config configs/lmcache-config.yml
+
+          ./.venv/bin/python -m src.lmcache-sim run \
+            --storage-type filesystem \
+            --storage-path "$CI_STORAGE_ROOT" \
+            --device cpu \
+            --pattern lookup-only \
             --num-operations 32 \
             --config configs/lmcache-config.yml
 

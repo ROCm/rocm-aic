@@ -4,4 +4,9 @@ max_local_cpu_size: 5.0
 remote_serde: naive
 blocking_timeout_secs: 10
 cache_policy: LRU
-remote_url: fs://host:0/tmp/lmcache-test-fs/
+remote_storage_plugins:
+- fs
+extra_config:
+  remote_storage_plugin.fs.base_path: /opt/lmcache-test-fs/
+  fs_connector_use_odirect: true
+  save_chunk_meta: false

@@ -125,6 +125,7 @@ Radeon
 Reproducibility
 sbatch
 Slurm
+stderr
 stdout
 subcommand
 ttft
@@ -194,3 +195,5 @@ gpt2
 IOPS
 kv
 ok
+odirect
+POSIX

@@ -201,6 +201,9 @@ class WorkloadMetrics:
     retrieve_metrics: OperationTypeMetrics = field(
         default_factory=OperationTypeMetrics
     )
+    lookup_metrics: OperationTypeMetrics = field(
+        default_factory=OperationTypeMetrics
+    )
     pass_number: int = 1
     conversations_completed: int = 0
     latency_samples: List[float] = field(
@@ -210,6 +213,9 @@ class WorkloadMetrics:
         default_factory=list
     )
     retrieve_latency_samples: List[float] = field(
+        default_factory=list
+    )
+    lookup_latency_samples: List[float] = field(
         default_factory=list
     )
     stored_kv_block_ids: Set[str] = field(
@@ -268,6 +274,26 @@ class WorkloadMetrics:
                 self.store_latency_samples.append(
                     latency_ms
                 )
+        elif op_type == "lookup":
+            self.lookup_metrics.record(
+                success,
+                latency_ms,
+                kv_blocks,
+                data_bytes=data_bytes,
+                cache_hit=cache_hit,
+            )
+            if success and block_identity is not None:
+                self.retrieve_seen_kv_block_ids.add(
+                    block_identity
+                )
+                if cache_hit:
+                    self.kv_block_hit_counts[
+                        block_identity
+                    ] += 1
+            if success:
+                self.lookup_latency_samples.append(
+                    latency_ms
+                )
         else:
             self.retrieve_metrics.record(
                 success, latency_ms, kv_blocks,
@@ -324,6 +350,11 @@ class WorkloadMetrics:
             self.retrieve_latency_samples,
             retrieve_summary,
         )
+        lookup_summary = self.lookup_metrics.get_summary()
+        _enrich_summary_latency_percentiles(
+            self.lookup_latency_samples,
+            lookup_summary,
+        )
 
         hc_plain = dict(self.kv_block_hit_counts)
         if self.chunk_index_fingerprints is not None:
@@ -371,6 +402,7 @@ class WorkloadMetrics:
             "throughput_ops_per_sec": throughput,
             "store_operations": store_summary,
             "retrieve_operations": retrieve_summary,
+            "lookup_operations": lookup_summary,
             "kv_block_hit_histogram": kv_hist,
         }
         if self.chunk_index_fingerprints is not None:

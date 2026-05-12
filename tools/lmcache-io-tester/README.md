@@ -259,10 +259,12 @@ JSON object per successful store (`op_index`,
 Printed metrics (default `--output-format text`) list
 per-operation-type averages, min/max, and when samples exist
 `latency_std_ms`, `latency_p99_ms`, and `latency_p999_ms` under
-`store_operations` and `retrieve_operations`.
+`store_operations`, `retrieve_operations`, and `lookup_operations`
+(when the lookup-only pattern runs).
 Use `--output-format json` for machine-readable summaries.
 Latency is wall time around `engine.store()` /
-`engine.retrieve()`; `bytes_written` is logical KV bytes
+`engine.retrieve()`, or `engine.lookup()` for lookup-only;
+`bytes_written` is logical KV bytes
 for that chunk (same basis as the workload summary), not
 a host OS block IO counter. Very large `--num-operations`
 values keep all samples in RAM for percentiles.
@@ -306,12 +308,29 @@ python -m src.lmcache-sim run \
     --num-operations 500
 ```
 
-Omit `--hf-model-name` / `--auto-kv-shape` if you want the fixed default KV
-shape only; keep flags identical between the two phases when you use a model.
+**Lookup-only** (`--pattern lookup-only`) uses the same JSONL sidecar as
+retrieve-only but calls `engine.lookup(tokens=...)` only. It measures
+prefix-hit latency and full-chunk hit rate without loading KV tensors.
+Add a third phase after the retrieve-only example:
 
-Continuous integration (on `main`) runs a small **store-only** then
-**retrieve-only** smoke job when files under `tools/lmcache-io-tester/` change;
-see `.github/workflows/lmcache-io-tester.yml`.
+```bash
+python -m src.lmcache-sim run \
+    --storage-type filesystem \
+    --storage-path "$ST" \
+    --device cpu \
+    --hf-model-name gpt2 \
+    --auto-kv-shape \
+    --pattern lookup-only \
+    --num-operations 500
+```
+
+Omit `--hf-model-name` / `--auto-kv-shape` if you want the fixed default KV
+shape only; keep flags identical across store, retrieve, and lookup phases
+when you use a model.
+
+Continuous integration (on `main`) runs a small **store-only**, then
+**retrieve-only**, then **lookup-only** smoke job when files under
+`tools/lmcache-io-tester/` change; see `.github/workflows/lmcache-io-tester.yml`.
 
 ### Steady-State
 
@@ -455,8 +474,9 @@ The workload generation flow:
 
 3. **Direct Engine Calls**:
    ```python
-   engine.store(token_ids)     # store KV cache
-   engine.retrieve(token_ids)  # retrieve cached data
+   engine.store(token_ids)      # store KV cache
+   engine.retrieve(token_ids)   # retrieve cached data
+   engine.lookup(token_ids)     # lookup-only: prefix hit count, no KV load
    ```
 
 4. **Metrics Collection** (default human-readable `text` output):
@@ -464,12 +484,15 @@ The workload generation flow:
    - **Header**: `Workload Metrics` then one line: duration, operation counts,
      ok/fail, and **IOPS** (successful ops / elapsed time),
      semicolon-separated.
-   - **Table**: one row each for `store` and `retrieve` with op counts, KV
-     blocks, **IO Bytes** (logical KV bytes), average / P99 / P99.9 ms where
-     samples exist, and retrieve **Hit%**.
+   - **Table**: one row each for `store` and `retrieve`, plus `lookup` when the
+     run used **lookup-only**, with op counts, KV blocks, **IO Bytes** (logical
+     KV bytes; zero for lookup), average / P99 / P99.9 ms where samples exist,
+     and retrieve / lookup **Hit%** (full-chunk hit for lookup: returned prefix
+     covers all sidecar tokens).
    - **Hits per KV block**: histogram of how many logical blocks (by default,
      distinct chunk token fingerprints in the JSONL sidecar for
-     **retrieve-only**) had 0, 1, … successful retrieve hits. Prints **Total
+     **retrieve-only** / **lookup-only**) had 0, 1, … successful hits (retrieve
+     tokens loaded; lookup full prefix). Prints **Total
      Unique Blocks** for that index. Only non-zero buckets are shown (up to
      nine interior rows); the last row is **`>N`** where `N` is the last printed
      bucket index and its count sums every higher bucket plus the internal
@@ -487,13 +510,14 @@ storage type. Config files can be customized and reused.
 
 ### Storage backends (`--storage-type`)
 
-| Type | Required flags | LMCache `remote_url` / notes |
-|------|----------------|------------------------------|
-| `filesystem` | `--storage-path` | `fs://host:0{path}/` (remote FS
-connector) |
-| `local-disk` | `--storage-path` | `local_disk` + `file://` path; uses
-[local disk][ref-lmcache-local] backend (not `fs://`) |
-| `block-device` | `--block-device` | Mounts device; same `fs://` pattern |
+| Type | Required flags | LMCache wiring / notes |
+|------|----------------|------------------------|
+| `filesystem` | `--storage-path` | ``remote_storage_plugins: [fs]`` and
+``extra_config.remote_storage_plugin.fs.base_path`` (no legacy ``remote_url``) |
+| `local-disk` | `--storage-path` | ``local_disk`` + ``file://`` path; uses
+[local disk][ref-lmcache-local] backend (not ``fs://``) |
+| `block-device` | `--block-device` | Mounts device; same ``fs`` plugin +
+``base_path`` as ``filesystem`` |
 | `gds` | `--storage-path` | Sets `gds_path` and CuFile options |
 | `redis` | `--remote-url` | `redis://` or `redis-sentinel://` |
 | `s3` | `--remote-url`, `--s3-region` | `s3://bucket`; region and AWS keys
@@ -504,6 +528,32 @@ Optional **`--extra-config PATH`**: merge a YAML or JSON object into the
 generated config (nested `extra_config` keys merge with existing S3 or
 other backend settings). Optional **`--probe-remote`**: TCP reachability
 for host/port URLs before starting the engine (skipped for `s3://`).
+
+**`--fs-odirect`** (`start`, `run`, `verify`): after `--extra-config`, merges
+LMCache `extra_config` entries to turn on POSIX `O_DIRECT` for the ``fs``
+remote connector on **`filesystem`** and **`block-device`** backends
+(`fs_connector_use_odirect`, `save_chunk_meta: false`). Other storage types
+print a warning and ignore the flag. Keys follow upstream LMCache; adjust
+with `--extra-config` if your package version uses different names.
+
+### LMCache stderr warnings (what they mean)
+
+At ``LMCACHE_LOG_LEVEL=WARNING`` (the tester default), you may still see:
+
+- **Fallback to python backend ``lmcache.non_cuda_equivalents``** — normal on
+  CPU-only hosts or when CUDA is unavailable; use a GPU build with CUDA to
+  pick ``lmcache.c_ops`` instead.
+- **Could not load ``builtin`` from vLLM** — the sim does not require vLLM;
+  LMCache then uses Python ``hash``. The tester sets ``PYTHONHASHSEED`` by
+  default so follow-on hash-seed warnings are avoided; install vLLM if you
+  need its hash functions.
+- **Controller message sender is not initialized** — expected for this
+  in-process engine: there is no LMCache cache-controller worker. Harmless for
+  local IO testing.
+- **``remote_url`` is deprecated** — still emitted for ``redis``, ``s3``, and
+  generic ``remote`` backends until those configs migrate to
+  ``remote_storage_plugins`` upstream; ``filesystem`` / ``block-device`` use
+  the plugin path and should not log this.
 
 **`verify` subcommand**: one chunk `store` then `retrieve`/`lookup`; exits
 0 when hit counts match the chunk size. Set **`LMVERIFY_RELAXED=1`** to

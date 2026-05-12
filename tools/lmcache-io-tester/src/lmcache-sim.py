@@ -134,6 +134,13 @@ def help_alias(ctx: click.Context):
     help="YAML/JSON merged into generated LMCache config",
 )
 @click.option(
+    "--fs-odirect",
+    is_flag=True,
+    help="Enable O_DIRECT on LMCache fs:// connector "
+    "(filesystem / block-device only); merges "
+    "extra_config after --extra-config",
+)
+@click.option(
     "--probe-remote",
     is_flag=True,
     help="TCP check for redis/lm-style remote_url "
@@ -262,6 +269,7 @@ def start(
     remote_url: Optional[str],
     s3_region: Optional[str],
     extra_config_path: Optional[str],
+    fs_odirect: bool,
     probe_remote: bool,
     storage_path: Optional[str],
     block_device: Optional[str],
@@ -325,6 +333,7 @@ def start(
             s3_region,
             extra_config_path,
             probe_remote,
+            fs_odirect,
             storage_mgr,
             config_gen,
         )
@@ -365,6 +374,13 @@ def start(
     "extra_config_path",
     type=click.Path(exists=True, dir_okay=False),
     help="YAML/JSON merged into generated LMCache config",
+)
+@click.option(
+    "--fs-odirect",
+    is_flag=True,
+    help="Enable O_DIRECT on LMCache fs:// connector "
+    "(filesystem / block-device only); merges "
+    "extra_config after --extra-config",
 )
 @click.option(
     "--probe-remote",
@@ -506,7 +522,7 @@ def start(
     default=None,
     help="JSONL token sidecar path; default "
          "<storage-path>/" + CHUNK_TOKENS_INDEX_NAME
-         + " (patterns store-only / retrieve-only)",
+         + " (patterns store-only / retrieve-only / lookup-only)",
 )
 @click.option(
     "--pattern",
@@ -517,6 +533,7 @@ def start(
             "conversation",
             "store-only",
             "retrieve-only",
+            "lookup-only",
         ]
     ),
     default="random",
@@ -617,6 +634,7 @@ def run(
     remote_url: Optional[str],
     s3_region: Optional[str],
     extra_config_path: Optional[str],
+    fs_odirect: bool,
     probe_remote: bool,
     storage_path: Optional[str],
     block_device: Optional[str],
@@ -671,11 +689,12 @@ def run(
         )
         sys.exit(1)
 
-    if pattern in ("store-only", "retrieve-only"):
+    if pattern in ("store-only", "retrieve-only", "lookup-only"):
         if not chunk_index and not storage_path:
             click.echo(
-                "Error: patterns store-only / retrieve-only "
-                "require --storage-path or --chunk-index",
+                "Error: patterns store-only / retrieve-only / "
+                "lookup-only require --storage-path or "
+                "--chunk-index",
                 err=True,
             )
             sys.exit(1)
@@ -733,6 +752,7 @@ def run(
             s3_region,
             extra_config_path,
             probe_remote,
+            fs_odirect,
             storage_mgr,
             config_gen,
         )
@@ -843,7 +863,7 @@ def run(
     default=None,
     required=False,
     help="JSONL token sidecar (patterns "
-         "store-only / retrieve-only)",
+         "store-only / retrieve-only / lookup-only)",
 )
 @click.option(
     "--pattern",
@@ -854,6 +874,7 @@ def run(
             "conversation",
             "store-only",
             "retrieve-only",
+            "lookup-only",
         ]
     ),
     default="random",
@@ -1068,11 +1089,11 @@ def workload(
         )
         sys.exit(1)
 
-    if pattern in ("store-only", "retrieve-only"):
+    if pattern in ("store-only", "retrieve-only", "lookup-only"):
         if not chunk_index:
             click.echo(
-                "Error: patterns store-only / "
-                "retrieve-only require --chunk-index "
+                "Error: patterns store-only / retrieve-only / "
+                "lookup-only require --chunk-index "
                 "for the workload command",
                 err=True,
             )
@@ -1201,6 +1222,13 @@ def workload(
     help="YAML/JSON merged into generated LMCache config",
 )
 @click.option(
+    "--fs-odirect",
+    is_flag=True,
+    help="Enable O_DIRECT on LMCache fs:// connector "
+    "(filesystem / block-device only); merges "
+    "extra_config after --extra-config",
+)
+@click.option(
     "--probe-remote",
     is_flag=True,
     help="TCP check for redis/lm-style remote_url "
@@ -1317,6 +1345,7 @@ def verify(
     remote_url: Optional[str],
     s3_region: Optional[str],
     extra_config_path: Optional[str],
+    fs_odirect: bool,
     probe_remote: bool,
     storage_path: Optional[str],
     block_device: Optional[str],
@@ -1383,6 +1412,7 @@ def verify(
             s3_region,
             extra_config_path,
             probe_remote,
+            fs_odirect,
             storage_mgr,
             config_gen,
         )
@@ -1614,6 +1644,7 @@ def _setup_storage_and_config(
     s3_region,
     extra_config_path,
     probe_remote,
+    fs_odirect,
     storage_mgr,
     config_gen,
 ):
@@ -1826,6 +1857,20 @@ def _setup_storage_and_config(
             config_dict,
             extra_config_path,
         )
+
+    if fs_odirect:
+        if storage_type in ("filesystem", "block-device"):
+            config_gen.apply_fs_odirect_extra_config(
+                config_dict
+            )
+        else:
+            click.echo(
+                "Warning: --fs-odirect is ignored for "
+                f"storage-type={storage_type!r} "
+                "(only filesystem and block-device use "
+                "the fs:// connector)",
+                err=True,
+            )
 
     config_gen.save_config(config_dict, config)
     click.echo(f"Generated config file: {config}")

@@ -33,6 +33,10 @@ class ConfigGenerator:
         """
         Generate configuration for filesystem storage.
 
+        Uses ``remote_storage_plugins: [fs]`` and
+        ``extra_config.remote_storage_plugin.fs.base_path`` so LMCache does
+        not emit the legacy ``remote_url`` deprecation warning.
+
         Args:
             storage_path: Path to storage directory
             chunk_size: KV cache chunk size
@@ -43,13 +47,19 @@ class ConfigGenerator:
         Returns:
             Configuration dictionary
         """
+        extra: Dict[str, Any] = {
+            "remote_storage_plugin.fs.base_path": (
+                Path(storage_path).resolve().as_posix().rstrip("/") + "/"
+            ),
+        }
         config = self.DEFAULT_CONFIG.copy()
         config.update(
             {
                 "chunk_size": chunk_size,
                 "local_cpu": local_cpu,
                 "max_local_cpu_size": max_local_cpu_size,
-                "remote_url": f"fs://host:0{storage_path}/",
+                "remote_storage_plugins": ["fs"],
+                "extra_config": extra,
             }
         )
         config.update(kwargs)
@@ -91,6 +101,9 @@ class ConfigGenerator:
         """
         Generate configuration for block device storage.
 
+        Uses the same ``fs`` remote plugin layout as
+        :meth:`generate_filesystem_config` (see that docstring).
+
         Args:
             mount_point: Mount point path
             chunk_size: KV cache chunk size
@@ -101,13 +114,19 @@ class ConfigGenerator:
         Returns:
             Configuration dictionary
         """
+        extra: Dict[str, Any] = {
+            "remote_storage_plugin.fs.base_path": (
+                Path(mount_point).resolve().as_posix().rstrip("/") + "/"
+            ),
+        }
         config = self.DEFAULT_CONFIG.copy()
         config.update(
             {
                 "chunk_size": chunk_size,
                 "local_cpu": local_cpu,
                 "max_local_cpu_size": max_local_cpu_size,
-                "remote_url": f"fs://host:0{mount_point}/",
+                "remote_storage_plugins": ["fs"],
+                "extra_config": extra,
             }
         )
         config.update(kwargs)
@@ -219,6 +238,24 @@ class ConfigGenerator:
         )
         config.update(kwargs)
         return config
+
+    #: LMCache ``extra_config`` keys for POSIX O_DIRECT on the ``fs``
+    #: remote connector (filesystem and block-device backends). Chunk meta
+    #: must be off for block-aligned direct I/O in upstream LMCache.
+    FS_ODIRECT_EXTRA_CONFIG: Dict[str, Any] = {
+        "fs_connector_use_odirect": True,
+        "save_chunk_meta": False,
+    }
+
+    def apply_fs_odirect_extra_config(
+        self,
+        base: Dict[str, Any],
+    ) -> None:
+        """Merge :attr:`FS_ODIRECT_EXTRA_CONFIG` into ``base['extra_config']``."""
+        self.merge_config_fragment(
+            base,
+            {"extra_config": dict(self.FS_ODIRECT_EXTRA_CONFIG)},
+        )
 
     @staticmethod
     def merge_config_fragment(

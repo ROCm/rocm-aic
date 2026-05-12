@@ -83,13 +83,21 @@ def suppress_torch_cuda_warning() -> None:
 
 
 def configure_lmcache_env_defaults() -> None:
-    """LMCache ``init_logger()`` reads ``LMCACHE_LOG_LEVEL`` (default
-    INFO) before attaching handlers. Set WARNING early unless verbose."""
+    """Environment defaults before LMCache imports.
+
+    - ``LMCACHE_LOG_LEVEL``: LMCache ``init_logger()`` reads this (library
+      default INFO). Default WARNING unless verbose.
+    - ``PYTHONHASHSEED``: LMCache falls back to Python ``hash`` when vLLM is
+      not installed; a fixed seed avoids its PYTHONHASHSEED warnings and
+      keeps chunk keys stable. Override with ``PYTHONHASHSEED=`` in the
+      environment if you need a different seed.
+    """
     if lmcache_verbose_enabled():
         return
     os.environ.setdefault(
         "LMCACHE_LOG_LEVEL", "WARNING"
     )
+    os.environ.setdefault("PYTHONHASHSEED", "0")
 
 
 def configure_default_at_import() -> None:
