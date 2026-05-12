@@ -1,0 +1,19 @@
+#! /bin/bash
+
+[ -z "${ROCR_VISIBLE_DEVICES}" ] && { echo "Error: ROCR_VISIBLE_DEVICES not set" >&2; exit 1; }
+
+VLLM_PORT="800${ROCR_VISIBLE_DEVICES}"
+
+python3 /app/LMCache/benchmarks/long_doc_qa/long_doc_qa.py \
+    --port ${VLLM_PORT} \
+    --model openai/gpt-oss-120b  \
+    --num-documents 100 \
+    --document-length 100000 \
+    --output-len 100 \
+    --repeat-count 3 \
+    --repeat-mode tile \
+    --max-inflight-requests 4 \
+    --sleep-time-after-warmup 15 \
+    --completions \
+    --json-output \
+    --trim-fraction 0.1

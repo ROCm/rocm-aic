@@ -1,0 +1,24 @@
+#!/bin/bash
+
+[ -z "${GPU}" ] && { echo "Error: GPU not set" >&2; exit 1; }
+[ -z "${DATA}" ] && { echo "Error: DATA not set" >&2; exit 1; }
+[ -z "${HF_HOME}" ] && { echo "Error: HF_HOME not set" >&2; exit 1; }
+[ -z "${HF_TOKEN}" ] && { echo "Error: HF_TOKEN not set" >&2; exit 1; }
+
+docker run -it --rm \
+  --name=gpu${GPU} \
+  --hostname=gpu${GPU} \
+  --ipc=host \
+  --network=host \
+  --cap-add=CAP_SYS_ADMIN \
+  --cap-add=SYS_PTRACE \
+  --security-opt seccomp=unconfined \
+  --device=/dev/kfd \
+  --device=/dev/dri \
+  --env HF_HOME=${HF_HOME} \
+  --env HF_TOKEN="${HF_TOKEN}" \
+  --env ROCR_VISIBLE_DEVICES="${GPU}" \
+  -v ${HF_HOME}:/hf \
+  -v ${DATA}:/data \
+  -v /boot/config-$(uname -r):/boot/config-$(uname -r):ro \
+  vllm-kurt
