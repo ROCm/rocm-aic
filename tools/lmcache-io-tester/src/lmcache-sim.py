@@ -192,10 +192,17 @@ def help_alias(ctx: click.Context):
     help="Device to run on (default: cpu)",
 )
 @click.option(
-    "--cufile-buffer-size",
+    "--gds-buffer-size",
     type=int,
     default=8192,
-    help="CuFile buffer size (MiB) for GDS",
+    help="GDS buffer size (MiB) for GDS",
+)
+@click.option(
+    "--gds-engine",
+    type=click.Choice(["cufile", "hipfile"]),
+    default="cufile",
+    help="GDS library backend "
+    "(cufile for NVIDIA, hipfile for AMD)",
 )
 @click.option(
     "--model-name",
@@ -280,7 +287,8 @@ def start(
     local_cpu: bool,
     max_local_cpu_size: float,
     device: str,
-    cufile_buffer_size: int,
+    gds_buffer_size: int,
+    gds_engine: str,
     model_name: str,
     worker_id: int,
     world_size: int,
@@ -328,7 +336,8 @@ def start(
             chunk_size,
             local_cpu,
             max_local_cpu_size,
-            cufile_buffer_size,
+            gds_buffer_size,
+            gds_engine,
             remote_url,
             s3_region,
             extra_config_path,
@@ -434,10 +443,17 @@ def start(
     help="Device to run on (default: cpu)",
 )
 @click.option(
-    "--cufile-buffer-size",
+    "--gds-buffer-size",
     type=int,
     default=8192,
-    help="CuFile buffer size (MiB) for GDS",
+    help="GDS buffer size (MiB) for GDS",
+)
+@click.option(
+    "--gds-engine",
+    type=click.Choice(["cufile", "hipfile"]),
+    default="cufile",
+    help="GDS library backend "
+    "(cufile for NVIDIA, hipfile for AMD)",
 )
 @click.option(
     "--model-name",
@@ -645,7 +661,8 @@ def run(
     local_cpu: bool,
     max_local_cpu_size: float,
     device: str,
-    cufile_buffer_size: int,
+    gds_buffer_size: int,
+    gds_engine: str,
     model_name: str,
     worker_id: int,
     world_size: int,
@@ -747,7 +764,8 @@ def run(
             chunk_size,
             local_cpu,
             max_local_cpu_size,
-            cufile_buffer_size,
+            gds_buffer_size,
+            gds_engine,
             remote_url,
             s3_region,
             extra_config_path,
@@ -1274,10 +1292,17 @@ def workload(
     help="Max local CPU cache size (GB)",
 )
 @click.option(
-    "--cufile-buffer-size",
+    "--gds-buffer-size",
     type=int,
     default=8192,
-    help="CuFile buffer size (MiB) for GDS",
+    help="GDS buffer size (MiB) for GDS",
+)
+@click.option(
+    "--gds-engine",
+    type=click.Choice(["cufile", "hipfile"]),
+    default="cufile",
+    help="GDS library backend "
+    "(cufile for NVIDIA, hipfile for AMD)",
 )
 @click.option(
     "--model-name",
@@ -1355,7 +1380,8 @@ def verify(
     chunk_size: int,
     local_cpu: bool,
     max_local_cpu_size: float,
-    cufile_buffer_size: int,
+    gds_buffer_size: int,
+    gds_engine: str,
     model_name: str,
     worker_id: int,
     world_size: int,
@@ -1407,7 +1433,8 @@ def verify(
             chunk_size,
             local_cpu,
             max_local_cpu_size,
-            cufile_buffer_size,
+            gds_buffer_size,
+            gds_engine,
             remote_url,
             s3_region,
             extra_config_path,
@@ -1639,7 +1666,8 @@ def _setup_storage_and_config(
     chunk_size,
     local_cpu,
     max_local_cpu_size,
-    cufile_buffer_size,
+    gds_buffer_size,
+    gds_engine,
     remote_url,
     s3_region,
     extra_config_path,
@@ -1752,11 +1780,24 @@ def _setup_storage_and_config(
             click.echo(f"Error: {error}", err=True)
             sys.exit(1)
 
+        if gds_engine == "hipfile":
+            try:
+                import hipfile  # noqa: F401
+            except ModuleNotFoundError:
+                click.echo(
+                    "Error: --gds-engine hipfile requires the "
+                    "'hipfile' package.\n"
+                    "Install it with: pip install hipfile",
+                    err=True,
+                )
+                sys.exit(1)
+
         config_dict = config_gen.generate_gds_config(
             gds_path=storage_path,
             chunk_size=chunk_size,
             local_cpu=local_cpu,
-            cufile_buffer_size=cufile_buffer_size,
+            gds_buffer_size=gds_buffer_size,
+            gds_backend=gds_engine,
         )
 
     elif storage_type == "redis":
