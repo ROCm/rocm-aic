@@ -25,6 +25,27 @@ vars: **`KURT_GPU_MEMORY_UTILIZATION`** (default ``0.72``), **`KURT_MAX_MODEL_LE
 **`VLLM_ENFORCE_EAGER`**). Optional: **`KURT_PYTORCH_ALLOC_CONF`** or
 **`VLLM_PYTORCH_ALLOC_CONF`** for **`PYTORCH_ALLOC_CONF`**.
 
+LMCache observability (defaults favor Slurm report artifacts under
+**`${KURT_CONTAINER_DATA_DIR}`**):
+
+- **`KURT_LMCACHE_ENABLE_CHUNK_STATISTICS`**: ``1`` (default) enables chunk
+  statistics (``file_hash`` strategy by default) and sets **`PYTHONHASHSEED=0`**
+  for stable Bloom filters when using **`memory_bloom_filter`**.
+- **`KURT_LMCACHE_CHUNK_STATISTICS_STRATEGY`**: ``file_hash`` (default) or
+  ``memory_bloom_filter``.
+- **`KURT_LMCACHE_COLLECT_INTERNAL_API`**: ``1`` (default) snapshots
+  ``/chunk_statistics/status`` and ``/metrics`` from internal API ports before
+  the server exits (written as ``lmcache_internal_api_*`` under the data dir).
+- **`KURT_LMCACHE_INTERNAL_API_MAX_OFFSET`**: highest port index to probe
+  relative to **LMCACHE_INTERNAL_API_SERVER_PORT_START** (default ``3``).
+- **`KURT_LMCACHE_ENABLE_KV_EVENTS`**: ``1`` (default) sets
+  **`LMCACHE_ENABLE_KV_EVENTS=true`** for LMCache KV connector events; set ``0``
+  to disable.
+- **`KURT_LMCACHE_LOG_LEVEL`**: LMCache log level (default ``INFO``), forwarded
+  as **`LMCACHE_LOG_LEVEL`** so retrieve / hit lines appear in **server.txt**
+  without **DEBUG** noise unless you raise it.
+- **`KURT_LMCACHE_INTERNAL_API_VERBOSE`**: ``1`` logs failed snapshot URLs.
+
 Examples::
 
     python3 /app/run_long_doc_qa.py --backend hipfile
@@ -35,6 +56,7 @@ Examples::
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import signal
 import subprocess
@@ -124,6 +146,75 @@ def _lmcache_gds_dir() -> str:
     return os.path.join(_data_dir().rstrip("/"), "lmcache_gds") + os.sep
 
 
+def _env_truthy(name: str, default: str = "1") -> bool:
+    v = os.environ.get(name, default).strip().lower()
+    return v not in ("0", "false", "no", "off", "")
+
+
+def _chunk_statistics_strategy() -> str:
+    v = os.environ.get("KURT_LMCACHE_CHUNK_STATISTICS_STRATEGY", "").strip()
+    if v in ("memory_bloom_filter", "file_hash"):
+        return v
+    return "file_hash"
+
+
+def _merge_lmcache_extra_config(
+    existing_json: str | None, updates: dict[str, object]
+) -> str:
+    base: dict[str, object] = {}
+    if existing_json:
+        try:
+            parsed = json.loads(existing_json)
+            if isinstance(parsed, dict):
+                base = parsed
+        except json.JSONDecodeError:
+            pass
+    base.update(updates)
+    return json.dumps(base, separators=(",", ":"))
+
+
+def _chunk_statistics_extra_for_strategy(strategy: str) -> dict[str, object]:
+    if strategy == "file_hash":
+        out_dir = os.path.join(_data_dir().rstrip("/"), "lmcache_chunk_stats")
+        return {
+            "chunk_statistics_file_output_dir": out_dir,
+            "chunk_statistics_file_rotation_size": 104857600,
+            "chunk_statistics_file_max_count": 100,
+        }
+    return {
+        "chunk_statistics_mem_bf_expected_chunks": 20_000_000,
+        "chunk_statistics_mem_bf_false_positive_rate": 0.01,
+    }
+
+
+def _apply_chunk_statistics_env(env: dict[str, str]) -> None:
+    if not _env_truthy("KURT_LMCACHE_ENABLE_CHUNK_STATISTICS", "1"):
+        return
+    strategy = _chunk_statistics_strategy()
+    env["LMCACHE_ENABLE_CHUNK_STATISTICS"] = "true"
+    env["LMCACHE_CHUNK_STATISTICS_AUTO_START_STATISTICS"] = "true"
+    env["LMCACHE_CHUNK_STATISTICS_STRATEGY"] = strategy
+    extra_updates = _chunk_statistics_extra_for_strategy(strategy)
+    if strategy == "file_hash":
+        d = extra_updates.get("chunk_statistics_file_output_dir")
+        if isinstance(d, str):
+            os.makedirs(d, exist_ok=True)
+    prior = env.get("LMCACHE_EXTRA_CONFIG")
+    env["LMCACHE_EXTRA_CONFIG"] = _merge_lmcache_extra_config(prior, extra_updates)
+    env.setdefault("PYTHONHASHSEED", "0")
+
+
+def _apply_kv_events_env(env: dict[str, str]) -> None:
+    if not _env_truthy("KURT_LMCACHE_ENABLE_KV_EVENTS", "1"):
+        return
+    env["LMCACHE_ENABLE_KV_EVENTS"] = "true"
+
+
+def _apply_lmcache_log_level(env: dict[str, str]) -> None:
+    v = os.environ.get("KURT_LMCACHE_LOG_LEVEL", "").strip()
+    env["LMCACHE_LOG_LEVEL"] = v if v else "INFO"
+
+
 def _common_lmcache_env(lmcache_port: int) -> dict[str, str]:
     return {
         "LMCACHE_INTERNAL_API_SERVER_ENABLED": "true",
@@ -176,6 +267,9 @@ def _start_server_native(vllm_port: int, lmcache_port: int) -> subprocess.Popen:
     env = os.environ.copy()
     _apply_pytorch_alloc_conf(env)
     env.update(_common_lmcache_env(lmcache_port))
+    _apply_chunk_statistics_env(env)
+    _apply_kv_events_env(env)
+    _apply_lmcache_log_level(env)
     env.update(
         {
             "LMCACHE_LOCAL_DISK": _lmcache_local_disk_uri(),
@@ -204,6 +298,12 @@ def _start_server_hipfile(vllm_port: int, lmcache_port: int) -> subprocess.Popen
     env = os.environ.copy()
     _apply_pytorch_alloc_conf(env)
     env.update(_common_lmcache_env(lmcache_port))
+    env["LMCACHE_EXTRA_CONFIG"] = _merge_lmcache_extra_config(
+        None, {"gds_io_threads": 4}
+    )
+    _apply_chunk_statistics_env(env)
+    _apply_kv_events_env(env)
+    _apply_lmcache_log_level(env)
     env.update(
         {
             "HIPFILE_UNSUPPORTED_FILE_SYSTEMS": "true",
@@ -211,7 +311,6 @@ def _start_server_hipfile(vllm_port: int, lmcache_port: int) -> subprocess.Popen
             "HIPFILE_STATS_LEVEL": "0",
             "LMCACHE_USE_GDS": "true",
             "LMCACHE_GDS_BACKEND": "hipfile",
-            "LMCACHE_EXTRA_CONFIG": '{"gds_io_threads": 4}',
             "LMCACHE_GDS_PATH": _lmcache_gds_dir(),
             "LMCACHE_GDS_BUFFER_SIZE": "16384",
         }
@@ -249,6 +348,51 @@ def wait_for_vllm_http(
         f"vLLM did not become ready at {url} within {timeout_s}s "
         f"(last error: {last_err}); see {SERVER_LOG}"
     )
+
+
+def _collect_lmcache_observability(lmcache_port: int) -> None:
+    """Snapshot LMCache internal API (chunk statistics JSON, Prometheus text).
+
+    LMCache binds internal_api_server_port_start + offset per process (e.g.
+    scheduler vs worker). We probe a small range so one-GPU ``kv_both`` runs
+    still capture available endpoints.
+    """
+    max_off = int(os.environ.get("KURT_LMCACHE_INTERNAL_API_MAX_OFFSET", "3"))
+    root = _data_dir().rstrip("/")
+    for off in range(max_off + 1):
+        port = lmcache_port + off
+        base = f"http://127.0.0.1:{port}"
+        for path, ext in (
+            ("/chunk_statistics/status", "json"),
+            ("/metrics", "txt"),
+        ):
+            url = base + path
+            safe = path.strip("/").replace("/", "_")
+            out_path = os.path.join(root, f"lmcache_internal_api_{port}_{safe}.{ext}")
+            try:
+                req = urllib.request.Request(url, method="GET")
+                with urllib.request.urlopen(req, timeout=20) as resp:
+                    raw = resp.read()
+                if ext == "json":
+                    try:
+                        raw = (
+                            json.dumps(
+                                json.loads(raw.decode("utf-8")),
+                                indent=2,
+                                sort_keys=True,
+                            ).encode("utf-8")
+                        )
+                    except (json.JSONDecodeError, UnicodeDecodeError):
+                        pass
+                with open(out_path, "wb") as f:
+                    f.write(raw)
+                print(f"Wrote LMCache observability snapshot {out_path}", flush=True)
+            except (urllib.error.URLError, OSError, TimeoutError, ValueError) as e:
+                if _env_truthy("KURT_LMCACHE_INTERNAL_API_VERBOSE", "0"):
+                    print(
+                        f"LMCache observability skip {url}: {e!r}",
+                        flush=True,
+                    )
 
 
 def _terminate_process_group(proc: subprocess.Popen | None) -> None:
@@ -341,6 +485,13 @@ def main() -> int:
             print("vLLM HTTP API is up; running long_doc_qa.py", flush=True)
 
         rc = subprocess.call([sys.executable, LONG_DOC_QA] + bench_argv)
+        if (
+            not args.skip_server
+            and server is not None
+            and server.poll() is None
+            and _env_truthy("KURT_LMCACHE_COLLECT_INTERNAL_API", "1")
+        ):
+            _collect_lmcache_observability(lmcache_port)
         return int(rc)
     finally:
         _terminate_process_group(server)
