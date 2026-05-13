@@ -1,9 +1,32 @@
 #!/bin/bash
+#
+# Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+#
 
-[ -z "${GPU}" ] && { echo "Error: GPU not set" >&2; exit 1; }
-[ -z "${DATA}" ] && { echo "Error: DATA not set" >&2; exit 1; }
-[ -z "${HF_HOME}" ] && { echo "Error: HF_HOME not set" >&2; exit 1; }
-[ -z "${HF_TOKEN}" ] && { echo "Error: HF_TOKEN not set" >&2; exit 1; }
+GPU="${GPU:-0}"
+# Host paths (sources for docker -v). In-container targets: see CONTAINER_* below.
+DATA="${DATA:-/mnt/lmcache-nvme}"
+HF_HOME="${HF_HOME:-${HOME}/.cache/huggingface}"
+HF_TOKEN_FILE="${HF_TOKEN_FILE:-${HOME}/.batesste-hugging-face-read-march-2026.token}"
+
+if [ -z "${HF_TOKEN}" ] && [ -r "${HF_TOKEN_FILE}" ]; then
+  HF_TOKEN="$(tr -d '\r\n' < "${HF_TOKEN_FILE}")"
+fi
+
+if [ -z "${HF_TOKEN}" ]; then
+  echo "Error: HF_TOKEN not set and not readable from HF_TOKEN_FILE=${HF_TOKEN_FILE}" >&2
+  exit 1
+fi
+
+mkdir -p "${DATA}" "${HF_HOME}"
+
+# In-container mount points: passed into docker run; host DATA/HF_HOME mount
+# there. App scripts read VLLM_CONTAINER_DATA_DIR (default /data); Hugging Face
+# uses HF_HOME (default /hf). Override CONTAINER_* only if you change -v dests.
+CONTAINER_HF_HOME="${CONTAINER_HF_HOME:-/hf}"
+CONTAINER_DATA_DIR="${CONTAINER_DATA_DIR:-/data}"
 
 docker run -it --rm \
   --name=gpu"${GPU}" \
@@ -15,10 +38,11 @@ docker run -it --rm \
   --security-opt seccomp=unconfined \
   --device=/dev/kfd \
   --device=/dev/dri \
-  --env HF_HOME="${HF_HOME}" \
+  --env HF_HOME="${CONTAINER_HF_HOME}" \
+  --env VLLM_CONTAINER_DATA_DIR="${CONTAINER_DATA_DIR}" \
   --env HF_TOKEN="${HF_TOKEN}" \
   --env ROCR_VISIBLE_DEVICES="${GPU}" \
-  -v "${HF_HOME}":/hf \
-  -v "${DATA}":/data \
+  -v "${HF_HOME}":"${CONTAINER_HF_HOME}" \
+  -v "${DATA}":"${CONTAINER_DATA_DIR}" \
   -v /boot/config-"$(uname -r)":/boot/config-"$(uname -r)":ro \
   vllm-kurt

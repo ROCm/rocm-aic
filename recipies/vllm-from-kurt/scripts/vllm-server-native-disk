@@ -1,12 +1,17 @@
 #! /bin/bash
+#
+# Data layout: host ./vllm-container sets HF_HOME and VLLM_CONTAINER_DATA_DIR.
 
 [ -z "${ROCR_VISIBLE_DEVICES}" ] && { echo "Error: ROCR_VISIBLE_DEVICES not set" >&2; exit 1; }
+
+VLLM_CONTAINER_DATA_DIR="${VLLM_CONTAINER_DATA_DIR:-/data}"
 
 PORT=${ROCR_VISIBLE_DEVICES}
 LMCACHE_PORT="699${PORT}"
 VLLM_PORT="800${PORT}"
+VLLM_MODEL="${VLLM_MODEL:-meta-llama/Llama-3.1-8B-Instruct}"
 
-LMCACHE_LOCAL_DISK="file:///data/lmcache_test/" \
+LMCACHE_LOCAL_DISK="file://${VLLM_CONTAINER_DATA_DIR}/lmcache_test/" \
 LMCACHE_MAX_LOCAL_DISK_SIZE=1500.0 \
 LMCACHE_INTERNAL_API_SERVER_ENABLED=true \
 LMCACHE_INTERNAL_API_SERVER_PORT_START=${LMCACHE_PORT} \
@@ -17,7 +22,7 @@ MIOPEN_USER_DB_PATH=/app/miopen \
 MIOPEN_FIND_MODE=FAST \
 VLLM_ROCM_USE_AITER=1 \
 AMDGCN_USE_BUFFER_OPS=0 \
-vllm serve openai/gpt-oss-120b   \
+vllm serve "${VLLM_MODEL}"   \
     --host localhost \
     --port "${VLLM_PORT}" \
     --tensor-parallel-size 1 \
@@ -29,4 +34,5 @@ vllm serve openai/gpt-oss-120b   \
     --async-scheduling \
     --attention-backend ROCM_AITER_UNIFIED_ATTN \
     --kv-transfer-config \
-    '{"kv_connector":"LMCacheConnectorV1", "kv_role":"kv_both"}' | tee /app/server.txt &
+    '{"kv_connector":"LMCacheConnectorV1", "kv_role":"kv_both"}' \
+    | tee "${VLLM_CONTAINER_DATA_DIR}/server.txt" &

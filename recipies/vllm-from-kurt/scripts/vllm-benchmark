@@ -1,12 +1,16 @@
 #! /bin/bash
+#
+# Data layout: host ./vllm-container sets VLLM_CONTAINER_DATA_DIR (see
+# vllm-server-*). --model defaults match those servers.
 
 [ -z "${ROCR_VISIBLE_DEVICES}" ] && { echo "Error: ROCR_VISIBLE_DEVICES not set" >&2; exit 1; }
 
 VLLM_PORT="800${ROCR_VISIBLE_DEVICES}"
+VLLM_MODEL="${VLLM_MODEL:-meta-llama/Llama-3.1-8B-Instruct}"
 
 python3 /app/LMCache/benchmarks/long_doc_qa/long_doc_qa.py \
     --port "${VLLM_PORT}" \
-    --model openai/gpt-oss-120b  \
+    --model "${VLLM_MODEL}" \
     --num-documents 100 \
     --document-length 100000 \
     --output-len 100 \

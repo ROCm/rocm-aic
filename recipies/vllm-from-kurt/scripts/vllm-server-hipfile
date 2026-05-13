@@ -1,12 +1,19 @@
 #! /bin/bash
+#
+# Data layout: host ./vllm-container sets HF_HOME and VLLM_CONTAINER_DATA_DIR.
 
 [ -z "${ROCR_VISIBLE_DEVICES}" ] && { echo "Error: ROCR_VISIBLE_DEVICES not set" >&2; exit 1; }
 
-rm -fr /data/lmcache_gds/
+VLLM_CONTAINER_DATA_DIR="${VLLM_CONTAINER_DATA_DIR:-/data}"
+
+rm -fr "${VLLM_CONTAINER_DATA_DIR}/lmcache_gds"
 
 PORT=${ROCR_VISIBLE_DEVICES}
 LMCACHE_PORT="699${PORT}"
 VLLM_PORT="800${PORT}"
+# Dense Llama avoids MXFP4 MoE paths that are not supported on some ROCm
+# GPUs (e.g. gfx1201). Override when needed: export VLLM_MODEL=...
+VLLM_MODEL="${VLLM_MODEL:-meta-llama/Llama-3.1-8B-Instruct}"
 
 HIPFILE_UNSUPPORTED_FILE_SYSTEMS=true \
 HIPFILE_ALLOW_COMPAT_MODE=false \
@@ -18,14 +25,14 @@ LMCACHE_INTERNAL_API_SERVER_ENABLED=true \
 LMCACHE_INTERNAL_API_SERVER_PORT_START=${LMCACHE_PORT} \
 LMCACHE_CHUNK_SIZE=256 \
 LMCACHE_LOCAL_CPU=False \
-LMCACHE_GDS_PATH="/data/lmcache_gds/" \
+LMCACHE_GDS_PATH="${VLLM_CONTAINER_DATA_DIR}/lmcache_gds/" \
 LMCACHE_GDS_BUFFER_SIZE=16384 \
 MIOPEN_USER_DB_PATH=/app/miopen \
 MIOPEN_FIND_MODE=FAST \
 VLLM_ROCM_USE_AITER=1 \
 AMDGCN_USE_BUFFER_OPS=0 \
 /app/hipFile/build/tools/ais-stats/ais-stats \
-vllm serve openai/gpt-oss-120b \
+vllm serve "${VLLM_MODEL}" \
     --host localhost \
     --port "${VLLM_PORT}" \
     --load-format dummy \
@@ -38,4 +45,5 @@ vllm serve openai/gpt-oss-120b \
     --async-scheduling \
     --attention-backend ROCM_AITER_UNIFIED_ATTN \
     --kv-transfer-config \
-    '{"kv_connector":"LMCacheConnectorV1", "kv_role":"kv_both"}' | tee /app/server.txt &
+    '{"kv_connector":"LMCacheConnectorV1", "kv_role":"kv_both"}' \
+    | tee "${VLLM_CONTAINER_DATA_DIR}/server.txt" &

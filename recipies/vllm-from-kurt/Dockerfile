@@ -3,6 +3,17 @@ FROM vllm/vllm-openai-rocm:v0.19.0
 ARG ROCM_ARCH
 RUN test -n "$ROCM_ARCH" || (echo "ERROR: ROCM_ARCH is not set" && exit 1)
 
+# Install distro packages before any `pip install -e .` in this image. A
+# no-build-isolation LMCache build can refresh system Python wheels in ways
+# that break later `apt-get update` (GPG: "invalid signature" on all mirrors).
+
+RUN apt-get clean && rm -rf /var/lib/apt/lists/* && \
+    apt-get update && \
+    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+        libboost-program-options-dev \
+        libmount-dev \
+    && rm -rf /var/lib/apt/lists/*
+
 ## LMCache is broken (2026-04-21), need to checkout a specific SHA1
 #RUN cd /app && \
 #    git clone https://github.com/LMCache/LMCache.git && \
@@ -29,11 +40,6 @@ RUN cd /app && \
         CXX=hipcc \
         BUILD_WITH_HIP=1 \
         python3 -m pip install --no-build-isolation --no-cache-dir -e .
-
-RUN apt-get update && \
-    apt-get install -y \
-        libboost-program-options-dev \
-        libmount-dev
 
 RUN cd /app && \
     git clone https://github.com/ROCm/hipFile.git && \

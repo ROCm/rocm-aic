@@ -68,22 +68,46 @@ make build LMCACHE_SHA1=your_git_sha_here
 ## Run the container
 
 The **`vllm-container`** script is meant to be run on the **host** (not
-inside the image). It expects:
+inside the image). Defaults apply when variables are unset; override as
+needed:
 
-| Variable   | Purpose |
-| ---------- | ------- |
-| `GPU`      | GPU index passed to Docker as `ROCR_VISIBLE_DEVICES` |
-| `DATA`     | Host path mounted read-write at `/data` in the container |
-| `HF_HOME`  | Hugging Face cache directory (mounted at `/hf`) |
-| `HF_TOKEN` | Hugging Face token (passed into the container) |
+| Variable              | Default | Purpose |
+| --------------------- | ------- | ------- |
+| `GPU`                 | `0` | GPU index for `ROCR_VISIBLE_DEVICES` |
+| `DATA`                | `/mnt/lmcache-nvme` | Host path mounted at **`${CONTAINER_DATA_DIR}`** (see below) |
+| `HF_HOME`             | `${HOME}/.cache/huggingface` | Host Hugging Face cache mounted at **`${CONTAINER_HF_HOME}`** |
+| `CONTAINER_DATA_DIR`  | `/data` | In-container mount **target** for **`DATA`**; passed as **`VLLM_CONTAINER_DATA_DIR`** |
+| `CONTAINER_HF_HOME`   | `/hf` | Mount target for host **`HF_HOME`**; in-container **`HF_HOME`** matches it |
+| `HF_TOKEN`            | *(empty)* | If empty, read from `HF_TOKEN_FILE` |
+| `HF_TOKEN_FILE`       | `${HOME}/.batesste-hugging-face-read-march-2026.token` | Token file when `HF_TOKEN` is unset |
 
-Example:
+**Inside the container,** **`./vllm-container`** sets **`HF_HOME`** to
+**`${CONTAINER_HF_HOME}`** so Hugging Face uses the **`/hf`** mount. It sets
+**`VLLM_CONTAINER_DATA_DIR`** to **`${CONTAINER_DATA_DIR}`** for **`/app/`**
+scripts: LMCache, **fio**, and **`server.txt`** share that data root. Align
+**`CONTAINER_*`**, **`-v`**, and **`VLLM_CONTAINER_DATA_DIR`** to one path.
+
+**Llama weights:** default id **`meta-llama/Llama-3.1-8B-Instruct`**; set env
+**`VLLM_MODEL`** inside the container to change it. The Hub checkpoint is gated:
+accept the license on the model card; keep **`HF_TOKEN`** or **`HF_TOKEN_FILE`**
+on the host so gated pulls use the **`/hf`** cache mount.
+
+The script runs **`mkdir -p`** on **`DATA`** and **`HF_HOME`** before **`docker run`**.
+
+Minimal example (defaults only; ensure the default token file exists or set
+**`HF_TOKEN`** / **`HF_TOKEN_FILE`**):
 
 ```bash
-export GPU=0
+./vllm-container
+```
+
+Override example:
+
+```bash
+export GPU=1
 export DATA=/srv/vllm-data
 export HF_HOME="${HOME}/.cache/huggingface"
-export HF_TOKEN="$(cat ~/.hf_token)"   # however you store the token
+export HF_TOKEN="$(cat ~/.hf_token)"
 
 ./vllm-container
 ```
@@ -97,16 +121,24 @@ shell you can run the scripts under `/app/`.
 - **`vllm-server-hipfile`** — LMCache GDS backend via hipFile; uses
   `ROCR_VISIBLE_DEVICES` to pick ports (`699${PORT}` / `800${PORT}`).
   Runs **`ais-stats`** from the hipFile build ahead of **`vllm serve`**
-  (dummy `openai/gpt-oss-120b`, prefix caching, AITER attention). Log:
-  `/app/server.txt`.
-- **`vllm-server-native-disk`** — Same vLLM/LMCache wiring but local
-  disk cache under `file:///data/lmcache_test/`.
-- **`vllm-benchmark`** — Drives the long-doc LMCache benchmark against
-  the server on port `800${ROCR_VISIBLE_DEVICES}`.
-- **`fio-benchmark`** — hipFile **fio** read job on `/data/rand1G.dat`
-  (creates a 1 GiB random file if missing).
-- **`hipfile-bench.py`** — Small Python hipfile/HIP exercise (not the
-  full vLLM stack).
+  (dummy **`meta-llama/Llama-3.1-8B-Instruct`** by default, prefix caching,
+  AITER attention). Log: **`${VLLM_CONTAINER_DATA_DIR}/server.txt`** (default
+  **`/data/server.txt`**).
+- **`vllm-server-native-disk`** — Same vLLM/LMCache wiring but local disk cache
+  under **`file://${VLLM_CONTAINER_DATA_DIR}/lmcache_test/`** (default
+  **`file:///data/lmcache_test/`**). Model: **`VLLM_MODEL`** or
+  **`meta-llama/Llama-3.1-8B-Instruct`** (real weights; needs HF token).
+- **`vllm-benchmark`** — Drives the long-doc LMCache benchmark against the
+  server on port `800${ROCR_VISIBLE_DEVICES}`; **`--model`** defaults like
+  **`vllm-server-*`**.
+- **`run_long_doc_qa.py`** — Starts **`vllm serve`** (hipfile or native path),
+  waits for **`/v1/models`**, then runs **`long_doc_qa.py`**; see
+  **`python3 /app/run_long_doc_qa.py --help`**. Uses **`VLLM_MODEL`** (or Llama
+  3.1 8B Instruct) for both server and benchmark unless you override **`--model`**.
+- **`fio-benchmark`** — hipFile **fio** read on **`${VLLM_CONTAINER_DATA_DIR}/rand1G.dat`**
+  (default **`/data/rand1G.dat`**; creates 1 GiB random file if missing).
+- **`hipfile-bench.py`** — Small Python hipfile/HIP exercise (not the full
+  vLLM stack); pass a chunk directory under **`${VLLM_CONTAINER_DATA_DIR}`** after a run.
 
 Ensure **`ROCR_VISIBLE_DEVICES`** is set inside the container when you
 use the server or benchmark scripts (the host wrapper sets it from
