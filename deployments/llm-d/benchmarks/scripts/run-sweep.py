@@ -1206,33 +1206,26 @@ class SweepOrchestrator:
             env_vars: Dictionary of environment variable names to values
 
         Returns:
-            List of YAML-formatted strings representing patch operations
+            List of YAML-formatted strings representing patch operations.
+            Each item in the list is a complete patch operation as a multi-line string.
+            The leading dash will be added by replace_template_variables().
 
         Example:
             Input:  {'API_KEY': 'secret', 'DEBUG': 'true'}
-            Output: ['- op: add',
-                     '  path: /spec/template/spec/containers/0/env/-',
-                     '  value:',
-                     '    name: API_KEY',
-                     '    value: "secret"',
-                     '- op: add',
-                     '  path: /spec/template/spec/containers/0/env/-',
-                     '  value:',
-                     '    name: DEBUG',
-                     '    value: "true"']
+            Output: ['op: add\npath: /spec/template/spec/containers/0/env/-\nvalue:\n  name: API_KEY\n  value: "secret"',
+                     'op: add\npath: /spec/template/spec/containers/0/env/-\nvalue:\n  name: DEBUG\n  value: "true"']
         """
         if not env_vars:
             return []
 
         patches = []
         for name, value in sorted(env_vars.items()):  # Sort for deterministic output
-            patches.append('- op: add')
-            patches.append('  path: /spec/template/spec/containers/0/env/-')
-            patches.append('  value:')
-            patches.append(f'    name: {name}')
             # Escape quotes in value and wrap in quotes
             escaped_value = str(value).replace('"', '\\"')
-            patches.append(f'    value: "{escaped_value}"')
+
+            # Create complete patch operation as a single multi-line string
+            patch = f'op: add\npath: /spec/template/spec/containers/0/env/-\nvalue:\n  name: {name}\n  value: "{escaped_value}"'
+            patches.append(patch)
 
         return patches
 
@@ -1267,8 +1260,19 @@ class SweepOrchestrator:
 
                             # Generate YAML list items, each properly indented
                             for item in value:
-                                # Add as YAML list item
-                                new_lines.append(f'{indent}- {item}')
+                                # Handle multi-line items (e.g., env_vars patches)
+                                item_str = str(item)
+                                if '\n' in item_str:
+                                    # Multi-line item: indent all lines properly
+                                    item_lines = item_str.split('\n')
+                                    # First line gets the list dash
+                                    new_lines.append(f'{indent}- {item_lines[0]}')
+                                    # Subsequent lines get indented to align with first line content
+                                    for item_line in item_lines[1:]:
+                                        new_lines.append(f'{indent}  {item_line}')
+                                else:
+                                    # Single-line item
+                                    new_lines.append(f'{indent}- {item}')
                         else:
                             new_lines.append(line)
 
