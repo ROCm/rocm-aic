@@ -1,0 +1,208 @@
+# Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+
+---
+- name: Resolve per-run results directory on host
+  ansible.builtin.set_fact:
+    lmcache_io_tester_results_resolved: >-
+      {{
+        lmcache_io_tester_results_dir
+        if (lmcache_io_tester_results_dir | default('') | length) > 0
+        else (
+          ansible_user_dir ~ '/lmcache-nfs-rdma-results/'
+          ~ inventory_hostname ~ '-' ~ ansible_date_time.iso8601_basic_short
+        )
+      }}
+
+- name: Verify NFS RDMA client mount exists
+  ansible.builtin.command:
+    argv:
+      - findmnt
+      - "-n"
+      - "-T"
+      - "{{ nfs_rdma_client_mount }}"
+  changed_when: false
+  register: lmcache_findmnt
+  failed_when: lmcache_findmnt.rc != 0
+
+- name: Dry run — baseline RDMA snapshot only
+  when: lmcache_nfs_rdma_dry_run | bool
+  block:
+    - name: Dry run — RDMA / IB snapshot
+      ansible.builtin.shell: |
+        set -euo pipefail
+        if command -v rdma >/dev/null 2>&1; then
+          rdma statistic show 2>&1 || true
+          rdma link show 2>&1 || true
+        elif command -v ibstat >/dev/null 2>&1; then
+          ibstat 2>&1 || true
+        else
+          echo "No rdma or ibstat in PATH"
+        fi
+      args:
+        executable: /bin/bash
+      changed_when: false
+      register: lmcache_dry_rdma
+
+    - name: Dry run — nfsiostat baseline
+      ansible.builtin.shell: |
+        set -euo pipefail
+        if command -v nfsiostat >/dev/null 2>&1; then
+          nfsiostat "{{ nfs_rdma_client_mount }}" 1 2 2>&1 || nfsiostat 1 2 2>&1 || true
+        else
+          echo "nfsiostat not in PATH"
+        fi
+      args:
+        executable: /bin/bash
+      changed_when: false
+      register: lmcache_dry_nfsiostat
+
+    - name: Dry run — print snapshots
+      ansible.builtin.debug:
+        msg:
+          - "Results dir (unused in dry run): {{ lmcache_io_tester_results_resolved }}"
+          - "RDMA / IB:"
+          - "{{ lmcache_dry_rdma.stdout_lines | default([]) }}"
+          - "nfsiostat:"
+          - "{{ lmcache_dry_nfsiostat.stdout_lines | default([]) }}"
+
+- name: Require controller source path for bench
+  ansible.builtin.assert:
+    that:
+      - (lmcache_io_tester_src | default('') | length) > 0
+    fail_msg: >-
+      Set lmcache_io_tester_src (the playbook sets this from playbook_dir).
+  when: not (lmcache_nfs_rdma_dry_run | bool)
+
+- name: Install Python and venv support on target (Debian / Ubuntu)
+  ansible.builtin.apt:
+    name:
+      - python3
+      - python3-pip
+      - python3-venv
+    state: present
+    update_cache: true
+  become: true
+  when:
+    - lmcache_nfs_rdma_install_python_packages | bool
+    - not (lmcache_nfs_rdma_dry_run | bool)
+    - not ansible_check_mode
+    - ansible_facts.os_family == 'Debian'
+
+- name: Ensure lmcache-io-tester install directory exists on host
+  ansible.builtin.file:
+    path: "{{ lmcache_io_tester_install_dir }}"
+    state: directory
+    mode: "0755"
+  when:
+    - not (lmcache_nfs_rdma_dry_run | bool)
+    - not ansible_check_mode
+
+- name: Push lmcache-io-tester tree to host
+  ansible.posix.synchronize:
+    mode: push
+    src: "{{ lmcache_io_tester_src }}/"
+    dest: "{{ lmcache_io_tester_install_dir }}/"
+    delete: false
+    rsync_opts: "{{ lmcache_nfs_rdma_rsync_opts }}"
+  delegate_to: localhost
+  when:
+    - not (lmcache_nfs_rdma_dry_run | bool)
+    - not ansible_check_mode
+
+- name: Create Python virtualenv for lmcache-io-tester on host
+  ansible.builtin.command:
+    argv:
+      - python3
+      - "-m"
+      - venv
+      - "{{ lmcache_io_tester_venv }}"
+    creates: "{{ lmcache_io_tester_venv }}/bin/python"
+  when:
+    - not (lmcache_nfs_rdma_dry_run | bool)
+    - not ansible_check_mode
+
+- name: Upgrade pip in lmcache-io-tester venv
+  ansible.builtin.pip:
+    name: pip
+    state: latest
+    virtualenv: "{{ lmcache_io_tester_venv }}"
+    virtualenv_command: python3 -m venv
+  when:
+    - not (lmcache_nfs_rdma_dry_run | bool)
+    - not ansible_check_mode
+
+- name: Install Python requirements into venv on host
+  ansible.builtin.pip:
+    requirements: "{{ lmcache_io_tester_install_dir }}/requirements.txt"
+    virtualenv: "{{ lmcache_io_tester_venv }}"
+    virtualenv_command: python3 -m venv
+  when:
+    - not (lmcache_nfs_rdma_dry_run | bool)
+    - not ansible_check_mode
+
+- name: Install bench runner script on host
+  ansible.builtin.template:
+    src: run-lmcache-nfs-rdma-bench.sh.j2
+    dest: "{{ lmcache_io_tester_install_dir }}/run-lmcache-nfs-rdma-bench.sh"
+    mode: "0755"
+  when:
+    - not (lmcache_nfs_rdma_dry_run | bool)
+    - not ansible_check_mode
+
+- name: Run LMCache NFS over RDMA bench with collectors
+  ansible.builtin.command:
+    argv:
+      - /bin/bash
+      - "{{ lmcache_io_tester_install_dir }}/run-lmcache-nfs-rdma-bench.sh"
+  register: lmcache_bench_result
+  changed_when: true
+  failed_when: false
+  when:
+    - not (lmcache_nfs_rdma_dry_run | bool)
+    - not ansible_check_mode
+
+- name: Report bench exit code and results directory
+  ansible.builtin.debug:
+    msg:
+      - "Results directory: {{ lmcache_io_tester_results_resolved }}"
+      - "Bench script exit code: {{ lmcache_bench_result.rc | default('n/a') }}"
+  when:
+    - not (lmcache_nfs_rdma_dry_run | bool)
+    - not ansible_check_mode
+    - lmcache_bench_result is defined
+
+- name: Require fetch destination on controller when fetch is enabled
+  ansible.builtin.assert:
+    that:
+      - (lmcache_nfs_rdma_fetch_dest | default('') | length) > 0
+    fail_msg: >-
+      Set lmcache_nfs_rdma_fetch_dest to a directory on the Ansible controller
+      (e.g. -e lmcache_nfs_rdma_fetch_dest=/tmp/lmcache-bench-fetch).
+  when:
+    - lmcache_nfs_rdma_fetch_to_controller | bool
+    - not (lmcache_nfs_rdma_dry_run | bool)
+    - not ansible_check_mode
+
+- name: Ensure local fetch directory exists on controller
+  ansible.builtin.file:
+    path: "{{ lmcache_nfs_rdma_fetch_dest }}/{{ inventory_hostname }}"
+    state: directory
+    mode: "0755"
+  delegate_to: localhost
+  when:
+    - lmcache_nfs_rdma_fetch_to_controller | bool
+    - not (lmcache_nfs_rdma_dry_run | bool)
+    - not ansible_check_mode
+
+- name: Pull results directory from host to controller
+  ansible.posix.synchronize:
+    mode: pull
+    src: "{{ lmcache_io_tester_results_resolved }}/"
+    dest: "{{ lmcache_nfs_rdma_fetch_dest }}/{{ inventory_hostname }}/"
+  delegate_to: localhost
+  when:
+    - lmcache_nfs_rdma_fetch_to_controller | bool
+    - not (lmcache_nfs_rdma_dry_run | bool)
+    - not ansible_check_mode

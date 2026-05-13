@@ -1,0 +1,48 @@
+# Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+
+---
+# Controller-side tree to rsync (set in playbook, e.g.
+# "{{ playbook_dir }}/../../tools/lmcache-io-tester").
+lmcache_io_tester_src: ""
+
+lmcache_io_tester_install_dir: "{{ ansible_user_dir }}/lmcache-io-tester"
+lmcache_io_tester_venv: "{{ lmcache_io_tester_install_dir }}/.venv"
+
+# Install python3 / venv / pip on the target with apt (requires privilege).
+lmcache_nfs_rdma_install_python_packages: true
+
+# NFS workload path (must be under nfs_rdma_client_mount).
+lmcache_io_tester_data_dir: >-
+  {{ nfs_rdma_client_mount }}/{{ ansible_user }}/lmcache-io-tester/data
+
+# Leave empty to use
+# {{ ansible_user_dir }}/lmcache-nfs-rdma-results/{{ inventory_hostname }}-<timestamp>.
+lmcache_io_tester_results_dir: ""
+
+lmcache_nfs_rdma_sample_interval_sec: 3
+
+lmcache_nfs_rdma_verbose_lmcache: false
+
+# Match current tools/lmcache-io-tester/run-this.sh phases before exit 0.
+lmcache_nfs_rdma_include_retrieve_only: false
+
+lmcache_nfs_rdma_run_pip_freeze: false
+
+lmcache_nfs_rdma_dry_run: false
+
+lmcache_nfs_rdma_fetch_to_controller: false
+# When fetch is true, playbook should set this (controller directory).
+lmcache_nfs_rdma_fetch_dest: ""
+
+lmcache_nfs_rdma_rsync_opts:
+  - "--exclude=.venv"
+  - "--exclude=__pycache__"
+  - "--exclude=.git"
+  - "--exclude=*.pyc"
+
+# Inventory group_vars normally set these for nfs_rdma_clients.
+nfs_rdma_client_mount: /mnt/rocm-icms-cache
+nfs_rdma_server_ip: ""
+nfs_rdma_export_path: /srv/rocm-icms-cache

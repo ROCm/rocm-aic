@@ -1,0 +1,54 @@
+# Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+#
+# Run LMCache IO simulator against the NFS-over-RDMA mount while sampling
+# nfsiostat and rdma statistic counters. The role installs python3,
+# python3-venv, and python3-pip on Debian/Ubuntu (one become: true apt
+# task), creates {{ ansible_user_dir }}/lmcache-io-tester/.venv, and
+# pip-installs requirements. Execute from ansible/:
+#
+#   ansible-playbook playbooks/lmcache-nfs-rdma-bench.yml
+#
+# Dry run (mount check + baseline nfsiostat / RDMA only):
+#
+#   ansible-playbook playbooks/lmcache-nfs-rdma-bench.yml \
+#     --limit g04u07 -e lmcache_nfs_rdma_dry_run=true
+#
+# Verbose LMCache library INFO on stderr (captured in lmcache-run.log):
+#
+#   ansible-playbook playbooks/lmcache-nfs-rdma-bench.yml \
+#     -e lmcache_nfs_rdma_verbose_lmcache=true
+#
+# Include retrieve-only phase (after lookup-only), matching full run-this.sh:
+#
+#   ansible-playbook playbooks/lmcache-nfs-rdma-bench.yml \
+#     -e lmcache_nfs_rdma_include_retrieve_only=true
+#
+# Pull result logs to the controller after the bench (set a writable path):
+#
+#   ansible-playbook playbooks/lmcache-nfs-rdma-bench.yml \
+#     -e lmcache_nfs_rdma_fetch_to_controller=true \
+#     -e lmcache_nfs_rdma_fetch_dest=/tmp/lmcache-nfs-rdma-fetched
+#
+# Override tool source on the controller (default is repo tools/ tree):
+#
+#   ansible-playbook playbooks/lmcache-nfs-rdma-bench.yml \
+#     -e lmcache_io_tester_src=/path/to/lmcache-io-tester
+#
+# Skip OS package install if python3-venv is already present:
+#
+#   ansible-playbook playbooks/lmcache-nfs-rdma-bench.yml \
+#     -e lmcache_nfs_rdma_install_python_packages=false
+
+---
+- name: Run LMCache IO tester on NFS over RDMA with nfsiostat and RDMA stats
+  hosts: nfs_rdma_clients
+  gather_facts: true
+  become: false
+  tags:
+    - lmcache-nfs-rdma-bench
+  vars:
+    lmcache_io_tester_src: "{{ playbook_dir }}/../../tools/lmcache-io-tester"
+  roles:
+    - role: lmcache_nfs_rdma_bench
