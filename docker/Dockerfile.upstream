@@ -1,4 +1,4 @@
-ARG BASE_IMAGE=rvllm/vllm-openai-rocm:v0.20.1
+ARG BASE_IMAGE=vllm/vllm-openai-rocm:v0.20.1
 
 ARG PYTORCH_ROCM_ARCH=gfx942
 
@@ -10,12 +10,12 @@ ARG ETCD_SHA="7c6e714"
 ARG ETCD_REPO="https://github.com/etcd-cpp-apiv3/etcd-cpp-apiv3.git"
 
 ARG HIPFILE_REPO="https://github.com/ROCm/rocm-systems.git"
-ARG HIPFILE_SHA=b2509f2
+ARG HIPFILE_SHA=adc1a2d2f8e886e93c5e55e674dbff6e05db2dbe
 
-ARG LMCACHE_REPO=https://github.com/amd-ivaganev/LMCache.git
 #ARG LMCACHE_REPO="https://github.com/LMCache/LMCache.git"
-ARG LMCACHE_SHA="bef2e13"
-#ARG LMCACHE_SHA="0b443774"
+ARG LMCACHE_REPO="https://github.com/riley-dixon/LMCache.git"
+ARG LMCACHE_SHA="fdc7c1b76d48ed622e0e1d149639ddaaa3bf348b"
+
 
 
 ###
@@ -203,12 +203,11 @@ RUN git clone --no-checkout --filter=blob:none ${HIPFILE_REPO} && \
     cd rocm-systems && \
     git sparse-checkout set --cone projects/hipfile && \
     git checkout "${HIPFILE_SHA}" && \
-    cd projects/hipfile && \
     mkdir build && cd build && \
-    cmake -DCMAKE_HIP_PLATFORM=amd .. && cmake --build . -j && cpack -G DEB && \
+    cmake -DGPU_TARGETS=${PYTORCH_ROCM_ARCH} -DCMAKE_BUILD_TYPE=Release -DCMAKE_HIP_PLATFORM=amd ../projects/hipfile && cmake --build . -j && cpack -G DEB && \
     dpkg -i hipfile*deb && \
     cp hipfile*deb /export/artifacts && \
-    cd ../python && \
+    cd ../projects/hipfile/python && \
     python -m build --wheel -Ccmake.define.HIPFILE_INCLUDE_DIR=../include -Ccmake.define.HIP_INCLUDE_DIR=/opt/rocm/include && \
     cp dist/hipfile-*.whl /export/artifacts
 
