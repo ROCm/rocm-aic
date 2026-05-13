@@ -1,7 +1,7 @@
 #! /usr/bin/env python3
 """Microbench over LMCache KV chunk files (hipfile).
 
-**CHUNK_DIR** is commonly under ``${VLLM_CONTAINER_DATA_DIR}`` (see host
+**CHUNK_DIR** is commonly under ``${KURT_CONTAINER_DATA_DIR}`` (see host
 ``./vllm-container``; default in-container ``/data``), for example after a
 vLLM+LMCache run.
 """

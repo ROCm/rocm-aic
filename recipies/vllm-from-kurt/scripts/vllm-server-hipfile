@@ -1,12 +1,12 @@
 #! /bin/bash
 #
-# Data layout: host ./vllm-container sets HF_HOME and VLLM_CONTAINER_DATA_DIR.
+# Data layout: host ./vllm-container sets HF_HOME and KURT_CONTAINER_DATA_DIR.
 
 [ -z "${ROCR_VISIBLE_DEVICES}" ] && { echo "Error: ROCR_VISIBLE_DEVICES not set" >&2; exit 1; }
 
-VLLM_CONTAINER_DATA_DIR="${VLLM_CONTAINER_DATA_DIR:-/data}"
+KURT_CONTAINER_DATA_DIR="${KURT_CONTAINER_DATA_DIR:-${VLLM_CONTAINER_DATA_DIR:-/data}}"
 
-rm -fr "${VLLM_CONTAINER_DATA_DIR}/lmcache_gds"
+rm -fr "${KURT_CONTAINER_DATA_DIR}/lmcache_gds"
 
 PORT=${ROCR_VISIBLE_DEVICES}
 LMCACHE_PORT="699${PORT}"
@@ -14,6 +14,20 @@ VLLM_PORT="800${PORT}"
 # Dense Llama avoids MXFP4 MoE paths that are not supported on some ROCm
 # GPUs (e.g. gfx1201). Override when needed: export VLLM_MODEL=...
 VLLM_MODEL="${VLLM_MODEL:-meta-llama/Llama-3.1-8B-Instruct}"
+KURT_GPU_MEMORY_UTILIZATION="${KURT_GPU_MEMORY_UTILIZATION:-${VLLM_GPU_MEMORY_UTILIZATION:-0.72}}"
+KURT_MAX_MODEL_LEN="${KURT_MAX_MODEL_LEN:-8192}"
+KURT_MAX_NUM_BATCHED_TOKENS="${KURT_MAX_NUM_BATCHED_TOKENS:-4096}"
+VLLM_ENFORCE_EAGER_FLAG=""
+case "${KURT_ENFORCE_EAGER:-${VLLM_ENFORCE_EAGER:-1}}" in
+  0|false|FALSE|no|NO|off|OFF) ;;
+  *) VLLM_ENFORCE_EAGER_FLAG="--enforce-eager" ;;
+esac
+if [ -n "${KURT_PYTORCH_ALLOC_CONF:-}" ]; then
+  export PYTORCH_ALLOC_CONF="${KURT_PYTORCH_ALLOC_CONF}"
+elif [ -n "${VLLM_PYTORCH_ALLOC_CONF:-}" ]; then
+  export PYTORCH_ALLOC_CONF="${VLLM_PYTORCH_ALLOC_CONF}"
+fi
+unset VLLM_GPU_MEMORY_UTILIZATION VLLM_ENFORCE_EAGER 2>/dev/null || true
 
 HIPFILE_UNSUPPORTED_FILE_SYSTEMS=true \
 HIPFILE_ALLOW_COMPAT_MODE=false \
@@ -25,7 +39,7 @@ LMCACHE_INTERNAL_API_SERVER_ENABLED=true \
 LMCACHE_INTERNAL_API_SERVER_PORT_START=${LMCACHE_PORT} \
 LMCACHE_CHUNK_SIZE=256 \
 LMCACHE_LOCAL_CPU=False \
-LMCACHE_GDS_PATH="${VLLM_CONTAINER_DATA_DIR}/lmcache_gds/" \
+LMCACHE_GDS_PATH="${KURT_CONTAINER_DATA_DIR}/lmcache_gds/" \
 LMCACHE_GDS_BUFFER_SIZE=16384 \
 MIOPEN_USER_DB_PATH=/app/miopen \
 MIOPEN_FIND_MODE=FAST \
@@ -35,15 +49,17 @@ AMDGCN_USE_BUFFER_OPS=0 \
 vllm serve "${VLLM_MODEL}" \
     --host localhost \
     --port "${VLLM_PORT}" \
+    --max-model-len "${KURT_MAX_MODEL_LEN}" \
     --load-format dummy \
     --tensor-parallel-size 1 \
-    --gpu-memory-utilization 0.90 \
+    --gpu-memory-utilization "${KURT_GPU_MEMORY_UTILIZATION}" \
+    ${VLLM_ENFORCE_EAGER_FLAG} \
     --block-size 64 \
     --enable-prefix-caching \
     --stream-interval 20 \
-    --max-num-batched-tokens 8192 \
+    --max-num-batched-tokens "${KURT_MAX_NUM_BATCHED_TOKENS}" \
     --async-scheduling \
     --attention-backend ROCM_AITER_UNIFIED_ATTN \
     --kv-transfer-config \
     '{"kv_connector":"LMCacheConnectorV1", "kv_role":"kv_both"}' \
-    | tee "${VLLM_CONTAINER_DATA_DIR}/server.txt" &
+    | tee "${KURT_CONTAINER_DATA_DIR}/server.txt" &

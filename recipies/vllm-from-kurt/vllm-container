@@ -21,9 +21,18 @@ if [ -z "${HF_TOKEN}" ]; then
 fi
 
 mkdir -p "${DATA}" "${HF_HOME}"
+# Subdirs on the host so Hub / Transformers / vLLM never fall back to
+# /root/.cache inside the writable image layer (duplicate downloads).
+mkdir -p \
+  "${HF_HOME}/hub" \
+  "${HF_HOME}/datasets" \
+  "${HF_HOME}/vllm" \
+  "${HF_HOME}/vllm_config" \
+  "${HF_HOME}/torch" \
+  "${HF_HOME}/torch_inductor"
 
 # In-container mount points: passed into docker run; host DATA/HF_HOME mount
-# there. App scripts read VLLM_CONTAINER_DATA_DIR (default /data); Hugging Face
+# there. App scripts read KURT_CONTAINER_DATA_DIR (default /data); Hugging Face
 # uses HF_HOME (default /hf). Override CONTAINER_* only if you change -v dests.
 CONTAINER_HF_HOME="${CONTAINER_HF_HOME:-/hf}"
 CONTAINER_DATA_DIR="${CONTAINER_DATA_DIR:-/data}"
@@ -39,9 +48,17 @@ docker run -it --rm \
   --device=/dev/kfd \
   --device=/dev/dri \
   --env HF_HOME="${CONTAINER_HF_HOME}" \
-  --env VLLM_CONTAINER_DATA_DIR="${CONTAINER_DATA_DIR}" \
+  --env HUGGINGFACE_HUB_CACHE="${CONTAINER_HF_HOME}/hub" \
+  --env HF_HUB_CACHE="${CONTAINER_HF_HOME}/hub" \
+  --env HF_DATASETS_CACHE="${CONTAINER_HF_HOME}/datasets" \
+  --env VLLM_CACHE_ROOT="${CONTAINER_HF_HOME}/vllm" \
+  --env VLLM_CONFIG_ROOT="${CONTAINER_HF_HOME}/vllm_config" \
+  --env TORCH_HOME="${CONTAINER_HF_HOME}/torch" \
+  --env TORCHINDUCTOR_CACHE_DIR="${CONTAINER_HF_HOME}/torch_inductor" \
+  --env KURT_CONTAINER_DATA_DIR="${CONTAINER_DATA_DIR}" \
   --env HF_TOKEN="${HF_TOKEN}" \
   --env ROCR_VISIBLE_DEVICES="${GPU}" \
+  --env PYTORCH_ALLOC_CONF="${PYTORCH_ALLOC_CONF:-expandable_segments:True}" \
   -v "${HF_HOME}":"${CONTAINER_HF_HOME}" \
   -v "${DATA}":"${CONTAINER_DATA_DIR}" \
   -v /boot/config-"$(uname -r)":/boot/config-"$(uname -r)":ro \

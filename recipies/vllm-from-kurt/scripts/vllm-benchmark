@@ -1,18 +1,21 @@
 #! /bin/bash
 #
-# Data layout: host ./vllm-container sets VLLM_CONTAINER_DATA_DIR (see
+# Data layout: host ./vllm-container sets KURT_CONTAINER_DATA_DIR (see
 # vllm-server-*). --model defaults match those servers.
 
 [ -z "${ROCR_VISIBLE_DEVICES}" ] && { echo "Error: ROCR_VISIBLE_DEVICES not set" >&2; exit 1; }
 
 VLLM_PORT="800${ROCR_VISIBLE_DEVICES}"
 VLLM_MODEL="${VLLM_MODEL:-meta-llama/Llama-3.1-8B-Instruct}"
+# Defaults match vllm-server-* (KURT_MAX_MODEL_LEN default 8192). Raise both on large GPUs.
+KURT_BENCH_NUM_DOCUMENTS="${KURT_BENCH_NUM_DOCUMENTS:-8}"
+KURT_BENCH_DOCUMENT_LENGTH="${KURT_BENCH_DOCUMENT_LENGTH:-6000}"
 
 python3 /app/LMCache/benchmarks/long_doc_qa/long_doc_qa.py \
     --port "${VLLM_PORT}" \
     --model "${VLLM_MODEL}" \
-    --num-documents 100 \
-    --document-length 100000 \
+    --num-documents "${KURT_BENCH_NUM_DOCUMENTS}" \
+    --document-length "${KURT_BENCH_DOCUMENT_LENGTH}" \
     --output-len 100 \
     --repeat-count 3 \
     --repeat-mode tile \

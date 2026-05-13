@@ -8,7 +8,7 @@
 """Start vLLM + LMCache, wait until the OpenAI HTTP API is up, run long_doc_qa.
 
 Intended for use inside the vllm-kurt container (paths under /app). Host
-**`./vllm-container`** sets **`VLLM_CONTAINER_DATA_DIR`** (default **`/data`**
+**`./vllm-container`** sets **`KURT_CONTAINER_DATA_DIR`** (default **`/data`**
 in-container) for LMCache and logs; set **`HF_HOME=/hf`** for Hub cache.
 Place this script's options first; every other flag is forwarded to
 ``/app/LMCache/benchmarks/long_doc_qa/long_doc_qa.py`` (for example
@@ -17,7 +17,13 @@ the two groups if you prefer.
 
 The served model defaults to ``meta-llama/Llama-3.1-8B-Instruct`` (override with
 env ``VLLM_MODEL``). Unless you pass ``--model`` to ``long_doc_qa.py``, the same
-default is injected so the client matches the server.
+default is injected so the client matches the server. VRAM knobs use the
+**`KURT_*`** prefix (not **`VLLM_*`**) so vLLM does not warn about unknown env
+vars: **`KURT_GPU_MEMORY_UTILIZATION`** (default ``0.72``), **`KURT_MAX_MODEL_LEN`**
+(default ``8192``), **`KURT_MAX_NUM_BATCHED_TOKENS`** (default ``4096``).
+**`--enforce-eager`** is on unless **`KURT_ENFORCE_EAGER=0`** (legacy:
+**`VLLM_ENFORCE_EAGER`**). Optional: **`KURT_PYTORCH_ALLOC_CONF`** or
+**`VLLM_PYTORCH_ALLOC_CONF`** for **`PYTORCH_ALLOC_CONF`**.
 
 Examples::
 
@@ -43,8 +49,11 @@ AIS_STATS = "/app/hipFile/build/tools/ais-stats/ais-stats"
 
 def _data_dir() -> str:
     """Host data mount inside the container (set by vllm-container)."""
-    v = os.environ.get("VLLM_CONTAINER_DATA_DIR", "").strip()
-    return v if v else "/data"
+    v = os.environ.get("KURT_CONTAINER_DATA_DIR", "").strip()
+    if v:
+        return v
+    legacy = os.environ.get("VLLM_CONTAINER_DATA_DIR", "").strip()
+    return legacy if legacy else "/data"
 
 
 SERVER_LOG = os.path.join(_data_dir(), "server.txt")
@@ -56,6 +65,41 @@ _DEFAULT_VLLM_MODEL = "meta-llama/Llama-3.1-8B-Instruct"
 def _vllm_model() -> str:
     v = os.environ.get("VLLM_MODEL", "").strip()
     return v if v else _DEFAULT_VLLM_MODEL
+
+
+def _gpu_memory_utilization() -> str:
+    v = os.environ.get("KURT_GPU_MEMORY_UTILIZATION", "").strip()
+    if not v:
+        v = os.environ.get("VLLM_GPU_MEMORY_UTILIZATION", "").strip()
+    return v if v else "0.72"
+
+
+def _max_model_len() -> str:
+    v = os.environ.get("KURT_MAX_MODEL_LEN", "").strip()
+    return v if v else "8192"
+
+
+def _max_num_batched_tokens() -> str:
+    v = os.environ.get("KURT_MAX_NUM_BATCHED_TOKENS", "").strip()
+    return v if v else "4096"
+
+
+def _enforce_eager() -> bool:
+    """Avoid TorchInductor autotune peak on tight VRAM; default on."""
+    v = os.environ.get("KURT_ENFORCE_EAGER", "").strip().lower()
+    if not v:
+        v = os.environ.get("VLLM_ENFORCE_EAGER", "").strip().lower()
+    if v in ("0", "false", "no", "off"):
+        return False
+    return True
+
+
+def _apply_pytorch_alloc_conf(env: dict[str, str]) -> None:
+    v = os.environ.get("KURT_PYTORCH_ALLOC_CONF", "").strip()
+    if not v:
+        v = os.environ.get("VLLM_PYTORCH_ALLOC_CONF", "").strip()
+    if v:
+        env["PYTORCH_ALLOC_CONF"] = v
 
 
 def _rocr_visible_devices() -> str:
@@ -102,23 +146,27 @@ def _vllm_serve_argv(vllm_port: int, *, load_format_dummy: bool) -> list[str]:
         "localhost",
         "--port",
         str(vllm_port),
+        "--max-model-len",
+        _max_model_len(),
         "--tensor-parallel-size",
         "1",
         "--gpu-memory-utilization",
-        "0.90",
+        _gpu_memory_utilization(),
         "--block-size",
         "64",
         "--enable-prefix-caching",
         "--stream-interval",
         "20",
         "--max-num-batched-tokens",
-        "8192",
+        _max_num_batched_tokens(),
         "--async-scheduling",
         "--attention-backend",
         "ROCM_AITER_UNIFIED_ATTN",
         "--kv-transfer-config",
         '{"kv_connector":"LMCacheConnectorV1", "kv_role":"kv_both"}',
     ]
+    if _enforce_eager():
+        out.append("--enforce-eager")
     if load_format_dummy:
         out[3:3] = ["--load-format", "dummy"]
     return out
@@ -126,6 +174,7 @@ def _vllm_serve_argv(vllm_port: int, *, load_format_dummy: bool) -> list[str]:
 
 def _start_server_native(vllm_port: int, lmcache_port: int) -> subprocess.Popen:
     env = os.environ.copy()
+    _apply_pytorch_alloc_conf(env)
     env.update(_common_lmcache_env(lmcache_port))
     env.update(
         {
@@ -153,6 +202,7 @@ def _start_server_hipfile(vllm_port: int, lmcache_port: int) -> subprocess.Popen
     gds = os.path.join(_data_dir(), "lmcache_gds")
     subprocess.run(["rm", "-fr", gds], check=False)
     env = os.environ.copy()
+    _apply_pytorch_alloc_conf(env)
     env.update(_common_lmcache_env(lmcache_port))
     env.update(
         {
