@@ -100,12 +100,14 @@ class RandomWorkload(BaseWorkload):
         value_size: int = 1024,
         tokenizer: Optional[Any] = None,
         text_input: Optional[str] = None,
+        chunk_size: int = 256,
     ):
         super().__init__(engine)
         self.key_range = key_range
         self.value_size = value_size
         self.tokenizer = tokenizer
         self.text_input = text_input
+        self._chunk_size = max(1, int(chunk_size))
         self._tokenized_text = _tokenize_input(
             tokenizer, text_input
         )
@@ -121,7 +123,7 @@ class RandomWorkload(BaseWorkload):
     ) -> bool:
         """Execute operation via direct engine call."""
         try:
-            chunk_size = 256
+            cs = self._chunk_size
             key_hash = abs(hash(operation["key"]))
 
             if (
@@ -130,7 +132,7 @@ class RandomWorkload(BaseWorkload):
             ):
                 max_start = max(
                     0,
-                    len(self._tokenized_text) - chunk_size,
+                    len(self._tokenized_text) - cs,
                 )
                 start_idx = key_hash % max(1, max_start + 1)
             else:
@@ -139,7 +141,7 @@ class RandomWorkload(BaseWorkload):
             token_ids = _build_token_ids(
                 self._tokenized_text,
                 start_idx,
-                chunk_size,
+                cs,
                 fallback_start=key_hash % 10000,
             )
 
@@ -152,11 +154,11 @@ class RandomWorkload(BaseWorkload):
                     token_ids, req_id=req_id
                 )
                 blocks = (
-                    len(token_ids) // chunk_size
+                    len(token_ids) // cs
                 ) or 1
                 operation["kv_blocks"] = blocks
                 operation["data_bytes"] = (
-                    blocks * chunk_size * bpt
+                    blocks * cs * bpt
                 )
                 return True
             else:
@@ -208,6 +210,7 @@ class StoreOnlyWorkload(BaseWorkload):
         value_size: int = 1024,
         tokenizer: Optional[Any] = None,
         text_input: Optional[str] = None,
+        chunk_size: int = 256,
     ):
         super().__init__(engine)
         self.index_path = Path(index_path)
@@ -215,6 +218,7 @@ class StoreOnlyWorkload(BaseWorkload):
         self.value_size = value_size
         self.tokenizer = tokenizer
         self.text_input = text_input
+        self._chunk_size = max(1, int(chunk_size))
         self._tokenized_text = _tokenize_input(
             tokenizer, text_input
         )
@@ -248,7 +252,7 @@ class StoreOnlyWorkload(BaseWorkload):
         self, operation: Dict[str, Any]
     ) -> bool:
         try:
-            chunk_size = 256
+            cs = self._chunk_size
             key_hash = abs(hash(operation["key"]))
             if (
                 self._tokenized_text
@@ -256,7 +260,7 @@ class StoreOnlyWorkload(BaseWorkload):
             ):
                 max_start = max(
                     0,
-                    len(self._tokenized_text) - chunk_size,
+                    len(self._tokenized_text) - cs,
                 )
                 start_idx = key_hash % max(1, max_start + 1)
             else:
@@ -264,7 +268,7 @@ class StoreOnlyWorkload(BaseWorkload):
             token_ids = _build_token_ids(
                 self._tokenized_text,
                 start_idx,
-                chunk_size,
+                cs,
                 fallback_start=key_hash % 10000,
             )
             req_id = operation.get("key")
@@ -282,11 +286,11 @@ class StoreOnlyWorkload(BaseWorkload):
                     + "\n"
                 )
             blocks = (
-                len(token_ids) // chunk_size
+                len(token_ids) // cs
             ) or 1
             operation["kv_blocks"] = blocks
             operation["data_bytes"] = (
-                blocks * chunk_size * bpt
+                blocks * cs * bpt
             )
             return True
         except Exception as e:
@@ -434,6 +438,7 @@ class SteadyStateWorkload(BaseWorkload):
         read_ratio: float = 0.8,
         tokenizer: Optional[Any] = None,
         text_input: Optional[str] = None,
+        chunk_size: int = 256,
     ):
         super().__init__(engine)
         self.key_range = key_range
@@ -441,6 +446,7 @@ class SteadyStateWorkload(BaseWorkload):
         self.read_ratio = read_ratio
         self.tokenizer = tokenizer
         self.text_input = text_input
+        self._chunk_size = max(1, int(chunk_size))
         self._tokenized_text = _tokenize_input(
             tokenizer, text_input
         )
@@ -473,7 +479,7 @@ class SteadyStateWorkload(BaseWorkload):
     ) -> bool:
         """Execute operation via direct engine call."""
         try:
-            chunk_size = 256
+            cs = self._chunk_size
             key_hash = abs(hash(operation["key"]))
 
             if (
@@ -482,7 +488,7 @@ class SteadyStateWorkload(BaseWorkload):
             ):
                 max_start = max(
                     0,
-                    len(self._tokenized_text) - chunk_size,
+                    len(self._tokenized_text) - cs,
                 )
                 start_idx = key_hash % max(1, max_start + 1)
             else:
@@ -491,7 +497,7 @@ class SteadyStateWorkload(BaseWorkload):
             token_ids = _build_token_ids(
                 self._tokenized_text,
                 start_idx,
-                chunk_size,
+                cs,
                 fallback_start=key_hash % 10000,
             )
 
@@ -504,11 +510,11 @@ class SteadyStateWorkload(BaseWorkload):
                     token_ids, req_id=req_id
                 )
                 blocks = (
-                    len(token_ids) // chunk_size
+                    len(token_ids) // cs
                 ) or 1
                 operation["kv_blocks"] = blocks
                 operation["data_bytes"] = (
-                    blocks * chunk_size * bpt
+                    blocks * cs * bpt
                 )
                 return True
             else:
@@ -624,9 +630,11 @@ class ConversationWorkload(BaseWorkload):
         max_conversations: int = 0,
         shuffle_conversations: bool = False,
         seed: Optional[int] = None,
+        chunk_size: int = 256,
         **kwargs,
     ):
         super().__init__(engine)
+        _ = kwargs
         if not conversation_file:
             raise ValueError(
                 "ConversationWorkload requires "
@@ -649,6 +657,7 @@ class ConversationWorkload(BaseWorkload):
         self._next_conv_idx = 0
         self._slot_cursor = 0
         self.conversations_completed = 0
+        self._chunk_size = max(1, int(chunk_size))
 
         self._active_slots: List[
             List[Dict[str, Any]]
@@ -749,7 +758,7 @@ class ConversationWorkload(BaseWorkload):
     ) -> bool:
         """Execute a conversation-driven operation."""
         try:
-            chunk_size = 256
+            cs = self._chunk_size
             token_ids = operation.get(
                 "token_ids", []
             )
@@ -766,11 +775,11 @@ class ConversationWorkload(BaseWorkload):
                     token_ids, req_id=req_id
                 )
                 blocks = max(
-                    1, len(token_ids) // chunk_size
+                    1, len(token_ids) // cs
                 )
                 operation["kv_blocks"] = blocks
                 operation["data_bytes"] = (
-                    blocks * chunk_size * bpt
+                    blocks * cs * bpt
                 )
                 return True
             else:

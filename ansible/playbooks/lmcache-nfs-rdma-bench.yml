@@ -25,6 +25,16 @@
 #   ansible-playbook playbooks/lmcache-nfs-rdma-bench.yml \
 #     -e lmcache_nfs_rdma_include_retrieve_only=true
 #
+# Retrieve duration defaults to 120 s; override e.g. -e
+# lmcache_nfs_rdma_retrieve_duration_sec=60
+#
+# Concurrent retrieve-only against the same filesystem DATA_DIR (requires
+# include_retrieve_only; each worker gets its own --per-op-log under results):
+#
+#   ansible-playbook playbooks/lmcache-nfs-rdma-bench.yml \
+#     -e lmcache_nfs_rdma_include_retrieve_only=true \
+#     -e lmcache_nfs_rdma_parallel_retrieve_workers=4
+#
 # Pull result logs to the controller after the bench (set a writable path):
 #
 #   ansible-playbook playbooks/lmcache-nfs-rdma-bench.yml \

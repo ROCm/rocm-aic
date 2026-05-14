@@ -1,0 +1,24 @@
+#!/usr/bin/env bpftrace
+// Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+//
+// SPDX-License-Identifier: MIT
+//
+// Legacy block:block_rq_issue (kernels that expose char[] disk_name in the TP).
+// Newer kernels (e.g. 6.8) use dev_t only — see nvme_block_io_trace_dev.bt.in.
+// @@DISK_NAME_STR@@ is replaced with a bpftrace string literal, e.g. "nvme2n1".
+// @@LB_SIZE@@ is logical block size in bytes (usually 512; from sysfs).
+//
+// Columns: ts_ns (nsecs), rwbs, bytes (nr_sector * LB), nr_sector, comm
+
+BEGIN
+{
+  printf("ts_ns\trwbs\tbytes\tnr_sector\tcomm\n");
+}
+
+tracepoint:block:block_rq_issue
+// strncmp: Ubuntu bpftrace 0.20.x has no strcmp(); keep length >= kernel disk_name size.
+/strncmp((char *)args->disk_name, @@DISK_NAME_STR@@, 64) == 0/
+{
+  printf("%llu\t%s\t%llu\t%u\t%s\n",
+    nsecs, str(args->rwbs), (uint64)args->nr_sector * @@LB_SIZE@@, args->nr_sector, comm);
+}

@@ -588,6 +588,14 @@ def start(
          "(timestamps, latency_ms, bytes_written)",
 )
 @click.option(
+    "--per-op-log",
+    type=click.Path(),
+    default=None,
+    help="JSONL: one object per operation (all op types; "
+         "timestamps, latency_ms, success, cache_hit, "
+         "kv_blocks, data_bytes)",
+)
+@click.option(
     "--cleanup",
     is_flag=True,
     help="Cleanup storage mounts after workload",
@@ -671,6 +679,7 @@ def run(
     read_ratio: float,
     output_format: str,
     per_op_store_log: Optional[str],
+    per_op_log: Optional[str],
     cleanup: bool,
     concurrency: int,
     passes: int,
@@ -781,6 +790,7 @@ def run(
         pattern_kwargs = {
             "key_range": key_range,
             "value_size": value_size,
+            "chunk_size": chunk_size,
         }
         if pattern == "steady-state":
             pattern_kwargs[
@@ -832,6 +842,7 @@ def run(
                 chunk_index_dir=chunk_index_dir,
                 chunk_index_file=chunk_index_file,
                 per_op_store_log=per_op_store_log,
+                per_op_log=per_op_log,
                 **pattern_kwargs,
             )
         except KeyboardInterrupt:
@@ -926,6 +937,12 @@ def run(
     type=click.Path(),
     default=None,
     help="JSONL per successful store",
+)
+@click.option(
+    "--per-op-log",
+    type=click.Path(),
+    default=None,
+    help="JSONL: one line per operation (all types)",
 )
 @click.option(
     "--hf-model-name",
@@ -1056,6 +1073,7 @@ def workload(
     read_ratio: float,
     output_format: str,
     per_op_store_log: Optional[str],
+    per_op_log: Optional[str],
     hf_model_name: Optional[str],
     model_path: Optional[str],
     tokenizer_mode: str,
@@ -1148,6 +1166,7 @@ def workload(
         pattern_kwargs = {
             "key_range": key_range,
             "value_size": value_size,
+            "chunk_size": chunk_size,
         }
         if pattern == "steady-state":
             pattern_kwargs[
@@ -1191,6 +1210,7 @@ def workload(
             chunk_index_dir=None,
             chunk_index_file=chunk_index,
             per_op_store_log=per_op_store_log,
+            per_op_log=per_op_log,
             **pattern_kwargs,
         )
     except Exception as e:

@@ -72,4 +72,6 @@ jobs:
             --num-operations 32 \
             --config configs/lmcache-config.yml
 
+          ./.venv/bin/python tests/verify_retrieve_throughput_behavior.py
+
           rm -rf "$CI_STORAGE_ROOT"

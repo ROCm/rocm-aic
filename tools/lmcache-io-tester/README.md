@@ -29,6 +29,17 @@ Run the tool as a Python module from this directory (`tools/lmcache-io-tester`):
 python -m src.lmcache-sim --help
 ```
 
+### Retrieve-only (warmed cache)
+
+After store/lookup has populated the sidecar under your `--storage-path`,
+`run-retrieve-only.sh` runs **retrieve-only** on the NFS-backed data dir for
+**120 seconds** (override with `RETRIEVE_DURATION_SEC`). It does not pass
+`--fs-odirect` (page cache path). From this directory:
+
+```bash
+./run-retrieve-only.sh
+```
+
 ## Defaults when no Hugging Face model is passed
 
 If you omit both `--hf-model-name` and `--model-path`, no Transformers model is
@@ -39,7 +50,7 @@ loaded. The engine still starts using CLI defaults:
 | `--model-name` | `lmcache_model` | LMCache model tag in cache paths |
 | `--kv-shape` | `2,2,256,4,16` | KV tensor shape string passed to LMCache |
 | `--kv-dtype` | `float16` | KV element type |
-| `--chunk-size` | `256` | Tokens per chunk for workload patterns |
+| `--chunk-size` | `256` | KV config and token rows per op in workloads |
 | `--tokenizer-mode` | `vocab-only` | No HF tokenizer unless a model is loaded |
 | `--device` | `cpu` | Connector device (`cpu`, `cuda`, `xpu`) |
 
@@ -53,8 +64,26 @@ match a real checkpoint.
 src/                  Core simulator modules
 data/                 Conversation schemas, sample data
 tests/                Test scripts
+scripts/              Optional helpers (e.g. RDMA throughput plot from bench logs)
 configs/              Generated YAML configs (runtime)
 ```
+
+### RDMA throughput plot (1 s, SI GB/s)
+
+After an NFS/RDMA bench, `rdma-statistic.sample.log` contains timestamped
+`rdma statistic show` blocks. To chart **RX and TX throughput in SI GB/s**
+(1e9 bytes per second) with **1 second** resolution (linear interpolation
+between samples, then per-second deltas):
+
+```bash
+./scripts/plot_rdma_throughput_1s.py \
+  -i /path/to/rdma-statistic.sample.log \
+  --iface rocep159s0 \
+  -o /tmp/rdma-throughput-1s-gbs.svg
+```
+
+Open the SVG in a browser or an image viewer. Use `--iface` to match the
+`link …/1` line for the NIC you care about.
 
 ## Architecture
 
@@ -256,6 +285,12 @@ reads. The `workload` subcommand requires
 `--per-op-store-log /path/to/file.jsonl` to append one
 JSON object per successful store (`op_index`,
 `ts_unix`, `ts_iso`, `latency_ms`, `bytes_written`).
+Pass `--per-op-log /path/to/file.jsonl` for one JSON
+object per operation (every op type): `op_index`,
+`ts_unix`, `ts_iso`, `op_type`, `success`, `cache_hit`,
+`latency_ms`, `kv_blocks`, `data_bytes`. If both
+`--per-op-log` and `--per-op-store-log` are set,
+`--per-op-log` is used.
 Printed metrics (default `--output-format text`) list
 per-operation-type averages, min/max, and when samples exist
 `latency_std_ms`, `latency_p99_ms`, and `latency_p999_ms` under
@@ -307,6 +342,32 @@ python -m src.lmcache-sim run \
     --pattern retrieve-only \
     --num-operations 500
 ```
+
+#### Maximizing retrieve IOPS
+
+Reported **IOPS** is `throughput_ops_per_sec` in JSON output (successful
+ops divided by wall time). For retrieve-only that is effectively retrieves
+per second in a **single Python thread**; omit **`--rate`** so the driver
+does not sleep between ops. **`--chunk-size`** and KV flags apply to both
+store-only and token-building patterns: keep the same values across store
+and retrieve phases. For **A/B** comparisons across backends, `O_DIRECT`,
+dtype, or chunk size, run
+[`tests/run_retrieve_throughput_matrix.sh`](tests/run_retrieve_throughput_matrix.sh)
+from this directory (set `LMCACHE_IO_MATRIX_*` env vars to tune op counts).
+To approximate **aggregate** cluster RPS, run several **process** sessions
+in parallel. The conservative pattern in
+[`tests/run_retrieve_multi_process.sh`](tests/run_retrieve_multi_process.sh)
+copies the populated cache so each worker has a **disjoint**
+`--storage-path` (clear isolation for summed-throughput experiments). For
+the **filesystem** backend, LMCache supports multiple **read-only**
+retrievers against the **same** on-disk tree from **separate processes**
+(one `LMCacheEngine` per process); do not run writers against that path
+concurrently and give each process its own `--per-op-log` path. Do **not**
+assume `LMCacheEngine.retrieve` is safe to call concurrently from **multiple
+threads** on a single engine in one process. CI runs
+[`tests/verify_retrieve_throughput_behavior.py`](tests/verify_retrieve_throughput_behavior.py)
+to assert `--rate` caps throughput and that `run-this.sh` does not pass
+`--rate` or `--fs-odirect` on lookup/retrieve lines.
 
 **Lookup-only** (`--pattern lookup-only`) uses the same JSONL sidecar as
 retrieve-only but calls `engine.lookup(tokens=...)` only. It measures

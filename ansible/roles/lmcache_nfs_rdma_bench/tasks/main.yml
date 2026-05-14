@@ -75,6 +75,17 @@
       Set lmcache_io_tester_src (the playbook sets this from playbook_dir).
   when: not (lmcache_nfs_rdma_dry_run | bool)
 
+- name: Parallel retrieve-only requires include_retrieve_only
+  ansible.builtin.assert:
+    that:
+      - >-
+        (lmcache_nfs_rdma_parallel_retrieve_workers | default(1) | int <= 1)
+        or (lmcache_nfs_rdma_include_retrieve_only | bool)
+    fail_msg: >-
+      Set lmcache_nfs_rdma_include_retrieve_only=true when
+      lmcache_nfs_rdma_parallel_retrieve_workers is greater than 1.
+  when: not (lmcache_nfs_rdma_dry_run | bool)
+
 - name: Install Python and venv support on target (Debian / Ubuntu)
   ansible.builtin.apt:
     name:

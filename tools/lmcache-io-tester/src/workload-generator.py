@@ -313,6 +313,7 @@ class WorkloadGenerator:
                 value_size=kwargs.get("value_size", 1024),
                 tokenizer=kwargs.get("tokenizer"),
                 text_input=kwargs.get("text_input"),
+                chunk_size=kwargs.get("chunk_size", 256),
             )
 
         if pattern not in self.PATTERNS:
@@ -339,6 +340,7 @@ class WorkloadGenerator:
         passes: int = 1,
         chunk_index_dir: Optional[str] = None,
         chunk_index_file: Optional[str] = None,
+        per_op_log: Optional[str] = None,
         per_op_store_log: Optional[str] = None,
         **pattern_kwargs,
     ) -> Dict[str, Any]:
@@ -351,6 +353,9 @@ class WorkloadGenerator:
             rate: Operations per second
             output_format: Output format (json, text)
             passes: Number of passes over the dataset
+            per_op_log: Optional JSONL path logging every op
+            per_op_store_log: Optional JSONL path (legacy:
+                successful stores only)
             **pattern_kwargs: Pattern-specific args
 
         Returns:
@@ -364,7 +369,9 @@ class WorkloadGenerator:
             chunk_index_file=chunk_index_file,
             **pattern_kwargs,
         )
-        if per_op_store_log:
+        if per_op_log:
+            workload.per_op_log = per_op_log
+        elif per_op_store_log:
             workload.per_op_store_log = (
                 per_op_store_log
             )

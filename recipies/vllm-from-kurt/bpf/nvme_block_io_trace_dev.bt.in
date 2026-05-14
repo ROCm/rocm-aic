@@ -1,0 +1,25 @@
+#!/usr/bin/env bpftrace
+// Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+//
+// SPDX-License-Identifier: MIT
+//
+// block:block_rq_issue on Linux ~6.8+: dev_t dev, no disk_name; bytes + rwbs[8].
+// @@DEV_T@@ is replaced with the decimal st_rdev of /dev/<disk> (Linux kdev_t).
+//
+// Columns: ts_ns (nsecs), rwbs, bytes (kernel), nr_sector, comm
+
+BEGIN
+{
+  printf("ts_ns\trwbs\tbytes\tnr_sector\tcomm\n");
+}
+
+tracepoint:block:block_rq_issue
+/args->dev == @@DEV_T@@/
+{
+  printf("%llu\t%s\t%llu\t%u\t%s\n",
+    nsecs,
+    str((uint8 *)args->rwbs, 8),
+    (uint64)args->bytes,
+    args->nr_sector,
+    str((uint8 *)args->comm, 16));
+}

@@ -488,7 +488,12 @@ class BaseWorkload(ABC):
         start_time = time.time()
         next_op_time = start_time
 
-        log_path = getattr(self, "per_op_store_log", None)
+        per_op_log_path = getattr(self, "per_op_log", None)
+        legacy_store_log = getattr(
+            self, "per_op_store_log", None
+        )
+        log_path = per_op_log_path or legacy_store_log
+        log_all_ops = per_op_log_path is not None
         log_f = None
         if log_path:
             lp = Path(log_path)
@@ -552,36 +557,62 @@ class BaseWorkload(ABC):
                         operation
                     ),
                 )
-                if (
-                    log_f
-                    and op_type == "store"
-                    and success
-                    and self.metrics.store_latency_samples
-                    is not None
-                ):
-                    ts = time.time()
-                    ts_iso = datetime.fromtimestamp(
-                        ts, tz=timezone.utc
-                    ).isoformat()
-                    log_f.write(
-                        json.dumps(
-                            {
-                                "op_index": (
-                                    operation_count
-                                ),
-                                "ts_unix": ts,
-                                "ts_iso": ts_iso,
-                                "latency_ms": round(
-                                    op_latency, 6
-                                ),
-                                "bytes_written": (
-                                    data_bytes
-                                ),
-                            }
+                if log_f:
+                    if log_all_ops:
+                        ts = time.time()
+                        ts_iso = datetime.fromtimestamp(
+                            ts, tz=timezone.utc
+                        ).isoformat()
+                        log_f.write(
+                            json.dumps(
+                                {
+                                    "op_index": (
+                                        operation_count
+                                    ),
+                                    "ts_unix": ts,
+                                    "ts_iso": ts_iso,
+                                    "op_type": op_type,
+                                    "success": success,
+                                    "cache_hit": cache_hit,
+                                    "latency_ms": round(
+                                        op_latency, 6
+                                    ),
+                                    "kv_blocks": kv_blocks,
+                                    "data_bytes": data_bytes,
+                                }
+                            )
+                            + "\n"
                         )
-                        + "\n"
-                    )
-                    log_f.flush()
+                        log_f.flush()
+                    elif (
+                        op_type == "store"
+                        and success
+                        and self.metrics.store_latency_samples
+                        is not None
+                    ):
+                        ts = time.time()
+                        ts_iso = datetime.fromtimestamp(
+                            ts, tz=timezone.utc
+                        ).isoformat()
+                        log_f.write(
+                            json.dumps(
+                                {
+                                    "op_index": (
+                                        operation_count
+                                    ),
+                                    "ts_unix": ts,
+                                    "ts_iso": ts_iso,
+                                    "latency_ms": round(
+                                        op_latency, 6
+                                    ),
+                                    "bytes_written": (
+                                        data_bytes
+                                    ),
+                                }
+                            )
+                            + "\n"
+                        )
+                        log_f.flush()
                 operation_count += 1
         finally:
             if log_f:

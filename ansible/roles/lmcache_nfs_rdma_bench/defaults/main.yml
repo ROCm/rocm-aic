@@ -23,10 +23,19 @@ lmcache_io_tester_results_dir: ""
 
 lmcache_nfs_rdma_sample_interval_sec: 3
 
+# Seconds for retrieve-only phase (when include_retrieve_only is true).
+lmcache_nfs_rdma_retrieve_duration_sec: 120
+
 lmcache_nfs_rdma_verbose_lmcache: false
 
 # Match current tools/lmcache-io-tester/run-this.sh phases before exit 0.
 lmcache_nfs_rdma_include_retrieve_only: false
+
+# When include_retrieve_only is true: run this many concurrent retrieve-only
+# processes against the same filesystem DATA_DIR (one LMCacheEngine each;
+# distinct --per-op-log under results). Use 1 for the original single-process
+# retrieve (no extra per-op JSONL from Ansible).
+lmcache_nfs_rdma_parallel_retrieve_workers: 1
 
 lmcache_nfs_rdma_run_pip_freeze: false
 

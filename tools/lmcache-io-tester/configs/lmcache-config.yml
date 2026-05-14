@@ -7,6 +7,4 @@ cache_policy: LRU
 remote_storage_plugins:
 - fs
 extra_config:
-  remote_storage_plugin.fs.base_path: /opt/lmcache-test-fs/
-  fs_connector_use_odirect: true
-  save_chunk_meta: false
+  remote_storage_plugin.fs.base_path: /tmp/lmcache-io-verify-6af3q3hb/

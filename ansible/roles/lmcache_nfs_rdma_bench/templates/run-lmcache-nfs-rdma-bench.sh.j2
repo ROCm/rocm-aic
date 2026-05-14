@@ -13,8 +13,10 @@ VENV_PY="{{ lmcache_io_tester_venv }}/bin/python"
 DATA_DIR={{ lmcache_io_tester_data_dir | quote }}
 NFS_MOUNT={{ nfs_rdma_client_mount | quote }}
 INTERVAL={{ lmcache_nfs_rdma_sample_interval_sec | int }}
+RETRIEVE_SEC={{ lmcache_nfs_rdma_retrieve_duration_sec | int }}
 VERBOSE_LM="{{ lmcache_nfs_rdma_verbose_lmcache | bool | lower }}"
 INCLUDE_RETRIEVE="{{ lmcache_nfs_rdma_include_retrieve_only | bool | lower }}"
+RETRIEVE_WORKERS={{ lmcache_nfs_rdma_parallel_retrieve_workers | default(1) | int }}
 PIP_FREEZE="{{ lmcache_nfs_rdma_run_pip_freeze | bool | lower }}"
 SERVER_IP={{ nfs_rdma_server_ip | default('') | quote }}
 EXPORT_PATH={{ nfs_rdma_export_path | default('') | quote }}
@@ -102,16 +104,51 @@ run_workload() {
     --storage-type filesystem \
     --storage-path "${DATA_DIR}" \
     --pattern lookup-only \
-    --fs-odirect \
     --duration 60
   sleep 3
   if [[ "${INCLUDE_RETRIEVE}" == "true" ]]; then
-    run_lmcache \
-      --storage-type filesystem \
-      --storage-path "${DATA_DIR}" \
-      --pattern retrieve-only \
-      --fs-odirect \
-      --duration 60
+    if (( RETRIEVE_WORKERS <= 1 )); then
+      run_lmcache \
+        --storage-type filesystem \
+        --storage-path "${DATA_DIR}" \
+        --pattern retrieve-only \
+        --duration "${RETRIEVE_SEC}"
+    else
+      echo "=== parallel retrieve-only: ${RETRIEVE_WORKERS} workers (same DATA_DIR) ==="
+      pr_base="${RESULTS_DIR}/parallel-retrieve"
+      mkdir -p "${pr_base}"
+      echo "parallel_retrieve_workers=${RETRIEVE_WORKERS}" >> "${RESULTS_DIR}/summary.txt"
+      pids=()
+      for ((wi = 1; wi <= RETRIEVE_WORKERS; wi++)); do
+        wdir="${pr_base}/w${wi}"
+        mkdir -p "${wdir}"
+        (
+          run_lmcache \
+            --storage-type filesystem \
+            --storage-path "${DATA_DIR}" \
+            --pattern retrieve-only \
+            --duration "${RETRIEVE_SEC}" \
+            --per-op-log "${wdir}/retrieve-only.jsonl"
+        ) >"${wdir}/run.log" 2>&1 &
+        pids+=($!)
+      done
+      pr_rc=0
+      for pid in "${pids[@]}"; do
+        if ! wait "${pid}"; then
+          pr_rc=1
+        fi
+      done
+      echo "=== parallel retrieve finished (aggregate_exit=${pr_rc}) ==="
+      for ((wi = 1; wi <= RETRIEVE_WORKERS; wi++)); do
+        echo ""
+        echo "--- worker w${wi} (stdout/stderr) ---"
+        cat "${pr_base}/w${wi}/run.log"
+      done
+      if (( pr_rc != 0 )); then
+        echo "parallel retrieve: one or more workers failed (see ${pr_base}/w*/run.log)" >&2
+        return "${pr_rc}"
+      fi
+    fi
     sleep 3
   fi
 }

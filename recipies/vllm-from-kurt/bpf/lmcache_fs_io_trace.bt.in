@@ -1,0 +1,36 @@
+#!/usr/bin/env bpftrace
+// Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+//
+// SPDX-License-Identifier: MIT
+//
+// Host VFS read/write under the LMCache bind-mount directory (path prefix).
+// @@PATH_PREFIX_STR@@ is replaced with a JSON string literal (host realpath).
+// @@PATH_PREFIX_LEN@@ is replaced with strncmp length (capped in the generator).
+//
+// Columns: ts_ns, op (read|write), nbytes_req (count arg; not short-read),
+// path (truncated), comm
+
+BEGIN
+{
+  printf("ts_ns\top\tnbytes_req\tpath\tcomm\n");
+}
+
+kprobe:vfs_read
+{
+  $f = (struct file *)arg0;
+  $p = path(&$f->f_path);
+  if (strncmp($p, @@PATH_PREFIX_STR@@, @@PATH_PREFIX_LEN@@) != 0) {
+    return;
+  }
+  printf("%llu\tread\t%llu\t%s\t%s\n", nsecs, (uint64)arg2, str($p, 512), comm);
+}
+
+kprobe:vfs_write
+{
+  $f = (struct file *)arg0;
+  $p = path(&$f->f_path);
+  if (strncmp($p, @@PATH_PREFIX_STR@@, @@PATH_PREFIX_LEN@@) != 0) {
+    return;
+  }
+  printf("%llu\twrite\t%llu\t%s\t%s\n", nsecs, (uint64)arg2, str($p, 512), comm);
+}
