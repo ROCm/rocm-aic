@@ -10,7 +10,8 @@ remote_serde: {{ remote_serde }}
 {% endif %}
 {% if gds_path %}
 gds_path: "{{ gds_path }}"
-cufile_buffer_size: {{ cufile_buffer_size }}
+gds_buffer_size: {{ gds_buffer_size }}
+gds_backend: "{{ gds_backend }}"
 {% endif %}
 blocking_timeout_secs: {{ blocking_timeout_secs }}
 cache_policy: {{ cache_policy }}

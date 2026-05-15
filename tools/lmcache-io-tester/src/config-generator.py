@@ -137,7 +137,8 @@ class ConfigGenerator:
         gds_path: str,
         chunk_size: int = 256,
         local_cpu: bool = False,
-        cufile_buffer_size: int = 8192,
+        gds_buffer_size: int = 8192,
+        gds_backend: str = "cufile",
         **kwargs,
     ) -> Dict[str, Any]:
         """
@@ -147,7 +148,8 @@ class ConfigGenerator:
             gds_path: Path to GDS storage
             chunk_size: KV cache chunk size
             local_cpu: Enable CPU caching
-            cufile_buffer_size: CuFile buffer size in MiB
+            gds_buffer_size: GDS buffer size in MiB
+            gds_backend: GDS library ("cufile" or "hipfile")
             **kwargs: Additional configuration options
 
         Returns:
@@ -159,7 +161,8 @@ class ConfigGenerator:
                 "chunk_size": chunk_size,
                 "local_cpu": local_cpu,
                 "gds_path": gds_path,
-                "cufile_buffer_size": cufile_buffer_size,
+                "gds_buffer_size": gds_buffer_size,
+                "gds_backend": gds_backend,
             }
         )
         config.update(kwargs)
