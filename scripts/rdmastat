@@ -1,0 +1,78 @@
+#!/usr/bin/python3
+"""Periodically run 'rdma stat' and output counter deltas as CSV."""
+
+import subprocess
+import sys
+import time
+import csv
+import socket
+
+_hostname = socket.gethostname()
+
+def parse_rdma_stat():
+    out = subprocess.check_output(['rdma', 'stat'], text=True)
+    devices = {}
+    for line in out.strip().split('\n'):
+        tokens = line.split()
+        if len(tokens) < 2 or tokens[0] != 'link':
+            continue
+        dev = tokens[1]
+        counters = {}
+        i = 2
+        while i + 1 < len(tokens):
+            key = tokens[i]
+            try:
+                val = int(tokens[i + 1])
+            except ValueError:
+                i += 1
+                continue
+            counters[key] = val
+            i += 2
+        devices[dev] = counters
+    return devices
+
+def main():
+    if len(sys.argv) < 2:
+        print('Usage: %s <interval_seconds>' % sys.argv[0], file=sys.stderr)
+        sys.exit(1)
+
+    try:
+        interval = float(sys.argv[1])
+    except ValueError:
+        print('Invalid interval: %s' % sys.argv[1], file=sys.stderr)
+        sys.exit(1)
+
+    if interval <= 0:
+        print('Interval must be positive', file=sys.stderr)
+        sys.exit(1)
+
+    prev = parse_rdma_stat()
+
+    all_keys = []
+    seen = set()
+    for dev in sorted(prev):
+        for k in prev[dev]:
+            if k not in seen:
+                all_keys.append(k)
+                seen.add(k)
+
+    writer = csv.writer(sys.stdout)
+    writer.writerow(['hostname', 'timestamp', 'device'] + all_keys)
+    sys.stdout.flush()
+
+    while True:
+        time.sleep(interval)
+        curr = parse_rdma_stat()
+        ts = time.strftime('%Y-%m-%d %H:%M:%S')
+        for dev in sorted(curr):
+            row = [_hostname, ts, dev]
+            for k in all_keys:
+                old_val = prev.get(dev, {}).get(k, 0)
+                new_val = curr.get(dev, {}).get(k, 0)
+                row.append(new_val - old_val)
+            writer.writerow(row)
+        sys.stdout.flush()
+        prev = curr
+
+if __name__ == '__main__':
+    main()
