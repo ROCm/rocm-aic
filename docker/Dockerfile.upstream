@@ -14,7 +14,7 @@ ARG HIPFILE_SHA=adc1a2d2f8e886e93c5e55e674dbff6e05db2dbe
 
 #ARG LMCACHE_REPO="https://github.com/LMCache/LMCache.git"
 ARG LMCACHE_REPO="https://github.com/riley-dixon/LMCache.git"
-ARG LMCACHE_SHA="fdc7c1b76d48ed622e0e1d149639ddaaa3bf348b"
+ARG LMCACHE_SHA="92fe433ac8e21baf33d9a1b5dda835e1e56c53dd"
 
 
 
