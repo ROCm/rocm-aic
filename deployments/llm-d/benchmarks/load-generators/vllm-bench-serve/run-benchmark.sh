@@ -8,6 +8,7 @@ set -euo pipefail
 IMAGE=""
 NAMESPACE=""
 OUTPUT_DIR=""
+RESULTS_DIR=""
 RUN_LABEL="run1"
 DRY_RUN=false
 BENCHMARK_ARGS=()
@@ -27,6 +28,10 @@ while [[ $# -gt 0 ]]; do
       OUTPUT_DIR="$2"
       shift 2
       ;;
+    --results-dir)
+      RESULTS_DIR="$2"
+      shift 2
+      ;;
     --run-label)
       RUN_LABEL="$2"
       shift 2
@@ -42,7 +47,7 @@ while [[ $# -gt 0 ]]; do
       ;;
     *)
       echo "ERROR: Unknown argument: $1"
-      echo "Usage: $0 --image IMAGE --namespace NS --output-dir DIR [--run-label LABEL] [--dry-run] -- <benchmark-args>"
+      echo "Usage: $0 --image IMAGE --namespace NS --output-dir DIR --results-dir DIR [--run-label LABEL] [--dry-run] -- <benchmark-args>"
       exit 1
       ;;
   esac
@@ -62,6 +67,12 @@ fi
 if [ -z "$OUTPUT_DIR" ]; then
   echo "ERROR: --output-dir is required"
   exit 1
+fi
+
+# If results-dir not specified, default to /tmp/benchmark-results
+if [ -z "$RESULTS_DIR" ]; then
+  RESULTS_DIR="/tmp/benchmark-results/${NAMESPACE}"
+  echo "INFO: --results-dir not specified, using default: $RESULTS_DIR"
 fi
 
 # Generate pod name (use timestamp + run_label for uniqueness)

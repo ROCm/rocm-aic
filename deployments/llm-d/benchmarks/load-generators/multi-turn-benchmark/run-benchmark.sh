@@ -9,6 +9,7 @@ IMAGE=""
 NAMESPACE=""
 WORKLOAD_FILE=""
 OUTPUT_DIR=""
+RESULTS_DIR=""
 DRY_RUN=false
 BENCHMARK_ARGS=()
 
@@ -31,6 +32,10 @@ while [[ $# -gt 0 ]]; do
       OUTPUT_DIR="$2"
       shift 2
       ;;
+    --results-dir)
+      RESULTS_DIR="$2"
+      shift 2
+      ;;
     --dry-run)
       DRY_RUN=true
       shift
@@ -42,7 +47,7 @@ while [[ $# -gt 0 ]]; do
       ;;
     *)
       echo "ERROR: Unknown argument: $1"
-      echo "Usage: $0 --image IMAGE --namespace NS --workload-file FILE --output-dir DIR [--dry-run] -- <benchmark-args>"
+      echo "Usage: $0 --image IMAGE --namespace NS --workload-file FILE --output-dir DIR --results-dir DIR [--dry-run] -- <benchmark-args>"
       exit 1
       ;;
   esac
@@ -67,6 +72,12 @@ fi
 if [ -z "$OUTPUT_DIR" ]; then
   echo "ERROR: --output-dir is required"
   exit 1
+fi
+
+# If results-dir not specified, default to /tmp/benchmark-results
+if [ -z "$RESULTS_DIR" ]; then
+  RESULTS_DIR="/tmp/benchmark-results"
+  echo "INFO: --results-dir not specified, using default: $RESULTS_DIR"
 fi
 
 # Validate workload file exists
@@ -112,18 +123,27 @@ spec:
     command: ["/bin/sh", "-c"]
     args:
     - |
+      set -e
       wget https://www.gutenberg.org/ebooks/1184.txt.utf-8 && \
       mv 1184.txt.utf-8 pg1184.txt && \
       python3 benchmark_serving_multi_turn.py \
-      ARGS_PLACEHOLDER
+      ARGS_PLACEHOLDER && \
+      echo "Copying result files to mounted volume..." && \
+      cp -v *.xlsx *.json /results 2>/dev/null || echo "No .xlsx or .json files to copy"
     volumeMounts:
     - name: workload
       mountPath: /workload
       readOnly: true
+    - name: results
+      mountPath: /results
   volumes:
   - name: workload
     configMap:
       name: benchmark-workload
+  - name: results
+    hostPath:
+      path: OUTPUT_DIR_PLACEHOLDER
+      type: DirectoryOrCreate
 EOF_OUTER
 
 # Read workload content and indent it
@@ -154,6 +174,7 @@ ARGS_YAML="      ${BENCHMARK_ARGS[@]}"
 sed -i "s|NAMESPACE_PLACEHOLDER|$NAMESPACE|g" "$COMBINED_YAML"
 sed -i "s|POD_NAME_PLACEHOLDER|$POD_NAME|g" "$COMBINED_YAML"
 sed -i "s|IMAGE_PLACEHOLDER|$IMAGE|g" "$COMBINED_YAML"
+sed -i "s|OUTPUT_DIR_PLACEHOLDER|$RESULTS_DIR|g" "$COMBINED_YAML"
 sed -i "s|WORKLOAD_CONTENT_JSON|$(basename $WORKLOAD_FILE)|g" "$COMBINED_YAML"
 sed -i "/WORKLOAD_CONTENT_PLACEHOLDER/r /dev/stdin" "$COMBINED_YAML" <<< "$WORKLOAD_CONTENT"
 sed -i "/WORKLOAD_CONTENT_PLACEHOLDER/d" "$COMBINED_YAML"
@@ -223,6 +244,13 @@ kubectl logs "$POD_NAME" -n "$NAMESPACE" > "$OUTPUT_FILE" 2>&1 || true
 # Save pod description for debugging
 POD_DESC_FILE="$OUTPUT_DIR/pod_description.txt"
 kubectl describe pod "$POD_NAME" -n "$NAMESPACE" > "$POD_DESC_FILE" 2>&1 || true
+
+# Copy result files from pod's /results volume to host OUTPUT_DIR
+echo "Copying result files from shared results folder to host..."
+cp ${RESULTS_DIR}/* ${OUTPUT_DIR}
+
+echo "Deleting ${RESULTS_DIR}"
+rm -Rf ${RESULTS_DIR}/*
 
 # Get exit code
 EXIT_CODE=$(kubectl get pod "$POD_NAME" -n "$NAMESPACE" -o jsonpath='{.status.containerStatuses[0].state.terminated.exitCode}' 2>/dev/null || echo "1")

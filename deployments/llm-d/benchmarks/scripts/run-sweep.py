@@ -474,7 +474,8 @@ class SweepOrchestrator:
 
     def __init__(self, config_file: str, gpu_budget: Optional[int] = None,
                  max_concurrent: int = 1, exclusive_mode: bool = False,
-                 max_gpus_per_node: int = 8, output_dir: Optional[str] = None):
+                 max_gpus_per_node: int = 8, output_dir: Optional[str] = None,
+                 base_k8s_results_dir: str = "/mnt/rocm-icms-cache/benchmark-results"):
         """
         Initialize the orchestrator.
 
@@ -485,7 +486,9 @@ class SweepOrchestrator:
             exclusive_mode: If True, pods request max GPUs per node
             max_gpus_per_node: Maximum GPUs available per node
             output_dir: Custom sweep directory name (optional, overrides auto-generated name)
+            base_k8s_results_dir: Base directory on K8s nodes for result files (default: /tmp/benchmark-results)
         """
+        self.base_k8s_results_dir = base_k8s_results_dir
         # Load configuration with environment variable substitution
         with open(config_file) as f:
             raw_content = f.read()
@@ -914,9 +917,15 @@ class SweepOrchestrator:
             for combo in itertools.product(*values):
                 config = fixed.copy()
                 config.update(dict(zip(keys, combo)))
+                # Evaluate any expressions in this deployment combination
+                # This allows top-level parameters (cpu, memory, etc.) to reference
+                # other parameters using {var_name} syntax
+                config = evaluate_expressions_in_combination(config)
                 deployment_combinations.append(config)
         else:
-            deployment_combinations = [fixed]
+            # Even for single fixed config, evaluate expressions
+            # (e.g., cpu: "{tensor_parallel_size} * 16" where tensor_parallel_size is fixed)
+            deployment_combinations = [evaluate_expressions_in_combination(fixed)]
 
         # Check if load_generation has benchmark_args with type: combinations
         load_config = self.config.get('load_generation', {})
@@ -2043,7 +2052,10 @@ class SweepOrchestrator:
                 raise InterruptedError("Shutdown requested")
 
             print(f"{prefix} Running load generation...")
-            benchmark_results = self.run_load_generation(run_dir, params, namespace)
+            # Add run_id to params for unique results directory naming
+            params_with_run_id = params.copy()
+            params_with_run_id['_run_id'] = run_id
+            benchmark_results = self.run_load_generation(run_dir, params_with_run_id, namespace)
 
             if self.shutdown_event.is_set():
                 raise InterruptedError("Shutdown requested")
@@ -2392,6 +2404,12 @@ Examples:
         default=None,
         help="Custom sweep directory name (default: auto-generated {sweep_name}_{timestamp})"
     )
+    parser.add_argument(
+        "--base-k8s-results-dir",
+        type=str,
+        default="/mnt/rocm-icms-cache/benchmark-results",
+        help="Base directory on K8s nodes for result files (default: /mnt/rocm-icms-cache/benchmark-results)"
+    )
     args = parser.parse_args()
 
     try:
@@ -2402,7 +2420,8 @@ Examples:
             max_concurrent=args.max_concurrent,
             exclusive_mode=args.exclusive_mode,
             max_gpus_per_node=args.max_gpus_per_node,
-            output_dir=args.output_dir
+            output_dir=args.output_dir,
+            base_k8s_results_dir=args.base_k8s_results_dir
         )
 
         if args.dry_run:
