@@ -1,4 +1,4 @@
-ARG BASE_IMAGE=vllm/vllm-openai-rocm:v0.20.1
+ARG BASE_IMAGE=vllm/vllm-openai-rocm:v0.19.0
 
 ARG PYTORCH_ROCM_ARCH=gfx942
 
@@ -185,9 +185,13 @@ RUN uv pip install --system build
 # Clone and checkout LMCache
 # NOTE: Remove NIXL wheels pulled by upstream LMCache unconditionally. If they remain, VLLM
 # tries to import non-existent CUDA shared object at runtime.
+COPY patches /app/patches
 RUN git clone ${LMCACHE_REPO} && \
+    git config --global user.email "foo@bar.com" && \
+    git config --global user.name "Docker Build" && \
     cd LMCache && \
     git checkout ${LMCACHE_SHA} && \
+    git am /app/patches/lmcache/*.patch && \
     uv pip install --system -r requirements/build.txt && \
     PYTORCH_ROCM_ARCH="${PYTORCH_ROCM_ARCH}" \
     TORCH_DONT_CHECK_COMPILER_ABI=1 \
@@ -222,6 +226,14 @@ ARG PYTORCH_ROCM_ARCH
 
 WORKDIR /app
 
+# Install runtime dependencies for hipfile (boost libraries needed at runtime)
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
+    apt-get update && \
+    apt-get install -y --no-install-recommends \
+        libmount-dev \
+    && rm -rf /var/lib/apt/lists/*
+
 RUN --mount=type=bind,from=build_rixl,src=/export/wheels,target=/export/wheels \
     --mount=type=bind,from=build_rixl,src=/export/packages,target=/export/packages \
     --mount=type=bind,from=build_kv,src=/export/artifacts,target=/export/artifacts \
@@ -232,9 +244,25 @@ RUN --mount=type=bind,from=build_rixl,src=/export/wheels,target=/export/wheels \
     uv pip install --system /export/artifacts/*.whl && \
     uv pip uninstall --system nixl nixl-cu12
 
-# Verify LMCache installation
-RUN python3 -c "import lmcache; print('LMCache installed successfully')" || \
-    python3 -c "import lmcache"
+# Update library cache after installing all packages
+RUN ldconfig
+
+# longdocqa:
+# - matplotlib
+# multiturn:
+# - xlsxwriter
+RUN uv pip install --system pandas matplotlib xlsxwriter
+
+# Update LD_LIBRARY_PATH to include all necessary library paths
+ENV LD_LIBRARY_PATH=/usr/lib:/usr/local/lib:${ROCM_PATH}/lib:${UCX_PATH}/lib:${RIXL_PATH}/lib/x86_64-linux-gnu:${LD_LIBRARY_PATH}
+
+# Verify installations with detailed diagnostics
+RUN echo "=== Verifying LMCache installation ===" && \
+    python3 -c "import lmcache; print('LMCache installed successfully')" && \
+    echo "=== Verifying hipfile installation ===" && \
+    python3 -c "import hipfile; print('hipfile installed successfully at:', hipfile.__file__)" && \
+    echo "=== Checking hipfile library files ===" && \
+    find /usr -name "*hipfile*" -type f 2>/dev/null | head -20 || true
 
 # Set environment for ROCm
 ENV PYTORCH_ROCM_ARCH=${PYTORCH_ROCM_ARCH}
