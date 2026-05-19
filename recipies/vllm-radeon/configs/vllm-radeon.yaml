@@ -5,7 +5,7 @@
 # vllm-radeon: LMCache + vLLM Serve Defaults + KV Connector JSON.
 
 lmcache_paths:
-  gds_subdir: lmcache_gds
+  subdir: lmcache
 
 lmcache_hipfile: "/app/configs/lmcache-hipfile.yml"
 lmcache_posix: "/app/configs/lmcache-posix.yml"

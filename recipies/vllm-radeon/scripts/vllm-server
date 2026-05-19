@@ -21,9 +21,24 @@ except ImportError as e:
     print("ERROR: PyYAML is required (import yaml).", file=sys.stderr)
     raise SystemExit(1) from e
 
-from vllm_radeon_defaults import container_data_root, container_server_log_dir
+import importlib.util
 
 _script_dir = Path(__file__).resolve().parent
+
+
+def _load_defaults_module():
+    path = _script_dir / "vllm-radeon-defaults.py"
+    spec = importlib.util.spec_from_file_location("vllm_radeon_defaults", path)
+    if spec is None or spec.loader is None:
+        raise ImportError(f"cannot load {path}")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+_defaults = _load_defaults_module()
+container_data_root = _defaults.container_data_root
+container_server_log_dir = _defaults.container_server_log_dir
 _cfg_next_to_script = _script_dir / "configs"
 _CONFIG_DIR = (
     _cfg_next_to_script
@@ -133,7 +148,7 @@ def _materialize_lmcache_config(svc: dict[str, Any], data_root: Path) -> Path | 
     paths = svc.get("lmcache_paths")
     if not isinstance(paths, dict):
         print(
-            "ERROR: vllm-radeon.yaml must define lmcache_paths with gds_subdir",
+            "ERROR: vllm-radeon.yaml must define lmcache_paths as a mapping",
             file=sys.stderr,
         )
         return None
@@ -146,17 +161,17 @@ def _materialize_lmcache_config(svc: dict[str, Any], data_root: Path) -> Path | 
         print(f"ERROR: invalid LMCache config {src}", file=sys.stderr)
         return None
 
-    gds_sub = paths.get("gds_subdir")
-    if not isinstance(gds_sub, str) or not gds_sub.strip():
+    cache_subdir = paths.get("subdir")
+    if not isinstance(cache_subdir, str) or not cache_subdir.strip():
         print(
-            "ERROR: lmcache_paths.gds_subdir must be a non-empty string",
+            "ERROR: lmcache_paths.subdir must be a non-empty string",
             file=sys.stderr,
         )
         return None
 
     mode = _lmcache_io_mode()
     if mode in ("posix", "mmap", "non-gds"):
-        fs_root = (data_root / gds_sub).resolve()
+        fs_root = (data_root / cache_subdir).resolve()
         fs_root.mkdir(parents=True, exist_ok=True)
         base_path = str(fs_root).rstrip("/") + "/"
         extra = cfg.get("extra_config")
@@ -173,7 +188,7 @@ def _materialize_lmcache_config(svc: dict[str, Any], data_root: Path) -> Path | 
         ):
             cfg.pop(k, None)
     else:
-        cfg["gds_path"] = str(data_root / gds_sub)
+        cfg["gds_path"] = str(data_root / cache_subdir)
         cfg.pop("remote_storage_plugins", None)
         ec = cfg.get("extra_config")
         if isinstance(ec, dict):
@@ -228,7 +243,7 @@ def main() -> int:
 
     paths = svc.get("lmcache_paths")
     if prof.get("clear_gds_dir_before_start") and isinstance(paths, dict):
-        sub = paths.get("gds_subdir")
+        sub = paths.get("subdir")
         if isinstance(sub, str) and sub.strip():
             disk = data_root / sub
             subprocess.run(["rm", "-fr", str(disk)], check=False)

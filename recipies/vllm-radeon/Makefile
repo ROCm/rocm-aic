@@ -19,6 +19,16 @@ RADEON_LMCACHE_IO ?= hipfile
 ARGS ?=
 EXTRA_DOCKER_RUN_FLAGS ?=
 
+# Gutenberg long-context fixtures (gitignored under data/; not LMCache DATA mount)
+BOOK_SLUG ?= war-and-peace
+BOOK_PG_ID ?= 2600
+BOOK_TITLE ?= War and Peace
+BOOK_AUTHOR ?= Leo Tolstoy
+BOOK_CHUNK_WORDS ?= 10000
+BOOK_CHUNK_COUNT ?= 100
+BOOK_DATA_DIR ?= $(CURDIR)/data/$(BOOK_SLUG)
+PYTHON ?= python3
+
 _ROCM_ARCH_DETECTED := $(shell rocm_agent_enumerator 2>/dev/null | \
 	grep -E '^gfx' | head -1)
 ROCM_ARCH := $(if $(strip $(ROCM_ARCH)),$(strip $(ROCM_ARCH)),$(_ROCM_ARCH_DETECTED))
@@ -31,7 +41,7 @@ ifneq ($(strip $(HIPFILE_SHA)),)
 BUILD_ARGS += --build-arg HIPFILE_SHA=$(HIPFILE_SHA)
 endif
 
-.PHONY: help build vllm-radeon run
+.PHONY: help build vllm-radeon run data
 
 .DEFAULT_GOAL := help
 
@@ -43,6 +53,8 @@ help:
 	@echo "  make run            docker run ... bind-mounts repo configs/ + scripts/"
 	@echo "                      + LOG (server.txt); DATA = LMCache KV only"
 	@echo "                      default CONTAINER_NAME=$(CONTAINER_NAME)"
+	@echo "  make data           download PG book, chunk, and write questions JSON"
+	@echo "                      (BOOK_SLUG=$(BOOK_SLUG) BOOK_PG_ID=$(BOOK_PG_ID))"
 	@echo ""
 	@echo ""
 	@echo "make run: requires HF_TOKEN or HF_TOKEN_FILE (shell env, Makefile"
@@ -50,6 +62,29 @@ help:
 	@echo "  Examples: make run"
 	@echo "            make run HF_TOKEN_FILE=/path/to/token"
 	@echo ""
+	@echo "make data: writes $(BOOK_DATA_DIR)/ (override BOOK_SLUG, BOOK_PG_ID,"
+	@echo "  BOOK_TITLE, BOOK_AUTHOR, BOOK_CHUNK_WORDS, BOOK_CHUNK_COUNT)."
+	@echo "  Example: make data BOOK_SLUG=pride-and-prejudice BOOK_PG_ID=1342 \\"
+	@echo "    BOOK_TITLE='Pride and Prejudice' BOOK_AUTHOR='Jane Austen'"
+	@echo ""
+
+data:
+	@set -e; \
+	command -v $(PYTHON) >/dev/null 2>&1 || { \
+		echo "ERROR: $(PYTHON) not found" >&2; exit 1; \
+	}; \
+	echo "make data: BOOK_SLUG=$(BOOK_SLUG) PG#$(BOOK_PG_ID) -> $(BOOK_DATA_DIR)"; \
+	$(PYTHON) "$(CURDIR)/scripts/split-gutenberg-random-chunks.py" \
+		--pg-id "$(BOOK_PG_ID)" \
+		--slug "$(BOOK_SLUG)" \
+		-o "$(BOOK_DATA_DIR)" \
+		--chunk-words "$(BOOK_CHUNK_WORDS)" \
+		--count "$(BOOK_CHUNK_COUNT)"; \
+	$(PYTHON) "$(CURDIR)/scripts/gen-questions-json.py" \
+		--slug "$(BOOK_SLUG)" \
+		--title "$(BOOK_TITLE)" \
+		--author "$(BOOK_AUTHOR)" \
+		--pg-id "$(BOOK_PG_ID)"
 
 run:
 	@set -e; \

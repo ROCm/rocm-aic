@@ -46,6 +46,7 @@ tools/lmcache-io-tester/data/lmsys-chat-*.json
 tools/lmcache-io-tester/data/wildchat-*.json
 tools/lmcache-io-tester/**/*.token
 
-# vllm-radeon logs
+# vllm-radeon logs and generated Gutenberg fixtures (see README)
 recipies/vllm-radeon/logs/
+recipies/vllm-radeon/data/
 

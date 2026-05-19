@@ -18,9 +18,11 @@ naming. Work from **`recipies/vllm-radeon/`**.
 | Image layers, LMCache / hipFile / **fio** build; **`ENTRYPOINT`** **`/app/scripts/vllm-server`** (**`Dockerfile`** **`COPY`**; **`make run`** overlays repo **`configs/`** + **`scripts/`**) | **`Dockerfile`** |
 | vLLM + LMCache (**`--kv-transfer-config`**); **`RADEON_LMCACHE_IO`** selects template | **`scripts/vllm-server`** |
 | LMCache **hipfile** (**GdsBackend**, **`gds_path`**) vs **posix** (**`fs`**
-plugin, same **`DATA`/`gds_subdir`** as **`gds_path`**, no **`gds_path`** key) |
+plugin, same **`DATA`/`subdir`** as **`gds_path`**, no **`gds_path`** key) |
 **`configs/lmcache-hipfile.yml`**, **`configs/lmcache-posix.yml`** |
-| LMCache subdir + **`serve`** (load format, ais-stats, clear GDS) | **`configs/vllm-radeon.yaml`**, **`scripts/vllm_radeon_defaults.py`**, **`Makefile`** **`CONTAINER_DATA_DIR`**, **`CONTAINER_LOG_DIR`** |
+| LMCache subdir + **`serve`** (load format, ais-stats, clear GDS) | **`configs/vllm-radeon.yaml`**, **`scripts/vllm-radeon-defaults.py`**, **`Makefile`** **`CONTAINER_DATA_DIR`**, **`CONTAINER_LOG_DIR`** |
+| Gutenberg chunks + questions + **`run-long`** load test | **`make data`**, **`scripts/split-gutenberg-random-chunks.py`**, **`scripts/gen-questions-json.py`**, **`run-long.sh`** |
+| Parse engine log → CSV/SVG | **`scripts/parse-vllm-engine-log-timeseries.py`** |
 
 ## Quick start
 
@@ -38,7 +40,7 @@ or add matching **`-v`** flags with **`EXTRA_DOCKER_RUN_FLAGS`**.
 
 Prepare the host path you mount as LMCache data (default host **`DATA`**
 in **`Makefile`**: **`/mnt/lmcache-nvme`** → container **`/data`**). That
-volume should hold only LMCache on-disk state (**`gds_subdir`**, runtime
+volume should hold only LMCache on-disk state (**`subdir`**, runtime
 YAML, chunk statistics, etc.). vLLM tee logs go under host **`LOG`**
 (default **`recipies/vllm-radeon/logs`** → container **`/var/log/vllm-radeon`**,
 file **`server.txt`**). Override with **`make run LOG=/other/host/dir`** or
@@ -52,10 +54,10 @@ override with **`make run CONTAINER_NAME=...`**.
 ## LMCache disk mode (**`RADEON_LMCACHE_IO`**)
 
 **`make run`** passes **`RADEON_LMCACHE_IO`** (default **`hipfile`**). **`hipfile`**
-uses LMCache **GdsBackend** + hipFile (**`gds_path`** under **`DATA`/`gds_subdir`**).
+uses LMCache **GdsBackend** + hipFile (**`gds_path`** under **`DATA`/`subdir`**).
 **`posix`** uses LMCache **`remote_storage_plugins: [fs]`** (POSIX filesystem
 backend): **`extra_config.remote_storage_plugin.fs.base_path`** points at the
-same directory as **`hipfile`** (**`DATA`/`gds_subdir`**). No **`gds_path`** key
+same directory as **`hipfile`** (**`DATA`/`subdir`**). No **`gds_path`** key
 in the runtime YAML (normal path; not **`fs://`**).
 
 ```bash
@@ -87,6 +89,47 @@ Use the same name as **`make run`** (**`CONTAINER_NAME`**, default **`vllm-radeo
 
 Match **`--model`** to **`VLLM_MODEL`** / **`vllm-radeon.yaml`** **`model_default`**;
 match **`--port`** to **`800{GPU}`** from **`ROCR_VISIBLE_DEVICES`**.
+
+## Gutenberg long-context fixtures
+
+**`data/`** is **not** tracked (see **`.gitignore`**); generate fixtures locally.
+From **`recipies/vllm-radeon/`**:
+
+```bash
+make data
+```
+
+Defaults: **War and Peace** (**`BOOK_PG_ID=2600`**, **`BOOK_SLUG=war-and-peace`**).
+Override book, chunk size, or count, e.g.:
+
+```bash
+make data BOOK_SLUG=pride-and-prejudice BOOK_PG_ID=1342 \
+  BOOK_TITLE='Pride and Prejudice' BOOK_AUTHOR='Jane Austen'
+```
+
+Equivalent manual steps (hyphenated scripts under **`scripts/`**):
+
+```bash
+python3 scripts/split-gutenberg-random-chunks.py \
+  --pg-id 2600 --slug war-and-peace \
+  -o data/war-and-peace --count 100
+
+python3 scripts/gen-questions-json.py \
+  --slug war-and-peace --title "War and Peace" --author "Leo Tolstoy" \
+  --pg-id 2600
+
+# Optional: supply your own question list (.json array or one question per line):
+python3 scripts/gen-questions-json.py \
+  --slug war-and-peace --title "War and Peace" --author "Leo Tolstoy" \
+  --extra-questions /path/to/my-questions.json
+
+# Load test (run after data/<slug>/ exists):
+BOOK_SLUG=war-and-peace ./run-long.sh
+```
+
+Chunk files are **`data/<slug>/<slug>-<chunk-label>.<offset>.txt`** (default
+label **`10k`** for 10 000 words). **`run-long.sh`** honors **`BOOK_SLUG`**,
+**`BOOK_DATA_DIR`**, and **`QUESTIONS_FILE`**.
 
 ## Grafana **`grafana/vllm-lmcache-prometheus.json`**
 
