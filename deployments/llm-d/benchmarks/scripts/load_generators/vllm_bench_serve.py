@@ -317,8 +317,8 @@ class VllmBenchServe(LoadGeneratorBase):
 
         # Get benchmark_args - handle both patterns
         benchmark_args_config = config.get('benchmark_args', {})
-        if isinstance(benchmark_args_config, dict) and benchmark_args_config.get('type') == 'combinations':
-            # New pattern: type: combinations - extract fixed args (non-sweepable)
+        if isinstance(benchmark_args_config, dict) and benchmark_args_config.get('type') in ['combinations', 'pairwise']:
+            # New pattern: type: combinations or pairwise - extract fixed args (non-sweepable)
             benchmark_args = {}
             for key, value in benchmark_args_config.get('args', {}).items():
                 # Skip sweepable parameters (they're in _load_params)
