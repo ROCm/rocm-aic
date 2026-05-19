@@ -13,6 +13,7 @@ RUN test -n "$ROCM_ARCH" || (echo "ERROR: ROCM_ARCH is not set" && exit 1)
 ARG LMCACHE_SHA=92fe433ac8e21baf33d9a1b5dda835e1e56c53dd
 # Backport LMCache/LMCache#3008 (vLLM cache_salt in LMCache V1 cache identity).
 ARG LMCACHE_CACHE_SALT_PATCH=lmcache-pr-3008-cache-salt.patch
+ARG LMCACHE_STORAGE_MODE_PATCH=lmcache-storage-mode-switch.patch
 ARG HIPFILE_SHA=adc1a2d2f8e886e93c5e55e674dbff6e05db2dbe
 
 # Build deps for LMCache, rocm-systems hipFile (DEB + Python), and fio.
@@ -37,6 +38,7 @@ RUN cd /app && \
     cd LMCache && \
     git checkout "${LMCACHE_SHA}" && \
     git apply "/app/patches/${LMCACHE_CACHE_SALT_PATCH}" && \
+    git apply "/app/patches/${LMCACHE_STORAGE_MODE_PATCH}" && \
     PYTORCH_ROCM_ARCH=${ROCM_ARCH} \
         TORCH_DONT_CHECK_COMPILER_ABI=1 \
         CXX=hipcc \

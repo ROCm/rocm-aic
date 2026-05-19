@@ -115,8 +115,18 @@ _BATCH_GET_RE = re.compile(r"batched_get_blocking: ([\d.]+)s \| ([\d.]+)MiB")
 _EXTERNAL_HIT_RE = re.compile(r"External prefix cache hit rate: ([\d.]+)%")
 
 
-def _http(method: str, url: str, timeout: float) -> tuple[int, Any]:
-    req = urllib.request.Request(url, method=method, headers={"Accept": "application/json"})
+def _http(
+    method: str,
+    url: str,
+    timeout: float,
+    *,
+    data: bytes | None = None,
+    headers: dict[str, str] | None = None,
+) -> tuple[int, Any]:
+    hdrs = {"Accept": "application/json"}
+    if headers:
+        hdrs.update(headers)
+    req = urllib.request.Request(url, data=data, method=method, headers=hdrs)
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             raw = resp.read().decode("utf-8", errors="replace")
@@ -140,6 +150,46 @@ def reset_gpu_prefix(vllm_base: str, timeout: float) -> None:
             f"reset_prefix_cache HTTP {status}: {body!r} "
             "(need VLLM_SERVER_DEV_MODE=1; make run)"
         )
+
+
+def storage_mode_get(base: str, timeout: float) -> str | None:
+    status, payload = _http("GET", f"{base}/storage/mode", timeout)
+    if status == 404:
+        return None
+    if status != 200:
+        raise RuntimeError(f"storage/mode GET HTTP {status}: {payload!r}")
+    mode = payload.get("mode")
+    return str(mode) if mode else None
+
+
+def storage_mode_set(
+    base: str,
+    mode: str,
+    timeout: float,
+    *,
+    gds_path: str | None = None,
+    fs_base_path: str | None = None,
+) -> dict[str, Any]:
+    body: dict[str, Any] = {"mode": mode}
+    if gds_path:
+        body["gds_path"] = gds_path
+    if fs_base_path:
+        body["fs_base_path"] = fs_base_path
+    status, payload = _http(
+        "POST",
+        f"{base}/storage/mode",
+        timeout,
+        data=json.dumps(body).encode(),
+        headers={"Content-Type": "application/json"},
+    )
+    if status == 404:
+        raise RuntimeError(
+            "POST /storage/mode unavailable (rebuild image with "
+            "lmcache-storage-mode-switch.patch)"
+        )
+    if status != 200:
+        raise RuntimeError(f"storage/mode POST HTTP {status}: {payload!r}")
+    return payload
 
 
 def bypass_list(base: str, timeout: float) -> list[str]:

@@ -80,6 +80,28 @@ make run RADEON_LMCACHE_IO=posix
 make run RADEON_LMCACHE_IO=hipfile   # default
 ```
 
+### Runtime storage mode (no vLLM restart)
+
+After **`make build`** (applies **`lmcache-storage-mode-switch.patch`**), the
+LMCache worker HTTP API on port **`699{GPU}+1`** (e.g. **`6991`** for **`GPU=0`**)
+exposes **`GET|POST /storage/mode`**. This closes the active disk backend,
+updates config to match the hipfile or posix profile (same fields as
+**`vllm-server`** materialization), and recreates backends. **KV on disk is not
+portable** between modes; repopulate after switching.
+
+```bash
+curl -sS "http://127.0.0.1:6991/storage/mode"
+curl -sS -X POST "http://127.0.0.1:6991/storage/mode" \
+  -H 'Content-Type: application/json' \
+  -d '{"mode":"posix","fs_base_path":"/data/lmcache/"}'
+curl -sS -X POST "http://127.0.0.1:6991/storage/mode" \
+  -H 'Content-Type: application/json' \
+  -d '{"mode":"hipfile","gds_path":"/data/lmcache"}'
+```
+
+Startup mode still comes from **`RADEON_LMCACHE_IO`** at **`make run`**; use
+**`/storage/mode`** only when you need to flip layouts on a live server.
+
 ## LMCache **long_doc_qa** benchmark
 
 After vLLM is listening (e.g. **`curl -sS http://127.0.0.1:8000/v1/models`**),
