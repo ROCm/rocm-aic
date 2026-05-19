@@ -1,21 +1,34 @@
 name: "test-model-vllm-lmcache-sweep"
 description: "Test health of various models against vllm+LMCache (TP=4)"
 deployment: "tiered-prefix-cache-lmcache"
+deployment_template: "tiered-prefix-cache-lmcache-hipfile-kustomization.yaml.tmpl"
 
 parameters:
   model:
     type: categorical
     values:
       - "Qwen/Qwen3-32B"
-      - "amd/DeepSeek-R1-0528-MXFP4"
-      - "amd/Kimi-K2.5-MXFP4"
+      - "deepseek-ai/DeepSeek-R1-0528"
+      - "moonshotai/Kimi-K2.5"
       - "amd/Qwen3-235B-A22B-Thinking-2507_moe_w_mxfp4_a_mxfp4_kv_fp8"
-      - "amd/gpt-oss-120b-w-mxfp4-a-fp8"
       - "openai/gpt-oss-120b"
-
-  tensor_parallel_size:
+      # MXFP4 not yet supported
+      #- "amd/Kimi-K2.5-MXFP4"
+      #- "amd/DeepSeek-R1-0528-MXFP4"
+      #- "amd/gpt-oss-120b-w-mxfp4-a-fp8"
+  replicas:
+    type: categorical
+    values: [1]
+  memory:
     type: fixed
-    value: 8
+    value: "1500Gi"
+  cpu:
+    type: fixed
+    value: 100
+  tensor_parallel_size:
+    type: categorical
+    values: [8]
+
   vllm_args:
     type: combinations
     args:

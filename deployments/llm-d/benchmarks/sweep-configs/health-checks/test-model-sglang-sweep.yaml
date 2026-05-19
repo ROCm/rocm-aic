@@ -7,10 +7,6 @@ deployment_template: "inference-scheduling-sglang-dummy-kustomization.yaml.tmpl"
 
 # Model-specific information:
 
-# Kimi:
-# - requires `trust-remote-code: true`
-# - requires pod Memory else OOMKilled
-
 parameters:
   model:
     type: categorical
@@ -24,14 +20,23 @@ parameters:
       #- "amd/Kimi-K2.5-MXFP4"
       #- "amd/DeepSeek-R1-0528-MXFP4"
       #- "amd/gpt-oss-120b-w-mxfp4-a-fp8"
-
-  tensor_parallel_size:
+  replicas:
+    type: categorical
+    values: [1]
+  memory:
     type: fixed
-    value: 8
+    value: "1500Gi"
+  cpu:
+    type: fixed
+    value: 100
+  tensor_parallel_size:
+    type: categorical
+    values: [8]
 
   sglang_args:
     type: combinations
     args:
+      load-format: "dummy"
       attention-backend: "aiter"
       trust-remote-code: true # for kimi
       max_running_requests: 1024
@@ -41,7 +46,6 @@ parameters:
       # Longest Prefix Match scheduling
       chunked_prefill_size: 4096
       schedule_policy: "lpm"
-      load-format: "dummy"
 
   model_specific_args:
     - pattern: "deepseek-ai/DeepSeek-R1-0528"

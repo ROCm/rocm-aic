@@ -6,8 +6,14 @@ deployment_template: "inference-scheduling-vllm-dummy-kustomization.yaml.tmpl"
 
 env_vars:
   VLLM_ROCM_USE_AITER: 1
+# TODO does this work if there's also huggginface?
+  HF_HOME: "/root/hf"
 
 parameters:
+  image:
+    type: categorical
+    values:
+      - "ghcr.io/vcave/vllm:rocm_721-vllm_0201-lmcache_20260514_384d79df"
   model:
     type: categorical
     values:
@@ -20,18 +26,27 @@ parameters:
       #- "amd/Kimi-K2.5-MXFP4"
       #- "amd/DeepSeek-R1-0528-MXFP4"
       #- "amd/gpt-oss-120b-w-mxfp4-a-fp8"
-
-  tensor_parallel_size:
+  replicas:
+    type: categorical
+    values: [8]
+  memory:
     type: fixed
-    value: 8
+    value: "1500Gi"
+  cpu:
+    type: fixed
+    value: 100
+  tensor_parallel_size:
+    type: categorical
+    values: [8]
 
   vllm_args:
     type: combinations
     args:
       load-format: "dummy"
-      kv_cache_dtype: "fp8"
+      trust-remote-code: true # for kimi
       gpu_memory_utilization:
         values: [0.90]
+      kv_cache_dtype: "fp8"
 
   model_specific_args:
     - pattern: "moonshotai/Kimi-K2.5"

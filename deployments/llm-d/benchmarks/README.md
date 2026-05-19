@@ -85,6 +85,27 @@ parameters:
     type: fixed
     value: 2
 
+  # Optional: Specify number of replicas for the decode deployment (default: 1)
+  replicas:
+    type: fixed
+    value: 1
+
+  # Optional: Specify the container image for the decode deployment
+  # If not specified, uses the default image from the template
+  image:
+    type: fixed
+    value: "ghcr.io/vcave/vllm:rocm_721-vllm_20260423b-lmcache"
+
+  # Optional: Specify CPU resource limit/request (default: varies by template)
+  cpu:
+    type: fixed
+    value: "32"
+
+  # Optional: Specify memory resource limit/request (default: varies by template)
+  memory:
+    type: fixed
+    value: "100Gi"
+
   # vLLM arguments with automatic conversion to CLI flags
   vllm_args:
     type: combinations
@@ -217,6 +238,69 @@ See `sweep-configs/example-env-vars.yaml` for a complete example demonstrating:
 - Per-combination environment variables
 - Host environment variable substitution
 - Override semantics
+
+### Deployment Configuration
+
+#### Replicas, Image, CPU, and Memory
+
+You can specify the number of replicas, container image, and resource limits for the decode deployment:
+
+```yaml
+parameters:
+  # Number of replicas for the decode deployment
+  replicas:
+    type: fixed
+    value: 2
+
+  # Container image for the decode deployment
+  image:
+    type: fixed
+    value: "ghcr.io/vcave/vllm:your-custom-image"
+
+  # CPU resource limit/request (same value for both)
+  cpu:
+    type: fixed
+    value: "32"
+
+  # Memory resource limit/request (same value for both)
+  memory:
+    type: fixed
+    value: "100Gi"
+```
+
+**Use cases:**
+- **Multiple replicas**: Scale out for higher throughput or availability
+- **Custom images**: Test different vLLM versions, custom builds, or optimizations
+- **Resource tuning**: Find optimal CPU and memory allocations for your workload
+- **Sweeping configurations**: Compare performance across different resource configurations
+
+All parameters are optional and can be swept like any other parameter:
+
+```yaml
+parameters:
+  replicas:
+    type: categorical
+    values: [1, 2, 4]
+
+  image:
+    type: categorical
+    values:
+      - "ghcr.io/vcave/vllm:rocm_721-vllm_20260423b-lmcache"
+      - "ghcr.io/vcave/vllm:rocm_721-vllm_20260501-lmcache"
+
+  cpu:
+    type: categorical
+    values: ["16", "32", "64"]
+
+  memory:
+    type: categorical
+    values: ["50Gi", "100Gi", "200Gi"]
+```
+
+**Examples:**
+- `sweep-configs/example-replicas-and-image.yaml` - Basic usage
+- `sweep-configs/example-replicas-image-sweep.yaml` - Sweeping replicas and images
+- `sweep-configs/example-resource-sweep.yaml` - Sweeping CPU and memory resources
 
 ## Running Sweeps Quick start
 

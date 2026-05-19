@@ -4,12 +4,26 @@ deployment: "tiered-prefix-cache-offloading"
 deployment_template: "tiered-prefix-cache-offloading-hostpath-kustomization.yaml.tmpl"
 
 parameters:
+  image:
+    type: categorical
+    values:
+      - "ghcr.io/vcave/vllm:rocm_721-vllm_0201-lmcache_20260514_384d79df"
   model:
     type: fixed
     value: "openai/gpt-oss-120b"
+  replicas:
+    type: categorical
+    values: [1]
+  memory:
+    type: fixed
+    value: "1500Gi"
+  cpu:
+    type: fixed
+    value: 24
   tensor_parallel_size:
     type: categorical
     values: [1,2,4,8]
+
   vllm_args:
     type: combinations
     args:
