@@ -1,0 +1,2 @@
+# Host-side Python deps for rocm-aic scripts and benchmarks.
+openai>=1.40.0

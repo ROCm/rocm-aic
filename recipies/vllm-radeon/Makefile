@@ -16,6 +16,8 @@ CONTAINER_DATA_DIR ?= /data
 CONTAINER_LOG_DIR ?= /var/log/vllm-radeon
 TZ ?= America/Edmonton
 RADEON_LMCACHE_IO ?= hipfile
+# Enables vLLM dev HTTP APIs (e.g. POST /reset_prefix_cache). Set to 0 to disable.
+VLLM_SERVER_DEV_MODE ?= 1
 ARGS ?=
 EXTRA_DOCKER_RUN_FLAGS ?=
 
@@ -124,6 +126,7 @@ run:
 		--env RADEON_CONTAINER_DATA_DIR="$(CONTAINER_DATA_DIR)" \
 		--env RADEON_SERVER_LOG_DIR="$(CONTAINER_LOG_DIR)" \
 		--env RADEON_LMCACHE_IO="$(RADEON_LMCACHE_IO)" \
+		--env VLLM_SERVER_DEV_MODE="$(VLLM_SERVER_DEV_MODE)" \
 		--env HF_TOKEN="$$HF_TOKEN" \
 		--env ROCR_VISIBLE_DEVICES="$(GPU)" \
 		--env TZ="$(TZ)" \

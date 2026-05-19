@@ -14,14 +14,14 @@ naming. Work from **`recipies/vllm-radeon/`**.
 | What you need | File |
 | --- | --- |
 | **`make build` / `make run`**, **`ROCM_ARCH`**, **`CONTAINER_NAME`**, mounts (**`DATA`**, **`LOG`**),
-**`TZ`**, **`HF_TOKEN`**, **`HF_TOKEN_FILE`**, **`RADEON_LMCACHE_IO`**, **`ARGS`**, **`EXTRA_DOCKER_RUN_FLAGS`** | **`Makefile`** (see **`make help`**) |
-| Image layers, LMCache / hipFile / **fio** build; **`ENTRYPOINT`** **`/app/scripts/vllm-server`** (**`Dockerfile`** **`COPY`**; **`make run`** overlays repo **`configs/`** + **`scripts/`**) | **`Dockerfile`** |
+**`TZ`**, **`HF_TOKEN`**, **`HF_TOKEN_FILE`**, **`RADEON_LMCACHE_IO`**, **`VLLM_SERVER_DEV_MODE`**, **`ARGS`**, **`EXTRA_DOCKER_RUN_FLAGS`** | **`Makefile`** (see **`make help`**) |
+| Image layers, LMCache / hipFile / **fio** build; **`patches/`** applies [LMCache#3008][lmcache-pr-3008] (`cache_salt` in V1 keys); **`ENTRYPOINT`** **`/app/scripts/vllm-server`** (**`make run`** overlays **`configs/`** + **`scripts/`**) | **`Dockerfile`**, **`patches/`** |
 | vLLM + LMCache (**`--kv-transfer-config`**); **`RADEON_LMCACHE_IO`** selects template | **`scripts/vllm-server`** |
 | LMCache **hipfile** (**GdsBackend**, **`gds_path`**) vs **posix** (**`fs`**
 plugin, same **`DATA`/`subdir`** as **`gds_path`**, no **`gds_path`** key) |
 **`configs/lmcache-hipfile.yml`**, **`configs/lmcache-posix.yml`** |
 | LMCache subdir + **`serve`** (load format, ais-stats, clear GDS) | **`configs/vllm-radeon.yaml`**, **`scripts/vllm-radeon-defaults.py`**, **`Makefile`** **`CONTAINER_DATA_DIR`**, **`CONTAINER_LOG_DIR`** |
-| Gutenberg chunks + questions + **`run-long`** load test | **`make data`**, **`scripts/split-gutenberg-random-chunks.py`**, **`scripts/gen-questions-json.py`**, **`run-long.sh`** |
+| Gutenberg chunks + questions + load / AIC A/B test | **`make data`**, **`scripts/test-aic.py`**, **`run-long.sh`** |
 | Parse engine log → CSV/SVG | **`scripts/parse-vllm-engine-log-timeseries.py`** |
 
 ## Quick start
@@ -50,6 +50,21 @@ override with **`make run TZ=...`**. vLLM and LMCache log timestamps follow
 **`TZ`** in the container. For **`docker exec`**, use **`CONTAINER_NAME`**
 (default **`vllm-radeon-gpu0`**, i.e. **`IMAGE_NAME`** + **`gpu`** + **`GPU`**);
 override with **`make run CONTAINER_NAME=...`**.
+
+## vLLM dev mode (**`VLLM_SERVER_DEV_MODE`**)
+
+**`make run`** sets **`VLLM_SERVER_DEV_MODE=1`** by default (also defaulted in
+**`scripts/vllm-server`**). That enables dev-only HTTP routes such as
+**`POST /reset_prefix_cache`** to clear the GPU prefix cache without restarting
+the container. Disable with **`make run VLLM_SERVER_DEV_MODE=0`**. Restart vLLM
+after changing this variable so the server picks it up.
+
+```bash
+curl -sS -X POST "http://127.0.0.1:8000/reset_prefix_cache"
+```
+
+Port **`800{GPU}`** matches **`ROCR_VISIBLE_DEVICES`** (e.g. **`8000`** for
+**`GPU=0`**).
 
 ## LMCache disk mode (**`RADEON_LMCACHE_IO`**)
 
@@ -125,6 +140,11 @@ python3 scripts/gen-questions-json.py \
 
 # Load test (run after data/<slug>/ exists):
 BOOK_SLUG=war-and-peace ./run-long.sh
+
+# LMCache populate / cold / warm A/B (repo root: pip install -r requirements.txt):
+python3 scripts/test-aic.py -o logs/test-aic.json
+# Same chunk + cache_salt; reset_prefix_cache before cold/warm; cold bypasses GDS.
+# Fresh NVMe store: new --run-id (or --skip-populate if already stored).
 ```
 
 Chunk files are **`data/<slug>/<slug>-<chunk-label>.<offset>.txt`** (default
@@ -133,6 +153,9 @@ label **`10k`** for 10 000 words). **`run-long.sh`** honors **`BOOK_SLUG`**,
 
 ## Grafana **`grafana/vllm-lmcache-prometheus.json`**
 
-A sample Grafana dashboard. Import into your Grafana server. This may need 
+A sample Grafana dashboard. Import into your Grafana server. This may need
 adjusting to match your exporter naming.
+
+<!-- References -->
+[lmcache-pr-3008]: https://github.com/LMCache/LMCache/pull/3008
 

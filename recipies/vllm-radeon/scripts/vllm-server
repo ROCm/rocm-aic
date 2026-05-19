@@ -267,6 +267,10 @@ def main() -> int:
     env["MIOPEN_FIND_MODE"] = "FAST"
     env["VLLM_ROCM_USE_AITER"] = "1"
     env["AMDGCN_USE_BUFFER_OPS"] = "0"
+    if _truthy("VLLM_SERVER_DEV_MODE", "1"):
+        env["VLLM_SERVER_DEV_MODE"] = "1"
+    else:
+        env.pop("VLLM_SERVER_DEV_MODE", None)
     _apply_chunk_statistics_env(env)
     _apply_kv_events_env(env)
     _apply_lmcache_log_level(env)
