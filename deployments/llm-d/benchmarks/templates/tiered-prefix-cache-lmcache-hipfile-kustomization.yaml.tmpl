@@ -62,4 +62,25 @@ patches:
       - op: replace
         path: /spec/template/spec/containers/0/resources/requests/memory
         value: {{memory}}
-
+      # Add init container to clean up output directory
+      - op: add
+        path: /spec/template/spec/initContainers
+        value:
+          - name: cleanup-output
+            image: busybox:latest
+            command: ["/bin/sh", "-c"]
+            args:
+              - |
+                echo "Cleaning up previous run output..."
+                if [ -d /hipfile-of ]; then
+                  rm -rf /hipfile-of/*
+                  echo "Cleaned /hipfile-of"
+                fi
+                echo "Cleanup complete"
+            volumeMounts:
+              - name: hipfile-of
+                mountPath: /hipfile-of
+            securityContext:
+              runAsUser: 0
+              runAsGroup: 0
+              allowPrivilegeEscalation: false
