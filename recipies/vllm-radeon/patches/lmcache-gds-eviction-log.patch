@@ -1,0 +1,22 @@
+diff --git a/lmcache/v1/storage_backend/gds_backend.py b/lmcache/v1/storage_backend/gds_backend.py
+index ab0baa6..7c7729a 100644
+--- a/lmcache/v1/storage_backend/gds_backend.py
++++ b/lmcache/v1/storage_backend/gds_backend.py
+@@ -1099,7 +1099,7 @@ class GdsBackend(AllocatorBackendInterface):
+         Allocate a memory object of shape and dtype
+         """
+         if eviction:
+-            logger.warning("GDS Backend does not support eviction")
++            logger.debug("GDS Backend does not support eviction")
+ 
+         logger.debug(f"Allocating memory with busy loop: {busy_loop}")
+ 
+@@ -1147,7 +1147,7 @@ class GdsBackend(AllocatorBackendInterface):
+         Batched allocate `batch_size` memory objects of shape and dtype
+         """
+         if eviction:
+-            logger.warning("GDS Backend does not support eviction")
++            logger.debug("GDS Backend does not support eviction")
+ 
+         logger.debug(
+             f"Batched allocating memory in GDS backend with busy loop: {busy_loop}"

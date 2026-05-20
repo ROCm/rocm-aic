@@ -1,0 +1,41 @@
+#! /bin/bash
+
+[ -z "${ROCR_VISIBLE_DEVICES}" ] && { echo "Error: ROCR_VISIBLE_DEVICES not set" >&2; exit 1; }
+
+# Port suffix must be a single integer; use the first device if a list is given.
+PORT="${ROCR_VISIBLE_DEVICES%%,*}"
+PORT="${PORT//[[:space:]]/}"
+if ! [[ "${PORT}" =~ ^[0-9]+$ ]]; then
+  echo "error: first GPU index in ROCR_VISIBLE_DEVICES must be a non-negative integer (got: ${ROCR_VISIBLE_DEVICES})" >&2
+  exit 1
+fi
+if [[ "${ROCR_VISIBLE_DEVICES}" == *","* ]]; then
+  echo "vllm-server-native-disk: using first index ${PORT} from ROCR_VISIBLE_DEVICES=${ROCR_VISIBLE_DEVICES} for ports" >&2
+fi
+LMCACHE_PORT="699${PORT}"
+VLLM_PORT="800${PORT}"
+
+LMCACHE_LOCAL_DISK="file:///data/lmcache_test/" \
+LMCACHE_MAX_LOCAL_DISK_SIZE=1500.0 \
+LMCACHE_INTERNAL_API_SERVER_ENABLED=true \
+LMCACHE_INTERNAL_API_SERVER_PORT_START=${LMCACHE_PORT} \
+LMCACHE_CHUNK_SIZE=256 \
+LMCACHE_LOCAL_CPU=False \
+LMCACHE_MAX_LOCAL_CPU_SIZE=48 \
+MIOPEN_USER_DB_PATH=/app/miopen \
+MIOPEN_FIND_MODE=FAST \
+VLLM_ROCM_USE_AITER=1 \
+AMDGCN_USE_BUFFER_OPS=0 \
+vllm serve openai/gpt-oss-120b   \
+    --host localhost \
+    --port ${VLLM_PORT} \
+    --tensor-parallel-size 1 \
+    --gpu-memory-utilization 0.90 \
+    --block-size 64 \
+    --enable-prefix-caching \
+    --stream-interval 20 \
+    --max-num-batched-tokens 8192 \
+    --async-scheduling \
+    --attention-backend ROCM_AITER_UNIFIED_ATTN \
+    --kv-transfer-config \
+    '{"kv_connector":"LMCacheConnectorV1", "kv_role":"kv_both"}' | tee /app/server.txt &

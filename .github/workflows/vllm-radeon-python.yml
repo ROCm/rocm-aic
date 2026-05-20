@@ -1,0 +1,125 @@
+# Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+#
+name: vllm-radeon Python
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'recipies/vllm-radeon/scripts/**'
+      - 'recipies/vllm-radeon/configs/gutenberg-library.json'
+      - 'recipies/vllm-radeon/tests/**'
+      - 'requirements.txt'
+      - '.github/workflows/vllm-radeon-python.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    name: py_compile and offline script smoke
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: recipies/vllm-radeon
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: requirements.txt
+
+      - name: Install host dependencies
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          pip install -r "${GITHUB_WORKSPACE}/requirements.txt"
+
+      - name: py_compile all recipe scripts
+        run: |
+          set -euo pipefail
+          python -m py_compile scripts/*.py
+
+      - name: test-aic.py --help
+        run: python3 scripts/test-aic.py --help
+
+      - name: build-gutenberg-library.py --help
+        run: python3 scripts/build-gutenberg-library.py --help
+
+      - name: Validate gutenberg-library.json
+        env:
+          MANIFEST: ${{ github.workspace }}/recipies/vllm-radeon/configs/gutenberg-library.json
+        run: |
+          set -euo pipefail
+          jq -e '
+            (type == "object")
+            and (.version != null)
+            and ((.books | type) == "array")
+            and ((.books | length) == 100)
+            and (([.books[].slug] | unique | length) == (.books | length))
+            and all(
+              .books[];
+              (type == "object")
+              and has("pg_id") and has("slug") and has("title") and has("author")
+              and (.slug | type) == "string" and (.slug | length) > 0
+            )
+          ' "${MANIFEST}"
+
+      - name: split-gutenberg-random-chunks (local snippet)
+        run: |
+          set -euo pipefail
+          out="${RUNNER_TEMP}/split-out"
+          rm -rf "${out}"
+          python3 scripts/split-gutenberg-random-chunks.py \
+            tests/fixtures/gutenberg-snippet.txt \
+            --slug ci-snippet \
+            -o "${out}" \
+            --chunk-words 40 \
+            --count 2 \
+            --seed 1
+          test "$(find "${out}" -name 'ci-snippet-*.txt' | wc -l)" -eq 2
+          test -f "${out}/ci-snippet.book-stats.json"
+
+      - name: gen-questions-json
+        run: |
+          set -euo pipefail
+          out="${RUNNER_TEMP}/questions"
+          mkdir -p "${out}"
+          python3 scripts/gen-questions-json.py \
+            --slug ci-book \
+            --title "CI Book" \
+            --author "CI Author" \
+            --count 3 \
+            -o "${out}/ci-book.questions.json"
+          jq -e '.questions | length == 3' "${out}/ci-book.questions.json"
+
+      - name: rocm-aic-exporter (fixture tree)
+        run: |
+          set -euo pipefail
+          prom="${RUNNER_TEMP}/rocm_aic_exporter.prom"
+          python3 scripts/rocm-aic-exporter.py \
+            --data-root tests/fixtures/lmcache-exporter \
+            --prometheus-textfile "${prom}" \
+            --textfile-only \
+            --json >/dev/null
+          grep -q 'rocm_aic_kv_disk_files' "${prom}"
+          grep -q 'rocm_aic_kv_file_hits_histogram_bucket' "${prom}"
+
+      - name: parse-vllm-engine-log-timeseries (CSV only)
+        run: |
+          set -euo pipefail
+          csv="${RUNNER_TEMP}/engine_timeseries.csv"
+          python3 scripts/parse-vllm-engine-log-timeseries.py \
+            tests/fixtures/engine-log-sample.txt \
+            --engine 0 \
+            --year 2026 \
+            --csv "${csv}" \
+            --svg "${RUNNER_TEMP}/engine_timeseries.svg"
+          test -s "${csv}"
+          test "$(wc -l < "${csv}")" -ge 2

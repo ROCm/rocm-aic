@@ -1,0 +1,75 @@
+# Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+#
+name: vllm-radeon Config
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'recipies/vllm-radeon/configs/**'
+      - 'recipies/vllm-radeon/grafana/**'
+      - '.github/workflows/vllm-radeon-config.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    name: YAML, manifest, and Grafana JSON
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install tools
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y jq
+          pip install yamllint
+
+      - name: yamllint vllm-radeon configs
+        run: |
+          set -euo pipefail
+          yamllint -c .yamllint recipies/vllm-radeon/configs/
+
+      - name: Validate gutenberg-library.json
+        env:
+          MANIFEST: ${{ github.workspace }}/recipies/vllm-radeon/configs/gutenberg-library.json
+        run: |
+          set -euo pipefail
+          jq -e '
+            (type == "object")
+            and (.version != null)
+            and ((.books | type) == "array")
+            and ((.books | length) >= 1)
+            and (([.books[].slug] | unique | length) == (.books | length))
+            and all(
+              .books[];
+              (type == "object")
+              and has("pg_id") and has("slug") and has("title") and has("author")
+              and (.slug | type) == "string" and (.slug | length) > 0
+            )
+          ' "${MANIFEST}"
+
+      - name: Validate Grafana dashboard JSON
+        env:
+          DASH: ${{ github.workspace }}/recipies/vllm-radeon/grafana/vllm-lmcache-prometheus.json
+        run: |
+          set -euo pipefail
+          jq -e '
+            (type == "object")
+            and (.kind == "Dashboard")
+            and (
+              ((.spec.elements // {} | keys | length) >= 1)
+              or ((.panels // [] | length) >= 1)
+            )
+            and (
+              ([.spec.elements[]? | select(.kind == "Panel")] | length) >= 1
+              or ((.panels // [] | length) >= 1)
+            )
+            and (([.. | strings? | select(test("rocm_aic_"))] | length) >= 1)
+          ' "${DASH}"

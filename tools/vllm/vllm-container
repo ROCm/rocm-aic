@@ -1,0 +1,37 @@
+#!/bin/bash
+#
+# Optional: set VLLM_CONTAINER_PRIVILEGED=1 to add CAP_SYS_ADMIN, SYS_PTRACE,
+# and seccomp=unconfined (only when ROCm, profilers, or debuggers require it).
+
+[ -z "${GPU}" ] && { echo "Error: GPU not set" >&2; exit 1; }
+[ -z "${DATA}" ] && { echo "Error: DATA not set" >&2; exit 1; }
+[ -z "${HF_HOME}" ] && { echo "Error: HF_HOME not set" >&2; exit 1; }
+[ -z "${HF_TOKEN}" ] && { echo "Error: HF_TOKEN not set" >&2; exit 1; }
+
+extra_priv=()
+case "${VLLM_CONTAINER_PRIVILEGED:-}" in
+  1 | [Yy][Ee][Ss] | [Tt][Rr][Uu][Ee])
+    extra_priv=(
+      --cap-add=CAP_SYS_ADMIN
+      --cap-add=SYS_PTRACE
+      --security-opt seccomp=unconfined
+    )
+    echo "vllm-container: VLLM_CONTAINER_PRIVILEGED set (broader caps / seccomp)" >&2
+    ;;
+esac
+
+docker run -it --rm \
+  --name="gpu${GPU}" \
+  --hostname="gpu${GPU}" \
+  --ipc=host \
+  --network=host \
+  "${extra_priv[@]}" \
+  --device=/dev/kfd \
+  --device=/dev/dri \
+  --env "HF_HOME=/hf" \
+  --env "HF_TOKEN=${HF_TOKEN}" \
+  --env "ROCR_VISIBLE_DEVICES=${GPU}" \
+  -v "${HF_HOME}:/hf" \
+  -v "${DATA}:/data" \
+  -v "/boot/config-$(uname -r):/boot/config-$(uname -r):ro" \
+  vllm-kurt

@@ -1,0 +1,13 @@
+[Unit]
+Description=Run Prometheus rocm-aic metric updater regularly
+
+[Timer]
+# Run 2 minutes after boot
+OnBootSec=2min
+# Run every 15s thereafter
+OnUnitActiveSec=15s
+# Keep execution predictable
+AccuracySec=1s
+
+[Install]
+WantedBy=timers.target

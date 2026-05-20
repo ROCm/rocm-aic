@@ -1,0 +1,16 @@
+# Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+#
+# LMCache GDS via hipFile
+
+local_cpu: false
+gds_backend: hipfile
+save_decode_cache: true
+pre_caching_hash_algorithm: sha256_cbor
+gds_buffer_size: 1024
+
+extra_config:
+  use_hipfile: true
+  use_cufile: false
+  use_direct_io: true
