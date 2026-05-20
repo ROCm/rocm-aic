@@ -12,6 +12,31 @@ import json
 import sys
 from pathlib import Path
 
+BOOK_STATS_KEYS = (
+    "book_word_count",
+    "chunk_words",
+    "chunk_count",
+    "chunk_label",
+    "max_chunk_start_offsets",
+    "source",
+)
+
+
+def load_book_stats(stats_path: Path) -> dict[str, object]:
+    data = json.loads(stats_path.read_text(encoding="utf-8"))
+    if not isinstance(data, dict):
+        raise ValueError(f"{stats_path}: expected JSON object")
+    return data
+
+
+def merge_book_stats(payload: dict[str, object], stats: dict[str, object]) -> None:
+    for key in BOOK_STATS_KEYS:
+        if key in stats:
+            payload[key] = stats[key]
+    if "gutenberg_id" in stats and "gutenberg_id" not in payload:
+        payload["gutenberg_id"] = stats["gutenberg_id"]
+
+
 # Placeholders: {title}, {author}
 QUESTION_TEMPLATES: list[str] = [
     "What is the central conflict introduced early in {title}, and how is it framed?",
@@ -253,6 +278,14 @@ def main() -> int:
     }
     if args.pg_id is not None:
         payload["gutenberg_id"] = args.pg_id
+
+    stats_path = out.parent / f"{slug}.book-stats.json"
+    if stats_path.is_file():
+        try:
+            merge_book_stats(payload, load_book_stats(stats_path))
+        except (json.JSONDecodeError, ValueError) as e:
+            print(f"error: {stats_path}: {e}", file=sys.stderr)
+            return 1
 
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps(payload, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")

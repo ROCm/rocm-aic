@@ -29,6 +29,11 @@ BOOK_AUTHOR ?= Leo Tolstoy
 BOOK_CHUNK_WORDS ?= 10000
 BOOK_CHUNK_COUNT ?= 100
 BOOK_DATA_DIR ?= $(CURDIR)/data/$(BOOK_SLUG)
+BOOK_DATA_ROOT ?= $(CURDIR)/data
+GUTENBERG_MANIFEST ?= $(CURDIR)/configs/gutenberg-library.json
+DATA_ALL_LIMIT ?=
+DATA_ALL_DELAY ?= 1.0
+DATA_ALL_SKIP_EXISTING ?= 1
 PYTHON ?= python3
 
 _ROCM_ARCH_DETECTED := $(shell rocm_agent_enumerator 2>/dev/null | \
@@ -43,7 +48,7 @@ ifneq ($(strip $(HIPFILE_SHA)),)
 BUILD_ARGS += --build-arg HIPFILE_SHA=$(HIPFILE_SHA)
 endif
 
-.PHONY: help build vllm-radeon run data
+.PHONY: help build vllm-radeon run data data-all
 
 .DEFAULT_GOAL := help
 
@@ -57,6 +62,8 @@ help:
 	@echo "                      default CONTAINER_NAME=$(CONTAINER_NAME)"
 	@echo "  make data           download PG book, chunk, and write questions JSON"
 	@echo "                      (BOOK_SLUG=$(BOOK_SLUG) BOOK_PG_ID=$(BOOK_PG_ID))"
+	@echo "  make data-all       build 100-book library from configs/gutenberg-library.json"
+	@echo "                      (DATA_ALL_LIMIT=N smoke test; ~500MB-1GB+ under data/)"
 	@echo ""
 	@echo ""
 	@echo "make run: requires HF_TOKEN or HF_TOKEN_FILE (shell env, Makefile"
@@ -69,6 +76,21 @@ help:
 	@echo "  Example: make data BOOK_SLUG=pride-and-prejudice BOOK_PG_ID=1342 \\"
 	@echo "    BOOK_TITLE='Pride and Prejudice' BOOK_AUTHOR='Jane Austen'"
 	@echo ""
+	@echo "make data-all: manifest=$(GUTENBERG_MANIFEST) -> $(BOOK_DATA_ROOT)/"
+	@echo "  DATA_ALL_LIMIT=3 smoke test; DATA_ALL_SKIP_EXISTING=0 force rebuild."
+	@echo "  ./run-long.sh uses library mode (all books) when BOOK_SLUG is unset."
+	@echo ""
+
+data-all:
+	@set -e; \
+	command -v $(PYTHON) >/dev/null 2>&1 || { \
+		echo "ERROR: $(PYTHON) not found" >&2; exit 1; \
+	}; \
+	_opts="--manifest $(GUTENBERG_MANIFEST) --data-root $(BOOK_DATA_ROOT) --delay $(DATA_ALL_DELAY)"; \
+	if [ "$(DATA_ALL_SKIP_EXISTING)" = "1" ]; then _opts="$$_opts --skip-existing"; fi; \
+	if [ -n "$(DATA_ALL_LIMIT)" ]; then _opts="$$_opts --limit $(DATA_ALL_LIMIT)"; fi; \
+	echo "make data-all: manifest=$(GUTENBERG_MANIFEST) -> $(BOOK_DATA_ROOT)"; \
+	$(PYTHON) "$(CURDIR)/scripts/build-gutenberg-library.py" $$_opts
 
 data:
 	@set -e; \

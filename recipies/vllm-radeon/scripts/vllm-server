@@ -106,6 +106,17 @@ def _enforce_eager() -> bool:
     return True
 
 
+def _enable_mfu_metrics(prof: dict[str, Any]) -> bool:
+    v = os.environ.get("RADEON_ENABLE_MFU_METRICS", "").strip().lower()
+    if not v:
+        v = os.environ.get("VLLM_ENABLE_MFU_METRICS", "").strip().lower()
+    if v in ("0", "false", "no", "off"):
+        return False
+    if v in ("1", "true", "yes", "on"):
+        return True
+    return bool(prof.get("enable_mfu_metrics", True))
+
+
 def _tee_thread(stream: Any, log_f: Any) -> None:
     for line in iter(stream.readline, b""):
         if not line:
@@ -339,6 +350,8 @@ def main() -> int:
         cmd.extend(["--load-format", lf])
     if _enforce_eager():
         cmd.append("--enforce-eager")
+    if _enable_mfu_metrics(prof):
+        cmd.append("--enable-mfu-metrics")
     if prof.get("disable_uvicorn_access_log", True):
         cmd.append("--disable-uvicorn-access-log")
 

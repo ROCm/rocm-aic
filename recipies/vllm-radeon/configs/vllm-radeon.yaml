@@ -30,3 +30,4 @@ serve:
   use_ais_stats_wrapper: true
   clear_gds_dir_before_start: true
   disable_uvicorn_access_log: true
+  enable_mfu_metrics: true

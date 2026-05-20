@@ -20,8 +20,10 @@ naming. Work from **`recipies/vllm-radeon/`**.
 | LMCache **hipfile** (**GdsBackend**, **`gds_path`**) vs **posix** (**`fs`**
 plugin, same **`DATA`/`subdir`** as **`gds_path`**, no **`gds_path`** key) |
 **`configs/lmcache-hipfile.yml`**, **`configs/lmcache-posix.yml`** |
-| LMCache subdir + **`serve`** (load format, ais-stats, clear GDS) | **`configs/vllm-radeon.yaml`**, **`scripts/vllm-radeon-defaults.py`**, **`Makefile`** **`CONTAINER_DATA_DIR`**, **`CONTAINER_LOG_DIR`** |
+| LMCache subdir + **`serve`** (load format, ais-stats, clear GDS,
+**`enable_mfu_metrics`**) | **`configs/vllm-radeon.yaml`**, **`scripts/vllm-radeon-defaults.py`**, **`Makefile`** **`CONTAINER_DATA_DIR`**, **`CONTAINER_LOG_DIR`** |
 | Gutenberg chunks + questions + load / AIC A/B test | **`make data`**, **`scripts/test-aic.py`**, **`run-long.sh`** |
+| LMCache / NVMe textfile metrics for Grafana | **`scripts/rocm-aic-exporter.py`** |
 | Parse engine log → CSV/SVG | **`scripts/parse-vllm-engine-log-timeseries.py`** |
 
 ## Quick start
@@ -50,6 +52,55 @@ override with **`make run TZ=...`**. vLLM and LMCache log timestamps follow
 **`TZ`** in the container. For **`docker exec`**, use **`CONTAINER_NAME`**
 (default **`vllm-radeon-gpu0`**, i.e. **`IMAGE_NAME`** + **`gpu`** + **`GPU`**);
 override with **`make run CONTAINER_NAME=...`**.
+
+## **`rocm-aic-exporter.py`** (Prometheus textfile)
+
+Standalone exporter for LMCache / vLLM host metrics. Today it reports:
+
+1. **KV inventory** — ``.data`` file count and total bytes per **`model_name`**
+2. **Filesystem** — total, used, and free bytes on the mount hosting **`$DATA`**
+3. **Hit histogram** — from **`$DATA/lmcache_chunk_stats/chunk_hashes_*.jsonl`**
+   over **current** ``$DATA/lmcache/*.data`` only (deleted chunks excluded)
+
+```bash
+# Host path matches make run DATA= (default /mnt/lmcache-nvme)
+python3 scripts/rocm-aic-exporter.py
+python3 scripts/rocm-aic-exporter.py --top 20 --json
+
+# node_exporter textfile collector → Grafana (job=node_exporter)
+python3 scripts/rocm-aic-exporter.py --prometheus-textfile
+python3 scripts/rocm-aic-exporter.py \
+  --prometheus-textfile /var/lib/prometheus/node-exporter/rocm_aic_exporter.prom \
+  --textfile-only
+
+# Example Grafana bar chart:
+#   rocm_aic_kv_files_by_hit_count{hit_count=~".+"}
+```
+
+Metrics use the **`rocm_aic_*`** prefix. Default textfile path:
+**`/var/lib/prometheus/node-exporter/rocm_aic_exporter.prom`**, or set
+**`ROCM_AIC_EXPORTER_TEXTFILE`** / **`ROCM_ICMS_TEXTFILE_DIR`** (legacy:
+**`RADEON_LMCACHE_CHUNK_HIST_TEXTFILE`**).
+
+Example Grafana queries (``job="node_exporter"``):
+
+- ``rocm_aic_kv_files{model_name=~".+"}``
+- ``rocm_aic_kv_chunk_bytes_total``
+- ``rocm_aic_data_fs_free_bytes``
+
+## MFU metrics (**`--enable-mfu-metrics`**)
+
+**`scripts/vllm-server`** passes **`--enable-mfu-metrics`** by default
+(**`serve.enable_mfu_metrics: true`** in **`configs/vllm-radeon.yaml`**).
+vLLM exposes analytic FLOPs / MFU on Prometheus (e.g.
+**`vllm:estimated_flops_per_gpu_total`**). Disable without editing YAML:
+
+```bash
+make run RADEON_ENABLE_MFU_METRICS=0
+```
+
+Set **`VLLM_DEBUG_MFU_METRICS=1`** in the container for extra MFU debug
+logging. Restart vLLM after changing MFU-related env vars.
 
 ## vLLM dev mode (**`VLLM_SERVER_DEV_MODE`**)
 
@@ -170,8 +221,87 @@ python3 scripts/test-aic.py -o logs/test-aic.json
 ```
 
 Chunk files are **`data/<slug>/<slug>-<chunk-label>.<offset>.txt`** (default
-label **`10k`** for 10 000 words). **`run-long.sh`** honors **`BOOK_SLUG`**,
-**`BOOK_DATA_DIR`**, and **`QUESTIONS_FILE`**.
+label **`10k`** for 10 000 words). Each split run also writes
+**`data/<slug>/<slug>.book-stats.json`** with **`book_word_count`** (full
+text after Gutenberg boilerplate removal, whitespace-split). **`gen-questions-json.py`**
+copies those fields into **`<slug>.questions.json`**. Backfill stats without
+rewriting chunks:
+
+```bash
+python3 scripts/split-gutenberg-random-chunks.py --pg-id 2600 \
+  --slug war-and-peace -o data/war-and-peace --stats-only
+python3 scripts/gen-questions-json.py --slug war-and-peace \
+  --title "War and Peace" --author "Leo Tolstoy" --pg-id 2600
+```
+
+**`run-long.sh`** honors **`BOOK_SLUG`**, **`BOOK_DATA_DIR`**, and
+**`QUESTIONS_FILE`**.
+
+### 100-book library
+
+A curated manifest lives at
+**`configs/gutenberg-library.json`** (100 English novels: PG id, slug,
+title, author). Build every book locally (network required; **`data/`** stays
+gitignored):
+
+```bash
+make data-all
+```
+
+Smoke-test the first three books:
+
+```bash
+make data-all DATA_ALL_LIMIT=3
+```
+
+Re-runs skip complete directories by default
+(**`DATA_ALL_SKIP_EXISTING=0`** forces a rebuild). Expect on the order of
+**500 MB–1 GB+** under **`data/`** for the full library (100 books × 100
+10 k-word chunks plus questions JSON per book).
+
+**`run-long.sh`** library mode (default when **`BOOK_SLUG`** is unset) picks a
+random book, chunk, and question on each iteration from every complete
+**`data/<slug>/`** directory:
+
+```bash
+./run-long.sh
+./run-long.sh ITERATIONS=20
+```
+
+Single-book mode is unchanged:
+
+```bash
+BOOK_SLUG=war-and-peace ./run-long.sh
+```
+
+Optional env: **`BOOK_DATA_ROOT`** (default **`data/`**), **`CONTEXT_FILE`**,
+**`QUESTION`**, **`RUN_LONG_SEED`** (deterministic **`$RANDOM`** sequence),
+**`RUN_LONG_COMBINE_CHUNKS`** (default **`1`**; set **`2`** to concatenate two
+random 10 k-word chunks into ~20 k words without new fixture files).
+
+```bash
+RUN_LONG_COMBINE_CHUNKS=2 BOOK_SLUG=war-and-peace ./run-long.sh
+RUN_LONG_COMBINE_CHUNKS=2 ./run-long-parallel.sh 4
+```
+
+### Parallel load (**`run-long-parallel.sh`**)
+
+Run **`N`** workers in parallel; worker **`i`** uses **`RUN_LONG_SEED =
+BASE_SEED + i`** so each picks a different book/chunk/question stream:
+
+```bash
+./run-long-parallel.sh 8
+WORKERS=8 ITERATIONS=50 BASE_SEED=42 ./run-long-parallel.sh
+```
+
+Per-worker JSON lines go under **`logs/run-long-parallel/<timestamp>/`**
+(**`worker-<n>.jsonl`**, **`worker-<n>.log`**). Response JSON includes
+**`run_long_worker`** and **`run_long_seed`**. Optional **`STAGGER_SEC`** delays
+worker starts.
+
+When stderr is a TTY, an iteration progress bar runs automatically
+(**`WORKERS * ITERATIONS`** completions, polled from **`worker-*.jsonl`**).
+Disable with **`PROGRESS=0`**; force on in CI with **`PROGRESS=1`**.
 
 ## Grafana **`grafana/vllm-lmcache-prometheus.json`**
 

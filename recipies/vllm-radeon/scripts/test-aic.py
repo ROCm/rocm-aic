@@ -3,16 +3,9 @@
 #
 # SPDX-License-Identifier: MIT
 #
-"""LMCache AIC prefill A/B: populate NVMe, cold GPU compute, warm NVMe retrieve.
+"""LMCache AIC prefill A/B harness (populate → cold → warm).
 
-Requires: pip install -r requirements.txt from repo root (openai), LMCache #3008
-(cache_salt),
-VLLM_SERVER_DEV_MODE=1 (make run) for POST /reset_prefix_cache.
-
-Phases (same context, question, cache_salt):
-  populate — store KV to GdsBackend
-  cold     — reset GPU prefix, bypass GdsBackend (GPU prefill)
-  warm     — reset GPU prefix, retrieve from NVMe
+See ``python3 scripts/test-aic.py --help`` for CLI options and examples.
 """
 
 from __future__ import annotations
@@ -33,8 +26,273 @@ from typing import Any
 from openai import OpenAI
 
 SCRIPT = "test-aic"
-LMCACHE_BACKEND = "GdsBackend"
+DISK_BACKEND_HIPFILE = "GdsBackend"
+DISK_BACKEND_POSIX = "RemoteBackend-fs"
 SALT_PREFIX = "test-aic"
+
+DEFAULT_GPU = 0
+DEFAULT_SLUG = "war-and-peace"
+DEFAULT_MODEL = "Qwen/Qwen2.5-3B-Instruct"
+DEFAULT_MAX_TOKENS = 32
+DEFAULT_PAUSE_S = 2.0
+DEFAULT_TIMEOUT_S = 600.0
+DEFAULT_LMCACHE_IO = "auto"
+DEFAULT_ITERATIONS = 1
+
+_CLI_EPILOG = """\
+examples:
+  # Default fixture (first chunk + question under data/war-and-peace/)
+  python3 scripts/test-aic.py -o logs/test-aic.json
+
+  # Explicit context; posix disk backend (RADEON_LMCACHE_IO=posix)
+  python3 scripts/test-aic.py --lmcache-io posix \\
+      --context data/war-and-peace/war-and-peace-10k.100270.txt \\
+      -r my-run -o logs/my-run.json
+
+  # Skip populate when NVMe already has this cache_salt
+  python3 scripts/test-aic.py -r my-run --skip-populate
+
+  # Five cold+warm cycles (populate once on iteration 1)
+  python3 scripts/test-aic.py -n 5 -r bench -o logs/bench.json
+
+  # Machine-readable JSON on stdout
+  python3 scripts/test-aic.py --json -o logs/out.json
+
+requirements:
+  pip install -r requirements.txt   # openai
+  make run                          # VLLM_SERVER_DEV_MODE=1 for reset_prefix_cache
+  LMCache image with cache_salt patch (#3008) for isolated NVMe keys
+
+phases (same prompt, question, cache_salt=test-aic-<run-id>):
+  populate  store KV to disk (GdsBackend or RemoteBackend-fs)
+  cold      reset GPU prefix cache; bypass disk → full GPU prefill
+  warm      reset GPU prefix cache; read KV from disk
+"""
+
+
+class _HelpFormatter(
+    argparse.RawDescriptionHelpFormatter,
+    argparse.ArgumentDefaultsHelpFormatter,
+):
+    """Preserve newlines in epilog and show default= for each option."""
+
+
+def _positive_int(text: str) -> int:
+    value = int(text)
+    if value < 1:
+        raise argparse.ArgumentTypeError("must be >= 1")
+    return value
+
+
+def _recipe_root() -> Path:
+    return Path(__file__).resolve().parents[1]
+
+
+def _default_server_log(recipe_root: Path) -> Path | None:
+    path = recipe_root / "logs" / "server.txt"
+    return path if path.is_file() else None
+
+
+def build_parser() -> argparse.ArgumentParser:
+    p = argparse.ArgumentParser(
+        prog=SCRIPT,
+        description=(
+            "Run populate / cold / warm prefill A/B against a vLLM + LMCache server."
+        ),
+        formatter_class=_HelpFormatter,
+        epilog=_CLI_EPILOG,
+    )
+
+    fixture = p.add_argument_group(
+        "fixture",
+        "Long-context input and cache_salt identity (LMCache #3008).",
+    )
+    fixture.add_argument(
+        "-g",
+        "--gpu",
+        type=int,
+        default=DEFAULT_GPU,
+        metavar="N",
+        help=(
+            "GPU index for default URLs: vLLM http://127.0.0.1:800{N}, "
+            "LMCache worker http://127.0.0.1:699{N+1}."
+        ),
+    )
+    fixture.add_argument(
+        "-r",
+        "--run-id",
+        default="",
+        metavar="ID",
+        help=(
+            "Suffix for cache_salt (test-aic-<ID>). Use a new ID for a fresh "
+            "NVMe store; reuse to hit existing KV."
+        ),
+    )
+    fixture.add_argument(
+        "--slug",
+        default=DEFAULT_SLUG,
+        metavar="NAME",
+        help=(
+            "Book slug under data/<NAME>/ when --context or --question is omitted "
+            "(requires make data)."
+        ),
+    )
+    fixture.add_argument(
+        "--context",
+        type=Path,
+        metavar="PATH",
+        help="Context chunk file. Default: first data/<slug>/<slug>-*.txt.",
+    )
+    fixture.add_argument(
+        "--question",
+        metavar="TEXT",
+        help="User question for the chat turn. Default: first entry in .questions.json.",
+    )
+
+    vllm = p.add_argument_group("vLLM", "OpenAI-compatible completion API.")
+    vllm.add_argument(
+        "--model",
+        default=DEFAULT_MODEL,
+        metavar="ID",
+        help="Model name passed to the chat completions API.",
+    )
+    vllm.add_argument(
+        "--max-tokens",
+        type=int,
+        default=DEFAULT_MAX_TOKENS,
+        metavar="N",
+        help="Max completion tokens per phase (streaming, include_usage).",
+    )
+    vllm.add_argument(
+        "--url",
+        metavar="URL",
+        help="vLLM base URL. Default: http://127.0.0.1:800<gpu> (see --gpu).",
+    )
+    vllm.add_argument(
+        "--timeout",
+        type=float,
+        default=DEFAULT_TIMEOUT_S,
+        metavar="SEC",
+        help="HTTP timeout for vLLM and LMCache API calls.",
+    )
+
+    lmcache = p.add_argument_group(
+        "LMCache",
+        "Disk backend selection and cold-phase bypass target.",
+    )
+    lmcache.add_argument(
+        "--lmcache-io",
+        default=DEFAULT_LMCACHE_IO,
+        choices=("auto", "hipfile", "posix"),
+        metavar="MODE",
+        help=(
+            "Which disk backend to use for populate/cold/warm. "
+            "'auto' reads GET /bypass/list (all_backends): GdsBackend (hipfile) "
+            "or RemoteBackend-fs (posix). Match RADEON_LMCACHE_IO at make run."
+        ),
+    )
+
+    phases = p.add_argument_group(
+        "phases",
+        "Control the three-phase sequence and GPU prefix cache resets.",
+    )
+    phases.add_argument(
+        "--skip-populate",
+        action="store_true",
+        help="Omit populate; run only cold and warm (NVMe already has this salt).",
+    )
+    phases.add_argument(
+        "--no-reset",
+        action="store_true",
+        help=(
+            "Do not call POST /reset_prefix_cache before cold or warm "
+            "(requires VLLM_SERVER_DEV_MODE=1 when enabled)."
+        ),
+    )
+    phases.add_argument(
+        "--pause",
+        type=float,
+        default=DEFAULT_PAUSE_S,
+        metavar="SEC",
+        help="Sleep between phases and between iterations.",
+    )
+    phases.add_argument(
+        "-n",
+        "--iterations",
+        type=_positive_int,
+        default=DEFAULT_ITERATIONS,
+        metavar="N",
+        help=(
+            "Repeat the test N times. Populate runs only on iteration 1 "
+            "(unless --skip-populate); each iteration runs cold then warm."
+        ),
+    )
+
+    output = p.add_argument_group("output", "Stdout and JSON report file.")
+    output.add_argument(
+        "-o",
+        "--report",
+        type=Path,
+        metavar="PATH",
+        help="Write full JSON summary to PATH (always; not printed unless --json).",
+    )
+    output.add_argument(
+        "--json",
+        action="store_true",
+        help="Also print JSON summary to stdout (default: human table only).",
+    )
+
+    logging_grp = p.add_argument_group(
+        "logging",
+        "Parse recipies/vllm-radeon/logs/server.txt for NVMe and hit-rate columns.",
+    )
+    log_exclusive = logging_grp.add_mutually_exclusive_group()
+    log_exclusive.add_argument(
+        "--server-log",
+        type=Path,
+        metavar="PATH",
+        help=(
+            "Engine log to tail per phase. Default: <recipe>/logs/server.txt "
+            "if that file exists."
+        ),
+    )
+    log_exclusive.add_argument(
+        "--no-server-log",
+        action="store_true",
+        help="Do not parse any log; NVMe / LMCache hit columns stay empty.",
+    )
+
+    return p
+
+
+def config_from_namespace(ns: argparse.Namespace, recipe_root: Path) -> RunConfig:
+    run_id = (ns.run_id or uuid.uuid4().hex[:8]).strip()
+    if ns.no_server_log:
+        server_log: Path | None = None
+    elif ns.server_log is not None:
+        server_log = ns.server_log
+    else:
+        server_log = _default_server_log(recipe_root)
+
+    return RunConfig(
+        gpu=ns.gpu,
+        run_id=run_id,
+        slug=ns.slug,
+        context_path=ns.context,
+        question=ns.question,
+        model=ns.model,
+        max_tokens=ns.max_tokens,
+        skip_populate=ns.skip_populate,
+        reset_gpu=not ns.no_reset,
+        pause_s=ns.pause,
+        report=ns.report,
+        timeout=ns.timeout,
+        vllm_url=ns.url,
+        server_log=server_log,
+        lmcache_io=ns.lmcache_io,
+        json_stdout=ns.json,
+        iterations=ns.iterations,
+    )
 
 
 @dataclass
@@ -53,6 +311,9 @@ class RunConfig:
     timeout: float
     vllm_url: str | None
     server_log: Path | None
+    lmcache_io: str
+    json_stdout: bool
+    iterations: int
 
     @property
     def cache_salt(self) -> str:
@@ -95,6 +356,7 @@ class PhaseResult:
     completion_tokens: int | None
     cache_salt: str
     gpu_prefix_reset: bool
+    disk_backend: str
     lmcache_bypassed_backends: list[str]
     engine: EngineLogSlice = field(default_factory=EngineLogSlice)
     error: str | None = None
@@ -190,6 +452,52 @@ def storage_mode_set(
     if status != 200:
         raise RuntimeError(f"storage/mode POST HTTP {status}: {payload!r}")
     return payload
+
+
+def lmcache_all_backends(base: str, timeout: float) -> list[str]:
+    status, payload = _http("GET", f"{base}/bypass/list", timeout)
+    if status != 200 or not isinstance(payload, dict):
+        raise RuntimeError(f"bypass/list HTTP {status}: {payload!r}")
+    names = payload.get("all_backends")
+    if not isinstance(names, list):
+        raise RuntimeError(f"unexpected bypass/list: {payload!r}")
+    return [str(x) for x in names]
+
+
+def resolve_disk_backend(base: str, timeout: float, lmcache_io: str) -> str:
+    """Return the LMCache disk backend name to bypass for the cold phase."""
+    mode = lmcache_io.strip().lower()
+    if mode in ("gds", "hipfile", "hip"):
+        want = DISK_BACKEND_HIPFILE
+    elif mode in ("posix", "mmap", "non-gds", "fs"):
+        want = DISK_BACKEND_POSIX
+    elif mode == "auto":
+        want = None
+    else:
+        raise ValueError(
+            f"--lmcache-io must be auto, hipfile, or posix (got {lmcache_io!r})",
+        )
+
+    available = lmcache_all_backends(base, timeout)
+    has_hipfile = DISK_BACKEND_HIPFILE in available
+    has_posix = DISK_BACKEND_POSIX in available
+
+    if want is not None:
+        if want not in available:
+            raise RuntimeError(
+                f"disk backend {want!r} not in LMCache backends {available!r}; "
+                f"start server with matching RADEON_LMCACHE_IO or use --lmcache-io auto",
+            )
+        return want
+
+    if has_hipfile:
+        return DISK_BACKEND_HIPFILE
+    if has_posix:
+        return DISK_BACKEND_POSIX
+    raise RuntimeError(
+        f"no disk backend in LMCache backends {available!r} "
+        f"(expected {DISK_BACKEND_HIPFILE} or {DISK_BACKEND_POSIX})",
+    )
 
 
 def bypass_list(base: str, timeout: float) -> list[str]:
@@ -373,7 +681,7 @@ def build_metrics_table(
                 "lmcache_token_hit_pct": token_hit_pct,
                 "external_prefix_hit_pct": eng.external_prefix_hit_pct,
                 "gpu_prefix_reset": pr.gpu_prefix_reset,
-                "gds_bypassed": LMCACHE_BACKEND in pr.lmcache_bypassed_backends,
+                "disk_bypassed": pr.disk_backend in pr.lmcache_bypassed_backends,
             }
         )
     return rows
@@ -423,66 +731,113 @@ def format_metrics_table(rows: list[dict[str, Any]]) -> str:
     return "\n".join(out)
 
 
+def _mean_optional(values: list[float]) -> float | None:
+    if not values:
+        return None
+    return sum(values) / len(values)
+
+
+def aggregate_metrics_tables(
+    tables: list[list[dict[str, Any]]],
+) -> list[dict[str, Any]]:
+    """Mean numeric columns per phase across iteration tables."""
+    if not tables:
+        return []
+    if len(tables) == 1:
+        return list(tables[0])
+
+    by_phase: dict[str, list[dict[str, Any]]] = {}
+    for table in tables:
+        for row in table:
+            by_phase.setdefault(str(row["phase"]), []).append(row)
+
+    numeric_keys = (
+        "ttft_s",
+        "wall_s",
+        "prefill_tok_per_s",
+        "decode_tok_per_s",
+        "e2e_tok_per_s",
+        "nvme_ms",
+        "nvme_gbps",
+        "lmcache_token_hit_pct",
+        "external_prefix_hit_pct",
+    )
+    agg: list[dict[str, Any]] = []
+    for phase in ("populate", "cold", "warm"):
+        rows = by_phase.get(phase, [])
+        if not rows:
+            continue
+        n = len(rows)
+        out: dict[str, Any] = {"phase": f"{phase} (mean n={n})"}
+        for key in numeric_keys:
+            vals = [float(r[key]) for r in rows if r.get(key) is not None]
+            out[key] = _mean_optional(vals)
+        sample = rows[0]
+        out["nvme_op"] = sample.get("nvme_op")
+        out["prompt_tokens"] = sample.get("prompt_tokens")
+        out["completion_tokens"] = sample.get("completion_tokens")
+        agg.append(out)
+    return agg
+
+
+def format_iteration_tables(
+    tables: list[list[dict[str, Any]]],
+    aggregate: list[dict[str, Any]],
+) -> str:
+    if len(tables) == 1:
+        return format_metrics_table(tables[0])
+    parts: list[str] = []
+    total = len(tables)
+    for i, table in enumerate(tables, start=1):
+        parts.append(f"--- iteration {i}/{total} ---")
+        parts.append(format_metrics_table(table))
+    if aggregate:
+        parts.append(f"--- aggregate (mean over {total} iterations) ---")
+        parts.append(format_metrics_table(aggregate))
+    return "\n\n".join(parts)
+
+
+def combine_iteration_summaries(
+    cfg: RunConfig,
+    runs: list[dict[str, Any]],
+    aggregate_table: list[dict[str, Any]],
+) -> dict[str, Any]:
+    if len(runs) == 1:
+        return runs[0]
+
+    cold_ttft = [
+        r["delta"]["ttft_seconds_cold_minus_warm"]
+        for r in runs
+        if r.get("delta", {}).get("ttft_seconds_cold_minus_warm") is not None
+    ]
+    cold_wall = [
+        r["delta"]["wall_seconds_cold_minus_warm"]
+        for r in runs
+        if r.get("delta", {}).get("wall_seconds_cold_minus_warm") is not None
+    ]
+    base = dict(runs[0])
+    base["iterations"] = cfg.iterations
+    base["runs"] = runs
+    base["aggregate_metrics_table"] = aggregate_table
+    base["aggregate_delta"] = {
+        "ttft_seconds_cold_minus_warm_mean": _mean_optional(cold_ttft),
+        "wall_seconds_cold_minus_warm_mean": _mean_optional(cold_wall),
+    }
+    return base
+
+
 def parse_args(argv: list[str] | None = None) -> RunConfig:
-    p = argparse.ArgumentParser(
-        description=__doc__,
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-    )
-    p.add_argument("-g", "--gpu", type=int, default=0, help="vLLM :800{gpu}, LMCache :699{gpu}+1")
-    p.add_argument("-r", "--run-id", default="", help="cache_salt suffix (default: random 8 hex)")
-    p.add_argument("--slug", default="war-and-peace", help="data/<slug>/ fixture")
-    p.add_argument("--context", type=Path, help="context chunk (default: first in slug dir)")
-    p.add_argument("--question", help="question (default: first in .questions.json)")
-    p.add_argument("--model", default="Qwen/Qwen2.5-3B-Instruct")
-    p.add_argument("--max-tokens", type=int, default=32)
-    p.add_argument("--skip-populate", action="store_true", help="NVMe already has this salt")
-    p.add_argument("--no-reset", action="store_true", help="skip reset_prefix_cache before cold/warm")
-    p.add_argument("--pause", type=float, default=2.0, help="seconds between phases")
-    p.add_argument("-o", "--report", type=Path, help="write JSON summary")
-    p.add_argument("--url", help="vLLM base URL (default: http://127.0.0.1:800{gpu})")
-    p.add_argument(
-        "--server-log",
-        type=Path,
-        help="vLLM server.txt for NVMe/AIC columns (default: <recipe>/logs/server.txt)",
-    )
-    p.add_argument(
-        "--no-server-log",
-        action="store_true",
-        help="do not parse engine log for NVMe / external hit rate",
-    )
-    ns = p.parse_args(argv)
-    run_id = (ns.run_id or uuid.uuid4().hex[:8]).strip()
-    recipe_root = Path(__file__).resolve().parents[1]
-    if ns.no_server_log:
-        server_log: Path | None = None
-    elif ns.server_log is not None:
-        server_log = ns.server_log
-    else:
-        default_log = recipe_root / "logs" / "server.txt"
-        server_log = default_log if default_log.is_file() else None
-    return RunConfig(
-        gpu=ns.gpu,
-        run_id=run_id,
-        slug=ns.slug,
-        context_path=ns.context,
-        question=ns.question,
-        model=ns.model,
-        max_tokens=ns.max_tokens,
-        skip_populate=ns.skip_populate,
-        reset_gpu=not ns.no_reset,
-        pause_s=ns.pause,
-        report=ns.report,
-        timeout=600.0,
-        vllm_url=ns.url,
-        server_log=server_log,
-    )
+    return config_from_namespace(build_parser().parse_args(argv), _recipe_root())
 
 
 def run_ab(
     cfg: RunConfig,
     recipe_root: Path,
     server_log: Path | None,
-) -> tuple[list[PhaseResult], dict[str, Any]]:
+    *,
+    iteration: int = 1,
+    total_iterations: int = 1,
+) -> tuple[list[PhaseResult], dict[str, Any], list[dict[str, Any]]]:
     context_path = cfg.context_path
     question = cfg.question
     if context_path is None or question is None:
@@ -501,20 +856,30 @@ def run_ab(
         timeout=cfg.timeout,
     )
 
-    print(
-        f"{SCRIPT}: context={context_path} ({len(context)} bytes) "
-        f"salt={cfg.cache_salt!r} reset={cfg.reset_gpu}",
-        file=sys.stderr,
+    iter_label = (
+        f" iteration={iteration}/{total_iterations}"
+        if total_iterations > 1
+        else ""
     )
     print(
-        f"{SCRIPT}: vllm={cfg.vllm_base} lmcache={cfg.lmcache_base}",
+        f"{SCRIPT}: context={context_path} ({len(context)} bytes) "
+        f"salt={cfg.cache_salt!r} reset={cfg.reset_gpu}{iter_label}",
+        file=sys.stderr,
+    )
+    disk_backend = resolve_disk_backend(
+        cfg.lmcache_base, cfg.timeout, cfg.lmcache_io,
+    )
+    print(
+        f"{SCRIPT}: vllm={cfg.vllm_base} lmcache={cfg.lmcache_base} "
+        f"disk_backend={disk_backend}",
         file=sys.stderr,
     )
 
     results: list[PhaseResult] = []
     log_tail = ServerLogTail(server_log)
     phases: list[tuple[str, bool, bool]] = []
-    if not cfg.skip_populate:
+    skip_populate = cfg.skip_populate or iteration > 1
+    if not skip_populate:
         phases.append(("populate", False, False))
     phases.extend(
         [
@@ -532,9 +897,9 @@ def run_ab(
                 did_reset = True
 
             if bypass_gds:
-                bypass_set(cfg.lmcache_base, LMCACHE_BACKEND, True, cfg.timeout)
-            elif LMCACHE_BACKEND in bypass_list(cfg.lmcache_base, cfg.timeout):
-                bypass_set(cfg.lmcache_base, LMCACHE_BACKEND, False, cfg.timeout)
+                bypass_set(cfg.lmcache_base, disk_backend, True, cfg.timeout)
+            elif disk_backend in bypass_list(cfg.lmcache_base, cfg.timeout):
+                bypass_set(cfg.lmcache_base, disk_backend, False, cfg.timeout)
 
             bypassed = bypass_list(cfg.lmcache_base, cfg.timeout)
             wall, ttft, prompt_tok, completion_tok, err = stream_completion(
@@ -550,6 +915,7 @@ def run_ab(
                     completion_tokens=completion_tok,
                     cache_salt=cfg.cache_salt,
                     gpu_prefix_reset=did_reset,
+                    disk_backend=disk_backend,
                     lmcache_bypassed_backends=bypassed,
                     engine=engine,
                     error=err,
@@ -563,7 +929,7 @@ def run_ab(
                 time.sleep(cfg.pause_s)
     finally:
         try:
-            bypass_set(cfg.lmcache_base, LMCACHE_BACKEND, False, cfg.timeout)
+            bypass_set(cfg.lmcache_base, disk_backend, False, cfg.timeout)
         except RuntimeError:
             pass
 
@@ -571,6 +937,8 @@ def run_ab(
     warm = next(x for x in results if x.phase == "warm")
     metrics_table = build_metrics_table(results, cfg.max_tokens)
     summary: dict[str, Any] = {
+        "iteration": iteration,
+        "iterations_total": total_iterations,
         "run_id": cfg.run_id,
         "cache_salt": cfg.cache_salt,
         "context_file": str(context_path.resolve()),
@@ -578,6 +946,8 @@ def run_ab(
         "model": cfg.model,
         "vllm_base": cfg.vllm_base,
         "lmcache_base": cfg.lmcache_base,
+        "disk_backend": disk_backend,
+        "lmcache_io": cfg.lmcache_io,
         "server_log": str(server_log) if server_log else None,
         "gpu_prefix_reset_before_cold_and_warm": cfg.reset_gpu,
         "metrics_table": metrics_table,
@@ -595,20 +965,47 @@ def run_ab(
 
 
 def main(argv: list[str] | None = None) -> int:
-    recipe_root = Path(__file__).resolve().parents[1]
+    recipe_root = _recipe_root()
     try:
         cfg = parse_args(argv)
+        if cfg.iterations < 1:
+            raise ValueError("--iterations must be >= 1")
         if cfg.server_log:
             print(f"{SCRIPT}: server_log={cfg.server_log}", file=sys.stderr)
-        _, summary, metrics_table = run_ab(cfg, recipe_root, cfg.server_log)
+        if cfg.iterations > 1:
+            print(f"{SCRIPT}: iterations={cfg.iterations}", file=sys.stderr)
+
+        run_summaries: list[dict[str, Any]] = []
+        metrics_tables: list[list[dict[str, Any]]] = []
+        for iteration in range(1, cfg.iterations + 1):
+            if cfg.iterations > 1:
+                print(
+                    f"{SCRIPT}: --- iteration {iteration}/{cfg.iterations} ---",
+                    file=sys.stderr,
+                )
+            _, summary, metrics_table = run_ab(
+                cfg,
+                recipe_root,
+                cfg.server_log,
+                iteration=iteration,
+                total_iterations=cfg.iterations,
+            )
+            run_summaries.append(summary)
+            metrics_tables.append(metrics_table)
+            if iteration < cfg.iterations and cfg.pause_s > 0:
+                time.sleep(cfg.pause_s)
+
+        aggregate_table = aggregate_metrics_tables(metrics_tables)
+        summary = combine_iteration_summaries(cfg, run_summaries, aggregate_table)
     except (FileNotFoundError, ValueError, RuntimeError) as e:
         print(f"{SCRIPT}: {e}", file=sys.stderr)
         return 1
 
     out = json.dumps(summary, indent=2)
-    print(out)
-    table_text = format_metrics_table(metrics_table)
-    print(f"\n{SCRIPT} summary:\n{table_text}")
+    if cfg.json_stdout:
+        print(out)
+    table_text = format_iteration_tables(metrics_tables, aggregate_table)
+    print(f"{SCRIPT} summary:\n{table_text}")
     if cfg.report:
         cfg.report.parent.mkdir(parents=True, exist_ok=True)
         cfg.report.write_text(out + "\n", encoding="utf-8")
