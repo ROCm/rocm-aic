@@ -1,0 +1,76 @@
+# Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+#
+name: vllm-radeon Shell
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'recipies/vllm-radeon/run-long.sh'
+      - 'recipies/vllm-radeon/run-long-parallel.sh'
+      - 'recipies/vllm-radeon/tests/**'
+      - '.github/workflows/vllm-radeon-shell.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  run-long-smoke:
+    name: run-long discovery and mock API
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: recipies/vllm-radeon
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install jq
+        run: sudo apt-get update && sudo apt-get install -y jq
+
+      - name: Single-book run-long (mock curl)
+        env:
+          PATH: ${{ github.workspace }}/recipies/vllm-radeon/tests/bin:${{ env.PATH }}
+          BOOK_DATA_ROOT: ${{ github.workspace }}/recipies/vllm-radeon/tests/fixtures
+          BOOK_SLUG: ci-mini-book
+          ITERATIONS: '1'
+          RUN_LONG_SEED: '42'
+        run: |
+          set -euo pipefail
+          command -v curl
+          curl --version 2>&1 | head -1 || true
+          type curl | grep -q 'tests/bin/curl'
+          ./run-long.sh 2>&1 | tee "${RUNNER_TEMP}/run-long.log"
+          grep -q 'run-long: library mode' "${RUNNER_TEMP}/run-long.log" && exit 1 || true
+          grep -q 'run-long: iteration=1/1' "${RUNNER_TEMP}/run-long.log"
+
+      - name: BOOK_SLUG_FILE allowlist
+        env:
+          PATH: ${{ github.workspace }}/recipies/vllm-radeon/tests/bin:${{ env.PATH }}
+          BOOK_DATA_ROOT: ${{ github.workspace }}/recipies/vllm-radeon/tests/fixtures
+          BOOK_SLUG_FILE: ${{ github.workspace }}/recipies/vllm-radeon/tests/fixtures/ci-slugs.txt
+          ITERATIONS: '1'
+          RUN_LONG_SEED: '43'
+        run: |
+          set -euo pipefail
+          printf '%s\n' ci-mini-book > "${BOOK_SLUG_FILE}"
+          ./run-long.sh 2>&1 | tee "${RUNNER_TEMP}/run-long-allowlist.log"
+          grep -q 'subset=ci-mini-book' "${RUNNER_TEMP}/run-long-allowlist.log"
+          grep -q 'books=1' "${RUNNER_TEMP}/run-long-allowlist.log"
+
+      - name: run-long-parallel (2 workers, mock curl)
+        env:
+          PATH: ${{ github.workspace }}/recipies/vllm-radeon/tests/bin:${{ env.PATH }}
+          BOOK_DATA_ROOT: ${{ github.workspace }}/recipies/vllm-radeon/tests/fixtures
+          BOOK_SLUG: ci-mini-book
+          PROGRESS: '0'
+        run: |
+          set -euo pipefail
+          WORKERS=2 ITERATIONS=1 BASE_SEED=100 \
+            OUTPUT_DIR="${RUNNER_TEMP}/parallel-out" \
+            ./run-long-parallel.sh
+          test -f "${RUNNER_TEMP}/parallel-out/"*/worker-0.jsonl
+          test -f "${RUNNER_TEMP}/parallel-out/"*/worker-1.jsonl

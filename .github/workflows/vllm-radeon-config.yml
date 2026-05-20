@@ -1,0 +1,53 @@
+# Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+#
+name: vllm-radeon Config
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'recipies/vllm-radeon/configs/**'
+      - 'recipies/vllm-radeon/grafana/**'
+      - '.github/workflows/vllm-radeon-config.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    name: YAML, manifest, and Grafana JSON
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install tools
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y jq
+          pip install yamllint
+
+      - name: yamllint vllm-radeon configs
+        run: |
+          set -euo pipefail
+          yamllint -c .yamllint recipies/vllm-radeon/configs/
+
+      - name: Validate gutenberg-library.json
+        run: |
+          set -euo pipefail
+          manifest="recipies/vllm-radeon/configs/gutenberg-library.json"
+          jq -e '.version and (.books | length >= 1)' "${manifest}"
+          jq -e '[.books[].slug] | unique | length == ([.books[].slug] | length)' \
+            "${manifest}"
+
+      - name: Validate Grafana dashboard JSON
+        run: |
+          set -euo pipefail
+          dash="recipies/vllm-radeon/grafana/vllm-lmcache-prometheus.json"
+          jq -e '.panels | length >= 1' "${dash}"
+          jq -e '[.. | strings? | select(test("rocm_aic_"))] | length >= 1' \
+            "${dash}"

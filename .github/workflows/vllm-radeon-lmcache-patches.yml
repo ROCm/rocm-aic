@@ -1,0 +1,50 @@
+# Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+#
+name: vllm-radeon LMCache patches
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'recipies/vllm-radeon/Dockerfile'
+      - 'recipies/vllm-radeon/patches/**'
+      - '.github/workflows/vllm-radeon-lmcache-patches.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  apply-check:
+    name: git apply --check (LMCache @ LMCACHE_SHA)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: recipies/vllm-radeon
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve LMCACHE_SHA from Dockerfile
+        id: meta
+        run: |
+          set -euo pipefail
+          sha="$(grep -E '^ARG LMCACHE_SHA=' Dockerfile | head -1 | cut -d= -f2-)"
+          test -n "${sha}"
+          echo "sha=${sha}" >> "${GITHUB_OUTPUT}"
+
+      - name: Clone LMCache and verify patches apply
+        run: |
+          set -euo pipefail
+          rm -rf /tmp/LMCache
+          git clone --filter=blob:none \
+            https://github.com/riley-dixon/LMCache.git /tmp/LMCache
+          cd /tmp/LMCache
+          git fetch --depth 1 origin "${{ steps.meta.outputs.sha }}"
+          git checkout "${{ steps.meta.outputs.sha }}"
+          for patch in patches/*.patch; do
+            echo "==> git apply --check ${patch}"
+            git apply --check "${GITHUB_WORKSPACE}/recipies/vllm-radeon/${patch}"
+          done

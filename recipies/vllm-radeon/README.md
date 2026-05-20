@@ -357,6 +357,25 @@ When stderr is a TTY, an iteration progress bar runs automatically
 (**`WORKERS * ITERATIONS`** completions, polled from **`worker-*.jsonl`**).
 Disable with **`PROGRESS=0`**; force on in CI with **`PROGRESS=1`**.
 
+## GitHub Actions CI
+
+Workflows under **`.github/workflows/vllm-radeon-*.yml`** run on PRs into
+**`main`** (path-filtered) and via **Actions → Run workflow** (**`workflow_dispatch`**):
+
+| Workflow | What it checks |
+| --- | --- |
+| **`vllm-radeon-lmcache-patches`** | **`git apply --check`** on LMCache @ **`LMCACHE_SHA`** |
+| **`vllm-radeon-python`** | **`py_compile`**, Gutenberg scripts, **`rocm-aic-exporter`** |
+| **`vllm-radeon-shell`** | **`run-long.sh`** / parallel with **`tests/fixtures/`** + mock **`curl`** |
+| **`vllm-radeon-config`** | **`yamllint`**, manifest + Grafana JSON |
+| **`vllm-radeon-docker`** | Cached **`docker build`** (no push) |
+
+The Docker job uses BuildKit **`type=gha`** cache (**`scope=vllm-radeon`**).
+Set **`ROCM_ARCH=gfx942`** in CI (override in the workflow if needed). Optional
+**`DOCKERHUB_USERNAME`** / **`DOCKERHUB_TOKEN`** secrets reduce Hub rate
+limits on **`FROM vllm/vllm-openai-rocm`**. Cold builds can take hours; warm
+runs reuse layers until patches or SHAs change.
+
 ## Grafana **`grafana/vllm-lmcache-prometheus.json`**
 
 A sample Grafana dashboard. Import into your Grafana server. This may need
