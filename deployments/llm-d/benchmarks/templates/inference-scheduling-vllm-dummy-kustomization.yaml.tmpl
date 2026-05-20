@@ -14,10 +14,10 @@ patches:
     patch: |-
       - op: replace
         path: /spec/replicas
-        value: 1
+        value: {{replicas}}
       - op: replace
         path: /spec/template/spec/containers/0/image
-        value: ghcr.io/vcave/vllm:rocm_721-vllm_20260423b-lmcache
+        value: {{image}}
       - op: replace
         path: /spec/template/spec/containers/0/args
         value:
@@ -33,6 +33,8 @@ patches:
         value:
           name: HF_HOME
           value: "/root/hf"
+      # Inject environment variables from sweep config
+      {{ENV_VARS_PATCH}}
 
   # Update resource requests (no large CPU cache needed)
   # NOTE: GPU count and other resources can be customized here
@@ -45,9 +47,9 @@ patches:
         value:
           limits:
             amd.com/gpu: {{tensor_parallel_size}}
-            cpu: "32"
-            memory: 100Gi
+            cpu: "{{cpu}}"
+            memory: {{memory}}
           requests:
             amd.com/gpu: {{tensor_parallel_size}}
-            cpu: "32"
-            memory: 100Gi
+            cpu: "{{cpu}}"
+            memory: {{memory}}

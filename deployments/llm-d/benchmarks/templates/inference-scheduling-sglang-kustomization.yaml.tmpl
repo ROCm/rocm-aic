@@ -31,7 +31,9 @@ patches:
           - "--enable-metrics"
           - "--log-level-http=warning"
           - "--tensor-parallel-size={{tensor_parallel_size}}"
-          {{ENGINE_ARGS_ARRAY}} 
+          {{ENGINE_ARGS_ARRAY}}
+      # Inject environment variables from sweep config
+      {{ENV_VARS_PATCH}}
       - op: replace
         path: /spec/template/spec/containers/0/resources/limits/amd.com~1gpu
         value: "{{tensor_parallel_size}}"

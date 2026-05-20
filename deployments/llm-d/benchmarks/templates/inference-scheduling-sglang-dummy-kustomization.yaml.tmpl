@@ -32,6 +32,8 @@ patches:
           - "--log-level-http=warning"
           - "--tensor-parallel-size={{tensor_parallel_size}}"
           {{ENGINE_ARGS_ARRAY}}
+      # Inject environment variables from sweep config
+      {{ENV_VARS_PATCH}}
       # This is meant for sglang with dummy model loading
       - op: add
         path: /spec/template/spec/containers/0/env/-
@@ -50,4 +52,3 @@ patches:
       - op: replace
         path: /spec/template/spec/containers/0/resources/requests/memory
         value: "800Gi"
-              
