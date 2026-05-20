@@ -15,10 +15,10 @@ patches:
     patch: |-
       - op: replace
         path: /spec/replicas
-        value: 1
+        value: {{replicas}}
       - op: replace
         path: /spec/template/spec/containers/0/image
-        value: docker.io/lmsysorg/sglang:v0.5.10.post1-rocm720-mi30x
+        value: {{image}}
       - op: replace
         path: /spec/template/spec/containers/0/command
         value: ["sglang", "serve"]
@@ -39,9 +39,15 @@ patches:
         path: /spec/template/spec/containers/0/resources/requests/amd.com~1gpu
         value: "{{tensor_parallel_size}}"
       - op: replace
+        path: /spec/template/spec/containers/0/resources/limits/cpu
+        value: "{{cpu}}"
+      - op: replace
+        path: /spec/template/spec/containers/0/resources/requests/cpu
+        value: "{{cpu}}"
+      - op: replace
         path: /spec/template/spec/containers/0/resources/limits/memory
-        value: "800Gi"
+        value: {{memory}}
       - op: replace
         path: /spec/template/spec/containers/0/resources/requests/memory
-        value: "800Gi"
+        value: {{memory}}
               

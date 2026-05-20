@@ -1,0 +1,17 @@
+# Shared kustomization for all load generator benchmarks
+# This applies the results volume patch to any pod that has a volume named "results"
+
+resources: []
+
+patches:
+  - target:
+      kind: Pod
+      name: benchmark
+  patch: |-
+    - op: add                                                                                                                                                                                                                                                                                                                         
+      path: /spec/volumes/-                                                                                                                                                                                                                                                                                                           
+      value:                                                                                                                                                                                                                                                                                                                          
+        name: results                                                                                                                                                                                                                                                                                                                 
+        hostPath:                                                                                                                                                                                                                                                                                                                     
+          path: /mnt/rocm-icms-cache/benchmark-results                                                                                                                                                                                                                                                                                
+          type: DirectoryOrCreate 

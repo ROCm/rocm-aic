@@ -474,8 +474,7 @@ class SweepOrchestrator:
 
     def __init__(self, config_file: str, gpu_budget: Optional[int] = None,
                  max_concurrent: int = 1, exclusive_mode: bool = False,
-                 max_gpus_per_node: int = 8, output_dir: Optional[str] = None,
-                 base_k8s_results_dir: str = "/mnt/rocm-icms-cache/benchmark-results"):
+                 max_gpus_per_node: int = 8, output_dir: Optional[str] = None):
         """
         Initialize the orchestrator.
 
@@ -486,9 +485,7 @@ class SweepOrchestrator:
             exclusive_mode: If True, pods request max GPUs per node
             max_gpus_per_node: Maximum GPUs available per node
             output_dir: Custom sweep directory name (optional, overrides auto-generated name)
-            base_k8s_results_dir: Base directory on K8s nodes for result files (default: /tmp/benchmark-results)
         """
-        self.base_k8s_results_dir = base_k8s_results_dir
         # Load configuration with environment variable substitution
         with open(config_file) as f:
             raw_content = f.read()
@@ -1513,7 +1510,6 @@ class SweepOrchestrator:
     def delete_namespace(self, namespace: str):
         """Delete a Kubernetes namespace."""
         safe_print(f"  Deleting namespace {namespace}...")
-
         result = subprocess.run([
             "kubectl", "delete", "namespace", namespace, "--wait=true"
         ], capture_output=True, text=True)
@@ -1837,6 +1833,7 @@ class SweepOrchestrator:
 
             if result.returncode != 0:
                 print(f"  Warning: Teardown had errors: {result.stderr}")
+                print(f"  Warning: Teardown had errors [DBG]: {result.stdout}")
                 # Don't raise exception, teardown is best-effort
 
         # Delete the namespace (for all deployment types)
@@ -2404,12 +2401,6 @@ Examples:
         default=None,
         help="Custom sweep directory name (default: auto-generated {sweep_name}_{timestamp})"
     )
-    parser.add_argument(
-        "--base-k8s-results-dir",
-        type=str,
-        default="/mnt/rocm-icms-cache/benchmark-results",
-        help="Base directory on K8s nodes for result files (default: /mnt/rocm-icms-cache/benchmark-results)"
-    )
     args = parser.parse_args()
 
     try:
@@ -2420,8 +2411,7 @@ Examples:
             max_concurrent=args.max_concurrent,
             exclusive_mode=args.exclusive_mode,
             max_gpus_per_node=args.max_gpus_per_node,
-            output_dir=args.output_dir,
-            base_k8s_results_dir=args.base_k8s_results_dir
+            output_dir=args.output_dir
         )
 
         if args.dry_run:

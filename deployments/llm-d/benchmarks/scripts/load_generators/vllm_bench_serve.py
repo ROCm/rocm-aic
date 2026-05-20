@@ -388,16 +388,10 @@ class VllmBenchServe(LoadGeneratorBase):
         )
 
         # Build script arguments (for run-benchmark.sh)
-        # Build unique results directory for K8s node
-        base_k8s_results_dir = getattr(self.orchestrator, 'base_k8s_results_dir', '/tmp/benchmark-results')
-        run_id = params.get('_run_id', 'unknown')
-        results_dir = f"{base_k8s_results_dir}/{namespace}/run-{run_id}"
-
         script_args = [
             "--image", image,
             "--namespace", namespace,
             "--output-dir", str(run_dir.absolute()),
-            "--results-dir", results_dir,
             "--run-label", run_label
         ]
 

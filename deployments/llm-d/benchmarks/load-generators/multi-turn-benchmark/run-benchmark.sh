@@ -9,7 +9,6 @@ IMAGE=""
 NAMESPACE=""
 WORKLOAD_FILE=""
 OUTPUT_DIR=""
-RESULTS_DIR=""
 DRY_RUN=false
 BENCHMARK_ARGS=()
 
@@ -32,10 +31,6 @@ while [[ $# -gt 0 ]]; do
       OUTPUT_DIR="$2"
       shift 2
       ;;
-    --results-dir)
-      RESULTS_DIR="$2"
-      shift 2
-      ;;
     --dry-run)
       DRY_RUN=true
       shift
@@ -47,7 +42,7 @@ while [[ $# -gt 0 ]]; do
       ;;
     *)
       echo "ERROR: Unknown argument: $1"
-      echo "Usage: $0 --image IMAGE --namespace NS --workload-file FILE --output-dir DIR --results-dir DIR [--dry-run] -- <benchmark-args>"
+      echo "Usage: $0 --image IMAGE --namespace NS --workload-file FILE --output-dir DIR [--dry-run] -- <benchmark-args>"
       exit 1
       ;;
   esac
@@ -74,12 +69,6 @@ if [ -z "$OUTPUT_DIR" ]; then
   exit 1
 fi
 
-# If results-dir not specified, default to /tmp/benchmark-results
-if [ -z "$RESULTS_DIR" ]; then
-  RESULTS_DIR="/tmp/benchmark-results"
-  echo "INFO: --results-dir not specified, using default: $RESULTS_DIR"
-fi
-
 # Validate workload file exists
 if [ ! -f "$WORKLOAD_FILE" ]; then
   echo "ERROR: Workload file not found: $WORKLOAD_FILE"
@@ -92,26 +81,41 @@ WORKLOAD_BASENAME=$(basename "$WORKLOAD_FILE")
 # Generate pod name (use timestamp for uniqueness)
 POD_NAME="benchmark-runner-$(date +%s)"
 
-# Generate combined YAML
-COMBINED_YAML=$(mktemp)
+# Create manifests directory in output for user inspection
+MANIFESTS_DIR="$OUTPUT_DIR/manifests"
+mkdir -p "$MANIFESTS_DIR"
 
-#TODO parameterize the `agent_multi_turn.json`
-cat > "$COMBINED_YAML" << 'EOF_OUTER'
----
+# Generate ConfigMap YAML
+CONFIGMAP_YAML="$MANIFESTS_DIR/configmap.yaml"
+WORKLOAD_BASENAME=$(basename "$WORKLOAD_FILE")
+WORKLOAD_CONTENT=$(cat "$WORKLOAD_FILE" | sed 's/^/    /')
+
+cat > "$CONFIGMAP_YAML" << EOF
 apiVersion: v1
 kind: ConfigMap
 metadata:
   name: benchmark-workload
-  namespace: NAMESPACE_PLACEHOLDER
+  namespace: $NAMESPACE
 data:
-  WORKLOAD_CONTENT_JSON: |
-WORKLOAD_CONTENT_PLACEHOLDER
----
+  $WORKLOAD_BASENAME: |
+$WORKLOAD_CONTENT
+EOF
+
+# Build benchmark args string
+ARGS_STR="${BENCHMARK_ARGS[@]}"
+
+# Generate unique subdirectory for this benchmark run's results
+# This prevents conflicts when multiple benchmarks run in parallel
+RESULTS_SUBDIR="${NAMESPACE}-${POD_NAME}"
+
+# Generate Pod YAML
+POD_YAML="$MANIFESTS_DIR/pod.yaml"
+cat > "$POD_YAML" << EOF
 apiVersion: v1
 kind: Pod
 metadata:
-  name: POD_NAME_PLACEHOLDER
-  namespace: NAMESPACE_PLACEHOLDER
+  name: $POD_NAME
+  namespace: $NAMESPACE
   labels:
     app: llm-d-benchmark
 spec:
@@ -119,17 +123,19 @@ spec:
   containers:
   - name: benchmark
     workingDir: /app/vllm/benchmarks/multi_turn
-    image: IMAGE_PLACEHOLDER
+    image: $IMAGE
     command: ["/bin/sh", "-c"]
     args:
     - |
       set -e
-      wget https://www.gutenberg.org/ebooks/1184.txt.utf-8 && \
-      mv 1184.txt.utf-8 pg1184.txt && \
-      python3 benchmark_serving_multi_turn.py \
-      ARGS_PLACEHOLDER && \
-      echo "Copying result files to mounted volume..." && \
-      cp -v *.xlsx *.json /results 2>/dev/null || echo "No .xlsx or .json files to copy"
+      # Create unique subdirectory for this run
+      mkdir -p /results/$RESULTS_SUBDIR
+      wget https://www.gutenberg.org/ebooks/1184.txt.utf-8 && \\
+      mv 1184.txt.utf-8 pg1184.txt && \\
+      python3 benchmark_serving_multi_turn.py \\
+      $ARGS_STR && \\
+      echo "Copying result files to mounted volume..." && \\
+      cp -v *.xlsx *.json /results/$RESULTS_SUBDIR/ 2>/dev/null || echo "No .xlsx or .json files to copy"
     volumeMounts:
     - name: workload
       mountPath: /workload
@@ -141,45 +147,32 @@ spec:
     configMap:
       name: benchmark-workload
   - name: results
-    hostPath:
-      path: OUTPUT_DIR_PLACEHOLDER
-      type: DirectoryOrCreate
-EOF_OUTER
+    # Placeholder - will be replaced by Kustomize patch with actual hostPath
+    emptyDir: {}
+EOF
 
-# Read workload content and indent it
-WORKLOAD_CONTENT=$(cat "$WORKLOAD_FILE" | sed 's/^/    /')
+# Create kustomization with JSON patch to replace results volume
+KUSTOMIZATION_YAML="$MANIFESTS_DIR/kustomization.yaml"
+cat > "$KUSTOMIZATION_YAML" << 'EOF'
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
 
-# Build benchmark args YAML list
-# ARGS_YAML=""
-# for arg in "${BENCHMARK_ARGS[@]}"; do
-#   ARGS_YAML+="    - \"$arg\"\n"
-# done
+resources:
+- configmap.yaml
+- pod.yaml
 
-for i in "${!WORKLOAD_FILE[@]}"; do
-    if [[ "${WORKLOAD_FILE[i]}" == "--input-file" ]]; then
-        if [[ $((i + 1)) -lt ${#WORKLOAD_FILE[@]} ]]; then
-            WORKLOAD_CONTENT_JSON="${WORKLOAD_FILE[i+1]}"
-            break
-        else
-            echo "Error: --input-file provided without a following value."
-            exit 1
-        fi
-    fi
-done
-
-# keep the indent
-ARGS_YAML="      ${BENCHMARK_ARGS[@]}"
-
-# Replace placeholders
-sed -i "s|NAMESPACE_PLACEHOLDER|$NAMESPACE|g" "$COMBINED_YAML"
-sed -i "s|POD_NAME_PLACEHOLDER|$POD_NAME|g" "$COMBINED_YAML"
-sed -i "s|IMAGE_PLACEHOLDER|$IMAGE|g" "$COMBINED_YAML"
-sed -i "s|OUTPUT_DIR_PLACEHOLDER|$RESULTS_DIR|g" "$COMBINED_YAML"
-sed -i "s|WORKLOAD_CONTENT_JSON|$(basename $WORKLOAD_FILE)|g" "$COMBINED_YAML"
-sed -i "/WORKLOAD_CONTENT_PLACEHOLDER/r /dev/stdin" "$COMBINED_YAML" <<< "$WORKLOAD_CONTENT"
-sed -i "/WORKLOAD_CONTENT_PLACEHOLDER/d" "$COMBINED_YAML"
-sed -i "/ARGS_PLACEHOLDER/r /dev/stdin" "$COMBINED_YAML" <<< "$(echo -e "$ARGS_YAML")"
-sed -i "/ARGS_PLACEHOLDER/d" "$COMBINED_YAML"
+patches:
+- target:
+    kind: Pod
+  patch: |-
+    - op: replace
+      path: /spec/volumes/1
+      value:
+        name: results
+        hostPath:
+          path: /mnt/rocm-icms-cache/benchmark-results
+          type: DirectoryOrCreate
+EOF
 
 # Dry-run mode
 if [ "$DRY_RUN" = true ]; then
@@ -188,11 +181,13 @@ if [ "$DRY_RUN" = true ]; then
   echo "=========================================="
   echo ""
   echo "Would execute:"
-  echo "  kubectl apply -f <combined-yaml> -n $NAMESPACE"
+  echo "  kubectl apply -k $MANIFESTS_DIR -n $NAMESPACE"
   echo ""
-  echo "Generated YAML:"
+  echo "Generated manifests saved to: $MANIFESTS_DIR"
+  echo ""
+  echo "Kustomized YAML (preview):"
   echo "----------------------------------------"
-  cat "$COMBINED_YAML"
+  kubectl kustomize "$MANIFESTS_DIR"
   echo "----------------------------------------"
   echo ""
   echo "Mock Output:"
@@ -206,23 +201,23 @@ if [ "$DRY_RUN" = true ]; then
   echo "Mean TPOT: 15ms"
   echo "Throughput: 25 conversations/sec"
   echo "=========================================="
-  rm -f "$COMBINED_YAML"
   exit 0
 fi
 
-cat "$COMBINED_YAML"
+# Show kustomized output for debugging
+echo "Manifests saved to: $MANIFESTS_DIR"
+echo "Kustomized YAML:"
+kubectl kustomize "$MANIFESTS_DIR"
 
 # Execute benchmark
-echo "Applying combined ConfigMap + Pod to namespace $NAMESPACE..."
+echo "Applying kustomization to namespace $NAMESPACE..."
 
-if ! kubectl apply -f "$COMBINED_YAML" -n "$NAMESPACE"; then
-  echo "ERROR: Failed to apply ConfigMap and Pod"
-  rm -f "$COMBINED_YAML"
+if ! kubectl apply -k "$MANIFESTS_DIR" -n "$NAMESPACE"; then
+  echo "ERROR: Failed to apply kustomization"
   exit 1
 fi
 
 echo "ConfigMap and Pod created successfully"
-rm -f "$COMBINED_YAML"
 
 # Wait for pod to start
 echo "Waiting for pod to be ready..."
@@ -245,12 +240,24 @@ kubectl logs "$POD_NAME" -n "$NAMESPACE" > "$OUTPUT_FILE" 2>&1 || true
 POD_DESC_FILE="$OUTPUT_DIR/pod_description.txt"
 kubectl describe pod "$POD_NAME" -n "$NAMESPACE" > "$POD_DESC_FILE" 2>&1 || true
 
-# Copy result files from pod's /results volume to host OUTPUT_DIR
-echo "Copying result files from shared results folder to host..."
-cp ${RESULTS_DIR}/* ${OUTPUT_DIR}
+# Extract the hostPath from the Kustomize patch
+BASE_HOST_PATH=$(grep -A 5 "hostPath:" "$MANIFESTS_DIR/kustomization.yaml" | grep "path:" | head -1 | awk '{print $2}')
 
-echo "Deleting ${RESULTS_DIR}"
-rm -Rf ${RESULTS_DIR}/*
+if [ -z "$BASE_HOST_PATH" ]; then
+  echo "ERROR: Could not extract hostPath from kustomization.yaml"
+  exit 1
+fi
+
+# Copy result files from shared hostPath to local OUTPUT_DIR
+SHARED_RESULTS_PATH="${BASE_HOST_PATH}/$RESULTS_SUBDIR"
+echo "Copying result files from $SHARED_RESULTS_PATH to $OUTPUT_DIR..."
+if [ -d "$SHARED_RESULTS_PATH" ]; then
+  cp -v "$SHARED_RESULTS_PATH"/* "$OUTPUT_DIR/" 2>/dev/null || echo "No result files to copy"
+  # Clean up the shared directory
+  rm -rf "$SHARED_RESULTS_PATH"
+else
+  echo "Warning: Shared results directory not found: $SHARED_RESULTS_PATH"
+fi
 
 # Get exit code
 EXIT_CODE=$(kubectl get pod "$POD_NAME" -n "$NAMESPACE" -o jsonpath='{.status.containerStatuses[0].state.terminated.exitCode}' 2>/dev/null || echo "1")

@@ -8,7 +8,6 @@ set -euo pipefail
 IMAGE=""
 NAMESPACE=""
 OUTPUT_DIR=""
-RESULTS_DIR=""
 RUN_LABEL="run1"
 DRY_RUN=false
 BENCHMARK_ARGS=()
@@ -28,10 +27,6 @@ while [[ $# -gt 0 ]]; do
       OUTPUT_DIR="$2"
       shift 2
       ;;
-    --results-dir)
-      RESULTS_DIR="$2"
-      shift 2
-      ;;
     --run-label)
       RUN_LABEL="$2"
       shift 2
@@ -47,7 +42,7 @@ while [[ $# -gt 0 ]]; do
       ;;
     *)
       echo "ERROR: Unknown argument: $1"
-      echo "Usage: $0 --image IMAGE --namespace NS --output-dir DIR --results-dir DIR [--run-label LABEL] [--dry-run] -- <benchmark-args>"
+      echo "Usage: $0 --image IMAGE --namespace NS --output-dir DIR [--run-label LABEL] [--dry-run] -- <benchmark-args>"
       exit 1
       ;;
   esac
@@ -69,14 +64,15 @@ if [ -z "$OUTPUT_DIR" ]; then
   exit 1
 fi
 
-# If results-dir not specified, default to /tmp/benchmark-results
-if [ -z "$RESULTS_DIR" ]; then
-  RESULTS_DIR="/tmp/benchmark-results/${NAMESPACE}"
-  echo "INFO: --results-dir not specified, using default: $RESULTS_DIR"
-fi
-
 # Generate pod name
 POD_NAME="long-doc-qa-${RUN_LABEL}-$(date +%s)"
+
+# Generate unique subdirectory for this benchmark run's results
+RESULTS_SUBDIR="${NAMESPACE}-${POD_NAME}"
+
+# Create manifests directory in output for user inspection
+MANIFESTS_DIR="$OUTPUT_DIR/manifests"
+mkdir -p "$MANIFESTS_DIR"
 
 # Build benchmark args string for YAML
 ARGS_STR=""
@@ -85,7 +81,7 @@ for arg in "${BENCHMARK_ARGS[@]}"; do
 done
 
 # Generate Pod YAML
-POD_YAML=$(mktemp)
+POD_YAML="$MANIFESTS_DIR/pod.yaml"
 
 cat > "$POD_YAML" << EOF
 apiVersion: v1
@@ -104,13 +100,13 @@ spec:
     command: ["/bin/sh", "-c"]
     args:
     - |
+      # Create unique subdirectory for this run
+      mkdir -p /results/$RESULTS_SUBDIR
       # Run benchmark (long_doc_qa.py outputs to current directory)
-      # TODO fix this; racy; hard-coded
-      rm -Rf /mnt/rocm-icms-cache/vinccave/*
       python /utils/long_doc_qa.py ${ARGS_STR}
-      rm -f ${RESULTS_DIR}/*
-      cp -v *.csv /results 2>/dev/null || echo "No .csv files to copy"
-      cp -v *.png /results 2>/dev/null || echo "No .png files to copy"
+      # Copy results to mounted volume
+      cp -v *.csv /results/$RESULTS_SUBDIR/ 2>/dev/null || echo "No .csv files to copy"
+      cp -v *.png /results/$RESULTS_SUBDIR/ 2>/dev/null || echo "No .png files to copy"
     volumeMounts:
     - name: results
       mountPath: /results
@@ -118,14 +114,34 @@ spec:
       mountPath: /utils
   volumes:
   - name: results
-    hostPath:
-      path: ${RESULTS_DIR}
-      type: DirectoryOrCreate
+    # Placeholder - will be replaced by Kustomize patch with actual hostPath
+    emptyDir: {}
   - name: utils
     hostPath:
       path: /mnt/rocm-icms-cache/utils
       type: DirectoryOrCreate
+EOF
 
+# Create kustomization with JSON patch to replace results volume
+KUSTOMIZATION_YAML="$MANIFESTS_DIR/kustomization.yaml"
+cat > "$KUSTOMIZATION_YAML" << 'EOF'
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+- pod.yaml
+
+patches:
+- target:
+    kind: Pod
+  patch: |-
+    - op: replace
+      path: /spec/volumes/0
+      value:
+        name: results
+        hostPath:
+          path: /mnt/rocm-icms-cache/benchmark-results
+          type: DirectoryOrCreate
 EOF
 
 # Dry-run mode
@@ -135,11 +151,13 @@ if [ "$DRY_RUN" = true ]; then
   echo "=========================================="
   echo ""
   echo "Would execute:"
-  echo "  kubectl apply -f <pod-yaml> -n $NAMESPACE"
+  echo "  kubectl apply -k $MANIFESTS_DIR -n $NAMESPACE"
   echo ""
-  echo "Generated YAML:"
+  echo "Generated manifests saved to: $MANIFESTS_DIR"
+  echo ""
+  echo "Kustomized YAML (preview):"
   echo "----------------------------------------"
-  cat "$POD_YAML"
+  kubectl kustomize "$MANIFESTS_DIR"
   echo "----------------------------------------"
   echo ""
   echo "Mock Output:"
@@ -149,21 +167,23 @@ if [ "$DRY_RUN" = true ]; then
   echo "Query round completed"
   echo "Results saved to CSV files"
   echo "=========================================="
-  rm -f "$POD_YAML"
   exit 0
 fi
 
-# Execute benchmark
-echo "Creating benchmark pod in namespace $NAMESPACE..."
+# Show kustomized output for debugging
+echo "Manifests saved to: $MANIFESTS_DIR"
+echo "Kustomized YAML:"
+kubectl kustomize "$MANIFESTS_DIR"
 
-if ! kubectl apply -f "$POD_YAML" -n "$NAMESPACE"; then
-  echo "ERROR: Failed to create pod"
-  rm -f "$POD_YAML"
+# Execute benchmark
+echo "Applying kustomization to namespace $NAMESPACE..."
+
+if ! kubectl apply -k "$MANIFESTS_DIR" -n "$NAMESPACE"; then
+  echo "ERROR: Failed to apply kustomization"
   exit 1
 fi
 
 echo "Pod created successfully"
-rm -f "$POD_YAML"
 
 # Wait for pod to start
 echo "Waiting for pod to be ready..."
@@ -183,9 +203,24 @@ kubectl wait --for=condition=Ready=false "pod/$POD_NAME" -n "$NAMESPACE" --timeo
 echo "Retrieving logs..."
 kubectl logs "$POD_NAME" -n "$NAMESPACE" > "$LOG_FILE" 2>&1 || true
 
-# Copy result files from pod's /results volume to host OUTPUT_DIR
-echo "Copying result files from shared results folder to host..."
-cp ${RESULTS_DIR}/* ${OUTPUT_DIR}
+# Extract the hostPath from the Kustomize patch
+BASE_HOST_PATH=$(grep -A 5 "hostPath:" "$MANIFESTS_DIR/kustomization.yaml" | grep "path:" | head -1 | awk '{print $2}')
+
+if [ -z "$BASE_HOST_PATH" ]; then
+  echo "ERROR: Could not extract hostPath from kustomization.yaml"
+  exit 1
+fi
+
+# Copy result files from shared hostPath to local OUTPUT_DIR
+SHARED_RESULTS_PATH="${BASE_HOST_PATH}/$RESULTS_SUBDIR"
+echo "Copying result files from $SHARED_RESULTS_PATH to $OUTPUT_DIR..."
+if [ -d "$SHARED_RESULTS_PATH" ]; then
+  cp -v "$SHARED_RESULTS_PATH"/* "$OUTPUT_DIR/" 2>/dev/null || echo "No result files to copy"
+  # Clean up the shared directory
+  rm -rf "$SHARED_RESULTS_PATH"
+else
+  echo "Warning: Shared results directory not found: $SHARED_RESULTS_PATH"
+fi
 
 # Save pod description for debugging
 POD_DESC_FILE="$OUTPUT_DIR/pod_description_${RUN_LABEL}.txt"

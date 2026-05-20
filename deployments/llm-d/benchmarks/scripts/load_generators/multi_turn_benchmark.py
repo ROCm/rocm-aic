@@ -189,18 +189,12 @@ class MultiTurnBenchmark(LoadGeneratorBase):
         service_url = f"http://llm-d-inference-gateway-istio.{namespace}.svc.cluster.local:80"
 
         # Build script arguments (for run-benchmark.sh)
-        # results-dir is a path accessible to the K8s cluster (will be mounted as hostPath)
-        # Create unique subfolder using namespace and run info to avoid parallel job conflicts
-        base_k8s_results_dir = getattr(self.orchestrator, 'base_k8s_results_dir', '/tmp/benchmark-results')
-        run_id = params.get('_run_id', 'unknown')
-        results_dir = f"{base_k8s_results_dir}/{namespace}/run-{run_id}"
-
+        # Note: results-dir is no longer passed - the hostPath is configured in Kustomize
         script_args = [
             "--image", image,
             "--namespace", namespace,
             "--workload-file", str(workload_path.absolute()),
-            "--output-dir", str(run_dir.absolute()),
-            "--results-dir", results_dir
+            "--output-dir", str(run_dir.absolute())
         ]
 
         # Build benchmark arguments (passed to container after --)

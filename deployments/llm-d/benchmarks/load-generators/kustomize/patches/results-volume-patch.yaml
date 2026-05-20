@@ -1,0 +1,11 @@
+patches:
+- target:
+    kind: Pod
+  patch: |-
+    - op: add
+      path: /spec/volumes/-
+      value:
+        name: results
+        hostPath:
+          path: /mnt/rocm-icms-cache/benchmark-results
+          type: DirectoryOrCreate

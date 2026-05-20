@@ -112,15 +112,11 @@ class LongDocQA(LoadGeneratorBase):
         )
 
         # Build script arguments (for run-benchmark.sh)
-        # Build unique results directory for K8s node
-        base_k8s_results_dir = getattr(self.orchestrator, 'base_k8s_results_dir', '/tmp/benchmark-results')
-        results_dir = f"{base_k8s_results_dir}/{namespace}"
-
+        # Note: results-dir is no longer passed - the hostPath is configured in Kustomize
         script_args = [
             "--image", image,
             "--namespace", namespace,
             "--output-dir", str(run_dir.absolute()),
-            "--results-dir", results_dir,
             "--run-label", run_label
         ]
 

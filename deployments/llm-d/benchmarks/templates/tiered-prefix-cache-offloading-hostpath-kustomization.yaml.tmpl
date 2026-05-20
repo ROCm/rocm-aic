@@ -19,10 +19,10 @@ patches:
     patch: |-
       - op: replace
         path: /spec/replicas
-        value: 1
+        value: {{replicas}}
       - op: replace
         path: /spec/template/spec/containers/0/image
-        value: ghcr.io/vcave/vllm:rocm_721-vllm_20260423b-lmcache
+        value: {{image}}
       - op: replace
         path: /spec/template/spec/containers/0/args
         value:
@@ -37,3 +37,15 @@ patches:
       - op: replace
         path: /spec/template/spec/containers/0/resources/requests/amd.com~1gpu
         value: "{{tensor_parallel_size}}"
+      - op: replace
+        path: /spec/template/spec/containers/0/resources/limits/cpu
+        value: "{{cpu}}"
+      - op: replace
+        path: /spec/template/spec/containers/0/resources/requests/cpu
+        value: "{{cpu}}"
+      - op: replace
+        path: /spec/template/spec/containers/0/resources/limits/memory
+        value: {{memory}}
+      - op: replace
+        path: /spec/template/spec/containers/0/resources/requests/memory
+        value: {{memory}}
