@@ -193,40 +193,70 @@ def _validate_safe_ast(node: ast.AST) -> None:
 
 def evaluate_expressions_in_combination(combination: Dict[str, Any]) -> Dict[str, Any]:
     """
-    Evaluate all expressions in a parameter combination.
+    Evaluate all expressions in a parameter combination, including nested structures.
 
-    Processes each value in the combination:
+    Recursively processes each value in the combination:
     - If it contains {variable} references, evaluates the expression
+    - If it's a nested dict or list, recursively processes it
     - Otherwise, keeps the original value
 
     Args:
-        combination: Dictionary of parameter names to values
+        combination: Dictionary of parameter names to values (may contain nested dicts/lists)
 
     Returns:
-        New dictionary with expressions evaluated
+        New dictionary with expressions evaluated at all levels
 
-    Example:
-        Input:  {"max_concurrency": 16, "num_prompts": "30 * {max_concurrency}"}
-        Output: {"max_concurrency": 16, "num_prompts": 480}
+    Examples:
+        Simple top-level:
+            Input:  {"max_concurrency": 16, "num_prompts": "30 * {max_concurrency}"}
+            Output: {"max_concurrency": 16, "num_prompts": 480}
+
+        Nested dict (e.g., lmcache_args):
+            Input:  {"tensor_parallel_size": 4,
+                     "lmcache_args": {"chunk_size": "256 * {tensor_parallel_size}"}}
+            Output: {"tensor_parallel_size": 4,
+                     "lmcache_args": {"chunk_size": 1024}}
     """
-    result = {}
+    # Helper to collect all top-level non-expression values as variables
+    # Only top-level params can be referenced (e.g., {tensor_parallel_size})
+    def collect_variables(data: Dict[str, Any]) -> Dict[str, Any]:
+        """Collect top-level scalar values to use as variables in expressions."""
+        variables = {}
+        for key, value in data.items():
+            # Only collect top-level scalar values (not nested dicts/lists)
+            # and only if they don't contain variable references themselves
+            if not isinstance(value, (dict, list)) and not has_variable_reference(value):
+                variables[key] = value
+        return variables
 
-    # First pass: collect non-expression values to use as variables
-    variables = {}
-    for key, value in combination.items():
-        if not has_variable_reference(value):
-            variables[key] = value
-
-    # Second pass: evaluate expressions
-    for key, value in combination.items():
-        if has_variable_reference(value):
+    # Helper to recursively evaluate expressions in nested structures
+    def evaluate_recursive(data: Any, variables: Dict[str, Any]) -> Any:
+        """Recursively evaluate expressions in data structure."""
+        if isinstance(data, dict):
+            # Recursively process dictionary
+            result = {}
+            for key, value in data.items():
+                result[key] = evaluate_recursive(value, variables)
+            return result
+        elif isinstance(data, list):
+            # Recursively process list
+            return [evaluate_recursive(item, variables) for item in data]
+        elif has_variable_reference(data):
+            # This is a string expression with variables - evaluate it
             try:
-                evaluated = safe_eval_expression(value, variables)
-                result[key] = evaluated
+                return safe_eval_expression(data, variables)
             except ValueError as e:
-                raise ValueError(f"Error evaluating '{key}': {e}") from e
+                # Re-raise with context about where the error occurred
+                raise ValueError(f"Error evaluating expression '{data}': {e}") from e
         else:
-            result[key] = value
+            # Scalar value without variables - return as-is
+            return data
+
+    # First pass: collect top-level non-expression values to use as variables
+    variables = collect_variables(combination)
+
+    # Second pass: recursively evaluate all expressions
+    result = evaluate_recursive(combination, variables)
 
     return result
 
@@ -464,7 +494,7 @@ class SweepOrchestrator:
             'teardown_target': 'teardown-lmcache',
             'use_justfile': True
         },
-        'tiered-prefix-cache-lmcache-ssd': {
+        'tiered-prefix-cache-lmcache-ssd': { #TODO remove
             'justfile_dir': 'tiered-prefix-cache',
             'deploy_target': 'deploy-lmcache',
             'teardown_target': 'teardown-lmcache',
@@ -932,7 +962,11 @@ class SweepOrchestrator:
 
         # New pattern: benchmark_args with type: combinations or pairwise
         if isinstance(benchmark_args_spec, dict) and benchmark_args_spec.get('type') in ['combinations', 'pairwise']:
-            combination_mode = 'pairwise' if benchmark_args_spec.get('type') == 'pairwise' else 'product'
+            # Check for explicit combination_mode field first, then fall back to type
+            if 'combination_mode' in benchmark_args_spec:
+                combination_mode = benchmark_args_spec['combination_mode']
+            else:
+                combination_mode = 'pairwise' if benchmark_args_spec.get('type') == 'pairwise' else 'product'
             load_combinations = self._generate_args_combinations(benchmark_args_spec['args'], combination_mode)
         # Backward compatibility: sweep_args (deprecated)
         elif 'sweep_args' in load_config:
@@ -1316,13 +1350,18 @@ class SweepOrchestrator:
         # Prepare template parameters
         template_params = params.copy()
 
+        engine_args_key = self.serving_engine.args_key  # e.g., 'vllm_args' or 'sglang_args'
+
         # Debug: Show what parameters we received (helps diagnose issues)
-        print(f"    Template rendering - received params: {list(params.keys())}")
+        print(f"   Template rendering - received params: {list(params.keys())}")
+        if 'engine_args_key' in params:
+            print(f"    engine_args present: {params['engine_args_key']}")
         if 'lmcache_args' in params:
             print(f"    lmcache_args present: {params['lmcache_args']}")
+        if 'bench_args' in params:
+            print(f"    bench_args present: {params['bench_args']}")
 
         # Process engine-specific args (vllm_args, sglang_args, etc.)
-        engine_args_key = self.serving_engine.args_key  # e.g., 'vllm_args' or 'sglang_args'
         if engine_args_key in params:
             engine_args_array = self.serving_engine.build_server_args_array(params[engine_args_key])
             template_params["ENGINE_ARGS_ARRAY"] = engine_args_array
@@ -1510,12 +1549,9 @@ class SweepOrchestrator:
     def delete_namespace(self, namespace: str):
         """Delete a Kubernetes namespace."""
         safe_print(f"  Deleting namespace {namespace}...")
-        # "ignore not found" avoids warnings as we first teardown
-        # using the corresponding justfile, but always delete here
-        # too in case something goes wrong so as to not impact
-        # subsequent runs.
+
         result = subprocess.run([
-            "kubectl", "delete", "--ignore-not-found=true", "namespace", namespace, "--wait=true"
+            "kubectl", "delete", "namespace", namespace, "--wait=true"
         ], capture_output=True, text=True)
 
         if result.returncode != 0:
@@ -1837,7 +1873,6 @@ class SweepOrchestrator:
 
             if result.returncode != 0:
                 print(f"  Warning: Teardown had errors: {result.stderr}")
-                print(f"  Warning: Teardown had errors [DBG]: {result.stdout}")
                 # Don't raise exception, teardown is best-effort
 
         # Delete the namespace (for all deployment types)
@@ -1920,7 +1955,7 @@ class SweepOrchestrator:
                     print(f"    benchmark_args:")
                     for key, value in benchmark_args.items():
                         print(f"      {key}: {value}")
-                
+
             print()
 
         # Add GPU budget analysis
