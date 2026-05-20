@@ -1,17 +1,23 @@
-# Shared kustomization for all load generator benchmarks
-# This applies the results volume patch to any pod that has a volume named "results"
+# Shared kustomization template for all load generator benchmarks
+# This file is copied to the manifests directory, and pod.yaml is generated there
 
-resources: []
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+- pod.yaml
 
 patches:
-  - target:
-      kind: Pod
-      name: benchmark
+- target:
+    kind: Pod
   patch: |-
-    - op: add                                                                                                                                                                                                                                                                                                                         
-      path: /spec/volumes/-                                                                                                                                                                                                                                                                                                           
-      value:                                                                                                                                                                                                                                                                                                                          
-        name: results                                                                                                                                                                                                                                                                                                                 
-        hostPath:                                                                                                                                                                                                                                                                                                                     
-          path: /mnt/rocm-icms-cache/benchmark-results                                                                                                                                                                                                                                                                                
-          type: DirectoryOrCreate 
+    apiVersion: v1
+    kind: Pod
+    metadata:
+      name: placeholder  # Name doesn't matter, target selector handles matching
+    spec:
+      volumes:
+      - name: results
+        hostPath:
+          path: /mnt/rocm-icms-cache/benchmark-results
+          type: DirectoryOrCreate

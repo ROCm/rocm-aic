@@ -188,15 +188,6 @@ class MultiTurnBenchmark(LoadGeneratorBase):
         model = params.get('model')
         service_url = f"http://llm-d-inference-gateway-istio.{namespace}.svc.cluster.local:80"
 
-        # Build script arguments (for run-benchmark.sh)
-        # Note: results-dir is no longer passed - the hostPath is configured in Kustomize
-        script_args = [
-            "--image", image,
-            "--namespace", namespace,
-            "--workload-file", str(workload_path.absolute()),
-            "--output-dir", str(run_dir.absolute())
-        ]
-
         # Build benchmark arguments (passed to container after --)
         benchmark_cmd_args = self.build_args(
             benchmark_args,
@@ -209,10 +200,22 @@ class MultiTurnBenchmark(LoadGeneratorBase):
             "--input-file", f"/workload/{workload_file}"
         ])
 
-        # Build full command
-        cmd = ["./load-generators/multi-turn-benchmark/run-benchmark.sh"]
-        cmd.extend(script_args)
-        cmd.append("--")  # Separator
+        # Export WORKLOAD_FILE for the ConfigMap generator to access
+        import os
+        os.environ['WORKLOAD_FILE'] = str(workload_path.absolute())
+
+        # Build command using generic runner with ConfigMap generator
+        cmd = [
+            "./scripts/run-k8s-benchmark.sh",
+            "--tool-name", "multi-turn-benchmark",
+            "--manifest-generator", "./load-generators/multi-turn-benchmark/generate-pod-manifest.sh",
+            "--extra-manifest-generator", "./load-generators/multi-turn-benchmark/generate-configmap-manifest.sh",
+            "--image", image,
+            "--namespace", namespace,
+            "--output-dir", str(run_dir.absolute()),
+            "--completion-timeout", "600",
+            "--",  # Separator for benchmark args
+        ]
         cmd.extend(benchmark_cmd_args)
 
         print(f"  Running benchmark in pod (image: {image})...")

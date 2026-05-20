@@ -111,19 +111,18 @@ class LongDocQA(LoadGeneratorBase):
             run_dir=run_dir
         )
 
-        # Build script arguments (for run-benchmark.sh)
-        # Note: results-dir is no longer passed - the hostPath is configured in Kustomize
-        script_args = [
+        # Build command using generic runner
+        cmd = [
+            "./scripts/run-k8s-benchmark.sh",
+            "--tool-name", "long-doc-qa",
+            "--manifest-generator", "./load-generators/long_doc_qa/generate-pod-manifest.sh",
             "--image", image,
             "--namespace", namespace,
             "--output-dir", str(run_dir.absolute()),
-            "--run-label", run_label
+            "--run-label", run_label,
+            "--completion-timeout", "10800",
+            "--",  # Separator for benchmark args
         ]
-
-        # Build full command
-        cmd = ["./load-generators/long_doc_qa/run-benchmark.sh"]
-        cmd.extend(script_args)
-        cmd.append("--")  # Separator
         cmd.extend(benchmark_cmd_args)
 
         print(f"    Running long_doc_qa (image: {image})...")

@@ -387,18 +387,18 @@ class VllmBenchServe(LoadGeneratorBase):
             seed=seed
         )
 
-        # Build script arguments (for run-benchmark.sh)
-        script_args = [
+        # Build command using generic runner
+        cmd = [
+            "./scripts/run-k8s-benchmark.sh",
+            "--tool-name", "vllm-bench-serve",
+            "--manifest-generator", "./load-generators/vllm-bench-serve/generate-pod-manifest.sh",
             "--image", image,
             "--namespace", namespace,
             "--output-dir", str(run_dir.absolute()),
-            "--run-label", run_label
+            "--run-label", run_label,
+            "--completion-timeout", "10800",
+            "--",  # Separator for benchmark args
         ]
-
-        # Build full command
-        cmd = ["./load-generators/vllm-bench-serve/run-benchmark.sh"]
-        cmd.extend(script_args)
-        cmd.append("--")  # Separator
         cmd.extend(benchmark_cmd_args)
 
         print(f"    Running vllm bench serve (image: {image})...")

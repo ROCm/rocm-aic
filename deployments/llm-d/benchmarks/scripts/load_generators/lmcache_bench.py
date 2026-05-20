@@ -229,18 +229,18 @@ class LMCacheBenchLoadGenerator(LoadGeneratorBase):
             run_dir=run_dir
         )
 
-        # Build script arguments (for run-benchmark.sh)
-        script_args = [
+        # Build command using generic runner
+        cmd = [
+            "./scripts/run-k8s-benchmark.sh",
+            "--tool-name", "lmcache-bench",
+            "--manifest-generator", "./load-generators/lmcache-bench/generate-pod-manifest.sh",
             "--image", image,
             "--namespace", namespace,
             "--output-dir", str(run_dir.absolute()),
-            "--run-label", run_label
+            "--run-label", run_label,
+            "--completion-timeout", "1200",
+            "--",  # Separator for benchmark args
         ]
-
-        # Build full command
-        cmd = ["./load-generators/lmcache-bench/run-benchmark.sh"]
-        cmd.extend(script_args)
-        cmd.append("--")  # Separator
         cmd.extend(benchmark_cmd_args)
 
         print(f"    Running lmcache bench (image: {image})...")
