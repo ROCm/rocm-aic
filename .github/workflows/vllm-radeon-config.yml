@@ -37,17 +37,39 @@ jobs:
           yamllint -c .yamllint recipies/vllm-radeon/configs/
 
       - name: Validate gutenberg-library.json
+        env:
+          MANIFEST: ${{ github.workspace }}/recipies/vllm-radeon/configs/gutenberg-library.json
         run: |
           set -euo pipefail
-          manifest="recipies/vllm-radeon/configs/gutenberg-library.json"
-          jq -e '.version and (.books | length >= 1)' "${manifest}"
-          jq -e '[.books[].slug] | unique | length == ([.books[].slug] | length)' \
-            "${manifest}"
+          jq -e '
+            (type == "object")
+            and (.version != null)
+            and ((.books | type) == "array")
+            and ((.books | length) >= 1)
+            and (([.books[].slug] | unique | length) == (.books | length))
+            and all(
+              .books[];
+              (type == "object")
+              and has("pg_id") and has("slug") and has("title") and has("author")
+              and (.slug | type) == "string" and (.slug | length) > 0
+            )
+          ' "${MANIFEST}"
 
       - name: Validate Grafana dashboard JSON
+        env:
+          DASH: ${{ github.workspace }}/recipies/vllm-radeon/grafana/vllm-lmcache-prometheus.json
         run: |
           set -euo pipefail
-          dash="recipies/vllm-radeon/grafana/vllm-lmcache-prometheus.json"
-          jq -e '.panels | length >= 1' "${dash}"
-          jq -e '[.. | strings? | select(test("rocm_aic_"))] | length >= 1' \
-            "${dash}"
+          jq -e '
+            (type == "object")
+            and (.kind == "Dashboard")
+            and (
+              ((.spec.elements // {} | keys | length) >= 1)
+              or ((.panels // [] | length) >= 1)
+            )
+            and (
+              ([.spec.elements[]? | select(.kind == "Panel")] | length) >= 1
+              or ((.panels // [] | length) >= 1)
+            )
+            and (([.. | strings? | select(test("rocm_aic_"))] | length) >= 1)
+          ' "${DASH}"

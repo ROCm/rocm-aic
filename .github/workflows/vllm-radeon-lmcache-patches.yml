@@ -36,15 +36,23 @@ jobs:
           echo "sha=${sha}" >> "${GITHUB_OUTPUT}"
 
       - name: Clone LMCache and verify patches apply
+        working-directory: ${{ github.workspace }}
         run: |
           set -euo pipefail
+          patch_dir="${GITHUB_WORKSPACE}/recipies/vllm-radeon/patches"
+          shopt -s nullglob
+          patches=( "${patch_dir}"/*.patch )
+          if (( ${#patches[@]} == 0 )); then
+            echo "No .patch files in ${patch_dir}" >&2
+            exit 1
+          fi
           rm -rf /tmp/LMCache
           git clone --filter=blob:none \
             https://github.com/riley-dixon/LMCache.git /tmp/LMCache
           cd /tmp/LMCache
           git fetch --depth 1 origin "${{ steps.meta.outputs.sha }}"
           git checkout "${{ steps.meta.outputs.sha }}"
-          for patch in patches/*.patch; do
+          for patch in "${patches[@]}"; do
             echo "==> git apply --check ${patch}"
-            git apply --check "${GITHUB_WORKSPACE}/recipies/vllm-radeon/${patch}"
+            git apply --check "${patch}"
           done

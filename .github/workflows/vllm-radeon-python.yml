@@ -53,14 +53,23 @@ jobs:
         run: python3 scripts/build-gutenberg-library.py --help
 
       - name: Validate gutenberg-library.json
+        env:
+          MANIFEST: ${{ github.workspace }}/recipies/vllm-radeon/configs/gutenberg-library.json
         run: |
           set -euo pipefail
-          manifest="configs/gutenberg-library.json"
-          jq -e '.books | length == 100' "${manifest}"
-          jq -e '[.books[].slug] | length == ([.books[].slug] | unique | length)' \
-            "${manifest}"
-          jq -e '.books[] | select(.pg_id and .slug and .title and .author) \
-            | .slug' "${manifest}" >/dev/null
+          jq -e '
+            (type == "object")
+            and (.version != null)
+            and ((.books | type) == "array")
+            and ((.books | length) == 100)
+            and (([.books[].slug] | unique | length) == (.books | length))
+            and all(
+              .books[];
+              (type == "object")
+              and has("pg_id") and has("slug") and has("title") and has("author")
+              and (.slug | type) == "string" and (.slug | length) > 0
+            )
+          ' "${MANIFEST}"
 
       - name: split-gutenberg-random-chunks (local snippet)
         run: |

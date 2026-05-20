@@ -2,17 +2,13 @@
 #
 # SPDX-License-Identifier: MIT
 #
+# Full image build (~10GB+ layers). GitHub-hosted runners often run out of
+# disk on cold builds; PRs use vllm-radeon-lmcache-patches.yml instead.
+# Run this workflow manually after Dockerfile or patch changes.
+#
 name: vllm-radeon Docker
 
 on:
-  pull_request:
-    branches: [main]
-    paths:
-      - 'recipies/vllm-radeon/Dockerfile'
-      - 'recipies/vllm-radeon/patches/**'
-      - 'recipies/vllm-radeon/scripts/vllm-server'
-      - 'recipies/vllm-radeon/configs/**'
-      - '.github/workflows/vllm-radeon-docker.yml'
   workflow_dispatch:
 
 permissions:
@@ -31,6 +27,21 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Free disk space on runner
+        run: |
+          set -euo pipefail
+          echo "Disk before cleanup:"
+          df -h /
+          sudo rm -rf /usr/share/dotnet
+          sudo rm -rf /usr/local/lib/android
+          sudo rm -rf /opt/ghc
+          sudo rm -rf /opt/hostedtoolcache
+          sudo rm -rf /usr/local/share/boost
+          sudo rm -rf "$AGENT_TOOLSDIRECTORY" || true
+          sudo docker system prune -af --volumes || true
+          echo "Disk after cleanup:"
+          df -h /
+
       - name: Log in to Docker Hub
         continue-on-error: true
         uses: docker/login-action@v3
@@ -40,21 +51,14 @@ jobs:
 
       - uses: docker/setup-buildx-action@v3
 
-      - name: Build vllm-radeon (no push)
+      - name: Build vllm-radeon (no load; saves runner disk)
         uses: docker/build-push-action@v6
         with:
           context: recipies/vllm-radeon
           file: recipies/vllm-radeon/Dockerfile
           push: false
-          load: true
           tags: ${{ env.IMAGE_NAME }}:ci
           build-args: |
             ROCM_ARCH=${{ env.ROCM_ARCH }}
           cache-from: type=gha,scope=vllm-radeon
           cache-to: type=gha,mode=max,scope=vllm-radeon
-
-      - name: Verify image entrypoint
-        run: |
-          set -euo pipefail
-          docker run --rm --entrypoint python3 "${IMAGE_NAME}:ci" \
-            -c "import pathlib; p=pathlib.Path('/app/scripts/vllm-server'); assert p.is_file(), p"

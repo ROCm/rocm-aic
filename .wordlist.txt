@@ -102,6 +102,7 @@ HuggingFace
 jsonl
 NFS
 PRNG
+PRs
 TTFT
 xfs
 tmpfs

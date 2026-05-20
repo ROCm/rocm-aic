@@ -371,13 +371,14 @@ Workflows under **`.github/workflows/vllm-radeon-*.yml`** run on PRs into
 | **`vllm-radeon-python`** | **`py_compile`**, Gutenberg scripts, **`rocm-aic-exporter`** |
 | **`vllm-radeon-shell`** | **`run-long.sh`** / parallel with **`tests/fixtures/`** + mock **`curl`** |
 | **`vllm-radeon-config`** | **`yamllint`**, manifest + Grafana JSON |
-| **`vllm-radeon-docker`** | Cached **`docker build`** (no push) |
+| **`vllm-radeon-docker`** | Manual **`workflow_dispatch`** only: full cached build |
 
-The Docker job uses BuildKit **`type=gha`** cache (**`scope=vllm-radeon`**).
-Set **`ROCM_ARCH=gfx942`** in CI (override in the workflow if needed). Optional
-**`DOCKERHUB_USERNAME`** / **`DOCKERHUB_TOKEN`** secrets reduce Hub rate
-limits on **`FROM vllm/vllm-openai-rocm`**. Cold builds can take hours; warm
-runs reuse layers until patches or SHAs change.
+PRs do **not** run the full image build (hosted runners lack disk for a cold
+**`vllm/vllm-openai-rocm`** + LMCache compile). Use **`vllm-radeon-lmcache-patches`**
+on PRs and **`vllm-radeon-docker`** from Actions when you need an end-to-end
+build. That job frees runner disk, uses BuildKit **`type=gha`** cache
+(**`scope=vllm-radeon`**), and does not **`load`** the image into Docker
+(**`ROCM_ARCH=gfx942`**). Optional **`DOCKERHUB_*`** secrets help Hub pulls.
 
 ## Grafana **`grafana/vllm-lmcache-prometheus.json`**
 
