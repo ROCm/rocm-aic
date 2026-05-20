@@ -109,13 +109,85 @@ PLOT_FILTERS: dict[str, type[PlotFilterBase]] = {
 }
 
 
-class PlotFilters(list[PlotFilterBase]):
+@dataclass
+class PlotOrFilter:
+    """
+    A filter that applies OR logic to multiple sub-filters.
+
+    At least one of the sub-filters must match for a row to pass.
+    """
+    filters: list[PlotFilterBase]
+
+    def apply(self, df: "pd.DataFrame") -> "pd.DataFrame":
+        """Apply OR logic: return rows that match ANY of the sub-filters."""
+        if not self.filters:
+            return df
+
+        # Start with an empty boolean mask (all False)
+        mask = pd.Series([False] * len(df), index=df.index)
+
+        # OR together all the filter conditions
+        for filter_item in self.filters:
+            filtered_df = filter_item.apply(df)
+            # Update mask to include rows from this filter
+            mask |= df.index.isin(filtered_df.index)
+
+        return df[mask]
+
+    def __repr__(self) -> str:
+        """String representation for debugging."""
+        filter_strs = [f"{f.var}{self._get_op_str(f)}{f.target}" for f in self.filters]
+        return f"({' | '.join(filter_strs)})"
+
+    @staticmethod
+    def _get_op_str(filter_obj: PlotFilterBase) -> str:
+        """Get the operator string for a filter object."""
+        if isinstance(filter_obj, PlotEqualTo):
+            return "=="
+        elif isinstance(filter_obj, PlotNotEqualTo):
+            return "!="
+        elif isinstance(filter_obj, PlotLessThan):
+            return "<"
+        elif isinstance(filter_obj, PlotLessThanOrEqualTo):
+            return "<="
+        elif isinstance(filter_obj, PlotGreaterThan):
+            return ">"
+        elif isinstance(filter_obj, PlotGreaterThanOrEqualTo):
+            return ">="
+        else:
+            return "?"
+
+
+class PlotFilters(list):
+    """
+    A list of filters that are applied with AND logic.
+
+    Each filter can be either a PlotFilterBase (single condition) or
+    PlotOrFilter (multiple conditions with OR logic).
+
+    Examples:
+        "chunk_size==256" -> Single filter
+        "chunk_size==256|chunk_size==2048" -> OR filter
+        "chunk_size==256|chunk_size==2048,batch_size>10" -> OR filter AND regular filter
+    """
     @classmethod
     def parse_str(cls, s: str):
         if not s:
             return cls()
 
-        return cls(PlotFilterBase.parse_str(e) for e in s.split(","))
+        filters = []
+        # Split by comma for AND groups
+        for and_group in s.split(","):
+            # Check if this group contains OR operations (|)
+            if "|" in and_group:
+                # Parse each OR component
+                or_filters = [PlotFilterBase.parse_str(e.strip()) for e in and_group.split("|")]
+                filters.append(PlotOrFilter(or_filters))
+            else:
+                # Regular single filter
+                filters.append(PlotFilterBase.parse_str(and_group.strip()))
+
+        return cls(filters)
 
     def apply(self, df: "pd.DataFrame") -> "pd.DataFrame":
         for item in self:
@@ -575,9 +647,15 @@ class SweepPlotArgs:
             default="",
             help="A comma-separated list of statements indicating values to filter by. "
             "This is useful to remove outliers. "
-            "Example: `max_concurrency<1000,max_num_batched_tokens<=4096` means "
-            "plot only the points where `max_concurrency` is less than 1000 and "
-            "`max_num_batched_tokens` is no greater than 4096.",
+            "Use '|' for OR conditions and ',' for AND conditions. "
+            "Examples: "
+            "`max_concurrency<1000,max_num_batched_tokens<=4096` means "
+            "plot only the points where `max_concurrency` is less than 1000 AND "
+            "`max_num_batched_tokens` is no greater than 4096. "
+            "`chunk_size==256|chunk_size==2048` means "
+            "plot only the points where `chunk_size` equals 256 OR 2048. "
+            "`chunk_size==256|chunk_size==2048,batch_size>10` means "
+            "plot only the points where (`chunk_size` equals 256 OR 2048) AND `batch_size` > 10.",
         )
         parser.add_argument(
             "--bin-by",
