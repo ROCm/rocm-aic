@@ -231,3 +231,15 @@ sha
 textfile
 txt
 whitespace
+builtin
+dispatch
+gfx942
+hasher
+histogram
+reconciled
+sha256
+sha256_cbor
+workflow
+BuildKit
+DOCKERHUB
+pre_caching

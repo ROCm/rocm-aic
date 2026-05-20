@@ -46,20 +46,27 @@ def _norm_jsonl_hash(raw: str) -> str:
 
 
 def _aliases_for_jsonl_hash(h: str) -> set[str]:
-    """Map a chunk_hashes JSONL entry to filename tag alias(es)."""
+    """Map a ``chunk_hashes`` JSONL entry to on-disk ``chunk_hash_hex`` tag(s).
+
+    FileHashStrategy writes ``hex()`` of the 64-bit value with negatives
+    converted to unsigned first. ``CacheEngineKey.to_string()`` uses
+    ``f"{chunk_hash:x}"`` (signed Python int). Both must use the same
+    ``pre_caching_hash_algorithm`` as storage (see
+    ``lmcache-chunk-statistics-hash.patch``).
+    """
     s = h.strip().lower()
     if s.startswith("0x"):
-        raw = s[2:]
-        v = int(s, 16)
+        unsigned = int(s, 16)
     else:
-        raw = _norm_jsonl_hash(s)
-        v = int(raw, 16)
-    aliases = {raw}
-    if v >= 2**63:
-        v -= 2**64
-    if v < 0:
-        aliases.add("-" + format((2**64 + v) & (2**64 - 1), "x"))
-    return aliases
+        try:
+            unsigned = int(s, 16)
+        except ValueError:
+            unsigned = int(s, 10)
+    signed = unsigned if unsigned < 2**64 // 2 else unsigned - 2**64
+    tags = {f"{signed:x}"}
+    if signed >= 0:
+        tags.add(str(signed))
+    return tags
 
 
 def _parse_data_filename(name: str) -> tuple[str, str, str] | None:
@@ -655,6 +662,23 @@ def main() -> int:
         print(
             f"warning: no chunk_hashes_*.jsonl under {summary.stats_dir}; "
             "histogram is all zero-hit files",
+            file=sys.stderr,
+        )
+
+    if (
+        summary.lookup_rows > 0
+        and summary.disk_file_count > 0
+        and summary.hit_file_count == 0
+        and summary.orphan_stat_mentions > 0
+    ):
+        print(
+            "warning: chunk_hashes JSONL did not match any on-disk .data tags "
+            "(orphan_stat_mentions="
+            f"{summary.orphan_stat_mentions}). Rebuild the vllm-radeon image "
+            "with lmcache-chunk-statistics-hash.patch, restart vLLM, and "
+            "collect new stats after pre_caching_hash_algorithm matches storage "
+            "(e.g. sha256_cbor). Existing JSONL from builtin hashing cannot be "
+            "reconciled with stored keys.",
             file=sys.stderr,
         )
 

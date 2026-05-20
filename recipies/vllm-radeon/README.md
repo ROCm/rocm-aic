@@ -60,7 +60,10 @@ Standalone exporter for LMCache / vLLM host metrics. Today it reports:
 1. **KV inventory** — ``.data`` file count and total bytes per **`model_name`**
 2. **Filesystem** — total, used, and free bytes on the mount hosting **`$DATA`**
 3. **Hit histogram** — from **`$DATA/lmcache_chunk_stats/chunk_hashes_*.jsonl`**
-   over **current** ``$DATA/lmcache/*.data`` only (deleted chunks excluded)
+   over **current** ``$DATA/lmcache/*.data`` only (deleted chunks excluded).
+   JSONL hashes must use the same **`pre_caching_hash_algorithm`** as KV storage
+   (**`lmcache-chunk-statistics-hash.patch`**). Stats collected with the default
+   **builtin** hasher cannot be matched to **`sha256_cbor`** on-disk keys.
 
 ```bash
 # Host path matches make run DATA= (default /mnt/lmcache-nvme)

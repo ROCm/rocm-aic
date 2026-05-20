@@ -42,6 +42,7 @@ RUN cd /app && \
     git apply /app/patches/lmcache-gds-eviction-log.patch && \
     git apply /app/patches/lmcache-sha256-cbor-int.patch && \
     git apply /app/patches/lmcache-controller-log.patch && \
+    git apply /app/patches/lmcache-chunk-statistics-hash.patch && \
     PYTORCH_ROCM_ARCH=${ROCM_ARCH} \
         TORCH_DONT_CHECK_COMPILER_ABI=1 \
         CXX=hipcc \

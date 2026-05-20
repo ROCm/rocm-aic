@@ -9,6 +9,7 @@ Patches are applied after `LMCACHE_SHA` checkout in the Dockerfile.
 | `lmcache-gds-eviction-log.patch` | (rocm-aic) | Downgrade per-allocation GDS eviction notice from WARNING to DEBUG (hipfile has no eviction). |
 | `lmcache-sha256-cbor-int.patch` | [LMCache#2979][issue-2979] | Convert vLLM `sha256_cbor` bytes hashes to int for LMCache keys (vLLM 0.19+). |
 | `lmcache-controller-log.patch` | (rocm-aic) | Controller sender WARNING only when `enable_controller` is true. |
+| `lmcache-chunk-statistics-hash.patch` | (rocm-aic) | Chunk statistics use `pre_caching_hash_algorithm` (same as KV keys). |
 
 Adapted for the riley-dixon fork at `LMCACHE_SHA` (not a raw `git apply` of the upstream PR).
 
