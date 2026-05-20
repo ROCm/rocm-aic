@@ -1,9 +1,19 @@
 name: "test-model-vllm-lmcache-sweep"
-description: "Test health of various models against vllm+LMCache (TP=4)"
+description: "Test health of various models against vllm+LMCache (TP=8)"
 deployment: "tiered-prefix-cache-lmcache"
 deployment_template: "tiered-prefix-cache-lmcache-hipfile-kustomization.yaml.tmpl"
 
+# When using load-format dummy, override HF settings
+env_vars:
+  HF_HOME: "/root/hf_home_dummy"
+  HUGGINGFACE_HUB_CACHE: "/root/hf_hub_dummy"
+  VLLM_ROCM_USE_AITER: 1
+
 parameters:
+  image:
+    type: categorical
+    values:
+      - "ghcr.io/vcave/vllm:rocm_721-vllm_0190-lmcache_20260514_92fe433a"
   model:
     type: categorical
     values:
@@ -32,6 +42,7 @@ parameters:
   vllm_args:
     type: combinations
     args:
+      load-format: "dummy"
       trust-remote-code: true # for kimi
       gpu_memory_utilization:
         values: [0.90]
@@ -58,3 +69,4 @@ load_generation:
     num_clients: 5
     max_active_conversations: 5
     verbose: false
+    excel_output: true

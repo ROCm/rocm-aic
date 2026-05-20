@@ -4,10 +4,11 @@ deployment: "inference-scheduling-vllm"
 # does not require model cache
 deployment_template: "inference-scheduling-vllm-dummy-kustomization.yaml.tmpl"
 
+# When using load-format dummy, override HF settings
 env_vars:
+  HF_HOME: "/root/hf_home_dummy"
+  HUGGINGFACE_HUB_CACHE: "/root/hf_hub_dummy"
   VLLM_ROCM_USE_AITER: 1
-# TODO does this work if there's also huggginface?
-  HF_HOME: "/root/hf"
 
 parameters:
   image:
@@ -17,11 +18,11 @@ parameters:
   model:
     type: categorical
     values:
-      - "Qwen/Qwen3-32B"
+      # - "Qwen/Qwen3-32B"
       - "deepseek-ai/DeepSeek-R1-0528"
-      - "moonshotai/Kimi-K2.5"
-      - "amd/Qwen3-235B-A22B-Thinking-2507_moe_w_mxfp4_a_mxfp4_kv_fp8"
-      - "openai/gpt-oss-120b"
+      # - "moonshotai/Kimi-K2.5"
+      # - "amd/Qwen3-235B-A22B-Thinking-2507_moe_w_mxfp4_a_mxfp4_kv_fp8"
+      # - "openai/gpt-oss-120b"
       # MXFP4 not yet supported
       #- "amd/Kimi-K2.5-MXFP4"
       #- "amd/DeepSeek-R1-0528-MXFP4"
@@ -53,7 +54,7 @@ parameters:
       vllm_args:
         block_size: 64
         mm_encoder_tp_mode: "data"
-        trust-remote-code: True
+        trust-remote-code: true
 
 load_generation:
   tool: "multi-turn-benchmark"
