@@ -206,6 +206,16 @@ def _materialize_lmcache_config(svc: dict[str, Any], data_root: Path) -> Path | 
             ec.pop("remote_storage_plugin.fs.base_path", None)
             if not ec:
                 cfg.pop("extra_config", None)
+        buf_mb = os.environ.get("RADEON_LMCACHE_GDS_BUFFER_SIZE", "").strip()
+        if buf_mb:
+            try:
+                cfg["gds_buffer_size"] = int(buf_mb)
+            except ValueError:
+                print(
+                    f"WARN: invalid RADEON_LMCACHE_GDS_BUFFER_SIZE={buf_mb!r}, "
+                    "keeping template gds_buffer_size",
+                    file=sys.stderr,
+                )
 
     extra = cfg.get("extra_config")
     if not isinstance(extra, dict):

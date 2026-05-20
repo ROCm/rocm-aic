@@ -7,7 +7,8 @@
 #   WORKERS=8 ITERATIONS=10 ./run-long-parallel.sh
 #
 # Env (passed through to each worker):
-#   BASE_URL, MODEL, BOOK_DATA_ROOT, BOOK_SLUG, ITERATIONS,
+#   BASE_URL, MODEL, BOOK_DATA_ROOT, BOOK_SLUG, BOOK_SLUGS, BOOK_SLUG_FILE,
+#   ITERATIONS,
 #   RUN_LONG_COMBINE_CHUNKS, etc.
 #
 # Wrapper-only env:

@@ -39,6 +39,9 @@ RUN cd /app && \
     git checkout "${LMCACHE_SHA}" && \
     git apply "/app/patches/${LMCACHE_CACHE_SALT_PATCH}" && \
     git apply "/app/patches/${LMCACHE_STORAGE_MODE_PATCH}" && \
+    git apply /app/patches/lmcache-gds-eviction-log.patch && \
+    git apply /app/patches/lmcache-sha256-cbor-int.patch && \
+    git apply /app/patches/lmcache-controller-log.patch && \
     PYTORCH_ROCM_ARCH=${ROCM_ARCH} \
         TORCH_DONT_CHECK_COMPILER_ABI=1 \
         CXX=hipcc \

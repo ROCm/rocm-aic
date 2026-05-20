@@ -15,7 +15,7 @@ naming. Work from **`recipies/vllm-radeon/`**.
 | --- | --- |
 | **`make build` / `make run`**, **`ROCM_ARCH`**, **`CONTAINER_NAME`**, mounts (**`DATA`**, **`LOG`**),
 **`TZ`**, **`HF_TOKEN`**, **`HF_TOKEN_FILE`**, **`RADEON_LMCACHE_IO`**, **`VLLM_SERVER_DEV_MODE`**, **`ARGS`**, **`EXTRA_DOCKER_RUN_FLAGS`** | **`Makefile`** (see **`make help`**) |
-| Image layers, LMCache / hipFile / **fio** build; **`patches/`** applies [LMCache#3008][lmcache-pr-3008] (`cache_salt` in V1 keys); **`ENTRYPOINT`** **`/app/scripts/vllm-server`** (**`make run`** overlays **`configs/`** + **`scripts/`**) | **`Dockerfile`**, **`patches/`** |
+| Image layers, LMCache / hipFile / **fio** build; **`patches/`** (cache_salt, storage mode, log noise, sha256_cbor); **`ENTRYPOINT`** **`/app/scripts/vllm-server`** (**`make run`** overlays **`configs/`** + **`scripts/`**) | **`Dockerfile`**, **`patches/`** |
 | vLLM + LMCache (**`--kv-transfer-config`**); **`RADEON_LMCACHE_IO`** selects template | **`scripts/vllm-server`** |
 | LMCache **hipfile** (**GdsBackend**, **`gds_path`**) vs **posix** (**`fs`**
 plugin, same **`DATA`/`subdir`** as **`gds_path`**, no **`gds_path`** key) |
@@ -153,6 +153,48 @@ curl -sS -X POST "http://127.0.0.1:6991/storage/mode" \
 Startup mode still comes from **`RADEON_LMCACHE_IO`** at **`make run`**; use
 **`/storage/mode`** only when you need to flip layouts on a live server.
 
+## LMCache logging and hipFile buffer
+
+The image applies **`patches/lmcache-gds-eviction-log.patch`**,
+**`lmcache-sha256-cbor-int.patch`**, and **`lmcache-controller-log.patch`**
+(see **`patches/README.md`**). Rebuild after changing patches:
+
+```bash
+make build
+```
+
+**Log level:** **`scripts/vllm-server`** sets **`LMCACHE_LOG_LEVEL`** from
+**`RADEON_LMCACHE_LOG_LEVEL`** (default **`INFO`**). Use **`ERROR`** only if
+you need to hide all LMCache warnings (including real allocation failures):
+
+```bash
+make run RADEON_LMCACHE_LOG_LEVEL=ERROR
+```
+
+**hipFile pool (MiB):** **`configs/lmcache-hipfile.yml`** defaults
+**`gds_buffer_size: 1024`**. Override at run time without editing YAML:
+
+```bash
+make run RADEON_LMCACHE_GDS_BUFFER_SIZE=2048
+```
+
+Raise the pool if **`logs/server.txt`** shows
+**`Failed to allocate memory block of size 9437184`** during parallel long-
+context retrieve (~9 MiB per chunk; many concurrent loads can exhaust a 512
+MiB pool).
+
+**Validate warnings** after rebuild and a short workload:
+
+```bash
+grep -c 'LMCache WARNING' logs/server.txt
+grep 'LMCache WARNING' logs/server.txt | sed 's/.*LMCache WARNING://' \
+  | sort | uniq -c | sort -rn
+```
+
+Expect no repeated **GDS Backend does not support eviction** lines at INFO;
+**builtin** hash warnings should be gone (**`pre_caching_hash_algorithm:
+sha256_cbor`**).
+
 ## LMCache **long_doc_qa** benchmark
 
 After vLLM is listening (e.g. **`curl -sS http://127.0.0.1:8000/v1/models`**),
@@ -273,6 +315,18 @@ Single-book mode is unchanged:
 ```bash
 BOOK_SLUG=war-and-peace ./run-long.sh
 ```
+
+Limit library mode to a subset of books with a comma-separated list or a file
+(one slug per line; **`#`** starts a comment):
+
+```bash
+BOOK_SLUGS=war-and-peace,pride-and-prejudice ./run-long.sh
+BOOK_SLUG=war-and-peace,pride-and-prejudice ./run-long.sh   # same as BOOK_SLUGS
+BOOK_SLUG_FILE=configs/my-slugs.txt ./run-long-parallel.sh 4
+```
+
+**`BOOK_SLUGS`** and **`BOOK_SLUG_FILE`** may be combined (union). Do not set
+**`BOOK_SLUG`** to a single slug when using **`BOOK_SLUGS`** / **`BOOK_SLUG_FILE`**.
 
 Optional env: **`BOOK_DATA_ROOT`** (default **`data/`**), **`CONTEXT_FILE`**,
 **`QUESTION`**, **`RUN_LONG_SEED`** (deterministic **`$RANDOM`** sequence),

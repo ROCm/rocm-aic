@@ -7,7 +7,8 @@
 local_cpu: false
 gds_backend: hipfile
 save_decode_cache: true
-gds_buffer_size: 512
+pre_caching_hash_algorithm: sha256_cbor
+gds_buffer_size: 1024
 
 extra_config:
   use_hipfile: true
