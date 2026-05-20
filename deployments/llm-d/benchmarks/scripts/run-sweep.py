@@ -1310,7 +1310,7 @@ class SweepOrchestrator:
             # Use automatic inference based on deployment name
             template_file = script_dir / "templates" / f"{self.deployment}-kustomization.yaml.tmpl"
 
-        output_dir = run_dir / "manifests"
+        output_dir = run_dir / "manifests-serving"
         output_dir.mkdir(parents=True, exist_ok=True)
 
         # Prepare template parameters
