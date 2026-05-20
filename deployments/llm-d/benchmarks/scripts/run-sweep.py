@@ -19,7 +19,6 @@ import re
 import ast
 import operator
 import fnmatch
-import glob
 from pathlib import Path
 from datetime import datetime
 from typing import Dict, List, Any, Optional
@@ -495,7 +494,7 @@ class SweepOrchestrator:
             'teardown_target': 'teardown-lmcache',
             'use_justfile': True
         },
-        'tiered-prefix-cache-lmcache-ssd': { #TODO remove
+        'tiered-prefix-cache-lmcache-ssd': {
             'justfile_dir': 'tiered-prefix-cache',
             'deploy_target': 'deploy-lmcache',
             'teardown_target': 'teardown-lmcache',
@@ -1345,24 +1344,19 @@ class SweepOrchestrator:
             # Use automatic inference based on deployment name
             template_file = script_dir / "templates" / f"{self.deployment}-kustomization.yaml.tmpl"
 
-        output_dir = run_dir / "manifests-serving"
+        output_dir = run_dir / "manifests"
         output_dir.mkdir(parents=True, exist_ok=True)
 
         # Prepare template parameters
         template_params = params.copy()
 
-        engine_args_key = self.serving_engine.args_key  # e.g., 'vllm_args' or 'sglang_args'
-
         # Debug: Show what parameters we received (helps diagnose issues)
-        print(f"   Template rendering - received params: {list(params.keys())}")
-        if 'engine_args_key' in params:
-            print(f"    engine_args present: {params['engine_args_key']}")
+        print(f"    Template rendering - received params: {list(params.keys())}")
         if 'lmcache_args' in params:
             print(f"    lmcache_args present: {params['lmcache_args']}")
-        if 'bench_args' in params:
-            print(f"    bench_args present: {params['bench_args']}")
 
         # Process engine-specific args (vllm_args, sglang_args, etc.)
+        engine_args_key = self.serving_engine.args_key  # e.g., 'vllm_args' or 'sglang_args'
         if engine_args_key in params:
             engine_args_array = self.serving_engine.build_server_args_array(params[engine_args_key])
             template_params["ENGINE_ARGS_ARRAY"] = engine_args_array
@@ -1742,11 +1736,12 @@ class SweepOrchestrator:
 
         return result
 
-    def check_model_server_health(self, namespace: str) -> Optional[str]:
+    def check_model_server_health(self, namespace: str) -> tuple[Optional[str], list[str]]:
         """
         Check model server pods for errors after benchmark completion.
 
-        Returns error message if issues found, None if healthy.
+        Returns tuple of (error_message, list of pod names with issues).
+        Returns (None, []) if healthy.
         """
         try:
             # Get model server pods
@@ -1758,19 +1753,22 @@ class SweepOrchestrator:
             ], capture_output=True, text=True, timeout=10)
 
             if result.returncode != 0:
-                return f"Failed to get pod status: {result.stderr}"
+                return (f"Failed to get pod status: {result.stderr}", [])
 
             pods_data = json.loads(result.stdout)
             errors = []
+            problem_pods = []
 
             for pod in pods_data.get('items', []):
                 pod_name = pod['metadata']['name']
                 phase = pod['status'].get('phase', 'Unknown')
                 container_statuses = pod.get('status', {}).get('containerStatuses', [])
+                pod_has_issue = False
 
                 # Check 1: Pod phase
                 if phase in ['Failed', 'Unknown']:
                     errors.append(f"Pod {pod_name} in {phase} state")
+                    pod_has_issue = True
 
                 # Check 2: Container statuses
                 for container_status in container_statuses:
@@ -1780,6 +1778,7 @@ class SweepOrchestrator:
                     restart_count = container_status.get('restartCount', 0)
                     if restart_count > 0:
                         errors.append(f"Container '{container_name}' in pod {pod_name} restarted {restart_count} time(s)")
+                        pod_has_issue = True
 
                     # Check for waiting/terminated states
                     state = container_status.get('state', {})
@@ -1789,6 +1788,7 @@ class SweepOrchestrator:
                         message = state['waiting'].get('message', '')
                         if reason in ['CrashLoopBackOff', 'ImagePullBackOff', 'ErrImagePull']:
                             errors.append(f"Container '{container_name}' in pod {pod_name}: {reason} - {message}")
+                            pod_has_issue = True
 
                     if 'terminated' in state:
                         reason = state['terminated'].get('reason', '')
@@ -1796,6 +1796,7 @@ class SweepOrchestrator:
                         exit_code = state['terminated'].get('exitCode', 0)
                         if exit_code != 0:
                             errors.append(f"Container '{container_name}' in pod {pod_name} terminated (exit {exit_code}): {reason} - {message}")
+                            pod_has_issue = True
 
                 # Check 3: Recent ERROR lines in logs
                 log_result = subprocess.run([
@@ -1814,14 +1815,18 @@ class SweepOrchestrator:
                         # Take first few errors
                         sample_errors = error_lines[:3]
                         errors.append(f"ERROR lines found in {pod_name}: {'; '.join(sample_errors)}")
+                        pod_has_issue = True
+
+                if pod_has_issue and pod_name not in problem_pods:
+                    problem_pods.append(pod_name)
 
             if errors:
-                return "Model server issues detected:\n  - " + "\n  - ".join(errors)
+                return ("Model server issues detected:\n  - " + "\n  - ".join(errors), problem_pods)
 
-            return None
+            return (None, [])
 
         except Exception as e:
-            return f"Error checking model server health: {e}"
+            return (f"Error checking model server health: {e}", [])
 
     def capture_snapshot(self, run_dir: Path, namespace: str, context: str = "unknown"):
         """
@@ -1956,7 +1961,6 @@ class SweepOrchestrator:
                     print(f"    benchmark_args:")
                     for key, value in benchmark_args.items():
                         print(f"      {key}: {value}")
-
             print()
 
         # Add GPU budget analysis
@@ -2101,7 +2105,7 @@ class SweepOrchestrator:
 
             # Check model server health after benchmark completion
             print(f"{prefix} Checking model server health...")
-            server_health_error = self.check_model_server_health(namespace)
+            server_health_error, problem_pods = self.check_model_server_health(namespace)
 
             # Update run state
             run_state.benchmark_results = benchmark_results
@@ -2118,6 +2122,18 @@ class SweepOrchestrator:
                 # Print each error line with indentation
                 for line in server_health_error.split('\n'):
                     print(f"{prefix}   {line}")
+
+                # Print pod log paths for easy access
+                if problem_pods:
+                    print(f"{prefix}   ")
+                    print(f"{prefix}   Pod logs saved to:")
+                    for pod_name in problem_pods:
+                        log_path = run_dir / "snapshots" / f"{pod_name}.log"
+                        print(f"{prefix}     {log_path}")
+                        # Also print previous log if it exists
+                        prev_log_path = run_dir / "snapshots" / f"{pod_name}-previous.log"
+                        if prev_log_path.exists():
+                            print(f"{prefix}     {prev_log_path}")
             else:
                 run_state.status = RunStatus.COMPLETED
                 print(f"{prefix} ✓ Completed successfully")
