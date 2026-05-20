@@ -1510,8 +1510,12 @@ class SweepOrchestrator:
     def delete_namespace(self, namespace: str):
         """Delete a Kubernetes namespace."""
         safe_print(f"  Deleting namespace {namespace}...")
+        # "ignore not found" avoids warnings as we first teardown
+        # using the corresponding justfile, but always delete here
+        # too in case something goes wrong so as to not impact
+        # subsequent runs.
         result = subprocess.run([
-            "kubectl", "delete", "namespace", namespace, "--wait=true"
+            "kubectl", "delete", "--ignore-not-found=true", "namespace", namespace, "--wait=true"
         ], capture_output=True, text=True)
 
         if result.returncode != 0:
