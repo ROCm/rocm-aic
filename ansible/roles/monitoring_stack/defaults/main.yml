@@ -32,6 +32,14 @@ monitoring_grafana_dashboard_amd_gpu_id: "23434"
 
 monitoring_grafana_provision_cluster_summary_dashboard: true
 
+# Prometheus /etc/default/prometheus ARGS (systemd EnvironmentFile).
+# Enables POST /api/v1/write on the monitoring server.
+monitoring_prometheus_enable_remote_write_receiver: true
+# Extra flags appended when monitoring_prometheus_args_override is empty.
+monitoring_prometheus_extra_args: []
+# Non-empty string replaces auto-built ARGS entirely (advanced).
+monitoring_prometheus_args_override: ""
+
 # Defaults for templates when hostvars omit collection role defaults.
 nvme_exporter_listen_address: ":9998"
 rocm_setup_metrics_exporter_port: 5000

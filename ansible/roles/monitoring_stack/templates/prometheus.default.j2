@@ -1,0 +1,12 @@
+# Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+#
+# Managed by Ansible (monitoring_stack). Do not edit on host.
+# Consumed by the prometheus systemd unit: /usr/bin/prometheus $ARGS
+
+{% if monitoring_prometheus_args_override | default('') | length > 0 %}
+ARGS="{{ monitoring_prometheus_args_override }}"
+{% else %}
+ARGS="{{ ((['--web.enable-remote-write-receiver'] if (monitoring_prometheus_enable_remote_write_receiver | default(true) | bool) else []) + (monitoring_prometheus_extra_args | default([]))) | join(' ') }}"
+{% endif %}

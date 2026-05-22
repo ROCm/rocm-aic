@@ -3,6 +3,15 @@
 # SPDX-License-Identifier: MIT
 
 ---
+- name: Deploy Prometheus service environment (remote write receiver)
+  ansible.builtin.template:
+    src: prometheus.default.j2
+    dest: /etc/default/prometheus
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Reload prometheus
+
 - name: Validate llm-d federation host when enabled
   ansible.builtin.assert:
     that:

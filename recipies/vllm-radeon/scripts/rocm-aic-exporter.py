@@ -5,10 +5,11 @@
 #
 """ROCm AIC Prometheus textfile exporter for vLLM + LMCache host stats.
 
-Currently exports LMCache KV inventory (per-model file counts and chunk
-bytes), filesystem free space on the data mount, and a **Hits per KV file**
-histogram from ``chunk_hashes_*.jsonl`` (on-disk ``.data`` files only;
-deleted chunks are excluded from the histogram universe).
+Exports LMCache KV inventory (per-model file counts and chunk bytes),
+filesystem free space on the data mount, a **Hits per KV file** histogram
+from ``chunk_hashes_*.jsonl`` (on-disk ``.data`` files only), NFS client
+byte totals per mount (via ``nfsiostat`` + ``/proc/self/mountstats``), and
+ROCm/HIP version from ``hipconfig``.
 
 Use ``--prometheus-textfile`` to write metrics for the node_exporter
 textfile collector (same pattern as ``rocm_icms_stack_versions.prom``).
@@ -22,6 +23,7 @@ import json
 import os
 import re
 import shutil
+import subprocess
 import sys
 import time
 from collections import Counter
@@ -38,6 +40,21 @@ _DATA_FILE_RE = re.compile(
 )
 
 _METRIC_PREFIX = "rocm_aic"
+_MOUNTSTATS_DEVICE_RE = re.compile(
+    r"^device\s+(.+?)\s+mounted on\s+(.+?)\s+with fstype\s+(\S+)",
+)
+_MOUNTSTATS_OP_RE = re.compile(r"^\s+([A-Z][A-Z0-9_]+):\s+(.+)$")
+_HIP_VERSION_RE = re.compile(
+    r"^HIP\s+version:\s*(\S+)",
+    re.IGNORECASE | re.MULTILINE,
+)
+
+
+def _is_nfs_client_fstype(fstype: str) -> bool:
+    fs = fstype.lower()
+    if fs == "nfsd":
+        return False
+    return fs.startswith("nfs")
 
 
 def _norm_jsonl_hash(raw: str) -> str:
@@ -213,6 +230,59 @@ def kv_block_hit_histogram(
 
 
 @dataclass(frozen=True)
+class NfsMountBytes:
+    """Cumulative NFS client bytes for one mount (from mountstats)."""
+
+    mount_point: str
+    rx_bytes: int
+    tx_bytes: int
+
+
+@dataclass(frozen=True)
+class NfsIoStats:
+    """NFS observability: ``nfsiostat`` presence and per-mount byte totals."""
+
+    nfsiostat_present: bool
+    mounts: tuple[NfsMountBytes, ...]
+    mountstats_path: Path
+    nfsiostat_error: str | None = None
+
+
+@dataclass(frozen=True)
+class HipconfigStats:
+    """ROCm/HIP version from ``hipconfig``."""
+
+    hipconfig_present: bool
+    rocm_version: str
+    hipconfig_error: str | None = None
+
+
+@dataclass(frozen=True)
+class ExporterSnapshot:
+    chunk: ChunkHitSummary
+    nfs: NfsIoStats
+    hip: HipconfigStats
+    host_metrics_collected: bool = False
+
+
+def _empty_nfs_stats(mountstats_path: Path) -> NfsIoStats:
+    return NfsIoStats(
+        nfsiostat_present=False,
+        mounts=(),
+        mountstats_path=mountstats_path,
+        nfsiostat_error=None,
+    )
+
+
+def _empty_hip_stats() -> HipconfigStats:
+    return HipconfigStats(
+        hipconfig_present=False,
+        rocm_version="",
+        hipconfig_error=None,
+    )
+
+
+@dataclass(frozen=True)
 class ChunkHitSummary:
     data_root: Path
     kv_dir: Path
@@ -275,6 +345,213 @@ def collect_chunk_hit_summary(
     )
 
 
+def _nfsiostat_path() -> str | None:
+    return shutil.which("nfsiostat")
+
+
+def _hipconfig_path() -> str | None:
+    return shutil.which("hipconfig")
+
+
+def _invoke_nfsiostat(*, interval: int = 1, count: int = 1) -> str | None:
+    """Run ``nfsiostat`` once; return an error string on failure."""
+    bin_path = _nfsiostat_path()
+    if not bin_path:
+        return "nfsiostat not found in PATH"
+    try:
+        proc = subprocess.run(
+            [bin_path, str(interval), str(count)],
+            capture_output=True,
+            text=True,
+            timeout=max(30, interval * count + 15),
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return str(exc)
+    if proc.returncode != 0:
+        err = (proc.stderr or proc.stdout or "").strip()
+        return err or f"nfsiostat exited {proc.returncode}"
+    return None
+
+
+def _parse_mountstats_nfs(path: Path) -> list[NfsMountBytes]:
+    """Parse cumulative NFS client bytes per mount from mountstats.
+
+    Per-op lines follow the kernel layout documented in
+    Documentation/filesystems/nfs/nfs-stats.txt (bytes_sent, bytes_recv).
+    """
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return []
+
+    mounts: list[NfsMountBytes] = []
+    current_mount: str | None = None
+    current_fstype: str | None = None
+    rx = 0
+    tx = 0
+
+    def flush() -> None:
+        nonlocal current_mount, current_fstype, rx, tx
+        if current_mount is None or current_fstype is None:
+            return
+        if not _is_nfs_client_fstype(current_fstype):
+            return
+        mounts.append(
+            NfsMountBytes(
+                mount_point=current_mount,
+                rx_bytes=rx,
+                tx_bytes=tx,
+            )
+        )
+
+    for raw in text.splitlines():
+        dev = _MOUNTSTATS_DEVICE_RE.match(raw)
+        if dev is not None:
+            flush()
+            current_mount = dev.group(2)
+            current_fstype = dev.group(3)
+            rx = 0
+            tx = 0
+            continue
+        if current_mount is None:
+            continue
+        op = _MOUNTSTATS_OP_RE.match(raw)
+        if op is None:
+            continue
+        fields = op.group(2).split()
+        if len(fields) < 5:
+            continue
+        try:
+            bytes_sent = int(fields[3])
+            bytes_recv = int(fields[4])
+        except ValueError:
+            continue
+        tx += bytes_sent
+        rx += bytes_recv
+
+    flush()
+    mounts.sort(key=lambda m: m.mount_point)
+    return mounts
+
+
+def collect_nfs_io_stats(
+    *,
+    mountstats_path: Path | None = None,
+    run_nfsiostat: bool = True,
+) -> NfsIoStats:
+    """Collect NFS byte totals; call ``nfsiostat`` when the binary exists."""
+    mpath = mountstats_path or Path("/proc/self/mountstats")
+    present = _nfsiostat_path() is not None
+    nfs_err: str | None = None
+    if present and run_nfsiostat:
+        nfs_err = _invoke_nfsiostat()
+    mounts = tuple(_parse_mountstats_nfs(mpath)) if mpath.is_file() else ()
+    return NfsIoStats(
+        nfsiostat_present=present,
+        mounts=mounts,
+        mountstats_path=mpath,
+        nfsiostat_error=nfs_err,
+    )
+
+
+def _parse_hipconfig_version(text: str) -> str:
+    m = _HIP_VERSION_RE.search(text)
+    if m:
+        return m.group(1).strip()
+    for line in text.splitlines():
+        line = line.strip()
+        if line.lower().startswith("rocm version"):
+            parts = line.split(":", 1)
+            if len(parts) == 2 and parts[1].strip():
+                return parts[1].strip()
+    return ""
+
+
+def collect_hipconfig_stats() -> HipconfigStats:
+    """Run ``hipconfig`` and parse the HIP/ROCm version string."""
+    bin_path = _hipconfig_path()
+    if not bin_path:
+        return HipconfigStats(
+            hipconfig_present=False,
+            rocm_version="",
+            hipconfig_error="hipconfig not found in PATH",
+        )
+    try:
+        proc = subprocess.run(
+            [bin_path],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return HipconfigStats(
+            hipconfig_present=True,
+            rocm_version="",
+            hipconfig_error=str(exc),
+        )
+    combined = (proc.stdout or "") + "\n" + (proc.stderr or "")
+    version = _parse_hipconfig_version(combined)
+    err: str | None = None
+    if proc.returncode != 0:
+        err = (proc.stderr or proc.stdout or "").strip() or (
+            f"hipconfig exited {proc.returncode}"
+        )
+    elif not version:
+        err = "hipconfig output did not contain HIP version"
+        version = "unknown"
+    return HipconfigStats(
+        hipconfig_present=True,
+        rocm_version=version,
+        hipconfig_error=err,
+    )
+
+
+def collect_exporter_snapshot(
+    *,
+    data_root: Path,
+    kv_subdir: str = "lmcache",
+    stats_subdir: str = "lmcache_chunk_stats",
+    mountstats_path: Path | None = None,
+    run_nfsiostat: bool = True,
+    collect_hip: bool = True,
+    include_host_metrics: bool = False,
+) -> ExporterSnapshot:
+    """Collect LMCache stats; NFS/hip only when ``include_host_metrics``."""
+    mpath = mountstats_path or Path("/proc/self/mountstats")
+    chunk = collect_chunk_hit_summary(
+        data_root=data_root,
+        kv_subdir=kv_subdir,
+        stats_subdir=stats_subdir,
+    )
+    if not include_host_metrics:
+        return ExporterSnapshot(
+            chunk=chunk,
+            nfs=_empty_nfs_stats(mpath),
+            hip=_empty_hip_stats(),
+            host_metrics_collected=False,
+        )
+    hip = (
+        collect_hipconfig_stats()
+        if collect_hip
+        else HipconfigStats(
+            hipconfig_present=False,
+            rocm_version="",
+            hipconfig_error="skipped",
+        )
+    )
+    return ExporterSnapshot(
+        chunk=chunk,
+        nfs=collect_nfs_io_stats(
+            mountstats_path=mpath,
+            run_nfsiostat=run_nfsiostat,
+        ),
+        hip=hip,
+        host_metrics_collected=True,
+    )
+
+
 def _prom_label_escape(value: str) -> str:
     return value.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "")
 
@@ -291,11 +568,17 @@ def _label_set(extra: dict[str, str] | None) -> str:
 
 
 def format_prometheus_textfile(
-    summary: ChunkHitSummary,
+    snapshot: ExporterSnapshot,
     *,
     extra_labels: dict[str, str] | None = None,
+    include_host_metrics: bool = False,
 ) -> str:
-    """Exposition text for node_exporter ``collector.textfile.directory``."""
+    """Exposition text for node_exporter ``collector.textfile.directory``.
+
+    NFS and hipconfig series are included only when
+    ``include_host_metrics`` is true (set when ``--prometheus-textfile`` runs).
+    """
+    summary = snapshot.chunk
     labels = _label_set(extra_labels)
     hist = summary.kv_block_hit_histogram
     lines: list[str] = []
@@ -441,6 +724,66 @@ def format_prometheus_textfile(
         bucket_lines,
     )
 
+    if include_host_metrics:
+        nfs = snapshot.nfs
+        emit(
+            f"{_METRIC_PREFIX}_nfsiostat_present",
+            "1 if nfsiostat is installed on PATH, else 0.",
+            "gauge",
+            [
+                f"{_METRIC_PREFIX}_nfsiostat_present{labels} "
+                f"{1 if nfs.nfsiostat_present else 0}"
+            ],
+        )
+        rx_lines = [
+            f"{_METRIC_PREFIX}_nfs_mount_rx_bytes_total"
+            f"{_label_set({**(extra_labels or {}), 'mount_point': m.mount_point})} "
+            f"{m.rx_bytes}"
+            for m in nfs.mounts
+        ]
+        emit(
+            f"{_METRIC_PREFIX}_nfs_mount_rx_bytes_total",
+            "Cumulative NFS client bytes received (sum of per-op bytes_recv).",
+            "counter",
+            rx_lines,
+        )
+        tx_lines = [
+            f"{_METRIC_PREFIX}_nfs_mount_tx_bytes_total"
+            f"{_label_set({**(extra_labels or {}), 'mount_point': m.mount_point})} "
+            f"{m.tx_bytes}"
+            for m in nfs.mounts
+        ]
+        emit(
+            f"{_METRIC_PREFIX}_nfs_mount_tx_bytes_total",
+            "Cumulative NFS client bytes sent (sum of per-op bytes_sent).",
+            "counter",
+            tx_lines,
+        )
+
+        hip = snapshot.hip
+        emit(
+            f"{_METRIC_PREFIX}_hipconfig_present",
+            "1 if hipconfig is installed on PATH, else 0.",
+            "gauge",
+            [
+                f"{_METRIC_PREFIX}_hipconfig_present{labels} "
+                f"{1 if hip.hipconfig_present else 0}"
+            ],
+        )
+        if hip.hipconfig_present and hip.rocm_version:
+            ver_lbl = _label_set(
+                {
+                    **(extra_labels or {}),
+                    "version": hip.rocm_version,
+                }
+            )
+            emit(
+                f"{_METRIC_PREFIX}_rocm_version_info",
+                "ROCm/HIP stack version from hipconfig (gauge 1).",
+                "gauge",
+                [f"{_METRIC_PREFIX}_rocm_version_info{ver_lbl} 1"],
+            )
+
     lines.append(
         f"# {_METRIC_PREFIX} generated_at={int(time.time())} "
         f"data_root={summary.data_root}"
@@ -541,6 +884,34 @@ def _print_histogram(summary: ChunkHitSummary) -> None:
     print(f"{tail_label:<{label_w}}{ov_sum:>{cnt_w}d}")
 
 
+def _print_host_observability(snapshot: ExporterSnapshot) -> None:
+    nfs = snapshot.nfs
+    print("\nNFS client stats (mountstats)")
+    print(f"nfsiostat present = {nfs.nfsiostat_present}")
+    if nfs.nfsiostat_error:
+        print(f"nfsiostat run note = {nfs.nfsiostat_error}")
+    print(f"mountstats = {nfs.mountstats_path}")
+    if not nfs.mounts:
+        print("No NFS mounts in mountstats.")
+    else:
+        print(f"{'Mount':<32} {'RX':>16} {'TX':>16}")
+        print("-" * 66)
+        for m in nfs.mounts:
+            print(
+                f"{m.mount_point:<32} "
+                f"{_format_bytes(m.rx_bytes):>16} "
+                f"{_format_bytes(m.tx_bytes):>16}"
+            )
+
+    hip = snapshot.hip
+    print("\nROCm / HIP (hipconfig)")
+    print(f"hipconfig present = {hip.hipconfig_present}")
+    if hip.hipconfig_present:
+        print(f"ROCm/HIP version = {hip.rocm_version or 'unknown'}")
+    if hip.hipconfig_error:
+        print(f"hipconfig note = {hip.hipconfig_error}")
+
+
 def _default_data_root(recipe_root: Path) -> Path:
     host = os.environ.get("RADEON_HOST_DATA_ROOT", "").strip()
     if host:
@@ -627,6 +998,22 @@ def main() -> int:
         action="store_true",
         help="Print JSON summary (stdout).",
     )
+    p.add_argument(
+        "--mountstats-path",
+        type=Path,
+        default=Path("/proc/self/mountstats"),
+        help="NFS mountstats file (default: /proc/self/mountstats).",
+    )
+    p.add_argument(
+        "--skip-nfsiostat-invoke",
+        action="store_true",
+        help="Do not run nfsiostat; still parse mountstats if readable.",
+    )
+    p.add_argument(
+        "--skip-hipconfig",
+        action="store_true",
+        help="Do not run hipconfig or emit ROCm version metrics.",
+    )
     args = p.parse_args()
 
     extra_labels: dict[str, str] = {}
@@ -645,11 +1032,17 @@ def main() -> int:
         )
         return 1
 
-    summary = collect_chunk_hit_summary(
+    prom_path = args.prometheus_textfile
+    snapshot = collect_exporter_snapshot(
         data_root=data_root,
         kv_subdir=args.kv_subdir,
         stats_subdir=args.stats_subdir,
+        mountstats_path=args.mountstats_path,
+        run_nfsiostat=not args.skip_nfsiostat_invoke,
+        collect_hip=not args.skip_hipconfig,
+        include_host_metrics=prom_path is not None,
     )
+    summary = snapshot.chunk
 
     if summary.disk_file_count == 0:
         print(
@@ -682,9 +1075,33 @@ def main() -> int:
             file=sys.stderr,
         )
 
-    prom_path = args.prometheus_textfile
+    if prom_path is not None and snapshot.host_metrics_collected:
+        if not snapshot.nfs.nfsiostat_present:
+            print(
+                "warning: nfsiostat not found; nfs byte metrics use "
+                "mountstats only",
+                file=sys.stderr,
+            )
+        elif snapshot.nfs.nfsiostat_error:
+            print(
+                f"warning: nfsiostat: {snapshot.nfs.nfsiostat_error}",
+                file=sys.stderr,
+            )
+        if not args.skip_hipconfig:
+            if not snapshot.hip.hipconfig_present:
+                print("warning: hipconfig not found in PATH", file=sys.stderr)
+            elif snapshot.hip.hipconfig_error:
+                print(
+                    f"warning: hipconfig: {snapshot.hip.hipconfig_error}",
+                    file=sys.stderr,
+                )
+
     if prom_path is not None:
-        body = format_prometheus_textfile(summary, extra_labels=extra_labels or None)
+        body = format_prometheus_textfile(
+            snapshot,
+            extra_labels=extra_labels or None,
+            include_host_metrics=True,
+        )
         write_prometheus_textfile(prom_path, body)
         print(f"wrote {prom_path}", file=sys.stderr)
 
@@ -715,6 +1132,33 @@ def main() -> int:
                         else None
                     ),
                     "prometheus_textfile": str(prom_path) if prom_path else None,
+                    "host_metrics_collected": snapshot.host_metrics_collected,
+                    "nfs": (
+                        {
+                            "nfsiostat_present": snapshot.nfs.nfsiostat_present,
+                            "mountstats_path": str(snapshot.nfs.mountstats_path),
+                            "nfsiostat_error": snapshot.nfs.nfsiostat_error,
+                            "mounts": [
+                                {
+                                    "mount_point": m.mount_point,
+                                    "rx_bytes": m.rx_bytes,
+                                    "tx_bytes": m.tx_bytes,
+                                }
+                                for m in snapshot.nfs.mounts
+                            ],
+                        }
+                        if snapshot.host_metrics_collected
+                        else None
+                    ),
+                    "hipconfig": (
+                        {
+                            "hipconfig_present": snapshot.hip.hipconfig_present,
+                            "rocm_version": snapshot.hip.rocm_version,
+                            "hipconfig_error": snapshot.hip.hipconfig_error,
+                        }
+                        if snapshot.host_metrics_collected
+                        else None
+                    ),
                 },
                 indent=2,
             )
@@ -727,6 +1171,8 @@ def main() -> int:
             flush=True,
         )
         _print_histogram(summary)
+        if snapshot.host_metrics_collected:
+            _print_host_observability(snapshot)
         if args.top > 0:
             disk = _scan_disk_kv_files(summary.kv_dir)
             hits, _, _ = _load_hit_counts(

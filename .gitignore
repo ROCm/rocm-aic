@@ -50,3 +50,7 @@ tools/lmcache-io-tester/**/*.token
 recipies/vllm-radeon/logs/
 recipies/vllm-radeon/data/
 
+# slurm logs and reports
+.slurm/logs/
+.slurm/reports/
+
