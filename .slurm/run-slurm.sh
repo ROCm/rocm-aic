@@ -18,11 +18,11 @@ cd "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 out="$(sbatch \
   --export=ALL,KURT_NVME_BLK_BPFTRACE=1,KURT_NVME_SMART_LOG=1,KURT_LMCACHE_ENABLE_KV_EVENTS=1 \
-  .slurm/vllm-from-kurt-mi300.sbatch)"
+  ./vllm-from-kurt-mi300.sbatch)"
 echo "${out}"
 jid="${out##* }"
-echo "Log: tail -f .slurm/logs/vllm-from-kurt-mi300-${jid}.log"
+echo "Log: tail -f ./logs/vllm-from-kurt-mi300-${jid}.log"
 echo "Done:  sacct -j ${jid} --format=JobID,State,ExitCode,Elapsed,End"
 
-# Example (local NVMe + traces): sbatch --export=ALL,KURT_NVME_BASE=/mnt/nvme,KURT_NVME_BLK_BPFTRACE=1 \
+# Example (from repo root): sbatch --export=ALL,KURT_NVME_BASE=/mnt/nvme,KURT_NVME_BLK_BPFTRACE=1 \
 #   .slurm/vllm-from-kurt-mi300.sbatch

@@ -18,7 +18,7 @@ monitoring_grafana_require_admin_password: false
 # monitoring_grafana_dashboard_amd_gpu_id: "23434"
 
 # Accept Prometheus remote write at POST /api/v1/write (web.enable-remote-write-
-# receiver). Managed in /etc/default/prometheus via monitoring_stack.
+# receiver). Appended via prometheus.service.d drop-in (monitoring_stack).
 monitoring_prometheus_enable_remote_write_receiver: true
 
 # Optional: federate metrics from an llm-d / in-cluster Prometheus into this

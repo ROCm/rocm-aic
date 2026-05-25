@@ -1,0 +1,10 @@
+# Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+#
+# Managed by Ansible (monitoring_stack). Appends flags to $ARGS from
+# /etc/default/prometheus without replacing that file.
+
+[Service]
+ExecStart=
+ExecStart=/usr/bin/prometheus $ARGS{% if monitoring_prometheus_enable_remote_write_receiver | default(true) | bool %} --web.enable-remote-write-receiver{% endif %}{% for arg in monitoring_prometheus_extra_args | default([]) %} {{ arg }}{% endfor %}

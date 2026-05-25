@@ -3,13 +3,49 @@
 # SPDX-License-Identifier: MIT
 
 ---
-- name: Deploy Prometheus service environment (remote write receiver)
+- name: Ensure Prometheus systemd drop-in directory exists
+  ansible.builtin.file:
+    path: /etc/systemd/system/prometheus.service.d
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Restore package-style Prometheus defaults (empty ARGS)
+  ansible.builtin.template:
+    src: prometheus.default.package.j2
+    dest: /etc/default/prometheus
+    owner: root
+    group: root
+    mode: "0644"
+  when: monitoring_prometheus_args_override | default('') | length == 0
+  notify: Reload prometheus
+
+- name: Deploy Prometheus ARGS override
   ansible.builtin.template:
     src: prometheus.default.j2
     dest: /etc/default/prometheus
     owner: root
     group: root
     mode: "0644"
+  when: monitoring_prometheus_args_override | default('') | length > 0
+  notify: Reload prometheus
+
+- name: Deploy Prometheus systemd drop-in (append flags, preserve ARGS)
+  ansible.builtin.template:
+    src: prometheus-drop-in.conf.j2
+    dest: /etc/systemd/system/prometheus.service.d/rocm-aic.conf
+    owner: root
+    group: root
+    mode: "0644"
+  when: monitoring_prometheus_args_override | default('') | length == 0
+  notify: Reload prometheus
+
+- name: Remove Prometheus systemd drop-in when ARGS override is set
+  ansible.builtin.file:
+    path: /etc/systemd/system/prometheus.service.d/rocm-aic.conf
+    state: absent
+  when: monitoring_prometheus_args_override | default('') | length > 0
   notify: Reload prometheus
 
 - name: Validate llm-d federation host when enabled

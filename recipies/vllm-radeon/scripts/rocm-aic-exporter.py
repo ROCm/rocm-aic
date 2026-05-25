@@ -282,6 +282,15 @@ def _empty_hip_stats() -> HipconfigStats:
     )
 
 
+def _skipped_hip_stats() -> HipconfigStats:
+    """PATH presence only; hipconfig not executed (--skip-hipconfig)."""
+    return HipconfigStats(
+        hipconfig_present=_hipconfig_path() is not None,
+        rocm_version="",
+        hipconfig_error="skipped",
+    )
+
+
 @dataclass(frozen=True)
 class ChunkHitSummary:
     data_root: Path
@@ -532,15 +541,7 @@ def collect_exporter_snapshot(
             hip=_empty_hip_stats(),
             host_metrics_collected=False,
         )
-    hip = (
-        collect_hipconfig_stats()
-        if collect_hip
-        else HipconfigStats(
-            hipconfig_present=False,
-            rocm_version="",
-            hipconfig_error="skipped",
-        )
-    )
+    hip = collect_hipconfig_stats() if collect_hip else _skipped_hip_stats()
     return ExporterSnapshot(
         chunk=chunk,
         nfs=collect_nfs_io_stats(
@@ -761,28 +762,29 @@ def format_prometheus_textfile(
         )
 
         hip = snapshot.hip
-        emit(
-            f"{_METRIC_PREFIX}_hipconfig_present",
-            "1 if hipconfig is installed on PATH, else 0.",
-            "gauge",
-            [
-                f"{_METRIC_PREFIX}_hipconfig_present{labels} "
-                f"{1 if hip.hipconfig_present else 0}"
-            ],
-        )
-        if hip.hipconfig_present and hip.rocm_version:
-            ver_lbl = _label_set(
-                {
-                    **(extra_labels or {}),
-                    "version": hip.rocm_version,
-                }
-            )
+        if hip.hipconfig_error != "skipped":
             emit(
-                f"{_METRIC_PREFIX}_rocm_version_info",
-                "ROCm/HIP stack version from hipconfig (gauge 1).",
+                f"{_METRIC_PREFIX}_hipconfig_present",
+                "1 if hipconfig is installed on PATH, else 0.",
                 "gauge",
-                [f"{_METRIC_PREFIX}_rocm_version_info{ver_lbl} 1"],
+                [
+                    f"{_METRIC_PREFIX}_hipconfig_present{labels} "
+                    f"{1 if hip.hipconfig_present else 0}"
+                ],
             )
+            if hip.hipconfig_present and hip.rocm_version:
+                ver_lbl = _label_set(
+                    {
+                        **(extra_labels or {}),
+                        "version": hip.rocm_version,
+                    }
+                )
+                emit(
+                    f"{_METRIC_PREFIX}_rocm_version_info",
+                    "ROCm/HIP stack version from hipconfig (gauge 1).",
+                    "gauge",
+                    [f"{_METRIC_PREFIX}_rocm_version_info{ver_lbl} 1"],
+                )
 
     lines.append(
         f"# {_METRIC_PREFIX} generated_at={int(time.time())} "
@@ -905,6 +907,10 @@ def _print_host_observability(snapshot: ExporterSnapshot) -> None:
 
     hip = snapshot.hip
     print("\nROCm / HIP (hipconfig)")
+    if hip.hipconfig_error == "skipped":
+        print("hipconfig collection skipped (--skip-hipconfig)")
+        print(f"hipconfig on PATH = {hip.hipconfig_present}")
+        return
     print(f"hipconfig present = {hip.hipconfig_present}")
     if hip.hipconfig_present:
         print(f"ROCm/HIP version = {hip.rocm_version or 'unknown'}")
@@ -1012,7 +1018,10 @@ def main() -> int:
     p.add_argument(
         "--skip-hipconfig",
         action="store_true",
-        help="Do not run hipconfig or emit ROCm version metrics.",
+        help=(
+            "Do not run hipconfig; omit hipconfig_present and rocm_version_info "
+            "from the textfile (PATH lookup still reported in JSON/CLI)."
+        ),
     )
     args = p.parse_args()
 

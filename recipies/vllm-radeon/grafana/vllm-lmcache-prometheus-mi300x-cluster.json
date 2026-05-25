@@ -200,7 +200,7 @@
                 "spec": {
                     "id": 32,
                     "title": "GPU Activity",
-                    "description": "The activity factor of the CUs and UMC in the GPU. This is given as a percentage of total compute power avaliable.",
+                    "description": "The activity factor of the CUs and UMC in the GPU. This is given as a percentage of total compute power available.",
                     "links": [],
                     "data": {
                         "kind": "QueryGroup",
@@ -496,7 +496,7 @@
                                             },
                                             "spec": {
                                                 "editorMode": "code",
-                                                "expr": "sum(rate(node_disk_read_bytes_total{instance=\"g04u07\"}[$__rate_interval]))",
+                                                "expr": "sum(rate(node_disk_read_bytes_total{instance=~\"$instance\"}[$__rate_interval]))",
                                                 "fromExploreMetrics": false,
                                                 "legendFormat": "Read Bandwidth",
                                                 "range": true
@@ -518,7 +518,7 @@
                                             },
                                             "spec": {
                                                 "editorMode": "code",
-                                                "expr": "sum(rate(node_disk_written_bytes_total{instance=\"g04u07\"}[$__rate_interval]))",
+                                                "expr": "sum(rate(node_disk_written_bytes_total{instance=~\"$instance\"}[$__rate_interval]))",
                                                 "instant": false,
                                                 "legendFormat": "Write Bandwidth",
                                                 "range": true
@@ -921,7 +921,7 @@
                                         "axisBorderShow": false,
                                         "axisCenteredZero": false,
                                         "axisColorMode": "text",
-                                        "axisLabel": "Tokens/Secomd",
+                                        "axisLabel": "Tokens/Second",
                                         "axisPlacement": "auto",
                                         "barAlignment": 0,
                                         "barWidthFactor": 0.6,
@@ -1213,7 +1213,7 @@
                 "spec": {
                     "id": 47,
                     "title": "KV Cache Block Hit Statistics",
-                    "description": "Time-based statistics on the AIS KV Cache Blocks and the number of times they have been \"hit\" as in retrieved by the KV Block Manager.",
+                    "description": "Time-based statistics on the AIC KV Cache Blocks and the number of times they have been \"hit\" as in retrieved by the KV Block Manager.",
                     "links": [],
                     "data": {
                         "kind": "QueryGroup",
@@ -1357,8 +1357,8 @@
                 "kind": "Panel",
                 "spec": {
                     "id": 48,
-                    "title": "RDMA Bandwith to AIC Storage",
-                    "description": "The RDMA transmit and receive bandwifth to and from the AIC storage backend.",
+                    "title": "RDMA Bandwidth to AIC Storage",
+                    "description": "The RDMA transmit and receive bandwidth to and from the AIC storage backend.",
                     "links": [],
                     "data": {
                         "kind": "QueryGroup",
