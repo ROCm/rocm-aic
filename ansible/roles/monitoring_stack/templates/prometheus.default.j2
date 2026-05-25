@@ -1,0 +1,13 @@
+# Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+#
+# Managed by Ansible (monitoring_stack). Advanced: replaces ARGS entirely.
+# Include all required flags (e.g. --config.file, --storage.tsdb.path,
+# --web.console.*) or Prometheus may not start.
+
+# Set the command-line arguments to pass to the server.
+# Due to shell escaping, to pass backslashes for regexes, you need to double
+# them (\\d for \d). If running under systemd, you need to double them again
+# (\\\\d to mean \d), and escape newlines too.
+ARGS="{{ monitoring_prometheus_args_override }}"

@@ -32,6 +32,15 @@ monitoring_grafana_dashboard_amd_gpu_id: "23434"
 
 monitoring_grafana_provision_cluster_summary_dashboard: true
 
+# Prometheus: remote-write receiver via systemd drop-in (preserves package
+# /etc/default/prometheus ARGS). Enables POST /api/v1/write on the server.
+monitoring_prometheus_enable_remote_write_receiver: true
+# Extra flags appended in systemd drop-in ExecStart when args_override is empty.
+monitoring_prometheus_extra_args: []
+# Non-empty string replaces /etc/default/prometheus ARGS entirely (advanced).
+# Must include required flags (--config.file, --storage.tsdb.path, etc.).
+monitoring_prometheus_args_override: ""
+
 # Defaults for templates when hostvars omit collection role defaults.
 nvme_exporter_listen_address: ":9998"
 rocm_setup_metrics_exporter_port: 5000

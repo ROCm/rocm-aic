@@ -64,6 +64,13 @@ Standalone exporter for LMCache / vLLM host metrics. Today it reports:
    JSONL hashes must use the same **`pre_caching_hash_algorithm`** as KV storage
    (**`lmcache-chunk-statistics-hash.patch`**). Stats collected with the default
    **builtin** hasher cannot be matched to **`sha256_cbor`** on-disk keys.
+4. **NFS** (only with **`--prometheus-textfile`**) — runs **`nfsiostat`** when
+   installed; cumulative RX/TX bytes per NFS client mount from
+   **`/proc/self/mountstats`** (label **`mount_point`**).
+   **`rocm_aic_nfsiostat_present`** is 0 when **`nfsiostat`** is absent.
+5. **ROCm** (only with **`--prometheus-textfile`**) — **`hipconfig`** for
+   HIP/ROCm version; **`rocm_aic_hipconfig_present`** is 0 when
+   **`hipconfig`** is absent.
 
 ```bash
 # Host path matches make run DATA= (default /mnt/lmcache-nvme)
@@ -90,6 +97,8 @@ Example Grafana queries (``job="node_exporter"``):
 - ``rocm_aic_kv_files{model_name=~".+"}``
 - ``rocm_aic_kv_chunk_bytes_total``
 - ``rocm_aic_data_fs_free_bytes``
+- ``rate(rocm_aic_nfs_mount_rx_bytes_total{mount_point="/mnt/..."}[5m])``
+- ``rocm_aic_rocm_version_info``
 
 ## MFU metrics (**`--enable-mfu-metrics`**)
 

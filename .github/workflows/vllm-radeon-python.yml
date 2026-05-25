@@ -107,9 +107,38 @@ jobs:
             --data-root tests/fixtures/lmcache-exporter \
             --prometheus-textfile "${prom}" \
             --textfile-only \
+            --skip-nfsiostat-invoke \
             --json >/dev/null
           grep -q 'rocm_aic_kv_disk_files' "${prom}"
           grep -q 'rocm_aic_kv_file_hits_histogram_bucket' "${prom}"
+          grep -q 'rocm_aic_nfsiostat_present' "${prom}"
+          grep -q 'rocm_aic_hipconfig_present' "${prom}"
+          python3 -c "
+          from importlib.machinery import SourceFileLoader
+          from pathlib import Path
+          m = SourceFileLoader('ex', 'scripts/rocm-aic-exporter.py').load_module()
+          mounts = m._parse_mountstats_nfs(
+              Path('tests/fixtures/mountstats-nfs.sample'))
+          assert len(mounts) == 1 and mounts[0].rx_bytes == 9100
+          snap = m.collect_exporter_snapshot(
+              data_root=Path('tests/fixtures/lmcache-exporter'),
+              include_host_metrics=False,
+              run_nfsiostat=False,
+              collect_hip=False,
+          )
+          body_kv = m.format_prometheus_textfile(
+              snap, include_host_metrics=False)
+          assert 'rocm_aic_nfsiostat_present' not in body_kv
+          snap_h = m.collect_exporter_snapshot(
+              data_root=Path('tests/fixtures/lmcache-exporter'),
+              include_host_metrics=True,
+              run_nfsiostat=False,
+              collect_hip=False,
+          )
+          body_all = m.format_prometheus_textfile(
+              snap_h, include_host_metrics=True)
+          assert 'rocm_aic_nfsiostat_present' in body_all
+          "
 
       - name: parse-vllm-engine-log-timeseries (CSV only)
         run: |

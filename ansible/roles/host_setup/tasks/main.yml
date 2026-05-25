@@ -49,6 +49,23 @@
     - provision
     - stack_versions
 
+- name: ROCm AIC exporter (LMCache metrics textfile + systemd timer)
+  ansible.builtin.include_tasks:
+    file: rocm_aic_exporter.yml
+    apply:
+      tags:
+        - node_exporter
+        - provision
+        - rocm_aic_exporter
+  when:
+    - host_setup_rocm_aic_exporter_enabled | default(true) | bool
+    - host_setup_enable_prometheus_node_exporter | default(true) | bool
+    - "'prometheus-node-exporter' in (extra_packages | default([]))"
+  tags:
+    - node_exporter
+    - provision
+    - rocm_aic_exporter
+
 - name: Install NVMe Prometheus exporter
   ansible.builtin.include_role:
     name: sbates130272.batesste.nvme_exporter_setup
