@@ -3,6 +3,10 @@
 # SPDX-License-Identifier: MIT
 
 ---
+- name: Configure node_exporter textfile collector
+  ansible.builtin.include_tasks: node_exporter_textfile_collector.yml
+  when: "'prometheus-node-exporter' in (extra_packages | default([]))"
+
 - name: Enable and start prometheus-node-exporter
   ansible.builtin.service:
     name: prometheus-node-exporter

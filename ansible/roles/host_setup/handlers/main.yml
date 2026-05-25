@@ -7,6 +7,15 @@
   ansible.builtin.systemd:
     daemon_reload: true
 
+- name: Reload systemd for rocm-aic-exporter
+  ansible.builtin.systemd:
+    daemon_reload: true
+
+- name: Restart prometheus-node-exporter
+  ansible.builtin.systemd:
+    name: prometheus-node-exporter
+    state: restarted
+
 - name: Apt update after AMD repo dedupe
   ansible.builtin.apt:
     update_cache: true
