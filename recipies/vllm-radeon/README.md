@@ -9,6 +9,24 @@ ROCm **vLLM** + **LMCache** image (base **`vllm/vllm-openai-rocm:v0.19.0`**), wi
 **hipFile** from **ROCm/rocm-systems**, **fio** with **libhipfile**, and **`RADEON_*`**
 naming. Work from **`recipies/vllm-radeon/`**.
 
+Part of [rocm-aic](../../README.md). Host Python deps (including
+`scripts/test-aic.py`, which needs only `openai`): from the repo root,
+`pip install -r requirements.txt`.
+
+## Contents
+
+- [Where things live](#where-things-live)
+- [Quick start](#quick-start)
+- [rocm-aic-exporter.py](#rocm-aic-exporterpy-prometheus-textfile)
+- [MFU metrics](#mfu-metrics---enable-mfu-metrics)
+- [vLLM dev mode](#vllm-dev-mode-vllm_server_dev_mode)
+- [LMCache disk mode](#lmcache-disk-mode-radeon_lmcache_io)
+- [LMCache logging and hipFile buffer](#lmcache-logging-and-hipfile-buffer)
+- [LMCache long_doc_qa benchmark](#lmcache-long_doc_qa-benchmark)
+- [Gutenberg long-context fixtures](#gutenberg-long-context-fixtures)
+- [GitHub Actions CI](#github-actions-ci)
+- [Grafana dashboard](#grafana-grafanavllm-lmcache-prometheusjson)
+
 ## Where things live
 
 | What you need | File |
@@ -268,7 +286,7 @@ python3 scripts/gen-questions-json.py \
 # Load test (run after data/<slug>/ exists):
 BOOK_SLUG=war-and-peace ./run-long.sh
 
-# LMCache populate / cold / warm A/B (repo root: pip install -r requirements.txt):
+# LMCache populate / cold / warm A/B (host: pip install 'openai>=1.40.0' or full requirements.txt):
 python3 scripts/test-aic.py -o logs/test-aic.json
 # Same chunk + cache_salt; reset_prefix_cache before cold/warm; cold bypasses GDS.
 # Fresh NVMe store: new --run-id (or --skip-populate if already stored).
@@ -371,23 +389,11 @@ Disable with **`PROGRESS=0`**; force on in CI with **`PROGRESS=1`**.
 
 ## GitHub Actions CI
 
-Workflows under **`.github/workflows/vllm-radeon-*.yml`** run on PRs into
-**`main`** (path-filtered) and via **Actions → Run workflow** (**`workflow_dispatch`**):
-
-| Workflow | What it checks |
-| --- | --- |
-| **`vllm-radeon-lmcache-patches`** | **`git apply --check`** on LMCache @ **`LMCACHE_SHA`** |
-| **`vllm-radeon-python`** | **`py_compile`**, Gutenberg scripts, **`rocm-aic-exporter`** |
-| **`vllm-radeon-shell`** | **`run-long.sh`** / parallel with **`tests/fixtures/`** + mock **`curl`** |
-| **`vllm-radeon-config`** | **`yamllint`**, manifest + Grafana JSON |
-| **`vllm-radeon-docker`** | Manual **`workflow_dispatch`** only: full cached build |
-
-PRs do **not** run the full image build (hosted runners lack disk for a cold
-**`vllm/vllm-openai-rocm`** + LMCache compile). Use **`vllm-radeon-lmcache-patches`**
-on PRs and **`vllm-radeon-docker`** from Actions when you need an end-to-end
-build. That job frees runner disk, uses BuildKit **`type=gha`** cache
-(**`scope=vllm-radeon`**), and does not **`load`** the image into Docker
-(**`ROCM_ARCH=gfx942`**). Optional **`DOCKERHUB_*`** secrets help Hub pulls.
+Path-filtered workflows under [`.github/workflows/vllm-radeon-*.yml`][gh-vr]
+cover patches, Python scripts, shell fixtures, config lint, and an optional
+manual Docker build. PRs do not run a full image build (runner disk); use
+**`vllm-radeon-docker`** via **workflow_dispatch** when you need an end-to-end
+compile. See also [rocm-aic CI][root-ci] in the root README.
 
 ## Grafana **`grafana/vllm-lmcache-prometheus.json`**
 
@@ -395,5 +401,8 @@ A sample Grafana dashboard. Import into your Grafana server. This may need
 adjusting to match your exporter naming.
 
 <!-- References -->
+
+[gh-vr]: ../../.github/workflows/
+[root-ci]: ../../README.md#ci
 [lmcache-pr-3008]: https://github.com/LMCache/LMCache/pull/3008
 

@@ -1,21 +1,23 @@
+<!--
+Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+SPDX-License-Identifier: MIT
+-->
+
 # amdgpu-dkms-tool.py
+
+Part of [rocm-aic](../../README.md).
 
 ## Overview
 
-A simple python tool that can pull either a URL or file-based debian package
-file (.deb) extract it, apply patches and repackage it with a new version tag
-and name. This new package can then be installed on a system using normal tools
-like `dpkg`.
+A Python tool that pulls either a URL or file-based Debian package (`.deb`),
+extracts it, applies patches, and repackages with a new version tag and name.
+Install the result with `dpkg` like any other DKMS package.
 
 ## Patches
 
-We provide a series of patches in the [patches](./patches) directory. These 
-include patches to improve the dkms install itself and also add features to
-things like [hipfile][ref-hipfile].
-
-Note that these patches may not work with newer versions of the
-amdgpu-dkms package due to changes in the source code. The example
-given below does work.
+Patches live in [patches](./patches). They improve the DKMS install and add
+features for [hipFile][ref-hipfile]. Newer `amdgpu-dkms` versions may not
+apply cleanly; the example below matches a known-good package.
 
 | Patch | Description |
 |---|---|
@@ -26,11 +28,11 @@ given below does work.
 | 0005-amdkfd-ais-updates | AIS tracepoints, debugfs latency, sysfs tunables, conditional buffer pinning |
 | 0006-amirs-raw-block-device-fix | Fix PCI device lookup for raw block device nodes in AIS I/O |
 
-## Example Usage
+## Example usage
 
-Note that this example only works inside the AMD VPN as we pull from an internal
-package hosting site.
-```
+This example requires AMD VPN access to the internal package host:
+
+```bash
 ./amdgpu-dkms-tool.py \
    https://mkmartifactory.amd.com:8443/artifactory/amdgpu-deb-local-new/pool/2295296/noble/a/amdgpu-dkms_6.18.8.31200000-2295296.24.04_all.deb \
   --patch patches \
@@ -38,11 +40,11 @@ package hosting site.
   --output debs/amdgpu-dkms_6.18.8.31200000-2295296.24.05_all.deb
 ```
 
-## AIS sysfs Knobs
+## AIS sysfs knobs
 
 Patch 0005 adds runtime-tunable sysfs entries under
-`/sys/devices/virtual/kfd/kfd/ais/`. All are read/write (0644)
-and require root to write.
+`/sys/devices/virtual/kfd/kfd/ais/`. All are read/write (0644) and require root
+to write.
 
 | Entry | Type | Default | Purpose |
 |---|---|---|---|
@@ -69,18 +71,19 @@ echo "0000:41:00.0" > /sys/devices/virtual/kfd/kfd/ais/pci_bdf
 echo 1 > /sys/devices/virtual/kfd/kfd/ais/pci_bdf_override
 ```
 
-### debugfs Latency
+### debugfs latency
 
-When the kernel is built with `CONFIG_DEBUG_FS`, the last AIS
-operation's phase-by-phase timing is available at:
+When the kernel is built with `CONFIG_DEBUG_FS`, the last AIS operation's
+phase-by-phase timing is available at:
 
 ```
 /sys/kernel/debug/kfd/ais_latency
 ```
 
-Reading it shows nanosecond breakdowns for each phase:
-`get_pdev`, `p2p_distance`, `get_sg_table`, `init_bvec`,
-`vfs_io`, `update_counters`, plus `total_ns`, `size_copied`,
-and `ret`.
+Reading it shows nanosecond breakdowns for each phase: `get_pdev`,
+`p2p_distance`, `get_sg_table`, `init_bvec`, `vfs_io`, `update_counters`,
+plus `total_ns`, `size_copied`, and `ret`.
+
+<!-- References -->
 
 [ref-hipfile]: https://github.com/ROCm/hipFile

@@ -1,62 +1,50 @@
-# AMD WEKA-FS Proof of Concept
+<!--
+Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+SPDX-License-Identifier: MIT
+-->
 
-## Stephen - Notes from Weka Call (March 18 2026)
+# AMD WEKA-FS proof of concept
 
-Stephen to add more compute containers to the cluster. Use the same steps as
-per the drive based container 
+Scripts and a minimal SSH-enabled container image for exploring WEKA-backed
+storage on the AMD Arad Slurm pool. See [NOTES.md](NOTES.md) for informal
+cluster notes from vendor calls.
 
-```
-$ creation --cores 2 --flag 
-$ weka local setup container --name default6 --net $NIC --cores 2 \
-  --cores-ids 12,13 --drives-dedicated-cores 1 \
-  --compute-dedicated-cores 1 --no-frontends --base-port 17000 \
-  --memory 16GB --failure-domain fd7
-```
-Only the first container needs a frontend to access the filesystem. Add to the
-existing containers. Add a frontend to the first container. Be sure to update
-the --core-ids.
+Part of [rocm-aic](../../README.md).
 
-weka cluster process
-CPU is the core id.
+## Slurm and pool commands
 
-weka status
-weka cloud enable (this will send heuristics to Weka)
+From the login node, list nodes in the pool:
 
-
-
-
-## Introduction
-
-## Useful Commands
-
-To get a list of all the nodes in the pool. Run from the login node:
-```
+```bash
 sinfo -N -l -p amd-arad
 ```
-To start an interactive session on one of the machines identified via the
-`sinfo` command above:
-```
+
+Interactive session on a chosen node:
+
+```bash
 srun -w <node-name> -A amd-arad -p amd-arad -t 01:00:00 --pty bash
 ```
 
-To run a job inside a container:
-```
+Run a command inside a container:
+
+```bash
 srun --container-id=docker://ubuntu:noble -A amd-arad \
   -p amd-arad -t 01:00:00 grep PRETTY_NAME /etc/os-release
 ```
 
 ## SSH container launcher
 
-A Python script runs a Docker container with SSH enabled, a created user, and
-optional bind-mounted home. Tested with Debian/Ubuntu-based images.
+`docker/docker-ssh-setup.py` runs a Docker container with SSH enabled, a
+created user, and optional bind-mounted home. Tested with Debian/Ubuntu-based
+images.
 
 ### Setup (venv)
 
-Create and activate a virtual environment, then install dependencies:
+From the **repository root**:
 
-```
+```bash
 python3 -m venv .venv
-source .venv/bin/activate   # Windows: .venv\Scripts\activate
+source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
@@ -65,10 +53,11 @@ remote).
 
 ### Usage
 
-Run from the repo root (so the venv and requirements apply):
+From the repository root:
 
-```
-python docker/docker-ssh-setup.py --image IMAGE --ssh-port PORT [OPTIONS]
+```bash
+python vendors/weka/docker/docker-ssh-setup.py \
+    --image IMAGE --ssh-port PORT [OPTIONS]
 ```
 
 Required arguments:
@@ -95,8 +84,9 @@ Optional arguments:
 
 Example:
 
-```
-python docker/docker-ssh-setup.py --image ubuntu:22.04 --ssh-port 2222
+```bash
+python vendors/weka/docker/docker-ssh-setup.py \
+    --image ubuntu:22.04 --ssh-port 2222
 ```
 
 Then connect with: `ssh -p 2222 $USER@localhost` (use the host's IP when
@@ -104,16 +94,16 @@ connecting remotely).
 
 ### Pre-built image with OpenSSH
 
-A minimal image based on Ubuntu 24.04 with OpenSSH server pre-installed is
-provided so container startup skips `apt-get install` and is faster. Build and
-tag it from the repo root:
+A minimal Ubuntu 24.04 image with OpenSSH server pre-installed avoids
+`apt-get install` on each start. Build from `vendors/weka/docker/`:
 
-```
-docker build -t amd-weka-fs/ssh-base:24.04 docker/
+```bash
+docker build -t amd-weka-fs/ssh-base:24.04 vendors/weka/docker/
 ```
 
-Then run the script with that image:
+Then:
 
-```
-python docker/docker-ssh-setup.py --image amd-weka-fs/ssh-base:24.04 --ssh-port 2222
+```bash
+python vendors/weka/docker/docker-ssh-setup.py \
+    --image amd-weka-fs/ssh-base:24.04 --ssh-port 2222
 ```

@@ -59,7 +59,7 @@ examples:
   python3 scripts/test-aic.py --json -o logs/out.json
 
 requirements:
-  pip install -r requirements.txt   # openai
+  pip install 'openai>=1.40.0'   # this script only; full repo: pip install -r requirements.txt
   make run                          # VLLM_SERVER_DEV_MODE=1 for reset_prefix_cache
   LMCache image with cache_salt patch (#3008) for isolated NVMe keys
 

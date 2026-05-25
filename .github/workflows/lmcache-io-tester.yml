@@ -5,11 +5,13 @@ on:
     branches: [main]
     paths:
       - 'tools/lmcache-io-tester/**'
+      - 'requirements.txt'
       - '.github/workflows/lmcache-io-tester.yml'
   pull_request:
     branches: [main]
     paths:
       - 'tools/lmcache-io-tester/**'
+      - 'requirements.txt'
       - '.github/workflows/lmcache-io-tester.yml'
 
 permissions:
@@ -31,14 +33,14 @@ jobs:
         with:
           python-version: '3.12'
           cache: pip
-          cache-dependency-path: tools/lmcache-io-tester/requirements.txt
+          cache-dependency-path: requirements.txt
 
       - name: Create venv and install requirements
         run: |
           set -euo pipefail
           python -m venv .venv
           ./.venv/bin/python -m pip install --upgrade pip
-          ./.venv/bin/pip install -r requirements.txt
+          ./.venv/bin/pip install -r "${GITHUB_WORKSPACE}/requirements.txt"
 
       - name: Store-only, retrieve-only, and lookup-only on local filesystem
         env:
