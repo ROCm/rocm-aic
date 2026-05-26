@@ -28,7 +28,7 @@ class PlotFilterBase(ABC):
     def parse_str(cls, s: str):
         for op_key in PLOT_FILTERS:
             if op_key in s:
-                key, value = s.split(op_key)
+                key, value = s.split(op_key, 1)  # Only split on first occurrence
                 return PLOT_FILTERS[op_key](
                     key,
                     value.removeprefix(op_key).strip("'").strip('"'),
