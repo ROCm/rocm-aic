@@ -43,6 +43,7 @@ plugin, same **`DATA`/`subdir`** as **`gds_path`**, no **`gds_path`** key) |
 | Gutenberg chunks + questions + load / AIC A/B test | **`make data`**, **`scripts/test-aic.py`**, **`run-long.sh`** |
 | LMCache / NVMe textfile metrics for Grafana | **`scripts/rocm-aic-exporter.py`** |
 | Parse engine log → CSV/SVG | **`scripts/parse-vllm-engine-log-timeseries.py`** |
+| Slurm MI300 build + **`long_doc_qa`** | **`.slurm/vllm-radeon-mi300.sbatch`**, **`run-vllm-radeon.sh`** |
 
 ## Quick start
 
@@ -70,6 +71,44 @@ override with **`make run TZ=...`**. vLLM and LMCache log timestamps follow
 **`TZ`** in the container. For **`docker exec`**, use **`CONTAINER_NAME`**
 (default **`vllm-radeon-gpu0`**, i.e. **`IMAGE_NAME`** + **`gpu`** + **`GPU`**);
 override with **`make run CONTAINER_NAME=...`**.
+
+## Slurm (MI300X cluster)
+
+Submit from the **repository root** on a node with Docker and ROCm (partition
+**`defq`**, constraint **`MARKHAM&(GFX90A|GFX942)`** — see
+**`.slurm/vllm-radeon-mi300.sbatch`**).
+
+```bash
+export HF_TOKEN=...              # or HF_TOKEN_FILE=~/.hf_token
+export RADEON_NVME_BASE=/mnt/nvme  # LMCache + HF cache; do not use /tmp on nodes
+bash .slurm/run-vllm-radeon.sh
+```
+
+The job **`docker build`**s the image, starts vLLM via **`make run-batch`**
+(detached container), runs **`long_doc_qa.py`** (same defaults as
+**`run-this.sh`**), and copies artifacts to
+**`.slurm/logs/vllm-radeon-<jobid>/`** (report, metadata, server log, LMCache
+API snapshots, optional bpftrace TSV).
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| **`RADEON_NVME_BASE`** | job **`/tmp/vllm-radeon-<id>`** | Host dir for **`data/`** (LMCache) and **`hf/`** (Hub cache) |
+| **`RADEON_LMCACHE_IO`** | **`hipfile`** | **`hipfile`** or **`posix`** disk backend |
+| **`RADEON_BENCHMARK`** | **`long_doc_qa`** | **`long_doc_qa`**, **`test_aic`**, or **`none`** |
+| **`RADEON_SKIP_BUILD`** | **`0`** | **`1`** skips **`make build`** if image exists |
+| **`RADEON_NVME_BLK_BPFTRACE`** | **`1`** (via wrapper) | NVMe block I/O bpftrace TSV |
+| **`RADEON_NVME_SMART_LOG`** | **`1`** (via wrapper) | **`nvme smart-log`** at job start/end |
+| **`RADEON_LMCACHE_ENABLE_KV_EVENTS`** | **`1`** | LMCache KV events in **`server.txt`** |
+
+Smoke test (build + server only):
+
+```bash
+sbatch --export=ALL,RADEON_BENCHMARK=none,RADEON_NVME_BASE=/mnt/nvme \
+  .slurm/vllm-radeon-mi300.sbatch
+```
+
+Monitor: **`tail -f .slurm/logs/vllm-radeon-<jobid>.log`**. The legacy Kurt
+Slurm script **`.slurm/run-slurm.sh`** now delegates to **`run-vllm-radeon.sh`**.
 
 ## **`rocm-aic-exporter.py`** (Prometheus textfile)
 

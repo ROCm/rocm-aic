@@ -22,6 +22,7 @@ RADEON_LMCACHE_GDS_BUFFER_SIZE ?=
 VLLM_SERVER_DEV_MODE ?= 1
 ARGS ?=
 EXTRA_DOCKER_RUN_FLAGS ?=
+DOCKER_RUN_ATTACH ?= -it
 
 # Gutenberg long-context fixtures (gitignored under data/; not LMCache DATA mount)
 BOOK_SLUG ?= war-and-peace
@@ -50,7 +51,7 @@ ifneq ($(strip $(HIPFILE_SHA)),)
 BUILD_ARGS += --build-arg HIPFILE_SHA=$(HIPFILE_SHA)
 endif
 
-.PHONY: help build vllm-radeon run data data-all
+.PHONY: help build vllm-radeon run run-batch data data-all
 
 .DEFAULT_GOAL := help
 
@@ -59,9 +60,10 @@ help:
 	@echo ""
 	@echo "  make build         docker build -t $(IMAGE_NAME)"
 	@echo "  make vllm-radeon    alias for build"
-	@echo "  make run            docker run ... bind-mounts repo configs/ + scripts/"
+	@echo "  make run            docker run -it ... bind-mounts repo configs/ + scripts/"
 	@echo "                      + LOG (server.txt); DATA = LMCache KV only"
 	@echo "                      default CONTAINER_NAME=$(CONTAINER_NAME)"
+	@echo "  make run-batch      docker run -d (non-interactive; for Slurm sbatch)"
 	@echo "  make data           download PG book, chunk, and write questions JSON"
 	@echo "                      (BOOK_SLUG=$(BOOK_SLUG) BOOK_PG_ID=$(BOOK_PG_ID))"
 	@echo "  make data-all       build 100-book library from configs/gutenberg-library.json"
@@ -113,6 +115,12 @@ data:
 		--pg-id "$(BOOK_PG_ID)"
 
 run:
+	@$(MAKE) -f "$(CURDIR)/Makefile" _docker_run DOCKER_RUN_ATTACH=-it
+
+run-batch:
+	@$(MAKE) -f "$(CURDIR)/Makefile" _docker_run DOCKER_RUN_ATTACH=-d
+
+_docker_run:
 	@set -e; \
 	HF_TOKEN_FILE_MAKE="$(HF_TOKEN_FILE)"; \
 	if [ -n "$$HF_TOKEN_FILE_MAKE" ]; then export HF_TOKEN_FILE="$$HF_TOKEN_FILE_MAKE"; fi; \
@@ -130,7 +138,8 @@ run:
 	mkdir -p "$(DATA)" "$(LOG)" "$(HF_HOME)" \
 		"$(HF_HOME)/hub" "$(HF_HOME)/datasets" "$(HF_HOME)/vllm" \
 		"$(HF_HOME)/vllm_config" "$(HF_HOME)/torch" "$(HF_HOME)/torch_inductor"; \
-	docker run -it --rm \
+	docker rm -f "$(CONTAINER_NAME)" >/dev/null 2>&1 || true; \
+	docker run $(DOCKER_RUN_ATTACH) --rm \
 		--name="$(CONTAINER_NAME)" \
 		--hostname="$(CONTAINER_NAME)" \
 		--ipc=host \
@@ -164,7 +173,10 @@ run:
 		-v "$(CURDIR)/scripts:/app/scripts:ro" \
 		-v /boot/config-$$(uname -r):/boot/config-$$(uname -r):ro \
 		$(EXTRA_DOCKER_RUN_FLAGS) \
-		$(IMAGE_NAME) $(ARGS)
+		$(IMAGE_NAME) $(ARGS); \
+	if [ "$(DOCKER_RUN_ATTACH)" = "-d" ]; then \
+		echo "Started container $(CONTAINER_NAME)"; \
+	fi
 
 build vllm-radeon:
 	@command -v docker >/dev/null 2>&1 || { \
