@@ -4,6 +4,9 @@ kind: Kustomization
 resources:
   - ../../../../../../../submodules/llm-d/guides/optimized-baseline/modelserver/amd/vllm
 
+components:
+  - ../../../../../../../submodules/llm-d/guides/recipes/modelserver/components/monitoring
+  
 # LMCache-specific configuration; can override through env variables in `llm-d-model-server` too.
 configMapGenerator:
   - name: config-map
@@ -33,7 +36,7 @@ patches:
     patch: |-
       - op: replace
         path: /spec/template/spec/containers/0/image
-        value: ghcr.io/vcave/vllm:rocm_721-vllm_20260423b-lmcache
+        value: ghcr.io/vcave/vllm:rocm_721-vllm_0201-lmcache_20260513
 
   # Configure vLLM server with LMCache connector
   - target:
@@ -43,13 +46,12 @@ patches:
       - op: replace
         path: /spec/template/spec/containers/0/args
         value:
-          - "Qwen/Qwen3-32B"
+          - "openai/gpt-oss-120b"
           - "--host=0.0.0.0"
           - "--port=8000"
-          - "--tensor-parallel-size=2"
           - "--kv-transfer-config={\"kv_connector\":\"LMCacheConnectorV1\",\"kv_role\":\"kv_both\"}"
           - "--max-num-seq=1024"
-          - "--gpu-memory-utilization=0.25"
+          - "--gpu-memory-utilization=0.90"
           - "--enable_prefix_caching"
           - "--disable-access-log-for-endpoints=/health,/metrics,/v1/models"
   # Add LMCache environment variables
@@ -117,13 +119,13 @@ patches:
         path: /spec/template/spec/containers/0/resources
         value:
           limits:
-            amd.com/gpu: 2
+            amd.com/gpu: 1
             cpu: "32"
-            memory: 400Gi
+            memory: 1800Gi
           requests:
-            amd.com/gpu: 2
+            amd.com/gpu: 1
             cpu: "32"
-            memory: 400Gi
+            memory: 1800Gi
 
 # Add tiered-prefix-cache specific labels
 labels:

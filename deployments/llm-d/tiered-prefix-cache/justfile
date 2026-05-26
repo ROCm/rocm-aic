@@ -56,12 +56,12 @@ _deploy-internal dir:
     kustomize build "$TARGET" | kubectl apply -n {{NAMESPACE}} -f -
     @echo "✅ Deployment complete"
 
-# Deploy AMD vLLM model server with lmcache connector
+# Deploy AMD vLLM model server with lmcache connector and hipfile
 deploy-model-server-lmcache:
     @echo "Targeting: LMCache connector"
     @just _deploy-internal "./manifests/vllm/flavors/lmcache"
 
-# Deploy AMD vLLM model server with lmcache connector and hifile
+# Deploy AMD vLLM model server with lmcache connector and hipfile
 deploy-model-server-lmcache-hipfile:
     @echo "Targeting: LMCache connector + Hipfile"
     @just _deploy-internal "./manifests/vllm/flavors/lmcache-hipfile"
@@ -82,38 +82,21 @@ deploy-inferencepool:
       --set experimentalHttpRoute.enabled=true \
       --set experimentalHttpRoute.inferenceGatewayName=llm-d-inference-gateway \
       --set provider.name=istio \
-      --set experimentalHttpRoute.enabled=true \
-      --set experimentalHttpRoute.inferenceGatewayName=llm-d-inference-gateway \
       -n {{NAMESPACE}} \
       --version {{INFERENCEPOOL_VERSION}} || exit 1
     @echo "✅ InferencePool deployed"
 
-#TODO: do we still need this?
-# Deploy PodMonitor for Prometheus metrics scraping - check if we still need these monitoring recipes
-deploy-monitoring:
-    @echo "🚀 Deploying PodMonitor..."
-    kubectl apply -f {{LLM_D_PATH}}/guides/tiered-prefix-cache/cpu/manifests/vllm/monitoring/podmonitor.yaml -n {{NAMESPACE}} || exit 1
-    @echo "✅ PodMonitor deployed"
 
 # Teardown everything (offloading variant)
 teardown: teardown-offloading
 
 # Teardown offloading-connector deployment
-#teardown-offloading: teardown-monitoring teardown-inferencepool teardown-model-server-offloading teardown-gateway
 teardown-offloading: teardown-inferencepool teardown-model-server-offloading teardown-gateway
     @echo "✅ Teardown complete (offloading-connector)!"
 
 # Teardown lmcache-connector deployment
-#teardown-lmcache: teardown-monitoring teardown-inferencepool teardown-model-server-lmcache teardown-gateway
 teardown-lmcache: teardown-inferencepool teardown-model-server-lmcache teardown-gateway
     @echo "✅ Teardown complete (lmcache-connector)!"
-
-#TODO: do we still need this?
-# Remove PodMonitor
-teardown-monitoring:
-    @echo "🗑️  Removing PodMonitor..."
-    -kubectl delete -f {{LLM_D_PATH}}/guides/tiered-prefix-cache/cpu/manifests/vllm/monitoring/podmonitor.yaml -n {{NAMESPACE}}
-    @echo "✅ PodMonitor removed"
 
 teardown-inferencepool:
     @echo "🗑️  Removing InferencePool..."
@@ -133,7 +116,7 @@ teardown-model-server-lmcache:
     @echo "Targeting: LMCache connector"
     @just _teardown-internal "./manifests/vllm/flavors/lmcache"
 
-# Teardown AMD vLLM model server with lmcache connector and hifile
+# Teardown AMD vLLM model server with lmcache connector and hipfile
 teardown-model-server-lmcache-hipfile:
     @echo "Targeting: LMCache connector + Hipfile"
     @just _teardown-internal "./manifests/vllm/flavors/lmcache-hipfile"
@@ -191,8 +174,6 @@ status:
     @echo "=== InferencePool ==="
     kubectl get inferencepool -n {{NAMESPACE}} || echo "No InferencePool found"
     @echo ""
-    @echo "=== PodMonitor ==="
-    kubectl get podmonitor -n {{NAMESPACE}} || echo "No PodMonitor found"
 
 # Wait for deployment to be ready
 wait:
