@@ -4,12 +4,12 @@
 #
 # SPDX-License-Identifier: MIT
 #
-# Shared helpers for vllm-radeon Slurm jobs (sourced by vllm-radeon-mi300.sbatch).
+# Shared helpers for vllm-radeon Slurm jobs (sourced by vllm-radeon.sbatch).
 
 _radeon_env_aliases() {
     local _k _radeon _kurt
     for _k in NVME_BASE NVME_BLK_BPFTRACE NVME_SMART_LOG NVME_MKFS \
-        NVME_AUTO_DEVICE NVME_MOUNT NVME_DEVICE VFS_BPFTRACE \
+        NVME_AUTO_DEVICE NVME_AUTO_USE NVME_MOUNT NVME_DEVICE VFS_BPFTRACE \
         VFS_BPFTRACE_APT_INSTALL LMCACHE_ENABLE_KV_EVENTS SKIP_BUILD BENCHMARK; do
         _radeon="RADEON_${_k}"
         _kurt="KURT_${_k}"
@@ -29,6 +29,26 @@ _radeon_truthy() {
         1 | true | yes | on) return 0 ;;
         *) return 1 ;;
     esac
+}
+
+# Single model knob: VLLM_MODEL (server + benchmarks). Unset → vllm-radeon.yaml default.
+_radeon_model_default() {
+    printf 'openai/gpt-oss-120b'
+}
+
+_radeon_resolve_model_env() {
+    if [[ -z "${VLLM_MODEL:-}" && -n "${RADEON_BENCH_MODEL:-}" ]]; then
+        export VLLM_MODEL="${RADEON_BENCH_MODEL}"
+        _radeon_log "WARN: RADEON_BENCH_MODEL is deprecated; use VLLM_MODEL instead"
+    fi
+}
+
+_radeon_served_model() {
+    if [[ -n "${VLLM_MODEL:-}" ]]; then
+        printf '%s' "${VLLM_MODEL}"
+        return 0
+    fi
+    _radeon_model_default
 }
 
 _radeon_resolve_hf_token() {
@@ -80,28 +100,244 @@ _radeon_metadata_init() {
     _radeon_metadata_append "SLURM_JOB_NODELIST" "${SLURM_JOB_NODELIST:-}"
     _radeon_metadata_append "SLURM_SUBMIT_DIR" "${SLURM_SUBMIT_DIR:-}"
     _radeon_metadata_append "JOB_ROOT" "${JOB_ROOT}"
-    _radeon_metadata_append "RADEON_NVME_BASE" "${RADEON_NVME_BASE}"
+    _radeon_metadata_append "RADEON_NVME_BASE" "${RADEON_NVME_BASE:-}"
     _radeon_metadata_append "RADEON_LMCACHE_IO" "${RADEON_LMCACHE_IO:-hipfile}"
-    _radeon_metadata_append "RADEON_BENCHMARK" "${RADEON_BENCHMARK:-long_doc_qa}"
+    _radeon_metadata_append "RADEON_BENCHMARK" "${RADEON_BENCHMARK:-gutenberg}"
+    _radeon_metadata_append "RADEON_GUTENBERG_DATA_ROOT" "${RADEON_GUTENBERG_DATA_ROOT:-}"
     _radeon_metadata_append "CONTAINER_NAME" "${CONTAINER_NAME}"
 }
 
-_radeon_nvme_setup() {
-    local mkfs="${RADEON_NVME_MKFS:-0}"
-    local auto="${RADEON_NVME_AUTO_DEVICE:-0}"
-    local device="${RADEON_NVME_DEVICE:-}"
-    local mount="${RADEON_NVME_MOUNT:-}"
+_radeon_find_unmounted_nvme_device() {
+    # Whole-disk nvme namespace, not mounted, not RAID/LVM member.
+    lsblk -dn -o NAME,MOUNTPOINT,FSTYPE,TYPE 2>/dev/null | awk '
+        $4 == "disk" &&
+        $1 ~ /^nvme[0-9]+n[0-9]+$/ &&
+        $2 == "" &&
+        $3 !~ /raid|LVM|linux_raid/ { print "/dev/" $1; exit }
+    '
+}
 
-    if ! _radeon_truthy "${mkfs}"; then
+_radeon_nvme_log_inventory() {
+    _radeon_log "NVMe block devices on $(hostname -s 2>/dev/null || hostname):"
+    if command -v lsblk >/dev/null 2>&1; then
+        lsblk -o NAME,SIZE,TYPE,MOUNTPOINT,FSTYPE,MODEL 2>/dev/null \
+            | grep -E '^NAME|nvme' \
+            | while IFS= read -r _line; do
+                _radeon_log "  ${_line}"
+            done || _radeon_log "  (none listed)"
+    else
+        _radeon_log "  lsblk not available"
+    fi
+}
+
+_radeon_mount_is_excluded() {
+    case "$1" in
+        / | /boot | /boot/* | /proc | /proc/* | /sys | /sys/* | /dev | /dev/* \
+            | /run | /run/*)
+            return 0
+            ;;
+    esac
+    return 1
+}
+
+_radeon_mount_is_nvme_backed() {
+    local mnt="$1"
+    local src
+    src="$(findmnt -n -o SOURCE --target "${mnt}" 2>/dev/null || true)"
+    [[ -z "${src}" ]] && return 1
+    if [[ "${src}" == *nvme* ]]; then
+        return 0
+    fi
+    # LVM/device-mapper on top of NVMe (e.g. /dev/mapper/data-data → nvme*n*).
+    if command -v lsblk >/dev/null 2>&1; then
+        lsblk -s -n -o NAME "${src}" 2>/dev/null | grep -qE '^nvme'
+        return $?
+    fi
+    return 1
+}
+
+_radeon_mount_avail_bytes() {
+    df -B1 --output=avail "${1}" 2>/dev/null | awk 'NR==2 { print $1 }'
+}
+
+_radeon_nvme_mount_candidates() {
+    # All mount points; NVMe backing is checked via findmnt + lsblk (includes LVM on nvme).
+    if command -v findmnt >/dev/null 2>&1; then
+        findmnt -rn -o TARGET 2>/dev/null | sort -u
+        return
+    fi
+    lsblk -rn -o MOUNTPOINT 2>/dev/null | awk '$1 != ""' | sort -u
+}
+
+_radeon_mount_is_shared_cluster_path() {
+    # Site-wide pools (often root-owned LVM on NVMe). Do not use for LMCache unless opted in.
+    case "$1" in
+        /data | /data/* | /docker | /docker/*) return 0 ;;
+    esac
+    return 1
+}
+
+_radeon_find_mounted_nvme_mount() {
+    # Writable NVMe-backed mount with enough free space (not shared /data or /docker by default).
+    local min_avail_gb="${RADEON_NVME_MIN_AVAIL_GB:-10}"
+    local min_bytes=$((min_avail_gb * 1024 * 1024 * 1024))
+    local pass mnt avail best_avail=-1 best_mnt=""
+
+    for pass in preferred any; do
+        best_avail=-1
+        best_mnt=""
+        while IFS= read -r mnt; do
+            [[ -n "${mnt}" ]] || continue
+            _radeon_mount_is_excluded "${mnt}" && continue
+            if [[ "${pass}" == preferred ]]; then
+                case "${mnt}" in
+                    /mnt/* | /local/* | /localssd/* | /nvme/* | /ssd/* | /cache/*) ;;
+                    *) continue ;;
+                esac
+            fi
+            if _radeon_mount_is_shared_cluster_path "${mnt}" \
+                && ! _radeon_truthy "${RADEON_NVME_USE_SHARED_DATA_DOCKER:-0}"; then
+                continue
+            fi
+            _radeon_mount_is_nvme_backed "${mnt}" || continue
+            [[ -d "${mnt}" && -w "${mnt}" ]] || continue
+            avail="$(_radeon_mount_avail_bytes "${mnt}")"
+            [[ -n "${avail}" && "${avail}" -ge "${min_bytes}" ]] || continue
+            if [[ "${avail}" -gt "${best_avail}" ]]; then
+                best_avail="${avail}"
+                best_mnt="${mnt}"
+            fi
+        done < <(_radeon_nvme_mount_candidates)
+        if [[ -n "${best_mnt}" ]]; then
+            printf '%s' "${best_mnt}"
+            return 0
+        fi
+    done
+    return 1
+}
+
+_radeon_use_mounted_nvme_path() {
+    local mnt="$1"
+    local base="${mnt}/vllm-radeon-${SLURM_JOB_ID:-local$$}"
+    local avail_human src
+
+    mkdir -p "${base}" || return 1
+    [[ -w "${base}" ]] || return 1
+
+    src="$(findmnt -n -o SOURCE --target "${mnt}" 2>/dev/null || true)"
+    avail_human="$(df -h --output=avail "${mnt}" 2>/dev/null | awk 'NR==2 { print $1 }')"
+
+    RADEON_NVME_MOUNT="${mnt}"
+    RADEON_NVME_BASE="${base}"
+    RADEON_NVME_DEVICE="$(_radeon_block_device_for_path "${mnt}" 2>/dev/null || true)"
+    if [[ -z "${RADEON_NVME_DEVICE}" ]]; then
+        RADEON_NVME_DEVICE="${src}"
+    fi
+    export RADEON_NVME_MOUNT RADEON_NVME_BASE RADEON_NVME_DEVICE
+
+    _radeon_metadata_append "RADEON_NVME_AUTO_MODE" "mounted"
+    _radeon_metadata_append "RADEON_NVME_MOUNT" "${mnt}"
+    _radeon_metadata_append "RADEON_NVME_SOURCE" "${src}"
+    _radeon_log "RADEON_NVME_AUTO_USE: NVMe mount ${mnt} (${src}, ${avail_human} avail) -> ${base}"
+    return 0
+}
+
+_radeon_nvme_scratch_fallback() {
+    if ! _radeon_truthy "${RADEON_NVME_SCRATCH_FALLBACK:-1}"; then
+        return 1
+    fi
+    local root="${RADEON_NVME_SCRATCH_ROOT:-/scratch/${USER:-}}"
+    local base
+    [[ -n "${root}" && -d "${root}" && -w "${root}" ]] || return 1
+    base="${root}/vllm-radeon/lmcache-${SLURM_JOB_ID:-local$$}"
+    mkdir -p "${base}" || return 1
+    [[ -w "${base}" ]] || return 1
+    RADEON_NVME_BASE="${base}"
+    export RADEON_NVME_BASE
+    _radeon_metadata_append "RADEON_NVME_AUTO_MODE" "scratch"
+    _radeon_log "RADEON_NVME_AUTO_USE: scratch fallback ${base} (no local NVMe path found)"
+    return 0
+}
+
+_radeon_nvme_mount_device() {
+    local device="$1"
+    local mount="$2"
+    local fstype
+
+    mkdir -p "${mount}"
+    fstype="$(blkid -o value -s TYPE "${device}" 2>/dev/null || true)"
+    if [[ -n "${fstype}" ]]; then
+        _radeon_log "mount ${device} (${fstype}) -> ${mount}"
+        mount "${device}" "${mount}"
+    elif _radeon_truthy "${RADEON_NVME_MKFS:-0}"; then
+        _radeon_log "mkfs.ext4 ${device} -> ${mount}"
+        command -v mkfs.ext4 >/dev/null 2>&1 || {
+            _radeon_log "ERROR: mkfs.ext4 not found"
+            return 1
+        }
+        mkfs.ext4 -F "${device}"
+        mount "${device}" "${mount}"
+    else
+        _radeon_log "WARN: ${device} has no filesystem; set RADEON_NVME_MKFS=1 to format (default when auto-discovering)"
+        return 1
+    fi
+    RADEON_NVME_DEVICE="${device}"
+    RADEON_NVME_MOUNT="${mount}"
+    RADEON_NVME_BASE="${mount}"
+    export RADEON_NVME_DEVICE RADEON_NVME_MOUNT RADEON_NVME_BASE
+    _radeon_metadata_append "RADEON_NVME_DEVICE" "${device}"
+    _radeon_metadata_append "RADEON_NVME_MOUNT" "${mount}"
+    return 0
+}
+
+# When RADEON_NVME_BASE is unset: (1) mount blank nvme*n*, (2) use an existing
+# NVMe-backed mount, (3) scratch fallback — see vllm-radeon.sbatch.
+_radeon_nvme_auto_use() {
+    local device mount mnt
+
+    if ! _radeon_truthy "${RADEON_NVME_AUTO_USE:-1}"; then
+        return 1
+    fi
+
+    device="${RADEON_NVME_DEVICE:-}"
+    if [[ -z "${device}" ]] && _radeon_truthy "${RADEON_NVME_AUTO_DEVICE:-1}"; then
+        device="$(_radeon_find_unmounted_nvme_device || true)"
+        if [[ -n "${device}" ]]; then
+            _radeon_log "RADEON_NVME_AUTO_DEVICE selected unmounted ${device}"
+        fi
+    fi
+    if [[ -n "${device}" ]]; then
+        mount="${RADEON_NVME_MOUNT:-/mnt/vllm-radeon-${SLURM_JOB_ID:-local}}"
+        if _radeon_nvme_mount_device "${device}" "${mount}"; then
+            _radeon_metadata_append "RADEON_NVME_AUTO_MODE" "mount-unmounted"
+            return 0
+        fi
+    fi
+
+    mnt="$(_radeon_find_mounted_nvme_mount || true)"
+    if [[ -n "${mnt}" ]] && _radeon_use_mounted_nvme_path "${mnt}"; then
         return 0
     fi
 
-    if _radeon_truthy "${auto}" && [[ -z "${device}" ]]; then
-        device="$(
-            lsblk -dn -o NAME,MOUNTPOINT,FSTYPE 2>/dev/null | awk '
-                $1 ~ /^nvme[0-9]+n[0-9]+$/ && $2 == "" && $3 == "" { print "/dev/" $1; exit }
-            ' || true
-        )"
+    _radeon_nvme_log_inventory
+    _radeon_log "WARN: no dedicated writable NVMe path (unmounted nvme*n*, or a job-local" \
+        "mount under /mnt|/local|/nvme with >= ${RADEON_NVME_MIN_AVAIL_GB:-10}G free)."
+    _radeon_log "WARN: /data and /docker are shared site LVM pools — skipped unless" \
+        "RADEON_NVME_USE_SHARED_DATA_DOCKER=1. Using scratch fallback if enabled."
+    return 1
+}
+
+# Explicit mkfs+mount (RADEON_NVME_MKFS=1); used when RADEON_NVME_BASE is preset.
+_radeon_nvme_setup() {
+    local device="${RADEON_NVME_DEVICE:-}"
+    local mount="${RADEON_NVME_MOUNT:-}"
+
+    if ! _radeon_truthy "${RADEON_NVME_MKFS:-0}"; then
+        return 0
+    fi
+
+    if [[ -z "${device}" ]] && _radeon_truthy "${RADEON_NVME_AUTO_DEVICE:-1}"; then
+        device="$(_radeon_find_unmounted_nvme_device || true)"
         if [[ -z "${device}" ]]; then
             _radeon_log "WARN: RADEON_NVME_AUTO_DEVICE=1 but no unmounted whole-disk nvme* found"
         else
@@ -116,19 +352,7 @@ _radeon_nvme_setup() {
         return 1
     fi
 
-    _radeon_log "mkfs + mount ${device} -> ${mount}"
-    if command -v mkfs.ext4 >/dev/null 2>&1; then
-        mkfs.ext4 -F "${device}"
-    else
-        _radeon_log "ERROR: mkfs.ext4 not found"
-        return 1
-    fi
-    mkdir -p "${mount}"
-    mount "${device}" "${mount}"
-    RADEON_NVME_BASE="${mount}"
-    export RADEON_NVME_BASE
-    _radeon_metadata_append "RADEON_NVME_DEVICE" "${device}"
-    _radeon_metadata_append "RADEON_NVME_MOUNT" "${mount}"
+    _radeon_nvme_mount_device "${device}" "${mount}"
 }
 
 _radeon_st_rdev_decimal() {
@@ -184,12 +408,39 @@ _radeon_nvme_smart_log() {
     fi
 }
 
+_radeon_bpftrace_ok() {
+    local probe_log="${REPORT_DIR}/bpftrace-probe.log"
+    if bpftrace -e 'BEGIN { exit() }' >"${probe_log}" 2>&1; then
+        return 0
+    fi
+    _radeon_log "WARN: bpftrace probe failed (root/CAP_BPF or tracefs); skip trace"
+    if [[ -s "${probe_log}" ]]; then
+        sed -n '1,3p' "${probe_log}" | while IFS= read -r _line; do
+            _radeon_log "  bpftrace: ${_line}"
+        done
+    fi
+    return 1
+}
+
+_radeon_bpftrace_log_tail() {
+    local log_file="$1"
+    local label="${2:-bpftrace}"
+    if [[ -s "${log_file}" ]]; then
+        sed -n '1,5p' "${log_file}" | while IFS= read -r _line; do
+            _radeon_log "  ${label}: ${_line}"
+        done
+    fi
+}
+
 _radeon_bpftrace_nvme_start() {
     if ! _radeon_truthy "${RADEON_NVME_BLK_BPFTRACE:-0}"; then
         return 0
     fi
     if ! command -v bpftrace >/dev/null 2>&1; then
         _radeon_log "WARN: bpftrace not installed; skip NVMe block trace"
+        return 0
+    fi
+    if ! _radeon_bpftrace_ok; then
         return 0
     fi
 
@@ -220,7 +471,8 @@ _radeon_bpftrace_nvme_start() {
     NVME_BLK_BPFTRACE_PID=$!
     sleep 1
     if ! kill -0 "${NVME_BLK_BPFTRACE_PID}" 2>/dev/null; then
-        _radeon_log "WARN: nvme bpftrace exited immediately; see ${REPORT_DIR}/nvme_blk_io.bpftrace.log"
+        _radeon_log "WARN: nvme bpftrace exited immediately"
+        _radeon_bpftrace_log_tail "${REPORT_DIR}/nvme_blk_io.bpftrace.log" "nvme-bpftrace"
         NVME_BLK_BPFTRACE_PID=
     fi
     _radeon_metadata_append "nvme_blk disk_name" "${disk_name}"
@@ -256,16 +508,21 @@ _radeon_bpftrace_vfs_start() {
     if ! command -v bpftrace >/dev/null 2>&1; then
         if _radeon_truthy "${RADEON_VFS_BPFTRACE_APT_INSTALL:-0}"; then
             _radeon_log "Installing bpftrace (apt) ..."
-            apt-get update -qq && DEBIAN_FRONTEND=noninteractive \
-                apt-get install -y -qq bpftrace || true
+            if apt-get update -qq; then
+                DEBIAN_FRONTEND=noninteractive apt-get install -y -qq bpftrace \
+                    || true
+            fi
         fi
     fi
     if ! command -v bpftrace >/dev/null 2>&1; then
         _radeon_log "WARN: bpftrace not installed; skip VFS trace"
         return 0
     fi
+    if ! _radeon_bpftrace_ok; then
+        return 0
+    fi
 
-    local cid docker_pid cgroup_path bt_out tsv_out escaped
+    local cid cgroup_path bt_out tsv_out escaped
     cid="$(docker inspect -f '{{.State.Pid}}' "${CONTAINER_NAME}" 2>/dev/null || true)"
     if [[ -z "${cid}" || "${cid}" == "0" ]]; then
         _radeon_log "WARN: VFS bpftrace: container pid not available yet"
@@ -278,7 +535,6 @@ _radeon_bpftrace_vfs_start() {
     fi
 
     VFS_TRACE_PREFIX="${DATA_HOST}/lmcache"
-    VFS_TRACE_CGROUP_PATH="${cgroup_path}"
     bt_out="${REPORT_DIR}/vfs_dir_io_trace.gen.bt"
     tsv_out="${REPORT_DIR}/vfs_dir_io.tsv"
     VFS_DIR_TSV="${tsv_out}"
@@ -352,9 +608,137 @@ _radeon_wait_vllm() {
     return 1
 }
 
+_radeon_golden_hf_home() {
+    if [[ -n "${RADEON_HF_HOME:-}" ]]; then
+        printf '%s' "${RADEON_HF_HOME}"
+        return 0
+    fi
+    if [[ -n "${RADEON_SHARED_ROOT:-}" ]]; then
+        printf '%s' "${RADEON_SHARED_ROOT}/hf"
+        return 0
+    fi
+    printf '/scratch/%s/vllm-radeon/hf' "${USER:-unknown}"
+}
+
+_radeon_resolve_hf_home() {
+  # Golden cache only — never ${RADEON_NVME_BASE}/hf (per-job LMCache storage).
+    HF_HOST="$(_radeon_golden_hf_home)"
+    export HF_HOST
+    _radeon_metadata_append "RADEON_HF_HOME" "${HF_HOST}"
+}
+
+_radeon_hf_fix_ownership() {
+    local hf="${HF_HOST:-$(_radeon_golden_hf_home)}"
+    [[ -d "${hf}" ]] || return 0
+    if ! find "${hf}" -maxdepth 4 ! -user "${USER}" -print -quit 2>/dev/null | grep -q .; then
+        return 0
+    fi
+    _radeon_log "Fixing HF cache ownership under ${hf} (docker wrote as root)"
+    local grp
+    grp="$(id -gn 2>/dev/null || echo "${USER}")"
+    if chown -R "${USER}:${grp}" "${hf}" 2>/dev/null; then
+        return 0
+    fi
+    if command -v sudo >/dev/null 2>&1 && sudo chown -R "${USER}:${grp}" "${hf}" 2>/dev/null; then
+        return 0
+    fi
+    _radeon_log "WARN: could not chown ${hf}; use: sudo chown -R \$USER:\$(id -gn) ${hf}"
+}
+
+_radeon_resolve_gutenberg_data_root() {
+    if [[ -n "${RADEON_GUTENBERG_DATA_ROOT:-}" ]]; then
+        GUTENBERG_DATA_ROOT="${RADEON_GUTENBERG_DATA_ROOT}"
+    elif [[ -n "${RADEON_SHARED_ROOT:-}" ]]; then
+        GUTENBERG_DATA_ROOT="${RADEON_SHARED_ROOT}/gutenberg"
+    else
+        GUTENBERG_DATA_ROOT="${RECIPE_DIR}/data"
+    fi
+    export GUTENBERG_DATA_ROOT
+}
+
+_radeon_gutenberg_fixtures_present() {
+    local root="$1"
+    [[ -d "${root}" ]] || return 1
+    find "${root}" -maxdepth 2 -name '*.questions.json' -print -quit 2>/dev/null | grep -q .
+}
+
+_radeon_gutenberg_prereqs() {
+    _radeon_resolve_gutenberg_data_root
+    if ! _radeon_gutenberg_fixtures_present "${GUTENBERG_DATA_ROOT}"; then
+        _radeon_log "ERROR: no Gutenberg fixtures under ${GUTENBERG_DATA_ROOT}"
+        _radeon_log "Generate once on shared storage, e.g.:"
+        _radeon_log "  export RADEON_GUTENBERG_DATA_ROOT=/scratch/\$USER/vllm-radeon/gutenberg"
+        _radeon_log "  make -C ${RECIPE_DIR} data-all BOOK_DATA_ROOT=\${RADEON_GUTENBERG_DATA_ROOT}"
+        return 1
+    fi
+    command -v jq >/dev/null 2>&1 || {
+        _radeon_log "ERROR: jq required for run-long.sh (install on compute nodes)"
+        return 1
+    }
+    _radeon_metadata_append "BOOK_DATA_ROOT" "${GUTENBERG_DATA_ROOT}"
+    return 0
+}
+
+_radeon_run_long_env() {
+    local port="${VLLM_PORT:-8000}"
+    export BOOK_DATA_ROOT="${GUTENBERG_DATA_ROOT}"
+    # run-long.sh appends /v1/chat/completions; do not include /v1 here.
+    export BASE_URL="http://127.0.0.1:${port}"
+    export MODEL="$(_radeon_served_model)"
+    export ITERATIONS="${RADEON_RUN_LONG_ITERATIONS:-1}"
+    export BOOK_SLUG="${BOOK_SLUG:-}"
+    export BOOK_SLUGS="${BOOK_SLUGS:-}"
+    export BOOK_SLUG_FILE="${BOOK_SLUG_FILE:-}"
+    export RUN_LONG_COMBINE_CHUNKS="${RUN_LONG_COMBINE_CHUNKS:-1}"
+}
+
+_radeon_run_gutenberg_serial() {
+    local out="${REPORT_DIR}/run-long.jsonl"
+    _radeon_gutenberg_prereqs || return 1
+    _radeon_run_long_env
+    _radeon_log "Running run-long.sh BOOK_DATA_ROOT=${GUTENBERG_DATA_ROOT}"
+    : > "${out}"
+    if RUN_LONG_SEED="${RUN_LONG_SEED:-}" \
+        bash "${RECIPE_DIR}/run-long.sh" >> "${out}" 2>&1; then
+        return 0
+    fi
+    return 1
+}
+
+_radeon_run_gutenberg_parallel() {
+    local workers="${RADEON_RUN_LONG_WORKERS:-4}"
+    local log="${REPORT_DIR}/run-long-parallel.log"
+    _radeon_gutenberg_prereqs || return 1
+    _radeon_run_long_env
+    _radeon_log "Running run-long-parallel.sh workers=${workers} BOOK_DATA_ROOT=${GUTENBERG_DATA_ROOT}"
+    _radeon_metadata_append "RADEON_RUN_LONG_WORKERS" "${workers}"
+    _radeon_metadata_append "RADEON_RUN_LONG_ITERATIONS" "${ITERATIONS}"
+    if OUTPUT_DIR="${REPORT_DIR}/run-long-parallel" \
+        WORKERS="${workers}" \
+        BASE_SEED="${RADEON_RUN_LONG_BASE_SEED:-${BASE_SEED:-$RANDOM}}" \
+        STAGGER_SEC="${RADEON_RUN_LONG_STAGGER_SEC:-0}" \
+        PROGRESS="${RADEON_RUN_LONG_PROGRESS:-0}" \
+        RUN_LONG_SEED="${RUN_LONG_SEED:-}" \
+        bash "${RECIPE_DIR}/run-long-parallel.sh" >> "${log}" 2>&1; then
+        _radeon_metadata_append "run-long-parallel log" "${log}"
+        _radeon_metadata_append "run-long-parallel dir" "${REPORT_DIR}/run-long-parallel"
+        return 0
+    fi
+    return 1
+}
+
+_radeon_run_gutenberg() {
+    if _radeon_truthy "${RADEON_RUN_LONG_PARALLEL:-1}"; then
+        _radeon_run_gutenberg_parallel
+    else
+        _radeon_run_gutenberg_serial
+    fi
+}
+
 _radeon_run_long_doc_qa() {
     local port="${VLLM_PORT:-8000}"
-    local model="${RADEON_BENCH_MODEL:-Qwen/Qwen2.5-3B-Instruct}"
+    local model
+    model="$(_radeon_served_model)"
     local out="${REPORT_DIR}/long_doc_qa.json"
     _radeon_log "Running long_doc_qa.py (model=${model})"
     docker exec "${CONTAINER_NAME}" python3 \
@@ -378,10 +762,14 @@ _radeon_run_long_doc_qa() {
 
 _radeon_run_test_aic() {
     local out="${REPORT_DIR}/test_aic.json"
+    local -a _aic_extra=()
     _radeon_log "Running test-aic.py"
+    if [[ -n "${RADEON_TEST_AIC_EXTRA_ARGS:-}" ]]; then
+        read -r -a _aic_extra <<< "${RADEON_TEST_AIC_EXTRA_ARGS}"
+    fi
     docker exec "${CONTAINER_NAME}" python3 /app/scripts/test-aic.py \
         --json -o "/var/log/vllm-radeon/test_aic.json" \
-        ${RADEON_TEST_AIC_EXTRA_ARGS:-} \
+        "${_aic_extra[@]}" \
         > "${out}" 2>&1 || true
     docker cp "${CONTAINER_NAME}:/var/log/vllm-radeon/test_aic.json" "${out}" 2>/dev/null || true
 }
@@ -425,16 +813,32 @@ _radeon_write_report() {
         echo "- CONTAINER_NAME: ${CONTAINER_NAME}"
         echo "- BUILD_RC: ${BUILD_RC:-?} RUN_RC: ${RUN_RC:-?} PHASE_RC: ${PHASE_RC:-?}"
         echo ""
-        echo "## Summary"
-        echo ""
-        echo '```'
-        cat "${REPORT_DIR}/summary.txt" 2>/dev/null || true
-        echo '```'
-        echo ""
-        if [[ -f "${REPORT_DIR}/long_doc_qa.json" ]]; then
-            echo "## long_doc_qa"
+        if [[ -f "${REPORT_DIR}/results-summary.md" ]]; then
+            cat "${REPORT_DIR}/results-summary.md"
             echo ""
-            echo "See \`${REPORT_DIR}/long_doc_qa.json\`"
+        else
+            echo "## Summary"
+            echo ""
+            echo '```'
+            cat "${REPORT_DIR}/summary.txt" 2>/dev/null || true
+            echo '```'
+            echo ""
+        fi
+        echo "## Artifact paths"
+        echo ""
+        echo "- Report dir: \`${REPORT_DIR}\`"
+        echo "- Slurm copy: \`${SLURM_LOG_DIR}\`"
+        if [[ -d "${REPORT_DIR}/run-long-parallel" ]]; then
+            echo "- Gutenberg: \`${REPORT_DIR}/run-long-parallel/\`"
+        fi
+        if [[ -f "${REPORT_DIR}/run-long.jsonl" ]]; then
+            echo "- Gutenberg serial: \`${REPORT_DIR}/run-long.jsonl\`"
+        fi
+        if [[ -f "${REPORT_DIR}/long_doc_qa.json" ]]; then
+            echo "- long_doc_qa: \`${REPORT_DIR}/long_doc_qa.json\`"
+        fi
+        if [[ -f "${REPORT_DIR}/logs/server.txt" ]] || [[ -f "${REPORT_DIR}/../server.txt" ]]; then
+            echo "- server log: \`server.txt\` (under Slurm log dir)"
         fi
     } > "${report}"
 }
@@ -446,6 +850,30 @@ _radeon_write_summary() {
     } > "${REPORT_DIR}/summary.txt"
 }
 
+_radeon_summarize_job() {
+    local script="${SLURM_LIB}/summarize-vllm-radeon-job.py"
+    if [[ ! -f "${script}" ]]; then
+        _radeon_log "WARN: ${script} missing; skip results summary"
+        return 0
+    fi
+    if ! command -v python3 >/dev/null 2>&1; then
+        _radeon_log "WARN: python3 not found; skip results summary"
+        return 0
+    fi
+    if python3 "${script}" "${REPORT_DIR}"; then
+        _radeon_metadata_append "results-summary.md" "${REPORT_DIR}/results-summary.md"
+        _radeon_metadata_append "results-summary.json" "${REPORT_DIR}/results-summary.json"
+        _radeon_log "Results summary: ${REPORT_DIR}/results-summary.md"
+        echo ""
+        echo "========== vllm-radeon results summary =========="
+        sed -n '1,80p' "${REPORT_DIR}/results-summary.md" 2>/dev/null || true
+        echo "================================================="
+        echo ""
+    else
+        _radeon_log "WARN: summarize-vllm-radeon-job.py failed"
+    fi
+}
+
 _radeon_job_cleanup() {
     _radeon_bpftrace_vfs_stop
     _radeon_bpftrace_nvme_stop
@@ -453,5 +881,6 @@ _radeon_job_cleanup() {
     if [[ -n "${CONTAINER_NAME:-}" ]]; then
         docker stop "${CONTAINER_NAME}" >/dev/null 2>&1 || true
         docker rm -f "${CONTAINER_NAME}" >/dev/null 2>&1 || true
+        _radeon_hf_fix_ownership
     fi
 }

@@ -103,6 +103,7 @@ def build_book(
         ],
         "split",
     )
+    questions_path = book_dir / f"{slug}.questions.json"
     run_step(
         [
             python,
@@ -117,6 +118,8 @@ def build_book(
             str(pg_id),
             "--count",
             str(question_count),
+            "-o",
+            str(questions_path),
         ],
         "questions",
     )

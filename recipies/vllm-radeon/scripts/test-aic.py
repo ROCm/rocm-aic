@@ -32,7 +32,7 @@ SALT_PREFIX = "test-aic"
 
 DEFAULT_GPU = 0
 DEFAULT_SLUG = "war-and-peace"
-DEFAULT_MODEL = "Qwen/Qwen2.5-3B-Instruct"
+DEFAULT_MODEL = "openai/gpt-oss-120b"
 DEFAULT_MAX_TOKENS = 32
 DEFAULT_PAUSE_S = 2.0
 DEFAULT_TIMEOUT_S = 600.0

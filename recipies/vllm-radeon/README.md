@@ -43,7 +43,7 @@ plugin, same **`DATA`/`subdir`** as **`gds_path`**, no **`gds_path`** key) |
 | Gutenberg chunks + questions + load / AIC A/B test | **`make data`**, **`scripts/test-aic.py`**, **`run-long.sh`** |
 | LMCache / NVMe textfile metrics for Grafana | **`scripts/rocm-aic-exporter.py`** |
 | Parse engine log → CSV/SVG | **`scripts/parse-vllm-engine-log-timeseries.py`** |
-| Slurm MI300 build + **`long_doc_qa`** | **`.slurm/vllm-radeon-mi300.sbatch`**, **`run-vllm-radeon.sh`** |
+| Slurm + Gutenberg **`run-long.sh`** | **`run-slurm.sh`**, **`.slurm/vllm-radeon.sbatch`** |
 
 ## Quick start
 
@@ -64,7 +64,7 @@ in **`Makefile`**: **`/mnt/lmcache-nvme`** → container **`/data`**). That
 volume should hold only LMCache on-disk state (**`subdir`**, runtime
 YAML, chunk statistics, etc.). vLLM tee logs go under host **`LOG`**
 (default **`recipies/vllm-radeon/logs`** → container **`/var/log/vllm-radeon`**,
-file **`server.txt`**). Override with **`make run LOG=/other/host/dir`** or
+file **`server.txt`**). Override with **`make run LOG=/other/host/logs`** or
 **`CONTAINER_LOG_DIR`**. **`make run`** also passes **`TZ=America/Edmonton`**
 (Edmonton, Alberta). **tzdata** uses that **IANA** id, not **`Canada/Edmonton`**;
 override with **`make run TZ=...`**. vLLM and LMCache log timestamps follow
@@ -72,43 +72,87 @@ override with **`make run TZ=...`**. vLLM and LMCache log timestamps follow
 (default **`vllm-radeon-gpu0`**, i.e. **`IMAGE_NAME`** + **`gpu`** + **`GPU`**);
 override with **`make run CONTAINER_NAME=...`**.
 
-## Slurm (MI300X cluster)
+## Slurm (ROCm GPU cluster)
 
-Submit from the **repository root** on a node with Docker and ROCm (partition
-**`defq`**, constraint **`MARKHAM&(GFX90A|GFX942)`** — see
-**`.slurm/vllm-radeon-mi300.sbatch`**).
+Submit from the **repository root** on a node with Docker and ROCm (default
+**`gres=gpu:1`**, no GPU architecture constraint — see
+**`.slurm/vllm-radeon.sbatch`**). Narrow nodes with **`RADEON_SLURM_CONSTRAINT`**
+(e.g. **`MARKHAM&GFX942`** for MI300X, **`MARKHAM`** for any Markham ROCm GPU).
 
 ```bash
-export HF_TOKEN=...              # or HF_TOKEN_FILE=~/.hf_token
-export RADEON_NVME_BASE=/mnt/nvme  # LMCache + HF cache; do not use /tmp on nodes
-bash .slurm/run-vllm-radeon.sh
+./run-slurm.sh
 ```
 
-The job **`docker build`**s the image, starts vLLM via **`make run-batch`**
-(detached container), runs **`long_doc_qa.py`** (same defaults as
-**`run-this.sh`**), and copies artifacts to
-**`.slurm/logs/vllm-radeon-<jobid>/`** (report, metadata, server log, LMCache
-API snapshots, optional bpftrace TSV).
+**`run-slurm.sh`** sets defaults (HF token file if present, Gutenberg path under
+**`/scratch/$USER/vllm-radeon/gutenberg`** and Hub weights under
+**`/scratch/$USER/vllm-radeon/hf/hub`**, **`RADEON_LMCACHE_IO=posix`**, parallel
+**`run-long-parallel.sh`** with **`4`** workers). You do not need to know NVMe
+mount paths in advance: the job discovers storage on the allocated node (blank
+**`nvme*n*`**, then mounted NVMe under **`/mnt`** / **`/local`** / similar, then
+**`/scratch/$USER/vllm-radeon/lmcache-<jobid>`**, then **`/tmp`**). Override any
+variable, then run again. Low-level submit: **`bash .slurm/run-vllm-radeon.sh`**.
+
+**One-time** Gutenberg library on shared storage (same path every job):
+
+```bash
+mkdir -p "$RADEON_GUTENBERG_DATA_ROOT"
+make -C recipies/vllm-radeon data-all BOOK_DATA_ROOT="$RADEON_GUTENBERG_DATA_ROOT"
+# smoke: make -C recipies/vllm-radeon data BOOK_DATA_DIR=$RADEON_GUTENBERG_DATA_ROOT/war-and-peace ...
+```
+
+The job **`docker build`**s the image, starts vLLM via **`make run-batch`**, then
+runs host **`run-long-parallel.sh`** (default **`4`** workers, distinct seeds;
+each worker calls **`run-long.sh`**). Set **`RADEON_RUN_LONG_PARALLEL=0`** or
+**`RADEON_BENCHMARK=gutenberg_serial`** for a single **`run-long.sh`** stream.
+Artifacts land under **`.slurm/logs/vllm-radeon-<jobid>/`**
+(**`run-long-parallel/<timestamp>/worker-*.jsonl`**, server log, LMCache API
+snapshots). Requires **`jq`** on compute nodes. LMCache **`long_doc_qa`** is
+optional (**`RADEON_BENCHMARK=long_doc_qa`**).
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| **`RADEON_NVME_BASE`** | job **`/tmp/vllm-radeon-<id>`** | Host dir for **`data/`** (LMCache) and **`hf/`** (Hub cache) |
+| **`RADEON_NVME_BASE`** | auto | Unset: discover on node (see below); else **`/tmp/...`** job dir |
+| **`RADEON_NVME_AUTO_USE`** | **`1`** | When **`RADEON_NVME_BASE`** unset, probe the compute node at runtime |
+| **`RADEON_NVME_SCRATCH_FALLBACK`** | **`1`** | Use **`/scratch/$USER/vllm-radeon/lmcache-<jobid>`** if no NVMe path |
+| **`RADEON_NVME_USE_SHARED_DATA_DOCKER`** | **`0`** | Allow LMCache under site **`/data`** / **`/docker`** (shared LVM; usually off) |
+| **`RADEON_NVME_MIN_AVAIL_GB`** | **`10`** | Minimum free space on a mounted NVMe path |
+| **`RADEON_NVME_MKFS`** | **`1`** if **`RADEON_NVME_BASE`** unset, else **`0`** | **`mkfs.ext4`** blank **`nvme*n*`** only (destructive); **`0`** to skip |
+| **`RADEON_NVME_MOUNT`** | **`/mnt/vllm-radeon-<jobid>`** | Mount point when mounting a blank **`nvme*n*`** |
+| **`RADEON_GUTENBERG_DATA_ROOT`** | **`RADEON_SHARED_ROOT/gutenberg`** or recipe **`data/`** | Shared Gutenberg chunks + **`*.questions.json`** |
+| **`RADEON_SHARED_ROOT`** | **`/scratch/$USER/vllm-radeon`** (via **`run-slurm.sh`**) | Shared parent on scratch |
+| **`RADEON_HF_HOME`** | **`/scratch/$USER/vllm-radeon/hf`** | Golden HF Hub cache (always; never **`lmcache-<jobid>/hf`**) |
+| **`VLLM_MODEL`** | **`model_default`** in yaml | Served model (vLLM + Gutenberg / **`long_doc_qa`**) |
+| **`RADEON_VLLM_READY_TIMEOUT`** | **`1800`** | Seconds to wait for **`/v1/models`** (raise for **`gpt-oss-120b`**) |
 | **`RADEON_LMCACHE_IO`** | **`hipfile`** | **`hipfile`** or **`posix`** disk backend |
-| **`RADEON_BENCHMARK`** | **`long_doc_qa`** | **`long_doc_qa`**, **`test_aic`**, or **`none`** |
+| **`RADEON_BENCHMARK`** | **`gutenberg`** | **`gutenberg`**, **`none`**, **`long_doc_qa`**, **`test_aic`** |
+| **`RADEON_RUN_LONG_PARALLEL`** | **`1`** | **`1`** = **`run-long-parallel.sh`**; **`0`** = serial **`run-long.sh`** |
+| **`RADEON_RUN_LONG_WORKERS`** | **`4`** | Parallel workers ( **`WORKERS`** ) |
+| **`RADEON_RUN_LONG_ITERATIONS`** | **`1`** | Per-worker **`ITERATIONS`** (total ≈ workers × iterations) |
+| **`RADEON_RUN_LONG_BASE_SEED`** | **`$RANDOM`** | Worker **`i`** uses seed **`BASE_SEED + i`** |
+| **`RADEON_RUN_LONG_STAGGER_SEC`** | **`0`** | Delay between starting workers |
+| **`BOOK_SLUG`** / **`BOOK_SLUGS`** | (library mode) | Single book or subset; see **`run-long.sh`** |
+| **`RADEON_SLURM_CONSTRAINT`** | (none) | Slurm **`--constraint`** (e.g. **`MARKHAM`**, **`MARKHAM&GFX942`**) |
+| **`RADEON_SLURM_MEM`** | **`64G`** (via sbatch) | Override with **`128G`** on large-memory nodes |
+| **`ROCM_ARCH`** | auto on node | Force image build (**`gfx942`**, **`gfx90a`**, **`gfx1201`**, …) |
 | **`RADEON_SKIP_BUILD`** | **`0`** | **`1`** skips **`make build`** if image exists |
-| **`RADEON_NVME_BLK_BPFTRACE`** | **`1`** (via wrapper) | NVMe block I/O bpftrace TSV |
+| **`RADEON_NVME_BLK_BPFTRACE`** | **`1`** (via wrapper) | NVMe block I/O bpftrace tab-separated trace |
 | **`RADEON_NVME_SMART_LOG`** | **`1`** (via wrapper) | **`nvme smart-log`** at job start/end |
 | **`RADEON_LMCACHE_ENABLE_KV_EVENTS`** | **`1`** | LMCache KV events in **`server.txt`** |
 
-Smoke test (build + server only):
+Build + server only (no Gutenberg load):
 
 ```bash
 sbatch --export=ALL,RADEON_BENCHMARK=none,RADEON_NVME_BASE=/mnt/nvme \
-  .slurm/vllm-radeon-mi300.sbatch
+  .slurm/vllm-radeon.sbatch
 ```
 
-Monitor: **`tail -f .slurm/logs/vllm-radeon-<jobid>.log`**. The legacy Kurt
-Slurm script **`.slurm/run-slurm.sh`** now delegates to **`run-vllm-radeon.sh`**.
+Monitor: **`tail -f .slurm/logs/vllm-radeon-<jobid>.log`**. After the job,
+read **`.slurm/logs/vllm-radeon-<jobid>/results-summary.md`** (per-worker TTFT,
+prefill/decode tok/s, LMCache store totals, bpftrace NVMe/VFS I/O, NVMe SMART
+delta, engine stats from **`server.txt`**, exit codes). Machine-readable:
+**`results-summary.json`**. Re-run post-processing:
+**`python3 .slurm/lib/summarize-vllm-radeon-job.py .slurm/logs/vllm-radeon-<jobid>`**.
+**`.slurm/run-slurm.sh`** delegates to the top-level **`run-slurm.sh`**.
 
 ## **`rocm-aic-exporter.py`** (Prometheus textfile)
 
@@ -280,14 +324,16 @@ docker exec -it vllm-radeon-gpu0 python3 \
   /app/LMCache/benchmarks/long_doc_qa/long_doc_qa.py --help
 docker exec -it vllm-radeon-gpu0 python3 \
   /app/LMCache/benchmarks/long_doc_qa/long_doc_qa.py \
-  --port 8000 --model Qwen/Qwen2.5-3B-Instruct \
+  --port 8000 --model openai/gpt-oss-120b \
   --num-documents 2 --hit-miss-ratio 1:1
 ```
 
 Use the same name as **`make run`** (**`CONTAINER_NAME`**, default **`vllm-radeon-gpu0`** if **`IMAGE_NAME`** and **`GPU`** match defaults).
 
-Match **`--model`** to **`VLLM_MODEL`** / **`vllm-radeon.yaml`** **`model_default`**;
-match **`--port`** to **`800{GPU}`** from **`ROCR_VISIBLE_DEVICES`**.
+Set **`VLLM_MODEL`** for Slurm and **`make run`** (same name for server and
+benchmarks). Unset uses **`vllm-radeon.yaml`** **`model_default`**. Legacy
+**`RADEON_BENCH_MODEL`** is copied to **`VLLM_MODEL`** with a warning.
+Match **`--port`** to **`800{GPU}`** from **`ROCR_VISIBLE_DEVICES`**.
 
 ## Gutenberg long-context fixtures
 

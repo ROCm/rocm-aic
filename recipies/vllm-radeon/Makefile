@@ -20,6 +20,8 @@ RADEON_LMCACHE_LOG_LEVEL ?=
 RADEON_LMCACHE_GDS_BUFFER_SIZE ?=
 # Enables vLLM dev HTTP APIs (e.g. POST /reset_prefix_cache). Set to 0 to disable.
 VLLM_SERVER_DEV_MODE ?= 1
+# Served model (vllm-server + Slurm benchmarks). Unset → configs/vllm-radeon.yaml default.
+VLLM_MODEL ?=
 ARGS ?=
 EXTRA_DOCKER_RUN_FLAGS ?=
 DOCKER_RUN_ATTACH ?= -it
@@ -35,6 +37,7 @@ BOOK_DATA_DIR ?= $(CURDIR)/data/$(BOOK_SLUG)
 BOOK_DATA_ROOT ?= $(CURDIR)/data
 GUTENBERG_MANIFEST ?= $(CURDIR)/configs/gutenberg-library.json
 DATA_ALL_LIMIT ?=
+DATA_ALL_BOOK ?=
 DATA_ALL_DELAY ?= 1.0
 DATA_ALL_SKIP_EXISTING ?= 1
 PYTHON ?= python3
@@ -81,7 +84,8 @@ help:
 	@echo "    BOOK_TITLE='Pride and Prejudice' BOOK_AUTHOR='Jane Austen'"
 	@echo ""
 	@echo "make data-all: manifest=$(GUTENBERG_MANIFEST) -> $(BOOK_DATA_ROOT)/"
-	@echo "  DATA_ALL_LIMIT=3 smoke test; DATA_ALL_SKIP_EXISTING=0 force rebuild."
+	@echo "  DATA_ALL_LIMIT=3 smoke test; DATA_ALL_BOOK=adam-bede one book;"
+	@echo "  DATA_ALL_SKIP_EXISTING=0 force rebuild."
 	@echo "  ./run-long.sh uses library mode (all books) when BOOK_SLUG is unset."
 	@echo ""
 
@@ -92,6 +96,7 @@ data-all:
 	}; \
 	_opts="--manifest $(GUTENBERG_MANIFEST) --data-root $(BOOK_DATA_ROOT) --delay $(DATA_ALL_DELAY)"; \
 	if [ "$(DATA_ALL_SKIP_EXISTING)" = "1" ]; then _opts="$$_opts --skip-existing"; fi; \
+	if [ -n "$(DATA_ALL_BOOK)" ]; then _opts="$$_opts --book $(DATA_ALL_BOOK)"; fi; \
 	if [ -n "$(DATA_ALL_LIMIT)" ]; then _opts="$$_opts --limit $(DATA_ALL_LIMIT)"; fi; \
 	echo "make data-all: manifest=$(GUTENBERG_MANIFEST) -> $(BOOK_DATA_ROOT)"; \
 	$(PYTHON) "$(CURDIR)/scripts/build-gutenberg-library.py" $$_opts
@@ -112,7 +117,8 @@ data:
 		--slug "$(BOOK_SLUG)" \
 		--title "$(BOOK_TITLE)" \
 		--author "$(BOOK_AUTHOR)" \
-		--pg-id "$(BOOK_PG_ID)"
+		--pg-id "$(BOOK_PG_ID)" \
+		-o "$(BOOK_DATA_DIR)/$(BOOK_SLUG).questions.json"
 
 run:
 	@$(MAKE) -f "$(CURDIR)/Makefile" _docker_run DOCKER_RUN_ATTACH=-it
@@ -162,6 +168,7 @@ _docker_run:
 		--env RADEON_LMCACHE_LOG_LEVEL="$(RADEON_LMCACHE_LOG_LEVEL)" \
 		--env RADEON_LMCACHE_GDS_BUFFER_SIZE="$(RADEON_LMCACHE_GDS_BUFFER_SIZE)" \
 		--env VLLM_SERVER_DEV_MODE="$(VLLM_SERVER_DEV_MODE)" \
+		$$(if [ -n "$(VLLM_MODEL)" ]; then printf '%s' "--env VLLM_MODEL=$(VLLM_MODEL)"; fi) \
 		--env HF_TOKEN="$$HF_TOKEN" \
 		--env ROCR_VISIBLE_DEVICES="$(GPU)" \
 		--env TZ="$(TZ)" \

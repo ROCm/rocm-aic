@@ -14,7 +14,7 @@
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BASE_URL="${BASE_URL:-http://127.0.0.1:8000}"
-MODEL="${MODEL:-Qwen/Qwen2.5-3B-Instruct}"
+MODEL="${MODEL:-openai/gpt-oss-120b}"
 BOOK_DATA_ROOT="${BOOK_DATA_ROOT:-${here}/data}"
 ITERATIONS="${ITERATIONS:-1}"
 RUN_LONG_WORKER="${RUN_LONG_WORKER:-}"
@@ -240,11 +240,12 @@ elif [[ -n "${BOOK_SLUG_MODE}" ]]; then
 fi
 
 resp_file=$(mktemp)
+payload_file=$(mktemp)
 combined_file=""
 if [[ "${RUN_LONG_COMBINE_CHUNKS}" -gt 1 && -z "${CONTEXT_FILE:-}" ]]; then
   combined_file=$(mktemp)
 fi
-trap 'rm -f "${resp_file}" "${combined_file}"' EXIT
+trap 'rm -f "${resp_file}" "${payload_file}" "${combined_file}"' EXIT
 
 # Pick N distinct chunk paths from pool (bash 3+ compatible).
 pick_distinct_chunks() {
@@ -370,32 +371,33 @@ for ((i = 1; i <= ITERATIONS; i++)); do
     echo "run-long: question_index=${qidx} file=${iter_questions_file}" >&2
   fi
 
-  read -r http_code elapsed < <(
-    jq -n \
-      --arg model "$MODEL" \
-      --arg question "$qtext" \
-      --rawfile context "$ctxt" \
-      '{
-        model: $model,
-        messages: [
-          { role: "system", content: "Answer using only the provided context." },
-          { role: "user", content: ("Context:\n\n" + $context + "\n\nQuestion: " + $question) }
-        ],
-        max_tokens: 512,
-        temperature: 0.2
-      }' \
-      | curl -sS "${BASE_URL}/v1/chat/completions" \
-          -H "Content-Type: application/json" \
-          -o "${resp_file}" \
-          -w '%{http_code} %{time_total}' \
-          -d @-
-  )
+  jq -n \
+    --arg model "$MODEL" \
+    --arg question "$qtext" \
+    --rawfile context "$ctxt" \
+    '{
+      model: $model,
+      messages: [
+        { role: "system", content: "Answer using only the provided context." },
+        { role: "user", content: ("Context:\n\n" + $context + "\n\nQuestion: " + $question) }
+      ],
+      max_tokens: 512,
+      temperature: 0.2
+    }' >"${payload_file}"
 
-  if [[ "${http_code}" != 2* ]]; then
+  if ! python3 "${here}/scripts/stream-chat-completion.py" \
+      --url "${BASE_URL}" \
+      --data-file "${payload_file}" \
+      -o "${resp_file}"; then
+    http_code=$(jq -r '.http_status // 0' "${resp_file}" 2>/dev/null || echo 0)
+    elapsed=$(jq -r '.client_wall_time_seconds // 0' "${resp_file}" 2>/dev/null || echo 0)
     echo "HTTP ${http_code} (client_wall_time_seconds=${elapsed}) iteration=${i}/${ITERATIONS}" >&2
     cat "${resp_file}" >&2
     exit 1
   fi
+
+  http_code=$(jq -r '.http_status' "${resp_file}")
+  elapsed=$(jq -r '.client_wall_time_seconds' "${resp_file}")
 
   if [[ "${i}" -gt 1 ]]; then
     echo
@@ -409,8 +411,7 @@ for ((i = 1; i <= ITERATIONS; i++)); do
     _jq_worker="${RUN_LONG_WORKER}"
   fi
   _sources_json=$(printf '%s\n' "${iter_context_sources[@]}" | jq -R . | jq -s .)
-  jq --argjson http "${http_code}" --argjson wall "${elapsed}" \
-    --argjson iter "${i}" --argjson total "${ITERATIONS}" \
+  jq --argjson iter "${i}" --argjson total "${ITERATIONS}" \
     --argjson seed "${_jq_seed}" --argjson worker "${_jq_worker}" \
     --argjson combine "${RUN_LONG_COMBINE_CHUNKS}" \
     --argjson sources "${_sources_json}" \
@@ -418,8 +419,6 @@ for ((i = 1; i <= ITERATIONS; i++)); do
     --arg context "${ctxt}" \
     --arg questions_file "${iter_questions_file:-${QUESTIONS_FILE:-}}" '
     . + {
-      http_status: $http,
-      client_wall_time_seconds: $wall,
       run_long_iteration: $iter,
       run_long_iterations_total: $total,
       run_long_seed: $seed,

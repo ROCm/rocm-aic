@@ -6,6 +6,7 @@ BDF
 BOs
 BPF
 BTF
+bpftrace
 CMX
 DPUs
 Dockerfile
