@@ -20,8 +20,11 @@ RADEON_LMCACHE_LOG_LEVEL ?=
 RADEON_LMCACHE_GDS_BUFFER_SIZE ?=
 # Enables vLLM dev HTTP APIs (e.g. POST /reset_prefix_cache). Set to 0 to disable.
 VLLM_SERVER_DEV_MODE ?= 1
+# Served model (vllm-server + Slurm benchmarks). Unset → configs/vllm-radeon.yaml default.
+VLLM_MODEL ?=
 ARGS ?=
 EXTRA_DOCKER_RUN_FLAGS ?=
+DOCKER_RUN_ATTACH ?= -it
 
 # Gutenberg long-context fixtures (gitignored under data/; not LMCache DATA mount)
 BOOK_SLUG ?= war-and-peace
@@ -34,6 +37,7 @@ BOOK_DATA_DIR ?= $(CURDIR)/data/$(BOOK_SLUG)
 BOOK_DATA_ROOT ?= $(CURDIR)/data
 GUTENBERG_MANIFEST ?= $(CURDIR)/configs/gutenberg-library.json
 DATA_ALL_LIMIT ?=
+DATA_ALL_BOOK ?=
 DATA_ALL_DELAY ?= 1.0
 DATA_ALL_SKIP_EXISTING ?= 1
 PYTHON ?= python3
@@ -50,7 +54,7 @@ ifneq ($(strip $(HIPFILE_SHA)),)
 BUILD_ARGS += --build-arg HIPFILE_SHA=$(HIPFILE_SHA)
 endif
 
-.PHONY: help build vllm-radeon run data data-all
+.PHONY: help build vllm-radeon run run-batch data data-all
 
 .DEFAULT_GOAL := help
 
@@ -59,9 +63,10 @@ help:
 	@echo ""
 	@echo "  make build         docker build -t $(IMAGE_NAME)"
 	@echo "  make vllm-radeon    alias for build"
-	@echo "  make run            docker run ... bind-mounts repo configs/ + scripts/"
+	@echo "  make run            docker run -it ... bind-mounts repo configs/ + scripts/"
 	@echo "                      + LOG (server.txt); DATA = LMCache KV only"
 	@echo "                      default CONTAINER_NAME=$(CONTAINER_NAME)"
+	@echo "  make run-batch      docker run -d (non-interactive; for Slurm sbatch)"
 	@echo "  make data           download PG book, chunk, and write questions JSON"
 	@echo "                      (BOOK_SLUG=$(BOOK_SLUG) BOOK_PG_ID=$(BOOK_PG_ID))"
 	@echo "  make data-all       build 100-book library from configs/gutenberg-library.json"
@@ -79,7 +84,8 @@ help:
 	@echo "    BOOK_TITLE='Pride and Prejudice' BOOK_AUTHOR='Jane Austen'"
 	@echo ""
 	@echo "make data-all: manifest=$(GUTENBERG_MANIFEST) -> $(BOOK_DATA_ROOT)/"
-	@echo "  DATA_ALL_LIMIT=3 smoke test; DATA_ALL_SKIP_EXISTING=0 force rebuild."
+	@echo "  DATA_ALL_LIMIT=3 smoke test; DATA_ALL_BOOK=adam-bede one book;"
+	@echo "  DATA_ALL_SKIP_EXISTING=0 force rebuild."
 	@echo "  ./run-long.sh uses library mode (all books) when BOOK_SLUG is unset."
 	@echo ""
 
@@ -90,6 +96,7 @@ data-all:
 	}; \
 	_opts="--manifest $(GUTENBERG_MANIFEST) --data-root $(BOOK_DATA_ROOT) --delay $(DATA_ALL_DELAY)"; \
 	if [ "$(DATA_ALL_SKIP_EXISTING)" = "1" ]; then _opts="$$_opts --skip-existing"; fi; \
+	if [ -n "$(DATA_ALL_BOOK)" ]; then _opts="$$_opts --book $(DATA_ALL_BOOK)"; fi; \
 	if [ -n "$(DATA_ALL_LIMIT)" ]; then _opts="$$_opts --limit $(DATA_ALL_LIMIT)"; fi; \
 	echo "make data-all: manifest=$(GUTENBERG_MANIFEST) -> $(BOOK_DATA_ROOT)"; \
 	$(PYTHON) "$(CURDIR)/scripts/build-gutenberg-library.py" $$_opts
@@ -110,9 +117,16 @@ data:
 		--slug "$(BOOK_SLUG)" \
 		--title "$(BOOK_TITLE)" \
 		--author "$(BOOK_AUTHOR)" \
-		--pg-id "$(BOOK_PG_ID)"
+		--pg-id "$(BOOK_PG_ID)" \
+		-o "$(BOOK_DATA_DIR)/$(BOOK_SLUG).questions.json"
 
 run:
+	@$(MAKE) -f "$(CURDIR)/Makefile" _docker_run DOCKER_RUN_ATTACH=-it
+
+run-batch:
+	@$(MAKE) -f "$(CURDIR)/Makefile" _docker_run DOCKER_RUN_ATTACH=-d
+
+_docker_run:
 	@set -e; \
 	HF_TOKEN_FILE_MAKE="$(HF_TOKEN_FILE)"; \
 	if [ -n "$$HF_TOKEN_FILE_MAKE" ]; then export HF_TOKEN_FILE="$$HF_TOKEN_FILE_MAKE"; fi; \
@@ -130,7 +144,8 @@ run:
 	mkdir -p "$(DATA)" "$(LOG)" "$(HF_HOME)" \
 		"$(HF_HOME)/hub" "$(HF_HOME)/datasets" "$(HF_HOME)/vllm" \
 		"$(HF_HOME)/vllm_config" "$(HF_HOME)/torch" "$(HF_HOME)/torch_inductor"; \
-	docker run -it --rm \
+	docker rm -f "$(CONTAINER_NAME)" >/dev/null 2>&1 || true; \
+	docker run $(DOCKER_RUN_ATTACH) --rm \
 		--name="$(CONTAINER_NAME)" \
 		--hostname="$(CONTAINER_NAME)" \
 		--ipc=host \
@@ -153,6 +168,7 @@ run:
 		--env RADEON_LMCACHE_LOG_LEVEL="$(RADEON_LMCACHE_LOG_LEVEL)" \
 		--env RADEON_LMCACHE_GDS_BUFFER_SIZE="$(RADEON_LMCACHE_GDS_BUFFER_SIZE)" \
 		--env VLLM_SERVER_DEV_MODE="$(VLLM_SERVER_DEV_MODE)" \
+		$$(if [ -n "$(VLLM_MODEL)" ]; then printf '%s' "--env VLLM_MODEL=$(VLLM_MODEL)"; fi) \
 		--env HF_TOKEN="$$HF_TOKEN" \
 		--env ROCR_VISIBLE_DEVICES="$(GPU)" \
 		--env TZ="$(TZ)" \
@@ -164,7 +180,10 @@ run:
 		-v "$(CURDIR)/scripts:/app/scripts:ro" \
 		-v /boot/config-$$(uname -r):/boot/config-$$(uname -r):ro \
 		$(EXTRA_DOCKER_RUN_FLAGS) \
-		$(IMAGE_NAME) $(ARGS)
+		$(IMAGE_NAME) $(ARGS); \
+	if [ "$(DOCKER_RUN_ATTACH)" = "-d" ]; then \
+		echo "Started container $(CONTAINER_NAME)"; \
+	fi
 
 build vllm-radeon:
 	@command -v docker >/dev/null 2>&1 || { \

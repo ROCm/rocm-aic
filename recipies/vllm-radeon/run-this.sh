@@ -7,7 +7,7 @@ CONTAINER_NAME="${CONTAINER_NAME:-${IMAGE_NAME}-gpu${GPU}}"
 docker exec -it "${CONTAINER_NAME}" python3 \
   /app/LMCache/benchmarks/long_doc_qa/long_doc_qa.py \
   --port 8000 \
-  --model Qwen/Qwen2.5-3B-Instruct \
+  --model openai/gpt-oss-120b \
   --num-documents 40 \
   --document-length 24000 \
   --output-len 128 \

@@ -24,6 +24,7 @@ report_meta.json
 # Slurm logs
 .slurm/logs/*.log
 ttft-llamacpp-*.log
+vllm-radeon-*.log
 
 # Debian package files
 *.deb

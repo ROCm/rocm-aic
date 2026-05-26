@@ -10,6 +10,7 @@ on:
     paths:
       - 'recipies/vllm-radeon/run-long.sh'
       - 'recipies/vllm-radeon/run-long-parallel.sh'
+      - 'recipies/vllm-radeon/scripts/stream-chat-completion.py'
       - 'recipies/vllm-radeon/tests/**'
       - '.github/workflows/vllm-radeon-shell.yml'
   workflow_dispatch:
@@ -23,6 +24,7 @@ jobs:
     runs-on: ubuntu-latest
     env:
       MOCK_PATH_PREFIX: ${{ github.workspace }}/recipies/vllm-radeon/tests/bin
+      RUN_LONG_STREAM_CHAT: ${{ github.workspace }}/recipies/vllm-radeon/tests/bin/stream-chat-completion.py
     defaults:
       run:
         working-directory: recipies/vllm-radeon
@@ -34,24 +36,21 @@ jobs:
       - name: Install jq
         run: sudo apt-get update && sudo apt-get install -y jq
 
-      - name: Single-book run-long (mock curl)
+      - name: Single-book run-long (mock stream-chat-completion)
         env:
-          PATH: ${{ env.MOCK_PATH_PREFIX }}:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
           BOOK_DATA_ROOT: ${{ github.workspace }}/recipies/vllm-radeon/tests/fixtures
           BOOK_SLUG: ci-mini-book
           ITERATIONS: '1'
           RUN_LONG_SEED: '42'
         run: |
           set -euo pipefail
-          mock_curl="${MOCK_PATH_PREFIX}/curl"
-          test "$(command -v curl)" = "${mock_curl}"
+          test -x "${RUN_LONG_STREAM_CHAT}"
           ./run-long.sh 2>&1 | tee "${RUNNER_TEMP}/run-long.log"
           grep -q 'run-long: library mode' "${RUNNER_TEMP}/run-long.log" && exit 1 || true
           grep -q 'run-long: iteration=1/1' "${RUNNER_TEMP}/run-long.log"
 
       - name: BOOK_SLUG_FILE allowlist
         env:
-          PATH: ${{ env.MOCK_PATH_PREFIX }}:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
           BOOK_DATA_ROOT: ${{ github.workspace }}/recipies/vllm-radeon/tests/fixtures
           BOOK_SLUG_FILE: ${{ github.workspace }}/recipies/vllm-radeon/tests/fixtures/ci-slugs.txt
           ITERATIONS: '1'
@@ -63,9 +62,8 @@ jobs:
           grep -q 'subset=ci-mini-book' "${RUNNER_TEMP}/run-long-allowlist.log"
           grep -q 'books=1' "${RUNNER_TEMP}/run-long-allowlist.log"
 
-      - name: run-long-parallel (2 workers, mock curl)
+      - name: run-long-parallel (2 workers, mock stream-chat-completion)
         env:
-          PATH: ${{ env.MOCK_PATH_PREFIX }}:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
           BOOK_DATA_ROOT: ${{ github.workspace }}/recipies/vllm-radeon/tests/fixtures
           BOOK_SLUG: ci-mini-book
           PROGRESS: '0'

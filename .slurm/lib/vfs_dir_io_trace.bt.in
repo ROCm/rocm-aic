@@ -1,0 +1,61 @@
+#!/usr/bin/env bpftrace
+// Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+//
+// SPDX-License-Identifier: MIT
+//
+// __CGROUP_PATH__ is replaced with json.dumps(cgroup_path) for cgroupid().
+// Filters vfs_read/write to the container cgroup only.
+//
+// Columns: tab-separated; ts_* are monotonic nsecs; ret_bytes from retval.
+
+BEGIN
+{
+  printf("ts_begin_ns\tts_end_ns\tduration_ns\top\tsize_req\tret_bytes\ttgid\ttid\tcomm\n");
+}
+
+kfunc:vfs_read
+/cgroup == cgroupid(__CGROUP_PATH__)/
+{
+  @t0[tid] = nsecs;
+  @op[tid] = 1;
+  @req[tid] = args->count;
+}
+
+kretfunc:vfs_read
+/@t0[tid] && @op[tid] == 1/
+{
+  $t1 = nsecs;
+  $dt = $t1 - @t0[tid];
+  printf("%llu\t%llu\t%llu\tREAD\t%llu\t%lld\t%d\t%d\t%s\n",
+    @t0[tid], $t1, $dt, @req[tid], (int64)retval, pid, tid, comm);
+  delete(@t0[tid]);
+  delete(@op[tid]);
+  delete(@req[tid]);
+}
+
+kfunc:vfs_write
+/cgroup == cgroupid(__CGROUP_PATH__)/
+{
+  @t0[tid] = nsecs;
+  @op[tid] = 2;
+  @req[tid] = args->count;
+}
+
+kretfunc:vfs_write
+/@t0[tid] && @op[tid] == 2/
+{
+  $t1 = nsecs;
+  $dt = $t1 - @t0[tid];
+  printf("%llu\t%llu\t%llu\tWRITE\t%llu\t%lld\t%d\t%d\t%s\n",
+    @t0[tid], $t1, $dt, @req[tid], (int64)retval, pid, tid, comm);
+  delete(@t0[tid]);
+  delete(@op[tid]);
+  delete(@req[tid]);
+}
+
+END
+{
+  clear(@t0);
+  clear(@op);
+  clear(@req);
+}
