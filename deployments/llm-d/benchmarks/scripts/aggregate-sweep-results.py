@@ -191,7 +191,7 @@ class SweepResultParser:
                     result["parsing_status"] = runs[0].get("parsing_status", "failed")
 
             elif tool == "multi-turn-benchmark":
-                output_file = run_dir / "benchmark_output.txt"
+                output_file = run_dir / "benchmark_output_run1.txt"
                 if not output_file.exists():
                     result["parsing_errors"] = [f"Output file not found: {output_file}"]
                     return result

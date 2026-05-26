@@ -31,21 +31,23 @@ spec:
       pip install xlsxwriter
       # Create unique subdirectory for this run
       mkdir -p /results/${RESULTS_SUBDIR}
-      wget https://www.gutenberg.org/ebooks/1184.txt.utf-8 && \\
-      mv 1184.txt.utf-8 pg1184.txt && \\
-      python3 benchmark_serving_multi_turn.py \\
-      ${ARGS_STR} && \\
-      echo "Copying result files to mounted volume..." && \\
+      set +e
+      python3 benchmark_serving_multi_turn.py ${ARGS_STR}
+      status=$?
+      set -e
+      echo "Benchmark exited with code=${status}"
+      echo "Copying result files to mounted volume..."
       cp -v *.xlsx *.json /results/${RESULTS_SUBDIR}/ 2>/dev/null || echo "No .xlsx or .json files to copy"
     volumeMounts:
-    - name: workload
-      mountPath: /workload
+    - name: inputs
+      mountPath: /inputs
       readOnly: true
     - name: results
       mountPath: /results
   volumes:
-  - name: workload
-    configMap:
-      name: benchmark-workload
+  # Folder containing text inputs to generate conversations
+  - name: inputs
+    hostPath:
+      path: /mnt/rocm-icms-cache/benchmarks-inputs
   # This will be patched by kustomize with the actual hostPath
 EOF
