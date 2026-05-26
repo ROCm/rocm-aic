@@ -13,6 +13,7 @@
 # Parallel load: use run-long-parallel.sh (distinct RUN_LONG_SEED per worker).
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+STREAM_CHAT="${RUN_LONG_STREAM_CHAT:-${here}/scripts/stream-chat-completion.py}"
 BASE_URL="${BASE_URL:-http://127.0.0.1:8000}"
 MODEL="${MODEL:-openai/gpt-oss-120b}"
 BOOK_DATA_ROOT="${BOOK_DATA_ROOT:-${here}/data}"
@@ -385,7 +386,7 @@ for ((i = 1; i <= ITERATIONS; i++)); do
       temperature: 0.2
     }' >"${payload_file}"
 
-  if ! python3 "${here}/scripts/stream-chat-completion.py" \
+  if ! python3 "${STREAM_CHAT}" \
       --url "${BASE_URL}" \
       --data-file "${payload_file}" \
       -o "${resp_file}"; then

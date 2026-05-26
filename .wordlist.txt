@@ -130,6 +130,7 @@ Slurm
 stderr
 stdout
 subcommand
+tok
 ttft
 warmup
 batesste
@@ -143,11 +144,15 @@ lmcache
 NICs
 lsblk
 lspci
+LVM
+mkdir
 playbook
 README
 rocminfo
 sbates
 vCPUs
+VFS
+yaml
 yml
 ARG
 amd
@@ -223,6 +228,7 @@ TTY
 aic
 cbor
 dev
+dir
 dixon
 gutenberg
 json

@@ -681,10 +681,12 @@ _radeon_gutenberg_prereqs() {
 
 _radeon_run_long_env() {
     local port="${VLLM_PORT:-8000}"
+    local model
+    model="$(_radeon_served_model)"
     export BOOK_DATA_ROOT="${GUTENBERG_DATA_ROOT}"
     # run-long.sh appends /v1/chat/completions; do not include /v1 here.
     export BASE_URL="http://127.0.0.1:${port}"
-    export MODEL="$(_radeon_served_model)"
+    export MODEL="${model}"
     export ITERATIONS="${RADEON_RUN_LONG_ITERATIONS:-1}"
     export BOOK_SLUG="${BOOK_SLUG:-}"
     export BOOK_SLUGS="${BOOK_SLUGS:-}"

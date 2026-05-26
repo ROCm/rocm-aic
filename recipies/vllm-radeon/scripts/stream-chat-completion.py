@@ -144,6 +144,15 @@ def main() -> int:
         status, doc, _wall, _ttft = stream_completion(args.url, payload)
     except urllib.error.URLError as exc:
         print(f"error: request failed: {exc}", file=sys.stderr)
+        err_doc = {
+            "http_status": 0,
+            "client_wall_time_seconds": 0.0,
+            "client_ttft_seconds": None,
+            "error": {"message": str(exc)},
+        }
+        with open(args.out, "w", encoding="utf-8") as fh:
+            json.dump(err_doc, fh, indent=2)
+            fh.write("\n")
         return 1
 
     out_path = args.out
