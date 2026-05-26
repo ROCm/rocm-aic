@@ -239,6 +239,7 @@ fi
 # Create output directory structure
 mkdir -p "$OUTPUT_DIR"
 LOG_FILE="$OUTPUT_DIR/benchmark_output_${RUN_LABEL}.log"
+DESCRIBE_FILE="$OUTPUT_DIR/benchmark_pod_describe_${RUN_LABEL}.log"
 
 # Wait for pod completion
 echo "Waiting for benchmark to complete (timeout: ${COMPLETION_TIMEOUT}s)..."
@@ -276,7 +277,8 @@ fi
 EXIT_CODE=$(kubectl get pod "$POD_NAME" -n "$NAMESPACE" -o jsonpath='{.status.containerStatuses[0].state.terminated.exitCode}' 2>/dev/null || echo "1")
 
 if [ "$EXIT_CODE" != "0" ]; then
-  echo "WARNING: Benchmark exited with code $EXIT_CODE"
+  echo "WARNING: Benchmark exited with code=$EXIT_CODE"
+  kubectl describe pod "$POD_NAME" -n "$NAMESPACE" > ${DESCRIBE_FILE}
 fi
 
 # Cleanup pod
