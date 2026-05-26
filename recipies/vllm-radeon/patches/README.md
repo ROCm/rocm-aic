@@ -1,3 +1,8 @@
+<!--
+Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+SPDX-License-Identifier: MIT
+-->
+
 # LMCache patches (vllm-radeon image)
 
 Patches are applied after `LMCACHE_SHA` checkout in the Dockerfile.
@@ -12,6 +17,8 @@ Patches are applied after `LMCACHE_SHA` checkout in the Dockerfile.
 | `lmcache-chunk-statistics-hash.patch` | (rocm-aic) | Chunk statistics use `pre_caching_hash_algorithm` (same as KV keys). |
 
 Adapted for the riley-dixon fork at `LMCACHE_SHA` (not a raw `git apply` of the upstream PR).
+
+<!-- References -->
 
 [pr-3008]: https://github.com/LMCache/LMCache/pull/3008
 [issue-2878]: https://github.com/LMCache/LMCache/issues/2878

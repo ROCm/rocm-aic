@@ -1,8 +1,12 @@
-# vLLM + LMCache + hipFile Benchmark
+<!--
+Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+SPDX-License-Identifier: MIT
+-->
 
-Benchmark kit for evaluating **KV-cache offload strategies**
-in [vLLM](https://github.com/vllm-project/vllm) on AMD
-MI325X GPUs. Three serving modes are compared:
+# vLLM + LMCache + hipFile benchmark
+
+Benchmark kit for evaluating **KV-cache offload strategies** in
+[vLLM][vllm] on AMD MI325X GPUs. Three serving modes are compared:
 
 | Mode | Script | KV cache location |
 |------|--------|-------------------|
@@ -10,17 +14,17 @@ MI325X GPUs. Three serving modes are compared:
 | CPU | `serve_cpu_cache.sh` | Host RAM via LMCache |
 | AIS | `serve_ais_cache.sh` | NVMe via hipFile/GDS |
 
-GPU memory utilisation is deliberately capped (30-32 %) to
-create VRAM pressure and force KV-cache spill.
+GPU memory utilisation is deliberately capped (30–32 %) to create VRAM
+pressure and force KV-cache spill.
+
+Part of [rocm-aic](../../../README.md).
 
 ## Prerequisites
 
-* Docker with GPU pass-through (ROCm `/dev/kfd`,
-  `/dev/dri`)
+* Docker with GPU pass-through (ROCm `/dev/kfd`, `/dev/dri`)
 * `/dev/infiniband` access (for RDMA / AIS mode)
 * `/data` mount for NVMe-backed AIS storage
-* A Hugging Face token with access to
-  `openai/gpt-oss-120b`
+* A Hugging Face token with access to `openai/gpt-oss-120b`
 
 ## Quick start
 
@@ -71,27 +75,21 @@ docker run -it --rm \
     "$(whoami)-hipfile"
 ```
 
-If your Docker/kernel setup does not support the fine-grained
-`BPF`/`PERFMON` capabilities and you still encounter permission
-errors when collecting BPF traces, you can temporarily add
-`--privileged` to the `docker run` command as a last resort.
+If your Docker/kernel setup does not support the fine-grained `BPF`/`PERFMON`
+capabilities and you still encounter permission errors when collecting BPF
+traces, you can temporarily add `--privileged` to the `docker run` command
+as a last resort.
 
 ### 4. Serve the model
 
 Pick one of the three modes from inside the container:
 
 ```bash
-# --gpu-memory-utilization and --tensor-parallel-size vLLM parameters can be set via env variables, such as: 
 export GPU_MEMORY_UTILIZATION=0.5
 export TENSOR_PARALLEL_SIZE=$(rocm-smi -i | grep "Instinct" | wc -l)
 
-# Baseline (no external cache)
 ./scripts/serve_nocache.sh
-
-# LMCache -> host CPU RAM
 ./scripts/serve_cpu_cache.sh
-
-# LMCache -> NVMe via hipFile (AIS)
 ./scripts/serve_ais_cache.sh
 ```
 
@@ -100,17 +98,13 @@ export TENSOR_PARALLEL_SIZE=$(rocm-smi -i | grep "Instinct" | wc -l)
 In a second shell inside the same container:
 
 ```bash
-# Short multi-turn (24 conversations, 12-18 turns)
 ./scripts/bench_multi_turn_short.sh
-
-# Long multi-turn (240 conversations, 24-36 turns)
 ./scripts/bench_multi_turn_long.sh
 ```
 
 ### 6. Collect hipFile traces with BPF
 
 ```bash
-# Trace hipFile IO with BPF
 ./scripts/trace_hipfile.sh [<custom libhipfile.so location>] > data.csv
 ```
 
@@ -135,12 +129,8 @@ scripts/
     books.txt                  (generated, gitignored)
 ```
 
-## References
+<!-- References -->
 
-* [hipFile](https://github.com/glimchb/hipFile) -- AMD
-  GPU Direct Storage library
-* [LMCache](https://github.com/glimchb/LMCache)
-  (hipFile branch) -- KV-cache management for LLM
-  inference
-* [vLLM](https://github.com/vllm-project/vllm) -- high
-  throughput LLM serving engine
+[vllm]: https://github.com/vllm-project/vllm
+[hipfile]: https://github.com/glimchb/hipFile
+[lmcache]: https://github.com/glimchb/LMCache

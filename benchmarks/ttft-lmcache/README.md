@@ -1,3 +1,8 @@
+<!--
+Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+SPDX-License-Identifier: MIT
+-->
+
 # TTFT LMCache Benchmark
 
 Measure **Time-To-First-Token (TTFT)** on AMD ROCm GPUs as a
@@ -34,6 +39,9 @@ JSON so any run can be replayed exactly.
 ## Prerequisites
 
 * Docker with GPU pass-through (ROCm `/dev/kfd`, `/dev/dri`)
+* Host tools: optional `pip install -r requirements.txt` from the [repo root][root-readme]
+  (full stack). The Docker image uses **local** `requirements.txt` here
+  (`openai`, `transformers` only).
 * `/dev/infiniband` access (only for AIS backend)
 * An NVMe or disk mount for cache storage
 * A HuggingFace token if using a gated model
@@ -133,8 +141,8 @@ explores different random layouts of cache holes.
 ```
 Dockerfile                    ROCm + vLLM + LMCache (+hipFile)
 README.md                     This file
-requirements.txt              Python deps (openai, transformers)
-bench_ttft.py                 TTFT measurement script
+requirements.txt              Image-only deps (openai, transformers)
+bench_ttft.py                 TTFT measurement script (host + container)
 scripts/
   docker-build.sh             Build the image
   docker-run.sh               Launch container with ROCm flags
@@ -151,5 +159,6 @@ configs/
 
 <!-- References -->
 
+[root-readme]: ../../README.md
 [vllm]: https://github.com/vllm-project/vllm
 [lmcache]: https://github.com/LMCache/LMCache

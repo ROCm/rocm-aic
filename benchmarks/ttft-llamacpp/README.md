@@ -1,3 +1,8 @@
+<!--
+Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+SPDX-License-Identifier: MIT
+-->
+
 # llama.cpp TTFT Benchmark
 
 Measure **Time-To-First-Token (TTFT)** on AMD ROCm GPUs using
@@ -27,11 +32,15 @@ REPEATS=5 SEED=123 sbatch .slurm/ttft-llamacpp.sbatch
 
 ## Manual usage
 
-```bash
-# install deps
-pip install openai matplotlib
+Host-side Python deps (including `matplotlib`) are in the repo root
+[`requirements.txt`](../../requirements.txt). The Docker image installs only
+this directory’s `requirements.txt` (`openai`, `matplotlib`).
 
-# run the benchmark
+```bash
+# from repository root
+pip install -r requirements.txt
+
+# run the benchmark (host or container)
 python3 ttft_bench.py run \
     --model /path/to/model.gguf \
     --context-chars 400 4000 40000 \
@@ -110,8 +119,9 @@ prompt caching.  See the patch header for details.
 ```
 Dockerfile                    ROCm + llama.cpp (HIP) build
 README.md                     This file
-requirements.txt              Python deps (openai, matplotlib)
-ttft_bench.py                 Unified CLI: run + report
+requirements.txt              Image-only deps (openai, matplotlib)
+ttft_bench.py                 Host CLI: run + report
+bench_ttft.py                 Copy used inside the Docker image
 corpus.txt                    (generated, gitignored)
 scripts/
   docker-build.sh             Build the Docker image
