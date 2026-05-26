@@ -10,22 +10,23 @@ components:
   - ../../components/hostpath-models
   - ../../components/hipfile
 
-# Benchmark harness injects LMCache config file out of bench sweep declaration
+# Note: Benchmark harness will override this definition with
+#       the LMCache config file out of bench sweep declaration
 configMapGenerator:
   - name: config-map
     behavior: replace
     literals:
       - |
         lmcache_config.yaml=chunk_size: 256
-        save_decode_cache: True
+        save_decode_cache: false
         local_cpu: false
-        gds_path: "/hipfile/lmcache"
-        cufile_buffer_size: 8192
+        use_gds: true
+        gds_backend: "hipfile"
+        gds_path: "/hipfile-of"
+        gds_buffer_size: 16384
         extra_config:
-          use_hipfile: true
-          use_cufile: false
-          use_direct_io: true
-        remote_url: null
+          gds_io_threads:
+            values: [16]
 
 # Benchmark harness injects vLLM args and LMCache connector out of bench sweep declaration
 patches:
