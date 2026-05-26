@@ -42,10 +42,15 @@ spec:
     - name: inputs
       mountPath: /inputs
       readOnly: true
+    - name: workload
+      mountPath: /workload
+      readOnly: true
     - name: results
       mountPath: /results
   volumes:
-  # Folder containing text inputs to generate conversations
+  - name: workload
+    configMap:
+      name: benchmark-workload
   - name: inputs
     hostPath:
       path: /mnt/rocm-icms-cache/benchmarks-inputs
