@@ -76,8 +76,13 @@ override with **`make run CONTAINER_NAME=...`**.
 
 Submit from the **repository root** on a node with Docker and ROCm (default
 **`gres=gpu:1`**, no GPU architecture constraint — see
-**`.slurm/vllm-lmcache-hipfile.sbatch`**). Narrow nodes with **`VLH_SLURM_CONSTRAINT`**
-(e.g. **`MARKHAM&GFX942`** for MI300X, **`MARKHAM`** for any Markham ROCm GPU).
+**`.slurm/vllm-lmcache-hipfile.sbatch`**). The allocated GPU node must allow
+**`docker`** for **`$USER`** (member of the **`docker`** group, or root). If
+**`docker build`** fails with *permission denied* on **`/var/run/docker.sock`**
+on compute nodes, build once on a node where Docker works (or via
+**`srun --pty`** on a GPU host), then set **`VLH_SKIP_BUILD=1`** for later jobs
+on that host. Narrow nodes with **`VLH_SLURM_CONSTRAINT`** (e.g.
+**`MARKHAM&GFX942`** for MI300X, **`MARKHAM`** for any Markham ROCm GPU).
 
 ```bash
 ./run-slurm.sh
@@ -117,10 +122,11 @@ optional (**`VLH_BENCHMARK=long_doc_qa`**).
 | --- | --- | --- |
 | **`VLH_NVME_BASE`** | auto | Unset: discover on node (see below); else **`/tmp/...`** job dir |
 | **`VLH_NVME_AUTO_USE`** | **`1`** | When **`VLH_NVME_BASE`** unset, probe the compute node at runtime |
+| **`VLH_NVME_AUTO_DEVICE`** | **`1`** | Pick first spare **`nvme*n*`** (skips OS disk when **`nvme*n*p*`** is mounted) |
 | **`VLH_NVME_SCRATCH_FALLBACK`** | **`1`** | Use **`/scratch/$USER/vllm-lmcache-hipfile/lmcache-<jobid>`** if no NVMe path |
 | **`VLH_NVME_USE_SHARED_DATA_DOCKER`** | **`0`** | Allow LMCache under site **`/data`** / **`/docker`** (shared LVM; usually off) |
 | **`VLH_NVME_MIN_AVAIL_GB`** | **`10`** | Minimum free space on a mounted NVMe path |
-| **`VLH_NVME_MKFS`** | **`1`** if **`VLH_NVME_BASE`** unset, else **`0`** | **`mkfs.ext4`** blank **`nvme*n*`** only (destructive); **`0`** to skip |
+| **`VLH_NVME_MKFS`** | **`1`** if **`VLH_NVME_BASE`** unset, else **`0`** | **`mkfs.ext4`** blank **`nvme*n*`** only (destructive); needs **root** |
 | **`VLH_NVME_MOUNT`** | **`/mnt/vllm-lmcache-hipfile-<jobid>`** | Mount point when mounting a blank **`nvme*n*`** |
 | **`VLH_GUTENBERG_DATA_ROOT`** | **`VLH_SHARED_ROOT/gutenberg`** or recipe **`data/`** | Shared Gutenberg chunks + **`*.questions.json`** |
 | **`VLH_SHARED_ROOT`** | **`/scratch/$USER/vllm-lmcache-hipfile`** (via **`run-slurm.sh`**) | Shared parent on scratch |
@@ -136,6 +142,7 @@ optional (**`VLH_BENCHMARK=long_doc_qa`**).
 | **`VLH_RUN_LONG_STAGGER_SEC`** | **`0`** | Delay between starting workers |
 | **`BOOK_SLUG`** / **`BOOK_SLUGS`** | (library mode) | Single book or subset; see **`run-long.sh`** |
 | **`VLH_SLURM_CONSTRAINT`** | (none) | Slurm **`--constraint`** (e.g. **`MARKHAM`**, **`MARKHAM&GFX942`**) |
+| **`VLH_SLURM_EXCLUDE`** | (none) | Slurm **`--exclude`** comma-separated node names |
 | **`VLH_SLURM_MEM`** | **`64G`** (via sbatch) | Override with **`128G`** on large-memory nodes |
 | **`ROCM_ARCH`** | auto on node | Force image build (**`gfx942`**, **`gfx90a`**, **`gfx1201`**, …) |
 | **`VLH_SKIP_BUILD`** | **`0`** | **`1`** skips **`make build`** if image exists |

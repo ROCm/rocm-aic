@@ -15,6 +15,8 @@
 # Optional GPU / resource selection (cluster-specific Slurm features):
 #   export VLH_SLURM_CONSTRAINT=MARKHAM   # any Markham ROCm node (default)
 #   export VLH_SLURM_CONSTRAINT='MARKHAM&GFX942'   # MI300X only
+#   export VLH_SLURM_EXCLUDE=node1,node2          # sbatch --exclude
+#   export VLH_SLURM_NODELIST=mlse-alola-b39-ws2   # sbatch --nodelist (pin one host)
 #   export VLH_SLURM_MEM=128G             # large-memory nodes (default 64G)
 #
 # Generate Gutenberg fixtures once on that shared path:
@@ -94,6 +96,12 @@ if [[ -n "${VLH_SLURM_PARTITION:-}" ]]; then
 fi
 if [[ -n "${VLH_SLURM_CONSTRAINT:-}" ]]; then
     _sbopts+=(--constraint="${VLH_SLURM_CONSTRAINT}")
+fi
+if [[ -n "${VLH_SLURM_EXCLUDE:-}" ]]; then
+    _sbopts+=(--exclude="${VLH_SLURM_EXCLUDE}")
+fi
+if [[ -n "${VLH_SLURM_NODELIST:-}" ]]; then
+    _sbopts+=(--nodelist="${VLH_SLURM_NODELIST}")
 fi
 if [[ -n "${VLH_SLURM_MEM:-}" ]]; then
     _sbopts+=(--mem="${VLH_SLURM_MEM}")

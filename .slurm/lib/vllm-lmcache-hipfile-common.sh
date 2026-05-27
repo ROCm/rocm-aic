@@ -107,14 +107,34 @@ _vlh_metadata_init() {
     _vlh_metadata_append "CONTAINER_NAME" "${CONTAINER_NAME}"
 }
 
+_vlh_nvme_disk_has_mounted_descendant() {
+    # True when the namespace or any child partition/filesystem is mounted.
+    local dev="$1"
+    lsblk -rn -o MOUNTPOINT "${dev}" 2>/dev/null \
+        | awk 'NF && $1 != "" { exit 0 } END { exit 1 }'
+}
+
 _vlh_find_unmounted_nvme_device() {
-    # Whole-disk nvme namespace, not mounted, not RAID/LVM member.
-    lsblk -dn -o NAME,MOUNTPOINT,FSTYPE,TYPE 2>/dev/null | awk '
-        $4 == "disk" &&
-        $1 ~ /^nvme[0-9]+n[0-9]+$/ &&
-        $2 == "" &&
-        $3 !~ /raid|LVM|linux_raid/ { print "/dev/" $1; exit }
-    '
+    # Spare whole-disk nvme namespace: no mounted descendants, not RAID/LVM.
+    # Skips OS drives such as nvme0n1 when nvme0n1p* holds / or /boot.
+    local name dev fstype
+    while IFS= read -r name; do
+        [[ -n "${name}" ]] || continue
+        [[ "${name}" =~ ^nvme[0-9]+n[0-9]+$ ]] || continue
+        dev="/dev/${name}"
+        fstype="$(lsblk -dn -o FSTYPE "${dev}" 2>/dev/null | head -1 || true)"
+        if [[ "${fstype}" =~ raid|LVM|linux_raid ]]; then
+            _vlh_log "VLH_NVME_AUTO_DEVICE: skip ${dev} (fstype=${fstype:-unknown})"
+            continue
+        fi
+        if _vlh_nvme_disk_has_mounted_descendant "${dev}"; then
+            _vlh_log "VLH_NVME_AUTO_DEVICE: skip ${dev} (mounted partition or filesystem)"
+            continue
+        fi
+        printf '%s' "${dev}"
+        return 0
+    done < <(lsblk -dn -o NAME,TYPE 2>/dev/null | awk '$2 == "disk" { print $1 }')
+    return 1
 }
 
 _vlh_nvme_log_inventory() {
@@ -259,24 +279,41 @@ _vlh_nvme_scratch_fallback() {
     return 0
 }
 
+_vlh_can_mkfs_mount_block_device() {
+    # Format/mount of a whole-disk block device requires root on typical Slurm nodes.
+    [[ "$(id -u)" -eq 0 ]]
+}
+
 _vlh_nvme_mount_device() {
     local device="$1"
     local mount="$2"
     local fstype
 
-    mkdir -p "${mount}"
+    if ! mkdir -p "${mount}"; then
+        _vlh_log "WARN: cannot create mount point ${mount}"
+        return 1
+    fi
     fstype="$(blkid -o value -s TYPE "${device}" 2>/dev/null || true)"
     if [[ -n "${fstype}" ]]; then
         _vlh_log "mount ${device} (${fstype}) -> ${mount}"
-        mount "${device}" "${mount}"
+        if ! mount "${device}" "${mount}"; then
+            _vlh_log "WARN: mount ${device} -> ${mount} failed (root required?)"
+            return 1
+        fi
     elif _vlh_truthy "${VLH_NVME_MKFS:-0}"; then
         _vlh_log "mkfs.ext4 ${device} -> ${mount}"
         command -v mkfs.ext4 >/dev/null 2>&1 || {
             _vlh_log "ERROR: mkfs.ext4 not found"
             return 1
         }
-        mkfs.ext4 -F "${device}"
-        mount "${device}" "${mount}"
+        if ! mkfs.ext4 -F "${device}"; then
+            _vlh_log "WARN: mkfs.ext4 ${device} failed (root required?)"
+            return 1
+        fi
+        if ! mount "${device}" "${mount}"; then
+            _vlh_log "WARN: mount ${device} -> ${mount} failed after mkfs"
+            return 1
+        fi
     else
         _vlh_log "WARN: ${device} has no filesystem; set VLH_NVME_MKFS=1 to format (default when auto-discovering)"
         return 1
@@ -287,6 +324,11 @@ _vlh_nvme_mount_device() {
     export VLH_NVME_DEVICE VLH_NVME_MOUNT VLH_NVME_BASE
     _vlh_metadata_append "VLH_NVME_DEVICE" "${device}"
     _vlh_metadata_append "VLH_NVME_MOUNT" "${mount}"
+    if _vlh_chown_to_job_user "${mount}"; then
+        _vlh_log "chown ${mount} -> ${SLURM_JOB_USER:-${USER}} (LMCache mount)"
+    else
+        _vlh_log "WARN: could not chown ${mount} to ${SLURM_JOB_USER:-${USER}}; LMCache writes may fail"
+    fi
     return 0
 }
 
@@ -307,10 +349,14 @@ _vlh_nvme_auto_use() {
         fi
     fi
     if [[ -n "${device}" ]]; then
-        mount="${VLH_NVME_MOUNT:-/mnt/vllm-lmcache-hipfile-${SLURM_JOB_ID:-local}}"
-        if _vlh_nvme_mount_device "${device}" "${mount}"; then
-            _vlh_metadata_append "VLH_NVME_AUTO_MODE" "mount-unmounted"
-            return 0
+        if ! _vlh_can_mkfs_mount_block_device; then
+            _vlh_log "VLH_NVME_AUTO_DEVICE: skip ${device} (mkfs/mount needs root; try mounted/scratch paths)"
+        else
+            mount="${VLH_NVME_MOUNT:-/mnt/vllm-lmcache-hipfile-${SLURM_JOB_ID:-local}}"
+            if _vlh_nvme_mount_device "${device}" "${mount}"; then
+                _vlh_metadata_append "VLH_NVME_AUTO_MODE" "mount-unmounted"
+                return 0
+            fi
         fi
     fi
 
@@ -565,8 +611,25 @@ _vlh_docker_cleanup() {
     fi
 }
 
+_vlh_docker_preflight() {
+    if docker info >/dev/null 2>&1; then
+        return 0
+    fi
+    _vlh_log "ERROR: cannot access Docker on $(hostname -s 2>/dev/null || hostname)"
+    _vlh_log "  (${DOCKER_HOST:-unix:///var/run/docker.sock}: permission denied or daemon down)"
+    _vlh_log "  Fix: add \$USER to the docker group on GPU nodes, or build the image on"
+    _vlh_log "  this host once (where docker works), then submit with VLH_SKIP_BUILD=1:"
+    _vlh_log "    make -C recipies/vllm-lmcache-hipfile build ROCM_ARCH=<gfx>"
+    _vlh_log "    export VLH_SKIP_BUILD=1 && ./run-slurm.sh"
+    return 1
+}
+
 _vlh_build_image() {
     local rc=0
+    if ! _vlh_docker_preflight; then
+        BUILD_RC=1
+        return 1
+    fi
     if _vlh_truthy "${VLH_SKIP_BUILD:-0}"; then
         if docker image inspect "${IMAGE_NAME:-vllm-lmcache-hipfile}" >/dev/null 2>&1; then
             _vlh_log "VLH_SKIP_BUILD=1 and image exists; skipping build"
@@ -627,19 +690,31 @@ _vlh_resolve_hf_home() {
     _vlh_metadata_append "VLH_HF_HOME" "${HF_HOST}"
 }
 
+_vlh_chown_to_job_user() {
+    local path="$1"
+    local who grp
+    [[ -e "${path}" ]] || return 0
+    who="${SLURM_JOB_USER:-${USER}}"
+    grp="$(id -gn "${who}" 2>/dev/null || echo "${who}")"
+    if chown -R "${who}:${grp}" "${path}" 2>/dev/null; then
+        return 0
+    fi
+    if command -v sudo >/dev/null 2>&1 \
+        && sudo chown -R "${who}:${grp}" "${path}" 2>/dev/null; then
+        return 0
+    fi
+    return 1
+}
+
 _vlh_hf_fix_ownership() {
     local hf="${HF_HOST:-$(_vlh_golden_hf_home)}"
     [[ -d "${hf}" ]] || return 0
-    if ! find "${hf}" -maxdepth 4 ! -user "${USER}" -print -quit 2>/dev/null | grep -q .; then
+    if ! find "${hf}" -maxdepth 4 ! -user "${SLURM_JOB_USER:-${USER}}" \
+        -print -quit 2>/dev/null | grep -q .; then
         return 0
     fi
     _vlh_log "Fixing HF cache ownership under ${hf} (docker wrote as root)"
-    local grp
-    grp="$(id -gn 2>/dev/null || echo "${USER}")"
-    if chown -R "${USER}:${grp}" "${hf}" 2>/dev/null; then
-        return 0
-    fi
-    if command -v sudo >/dev/null 2>&1 && sudo chown -R "${USER}:${grp}" "${hf}" 2>/dev/null; then
+    if _vlh_chown_to_job_user "${hf}"; then
         return 0
     fi
     _vlh_log "WARN: could not chown ${hf}; use: sudo chown -R \$USER:\$(id -gn) ${hf}"

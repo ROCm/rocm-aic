@@ -70,6 +70,11 @@ export VLH_RUN_LONG_WORKERS VLH_RUN_LONG_ITERATIONS VLH_RUN_LONG_BASE_SEED
 # --- Optional Slurm (uncomment to narrow nodes / raise memory) ---
 # export VLH_SLURM_CONSTRAINT=MARKHAM
 export VLH_SLURM_CONSTRAINT='MARKHAM&NVME'
+export VLH_SLURM_EXCLUDE='ctr-cx65-mi300x-30'
+# Pin to a workstation where you built the image (local docker only):
+# export VLH_SLURM_NODELIST='mlse-alola-b39-ws2'
+# export VLH_SKIP_BUILD=1
+# export ROCM_ARCH=gfx1100w
 # export VLH_SLURM_MEM=128G
 # export VLH_SLURM_CPUS=16
 
