@@ -1,0 +1,12 @@
+diff --git a/lmcache/v1/storage_backend/nixl_storage_backend.py b/lmcache/v1/storage_backend/nixl_storage_backend.py
+--- a/lmcache/v1/storage_backend/nixl_storage_backend.py
++++ b/lmcache/v1/storage_backend/nixl_storage_backend.py
+@@ -99,7 +99,7 @@ class NixlStorageConfig:
+             else:
+                 return False
+         else:
+-            if backend in ("GDS", "GDS_MT", "OBJ"):
++            if backend in ("GDS", "GDS_MT", "OBJ", "AIS", "AIS_MT"):
+                 return device == "cpu" or device == "cuda"
+             elif backend in ("POSIX", "HF3FS", "AZURE_BLOB"):
+                 return device == "cpu"

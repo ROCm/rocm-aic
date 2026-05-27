@@ -3,6 +3,8 @@
 # SPDX-License-Identifier: MIT
 #
 
+REPO_ROOT := $(abspath $(CURDIR)/../..)
+BENCH_DIR := $(REPO_ROOT)/benchmarks/llm-prefill-benchmark
 IMAGE_NAME ?= vllm-lmcache-hipfile
 GPU ?= 0
 # **`docker run --name`** / **`--hostname`** (default **`$(IMAGE_NAME)-gpu$(GPU)`**, e.g. **vllm-lmcache-hipfile-gpu0**).
@@ -35,7 +37,7 @@ BOOK_CHUNK_WORDS ?= 10000
 BOOK_CHUNK_COUNT ?= 100
 BOOK_DATA_DIR ?= $(CURDIR)/data/$(BOOK_SLUG)
 BOOK_DATA_ROOT ?= $(CURDIR)/data
-GUTENBERG_MANIFEST ?= $(CURDIR)/configs/gutenberg-library.json
+GUTENBERG_MANIFEST ?= $(BENCH_DIR)/configs/gutenberg-library.json
 DATA_ALL_LIMIT ?=
 DATA_ALL_BOOK ?=
 DATA_ALL_DELAY ?= 1.0
@@ -90,35 +92,23 @@ help:
 	@echo ""
 
 data-all:
-	@set -e; \
-	command -v $(PYTHON) >/dev/null 2>&1 || { \
-		echo "ERROR: $(PYTHON) not found" >&2; exit 1; \
-	}; \
-	_opts="--manifest $(GUTENBERG_MANIFEST) --data-root $(BOOK_DATA_ROOT) --delay $(DATA_ALL_DELAY)"; \
-	if [ "$(DATA_ALL_SKIP_EXISTING)" = "1" ]; then _opts="$$_opts --skip-existing"; fi; \
-	if [ -n "$(DATA_ALL_BOOK)" ]; then _opts="$$_opts --book $(DATA_ALL_BOOK)"; fi; \
-	if [ -n "$(DATA_ALL_LIMIT)" ]; then _opts="$$_opts --limit $(DATA_ALL_LIMIT)"; fi; \
-	echo "make data-all: manifest=$(GUTENBERG_MANIFEST) -> $(BOOK_DATA_ROOT)"; \
-	$(PYTHON) "$(CURDIR)/scripts/build-gutenberg-library.py" $$_opts
+	@$(MAKE) -C "$(BENCH_DIR)" data-all \
+		BOOK_DATA_ROOT="$(BOOK_DATA_ROOT)" \
+		GUTENBERG_MANIFEST="$(GUTENBERG_MANIFEST)" \
+		DATA_ALL_LIMIT="$(DATA_ALL_LIMIT)" \
+		DATA_ALL_BOOK="$(DATA_ALL_BOOK)" \
+		DATA_ALL_DELAY="$(DATA_ALL_DELAY)" \
+		DATA_ALL_SKIP_EXISTING="$(DATA_ALL_SKIP_EXISTING)"
 
 data:
-	@set -e; \
-	command -v $(PYTHON) >/dev/null 2>&1 || { \
-		echo "ERROR: $(PYTHON) not found" >&2; exit 1; \
-	}; \
-	echo "make data: BOOK_SLUG=$(BOOK_SLUG) PG#$(BOOK_PG_ID) -> $(BOOK_DATA_DIR)"; \
-	$(PYTHON) "$(CURDIR)/scripts/split-gutenberg-random-chunks.py" \
-		--pg-id "$(BOOK_PG_ID)" \
-		--slug "$(BOOK_SLUG)" \
-		-o "$(BOOK_DATA_DIR)" \
-		--chunk-words "$(BOOK_CHUNK_WORDS)" \
-		--count "$(BOOK_CHUNK_COUNT)"; \
-	$(PYTHON) "$(CURDIR)/scripts/gen-questions-json.py" \
-		--slug "$(BOOK_SLUG)" \
-		--title "$(BOOK_TITLE)" \
-		--author "$(BOOK_AUTHOR)" \
-		--pg-id "$(BOOK_PG_ID)" \
-		-o "$(BOOK_DATA_DIR)/$(BOOK_SLUG).questions.json"
+	@$(MAKE) -C "$(BENCH_DIR)" data \
+		BOOK_SLUG="$(BOOK_SLUG)" \
+		BOOK_PG_ID="$(BOOK_PG_ID)" \
+		BOOK_TITLE="$(BOOK_TITLE)" \
+		BOOK_AUTHOR="$(BOOK_AUTHOR)" \
+		BOOK_CHUNK_WORDS="$(BOOK_CHUNK_WORDS)" \
+		BOOK_CHUNK_COUNT="$(BOOK_CHUNK_COUNT)" \
+		BOOK_DATA_DIR="$(BOOK_DATA_DIR)"
 
 run:
 	@$(MAKE) -f "$(CURDIR)/Makefile" _docker_run DOCKER_RUN_ATTACH=-it
@@ -195,4 +185,4 @@ build vllm-lmcache-hipfile:
 		echo "       or set e.g. ROCM_ARCH=gfx1201 for RX 9070 XT)" >&2; \
 		exit 1; \
 	}
-	docker build . -t $(IMAGE_NAME) $(BUILD_ARGS)
+	docker build -f "$(CURDIR)/Dockerfile" -t $(IMAGE_NAME) $(BUILD_ARGS) "$(REPO_ROOT)"

@@ -36,9 +36,9 @@ jobs:
           set -euo pipefail
           yamllint -c .yamllint recipies/vllm-lmcache-hipfile/configs/
 
-      - name: Validate gutenberg-library.json
+      - name: Validate gutenberg-library.json (benchmark manifest)
         env:
-          MANIFEST: ${{ github.workspace }}/recipies/vllm-lmcache-hipfile/configs/gutenberg-library.json
+          MANIFEST: ${{ github.workspace }}/benchmarks/llm-prefill-benchmark/configs/gutenberg-library.json
         run: |
           set -euo pipefail
           jq -e '

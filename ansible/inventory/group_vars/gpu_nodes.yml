@@ -85,8 +85,8 @@ extra_packages:
   - prometheus-node-exporter
 
 # --- Optional: ROCm inference container (playbooks/inference-image.yml) ---
-# inference_nixl_git_url: https://github.com/ROCm/nixl.git
-# inference_nixl_git_ref: ""   # set tag/commit for reproducible NIXL builds
+# inference_nixl_git_url: https://github.com/andyluo7/nixl.git
+# inference_nixl_git_ref: amd-support   # amd-support + AIS overlay at build time
 # inference_llm_d_git_sha: "" # optional llm-d commit after branch checkout
 # inference_container_tarball: /tmp/rocm-inference-stack.tar
 # inference_container_install_service: false
