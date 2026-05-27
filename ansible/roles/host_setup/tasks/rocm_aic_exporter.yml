@@ -50,8 +50,8 @@
   environment:
     ROCM_AIC_EXPORTER_TEXTFILE: "{{ host_setup_rocm_aic_exporter_textfile_path }}"
     ROCM_ICMS_TEXTFILE_DIR: "{{ host_setup_node_exporter_textfile_dir }}"
-    RADEON_HOST_DATA_ROOT: "{{ host_setup_rocm_aic_exporter_radeon_host_data_root }}"
-    RADEON_LMCACHE_KV_SUBDIR: "{{ host_setup_rocm_aic_exporter_lmcache_kv_subdir }}"
-    RADEON_LMCACHE_CHUNK_STATS_SUBDIR: >-
+    VLH_HOST_DATA_ROOT: "{{ host_setup_rocm_aic_exporter_vlh_host_data_root }}"
+    VLH_LMCACHE_KV_SUBDIR: "{{ host_setup_rocm_aic_exporter_lmcache_kv_subdir }}"
+    VLH_LMCACHE_CHUNK_STATS_SUBDIR: >-
       {{ host_setup_rocm_aic_exporter_lmcache_chunk_stats_subdir }}
   changed_when: false

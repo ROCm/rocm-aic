@@ -3,7 +3,7 @@ Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
 SPDX-License-Identifier: MIT
 -->
 
-# LMCache patches (vllm-radeon image)
+# LMCache patches (vllm-lmcache-hipfile image)
 
 Patches are applied after `LMCACHE_SHA` checkout in the Dockerfile.
 

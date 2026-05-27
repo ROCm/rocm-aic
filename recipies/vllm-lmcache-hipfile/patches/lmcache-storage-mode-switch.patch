@@ -195,7 +195,7 @@ index 0000000..901bfa9
 +    fs_base_path: Optional[str] = None,
 +    gds_backend: Optional[str] = None,
 +) -> Dict[str, Any]:
-+    """Mutate *config* to match vllm-radeon hipfile or posix LMCache profiles.
++    """Mutate *config* to match vllm-lmcache-hipfile hipfile or posix LMCache profiles.
 +
 +    Matches ``scripts/vllm-server`` materialization: hipfile uses ``gds_path``
 +    and hipFile extra_config; posix uses ``remote_storage_plugins: [fs]`` with

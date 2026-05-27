@@ -44,7 +44,7 @@ examples:
   # Default fixture (first chunk + question under data/war-and-peace/)
   python3 scripts/test-aic.py -o logs/test-aic.json
 
-  # Explicit context; posix disk backend (RADEON_LMCACHE_IO=posix)
+  # Explicit context; posix disk backend (VLH_LMCACHE_IO=posix)
   python3 scripts/test-aic.py --lmcache-io posix \\
       --context data/war-and-peace/war-and-peace-10k.100270.txt \\
       -r my-run -o logs/my-run.json
@@ -188,7 +188,7 @@ def build_parser() -> argparse.ArgumentParser:
         help=(
             "Which disk backend to use for populate/cold/warm. "
             "'auto' reads GET /bypass/list (all_backends): GdsBackend (hipfile) "
-            "or RemoteBackend-fs (posix). Match RADEON_LMCACHE_IO at make run."
+            "or RemoteBackend-fs (posix). Match VLH_LMCACHE_IO at make run."
         ),
     )
 
@@ -244,7 +244,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     logging_grp = p.add_argument_group(
         "logging",
-        "Parse recipies/vllm-radeon/logs/server.txt for NVMe and hit-rate columns.",
+        "Parse recipies/vllm-lmcache-hipfile/logs/server.txt for NVMe and hit-rate columns.",
     )
     log_exclusive = logging_grp.add_mutually_exclusive_group()
     log_exclusive.add_argument(
@@ -486,7 +486,7 @@ def resolve_disk_backend(base: str, timeout: float, lmcache_io: str) -> str:
         if want not in available:
             raise RuntimeError(
                 f"disk backend {want!r} not in LMCache backends {available!r}; "
-                f"start server with matching RADEON_LMCACHE_IO or use --lmcache-io auto",
+                f"start server with matching VLH_LMCACHE_IO or use --lmcache-io auto",
             )
         return want
 

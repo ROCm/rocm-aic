@@ -75,9 +75,9 @@ host_setup_rocm_icms_textfile_dir: "{{ host_setup_node_exporter_textfile_dir }}"
 host_setup_rocm_aic_exporter_enabled: true
 host_setup_rocm_aic_exporter_install_dir: /opt/rocm-aic-exporter
 host_setup_rocm_aic_exporter_script_src: >-
-  {{ role_path }}/../../../recipies/vllm-radeon/scripts/rocm-aic-exporter.py
+  {{ role_path }}/../../../recipies/vllm-lmcache-hipfile/scripts/rocm-aic-exporter.py
 host_setup_rocm_aic_exporter_textfile_path: >-
   {{ host_setup_node_exporter_textfile_dir }}/rocm_aic_exporter.prom
-host_setup_rocm_aic_exporter_radeon_host_data_root: /mnt/lmcache-nvme
+host_setup_rocm_aic_exporter_vlh_host_data_root: /mnt/lmcache-nvme
 host_setup_rocm_aic_exporter_lmcache_kv_subdir: lmcache
 host_setup_rocm_aic_exporter_lmcache_chunk_stats_subdir: lmcache_chunk_stats

@@ -3,10 +3,10 @@
 # SPDX-License-Identifier: MIT
 #
 # Full image build (~10GB+ layers). GitHub-hosted runners often run out of
-# disk on cold builds; PRs use vllm-radeon-lmcache-patches.yml instead.
+# disk on cold builds; PRs use vllm-lmcache-hipfile-lmcache-patches.yml instead.
 # Run this workflow manually after Dockerfile or patch changes.
 #
-name: vllm-radeon Docker
+name: vllm-lmcache-hipfile Docker
 
 on:
   workflow_dispatch:
@@ -15,7 +15,7 @@ permissions:
   contents: read
 
 env:
-  IMAGE_NAME: vllm-radeon
+  IMAGE_NAME: vllm-lmcache-hipfile
   ROCM_ARCH: gfx942
 
 jobs:
@@ -51,14 +51,14 @@ jobs:
 
       - uses: docker/setup-buildx-action@v3
 
-      - name: Build vllm-radeon (no load; saves runner disk)
+      - name: Build vllm-lmcache-hipfile (no load; saves runner disk)
         uses: docker/build-push-action@v6
         with:
-          context: recipies/vllm-radeon
-          file: recipies/vllm-radeon/Dockerfile
+          context: recipies/vllm-lmcache-hipfile
+          file: recipies/vllm-lmcache-hipfile/Dockerfile
           push: false
           tags: ${{ env.IMAGE_NAME }}:ci
           build-args: |
             ROCM_ARCH=${{ env.ROCM_ARCH }}
-          cache-from: type=gha,scope=vllm-radeon
-          cache-to: type=gha,mode=max,scope=vllm-radeon
+          cache-from: type=gha,scope=vllm-lmcache-hipfile
+          cache-to: type=gha,mode=max,scope=vllm-lmcache-hipfile

@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: MIT
 #
-# vllm-radeon: LMCache + vLLM Serve Defaults + KV Connector JSON.
+# vllm-lmcache-hipfile: LMCache + vLLM Serve Defaults + KV Connector JSON.
 
 lmcache_paths:
   subdir: lmcache

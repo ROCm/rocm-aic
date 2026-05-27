@@ -27,8 +27,8 @@ _script_dir = Path(__file__).resolve().parent
 
 
 def _load_defaults_module():
-    path = _script_dir / "vllm-radeon-defaults.py"
-    spec = importlib.util.spec_from_file_location("vllm_radeon_defaults", path)
+    path = _script_dir / "vllm-lmcache-hipfile-defaults.py"
+    spec = importlib.util.spec_from_file_location("vllm_vlh_defaults", path)
     if spec is None or spec.loader is None:
         raise ImportError(f"cannot load {path}")
     mod = importlib.util.module_from_spec(spec)
@@ -45,11 +45,11 @@ _CONFIG_DIR = (
     if _cfg_next_to_script.is_dir()
     else _script_dir.parent / "configs"
 )
-_SERVICE_YAML = _CONFIG_DIR / "vllm-radeon.yaml"
+_SERVICE_YAML = _CONFIG_DIR / "vllm-lmcache-hipfile.yaml"
 
 
 def _lmcache_io_mode() -> str:
-    return os.environ.get("RADEON_LMCACHE_IO", "hipfile").strip().lower()
+    return os.environ.get("VLH_LMCACHE_IO", "hipfile").strip().lower()
 
 
 def _truthy(name: str, default: str = "1") -> bool:
@@ -68,29 +68,29 @@ def _chunk_statistics_extra(data_root: Path) -> dict[str, object]:
 
 
 def _apply_chunk_statistics_env(env: dict[str, str]) -> None:
-    if not _truthy("RADEON_LMCACHE_ENABLE_CHUNK_STATISTICS", "1"):
+    if not _truthy("VLH_LMCACHE_ENABLE_CHUNK_STATISTICS", "1"):
         return
     env["LMCACHE_ENABLE_CHUNK_STATISTICS"] = "true"
     env["LMCACHE_CHUNK_STATISTICS_AUTO_START_STATISTICS"] = "true"
     env["LMCACHE_CHUNK_STATISTICS_STRATEGY"] = os.environ.get(
-        "RADEON_LMCACHE_CHUNK_STATISTICS_STRATEGY", "file_hash"
+        "VLH_LMCACHE_CHUNK_STATISTICS_STRATEGY", "file_hash"
     ).strip()
     env.setdefault("PYTHONHASHSEED", "0")
 
 
 def _apply_kv_events_env(env: dict[str, str]) -> None:
-    if not _truthy("RADEON_LMCACHE_ENABLE_KV_EVENTS", "1"):
+    if not _truthy("VLH_LMCACHE_ENABLE_KV_EVENTS", "1"):
         return
     env["LMCACHE_ENABLE_KV_EVENTS"] = "true"
 
 
 def _apply_lmcache_log_level(env: dict[str, str]) -> None:
-    v = os.environ.get("RADEON_LMCACHE_LOG_LEVEL", "").strip()
+    v = os.environ.get("VLH_LMCACHE_LOG_LEVEL", "").strip()
     env["LMCACHE_LOG_LEVEL"] = v if v else "INFO"
 
 
 def _apply_pytorch_alloc_conf(env: dict[str, str]) -> None:
-    v = os.environ.get("RADEON_PYTORCH_ALLOC_CONF", "").strip()
+    v = os.environ.get("VLH_PYTORCH_ALLOC_CONF", "").strip()
     if not v:
         v = os.environ.get("VLLM_PYTORCH_ALLOC_CONF", "").strip()
     if v:
@@ -98,7 +98,7 @@ def _apply_pytorch_alloc_conf(env: dict[str, str]) -> None:
 
 
 def _enforce_eager() -> bool:
-    v = os.environ.get("RADEON_ENFORCE_EAGER", "").strip().lower()
+    v = os.environ.get("VLH_ENFORCE_EAGER", "").strip().lower()
     if not v:
         v = os.environ.get("VLLM_ENFORCE_EAGER", "").strip().lower()
     if v in ("0", "false", "no", "off"):
@@ -107,7 +107,7 @@ def _enforce_eager() -> bool:
 
 
 def _enable_mfu_metrics(prof: dict[str, Any]) -> bool:
-    v = os.environ.get("RADEON_ENABLE_MFU_METRICS", "").strip().lower()
+    v = os.environ.get("VLH_ENABLE_MFU_METRICS", "").strip().lower()
     if not v:
         v = os.environ.get("VLLM_ENABLE_MFU_METRICS", "").strip().lower()
     if v in ("0", "false", "no", "off"):
@@ -131,7 +131,7 @@ def _tee_thread(stream: Any, log_f: Any) -> None:
 
 
 def _lmcache_template_from_svc(svc: dict[str, Any]) -> Path | None:
-    """Resolve LMCache YAML path from **`RADEON_LMCACHE_IO`** and **`vllm-radeon.yaml`**."""
+    """Resolve LMCache YAML path from **`VLH_LMCACHE_IO`** and **`vllm-lmcache-hipfile.yaml`**."""
     mode = _lmcache_io_mode()
     if mode in ("posix", "mmap", "non-gds"):
         key = "lmcache_posix"
@@ -139,15 +139,15 @@ def _lmcache_template_from_svc(svc: dict[str, Any]) -> Path | None:
         key = "lmcache_hipfile"
     else:
         print(
-            "ERROR: RADEON_LMCACHE_IO must be hipfile or posix "
-            f"(got {mode!r}); see configs/vllm-radeon.yaml",
+            "ERROR: VLH_LMCACHE_IO must be hipfile or posix "
+            f"(got {mode!r}); see configs/vllm-lmcache-hipfile.yaml",
             file=sys.stderr,
         )
         return None
     lmc_path = svc.get(key)
     if not isinstance(lmc_path, str) or not lmc_path.strip():
         print(
-            f"ERROR: vllm-radeon.yaml must define {key} (LMCache template path)",
+            f"ERROR: vllm-lmcache-hipfile.yaml must define {key} (LMCache template path)",
             file=sys.stderr,
         )
         return None
@@ -159,7 +159,7 @@ def _materialize_lmcache_config(svc: dict[str, Any], data_root: Path) -> Path | 
     paths = svc.get("lmcache_paths")
     if not isinstance(paths, dict):
         print(
-            "ERROR: vllm-radeon.yaml must define lmcache_paths as a mapping",
+            "ERROR: vllm-lmcache-hipfile.yaml must define lmcache_paths as a mapping",
             file=sys.stderr,
         )
         return None
@@ -206,13 +206,13 @@ def _materialize_lmcache_config(svc: dict[str, Any], data_root: Path) -> Path | 
             ec.pop("remote_storage_plugin.fs.base_path", None)
             if not ec:
                 cfg.pop("extra_config", None)
-        buf_mb = os.environ.get("RADEON_LMCACHE_GDS_BUFFER_SIZE", "").strip()
+        buf_mb = os.environ.get("VLH_LMCACHE_GDS_BUFFER_SIZE", "").strip()
         if buf_mb:
             try:
                 cfg["gds_buffer_size"] = int(buf_mb)
             except ValueError:
                 print(
-                    f"WARN: invalid RADEON_LMCACHE_GDS_BUFFER_SIZE={buf_mb!r}, "
+                    f"WARN: invalid VLH_LMCACHE_GDS_BUFFER_SIZE={buf_mb!r}, "
                     "keeping template gds_buffer_size",
                     file=sys.stderr,
                 )
@@ -228,14 +228,14 @@ def _materialize_lmcache_config(svc: dict[str, Any], data_root: Path) -> Path | 
                 extra = {**prior, **extra}
         except json.JSONDecodeError:
             pass
-    if _truthy("RADEON_LMCACHE_ENABLE_CHUNK_STATISTICS", "1"):
+    if _truthy("VLH_LMCACHE_ENABLE_CHUNK_STATISTICS", "1"):
         extra.update(_chunk_statistics_extra(data_root))
     if extra:
         cfg["extra_config"] = extra
     else:
         cfg.pop("extra_config", None)
 
-    out = data_root / ".lmcache-radeon-runtime.yaml"
+    out = data_root / ".lmcache-vlh-runtime.yaml"
     out.write_text(
         yaml.safe_dump(cfg, default_flow_style=False, sort_keys=False),
         encoding="utf-8",
@@ -256,7 +256,7 @@ def main() -> int:
     vcfg = svc["vllm"]
     prof = svc.get("serve")
     if not isinstance(prof, dict):
-        print("ERROR: vllm-radeon.yaml must define serve (mapping)", file=sys.stderr)
+        print("ERROR: vllm-lmcache-hipfile.yaml must define serve (mapping)", file=sys.stderr)
         return 1
 
     data_root = container_data_root()
@@ -301,23 +301,23 @@ def main() -> int:
 
     model = os.environ.get("VLLM_MODEL", "").strip() or str(vcfg["model_default"])
     gpu_mem = (
-        os.environ.get("RADEON_GPU_MEMORY_UTILIZATION", "").strip()
+        os.environ.get("VLH_GPU_MEMORY_UTILIZATION", "").strip()
         or os.environ.get("VLLM_GPU_MEMORY_UTILIZATION", "").strip()
         or str(vcfg["gpu_memory_utilization_default"])
     )
     max_len = (
-        os.environ.get("RADEON_MAX_MODEL_LEN", "").strip()
+        os.environ.get("VLH_MAX_MODEL_LEN", "").strip()
         or str(vcfg["max_model_len_default"])
     )
     max_batched = (
-        os.environ.get("RADEON_MAX_NUM_BATCHED_TOKENS", "").strip()
+        os.environ.get("VLH_MAX_NUM_BATCHED_TOKENS", "").strip()
         or str(vcfg["max_num_batched_tokens_default"])
     )
 
     kv_obj = svc.get("vllm_kv_transfer")
     if not isinstance(kv_obj, dict):
         print(
-            "ERROR: vllm-radeon.yaml must define vllm_kv_transfer as a mapping",
+            "ERROR: vllm-lmcache-hipfile.yaml must define vllm_kv_transfer as a mapping",
             file=sys.stderr,
         )
         return 1
@@ -375,7 +375,7 @@ def main() -> int:
     listen = str(vcfg["host"])
     _io = _lmcache_io_mode()
     print(
-        f"vllm-radeon RADEON_LMCACHE_IO={_io} "
+        f"vllm-lmcache-hipfile VLH_LMCACHE_IO={_io} "
         f"LMCACHE_CONFIG_FILE={env['LMCACHE_CONFIG_FILE']} "
         f"http://{listen}:{vllm_port}/v1 log={log_path}",
         flush=True,

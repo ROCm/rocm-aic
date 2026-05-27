@@ -2,15 +2,15 @@
 #
 # SPDX-License-Identifier: MIT
 #
-name: vllm-radeon LMCache patches
+name: vllm-lmcache-hipfile LMCache patches
 
 on:
   pull_request:
     branches: [main]
     paths:
-      - 'recipies/vllm-radeon/Dockerfile'
-      - 'recipies/vllm-radeon/patches/**'
-      - '.github/workflows/vllm-radeon-lmcache-patches.yml'
+      - 'recipies/vllm-lmcache-hipfile/Dockerfile'
+      - 'recipies/vllm-lmcache-hipfile/patches/**'
+      - '.github/workflows/vllm-lmcache-hipfile-lmcache-patches.yml'
   workflow_dispatch:
 
 permissions:
@@ -22,7 +22,7 @@ jobs:
     runs-on: ubuntu-latest
     defaults:
       run:
-        working-directory: recipies/vllm-radeon
+        working-directory: recipies/vllm-lmcache-hipfile
 
     steps:
       - uses: actions/checkout@v4
@@ -39,7 +39,7 @@ jobs:
         working-directory: ${{ github.workspace }}
         run: |
           set -euo pipefail
-          patch_dir="${GITHUB_WORKSPACE}/recipies/vllm-radeon/patches"
+          patch_dir="${GITHUB_WORKSPACE}/recipies/vllm-lmcache-hipfile/patches"
           shopt -s nullglob
           patches=( "${patch_dir}"/*.patch )
           if (( ${#patches[@]} == 0 )); then

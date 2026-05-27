@@ -7,9 +7,9 @@ Wants=network-online.target
 Type=oneshot
 Environment=ROCM_AIC_EXPORTER_TEXTFILE=/var/lib/node_exporter/textfile_collector/rocm_aic_exporter.prom
 Environment=ROCM_ICMS_TEXTFILE_DIR=/var/lib/node_exporter/textfile_collector
-Environment=RADEON_HOST_DATA_ROOT=/mnt/lmcache-nvme
-Environment=RADEON_LMCACHE_KV_SUBDIR=lmcache
-Environment=RADEON_LMCACHE_CHUNK_STATS_SUBDIR=lmcache_chunk_stats
+Environment=VLH_HOST_DATA_ROOT=/mnt/lmcache-nvme
+Environment=VLH_LMCACHE_KV_SUBDIR=lmcache
+Environment=VLH_LMCACHE_CHUNK_STATS_SUBDIR=lmcache_chunk_stats
 ExecStart=/usr/bin/python3 /opt/rocm-aic-exporter/rocm-aic-exporter.py \
   --prometheus-textfile \
   --textfile-only

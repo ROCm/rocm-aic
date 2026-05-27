@@ -919,7 +919,7 @@ def _print_host_observability(snapshot: ExporterSnapshot) -> None:
 
 
 def _default_data_root(recipe_root: Path) -> Path:
-    host = os.environ.get("RADEON_HOST_DATA_ROOT", "").strip()
+    host = os.environ.get("VLH_HOST_DATA_ROOT", "").strip()
     if host:
         return Path(host)
     makefile_data = os.environ.get("DATA", "").strip()
@@ -931,7 +931,7 @@ def _default_data_root(recipe_root: Path) -> Path:
 def _default_textfile_path() -> Path | None:
     for key in (
         "ROCM_AIC_EXPORTER_TEXTFILE",
-        "RADEON_LMCACHE_CHUNK_HIST_TEXTFILE",
+        "VLH_LMCACHE_CHUNK_HIST_TEXTFILE",
     ):
         v = os.environ.get(key, "").strip()
         if v:
@@ -951,19 +951,19 @@ def main() -> int:
         type=Path,
         default=None,
         help=(
-            "LMCache data root (host path). Default: RADEON_HOST_DATA_ROOT, "
+            "LMCache data root (host path). Default: VLH_HOST_DATA_ROOT, "
             "then DATA, then /mnt/lmcache-nvme."
         ),
     )
     p.add_argument(
         "--kv-subdir",
-        default=os.environ.get("RADEON_LMCACHE_KV_SUBDIR", "lmcache"),
+        default=os.environ.get("VLH_LMCACHE_KV_SUBDIR", "lmcache"),
         help="KV .data directory under data-root (default: lmcache).",
     )
     p.add_argument(
         "--stats-subdir",
         default=os.environ.get(
-            "RADEON_LMCACHE_CHUNK_STATS_SUBDIR", "lmcache_chunk_stats"
+            "VLH_LMCACHE_CHUNK_STATS_SUBDIR", "lmcache_chunk_stats"
         ),
         help="Chunk statistics directory under data-root.",
     )
@@ -1076,7 +1076,7 @@ def main() -> int:
         print(
             "warning: chunk_hashes JSONL did not match any on-disk .data tags "
             "(orphan_stat_mentions="
-            f"{summary.orphan_stat_mentions}). Rebuild the vllm-radeon image "
+            f"{summary.orphan_stat_mentions}). Rebuild the vllm-lmcache-hipfile image "
             "with lmcache-chunk-statistics-hash.patch, restart vLLM, and "
             "collect new stats after pre_caching_hash_algorithm matches storage "
             "(e.g. sha256_cbor). Existing JSONL from builtin hashing cannot be "

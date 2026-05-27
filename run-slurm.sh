@@ -4,14 +4,14 @@
 #
 # SPDX-License-Identifier: MIT
 #
-# Submit vllm-radeon on Slurm with sensible defaults (override any variable before
+# Submit vllm-lmcache-hipfile on Slurm with sensible defaults (override any variable before
 # running). From the repository root:
 #
 #   ./run-slurm.sh
 #
 # One-time Gutenberg library on shared storage:
-#   make -C recipies/vllm-radeon data-all \
-#     BOOK_DATA_ROOT="${RADEON_GUTENBERG_DATA_ROOT:-/scratch/$USER/vllm-radeon/gutenberg}"
+#   make -C recipies/vllm-lmcache-hipfile data-all \
+#     BOOK_DATA_ROOT="${VLH_GUTENBERG_DATA_ROOT:-/scratch/$USER/vllm-lmcache-hipfile/gutenberg}"
 #
 set -euo pipefail
 cd "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -26,51 +26,51 @@ if [[ -z "${HF_TOKEN:-}" && -z "${HF_TOKEN_FILE:-}" ]]; then
 fi
 
 # --- Shared scratch tree (Gutenberg + golden HF Hub cache; never per-job lmcache-*/hf) ---
-: "${RADEON_SHARED_ROOT:=/scratch/${USER}/vllm-radeon}"
-export RADEON_SHARED_ROOT
-: "${RADEON_HF_HOME:=/scratch/${USER}/vllm-radeon/hf}"
-export RADEON_HF_HOME
-: "${RADEON_GUTENBERG_DATA_ROOT:=${RADEON_SHARED_ROOT}/gutenberg}"
-export RADEON_GUTENBERG_DATA_ROOT
+: "${VLH_SHARED_ROOT:=/scratch/${USER}/vllm-lmcache-hipfile}"
+export VLH_SHARED_ROOT
+: "${VLH_HF_HOME:=/scratch/${USER}/vllm-lmcache-hipfile/hf}"
+export VLH_HF_HOME
+: "${VLH_GUTENBERG_DATA_ROOT:=${VLH_SHARED_ROOT}/gutenberg}"
+export VLH_GUTENBERG_DATA_ROOT
 
-# --- LMCache DATA only: unset RADEON_NVME_BASE → discover on the compute node ---
+# --- LMCache DATA only: unset VLH_NVME_BASE → discover on the compute node ---
 # Order: blank nvme*n* → mounted NVMe (/mnt, /local, …) → /scratch/.../lmcache-<jobid>
-: "${RADEON_NVME_AUTO_USE:=1}"
-: "${RADEON_NVME_SCRATCH_FALLBACK:=1}"
-export RADEON_NVME_AUTO_USE RADEON_NVME_SCRATCH_FALLBACK
-# Blank nvme*n* is formatted when found (only if RADEON_NVME_BASE is unset):
-if [[ -z "${RADEON_NVME_BASE:-}" ]]; then
-    : "${RADEON_NVME_MKFS:=1}"
-    export RADEON_NVME_MKFS
+: "${VLH_NVME_AUTO_USE:=1}"
+: "${VLH_NVME_SCRATCH_FALLBACK:=1}"
+export VLH_NVME_AUTO_USE VLH_NVME_SCRATCH_FALLBACK
+# Blank nvme*n* is formatted when found (only if VLH_NVME_BASE is unset):
+if [[ -z "${VLH_NVME_BASE:-}" ]]; then
+    : "${VLH_NVME_MKFS:=1}"
+    export VLH_NVME_MKFS
 fi
-# export RADEON_NVME_MKFS=0          # never mkfs; use mounted/scratch/tmp only
+# export VLH_NVME_MKFS=0          # never mkfs; use mounted/scratch/tmp only
 
 # --- LMCache disk backend ---
-: "${RADEON_LMCACHE_IO:=posix}"
-export RADEON_LMCACHE_IO
-if [[ "${RADEON_LMCACHE_IO}" == hipfile ]]; then
-    : "${RADEON_LMCACHE_GDS_BUFFER_SIZE:=2048}"
-    export RADEON_LMCACHE_GDS_BUFFER_SIZE
+: "${VLH_LMCACHE_IO:=posix}"
+export VLH_LMCACHE_IO
+if [[ "${VLH_LMCACHE_IO}" == hipfile ]]; then
+    : "${VLH_LMCACHE_GDS_BUFFER_SIZE:=2048}"
+    export VLH_LMCACHE_GDS_BUFFER_SIZE
 fi
 
 # --- Model (server + benchmarks): VLLM_MODEL only; unset → gpt-oss-120b in yaml ---
 # export VLLM_MODEL=Qwen/Qwen2.5-3B-Instruct
 
 # --- Benchmark: parallel Gutenberg via run-long-parallel.sh ---
-: "${RADEON_BENCHMARK:=gutenberg}"
-: "${RADEON_RUN_LONG_PARALLEL:=1}"
-: "${RADEON_RUN_LONG_WORKERS:=4}"
-: "${RADEON_RUN_LONG_ITERATIONS:=1}"
-: "${RADEON_RUN_LONG_BASE_SEED:=42}"
-export RADEON_BENCHMARK RADEON_RUN_LONG_PARALLEL
-export RADEON_RUN_LONG_WORKERS RADEON_RUN_LONG_ITERATIONS RADEON_RUN_LONG_BASE_SEED
+: "${VLH_BENCHMARK:=gutenberg}"
+: "${VLH_RUN_LONG_PARALLEL:=1}"
+: "${VLH_RUN_LONG_WORKERS:=4}"
+: "${VLH_RUN_LONG_ITERATIONS:=1}"
+: "${VLH_RUN_LONG_BASE_SEED:=42}"
+export VLH_BENCHMARK VLH_RUN_LONG_PARALLEL
+export VLH_RUN_LONG_WORKERS VLH_RUN_LONG_ITERATIONS VLH_RUN_LONG_BASE_SEED
 
-# export RADEON_NVME_BLK_BPFTRACE=0   # bpftrace often needs root on compute nodes
+# export VLH_NVME_BLK_BPFTRACE=0   # bpftrace often needs root on compute nodes
 
 # --- Optional Slurm (uncomment to narrow nodes / raise memory) ---
-# export RADEON_SLURM_CONSTRAINT=MARKHAM
-export RADEON_SLURM_CONSTRAINT='MARKHAM&NVME'
-# export RADEON_SLURM_MEM=128G
-# export RADEON_SLURM_CPUS=16
+# export VLH_SLURM_CONSTRAINT=MARKHAM
+export VLH_SLURM_CONSTRAINT='MARKHAM&NVME'
+# export VLH_SLURM_MEM=128G
+# export VLH_SLURM_CPUS=16
 
-exec "${PWD}/.slurm/run-vllm-radeon.sh" "$@"
+exec "${PWD}/.slurm/run-vllm-lmcache-hipfile.sh" "$@"
