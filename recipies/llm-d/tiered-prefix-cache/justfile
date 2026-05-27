@@ -84,6 +84,10 @@ deploy-inferencepool:
       --set provider.name=istio \
       -n {{NAMESPACE}} \
       --version {{INFERENCEPOOL_VERSION}} || exit 1
+    # The inferencepool chart hardcodes timeouts.request=300s in the HTTPRoute template.
+    # Patch it to 0s (no limit) so long-running inference requests aren't killed by Envoy.
+    kubectl patch httproute llm-d-infpool -n {{NAMESPACE}} --type=json \
+      -p '[{"op":"replace","path":"/spec/rules/0/timeouts/request","value":"0s"}]'
     @echo "✅ InferencePool deployed"
 
 
