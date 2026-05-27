@@ -42,7 +42,7 @@ rocm_setup_install_metrics_exporter: true
 # Prometheus node exporter (package + service; see host_setup).
 # rocm-aic-exporter timer writes rocm_aic_exporter.prom into the textfile dir.
 # RDMA and NVMe Prometheus exporters via batesste collection roles.
-host_setup_rocm_aic_exporter_radeon_host_data_root: /mnt/lmcache-nvme
+host_setup_rocm_aic_exporter_vlh_host_data_root: /mnt/lmcache-nvme
 rdma_setup_install_rdma_exporter: true
 nvme_exporter_setup_install: true
 

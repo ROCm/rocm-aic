@@ -2,15 +2,15 @@
 #
 # SPDX-License-Identifier: MIT
 #
-name: vllm-radeon Config
+name: vllm-lmcache-hipfile Config
 
 on:
   pull_request:
     branches: [main]
     paths:
-      - 'recipies/vllm-radeon/configs/**'
-      - 'recipies/vllm-radeon/grafana/**'
-      - '.github/workflows/vllm-radeon-config.yml'
+      - 'recipies/vllm-lmcache-hipfile/configs/**'
+      - 'recipies/vllm-lmcache-hipfile/grafana/**'
+      - '.github/workflows/vllm-lmcache-hipfile-config.yml'
   workflow_dispatch:
 
 permissions:
@@ -31,14 +31,14 @@ jobs:
           sudo apt-get install -y jq
           pip install yamllint
 
-      - name: yamllint vllm-radeon configs
+      - name: yamllint vllm-lmcache-hipfile configs
         run: |
           set -euo pipefail
-          yamllint -c .yamllint recipies/vllm-radeon/configs/
+          yamllint -c .yamllint recipies/vllm-lmcache-hipfile/configs/
 
       - name: Validate gutenberg-library.json
         env:
-          MANIFEST: ${{ github.workspace }}/recipies/vllm-radeon/configs/gutenberg-library.json
+          MANIFEST: ${{ github.workspace }}/recipies/vllm-lmcache-hipfile/configs/gutenberg-library.json
         run: |
           set -euo pipefail
           jq -e '
@@ -57,7 +57,7 @@ jobs:
 
       - name: Validate Grafana dashboard JSON
         env:
-          DASH: ${{ github.workspace }}/recipies/vllm-radeon/grafana/vllm-lmcache-prometheus.json
+          DASH: ${{ github.workspace }}/recipies/vllm-lmcache-hipfile/grafana/vllm-lmcache-prometheus.json
         run: |
           set -euo pipefail
           jq -e '

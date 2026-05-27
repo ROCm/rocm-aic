@@ -50,7 +50,7 @@ def fetch_gutenberg_text(pg_id: int, timeout: float = 120.0) -> str:
     last_err: Exception | None = None
     for url in urls:
         try:
-            req = urllib.request.Request(url, headers={"User-Agent": "vllm-radeon/1.0"})
+            req = urllib.request.Request(url, headers={"User-Agent": "vllm-lmcache-hipfile/1.0"})
             with urllib.request.urlopen(req, timeout=timeout) as resp:
                 raw = resp.read().decode("utf-8", errors="replace")
             return strip_gutenberg_boilerplate(raw)

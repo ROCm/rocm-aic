@@ -1,6 +1,6 @@
 #!/bin/bash
-# Must match **`make run`**: default **`vllm-radeon-gpu0`** (**`IMAGE_NAME-gpu${GPU}`**).
-IMAGE_NAME="${IMAGE_NAME:-vllm-radeon}"
+# Must match **`make run`**: default **`vllm-lmcache-hipfile-gpu0`** (**`IMAGE_NAME-gpu${GPU}`**).
+IMAGE_NAME="${IMAGE_NAME:-vllm-lmcache-hipfile}"
 GPU="${GPU:-0}"
 CONTAINER_NAME="${CONTAINER_NAME:-${IMAGE_NAME}-gpu${GPU}}"
 

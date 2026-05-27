@@ -2,17 +2,17 @@
 #
 # SPDX-License-Identifier: MIT
 #
-name: vllm-radeon Python
+name: vllm-lmcache-hipfile Python
 
 on:
   pull_request:
     branches: [main]
     paths:
-      - 'recipies/vllm-radeon/scripts/**'
-      - 'recipies/vllm-radeon/configs/gutenberg-library.json'
-      - 'recipies/vllm-radeon/tests/**'
+      - 'recipies/vllm-lmcache-hipfile/scripts/**'
+      - 'recipies/vllm-lmcache-hipfile/configs/gutenberg-library.json'
+      - 'recipies/vllm-lmcache-hipfile/tests/**'
       - 'requirements.txt'
-      - '.github/workflows/vllm-radeon-python.yml'
+      - '.github/workflows/vllm-lmcache-hipfile-python.yml'
   workflow_dispatch:
 
 permissions:
@@ -24,7 +24,7 @@ jobs:
     runs-on: ubuntu-latest
     defaults:
       run:
-        working-directory: recipies/vllm-radeon
+        working-directory: recipies/vllm-lmcache-hipfile
 
     steps:
       - uses: actions/checkout@v4
@@ -54,7 +54,7 @@ jobs:
 
       - name: Validate gutenberg-library.json
         env:
-          MANIFEST: ${{ github.workspace }}/recipies/vllm-radeon/configs/gutenberg-library.json
+          MANIFEST: ${{ github.workspace }}/recipies/vllm-lmcache-hipfile/configs/gutenberg-library.json
         run: |
           set -euo pipefail
           jq -e '

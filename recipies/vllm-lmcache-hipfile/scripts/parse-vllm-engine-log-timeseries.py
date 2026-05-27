@@ -173,7 +173,7 @@ def main() -> int:
     p.add_argument(
         "log_file",
         type=Path,
-        help="Path to vLLM server tee log (e.g. recipies/vllm-radeon/logs/server.txt).",
+        help="Path to vLLM server tee log (e.g. recipies/vllm-lmcache-hipfile/logs/server.txt).",
     )
     p.add_argument(
         "--year",

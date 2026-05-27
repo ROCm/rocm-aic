@@ -24,7 +24,7 @@ report_meta.json
 # Slurm logs
 .slurm/logs/*.log
 ttft-llamacpp-*.log
-vllm-radeon-*.log
+vllm-lmcache-hipfile-*.log
 
 # Debian package files
 *.deb
@@ -47,9 +47,9 @@ tools/lmcache-io-tester/data/lmsys-chat-*.json
 tools/lmcache-io-tester/data/wildchat-*.json
 tools/lmcache-io-tester/**/*.token
 
-# vllm-radeon logs and generated Gutenberg fixtures (see README)
-recipies/vllm-radeon/logs/
-recipies/vllm-radeon/data/
+# vllm-lmcache-hipfile logs and generated Gutenberg fixtures (see README)
+recipies/vllm-lmcache-hipfile/logs/
+recipies/vllm-lmcache-hipfile/data/
 
 # slurm logs and reports
 .slurm/logs/

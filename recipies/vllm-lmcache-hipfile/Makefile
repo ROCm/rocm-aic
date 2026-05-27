@@ -3,9 +3,9 @@
 # SPDX-License-Identifier: MIT
 #
 
-IMAGE_NAME ?= vllm-radeon
+IMAGE_NAME ?= vllm-lmcache-hipfile
 GPU ?= 0
-# **`docker run --name`** / **`--hostname`** (default **`$(IMAGE_NAME)-gpu$(GPU)`**, e.g. **vllm-radeon-gpu0**).
+# **`docker run --name`** / **`--hostname`** (default **`$(IMAGE_NAME)-gpu$(GPU)`**, e.g. **vllm-lmcache-hipfile-gpu0**).
 CONTAINER_NAME ?= $(IMAGE_NAME)-gpu$(GPU)
 DATA ?= /mnt/lmcache-nvme
 LOG ?= $(CURDIR)/logs
@@ -13,14 +13,14 @@ HF_HOME ?= $(HOME)/.cache/huggingface
 HF_TOKEN_FILE ?=
 CONTAINER_HF_HOME ?= /hf
 CONTAINER_DATA_DIR ?= /data
-CONTAINER_LOG_DIR ?= /var/log/vllm-radeon
+CONTAINER_LOG_DIR ?= /var/log/vllm-lmcache-hipfile
 TZ ?= America/Edmonton
-RADEON_LMCACHE_IO ?= hipfile
-RADEON_LMCACHE_LOG_LEVEL ?=
-RADEON_LMCACHE_GDS_BUFFER_SIZE ?=
+VLH_LMCACHE_IO ?= hipfile
+VLH_LMCACHE_LOG_LEVEL ?=
+VLH_LMCACHE_GDS_BUFFER_SIZE ?=
 # Enables vLLM dev HTTP APIs (e.g. POST /reset_prefix_cache). Set to 0 to disable.
 VLLM_SERVER_DEV_MODE ?= 1
-# Served model (vllm-server + Slurm benchmarks). Unset → configs/vllm-radeon.yaml default.
+# Served model (vllm-server + Slurm benchmarks). Unset → configs/vllm-lmcache-hipfile.yaml default.
 VLLM_MODEL ?=
 ARGS ?=
 EXTRA_DOCKER_RUN_FLAGS ?=
@@ -54,15 +54,15 @@ ifneq ($(strip $(HIPFILE_SHA)),)
 BUILD_ARGS += --build-arg HIPFILE_SHA=$(HIPFILE_SHA)
 endif
 
-.PHONY: help build vllm-radeon run run-batch data data-all
+.PHONY: help build vllm-lmcache-hipfile run run-batch data data-all
 
 .DEFAULT_GOAL := help
 
 help:
-	@echo "vllm-radeon Makefile"
+	@echo "vllm-lmcache-hipfile Makefile"
 	@echo ""
 	@echo "  make build         docker build -t $(IMAGE_NAME)"
-	@echo "  make vllm-radeon    alias for build"
+	@echo "  make vllm-lmcache-hipfile    alias for build"
 	@echo "  make run            docker run -it ... bind-mounts repo configs/ + scripts/"
 	@echo "                      + LOG (server.txt); DATA = LMCache KV only"
 	@echo "                      default CONTAINER_NAME=$(CONTAINER_NAME)"
@@ -162,11 +162,11 @@ _docker_run:
 		--env VLLM_CONFIG_ROOT="$(CONTAINER_HF_HOME)/vllm_config" \
 		--env TORCH_HOME="$(CONTAINER_HF_HOME)/torch" \
 		--env TORCHINDUCTOR_CACHE_DIR="$(CONTAINER_HF_HOME)/torch_inductor" \
-		--env RADEON_CONTAINER_DATA_DIR="$(CONTAINER_DATA_DIR)" \
-		--env RADEON_SERVER_LOG_DIR="$(CONTAINER_LOG_DIR)" \
-		--env RADEON_LMCACHE_IO="$(RADEON_LMCACHE_IO)" \
-		--env RADEON_LMCACHE_LOG_LEVEL="$(RADEON_LMCACHE_LOG_LEVEL)" \
-		--env RADEON_LMCACHE_GDS_BUFFER_SIZE="$(RADEON_LMCACHE_GDS_BUFFER_SIZE)" \
+		--env VLH_CONTAINER_DATA_DIR="$(CONTAINER_DATA_DIR)" \
+		--env VLH_SERVER_LOG_DIR="$(CONTAINER_LOG_DIR)" \
+		--env VLH_LMCACHE_IO="$(VLH_LMCACHE_IO)" \
+		--env VLH_LMCACHE_LOG_LEVEL="$(VLH_LMCACHE_LOG_LEVEL)" \
+		--env VLH_LMCACHE_GDS_BUFFER_SIZE="$(VLH_LMCACHE_GDS_BUFFER_SIZE)" \
 		--env VLLM_SERVER_DEV_MODE="$(VLLM_SERVER_DEV_MODE)" \
 		$$(if [ -n "$(VLLM_MODEL)" ]; then printf '%s' "--env VLLM_MODEL=$(VLLM_MODEL)"; fi) \
 		--env HF_TOKEN="$$HF_TOKEN" \
@@ -185,7 +185,7 @@ _docker_run:
 		echo "Started container $(CONTAINER_NAME)"; \
 	fi
 
-build vllm-radeon:
+build vllm-lmcache-hipfile:
 	@command -v docker >/dev/null 2>&1 || { \
 		echo "ERROR: docker not found (install Docker Engine)" >&2; \
 		exit 1; \

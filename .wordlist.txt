@@ -33,9 +33,11 @@ RDMA
 ROCm
 SSDs
 Symlink
+symlink
 UID
 VPN
 VRAM
+VLH
 WEKA
 Weka
 amdgpu

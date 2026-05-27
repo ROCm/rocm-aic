@@ -24,7 +24,7 @@ python -m pip install -r requirements.txt
 
 Benchmark Docker images install slimmer, image-local
 `requirements.txt` files under `benchmarks/ttft-*` (see each
-benchmark README). Scripts such as `recipies/vllm-radeon/scripts/
+benchmark README). Scripts such as `recipies/vllm-lmcache-hipfile/scripts/
 test-aic.py` need only `openai` unless you use the full tool stack.
 
 ## Documentation map
@@ -33,8 +33,8 @@ test-aic.py` need only `openai` unless you use the full tool stack.
 |------|------|--------|
 | TTFT benchmark (vLLM + LMCache) | [benchmarks/ttft-lmcache][b-lmc] | [README][r-lmc] |
 | TTFT benchmark (llama.cpp) | [benchmarks/ttft-llamacpp][b-lcp] | [README][r-lcp] |
-| vLLM + LMCache Radeon recipe | [recipies/vllm-radeon][r-vr] | [README][r-vr] |
-| LMCache patch index | [recipies/vllm-radeon/patches][r-patches] | [README][r-patches] |
+| vLLM + LMCache hipfile recipe | [recipies/vllm-lmcache-hipfile][r-vr] | [README][r-vr] |
+| LMCache patch index | [recipies/vllm-lmcache-hipfile/patches][r-patches] | [README][r-patches] |
 | ROCm inference stack image | [recipies/rocm-inference-stack][r-ris] | [README][r-ris] |
 | LMCache IO simulator | [tools/lmcache-io-tester][t-lit] | [README][t-lit-readme] |
 | LMCache IO detailed usage | [tools/lmcache-io-tester/docs/USAGE.md][t-lit-usage] | — |
@@ -81,7 +81,7 @@ discovery. From `ansible/`, run `ansible-playbook site.yml` (or
 ## CI
 
 GitHub Actions under [`.github/workflows/`][gh-workflows] include spellcheck,
-lint, benchmark-adjacent recipes (`vllm-radeon-*`, `lmcache-io-tester`), and
+lint, benchmark-adjacent recipes (`vllm-lmcache-hipfile-*`, `lmcache-io-tester`), and
 `test-amdgpu-dkms`.
 
 ## References
@@ -91,8 +91,8 @@ lint, benchmark-adjacent recipes (`vllm-radeon-*`, `lmcache-io-tester`), and
 [r-lmc]: benchmarks/ttft-lmcache/README.md
 [r-lcp]: benchmarks/ttft-llamacpp/README.md
 [patch]: benchmarks/ttft-llamacpp/patches/0001-cache-disk.patch
-[r-vr]: recipies/vllm-radeon/
-[r-patches]: recipies/vllm-radeon/patches/README.md
+[r-vr]: recipies/vllm-lmcache-hipfile/
+[r-patches]: recipies/vllm-lmcache-hipfile/patches/README.md
 [r-ris]: recipies/rocm-inference-stack/README.md
 [t-lit]: tools/lmcache-io-tester/
 [t-lit-readme]: tools/lmcache-io-tester/README.md

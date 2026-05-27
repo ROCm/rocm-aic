@@ -3,7 +3,7 @@
 #
 # SPDX-License-Identifier: MIT
 #
-"""Summarize vllm-radeon Slurm job artifacts under a report directory."""
+"""Summarize vllm-lmcache-hipfile Slurm job artifacts under a report directory."""
 
 from __future__ import annotations
 
@@ -440,25 +440,25 @@ def build_summary(report_dir: Path) -> dict[str, Any]:
     meta.update(parse_summary_txt(report_dir / "summary.txt"))
     server_path = _resolve_server_path(report_dir)
 
-    bench = (meta.get("RADEON_BENCHMARK") or "unknown").lower()
+    bench = (meta.get("VLH_BENCHMARK") or "unknown").lower()
     summary: dict[str, Any] = {
         "job_id": meta.get("SLURM_JOB_ID"),
         "hostname": meta.get("hostname"),
         "rocm_arch": meta.get("ROCM_ARCH"),
         "benchmark": bench,
         "model": meta.get("MODEL") or meta.get("served_model_name"),
-        "lmcache_io": meta.get("RADEON_LMCACHE_IO"),
-        "nvme_base": meta.get("RADEON_NVME_BASE"),
+        "lmcache_io": meta.get("VLH_LMCACHE_IO"),
+        "nvme_base": meta.get("VLH_NVME_BASE"),
         "gutenberg_data_root": meta.get("BOOK_DATA_ROOT")
-        or meta.get("RADEON_GUTENBERG_DATA_ROOT"),
+        or meta.get("VLH_GUTENBERG_DATA_ROOT"),
         "build_rc": _int_or_none(meta.get("BUILD_RC")),
         "run_rc": _int_or_none(meta.get("RUN_RC")),
         "phase_rc": _int_or_none(meta.get("PHASE_RC")),
         "t_build": meta.get("T_BUILD"),
         "t_run": meta.get("T_RUN"),
         "container": meta.get("CONTAINER_NAME"),
-        "workers": _int_or_none(meta.get("RADEON_RUN_LONG_WORKERS")),
-        "iterations_per_worker": _int_or_none(meta.get("RADEON_RUN_LONG_ITERATIONS")),
+        "workers": _int_or_none(meta.get("VLH_RUN_LONG_WORKERS")),
+        "iterations_per_worker": _int_or_none(meta.get("VLH_RUN_LONG_ITERATIONS")),
         "nvme_blk_device": meta.get("nvme_blk dev_path") or meta.get("nvme_blk disk_name"),
     }
 
@@ -572,7 +572,7 @@ def _fmt_bytes(n: int | float | None) -> str:
 
 def format_summary_md(data: dict[str, Any]) -> str:
     lines: list[str] = [
-        "# vllm-radeon job results",
+        "# vllm-lmcache-hipfile job results",
         "",
         f"- **Status:** {data.get('status', 'unknown')}",
         f"- **Job ID:** {data.get('job_id', '?')}",
@@ -582,7 +582,7 @@ def format_summary_md(data: dict[str, Any]) -> str:
         f"- **Build / run / phase RC:** "
         f"{data.get('build_rc')} / {data.get('run_rc')} / {data.get('phase_rc')}",
         f"- **LMCache I/O:** {data.get('lmcache_io', '?')}",
-        f"- **Storage (RADEON_NVME_BASE):** `{data.get('nvme_base', '?')}`",
+        f"- **Storage (VLH_NVME_BASE):** `{data.get('nvme_base', '?')}`",
         f"- **NVMe block device:** {data.get('nvme_blk_device', '—')}",
         f"- **Run window:** {data.get('t_run', '?')}",
         "",
@@ -749,7 +749,7 @@ def main() -> int:
     p.add_argument(
         "report_dir",
         type=Path,
-        help="Job report directory (JOB_ROOT/report or .slurm/logs/vllm-radeon-<id>)",
+        help="Job report directory (JOB_ROOT/report or .slurm/logs/vllm-lmcache-hipfile-<id>)",
     )
     p.add_argument(
         "--print",

@@ -3,11 +3,11 @@ Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
 SPDX-License-Identifier: MIT
 -->
 
-# vllm-radeon
+# vllm-lmcache-hipfile
 
 ROCm **vLLM** + **LMCache** image (base **`vllm/vllm-openai-rocm:v0.19.0`**), with
-**hipFile** from **ROCm/rocm-systems**, **fio** with **libhipfile**, and **`RADEON_*`**
-naming. Work from **`recipies/vllm-radeon/`**.
+**hipFile** from **ROCm/rocm-systems**, **fio** with **libhipfile**, and **`VLH_*`**
+naming. Work from **`recipies/vllm-lmcache-hipfile/`**.
 
 Part of [rocm-aic](../../README.md). Host Python deps (including
 `scripts/test-aic.py`, which needs only `openai`): from the repo root,
@@ -20,7 +20,7 @@ Part of [rocm-aic](../../README.md). Host Python deps (including
 - [rocm-aic-exporter.py](#rocm-aic-exporterpy-prometheus-textfile)
 - [MFU metrics](#mfu-metrics---enable-mfu-metrics)
 - [vLLM dev mode](#vllm-dev-mode-vllm_server_dev_mode)
-- [LMCache disk mode](#lmcache-disk-mode-radeon_lmcache_io)
+- [LMCache disk mode](#lmcache-disk-mode-vlh_lmcache_io)
 - [LMCache logging and hipFile buffer](#lmcache-logging-and-hipfile-buffer)
 - [LMCache long_doc_qa benchmark](#lmcache-long_doc_qa-benchmark)
 - [Gutenberg long-context fixtures](#gutenberg-long-context-fixtures)
@@ -32,18 +32,18 @@ Part of [rocm-aic](../../README.md). Host Python deps (including
 | What you need | File |
 | --- | --- |
 | **`make build` / `make run`**, **`ROCM_ARCH`**, **`CONTAINER_NAME`**, mounts (**`DATA`**, **`LOG`**),
-**`TZ`**, **`HF_TOKEN`**, **`HF_TOKEN_FILE`**, **`RADEON_LMCACHE_IO`**, **`VLLM_SERVER_DEV_MODE`**, **`ARGS`**, **`EXTRA_DOCKER_RUN_FLAGS`** | **`Makefile`** (see **`make help`**) |
+**`TZ`**, **`HF_TOKEN`**, **`HF_TOKEN_FILE`**, **`VLH_LMCACHE_IO`**, **`VLLM_SERVER_DEV_MODE`**, **`ARGS`**, **`EXTRA_DOCKER_RUN_FLAGS`** | **`Makefile`** (see **`make help`**) |
 | Image layers, LMCache / hipFile / **fio** build; **`patches/`** (cache_salt, storage mode, log noise, sha256_cbor); **`ENTRYPOINT`** **`/app/scripts/vllm-server`** (**`make run`** overlays **`configs/`** + **`scripts/`**) | **`Dockerfile`**, **`patches/`** |
-| vLLM + LMCache (**`--kv-transfer-config`**); **`RADEON_LMCACHE_IO`** selects template | **`scripts/vllm-server`** |
+| vLLM + LMCache (**`--kv-transfer-config`**); **`VLH_LMCACHE_IO`** selects template | **`scripts/vllm-server`** |
 | LMCache **hipfile** (**GdsBackend**, **`gds_path`**) vs **posix** (**`fs`**
 plugin, same **`DATA`/`subdir`** as **`gds_path`**, no **`gds_path`** key) |
 **`configs/lmcache-hipfile.yml`**, **`configs/lmcache-posix.yml`** |
 | LMCache subdir + **`serve`** (load format, ais-stats, clear GDS,
-**`enable_mfu_metrics`**) | **`configs/vllm-radeon.yaml`**, **`scripts/vllm-radeon-defaults.py`**, **`Makefile`** **`CONTAINER_DATA_DIR`**, **`CONTAINER_LOG_DIR`** |
+**`enable_mfu_metrics`**) | **`configs/vllm-lmcache-hipfile.yaml`**, **`scripts/vllm-lmcache-hipfile-defaults.py`**, **`Makefile`** **`CONTAINER_DATA_DIR`**, **`CONTAINER_LOG_DIR`** |
 | Gutenberg chunks + questions + load / AIC A/B test | **`make data`**, **`scripts/test-aic.py`**, **`run-long.sh`** |
 | LMCache / NVMe textfile metrics for Grafana | **`scripts/rocm-aic-exporter.py`** |
 | Parse engine log → CSV/SVG | **`scripts/parse-vllm-engine-log-timeseries.py`** |
-| Slurm + Gutenberg **`run-long.sh`** | **`run-slurm.sh`**, **`.slurm/vllm-radeon.sbatch`** |
+| Slurm + Gutenberg **`run-long.sh`** | **`run-slurm.sh`**, **`.slurm/vllm-lmcache-hipfile.sbatch`** |
 
 ## Quick start
 
@@ -56,27 +56,27 @@ make run
 
 The **Makefile** bind-mounts **`configs/`** and **`scripts/`** to **`/app/configs`**
 and **`/app/scripts`**, so YAML and Python helpers update without **`docker build`**.
-Run **`make run`** from **`recipies/vllm-radeon/`** (so **`$(CURDIR)`** is correct),
+Run **`make run`** from **`recipies/vllm-lmcache-hipfile/`** (so **`$(CURDIR)`** is correct),
 or add matching **`-v`** flags with **`EXTRA_DOCKER_RUN_FLAGS`**.
 
 Prepare the host path you mount as LMCache data (default host **`DATA`**
 in **`Makefile`**: **`/mnt/lmcache-nvme`** → container **`/data`**). That
 volume should hold only LMCache on-disk state (**`subdir`**, runtime
 YAML, chunk statistics, etc.). vLLM tee logs go under host **`LOG`**
-(default **`recipies/vllm-radeon/logs`** → container **`/var/log/vllm-radeon`**,
+(default **`recipies/vllm-lmcache-hipfile/logs`** → container **`/var/log/vllm-lmcache-hipfile`**,
 file **`server.txt`**). Override with **`make run LOG=/other/host/logs`** or
 **`CONTAINER_LOG_DIR`**. **`make run`** also passes **`TZ=America/Edmonton`**
 (Edmonton, Alberta). **tzdata** uses that **IANA** id, not **`Canada/Edmonton`**;
 override with **`make run TZ=...`**. vLLM and LMCache log timestamps follow
 **`TZ`** in the container. For **`docker exec`**, use **`CONTAINER_NAME`**
-(default **`vllm-radeon-gpu0`**, i.e. **`IMAGE_NAME`** + **`gpu`** + **`GPU`**);
+(default **`vllm-lmcache-hipfile-gpu0`**, i.e. **`IMAGE_NAME`** + **`gpu`** + **`GPU`**);
 override with **`make run CONTAINER_NAME=...`**.
 
 ## Slurm (ROCm GPU cluster)
 
 Submit from the **repository root** on a node with Docker and ROCm (default
 **`gres=gpu:1`**, no GPU architecture constraint — see
-**`.slurm/vllm-radeon.sbatch`**). Narrow nodes with **`RADEON_SLURM_CONSTRAINT`**
+**`.slurm/vllm-lmcache-hipfile.sbatch`**). Narrow nodes with **`VLH_SLURM_CONSTRAINT`**
 (e.g. **`MARKHAM&GFX942`** for MI300X, **`MARKHAM`** for any Markham ROCm GPU).
 
 ```bash
@@ -84,74 +84,78 @@ Submit from the **repository root** on a node with Docker and ROCm (default
 ```
 
 **`run-slurm.sh`** sets defaults (HF token file if present, Gutenberg path under
-**`/scratch/$USER/vllm-radeon/gutenberg`** and Hub weights under
-**`/scratch/$USER/vllm-radeon/hf/hub`**, **`RADEON_LMCACHE_IO=posix`**, parallel
+**`/scratch/$USER/vllm-lmcache-hipfile/gutenberg`** and Hub weights under
+**`/scratch/$USER/vllm-lmcache-hipfile/hf/hub`**, **`VLH_LMCACHE_IO=posix`**, parallel
 **`run-long-parallel.sh`** with **`4`** workers). You do not need to know NVMe
 mount paths in advance: the job discovers storage on the allocated node (blank
 **`nvme*n*`**, then mounted NVMe under **`/mnt`** / **`/local`** / similar, then
-**`/scratch/$USER/vllm-radeon/lmcache-<jobid>`**, then **`/tmp`**). Override any
-variable, then run again. Low-level submit: **`bash .slurm/run-vllm-radeon.sh`**.
+**`/scratch/$USER/vllm-lmcache-hipfile/lmcache-<jobid>`**, then **`/tmp`**). Override any
+variable, then run again. Low-level submit: **`bash .slurm/run-vllm-lmcache-hipfile.sh`**.
+
+If you have data from the old **`vllm-radeon`** layout, symlink or move
+**`/scratch/$USER/vllm-radeon`** to **`/scratch/$USER/vllm-lmcache-hipfile`**
+and update exports from **`RADEON_*`** to **`VLH_*`**.
 
 **One-time** Gutenberg library on shared storage (same path every job):
 
 ```bash
-mkdir -p "$RADEON_GUTENBERG_DATA_ROOT"
-make -C recipies/vllm-radeon data-all BOOK_DATA_ROOT="$RADEON_GUTENBERG_DATA_ROOT"
-# smoke: make -C recipies/vllm-radeon data BOOK_DATA_DIR=$RADEON_GUTENBERG_DATA_ROOT/war-and-peace ...
+mkdir -p "$VLH_GUTENBERG_DATA_ROOT"
+make -C recipies/vllm-lmcache-hipfile data-all BOOK_DATA_ROOT="$VLH_GUTENBERG_DATA_ROOT"
+# smoke: make -C recipies/vllm-lmcache-hipfile data BOOK_DATA_DIR=$VLH_GUTENBERG_DATA_ROOT/war-and-peace ...
 ```
 
 The job **`docker build`**s the image, starts vLLM via **`make run-batch`**, then
 runs host **`run-long-parallel.sh`** (default **`4`** workers, distinct seeds;
-each worker calls **`run-long.sh`**). Set **`RADEON_RUN_LONG_PARALLEL=0`** or
-**`RADEON_BENCHMARK=gutenberg_serial`** for a single **`run-long.sh`** stream.
-Artifacts land under **`.slurm/logs/vllm-radeon-<jobid>/`**
+each worker calls **`run-long.sh`**). Set **`VLH_RUN_LONG_PARALLEL=0`** or
+**`VLH_BENCHMARK=gutenberg_serial`** for a single **`run-long.sh`** stream.
+Artifacts land under **`.slurm/logs/vllm-lmcache-hipfile-<jobid>/`**
 (**`run-long-parallel/<timestamp>/worker-*.jsonl`**, server log, LMCache API
 snapshots). Requires **`jq`** on compute nodes. LMCache **`long_doc_qa`** is
-optional (**`RADEON_BENCHMARK=long_doc_qa`**).
+optional (**`VLH_BENCHMARK=long_doc_qa`**).
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| **`RADEON_NVME_BASE`** | auto | Unset: discover on node (see below); else **`/tmp/...`** job dir |
-| **`RADEON_NVME_AUTO_USE`** | **`1`** | When **`RADEON_NVME_BASE`** unset, probe the compute node at runtime |
-| **`RADEON_NVME_SCRATCH_FALLBACK`** | **`1`** | Use **`/scratch/$USER/vllm-radeon/lmcache-<jobid>`** if no NVMe path |
-| **`RADEON_NVME_USE_SHARED_DATA_DOCKER`** | **`0`** | Allow LMCache under site **`/data`** / **`/docker`** (shared LVM; usually off) |
-| **`RADEON_NVME_MIN_AVAIL_GB`** | **`10`** | Minimum free space on a mounted NVMe path |
-| **`RADEON_NVME_MKFS`** | **`1`** if **`RADEON_NVME_BASE`** unset, else **`0`** | **`mkfs.ext4`** blank **`nvme*n*`** only (destructive); **`0`** to skip |
-| **`RADEON_NVME_MOUNT`** | **`/mnt/vllm-radeon-<jobid>`** | Mount point when mounting a blank **`nvme*n*`** |
-| **`RADEON_GUTENBERG_DATA_ROOT`** | **`RADEON_SHARED_ROOT/gutenberg`** or recipe **`data/`** | Shared Gutenberg chunks + **`*.questions.json`** |
-| **`RADEON_SHARED_ROOT`** | **`/scratch/$USER/vllm-radeon`** (via **`run-slurm.sh`**) | Shared parent on scratch |
-| **`RADEON_HF_HOME`** | **`/scratch/$USER/vllm-radeon/hf`** | Golden HF Hub cache (always; never **`lmcache-<jobid>/hf`**) |
+| **`VLH_NVME_BASE`** | auto | Unset: discover on node (see below); else **`/tmp/...`** job dir |
+| **`VLH_NVME_AUTO_USE`** | **`1`** | When **`VLH_NVME_BASE`** unset, probe the compute node at runtime |
+| **`VLH_NVME_SCRATCH_FALLBACK`** | **`1`** | Use **`/scratch/$USER/vllm-lmcache-hipfile/lmcache-<jobid>`** if no NVMe path |
+| **`VLH_NVME_USE_SHARED_DATA_DOCKER`** | **`0`** | Allow LMCache under site **`/data`** / **`/docker`** (shared LVM; usually off) |
+| **`VLH_NVME_MIN_AVAIL_GB`** | **`10`** | Minimum free space on a mounted NVMe path |
+| **`VLH_NVME_MKFS`** | **`1`** if **`VLH_NVME_BASE`** unset, else **`0`** | **`mkfs.ext4`** blank **`nvme*n*`** only (destructive); **`0`** to skip |
+| **`VLH_NVME_MOUNT`** | **`/mnt/vllm-lmcache-hipfile-<jobid>`** | Mount point when mounting a blank **`nvme*n*`** |
+| **`VLH_GUTENBERG_DATA_ROOT`** | **`VLH_SHARED_ROOT/gutenberg`** or recipe **`data/`** | Shared Gutenberg chunks + **`*.questions.json`** |
+| **`VLH_SHARED_ROOT`** | **`/scratch/$USER/vllm-lmcache-hipfile`** (via **`run-slurm.sh`**) | Shared parent on scratch |
+| **`VLH_HF_HOME`** | **`/scratch/$USER/vllm-lmcache-hipfile/hf`** | Golden HF Hub cache (always; never **`lmcache-<jobid>/hf`**) |
 | **`VLLM_MODEL`** | **`model_default`** in yaml | Served model (vLLM + Gutenberg / **`long_doc_qa`**) |
-| **`RADEON_VLLM_READY_TIMEOUT`** | **`1800`** | Seconds to wait for **`/v1/models`** (raise for **`gpt-oss-120b`**) |
-| **`RADEON_LMCACHE_IO`** | **`hipfile`** | **`hipfile`** or **`posix`** disk backend |
-| **`RADEON_BENCHMARK`** | **`gutenberg`** | **`gutenberg`**, **`none`**, **`long_doc_qa`**, **`test_aic`** |
-| **`RADEON_RUN_LONG_PARALLEL`** | **`1`** | **`1`** = **`run-long-parallel.sh`**; **`0`** = serial **`run-long.sh`** |
-| **`RADEON_RUN_LONG_WORKERS`** | **`4`** | Parallel workers ( **`WORKERS`** ) |
-| **`RADEON_RUN_LONG_ITERATIONS`** | **`1`** | Per-worker **`ITERATIONS`** (total ≈ workers × iterations) |
-| **`RADEON_RUN_LONG_BASE_SEED`** | **`$RANDOM`** | Worker **`i`** uses seed **`BASE_SEED + i`** |
-| **`RADEON_RUN_LONG_STAGGER_SEC`** | **`0`** | Delay between starting workers |
+| **`VLH_VLLM_READY_TIMEOUT`** | **`1800`** | Seconds to wait for **`/v1/models`** (raise for **`gpt-oss-120b`**) |
+| **`VLH_LMCACHE_IO`** | **`hipfile`** | **`hipfile`** or **`posix`** disk backend |
+| **`VLH_BENCHMARK`** | **`gutenberg`** | **`gutenberg`**, **`none`**, **`long_doc_qa`**, **`test_aic`** |
+| **`VLH_RUN_LONG_PARALLEL`** | **`1`** | **`1`** = **`run-long-parallel.sh`**; **`0`** = serial **`run-long.sh`** |
+| **`VLH_RUN_LONG_WORKERS`** | **`4`** | Parallel workers ( **`WORKERS`** ) |
+| **`VLH_RUN_LONG_ITERATIONS`** | **`1`** | Per-worker **`ITERATIONS`** (total ≈ workers × iterations) |
+| **`VLH_RUN_LONG_BASE_SEED`** | **`$RANDOM`** | Worker **`i`** uses seed **`BASE_SEED + i`** |
+| **`VLH_RUN_LONG_STAGGER_SEC`** | **`0`** | Delay between starting workers |
 | **`BOOK_SLUG`** / **`BOOK_SLUGS`** | (library mode) | Single book or subset; see **`run-long.sh`** |
-| **`RADEON_SLURM_CONSTRAINT`** | (none) | Slurm **`--constraint`** (e.g. **`MARKHAM`**, **`MARKHAM&GFX942`**) |
-| **`RADEON_SLURM_MEM`** | **`64G`** (via sbatch) | Override with **`128G`** on large-memory nodes |
+| **`VLH_SLURM_CONSTRAINT`** | (none) | Slurm **`--constraint`** (e.g. **`MARKHAM`**, **`MARKHAM&GFX942`**) |
+| **`VLH_SLURM_MEM`** | **`64G`** (via sbatch) | Override with **`128G`** on large-memory nodes |
 | **`ROCM_ARCH`** | auto on node | Force image build (**`gfx942`**, **`gfx90a`**, **`gfx1201`**, …) |
-| **`RADEON_SKIP_BUILD`** | **`0`** | **`1`** skips **`make build`** if image exists |
-| **`RADEON_NVME_BLK_BPFTRACE`** | **`1`** (via wrapper) | NVMe block I/O bpftrace tab-separated trace |
-| **`RADEON_NVME_SMART_LOG`** | **`1`** (via wrapper) | **`nvme smart-log`** at job start/end |
-| **`RADEON_LMCACHE_ENABLE_KV_EVENTS`** | **`1`** | LMCache KV events in **`server.txt`** |
+| **`VLH_SKIP_BUILD`** | **`0`** | **`1`** skips **`make build`** if image exists |
+| **`VLH_NVME_BLK_BPFTRACE`** | **`1`** (via wrapper) | NVMe block I/O bpftrace tab-separated trace |
+| **`VLH_NVME_SMART_LOG`** | **`1`** (via wrapper) | **`nvme smart-log`** at job start/end |
+| **`VLH_LMCACHE_ENABLE_KV_EVENTS`** | **`1`** | LMCache KV events in **`server.txt`** |
 
 Build + server only (no Gutenberg load):
 
 ```bash
-sbatch --export=ALL,RADEON_BENCHMARK=none,RADEON_NVME_BASE=/mnt/nvme \
-  .slurm/vllm-radeon.sbatch
+sbatch --export=ALL,VLH_BENCHMARK=none,VLH_NVME_BASE=/mnt/nvme \
+  .slurm/vllm-lmcache-hipfile.sbatch
 ```
 
-Monitor: **`tail -f .slurm/logs/vllm-radeon-<jobid>.log`**. After the job,
-read **`.slurm/logs/vllm-radeon-<jobid>/results-summary.md`** (per-worker TTFT,
+Monitor: **`tail -f .slurm/logs/vllm-lmcache-hipfile-<jobid>.log`**. After the job,
+read **`.slurm/logs/vllm-lmcache-hipfile-<jobid>/results-summary.md`** (per-worker TTFT,
 prefill/decode tok/s, LMCache store totals, bpftrace NVMe/VFS I/O, NVMe SMART
 delta, engine stats from **`server.txt`**, exit codes). Machine-readable:
 **`results-summary.json`**. Re-run post-processing:
-**`python3 .slurm/lib/summarize-vllm-radeon-job.py .slurm/logs/vllm-radeon-<jobid>`**.
+**`python3 .slurm/lib/summarize-vllm-lmcache-hipfile-job.py .slurm/logs/vllm-lmcache-hipfile-<jobid>`**.
 **`.slurm/run-slurm.sh`** delegates to the top-level **`run-slurm.sh`**.
 
 ## **`rocm-aic-exporter.py`** (Prometheus textfile)
@@ -191,7 +195,7 @@ python3 scripts/rocm-aic-exporter.py \
 Metrics use the **`rocm_aic_*`** prefix. Default textfile path:
 **`/var/lib/prometheus/node-exporter/rocm_aic_exporter.prom`**, or set
 **`ROCM_AIC_EXPORTER_TEXTFILE`** / **`ROCM_ICMS_TEXTFILE_DIR`** (legacy:
-**`RADEON_LMCACHE_CHUNK_HIST_TEXTFILE`**).
+**`VLH_LMCACHE_CHUNK_HIST_TEXTFILE`**).
 
 Example Grafana queries (``job="node_exporter"``):
 
@@ -204,12 +208,12 @@ Example Grafana queries (``job="node_exporter"``):
 ## MFU metrics (**`--enable-mfu-metrics`**)
 
 **`scripts/vllm-server`** passes **`--enable-mfu-metrics`** by default
-(**`serve.enable_mfu_metrics: true`** in **`configs/vllm-radeon.yaml`**).
+(**`serve.enable_mfu_metrics: true`** in **`configs/vllm-lmcache-hipfile.yaml`**).
 vLLM exposes analytic FLOPs / MFU on Prometheus (e.g.
 **`vllm:estimated_flops_per_gpu_total`**). Disable without editing YAML:
 
 ```bash
-make run RADEON_ENABLE_MFU_METRICS=0
+make run VLH_ENABLE_MFU_METRICS=0
 ```
 
 Set **`VLLM_DEBUG_MFU_METRICS=1`** in the container for extra MFU debug
@@ -230,9 +234,9 @@ curl -sS -X POST "http://127.0.0.1:8000/reset_prefix_cache"
 Port **`800{GPU}`** matches **`ROCR_VISIBLE_DEVICES`** (e.g. **`8000`** for
 **`GPU=0`**).
 
-## LMCache disk mode (**`RADEON_LMCACHE_IO`**)
+## LMCache disk mode (**`VLH_LMCACHE_IO`**)
 
-**`make run`** passes **`RADEON_LMCACHE_IO`** (default **`hipfile`**). **`hipfile`**
+**`make run`** passes **`VLH_LMCACHE_IO`** (default **`hipfile`**). **`hipfile`**
 uses LMCache **GdsBackend** + hipFile (**`gds_path`** under **`DATA`/`subdir`**).
 **`posix`** uses LMCache **`remote_storage_plugins: [fs]`** (POSIX filesystem
 backend): **`extra_config.remote_storage_plugin.fs.base_path`** points at the
@@ -240,8 +244,8 @@ same directory as **`hipfile`** (**`DATA`/`subdir`**). No **`gds_path`** key
 in the runtime YAML (normal path; not **`fs://`**).
 
 ```bash
-make run RADEON_LMCACHE_IO=posix
-make run RADEON_LMCACHE_IO=hipfile   # default
+make run VLH_LMCACHE_IO=posix
+make run VLH_LMCACHE_IO=hipfile   # default
 ```
 
 ### Runtime storage mode (no vLLM restart)
@@ -263,7 +267,7 @@ curl -sS -X POST "http://127.0.0.1:6991/storage/mode" \
   -d '{"mode":"hipfile","gds_path":"/data/lmcache"}'
 ```
 
-Startup mode still comes from **`RADEON_LMCACHE_IO`** at **`make run`**; use
+Startup mode still comes from **`VLH_LMCACHE_IO`** at **`make run`**; use
 **`/storage/mode`** only when you need to flip layouts on a live server.
 
 ## LMCache logging and hipFile buffer
@@ -277,18 +281,18 @@ make build
 ```
 
 **Log level:** **`scripts/vllm-server`** sets **`LMCACHE_LOG_LEVEL`** from
-**`RADEON_LMCACHE_LOG_LEVEL`** (default **`INFO`**). Use **`ERROR`** only if
+**`VLH_LMCACHE_LOG_LEVEL`** (default **`INFO`**). Use **`ERROR`** only if
 you need to hide all LMCache warnings (including real allocation failures):
 
 ```bash
-make run RADEON_LMCACHE_LOG_LEVEL=ERROR
+make run VLH_LMCACHE_LOG_LEVEL=ERROR
 ```
 
 **hipFile pool (MiB):** **`configs/lmcache-hipfile.yml`** defaults
 **`gds_buffer_size: 1024`**. Override at run time without editing YAML:
 
 ```bash
-make run RADEON_LMCACHE_GDS_BUFFER_SIZE=2048
+make run VLH_LMCACHE_GDS_BUFFER_SIZE=2048
 ```
 
 Raise the pool if **`logs/server.txt`** shows
@@ -320,25 +324,25 @@ otherwise **`--help`** hits upstream **`ValueError: incomplete format`** (a
 or inspect the script in the container.
 
 ```bash
-docker exec -it vllm-radeon-gpu0 python3 \
+docker exec -it vllm-lmcache-hipfile-gpu0 python3 \
   /app/LMCache/benchmarks/long_doc_qa/long_doc_qa.py --help
-docker exec -it vllm-radeon-gpu0 python3 \
+docker exec -it vllm-lmcache-hipfile-gpu0 python3 \
   /app/LMCache/benchmarks/long_doc_qa/long_doc_qa.py \
   --port 8000 --model openai/gpt-oss-120b \
   --num-documents 2 --hit-miss-ratio 1:1
 ```
 
-Use the same name as **`make run`** (**`CONTAINER_NAME`**, default **`vllm-radeon-gpu0`** if **`IMAGE_NAME`** and **`GPU`** match defaults).
+Use the same name as **`make run`** (**`CONTAINER_NAME`**, default **`vllm-lmcache-hipfile-gpu0`** if **`IMAGE_NAME`** and **`GPU`** match defaults).
 
 Set **`VLLM_MODEL`** for Slurm and **`make run`** (same name for server and
-benchmarks). Unset uses **`vllm-radeon.yaml`** **`model_default`**. Legacy
-**`RADEON_BENCH_MODEL`** is copied to **`VLLM_MODEL`** with a warning.
+benchmarks). Unset uses **`vllm-lmcache-hipfile.yaml`** **`model_default`**. Legacy
+**`VLH_BENCH_MODEL`** is copied to **`VLLM_MODEL`** with a warning.
 Match **`--port`** to **`800{GPU}`** from **`ROCR_VISIBLE_DEVICES`**.
 
 ## Gutenberg long-context fixtures
 
 **`data/`** is **not** tracked (see **`.gitignore`**); generate fixtures locally.
-From **`recipies/vllm-radeon/`**:
+From **`recipies/vllm-lmcache-hipfile/`**:
 
 ```bash
 make data
@@ -474,10 +478,10 @@ Disable with **`PROGRESS=0`**; force on in CI with **`PROGRESS=1`**.
 
 ## GitHub Actions CI
 
-Path-filtered workflows under [`.github/workflows/vllm-radeon-*.yml`][gh-vr]
+Path-filtered workflows under [`.github/workflows/vllm-lmcache-hipfile-*.yml`][gh-vr]
 cover patches, Python scripts, shell fixtures, config lint, and an optional
 manual Docker build. PRs do not run a full image build (runner disk); use
-**`vllm-radeon-docker`** via **workflow_dispatch** when you need an end-to-end
+**`vllm-lmcache-hipfile-docker`** via **workflow_dispatch** when you need an end-to-end
 compile. See also [rocm-aic CI][root-ci] in the root README.
 
 ## Grafana **`grafana/vllm-lmcache-prometheus.json`**
