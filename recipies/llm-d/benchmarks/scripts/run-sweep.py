@@ -2101,7 +2101,9 @@ class SweepOrchestrator:
             if self.shutdown_event.is_set():
                 raise InterruptedError("Shutdown requested")
 
-            self.capture_snapshot(run_dir, namespace, context="success")
+            # Determine snapshot context based on benchmark result
+            snapshot_context = "success" if benchmark_results.get('exit_code', 0) == 0 else "benchmark_failure"
+            self.capture_snapshot(run_dir, namespace, context=snapshot_context)
 
             # Check model server health after benchmark completion
             print(f"{prefix} Checking model server health...")
@@ -2113,8 +2115,17 @@ class SweepOrchestrator:
             # Fail if benchmark failed OR if model server had issues
             if benchmark_results['exit_code'] != 0:
                 run_state.status = RunStatus.FAILED
-                run_state.error = "Benchmark failed"
-                print(f"{prefix} ✗ Benchmark failed")
+
+                # Extract failure reason and details from benchmark results
+                failure_reason = benchmark_results.get('failure_reason', 'unknown')
+                failure_details = benchmark_results.get('failure_details', '')
+
+                run_state.error = f"Benchmark failed: {failure_reason}"
+
+                # Clear, prominent failure output
+                print(f"{prefix} ✗ Benchmark failed: {failure_reason}")
+                if failure_details:
+                    print(f"{prefix}   {failure_details}")
             elif server_health_error:
                 run_state.status = RunStatus.FAILED
                 run_state.error = f"Model server error: {server_health_error}"

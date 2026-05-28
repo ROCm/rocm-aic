@@ -3,7 +3,6 @@ Multi-turn benchmark load generator.
 """
 
 import re
-import subprocess
 from pathlib import Path
 from typing import Dict, Any, List
 
@@ -213,32 +212,39 @@ class MultiTurnBenchmark(LoadGeneratorBase):
             "--image", image,
             "--namespace", namespace,
             "--output-dir", str(run_dir.absolute()),
-            "--completion-timeout", "600",
+            "--completion-timeout", "30",
             "--",  # Separator for benchmark args
         ]
         cmd.extend(benchmark_cmd_args)
 
-        print(f"  Running benchmark in pod (image: {image})...")
-
-        # Execute
-        result = subprocess.run(cmd, capture_output=True, text=True)
-
-        if result.returncode != 0:
-            print(f"  Warning: Benchmark exited with code {result.returncode}")
-
-        # Save runner output
-        with open(str(run_dir / "benchmark_runner_output.txt"), "w") as f:
-            f.write(result.stdout)
-            f.write(result.stderr)
+        # Execute using common helper
+        exec_result = self.execute_benchmark(
+            cmd=cmd,
+            run_dir=run_dir,
+            run_label="run1",
+            image=image,
+            tool_name="multi-turn-benchmark"
+        )
 
         # Parse metrics from output file
         output_path = run_dir / "benchmark_output.txt"
         parsed_result = self.parse_metrics(output_path)
 
+        # Determine failure reason - execution failure takes precedence
+        failure_reason = exec_result.get('failure_reason')
+        failure_details = exec_result.get('failure_details')
+
+        # If execution succeeded but parsing failed, report parsing failure
+        if failure_reason is None and parsed_result.get('parsing_status') == 'failed':
+            failure_reason = self.FAILURE_PARSING
+            failure_details = "; ".join(parsed_result.get('parsing_errors', ['Unknown parsing error']))
+
         return {
             "tool": "multi-turn-benchmark",
             "output_file": str(output_path),
-            "exit_code": result.returncode,
+            "exit_code": exec_result['exit_code'],
+            "failure_reason": failure_reason,
+            "failure_details": failure_details,
             "image": image,
             "workload_file": workload_file,
             **parsed_result  # Add metrics, parsing_status, parsing_errors/warnings

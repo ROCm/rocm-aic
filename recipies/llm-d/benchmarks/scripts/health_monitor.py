@@ -92,7 +92,7 @@ class CentralizedHealthMonitor:
     """
 
     def __init__(self, check_interval: int = 15, aggressive_timeout: int = 180,
-                 unhealthy_timeout: int = 600, api_rate_limit: int = 10):
+                 unhealthy_timeout: int = 1200, api_rate_limit: int = 10):
         """
         Initialize the centralized health monitor.
 

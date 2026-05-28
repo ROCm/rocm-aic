@@ -230,55 +230,68 @@ fi
 
 echo "Resources created successfully"
 
-# Wait for pod to start
-echo "Waiting for pod to be ready..."
-if ! kubectl wait --for=condition=Ready "pod/$POD_NAME" -n "$NAMESPACE" --timeout=300s 2>/dev/null; then
-  echo "Warning: Pod did not become ready, but continuing to capture logs..."
-fi
+set +e
+
+POD_EXIT_CODE=0
+TIMEOUT_EXIT_CODE=0
 
 # Create output directory structure
 mkdir -p "$OUTPUT_DIR"
 LOG_FILE="$OUTPUT_DIR/benchmark_output_${RUN_LABEL}.log"
 DESCRIBE_FILE="$OUTPUT_DIR/benchmark_pod_describe_${RUN_LABEL}.log"
 
-# Wait for pod completion
-echo "Waiting for benchmark to complete (timeout: ${COMPLETION_TIMEOUT}s)..."
-kubectl wait --for=condition=Ready=false "pod/$POD_NAME" -n "$NAMESPACE" --timeout="${COMPLETION_TIMEOUT}s" 2>/dev/null || true
+# Wait for pod to start
+echo "Waiting for pod to be ready..."
+if ! kubectl wait --for=condition=Ready "pod/$POD_NAME" -n "$NAMESPACE" --timeout=300s 2>/dev/null; then
+  echo "WARNING: Pod did not become ready, but continuing to capture logs..."
+else
+  # Pod is up, wait for pod completion
+  echo "Waiting for benchmark to complete (timeout: ${COMPLETION_TIMEOUT}s)..."
+  kubectl wait --for=condition=Ready=false "pod/$POD_NAME" -n "$NAMESPACE" --timeout="${COMPLETION_TIMEOUT}s" 2>/dev/null
+  TIMEOUT_EXIT_CODE=$?
+  if [ "$TIMEOUT_EXIT_CODE" != "0" ]; then
+    echo "WARNING: Timeout was reached waiting for benchmark completion! Run is going to be aborted!"
+  fi
 
-# Get logs
-echo "Retrieving logs..."
-kubectl logs "$POD_NAME" -n "$NAMESPACE" > "$LOG_FILE" 2>&1 || true
+  # Get logs
+  echo "Retrieving logs..."
+  kubectl logs "$POD_NAME" -n "$NAMESPACE" > "$LOG_FILE" 2>&1 || true
 
-# Save pod description for debugging
-POD_DESC_FILE="$OUTPUT_DIR/pod_description_${RUN_LABEL}.txt"
-kubectl describe pod "$POD_NAME" -n "$NAMESPACE" > "$POD_DESC_FILE" 2>&1 || true
-
-# Extract the hostPath from the kustomization.yaml (if it exists)
-KUSTOMIZATION_FILE="$MANIFESTS_DIR/kustomization.yaml"
-if [ -f "$KUSTOMIZATION_FILE" ]; then
-  BASE_HOST_PATH=$(grep -A 5 "hostPath:" "$KUSTOMIZATION_FILE" 2>/dev/null | grep "path:" | head -1 | awk '{print $2}' || echo "")
-
-  if [ -n "$BASE_HOST_PATH" ]; then
-    # Copy result files from shared hostPath to local OUTPUT_DIR
-    SHARED_RESULTS_PATH="${BASE_HOST_PATH}/$RESULTS_SUBDIR"
-    echo "Copying result files from $SHARED_RESULTS_PATH to $OUTPUT_DIR..."
-    if [ -d "$SHARED_RESULTS_PATH" ]; then
-      cp -v "$SHARED_RESULTS_PATH"/* "$OUTPUT_DIR/" 2>/dev/null || echo "No result files to copy"
-      # Clean up the shared directory
-      #TODO: better way to do this?
-      sudo rm -rf "$SHARED_RESULTS_PATH"
-    else
-      echo "Warning: Shared results directory not found: $SHARED_RESULTS_PATH"
+  # Extract the hostPath from the kustomization.yaml (if it exists)
+  KUSTOMIZATION_FILE="$MANIFESTS_DIR/kustomization.yaml"
+  if [ -f "$KUSTOMIZATION_FILE" ]; then
+    BASE_HOST_PATH=$(grep -A 5 "hostPath:" "$KUSTOMIZATION_FILE" 2>/dev/null | grep "path:" | head -1 | awk '{print $2}' || echo "")
+    if [ -n "$BASE_HOST_PATH" ]; then
+      # Copy result files from shared hostPath to local OUTPUT_DIR
+      SHARED_RESULTS_PATH="${BASE_HOST_PATH}/$RESULTS_SUBDIR"
+      echo "Copying result files from $SHARED_RESULTS_PATH to $OUTPUT_DIR..."
+      if [ -d "$SHARED_RESULTS_PATH" ]; then
+        cp -v "$SHARED_RESULTS_PATH"/* "$OUTPUT_DIR/" 2>/dev/null || echo "No result files to copy"
+        # Clean up the shared directory
+        #TODO: better way to do this?
+        sudo rm -rf "$SHARED_RESULTS_PATH"
+      else
+        echo "WARNING: Shared results directory not found: $SHARED_RESULTS_PATH"
+      fi
     fi
   fi
+
+  # Get exit code
+  POD_EXIT_CODE=$(kubectl get pod "$POD_NAME" -n "$NAMESPACE" -o jsonpath='{.status.containerStatuses[0].state.terminated.exitCode}' 2>/dev/null || echo "1")
 fi
 
-# Get exit code
-EXIT_CODE=$(kubectl get pod "$POD_NAME" -n "$NAMESPACE" -o jsonpath='{.status.containerStatuses[0].state.terminated.exitCode}' 2>/dev/null || echo "1")
+set -e
 
-if [ "$EXIT_CODE" != "0" ]; then
-  echo "WARNING: Benchmark exited with code=$EXIT_CODE"
-  kubectl describe pod "$POD_NAME" -n "$NAMESPACE" > "${DESCRIBE_FILE}"
+# Save pod description for debugging
+kubectl describe pod "$POD_NAME" -n "$NAMESPACE" > ${DESCRIBE_FILE} || true
+
+if [ "$TIMEOUT_EXIT_CODE" != "0" ]; then
+    echo "WARNING: Benchmark timed out!"
+    POD_EXIT_CODE=77 # stay in 8 bits range
+else
+  if [ "$POD_EXIT_CODE" != "0" ]; then
+    echo "WARNING: Benchmark exited with code=$POD_EXIT_CODE"
+  fi
 fi
 
 # Cleanup pod
@@ -289,4 +302,4 @@ echo "Benchmark execution complete"
 echo "Logs saved to: $LOG_FILE"
 echo "Results saved to: $OUTPUT_DIR"
 
-exit "$EXIT_CODE"
+exit "$POD_EXIT_CODE"

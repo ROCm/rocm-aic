@@ -2,13 +2,22 @@
 Base class for load generation tools.
 """
 
+import subprocess
 from abc import ABC, abstractmethod
 from pathlib import Path
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional
 
 
 class LoadGeneratorBase(ABC):
     """Base class for all load generation tools."""
+
+    # Exit code constants
+    EXIT_CODE_TIMEOUT = 77
+
+    # Failure reason constants
+    FAILURE_TIMEOUT = "timeout"
+    FAILURE_POD_ERROR = "pod_error"
+    FAILURE_PARSING = "parsing_failed"
 
     def __init__(self, orchestrator):
         """
@@ -18,6 +27,69 @@ class LoadGeneratorBase(ABC):
             orchestrator: Reference to SweepOrchestrator instance for accessing utilities
         """
         self.orchestrator = orchestrator
+
+    def execute_benchmark(
+        self,
+        cmd: List[str],
+        run_dir: Path,
+        run_label: str = "run1",
+        image: Optional[str] = None,
+        tool_name: str = "benchmark"
+    ) -> Dict[str, Any]:
+        """
+        Execute benchmark subprocess with standardized error handling.
+
+        This helper method provides consistent subprocess execution, output capture,
+        and error classification for all load generators.
+
+        Args:
+            cmd: Command to execute as list of strings
+            run_dir: Directory for saving output files
+            run_label: Label for this run (used in output filenames)
+            image: Container image name (for logging)
+            tool_name: Human-readable tool name (for logging)
+
+        Returns:
+            Dictionary with:
+                - exit_code: Process return code
+                - failure_reason: Classified failure reason (None if success)
+                - failure_details: Human-readable failure description (None if success)
+                - stdout: Captured stdout
+                - stderr: Captured stderr
+                - runner_output_file: Path to saved output file
+        """
+        if image:
+            print(f"  Running {tool_name} in pod (image: {image})...")
+        else:
+            print(f"  Running {tool_name}...")
+
+        result = subprocess.run(cmd, capture_output=True, text=True)
+
+        # Save runner output
+        output_file = run_dir / f"benchmark_runner_output_{run_label}.txt"
+        with open(output_file, "w") as f:
+            f.write(result.stdout)
+            f.write(result.stderr)
+
+        # Determine failure reason based on exit code
+        failure_reason = None
+        failure_details = None
+
+        if result.returncode == self.EXIT_CODE_TIMEOUT:
+            failure_reason = self.FAILURE_TIMEOUT
+            failure_details = "Benchmark pod timed out waiting for completion"
+        elif result.returncode != 0:
+            failure_reason = self.FAILURE_POD_ERROR
+            failure_details = f"Benchmark pod exited with code {result.returncode}"
+
+        return {
+            "exit_code": result.returncode,
+            "failure_reason": failure_reason,
+            "failure_details": failure_details,
+            "stdout": result.stdout,
+            "stderr": result.stderr,
+            "runner_output_file": str(output_file),
+        }
 
     @abstractmethod
     def run(self, config: Dict[str, Any], run_dir: Path,

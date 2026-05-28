@@ -4,7 +4,6 @@ vLLM bench serve load generator.
 
 import json
 import re
-import subprocess
 from pathlib import Path
 from typing import Dict, Any, List
 
@@ -363,6 +362,16 @@ class VllmBenchServe(LoadGeneratorBase):
             )
             results.append(result)
 
+        # Determine overall failure reason from runs
+        failed_runs = [r for r in results if r.get('exit_code', 0) != 0]
+        failure_reason = None
+        failure_details = None
+
+        if failed_runs:
+            # Use the first failure's reason
+            failure_reason = failed_runs[0].get('failure_reason', self.FAILURE_POD_ERROR)
+            failure_details = failed_runs[0].get('failure_details', f"{len(failed_runs)}/{num_runs} runs failed")
+
         # Return aggregated results
         return {
             "tool": "vllm-bench-serve",
@@ -370,7 +379,9 @@ class VllmBenchServe(LoadGeneratorBase):
             "clone_run": clone_run,
             "seed": seed,
             "num_runs": num_runs,
-            "exit_code": 0 if all(r['exit_code'] == 0 for r in results) else 1
+            "exit_code": 0 if all(r['exit_code'] == 0 for r in results) else 1,
+            "failure_reason": failure_reason,
+            "failure_details": failure_details,
         }
 
     def _execute_single_run(self, benchmark_args: Dict[str, Any], model: str,
@@ -401,28 +412,33 @@ class VllmBenchServe(LoadGeneratorBase):
         ]
         cmd.extend(benchmark_cmd_args)
 
-        print(f"    Running vllm bench serve (image: {image})...")
-
-        # Execute
-        result = subprocess.run(cmd, capture_output=True, text=True)
-
-        if result.returncode != 0:
-            print(f"    Warning: Benchmark exited with code {result.returncode}")
-
-        # Save runner output
-        output_file = run_dir / f"benchmark_runner_output_{run_label}.txt"
-        with open(output_file, "w") as f:
-            f.write(result.stdout)
-            f.write(result.stderr)
+        # Execute using common helper
+        exec_result = self.execute_benchmark(
+            cmd=cmd,
+            run_dir=run_dir,
+            run_label=run_label,
+            image=image,
+            tool_name=f"vllm-bench-serve ({run_label})"
+        )
 
         # Parse metrics from output file
         output_json_path = run_dir / f"benchmark_output_{run_label}.json"
         parsed_result = self.parse_metrics(output_json_path)
 
+        # Determine failure reason - execution failure takes precedence
+        failure_reason = exec_result.get('failure_reason')
+        failure_details = exec_result.get('failure_details')
+
+        if failure_reason is None and parsed_result.get('parsing_status') == 'failed':
+            failure_reason = self.FAILURE_PARSING
+            failure_details = "; ".join(parsed_result.get('parsing_errors', ['Unknown parsing error']))
+
         return {
             "run_label": run_label,
             "output_file": str(output_json_path),
-            "exit_code": result.returncode,
+            "exit_code": exec_result['exit_code'],
+            "failure_reason": failure_reason,
+            "failure_details": failure_details,
             "seed": seed,
             **parsed_result  # Add metrics, parsing_status, parsing_errors
         }
