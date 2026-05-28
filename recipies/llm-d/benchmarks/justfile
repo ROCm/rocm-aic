@@ -3,6 +3,11 @@
 # Environment variables with defaults
 SWEEP_RESULTS_DIR := env_var_or_default('SWEEP_RESULTS_DIR', 'results/sweeps')
 
+import? "../common/llm-d-helpers.justfile"
+
+# Label to identify benchmark pods
+BENCHMARK_POD_LABEL := "app=llm-d-benchmark"
+
 # Default recipe - show available commands
 default:
     @just --list
@@ -192,6 +197,21 @@ describe NAMESPACE:
     echo "📜 Viewing pod description from namespace: {{NAMESPACE}} (deployment: $DEPLOYMENT)"
     cd ../$DEPLOYMENT && NAMESPACE={{NAMESPACE}} just describe
 
+# View logs from benchmark pod(s)
+bench-logs NAMESPACE:
+  @echo "📜 Benchmark pod logs:"
+  @just _get-logs-by-label {{NAMESPACE}} {{BENCHMARK_POD_LABEL}} 50
+
+# Follow logs from benchmark pod(s) in real-time
+bench-logs-follow NAMESPACE:
+  @echo "📜 Following benchmark pod logs (Ctrl+C to stop)..."
+  @just _follow-logs-by-label {{NAMESPACE}} {{BENCHMARK_POD_LABEL}}
+
+# Show detailed description of benchmark pod(s)
+bench-describe NAMESPACE:
+  @echo "📜 Benchmark pod description:"
+  @just _get-describe-by-label {{NAMESPACE}} {{BENCHMARK_POD_LABEL}}
+
 # Show vLLM configuration from specified namespace (auto-detects deployment type from namespace label)
 show-config NAMESPACE:
     #!/usr/bin/env bash
@@ -242,3 +262,33 @@ results-merge OUTPUT *FILES:
     @echo "🔗 Merging aggregated results..."
     @python3 scripts/merge-aggregated-results.py {{FILES}} --output {{OUTPUT}} --pretty
     @echo "✓ Merged results saved to: {{OUTPUT}}"
+
+# Clean up all namespaces, clusterroles, and clusterrolebindings for current user (WARNING: DESTRUCTIVE)
+# This is when things went wrong and ctrl-c the sweep did not do a proper clean-up.
+mop-up:
+  #!/usr/bin/env bash
+  USER="${USER}"
+
+  echo ""
+  echo "🧹 Cleaning up namespaces for user: $USER..."
+  kubectl get namespace -o name | grep -E "namespace/$USER|namespace/.*$USER" | cut -d'/' -f2 | while read ns; do
+      echo "  🗑️   Deleting namespace: $ns"
+      kubectl delete namespace "$ns" 2>/dev/null || true
+  done
+
+  echo ""
+  echo "🧹 Cleaning up clusterroles for user: $USER..."
+  kubectl get clusterrole -o name | grep "$USER" | cut -d'/' -f2 | while read cr; do
+      echo "  🗑️   Deleting clusterrole: $cr"
+      kubectl delete clusterrole "$cr" 2>/dev/null || true
+  done
+
+  echo ""
+  echo "🧹 Cleaning up clusterrolebindings for user: $USER..."
+  kubectl get clusterrolebinding -o name | grep "$USER" | cut -d'/' -f2 | while read crb; do
+      echo "  🗑️   Deleting clusterrolebinding: $crb"
+      kubectl delete clusterrolebinding "$crb" 2>/dev/null || true
+  done
+
+  echo ""
+  echo "✅ Cleanup complete for user: $USER"
