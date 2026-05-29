@@ -73,7 +73,7 @@ load_generation:
     type: combinations
     combination_mode: pairwise
     args:
-      dataset_name: random 
+      dataset_name: random
       # Note: When tweaking settings, make sure the cache size is large enough
       random_input_len:
         values: [256, 512, 1024, 2048, 4096, 8192, 16384, 32768, 65536, 128000]

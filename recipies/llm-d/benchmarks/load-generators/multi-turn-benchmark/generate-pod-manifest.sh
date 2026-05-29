@@ -35,7 +35,7 @@ spec:
       python3 benchmark_serving_multi_turn.py ${ARGS_STR}
       status=$?
       set -e
-      echo "Benchmark exited with code=${status}"
+      echo "Benchmark exited with code=\${status}"
       echo "Copying result files to mounted volume..."
       cp -v *.xlsx *.json /results/${RESULTS_SUBDIR}/ 2>/dev/null || echo "No .xlsx or .json files to copy"
     volumeMounts:

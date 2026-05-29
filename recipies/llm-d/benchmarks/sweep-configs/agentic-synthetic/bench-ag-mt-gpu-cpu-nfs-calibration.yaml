@@ -76,7 +76,6 @@ load_generation:
   benchmark_args:
     type: pairwise
     args:
-    args:
       num_clients:
         values: [8, 16, 32]
       max_active_conversations:

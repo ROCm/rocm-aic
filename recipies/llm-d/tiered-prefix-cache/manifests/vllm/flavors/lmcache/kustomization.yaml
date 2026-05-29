@@ -6,7 +6,7 @@ resources:
 
 components:
   - ../../../../../../../submodules/llm-d/guides/recipes/modelserver/components/monitoring
-  
+
 # LMCache-specific configuration; can override through env variables in `llm-d-model-server` too.
 configMapGenerator:
   - name: config-map

@@ -46,7 +46,7 @@ load_generation:
   benchmark_args:
     type: combinations
     args:
-      dataset_name: random 
+      dataset_name: random
       random_input_len:
         values: [1000, 2000, 4000, 10000, 20000, 40000, 128000]
       random_output_len: 1
