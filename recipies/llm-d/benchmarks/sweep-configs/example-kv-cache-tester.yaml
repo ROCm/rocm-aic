@@ -1,0 +1,130 @@
+name: "kv-cache-tester-sweep"
+description: "Example sweep using kv-cache-tester with all four variants"
+deployment: "tiered-prefix-cache-offloading"
+
+# This file demonstrates all four kv-cache-tester variants.
+# In practice, you would typically use one variant per sweep config.
+
+parameters:
+  # Fixed model
+  model:
+    type: fixed
+    value: "facebook/opt-125m"  # Small model for testing
+
+  # Server parameters
+  vllm_args:
+    type: combinations
+    args:
+      max_num_seq: 256
+      gpu_memory_utilization: 0.90
+      disable_log_stats: false
+      disable_log_requests: true
+
+# Load generation with kv-cache-tester
+# Note: Each sweep config should use ONE variant. Examples of all variants shown below.
+
+# ==============================================================================
+# VARIANT 1: single_prompt_tester
+# ==============================================================================
+# Use this variant to test single-prompt performance across different context sizes.
+# Useful for understanding baseline TTFT at various token counts.
+#
+# load_generation:
+#   tool: "kv-cache-tester"
+#   image: "kv-cache-tester:latest"
+#   variant: "single_prompt_tester"
+#
+#   benchmark_args:
+#     type: combinations
+#     args:
+#       # Sweepable parameters
+#       min_tokens:
+#         values: [1000, 4000, 16000]
+#       max_tokens:
+#         values: [32000, 64000, 128000]
+#
+#       # Fixed parameters
+#       output_dir: "/tmp/results"  # Will be auto-set, but can override
+#
+#   clone_run: false
+
+# ==============================================================================
+# VARIANT 2: cache_rate_tester (DEFAULT EXAMPLE)
+# ==============================================================================
+# Use this variant to test performance at various cache hit rates.
+# Tests how TTFT changes as cache efficiency varies.
+
+load_generation:
+  tool: "kv-cache-tester"
+  image: "kv-cache-tester:latest"
+  variant: "cache_rate_tester"
+
+  benchmark_args:
+    type: combinations
+    args:
+      # Sweepable parameters
+      context_sizes:
+        values: ["8000", "32000", "64000"]  # Note: passed as space-separated string
+      working_set_size:
+        values: [1000000, 2000000, 5000000]
+
+      # Fixed parameters
+      max_ttft: 2.0
+      output_dir: "/tmp/results"
+
+  clone_run: true
+
+# ==============================================================================
+# VARIANT 3: working_set_tester
+# ==============================================================================
+# Use this variant to test performance across different memory tiers.
+# Useful for understanding how working set size affects TTFT.
+#
+# load_generation:
+#   tool: "kv-cache-tester"
+#   image: "kv-cache-tester:latest"
+#   variant: "working_set_tester"
+#
+#   benchmark_args:
+#     type: combinations
+#     args:
+#       # Sweepable parameters
+#       context_sizes:
+#         values: [30000, 60000]
+#       min_working_set_size:
+#         values: [100000, 500000]
+#       max_working_set_size:
+#         values: [2000000, 5000000]
+#
+#       # Fixed parameters
+#       working_set_increments: 10
+#
+#   clone_run: false
+
+# ==============================================================================
+# VARIANT 4: trace_replay_tester
+# ==============================================================================
+# Use this variant to replay real agentic coding traces.
+# Tests realistic workload patterns with concurrent users.
+#
+# load_generation:
+#   tool: "kv-cache-tester"
+#   image: "kv-cache-tester:latest"
+#   variant: "trace_replay_tester"
+#
+#   benchmark_args:
+#     type: combinations
+#     args:
+#       # Sweepable parameters
+#       start_users:
+#         values: [5, 10]
+#       max_users:
+#         values: [25, 50]
+#
+#       # Fixed parameters
+#       trace_directory: "/app/traces"  # Path to traces inside container
+#       output_dir: "/tmp/results"
+#       max_ttft: 2.0
+#       test_duration: 300
+#
+#   clone_run: false

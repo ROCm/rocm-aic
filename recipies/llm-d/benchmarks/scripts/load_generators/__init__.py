@@ -6,6 +6,7 @@ from .multi_turn_benchmark import MultiTurnBenchmark
 from .vllm_bench_serve import VllmBenchServe
 from .lmcache_bench import LMCacheBenchLoadGenerator
 from .long_doc_qa import LongDocQA
+from .kv_cache_tester import KvCacheTester
 
 # Registry of available load generators
 LOAD_GENERATORS = {
@@ -13,6 +14,7 @@ LOAD_GENERATORS = {
     'vllm-bench-serve': VllmBenchServe,
     'lmcache-bench': LMCacheBenchLoadGenerator,
     'long_doc_qa': LongDocQA,
+    'kv-cache-tester': KvCacheTester,
 }
 
 

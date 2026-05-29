@@ -1,0 +1,87 @@
+name: "agentic-callan-replay-gpu-aic"
+description: "Agentic Callan GPU and AIC KV Cache"
+deployment: "tiered-prefix-cache-lmcache"
+deployment_template: "tiered-prefix-cache-lmcache-hipfile-kustomization.yaml.tmpl"
+
+env_vars:
+  PYTHONHASHSEED: "42"
+  HIPFILE_STATS_LEVEL: "0"
+  LMCACHE_INTERNAL_API_SERVER_ENABLED: "true"
+  LMCACHE_INTERNAL_API_SERVER_PORT_START: "6990"
+  MIOPEN_USER_DB_PATH: "/app/miopen"
+  MIOPEN_FIND_MODE: "FAST"
+  AMDGCN_USE_BUFFER_OPS: "0"
+  LMCACHE_LOG_LEVEL: "INFO"
+
+parameters:
+  image:
+    type: categorical
+    values:
+      - "ghcr.io/vcave/vllm:rocm_721-vllm_0190-lmcache_20260514_92fe433a"
+  model:
+    type: fixed
+    value: "openai/gpt-oss-120b"
+  replicas:
+    type: categorical
+    values: [1]
+  tensor_parallel_size:
+    type: categorical
+    values: [1]
+  memory:
+    type: fixed
+    value: "1500Gi"
+  cpu:
+    type: fixed
+    # 112 available
+    value: "100"
+
+  vllm_args:
+    type: combinations
+    args:
+      disable_uvicorn_access_log: true
+      enable_prefix_caching: true
+      gpu_memory_utilization:
+        values: [0.90] # 156.32 GiB for KV
+      kv_cache_metrics: true
+      enable_mfu_metrics: true
+      kv_connector:
+        values:
+          - type: "lmcache"
+            role: "kv_both"
+
+  lmcache_args:
+    type: combinations
+    args:
+      chunk_size:
+        values: [256]
+      save_decode_cache: false
+      local_cpu: false
+      max_local_cpu_size:
+        values: [40]
+      use_gds: true
+      gds_backend: "hipfile"
+      # This path must agree with the pod's requested volumes
+      gds_path: "/hipfile-of"
+      gds_buffer_size: 16384
+      extra_config:
+        gds_io_threads:
+          values: [16]
+
+load_generation:
+ tool: "kv-cache-tester"
+ image: "ghcr.io/vcave/vllm:rocm_721-vllm_0190-lmcache_20260514_92fe433a"
+ variant: "trace_replay_tester"
+ clone_run: false
+ benchmark_args:
+   type: combinations
+   args:
+     start_users: 4
+     max_users: 32
+     max_ttft: 60.0
+     test_duration: 1200
+     max-context: 100000
+     warm-prefix-pct: 0.5
+     timing-strategy: "think-only"
+     recycle: true
+     seed: 42
+     trace_directory: "traces" # part of clone
