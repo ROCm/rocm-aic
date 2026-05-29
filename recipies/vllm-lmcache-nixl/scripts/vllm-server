@@ -204,6 +204,17 @@ def _materialize_lmcache_config(svc: dict[str, Any], data_root: Path) -> Path | 
                 file=sys.stderr,
             )
 
+    pool_size = os.environ.get("VLN_NIXL_POOL_SIZE", "").strip()
+    if pool_size:
+        try:
+            extra["nixl_pool_size"] = int(pool_size)
+        except ValueError:
+            print(
+                f"WARN: invalid VLN_NIXL_POOL_SIZE={pool_size!r} (integer expected)",
+                file=sys.stderr,
+            )
+    cfg["extra_config"] = extra
+
     prior_json = os.environ.get("LMCACHE_EXTRA_CONFIG", "").strip()
     if prior_json:
         try:
@@ -229,19 +240,49 @@ def _materialize_lmcache_config(svc: dict[str, Any], data_root: Path) -> Path | 
     return out
 
 
+def _resolve_nixl_plugin_dir(prefix: str, nixl_cfg: dict[str, Any]) -> str:
+    """Pick the first existing NIXL plugin directory (image ENV can be stale)."""
+    candidates: list[str] = []
+    cfg_dir = nixl_cfg.get("plugin_dir")
+    if isinstance(cfg_dir, str) and cfg_dir.strip():
+        candidates.append(cfg_dir.strip())
+    env_dir = os.environ.get("NIXL_PLUGIN_DIR", "").strip()
+    if env_dir:
+        candidates.append(env_dir)
+    candidates.extend(
+        [
+            f"{prefix}/lib/x86_64-linux-gnu/plugins",
+            f"{prefix}/lib/x86_64-linux-gnu/nixl/plugins",
+            f"{prefix}/lib/nixl/plugins",
+        ]
+    )
+    seen: set[str] = set()
+    for path in candidates:
+        if path in seen:
+            continue
+        seen.add(path)
+        if os.path.isdir(path):
+            return path
+    return candidates[0] if candidates else f"{prefix}/lib/x86_64-linux-gnu/plugins"
+
+
 def _apply_nixl_runtime_env(env: dict[str, str], svc: dict[str, Any]) -> None:
     nixl_cfg = svc.get("nixl")
     if not isinstance(nixl_cfg, dict):
         return
     prefix = str(nixl_cfg.get("install_prefix", "/opt/nixl")).rstrip("/")
     ucx = str(nixl_cfg.get("ucx_prefix", "/opt/rocnixl-ucx")).rstrip("/")
-    plugin_dir = os.environ.get("NIXL_PLUGIN_DIR", "").strip()
-    if not plugin_dir:
-        plugin_dir = str(nixl_cfg.get("plugin_dir", f"{prefix}/lib/x86_64-linux-gnu/nixl/plugins"))
+    plugin_dir = _resolve_nixl_plugin_dir(prefix, nixl_cfg)
     env["NIXL_PLUGIN_DIR"] = plugin_dir
     prev = env.get("LD_LIBRARY_PATH", "")
-    parts = [f"{prefix}/lib", f"{ucx}/lib", prev]
+    nixl_lib = f"{prefix}/lib/x86_64-linux-gnu"
+    parts = [nixl_lib, f"{prefix}/lib", f"{ucx}/lib", prev]
     env["LD_LIBRARY_PATH"] = ":".join(p for p in parts if p)
+    py_site = f"{prefix}/lib/python3/dist-packages"
+    prev_py = env.get("PYTHONPATH", "")
+    env["PYTHONPATH"] = (
+        f"{py_site}:{prev_py}" if prev_py else py_site
+    )
 
 
 def main() -> int:

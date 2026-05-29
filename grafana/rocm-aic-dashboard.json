@@ -2,21 +2,13 @@
     "apiVersion": "dashboard.grafana.app/v2",
     "kind": "Dashboard",
     "metadata": {
-        "name": "rocm-aic-vllm-lmcache",
+        "name": "rocm-aic-dashboard",
         "namespace": "default",
         "uid": "7f2af756-9968-44cd-8f7a-cd8be435dd28",
-        "resourceVersion": "1779415630613006",
-        "generation": 38,
-        "creationTimestamp": "2026-05-20T23:06:44Z",
-        "labels": {
-            "grafana.app/deprecatedInternalID": "3595179651878912"
-        },
         "annotations": {
-            "grafana.app/createdBy": "user:efjw5zjwxw7pcb",
-            "grafana.app/folder": "",
-            "grafana.app/saved-from-ui": "Grafana v13.0.1 (a100054f)",
-            "grafana.app/updatedBy": "user:afmrnm7m0xkw0e",
-            "grafana.app/updatedTimestamp": "2026-05-22T02:07:10Z"
+            "rocm-aic.git.normalizedAt": "2026-05-29T05:18:45Z",
+            "rocm-aic.git.revision": "1633d5cd94d1e8dac62c893acabef509654691e7",
+            "rocm-aic.git.author": "sbates@raithlin.com"
         }
     },
     "spec": {
@@ -42,7 +34,7 @@
             }
         ],
         "cursorSync": "Crosshair",
-        "description": "A dashboard to show information relevant to the ROCm(tm) AMD Infinity Context System using for KV Cache block management and prefill offload via storage. ",
+        "description": "ROCm AMD Infinity Context System: KV cache storage, LMCache, vLLM inference, and GPU metrics. AIC storage may be local block device, hipfile, NFS, or other backends — use optional NFS panels only when the cache is NFS-mounted.",
         "editable": true,
         "elements": {
             "panel-31": {
@@ -50,7 +42,7 @@
                 "spec": {
                     "id": 31,
                     "title": "Server and GPU Power",
-                    "description": "Total power delivered to the server running vLLM.",
+                    "description": "GPU power from amd_metrics_exporter. Server PDU power appears only when server_power_metric is set (Dashboard settings → Variables).",
                     "links": [],
                     "data": {
                         "kind": "QueryGroup",
@@ -64,17 +56,17 @@
                                             "group": "prometheus",
                                             "version": "v0",
                                             "datasource": {
-                                                "name": "local-prometheus"
+                                                "name": "${datasource}"
                                             },
                                             "spec": {
                                                 "editorMode": "code",
-                                                "expr": "snoc_pinewood_plug_d_power{ }",
+                                                "expr": "{__name__=~\"$server_power_metric\"}",
                                                 "fromExploreMetrics": false,
                                                 "legendFormat": "Server Power",
                                                 "range": true
                                             }
                                         },
-                                        "refId": "snoc_pinewood_plug_d_power-avg",
+                                        "refId": "server_power_metric-avg",
                                         "hidden": false
                                     }
                                 },
@@ -86,13 +78,13 @@
                                             "group": "prometheus",
                                             "version": "v0",
                                             "datasource": {
-                                                "name": "local-prometheus"
+                                                "name": "${datasource}"
                                             },
                                             "spec": {
                                                 "editorMode": "code",
-                                                "expr": "amd_gpu_power_usage{instance=\"$instance\"}",
+                                                "expr": "amd_gpu_power_usage{instance=~\"$host\",gpu_id=~\"$gpu_id\"}",
                                                 "instant": false,
-                                                "legendFormat": "__auto",
+                                                "legendFormat": "{{instance}} GPU {{gpu_id}}",
                                                 "range": true
                                             }
                                         },
@@ -144,10 +136,6 @@
                                             {
                                                 "value": 0,
                                                 "color": "green"
-                                            },
-                                            {
-                                                "value": 80,
-                                                "color": "red"
                                             }
                                         ]
                                     },
@@ -214,13 +202,13 @@
                                             "group": "prometheus",
                                             "version": "v0",
                                             "datasource": {
-                                                "name": "local-prometheus"
+                                                "name": "${datasource}"
                                             },
                                             "spec": {
                                                 "editorMode": "code",
-                                                "expr": "sum by (instance, gpu_id) (\r\n  amd_gpu_gfx_activity{\r\n    job=\"amd_metrics_exporter\",\r\n    instance=~\"$instance\",\r\n    gpu_id=~\"$gpu_id\"\r\n  }\r\n)",
+                                                "expr": "sum by (instance, gpu_id) (\r\n  amd_gpu_gfx_activity{\r\n    job=\"amd_metrics_exporter\",\r\n    instance=~\"$host\",\r\n    gpu_id=~\"$gpu_id\"\r\n  }\r\n)",
                                                 "fromExploreMetrics": false,
-                                                "legendFormat": "__auto",
+                                                "legendFormat": "{{instance}} GPU {{gpu_id}}",
                                                 "range": true
                                             }
                                         },
@@ -236,13 +224,13 @@
                                             "group": "prometheus",
                                             "version": "v0",
                                             "datasource": {
-                                                "name": "local-prometheus"
+                                                "name": "${datasource}"
                                             },
                                             "spec": {
                                                 "editorMode": "code",
-                                                "expr": "sum by (instance, gpu_id) (\r\n  amd_gpu_umc_activity{\r\n    job=\"amd_metrics_exporter\",\r\n    instance=~\"$instance\",\r\n    gpu_id=\"$gpu_id\"\r\n  }\r\n)",
+                                                "expr": "sum by (instance, gpu_id) (\r\n  amd_gpu_umc_activity{\r\n    job=\"amd_metrics_exporter\",\r\n    instance=~\"$host\",\r\n    gpu_id=~\"$gpu_id\"\r\n  }\r\n)",
                                                 "instant": false,
-                                                "legendFormat": "__auto",
+                                                "legendFormat": "{{instance}} GPU {{gpu_id}}",
                                                 "range": true
                                             }
                                         },
@@ -280,8 +268,8 @@
                                 },
                                 "tooltip": {
                                     "hideZeros": false,
-                                    "mode": "single",
-                                    "sort": "none"
+                                    "mode": "multi",
+                                    "sort": "desc"
                                 }
                             },
                             "fieldConfig": {
@@ -294,10 +282,6 @@
                                             {
                                                 "value": 0,
                                                 "color": "green"
-                                            },
-                                            {
-                                                "value": 80,
-                                                "color": "red"
                                             }
                                         ]
                                     },
@@ -337,7 +321,8 @@
                                         "thresholdsStyle": {
                                             "mode": "off"
                                         }
-                                    }
+                                    },
+                                    "max": 100
                                 },
                                 "overrides": []
                             }
@@ -364,13 +349,13 @@
                                             "group": "prometheus",
                                             "version": "v0",
                                             "datasource": {
-                                                "name": "local-prometheus"
+                                                "name": "${datasource}"
                                             },
                                             "spec": {
                                                 "editorMode": "code",
-                                                "expr": "sum by (instance) (\r\n  amd_gpu_used_vram{\r\n    job=\"amd_metrics_exporter\",\r\n    instance=~\"$instance\",\r\n    gpu_id=\"0\"\r\n  }\r\n)",
+                                                "expr": "sum by (instance) (\r\n  amd_gpu_used_vram{\r\n    job=\"amd_metrics_exporter\",\r\n    instance=~\"$host\",\r\n    gpu_id=~\"$gpu_id\"\r\n  }\r\n)",
                                                 "fromExploreMetrics": false,
-                                                "legendFormat": "__auto",
+                                                "legendFormat": "{{instance}}",
                                                 "range": true
                                             }
                                         },
@@ -422,10 +407,6 @@
                                             {
                                                 "value": 0,
                                                 "color": "green"
-                                            },
-                                            {
-                                                "value": 80,
-                                                "color": "red"
                                             }
                                         ]
                                     },
@@ -477,8 +458,8 @@
                 "kind": "Panel",
                 "spec": {
                     "id": 35,
-                    "title": "KV Cache Storage Bandwidth",
-                    "description": "The read and write bandwidth into and out of the AIC KV Cache Storage.",
+                    "title": "KV Cache Block I/O (local device)",
+                    "description": "Read/write bandwidth on the selected block device(s). Use for local NVMe, dm-crypt, or other direct-attached AIC storage — not NFS client traffic (see optional NFS panels below).",
                     "links": [],
                     "data": {
                         "kind": "QueryGroup",
@@ -492,11 +473,11 @@
                                             "group": "prometheus",
                                             "version": "v0",
                                             "datasource": {
-                                                "name": "local-prometheus"
+                                                "name": "${datasource}"
                                             },
                                             "spec": {
                                                 "editorMode": "code",
-                                                "expr": "sum(rate(node_disk_read_bytes_total{instance=~\"$instance\"}[$__rate_interval]))",
+                                                "expr": "sum(rate(node_disk_read_bytes_total{instance=~\"$host\",device=~\"$blkdevice\"}[$__rate_interval]))",
                                                 "fromExploreMetrics": false,
                                                 "legendFormat": "Read Bandwidth",
                                                 "range": true
@@ -514,11 +495,11 @@
                                             "group": "prometheus",
                                             "version": "v0",
                                             "datasource": {
-                                                "name": "local-prometheus"
+                                                "name": "${datasource}"
                                             },
                                             "spec": {
                                                 "editorMode": "code",
-                                                "expr": "sum(rate(node_disk_written_bytes_total{instance=~\"$instance\"}[$__rate_interval]))",
+                                                "expr": "sum(rate(node_disk_written_bytes_total{instance=~\"$host\",device=~\"$blkdevice\"}[$__rate_interval]))",
                                                 "instant": false,
                                                 "legendFormat": "Write Bandwidth",
                                                 "range": true
@@ -558,23 +539,19 @@
                                 },
                                 "tooltip": {
                                     "hideZeros": false,
-                                    "mode": "single",
-                                    "sort": "none"
+                                    "mode": "multi",
+                                    "sort": "desc"
                                 }
                             },
                             "fieldConfig": {
                                 "defaults": {
-                                    "unit": "Bps",
+                                    "unit": "binBps",
                                     "thresholds": {
                                         "mode": "absolute",
                                         "steps": [
                                             {
                                                 "value": 0,
                                                 "color": "green"
-                                            },
-                                            {
-                                                "value": 80,
-                                                "color": "red"
                                             }
                                         ]
                                     },
@@ -641,11 +618,11 @@
                                             "group": "prometheus",
                                             "version": "v0",
                                             "datasource": {
-                                                "name": "local-prometheus"
+                                                "name": "${datasource}"
                                             },
                                             "spec": {
                                                 "editorMode": "code",
-                                                "expr": "lmcache:num_store_requests_total{ }",
+                                                "expr": "lmcache:num_store_requests_total",
                                                 "legendFormat": "Store Requests",
                                                 "range": true
                                             }
@@ -662,11 +639,11 @@
                                             "group": "prometheus",
                                             "version": "v0",
                                             "datasource": {
-                                                "name": "local-prometheus"
+                                                "name": "${datasource}"
                                             },
                                             "spec": {
                                                 "editorMode": "code",
-                                                "expr": "lmcache:num_retrieve_requests_total{ }",
+                                                "expr": "lmcache:num_retrieve_requests_total",
                                                 "instant": false,
                                                 "legendFormat": "Retrieve Requests",
                                                 "range": true
@@ -716,10 +693,6 @@
                                             {
                                                 "value": 0,
                                                 "color": "green"
-                                            },
-                                            {
-                                                "value": 80,
-                                                "color": "red"
                                             }
                                         ]
                                     },
@@ -786,11 +759,11 @@
                                             "group": "prometheus",
                                             "version": "v0",
                                             "datasource": {
-                                                "name": "local-prometheus"
+                                                "name": "${datasource}"
                                             },
                                             "spec": {
                                                 "editorMode": "code",
-                                                "expr": "sum(rate(vllm:prompt_tokens_by_source_total{source=\"local_compute\"}[$__rate_interval]))",
+                                                "expr": "sum(rate(vllm:prompt_tokens_by_source_total{instance=~\"$vllm_instance\",model_name=~\"$model\",source=\"local_compute\"}[$__rate_interval]))",
                                                 "instant": false,
                                                 "legendFormat": "Tokens Computed",
                                                 "range": true
@@ -808,11 +781,11 @@
                                             "group": "prometheus",
                                             "version": "v0",
                                             "datasource": {
-                                                "name": "local-prometheus"
+                                                "name": "${datasource}"
                                             },
                                             "spec": {
                                                 "editorMode": "code",
-                                                "expr": "sum(rate(vllm:prompt_tokens_by_source_total{source=\"external_kv_transfer\"}[$__rate_interval]))",
+                                                "expr": "sum(rate(vllm:prompt_tokens_by_source_total{instance=~\"$vllm_instance\",model_name=~\"$model\",source=\"external_kv_transfer\"}[$__rate_interval]))",
                                                 "instant": false,
                                                 "legendFormat": "Tokens from AIC",
                                                 "range": true
@@ -830,11 +803,11 @@
                                             "group": "prometheus",
                                             "version": "v0",
                                             "datasource": {
-                                                "name": "local-prometheus"
+                                                "name": "${datasource}"
                                             },
                                             "spec": {
                                                 "editorMode": "code",
-                                                "expr": "sum(rate(vllm:prompt_tokens_by_source_total{source=\"local_cache_hit\"}[$__rate_interval]))",
+                                                "expr": "sum(rate(vllm:prompt_tokens_by_source_total{instance=~\"$vllm_instance\",model_name=~\"$model\",source=\"local_cache_hit\"}[$__rate_interval]))",
                                                 "instant": false,
                                                 "legendFormat": "Tokens from CPU Cache",
                                                 "range": true
@@ -893,8 +866,8 @@
                                 },
                                 "tooltip": {
                                     "hideZeros": false,
-                                    "mode": "single",
-                                    "sort": "none"
+                                    "mode": "multi",
+                                    "sort": "desc"
                                 }
                             },
                             "fieldConfig": {
@@ -907,10 +880,6 @@
                                             {
                                                 "value": 0,
                                                 "color": "green"
-                                            },
-                                            {
-                                                "value": 80,
-                                                "color": "red"
                                             }
                                         ]
                                     },
@@ -977,11 +946,11 @@
                                             "group": "prometheus",
                                             "version": "v0",
                                             "datasource": {
-                                                "name": "local-prometheus"
+                                                "name": "${datasource}"
                                             },
                                             "spec": {
                                                 "editorMode": "code",
-                                                "expr": "rocm_aic_kv_disk_files{ }",
+                                                "expr": "rocm_aic_kv_disk_files{instance=~\"$host\"}",
                                                 "legendFormat": "AIC File Count",
                                                 "range": true
                                             }
@@ -1032,10 +1001,6 @@
                                             {
                                                 "value": 0,
                                                 "color": "green"
-                                            },
-                                            {
-                                                "value": 80,
-                                                "color": "red"
                                             }
                                         ]
                                     },
@@ -1102,11 +1067,11 @@
                                             "group": "prometheus",
                                             "version": "v0",
                                             "datasource": {
-                                                "name": "local-prometheus"
+                                                "name": "${datasource}"
                                             },
                                             "spec": {
                                                 "editorMode": "code",
-                                                "expr": "rocm_aic_data_fs_free_bytes{ }",
+                                                "expr": "rocm_aic_data_fs_free_bytes{instance=~\"$host\"}",
                                                 "legendFormat": "AIC Space Remaining",
                                                 "range": true
                                             }
@@ -1149,7 +1114,7 @@
                             },
                             "fieldConfig": {
                                 "defaults": {
-                                    "unit": "decbytes",
+                                    "unit": "bytes",
                                     "min": 0,
                                     "thresholds": {
                                         "mode": "absolute",
@@ -1157,10 +1122,6 @@
                                             {
                                                 "value": 0,
                                                 "color": "green"
-                                            },
-                                            {
-                                                "value": 80,
-                                                "color": "red"
                                             }
                                         ]
                                     },
@@ -1212,8 +1173,8 @@
                 "kind": "Panel",
                 "spec": {
                     "id": 47,
-                    "title": "KV Cache Block Hit Statistics",
-                    "description": "Time-based statistics on the AIC KV Cache Blocks and the number of times they have been \"hit\" as in retrieved by the KV Block Manager.",
+                    "title": "KV Cache Block Hit Statistics (.data)",
+                    "description": "Hit distribution across on-disk LMCache .data files. NIXL-only deployments (obj_*.bin, no .data) use the NIXL Chunk Lookup Stats row below instead.",
                     "links": [],
                     "data": {
                         "kind": "QueryGroup",
@@ -1227,11 +1188,11 @@
                                             "group": "prometheus",
                                             "version": "v0",
                                             "datasource": {
-                                                "name": "local-prometheus"
+                                                "name": "${datasource}"
                                             },
                                             "spec": {
                                                 "editorMode": "code",
-                                                "expr": "sum(\r\n  rate(rocm_aic_kv_files_by_hit_count{hit_count=~\"0|1\"}[$__rate_interval])\r\n) by (instance)",
+                                                "expr": "sum(\r\n  rate(rocm_aic_kv_files_by_hit_count{instance=~\"$host\",hit_count=~\"0|1\"}[$__rate_interval])\r\n) by (instance)",
                                                 "legendFormat": "0 Hits",
                                                 "range": true
                                             }
@@ -1248,11 +1209,11 @@
                                             "group": "prometheus",
                                             "version": "v0",
                                             "datasource": {
-                                                "name": "local-prometheus"
+                                                "name": "${datasource}"
                                             },
                                             "spec": {
                                                 "editorMode": "code",
-                                                "expr": "sum(\r\n  rate(rocm_aic_kv_files_by_hit_count{hit_count=~\"2|3|4|5\"}[$__rate_interval])\r\n) by (instance)",
+                                                "expr": "sum(\r\n  rate(rocm_aic_kv_files_by_hit_count{instance=~\"$host\",hit_count=~\"2|3|4|5\"}[$__rate_interval])\r\n) by (instance)",
                                                 "instant": false,
                                                 "legendFormat": "1-5 Hits",
                                                 "range": true
@@ -1302,10 +1263,6 @@
                                             {
                                                 "value": 0,
                                                 "color": "green"
-                                            },
-                                            {
-                                                "value": 80,
-                                                "color": "red"
                                             }
                                         ]
                                     },
@@ -1358,7 +1315,7 @@
                 "spec": {
                     "id": 48,
                     "title": "RDMA Bandwidth to AIC Storage",
-                    "description": "The RDMA transmit and receive bandwidth to and from the AIC storage backend.",
+                    "description": "RDMA throughput to the storage backend when RoCE is in use (optional; not applicable to all AIC deployments).",
                     "links": [],
                     "data": {
                         "kind": "QueryGroup",
@@ -1372,11 +1329,11 @@
                                             "group": "prometheus",
                                             "version": "v0",
                                             "datasource": {
-                                                "name": "local-prometheus"
+                                                "name": "${datasource}"
                                             },
                                             "spec": {
                                                 "editorMode": "code",
-                                                "expr": "rate(rdma_port_rcv_data_total{device=\"rocep159s0\"}[$__rate_interval])",
+                                                "expr": "sum(rate(rdma_port_rcv_data_total{device=~\"$rdma_device\"}[$__rate_interval]))",
                                                 "legendFormat": "Receive Bandwidth",
                                                 "range": true
                                             }
@@ -1393,11 +1350,11 @@
                                             "group": "prometheus",
                                             "version": "v0",
                                             "datasource": {
-                                                "name": "local-prometheus"
+                                                "name": "${datasource}"
                                             },
                                             "spec": {
                                                 "editorMode": "code",
-                                                "expr": "rate(rdma_port_xmit_data_total{device=\"rocep159s0\"}[$__rate_interval])",
+                                                "expr": "sum(rate(rdma_port_xmit_data_total{device=~\"$rdma_device\"}[$__rate_interval]))",
                                                 "instant": false,
                                                 "legendFormat": "Transmit Bandwidth",
                                                 "range": true
@@ -1435,8 +1392,8 @@
                                 },
                                 "tooltip": {
                                     "hideZeros": false,
-                                    "mode": "single",
-                                    "sort": "none"
+                                    "mode": "multi",
+                                    "sort": "desc"
                                 }
                             },
                             "fieldConfig": {
@@ -1449,10 +1406,6 @@
                                             {
                                                 "value": 0,
                                                 "color": "green"
-                                            },
-                                            {
-                                                "value": 80,
-                                                "color": "red"
                                             }
                                         ]
                                     },
@@ -1523,7 +1476,7 @@
                                             },
                                             "spec": {
                                                 "editorMode": "code",
-                                                "expr": "histogram_quantile(0.50, sum(rate(vllm:inter_token_latency_seconds_bucket{ }[$__rate_interval])) by (le, model_name))",
+                                                "expr": "histogram_quantile(0.50, sum(rate(vllm:inter_token_latency_seconds_bucket{instance=~\"$vllm_instance\",model_name=~\"$model\"}[$__rate_interval])) by (le, model_name))",
                                                 "legendFormat": "__auto",
                                                 "range": true
                                             }
@@ -1560,8 +1513,8 @@
                                 },
                                 "tooltip": {
                                     "hideZeros": false,
-                                    "mode": "single",
-                                    "sort": "none"
+                                    "mode": "multi",
+                                    "sort": "desc"
                                 }
                             },
                             "fieldConfig": {
@@ -1574,10 +1527,6 @@
                                             {
                                                 "value": 0,
                                                 "color": "green"
-                                            },
-                                            {
-                                                "value": 80,
-                                                "color": "red"
                                             }
                                         ]
                                     },
@@ -1648,7 +1597,7 @@
                                             },
                                             "spec": {
                                                 "editorMode": "code",
-                                                "expr": "sum(rate(vllm:external_prefix_cache_hits_total{model_name=\"openai/gpt-oss-120b\"}[$__rate_interval])) by (instance)\n/ sum(rate(vllm:external_prefix_cache_queries_total{model_name=\"openai/gpt-oss-120b\"}[$__rate_interval])) by (instance)",
+                                                "expr": "sum(rate(vllm:external_prefix_cache_hits_total{instance=~\"$vllm_instance\",model_name=~\"$model\"}[$__rate_interval])) by (instance)\n/ clamp_min(sum(rate(vllm:external_prefix_cache_queries_total{instance=~\"$vllm_instance\",model_name=~\"$model\"}[$__rate_interval])) by (instance), 1e-9)",
                                                 "legendFormat": "Hit Ratio",
                                                 "range": true
                                             }
@@ -1700,10 +1649,6 @@
                                             {
                                                 "value": 0,
                                                 "color": "green"
-                                            },
-                                            {
-                                                "value": 80,
-                                                "color": "red"
                                             }
                                         ]
                                     },
@@ -1770,11 +1715,11 @@
                                             "group": "prometheus",
                                             "version": "v0",
                                             "datasource": {
-                                                "name": "local-prometheus"
+                                                "name": "${datasource}"
                                             },
                                             "spec": {
                                                 "editorMode": "code",
-                                                "expr": "sum(rate(vllm:generation_tokens_total{ }[$__rate_interval])) by (instance, model_name)",
+                                                "expr": "sum(rate(vllm:generation_tokens_total{instance=~\"$vllm_instance\",model_name=~\"$model\"}[$__rate_interval])) by (instance, model_name)",
                                                 "legendFormat": "__auto",
                                                 "range": true
                                             }
@@ -1811,8 +1756,8 @@
                                 },
                                 "tooltip": {
                                     "hideZeros": false,
-                                    "mode": "single",
-                                    "sort": "none"
+                                    "mode": "multi",
+                                    "sort": "desc"
                                 }
                             },
                             "fieldConfig": {
@@ -1825,10 +1770,6 @@
                                             {
                                                 "value": 0,
                                                 "color": "green"
-                                            },
-                                            {
-                                                "value": 80,
-                                                "color": "red"
                                             }
                                         ]
                                     },
@@ -1880,8 +1821,8 @@
                 "kind": "Panel",
                 "spec": {
                     "id": 51,
-                    "title": "NFS Server Bandwidth",
-                    "description": "The bandwidth of read and write traffic to/from the NFS mount(s) on a system.",
+                    "title": "NFS Server Bandwidth (optional)",
+                    "description": "Kernel NFS server read/write throughput on the selected node. Only populated on nodes that export the AIC cache; expect No data on GPU clients or when AIC is local/NVMe.",
                     "links": [],
                     "data": {
                         "kind": "QueryGroup",
@@ -1895,11 +1836,11 @@
                                             "group": "prometheus",
                                             "version": "v0",
                                             "datasource": {
-                                                "name": "local-prometheus"
+                                                "name": "${datasource}"
                                             },
                                             "spec": {
                                                 "editorMode": "code",
-                                                "expr": "rate(node_nfsd_disk_bytes_read_total{ }[$__rate_interval])",
+                                                "expr": "rate(node_nfsd_disk_bytes_read_total{instance=~\"$host\"}[$__rate_interval])",
                                                 "legendFormat": "__auto",
                                                 "range": true
                                             }
@@ -1916,11 +1857,11 @@
                                             "group": "prometheus",
                                             "version": "v0",
                                             "datasource": {
-                                                "name": "local-prometheus"
+                                                "name": "${datasource}"
                                             },
                                             "spec": {
                                                 "editorMode": "code",
-                                                "expr": "rate(node_nfsd_disk_bytes_written_total{ }[$__rate_interval])",
+                                                "expr": "rate(node_nfsd_disk_bytes_written_total{instance=~\"$host\"}[$__rate_interval])",
                                                 "instant": false,
                                                 "legendFormat": "__auto",
                                                 "range": true
@@ -1971,10 +1912,6 @@
                                             {
                                                 "value": 0,
                                                 "color": "green"
-                                            },
-                                            {
-                                                "value": 80,
-                                                "color": "red"
                                             }
                                         ]
                                     },
@@ -2026,8 +1963,8 @@
                 "kind": "Panel",
                 "spec": {
                     "id": 52,
-                    "title": "NFS Client Bandwidth",
-                    "description": "The NFS throughput as measured on the NFS client(s) via the nfsiostat tool.",
+                    "title": "NFS Client Bandwidth (optional)",
+                    "description": "NFS client throughput for the AIC cache mount (rocm_aic_nfs_mount_*). Set nfs_mount to your mount path when AIC is NFS-backed; leave nfs_mount as ^$ for local NVMe, hipfile, or other non-NFS storage.",
                     "links": [],
                     "data": {
                         "kind": "QueryGroup",
@@ -2041,11 +1978,11 @@
                                             "group": "prometheus",
                                             "version": "v0",
                                             "datasource": {
-                                                "name": "local-prometheus"
+                                                "name": "${datasource}"
                                             },
                                             "spec": {
                                                 "editorMode": "code",
-                                                "expr": "rate(rocm_aic_nfs_mount_rx_bytes_total{mount_point=\"/mnt/rocm-icms-cache\"}[$__rate_interval])",
+                                                "expr": "rate(rocm_aic_nfs_mount_rx_bytes_total{instance=~\"$host\",mount_point=~\"$nfs_mount\"}[$__rate_interval])",
                                                 "legendFormat": "__auto",
                                                 "range": true
                                             }
@@ -2062,11 +1999,11 @@
                                             "group": "prometheus",
                                             "version": "v0",
                                             "datasource": {
-                                                "name": "local-prometheus"
+                                                "name": "${datasource}"
                                             },
                                             "spec": {
                                                 "editorMode": "code",
-                                                "expr": "rate(rocm_aic_nfs_mount_tx_bytes_total{mount_point=\"/mnt/rocm-icms-cache\"}[$__rate_interval])",
+                                                "expr": "rate(rocm_aic_nfs_mount_tx_bytes_total{instance=~\"$host\",mount_point=~\"$nfs_mount\"}[$__rate_interval])",
                                                 "instant": false,
                                                 "legendFormat": "__auto",
                                                 "range": true
@@ -2112,7 +2049,7 @@
                             },
                             "fieldConfig": {
                                 "defaults": {
-                                    "unit": "Bps",
+                                    "unit": "binBps",
                                     "min": 0,
                                     "thresholds": {
                                         "mode": "absolute",
@@ -2120,10 +2057,6 @@
                                             {
                                                 "value": 0,
                                                 "color": "green"
-                                            },
-                                            {
-                                                "value": 80,
-                                                "color": "red"
                                             }
                                         ]
                                     },
@@ -2190,13 +2123,15 @@
                                             "group": "prometheus",
                                             "version": "v0",
                                             "datasource": {
-                                                "name": "local-prometheus"
+                                                "name": "${datasource}"
                                             },
                                             "spec": {
                                                 "editorMode": "code",
-                                                "expr": "rocm_aic_rocm_version_info{ }",
+                                                "expr": "rocm_aic_rocm_version_info{instance=~\"$host\"}",
                                                 "legendFormat": "__auto",
-                                                "range": true
+                                                "range": false,
+                                                "instant": true,
+                                                "format": "table"
                                             }
                                         },
                                         "refId": "A",
@@ -2204,22 +2139,7 @@
                                     }
                                 }
                             ],
-                            "transformations": [
-                                {
-                                    "kind": "Transformation",
-                                    "group": "labelsToFields",
-                                    "spec": {
-                                        "options": {
-                                            "keepLabels": [
-                                                "version",
-                                                "instance"
-                                            ],
-                                            "mode": "rows",
-                                            "valueLabel": "version"
-                                        }
-                                    }
-                                }
-                            ],
+                            "transformations": [],
                             "queryOptions": {}
                         }
                     },
@@ -2240,10 +2160,6 @@
                                             {
                                                 "value": 0,
                                                 "color": "green"
-                                            },
-                                            {
-                                                "value": 80,
-                                                "color": "red"
                                             }
                                         ]
                                     },
@@ -2272,7 +2188,7 @@
                 "spec": {
                     "id": 54,
                     "title": "Online GPUs",
-                    "description": "The GPUs that are currently online across the cluster, broken out by server.",
+                    "description": "GPUs reporting amd_gpu_package_power on the selected node(s).",
                     "links": [],
                     "data": {
                         "kind": "QueryGroup",
@@ -2286,11 +2202,11 @@
                                             "group": "prometheus",
                                             "version": "v0",
                                             "datasource": {
-                                                "name": "local-prometheus"
+                                                "name": "${datasource}"
                                             },
                                             "spec": {
                                                 "editorMode": "code",
-                                                "expr": "count by (instance) (\r\n  amd_gpu_package_power{job=\"amd_metrics_exporter\"}\r\n)",
+                                                "expr": "count by (instance) (\r\n  amd_gpu_package_power{job=\"amd_metrics_exporter\",instance=~\"$host\"}\r\n)",
                                                 "legendFormat": "__auto",
                                                 "range": true
                                             }
@@ -2311,7 +2227,7 @@
                         "spec": {
                             "options": {
                                 "colorMode": "value",
-                                "graphMode": "area",
+                                "graphMode": "none",
                                 "justifyMode": "auto",
                                 "orientation": "auto",
                                 "percentChangeColorMode": "standard",
@@ -2330,17 +2246,12 @@
                                 "defaults": {
                                     "unit": "none",
                                     "min": 0,
-                                    "max": 8,
                                     "thresholds": {
                                         "mode": "absolute",
                                         "steps": [
                                             {
                                                 "value": 0,
                                                 "color": "green"
-                                            },
-                                            {
-                                                "value": 80,
-                                                "color": "red"
                                             }
                                         ]
                                     },
@@ -2359,7 +2270,7 @@
                 "spec": {
                     "id": 6,
                     "title": "Time to First Token",
-                    "description": "Time-to-first-token latency from vllm:time_to_first_token_seconds_bucket; p50 and p99 quantiles over $__rate_interval.",
+                    "description": "Time-to-first-token from vllm:time_to_first_token_seconds_bucket; p50, p90, and p99 over $__rate_interval.",
                     "links": [],
                     "data": {
                         "kind": "QueryGroup",
@@ -2373,11 +2284,11 @@
                                             "group": "prometheus",
                                             "version": "v0",
                                             "datasource": {
-                                                "name": "local-prometheus"
+                                                "name": "${datasource}"
                                             },
                                             "spec": {
                                                 "editorMode": "code",
-                                                "expr": "histogram_quantile(0.50, sum(rate(vllm:time_to_first_token_seconds_bucket{job=\"vllm-exporter\",instance=\"10.245.130.131:8000\"}[$__rate_interval])) by (le, instance, model_name))",
+                                                "expr": "histogram_quantile(0.50, sum(rate(vllm:time_to_first_token_seconds_bucket{job=\"vllm-exporter\",instance=~\"$vllm_instance\",model_name=~\"$model\"}[$__rate_interval])) by (le, instance, model_name))",
                                                 "legendFormat": "p50 TTFT",
                                                 "range": true
                                             }
@@ -2394,11 +2305,11 @@
                                             "group": "prometheus",
                                             "version": "v0",
                                             "datasource": {
-                                                "name": "local-prometheus"
+                                                "name": "${datasource}"
                                             },
                                             "spec": {
                                                 "editorMode": "code",
-                                                "expr": "histogram_quantile(0.90, sum(rate(vllm:time_to_first_token_seconds_bucket{job=\"vllm-exporter\",instance=\"10.245.130.131:8000\"}[$__rate_interval])) by (le, instance, model_name))",
+                                                "expr": "histogram_quantile(0.90, sum(rate(vllm:time_to_first_token_seconds_bucket{job=\"vllm-exporter\",instance=~\"$vllm_instance\",model_name=~\"$model\"}[$__rate_interval])) by (le, instance, model_name))",
                                                 "legendFormat": "p90 TTFT ",
                                                 "range": true
                                             }
@@ -2415,11 +2326,11 @@
                                             "group": "prometheus",
                                             "version": "v0",
                                             "datasource": {
-                                                "name": "local-prometheus"
+                                                "name": "${datasource}"
                                             },
                                             "spec": {
                                                 "editorMode": "code",
-                                                "expr": "histogram_quantile(0.99, sum(rate(vllm:time_to_first_token_seconds_bucket{job=\"vllm-exporter\",instance=\"10.245.130.131:8000\"}[$__rate_interval])) by (le, instance, model_name))",
+                                                "expr": "histogram_quantile(0.99, sum(rate(vllm:time_to_first_token_seconds_bucket{job=\"vllm-exporter\",instance=~\"$vllm_instance\",model_name=~\"$model\"}[$__rate_interval])) by (le, instance, model_name))",
                                                 "instant": false,
                                                 "legendFormat": "p99 TTFT",
                                                 "range": true
@@ -2470,10 +2381,6 @@
                                             {
                                                 "value": 0,
                                                 "color": "green"
-                                            },
-                                            {
-                                                "value": 80,
-                                                "color": "red"
                                             }
                                         ]
                                     },
@@ -2520,6 +2427,1062 @@
                         }
                     }
                 }
+            },
+            "panel-55": {
+                "kind": "Panel",
+                "spec": {
+                    "id": 55,
+                    "title": "TTFT p99",
+                    "description": "Latest p99 time-to-first-token for the selected vLLM target(s) and model(s).",
+                    "links": [],
+                    "data": {
+                        "kind": "QueryGroup",
+                        "spec": {
+                            "queries": [
+                                {
+                                    "kind": "PanelQuery",
+                                    "spec": {
+                                        "query": {
+                                            "kind": "DataQuery",
+                                            "group": "prometheus",
+                                            "version": "v0",
+                                            "datasource": {
+                                                "name": "${datasource}"
+                                            },
+                                            "spec": {
+                                                "editorMode": "code",
+                                                "expr": "histogram_quantile(0.99, sum(rate(vllm:time_to_first_token_seconds_bucket{job=\"vllm-exporter\",instance=~\"$vllm_instance\",model_name=~\"$model\"}[$__rate_interval])) by (le))",
+                                                "legendFormat": "__auto",
+                                                "range": false,
+                                                "instant": true
+                                            }
+                                        },
+                                        "refId": "A",
+                                        "hidden": false
+                                    }
+                                }
+                            ],
+                            "transformations": [],
+                            "queryOptions": {}
+                        }
+                    },
+                    "vizConfig": {
+                        "kind": "VizConfig",
+                        "group": "stat",
+                        "version": "13.0.1",
+                        "spec": {
+                            "options": {
+                                "colorMode": "value",
+                                "graphMode": "none",
+                                "justifyMode": "auto",
+                                "orientation": "auto",
+                                "percentChangeColorMode": "standard",
+                                "reduceOptions": {
+                                    "calcs": [
+                                        "lastNotNull"
+                                    ],
+                                    "fields": "",
+                                    "values": false
+                                },
+                                "showPercentChange": false,
+                                "textMode": "auto",
+                                "wideLayout": true
+                            },
+                            "fieldConfig": {
+                                "defaults": {
+                                    "unit": "s",
+                                    "thresholds": {
+                                        "mode": "absolute",
+                                        "steps": [
+                                            {
+                                                "value": 0,
+                                                "color": "green"
+                                            }
+                                        ]
+                                    },
+                                    "color": {
+                                        "mode": "thresholds"
+                                    },
+                                    "min": 0
+                                },
+                                "overrides": []
+                            }
+                        }
+                    }
+                }
+            },
+            "panel-56": {
+                "kind": "Panel",
+                "spec": {
+                    "id": 56,
+                    "title": "AIC Prefix Hit Ratio",
+                    "description": "External prefix cache hit ratio (LMCache / KV connector) for selected vLLM instances.",
+                    "links": [],
+                    "data": {
+                        "kind": "QueryGroup",
+                        "spec": {
+                            "queries": [
+                                {
+                                    "kind": "PanelQuery",
+                                    "spec": {
+                                        "query": {
+                                            "kind": "DataQuery",
+                                            "group": "prometheus",
+                                            "version": "v0",
+                                            "datasource": {
+                                                "name": "${datasource}"
+                                            },
+                                            "spec": {
+                                                "editorMode": "code",
+                                                "expr": "sum(rate(vllm:external_prefix_cache_hits_total{instance=~\"$vllm_instance\",model_name=~\"$model\"}[$__rate_interval])) by (instance)\n/ clamp_min(sum(rate(vllm:external_prefix_cache_queries_total{instance=~\"$vllm_instance\",model_name=~\"$model\"}[$__rate_interval])) by (instance), 1e-9)",
+                                                "legendFormat": "__auto",
+                                                "range": false,
+                                                "instant": true
+                                            }
+                                        },
+                                        "refId": "A",
+                                        "hidden": false
+                                    }
+                                }
+                            ],
+                            "transformations": [],
+                            "queryOptions": {}
+                        }
+                    },
+                    "vizConfig": {
+                        "kind": "VizConfig",
+                        "group": "stat",
+                        "version": "13.0.1",
+                        "spec": {
+                            "options": {
+                                "colorMode": "value",
+                                "graphMode": "none",
+                                "justifyMode": "auto",
+                                "orientation": "auto",
+                                "percentChangeColorMode": "standard",
+                                "reduceOptions": {
+                                    "calcs": [
+                                        "lastNotNull"
+                                    ],
+                                    "fields": "",
+                                    "values": false
+                                },
+                                "showPercentChange": false,
+                                "textMode": "auto",
+                                "wideLayout": true
+                            },
+                            "fieldConfig": {
+                                "defaults": {
+                                    "unit": "percentunit",
+                                    "thresholds": {
+                                        "mode": "absolute",
+                                        "steps": [
+                                            {
+                                                "value": 0,
+                                                "color": "green"
+                                            }
+                                        ]
+                                    },
+                                    "color": {
+                                        "mode": "thresholds"
+                                    },
+                                    "min": 0,
+                                    "max": 1
+                                },
+                                "overrides": []
+                            }
+                        }
+                    }
+                }
+            },
+            "panel-57": {
+                "kind": "Panel",
+                "spec": {
+                    "id": 57,
+                    "title": "KV Chunk Bytes",
+                    "description": "Total on-disk LMCache .data chunk bytes (rocm_aic_kv_chunk_bytes_total).",
+                    "links": [],
+                    "data": {
+                        "kind": "QueryGroup",
+                        "spec": {
+                            "queries": [
+                                {
+                                    "kind": "PanelQuery",
+                                    "spec": {
+                                        "query": {
+                                            "kind": "DataQuery",
+                                            "group": "prometheus",
+                                            "version": "v0",
+                                            "datasource": {
+                                                "name": "${datasource}"
+                                            },
+                                            "spec": {
+                                                "editorMode": "code",
+                                                "expr": "sum(rocm_aic_kv_chunk_bytes_total{instance=~\"$host\"})",
+                                                "legendFormat": "__auto",
+                                                "range": false,
+                                                "instant": true
+                                            }
+                                        },
+                                        "refId": "A",
+                                        "hidden": false
+                                    }
+                                }
+                            ],
+                            "transformations": [],
+                            "queryOptions": {}
+                        }
+                    },
+                    "vizConfig": {
+                        "kind": "VizConfig",
+                        "group": "stat",
+                        "version": "13.0.1",
+                        "spec": {
+                            "options": {
+                                "colorMode": "value",
+                                "graphMode": "none",
+                                "justifyMode": "auto",
+                                "orientation": "auto",
+                                "percentChangeColorMode": "standard",
+                                "reduceOptions": {
+                                    "calcs": [
+                                        "lastNotNull"
+                                    ],
+                                    "fields": "",
+                                    "values": false
+                                },
+                                "showPercentChange": false,
+                                "textMode": "auto",
+                                "wideLayout": true
+                            },
+                            "fieldConfig": {
+                                "defaults": {
+                                    "unit": "bytes",
+                                    "thresholds": {
+                                        "mode": "absolute",
+                                        "steps": [
+                                            {
+                                                "value": 0,
+                                                "color": "green"
+                                            }
+                                        ]
+                                    },
+                                    "color": {
+                                        "mode": "thresholds"
+                                    },
+                                    "min": 0
+                                },
+                                "overrides": []
+                            }
+                        }
+                    }
+                }
+            },
+            "panel-58": {
+                "kind": "Panel",
+                "spec": {
+                    "id": 58,
+                    "title": "AIC Storage Free %",
+                    "description": "Free space percentage on the AIC data filesystem.",
+                    "links": [],
+                    "data": {
+                        "kind": "QueryGroup",
+                        "spec": {
+                            "queries": [
+                                {
+                                    "kind": "PanelQuery",
+                                    "spec": {
+                                        "query": {
+                                            "kind": "DataQuery",
+                                            "group": "prometheus",
+                                            "version": "v0",
+                                            "datasource": {
+                                                "name": "${datasource}"
+                                            },
+                                            "spec": {
+                                                "editorMode": "code",
+                                                "expr": "100 * sum(rocm_aic_data_fs_free_bytes{instance=~\"$host\"})\n/ clamp_min(sum(rocm_aic_data_fs_total_bytes{instance=~\"$host\"}), 1)",
+                                                "legendFormat": "__auto",
+                                                "range": false,
+                                                "instant": true
+                                            }
+                                        },
+                                        "refId": "A",
+                                        "hidden": false
+                                    }
+                                }
+                            ],
+                            "transformations": [],
+                            "queryOptions": {}
+                        }
+                    },
+                    "vizConfig": {
+                        "kind": "VizConfig",
+                        "group": "stat",
+                        "version": "13.0.1",
+                        "spec": {
+                            "options": {
+                                "colorMode": "value",
+                                "graphMode": "none",
+                                "justifyMode": "auto",
+                                "orientation": "auto",
+                                "percentChangeColorMode": "standard",
+                                "reduceOptions": {
+                                    "calcs": [
+                                        "lastNotNull"
+                                    ],
+                                    "fields": "",
+                                    "values": false
+                                },
+                                "showPercentChange": false,
+                                "textMode": "auto",
+                                "wideLayout": true
+                            },
+                            "fieldConfig": {
+                                "defaults": {
+                                    "unit": "percent",
+                                    "thresholds": {
+                                        "mode": "absolute",
+                                        "steps": [
+                                            {
+                                                "value": 0,
+                                                "color": "green"
+                                            }
+                                        ]
+                                    },
+                                    "color": {
+                                        "mode": "thresholds"
+                                    },
+                                    "min": 0,
+                                    "max": 100
+                                },
+                                "overrides": []
+                            }
+                        }
+                    }
+                }
+            },
+            "panel-59": {
+                "kind": "Panel",
+                "spec": {
+                    "id": 59,
+                    "title": "AIC KV Cache Footprint",
+                    "description": "On-disk LMCache chunk and NIXL static pool size over time.",
+                    "links": [],
+                    "data": {
+                        "kind": "QueryGroup",
+                        "spec": {
+                            "queries": [
+                                {
+                                    "kind": "PanelQuery",
+                                    "spec": {
+                                        "query": {
+                                            "kind": "DataQuery",
+                                            "group": "prometheus",
+                                            "version": "v0",
+                                            "datasource": {
+                                                "name": "${datasource}"
+                                            },
+                                            "spec": {
+                                                "editorMode": "code",
+                                                "expr": "sum(rocm_aic_kv_chunk_bytes_total{instance=~\"$host\"})",
+                                                "legendFormat": "KV chunk bytes",
+                                                "range": true
+                                            }
+                                        },
+                                        "refId": "A",
+                                        "hidden": false
+                                    }
+                                },
+                                {
+                                    "kind": "PanelQuery",
+                                    "spec": {
+                                        "query": {
+                                            "kind": "DataQuery",
+                                            "group": "prometheus",
+                                            "version": "v0",
+                                            "datasource": {
+                                                "name": "${datasource}"
+                                            },
+                                            "spec": {
+                                                "editorMode": "code",
+                                                "expr": "sum(rocm_aic_nixl_pool_bytes_total{instance=~\"$host\"})",
+                                                "legendFormat": "NIXL pool bytes",
+                                                "range": true
+                                            }
+                                        },
+                                        "refId": "B",
+                                        "hidden": false
+                                    }
+                                }
+                            ],
+                            "transformations": [],
+                            "queryOptions": {}
+                        }
+                    },
+                    "vizConfig": {
+                        "kind": "VizConfig",
+                        "group": "timeseries",
+                        "version": "13.0.1",
+                        "spec": {
+                            "options": {
+                                "annotations": {
+                                    "clustering": -1,
+                                    "multiLane": true
+                                },
+                                "legend": {
+                                    "calcs": [
+                                        "min",
+                                        "mean",
+                                        "max",
+                                        "lastNotNull"
+                                    ],
+                                    "displayMode": "table",
+                                    "placement": "bottom",
+                                    "showLegend": true
+                                },
+                                "tooltip": {
+                                    "hideZeros": false,
+                                    "mode": "multi",
+                                    "sort": "desc"
+                                }
+                            },
+                            "fieldConfig": {
+                                "defaults": {
+                                    "unit": "bytes",
+                                    "min": 0,
+                                    "thresholds": {
+                                        "mode": "absolute",
+                                        "steps": [
+                                            {
+                                                "value": 0,
+                                                "color": "green"
+                                            }
+                                        ]
+                                    },
+                                    "color": {
+                                        "mode": "palette-classic"
+                                    },
+                                    "custom": {
+                                        "axisBorderShow": false,
+                                        "axisCenteredZero": false,
+                                        "axisColorMode": "text",
+                                        "axisLabel": "",
+                                        "axisPlacement": "auto",
+                                        "barAlignment": 0,
+                                        "barWidthFactor": 0.6,
+                                        "drawStyle": "line",
+                                        "fillOpacity": 10,
+                                        "gradientMode": "none",
+                                        "hideFrom": {
+                                            "legend": false,
+                                            "tooltip": false,
+                                            "viz": false
+                                        },
+                                        "insertNulls": false,
+                                        "lineInterpolation": "linear",
+                                        "lineWidth": 1,
+                                        "pointSize": 0,
+                                        "scaleDistribution": {
+                                            "type": "linear"
+                                        },
+                                        "showPoints": "never",
+                                        "showValues": false,
+                                        "spanNulls": false,
+                                        "stacking": {
+                                            "group": "A",
+                                            "mode": "none"
+                                        },
+                                        "thresholdsStyle": {
+                                            "mode": "off"
+                                        }
+                                    }
+                                },
+                                "overrides": []
+                            }
+                        }
+                    }
+                }
+            },
+            "panel-60": {
+                "kind": "Panel",
+                "spec": {
+                    "id": 60,
+                    "title": "Distinct Chunk Hashes",
+                    "description": "Unique chunk hashes seen in chunk_hashes JSONL (NIXL and .data modes).",
+                    "links": [],
+                    "data": {
+                        "kind": "QueryGroup",
+                        "spec": {
+                            "queries": [
+                                {
+                                    "kind": "PanelQuery",
+                                    "spec": {
+                                        "query": {
+                                            "kind": "DataQuery",
+                                            "group": "prometheus",
+                                            "version": "v0",
+                                            "datasource": {
+                                                "name": "${datasource}"
+                                            },
+                                            "spec": {
+                                                "editorMode": "code",
+                                                "expr": "sum(rocm_aic_chunk_hashes_tracked{instance=~\"$host\"})",
+                                                "legendFormat": "__auto",
+                                                "range": false,
+                                                "instant": true
+                                            }
+                                        },
+                                        "refId": "A",
+                                        "hidden": false
+                                    }
+                                }
+                            ],
+                            "transformations": [],
+                            "queryOptions": {}
+                        }
+                    },
+                    "vizConfig": {
+                        "kind": "VizConfig",
+                        "group": "stat",
+                        "version": "13.0.1",
+                        "spec": {
+                            "options": {
+                                "colorMode": "value",
+                                "graphMode": "none",
+                                "justifyMode": "auto",
+                                "orientation": "auto",
+                                "percentChangeColorMode": "standard",
+                                "reduceOptions": {
+                                    "calcs": [
+                                        "lastNotNull"
+                                    ],
+                                    "fields": "",
+                                    "values": false
+                                },
+                                "showPercentChange": false,
+                                "textMode": "auto",
+                                "wideLayout": true
+                            },
+                            "fieldConfig": {
+                                "defaults": {
+                                    "unit": "none",
+                                    "thresholds": {
+                                        "mode": "absolute",
+                                        "steps": [
+                                            {
+                                                "value": 0,
+                                                "color": "green"
+                                            }
+                                        ]
+                                    },
+                                    "color": {
+                                        "mode": "thresholds"
+                                    },
+                                    "min": 0
+                                },
+                                "overrides": []
+                            }
+                        }
+                    }
+                }
+            },
+            "panel-61": {
+                "kind": "Panel",
+                "spec": {
+                    "id": 61,
+                    "title": "Chunk Lookup Rows",
+                    "description": "chunk_hashes JSONL rows scanned by rocm-aic-exporter.",
+                    "links": [],
+                    "data": {
+                        "kind": "QueryGroup",
+                        "spec": {
+                            "queries": [
+                                {
+                                    "kind": "PanelQuery",
+                                    "spec": {
+                                        "query": {
+                                            "kind": "DataQuery",
+                                            "group": "prometheus",
+                                            "version": "v0",
+                                            "datasource": {
+                                                "name": "${datasource}"
+                                            },
+                                            "spec": {
+                                                "editorMode": "code",
+                                                "expr": "sum(rocm_aic_chunk_stats_lookup_rows{instance=~\"$host\"})",
+                                                "legendFormat": "__auto",
+                                                "range": false,
+                                                "instant": true
+                                            }
+                                        },
+                                        "refId": "A",
+                                        "hidden": false
+                                    }
+                                }
+                            ],
+                            "transformations": [],
+                            "queryOptions": {}
+                        }
+                    },
+                    "vizConfig": {
+                        "kind": "VizConfig",
+                        "group": "stat",
+                        "version": "13.0.1",
+                        "spec": {
+                            "options": {
+                                "colorMode": "value",
+                                "graphMode": "none",
+                                "justifyMode": "auto",
+                                "orientation": "auto",
+                                "percentChangeColorMode": "standard",
+                                "reduceOptions": {
+                                    "calcs": [
+                                        "lastNotNull"
+                                    ],
+                                    "fields": "",
+                                    "values": false
+                                },
+                                "showPercentChange": false,
+                                "textMode": "auto",
+                                "wideLayout": true
+                            },
+                            "fieldConfig": {
+                                "defaults": {
+                                    "unit": "none",
+                                    "thresholds": {
+                                        "mode": "absolute",
+                                        "steps": [
+                                            {
+                                                "value": 0,
+                                                "color": "green"
+                                            }
+                                        ]
+                                    },
+                                    "color": {
+                                        "mode": "thresholds"
+                                    },
+                                    "min": 0
+                                },
+                                "overrides": []
+                            }
+                        }
+                    }
+                }
+            },
+            "panel-62": {
+                "kind": "Panel",
+                "spec": {
+                    "id": 62,
+                    "title": "Hash Mention Sum",
+                    "description": "Total chunk hash mentions across all JSONL lookup rows.",
+                    "links": [],
+                    "data": {
+                        "kind": "QueryGroup",
+                        "spec": {
+                            "queries": [
+                                {
+                                    "kind": "PanelQuery",
+                                    "spec": {
+                                        "query": {
+                                            "kind": "DataQuery",
+                                            "group": "prometheus",
+                                            "version": "v0",
+                                            "datasource": {
+                                                "name": "${datasource}"
+                                            },
+                                            "spec": {
+                                                "editorMode": "code",
+                                                "expr": "sum(rocm_aic_chunk_hash_mention_sum{instance=~\"$host\"})",
+                                                "legendFormat": "__auto",
+                                                "range": false,
+                                                "instant": true
+                                            }
+                                        },
+                                        "refId": "A",
+                                        "hidden": false
+                                    }
+                                }
+                            ],
+                            "transformations": [],
+                            "queryOptions": {}
+                        }
+                    },
+                    "vizConfig": {
+                        "kind": "VizConfig",
+                        "group": "stat",
+                        "version": "13.0.1",
+                        "spec": {
+                            "options": {
+                                "colorMode": "value",
+                                "graphMode": "none",
+                                "justifyMode": "auto",
+                                "orientation": "auto",
+                                "percentChangeColorMode": "standard",
+                                "reduceOptions": {
+                                    "calcs": [
+                                        "lastNotNull"
+                                    ],
+                                    "fields": "",
+                                    "values": false
+                                },
+                                "showPercentChange": false,
+                                "textMode": "auto",
+                                "wideLayout": true
+                            },
+                            "fieldConfig": {
+                                "defaults": {
+                                    "unit": "none",
+                                    "thresholds": {
+                                        "mode": "absolute",
+                                        "steps": [
+                                            {
+                                                "value": 0,
+                                                "color": "green"
+                                            }
+                                        ]
+                                    },
+                                    "color": {
+                                        "mode": "thresholds"
+                                    },
+                                    "min": 0
+                                },
+                                "overrides": []
+                            }
+                        }
+                    }
+                }
+            },
+            "panel-63": {
+                "kind": "Panel",
+                "spec": {
+                    "id": 63,
+                    "title": "Hot Chunks (>10 lookups)",
+                    "description": "Percentage of distinct chunk hashes with more than 10 JSONL lookup mentions (sum of 11-20, 21-50, 51-100, and >100 buckets).",
+                    "links": [],
+                    "data": {
+                        "kind": "QueryGroup",
+                        "spec": {
+                            "queries": [
+                                {
+                                    "kind": "PanelQuery",
+                                    "spec": {
+                                        "query": {
+                                            "kind": "DataQuery",
+                                            "group": "prometheus",
+                                            "version": "v0",
+                                            "datasource": {
+                                                "name": "${datasource}"
+                                            },
+                                            "spec": {
+                                                "editorMode": "code",
+                                                "expr": "100 * sum(rocm_aic_chunk_hashes_by_lookup_count{instance=~\"$host\",lookup_count=~\"11-20|21-50|51-100|>100\"})\n/ clamp_min(sum(rocm_aic_chunk_hashes_tracked{instance=~\"$host\"}), 1)",
+                                                "legendFormat": "__auto",
+                                                "range": false,
+                                                "instant": true
+                                            }
+                                        },
+                                        "refId": "A",
+                                        "hidden": false
+                                    }
+                                }
+                            ],
+                            "transformations": [],
+                            "queryOptions": {}
+                        }
+                    },
+                    "vizConfig": {
+                        "kind": "VizConfig",
+                        "group": "stat",
+                        "version": "13.0.1",
+                        "spec": {
+                            "options": {
+                                "colorMode": "value",
+                                "graphMode": "none",
+                                "justifyMode": "auto",
+                                "orientation": "auto",
+                                "percentChangeColorMode": "standard",
+                                "reduceOptions": {
+                                    "calcs": [
+                                        "lastNotNull"
+                                    ],
+                                    "fields": "",
+                                    "values": false
+                                },
+                                "showPercentChange": false,
+                                "textMode": "auto",
+                                "wideLayout": true
+                            },
+                            "fieldConfig": {
+                                "defaults": {
+                                    "unit": "percent",
+                                    "thresholds": {
+                                        "mode": "absolute",
+                                        "steps": [
+                                            {
+                                                "value": 0,
+                                                "color": "green"
+                                            }
+                                        ]
+                                    },
+                                    "color": {
+                                        "mode": "thresholds"
+                                    },
+                                    "min": 0,
+                                    "max": 100
+                                },
+                                "overrides": []
+                            }
+                        }
+                    }
+                }
+            },
+            "panel-64": {
+                "kind": "Panel",
+                "spec": {
+                    "id": 64,
+                    "title": "NIXL Chunk Lookup Distribution",
+                    "description": "How many distinct chunk hashes fall into each JSONL lookup mention bucket. Populated for NIXL (obj_*.bin) and hipfile (.data) when chunk statistics are enabled; measures lookup references per hash, not per NIXL pool slot.",
+                    "links": [],
+                    "data": {
+                        "kind": "QueryGroup",
+                        "spec": {
+                            "queries": [
+                                {
+                                    "kind": "PanelQuery",
+                                    "spec": {
+                                        "query": {
+                                            "kind": "DataQuery",
+                                            "group": "prometheus",
+                                            "version": "v0",
+                                            "datasource": {
+                                                "name": "${datasource}"
+                                            },
+                                            "spec": {
+                                                "editorMode": "code",
+                                                "expr": "sum(rocm_aic_chunk_hashes_by_lookup_count{instance=~\"$host\",lookup_count=~\"1|2\"}) by (instance)",
+                                                "legendFormat": "1-2 mentions",
+                                                "range": true
+                                            }
+                                        },
+                                        "refId": "A",
+                                        "hidden": false
+                                    }
+                                },
+                                {
+                                    "kind": "PanelQuery",
+                                    "spec": {
+                                        "query": {
+                                            "kind": "DataQuery",
+                                            "group": "prometheus",
+                                            "version": "v0",
+                                            "datasource": {
+                                                "name": "${datasource}"
+                                            },
+                                            "spec": {
+                                                "editorMode": "code",
+                                                "expr": "sum(rocm_aic_chunk_hashes_by_lookup_count{instance=~\"$host\",lookup_count=~\"3|4|5\"}) by (instance)",
+                                                "legendFormat": "3-5 mentions",
+                                                "range": true
+                                            }
+                                        },
+                                        "refId": "B",
+                                        "hidden": false
+                                    }
+                                },
+                                {
+                                    "kind": "PanelQuery",
+                                    "spec": {
+                                        "query": {
+                                            "kind": "DataQuery",
+                                            "group": "prometheus",
+                                            "version": "v0",
+                                            "datasource": {
+                                                "name": "${datasource}"
+                                            },
+                                            "spec": {
+                                                "editorMode": "code",
+                                                "expr": "sum(rocm_aic_chunk_hashes_by_lookup_count{instance=~\"$host\",lookup_count=~\"6|7|8|9|10\"}) by (instance)",
+                                                "legendFormat": "6-10 mentions",
+                                                "range": true
+                                            }
+                                        },
+                                        "refId": "C",
+                                        "hidden": false
+                                    }
+                                },
+                                {
+                                    "kind": "PanelQuery",
+                                    "spec": {
+                                        "query": {
+                                            "kind": "DataQuery",
+                                            "group": "prometheus",
+                                            "version": "v0",
+                                            "datasource": {
+                                                "name": "${datasource}"
+                                            },
+                                            "spec": {
+                                                "editorMode": "code",
+                                                "expr": "sum(rocm_aic_chunk_hashes_by_lookup_count{instance=~\"$host\",lookup_count=\"11-20\"}) by (instance)",
+                                                "legendFormat": "11-20 mentions",
+                                                "range": true
+                                            }
+                                        },
+                                        "refId": "D",
+                                        "hidden": false
+                                    }
+                                },
+                                {
+                                    "kind": "PanelQuery",
+                                    "spec": {
+                                        "query": {
+                                            "kind": "DataQuery",
+                                            "group": "prometheus",
+                                            "version": "v0",
+                                            "datasource": {
+                                                "name": "${datasource}"
+                                            },
+                                            "spec": {
+                                                "editorMode": "code",
+                                                "expr": "sum(rocm_aic_chunk_hashes_by_lookup_count{instance=~\"$host\",lookup_count=\"21-50\"}) by (instance)",
+                                                "legendFormat": "21-50 mentions",
+                                                "range": true
+                                            }
+                                        },
+                                        "refId": "E",
+                                        "hidden": false
+                                    }
+                                },
+                                {
+                                    "kind": "PanelQuery",
+                                    "spec": {
+                                        "query": {
+                                            "kind": "DataQuery",
+                                            "group": "prometheus",
+                                            "version": "v0",
+                                            "datasource": {
+                                                "name": "${datasource}"
+                                            },
+                                            "spec": {
+                                                "editorMode": "code",
+                                                "expr": "sum(rocm_aic_chunk_hashes_by_lookup_count{instance=~\"$host\",lookup_count=\"51-100\"}) by (instance)",
+                                                "legendFormat": "51-100 mentions",
+                                                "range": true
+                                            }
+                                        },
+                                        "refId": "F",
+                                        "hidden": false
+                                    }
+                                },
+                                {
+                                    "kind": "PanelQuery",
+                                    "spec": {
+                                        "query": {
+                                            "kind": "DataQuery",
+                                            "group": "prometheus",
+                                            "version": "v0",
+                                            "datasource": {
+                                                "name": "${datasource}"
+                                            },
+                                            "spec": {
+                                                "editorMode": "code",
+                                                "expr": "sum(rocm_aic_chunk_hashes_by_lookup_count{instance=~\"$host\",lookup_count=\">100\"}) by (instance)",
+                                                "legendFormat": ">100 mentions",
+                                                "range": true
+                                            }
+                                        },
+                                        "refId": "G",
+                                        "hidden": false
+                                    }
+                                }
+                            ],
+                            "transformations": [],
+                            "queryOptions": {}
+                        }
+                    },
+                    "vizConfig": {
+                        "kind": "VizConfig",
+                        "group": "timeseries",
+                        "version": "13.0.1",
+                        "spec": {
+                            "options": {
+                                "annotations": {
+                                    "clustering": -1,
+                                    "multiLane": true
+                                },
+                                "legend": {
+                                    "calcs": [
+                                        "min",
+                                        "mean",
+                                        "max",
+                                        "lastNotNull"
+                                    ],
+                                    "displayMode": "table",
+                                    "placement": "bottom",
+                                    "showLegend": true
+                                },
+                                "tooltip": {
+                                    "hideZeros": false,
+                                    "mode": "multi",
+                                    "sort": "desc"
+                                }
+                            },
+                            "fieldConfig": {
+                                "defaults": {
+                                    "unit": "none",
+                                    "min": 0,
+                                    "thresholds": {
+                                        "mode": "absolute",
+                                        "steps": [
+                                            {
+                                                "value": 0,
+                                                "color": "green"
+                                            }
+                                        ]
+                                    },
+                                    "color": {
+                                        "mode": "palette-classic"
+                                    },
+                                    "custom": {
+                                        "axisBorderShow": false,
+                                        "axisCenteredZero": false,
+                                        "axisColorMode": "text",
+                                        "axisLabel": "",
+                                        "axisPlacement": "auto",
+                                        "barAlignment": 0,
+                                        "barWidthFactor": 0.6,
+                                        "drawStyle": "line",
+                                        "fillOpacity": 25,
+                                        "gradientMode": "none",
+                                        "hideFrom": {
+                                            "legend": false,
+                                            "tooltip": false,
+                                            "viz": false
+                                        },
+                                        "insertNulls": false,
+                                        "lineInterpolation": "linear",
+                                        "lineWidth": 1,
+                                        "pointSize": 0,
+                                        "scaleDistribution": {
+                                            "type": "linear"
+                                        },
+                                        "showPoints": "never",
+                                        "showValues": false,
+                                        "spanNulls": false,
+                                        "stacking": {
+                                            "group": "A",
+                                            "mode": "normal"
+                                        },
+                                        "thresholdsStyle": {
+                                            "mode": "off"
+                                        }
+                                    }
+                                },
+                                "overrides": []
+                            }
+                        }
+                    }
+                }
             }
         },
         "layout": {
@@ -2531,8 +3494,8 @@
                         "spec": {
                             "x": 0,
                             "y": 0,
-                            "width": 6,
-                            "height": 6,
+                            "width": 4,
+                            "height": 4,
                             "element": {
                                 "kind": "ElementReference",
                                 "name": "panel-54"
@@ -2542,10 +3505,62 @@
                     {
                         "kind": "GridLayoutItem",
                         "spec": {
-                            "x": 6,
+                            "x": 4,
                             "y": 0,
-                            "width": 18,
-                            "height": 6,
+                            "width": 5,
+                            "height": 4,
+                            "element": {
+                                "kind": "ElementReference",
+                                "name": "panel-55"
+                            }
+                        }
+                    },
+                    {
+                        "kind": "GridLayoutItem",
+                        "spec": {
+                            "x": 9,
+                            "y": 0,
+                            "width": 5,
+                            "height": 4,
+                            "element": {
+                                "kind": "ElementReference",
+                                "name": "panel-56"
+                            }
+                        }
+                    },
+                    {
+                        "kind": "GridLayoutItem",
+                        "spec": {
+                            "x": 14,
+                            "y": 0,
+                            "width": 5,
+                            "height": 4,
+                            "element": {
+                                "kind": "ElementReference",
+                                "name": "panel-57"
+                            }
+                        }
+                    },
+                    {
+                        "kind": "GridLayoutItem",
+                        "spec": {
+                            "x": 19,
+                            "y": 0,
+                            "width": 5,
+                            "height": 4,
+                            "element": {
+                                "kind": "ElementReference",
+                                "name": "panel-58"
+                            }
+                        }
+                    },
+                    {
+                        "kind": "GridLayoutItem",
+                        "spec": {
+                            "x": 0,
+                            "y": 4,
+                            "width": 24,
+                            "height": 5,
                             "element": {
                                 "kind": "ElementReference",
                                 "name": "panel-53"
@@ -2556,9 +3571,9 @@
                         "kind": "GridLayoutItem",
                         "spec": {
                             "x": 0,
-                            "y": 6,
+                            "y": 9,
                             "width": 8,
-                            "height": 13,
+                            "height": 12,
                             "element": {
                                 "kind": "ElementReference",
                                 "name": "panel-32"
@@ -2569,9 +3584,9 @@
                         "kind": "GridLayoutItem",
                         "spec": {
                             "x": 8,
-                            "y": 6,
+                            "y": 9,
                             "width": 8,
-                            "height": 13,
+                            "height": 12,
                             "element": {
                                 "kind": "ElementReference",
                                 "name": "panel-34"
@@ -2582,9 +3597,9 @@
                         "kind": "GridLayoutItem",
                         "spec": {
                             "x": 16,
-                            "y": 6,
+                            "y": 9,
                             "width": 8,
-                            "height": 13,
+                            "height": 12,
                             "element": {
                                 "kind": "ElementReference",
                                 "name": "panel-31"
@@ -2595,9 +3610,9 @@
                         "kind": "GridLayoutItem",
                         "spec": {
                             "x": 0,
-                            "y": 19,
+                            "y": 21,
                             "width": 12,
-                            "height": 20,
+                            "height": 10,
                             "element": {
                                 "kind": "ElementReference",
                                 "name": "panel-5"
@@ -2608,9 +3623,9 @@
                         "kind": "GridLayoutItem",
                         "spec": {
                             "x": 12,
-                            "y": 19,
+                            "y": 21,
                             "width": 12,
-                            "height": 20,
+                            "height": 10,
                             "element": {
                                 "kind": "ElementReference",
                                 "name": "panel-43"
@@ -2621,22 +3636,9 @@
                         "kind": "GridLayoutItem",
                         "spec": {
                             "x": 0,
-                            "y": 39,
+                            "y": 31,
                             "width": 8,
-                            "height": 20,
-                            "element": {
-                                "kind": "ElementReference",
-                                "name": "panel-35"
-                            }
-                        }
-                    },
-                    {
-                        "kind": "GridLayoutItem",
-                        "spec": {
-                            "x": 8,
-                            "y": 39,
-                            "width": 8,
-                            "height": 20,
+                            "height": 10,
                             "element": {
                                 "kind": "ElementReference",
                                 "name": "panel-6"
@@ -2646,36 +3648,10 @@
                     {
                         "kind": "GridLayoutItem",
                         "spec": {
-                            "x": 16,
-                            "y": 39,
-                            "width": 8,
-                            "height": 20,
-                            "element": {
-                                "kind": "ElementReference",
-                                "name": "panel-50"
-                            }
-                        }
-                    },
-                    {
-                        "kind": "GridLayoutItem",
-                        "spec": {
-                            "x": 0,
-                            "y": 59,
-                            "width": 8,
-                            "height": 14,
-                            "element": {
-                                "kind": "ElementReference",
-                                "name": "panel-48"
-                            }
-                        }
-                    },
-                    {
-                        "kind": "GridLayoutItem",
-                        "spec": {
                             "x": 8,
-                            "y": 59,
+                            "y": 31,
                             "width": 8,
-                            "height": 14,
+                            "height": 10,
                             "element": {
                                 "kind": "ElementReference",
                                 "name": "panel-49"
@@ -2686,9 +3662,48 @@
                         "kind": "GridLayoutItem",
                         "spec": {
                             "x": 16,
-                            "y": 59,
+                            "y": 31,
                             "width": 8,
-                            "height": 14,
+                            "height": 10,
+                            "element": {
+                                "kind": "ElementReference",
+                                "name": "panel-50"
+                            }
+                        }
+                    },
+                    {
+                        "kind": "GridLayoutItem",
+                        "spec": {
+                            "x": 0,
+                            "y": 41,
+                            "width": 8,
+                            "height": 10,
+                            "element": {
+                                "kind": "ElementReference",
+                                "name": "panel-35"
+                            }
+                        }
+                    },
+                    {
+                        "kind": "GridLayoutItem",
+                        "spec": {
+                            "x": 8,
+                            "y": 41,
+                            "width": 8,
+                            "height": 10,
+                            "element": {
+                                "kind": "ElementReference",
+                                "name": "panel-48"
+                            }
+                        }
+                    },
+                    {
+                        "kind": "GridLayoutItem",
+                        "spec": {
+                            "x": 16,
+                            "y": 41,
+                            "width": 8,
+                            "height": 10,
                             "element": {
                                 "kind": "ElementReference",
                                 "name": "panel-47"
@@ -2699,9 +3714,9 @@
                         "kind": "GridLayoutItem",
                         "spec": {
                             "x": 0,
-                            "y": 73,
+                            "y": 51,
                             "width": 8,
-                            "height": 10,
+                            "height": 8,
                             "element": {
                                 "kind": "ElementReference",
                                 "name": "panel-44"
@@ -2712,9 +3727,35 @@
                         "kind": "GridLayoutItem",
                         "spec": {
                             "x": 8,
-                            "y": 73,
+                            "y": 51,
                             "width": 8,
-                            "height": 10,
+                            "height": 8,
+                            "element": {
+                                "kind": "ElementReference",
+                                "name": "panel-59"
+                            }
+                        }
+                    },
+                    {
+                        "kind": "GridLayoutItem",
+                        "spec": {
+                            "x": 16,
+                            "y": 51,
+                            "width": 8,
+                            "height": 8,
+                            "element": {
+                                "kind": "ElementReference",
+                                "name": "panel-46"
+                            }
+                        }
+                    },
+                    {
+                        "kind": "GridLayoutItem",
+                        "spec": {
+                            "x": 0,
+                            "y": 59,
+                            "width": 12,
+                            "height": 8,
                             "element": {
                                 "kind": "ElementReference",
                                 "name": "panel-52"
@@ -2724,10 +3765,10 @@
                     {
                         "kind": "GridLayoutItem",
                         "spec": {
-                            "x": 16,
-                            "y": 73,
-                            "width": 8,
-                            "height": 10,
+                            "x": 12,
+                            "y": 59,
+                            "width": 12,
+                            "height": 8,
                             "element": {
                                 "kind": "ElementReference",
                                 "name": "panel-51"
@@ -2738,12 +3779,38 @@
                         "kind": "GridLayoutItem",
                         "spec": {
                             "x": 0,
-                            "y": 83,
-                            "width": 12,
-                            "height": 10,
+                            "y": 67,
+                            "width": 24,
+                            "height": 8,
                             "element": {
                                 "kind": "ElementReference",
-                                "name": "panel-46"
+                                "name": "panel-37"
+                            }
+                        }
+                    },
+                    {
+                        "kind": "GridLayoutItem",
+                        "spec": {
+                            "x": 0,
+                            "y": 75,
+                            "width": 6,
+                            "height": 4,
+                            "element": {
+                                "kind": "ElementReference",
+                                "name": "panel-60"
+                            }
+                        }
+                    },
+                    {
+                        "kind": "GridLayoutItem",
+                        "spec": {
+                            "x": 6,
+                            "y": 75,
+                            "width": 6,
+                            "height": 4,
+                            "element": {
+                                "kind": "ElementReference",
+                                "name": "panel-61"
                             }
                         }
                     },
@@ -2751,12 +3818,38 @@
                         "kind": "GridLayoutItem",
                         "spec": {
                             "x": 12,
-                            "y": 83,
-                            "width": 12,
+                            "y": 75,
+                            "width": 6,
+                            "height": 4,
+                            "element": {
+                                "kind": "ElementReference",
+                                "name": "panel-62"
+                            }
+                        }
+                    },
+                    {
+                        "kind": "GridLayoutItem",
+                        "spec": {
+                            "x": 18,
+                            "y": 75,
+                            "width": 6,
+                            "height": 4,
+                            "element": {
+                                "kind": "ElementReference",
+                                "name": "panel-63"
+                            }
+                        }
+                    },
+                    {
+                        "kind": "GridLayoutItem",
+                        "spec": {
+                            "x": 0,
+                            "y": 79,
+                            "width": 24,
                             "height": 10,
                             "element": {
                                 "kind": "ElementReference",
-                                "name": "panel-37"
+                                "name": "panel-64"
                             }
                         }
                     }
@@ -2777,9 +3870,9 @@
         ],
         "timeSettings": {
             "timezone": "browser",
-            "from": "now-24h",
+            "from": "now-6h",
             "to": "now",
-            "autoRefresh": "auto",
+            "autoRefresh": "30s",
             "autoRefreshIntervals": [
                 "5s",
                 "10s",
@@ -2804,57 +3897,88 @@
                     "pluginId": "prometheus",
                     "refresh": "onDashboardLoad",
                     "regex": "",
-                    "current": {
-                        "text": "Prometheus",
-                        "value": "local-prometheus"
-                    },
+                    "current": {},
                     "options": [],
                     "multi": false,
                     "includeAll": false,
                     "label": "Data source",
                     "hide": "hideVariable",
                     "skipUrlSync": false,
-                    "allowCustomValue": false
+                    "allowCustomValue": true
                 }
             },
             {
                 "kind": "QueryVariable",
                 "spec": {
-                    "name": "instance",
+                    "name": "host",
                     "current": {
-                        "text": [
-                            "g04u07"
-                        ],
-                        "value": [
-                            "g04u07"
-                        ]
+                        "text": "All",
+                        "value": "$__all"
                     },
-                    "label": "Server Instance",
+                    "label": "Host",
                     "hide": "dontHide",
-                    "refresh": "onDashboardLoad",
+                    "refresh": "onTimeRangeChanged",
                     "skipUrlSync": false,
-                    "description": "The server instance (node) that you wish to display metrics for.",
+                    "description": "Prometheus instance for node_exporter and amd_metrics_exporter (Ansible clusters use the inventory hostname for both).",
                     "query": {
                         "kind": "DataQuery",
                         "group": "prometheus",
                         "version": "v0",
                         "datasource": {
-                            "name": "local-prometheus"
+                            "name": "${datasource}"
                         },
                         "spec": {
                             "qryType": 1,
-                            "query": "label_values(node_arp_entries,instance)",
+                            "query": "label_values(up{job=~\"node_exporter|node|amd_metrics_exporter|amd_exporter\"}, instance)",
                             "refId": "PrometheusVariableQueryEditor-VariableQuery"
                         }
                     },
                     "regex": "",
                     "regexApplyTo": "value",
                     "sort": "alphabeticalAsc",
-                    "definition": "label_values(node_arp_entries,instance)",
+                    "definition": "label_values(up{job=~\"node_exporter|node|amd_metrics_exporter|amd_exporter\"}, instance)",
                     "options": [],
                     "multi": true,
                     "includeAll": true,
-                    "allowCustomValue": false
+                    "allowCustomValue": false,
+                    "allValue": ".+"
+                }
+            },
+            {
+                "kind": "QueryVariable",
+                "spec": {
+                    "name": "vllm_instance",
+                    "current": {
+                        "text": "All",
+                        "value": "$__all"
+                    },
+                    "label": "vLLM Instance",
+                    "hide": "dontHide",
+                    "refresh": "onTimeRangeChanged",
+                    "skipUrlSync": false,
+                    "description": "vLLM exporter target (host:port) for latency and token metrics.",
+                    "query": {
+                        "kind": "DataQuery",
+                        "group": "prometheus",
+                        "version": "v0",
+                        "datasource": {
+                            "name": "${datasource}"
+                        },
+                        "spec": {
+                            "qryType": 1,
+                            "query": "label_values(up{job=~\"vllm-exporter|vllm\"}, instance)",
+                            "refId": "PrometheusVariableQueryEditor-VariableQuery"
+                        }
+                    },
+                    "regex": "",
+                    "regexApplyTo": "value",
+                    "sort": "alphabeticalAsc",
+                    "definition": "label_values(up{job=~\"vllm-exporter|vllm\"}, instance)",
+                    "options": [],
+                    "multi": true,
+                    "includeAll": true,
+                    "allowCustomValue": false,
+                    "allValue": ".+"
                 }
             },
             {
@@ -2862,20 +3986,20 @@
                 "spec": {
                     "name": "model",
                     "current": {
-                        "text": "Qwen/Qwen2.5-3B-Instruct",
-                        "value": "Qwen/Qwen2.5-3B-Instruct"
+                        "text": "All",
+                        "value": "$__all"
                     },
                     "label": "LLM Model",
                     "hide": "dontHide",
-                    "refresh": "onDashboardLoad",
+                    "refresh": "onTimeRangeChanged",
                     "skipUrlSync": false,
-                    "description": "The LLM model in use. Note this is only appropriate for certain panels and metrics on this dashboard.",
+                    "description": "LLM model_name label on vLLM metrics.",
                     "query": {
                         "kind": "DataQuery",
                         "group": "prometheus",
                         "version": "v0",
                         "datasource": {
-                            "name": "local-prometheus"
+                            "name": "${datasource}"
                         },
                         "spec": {
                             "qryType": 1,
@@ -2890,43 +4014,8 @@
                     "options": [],
                     "multi": true,
                     "includeAll": true,
-                    "allowCustomValue": false
-                }
-            },
-            {
-                "kind": "QueryVariable",
-                "spec": {
-                    "name": "blkdevice",
-                    "current": {
-                        "text": "dm-0",
-                        "value": "dm-0"
-                    },
-                    "label": "Block Device",
-                    "hide": "dontHide",
-                    "refresh": "onDashboardLoad",
-                    "skipUrlSync": false,
-                    "description": "The specific block device (or devices) you want to visualize in a certain panels.",
-                    "query": {
-                        "kind": "DataQuery",
-                        "group": "prometheus",
-                        "version": "v0",
-                        "datasource": {
-                            "name": "local-prometheus"
-                        },
-                        "spec": {
-                            "qryType": 1,
-                            "query": "label_values(node_disk_read_bytes_total,device)",
-                            "refId": "PrometheusVariableQueryEditor-VariableQuery"
-                        }
-                    },
-                    "regex": "",
-                    "regexApplyTo": "value",
-                    "sort": "alphabeticalAsc",
-                    "definition": "label_values(node_disk_read_bytes_total,device)",
-                    "options": [],
-                    "multi": true,
-                    "includeAll": true,
-                    "allowCustomValue": false
+                    "allowCustomValue": false,
+                    "allValue": ".+"
                 }
             },
             {
@@ -2934,35 +4023,160 @@
                 "spec": {
                     "name": "gpu_id",
                     "current": {
-                        "text": "0",
-                        "value": "0"
+                        "text": "All",
+                        "value": "$__all"
                     },
                     "label": "GPU ID",
                     "hide": "dontHide",
-                    "refresh": "onDashboardLoad",
+                    "refresh": "onTimeRangeChanged",
                     "skipUrlSync": false,
-                    "description": "The gpu_id as given by rocm-smi on the target node.",
+                    "description": "GPU id from amd_metrics_exporter on the selected host(s).",
                     "query": {
                         "kind": "DataQuery",
                         "group": "prometheus",
                         "version": "v0",
                         "datasource": {
-                            "name": "local-prometheus"
+                            "name": "${datasource}"
                         },
                         "spec": {
                             "qryType": 1,
-                            "query": "label_values(amd_gpu_power_usage,gpu_id)",
+                            "query": "label_values(amd_gpu_power_usage{instance=~\"$host\"}, gpu_id)",
                             "refId": "PrometheusVariableQueryEditor-VariableQuery"
                         }
                     },
                     "regex": "",
                     "regexApplyTo": "value",
                     "sort": "disabled",
-                    "definition": "label_values(amd_gpu_power_usage,gpu_id)",
+                    "definition": "label_values(amd_gpu_power_usage{instance=~\"$host\"}, gpu_id)",
                     "options": [],
+                    "multi": true,
+                    "includeAll": true,
+                    "allowCustomValue": false,
+                    "allValue": ".+"
+                }
+            },
+            {
+                "kind": "QueryVariable",
+                "spec": {
+                    "name": "blkdevice",
+                    "current": {
+                        "text": "All",
+                        "value": "$__all"
+                    },
+                    "label": "Block Device",
+                    "hide": "dontHide",
+                    "refresh": "onTimeRangeChanged",
+                    "skipUrlSync": false,
+                    "description": "Block device on the selected node(s) for KV storage bandwidth.",
+                    "query": {
+                        "kind": "DataQuery",
+                        "group": "prometheus",
+                        "version": "v0",
+                        "datasource": {
+                            "name": "${datasource}"
+                        },
+                        "spec": {
+                            "qryType": 1,
+                            "query": "label_values(node_disk_read_bytes_total{instance=~\"$host\"}, device)",
+                            "refId": "PrometheusVariableQueryEditor-VariableQuery"
+                        }
+                    },
+                    "regex": "",
+                    "regexApplyTo": "value",
+                    "sort": "alphabeticalAsc",
+                    "definition": "label_values(node_disk_read_bytes_total{instance=~\"$host\"}, device)",
+                    "options": [],
+                    "multi": true,
+                    "includeAll": true,
+                    "allowCustomValue": false,
+                    "allValue": ".+"
+                }
+            },
+            {
+                "kind": "QueryVariable",
+                "spec": {
+                    "name": "rdma_device",
+                    "current": {
+                        "text": "All",
+                        "value": "$__all"
+                    },
+                    "label": "RDMA Device",
+                    "hide": "dontHide",
+                    "refresh": "onTimeRangeChanged",
+                    "skipUrlSync": false,
+                    "description": "RDMA port on the selected node(s); used when the storage backend is reachable over RoCE (optional).",
+                    "query": {
+                        "kind": "DataQuery",
+                        "group": "prometheus",
+                        "version": "v0",
+                        "datasource": {
+                            "name": "${datasource}"
+                        },
+                        "spec": {
+                            "qryType": 1,
+                            "query": "label_values(rdma_port_rcv_data_total{instance=~\"$host\"}, device)",
+                            "refId": "PrometheusVariableQueryEditor-VariableQuery"
+                        }
+                    },
+                    "regex": "",
+                    "regexApplyTo": "value",
+                    "sort": "alphabeticalAsc",
+                    "definition": "label_values(rdma_port_rcv_data_total{instance=~\"$host\"}, device)",
+                    "options": [],
+                    "multi": true,
+                    "includeAll": true,
+                    "allowCustomValue": false,
+                    "allValue": ".+"
+                }
+            },
+            {
+                "kind": "ConstantVariable",
+                "spec": {
+                    "name": "nfs_mount",
+                    "current": {
+                        "text": "^$",
+                        "value": "^$"
+                    },
+                    "label": "NFS Mount (optional)",
+                    "hide": "dontHide",
+                    "skipUrlSync": false,
+                    "description": "Regex for AIC NFS client mount path. Default ^$ disables NFS client panels (use for local NVMe, hipfile, or other non-NFS AIC). Set to your mount (for example /mnt/rocm-icms-cache) when the cache is NFS-backed.",
+                    "query": "^$",
+                    "options": [
+                        {
+                            "text": "^$",
+                            "value": "^$",
+                            "selected": true
+                        }
+                    ],
                     "multi": false,
                     "includeAll": false,
-                    "allowCustomValue": false
+                    "allowCustomValue": true
+                }
+            },
+            {
+                "kind": "ConstantVariable",
+                "spec": {
+                    "name": "server_power_metric",
+                    "current": {
+                        "text": "^$",
+                        "value": "^$"
+                    },
+                    "label": "Server Power Metric",
+                    "hide": "hideVariable",
+                    "skipUrlSync": false,
+                    "description": "Regex for optional PDU power metric; ^$ disables the series.",
+                    "query": "^$",
+                    "options": [
+                        {
+                            "text": "^$",
+                            "value": "^$",
+                            "selected": true
+                        }
+                    ],
+                    "multi": false,
+                    "includeAll": false,
+                    "allowCustomValue": true
                 }
             }
         ]

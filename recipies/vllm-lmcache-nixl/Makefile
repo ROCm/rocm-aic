@@ -20,6 +20,13 @@ TZ ?= America/Edmonton
 VLN_LMCACHE_IO ?= nixl-posix
 VLN_LMCACHE_LOG_LEVEL ?=
 VLN_NIXL_BUFFER_SIZE ?=
+VLN_NIXL_POOL_SIZE ?=
+# NIXL opens one FD per pool slot at init; raise above VLN_NIXL_POOL_SIZE.
+VLN_DOCKER_NOFILE ?= 1048576
+VLN_MAX_MODEL_LEN ?=
+VLN_GPU_MEMORY_UTILIZATION ?=
+VLN_MAX_NUM_BATCHED_TOKENS ?=
+NIXL_PLUGIN_DIR ?= /opt/nixl/lib/x86_64-linux-gnu/plugins
 # Enables vLLM dev HTTP APIs (e.g. POST /reset_prefix_cache). Set to 0 to disable.
 VLLM_SERVER_DEV_MODE ?= 1
 # Served model (vllm-server + Slurm benchmarks). Unset → configs/vllm-lmcache-nixl.yaml default.
@@ -35,8 +42,8 @@ BOOK_TITLE ?= War and Peace
 BOOK_AUTHOR ?= Leo Tolstoy
 BOOK_CHUNK_WORDS ?= 10000
 BOOK_CHUNK_COUNT ?= 100
-BOOK_DATA_DIR ?= $(CURDIR)/data/$(BOOK_SLUG)
-BOOK_DATA_ROOT ?= $(CURDIR)/data
+BOOK_DATA_ROOT ?= $(REPO_ROOT)/data/gutenberg
+BOOK_DATA_DIR ?= $(BOOK_DATA_ROOT)/$(BOOK_SLUG)
 GUTENBERG_MANIFEST ?= $(BENCH_DIR)/configs/gutenberg-library.json
 DATA_ALL_LIMIT ?=
 DATA_ALL_BOOK ?=
@@ -149,6 +156,7 @@ _docker_run:
 		--cap-add=CAP_SYS_ADMIN \
 		--cap-add=SYS_PTRACE \
 		--security-opt seccomp=unconfined \
+		--ulimit nofile=$(VLN_DOCKER_NOFILE):$(VLN_DOCKER_NOFILE) \
 		--device=/dev/kfd \
 		--device=/dev/dri \
 		--env HF_HOME="$(CONTAINER_HF_HOME)" \
@@ -163,6 +171,11 @@ _docker_run:
 		--env VLN_LMCACHE_IO="$(VLN_LMCACHE_IO)" \
 		--env VLN_LMCACHE_LOG_LEVEL="$(VLN_LMCACHE_LOG_LEVEL)" \
 		--env VLN_NIXL_BUFFER_SIZE="$(VLN_NIXL_BUFFER_SIZE)" \
+		$$(if [ -n "$(VLN_NIXL_POOL_SIZE)" ]; then printf '%s' "--env VLN_NIXL_POOL_SIZE=$(VLN_NIXL_POOL_SIZE)"; fi) \
+		$$(if [ -n "$(VLN_MAX_MODEL_LEN)" ]; then printf '%s' "--env VLN_MAX_MODEL_LEN=$(VLN_MAX_MODEL_LEN)"; fi) \
+		$$(if [ -n "$(VLN_GPU_MEMORY_UTILIZATION)" ]; then printf '%s' "--env VLN_GPU_MEMORY_UTILIZATION=$(VLN_GPU_MEMORY_UTILIZATION)"; fi) \
+		$$(if [ -n "$(VLN_MAX_NUM_BATCHED_TOKENS)" ]; then printf '%s' "--env VLN_MAX_NUM_BATCHED_TOKENS=$(VLN_MAX_NUM_BATCHED_TOKENS)"; fi) \
+		--env NIXL_PLUGIN_DIR="$(NIXL_PLUGIN_DIR)" \
 		--env VLLM_SERVER_DEV_MODE="$(VLLM_SERVER_DEV_MODE)" \
 		$$(if [ -n "$(VLLM_MODEL)" ]; then printf '%s' "--env VLLM_MODEL=$(VLLM_MODEL)"; fi) \
 		--env HF_TOKEN="$$HF_TOKEN" \

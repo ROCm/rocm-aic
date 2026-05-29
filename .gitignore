@@ -47,9 +47,22 @@ tools/lmcache-io-tester/data/lmsys-chat-*.json
 tools/lmcache-io-tester/data/wildchat-*.json
 tools/lmcache-io-tester/**/*.token
 
-# vllm-lmcache-hipfile logs and generated Gutenberg fixtures (see README)
+# vllm-lmcache-hipfile logs and legacy per-recipe Gutenberg fixtures
 recipies/vllm-lmcache-hipfile/logs/
 recipies/vllm-lmcache-hipfile/data/
+recipies/vllm-lmcache-nixl/data/
+recipies/vllm-lmcache-nixl/logs/
+
+# benchmark logs and reports
+benchmarks/ttft-lmcache/logs/
+benchmarks/ttft-lmcache/reports/
+benchmarks/ttft-llamacpp/logs/
+benchmarks/ttft-llamacpp/reports/
+benchmarks/llm-prefill-benchmark/logs/
+benchmarks/llm-prefill-benchmark/reports/
+
+# Generated Gutenberg benchmark corpus (repo-root data/gutenberg/)
+data/gutenberg/
 
 # slurm logs and reports
 .slurm/logs/

@@ -34,6 +34,8 @@ ninja -C build install
 ## Validation gates
 
 1. `python3 -c "import nixl; nixl.nixl_agent('t')"` with `NIXL_PLUGIN_DIR` set
+   and `PYTHONPATH` including `${NIXL_INSTALL_PREFIX}/lib/python3/dist-packages`
+   (build script installs a local `nixl` shim over meson’s `nixl_rocm` package)
 2. `libplugin_AIS.so` and `libplugin_AIS_MT.so` under the build tree
 3. Slurm: `sbatch .slurm/test-nixl-ais-mt.sbatch` on a MARKHAM+NVME node
 4. End-to-end: `./run-slurm-nixl.sh` with `VLN_LMCACHE_IO=nixl-posix`

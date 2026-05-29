@@ -36,6 +36,7 @@ need only `openai` unless you use the full tool stack.
 | TTFT benchmark (llama.cpp) | [benchmarks/ttft-llamacpp][b-lcp] | [README][r-lcp] |
 | LLM prefill benchmark (Gutenberg) | [benchmarks/llm-prefill-benchmark][b-lpb] | [README][r-lpb] |
 | vLLM + LMCache hipfile recipe | [recipies/vllm-lmcache-hipfile][r-vr] | [README][r-vr] |
+| Grafana dashboards | [grafana/][grafana-dir] | [README][grafana-readme] |
 | vLLM + LMCache NIXL recipe | [recipies/vllm-lmcache-nixl][r-vn] | [README][r-vn] |
 | LMCache patch index | [recipies/vllm-lmcache-hipfile/patches][r-patches] | [README][r-patches] |
 | ROCm inference stack image | [recipies/rocm-inference-stack][r-ris] | [README][r-ris] |
@@ -159,6 +160,8 @@ rocm-icms/
 [r-lpb]: benchmarks/llm-prefill-benchmark/README.md
 [patch]: benchmarks/ttft-llamacpp/patches/0001-cache-disk.patch
 [r-vr]: recipies/vllm-lmcache-hipfile/
+[grafana-dir]: grafana/
+[grafana-readme]: grafana/README.md
 [r-vn]: recipies/vllm-lmcache-nixl/
 [r-patches]: recipies/vllm-lmcache-hipfile/patches/README.md
 [r-ris]: recipies/rocm-inference-stack/README.md

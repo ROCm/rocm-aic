@@ -10,9 +10,9 @@ save_decode_cache: true
 pre_caching_hash_algorithm: sha256_cbor
 nixl_buffer_size: 1073741824
 nixl_buffer_device: cpu
-nixl_pool_size: 64
 
 extra_config:
   enable_nixl_storage: true
   nixl_backend: AIS
+  nixl_pool_size: 4096
   use_direct_io: true

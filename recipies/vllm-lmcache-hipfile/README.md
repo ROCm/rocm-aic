@@ -25,7 +25,7 @@ and **`test-aic.py`**: from the repo root, `pip install -r requirements.txt`
 - [LMCache long_doc_qa benchmark](#lmcache-long_doc_qa-benchmark)
 - [Gutenberg long-context fixtures](#gutenberg-long-context-fixtures)
 - [GitHub Actions CI](#github-actions-ci)
-- [Grafana dashboard](#grafana-grafanavllm-lmcache-prometheusjson)
+- [Grafana dashboard](#grafana-dashboard)
 
 ## Where things live
 
@@ -495,10 +495,11 @@ manual Docker build. PRs do not run a full image build (runner disk); use
 **`vllm-lmcache-hipfile-docker`** via **workflow_dispatch** when you need an end-to-end
 compile. See also [rocm-aic CI][root-ci] in the root README.
 
-## Grafana **`grafana/vllm-lmcache-prometheus.json`**
+## Grafana dashboard
 
-A sample Grafana dashboard. Import into your Grafana server. This may need
-adjusting to match your exporter naming.
+Cluster dashboard: [`grafana/rocm-aic-dashboard.json`](../../grafana/rocm-aic-dashboard.json).
+Import into your Grafana server and adjust variables for your Prometheus
+labels and mount paths. See [`grafana/README.md`](../../grafana/README.md).
 
 <!-- References -->
 

@@ -35,4 +35,4 @@ serve:
 nixl:
   install_prefix: "/opt/nixl"
   ucx_prefix: "/opt/rocnixl-ucx"
-  plugin_dir: "/opt/nixl/lib/x86_64-linux-gnu/nixl/plugins"
+  plugin_dir: "/opt/nixl/lib/x86_64-linux-gnu/plugins"

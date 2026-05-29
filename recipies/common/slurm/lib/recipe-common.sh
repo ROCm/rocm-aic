@@ -740,7 +740,7 @@ _vlh_resolve_gutenberg_data_root() {
     elif [[ -n "${VLH_SHARED_ROOT:-}" ]]; then
         GUTENBERG_DATA_ROOT="${VLH_SHARED_ROOT}/gutenberg"
     else
-        GUTENBERG_DATA_ROOT="${RECIPE_DIR}/data"
+        GUTENBERG_DATA_ROOT="${REPO_DIR}/data/gutenberg"
     fi
     export GUTENBERG_DATA_ROOT
 }
@@ -755,7 +755,9 @@ _vlh_gutenberg_prereqs() {
     _vlh_resolve_gutenberg_data_root
     if ! _vlh_gutenberg_fixtures_present "${GUTENBERG_DATA_ROOT}"; then
         _vlh_log "ERROR: no Gutenberg fixtures under ${GUTENBERG_DATA_ROOT}"
-        _vlh_log "Generate once on shared storage, e.g.:"
+        _vlh_log "Generate once, e.g.:"
+        _vlh_log "  make -C ${REPO_DIR}/benchmarks/llm-prefill-benchmark data-all"
+        _vlh_log "  # or on shared storage:"
         _vlh_log "  export VLH_GUTENBERG_DATA_ROOT=/scratch/\$USER/vllm-lmcache-hipfile/gutenberg"
         _vlh_log "  make -C ${LLM_PREFILL_BENCH_ROOT} data-all BOOK_DATA_ROOT=\${VLH_GUTENBERG_DATA_ROOT}"
         return 1

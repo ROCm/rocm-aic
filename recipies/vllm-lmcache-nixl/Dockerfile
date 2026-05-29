@@ -105,7 +105,8 @@ COPY benchmarks/llm-prefill-benchmark/scripts/test-aic.py /app/scripts/
 
 ENV PYTHONUNBUFFERED=1 \
     PYTHONHASHSEED=0 \
-    NIXL_PLUGIN_DIR=/opt/nixl/lib/x86_64-linux-gnu/nixl/plugins \
-    LD_LIBRARY_PATH=/opt/nixl/lib:/opt/rocnixl-ucx/lib:/opt/rocm/lib
+    NIXL_PLUGIN_DIR=/opt/nixl/lib/x86_64-linux-gnu/plugins \
+    PYTHONPATH=/opt/nixl/lib/python3/dist-packages \
+    LD_LIBRARY_PATH=/opt/nixl/lib/x86_64-linux-gnu:/opt/nixl/lib:/opt/rocnixl-ucx/lib:/opt/rocm/lib
 
 ENTRYPOINT ["python3", "/app/scripts/vllm-server"]

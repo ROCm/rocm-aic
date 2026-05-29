@@ -16,7 +16,15 @@ here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 STREAM_CHAT="${RUN_LONG_STREAM_CHAT:-${here}/scripts/stream-chat-completion.py}"
 BASE_URL="${BASE_URL:-http://127.0.0.1:8000}"
 MODEL="${MODEL:-openai/gpt-oss-120b}"
-BOOK_DATA_ROOT="${BOOK_DATA_ROOT:-${here}/data}"
+_default_book_data_root() {
+  local repo_root="${here}/../.."
+  if [[ -d "${repo_root}/data/gutenberg" ]]; then
+    printf '%s/data/gutenberg' "$(cd "${repo_root}" && pwd)"
+  else
+    printf '%s/data' "${here}"
+  fi
+}
+BOOK_DATA_ROOT="${BOOK_DATA_ROOT:-$(_default_book_data_root)}"
 ITERATIONS="${ITERATIONS:-1}"
 RUN_LONG_WORKER="${RUN_LONG_WORKER:-}"
 RUN_LONG_COMBINE_CHUNKS="${RUN_LONG_COMBINE_CHUNKS:-1}"

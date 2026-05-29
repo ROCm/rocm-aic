@@ -58,8 +58,31 @@ jobs:
             --json >/dev/null
           grep -q 'rocm_aic_kv_disk_files' "${prom}"
           grep -q 'rocm_aic_kv_file_hits_histogram_bucket' "${prom}"
+          grep -q 'rocm_aic_chunk_lookup_histogram_bucket' "${prom}"
+          grep -q 'rocm_aic_chunk_stats_lookup_rows 1' "${prom}"
+          grep -q 'rocm_aic_nixl_pool_files' "${prom}"
+          grep -q 'rocm_aic_nixl_pool_bytes_total' "${prom}"
           grep -q 'rocm_aic_nfsiostat_present' "${prom}"
           grep -q 'rocm_aic_hipconfig_present' "${prom}"
+          prom_nixl="${RUNNER_TEMP}/rocm_aic_exporter_nixl.prom"
+          python3 ../../common/scripts/rocm-aic-exporter.py \
+            --data-root ../../common/tests/fixtures/lmcache-exporter-nixl \
+            --prometheus-textfile "${prom_nixl}" \
+            --textfile-only \
+            --skip-nfsiostat-invoke \
+            --json >/dev/null
+          grep -q 'rocm_aic_nixl_pool_files 2' "${prom_nixl}"
+          grep -q 'rocm_aic_nixl_pool_bytes_total 12288' "${prom_nixl}"
+          grep -q 'rocm_aic_nixl_pool_present 1' "${prom_nixl}"
+          grep -q 'rocm_aic_kv_disk_files 0' "${prom_nixl}"
+          grep -q 'rocm_aic_chunk_stats_lookup_rows 3' "${prom_nixl}"
+          grep -q 'rocm_aic_chunk_hashes_tracked 2' "${prom_nixl}"
+          grep -q 'rocm_aic_chunk_hash_mention_sum 4' "${prom_nixl}"
+          grep -q 'rocm_aic_chunk_lookup_histogram_bucket{le="20"}' "${prom_nixl}"
+          grep -q 'rocm_aic_chunk_hashes_by_lookup_count{lookup_count="3"} 1' "${prom_nixl}"
+          grep -q 'rocm_aic_chunk_hashes_by_lookup_count{lookup_count="1"} 1' "${prom_nixl}"
+          grep -q 'rocm_aic_chunk_hashes_by_lookup_count{lookup_count="11-20"} 0' "${prom_nixl}"
+          grep -q 'rocm_aic_chunk_hashes_by_lookup_count{lookup_count=">100"} 0' "${prom_nixl}"
           python3 -c "
           from importlib.machinery import SourceFileLoader
           from pathlib import Path

@@ -58,3 +58,21 @@ From repo root:
 
 Both use the same [llm-prefill-benchmark](../../benchmarks/llm-prefill-benchmark)
 Gutenberg workload for TTFT measurement.
+
+## NIXL pool size (`VLN_NIXL_POOL_SIZE`)
+
+The NIXL backend pre-allocates a fixed pool of ``obj_*.bin`` slots under
+``$DATA/lmcache/``. Default **`nixl_pool_size: 4096`** in the LMCache YAML
+(~36 GiB for Qwen2.5-3B at ~9 MiB/slot). Override at run time:
+
+```bash
+make run VLN_NIXL_POOL_SIZE=8192   # ~72 GiB pool (8192 × ~9 MiB)
+```
+
+Restart after changing pool size (``clear_gds_dir_before_start`` recreates the
+pool). First start with a large pool can take a minute while slots allocate.
+
+**File descriptor limit:** NIXL opens one FD per pool slot during init. Docker
+defaults to ~65536; a pool of **131072** fails with ``Too many open files``
+unless ``make run`` passes a higher limit (``VLN_DOCKER_NOFILE``, default
+**1048576**). Rule of thumb: ``VLN_NIXL_POOL_SIZE + 5000 < VLN_DOCKER_NOFILE``.

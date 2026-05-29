@@ -94,22 +94,44 @@ ninja -C build
 ninja -C build install
 ldconfig
 
-shopt -s nullglob || true
-for wheel in "${NIXL_SRC}"/build/src/bindings/python/nixl-meta/nixl-*-py3-none-any.whl; do
-	[[ -f "${wheel}" ]] || continue
-	python3 -m pip install --no-cache-dir "${wheel}" && break
-done
-shopt -u nullglob || true
+NIXL_PY_SITE="${NIXL_INSTALL_PREFIX}/lib/python3/dist-packages"
+export PYTHONPATH="${NIXL_PY_SITE}:${PYTHONPATH:-}"
 
-if [[ -f "${NIXL_SRC}/pyproject.toml" ]] && ! python3 -c "import nixl" 2>/dev/null; then
-	python3 -m pip install --no-cache-dir "${NIXL_SRC}" || true
+python3 -m pip uninstall -y nixl nixl-cu12 nixl-cu13 2>/dev/null || true
+
+# Meson installs bindings as nixl_rocm. The upstream meta wheel depends on
+# nixl-rocm on PyPI and its __init__.py only probes CUDA backends, so pip
+# install of the meta wheel or repo root pyproject.toml is wrong on ROCm.
+if [[ ! -d "${NIXL_PY_SITE}/nixl_rocm" ]]; then
+	echo "ERROR: ${NIXL_PY_SITE}/nixl_rocm not found after meson install" >&2
+	exit 1
 fi
 
-export NIXL_PLUGIN_DIR="${NIXL_INSTALL_PREFIX}/lib/x86_64-linux-gnu/nixl/plugins"
+mkdir -p "${NIXL_PY_SITE}/nixl"
+cat > "${NIXL_PY_SITE}/nixl/__init__.py" <<'PY'
+# Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+# SPDX-License-Identifier: MIT
+"""ROCm shim: meson installs nixl_rocm; consumers import nixl."""
+
+import importlib
+import sys
+
+_pkg = importlib.import_module("nixl_rocm")
+
+for sub_name in ("_api", "_bindings", "_utils", "logging"):
+    module = importlib.import_module(f"{_pkg.__name__}.{sub_name}")
+    sys.modules[f"nixl.{sub_name}"] = module
+    setattr(sys.modules[__name__], sub_name, module)
+    for attr in dir(module):
+        if not attr.startswith("_"):
+            setattr(sys.modules[__name__], attr, getattr(module, attr))
+PY
+
+export NIXL_PLUGIN_DIR="${NIXL_INSTALL_PREFIX}/lib/x86_64-linux-gnu/plugins"
 if [[ ! -d "${NIXL_PLUGIN_DIR}" ]]; then
 	NIXL_PLUGIN_DIR="${NIXL_INSTALL_PREFIX}/lib/nixl/plugins"
 fi
-export LD_LIBRARY_PATH="${NIXL_INSTALL_PREFIX}/lib:${UCX_PREFIX}/lib:${LD_LIBRARY_PATH:-}"
+export LD_LIBRARY_PATH="${NIXL_INSTALL_PREFIX}/lib/x86_64-linux-gnu:${NIXL_INSTALL_PREFIX}/lib:${UCX_PREFIX}/lib:${LD_LIBRARY_PATH:-}"
 
 python3 -c "import nixl; print('nixl import OK:', nixl.__file__)"
 

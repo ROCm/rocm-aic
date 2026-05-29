@@ -42,7 +42,7 @@ make run-parallel WORKERS=4 ITERATIONS=10
 |----------|---------|---------|
 | `BASE_URL` | `http://127.0.0.1:8000` | OpenAI-compatible API root (no `/v1` suffix) |
 | `MODEL` | `openai/gpt-oss-120b` | Model id for chat completions |
-| `BOOK_DATA_ROOT` | `./data` | Gutenberg chunk + `*.questions.json` tree |
+| `BOOK_DATA_ROOT` | `../../data/gutenberg` | Gutenberg chunk + `*.questions.json` tree |
 | `BOOK_SLUG` | unset | Single-book mode when set |
 | `ITERATIONS` | `1` | Requests per worker |
 | `RUN_LONG_SEED` | random | Reproducible chunk/question selection |

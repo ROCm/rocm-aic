@@ -43,7 +43,7 @@ export AIS_PATH="${AIS_PATH:-${ROCM_PATH}}"
 
 "${NIXL_COMMON}/build-nixl.sh" 2>&1 | tee "${LOG_DIR}/build.log"
 
-export NIXL_PLUGIN_DIR="${NIXL_PREFIX}/lib/x86_64-linux-gnu/nixl/plugins"
+export NIXL_PLUGIN_DIR="${NIXL_PREFIX}/lib/x86_64-linux-gnu/plugins"
 if [[ ! -d "${NIXL_PLUGIN_DIR}" ]]; then
     NIXL_PLUGIN_DIR="${NIXL_PREFIX}/lib/nixl/plugins"
 fi

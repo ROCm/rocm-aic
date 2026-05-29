@@ -6,10 +6,13 @@
 """ROCm AIC Prometheus textfile exporter for vLLM + LMCache host stats.
 
 Exports LMCache KV inventory (per-model file counts and chunk bytes),
-filesystem free space on the data mount, a **Hits per KV file** histogram
-from ``chunk_hashes_*.jsonl`` (on-disk ``.data`` files only), NFS client
-byte totals per mount (via ``nfsiostat`` + ``/proc/self/mountstats``), and
-ROCm/HIP version from ``hipconfig``.
+NIXL static pool files (``obj_<slot>_<id>.bin``), filesystem free space on
+the data mount, **Hits per KV file** (``.data`` mode) and **chunk hash lookup
+frequency** histograms from ``chunk_hashes_*.jsonl`` (always parsed; NIXL
+mode uses JSONL-only lookup metrics when no ``.data`` files exist), NFS client
+byte totals per mount (via
+``nfsiostat`` + ``/proc/self/mountstats``), and ROCm/HIP version from
+``hipconfig``.
 
 Use ``--prometheus-textfile`` to write metrics for the node_exporter
 textfile collector (same pattern as ``rocm_icms_stack_versions.prom``).
@@ -38,6 +41,7 @@ _DATA_FILE_RE = re.compile(
     + r")\.data$",
     re.IGNORECASE,
 )
+_NIXL_POOL_FILE_RE = re.compile(r"^obj_\d+_[0-9a-fA-F]+\.bin$")
 
 _METRIC_PREFIX = "rocm_aic"
 _MOUNTSTATS_DEVICE_RE = re.compile(
@@ -111,6 +115,33 @@ class KvDiskInventory:
     unrecognized_files: int
 
 
+@dataclass(frozen=True)
+class NixlPoolInventory:
+    """LMCache NIXL static pool objects under the KV directory."""
+
+    file_count: int
+    bytes_total: int
+
+
+def _scan_nixl_pool_inventory(kv_dir: Path) -> NixlPoolInventory:
+    """Return file count and total bytes for NIXL ``obj_*.bin`` pool slots."""
+    file_count = 0
+    bytes_total = 0
+    if not kv_dir.is_dir():
+        return NixlPoolInventory(file_count=0, bytes_total=0)
+    for path in kv_dir.iterdir():
+        if not path.is_file():
+            continue
+        if not _NIXL_POOL_FILE_RE.match(path.name):
+            continue
+        file_count += 1
+        try:
+            bytes_total += path.stat().st_size
+        except OSError:
+            pass
+    return NixlPoolInventory(file_count=file_count, bytes_total=bytes_total)
+
+
 def _scan_kv_inventory(kv_dir: Path) -> KvDiskInventory:
     tag_to_path: dict[str, Path] = {}
     files_by_model: Counter[str] = Counter()
@@ -179,13 +210,9 @@ def _filesystem_usage(path: Path) -> FsUsage:
     )
 
 
-def _load_hit_counts(
-    stats_glob: str,
-    disk_tags: set[str],
-) -> tuple[Counter[str], int, int]:
-    """Count stat mentions that resolve to a tag present on disk."""
-    hits: Counter[str] = Counter()
-    orphan_mentions = 0
+def _load_jsonl_hash_mentions(stats_glob: str) -> tuple[Counter[str], int]:
+    """Count how often each chunk hash appears in ``chunk_hashes`` JSONL rows."""
+    mentions: Counter[str] = Counter()
     lookup_rows = 0
     for stats_path in sorted(glob.glob(stats_glob)):
         with open(stats_path, encoding="utf-8", errors="replace") as f:
@@ -203,16 +230,68 @@ def _load_hit_counts(
                 for h in rec.get("chunk_hashes") or []:
                     if not isinstance(h, str):
                         continue
-                    resolved: str | None = None
-                    for alias in _aliases_for_jsonl_hash(h):
-                        if alias in disk_tags:
-                            resolved = alias
-                            break
-                    if resolved is None:
-                        orphan_mentions += 1
-                        continue
-                    hits[resolved] += 1
+                    mentions[_norm_jsonl_hash(h)] += 1
+    return mentions, lookup_rows
+
+
+def _disk_hit_counts(
+    mentions: Counter[str],
+    disk_tags: set[str],
+) -> tuple[Counter[str], int]:
+    """Map JSONL hash mention counts onto on-disk ``.data`` hash tags."""
+    hits: Counter[str] = Counter()
+    orphan_mentions = 0
+    for raw_hash, count in mentions.items():
+        resolved: str | None = None
+        for alias in _aliases_for_jsonl_hash(raw_hash):
+            if alias in disk_tags:
+                resolved = alias
+                break
+        if resolved is None:
+            orphan_mentions += count
+        else:
+            hits[resolved] += count
+    return hits, orphan_mentions
+
+
+def _load_hit_counts(
+    stats_glob: str,
+    disk_tags: set[str],
+) -> tuple[Counter[str], int, int]:
+    """Count stat mentions that resolve to a tag present on disk."""
+    mentions, lookup_rows = _load_jsonl_hash_mentions(stats_glob)
+    if not disk_tags:
+        return Counter(), sum(mentions.values()), lookup_rows
+    hits, orphan_mentions = _disk_hit_counts(mentions, disk_tags)
     return hits, orphan_mentions, lookup_rows
+
+
+def _empty_hit_bucket_histogram() -> dict[str, int]:
+    return {str(i): 0 for i in range(11)} | {">10": 0}
+
+
+_CHUNK_LOOKUP_TAIL_BUCKETS = ("11-20", "21-50", "51-100", ">100")
+_CHUNK_LOOKUP_HISTOGRAM_LE = (20, 50, 100)
+
+
+def _chunk_lookup_bucket_labels() -> tuple[str, ...]:
+    return tuple(str(i) for i in range(11)) + _CHUNK_LOOKUP_TAIL_BUCKETS
+
+
+def _empty_chunk_lookup_histogram() -> dict[str, int]:
+    return {label: 0 for label in _chunk_lookup_bucket_labels()}
+
+
+def _chunk_lookup_tail_bucket(count: int) -> str:
+    if count <= 10:
+        return str(count)
+    if count <= 20:
+        return "11-20"
+    if count <= 50:
+        return "21-50"
+    if count <= 100:
+        return "51-100"
+    return ">100"
 
 
 def kv_block_hit_histogram(
@@ -226,6 +305,14 @@ def kv_block_hit_histogram(
             hist[">10"] += 1
         else:
             hist[str(h)] += 1
+    return hist
+
+
+def chunk_hash_lookup_histogram(mentions: Counter[str]) -> dict[str, int]:
+    """Histogram of unique chunk hashes by how often each appears in JSONL."""
+    hist = _empty_chunk_lookup_histogram()
+    for count in mentions.values():
+        hist[_chunk_lookup_tail_bucket(count)] += 1
     return hist
 
 
@@ -303,11 +390,19 @@ class ChunkHitSummary:
     orphan_stat_mentions: int
     kv_block_hit_histogram: dict[str, int]
     hit_mention_sum: int
+    chunk_lookup_histogram: dict[str, int] = field(
+        default_factory=_empty_chunk_lookup_histogram
+    )
+    chunk_hash_mention_sum: int = 0
+    unique_chunk_hashes: int = 0
     files_by_model: dict[str, int] = field(default_factory=dict)
     bytes_by_model: dict[str, int] = field(default_factory=dict)
     chunk_bytes_total: int = 0
     unrecognized_kv_files: int = 0
     filesystem: FsUsage | None = None
+    nixl_pool: NixlPoolInventory = field(
+        default_factory=lambda: NixlPoolInventory(0, 0)
+    )
 
 
 def collect_chunk_hit_summary(
@@ -321,18 +416,23 @@ def collect_chunk_hit_summary(
     stats_glob = str(stats_dir / "chunk_hashes_*.jsonl")
 
     inventory = _scan_kv_inventory(kv_dir)
+    nixl_pool = _scan_nixl_pool_inventory(kv_dir)
     disk = inventory.tag_to_path
     fs_usage = _filesystem_usage(kv_dir)
 
     disk_tags = set(disk)
-    hits: Counter[str] = Counter()
-    orphan_mentions = 0
-    lookup_rows = 0
+    jsonl_mentions, lookup_rows = _load_jsonl_hash_mentions(stats_glob)
     if disk_tags:
-        hits, orphan_mentions, lookup_rows = _load_hit_counts(stats_glob, disk_tags)
-    hist = kv_block_hit_histogram(hits, disk_tags) if disk_tags else {
-        str(i): 0 for i in range(11)
-    } | {">10": 0}
+        hits, orphan_mentions = _disk_hit_counts(jsonl_mentions, disk_tags)
+    else:
+        hits = Counter()
+        orphan_mentions = sum(jsonl_mentions.values())
+    hist = (
+        kv_block_hit_histogram(hits, disk_tags)
+        if disk_tags
+        else _empty_hit_bucket_histogram()
+    )
+    chunk_lookup_hist = chunk_hash_lookup_histogram(jsonl_mentions)
     hit_file_count = sum(1 for t in disk_tags if hits.get(t, 0) > 0)
 
     return ChunkHitSummary(
@@ -346,11 +446,15 @@ def collect_chunk_hit_summary(
         orphan_stat_mentions=orphan_mentions,
         kv_block_hit_histogram=hist,
         hit_mention_sum=sum(hits.values()),
+        chunk_lookup_histogram=chunk_lookup_hist,
+        chunk_hash_mention_sum=sum(jsonl_mentions.values()),
+        unique_chunk_hashes=len(jsonl_mentions),
         files_by_model=inventory.files_by_model,
         bytes_by_model=inventory.bytes_by_model,
         chunk_bytes_total=inventory.chunk_bytes_total,
         unrecognized_kv_files=inventory.unrecognized_files,
         filesystem=fs_usage,
+        nixl_pool=nixl_pool,
     )
 
 
@@ -654,6 +758,29 @@ def format_prometheus_textfile(
         [f"{_METRIC_PREFIX}_kv_chunk_bytes_total{labels} {summary.chunk_bytes_total}"],
     )
 
+    nixl = summary.nixl_pool
+    emit(
+        f"{_METRIC_PREFIX}_nixl_pool_present",
+        "1 when NIXL obj_*.bin pool files exist under the LMCache KV path.",
+        "gauge",
+        [
+            f"{_METRIC_PREFIX}_nixl_pool_present{labels} "
+            f"{1 if nixl.file_count > 0 else 0}"
+        ],
+    )
+    emit(
+        f"{_METRIC_PREFIX}_nixl_pool_files",
+        "Number of NIXL static pool files (obj_<slot>_<id>.bin).",
+        "gauge",
+        [f"{_METRIC_PREFIX}_nixl_pool_files{labels} {nixl.file_count}"],
+    )
+    emit(
+        f"{_METRIC_PREFIX}_nixl_pool_bytes_total",
+        "Total on-disk size of NIXL obj_*.bin pool files.",
+        "gauge",
+        [f"{_METRIC_PREFIX}_nixl_pool_bytes_total{labels} {nixl.bytes_total}"],
+    )
+
     if summary.filesystem is not None:
         fs = summary.filesystem
         fs_lbl = _label_set(
@@ -723,6 +850,77 @@ def format_prometheus_textfile(
         "Distribution of stat mentions per on-disk KV file.",
         "histogram",
         bucket_lines,
+    )
+
+    lookup_hist = summary.chunk_lookup_histogram
+    emit(
+        f"{_METRIC_PREFIX}_chunk_hashes_tracked",
+        "Distinct chunk hashes seen in chunk_hashes JSONL lookups.",
+        "gauge",
+        [
+            f"{_METRIC_PREFIX}_chunk_hashes_tracked{labels} "
+            f"{summary.unique_chunk_hashes}"
+        ],
+    )
+    emit(
+        f"{_METRIC_PREFIX}_chunk_hash_mention_sum",
+        "Total chunk hash mentions across all chunk_hashes JSONL rows.",
+        "gauge",
+        [
+            f"{_METRIC_PREFIX}_chunk_hash_mention_sum{labels} "
+            f"{summary.chunk_hash_mention_sum}"
+        ],
+    )
+    by_lookup_lines: list[str] = []
+    for bucket in _chunk_lookup_bucket_labels():
+        lbl = _label_set({**(extra_labels or {}), "lookup_count": bucket})
+        by_lookup_lines.append(
+            f"{_METRIC_PREFIX}_chunk_hashes_by_lookup_count{lbl} "
+            f"{lookup_hist.get(bucket, 0)}"
+        )
+    emit(
+        f"{_METRIC_PREFIX}_chunk_hashes_by_lookup_count",
+        "Distinct chunk hashes grouped by JSONL lookup mention count.",
+        "gauge",
+        by_lookup_lines,
+    )
+    lookup_bucket_lines: list[str] = []
+    lookup_cumulative = 0
+    for le in range(11):
+        lookup_cumulative += lookup_hist.get(str(le), 0)
+        le_lbl = _label_set({**(extra_labels or {}), "le": str(le)})
+        lookup_bucket_lines.append(
+            f"{_METRIC_PREFIX}_chunk_lookup_histogram_bucket{le_lbl} "
+            f"{lookup_cumulative}"
+        )
+    for le_boundary, tail_bucket in zip(
+        _CHUNK_LOOKUP_HISTOGRAM_LE, _CHUNK_LOOKUP_TAIL_BUCKETS[:-1], strict=True
+    ):
+        lookup_cumulative += lookup_hist.get(tail_bucket, 0)
+        le_lbl = _label_set({**(extra_labels or {}), "le": str(le_boundary)})
+        lookup_bucket_lines.append(
+            f"{_METRIC_PREFIX}_chunk_lookup_histogram_bucket{le_lbl} "
+            f"{lookup_cumulative}"
+        )
+    lookup_cumulative += lookup_hist.get(">100", 0)
+    lookup_inf_lbl = _label_set({**(extra_labels or {}), "le": "+Inf"})
+    lookup_bucket_lines.append(
+        f"{_METRIC_PREFIX}_chunk_lookup_histogram_bucket{lookup_inf_lbl} "
+        f"{lookup_cumulative}"
+    )
+    lookup_bucket_lines.append(
+        f"{_METRIC_PREFIX}_chunk_lookup_histogram_sum{hist_labels} "
+        f"{summary.chunk_hash_mention_sum}"
+    )
+    lookup_bucket_lines.append(
+        f"{_METRIC_PREFIX}_chunk_lookup_histogram_count{hist_labels} "
+        f"{summary.unique_chunk_hashes}"
+    )
+    emit(
+        f"{_METRIC_PREFIX}_chunk_lookup_histogram",
+        "Distribution of JSONL lookup mentions per distinct chunk hash.",
+        "histogram",
+        lookup_bucket_lines,
     )
 
     if include_host_metrics:
@@ -831,6 +1029,11 @@ def _print_inventory(summary: ChunkHitSummary) -> None:
         print("No .data chunk files found.")
     if summary.unrecognized_kv_files:
         print(f"Unrecognized .data filenames = {summary.unrecognized_kv_files}")
+    nixl = summary.nixl_pool
+    if nixl.file_count > 0:
+        print("\nNIXL static pool (obj_*.bin)")
+        print(f"  Files = {nixl.file_count}")
+        print(f"  Size  = {_format_bytes(nixl.bytes_total)}")
     if summary.filesystem is not None:
         fs = summary.filesystem
         print(f"\nFilesystem {fs.path}")
@@ -839,24 +1042,30 @@ def _print_inventory(summary: ChunkHitSummary) -> None:
         print(f"  Free  = {_format_bytes(fs.free_bytes)}")
 
 
-def _print_histogram(summary: ChunkHitSummary) -> None:
-    _print_inventory(summary)
-    hist = summary.kv_block_hit_histogram
+def _print_bucket_histogram(
+    *,
+    title: str,
+    hist: dict[str, int],
+    universe_label: str,
+    universe_count: int,
+    matched_label: str,
+    matched_count: int,
+    lookup_rows: int,
+    stats_files: int,
+    extra_note: str | None = None,
+) -> None:
     label_w = 12
     cnt_w = 10
-    print("\nHits per on-disk KV file (.data)")
-    print(f"Total on-disk files = {summary.disk_file_count}")
-    print(f"Files with >= 1 stat mention = {summary.hit_file_count}")
+    print(f"\n{title}")
+    print(f"{universe_label} = {universe_count}")
+    print(f"{matched_label} = {matched_count}")
     print(
-        f"Stat lookup rows read = {summary.lookup_rows} "
-        f"({summary.stats_files} jsonl file(s))"
+        f"Stat lookup rows read = {lookup_rows} "
+        f"({stats_files} jsonl file(s))"
     )
-    if summary.orphan_stat_mentions:
-        print(
-            f"Stat mentions for deleted/missing files = "
-            f"{summary.orphan_stat_mentions} (excluded from histogram)"
-        )
-    hdr = f"{'Hits':<{label_w}}{'Files':>{cnt_w}}"
+    if extra_note:
+        print(extra_note)
+    hdr = f"{'Mentions':<{label_w}}{'Count':>{cnt_w}}"
     print(hdr)
     print("-" * len(hdr))
 
@@ -868,7 +1077,7 @@ def _print_histogram(summary: ChunkHitSummary) -> None:
         c = hist.get(k, 0)
         if c <= 0:
             continue
-        row_label = "0 hits" if i == 0 else k
+        row_label = "0 mentions" if i == 0 else k
         interior.append((row_label, c, i))
     while len(interior) > _max_interior:
         interior.pop()
@@ -884,6 +1093,69 @@ def _print_histogram(summary: ChunkHitSummary) -> None:
         ov_sum = sum(hist.get(str(j), 0) for j in range(11)) + hist.get(">10", 0)
         tail_label = ">10"
     print(f"{tail_label:<{label_w}}{ov_sum:>{cnt_w}d}")
+
+
+def _print_chunk_lookup_histogram(summary: ChunkHitSummary) -> None:
+    hist = summary.chunk_lookup_histogram
+    label_w = 12
+    cnt_w = 10
+    print("\nChunk hash lookup frequency (chunk_hashes JSONL)")
+    print(f"Distinct chunk hashes = {summary.unique_chunk_hashes}")
+    print(f"Total hash mentions = {summary.chunk_hash_mention_sum}")
+    print(
+        f"Stat lookup rows read = {summary.lookup_rows} "
+        f"({summary.stats_files} jsonl file(s))"
+    )
+    if summary.disk_file_count == 0 and summary.nixl_pool.file_count > 0:
+        print(
+            "NIXL mode: lookup references per hash; not mapped to "
+            "obj_*.bin slots"
+        )
+    hdr = f"{'Mentions':<{label_w}}{'Count':>{cnt_w}}"
+    print(hdr)
+    print("-" * len(hdr))
+    rows: list[tuple[str, int]] = []
+    for i in range(11):
+        c = hist.get(str(i), 0)
+        if c <= 0:
+            continue
+        rows.append(("0 mentions" if i == 0 else str(i), c))
+    for bucket in _CHUNK_LOOKUP_TAIL_BUCKETS:
+        c = hist.get(bucket, 0)
+        if c <= 0:
+            continue
+        rows.append((bucket, c))
+    for row_label, c in rows:
+        print(f"{row_label:<{label_w}}{c:>{cnt_w}d}")
+
+
+def _print_histogram(summary: ChunkHitSummary) -> None:
+    _print_inventory(summary)
+    if summary.disk_file_count > 0:
+        extra = None
+        if summary.orphan_stat_mentions:
+            extra = (
+                f"Stat mentions for deleted/missing files = "
+                f"{summary.orphan_stat_mentions} (excluded from histogram)"
+            )
+        _print_bucket_histogram(
+            title="Hits per on-disk KV file (.data)",
+            hist=summary.kv_block_hit_histogram,
+            universe_label="Total on-disk files",
+            universe_count=summary.disk_file_count,
+            matched_label="Files with >= 1 stat mention",
+            matched_count=summary.hit_file_count,
+            lookup_rows=summary.lookup_rows,
+            stats_files=summary.stats_files,
+            extra_note=extra,
+        )
+    if summary.lookup_rows > 0 or summary.unique_chunk_hashes > 0:
+        _print_chunk_lookup_histogram(summary)
+    elif summary.disk_file_count == 0 and summary.nixl_pool.file_count > 0:
+        print(
+            "\nChunk hash lookup frequency (chunk_hashes JSONL)\n"
+            f"No chunk_hashes JSONL rows under {summary.stats_dir}."
+        )
 
 
 def _print_host_observability(snapshot: ExporterSnapshot) -> None:
@@ -919,12 +1191,10 @@ def _print_host_observability(snapshot: ExporterSnapshot) -> None:
 
 
 def _default_data_root(recipe_root: Path) -> Path:
-    host = os.environ.get("VLH_HOST_DATA_ROOT", "").strip()
-    if host:
-        return Path(host)
-    makefile_data = os.environ.get("DATA", "").strip()
-    if makefile_data:
-        return Path(makefile_data)
+    for key in ("VLH_HOST_DATA_ROOT", "RADEON_HOST_DATA_ROOT", "DATA"):
+        host = os.environ.get(key, "").strip()
+        if host:
+            return Path(host)
     return Path("/mnt/lmcache-nvme")
 
 
@@ -1053,10 +1323,10 @@ def main() -> int:
     )
     summary = snapshot.chunk
 
-    if summary.disk_file_count == 0:
+    if summary.disk_file_count == 0 and summary.nixl_pool.file_count == 0:
         print(
-            f"warning: no .data files under {summary.kv_dir}; "
-            "hit histogram empty",
+            f"warning: no .data or NIXL obj_*.bin files under {summary.kv_dir}; "
+            "storage inventory empty",
             file=sys.stderr,
         )
 
@@ -1127,9 +1397,16 @@ def main() -> int:
                     "orphan_stat_mentions": summary.orphan_stat_mentions,
                     "hit_mention_sum": summary.hit_mention_sum,
                     "kv_block_hit_histogram": summary.kv_block_hit_histogram,
+                    "chunk_lookup_histogram": summary.chunk_lookup_histogram,
+                    "chunk_hash_mention_sum": summary.chunk_hash_mention_sum,
+                    "unique_chunk_hashes": summary.unique_chunk_hashes,
                     "files_by_model": summary.files_by_model,
                     "bytes_by_model": summary.bytes_by_model,
                     "chunk_bytes_total": summary.chunk_bytes_total,
+                    "nixl_pool": {
+                        "file_count": summary.nixl_pool.file_count,
+                        "bytes_total": summary.nixl_pool.bytes_total,
+                    },
                     "filesystem": (
                         {
                             "path": str(summary.filesystem.path),
@@ -1183,14 +1460,19 @@ def main() -> int:
         if snapshot.host_metrics_collected:
             _print_host_observability(snapshot)
         if args.top > 0:
+            stats_glob = str(summary.stats_dir / "chunk_hashes_*.jsonl")
             disk = _scan_disk_kv_files(summary.kv_dir)
-            hits, _, _ = _load_hit_counts(
-                str(summary.stats_dir / "chunk_hashes_*.jsonl"),
-                set(disk),
-            )
-            print(f"\nTop {args.top} on-disk files by stat mentions")
-            for tag, count in hits.most_common(args.top):
-                print(f"  {count:8d}  {disk[tag].name}")
+            if disk:
+                hits, _, _ = _load_hit_counts(stats_glob, set(disk))
+                print(f"\nTop {args.top} on-disk files by stat mentions")
+                for tag, count in hits.most_common(args.top):
+                    print(f"  {count:8d}  {disk[tag].name}")
+            else:
+                mentions, _ = _load_jsonl_hash_mentions(stats_glob)
+                if mentions:
+                    print(f"\nTop {args.top} chunk hashes by JSONL lookup mentions")
+                    for h, count in mentions.most_common(args.top):
+                        print(f"  {count:8d}  {h}")
 
     return 0
 
