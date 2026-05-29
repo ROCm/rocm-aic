@@ -54,7 +54,7 @@ wait_for_condition() {
     local elapsed=0
 
     while ! eval "$condition_cmd" &> /dev/null; do
-        if [ $elapsed -ge $timeout ]; then
+        if [ "$elapsed" -ge "$timeout" ]; then
             log_error "Timeout waiting for condition: $condition_cmd"
             return 1
         fi

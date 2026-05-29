@@ -77,16 +77,14 @@ for dashboard_file in "${ROCM_AIC_DASHBOARDS_DIR}"/*.json; do
     log_info "Loading custom dashboard: ${dashboard_name}"
 
     # Create ConfigMap with dashboard JSON
-    kubectl create configmap "${configmap_name}" \
+    if kubectl create configmap "${configmap_name}" \
         --from-file="${dashboard_name}.json=${dashboard_file}" \
         --namespace="${NAMESPACE}" \
         --dry-run=client -o yaml | \
     kubectl label -f - \
         grafana_dashboard=1 \
         --local --dry-run=client -o yaml | \
-    kubectl apply -f -
-
-    if [ $? -eq 0 ]; then
+    kubectl apply -f -; then
         log_success "Custom dashboard ${dashboard_name} loaded"
     else
         log_error "Failed to load custom dashboard ${dashboard_name}"

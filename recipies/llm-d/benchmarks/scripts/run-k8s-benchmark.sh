@@ -278,7 +278,7 @@ EXIT_CODE=$(kubectl get pod "$POD_NAME" -n "$NAMESPACE" -o jsonpath='{.status.co
 
 if [ "$EXIT_CODE" != "0" ]; then
   echo "WARNING: Benchmark exited with code=$EXIT_CODE"
-  kubectl describe pod "$POD_NAME" -n "$NAMESPACE" > ${DESCRIBE_FILE}
+  kubectl describe pod "$POD_NAME" -n "$NAMESPACE" > "${DESCRIBE_FILE}"
 fi
 
 # Cleanup pod

@@ -17,7 +17,7 @@ if [ ! -f "$WORKLOAD_FILE" ]; then
 fi
 
 WORKLOAD_BASENAME=$(basename "$WORKLOAD_FILE")
-WORKLOAD_CONTENT=$(cat "$WORKLOAD_FILE" | sed 's/^/    /')
+WORKLOAD_CONTENT=$(sed 's/^/    /' "$WORKLOAD_FILE")
 
 cat << EOF
 apiVersion: v1
