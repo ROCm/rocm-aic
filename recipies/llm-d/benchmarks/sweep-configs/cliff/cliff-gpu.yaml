@@ -1,0 +1,78 @@
+name: "cliff-lmcache-gpu"
+description: "Cliff sweep using GPU backend"
+deployment: "tiered-prefix-cache-lmcache"
+deployment_template: "tiered-prefix-cache-lmcache-hipfile-kustomization.yaml.tmpl"
+
+env_vars:
+  # Remove HF-related settings for actual model loading
+  HF_HOME: "/root/hf_home_dummy"
+  HUGGINGFACE_HUB_CACHE: "/root/hf_hub_dummy"
+  HIPFILE_STATS_LEVEL: "0"
+  LMCACHE_INTERNAL_API_SERVER_ENABLED: "true"
+  LMCACHE_INTERNAL_API_SERVER_PORT_START: "6990"
+  MIOPEN_USER_DB_PATH: "/app/miopen"
+  MIOPEN_FIND_MODE: "FAST"
+  AMDGCN_USE_BUFFER_OPS: "0"
+  LMCACHE_LOG_LEVEL: "INFO"
+
+parameters:
+  image:
+    type: categorical
+    values:
+      - "ghcr.io/vcave/vllm:rocm_721-vllm_0190-lmcache_20260514_92fe433a"
+  model:
+    type: fixed
+    value: "openai/gpt-oss-120b"
+  replicas:
+    type: categorical
+    values: [1]
+  memory:
+    type: fixed
+    value: "1500Gi"
+  cpu:
+    type: fixed # 112 available
+    value: "100"
+
+  tensor_parallel_size:
+    type: categorical
+    values: [1]
+
+  vllm_args:
+    type: combinations
+    args:
+      load-format: "dummy" # Remove for actual model loading
+      disable_uvicorn_access_log: true
+      enable_prefix_caching: true
+      gpu_memory_utilization: 0.80
+
+  lmcache_args:
+    type: combinations
+    args:
+      chunk_size:
+        values: [256]
+      save_decode_cache: false
+      local_cpu: false
+      max_local_cpu_size:
+        values: [165] # makes for ~1.3TB footprint if we were running 8 replicas
+
+load_generation:
+  tool: "vllm-bench-serve"
+  image: "ghcr.io/vcave/vllm:rocm_721-vllm_0190-lmcache_20260514_92fe433a"
+  # Run benchmark twice: first run populates the cache, second run cache hits.
+  clone_run: true
+  benchmark_args:
+    type: combinations
+    combination_mode: pairwise
+    args:
+      dataset_name: random
+
+      random_input_len:
+        values: [20000,20000,20000,20000,20000,20000,20000,20000,20000,20000,20000,20000,20000,20000,20000,20000,20000,20000,20000,20000,20000]
+      random_output_len: 1
+      max_concurrency: 
+        values: [1,5,10,20,30,40,50,60,70,80,90,100,110,120,130,150,170,190,210,230,250]
+      num_prompts:
+        values: [10,25,20,20,30,40,50,60,70,80,90,100,110,120,130,150,170,190,210,230,250]
+      ignore_eos: true
+
+      # seed is auto-generated

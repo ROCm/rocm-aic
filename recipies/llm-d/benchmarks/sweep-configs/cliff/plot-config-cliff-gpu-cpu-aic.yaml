@@ -1,0 +1,106 @@
+# Multi-source comparison: GPU vs GPU+CPU vs GPU+AIC
+# Shows the cliff when each config cache gets exhausted
+
+sources:
+  # Source 1: LMCache offloading - GPU cache hit only
+  - name: lmcache_gpu
+    extraction:
+      input: ./results/cliff/lmcache_gpu_cpu_tp1_isl20k_cliff_mi300_gpt_oss_120b.json
+      fields:
+        conc: config._load_params.max_concurrency
+        tot_throughput: benchmark_run.metrics.total_token_throughput
+        run_label: benchmark_run.run_label
+      run_strategy: all
+    preparation:
+      # Filter to only run2 (run1 is cache warm-up)
+      filters:
+        - "run_label==run2"
+      transformations:
+        strategy: "'LMCache GPU'"
+
+  # Source 2: LMCache offloading - GPU+CPU cache hit only
+  - name: lmcache_cpu
+    extraction:
+      input: ./results/cliff/lmcache_gpu_cpu_tp1_isl20k_cliff_mi300_gpt_oss_120b.json
+      fields:
+        conc: config._load_params.max_concurrency
+        tot_throughput: benchmark_run.metrics.total_token_throughput
+        run_label: benchmark_run.run_label
+      run_strategy: all
+    preparation:
+      # Filter to only run2 (run1 is cache warm-up)
+      filters:
+        - "run_label==run2"
+      transformations:
+        strategy: "'LMCache GPU+CPU cache'"
+
+  # Source 4 LMCache offloading - GPU+NFS cache hit only
+  - name: lmcache_aic
+    extraction:
+      input: ./results/cliff/lmcache_gpu_aic_tp1_isl20k_cliff_mi300_gpt_oss_120b.json
+      fields:
+        conc: config._load_params.max_concurrency
+        tot_throughput: benchmark_run.metrics.total_token_throughput
+        run_label: benchmark_run.run_label
+      run_strategy: all
+    preparation:
+      # Filter to only run2 (run1 is cache warm-up)
+      filters:
+        - "run_label==run2"
+      transformations:
+        strategy: "'LMCache GPU+AIC cache'"
+
+# Global preparation
+merge_preparation:
+  sort_by: [strategy]
+
+export:
+  output: cliff_lmcache_gpu_cpu_aic.json
+  x: conc
+  y: tot_throughput
+
+  # Group by strategy
+  series_by: [strategy]
+  series_label_format: "{strategy}"
+
+  # Different markers per strategy
+  marker_by: strategy
+  series_markers:
+    "LMCache GPU": "o"
+    "LMCache GPU+CPU cache": "^"
+    "LMCache GPU+AIC cache": "s"
+
+  # Different colors per strategy
+  color_by: strategy
+  series_colors:
+    "LMCache GPU": "#1f77b4"           # Blue
+    "LMCache GPU+CPU cache": "#ff7f0e" # Orange
+    "LMCache GPU+AIC cache": "#8000FF" # Purple
+
+  axes:
+    x_scale: linear
+    y_scale: linear
+
+  style:
+    legend_outside: false
+    minor_grid: true
+    markersize: 8
+    linewidth: 2
+    show_value_labels: true
+    value_label_format: "{y:.0f}"
+    value_label_fontsize: 7
+    value_label_offset: [0, 8]
+
+  metadata:
+    title: "KV cache cliff\n MI300X - GPT OSS 120B - ISL=20K, OSL=1, TP=1"
+    x_label: "Number of clients"
+    y_label: "Total Token Throughput (tok/s)"
+    description: "Compare KV caching strategies"
+
+  figure:
+    width: 12
+    height: 7
+    dpi: 300
+
+plot:
+  output: cliff_lmcache_gpu_cpu_aic.png
