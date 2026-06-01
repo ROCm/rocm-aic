@@ -21,6 +21,9 @@ summary.csv
 report_meta.json
 *.png
 
+# Guttenberg benchmark config files
+benchmarks/llm-prefill-benchmark/configs/
+
 # Slurm logs
 .slurm/logs/*.log
 ttft-llamacpp-*.log

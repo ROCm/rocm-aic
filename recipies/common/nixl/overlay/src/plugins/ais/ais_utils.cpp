@@ -6,6 +6,21 @@
 
 #include "ais_utils.h"
 #include "common/nixl_log.h"
+#include <cstdlib>
+#include <cstring>
+#include <strings.h>
+
+namespace {
+bool aisCompatModeAllowed()
+{
+    const char *v = std::getenv("HIPFILE_ALLOW_COMPAT_MODE");
+    if (v == nullptr || v[0] == '\0') {
+        return false;
+    }
+    return std::strcmp(v, "1") == 0 || strcasecmp(v, "true") == 0
+        || strcasecmp(v, "yes") == 0;
+}
+} // namespace
 
 nixl_status_t aisUtil::registerFileHandle(int fd,
                                           size_t size,
@@ -41,7 +56,14 @@ nixl_status_t aisUtil::registerBufHandle(void *ptr,
 
     status = hipFileBufRegister(ptr, size, flags);
     if (status.err != hipFileSuccess) {
-        NIXL_WARN << "AIS: buffer registration failed - will use compat mode";
+        if (aisCompatModeAllowed()) {
+            NIXL_WARN << "AIS: buffer registration failed - will use compat mode: err="
+                      << status.err;
+            return NIXL_SUCCESS;
+        }
+        NIXL_ERROR << "AIS: hipFileBufRegister failed (err=" << status.err
+                   << "); set HIPFILE_ALLOW_COMPAT_MODE=true to allow fallback";
+        return NIXL_ERR_BACKEND;
     }
     return NIXL_SUCCESS;
 }
@@ -158,24 +180,47 @@ nixl_status_t nixlAisIOBatch::submitBatch(int flags)
 
 nixl_status_t nixlAisIOBatch::checkStatus()
 {
-    hipFileError_t errBatch;
-    unsigned int nr = batch_size;
+    if (batch_size == 0 || entries_completed >= (unsigned int)batch_size) {
+        current_status = NIXL_SUCCESS;
+        return current_status;
+    }
 
-    errBatch = hipFileBatchIOGetStatus(batch_handle, nr, &nr,
-                                      io_batch_events, NULL);
-    if (errBatch.err != 0) {
-        NIXL_ERROR << "AIS: error in IO batch get status";
-        current_status = NIXL_ERR_BACKEND;
+    unsigned int min_nr = 0;
+    unsigned int nr = batch_size - entries_completed;
+
+    hipFileError_t errBatch = hipFileBatchIOGetStatus(
+        batch_handle, min_nr, &nr, io_batch_events, nullptr);
+
+    for (unsigned int i = 0; i < nr; i++) {
+        const hipFileIOEvents_t &ev = io_batch_events[i];
+        if (ev.status & (hipFileFailed | hipFileInvalid | hipFileCanceled)) {
+            NIXL_ERROR << "AIS: batch IO entry failed status=" << ev.status
+                       << " ret=" << ev.ret;
+            current_status = NIXL_ERR_BACKEND;
+            return current_status;
+        }
     }
 
     entries_completed += nr;
-    if (entries_completed < (unsigned int)batch_size)
-        current_status = NIXL_IN_PROG;
-    else if (entries_completed > batch_size)
-        current_status = NIXL_ERR_UNKNOWN;
-    else
-        current_status = NIXL_SUCCESS;
 
+    if (entries_completed < (unsigned int)batch_size) {
+        current_status = NIXL_IN_PROG;
+        return current_status;
+    }
+
+    if (entries_completed > (unsigned int)batch_size) {
+        current_status = NIXL_ERR_UNKNOWN;
+        return current_status;
+    }
+
+    if (errBatch.err != 0) {
+        NIXL_ERROR << "AIS: batch get status err=" << errBatch.err
+                   << " after all entries completed";
+        current_status = NIXL_ERR_BACKEND;
+        return current_status;
+    }
+
+    current_status = NIXL_SUCCESS;
     return current_status;
 }
 

@@ -5,6 +5,7 @@
 
 REPO_ROOT := $(abspath $(CURDIR)/../..)
 BENCH_DIR := $(REPO_ROOT)/benchmarks/llm-prefill-benchmark
+include $(abspath $(CURDIR)/../common/nixl/defaults.mk)
 IMAGE_NAME ?= vllm-lmcache-nixl
 GPU ?= 0
 # **`docker run --name`** / **`--hostname`** (default **`$(IMAGE_NAME)-gpu$(GPU)`**, e.g. **vllm-lmcache-nixl-gpu0**).
@@ -20,6 +21,7 @@ TZ ?= America/Edmonton
 VLN_LMCACHE_IO ?= nixl-posix
 VLN_LMCACHE_LOG_LEVEL ?=
 VLN_NIXL_BUFFER_SIZE ?=
+VLN_NIXL_BUFFER_DEVICE ?=
 VLN_NIXL_POOL_SIZE ?=
 # NIXL opens one FD per pool slot at init; raise above VLN_NIXL_POOL_SIZE.
 VLN_DOCKER_NOFILE ?= 1048576
@@ -64,6 +66,9 @@ BUILD_ARGS += --build-arg HIPFILE_SHA=$(HIPFILE_SHA)
 endif
 ifneq ($(strip $(NIXL_REF)),)
 BUILD_ARGS += --build-arg NIXL_REF=$(NIXL_REF)
+endif
+ifneq ($(strip $(NIXL_SHA)),)
+BUILD_ARGS += --build-arg NIXL_SHA=$(NIXL_SHA)
 endif
 ifneq ($(strip $(NIXL_GIT_URL)),)
 BUILD_ARGS += --build-arg NIXL_GIT_URL=$(NIXL_GIT_URL)
@@ -171,6 +176,7 @@ _docker_run:
 		--env VLN_LMCACHE_IO="$(VLN_LMCACHE_IO)" \
 		--env VLN_LMCACHE_LOG_LEVEL="$(VLN_LMCACHE_LOG_LEVEL)" \
 		--env VLN_NIXL_BUFFER_SIZE="$(VLN_NIXL_BUFFER_SIZE)" \
+		$$(if [ -n "$(VLN_NIXL_BUFFER_DEVICE)" ]; then printf '%s' "--env VLN_NIXL_BUFFER_DEVICE=$(VLN_NIXL_BUFFER_DEVICE)"; fi) \
 		$$(if [ -n "$(VLN_NIXL_POOL_SIZE)" ]; then printf '%s' "--env VLN_NIXL_POOL_SIZE=$(VLN_NIXL_POOL_SIZE)"; fi) \
 		$$(if [ -n "$(VLN_MAX_MODEL_LEN)" ]; then printf '%s' "--env VLN_MAX_MODEL_LEN=$(VLN_MAX_MODEL_LEN)"; fi) \
 		$$(if [ -n "$(VLN_GPU_MEMORY_UTILIZATION)" ]; then printf '%s' "--env VLN_GPU_MEMORY_UTILIZATION=$(VLN_GPU_MEMORY_UTILIZATION)"; fi) \

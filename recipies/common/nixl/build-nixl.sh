@@ -3,11 +3,12 @@
 #
 # SPDX-License-Identifier: MIT
 #
-# Build NIXL from $NIXL_SRC for AMD ROCm (andyluo7/nixl amd-support + AIS overlay).
-# Meson: -Duse_rocm=/opt/rocm (path string on amd-support branch).
+# Build NIXL from $NIXL_SRC for AMD ROCm (andyluo7/nixl amd-support + overlays).
+# Meson: -Dwheel_variant=rocm -Drocm_path=/opt/rocm (see patch-rocm-meson.py).
 set -euo pipefail
 
 NIXL_SRC="${NIXL_SRC:-/tmp/nixl}"
+NIXL_REQUIRE_ROCM="${NIXL_REQUIRE_ROCM:-1}"
 UCX_PREFIX="${UCX_PREFIX:-/opt/rocnixl-ucx}"
 ROCM_PATH="${ROCM_PATH:-/opt/rocm}"
 AIS_PATH="${AIS_PATH:-${ROCM_PATH}}"
@@ -20,9 +21,22 @@ if [[ ! -f "${NIXL_SRC}/meson.build" ]]; then
 	exit 1
 fi
 
+if [[ "${NIXL_REQUIRE_ROCM}" == "1" ]]; then
+	if [[ ! -f "${NIXL_SRC}/meson_options.txt" ]] \
+		|| ! grep -q "option('wheel_variant'" "${NIXL_SRC}/meson_options.txt"; then
+		echo "ERROR: ${NIXL_SRC} is not an amd-support NIXL checkout (missing wheel_variant)." >&2
+		exit 1
+	fi
+fi
+
 if [[ "${NIXL_ENABLE_AIS}" == "1" ]]; then
 	chmod +x "${SCRIPT_DIR}/apply-ais-overlay.sh"
 	NIXL_SRC="${NIXL_SRC}" "${SCRIPT_DIR}/apply-ais-overlay.sh"
+	if [[ ! -f "${NIXL_SRC}/meson_options.txt" ]] \
+		|| ! grep -q "option('rocm_path'" "${NIXL_SRC}/meson_options.txt"; then
+		echo "ERROR: ROCm overlay did not add rocm_path to meson_options.txt" >&2
+		exit 1
+	fi
 fi
 
 export DEBIAN_FRONTEND=noninteractive
@@ -79,7 +93,8 @@ cd "${NIXL_SRC}"
 rm -rf build
 
 MESON_EXTRA=(
-	"-Duse_rocm=${ROCM_PATH}"
+	"-Dwheel_variant=rocm"
+	"-Drocm_path=${ROCM_PATH}"
 	"-Ducx_path=${UCX_PREFIX}"
 	"-Ddisable_gds_backend=true"
 	"--prefix=${NIXL_INSTALL_PREFIX}"

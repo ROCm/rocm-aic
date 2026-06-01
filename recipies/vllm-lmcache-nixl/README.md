@@ -5,7 +5,7 @@ SPDX-License-Identifier: MIT
 
 # vllm-lmcache-nixl
 
-ROCm **vLLM** + **LMCache** + **NIXL** (andyluo7/nixl `amd-support` + AIS/hipfile
+ROCm **vLLM** + **LMCache** + **NIXL** (andyluo7/nixl @ pinned `NIXL_SHA` + AIS/hipfile
 overlay). Uses LMCache **`enable_nixl_storage`** with **POSIX** (MVP) or **AIS**
 backends on AMD Instinct GPUs.
 
@@ -26,15 +26,64 @@ make -C recipies/vllm-lmcache-nixl run VLN_LMCACHE_IO=nixl-posix
 | Value | LMCache / NIXL backend |
 |-------|-------------------------|
 | `nixl-posix` (default) | NIXL POSIX on local NVMe |
-| `ais` | NIXL AIS + hipFile |
-| `ais_mt` | NIXL AIS_MT + hipFile |
+| `ais` | NIXL AIS + hipFile (VRAM staging buffer; see below) |
+| `ais_mt` | NIXL AIS_MT + hipFile (VRAM staging buffer) |
+
+## AIS / hipFile (non-compat)
+
+AIS mode uses a **GPU (VRAM) NIXL staging buffer** so `hipFileBufRegister`
+succeeds and transfers use the direct hipFile path. The template
+``configs/lmcache-nixl-ais.yml`` sets ``nixl_buffer_device: cuda`` (same idea as
+``HipFileMemoryAllocator`` in the hipfile recipe).
+
+```bash
+make -C recipies/vllm-lmcache-nixl run VLN_LMCACHE_IO=ais DATA=/mnt/lmcache-nvme/ GPU=0
+```
+
+``HIPFILE_ALLOW_COMPAT_MODE=false`` is set in ``vllm-server``; if buffer
+registration fails, NIXL AIS init **errors** instead of falling back to compat
+mode. Rebuild the image after overlay changes (``make build``).
+
+Override staging device or size:
+
+```bash
+VLN_NIXL_BUFFER_DEVICE=cuda VLN_NIXL_BUFFER_SIZE=512 make run VLN_LMCACHE_IO=ais
+```
+
+At startup you should see ``Backend AIS was instantiated`` **without** a flood
+of ``buffer registration failed - will use compat mode`` warnings. The default
+**512 MiB** VRAM staging buffer is reserved on GPU **in addition** to vLLM KV
+cache. On **16 GiB** GPUs, HIP OOM during warmup is common unless you tune:
+
+```bash
+VLN_LMCACHE_IO=ais \
+VLN_NIXL_BUFFER_SIZE=256 \
+VLN_GPU_MEMORY_UTILIZATION=0.85 \
+VLN_NIXL_POOL_SIZE=4096 \
+make -C recipies/vllm-lmcache-nixl run
+```
+
+Keep ``VLN_NIXL_POOL_SIZE`` in the low thousands unless ``VLN_DOCKER_NOFILE``
+is raised and you accept long AIS init (one FD per pool slot; your log used
+``262114``, which alone adds ~20 s startup).
+
+After a store, ``obj_*.bin`` slots should be **~4.5 MiB each** (Qwen2.5-3B
+align size), not 0 bytes:
+
+```bash
+find /mnt/lmcache-nvme/lmcache -name 'obj_*.bin' ! -empty | wc -l
+```
+
+0-byte slots after traffic means AIS writes did not land (often
+``O_DIRECT`` pool files not pre-sized); rebuild the image after overlay /
+LMCache patch updates.
 
 ## Build arguments
 
 | ARG | Default |
 |-----|---------|
 | `NIXL_GIT_URL` | `https://github.com/andyluo7/nixl.git` |
-| `NIXL_REF` | `amd-support` |
+| `NIXL_SHA` | `f72aad2…` (amd-support tip; see `../common/nixl/defaults.mk`) |
 | `HIPFILE_SHA` | same as hipfile recipe |
 | `LMCACHE_SHA` | pinned in Dockerfile |
 

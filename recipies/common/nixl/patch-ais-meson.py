@@ -17,7 +17,7 @@ if enabled_plugins.get('AIS')
         if disable_ais_backend
             error('AIS plugin requested but AIS backend is disabled')
         elif not use_rocm
-            error('AIS plugin requested but ROCm is not enabled (use_rocm empty)')
+            error('AIS plugin requested but ROCm is not enabled (rocm_path empty)')
         else
             error('AIS plugin requested but ROCm dependency not found')
         endif
@@ -31,7 +31,7 @@ if enabled_plugins.get('AIS_MT')
         if disable_ais_backend
             error('AIS_MT plugin requested but AIS backend is disabled')
         elif not use_rocm
-            error('AIS_MT plugin requested but ROCm is not enabled (use_rocm empty)')
+            error('AIS_MT plugin requested but ROCm is not enabled (rocm_path empty)')
         elif not cuda_dep.found()
             error('AIS_MT plugin requested but ROCm dependency not found')
         else

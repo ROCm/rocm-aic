@@ -26,6 +26,7 @@ MODEL ?= openai/gpt-oss-120b
 WORKERS ?= 4
 ITERATIONS ?= 1
 BASE_SEED ?= 42
+RUN_LONG_MAX_TOKENS ?= 512
 
 .PHONY: help data data-all run run-parallel
 
@@ -39,7 +40,8 @@ help:
 	@echo "  make run            serial run-long.sh (ITERATIONS=$(ITERATIONS))"
 	@echo "  make run-parallel   run-long-parallel.sh (WORKERS=$(WORKERS))"
 	@echo ""
-	@echo "Env: BASE_URL, MODEL, BOOK_DATA_ROOT, BOOK_SLUG, ITERATIONS, WORKERS"
+	@echo "Env: BASE_URL, MODEL, BOOK_DATA_ROOT, BOOK_SLUG, ITERATIONS, WORKERS,"
+	@echo "     RUN_LONG_MAX_TOKENS (default $(RUN_LONG_MAX_TOKENS))"
 
 data:
 	@set -e; \
@@ -70,9 +72,11 @@ data-all:
 
 run:
 	@BASE_URL="$(BASE_URL)" MODEL="$(MODEL)" BOOK_DATA_ROOT="$(BOOK_DATA_ROOT)" \
-		ITERATIONS="$(ITERATIONS)" bash "$(BENCH_ROOT)/run-long.sh"
+		ITERATIONS="$(ITERATIONS)" RUN_LONG_MAX_TOKENS="$(RUN_LONG_MAX_TOKENS)" \
+		bash "$(BENCH_ROOT)/run-long.sh"
 
 run-parallel:
 	@BASE_URL="$(BASE_URL)" MODEL="$(MODEL)" BOOK_DATA_ROOT="$(BOOK_DATA_ROOT)" \
 		WORKERS="$(WORKERS)" ITERATIONS="$(ITERATIONS)" BASE_SEED="$(BASE_SEED)" \
+		RUN_LONG_MAX_TOKENS="$(RUN_LONG_MAX_TOKENS)" \
 		bash "$(BENCH_ROOT)/run-long-parallel.sh" "$(WORKERS)"

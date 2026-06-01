@@ -22,6 +22,7 @@ for _flag in \
     VLN_BENCHMARK \
     VLN_LMCACHE_IO \
     VLN_NIXL_BUFFER_SIZE \
+    VLN_NIXL_BUFFER_DEVICE \
     VLN_NIXL_POOL_SIZE \
     HF_TOKEN \
     HF_TOKEN_FILE \
@@ -34,6 +35,7 @@ for _flag in \
     VLN_RUN_LONG_WORKERS \
     VLN_RUN_LONG_PARALLEL \
     VLN_RUN_LONG_BASE_SEED \
+    VLN_RUN_LONG_MAX_TOKENS \
     VLN_RUN_LONG_STAGGER_SEC \
     BASE_SEED \
     BOOK_SLUG \
@@ -51,7 +53,7 @@ for _flag in \
     VLN_NVME_DEVICE \
     ROCM_ARCH \
     NIXL_GIT_URL \
-    NIXL_REF; do
+    NIXL_SHA; do
     if [[ -n "${!_flag:-}" ]]; then
         _exports="${_exports},${_flag}=${!_flag}"
     fi

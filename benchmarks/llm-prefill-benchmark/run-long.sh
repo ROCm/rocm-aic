@@ -3,7 +3,8 @@
 # Random chunk + random question from one book or the whole library.
 # Env: BASE_URL, MODEL, BOOK_DATA_ROOT, BOOK_SLUG, BOOK_SLUGS, BOOK_SLUG_FILE,
 #      BOOK_DATA_DIR, QUESTIONS_FILE, CONTEXT_FILE, QUESTION, ITERATIONS,
-#      RUN_LONG_SEED, RUN_LONG_WORKER, RUN_LONG_COMBINE_CHUNKS.
+#      RUN_LONG_SEED, RUN_LONG_WORKER, RUN_LONG_COMBINE_CHUNKS,
+#      RUN_LONG_MAX_TOKENS.
 # Library mode (default): unset BOOK_SLUG; scans BOOK_DATA_ROOT/*/ for fixtures.
 # Subset library: BOOK_SLUGS=war-and-peace,pride-and-prejudice (or the same
 # comma-separated list in BOOK_SLUG with BOOK_SLUG unset for single-book), and/or
@@ -28,6 +29,7 @@ BOOK_DATA_ROOT="${BOOK_DATA_ROOT:-$(_default_book_data_root)}"
 ITERATIONS="${ITERATIONS:-1}"
 RUN_LONG_WORKER="${RUN_LONG_WORKER:-}"
 RUN_LONG_COMBINE_CHUNKS="${RUN_LONG_COMBINE_CHUNKS:-1}"
+RUN_LONG_MAX_TOKENS="${RUN_LONG_MAX_TOKENS:-512}"
 
 if ! [[ "${ITERATIONS}" =~ ^[1-9][0-9]*$ ]]; then
   echo "error: ITERATIONS must be a positive integer (got ${ITERATIONS})" >&2
@@ -36,6 +38,11 @@ fi
 
 if ! [[ "${RUN_LONG_COMBINE_CHUNKS}" =~ ^[1-9][0-9]*$ ]]; then
   echo "error: RUN_LONG_COMBINE_CHUNKS must be a positive integer (got ${RUN_LONG_COMBINE_CHUNKS})" >&2
+  exit 1
+fi
+
+if ! [[ "${RUN_LONG_MAX_TOKENS}" =~ ^[1-9][0-9]*$ ]]; then
+  echo "error: RUN_LONG_MAX_TOKENS must be a positive integer (got ${RUN_LONG_MAX_TOKENS})" >&2
   exit 1
 fi
 
@@ -305,6 +312,8 @@ build_combined_context() {
   done
 }
 
+echo "run-long: max_tokens=${RUN_LONG_MAX_TOKENS}" >&2
+
 for ((i = 1; i <= ITERATIONS; i++)); do
   echo "run-long: iteration=${i}/${ITERATIONS}${_worker_log}${_seed_log}" >&2
 
@@ -384,13 +393,14 @@ for ((i = 1; i <= ITERATIONS; i++)); do
     --arg model "$MODEL" \
     --arg question "$qtext" \
     --rawfile context "$ctxt" \
+    --argjson max_tokens "${RUN_LONG_MAX_TOKENS}" \
     '{
       model: $model,
       messages: [
         { role: "system", content: "Answer using only the provided context." },
         { role: "user", content: ("Context:\n\n" + $context + "\n\nQuestion: " + $question) }
       ],
-      max_tokens: 512,
+      max_tokens: $max_tokens,
       temperature: 0.2
     }' >"${payload_file}"
 

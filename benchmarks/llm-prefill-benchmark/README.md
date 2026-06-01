@@ -46,7 +46,19 @@ make run-parallel WORKERS=4 ITERATIONS=10
 | `BOOK_SLUG` | unset | Single-book mode when set |
 | `ITERATIONS` | `1` | Requests per worker |
 | `RUN_LONG_SEED` | random | Reproducible chunk/question selection |
+| `RUN_LONG_MAX_TOKENS` | `512` | Max completion tokens per chat request |
+| `BOOK_SLUG_FILE` | unset | Path to one slug per line (library subset) |
 | `LLM_PREFILL_BENCH_ROOT` | auto | Override benchmark tree (Slurm sets this) |
+
+Set a longer decode cap before `make run` or `make run-parallel`:
+
+```bash
+export RUN_LONG_MAX_TOKENS=2048
+make -C benchmarks/llm-prefill-benchmark run-parallel WORKERS=12 ITERATIONS=100
+```
+
+Ensure `prompt_tokens + RUN_LONG_MAX_TOKENS` stays within the server's
+`max_model_len`.
 
 ## Slurm
 

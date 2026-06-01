@@ -32,7 +32,8 @@ echo "NIXL_SRC=${NIXL_SRC}"
 
 export NIXL_DEST="${NIXL_SRC}"
 export NIXL_GIT_URL="${NIXL_GIT_URL:-https://github.com/andyluo7/nixl.git}"
-export NIXL_REF="${NIXL_REF:-amd-support}"
+export NIXL_SHA="${NIXL_SHA:-f72aad2cf4da0dff5d710dfcaa8666defa114d78}"
+export NIXL_REQUIRE_ROCM=1
 
 "${NIXL_COMMON}/clone-nixl.sh"
 

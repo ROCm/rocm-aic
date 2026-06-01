@@ -15,7 +15,7 @@ ARG LMCACHE_CACHE_SALT_PATCH=lmcache-pr-3008-cache-salt.patch
 ARG LMCACHE_NIXL_AIS_PATCH=lmcache-nixl-ais-backend.patch
 ARG HIPFILE_SHA=adc1a2d2f8e886e93c5e55e674dbff6e05db2dbe
 ARG NIXL_GIT_URL=https://github.com/andyluo7/nixl.git
-ARG NIXL_REF=amd-support
+ARG NIXL_SHA=f72aad2cf4da0dff5d710dfcaa8666defa114d78
 ARG NIXL_ENABLE_AIS=1
 
 RUN apt-get clean && rm -rf /var/lib/apt/lists/* && \
@@ -90,8 +90,8 @@ RUN git clone --no-checkout --filter=blob:none \
 
 COPY recipies/common/nixl /tmp/nixl-common
 RUN chmod +x /tmp/nixl-common/*.sh /tmp/nixl-common/apply-ais-overlay.sh && \
-    NIXL_GIT_URL="${NIXL_GIT_URL}" NIXL_REF="${NIXL_REF}" NIXL_DEST=/tmp/nixl \
-        /tmp/nixl-common/clone-nixl.sh && \
+    NIXL_GIT_URL="${NIXL_GIT_URL}" NIXL_SHA="${NIXL_SHA}" NIXL_REQUIRE_ROCM=1 \
+        NIXL_DEST=/tmp/nixl /tmp/nixl-common/clone-nixl.sh && \
     NIXL_SRC=/tmp/nixl NIXL_ENABLE_AIS="${NIXL_ENABLE_AIS}" \
         AIS_PATH=/opt/rocm ROCM_PATH=/opt/rocm \
         NIXL_INSTALL_PREFIX=/opt/nixl \

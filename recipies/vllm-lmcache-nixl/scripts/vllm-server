@@ -204,6 +204,16 @@ def _materialize_lmcache_config(svc: dict[str, Any], data_root: Path) -> Path | 
                 file=sys.stderr,
             )
 
+    buf_dev = os.environ.get("VLN_NIXL_BUFFER_DEVICE", "").strip()
+    if buf_dev:
+        if mode in ("ais", "ais_mt", "ais-mt", "hipfile", "hip") and buf_dev == "cpu":
+            print(
+                "WARN: VLN_NIXL_BUFFER_DEVICE=cpu with AIS hipFile may fall back to "
+                "compat mode; use cuda (default in lmcache-nixl-ais.yml)",
+                file=sys.stderr,
+            )
+        cfg["nixl_buffer_device"] = buf_dev
+
     pool_size = os.environ.get("VLN_NIXL_POOL_SIZE", "").strip()
     if pool_size:
         try:
@@ -214,6 +224,31 @@ def _materialize_lmcache_config(svc: dict[str, Any], data_root: Path) -> Path | 
                 file=sys.stderr,
             )
     cfg["extra_config"] = extra
+
+    if mode in ("ais", "ais_mt", "ais-mt", "hipfile", "hip"):
+        buf_bytes = cfg.get("nixl_buffer_size")
+        buf_dev_effective = cfg.get("nixl_buffer_device", "cpu")
+        if isinstance(buf_bytes, int) and buf_dev_effective == "cuda":
+            buf_mib = buf_bytes // (1024 * 1024)
+            pool = extra.get("nixl_pool_size")
+            print(
+                f"vllm-lmcache-nixl AIS: nixl_buffer_device=cuda "
+                f"nixl_buffer_size={buf_mib} MiB nixl_pool_size={pool!r} "
+                f"(VRAM + ~{pool} NVMe fds at init)",
+                file=sys.stderr,
+            )
+            if buf_mib >= 1024:
+                print(
+                    "WARN: AIS VRAM buffer >= 1024 MiB can OOM on 16 GiB GPUs; "
+                    "try VLN_NIXL_BUFFER_SIZE=512 VLN_GPU_MEMORY_UTILIZATION=0.85",
+                    file=sys.stderr,
+                )
+            if isinstance(pool, int) and pool > 65536:
+                print(
+                    f"WARN: nixl_pool_size={pool} opens one FD per slot at init; "
+                    "expect long startup and ensure VLN_DOCKER_NOFILE is high enough",
+                    file=sys.stderr,
+                )
 
     prior_json = os.environ.get("LMCACHE_EXTRA_CONFIG", "").strip()
     if prior_json:
@@ -385,6 +420,7 @@ def main() -> int:
             "--block-size",
             str(int(vcfg["block_size"])),
             "--enable-prefix-caching",
+            "--kv-cache-dtype=fp8",
             "--stream-interval",
             str(int(vcfg["stream_interval"])),
             "--max-num-batched-tokens",

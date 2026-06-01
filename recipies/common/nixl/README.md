@@ -3,7 +3,7 @@ Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
 SPDX-License-Identifier: MIT
 -->
 
-# NIXL build (ROCm amd-support + AIS overlay)
+# NIXL build (ROCm @ pinned SHA + AIS overlay)
 
 Shared clone/build scripts for [vllm-lmcache-nixl](../vllm-lmcache-nixl) and
 [rocm-inference-stack](../rocm-inference-stack).
@@ -13,8 +13,8 @@ Shared clone/build scripts for [vllm-lmcache-nixl](../vllm-lmcache-nixl) and
 | Variable | Default |
 |----------|---------|
 | `NIXL_GIT_URL` | `https://github.com/andyluo7/nixl.git` |
-| `NIXL_REF` | `amd-support` |
-| `NIXL_AMD_SUPPORT_SHA` | pinned in `defaults.mk` |
+| `NIXL_REF` | `amd-support` (branch; optional if `NIXL_SHA` set) |
+| `NIXL_SHA` | pinned in `defaults.mk` (`f72aad2…`, amd-support tip) |
 
 AIS and AIS_MT plugins are copied from `overlay/` at build time
 (`apply-ais-overlay.sh` + `patch-ais-meson.py`).
@@ -23,7 +23,8 @@ AIS and AIS_MT plugins are copied from `overlay/` at build time
 
 ```bash
 meson setup build \
-  -Duse_rocm=/opt/rocm \
+  -Dwheel_variant=rocm \
+  -Drocm_path=/opt/rocm \
   -Ducx_path=/opt/rocnixl-ucx \
   -Ddisable_gds_backend=true \
   -Dais_path=/opt/rocm \
@@ -44,7 +45,7 @@ ninja -C build install
 
 ```bash
 export NIXL_GIT_URL=https://github.com/andyluo7/nixl.git
-export NIXL_REF=amd-support
+export NIXL_SHA=f72aad2cf4da0dff5d710dfcaa8666defa114d78
 ./clone-nixl.sh
 NIXL_SRC=/tmp/nixl ./build-nixl.sh
 ```

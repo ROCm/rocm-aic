@@ -5,8 +5,23 @@
  */
 
 #include <stdexcept>
+#include <cstdlib>
+#include <cstring>
+#include <strings.h>
 #include "common/nixl_log.h"
 #include "ais_mt_utils.h"
+
+namespace {
+bool aisMtCompatModeAllowed()
+{
+    const char *v = std::getenv("HIPFILE_ALLOW_COMPAT_MODE");
+    if (v == nullptr || v[0] == '\0') {
+        return false;
+    }
+    return std::strcmp(v, "1") == 0 || strcasecmp(v, "true") == 0
+        || strcasecmp(v, "yes") == 0;
+}
+} // namespace
 
 aisMtUtil::aisMtUtil() {
     const hipFileError_t status = hipFileDriverOpen();
@@ -23,11 +38,16 @@ aisMtUtil::~aisMtUtil() {
 aisMtMemBuf::aisMtMemBuf (void *ptr, size_t sz, int flags) : base_ (ptr) {
     const hipFileError_t status = hipFileBufRegister (ptr, sz, flags);
     if (status.err != hipFileSuccess) {
-        NIXL_WARN << "AIS_MT: warning: buffer registration failed - will use compat mode: error="
-                  << status.err;
-    } else {
-        registered_ = true;
+        if (aisMtCompatModeAllowed()) {
+            NIXL_WARN << "AIS_MT: buffer registration failed - compat mode: err="
+                      << status.err;
+            return;
+        }
+        throw std::runtime_error(
+            "AIS_MT: hipFileBufRegister failed (err=" + std::to_string(status.err)
+            + "); set HIPFILE_ALLOW_COMPAT_MODE=true to allow fallback");
     }
+    registered_ = true;
 }
 
 aisMtMemBuf::~aisMtMemBuf() {
