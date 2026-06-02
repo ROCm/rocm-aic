@@ -10,5 +10,5 @@
 if [[ -z "${REPO_DIR:-}" ]]; then
 	REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 fi
-# shellcheck source=../../../recipies/common/slurm/lib/recipe-common.sh
+# shellcheck source=/dev/null
 source "${REPO_DIR}/recipies/common/slurm/lib/recipe-common.sh"

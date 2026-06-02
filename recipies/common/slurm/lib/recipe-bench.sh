@@ -18,5 +18,7 @@ _recipe_llm_prefill_bench_root() {
 }
 
 _recipe_export_bench_root() {
-	export LLM_PREFILL_BENCH_ROOT="$(_recipe_llm_prefill_bench_root)"
+	local _bench_root
+	_bench_root="$(_recipe_llm_prefill_bench_root)"
+	export LLM_PREFILL_BENCH_ROOT="${_bench_root}"
 }

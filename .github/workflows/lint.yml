@@ -15,8 +15,10 @@ jobs:
         run: sudo apt-get install -y shellcheck
       - name: Run shellcheck
         run: |
-          find . -name '*.sh' -not -path './.git/*' \
-            -print0 | xargs -0 shellcheck
+          find . -name '*.sh' \
+            -not -path './.git/*' \
+            -not -path './.venv/*' \
+            -print0 | xargs -0 -I{} shellcheck -x {}
 
   hadolint:
     name: Hadolint

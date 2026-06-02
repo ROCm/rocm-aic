@@ -9,7 +9,7 @@
 if [[ -z "${REPO_DIR:-}" ]]; then
 	REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../../.." && pwd)"
 fi
-# shellcheck source=recipe-bench.sh
+# shellcheck source=/dev/null
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/recipe-bench.sh"
 _recipe_export_bench_root
 
@@ -103,6 +103,7 @@ _vlh_metadata_append() {
 }
 
 _vlh_metadata_init() {
+    : "${REPORT_DIR:?REPORT_DIR must be set before _vlh_metadata_init}"
     METADATA_FILE="${REPORT_DIR}/metadata.txt"
     : > "${METADATA_FILE}"
     _vlh_metadata_append "hostname" "$(hostname -f 2>/dev/null || hostname)"

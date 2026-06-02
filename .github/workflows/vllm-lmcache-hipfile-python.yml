@@ -50,8 +50,8 @@ jobs:
         run: |
           set -euo pipefail
           prom="${RUNNER_TEMP}/rocm_aic_exporter.prom"
-          python3 ../../common/scripts/rocm-aic-exporter.py \
-            --data-root ../../common/tests/fixtures/lmcache-exporter \
+          python3 ../common/scripts/rocm-aic-exporter.py \
+            --data-root ../common/tests/fixtures/lmcache-exporter \
             --prometheus-textfile "${prom}" \
             --textfile-only \
             --skip-nfsiostat-invoke \
@@ -67,8 +67,8 @@ jobs:
           grep -q 'rocm_aic_nfsiostat_present' "${prom}"
           grep -q 'rocm_aic_hipconfig_present' "${prom}"
           prom_nixl="${RUNNER_TEMP}/rocm_aic_exporter_nixl.prom"
-          python3 ../../common/scripts/rocm-aic-exporter.py \
-            --data-root ../../common/tests/fixtures/lmcache-exporter-nixl \
+          python3 ../common/scripts/rocm-aic-exporter.py \
+            --data-root ../common/tests/fixtures/lmcache-exporter-nixl \
             --prometheus-textfile "${prom_nixl}" \
             --textfile-only \
             --skip-nfsiostat-invoke \
@@ -90,12 +90,12 @@ jobs:
           python3 -c "
           from importlib.machinery import SourceFileLoader
           from pathlib import Path
-          m = SourceFileLoader('ex', '../../common/scripts/rocm-aic-exporter.py').load_module()
+          m = SourceFileLoader('ex', '../common/scripts/rocm-aic-exporter.py').load_module()
           mounts = m._parse_mountstats_nfs(
-              Path('../../common/tests/fixtures/mountstats-nfs.sample'))
+              Path('../common/tests/fixtures/mountstats-nfs.sample'))
           assert len(mounts) == 1 and mounts[0].rx_bytes == 9100
           snap = m.collect_exporter_snapshot(
-              data_root=Path('../../common/tests/fixtures/lmcache-exporter'),
+              data_root=Path('../common/tests/fixtures/lmcache-exporter'),
               include_host_metrics=False,
               run_nfsiostat=False,
               collect_hip=False,
@@ -104,7 +104,7 @@ jobs:
               snap, include_host_metrics=False)
           assert 'rocm_aic_nfsiostat_present' not in body_kv
           snap_h = m.collect_exporter_snapshot(
-              data_root=Path('../../common/tests/fixtures/lmcache-exporter'),
+              data_root=Path('../common/tests/fixtures/lmcache-exporter'),
               include_host_metrics=True,
               run_nfsiostat=False,
               collect_hip=False,
@@ -112,7 +112,7 @@ jobs:
           body_all = m.format_prometheus_textfile(
               snap_h, include_host_metrics=True)
           assert 'rocm_aic_nfsiostat_present' in body_all
-          sample_text = Path('../../common/tests/fixtures/kfd-ais-bpftrace.sample').read_text()
+          sample_text = Path('../common/tests/fixtures/kfd-ais-bpftrace.sample').read_text()
           samples = m.parse_kfd_ais_bpftrace_lines(sample_text)
           assert len(samples) == 5
           kfd = m.summarize_kfd_ais_samples(
@@ -144,8 +144,8 @@ jobs:
         run: |
           set -euo pipefail
           csv="${RUNNER_TEMP}/engine_timeseries.csv"
-          python3 ../../common/scripts/parse-vllm-engine-log-timeseries.py \
-            ../../common/tests/fixtures/engine-log-sample.txt \
+          python3 ../common/scripts/parse-vllm-engine-log-timeseries.py \
+            ../common/tests/fixtures/engine-log-sample.txt \
             --engine 0 \
             --year 2026 \
             --csv "${csv}" \
