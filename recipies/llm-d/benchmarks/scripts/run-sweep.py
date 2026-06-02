@@ -32,6 +32,7 @@ from health_monitor import (
     DeploymentHealthCheckFailure,
     FailureInfo
 )
+from failure_patterns import is_whitelisted
 from namespace_snapshot import NamespaceSnapshot
 from sweep_state import RunState, RunStatus, write_state_file
 from generate_summary import generate_summary_from_states, write_summary_file
@@ -1806,9 +1807,7 @@ class SweepOrchestrator:
                 if log_result.returncode == 0:
                     error_lines = [
                         line.strip() for line in log_result.stdout.split('\n')
-                        if 'ERROR' in line
-                        and 'Error retrieving safetensors' not in line
-                        and 'Could not cache non-existence' not in line
+                        if 'ERROR' in line and not is_whitelisted(line)
                     ]
 
                     if error_lines:

@@ -553,10 +553,11 @@ class CentralizedHealthMonitor:
         """Scan logs for error patterns.
 
         Returns FailureInfo if critical patterns detected.
+        Whitelisted patterns are checked and skipped if they match non-fatal errors.
         """
         try:
             # Check for critical patterns (from failure_patterns.py will be imported)
-            from failure_patterns import ERROR_PATTERNS
+            from failure_patterns import ERROR_PATTERNS, is_whitelisted
 
             for pattern_info in ERROR_PATTERNS:
                 pattern = pattern_info['pattern']
@@ -567,6 +568,13 @@ class CentralizedHealthMonitor:
                 if match:
                     # Extract context around the match
                     context = self._extract_log_context(logs, match.start(), context_lines=5)
+
+                    # Check if this matched content is whitelisted (non-fatal)
+                    # We check both the matched text and the surrounding context
+                    matched_text = match.group(0)
+                    if is_whitelisted(matched_text) or is_whitelisted(context):
+                        # Skip this pattern match as it's whitelisted
+                        continue
 
                     return FailureInfo(
                         category=category,
