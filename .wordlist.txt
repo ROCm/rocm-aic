@@ -319,6 +319,7 @@ ConfigMaps
 grafana
 drilldown
 EPP
+EngineCore
 customizations
 HTTPRoute
 modelservice

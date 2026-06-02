@@ -12,8 +12,9 @@ frequency** histograms from ``chunk_hashes_*.jsonl`` (always parsed; NIXL
 mode uses JSONL-only lookup metrics when no ``.data`` files exist), NFS client
 byte totals per mount (via
 ``nfsiostat`` + ``/proc/self/mountstats``), ROCm/HIP version from
-``hipconfig``, and optional KFD AIS kernel I/O samples from bpftrace
-(``kfd_ais_rw_file`` kprobe; see ``kfd_ais_rw.bt``).
+``hipconfig``, optional KFD AIS kernel I/O samples from bpftrace
+(``kfd_ais_rw_file`` kprobe; see ``kfd_ais_rw.bt``), and optional hipFile
+``ais-stats`` totals from a vLLM container via ``docker exec``.
 
 Use ``--prometheus-textfile`` to write metrics for the node_exporter
 textfile collector (same pattern as ``rocm_icms_stack_versions.prom``).
@@ -26,6 +27,7 @@ import glob
 import json
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -66,6 +68,11 @@ _KFD_AIS_LATENCY_HIST_BUCKETS_US: tuple[int, ...] = (
     12500,
     15000,
     20000,
+)
+_AIS_STATS_LEVEL_RE = re.compile(r"^HipFile Stats Level:\s*(\d+)\s*$")
+_AIS_STATS_VALUE_RE = re.compile(
+    r"^(Total|Average) (Fastpath|Fallback) (Read|Write) "
+    r"(Size \(B\)|Errors|Bandwidth \(GiB/s\)|Latency \(us\)):\s*([0-9.]+)\s*$"
 )
 
 
@@ -419,11 +426,38 @@ class KfdAisStats:
 
 
 @dataclass(frozen=True)
+class AisHipfilePathStats:
+    """One hipFile path class (fastpath or fallback) and direction from ais-stats."""
+
+    bytes_total: int = 0
+    bandwidth_gibps: float = 0.0
+    latency_us: float = 0.0
+    errors_total: int = 0
+
+
+@dataclass(frozen=True)
+class AisHipfileStats:
+    """hipFile ``ais-stats`` totals scraped from a vLLM container."""
+
+    configured: bool
+    skipped: bool
+    docker_present: bool
+    container: str = ""
+    collect_error: str | None = None
+    stats_level: int = 0
+    fastpath_read: AisHipfilePathStats = field(default_factory=AisHipfilePathStats)
+    fastpath_write: AisHipfilePathStats = field(default_factory=AisHipfilePathStats)
+    fallback_read: AisHipfilePathStats = field(default_factory=AisHipfilePathStats)
+    fallback_write: AisHipfilePathStats = field(default_factory=AisHipfilePathStats)
+
+
+@dataclass(frozen=True)
 class ExporterSnapshot:
     chunk: ChunkHitSummary
     nfs: NfsIoStats
     hip: HipconfigStats
     kfd_ais: KfdAisStats
+    ais_hipfile: AisHipfileStats
     host_metrics_collected: bool = False
 
 
@@ -470,6 +504,163 @@ def _skipped_kfd_ais_stats() -> KfdAisStats:
         sample_seconds=0.0,
         skipped=True,
         bpftrace_error="skipped",
+    )
+
+
+def _docker_path() -> str | None:
+    return shutil.which("docker")
+
+
+def _empty_ais_hipfile_stats(*, configured: bool = False) -> AisHipfileStats:
+    return AisHipfileStats(
+        configured=configured,
+        skipped=False,
+        docker_present=_docker_path() is not None,
+    )
+
+
+def _skipped_ais_hipfile_stats() -> AisHipfileStats:
+    return AisHipfileStats(
+        configured=False,
+        skipped=True,
+        docker_present=_docker_path() is not None,
+        collect_error="skipped",
+    )
+
+
+@dataclass
+class _AisHipfilePathBuilder:
+    bytes_total: int = 0
+    bandwidth_gibps: float = 0.0
+    latency_us: float = 0.0
+    errors_total: int = 0
+
+
+def _ais_path_stats_from_builder(builder: _AisHipfilePathBuilder) -> AisHipfilePathStats:
+    return AisHipfilePathStats(
+        bytes_total=builder.bytes_total,
+        bandwidth_gibps=builder.bandwidth_gibps,
+        latency_us=builder.latency_us,
+        errors_total=builder.errors_total,
+    )
+
+
+def parse_ais_stats_output(text: str) -> AisHipfileStats:
+    """Parse ``ais-stats -i`` stdout into structured hipFile counters."""
+    builders: dict[tuple[str, str], _AisHipfilePathBuilder] = {}
+    stats_level = 0
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line:
+            continue
+        level_match = _AIS_STATS_LEVEL_RE.match(line)
+        if level_match:
+            stats_level = int(level_match.group(1))
+            continue
+        value_match = _AIS_STATS_VALUE_RE.match(line)
+        if not value_match:
+            continue
+        kind, backend, direction, field_name, value_str = value_match.groups()
+        key = (backend.lower(), direction.lower())
+        builder = builders.setdefault(key, _AisHipfilePathBuilder())
+        if kind == "Total" and field_name == "Size (B)":
+            builder.bytes_total = int(float(value_str))
+        elif kind == "Total" and field_name == "Errors":
+            builder.errors_total = int(float(value_str))
+        elif kind == "Average" and field_name == "Bandwidth (GiB/s)":
+            builder.bandwidth_gibps = float(value_str)
+        elif kind == "Average" and field_name == "Latency (us)":
+            builder.latency_us = float(value_str)
+
+    def path_stats(backend: str, direction: str) -> AisHipfilePathStats:
+        builder = builders.get((backend, direction))
+        if builder is None:
+            return AisHipfilePathStats()
+        return _ais_path_stats_from_builder(builder)
+
+    return AisHipfileStats(
+        configured=True,
+        skipped=False,
+        docker_present=True,
+        stats_level=stats_level,
+        fastpath_read=path_stats("fastpath", "read"),
+        fastpath_write=path_stats("fastpath", "write"),
+        fallback_read=path_stats("fallback", "read"),
+        fallback_write=path_stats("fallback", "write"),
+    )
+
+
+def collect_ais_hipfile_stats_from_container(
+    *,
+    container: str,
+    docker_bin: str | None = None,
+    engine_match: str = "VLLM::EngineCor",
+    ais_stats_cmd: str = "ais-stats",
+    timeout_seconds: float = 15.0,
+) -> AisHipfileStats:
+    """Run ``ais-stats -i`` inside ``container`` via ``docker exec``."""
+    name = container.strip()
+    if not name:
+        return _empty_ais_hipfile_stats()
+
+    docker = docker_bin or _docker_path()
+    if not docker:
+        return AisHipfileStats(
+            configured=True,
+            skipped=False,
+            docker_present=False,
+            container=name,
+            collect_error="docker not found in PATH",
+        )
+
+    inner = (
+        f"{ais_stats_cmd} -p $(pgrep -f {shlex.quote(engine_match)} | head -1) -i"
+    )
+    cmd = [docker, "exec", name, "bash", "-lc", inner]
+    try:
+        proc = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=timeout_seconds,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return AisHipfileStats(
+            configured=True,
+            skipped=False,
+            docker_present=True,
+            container=name,
+            collect_error=str(exc),
+        )
+
+    combined = (proc.stdout or "") + "\n" + (proc.stderr or "")
+    parsed = parse_ais_stats_output(combined)
+    collect_error: str | None = None
+    if proc.returncode != 0:
+        err_text = (proc.stderr or proc.stdout or "").strip()
+        collect_error = err_text or f"docker exec exited {proc.returncode}"
+    elif "HipFile Stats Level" not in combined:
+        collect_error = "ais-stats output did not contain HipFile Stats Level"
+        return AisHipfileStats(
+            configured=True,
+            skipped=False,
+            docker_present=True,
+            container=name,
+            collect_error=collect_error,
+        )
+
+    return AisHipfileStats(
+        configured=True,
+        skipped=False,
+        docker_present=True,
+        container=name,
+        collect_error=collect_error,
+        stats_level=parsed.stats_level,
+        fastpath_read=parsed.fastpath_read,
+        fastpath_write=parsed.fastpath_write,
+        fallback_read=parsed.fallback_read,
+        fallback_write=parsed.fallback_write,
     )
 
 
@@ -565,6 +756,10 @@ def _bpftrace_path() -> str | None:
     return shutil.which("bpftrace")
 
 
+def _timeout_path() -> str | None:
+    return shutil.which("timeout")
+
+
 def _kfd_ais_bpftrace_script_path() -> Path:
     return Path(__file__).resolve().with_name("kfd_ais_rw.bt")
 
@@ -586,7 +781,18 @@ def _kfd_ais_outcome(*, ret: int, size_bytes: int, copied_bytes: int) -> str:
         return "success"
     if copied_bytes > 0:
         return "partial"
+    # bpftrace often reads copied=0 on kretprobe even when ret=0 and I/O succeeded.
+    if size_bytes > 0:
+        return "success"
     return "error"
+
+
+def _kfd_ais_bytes_for_sample(sample: KfdAisRwSample, outcome: str) -> int:
+    if outcome != "success":
+        return 0
+    if sample.copied_bytes > 0:
+        return sample.copied_bytes
+    return sample.size_bytes
 
 
 def _kfd_ais_latency_bucket(duration_us: int) -> str:
@@ -643,7 +849,9 @@ def summarize_kfd_ais_samples(
         )
         operations[(sample.direction, outcome)] += 1
         if outcome == "success":
-            bytes_by_direction[sample.direction] += sample.copied_bytes
+            bytes_by_direction[sample.direction] += _kfd_ais_bytes_for_sample(
+                sample, outcome
+            )
             latency_us_sum += sample.duration_us
             latency_us_count += 1
             bucket = _kfd_ais_latency_bucket(sample.duration_us)
@@ -726,14 +934,32 @@ def collect_kfd_ais_stats(
             bpftrace_error="kprobe:kfd_ais_rw_file not available",
         )
 
-    sample_arg = str(max(1, int(sample_seconds)))
-    timeout = max(30, int(sample_seconds) + 60)
+    timeout_bin = _timeout_path()
+    if timeout_bin is None:
+        return summarize_kfd_ais_samples(
+            [],
+            sample_seconds=sample_seconds,
+            bpftrace_present=True,
+            kprobe_attachable=True,
+            bpftrace_error="timeout not found in PATH (required for kfd_ais_rw.bt)",
+        )
+
+    sample_secs = max(1, int(sample_seconds))
+    run_timeout = sample_secs + 15
+    cmd = [
+        timeout_bin,
+        "--signal=TERM",
+        f"{sample_secs}s",
+        bpf,
+        "-q",
+        str(script),
+    ]
     try:
         proc = subprocess.run(
-            [bpf, "-q", str(script), sample_arg],
+            cmd,
             capture_output=True,
             text=True,
-            timeout=timeout,
+            timeout=run_timeout,
             check=False,
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
@@ -747,12 +973,13 @@ def collect_kfd_ais_stats(
 
     samples = parse_kfd_ais_bpftrace_lines(proc.stdout or "")
     err: str | None = None
-    if proc.returncode != 0 and not samples:
-        err = (proc.stderr or proc.stdout or "").strip() or (
-            f"bpftrace exited {proc.returncode}"
-        )
-    elif proc.stderr.strip():
-        err = proc.stderr.strip()
+    rc = proc.returncode
+    stderr = (proc.stderr or "").strip()
+    # timeout(1) exits 124 after SIGTERM; an idle sample window is normal.
+    if rc not in (0, 124) and not samples:
+        err = stderr or (proc.stdout or "").strip() or f"bpftrace exited {rc}"
+    elif "ERROR:" in stderr:
+        err = stderr
 
     return summarize_kfd_ais_samples(
         samples,
@@ -930,24 +1157,19 @@ def collect_exporter_snapshot(
     kfd_ais_sample_seconds: float = 0.0,
     collect_kfd_ais: bool = True,
     kfd_ais_bpftrace_script: Path | None = None,
+    ais_stats_container: str = "",
+    collect_ais_stats: bool = True,
+    ais_stats_engine_match: str = "VLLM::EngineCor",
 ) -> ExporterSnapshot:
     """Collect LMCache stats; NFS/hip/KFD AIS only when ``include_host_metrics``."""
     mpath = mountstats_path or Path("/proc/self/mountstats")
-    chunk = collect_chunk_hit_summary(
-        data_root=data_root,
-        kv_subdir=kv_subdir,
-        stats_subdir=stats_subdir,
-    )
+
+    kfd_ais: KfdAisStats
     if not include_host_metrics:
-        return ExporterSnapshot(
-            chunk=chunk,
-            nfs=_empty_nfs_stats(mpath),
-            hip=_empty_hip_stats(),
-            kfd_ais=_empty_kfd_ais_stats(),
-            host_metrics_collected=False,
-        )
-    hip = collect_hipconfig_stats() if collect_hip else _skipped_hip_stats()
-    if collect_kfd_ais and kfd_ais_sample_seconds > 0:
+        kfd_ais = _empty_kfd_ais_stats()
+    elif collect_kfd_ais and kfd_ais_sample_seconds > 0:
+        # Sample KFD AIS before the slow chunk_hashes scan so traffic is more
+        # likely to overlap the bpftrace window when the timer fires.
         kfd_ais = collect_kfd_ais_stats(
             sample_seconds=kfd_ais_sample_seconds,
             bpftrace_script=kfd_ais_bpftrace_script,
@@ -962,6 +1184,35 @@ def collect_exporter_snapshot(
             kprobe_attachable=_kfd_ais_kprobe_attachable(),
             skipped=True,
         )
+
+    ais_hipfile: AisHipfileStats
+    if not include_host_metrics:
+        ais_hipfile = _empty_ais_hipfile_stats()
+    elif not collect_ais_stats:
+        ais_hipfile = _skipped_ais_hipfile_stats()
+    elif ais_stats_container.strip():
+        ais_hipfile = collect_ais_hipfile_stats_from_container(
+            container=ais_stats_container,
+            engine_match=ais_stats_engine_match,
+        )
+    else:
+        ais_hipfile = _empty_ais_hipfile_stats()
+
+    chunk = collect_chunk_hit_summary(
+        data_root=data_root,
+        kv_subdir=kv_subdir,
+        stats_subdir=stats_subdir,
+    )
+    if not include_host_metrics:
+        return ExporterSnapshot(
+            chunk=chunk,
+            nfs=_empty_nfs_stats(mpath),
+            hip=_empty_hip_stats(),
+            kfd_ais=kfd_ais,
+            ais_hipfile=ais_hipfile,
+            host_metrics_collected=False,
+        )
+    hip = collect_hipconfig_stats() if collect_hip else _skipped_hip_stats()
     return ExporterSnapshot(
         chunk=chunk,
         nfs=collect_nfs_io_stats(
@@ -970,6 +1221,7 @@ def collect_exporter_snapshot(
         ),
         hip=hip,
         kfd_ais=kfd_ais,
+        ais_hipfile=ais_hipfile,
         host_metrics_collected=True,
     )
 
@@ -1433,6 +1685,103 @@ def format_prometheus_textfile(
                 lat_bucket_lines,
             )
 
+        ais = snapshot.ais_hipfile
+        if ais.collect_error != "skipped":
+            ais_lbl = _label_set(
+                {
+                    **(extra_labels or {}),
+                    **({"container": ais.container} if ais.container else {}),
+                }
+            )
+            emit(
+                f"{_METRIC_PREFIX}_ais_stats_configured",
+                "1 when ROCM_AIC_AIS_STATS_CONTAINER is set for docker exec collection.",
+                "gauge",
+                [
+                    f"{_METRIC_PREFIX}_ais_stats_configured{labels} "
+                    f"{1 if ais.configured else 0}"
+                ],
+            )
+            emit(
+                f"{_METRIC_PREFIX}_ais_stats_docker_present",
+                "1 if docker is installed on PATH for ais-stats collection.",
+                "gauge",
+                [
+                    f"{_METRIC_PREFIX}_ais_stats_docker_present{labels} "
+                    f"{1 if ais.docker_present else 0}"
+                ],
+            )
+            emit(
+                f"{_METRIC_PREFIX}_ais_stats_collect_ok",
+                "1 when the last ais-stats docker exec scrape succeeded.",
+                "gauge",
+                [
+                    f"{_METRIC_PREFIX}_ais_stats_collect_ok{ais_lbl} "
+                    f"{1 if ais.configured and ais.collect_error is None else 0}"
+                ],
+            )
+            if ais.configured:
+                emit(
+                    f"{_METRIC_PREFIX}_ais_stats_level",
+                    "HipFile stats level reported by ais-stats inside the container.",
+                    "gauge",
+                    [f"{_METRIC_PREFIX}_ais_stats_level{ais_lbl} {ais.stats_level}"],
+                )
+                path_rows = (
+                    ("fastpath", "read", ais.fastpath_read),
+                    ("fastpath", "write", ais.fastpath_write),
+                    ("fallback", "read", ais.fallback_read),
+                    ("fallback", "write", ais.fallback_write),
+                )
+                byte_lines = [
+                    f"{_METRIC_PREFIX}_ais_stats_bytes"
+                    f"{_label_set({**(extra_labels or {}), **({'container': ais.container} if ais.container else {}), 'backend': backend, 'direction': direction})} "
+                    f"{path.bytes_total}"
+                    for backend, direction, path in path_rows
+                ]
+                emit(
+                    f"{_METRIC_PREFIX}_ais_stats_bytes",
+                    "Cumulative hipFile bytes from ais-stats (since EngineCore start).",
+                    "gauge",
+                    byte_lines,
+                )
+                bw_lines = [
+                    f"{_METRIC_PREFIX}_ais_stats_bandwidth_gibps"
+                    f"{_label_set({**(extra_labels or {}), **({'container': ais.container} if ais.container else {}), 'backend': backend, 'direction': direction})} "
+                    f"{path.bandwidth_gibps}"
+                    for backend, direction, path in path_rows
+                ]
+                emit(
+                    f"{_METRIC_PREFIX}_ais_stats_bandwidth_gibps",
+                    "Average hipFile bandwidth from ais-stats (GiB/s).",
+                    "gauge",
+                    bw_lines,
+                )
+                lat_lines = [
+                    f"{_METRIC_PREFIX}_ais_stats_latency_microseconds"
+                    f"{_label_set({**(extra_labels or {}), **({'container': ais.container} if ais.container else {}), 'backend': backend, 'direction': direction})} "
+                    f"{path.latency_us}"
+                    for backend, direction, path in path_rows
+                ]
+                emit(
+                    f"{_METRIC_PREFIX}_ais_stats_latency_microseconds",
+                    "Average hipFile latency from ais-stats (microseconds).",
+                    "gauge",
+                    lat_lines,
+                )
+                err_lines = [
+                    f"{_METRIC_PREFIX}_ais_stats_errors_total"
+                    f"{_label_set({**(extra_labels or {}), **({'container': ais.container} if ais.container else {}), 'backend': backend, 'direction': direction})} "
+                    f"{path.errors_total}"
+                    for backend, direction, path in path_rows
+                ]
+                emit(
+                    f"{_METRIC_PREFIX}_ais_stats_errors_total",
+                    "Cumulative hipFile errors from ais-stats (since EngineCore start).",
+                    "gauge",
+                    err_lines,
+                )
+
     lines.append(
         f"# {_METRIC_PREFIX} generated_at={int(time.time())} "
         f"data_root={summary.data_root}"
@@ -1791,6 +2140,28 @@ def main() -> int:
             "0 disables)."
         ),
     )
+    p.add_argument(
+        "--ais-stats-container",
+        default=os.environ.get("ROCM_AIC_AIS_STATS_CONTAINER", ""),
+        metavar="NAME",
+        help=(
+            "Docker container for hipFile ais-stats collection via docker exec "
+            "(default: ROCM_AIC_AIS_STATS_CONTAINER; empty disables)."
+        ),
+    )
+    p.add_argument(
+        "--skip-ais-stats-container",
+        action="store_true",
+        help="Do not docker exec ais-stats; omit hipFile ais-stats metrics.",
+    )
+    p.add_argument(
+        "--ais-stats-engine-match",
+        default=os.environ.get("ROCM_AIC_AIS_STATS_ENGINE_MATCH", "VLLM::EngineCor"),
+        help=(
+            "pgrep -f pattern inside the container to locate EngineCore "
+            "(default: VLLM::EngineCor)."
+        ),
+    )
     args = p.parse_args()
 
     extra_labels: dict[str, str] = {}
@@ -1829,6 +2200,9 @@ def main() -> int:
         include_host_metrics=prom_path is not None,
         kfd_ais_sample_seconds=kfd_ais_sample_seconds,
         collect_kfd_ais=not args.skip_kfd_ais_bpftrace,
+        ais_stats_container=args.ais_stats_container,
+        collect_ais_stats=not args.skip_ais_stats_container,
+        ais_stats_engine_match=args.ais_stats_engine_match,
     )
     summary = snapshot.chunk
 
@@ -1898,6 +2272,19 @@ def main() -> int:
                 )
             elif kfd.bpftrace_error and not kfd.operations:
                 print(f"warning: kfd ais bpftrace: {kfd.bpftrace_error}", file=sys.stderr)
+        if (
+            not args.skip_ais_stats_container
+            and args.ais_stats_container.strip()
+            and snapshot.host_metrics_collected
+        ):
+            ais = snapshot.ais_hipfile
+            if not ais.docker_present:
+                print(
+                    "warning: docker not found; ais-stats metrics empty",
+                    file=sys.stderr,
+                )
+            elif ais.collect_error:
+                print(f"warning: ais-stats: {ais.collect_error}", file=sys.stderr)
 
     if prom_path is not None:
         body = format_prometheus_textfile(
@@ -1987,6 +2374,24 @@ def main() -> int:
                             "bytes_by_direction": snapshot.kfd_ais.bytes_by_direction,
                             "latency_us_sum": snapshot.kfd_ais.latency_us_sum,
                             "latency_us_count": snapshot.kfd_ais.latency_us_count,
+                        }
+                        if snapshot.host_metrics_collected
+                        else None
+                    ),
+                    "ais_hipfile": (
+                        {
+                            "configured": snapshot.ais_hipfile.configured,
+                            "skipped": snapshot.ais_hipfile.skipped,
+                            "docker_present": snapshot.ais_hipfile.docker_present,
+                            "container": snapshot.ais_hipfile.container,
+                            "collect_error": snapshot.ais_hipfile.collect_error,
+                            "stats_level": snapshot.ais_hipfile.stats_level,
+                            "fastpath_write_bytes": (
+                                snapshot.ais_hipfile.fastpath_write.bytes_total
+                            ),
+                            "fastpath_read_bytes": (
+                                snapshot.ais_hipfile.fastpath_read.bytes_total
+                            ),
                         }
                         if snapshot.host_metrics_collected
                         else None

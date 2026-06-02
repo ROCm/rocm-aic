@@ -1,0 +1,17 @@
+HipFile Stats Level: 1
+Total Fastpath Read Size (B): 0
+Average Fastpath Read Bandwidth (GiB/s): 0.000000
+Average Fastpath Read Latency (us): 0.000000
+Total Fastpath Read Errors: 0
+Total Fastpath Write Size (B): 13320585216
+Average Fastpath Write Bandwidth (GiB/s): 0.220000
+Average Fastpath Write Latency (us): 19700.000000
+Total Fastpath Write Errors: 0
+Total Fallback Read Size (B): 0
+Average Fallback Read Bandwidth (GiB/s): 0.000000
+Average Fallback Read Latency (us): 0.000000
+Total Fallback Read Errors: 0
+Total Fallback Write Size (B): 0
+Average Fallback Write Bandwidth (GiB/s): 0.000000
+Average Fallback Write Latency (us): 0.000000
+Total Fallback Write Errors: 0

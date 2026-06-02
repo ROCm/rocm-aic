@@ -50,6 +50,27 @@ make -C recipies/vllm-lmcache-nixl run VLN_LMCACHE_IO=ais DATA=/mnt/lmcache-nvme
 registration fails, NIXL AIS init **errors** instead of falling back to compat
 mode. Rebuild the image after overlay changes (``make build``).
 
+### hipFile ``ais-stats`` (in container)
+
+The image installs ``/app/ais-stats`` (also on ``PATH`` as ``ais-stats``).
+hipFile counters are **off** unless ``VLH_HIPFILE_STATS_LEVEL`` is set before
+EngineCore starts (``0`` = disabled, ``1`` = basic, ``2`` = detailed, ``3`` =
+max):
+
+```bash
+make -C recipies/vllm-lmcache-nixl run \
+  VLN_LMCACHE_IO=ais \
+  VLH_HIPFILE_STATS_LEVEL=1 \
+  DATA=/mnt/lmcache-nvme/ GPU=0
+```
+
+After AIS traffic, attach to EngineCore and print stats:
+
+```bash
+docker exec -it vllm-lmcache-nixl-gpu0 bash -lc \
+  'ais-stats -p $(pgrep -f VLLM::EngineCor | head -1) -i'
+```
+
 Override staging device or size:
 
 ```bash

@@ -28,6 +28,8 @@ VLN_DOCKER_NOFILE ?= 1048576
 VLN_MAX_MODEL_LEN ?=
 VLN_GPU_MEMORY_UTILIZATION ?=
 VLN_MAX_NUM_BATCHED_TOKENS ?=
+# hipFile AIS stats for ais-stats (0=off, 1=basic, 2=detailed, 3=max). AIS modes only.
+VLH_HIPFILE_STATS_LEVEL ?=
 NIXL_PLUGIN_DIR ?= /opt/nixl/lib/x86_64-linux-gnu/plugins
 # Enables vLLM dev HTTP APIs (e.g. POST /reset_prefix_cache). Set to 0 to disable.
 VLLM_SERVER_DEV_MODE ?= 1
@@ -181,6 +183,7 @@ _docker_run:
 		$$(if [ -n "$(VLN_MAX_MODEL_LEN)" ]; then printf '%s' "--env VLN_MAX_MODEL_LEN=$(VLN_MAX_MODEL_LEN)"; fi) \
 		$$(if [ -n "$(VLN_GPU_MEMORY_UTILIZATION)" ]; then printf '%s' "--env VLN_GPU_MEMORY_UTILIZATION=$(VLN_GPU_MEMORY_UTILIZATION)"; fi) \
 		$$(if [ -n "$(VLN_MAX_NUM_BATCHED_TOKENS)" ]; then printf '%s' "--env VLN_MAX_NUM_BATCHED_TOKENS=$(VLN_MAX_NUM_BATCHED_TOKENS)"; fi) \
+		$$(if [ -n "$(VLH_HIPFILE_STATS_LEVEL)" ]; then printf '%s' "--env VLH_HIPFILE_STATS_LEVEL=$(VLH_HIPFILE_STATS_LEVEL)"; fi) \
 		--env NIXL_PLUGIN_DIR="$(NIXL_PLUGIN_DIR)" \
 		--env VLLM_SERVER_DEV_MODE="$(VLLM_SERVER_DEV_MODE)" \
 		$$(if [ -n "$(VLLM_MODEL)" ]; then printf '%s' "--env VLLM_MODEL=$(VLLM_MODEL)"; fi) \
