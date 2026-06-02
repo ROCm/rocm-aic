@@ -132,12 +132,33 @@ jobs:
                   nfs=snap_h.nfs,
                   hip=snap_h.hip,
                   kfd_ais=kfd,
+                  ais_hipfile=m._empty_ais_hipfile_stats(),
                   host_metrics_collected=True,
               ),
               include_host_metrics=True,
           )
           assert 'rocm_aic_kfd_ais_rw_operations{direction=\"read\",outcome=\"success\"} 3' in kfd_body
           assert 'rocm_aic_kfd_ais_latency_microseconds_count' in kfd_body
+          ais_text = Path('../common/tests/fixtures/ais-stats.sample').read_text()
+          ais = m.parse_ais_stats_output(ais_text)
+          assert ais.stats_level == 1
+          assert ais.fastpath_write.bytes_total == 13320585216
+          assert ais.fastpath_write.bandwidth_gibps == 0.22
+          assert ais.fastpath_write.latency_us == 19700.0
+          assert ais.fastpath_read.bytes_total == 0
+          ais_body = m.format_prometheus_textfile(
+              m.ExporterSnapshot(
+                  chunk=snap.chunk,
+                  nfs=snap_h.nfs,
+                  hip=snap_h.hip,
+                  kfd_ais=m._empty_kfd_ais_stats(),
+                  ais_hipfile=ais,
+                  host_metrics_collected=True,
+              ),
+              include_host_metrics=True,
+          )
+          assert 'rocm_aic_ais_stats_bytes{backend=\"fastpath\",direction=\"write\"} 13320585216' in ais_body
+          assert 'rocm_aic_ais_stats_level' in ais_body
           "
 
       - name: parse-vllm-engine-log-timeseries (CSV only)

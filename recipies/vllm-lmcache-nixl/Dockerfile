@@ -86,7 +86,11 @@ RUN git clone --no-checkout --filter=blob:none \
     pip install --no-cache-dir -e . \
         -Ccmake.define.HIPFILE_INCLUDE_DIR=../include \
         -Ccmake.define.HIP_INCLUDE_DIR=/opt/rocm/include && \
-    python3 -c "from hipfile import Buffer; from hipfile._hipfile import hipFileBufRegister"
+    python3 -c "from hipfile import Buffer; from hipfile._hipfile import hipFileBufRegister" && \
+    test -x /app/rocm-systems/projects/hipfile/build/tools/ais-stats/ais-stats && \
+    ln -sf /app/rocm-systems/projects/hipfile/build/tools/ais-stats/ais-stats \
+        /app/ais-stats && \
+    ln -sf /app/ais-stats /usr/local/bin/ais-stats
 
 COPY recipies/common/nixl /tmp/nixl-common
 RUN chmod +x /tmp/nixl-common/*.sh /tmp/nixl-common/apply-ais-overlay.sh && \

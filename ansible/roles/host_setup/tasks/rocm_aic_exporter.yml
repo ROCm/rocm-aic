@@ -61,4 +61,10 @@
     VLH_LMCACHE_KV_SUBDIR: "{{ host_setup_rocm_aic_exporter_lmcache_kv_subdir }}"
     VLH_LMCACHE_CHUNK_STATS_SUBDIR: >-
       {{ host_setup_rocm_aic_exporter_lmcache_chunk_stats_subdir }}
+    ROCM_AIC_KFD_AIS_SAMPLE_SECONDS: >-
+      {{ host_setup_rocm_aic_exporter_kfd_ais_sample_seconds | string }}
+    ROCM_AIC_AIS_STATS_CONTAINER: >-
+      {{ host_setup_rocm_aic_exporter_ais_stats_container | default('') }}
+    ROCM_AIC_AIS_STATS_ENGINE_MATCH: >-
+      {{ host_setup_rocm_aic_exporter_ais_stats_engine_match | default('VLLM::EngineCor') }}
   changed_when: false

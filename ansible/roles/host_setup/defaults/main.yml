@@ -84,3 +84,6 @@ host_setup_rocm_aic_exporter_textfile_path: >-
 host_setup_rocm_aic_exporter_vlh_host_data_root: /mnt/lmcache-nvme
 host_setup_rocm_aic_exporter_lmcache_kv_subdir: lmcache
 host_setup_rocm_aic_exporter_lmcache_chunk_stats_subdir: lmcache_chunk_stats
+# Docker container for hipFile ais-stats via rocm-aic-exporter (empty = disabled).
+host_setup_rocm_aic_exporter_ais_stats_container: ""
+host_setup_rocm_aic_exporter_ais_stats_engine_match: VLLM::EngineCor

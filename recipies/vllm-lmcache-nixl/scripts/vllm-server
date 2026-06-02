@@ -72,6 +72,31 @@ def _nixl_ais_backend_for_mode(mode: str) -> str | None:
     return None
 
 
+def _hipfile_stats_level(mode: str) -> str:
+    """Map ``VLH_HIPFILE_STATS_LEVEL`` to ``HIPFILE_STATS_LEVEL`` (0–3) in AIS modes."""
+    if not _ais_hipfile_io_mode(mode):
+        return "0"
+    raw = os.environ.get("VLH_HIPFILE_STATS_LEVEL", "").strip()
+    if not raw:
+        return "0"
+    try:
+        level = int(raw)
+    except ValueError:
+        print(
+            f"WARN: invalid VLH_HIPFILE_STATS_LEVEL={raw!r}; using HIPFILE_STATS_LEVEL=0",
+            file=sys.stderr,
+        )
+        return "0"
+    if level < 0 or level > 3:
+        print(
+            f"WARN: VLH_HIPFILE_STATS_LEVEL={level} out of range 0–3; "
+            "using HIPFILE_STATS_LEVEL=0",
+            file=sys.stderr,
+        )
+        return "0"
+    return str(level)
+
+
 def _truthy(name: str, default: str = "1") -> bool:
     v = os.environ.get(name, default).strip().lower()
     return v not in ("0", "false", "no", "off", "")
@@ -403,7 +428,7 @@ def main() -> int:
     if _ais_hipfile_io_mode(mode):
         env["HIPFILE_UNSUPPORTED_FILE_SYSTEMS"] = "true"
         env["HIPFILE_ALLOW_COMPAT_MODE"] = "false"
-        env["HIPFILE_STATS_LEVEL"] = "0"
+        env["HIPFILE_STATS_LEVEL"] = _hipfile_stats_level(mode)
 
     model = os.environ.get("VLLM_MODEL", "").strip() or str(vcfg["model_default"])
     gpu_mem = (
