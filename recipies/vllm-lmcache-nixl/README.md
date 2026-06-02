@@ -73,16 +73,18 @@ Keep ``VLN_NIXL_POOL_SIZE`` in the low thousands unless ``VLN_DOCKER_NOFILE``
 is raised and you accept long AIS init (one FD per pool slot; your log used
 ``262114``, which alone adds ~20 s startup).
 
-After a store, ``obj_*.bin`` slots should be **~4.5 MiB each** (Qwen2.5-3B
-align size), not 0 bytes:
+After a store, used ``obj_*.bin`` slots should be **~4.5 MiB each** (Qwen2.5-3B
+align size), not 0 bytes. Unused pool slots stay **0 bytes** until first write
+(lazy ``ftruncate`` before O_DIRECT AIS I/O):
 
 ```bash
-find /mnt/lmcache-nvme/lmcache -name 'obj_*.bin' ! -empty | wc -l
+find /mnt/lmcache-nvme/lmcache -name 'obj_*.bin' -size +0 | wc -l   # used slots
+find /mnt/lmcache-nvme/lmcache -name 'obj_*.bin' -size +0 -printf '%s\n' | \
+  awk '{s+=$1} END {print s}'   # used bytes (matches rocm_aic_nixl_pool_bytes_total)
 ```
 
-0-byte slots after traffic means AIS writes did not land (often
-``O_DIRECT`` pool files not pre-sized); rebuild the image after overlay /
-LMCache patch updates.
+0-byte slots after traffic on a slot that should have data means AIS writes did
+not land; rebuild the image after overlay / LMCache patch updates.
 
 ## Build arguments
 
@@ -116,12 +118,14 @@ Gutenberg workload for TTFT measurement.
 
 ## NIXL pool size (`VLN_NIXL_POOL_SIZE`)
 
-The NIXL backend pre-allocates a fixed pool of ``obj_*.bin`` slots under
-``$DATA/lmcache/``. Default **`nixl_pool_size: 4096`** in the LMCache YAML
-(~36 GiB for Qwen2.5-3B at ~9 MiB/slot). Override at run time:
+The NIXL backend pre-allocates a fixed pool of ``obj_*.bin`` slot **files**
+under ``$DATA/lmcache/`` (one FD per slot at init). Default **`nixl_pool_size:
+4096`** reserves up to that many slots; only **used** slots are sized on disk
+(~4.5 MiB each for Qwen2.5-3B). Grafana:
+``rocm_aic_nixl_pool_slots_used`` and ``rocm_aic_nixl_pool_bytes_total``.
 
 ```bash
-make run VLN_NIXL_POOL_SIZE=8192   # ~72 GiB pool (8192 × ~9 MiB)
+make run VLN_NIXL_POOL_SIZE=8192   # up to 8192 slots (~36 GiB if all used)
 ```
 
 Restart after changing pool size (``clear_gds_dir_before_start`` recreates the

@@ -135,15 +135,28 @@ class NixlPoolInventory:
     """LMCache NIXL static pool objects under the KV directory."""
 
     file_count: int
+    slots_used: int
     bytes_total: int
+    bytes_on_disk: int
 
 
 def _scan_nixl_pool_inventory(kv_dir: Path) -> NixlPoolInventory:
-    """Return file count and total bytes for NIXL ``obj_*.bin`` pool slots."""
+    """Return NIXL ``obj_*.bin`` slot counts and used bytes.
+
+    Unused pool slots stay at 0 bytes when lazy ``ftruncate`` is enabled;
+    ``bytes_total`` sums ``st_size`` only for slots that have been written.
+    """
     file_count = 0
+    slots_used = 0
     bytes_total = 0
+    bytes_on_disk = 0
     if not kv_dir.is_dir():
-        return NixlPoolInventory(file_count=0, bytes_total=0)
+        return NixlPoolInventory(
+            file_count=0,
+            slots_used=0,
+            bytes_total=0,
+            bytes_on_disk=0,
+        )
     for path in kv_dir.iterdir():
         if not path.is_file():
             continue
@@ -151,10 +164,20 @@ def _scan_nixl_pool_inventory(kv_dir: Path) -> NixlPoolInventory:
             continue
         file_count += 1
         try:
-            bytes_total += path.stat().st_size
+            st = path.stat()
         except OSError:
-            pass
-    return NixlPoolInventory(file_count=file_count, bytes_total=bytes_total)
+            continue
+        if st.st_size <= 0:
+            continue
+        slots_used += 1
+        bytes_total += st.st_size
+        bytes_on_disk += st.st_blocks * 512
+    return NixlPoolInventory(
+        file_count=file_count,
+        slots_used=slots_used,
+        bytes_total=bytes_total,
+        bytes_on_disk=bytes_on_disk,
+    )
 
 
 def _scan_kv_inventory(kv_dir: Path) -> KvDiskInventory:
@@ -473,7 +496,7 @@ class ChunkHitSummary:
     unrecognized_kv_files: int = 0
     filesystem: FsUsage | None = None
     nixl_pool: NixlPoolInventory = field(
-        default_factory=lambda: NixlPoolInventory(0, 0)
+        default_factory=lambda: NixlPoolInventory(0, 0, 0, 0)
     )
 
 
@@ -1069,10 +1092,25 @@ def format_prometheus_textfile(
         [f"{_METRIC_PREFIX}_nixl_pool_files{labels} {nixl.file_count}"],
     )
     emit(
+        f"{_METRIC_PREFIX}_nixl_pool_slots_used",
+        "NIXL pool slots with non-zero size (written at least once).",
+        "gauge",
+        [f"{_METRIC_PREFIX}_nixl_pool_slots_used{labels} {nixl.slots_used}"],
+    )
+    emit(
         f"{_METRIC_PREFIX}_nixl_pool_bytes_total",
-        "Total on-disk size of NIXL obj_*.bin pool files.",
+        "Sum of st_size for used NIXL pool slots (0-byte slots excluded).",
         "gauge",
         [f"{_METRIC_PREFIX}_nixl_pool_bytes_total{labels} {nixl.bytes_total}"],
+    )
+    emit(
+        f"{_METRIC_PREFIX}_nixl_pool_bytes_on_disk",
+        "Allocated block bytes for used NIXL pool slots (st_blocks * 512).",
+        "gauge",
+        [
+            f"{_METRIC_PREFIX}_nixl_pool_bytes_on_disk{labels} "
+            f"{nixl.bytes_on_disk}"
+        ],
     )
 
     if summary.filesystem is not None:
@@ -1444,7 +1482,10 @@ def _print_inventory(summary: ChunkHitSummary) -> None:
     if nixl.file_count > 0:
         print("\nNIXL static pool (obj_*.bin)")
         print(f"  Files = {nixl.file_count}")
-        print(f"  Size  = {_format_bytes(nixl.bytes_total)}")
+        print(f"  Used slots = {nixl.slots_used}")
+        print(f"  Used size (st_size) = {_format_bytes(nixl.bytes_total)}")
+        if nixl.bytes_on_disk != nixl.bytes_total:
+            print(f"  On disk (blocks) = {_format_bytes(nixl.bytes_on_disk)}")
     if summary.filesystem is not None:
         fs = summary.filesystem
         print(f"\nFilesystem {fs.path}")
@@ -1888,7 +1929,9 @@ def main() -> int:
                     "chunk_bytes_total": summary.chunk_bytes_total,
                     "nixl_pool": {
                         "file_count": summary.nixl_pool.file_count,
+                        "slots_used": summary.nixl_pool.slots_used,
                         "bytes_total": summary.nixl_pool.bytes_total,
+                        "bytes_on_disk": summary.nixl_pool.bytes_on_disk,
                     },
                     "filesystem": (
                         {

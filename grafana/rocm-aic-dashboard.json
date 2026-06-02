@@ -2767,7 +2767,7 @@
                 "spec": {
                     "id": 59,
                     "title": "AIC KV Cache Footprint",
-                    "description": "On-disk LMCache chunk and NIXL static pool size over time.",
+                    "description": "On-disk LMCache chunk bytes and used NIXL pool slots/bytes (0-byte slots excluded).",
                     "links": [],
                     "data": {
                         "kind": "QueryGroup",
@@ -2807,11 +2807,32 @@
                                             "spec": {
                                                 "editorMode": "code",
                                                 "expr": "sum(rocm_aic_nixl_pool_bytes_total{instance=~\"$host\"})",
-                                                "legendFormat": "NIXL pool bytes",
+                                                "legendFormat": "NIXL pool bytes (used)",
                                                 "range": true
                                             }
                                         },
                                         "refId": "B",
+                                        "hidden": false
+                                    }
+                                },
+                                {
+                                    "kind": "PanelQuery",
+                                    "spec": {
+                                        "query": {
+                                            "kind": "DataQuery",
+                                            "group": "prometheus",
+                                            "version": "v0",
+                                            "datasource": {
+                                                "name": "${datasource}"
+                                            },
+                                            "spec": {
+                                                "editorMode": "code",
+                                                "expr": "sum(rocm_aic_nixl_pool_slots_used{instance=~\"$host\"})",
+                                                "legendFormat": "NIXL pool slots used",
+                                                "range": true
+                                            }
+                                        },
+                                        "refId": "C",
                                         "hidden": false
                                     }
                                 }
@@ -2898,7 +2919,20 @@
                                         }
                                     }
                                 },
-                                "overrides": []
+                                "overrides": [
+                                    {
+                                        "matcher": {
+                                            "id": "byName",
+                                            "options": "NIXL pool slots used"
+                                        },
+                                        "properties": [
+                                            {
+                                                "id": "unit",
+                                                "value": "short"
+                                            }
+                                        ]
+                                    }
+                                ]
                             }
                         }
                     }

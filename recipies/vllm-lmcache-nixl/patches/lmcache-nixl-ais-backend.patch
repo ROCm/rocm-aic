@@ -1,5 +1,5 @@
 diff --git a/lmcache/v1/storage_backend/nixl_storage_backend.py b/lmcache/v1/storage_backend/nixl_storage_backend.py
-index c4d1230..99ddff4 100644
+index c4d12305..1ef6982f 100644
 --- a/lmcache/v1/storage_backend/nixl_storage_backend.py
 +++ b/lmcache/v1/storage_backend/nixl_storage_backend.py
 @@ -99,7 +99,7 @@ class NixlStorageConfig:
@@ -11,7 +11,7 @@ index c4d1230..99ddff4 100644
                  return device == "cpu" or device == "cuda"
              elif backend in ("POSIX", "HF3FS", "AZURE_BLOB"):
                  return device == "cpu"
-@@ -219,7 +219,13 @@ class NixlDescPool(ABC):
+@@ -219,9 +219,18 @@ class NixlDescPool(ABC):
  
  
  class NixlFilePool(NixlDescPool):
@@ -25,17 +25,40 @@ index c4d1230..99ddff4 100644
 +    ):
          super().__init__(size)
          self.fds: List[int] = []
++        self.use_direct_io = use_direct_io
++        self.slot_size = slot_size
++        self._sized_slots: set[int] = set()
  
-@@ -238,6 +244,8 @@ class NixlFilePool(NixlDescPool):
-             filename = f"obj_{i}_{uuid.uuid4().hex[0:4]}.bin"
-             tmp_path = os.path.join(path, filename)
+         assert path is not None
+ 
+@@ -240,6 +249,26 @@ class NixlFilePool(NixlDescPool):
              fd = os.open(tmp_path, flags)
-+            if slot_size > 0:
-+                os.ftruncate(fd, slot_size)
              self.fds.append(fd)
  
++    def _fd_for_index(self, index: int) -> int:
++        return self.fds[self.size - 1 - index]
++
++    def ensure_slot_sized(self, index: int) -> None:
++        """Size a pool file before the first O_DIRECT transfer to that slot."""
++        if not self.use_direct_io or self.slot_size <= 0:
++            return
++        with self.lock:
++            if index in self._sized_slots:
++                return
++            fd = self._fd_for_index(index)
++            try:
++                if os.fstat(fd).st_size >= self.slot_size:
++                    self._sized_slots.add(index)
++                    return
++            except OSError:
++                pass
++            os.ftruncate(fd, self.slot_size)
++            self._sized_slots.add(index)
++
      def close(self):
-@@ -784,6 +792,7 @@ class NixlStaticStorageBackend(NixlStorageBackend):
+         # TODO: do we need to delete the files?
+         with self.lock:
+@@ -784,6 +813,7 @@ class NixlStaticStorageBackend(NixlStorageBackend):
              nixl_config.pool_size,
              nixl_config.path,
              nixl_config.use_direct_io,
@@ -43,7 +66,7 @@ index c4d1230..99ddff4 100644
          )
          assert self.pool is not None
  
-@@ -798,9 +807,15 @@ class NixlStaticStorageBackend(NixlStorageBackend):
+@@ -798,9 +828,15 @@ class NixlStaticStorageBackend(NixlStorageBackend):
          )
  
      @staticmethod
@@ -62,3 +85,14 @@ index c4d1230..99ddff4 100644
          elif backend in ("OBJ", "AZURE_BLOB"):
              return NixlObjectPool(size)
          else:
+@@ -830,6 +866,10 @@ class NixlStaticStorageBackend(NixlStorageBackend):
+             storage_indices.append(index)
+             self.add_key_to_dict(keys[i], mem_objs[i].meta, index)
+ 
++        if isinstance(self.pool, NixlFilePool):
++            for index in storage_indices:
++                self.pool.ensure_slot_sized(index)
++
+         handle = self.agent.get_mem_to_storage_handle(mem_indices, storage_indices)
+         self.agent.post_blocking(handle)
+         self.agent.release_handle(handle)

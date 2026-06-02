@@ -57,6 +57,7 @@ FREE_PCT_EXPR = (
 CHUNK_BYTES_EXPR = 'sum(rocm_aic_kv_chunk_bytes_total{instance=~"$host"})'
 
 NIXL_BYTES_EXPR = 'sum(rocm_aic_nixl_pool_bytes_total{instance=~"$host"})'
+NIXL_SLOTS_USED_EXPR = 'sum(rocm_aic_nixl_pool_slots_used{instance=~"$host"})'
 
 CHUNK_HASHES_TRACKED_EXPR = (
     'sum(rocm_aic_chunk_hashes_tracked{instance=~"$host"})'
