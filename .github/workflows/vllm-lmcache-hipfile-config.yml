@@ -9,7 +9,7 @@ on:
     branches: [main]
     paths:
       - 'recipies/vllm-lmcache-hipfile/configs/**'
-      - 'recipies/vllm-lmcache-hipfile/grafana/**'
+      - 'grafana/**'
       - '.github/workflows/vllm-lmcache-hipfile-config.yml'
   workflow_dispatch:
 
@@ -36,9 +36,9 @@ jobs:
           set -euo pipefail
           yamllint -c .yamllint recipies/vllm-lmcache-hipfile/configs/
 
-      - name: Validate gutenberg-library.json
+      - name: Validate gutenberg-library.json (benchmark manifest)
         env:
-          MANIFEST: ${{ github.workspace }}/recipies/vllm-lmcache-hipfile/configs/gutenberg-library.json
+          MANIFEST: ${{ github.workspace }}/benchmarks/llm-prefill-benchmark/configs/gutenberg-library.json
         run: |
           set -euo pipefail
           jq -e '
@@ -57,7 +57,7 @@ jobs:
 
       - name: Validate Grafana dashboard JSON
         env:
-          DASH: ${{ github.workspace }}/recipies/vllm-lmcache-hipfile/grafana/vllm-lmcache-prometheus.json
+          DASH: ${{ github.workspace }}/grafana/rocm-aic-dashboard.json
         run: |
           set -euo pipefail
           jq -e '
@@ -73,3 +73,8 @@ jobs:
             )
             and (([.. | strings? | select(test("rocm_aic_"))] | length) >= 1)
           ' "${DASH}"
+
+      - name: Check Grafana dashboard normalization
+        run: |
+          set -euo pipefail
+          python3 grafana/scripts/normalize-dashboard.py --check

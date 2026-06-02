@@ -1,0 +1,81 @@
+# Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+#
+name: llm-prefill-benchmark Python
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'benchmarks/llm-prefill-benchmark/scripts/**'
+      - 'benchmarks/llm-prefill-benchmark/configs/**'
+      - '.github/workflows/llm-prefill-benchmark-python.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  python-scripts:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: benchmarks/llm-prefill-benchmark
+        shell: bash
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install deps
+        run: pip install -r requirements.txt
+
+      - name: test-aic.py --help
+        run: python3 scripts/test-aic.py --help
+
+      - name: build-gutenberg-library.py --help
+        run: python3 scripts/build-gutenberg-library.py --help
+
+      - name: Validate gutenberg-library.json
+        env:
+          MANIFEST: ${{ github.workspace }}/benchmarks/llm-prefill-benchmark/configs/gutenberg-library.json
+        run: |
+          python3 -c "
+          import json
+          json.load(open('${MANIFEST}'))
+          print('OK')
+          "
+
+      - name: split-gutenberg-random-chunks (local snippet)
+        run: |
+          set -euo pipefail
+          out="${RUNNER_TEMP}/split-out"
+          rm -rf "${out}"
+          python3 scripts/split-gutenberg-random-chunks.py \
+            tests/fixtures/gutenberg-snippet.txt \
+            --slug ci-snippet \
+            -o "${out}" \
+            --chunk-words 40 \
+            --count 2 \
+            --seed 1
+          test "$(find "${out}" -name 'ci-snippet-*.txt' | wc -l)" -eq 2
+
+      - name: gen-questions-json
+        run: |
+          set -euo pipefail
+          out="${RUNNER_TEMP}/questions"
+          mkdir -p "${out}"
+          python3 scripts/gen-questions-json.py \
+            --slug ci-book \
+            --title "CI Book" \
+            --author "CI Author" \
+            --count 3 \
+            -o "${out}/ci-book.questions.json"
+          python3 -c "import json; assert len(json.load(open('${out}/ci-book.questions.json'))['questions']) == 3"
+
+      - name: parse-results.py --help
+        run: python3 scripts/parse-results.py --help

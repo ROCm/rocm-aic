@@ -13,6 +13,10 @@
 #   make -C recipies/vllm-lmcache-hipfile data-all \
 #     BOOK_DATA_ROOT="${VLH_GUTENBERG_DATA_ROOT:-/scratch/$USER/vllm-lmcache-hipfile/gutenberg}"
 #
+# Gutenberg benchmarks live under benchmarks/llm-prefill-benchmark/ (engine-
+# agnostic). Slurm sets LLM_PREFILL_BENCH_ROOT automatically; override only
+# when using a non-default checkout path.
+#
 set -euo pipefail
 cd "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 

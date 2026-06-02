@@ -9,7 +9,7 @@
 # Env (passed through to each worker):
 #   BASE_URL, MODEL, BOOK_DATA_ROOT, BOOK_SLUG, BOOK_SLUGS, BOOK_SLUG_FILE,
 #   ITERATIONS,
-#   RUN_LONG_COMBINE_CHUNKS, etc.
+#   RUN_LONG_COMBINE_CHUNKS, RUN_LONG_MAX_TOKENS, etc.
 #
 # Wrapper-only env:
 #   WORKERS         number of parallel workers (default: 4; or first argument)

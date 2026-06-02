@@ -1,0 +1,22 @@
+# Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+#
+# LMCache NIXL storage backend — AIS_MT (sync hipFile) on ROCm.
+
+chunk_size: 256
+local_cpu: false
+save_decode_cache: true
+pre_caching_hash_algorithm: sha256_cbor
+# 512 MiB VRAM staging (hipFileBufRegister). On 16 GiB GPUs also lower
+# VLN_GPU_MEMORY_UTILIZATION (e.g. 0.85). Raise via VLN_NIXL_BUFFER_SIZE.
+nixl_buffer_size: 536870912
+# VRAM staging buffer — required for hipFileBufRegister (no compat mode).
+nixl_buffer_device: cuda
+
+extra_config:
+  enable_nixl_storage: true
+  # Sync hipFileRead/Write (ROCm hipFile 0.2.x batch APIs are stubbed).
+  nixl_backend: AIS_MT
+  nixl_pool_size: 4096
+  use_direct_io: true

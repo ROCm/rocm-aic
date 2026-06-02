@@ -9,8 +9,8 @@ on:
     branches: [main]
     paths:
       - 'recipies/vllm-lmcache-hipfile/scripts/**'
-      - 'recipies/vllm-lmcache-hipfile/configs/gutenberg-library.json'
-      - 'recipies/vllm-lmcache-hipfile/tests/**'
+      - 'recipies/common/scripts/**'
+      - 'recipies/common/tests/**'
       - 'requirements.txt'
       - '.github/workflows/vllm-lmcache-hipfile-python.yml'
   workflow_dispatch:
@@ -20,7 +20,7 @@ permissions:
 
 jobs:
   smoke:
-    name: py_compile and offline script smoke
+    name: recipe scripts and common observability
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -41,87 +41,61 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r "${GITHUB_WORKSPACE}/requirements.txt"
 
-      - name: py_compile all recipe scripts
+      - name: py_compile recipe scripts
         run: |
           set -euo pipefail
           python -m py_compile scripts/*.py
-
-      - name: test-aic.py --help
-        run: python3 scripts/test-aic.py --help
-
-      - name: build-gutenberg-library.py --help
-        run: python3 scripts/build-gutenberg-library.py --help
-
-      - name: Validate gutenberg-library.json
-        env:
-          MANIFEST: ${{ github.workspace }}/recipies/vllm-lmcache-hipfile/configs/gutenberg-library.json
-        run: |
-          set -euo pipefail
-          jq -e '
-            (type == "object")
-            and (.version != null)
-            and ((.books | type) == "array")
-            and ((.books | length) == 100)
-            and (([.books[].slug] | unique | length) == (.books | length))
-            and all(
-              .books[];
-              (type == "object")
-              and has("pg_id") and has("slug") and has("title") and has("author")
-              and (.slug | type) == "string" and (.slug | length) > 0
-            )
-          ' "${MANIFEST}"
-
-      - name: split-gutenberg-random-chunks (local snippet)
-        run: |
-          set -euo pipefail
-          out="${RUNNER_TEMP}/split-out"
-          rm -rf "${out}"
-          python3 scripts/split-gutenberg-random-chunks.py \
-            tests/fixtures/gutenberg-snippet.txt \
-            --slug ci-snippet \
-            -o "${out}" \
-            --chunk-words 40 \
-            --count 2 \
-            --seed 1
-          test "$(find "${out}" -name 'ci-snippet-*.txt' | wc -l)" -eq 2
-          test -f "${out}/ci-snippet.book-stats.json"
-
-      - name: gen-questions-json
-        run: |
-          set -euo pipefail
-          out="${RUNNER_TEMP}/questions"
-          mkdir -p "${out}"
-          python3 scripts/gen-questions-json.py \
-            --slug ci-book \
-            --title "CI Book" \
-            --author "CI Author" \
-            --count 3 \
-            -o "${out}/ci-book.questions.json"
-          jq -e '.questions | length == 3' "${out}/ci-book.questions.json"
 
       - name: rocm-aic-exporter (fixture tree)
         run: |
           set -euo pipefail
           prom="${RUNNER_TEMP}/rocm_aic_exporter.prom"
-          python3 scripts/rocm-aic-exporter.py \
-            --data-root tests/fixtures/lmcache-exporter \
+          python3 ../common/scripts/rocm-aic-exporter.py \
+            --data-root ../common/tests/fixtures/lmcache-exporter \
             --prometheus-textfile "${prom}" \
             --textfile-only \
             --skip-nfsiostat-invoke \
+            --skip-kfd-ais-bpftrace \
             --json >/dev/null
           grep -q 'rocm_aic_kv_disk_files' "${prom}"
           grep -q 'rocm_aic_kv_file_hits_histogram_bucket' "${prom}"
+          grep -q 'rocm_aic_chunk_lookup_histogram_bucket' "${prom}"
+          grep -q 'rocm_aic_chunk_stats_lookup_rows 1' "${prom}"
+          grep -q 'rocm_aic_nixl_pool_files' "${prom}"
+          grep -q 'rocm_aic_nixl_pool_slots_used' "${prom}"
+          grep -q 'rocm_aic_nixl_pool_bytes_total' "${prom}"
           grep -q 'rocm_aic_nfsiostat_present' "${prom}"
           grep -q 'rocm_aic_hipconfig_present' "${prom}"
+          prom_nixl="${RUNNER_TEMP}/rocm_aic_exporter_nixl.prom"
+          python3 ../common/scripts/rocm-aic-exporter.py \
+            --data-root ../common/tests/fixtures/lmcache-exporter-nixl \
+            --prometheus-textfile "${prom_nixl}" \
+            --textfile-only \
+            --skip-nfsiostat-invoke \
+            --skip-kfd-ais-bpftrace \
+            --json >/dev/null
+          grep -q 'rocm_aic_nixl_pool_files 2' "${prom_nixl}"
+          grep -q 'rocm_aic_nixl_pool_slots_used 2' "${prom_nixl}"
+          grep -q 'rocm_aic_nixl_pool_bytes_total 12288' "${prom_nixl}"
+          grep -q 'rocm_aic_nixl_pool_present 1' "${prom_nixl}"
+          grep -q 'rocm_aic_kv_disk_files 0' "${prom_nixl}"
+          grep -q 'rocm_aic_chunk_stats_lookup_rows 3' "${prom_nixl}"
+          grep -q 'rocm_aic_chunk_hashes_tracked 2' "${prom_nixl}"
+          grep -q 'rocm_aic_chunk_hash_mention_sum 4' "${prom_nixl}"
+          grep -q 'rocm_aic_chunk_lookup_histogram_bucket{le="20"}' "${prom_nixl}"
+          grep -q 'rocm_aic_chunk_hashes_by_lookup_count{lookup_count="3"} 1' "${prom_nixl}"
+          grep -q 'rocm_aic_chunk_hashes_by_lookup_count{lookup_count="1"} 1' "${prom_nixl}"
+          grep -q 'rocm_aic_chunk_hashes_by_lookup_count{lookup_count="11-20"} 0' "${prom_nixl}"
+          grep -q 'rocm_aic_chunk_hashes_by_lookup_count{lookup_count=">100"} 0' "${prom_nixl}"
           python3 -c "
           from importlib.machinery import SourceFileLoader
           from pathlib import Path
-          m = SourceFileLoader('ex', 'scripts/rocm-aic-exporter.py').load_module()
+          m = SourceFileLoader('ex', '../common/scripts/rocm-aic-exporter.py').load_module()
           mounts = m._parse_mountstats_nfs(
-              Path('tests/fixtures/mountstats-nfs.sample'))
+              Path('../common/tests/fixtures/mountstats-nfs.sample'))
           assert len(mounts) == 1 and mounts[0].rx_bytes == 9100
           snap = m.collect_exporter_snapshot(
-              data_root=Path('tests/fixtures/lmcache-exporter'),
+              data_root=Path('../common/tests/fixtures/lmcache-exporter'),
               include_host_metrics=False,
               run_nfsiostat=False,
               collect_hip=False,
@@ -130,7 +104,7 @@ jobs:
               snap, include_host_metrics=False)
           assert 'rocm_aic_nfsiostat_present' not in body_kv
           snap_h = m.collect_exporter_snapshot(
-              data_root=Path('tests/fixtures/lmcache-exporter'),
+              data_root=Path('../common/tests/fixtures/lmcache-exporter'),
               include_host_metrics=True,
               run_nfsiostat=False,
               collect_hip=False,
@@ -138,14 +112,40 @@ jobs:
           body_all = m.format_prometheus_textfile(
               snap_h, include_host_metrics=True)
           assert 'rocm_aic_nfsiostat_present' in body_all
+          sample_text = Path('../common/tests/fixtures/kfd-ais-bpftrace.sample').read_text()
+          samples = m.parse_kfd_ais_bpftrace_lines(sample_text)
+          assert len(samples) == 5
+          kfd = m.summarize_kfd_ais_samples(
+              samples,
+              sample_seconds=10.0,
+              bpftrace_present=True,
+              kprobe_attachable=True,
+          )
+          assert kfd.operations[('read', 'success')] == 3
+          assert kfd.operations[('write', 'success')] == 1
+          assert kfd.operations[('read', 'error')] == 1
+          assert kfd.bytes_by_direction['read'] == 4718592 * 3
+          assert kfd.latency_us_count == 4
+          kfd_body = m.format_prometheus_textfile(
+              m.ExporterSnapshot(
+                  chunk=snap.chunk,
+                  nfs=snap_h.nfs,
+                  hip=snap_h.hip,
+                  kfd_ais=kfd,
+                  host_metrics_collected=True,
+              ),
+              include_host_metrics=True,
+          )
+          assert 'rocm_aic_kfd_ais_rw_operations{direction=\"read\",outcome=\"success\"} 3' in kfd_body
+          assert 'rocm_aic_kfd_ais_latency_microseconds_count' in kfd_body
           "
 
       - name: parse-vllm-engine-log-timeseries (CSV only)
         run: |
           set -euo pipefail
           csv="${RUNNER_TEMP}/engine_timeseries.csv"
-          python3 scripts/parse-vllm-engine-log-timeseries.py \
-            tests/fixtures/engine-log-sample.txt \
+          python3 ../common/scripts/parse-vllm-engine-log-timeseries.py \
+            ../common/tests/fixtures/engine-log-sample.txt \
             --engine 0 \
             --year 2026 \
             --csv "${csv}" \

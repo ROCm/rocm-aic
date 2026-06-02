@@ -54,7 +54,7 @@ jobs:
       - name: Build vllm-lmcache-hipfile (no load; saves runner disk)
         uses: docker/build-push-action@v6
         with:
-          context: recipies/vllm-lmcache-hipfile
+          context: .
           file: recipies/vllm-lmcache-hipfile/Dockerfile
           push: false
           tags: ${{ env.IMAGE_NAME }}:ci

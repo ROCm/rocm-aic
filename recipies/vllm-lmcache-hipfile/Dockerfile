@@ -31,7 +31,7 @@ RUN apt-get clean && rm -rf /var/lib/apt/lists/* && \
 
 RUN python3 -m pip install --no-cache-dir --upgrade pip
 
-COPY patches/ /app/patches/
+COPY recipies/vllm-lmcache-hipfile/patches/ /app/patches/
 
 RUN cd /app && \
     git clone https://github.com/riley-dixon/LMCache.git && \
@@ -98,8 +98,9 @@ RUN git clone --no-checkout --filter=blob:none \
 
 RUN mkdir -p /app/configs /app/scripts
 
-COPY scripts/ /app/scripts/
-COPY configs/ /app/configs/
+COPY recipies/vllm-lmcache-hipfile/scripts/ /app/scripts/
+COPY recipies/vllm-lmcache-hipfile/configs/ /app/configs/
+COPY benchmarks/llm-prefill-benchmark/scripts/test-aic.py /app/scripts/
 
 ENV PYTHONUNBUFFERED=1 \
     PYTHONHASHSEED=0

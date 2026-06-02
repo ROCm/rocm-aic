@@ -2,16 +2,15 @@
 #
 # SPDX-License-Identifier: MIT
 #
+# Deprecated path triggers: Gutenberg run-long lives under
+# benchmarks/llm-prefill-benchmark/. Use llm-prefill-benchmark-shell.yml.
 name: vllm-lmcache-hipfile Shell
 
 on:
   pull_request:
     branches: [main]
     paths:
-      - 'recipies/vllm-lmcache-hipfile/run-long.sh'
-      - 'recipies/vllm-lmcache-hipfile/run-long-parallel.sh'
-      - 'recipies/vllm-lmcache-hipfile/scripts/stream-chat-completion.py'
-      - 'recipies/vllm-lmcache-hipfile/tests/**'
+      - 'recipies/vllm-lmcache-hipfile/tests/bin/**'
       - '.github/workflows/vllm-lmcache-hipfile-shell.yml'
   workflow_dispatch:
 
@@ -20,14 +19,14 @@ permissions:
 
 jobs:
   run-long-smoke:
-    name: run-long discovery and mock API
+    name: run-long discovery and mock API (via llm-prefill-benchmark)
     runs-on: ubuntu-latest
     env:
       MOCK_PATH_PREFIX: ${{ github.workspace }}/recipies/vllm-lmcache-hipfile/tests/bin
       RUN_LONG_STREAM_CHAT: ${{ github.workspace }}/recipies/vllm-lmcache-hipfile/tests/bin/stream-chat-completion.py
     defaults:
       run:
-        working-directory: recipies/vllm-lmcache-hipfile
+        working-directory: benchmarks/llm-prefill-benchmark
         shell: bash
 
     steps:
@@ -38,7 +37,7 @@ jobs:
 
       - name: Single-book run-long (mock stream-chat-completion)
         env:
-          BOOK_DATA_ROOT: ${{ github.workspace }}/recipies/vllm-lmcache-hipfile/tests/fixtures
+          BOOK_DATA_ROOT: ${{ github.workspace }}/benchmarks/llm-prefill-benchmark/tests/fixtures
           BOOK_SLUG: ci-mini-book
           ITERATIONS: '1'
           RUN_LONG_SEED: '42'
@@ -46,25 +45,11 @@ jobs:
           set -euo pipefail
           test -x "${RUN_LONG_STREAM_CHAT}"
           ./run-long.sh 2>&1 | tee "${RUNNER_TEMP}/run-long.log"
-          grep -q 'run-long: library mode' "${RUNNER_TEMP}/run-long.log" && exit 1 || true
           grep -q 'run-long: iteration=1/1' "${RUNNER_TEMP}/run-long.log"
-
-      - name: BOOK_SLUG_FILE allowlist
-        env:
-          BOOK_DATA_ROOT: ${{ github.workspace }}/recipies/vllm-lmcache-hipfile/tests/fixtures
-          BOOK_SLUG_FILE: ${{ github.workspace }}/recipies/vllm-lmcache-hipfile/tests/fixtures/ci-slugs.txt
-          ITERATIONS: '1'
-          RUN_LONG_SEED: '43'
-        run: |
-          set -euo pipefail
-          printf '%s\n' ci-mini-book > "${BOOK_SLUG_FILE}"
-          ./run-long.sh 2>&1 | tee "${RUNNER_TEMP}/run-long-allowlist.log"
-          grep -q 'subset=ci-mini-book' "${RUNNER_TEMP}/run-long-allowlist.log"
-          grep -q 'books=1' "${RUNNER_TEMP}/run-long-allowlist.log"
 
       - name: run-long-parallel (2 workers, mock stream-chat-completion)
         env:
-          BOOK_DATA_ROOT: ${{ github.workspace }}/recipies/vllm-lmcache-hipfile/tests/fixtures
+          BOOK_DATA_ROOT: ${{ github.workspace }}/benchmarks/llm-prefill-benchmark/tests/fixtures
           BOOK_SLUG: ci-mini-book
           PROGRESS: '0'
         run: |
@@ -73,4 +58,3 @@ jobs:
             OUTPUT_DIR="${RUNNER_TEMP}/parallel-out" \
             ./run-long-parallel.sh
           test -f "${RUNNER_TEMP}/parallel-out/"*/worker-0.jsonl
-          test -f "${RUNNER_TEMP}/parallel-out/"*/worker-1.jsonl

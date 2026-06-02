@@ -1,0 +1,39 @@
+# Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+#
+name: vllm-lmcache-nixl Config
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'recipies/vllm-lmcache-nixl/configs/**'
+      - 'recipies/vllm-lmcache-nixl/scripts/vllm-server'
+      - '.github/workflows/vllm-lmcache-nixl-config.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  yaml-lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install tools
+        run: pip install pyyaml
+
+      - name: Validate YAML configs
+        run: |
+          python3 -c "
+          import yaml, sys
+          from pathlib import Path
+          for p in Path('recipies/vllm-lmcache-nixl/configs').glob('*.yaml'):
+              yaml.safe_load(p.read_text())
+          for p in Path('recipies/vllm-lmcache-nixl/configs').glob('*.yml'):
+              yaml.safe_load(p.read_text())
+          print('OK')
+          "
+        working-directory: ${{ github.workspace }}

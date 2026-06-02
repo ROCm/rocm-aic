@@ -9,9 +9,9 @@ ROCm **vLLM** + **LMCache** image (base **`vllm/vllm-openai-rocm:v0.19.0`**), wi
 **hipFile** from **ROCm/rocm-systems**, **fio** with **libhipfile**, and **`VLH_*`**
 naming. Work from **`recipies/vllm-lmcache-hipfile/`**.
 
-Part of [rocm-aic](../../README.md). Host Python deps (including
-`scripts/test-aic.py`, which needs only `openai`): from the repo root,
-`pip install -r requirements.txt`.
+Part of [rocm-aic](../../README.md). Host Python deps for Gutenberg benchmarks
+and **`test-aic.py`**: from the repo root, `pip install -r requirements.txt`
+(see [benchmarks/llm-prefill-benchmark](../../benchmarks/llm-prefill-benchmark/README.md)).
 
 ## Contents
 
@@ -25,7 +25,7 @@ Part of [rocm-aic](../../README.md). Host Python deps (including
 - [LMCache long_doc_qa benchmark](#lmcache-long_doc_qa-benchmark)
 - [Gutenberg long-context fixtures](#gutenberg-long-context-fixtures)
 - [GitHub Actions CI](#github-actions-ci)
-- [Grafana dashboard](#grafana-grafanavllm-lmcache-prometheusjson)
+- [Grafana dashboard](#grafana-dashboard)
 
 ## Where things live
 
@@ -40,10 +40,10 @@ plugin, same **`DATA`/`subdir`** as **`gds_path`**, no **`gds_path`** key) |
 **`configs/lmcache-hipfile.yml`**, **`configs/lmcache-posix.yml`** |
 | LMCache subdir + **`serve`** (load format, ais-stats, clear GDS,
 **`enable_mfu_metrics`**) | **`configs/vllm-lmcache-hipfile.yaml`**, **`scripts/vllm-lmcache-hipfile-defaults.py`**, **`Makefile`** **`CONTAINER_DATA_DIR`**, **`CONTAINER_LOG_DIR`** |
-| Gutenberg chunks + questions + load / AIC A/B test | **`make data`**, **`scripts/test-aic.py`**, **`run-long.sh`** |
-| LMCache / NVMe textfile metrics for Grafana | **`scripts/rocm-aic-exporter.py`** |
-| Parse engine log → CSV/SVG | **`scripts/parse-vllm-engine-log-timeseries.py`** |
-| Slurm + Gutenberg **`run-long.sh`** | **`run-slurm.sh`**, **`.slurm/vllm-lmcache-hipfile.sbatch`** |
+| Gutenberg chunks + questions + load / AIC A/B test | **`make data`** (delegates to [llm-prefill-benchmark](../../benchmarks/llm-prefill-benchmark/)); **`run-long.sh`** / **`test-aic.py`** there |
+| LMCache / NVMe textfile metrics for Grafana | [recipies/common/scripts/rocm-aic-exporter.py](../common/scripts/rocm-aic-exporter.py) |
+| Parse engine log → CSV/SVG | [recipies/common/scripts/parse-vllm-engine-log-timeseries.py](../common/scripts/parse-vllm-engine-log-timeseries.py) |
+| Slurm + Gutenberg **`run-long.sh`** | **`run-slurm.sh`**, **`.slurm/vllm-lmcache-hipfile.sbatch`** (benchmark via **`LLM_PREFILL_BENCH_ROOT`**) |
 
 ## Quick start
 
@@ -162,7 +162,7 @@ read **`.slurm/logs/vllm-lmcache-hipfile-<jobid>/results-summary.md`** (per-work
 prefill/decode tok/s, LMCache store totals, bpftrace NVMe/VFS I/O, NVMe SMART
 delta, engine stats from **`server.txt`**, exit codes). Machine-readable:
 **`results-summary.json`**. Re-run post-processing:
-**`python3 .slurm/lib/summarize-vllm-lmcache-hipfile-job.py .slurm/logs/vllm-lmcache-hipfile-<jobid>`**.
+**`python3 .slurm/lib/summarize-recipe-job.py .slurm/logs/vllm-lmcache-hipfile-<jobid>`**.
 **`.slurm/run-slurm.sh`** delegates to the top-level **`run-slurm.sh`**.
 
 ## **`rocm-aic-exporter.py`** (Prometheus textfile)
@@ -186,12 +186,12 @@ Standalone exporter for LMCache / vLLM host metrics. Today it reports:
 
 ```bash
 # Host path matches make run DATA= (default /mnt/lmcache-nvme)
-python3 scripts/rocm-aic-exporter.py
-python3 scripts/rocm-aic-exporter.py --top 20 --json
+python3 ../common/scripts/rocm-aic-exporter.py
+python3 ../common/scripts/rocm-aic-exporter.py --top 20 --json
 
 # node_exporter textfile collector → Grafana (job=node_exporter)
-python3 scripts/rocm-aic-exporter.py --prometheus-textfile
-python3 scripts/rocm-aic-exporter.py \
+python3 ../common/scripts/rocm-aic-exporter.py --prometheus-textfile
+python3 ../common/scripts/rocm-aic-exporter.py \
   --prometheus-textfile /var/lib/prometheus/node-exporter/rocm_aic_exporter.prom \
   --textfile-only
 
@@ -348,6 +348,11 @@ Match **`--port`** to **`800{GPU}`** from **`ROCR_VISIBLE_DEVICES`**.
 
 ## Gutenberg long-context fixtures
 
+Gutenberg data prep and **`run-long*.sh`** live in
+[benchmarks/llm-prefill-benchmark](../../benchmarks/llm-prefill-benchmark/).
+This recipe's **`make data`** / **`make data-all`** delegate there; Slurm sets
+**`LLM_PREFILL_BENCH_ROOT`** automatically.
+
 **`data/`** is **not** tracked (see **`.gitignore`**); generate fixtures locally.
 From **`recipies/vllm-lmcache-hipfile/`**:
 
@@ -363,27 +368,27 @@ make data BOOK_SLUG=pride-and-prejudice BOOK_PG_ID=1342 \
   BOOK_TITLE='Pride and Prejudice' BOOK_AUTHOR='Jane Austen'
 ```
 
-Equivalent manual steps (hyphenated scripts under **`scripts/`**):
+Equivalent manual steps (from repo root or **`benchmarks/llm-prefill-benchmark/`**):
 
 ```bash
-python3 scripts/split-gutenberg-random-chunks.py \
+python3 benchmarks/llm-prefill-benchmark/scripts/split-gutenberg-random-chunks.py \
   --pg-id 2600 --slug war-and-peace \
   -o data/war-and-peace --count 100
 
-python3 scripts/gen-questions-json.py \
+python3 benchmarks/llm-prefill-benchmark/scripts/gen-questions-json.py \
   --slug war-and-peace --title "War and Peace" --author "Leo Tolstoy" \
   --pg-id 2600
 
 # Optional: supply your own question list (.json array or one question per line):
-python3 scripts/gen-questions-json.py \
+python3 benchmarks/llm-prefill-benchmark/scripts/gen-questions-json.py \
   --slug war-and-peace --title "War and Peace" --author "Leo Tolstoy" \
   --extra-questions /path/to/my-questions.json
 
 # Load test (run after data/<slug>/ exists):
-BOOK_SLUG=war-and-peace ./run-long.sh
+BOOK_SLUG=war-and-peace benchmarks/llm-prefill-benchmark/run-long.sh
 
 # LMCache populate / cold / warm A/B (host: pip install 'openai>=1.40.0' or full requirements.txt):
-python3 scripts/test-aic.py -o logs/test-aic.json
+python3 benchmarks/llm-prefill-benchmark/scripts/test-aic.py -o logs/test-aic.json
 # Same chunk + cache_salt; reset_prefix_cache before cold/warm; cold bypasses GDS.
 # Fresh NVMe store: new --run-id (or --skip-populate if already stored).
 ```
@@ -396,19 +401,19 @@ copies those fields into **`<slug>.questions.json`**. Backfill stats without
 rewriting chunks:
 
 ```bash
-python3 scripts/split-gutenberg-random-chunks.py --pg-id 2600 \
+python3 benchmarks/llm-prefill-benchmark/scripts/split-gutenberg-random-chunks.py --pg-id 2600 \
   --slug war-and-peace -o data/war-and-peace --stats-only
-python3 scripts/gen-questions-json.py --slug war-and-peace \
+python3 benchmarks/llm-prefill-benchmark/scripts/gen-questions-json.py --slug war-and-peace \
   --title "War and Peace" --author "Leo Tolstoy" --pg-id 2600
 ```
 
-**`run-long.sh`** honors **`BOOK_SLUG`**, **`BOOK_DATA_DIR`**, and
+**`run-long.sh`** (under **`benchmarks/llm-prefill-benchmark/`**) honors **`BOOK_SLUG`**, **`BOOK_DATA_DIR`**, and
 **`QUESTIONS_FILE`**.
 
 ### 100-book library
 
 A curated manifest lives at
-**`configs/gutenberg-library.json`** (100 English novels: PG id, slug,
+**`benchmarks/llm-prefill-benchmark/configs/gutenberg-library.json`** (100 English novels: PG id, slug,
 title, author). Build every book locally (network required; **`data/`** stays
 gitignored):
 
@@ -432,23 +437,22 @@ random book, chunk, and question on each iteration from every complete
 **`data/<slug>/`** directory:
 
 ```bash
-./run-long.sh
-./run-long.sh ITERATIONS=20
+make -C benchmarks/llm-prefill-benchmark run
+make -C benchmarks/llm-prefill-benchmark run ITERATIONS=20
 ```
 
 Single-book mode is unchanged:
 
 ```bash
-BOOK_SLUG=war-and-peace ./run-long.sh
+BOOK_SLUG=war-and-peace make -C benchmarks/llm-prefill-benchmark run
 ```
 
 Limit library mode to a subset of books with a comma-separated list or a file
 (one slug per line; **`#`** starts a comment):
 
 ```bash
-BOOK_SLUGS=war-and-peace,pride-and-prejudice ./run-long.sh
-BOOK_SLUG=war-and-peace,pride-and-prejudice ./run-long.sh   # same as BOOK_SLUGS
-BOOK_SLUG_FILE=configs/my-slugs.txt ./run-long-parallel.sh 4
+BOOK_SLUGS=war-and-peace,pride-and-prejudice make -C benchmarks/llm-prefill-benchmark run
+BOOK_SLUG_FILE=configs/my-slugs.txt make -C benchmarks/llm-prefill-benchmark run-parallel WORKERS=4
 ```
 
 **`BOOK_SLUGS`** and **`BOOK_SLUG_FILE`** may be combined (union). Do not set
@@ -460,8 +464,8 @@ Optional env: **`BOOK_DATA_ROOT`** (default **`data/`**), **`CONTEXT_FILE`**,
 random 10 k-word chunks into ~20 k words without new fixture files).
 
 ```bash
-RUN_LONG_COMBINE_CHUNKS=2 BOOK_SLUG=war-and-peace ./run-long.sh
-RUN_LONG_COMBINE_CHUNKS=2 ./run-long-parallel.sh 4
+RUN_LONG_COMBINE_CHUNKS=2 BOOK_SLUG=war-and-peace make -C benchmarks/llm-prefill-benchmark run
+RUN_LONG_COMBINE_CHUNKS=2 make -C benchmarks/llm-prefill-benchmark run-parallel WORKERS=4
 ```
 
 ### Parallel load (**`run-long-parallel.sh`**)
@@ -470,8 +474,8 @@ Run **`N`** workers in parallel; worker **`i`** uses **`RUN_LONG_SEED =
 BASE_SEED + i`** so each picks a different book/chunk/question stream:
 
 ```bash
-./run-long-parallel.sh 8
-WORKERS=8 ITERATIONS=50 BASE_SEED=42 ./run-long-parallel.sh
+make -C benchmarks/llm-prefill-benchmark run-parallel WORKERS=8
+WORKERS=8 ITERATIONS=50 BASE_SEED=42 make -C benchmarks/llm-prefill-benchmark run-parallel
 ```
 
 Per-worker JSON lines go under **`logs/run-long-parallel/<timestamp>/`**
@@ -491,10 +495,11 @@ manual Docker build. PRs do not run a full image build (runner disk); use
 **`vllm-lmcache-hipfile-docker`** via **workflow_dispatch** when you need an end-to-end
 compile. See also [rocm-aic CI][root-ci] in the root README.
 
-## Grafana **`grafana/vllm-lmcache-prometheus.json`**
+## Grafana dashboard
 
-A sample Grafana dashboard. Import into your Grafana server. This may need
-adjusting to match your exporter naming.
+Cluster dashboard: [`grafana/rocm-aic-dashboard.json`](../../grafana/rocm-aic-dashboard.json).
+Import into your Grafana server and adjust variables for your Prometheus
+labels and mount paths. See [`grafana/README.md`](../../grafana/README.md).
 
 <!-- References -->
 

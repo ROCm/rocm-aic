@@ -6,10 +6,14 @@
 """ROCm AIC Prometheus textfile exporter for vLLM + LMCache host stats.
 
 Exports LMCache KV inventory (per-model file counts and chunk bytes),
-filesystem free space on the data mount, a **Hits per KV file** histogram
-from ``chunk_hashes_*.jsonl`` (on-disk ``.data`` files only), NFS client
-byte totals per mount (via ``nfsiostat`` + ``/proc/self/mountstats``), and
-ROCm/HIP version from ``hipconfig``.
+NIXL static pool files (``obj_<slot>_<id>.bin``), filesystem free space on
+the data mount, **Hits per KV file** (``.data`` mode) and **chunk hash lookup
+frequency** histograms from ``chunk_hashes_*.jsonl`` (always parsed; NIXL
+mode uses JSONL-only lookup metrics when no ``.data`` files exist), NFS client
+byte totals per mount (via
+``nfsiostat`` + ``/proc/self/mountstats``), ROCm/HIP version from
+``hipconfig``, and optional KFD AIS kernel I/O samples from bpftrace
+(``kfd_ais_rw_file`` kprobe; see ``kfd_ais_rw.bt``).
 
 Use ``--prometheus-textfile`` to write metrics for the node_exporter
 textfile collector (same pattern as ``rocm_icms_stack_versions.prom``).
@@ -38,6 +42,7 @@ _DATA_FILE_RE = re.compile(
     + r")\.data$",
     re.IGNORECASE,
 )
+_NIXL_POOL_FILE_RE = re.compile(r"^obj_\d+_[0-9a-fA-F]+\.bin$")
 
 _METRIC_PREFIX = "rocm_aic"
 _MOUNTSTATS_DEVICE_RE = re.compile(
@@ -47,6 +52,20 @@ _MOUNTSTATS_OP_RE = re.compile(r"^\s+([A-Z][A-Z0-9_]+):\s+(.+)$")
 _HIP_VERSION_RE = re.compile(
     r"^HIP\s+version:\s*(\S+)",
     re.IGNORECASE | re.MULTILINE,
+)
+_KFD_AIS_TRACE_LINE_RE = re.compile(
+    r"^pid=(\d+) (READ|WRITE) size=(\d+) copied=(\d+) ret=(-?\d+) "
+    r"dur_us=(\d+)$"
+)
+_KFD_AIS_LATENCY_HIST_BUCKETS_US: tuple[int, ...] = (
+    1000,
+    2500,
+    5000,
+    7500,
+    10000,
+    12500,
+    15000,
+    20000,
 )
 
 
@@ -109,6 +128,56 @@ class KvDiskInventory:
     bytes_by_model: dict[str, int]
     chunk_bytes_total: int
     unrecognized_files: int
+
+
+@dataclass(frozen=True)
+class NixlPoolInventory:
+    """LMCache NIXL static pool objects under the KV directory."""
+
+    file_count: int
+    slots_used: int
+    bytes_total: int
+    bytes_on_disk: int
+
+
+def _scan_nixl_pool_inventory(kv_dir: Path) -> NixlPoolInventory:
+    """Return NIXL ``obj_*.bin`` slot counts and used bytes.
+
+    Unused pool slots stay at 0 bytes when lazy ``ftruncate`` is enabled;
+    ``bytes_total`` sums ``st_size`` only for slots that have been written.
+    """
+    file_count = 0
+    slots_used = 0
+    bytes_total = 0
+    bytes_on_disk = 0
+    if not kv_dir.is_dir():
+        return NixlPoolInventory(
+            file_count=0,
+            slots_used=0,
+            bytes_total=0,
+            bytes_on_disk=0,
+        )
+    for path in kv_dir.iterdir():
+        if not path.is_file():
+            continue
+        if not _NIXL_POOL_FILE_RE.match(path.name):
+            continue
+        file_count += 1
+        try:
+            st = path.stat()
+        except OSError:
+            continue
+        if st.st_size <= 0:
+            continue
+        slots_used += 1
+        bytes_total += st.st_size
+        bytes_on_disk += st.st_blocks * 512
+    return NixlPoolInventory(
+        file_count=file_count,
+        slots_used=slots_used,
+        bytes_total=bytes_total,
+        bytes_on_disk=bytes_on_disk,
+    )
 
 
 def _scan_kv_inventory(kv_dir: Path) -> KvDiskInventory:
@@ -179,13 +248,9 @@ def _filesystem_usage(path: Path) -> FsUsage:
     )
 
 
-def _load_hit_counts(
-    stats_glob: str,
-    disk_tags: set[str],
-) -> tuple[Counter[str], int, int]:
-    """Count stat mentions that resolve to a tag present on disk."""
-    hits: Counter[str] = Counter()
-    orphan_mentions = 0
+def _load_jsonl_hash_mentions(stats_glob: str) -> tuple[Counter[str], int]:
+    """Count how often each chunk hash appears in ``chunk_hashes`` JSONL rows."""
+    mentions: Counter[str] = Counter()
     lookup_rows = 0
     for stats_path in sorted(glob.glob(stats_glob)):
         with open(stats_path, encoding="utf-8", errors="replace") as f:
@@ -203,16 +268,68 @@ def _load_hit_counts(
                 for h in rec.get("chunk_hashes") or []:
                     if not isinstance(h, str):
                         continue
-                    resolved: str | None = None
-                    for alias in _aliases_for_jsonl_hash(h):
-                        if alias in disk_tags:
-                            resolved = alias
-                            break
-                    if resolved is None:
-                        orphan_mentions += 1
-                        continue
-                    hits[resolved] += 1
+                    mentions[_norm_jsonl_hash(h)] += 1
+    return mentions, lookup_rows
+
+
+def _disk_hit_counts(
+    mentions: Counter[str],
+    disk_tags: set[str],
+) -> tuple[Counter[str], int]:
+    """Map JSONL hash mention counts onto on-disk ``.data`` hash tags."""
+    hits: Counter[str] = Counter()
+    orphan_mentions = 0
+    for raw_hash, count in mentions.items():
+        resolved: str | None = None
+        for alias in _aliases_for_jsonl_hash(raw_hash):
+            if alias in disk_tags:
+                resolved = alias
+                break
+        if resolved is None:
+            orphan_mentions += count
+        else:
+            hits[resolved] += count
+    return hits, orphan_mentions
+
+
+def _load_hit_counts(
+    stats_glob: str,
+    disk_tags: set[str],
+) -> tuple[Counter[str], int, int]:
+    """Count stat mentions that resolve to a tag present on disk."""
+    mentions, lookup_rows = _load_jsonl_hash_mentions(stats_glob)
+    if not disk_tags:
+        return Counter(), sum(mentions.values()), lookup_rows
+    hits, orphan_mentions = _disk_hit_counts(mentions, disk_tags)
     return hits, orphan_mentions, lookup_rows
+
+
+def _empty_hit_bucket_histogram() -> dict[str, int]:
+    return {str(i): 0 for i in range(11)} | {">10": 0}
+
+
+_CHUNK_LOOKUP_TAIL_BUCKETS = ("11-20", "21-50", "51-100", ">100")
+_CHUNK_LOOKUP_HISTOGRAM_LE = (20, 50, 100)
+
+
+def _chunk_lookup_bucket_labels() -> tuple[str, ...]:
+    return tuple(str(i) for i in range(11)) + _CHUNK_LOOKUP_TAIL_BUCKETS
+
+
+def _empty_chunk_lookup_histogram() -> dict[str, int]:
+    return {label: 0 for label in _chunk_lookup_bucket_labels()}
+
+
+def _chunk_lookup_tail_bucket(count: int) -> str:
+    if count <= 10:
+        return str(count)
+    if count <= 20:
+        return "11-20"
+    if count <= 50:
+        return "21-50"
+    if count <= 100:
+        return "51-100"
+    return ">100"
 
 
 def kv_block_hit_histogram(
@@ -226,6 +343,14 @@ def kv_block_hit_histogram(
             hist[">10"] += 1
         else:
             hist[str(h)] += 1
+    return hist
+
+
+def chunk_hash_lookup_histogram(mentions: Counter[str]) -> dict[str, int]:
+    """Histogram of unique chunk hashes by how often each appears in JSONL."""
+    hist = _empty_chunk_lookup_histogram()
+    for count in mentions.values():
+        hist[_chunk_lookup_tail_bucket(count)] += 1
     return hist
 
 
@@ -257,11 +382,48 @@ class HipconfigStats:
     hipconfig_error: str | None = None
 
 
+def _empty_kfd_ais_latency_histogram() -> dict[str, int]:
+    buckets = {str(le): 0 for le in _KFD_AIS_LATENCY_HIST_BUCKETS_US}
+    buckets["+Inf"] = 0
+    return buckets
+
+
+@dataclass(frozen=True)
+class KfdAisRwSample:
+    """One completed ``kfd_ais_rw_file`` transfer from bpftrace output."""
+
+    pid: int
+    direction: str
+    size_bytes: int
+    copied_bytes: int
+    ret: int
+    duration_us: int
+
+
+@dataclass(frozen=True)
+class KfdAisStats:
+    """Aggregated KFD AIS bpftrace sample for one exporter scrape."""
+
+    bpftrace_present: bool
+    kprobe_attachable: bool
+    sample_seconds: float
+    skipped: bool
+    bpftrace_error: str | None = None
+    operations: dict[tuple[str, str], int] = field(default_factory=dict)
+    bytes_by_direction: dict[str, int] = field(default_factory=dict)
+    latency_us_histogram: dict[str, int] = field(
+        default_factory=_empty_kfd_ais_latency_histogram
+    )
+    latency_us_sum: int = 0
+    latency_us_count: int = 0
+
+
 @dataclass(frozen=True)
 class ExporterSnapshot:
     chunk: ChunkHitSummary
     nfs: NfsIoStats
     hip: HipconfigStats
+    kfd_ais: KfdAisStats
     host_metrics_collected: bool = False
 
 
@@ -291,6 +453,26 @@ def _skipped_hip_stats() -> HipconfigStats:
     )
 
 
+def _empty_kfd_ais_stats(*, skipped: bool = True) -> KfdAisStats:
+    return KfdAisStats(
+        bpftrace_present=_bpftrace_path() is not None,
+        kprobe_attachable=False,
+        sample_seconds=0.0,
+        skipped=skipped,
+        bpftrace_error=None,
+    )
+
+
+def _skipped_kfd_ais_stats() -> KfdAisStats:
+    return KfdAisStats(
+        bpftrace_present=_bpftrace_path() is not None,
+        kprobe_attachable=False,
+        sample_seconds=0.0,
+        skipped=True,
+        bpftrace_error="skipped",
+    )
+
+
 @dataclass(frozen=True)
 class ChunkHitSummary:
     data_root: Path
@@ -303,11 +485,19 @@ class ChunkHitSummary:
     orphan_stat_mentions: int
     kv_block_hit_histogram: dict[str, int]
     hit_mention_sum: int
+    chunk_lookup_histogram: dict[str, int] = field(
+        default_factory=_empty_chunk_lookup_histogram
+    )
+    chunk_hash_mention_sum: int = 0
+    unique_chunk_hashes: int = 0
     files_by_model: dict[str, int] = field(default_factory=dict)
     bytes_by_model: dict[str, int] = field(default_factory=dict)
     chunk_bytes_total: int = 0
     unrecognized_kv_files: int = 0
     filesystem: FsUsage | None = None
+    nixl_pool: NixlPoolInventory = field(
+        default_factory=lambda: NixlPoolInventory(0, 0, 0, 0)
+    )
 
 
 def collect_chunk_hit_summary(
@@ -321,18 +511,23 @@ def collect_chunk_hit_summary(
     stats_glob = str(stats_dir / "chunk_hashes_*.jsonl")
 
     inventory = _scan_kv_inventory(kv_dir)
+    nixl_pool = _scan_nixl_pool_inventory(kv_dir)
     disk = inventory.tag_to_path
     fs_usage = _filesystem_usage(kv_dir)
 
     disk_tags = set(disk)
-    hits: Counter[str] = Counter()
-    orphan_mentions = 0
-    lookup_rows = 0
+    jsonl_mentions, lookup_rows = _load_jsonl_hash_mentions(stats_glob)
     if disk_tags:
-        hits, orphan_mentions, lookup_rows = _load_hit_counts(stats_glob, disk_tags)
-    hist = kv_block_hit_histogram(hits, disk_tags) if disk_tags else {
-        str(i): 0 for i in range(11)
-    } | {">10": 0}
+        hits, orphan_mentions = _disk_hit_counts(jsonl_mentions, disk_tags)
+    else:
+        hits = Counter()
+        orphan_mentions = sum(jsonl_mentions.values())
+    hist = (
+        kv_block_hit_histogram(hits, disk_tags)
+        if disk_tags
+        else _empty_hit_bucket_histogram()
+    )
+    chunk_lookup_hist = chunk_hash_lookup_histogram(jsonl_mentions)
     hit_file_count = sum(1 for t in disk_tags if hits.get(t, 0) > 0)
 
     return ChunkHitSummary(
@@ -346,11 +541,15 @@ def collect_chunk_hit_summary(
         orphan_stat_mentions=orphan_mentions,
         kv_block_hit_histogram=hist,
         hit_mention_sum=sum(hits.values()),
+        chunk_lookup_histogram=chunk_lookup_hist,
+        chunk_hash_mention_sum=sum(jsonl_mentions.values()),
+        unique_chunk_hashes=len(jsonl_mentions),
         files_by_model=inventory.files_by_model,
         bytes_by_model=inventory.bytes_by_model,
         chunk_bytes_total=inventory.chunk_bytes_total,
         unrecognized_kv_files=inventory.unrecognized_files,
         filesystem=fs_usage,
+        nixl_pool=nixl_pool,
     )
 
 
@@ -360,6 +559,208 @@ def _nfsiostat_path() -> str | None:
 
 def _hipconfig_path() -> str | None:
     return shutil.which("hipconfig")
+
+
+def _bpftrace_path() -> str | None:
+    return shutil.which("bpftrace")
+
+
+def _kfd_ais_bpftrace_script_path() -> Path:
+    return Path(__file__).resolve().with_name("kfd_ais_rw.bt")
+
+
+def _default_kfd_ais_sample_seconds() -> float:
+    raw = os.environ.get("ROCM_AIC_KFD_AIS_SAMPLE_SECONDS", "").strip()
+    if not raw:
+        return 10.0
+    try:
+        return max(0.0, float(raw))
+    except ValueError:
+        return 10.0
+
+
+def _kfd_ais_outcome(*, ret: int, size_bytes: int, copied_bytes: int) -> str:
+    if ret != 0:
+        return "error"
+    if copied_bytes == size_bytes:
+        return "success"
+    if copied_bytes > 0:
+        return "partial"
+    return "error"
+
+
+def _kfd_ais_latency_bucket(duration_us: int) -> str:
+    for le in _KFD_AIS_LATENCY_HIST_BUCKETS_US:
+        if duration_us <= le:
+            return str(le)
+    return "+Inf"
+
+
+def parse_kfd_ais_bpftrace_lines(text: str) -> list[KfdAisRwSample]:
+    """Parse bpftrace lines emitted by ``kfd_ais_rw.bt``."""
+    samples: list[KfdAisRwSample] = []
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line:
+            continue
+        match = _KFD_AIS_TRACE_LINE_RE.match(line)
+        if match is None:
+            continue
+        pid_s, direction_raw, size_s, copied_s, ret_s, dur_s = match.groups()
+        samples.append(
+            KfdAisRwSample(
+                pid=int(pid_s),
+                direction=direction_raw.lower(),
+                size_bytes=int(size_s),
+                copied_bytes=int(copied_s),
+                ret=int(ret_s),
+                duration_us=int(dur_s),
+            )
+        )
+    return samples
+
+
+def summarize_kfd_ais_samples(
+    samples: list[KfdAisRwSample],
+    *,
+    sample_seconds: float,
+    bpftrace_present: bool,
+    kprobe_attachable: bool,
+    bpftrace_error: str | None = None,
+    skipped: bool = False,
+) -> KfdAisStats:
+    operations: Counter[tuple[str, str]] = Counter()
+    bytes_by_direction: Counter[str] = Counter()
+    latency_hist = _empty_kfd_ais_latency_histogram()
+    latency_us_sum = 0
+    latency_us_count = 0
+
+    for sample in samples:
+        outcome = _kfd_ais_outcome(
+            ret=sample.ret,
+            size_bytes=sample.size_bytes,
+            copied_bytes=sample.copied_bytes,
+        )
+        operations[(sample.direction, outcome)] += 1
+        if outcome == "success":
+            bytes_by_direction[sample.direction] += sample.copied_bytes
+            latency_us_sum += sample.duration_us
+            latency_us_count += 1
+            bucket = _kfd_ais_latency_bucket(sample.duration_us)
+            latency_hist[bucket] += 1
+
+    return KfdAisStats(
+        bpftrace_present=bpftrace_present,
+        kprobe_attachable=kprobe_attachable,
+        sample_seconds=sample_seconds,
+        skipped=skipped,
+        bpftrace_error=bpftrace_error,
+        operations=dict(operations),
+        bytes_by_direction=dict(bytes_by_direction),
+        latency_us_histogram=latency_hist,
+        latency_us_sum=latency_us_sum,
+        latency_us_count=latency_us_count,
+    )
+
+
+def _kfd_ais_kprobe_attachable() -> bool:
+    bpf = _bpftrace_path()
+    if not bpf:
+        return False
+    try:
+        proc = subprocess.run(
+            [bpf, "-l", "kprobe:*kfd_ais*"],
+            capture_output=True,
+            text=True,
+            timeout=15,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return "kprobe:kfd_ais_rw_file" in (proc.stdout or "")
+
+
+def collect_kfd_ais_stats(
+    *,
+    sample_seconds: float,
+    bpftrace_script: Path | None = None,
+) -> KfdAisStats:
+    """Sample ``kfd_ais_rw_file`` with bpftrace for ``sample_seconds``."""
+    bpf = _bpftrace_path()
+    script = bpftrace_script or _kfd_ais_bpftrace_script_path()
+    kprobe_ok = _kfd_ais_kprobe_attachable() if bpf else False
+
+    if sample_seconds <= 0:
+        return summarize_kfd_ais_samples(
+            [],
+            sample_seconds=0.0,
+            bpftrace_present=bpf is not None,
+            kprobe_attachable=kprobe_ok,
+            skipped=True,
+        )
+
+    if not bpf:
+        return summarize_kfd_ais_samples(
+            [],
+            sample_seconds=sample_seconds,
+            bpftrace_present=False,
+            kprobe_attachable=False,
+            bpftrace_error="bpftrace not found in PATH",
+        )
+
+    if not script.is_file():
+        return summarize_kfd_ais_samples(
+            [],
+            sample_seconds=sample_seconds,
+            bpftrace_present=True,
+            kprobe_attachable=kprobe_ok,
+            bpftrace_error=f"bpftrace script not found: {script}",
+        )
+
+    if not kprobe_ok:
+        return summarize_kfd_ais_samples(
+            [],
+            sample_seconds=sample_seconds,
+            bpftrace_present=True,
+            kprobe_attachable=False,
+            bpftrace_error="kprobe:kfd_ais_rw_file not available",
+        )
+
+    sample_arg = str(max(1, int(sample_seconds)))
+    timeout = max(30, int(sample_seconds) + 60)
+    try:
+        proc = subprocess.run(
+            [bpf, "-q", str(script), sample_arg],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return summarize_kfd_ais_samples(
+            [],
+            sample_seconds=sample_seconds,
+            bpftrace_present=True,
+            kprobe_attachable=True,
+            bpftrace_error=str(exc),
+        )
+
+    samples = parse_kfd_ais_bpftrace_lines(proc.stdout or "")
+    err: str | None = None
+    if proc.returncode != 0 and not samples:
+        err = (proc.stderr or proc.stdout or "").strip() or (
+            f"bpftrace exited {proc.returncode}"
+        )
+    elif proc.stderr.strip():
+        err = proc.stderr.strip()
+
+    return summarize_kfd_ais_samples(
+        samples,
+        sample_seconds=sample_seconds,
+        bpftrace_present=True,
+        kprobe_attachable=True,
+        bpftrace_error=err,
+    )
 
 
 def _invoke_nfsiostat(*, interval: int = 1, count: int = 1) -> str | None:
@@ -526,8 +927,11 @@ def collect_exporter_snapshot(
     run_nfsiostat: bool = True,
     collect_hip: bool = True,
     include_host_metrics: bool = False,
+    kfd_ais_sample_seconds: float = 0.0,
+    collect_kfd_ais: bool = True,
+    kfd_ais_bpftrace_script: Path | None = None,
 ) -> ExporterSnapshot:
-    """Collect LMCache stats; NFS/hip only when ``include_host_metrics``."""
+    """Collect LMCache stats; NFS/hip/KFD AIS only when ``include_host_metrics``."""
     mpath = mountstats_path or Path("/proc/self/mountstats")
     chunk = collect_chunk_hit_summary(
         data_root=data_root,
@@ -539,9 +943,25 @@ def collect_exporter_snapshot(
             chunk=chunk,
             nfs=_empty_nfs_stats(mpath),
             hip=_empty_hip_stats(),
+            kfd_ais=_empty_kfd_ais_stats(),
             host_metrics_collected=False,
         )
     hip = collect_hipconfig_stats() if collect_hip else _skipped_hip_stats()
+    if collect_kfd_ais and kfd_ais_sample_seconds > 0:
+        kfd_ais = collect_kfd_ais_stats(
+            sample_seconds=kfd_ais_sample_seconds,
+            bpftrace_script=kfd_ais_bpftrace_script,
+        )
+    elif not collect_kfd_ais:
+        kfd_ais = _skipped_kfd_ais_stats()
+    else:
+        kfd_ais = summarize_kfd_ais_samples(
+            [],
+            sample_seconds=0.0,
+            bpftrace_present=_bpftrace_path() is not None,
+            kprobe_attachable=_kfd_ais_kprobe_attachable(),
+            skipped=True,
+        )
     return ExporterSnapshot(
         chunk=chunk,
         nfs=collect_nfs_io_stats(
@@ -549,6 +969,7 @@ def collect_exporter_snapshot(
             run_nfsiostat=run_nfsiostat,
         ),
         hip=hip,
+        kfd_ais=kfd_ais,
         host_metrics_collected=True,
     )
 
@@ -654,6 +1075,44 @@ def format_prometheus_textfile(
         [f"{_METRIC_PREFIX}_kv_chunk_bytes_total{labels} {summary.chunk_bytes_total}"],
     )
 
+    nixl = summary.nixl_pool
+    emit(
+        f"{_METRIC_PREFIX}_nixl_pool_present",
+        "1 when NIXL obj_*.bin pool files exist under the LMCache KV path.",
+        "gauge",
+        [
+            f"{_METRIC_PREFIX}_nixl_pool_present{labels} "
+            f"{1 if nixl.file_count > 0 else 0}"
+        ],
+    )
+    emit(
+        f"{_METRIC_PREFIX}_nixl_pool_files",
+        "Number of NIXL static pool files (obj_<slot>_<id>.bin).",
+        "gauge",
+        [f"{_METRIC_PREFIX}_nixl_pool_files{labels} {nixl.file_count}"],
+    )
+    emit(
+        f"{_METRIC_PREFIX}_nixl_pool_slots_used",
+        "NIXL pool slots with non-zero size (written at least once).",
+        "gauge",
+        [f"{_METRIC_PREFIX}_nixl_pool_slots_used{labels} {nixl.slots_used}"],
+    )
+    emit(
+        f"{_METRIC_PREFIX}_nixl_pool_bytes_total",
+        "Sum of st_size for used NIXL pool slots (0-byte slots excluded).",
+        "gauge",
+        [f"{_METRIC_PREFIX}_nixl_pool_bytes_total{labels} {nixl.bytes_total}"],
+    )
+    emit(
+        f"{_METRIC_PREFIX}_nixl_pool_bytes_on_disk",
+        "Allocated block bytes for used NIXL pool slots (st_blocks * 512).",
+        "gauge",
+        [
+            f"{_METRIC_PREFIX}_nixl_pool_bytes_on_disk{labels} "
+            f"{nixl.bytes_on_disk}"
+        ],
+    )
+
     if summary.filesystem is not None:
         fs = summary.filesystem
         fs_lbl = _label_set(
@@ -725,6 +1184,77 @@ def format_prometheus_textfile(
         bucket_lines,
     )
 
+    lookup_hist = summary.chunk_lookup_histogram
+    emit(
+        f"{_METRIC_PREFIX}_chunk_hashes_tracked",
+        "Distinct chunk hashes seen in chunk_hashes JSONL lookups.",
+        "gauge",
+        [
+            f"{_METRIC_PREFIX}_chunk_hashes_tracked{labels} "
+            f"{summary.unique_chunk_hashes}"
+        ],
+    )
+    emit(
+        f"{_METRIC_PREFIX}_chunk_hash_mention_sum",
+        "Total chunk hash mentions across all chunk_hashes JSONL rows.",
+        "gauge",
+        [
+            f"{_METRIC_PREFIX}_chunk_hash_mention_sum{labels} "
+            f"{summary.chunk_hash_mention_sum}"
+        ],
+    )
+    by_lookup_lines: list[str] = []
+    for bucket in _chunk_lookup_bucket_labels():
+        lbl = _label_set({**(extra_labels or {}), "lookup_count": bucket})
+        by_lookup_lines.append(
+            f"{_METRIC_PREFIX}_chunk_hashes_by_lookup_count{lbl} "
+            f"{lookup_hist.get(bucket, 0)}"
+        )
+    emit(
+        f"{_METRIC_PREFIX}_chunk_hashes_by_lookup_count",
+        "Distinct chunk hashes grouped by JSONL lookup mention count.",
+        "gauge",
+        by_lookup_lines,
+    )
+    lookup_bucket_lines: list[str] = []
+    lookup_cumulative = 0
+    for le in range(11):
+        lookup_cumulative += lookup_hist.get(str(le), 0)
+        le_lbl = _label_set({**(extra_labels or {}), "le": str(le)})
+        lookup_bucket_lines.append(
+            f"{_METRIC_PREFIX}_chunk_lookup_histogram_bucket{le_lbl} "
+            f"{lookup_cumulative}"
+        )
+    for le_boundary, tail_bucket in zip(
+        _CHUNK_LOOKUP_HISTOGRAM_LE, _CHUNK_LOOKUP_TAIL_BUCKETS[:-1], strict=True
+    ):
+        lookup_cumulative += lookup_hist.get(tail_bucket, 0)
+        le_lbl = _label_set({**(extra_labels or {}), "le": str(le_boundary)})
+        lookup_bucket_lines.append(
+            f"{_METRIC_PREFIX}_chunk_lookup_histogram_bucket{le_lbl} "
+            f"{lookup_cumulative}"
+        )
+    lookup_cumulative += lookup_hist.get(">100", 0)
+    lookup_inf_lbl = _label_set({**(extra_labels or {}), "le": "+Inf"})
+    lookup_bucket_lines.append(
+        f"{_METRIC_PREFIX}_chunk_lookup_histogram_bucket{lookup_inf_lbl} "
+        f"{lookup_cumulative}"
+    )
+    lookup_bucket_lines.append(
+        f"{_METRIC_PREFIX}_chunk_lookup_histogram_sum{hist_labels} "
+        f"{summary.chunk_hash_mention_sum}"
+    )
+    lookup_bucket_lines.append(
+        f"{_METRIC_PREFIX}_chunk_lookup_histogram_count{hist_labels} "
+        f"{summary.unique_chunk_hashes}"
+    )
+    emit(
+        f"{_METRIC_PREFIX}_chunk_lookup_histogram",
+        "Distribution of JSONL lookup mentions per distinct chunk hash.",
+        "histogram",
+        lookup_bucket_lines,
+    )
+
     if include_host_metrics:
         nfs = snapshot.nfs
         emit(
@@ -786,6 +1316,123 @@ def format_prometheus_textfile(
                     [f"{_METRIC_PREFIX}_rocm_version_info{ver_lbl} 1"],
                 )
 
+        kfd = snapshot.kfd_ais
+        if kfd.bpftrace_error != "skipped":
+            emit(
+                f"{_METRIC_PREFIX}_kfd_ais_bpftrace_present",
+                "1 if bpftrace is installed on PATH, else 0.",
+                "gauge",
+                [
+                    f"{_METRIC_PREFIX}_kfd_ais_bpftrace_present{labels} "
+                    f"{1 if kfd.bpftrace_present else 0}"
+                ],
+            )
+            emit(
+                f"{_METRIC_PREFIX}_kfd_ais_kprobe_attachable",
+                "1 if kprobe:kfd_ais_rw_file is available, else 0.",
+                "gauge",
+                [
+                    f"{_METRIC_PREFIX}_kfd_ais_kprobe_attachable{labels} "
+                    f"{1 if kfd.kprobe_attachable else 0}"
+                ],
+            )
+            emit(
+                f"{_METRIC_PREFIX}_kfd_ais_sample_seconds",
+                "Duration of the last bpftrace sample window for KFD AIS I/O.",
+                "gauge",
+                [
+                    f"{_METRIC_PREFIX}_kfd_ais_sample_seconds{labels} "
+                    f"{kfd.sample_seconds}"
+                ],
+            )
+            emit(
+                f"{_METRIC_PREFIX}_kfd_ais_sample_skipped",
+                "1 when KFD AIS bpftrace sampling was disabled for this scrape.",
+                "gauge",
+                [
+                    f"{_METRIC_PREFIX}_kfd_ais_sample_skipped{labels} "
+                    f"{1 if kfd.skipped else 0}"
+                ],
+            )
+
+            op_lines: list[str] = []
+            for (direction, outcome), count in sorted(kfd.operations.items()):
+                op_lbl = _label_set(
+                    {
+                        **(extra_labels or {}),
+                        "direction": direction,
+                        "outcome": outcome,
+                    }
+                )
+                op_lines.append(
+                    f"{_METRIC_PREFIX}_kfd_ais_rw_operations{op_lbl} {count}"
+                )
+            for direction in ("read", "write"):
+                for outcome in ("success", "partial", "error"):
+                    key = (direction, outcome)
+                    if key in kfd.operations:
+                        continue
+                    op_lbl = _label_set(
+                        {
+                            **(extra_labels or {}),
+                            "direction": direction,
+                            "outcome": outcome,
+                        }
+                    )
+                    op_lines.append(
+                        f"{_METRIC_PREFIX}_kfd_ais_rw_operations{op_lbl} 0"
+                    )
+            emit(
+                f"{_METRIC_PREFIX}_kfd_ais_rw_operations",
+                "KFD AIS transfers observed in the last bpftrace sample window.",
+                "gauge",
+                op_lines,
+            )
+
+            byte_lines = [
+                f"{_METRIC_PREFIX}_kfd_ais_bytes"
+                f"{_label_set({**(extra_labels or {}), 'direction': direction})} "
+                f"{kfd.bytes_by_direction.get(direction, 0)}"
+                for direction in ("read", "write")
+            ]
+            emit(
+                f"{_METRIC_PREFIX}_kfd_ais_bytes",
+                "Successful KFD AIS bytes transferred in the last sample window.",
+                "gauge",
+                byte_lines,
+            )
+
+            lat_hist = kfd.latency_us_histogram
+            lat_bucket_lines: list[str] = []
+            lat_cumulative = 0
+            for le in _KFD_AIS_LATENCY_HIST_BUCKETS_US:
+                lat_cumulative += lat_hist.get(str(le), 0)
+                le_lbl = _label_set({**(extra_labels or {}), "le": str(le)})
+                lat_bucket_lines.append(
+                    f"{_METRIC_PREFIX}_kfd_ais_latency_microseconds_bucket"
+                    f"{le_lbl} {lat_cumulative}"
+                )
+            lat_cumulative += lat_hist.get("+Inf", 0)
+            lat_inf_lbl = _label_set({**(extra_labels or {}), "le": "+Inf"})
+            lat_bucket_lines.append(
+                f"{_METRIC_PREFIX}_kfd_ais_latency_microseconds_bucket"
+                f"{lat_inf_lbl} {lat_cumulative}"
+            )
+            lat_bucket_lines.append(
+                f"{_METRIC_PREFIX}_kfd_ais_latency_microseconds_sum{hist_labels} "
+                f"{kfd.latency_us_sum}"
+            )
+            lat_bucket_lines.append(
+                f"{_METRIC_PREFIX}_kfd_ais_latency_microseconds_count{hist_labels} "
+                f"{kfd.latency_us_count}"
+            )
+            emit(
+                f"{_METRIC_PREFIX}_kfd_ais_latency_microseconds",
+                "KFD AIS transfer latency for successful operations (microseconds).",
+                "histogram",
+                lat_bucket_lines,
+            )
+
     lines.append(
         f"# {_METRIC_PREFIX} generated_at={int(time.time())} "
         f"data_root={summary.data_root}"
@@ -831,6 +1478,14 @@ def _print_inventory(summary: ChunkHitSummary) -> None:
         print("No .data chunk files found.")
     if summary.unrecognized_kv_files:
         print(f"Unrecognized .data filenames = {summary.unrecognized_kv_files}")
+    nixl = summary.nixl_pool
+    if nixl.file_count > 0:
+        print("\nNIXL static pool (obj_*.bin)")
+        print(f"  Files = {nixl.file_count}")
+        print(f"  Used slots = {nixl.slots_used}")
+        print(f"  Used size (st_size) = {_format_bytes(nixl.bytes_total)}")
+        if nixl.bytes_on_disk != nixl.bytes_total:
+            print(f"  On disk (blocks) = {_format_bytes(nixl.bytes_on_disk)}")
     if summary.filesystem is not None:
         fs = summary.filesystem
         print(f"\nFilesystem {fs.path}")
@@ -839,24 +1494,30 @@ def _print_inventory(summary: ChunkHitSummary) -> None:
         print(f"  Free  = {_format_bytes(fs.free_bytes)}")
 
 
-def _print_histogram(summary: ChunkHitSummary) -> None:
-    _print_inventory(summary)
-    hist = summary.kv_block_hit_histogram
+def _print_bucket_histogram(
+    *,
+    title: str,
+    hist: dict[str, int],
+    universe_label: str,
+    universe_count: int,
+    matched_label: str,
+    matched_count: int,
+    lookup_rows: int,
+    stats_files: int,
+    extra_note: str | None = None,
+) -> None:
     label_w = 12
     cnt_w = 10
-    print("\nHits per on-disk KV file (.data)")
-    print(f"Total on-disk files = {summary.disk_file_count}")
-    print(f"Files with >= 1 stat mention = {summary.hit_file_count}")
+    print(f"\n{title}")
+    print(f"{universe_label} = {universe_count}")
+    print(f"{matched_label} = {matched_count}")
     print(
-        f"Stat lookup rows read = {summary.lookup_rows} "
-        f"({summary.stats_files} jsonl file(s))"
+        f"Stat lookup rows read = {lookup_rows} "
+        f"({stats_files} jsonl file(s))"
     )
-    if summary.orphan_stat_mentions:
-        print(
-            f"Stat mentions for deleted/missing files = "
-            f"{summary.orphan_stat_mentions} (excluded from histogram)"
-        )
-    hdr = f"{'Hits':<{label_w}}{'Files':>{cnt_w}}"
+    if extra_note:
+        print(extra_note)
+    hdr = f"{'Mentions':<{label_w}}{'Count':>{cnt_w}}"
     print(hdr)
     print("-" * len(hdr))
 
@@ -868,7 +1529,7 @@ def _print_histogram(summary: ChunkHitSummary) -> None:
         c = hist.get(k, 0)
         if c <= 0:
             continue
-        row_label = "0 hits" if i == 0 else k
+        row_label = "0 mentions" if i == 0 else k
         interior.append((row_label, c, i))
     while len(interior) > _max_interior:
         interior.pop()
@@ -884,6 +1545,69 @@ def _print_histogram(summary: ChunkHitSummary) -> None:
         ov_sum = sum(hist.get(str(j), 0) for j in range(11)) + hist.get(">10", 0)
         tail_label = ">10"
     print(f"{tail_label:<{label_w}}{ov_sum:>{cnt_w}d}")
+
+
+def _print_chunk_lookup_histogram(summary: ChunkHitSummary) -> None:
+    hist = summary.chunk_lookup_histogram
+    label_w = 12
+    cnt_w = 10
+    print("\nChunk hash lookup frequency (chunk_hashes JSONL)")
+    print(f"Distinct chunk hashes = {summary.unique_chunk_hashes}")
+    print(f"Total hash mentions = {summary.chunk_hash_mention_sum}")
+    print(
+        f"Stat lookup rows read = {summary.lookup_rows} "
+        f"({summary.stats_files} jsonl file(s))"
+    )
+    if summary.disk_file_count == 0 and summary.nixl_pool.file_count > 0:
+        print(
+            "NIXL mode: lookup references per hash; not mapped to "
+            "obj_*.bin slots"
+        )
+    hdr = f"{'Mentions':<{label_w}}{'Count':>{cnt_w}}"
+    print(hdr)
+    print("-" * len(hdr))
+    rows: list[tuple[str, int]] = []
+    for i in range(11):
+        c = hist.get(str(i), 0)
+        if c <= 0:
+            continue
+        rows.append(("0 mentions" if i == 0 else str(i), c))
+    for bucket in _CHUNK_LOOKUP_TAIL_BUCKETS:
+        c = hist.get(bucket, 0)
+        if c <= 0:
+            continue
+        rows.append((bucket, c))
+    for row_label, c in rows:
+        print(f"{row_label:<{label_w}}{c:>{cnt_w}d}")
+
+
+def _print_histogram(summary: ChunkHitSummary) -> None:
+    _print_inventory(summary)
+    if summary.disk_file_count > 0:
+        extra = None
+        if summary.orphan_stat_mentions:
+            extra = (
+                f"Stat mentions for deleted/missing files = "
+                f"{summary.orphan_stat_mentions} (excluded from histogram)"
+            )
+        _print_bucket_histogram(
+            title="Hits per on-disk KV file (.data)",
+            hist=summary.kv_block_hit_histogram,
+            universe_label="Total on-disk files",
+            universe_count=summary.disk_file_count,
+            matched_label="Files with >= 1 stat mention",
+            matched_count=summary.hit_file_count,
+            lookup_rows=summary.lookup_rows,
+            stats_files=summary.stats_files,
+            extra_note=extra,
+        )
+    if summary.lookup_rows > 0 or summary.unique_chunk_hashes > 0:
+        _print_chunk_lookup_histogram(summary)
+    elif summary.disk_file_count == 0 and summary.nixl_pool.file_count > 0:
+        print(
+            "\nChunk hash lookup frequency (chunk_hashes JSONL)\n"
+            f"No chunk_hashes JSONL rows under {summary.stats_dir}."
+        )
 
 
 def _print_host_observability(snapshot: ExporterSnapshot) -> None:
@@ -910,21 +1634,46 @@ def _print_host_observability(snapshot: ExporterSnapshot) -> None:
     if hip.hipconfig_error == "skipped":
         print("hipconfig collection skipped (--skip-hipconfig)")
         print(f"hipconfig on PATH = {hip.hipconfig_present}")
+    else:
+        print(f"hipconfig present = {hip.hipconfig_present}")
+        if hip.hipconfig_present:
+            print(f"ROCm/HIP version = {hip.rocm_version or 'unknown'}")
+        if hip.hipconfig_error:
+            print(f"hipconfig note = {hip.hipconfig_error}")
+
+    kfd = snapshot.kfd_ais
+    print("\nKFD AIS (kfd_ais_rw_file bpftrace)")
+    if kfd.bpftrace_error == "skipped":
+        print("KFD AIS bpftrace collection skipped (--skip-kfd-ais-bpftrace)")
         return
-    print(f"hipconfig present = {hip.hipconfig_present}")
-    if hip.hipconfig_present:
-        print(f"ROCm/HIP version = {hip.rocm_version or 'unknown'}")
-    if hip.hipconfig_error:
-        print(f"hipconfig note = {hip.hipconfig_error}")
+    print(f"bpftrace present = {kfd.bpftrace_present}")
+    print(f"kprobe attachable = {kfd.kprobe_attachable}")
+    print(f"sample seconds = {kfd.sample_seconds}")
+    print(f"sample skipped = {kfd.skipped}")
+    if kfd.bpftrace_error:
+        print(f"bpftrace note = {kfd.bpftrace_error}")
+    if kfd.operations:
+        print(f"{'Direction':<8} {'Outcome':<10} {'Count':>8}")
+        print("-" * 28)
+        for (direction, outcome), count in sorted(kfd.operations.items()):
+            print(f"{direction:<8} {outcome:<10} {count:>8d}")
+    for direction in ("read", "write"):
+        nbytes = kfd.bytes_by_direction.get(direction, 0)
+        if nbytes:
+            print(f"{direction} bytes (success) = {_format_bytes(nbytes)}")
+    if kfd.latency_us_count:
+        avg_us = kfd.latency_us_sum / kfd.latency_us_count
+        print(
+            f"latency us (success) count={kfd.latency_us_count} "
+            f"avg={avg_us:.0f}"
+        )
 
 
 def _default_data_root(recipe_root: Path) -> Path:
-    host = os.environ.get("VLH_HOST_DATA_ROOT", "").strip()
-    if host:
-        return Path(host)
-    makefile_data = os.environ.get("DATA", "").strip()
-    if makefile_data:
-        return Path(makefile_data)
+    for key in ("VLH_HOST_DATA_ROOT", "RADEON_HOST_DATA_ROOT", "DATA"):
+        host = os.environ.get(key, "").strip()
+        if host:
+            return Path(host)
     return Path("/mnt/lmcache-nvme")
 
 
@@ -1023,6 +1772,25 @@ def main() -> int:
             "from the textfile (PATH lookup still reported in JSON/CLI)."
         ),
     )
+    p.add_argument(
+        "--skip-kfd-ais-bpftrace",
+        action="store_true",
+        help=(
+            "Do not run kfd_ais_rw_file bpftrace sampling; omit KFD AIS metrics "
+            "from the textfile."
+        ),
+    )
+    p.add_argument(
+        "--kfd-ais-sample-seconds",
+        type=float,
+        default=None,
+        metavar="SECS",
+        help=(
+            "bpftrace sample window for kfd_ais_rw_file (default: "
+            "ROCM_AIC_KFD_AIS_SAMPLE_SECONDS or 10 when writing textfile; "
+            "0 disables)."
+        ),
+    )
     args = p.parse_args()
 
     extra_labels: dict[str, str] = {}
@@ -1042,6 +1810,15 @@ def main() -> int:
         return 1
 
     prom_path = args.prometheus_textfile
+    if args.skip_kfd_ais_bpftrace:
+        kfd_ais_sample_seconds = 0.0
+    elif args.kfd_ais_sample_seconds is not None:
+        kfd_ais_sample_seconds = max(0.0, args.kfd_ais_sample_seconds)
+    elif prom_path is not None:
+        kfd_ais_sample_seconds = _default_kfd_ais_sample_seconds()
+    else:
+        kfd_ais_sample_seconds = 0.0
+
     snapshot = collect_exporter_snapshot(
         data_root=data_root,
         kv_subdir=args.kv_subdir,
@@ -1050,13 +1827,15 @@ def main() -> int:
         run_nfsiostat=not args.skip_nfsiostat_invoke,
         collect_hip=not args.skip_hipconfig,
         include_host_metrics=prom_path is not None,
+        kfd_ais_sample_seconds=kfd_ais_sample_seconds,
+        collect_kfd_ais=not args.skip_kfd_ais_bpftrace,
     )
     summary = snapshot.chunk
 
-    if summary.disk_file_count == 0:
+    if summary.disk_file_count == 0 and summary.nixl_pool.file_count == 0:
         print(
-            f"warning: no .data files under {summary.kv_dir}; "
-            "hit histogram empty",
+            f"warning: no .data or NIXL obj_*.bin files under {summary.kv_dir}; "
+            "storage inventory empty",
             file=sys.stderr,
         )
 
@@ -1104,6 +1883,21 @@ def main() -> int:
                     f"warning: hipconfig: {snapshot.hip.hipconfig_error}",
                     file=sys.stderr,
                 )
+        if (
+            not args.skip_kfd_ais_bpftrace
+            and kfd_ais_sample_seconds > 0
+            and snapshot.host_metrics_collected
+        ):
+            kfd = snapshot.kfd_ais
+            if not kfd.bpftrace_present:
+                print("warning: bpftrace not found; KFD AIS metrics empty", file=sys.stderr)
+            elif not kfd.kprobe_attachable:
+                print(
+                    "warning: kprobe:kfd_ais_rw_file not available",
+                    file=sys.stderr,
+                )
+            elif kfd.bpftrace_error and not kfd.operations:
+                print(f"warning: kfd ais bpftrace: {kfd.bpftrace_error}", file=sys.stderr)
 
     if prom_path is not None:
         body = format_prometheus_textfile(
@@ -1127,9 +1921,18 @@ def main() -> int:
                     "orphan_stat_mentions": summary.orphan_stat_mentions,
                     "hit_mention_sum": summary.hit_mention_sum,
                     "kv_block_hit_histogram": summary.kv_block_hit_histogram,
+                    "chunk_lookup_histogram": summary.chunk_lookup_histogram,
+                    "chunk_hash_mention_sum": summary.chunk_hash_mention_sum,
+                    "unique_chunk_hashes": summary.unique_chunk_hashes,
                     "files_by_model": summary.files_by_model,
                     "bytes_by_model": summary.bytes_by_model,
                     "chunk_bytes_total": summary.chunk_bytes_total,
+                    "nixl_pool": {
+                        "file_count": summary.nixl_pool.file_count,
+                        "slots_used": summary.nixl_pool.slots_used,
+                        "bytes_total": summary.nixl_pool.bytes_total,
+                        "bytes_on_disk": summary.nixl_pool.bytes_on_disk,
+                    },
                     "filesystem": (
                         {
                             "path": str(summary.filesystem.path),
@@ -1168,6 +1971,26 @@ def main() -> int:
                         if snapshot.host_metrics_collected
                         else None
                     ),
+                    "kfd_ais": (
+                        {
+                            "bpftrace_present": snapshot.kfd_ais.bpftrace_present,
+                            "kprobe_attachable": snapshot.kfd_ais.kprobe_attachable,
+                            "sample_seconds": snapshot.kfd_ais.sample_seconds,
+                            "skipped": snapshot.kfd_ais.skipped,
+                            "bpftrace_error": snapshot.kfd_ais.bpftrace_error,
+                            "operations": {
+                                f"{direction}:{outcome}": count
+                                for (direction, outcome), count in (
+                                    snapshot.kfd_ais.operations.items()
+                                )
+                            },
+                            "bytes_by_direction": snapshot.kfd_ais.bytes_by_direction,
+                            "latency_us_sum": snapshot.kfd_ais.latency_us_sum,
+                            "latency_us_count": snapshot.kfd_ais.latency_us_count,
+                        }
+                        if snapshot.host_metrics_collected
+                        else None
+                    ),
                 },
                 indent=2,
             )
@@ -1183,14 +2006,19 @@ def main() -> int:
         if snapshot.host_metrics_collected:
             _print_host_observability(snapshot)
         if args.top > 0:
+            stats_glob = str(summary.stats_dir / "chunk_hashes_*.jsonl")
             disk = _scan_disk_kv_files(summary.kv_dir)
-            hits, _, _ = _load_hit_counts(
-                str(summary.stats_dir / "chunk_hashes_*.jsonl"),
-                set(disk),
-            )
-            print(f"\nTop {args.top} on-disk files by stat mentions")
-            for tag, count in hits.most_common(args.top):
-                print(f"  {count:8d}  {disk[tag].name}")
+            if disk:
+                hits, _, _ = _load_hit_counts(stats_glob, set(disk))
+                print(f"\nTop {args.top} on-disk files by stat mentions")
+                for tag, count in hits.most_common(args.top):
+                    print(f"  {count:8d}  {disk[tag].name}")
+            else:
+                mentions, _ = _load_jsonl_hash_mentions(stats_glob)
+                if mentions:
+                    print(f"\nTop {args.top} chunk hashes by JSONL lookup mentions")
+                    for h, count in mentions.most_common(args.top):
+                        print(f"  {count:8d}  {h}")
 
     return 0
 

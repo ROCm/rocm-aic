@@ -10,6 +10,7 @@ Environment=ROCM_ICMS_TEXTFILE_DIR=/var/lib/node_exporter/textfile_collector
 Environment=VLH_HOST_DATA_ROOT=/mnt/lmcache-nvme
 Environment=VLH_LMCACHE_KV_SUBDIR=lmcache
 Environment=VLH_LMCACHE_CHUNK_STATS_SUBDIR=lmcache_chunk_stats
+Environment=ROCM_AIC_KFD_AIS_SAMPLE_SECONDS=10
 ExecStart=/usr/bin/python3 /opt/rocm-aic-exporter/rocm-aic-exporter.py \
   --prometheus-textfile \
   --textfile-only
