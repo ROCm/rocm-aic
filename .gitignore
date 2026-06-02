@@ -2,6 +2,9 @@
 .venv
 __pycache__
 
+# VSCode related
+.vscode/
+
 # Large archives
 vendors/weka/weka-drops/*.tar
 vendors/weka/weka-drops/*.squashfs
@@ -55,6 +58,7 @@ recipies/vllm-lmcache-hipfile/logs/
 recipies/vllm-lmcache-hipfile/data/
 recipies/vllm-lmcache-nixl/data/
 recipies/vllm-lmcache-nixl/logs/
+recipies/vllm-atom-andy/logs/
 
 # benchmark logs and reports
 benchmarks/ttft-lmcache/logs/
