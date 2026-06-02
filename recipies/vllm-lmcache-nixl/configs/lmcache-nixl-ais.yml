@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: MIT
 #
-# LMCache NIXL storage backend — AIS (hipFile) on ROCm.
+# LMCache NIXL storage backend — AIS_MT (sync hipFile) on ROCm.
 
 chunk_size: 256
 local_cpu: false
@@ -16,6 +16,7 @@ nixl_buffer_device: cuda
 
 extra_config:
   enable_nixl_storage: true
-  nixl_backend: AIS
+  # Sync hipFileRead/Write (ROCm hipFile 0.2.x batch APIs are stubbed).
+  nixl_backend: AIS_MT
   nixl_pool_size: 4096
   use_direct_io: true

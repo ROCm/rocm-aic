@@ -55,6 +55,7 @@ jobs:
             --prometheus-textfile "${prom}" \
             --textfile-only \
             --skip-nfsiostat-invoke \
+            --skip-kfd-ais-bpftrace \
             --json >/dev/null
           grep -q 'rocm_aic_kv_disk_files' "${prom}"
           grep -q 'rocm_aic_kv_file_hits_histogram_bucket' "${prom}"
@@ -70,6 +71,7 @@ jobs:
             --prometheus-textfile "${prom_nixl}" \
             --textfile-only \
             --skip-nfsiostat-invoke \
+            --skip-kfd-ais-bpftrace \
             --json >/dev/null
           grep -q 'rocm_aic_nixl_pool_files 2' "${prom_nixl}"
           grep -q 'rocm_aic_nixl_pool_bytes_total 12288' "${prom_nixl}"
@@ -108,6 +110,32 @@ jobs:
           body_all = m.format_prometheus_textfile(
               snap_h, include_host_metrics=True)
           assert 'rocm_aic_nfsiostat_present' in body_all
+          sample_text = Path('../../common/tests/fixtures/kfd-ais-bpftrace.sample').read_text()
+          samples = m.parse_kfd_ais_bpftrace_lines(sample_text)
+          assert len(samples) == 5
+          kfd = m.summarize_kfd_ais_samples(
+              samples,
+              sample_seconds=10.0,
+              bpftrace_present=True,
+              kprobe_attachable=True,
+          )
+          assert kfd.operations[('read', 'success')] == 3
+          assert kfd.operations[('write', 'success')] == 1
+          assert kfd.operations[('read', 'error')] == 1
+          assert kfd.bytes_by_direction['read'] == 4718592 * 3
+          assert kfd.latency_us_count == 4
+          kfd_body = m.format_prometheus_textfile(
+              m.ExporterSnapshot(
+                  chunk=snap.chunk,
+                  nfs=snap_h.nfs,
+                  hip=snap_h.hip,
+                  kfd_ais=kfd,
+                  host_metrics_collected=True,
+              ),
+              include_host_metrics=True,
+          )
+          assert 'rocm_aic_kfd_ais_rw_operations{direction=\"read\",outcome=\"success\"} 3' in kfd_body
+          assert 'rocm_aic_kfd_ais_latency_microseconds_count' in kfd_body
           "
 
       - name: parse-vllm-engine-log-timeseries (CSV only)

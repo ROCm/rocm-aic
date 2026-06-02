@@ -75,7 +75,10 @@ host_setup_rocm_icms_textfile_dir: "{{ host_setup_node_exporter_textfile_dir }}"
 host_setup_rocm_aic_exporter_enabled: true
 host_setup_rocm_aic_exporter_install_dir: /opt/rocm-aic-exporter
 host_setup_rocm_aic_exporter_script_src: >-
-  {{ role_path }}/../../../recipies/vllm-lmcache-hipfile/scripts/rocm-aic-exporter.py
+  {{ role_path }}/../../../recipies/common/scripts/rocm-aic-exporter.py
+host_setup_rocm_aic_exporter_kfd_ais_bt_src: >-
+  {{ role_path }}/../../../recipies/common/scripts/kfd_ais_rw.bt
+host_setup_rocm_aic_exporter_kfd_ais_sample_seconds: 10
 host_setup_rocm_aic_exporter_textfile_path: >-
   {{ host_setup_node_exporter_textfile_dir }}/rocm_aic_exporter.prom
 host_setup_rocm_aic_exporter_vlh_host_data_root: /mnt/lmcache-nvme

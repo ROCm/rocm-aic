@@ -52,6 +52,26 @@ def _lmcache_io_mode() -> str:
     return os.environ.get("VLN_LMCACHE_IO", "nixl-posix").strip().lower()
 
 
+def _ais_hipfile_io_mode(mode: str) -> bool:
+    return mode in (
+        "ais",
+        "ais_mt",
+        "ais-mt",
+        "ais_batch",
+        "ais-batch",
+        "hipfile",
+        "hip",
+    )
+
+
+def _nixl_ais_backend_for_mode(mode: str) -> str | None:
+    if mode in ("ais_batch", "ais-batch"):
+        return "AIS"
+    if _ais_hipfile_io_mode(mode):
+        return "AIS_MT"
+    return None
+
+
 def _truthy(name: str, default: str = "1") -> bool:
     v = os.environ.get(name, default).strip().lower()
     return v not in ("0", "false", "no", "off", "")
@@ -134,13 +154,11 @@ def _lmcache_template_from_svc(svc: dict[str, Any]) -> Path | None:
     mode = _lmcache_io_mode()
     if mode in ("nixl-posix", "posix", "nixl"):
         key = "lmcache_nixl_posix"
-    elif mode in ("ais", "hipfile", "hip"):
-        key = "lmcache_nixl_ais"
-    elif mode in ("ais_mt", "ais-mt"):
+    elif _ais_hipfile_io_mode(mode):
         key = "lmcache_nixl_ais"
     else:
         print(
-            "ERROR: VLN_LMCACHE_IO must be nixl-posix, ais, or ais_mt "
+            "ERROR: VLN_LMCACHE_IO must be nixl-posix, ais, ais_mt, or ais_batch "
             f"(got {mode!r}); see configs/vllm-lmcache-nixl.yaml",
             file=sys.stderr,
         )
@@ -188,10 +206,9 @@ def _materialize_lmcache_config(svc: dict[str, Any], data_root: Path) -> Path | 
     if not isinstance(extra, dict):
         extra = {}
     extra["nixl_path"] = str(nixl_path)
-    if mode in ("ais_mt", "ais-mt"):
-        extra["nixl_backend"] = "AIS_MT"
-    elif mode in ("ais", "hipfile", "hip"):
-        extra["nixl_backend"] = "AIS"
+    ais_backend = _nixl_ais_backend_for_mode(mode)
+    if ais_backend is not None:
+        extra["nixl_backend"] = ais_backend
     cfg["extra_config"] = extra
 
     buf_mb = os.environ.get("VLN_NIXL_BUFFER_SIZE", "").strip()
@@ -206,7 +223,7 @@ def _materialize_lmcache_config(svc: dict[str, Any], data_root: Path) -> Path | 
 
     buf_dev = os.environ.get("VLN_NIXL_BUFFER_DEVICE", "").strip()
     if buf_dev:
-        if mode in ("ais", "ais_mt", "ais-mt", "hipfile", "hip") and buf_dev == "cpu":
+        if _ais_hipfile_io_mode(mode) and buf_dev == "cpu":
             print(
                 "WARN: VLN_NIXL_BUFFER_DEVICE=cpu with AIS hipFile may fall back to "
                 "compat mode; use cuda (default in lmcache-nixl-ais.yml)",
@@ -225,18 +242,26 @@ def _materialize_lmcache_config(svc: dict[str, Any], data_root: Path) -> Path | 
             )
     cfg["extra_config"] = extra
 
-    if mode in ("ais", "ais_mt", "ais-mt", "hipfile", "hip"):
+    if _ais_hipfile_io_mode(mode):
         buf_bytes = cfg.get("nixl_buffer_size")
         buf_dev_effective = cfg.get("nixl_buffer_device", "cpu")
+        nixl_backend = extra.get("nixl_backend", "AIS_MT")
         if isinstance(buf_bytes, int) and buf_dev_effective == "cuda":
             buf_mib = buf_bytes // (1024 * 1024)
             pool = extra.get("nixl_pool_size")
             print(
-                f"vllm-lmcache-nixl AIS: nixl_buffer_device=cuda "
+                f"vllm-lmcache-nixl {nixl_backend}: nixl_buffer_device=cuda "
                 f"nixl_buffer_size={buf_mib} MiB nixl_pool_size={pool!r} "
                 f"(VRAM + ~{pool} NVMe fds at init)",
                 file=sys.stderr,
             )
+            if nixl_backend == "AIS":
+                print(
+                    "WARN: nixl_backend=AIS uses hipFile batch APIs; on ROCm "
+                    "hipFile 0.2.x batch GetStatus is not implemented — prefer "
+                    "VLN_LMCACHE_IO=ais (AIS_MT default) or ais_mt",
+                    file=sys.stderr,
+                )
             if buf_mib >= 1024:
                 print(
                     "WARN: AIS VRAM buffer >= 1024 MiB can OOM on 16 GiB GPUs; "
@@ -375,7 +400,7 @@ def main() -> int:
     _apply_nixl_runtime_env(env, svc)
 
     mode = _lmcache_io_mode()
-    if mode in ("ais", "ais_mt", "ais-mt", "hipfile", "hip"):
+    if _ais_hipfile_io_mode(mode):
         env["HIPFILE_UNSUPPORTED_FILE_SYSTEMS"] = "true"
         env["HIPFILE_ALLOW_COMPAT_MODE"] = "false"
         env["HIPFILE_STATS_LEVEL"] = "0"

@@ -19,6 +19,13 @@
     mode: "0755"
   notify: Reload systemd for rocm-aic-exporter
 
+- name: Install kfd_ais_rw bpftrace program for rocm-aic-exporter
+  ansible.builtin.copy:
+    src: "{{ host_setup_rocm_aic_exporter_kfd_ais_bt_src }}"
+    dest: "{{ host_setup_rocm_aic_exporter_install_dir }}/kfd_ais_rw.bt"
+    mode: "0644"
+  notify: Reload systemd for rocm-aic-exporter
+
 - name: Install systemd unit for rocm-aic-exporter
   ansible.builtin.template:
     src: rocm-aic-exporter.service.j2

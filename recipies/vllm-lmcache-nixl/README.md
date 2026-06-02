@@ -26,10 +26,16 @@ make -C recipies/vllm-lmcache-nixl run VLN_LMCACHE_IO=nixl-posix
 | Value | LMCache / NIXL backend |
 |-------|-------------------------|
 | `nixl-posix` (default) | NIXL POSIX on local NVMe |
-| `ais` | NIXL AIS + hipFile (VRAM staging buffer; see below) |
-| `ais_mt` | NIXL AIS_MT + hipFile (VRAM staging buffer) |
+| `ais` | NIXL **AIS_MT** + sync hipFile (default AIS path; see below) |
+| `ais_mt` | Same as `ais` (explicit alias) |
+| `ais_batch` | NIXL AIS batch hipFile (stub on ROCm hipFile 0.2.x; not recommended) |
 
 ## AIS / hipFile (non-compat)
+
+ROCm **hipFile 0.2.x** implements sync ``hipFileRead``/``hipFileWrite`` only;
+batch ``hipFileBatchIOGetStatus`` is not implemented on AMD. This recipe
+therefore maps ``VLN_LMCACHE_IO=ais`` to NIXL **AIS_MT** (thread-pool sync I/O).
+Use ``VLN_LMCACHE_IO=ais_batch`` only to experiment with the batch AIS plugin.
 
 AIS mode uses a **GPU (VRAM) NIXL staging buffer** so `hipFileBufRegister`
 succeeds and transfers use the direct hipFile path. The template
@@ -50,7 +56,7 @@ Override staging device or size:
 VLN_NIXL_BUFFER_DEVICE=cuda VLN_NIXL_BUFFER_SIZE=512 make run VLN_LMCACHE_IO=ais
 ```
 
-At startup you should see ``Backend AIS was instantiated`` **without** a flood
+At startup you should see ``Backend AIS_MT was instantiated`` **without** a flood
 of ``buffer registration failed - will use compat mode`` warnings. The default
 **512 MiB** VRAM staging buffer is reserved on GPU **in addition** to vLLM KV
 cache. On **16 GiB** GPUs, HIP OOM during warmup is common unless you tune:

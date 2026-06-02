@@ -11,8 +11,9 @@ the data mount, **Hits per KV file** (``.data`` mode) and **chunk hash lookup
 frequency** histograms from ``chunk_hashes_*.jsonl`` (always parsed; NIXL
 mode uses JSONL-only lookup metrics when no ``.data`` files exist), NFS client
 byte totals per mount (via
-``nfsiostat`` + ``/proc/self/mountstats``), and ROCm/HIP version from
-``hipconfig``.
+``nfsiostat`` + ``/proc/self/mountstats``), ROCm/HIP version from
+``hipconfig``, and optional KFD AIS kernel I/O samples from bpftrace
+(``kfd_ais_rw_file`` kprobe; see ``kfd_ais_rw.bt``).
 
 Use ``--prometheus-textfile`` to write metrics for the node_exporter
 textfile collector (same pattern as ``rocm_icms_stack_versions.prom``).
@@ -51,6 +52,20 @@ _MOUNTSTATS_OP_RE = re.compile(r"^\s+([A-Z][A-Z0-9_]+):\s+(.+)$")
 _HIP_VERSION_RE = re.compile(
     r"^HIP\s+version:\s*(\S+)",
     re.IGNORECASE | re.MULTILINE,
+)
+_KFD_AIS_TRACE_LINE_RE = re.compile(
+    r"^pid=(\d+) (READ|WRITE) size=(\d+) copied=(\d+) ret=(-?\d+) "
+    r"dur_us=(\d+)$"
+)
+_KFD_AIS_LATENCY_HIST_BUCKETS_US: tuple[int, ...] = (
+    1000,
+    2500,
+    5000,
+    7500,
+    10000,
+    12500,
+    15000,
+    20000,
 )
 
 
@@ -344,11 +359,48 @@ class HipconfigStats:
     hipconfig_error: str | None = None
 
 
+def _empty_kfd_ais_latency_histogram() -> dict[str, int]:
+    buckets = {str(le): 0 for le in _KFD_AIS_LATENCY_HIST_BUCKETS_US}
+    buckets["+Inf"] = 0
+    return buckets
+
+
+@dataclass(frozen=True)
+class KfdAisRwSample:
+    """One completed ``kfd_ais_rw_file`` transfer from bpftrace output."""
+
+    pid: int
+    direction: str
+    size_bytes: int
+    copied_bytes: int
+    ret: int
+    duration_us: int
+
+
+@dataclass(frozen=True)
+class KfdAisStats:
+    """Aggregated KFD AIS bpftrace sample for one exporter scrape."""
+
+    bpftrace_present: bool
+    kprobe_attachable: bool
+    sample_seconds: float
+    skipped: bool
+    bpftrace_error: str | None = None
+    operations: dict[tuple[str, str], int] = field(default_factory=dict)
+    bytes_by_direction: dict[str, int] = field(default_factory=dict)
+    latency_us_histogram: dict[str, int] = field(
+        default_factory=_empty_kfd_ais_latency_histogram
+    )
+    latency_us_sum: int = 0
+    latency_us_count: int = 0
+
+
 @dataclass(frozen=True)
 class ExporterSnapshot:
     chunk: ChunkHitSummary
     nfs: NfsIoStats
     hip: HipconfigStats
+    kfd_ais: KfdAisStats
     host_metrics_collected: bool = False
 
 
@@ -375,6 +427,26 @@ def _skipped_hip_stats() -> HipconfigStats:
         hipconfig_present=_hipconfig_path() is not None,
         rocm_version="",
         hipconfig_error="skipped",
+    )
+
+
+def _empty_kfd_ais_stats(*, skipped: bool = True) -> KfdAisStats:
+    return KfdAisStats(
+        bpftrace_present=_bpftrace_path() is not None,
+        kprobe_attachable=False,
+        sample_seconds=0.0,
+        skipped=skipped,
+        bpftrace_error=None,
+    )
+
+
+def _skipped_kfd_ais_stats() -> KfdAisStats:
+    return KfdAisStats(
+        bpftrace_present=_bpftrace_path() is not None,
+        kprobe_attachable=False,
+        sample_seconds=0.0,
+        skipped=True,
+        bpftrace_error="skipped",
     )
 
 
@@ -464,6 +536,208 @@ def _nfsiostat_path() -> str | None:
 
 def _hipconfig_path() -> str | None:
     return shutil.which("hipconfig")
+
+
+def _bpftrace_path() -> str | None:
+    return shutil.which("bpftrace")
+
+
+def _kfd_ais_bpftrace_script_path() -> Path:
+    return Path(__file__).resolve().with_name("kfd_ais_rw.bt")
+
+
+def _default_kfd_ais_sample_seconds() -> float:
+    raw = os.environ.get("ROCM_AIC_KFD_AIS_SAMPLE_SECONDS", "").strip()
+    if not raw:
+        return 10.0
+    try:
+        return max(0.0, float(raw))
+    except ValueError:
+        return 10.0
+
+
+def _kfd_ais_outcome(*, ret: int, size_bytes: int, copied_bytes: int) -> str:
+    if ret != 0:
+        return "error"
+    if copied_bytes == size_bytes:
+        return "success"
+    if copied_bytes > 0:
+        return "partial"
+    return "error"
+
+
+def _kfd_ais_latency_bucket(duration_us: int) -> str:
+    for le in _KFD_AIS_LATENCY_HIST_BUCKETS_US:
+        if duration_us <= le:
+            return str(le)
+    return "+Inf"
+
+
+def parse_kfd_ais_bpftrace_lines(text: str) -> list[KfdAisRwSample]:
+    """Parse bpftrace lines emitted by ``kfd_ais_rw.bt``."""
+    samples: list[KfdAisRwSample] = []
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line:
+            continue
+        match = _KFD_AIS_TRACE_LINE_RE.match(line)
+        if match is None:
+            continue
+        pid_s, direction_raw, size_s, copied_s, ret_s, dur_s = match.groups()
+        samples.append(
+            KfdAisRwSample(
+                pid=int(pid_s),
+                direction=direction_raw.lower(),
+                size_bytes=int(size_s),
+                copied_bytes=int(copied_s),
+                ret=int(ret_s),
+                duration_us=int(dur_s),
+            )
+        )
+    return samples
+
+
+def summarize_kfd_ais_samples(
+    samples: list[KfdAisRwSample],
+    *,
+    sample_seconds: float,
+    bpftrace_present: bool,
+    kprobe_attachable: bool,
+    bpftrace_error: str | None = None,
+    skipped: bool = False,
+) -> KfdAisStats:
+    operations: Counter[tuple[str, str]] = Counter()
+    bytes_by_direction: Counter[str] = Counter()
+    latency_hist = _empty_kfd_ais_latency_histogram()
+    latency_us_sum = 0
+    latency_us_count = 0
+
+    for sample in samples:
+        outcome = _kfd_ais_outcome(
+            ret=sample.ret,
+            size_bytes=sample.size_bytes,
+            copied_bytes=sample.copied_bytes,
+        )
+        operations[(sample.direction, outcome)] += 1
+        if outcome == "success":
+            bytes_by_direction[sample.direction] += sample.copied_bytes
+            latency_us_sum += sample.duration_us
+            latency_us_count += 1
+            bucket = _kfd_ais_latency_bucket(sample.duration_us)
+            latency_hist[bucket] += 1
+
+    return KfdAisStats(
+        bpftrace_present=bpftrace_present,
+        kprobe_attachable=kprobe_attachable,
+        sample_seconds=sample_seconds,
+        skipped=skipped,
+        bpftrace_error=bpftrace_error,
+        operations=dict(operations),
+        bytes_by_direction=dict(bytes_by_direction),
+        latency_us_histogram=latency_hist,
+        latency_us_sum=latency_us_sum,
+        latency_us_count=latency_us_count,
+    )
+
+
+def _kfd_ais_kprobe_attachable() -> bool:
+    bpf = _bpftrace_path()
+    if not bpf:
+        return False
+    try:
+        proc = subprocess.run(
+            [bpf, "-l", "kprobe:*kfd_ais*"],
+            capture_output=True,
+            text=True,
+            timeout=15,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return "kprobe:kfd_ais_rw_file" in (proc.stdout or "")
+
+
+def collect_kfd_ais_stats(
+    *,
+    sample_seconds: float,
+    bpftrace_script: Path | None = None,
+) -> KfdAisStats:
+    """Sample ``kfd_ais_rw_file`` with bpftrace for ``sample_seconds``."""
+    bpf = _bpftrace_path()
+    script = bpftrace_script or _kfd_ais_bpftrace_script_path()
+    kprobe_ok = _kfd_ais_kprobe_attachable() if bpf else False
+
+    if sample_seconds <= 0:
+        return summarize_kfd_ais_samples(
+            [],
+            sample_seconds=0.0,
+            bpftrace_present=bpf is not None,
+            kprobe_attachable=kprobe_ok,
+            skipped=True,
+        )
+
+    if not bpf:
+        return summarize_kfd_ais_samples(
+            [],
+            sample_seconds=sample_seconds,
+            bpftrace_present=False,
+            kprobe_attachable=False,
+            bpftrace_error="bpftrace not found in PATH",
+        )
+
+    if not script.is_file():
+        return summarize_kfd_ais_samples(
+            [],
+            sample_seconds=sample_seconds,
+            bpftrace_present=True,
+            kprobe_attachable=kprobe_ok,
+            bpftrace_error=f"bpftrace script not found: {script}",
+        )
+
+    if not kprobe_ok:
+        return summarize_kfd_ais_samples(
+            [],
+            sample_seconds=sample_seconds,
+            bpftrace_present=True,
+            kprobe_attachable=False,
+            bpftrace_error="kprobe:kfd_ais_rw_file not available",
+        )
+
+    sample_arg = str(max(1, int(sample_seconds)))
+    timeout = max(30, int(sample_seconds) + 60)
+    try:
+        proc = subprocess.run(
+            [bpf, "-q", str(script), sample_arg],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return summarize_kfd_ais_samples(
+            [],
+            sample_seconds=sample_seconds,
+            bpftrace_present=True,
+            kprobe_attachable=True,
+            bpftrace_error=str(exc),
+        )
+
+    samples = parse_kfd_ais_bpftrace_lines(proc.stdout or "")
+    err: str | None = None
+    if proc.returncode != 0 and not samples:
+        err = (proc.stderr or proc.stdout or "").strip() or (
+            f"bpftrace exited {proc.returncode}"
+        )
+    elif proc.stderr.strip():
+        err = proc.stderr.strip()
+
+    return summarize_kfd_ais_samples(
+        samples,
+        sample_seconds=sample_seconds,
+        bpftrace_present=True,
+        kprobe_attachable=True,
+        bpftrace_error=err,
+    )
 
 
 def _invoke_nfsiostat(*, interval: int = 1, count: int = 1) -> str | None:
@@ -630,8 +904,11 @@ def collect_exporter_snapshot(
     run_nfsiostat: bool = True,
     collect_hip: bool = True,
     include_host_metrics: bool = False,
+    kfd_ais_sample_seconds: float = 0.0,
+    collect_kfd_ais: bool = True,
+    kfd_ais_bpftrace_script: Path | None = None,
 ) -> ExporterSnapshot:
-    """Collect LMCache stats; NFS/hip only when ``include_host_metrics``."""
+    """Collect LMCache stats; NFS/hip/KFD AIS only when ``include_host_metrics``."""
     mpath = mountstats_path or Path("/proc/self/mountstats")
     chunk = collect_chunk_hit_summary(
         data_root=data_root,
@@ -643,9 +920,25 @@ def collect_exporter_snapshot(
             chunk=chunk,
             nfs=_empty_nfs_stats(mpath),
             hip=_empty_hip_stats(),
+            kfd_ais=_empty_kfd_ais_stats(),
             host_metrics_collected=False,
         )
     hip = collect_hipconfig_stats() if collect_hip else _skipped_hip_stats()
+    if collect_kfd_ais and kfd_ais_sample_seconds > 0:
+        kfd_ais = collect_kfd_ais_stats(
+            sample_seconds=kfd_ais_sample_seconds,
+            bpftrace_script=kfd_ais_bpftrace_script,
+        )
+    elif not collect_kfd_ais:
+        kfd_ais = _skipped_kfd_ais_stats()
+    else:
+        kfd_ais = summarize_kfd_ais_samples(
+            [],
+            sample_seconds=0.0,
+            bpftrace_present=_bpftrace_path() is not None,
+            kprobe_attachable=_kfd_ais_kprobe_attachable(),
+            skipped=True,
+        )
     return ExporterSnapshot(
         chunk=chunk,
         nfs=collect_nfs_io_stats(
@@ -653,6 +946,7 @@ def collect_exporter_snapshot(
             run_nfsiostat=run_nfsiostat,
         ),
         hip=hip,
+        kfd_ais=kfd_ais,
         host_metrics_collected=True,
     )
 
@@ -984,6 +1278,123 @@ def format_prometheus_textfile(
                     [f"{_METRIC_PREFIX}_rocm_version_info{ver_lbl} 1"],
                 )
 
+        kfd = snapshot.kfd_ais
+        if kfd.bpftrace_error != "skipped":
+            emit(
+                f"{_METRIC_PREFIX}_kfd_ais_bpftrace_present",
+                "1 if bpftrace is installed on PATH, else 0.",
+                "gauge",
+                [
+                    f"{_METRIC_PREFIX}_kfd_ais_bpftrace_present{labels} "
+                    f"{1 if kfd.bpftrace_present else 0}"
+                ],
+            )
+            emit(
+                f"{_METRIC_PREFIX}_kfd_ais_kprobe_attachable",
+                "1 if kprobe:kfd_ais_rw_file is available, else 0.",
+                "gauge",
+                [
+                    f"{_METRIC_PREFIX}_kfd_ais_kprobe_attachable{labels} "
+                    f"{1 if kfd.kprobe_attachable else 0}"
+                ],
+            )
+            emit(
+                f"{_METRIC_PREFIX}_kfd_ais_sample_seconds",
+                "Duration of the last bpftrace sample window for KFD AIS I/O.",
+                "gauge",
+                [
+                    f"{_METRIC_PREFIX}_kfd_ais_sample_seconds{labels} "
+                    f"{kfd.sample_seconds}"
+                ],
+            )
+            emit(
+                f"{_METRIC_PREFIX}_kfd_ais_sample_skipped",
+                "1 when KFD AIS bpftrace sampling was disabled for this scrape.",
+                "gauge",
+                [
+                    f"{_METRIC_PREFIX}_kfd_ais_sample_skipped{labels} "
+                    f"{1 if kfd.skipped else 0}"
+                ],
+            )
+
+            op_lines: list[str] = []
+            for (direction, outcome), count in sorted(kfd.operations.items()):
+                op_lbl = _label_set(
+                    {
+                        **(extra_labels or {}),
+                        "direction": direction,
+                        "outcome": outcome,
+                    }
+                )
+                op_lines.append(
+                    f"{_METRIC_PREFIX}_kfd_ais_rw_operations{op_lbl} {count}"
+                )
+            for direction in ("read", "write"):
+                for outcome in ("success", "partial", "error"):
+                    key = (direction, outcome)
+                    if key in kfd.operations:
+                        continue
+                    op_lbl = _label_set(
+                        {
+                            **(extra_labels or {}),
+                            "direction": direction,
+                            "outcome": outcome,
+                        }
+                    )
+                    op_lines.append(
+                        f"{_METRIC_PREFIX}_kfd_ais_rw_operations{op_lbl} 0"
+                    )
+            emit(
+                f"{_METRIC_PREFIX}_kfd_ais_rw_operations",
+                "KFD AIS transfers observed in the last bpftrace sample window.",
+                "gauge",
+                op_lines,
+            )
+
+            byte_lines = [
+                f"{_METRIC_PREFIX}_kfd_ais_bytes"
+                f"{_label_set({**(extra_labels or {}), 'direction': direction})} "
+                f"{kfd.bytes_by_direction.get(direction, 0)}"
+                for direction in ("read", "write")
+            ]
+            emit(
+                f"{_METRIC_PREFIX}_kfd_ais_bytes",
+                "Successful KFD AIS bytes transferred in the last sample window.",
+                "gauge",
+                byte_lines,
+            )
+
+            lat_hist = kfd.latency_us_histogram
+            lat_bucket_lines: list[str] = []
+            lat_cumulative = 0
+            for le in _KFD_AIS_LATENCY_HIST_BUCKETS_US:
+                lat_cumulative += lat_hist.get(str(le), 0)
+                le_lbl = _label_set({**(extra_labels or {}), "le": str(le)})
+                lat_bucket_lines.append(
+                    f"{_METRIC_PREFIX}_kfd_ais_latency_microseconds_bucket"
+                    f"{le_lbl} {lat_cumulative}"
+                )
+            lat_cumulative += lat_hist.get("+Inf", 0)
+            lat_inf_lbl = _label_set({**(extra_labels or {}), "le": "+Inf"})
+            lat_bucket_lines.append(
+                f"{_METRIC_PREFIX}_kfd_ais_latency_microseconds_bucket"
+                f"{lat_inf_lbl} {lat_cumulative}"
+            )
+            lat_bucket_lines.append(
+                f"{_METRIC_PREFIX}_kfd_ais_latency_microseconds_sum{hist_labels} "
+                f"{kfd.latency_us_sum}"
+            )
+            lat_bucket_lines.append(
+                f"{_METRIC_PREFIX}_kfd_ais_latency_microseconds_count{hist_labels} "
+                f"{kfd.latency_us_count}"
+            )
+            emit(
+                f"{_METRIC_PREFIX}_kfd_ais_latency_microseconds",
+                "KFD AIS transfer latency for successful operations (microseconds).",
+                "histogram",
+                lat_bucket_lines,
+            )
+
     lines.append(
         f"# {_METRIC_PREFIX} generated_at={int(time.time())} "
         f"data_root={summary.data_root}"
@@ -1182,12 +1593,39 @@ def _print_host_observability(snapshot: ExporterSnapshot) -> None:
     if hip.hipconfig_error == "skipped":
         print("hipconfig collection skipped (--skip-hipconfig)")
         print(f"hipconfig on PATH = {hip.hipconfig_present}")
+    else:
+        print(f"hipconfig present = {hip.hipconfig_present}")
+        if hip.hipconfig_present:
+            print(f"ROCm/HIP version = {hip.rocm_version or 'unknown'}")
+        if hip.hipconfig_error:
+            print(f"hipconfig note = {hip.hipconfig_error}")
+
+    kfd = snapshot.kfd_ais
+    print("\nKFD AIS (kfd_ais_rw_file bpftrace)")
+    if kfd.bpftrace_error == "skipped":
+        print("KFD AIS bpftrace collection skipped (--skip-kfd-ais-bpftrace)")
         return
-    print(f"hipconfig present = {hip.hipconfig_present}")
-    if hip.hipconfig_present:
-        print(f"ROCm/HIP version = {hip.rocm_version or 'unknown'}")
-    if hip.hipconfig_error:
-        print(f"hipconfig note = {hip.hipconfig_error}")
+    print(f"bpftrace present = {kfd.bpftrace_present}")
+    print(f"kprobe attachable = {kfd.kprobe_attachable}")
+    print(f"sample seconds = {kfd.sample_seconds}")
+    print(f"sample skipped = {kfd.skipped}")
+    if kfd.bpftrace_error:
+        print(f"bpftrace note = {kfd.bpftrace_error}")
+    if kfd.operations:
+        print(f"{'Direction':<8} {'Outcome':<10} {'Count':>8}")
+        print("-" * 28)
+        for (direction, outcome), count in sorted(kfd.operations.items()):
+            print(f"{direction:<8} {outcome:<10} {count:>8d}")
+    for direction in ("read", "write"):
+        nbytes = kfd.bytes_by_direction.get(direction, 0)
+        if nbytes:
+            print(f"{direction} bytes (success) = {_format_bytes(nbytes)}")
+    if kfd.latency_us_count:
+        avg_us = kfd.latency_us_sum / kfd.latency_us_count
+        print(
+            f"latency us (success) count={kfd.latency_us_count} "
+            f"avg={avg_us:.0f}"
+        )
 
 
 def _default_data_root(recipe_root: Path) -> Path:
@@ -1293,6 +1731,25 @@ def main() -> int:
             "from the textfile (PATH lookup still reported in JSON/CLI)."
         ),
     )
+    p.add_argument(
+        "--skip-kfd-ais-bpftrace",
+        action="store_true",
+        help=(
+            "Do not run kfd_ais_rw_file bpftrace sampling; omit KFD AIS metrics "
+            "from the textfile."
+        ),
+    )
+    p.add_argument(
+        "--kfd-ais-sample-seconds",
+        type=float,
+        default=None,
+        metavar="SECS",
+        help=(
+            "bpftrace sample window for kfd_ais_rw_file (default: "
+            "ROCM_AIC_KFD_AIS_SAMPLE_SECONDS or 10 when writing textfile; "
+            "0 disables)."
+        ),
+    )
     args = p.parse_args()
 
     extra_labels: dict[str, str] = {}
@@ -1312,6 +1769,15 @@ def main() -> int:
         return 1
 
     prom_path = args.prometheus_textfile
+    if args.skip_kfd_ais_bpftrace:
+        kfd_ais_sample_seconds = 0.0
+    elif args.kfd_ais_sample_seconds is not None:
+        kfd_ais_sample_seconds = max(0.0, args.kfd_ais_sample_seconds)
+    elif prom_path is not None:
+        kfd_ais_sample_seconds = _default_kfd_ais_sample_seconds()
+    else:
+        kfd_ais_sample_seconds = 0.0
+
     snapshot = collect_exporter_snapshot(
         data_root=data_root,
         kv_subdir=args.kv_subdir,
@@ -1320,6 +1786,8 @@ def main() -> int:
         run_nfsiostat=not args.skip_nfsiostat_invoke,
         collect_hip=not args.skip_hipconfig,
         include_host_metrics=prom_path is not None,
+        kfd_ais_sample_seconds=kfd_ais_sample_seconds,
+        collect_kfd_ais=not args.skip_kfd_ais_bpftrace,
     )
     summary = snapshot.chunk
 
@@ -1374,6 +1842,21 @@ def main() -> int:
                     f"warning: hipconfig: {snapshot.hip.hipconfig_error}",
                     file=sys.stderr,
                 )
+        if (
+            not args.skip_kfd_ais_bpftrace
+            and kfd_ais_sample_seconds > 0
+            and snapshot.host_metrics_collected
+        ):
+            kfd = snapshot.kfd_ais
+            if not kfd.bpftrace_present:
+                print("warning: bpftrace not found; KFD AIS metrics empty", file=sys.stderr)
+            elif not kfd.kprobe_attachable:
+                print(
+                    "warning: kprobe:kfd_ais_rw_file not available",
+                    file=sys.stderr,
+                )
+            elif kfd.bpftrace_error and not kfd.operations:
+                print(f"warning: kfd ais bpftrace: {kfd.bpftrace_error}", file=sys.stderr)
 
     if prom_path is not None:
         body = format_prometheus_textfile(
@@ -1441,6 +1924,26 @@ def main() -> int:
                             "hipconfig_present": snapshot.hip.hipconfig_present,
                             "rocm_version": snapshot.hip.rocm_version,
                             "hipconfig_error": snapshot.hip.hipconfig_error,
+                        }
+                        if snapshot.host_metrics_collected
+                        else None
+                    ),
+                    "kfd_ais": (
+                        {
+                            "bpftrace_present": snapshot.kfd_ais.bpftrace_present,
+                            "kprobe_attachable": snapshot.kfd_ais.kprobe_attachable,
+                            "sample_seconds": snapshot.kfd_ais.sample_seconds,
+                            "skipped": snapshot.kfd_ais.skipped,
+                            "bpftrace_error": snapshot.kfd_ais.bpftrace_error,
+                            "operations": {
+                                f"{direction}:{outcome}": count
+                                for (direction, outcome), count in (
+                                    snapshot.kfd_ais.operations.items()
+                                )
+                            },
+                            "bytes_by_direction": snapshot.kfd_ais.bytes_by_direction,
+                            "latency_us_sum": snapshot.kfd_ais.latency_us_sum,
+                            "latency_us_count": snapshot.kfd_ais.latency_us_count,
                         }
                         if snapshot.host_metrics_collected
                         else None
