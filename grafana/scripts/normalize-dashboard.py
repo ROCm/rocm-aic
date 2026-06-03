@@ -16,7 +16,7 @@ Usage:
   normalize-dashboard.py [--check] [FILE ...]
   normalize-dashboard.py --ensure-uid [FILE ...]
 
-Default FILE: grafana/rocm-aic-dashboard.json relative to repo root.
+Default FILE: grafana/rocm-aic-dashboard.json and grafana/vllm-dashboard-amd.json.
 """
 
 from __future__ import annotations
@@ -31,7 +31,16 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-DEFAULT_DASH = "grafana/rocm-aic-dashboard.json"
+_SCRIPT_DIR = Path(__file__).resolve().parent
+if str(_SCRIPT_DIR) not in sys.path:
+    sys.path.insert(0, str(_SCRIPT_DIR))
+
+from dashboard_v2_wire import fix_dashboard_v2_wire_format  # noqa: E402
+
+DEFAULT_DASHBOARDS = (
+    "grafana/rocm-aic-dashboard.json",
+    "grafana/vllm-dashboard-amd.json",
+)
 
 # Grafana UI / API metadata not useful in git (v2).
 GRAFANA_APP_ANNOTATION_PREFIX = "grafana.app/"
@@ -50,8 +59,13 @@ def repo_root() -> Path:
     return script.parents[2]
 
 
+def default_dashboard_paths() -> list[Path]:
+    root = repo_root()
+    return [root / name for name in DEFAULT_DASHBOARDS]
+
+
 def default_dashboard_path() -> Path:
-    return repo_root() / DEFAULT_DASH
+    return default_dashboard_paths()[0]
 
 
 def git_revision() -> str:
@@ -135,6 +149,7 @@ def normalize_v2(dash: dict[str, Any], *, add_git_provenance: bool) -> dict[str,
             new_meta["annotations"] = existing
 
     out["metadata"] = new_meta
+    fix_dashboard_v2_wire_format(out)
     return out
 
 
@@ -301,7 +316,7 @@ def main() -> int:
         "files",
         nargs="*",
         type=Path,
-        help=f"Dashboard JSON file(s) (default: {DEFAULT_DASH})",
+        help=f"Dashboard JSON file(s) (default: {' '.join(DEFAULT_DASHBOARDS)})",
     )
     parser.add_argument(
         "--check",
@@ -320,7 +335,7 @@ def main() -> int:
     )
     args = parser.parse_args()
 
-    paths = args.files or [default_dashboard_path()]
+    paths = args.files or default_dashboard_paths()
     rc = 0
     for path in paths:
         path = path.resolve()

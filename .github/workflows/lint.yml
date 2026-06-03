@@ -41,3 +41,11 @@ jobs:
           yamllint -c .yamllint \
             $(find . -name '*.yml' -o -name '*.yaml' \
               | grep -v '.git/')
+
+  grafana:
+    name: Grafana dashboards
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Normalize and lint dashboard JSON
+        run: make grafana-check
