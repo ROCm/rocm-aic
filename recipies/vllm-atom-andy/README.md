@@ -32,7 +32,7 @@ for HBM L1 + CPU DRAM L2 + optional NVMe L3.
 | **`make build` / `make run` / `make verify`**, mounts, **`VAA_*`** | **`Makefile`** |
 | **`rocm/atom-dev@sha256:…`** (20260522 nightly) + HIP LMCache + **`aiofile`** | **`Dockerfile`** |
 | Defaults (FP8 KV, CUDA graphs, ATOM env, tiers) | **`configs/vllm-atom-andy.yaml`** |
-| Server entrypoint | **`scripts/vllm-server`** |
+| Server entry point | **`scripts/vllm-server`** |
 | HIP backend check (blog Step 3) | **`scripts/verify-lmcache-hip.py`** |
 
 ### Base image
