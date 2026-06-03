@@ -46,7 +46,7 @@ need only `openai` unless you use the full tool stack.
 | amdgpu-dkms repack tool | [tools/amdgpu-dkms][t-dkms] | [README][t-dkms-readme] |
 | WEKA FS PoC | [vendors/weka][v-weka] | [README][v-weka-readme] |
 | Dell vLLM + LMCache + hipFile | [vendors/dell/vllm-lmcache-hipfile][v-dell] | [README][v-dell-readme] |
-| Ansible discovery / provision | [ansible][ansible-dir] | [site.yml][site-yml] |
+| Ansible discovery / provision | [ansible][ansible-dir] | [README][ansible-readme] |
 
 ## Benchmarks
 
@@ -102,54 +102,51 @@ This repository provides production-ready deployment automation for LLM inferenc
 
 #### LLM-D Based Deployments
 
-**[Tiered Prefix Cache](deployments/llm-d/tiered-prefix-cache/)** - KV cache offloading
+**[Tiered Prefix Cache](recipies/llm-d/tiered-prefix-cache/)** - KV cache offloading
 - Offload GPU HBM cache to CPU RAM
 - Two connector variants: offloading-connector, lmcache-connector
 - Intelligent prefix cache-aware routing
 - Method: Kustomize + Helm
 
-**[Inference Scheduling](deployments/llm-d/inference-scheduling/)** - Intelligent routing
+**[Inference Scheduling](recipies/llm-d/inference-scheduling/)** - Intelligent routing
 - vLLM replicas with smart load balancing
 - Prefix cache-aware request routing
 - Reduced tail latency and increased throughput
 - Method: Helmfile (3 charts)
 
-**[Benchmarking](deployments/llm-d/benchmarks/)** - Benchmarking framework
+**[Benchmarking](recipies/llm-d/benchmarks/)** - Benchmarking framework
 - Declarative benchmark sweep configurations
 - Result post-processing and plotting
 
-**[Monitoring](deployments/llm-d/monitoring/)** - Grafana dashboard management
+**[Monitoring](recipies/llm-d/monitoring/)** - Grafana dashboard management
 - Load llm-d default dashboards (6 dashboards)
 - Load rocm-icms custom dashboards
 - Automatic Grafana discovery
 
-See [deployments/README.md](deployments/README.md) for details.
+See [recipies/llm-d/README.md](recipies/llm-d/README.md) for details.
 
 ## Repository Structure
 
 ```
-rocm-icms/
-├── justfile                    # Root automation (setup, verification)
-├── submodules/
-│   └── llm-d/                  # LLM-D project (submodule)
-├── deployments/
-│   ├── common/                 # Shared utilities (all deployments)
-│   ├── llm-d/                  # LLM-D based deployments
-│   │   ├── benchmarks/
-│   │   ├── monitoring/
-│   │   ├── tiered-prefix-cache/
-│   │   └── inference-scheduling/
-│   └── custom/                 # Custom deployments (add your own)
-├── scripts/                    # Utilities
+rocm-aic/
+├── ansible/                    # Discovery, provisioning, monitoring
+├── benchmarks/                 # TTFT and prefill benchmarks
+├── grafana/                    # Dashboard JSON (import or deploy.sh)
+├── recipies/                   # Docker vLLM recipes and llm-d K8s deploys
+│   ├── common/                 # Shared NIXL scripts, rocm-aic-exporter
+│   ├── llm-d/                  # LLM-D Kubernetes deployments
+│   ├── rocm-inference-stack/   # Full inference stack Docker image
+│   ├── vllm-lmcache-hipfile/
+│   └── vllm-lmcache-nixl/
 ├── tools/                      # Build and development tools
 └── vendors/                    # Vendor-specific configurations
 ```
 ## Documentation
 
-- **[Deployments Overview](deployments/README.md)** - Architecture and organization
-- **[LLM-D Deployments](deployments/llm-d/README.md)** - LLM-D guide deployments
-- **[Tiered Prefix Cache Guide](deployments/llm-d/tiered-prefix-cache/README.md)** - KV cache offloading
-- **[Inference Scheduling Guide](deployments/llm-d/inference-scheduling/README.md)** - Smart routing
+- **[Ansible runbook](ansible/README.md)** — playbooks, recipes, monitoring
+- **[LLM-D Deployments](recipies/llm-d/README.md)** — Kubernetes llm-d guide
+- **[Tiered Prefix Cache](recipies/llm-d/tiered-prefix-cache/README.md)** — KV cache offloading
+- **[Inference Scheduling](recipies/llm-d/inference-scheduling/README.md)** — Smart routing
 
 ## References
 
@@ -177,6 +174,7 @@ rocm-icms/
 [v-dell]: vendors/dell/vllm-lmcache-hipfile/
 [v-dell-readme]: vendors/dell/vllm-lmcache-hipfile/README.md
 [ansible-dir]: ansible/
+[ansible-readme]: ansible/README.md
 [playbooks-dir]: ansible/playbooks/
 [discover-yml]: ansible/playbooks/discover.yml
 [site-yml]: ansible/site.yml

@@ -20,8 +20,9 @@
 # Grafana: cluster summary dashboard UID rocm-aic-cluster (recording rules
 # rocm_icms:nvme:key / rocm_icms:rdma:key; textfile rocm_icms_software_version).
 #
-# Prometheus on monitoring_server: scrape-only config in prometheus.yml; remote
-# write receiver enabled via /etc/default/prometheus (POST /api/v1/write).
+# Prometheus on monitoring_server: scrape config in prometheus.yml; optional
+# outbound remote_write when monitoring_prometheus_remote_write_url is set.
+# Remote-write receiver is opt-in (monitoring_prometheus_enable_remote_write_receiver).
 
 - name: Install monitoring stack on monitoring server
   hosts: monitoring_server

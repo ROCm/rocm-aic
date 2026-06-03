@@ -15,8 +15,11 @@ and `rocm_aic_*` textfile metrics from
 [`rocm-aic-exporter.py`](../recipies/common/scripts/rocm-aic-exporter.py).
 
 Expects Prometheus scrape jobs named `node_exporter`, `nvme_exporter`,
-`vllm-exporter`, `lmcache-exporter`, and `amd_metrics_exporter` (as
-provisioned by the Ansible `monitoring_stack` role).
+`amd_metrics_exporter`, and (when enabled in inventory) `vllm-exporter` and
+`lmcache-exporter` from the Ansible `monitoring_stack` role. Set
+`monitoring_scrape_vllm_enabled` and/or `monitoring_scrape_lmcache_enabled`
+in `ansible/inventory/group_vars/monitoring_server.yml`, then run
+`ansible-playbook site.yml --tags monitoring`.
 
 ### Local vs NFS AIC storage
 

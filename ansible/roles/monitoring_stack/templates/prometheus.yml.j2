@@ -11,6 +11,26 @@ global:
     cluster: rocm-icms
     replica: "{{ inventory_hostname }}"
 
+{% if monitoring_prometheus_remote_write_url | default('') | length > 0 %}
+remote_write:
+  - url: "{{ monitoring_prometheus_remote_write_url }}"
+{% if monitoring_prometheus_remote_write_basic_auth_username | default('') | length > 0 %}
+    basic_auth:
+      username: "{{ monitoring_prometheus_remote_write_basic_auth_username }}"
+      password: "{{ monitoring_prometheus_remote_write_basic_auth_password }}"
+{% elif monitoring_prometheus_remote_write_bearer_token | default('') | length > 0 %}
+    authorization:
+      credentials: "{{ monitoring_prometheus_remote_write_bearer_token }}"
+{% endif %}
+{% if monitoring_prometheus_remote_write_tls_ca_file | default('') | length > 0 %}
+    tls_config:
+      ca_file: "{{ monitoring_prometheus_remote_write_tls_ca_file }}"
+{% elif monitoring_prometheus_remote_write_insecure_skip_verify | default(false) | bool %}
+    tls_config:
+      insecure_skip_verify: true
+{% endif %}
+{% endif %}
+
 rule_files:
   - /etc/prometheus/rules/rocm_icms.yml
 
@@ -61,6 +81,30 @@ scrape_configs:
           instance: "{{ host }}"
           hostname: "{{ host }}"
 {% endfor %}
+
+{% if monitoring_scrape_vllm_enabled | default(false) | bool %}
+  - job_name: vllm-exporter
+    metrics_path: /metrics
+    static_configs:
+{% for host in groups['gpu_nodes'] %}
+      - targets:
+          - "{{ hostvars[host].ansible_host }}:{{ monitoring_scrape_vllm_port | default(8000) }}"
+        labels:
+          instance: "{{ hostvars[host].ansible_host }}:{{ monitoring_scrape_vllm_port | default(8000) }}"
+{% endfor %}
+{% endif %}
+
+{% if monitoring_scrape_lmcache_enabled | default(false) | bool %}
+  - job_name: lmcache-exporter
+    metrics_path: "{{ monitoring_scrape_lmcache_metrics_path | default('/metrics') }}"
+    static_configs:
+{% for host in groups['gpu_nodes'] %}
+      - targets:
+          - "{{ hostvars[host].ansible_host }}:{{ monitoring_scrape_lmcache_port | default(8000) }}"
+        labels:
+          instance: "{{ hostvars[host].ansible_host }}:{{ monitoring_scrape_lmcache_port | default(8000) }}"
+{% endfor %}
+{% endif %}
 {% endif %}
 
 {% if monitoring_llmd_prometheus_federate_enabled | default(false) | bool %}
