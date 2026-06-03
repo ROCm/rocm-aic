@@ -32,9 +32,24 @@ monitoring_grafana_dashboard_amd_gpu_id: "23434"
 
 monitoring_grafana_provision_cluster_summary_dashboard: true
 
-# Prometheus: remote-write receiver via systemd drop-in (preserves package
-# /etc/default/prometheus ARGS). Enables POST /api/v1/write on the server.
-monitoring_prometheus_enable_remote_write_receiver: true
+# Outbound remote_write. Empty url = disabled (local TSDB only).
+monitoring_prometheus_remote_write_url: ""
+monitoring_prometheus_remote_write_basic_auth_username: ""
+monitoring_prometheus_remote_write_basic_auth_password: ""
+monitoring_prometheus_remote_write_bearer_token: ""
+monitoring_prometheus_remote_write_tls_ca_file: ""
+monitoring_prometheus_remote_write_insecure_skip_verify: false
+
+# Opt-in scrape jobs for vLLM/LMCache (host-network Docker recipes on :8000).
+monitoring_scrape_vllm_enabled: false
+monitoring_scrape_vllm_port: 8000
+monitoring_scrape_lmcache_enabled: false
+monitoring_scrape_lmcache_port: 8000
+monitoring_scrape_lmcache_metrics_path: /metrics
+
+# Remote-write receiver (POST /api/v1/write). Off by default; enable for
+# agents that push into this server's TSDB.
+monitoring_prometheus_enable_remote_write_receiver: false
 # Extra flags appended in systemd drop-in ExecStart when args_override is empty.
 monitoring_prometheus_extra_args: []
 # Non-empty string replaces /etc/default/prometheus ARGS entirely (advanced).

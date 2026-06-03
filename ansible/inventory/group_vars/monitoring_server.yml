@@ -17,9 +17,18 @@ monitoring_grafana_require_admin_password: false
 # monitoring_grafana_dashboard_node_exporter_id: "1860"
 # monitoring_grafana_dashboard_amd_gpu_id: "23434"
 
-# Accept Prometheus remote write at POST /api/v1/write (web.enable-remote-write-
-# receiver). Appended via prometheus.service.d drop-in (monitoring_stack).
-monitoring_prometheus_enable_remote_write_receiver: true
+# Push metrics to an external Prometheus-compatible endpoint (Grafana Cloud,
+# Mimir, etc.). Set secrets with vault or `-e`.
+# monitoring_prometheus_remote_write_url: "https://prometheus-prod-XX.grafana.net/api/prom/push"
+# monitoring_prometheus_remote_write_basic_auth_username: "123456"
+# monitoring_prometheus_remote_write_basic_auth_password: "{{ vault_grafana_cloud_token }}"
+
+# Opt-in vLLM/LMCache scrape jobs (Docker recipes use --network=host :8000).
+# monitoring_scrape_vllm_enabled: true
+# monitoring_scrape_lmcache_enabled: true
+
+# Optional: accept remote write at POST /api/v1/write on this server (advanced).
+# monitoring_prometheus_enable_remote_write_receiver: true
 
 # Optional: federate metrics from an llm-d / in-cluster Prometheus into this
 # server's Prometheus TSDB.

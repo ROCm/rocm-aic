@@ -10,7 +10,7 @@
         inference_container_context_path
         if (inference_container_context_path | length) > 0
         else (playbook_dir | dirname | dirname)
-        ~ '/containers/rocm-inference-stack'
+        ~ '/recipies/rocm-inference-stack'
       }}
 
 - name: Check Dockerfile exists

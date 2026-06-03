@@ -86,6 +86,8 @@ extra_packages:
   - prometheus-node-exporter
 
 # --- Optional: ROCm inference container (playbooks/inference-image.yml) ---
+# Default build context: recipies/rocm-inference-stack (override if needed):
+# inference_container_context_path: "{{ playbook_dir }}/../../recipies/rocm-inference-stack"
 # inference_nixl_git_url: https://github.com/andyluo7/nixl.git
 # inference_nixl_git_ref: f72aad2cf4da0dff5d710dfcaa8666defa114d78  # amd-support + AIS overlay
 # inference_llm_d_git_sha: "" # optional llm-d commit after branch checkout

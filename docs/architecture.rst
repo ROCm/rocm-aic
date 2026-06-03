@@ -197,7 +197,7 @@ Related material in this repository
 * **Performance notes** for shared-namespace NVMe-oF on the lab fabric are in
   ``performance.rst`` in this directory.
 * **ROCm inference stack** container (vLLM, LMCache, hipFile checkout, llm-d
-  source for charts): ``containers/rocm-inference-stack/README.md``.
+  source for charts): ``recipies/rocm-inference-stack/README.md``.
 * **LMCache TTFT benchmark** and AIS-oriented configs: ``benchmarks/ttft-lmcache/``.
 * **Ansible** playbooks for NVMe-oF target and initiator roles:
   ``ansible/playbooks/nvme-of.yml`` and inventory under ``ansible/inventory/``.

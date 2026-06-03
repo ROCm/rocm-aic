@@ -12,7 +12,8 @@ inference_container_image: >-
 # After build: tarball on the Ansible controller (localhost play)
 inference_container_tarball: /tmp/rocm-inference-stack.tar
 
-# Path to Dockerfile directory (repo: containers/rocm-inference-stack)
+# Path to Dockerfile directory (repo: recipies/rocm-inference-stack).
+# Empty uses playbook_dir/../../recipies/rocm-inference-stack (see build.yml).
 inference_container_context_path: ""
 
 # Git URLs / refs (NIXL default: public ROCm/nixl over HTTPS; no BuildKit SSH).
