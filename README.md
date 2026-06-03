@@ -143,7 +143,7 @@ rocm-aic/
 ```
 ## Documentation
 
-- **[Ansible runbook](ansible/README.md)** — playbooks, recipes, monitoring
+- **[Ansible guide](ansible/README.md)** — playbooks, recipes, monitoring
 - **[LLM-D Deployments](recipies/llm-d/README.md)** — Kubernetes llm-d guide
 - **[Tiered Prefix Cache](recipies/llm-d/tiered-prefix-cache/README.md)** — KV cache offloading
 - **[Inference Scheduling](recipies/llm-d/inference-scheduling/README.md)** — Smart routing

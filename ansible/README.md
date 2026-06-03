@@ -28,11 +28,11 @@ export ANSIBLE_REMOTE_USER=<lab-user>   # matches inventory/hosts.yml
 | Exporters only | `ansible-playbook site.yml --tags rocm_aic_exporter` |
 | Inference image | `ansible-playbook site.yml --tags inference-container` |
 | Monitoring | `ansible-playbook site.yml --tags monitoring` |
-| NVMe-oF | `ansible-playbook site.yml --tags nvmeof` |
+| NVMe over Fabrics | `ansible-playbook site.yml --tags nvmeof` |
 | NFS migration | `ansible-playbook site.yml --tags nfs-rdma` |
 
 The NFS play is tagged `never` in `site.yml`; run it explicitly with
-`--tags nfs-rdma` when migrating from NVMe-oF to NFS over RDMA.
+`--tags nfs-rdma` when migrating from NVMe over Fabrics to NFS over RDMA.
 
 List all tags: `ansible-playbook site.yml --list-tags`.
 
@@ -151,7 +151,7 @@ ansible-playbook site.yml --tags monitoring \
   -e monitoring_prometheus_remote_write_url=https://mimir.example:9009/api/v1/push
 ```
 
-See `roles/monitoring_stack/defaults/main.yml` for auth and TLS variables.
+See `roles/monitoring_stack/defaults/main.yml` for authentication and transport security variables.
 The remote-write **receiver** (`--web.enable-remote-write-receiver`) is
 opt-in (`monitoring_prometheus_enable_remote_write_receiver: true`).
 
