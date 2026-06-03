@@ -6,8 +6,8 @@
         "namespace": "default",
         "uid": "7f2af756-9968-44cd-8f7a-cd8be435dd28",
         "annotations": {
-            "rocm-aic.git.normalizedAt": "2026-05-29T05:18:45Z",
-            "rocm-aic.git.revision": "1633d5cd94d1e8dac62c893acabef509654691e7",
+            "rocm-aic.git.normalizedAt": "2026-06-03T21:29:36Z",
+            "rocm-aic.git.revision": "10fb4bad735ae03824943ad21ddb760b5c6094ea",
             "rocm-aic.git.author": "sbates@raithlin.com"
         }
     },
@@ -161,11 +161,11 @@
                                         "insertNulls": false,
                                         "lineInterpolation": "linear",
                                         "lineWidth": 1,
-                                        "pointSize": 1,
+                                        "pointSize": 0,
                                         "scaleDistribution": {
                                             "type": "linear"
                                         },
-                                        "showPoints": "auto",
+                                        "showPoints": "never",
                                         "showValues": false,
                                         "spanNulls": false,
                                         "stacking": {
@@ -307,11 +307,11 @@
                                         "insertNulls": false,
                                         "lineInterpolation": "linear",
                                         "lineWidth": 1,
-                                        "pointSize": 1,
+                                        "pointSize": 0,
                                         "scaleDistribution": {
                                             "type": "linear"
                                         },
-                                        "showPoints": "auto",
+                                        "showPoints": "never",
                                         "showValues": false,
                                         "spanNulls": false,
                                         "stacking": {
@@ -436,7 +436,7 @@
                                         "scaleDistribution": {
                                             "type": "linear"
                                         },
-                                        "showPoints": "auto",
+                                        "showPoints": "never",
                                         "showValues": false,
                                         "spanNulls": false,
                                         "stacking": {
@@ -581,7 +581,7 @@
                                         "scaleDistribution": {
                                             "type": "linear"
                                         },
-                                        "showPoints": "auto",
+                                        "showPoints": "never",
                                         "showValues": false,
                                         "spanNulls": false,
                                         "stacking": {
@@ -722,7 +722,7 @@
                                         "scaleDistribution": {
                                             "type": "linear"
                                         },
-                                        "showPoints": "auto",
+                                        "showPoints": "never",
                                         "showValues": false,
                                         "spanNulls": false,
                                         "stacking": {
@@ -860,9 +860,7 @@
                                     ],
                                     "displayMode": "table",
                                     "placement": "bottom",
-                                    "showLegend": true,
-                                    "sortBy": "Name",
-                                    "sortDesc": true
+                                    "showLegend": true
                                 },
                                 "tooltip": {
                                     "hideZeros": false,
@@ -909,7 +907,7 @@
                                         "scaleDistribution": {
                                             "type": "linear"
                                         },
-                                        "showPoints": "auto",
+                                        "showPoints": "never",
                                         "showValues": false,
                                         "spanNulls": false,
                                         "stacking": {
@@ -1030,7 +1028,7 @@
                                         "scaleDistribution": {
                                             "type": "linear"
                                         },
-                                        "showPoints": "auto",
+                                        "showPoints": "never",
                                         "showValues": false,
                                         "spanNulls": false,
                                         "stacking": {
@@ -1151,7 +1149,7 @@
                                         "scaleDistribution": {
                                             "type": "linear"
                                         },
-                                        "showPoints": "auto",
+                                        "showPoints": "never",
                                         "showValues": false,
                                         "spanNulls": false,
                                         "stacking": {
@@ -1292,7 +1290,7 @@
                                         "scaleDistribution": {
                                             "type": "linear"
                                         },
-                                        "showPoints": "auto",
+                                        "showPoints": "never",
                                         "showValues": false,
                                         "spanNulls": false,
                                         "stacking": {
@@ -1435,7 +1433,7 @@
                                         "scaleDistribution": {
                                             "type": "linear"
                                         },
-                                        "showPoints": "auto",
+                                        "showPoints": "never",
                                         "showValues": false,
                                         "spanNulls": false,
                                         "stacking": {
@@ -1556,7 +1554,7 @@
                                         "scaleDistribution": {
                                             "type": "linear"
                                         },
-                                        "showPoints": "auto",
+                                        "showPoints": "never",
                                         "showValues": false,
                                         "spanNulls": false,
                                         "stacking": {
@@ -1674,7 +1672,7 @@
                                         "insertNulls": false,
                                         "lineInterpolation": "smooth",
                                         "lineWidth": 1,
-                                        "pointSize": 5,
+                                        "pointSize": 0,
                                         "scaleDistribution": {
                                             "type": "linear"
                                         },
@@ -1799,7 +1797,7 @@
                                         "scaleDistribution": {
                                             "type": "linear"
                                         },
-                                        "showPoints": "auto",
+                                        "showPoints": "never",
                                         "showValues": false,
                                         "spanNulls": false,
                                         "stacking": {
@@ -1937,11 +1935,11 @@
                                         "insertNulls": false,
                                         "lineInterpolation": "linear",
                                         "lineWidth": 1,
-                                        "pointSize": 5,
+                                        "pointSize": 0,
                                         "scaleDistribution": {
                                             "type": "linear"
                                         },
-                                        "showPoints": "auto",
+                                        "showPoints": "never",
                                         "showValues": false,
                                         "spanNulls": false,
                                         "stacking": {
@@ -2037,9 +2035,7 @@
                                     ],
                                     "displayMode": "table",
                                     "placement": "bottom",
-                                    "showLegend": true,
-                                    "sortBy": "Name",
-                                    "sortDesc": true
+                                    "showLegend": true
                                 },
                                 "tooltip": {
                                     "hideZeros": false,
@@ -2086,7 +2082,7 @@
                                         "scaleDistribution": {
                                             "type": "linear"
                                         },
-                                        "showPoints": "auto",
+                                        "showPoints": "never",
                                         "showValues": false,
                                         "spanNulls": false,
                                         "stacking": {
@@ -2406,7 +2402,7 @@
                                         "insertNulls": false,
                                         "lineInterpolation": "smooth",
                                         "lineWidth": 1,
-                                        "pointSize": 5,
+                                        "pointSize": 0,
                                         "scaleDistribution": {
                                             "type": "linear"
                                         },
@@ -2767,7 +2763,7 @@
                 "spec": {
                     "id": 59,
                     "title": "AIC KV Cache Footprint",
-                    "description": "On-disk LMCache chunk bytes and used NIXL pool slots/bytes (0-byte slots excluded).",
+                    "description": "On-disk LMCache chunk and NIXL static pool size over time.",
                     "links": [],
                     "data": {
                         "kind": "QueryGroup",
@@ -2807,32 +2803,11 @@
                                             "spec": {
                                                 "editorMode": "code",
                                                 "expr": "sum(rocm_aic_nixl_pool_bytes_total{instance=~\"$host\"})",
-                                                "legendFormat": "NIXL pool bytes (used)",
+                                                "legendFormat": "NIXL pool bytes",
                                                 "range": true
                                             }
                                         },
                                         "refId": "B",
-                                        "hidden": false
-                                    }
-                                },
-                                {
-                                    "kind": "PanelQuery",
-                                    "spec": {
-                                        "query": {
-                                            "kind": "DataQuery",
-                                            "group": "prometheus",
-                                            "version": "v0",
-                                            "datasource": {
-                                                "name": "${datasource}"
-                                            },
-                                            "spec": {
-                                                "editorMode": "code",
-                                                "expr": "sum(rocm_aic_nixl_pool_slots_used{instance=~\"$host\"})",
-                                                "legendFormat": "NIXL pool slots used",
-                                                "range": true
-                                            }
-                                        },
-                                        "refId": "C",
                                         "hidden": false
                                     }
                                 }
@@ -2919,20 +2894,7 @@
                                         }
                                     }
                                 },
-                                "overrides": [
-                                    {
-                                        "matcher": {
-                                            "id": "byName",
-                                            "options": "NIXL pool slots used"
-                                        },
-                                        "properties": [
-                                            {
-                                                "id": "unit",
-                                                "value": "short"
-                                            }
-                                        ]
-                                    }
-                                ]
+                                "overrides": []
                             }
                         }
                     }
@@ -3931,7 +3893,10 @@
                     "pluginId": "prometheus",
                     "refresh": "onDashboardLoad",
                     "regex": "",
-                    "current": {},
+                    "current": {
+                        "text": "",
+                        "value": ""
+                    },
                     "options": [],
                     "multi": false,
                     "includeAll": false,
@@ -4000,14 +3965,14 @@
                         },
                         "spec": {
                             "qryType": 1,
-                            "query": "label_values(up{job=~\"vllm-exporter|vllm\"}, instance)",
+                            "query": "label_values(up{job=~\"vllm-exporter|vllm\",instance!~\"localhost(:.*)?\"}, instance)",
                             "refId": "PrometheusVariableQueryEditor-VariableQuery"
                         }
                     },
                     "regex": "",
                     "regexApplyTo": "value",
                     "sort": "alphabeticalAsc",
-                    "definition": "label_values(up{job=~\"vllm-exporter|vllm\"}, instance)",
+                    "definition": "label_values(up{job=~\"vllm-exporter|vllm\",instance!~\"localhost(:.*)?\"}, instance)",
                     "options": [],
                     "multi": true,
                     "includeAll": true,

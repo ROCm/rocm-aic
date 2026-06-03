@@ -56,23 +56,9 @@ jobs:
           ' "${MANIFEST}"
 
       - name: Validate Grafana dashboard JSON
-        env:
-          DASH: ${{ github.workspace }}/grafana/rocm-aic-dashboard.json
         run: |
           set -euo pipefail
-          jq -e '
-            (type == "object")
-            and (.kind == "Dashboard")
-            and (
-              ((.spec.elements // {} | keys | length) >= 1)
-              or ((.panels // [] | length) >= 1)
-            )
-            and (
-              ([.spec.elements[]? | select(.kind == "Panel")] | length) >= 1
-              or ((.panels // [] | length) >= 1)
-            )
-            and (([.. | strings? | select(test("rocm_aic_"))] | length) >= 1)
-          ' "${DASH}"
+          python3 grafana/scripts/lint-dashboards.py --check
 
       - name: Check Grafana dashboard normalization
         run: |

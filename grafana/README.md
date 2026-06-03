@@ -108,7 +108,8 @@ CI runs `make grafana-check` (same script with `--check`) on pull requests
 that touch `grafana/**`.
 
 After editing in the Grafana UI, export or API-pull the dashboard, then
-normalize before commit. Assign a new UID only once:
+`make grafana-apply` (optional query/style fixes), `make grafana-normalize`,
+and `make grafana-lint` before commit. Assign a new UID only once:
 
 ```bash
 python3 grafana/scripts/normalize-dashboard.py --ensure-uid
