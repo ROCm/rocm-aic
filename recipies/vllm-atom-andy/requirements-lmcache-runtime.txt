@@ -1,0 +1,18 @@
+# Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+#
+# LMCache runtime deps for vllm-atom-andy (local CPU / NVMe tiers).
+# Excludes torch and cufile-python so the atom-dev ROCm venv is not replaced.
+
+aiofile
+aiofiles
+blake3
+msgspec
+numpy<=2.2.6
+psutil
+py-cpuinfo
+pyyaml
+pyzmq>=25.0.0
+safetensors
+sortedcontainers
