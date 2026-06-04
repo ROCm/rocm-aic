@@ -718,6 +718,131 @@ def apply_vllm_legend_styling(dash: dict[str, Any]) -> None:
         options["legend"] = legend
 
 
+# Panel id -> legendFormats, hideLegend, alwaysShowLegend, hideQueryRefs.
+ROCM_AIC_PANEL_METADATA: dict[int, dict[str, Any]] = {
+    5: {
+        "legendFormats": {"A": "Prefix hit ratio"},
+        "hideQueryRefs": {"B"},
+    },
+    6: {
+        "legendFormats": {"A": "p50 TTFT", "B": "p90 TTFT", "C": "p99 TTFT"},
+    },
+    31: {
+        "legendFormats": {"A": "GPU Power", "B": "Server Power"},
+    },
+    32: {
+        "legendFormats": {
+            "amd_gpu_gfx_activity-avg": "GFX Activity",
+            "A": "UMC Activity",
+        },
+    },
+    34: {"hideLegend": True, "legendFormats": {"amd_gpu_used_vram-avg": "VRAM Used"}},
+    35: {
+        "legendFormats": {
+            "node_disk_written_bytes_total-sum(rate)": "Write Bandwidth",
+            "A": "Read Bandwidth",
+        },
+    },
+    37: {
+        "legendFormats": {"A": "Store Requests", "B": "Retrieve Requests"},
+    },
+    43: {
+        "alwaysShowLegend": True,
+        "legendFormats": {
+            "A": "Tokens Computed",
+            "B": "Tokens from AIC",
+            "C": "Tokens from CPU Cache",
+            "D": "Total tok/s",
+        },
+    },
+    44: {"hideLegend": True, "legendFormats": {"A": "KV block files"}},
+    46: {"hideLegend": True, "legendFormats": {"A": "AIC space remaining"}},
+    47: {
+        "legendFormats": {"A": "0 hits", "B": "2-5 hits", "C": ">5 hits"},
+    },
+    48: {
+        "alwaysShowLegend": True,
+        "legendFormats": {"A": "{{lookup_count}} mentions"},
+    },
+    49: {
+        "alwaysShowLegend": True,
+        "legendFormats": {"A": "{{finished_reason}}"},
+    },
+    50: {
+        "legendFormats": {"A": "AIS read ops", "B": "AIS write ops"},
+    },
+    51: {
+        "legendFormats": {"A": "Write throughput", "B": "Read throughput"},
+    },
+    52: {
+        "alwaysShowLegend": True,
+        "legendFormats": {"A": "{{direction}} · {{backend}}"},
+    },
+    53: {"hideLegend": True, "legendFormats": {"A": "KV cache"}},
+    54: {
+        "legendFormats": {"A": "Running", "B": "Waiting"},
+    },
+    55: {
+        "hideLegend": True,
+        "legendFormats": {"A": "{{mount_path}}"},
+    },
+}
+
+
+def fix_rocm_aic_panel_metadata(dash: dict[str, Any]) -> None:
+    """Panel legend labels and hide empty or derived queries."""
+    for panel in iter_panel_specs(dash):
+        pid = panel.get("id")
+        meta = ROCM_AIC_PANEL_METADATA.get(pid)
+        if not meta:
+            continue
+        queries = panel.get("data", {}).get("spec", {}).get("queries", [])
+        legend_formats = meta.get("legendFormats", {})
+        hide_refs = meta.get("hideQueryRefs", set())
+        for q in queries:
+            qspec = q.get("spec", {})
+            ref = qspec.get("refId")
+            if ref in hide_refs:
+                qspec["hidden"] = True
+            qquery = qspec.get("query", {}).get("spec", {})
+            if ref in legend_formats and isinstance(qquery, dict):
+                if "legendFormat" in qquery:
+                    qquery["legendFormat"] = legend_formats[ref]
+                elif "expression" in qquery:
+                    pass
+
+
+def apply_rocm_aic_legend_styling(dash: dict[str, Any]) -> None:
+    """ROCm AIC dashboard: table legends, hide single-series, multi tooltips."""
+    fix_rocm_aic_panel_metadata(dash)
+    apply_timeseries_styling_to_dashboard(dash)
+    for panel in iter_panel_specs(dash):
+        viz = panel.get("vizConfig", {})
+        if viz.get("group") != "timeseries":
+            continue
+        options = viz.setdefault("spec", {}).setdefault("options", {})
+        meta = ROCM_AIC_PANEL_METADATA.get(panel.get("id"), {})
+        force_hide = meta.get("hideLegend", False)
+        force_show = meta.get("alwaysShowLegend", False)
+        visible = _visible_query_count(panel)
+        legend = copy.deepcopy(LEGEND_TABLE)
+        if force_hide:
+            legend["showLegend"] = False
+        elif force_show:
+            legend["showLegend"] = True
+        else:
+            legend["showLegend"] = visible > 1
+        options["legend"] = legend
+        tooltip = options.setdefault("tooltip", {})
+        if visible > 1 or force_show:
+            tooltip["mode"] = "multi"
+            tooltip["sort"] = "desc"
+        else:
+            tooltip["mode"] = "single"
+            tooltip["sort"] = "none"
+        tooltip["hideZeros"] = False
+
+
 def apply_vllm_time_settings(dash: dict[str, Any]) -> None:
     """Default dashboard time range for vLLM."""
     time_settings = dash.setdefault("spec", {}).setdefault("timeSettings", {})
@@ -1564,8 +1689,8 @@ def apply_improvements(dash: dict[str, Any]) -> None:
 
 def main() -> None:
     aic = json.loads(ROCM_AIC_DASH_PATH.read_text(encoding="utf-8"))
-    apply_improvements(aic)
-    apply_timeseries_styling_to_dashboard(aic)
+    apply_rocm_aic_legend_styling(aic)
+    fix_dashboard_v2_wire_format(aic)
     ROCM_AIC_DASH_PATH.write_text(
         json.dumps(aic, indent=4, ensure_ascii=False) + "\n",
         encoding="utf-8",

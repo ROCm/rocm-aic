@@ -6,8 +6,8 @@
         "namespace": "default",
         "uid": "d8c0b394-daaf-44d0-bca2-6b649b527fc8",
         "annotations": {
-            "rocm-aic.git.normalizedAt": "2026-06-03T21:29:36Z",
-            "rocm-aic.git.revision": "10fb4bad735ae03824943ad21ddb760b5c6094ea",
+            "rocm-aic.git.normalizedAt": "2026-06-04T00:04:00Z",
+            "rocm-aic.git.revision": "9fca5a1882fed46de608c5163df880bc83ad16d1",
             "rocm-aic.git.author": "sbates@raithlin.com"
         }
     },
