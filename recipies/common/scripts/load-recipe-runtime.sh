@@ -23,14 +23,18 @@ env_overrides_enabled=1
 if [[ -f "${recipies_root}/runtime-defaults.yaml" ]]; then
 	config_files+=("${recipies_root}/runtime-defaults.yaml")
 fi
-if [[ -f "${recipe_root}/runtime-defaults.yaml" ]]; then
+if [[ -n "${recipe_root}" && -f "${recipe_root}/runtime-defaults.yaml" ]]; then
 	config_files+=("${recipe_root}/runtime-defaults.yaml")
 fi
 if [[ -n "${config_file}" ]]; then
 	config_files+=("${config_file}")
 	env_overrides_enabled=0
 else
-	for candidate in "${recipies_root}/runtime.yaml" "${recipe_root}/runtime.yaml"; do
+	candidates=("${recipies_root}/runtime.yaml")
+	if [[ -n "${recipe_root}" ]]; then
+		candidates+=("${recipe_root}/runtime.yaml")
+	fi
+	for candidate in "${candidates[@]}"; do
 		if [[ -n "${candidate}" && -f "${candidate}" ]]; then
 			config_files+=("${candidate}")
 			env_overrides_enabled=0
@@ -73,6 +77,7 @@ ENV_OVERRIDE_ALLOWLIST = {
     "HF_TOKEN",
     "HF_TOKEN_FILE",
 }
+ENV_NAME_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
 def normalize_key(key):
@@ -127,6 +132,8 @@ def resolve_path(value):
 def put(env, name, value, *, separator=" ", path=False):
     if value is None:
         return
+    if not ENV_NAME_PATTERN.fullmatch(name):
+        raise SystemExit(f"error: invalid environment variable name: {name!r}")
     if os.environ.get(name) and (
         env_overrides_enabled or name in ENV_OVERRIDE_ALLOWLIST
     ):

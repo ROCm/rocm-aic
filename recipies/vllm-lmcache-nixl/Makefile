@@ -156,7 +156,9 @@ data:
 run:
 	@set -e; \
 	if [ -x "$(RECIPE_RUNTIME_LOADER)" ]; then \
-		runtime_exports="$$("$(RECIPE_RUNTIME_LOADER)" vllm-lmcache-nixl "$(CURDIR)")"; \
+		if ! runtime_exports="$$("$(RECIPE_RUNTIME_LOADER)" vllm-lmcache-nixl "$(CURDIR)")"; then \
+			exit 1; \
+		fi; \
 		if [ -n "$$runtime_exports" ]; then eval "$$runtime_exports"; fi; \
 	fi; \
 	env $(call _recipe_runtime_env,$(_recipe_runtime_vars)) \
@@ -165,7 +167,9 @@ run:
 run-batch:
 	@set -e; \
 	if [ -x "$(RECIPE_RUNTIME_LOADER)" ]; then \
-		runtime_exports="$$("$(RECIPE_RUNTIME_LOADER)" vllm-lmcache-nixl "$(CURDIR)")"; \
+		if ! runtime_exports="$$("$(RECIPE_RUNTIME_LOADER)" vllm-lmcache-nixl "$(CURDIR)")"; then \
+			exit 1; \
+		fi; \
 		if [ -n "$$runtime_exports" ]; then eval "$$runtime_exports"; fi; \
 	fi; \
 	env $(call _recipe_runtime_env,$(_recipe_runtime_vars)) \

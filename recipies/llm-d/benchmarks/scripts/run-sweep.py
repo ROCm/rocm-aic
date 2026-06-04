@@ -1658,9 +1658,16 @@ class SweepOrchestrator:
         )
         if hf_token_file:
             token_path = Path(str(hf_token_file)).expanduser()
-            if token_path.is_file():
+            if not token_path.exists():
+                raise RuntimeError(f"HF_TOKEN_FILE does not exist: {hf_token_file}")
+            if not token_path.is_file():
+                raise RuntimeError(f"HF_TOKEN_FILE is not a file: {hf_token_file}")
+            try:
                 return token_path.read_text().strip()
-            raise RuntimeError(f"HF_TOKEN_FILE is not readable: {hf_token_file}")
+            except OSError as exc:
+                raise RuntimeError(
+                    f"HF_TOKEN_FILE is not readable: {hf_token_file}"
+                ) from exc
 
         runtime_token = get_nested(self.runtime_config, 'secrets', 'hf_token')
         if runtime_token:

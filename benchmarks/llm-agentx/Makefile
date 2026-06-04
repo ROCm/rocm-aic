@@ -69,7 +69,10 @@ check-data:
 	@set -e; \
 	runtime_loader="$(BENCH_ROOT)/../lib/load-runtime.sh"; \
 	if [ -x "$$runtime_loader" ]; then \
-		eval "$$("$$runtime_loader" llm-agentx "$(BENCH_ROOT)")"; \
+		if ! runtime_exports="$$("$$runtime_loader" llm-agentx "$(BENCH_ROOT)")"; then \
+			exit 1; \
+		fi; \
+		if [ -n "$$runtime_exports" ]; then eval "$$runtime_exports"; fi; \
 	fi; \
 	data_root="$${AGENTX_DATA_ROOT:-$(AGENTX_DATA_ROOT)}"; \
 	test -f "$$data_root/traces.jsonl" || { \
@@ -81,7 +84,10 @@ check-server: check-deps
 	@set -e; \
 	runtime_loader="$(BENCH_ROOT)/../lib/load-runtime.sh"; \
 	if [ -x "$$runtime_loader" ]; then \
-		eval "$$("$$runtime_loader" llm-agentx "$(BENCH_ROOT)")"; \
+		if ! runtime_exports="$$("$$runtime_loader" llm-agentx "$(BENCH_ROOT)")"; then \
+			exit 1; \
+		fi; \
+		if [ -n "$$runtime_exports" ]; then eval "$$runtime_exports"; fi; \
 	fi; \
 	python_bin="$${PYTHON:-$(PYTHON)}"; \
 	"$$python_bin" "$(BENCH_ROOT)/scripts/replay-trace.py" \
@@ -93,7 +99,10 @@ data: check-deps
 	@set -e; \
 	runtime_loader="$(BENCH_ROOT)/../lib/load-runtime.sh"; \
 	if [ -x "$$runtime_loader" ]; then \
-		eval "$$("$$runtime_loader" llm-agentx "$(BENCH_ROOT)")"; \
+		if ! runtime_exports="$$("$$runtime_loader" llm-agentx "$(BENCH_ROOT)")"; then \
+			exit 1; \
+		fi; \
+		if [ -n "$$runtime_exports" ]; then eval "$$runtime_exports"; fi; \
 	fi; \
 	python_bin="$${PYTHON:-$(PYTHON)}"; \
 	data_root="$${AGENTX_DATA_ROOT:-$(AGENTX_DATA_ROOT)}"; \
