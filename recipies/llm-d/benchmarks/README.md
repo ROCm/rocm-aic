@@ -239,6 +239,21 @@ See `sweep-configs/example-env-vars.yaml` for a complete example demonstrating:
 - Host environment variable substitution
 - Override semantics
 
+#### Runtime YAML Defaults
+
+For host-specific settings that should apply across many sweeps, copy
+`runtime.yaml.example` to `runtime.yaml` and edit it locally. The runner
+auto-loads that file when present, or you can pass a different file:
+
+```bash
+python3 scripts/run-sweep.py my-sweep --runtime-config /path/to/runtime.yaml
+```
+
+Runtime YAML can set the sweep results directory, default pod `env_vars`, and
+Hugging Face token-file location. Sweep config `env_vars` still override
+runtime `env_vars`, and host environment variables still override host runtime
+settings such as `sweep.results_dir`.
+
 ### Deployment Configuration
 
 #### Replicas, Image, CPU, and Memory

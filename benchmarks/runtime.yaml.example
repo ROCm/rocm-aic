@@ -1,0 +1,52 @@
+# Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+#
+
+# Copy this file to benchmarks/runtime.yaml, or point RUNTIME_CONFIG_FILE at a
+# copy in another directory. Environment variables still override these values.
+
+server:
+  base_url: http://127.0.0.1:8000
+  model: openai/gpt-oss-120b
+
+paths:
+  gutenberg_data_root: data/gutenberg
+  agentx_data_root: data/cc-traces
+
+llm_prefill:
+  iterations: 5
+  workers: 4
+  base_seed: 42
+  max_tokens: 512
+  combine_chunks: 1
+  # book_slugs may be a YAML list or a comma-separated string.
+  # book_slugs:
+  #   - war-and-peace
+  #   - pride-and-prejudice
+
+llm_agentx:
+  model: Qwen/Qwen2.5-3B-Instruct
+  iterations: 5
+  workers: 4
+  base_seed: 42
+  max_tokens: 512
+  max_requests:
+  max_context:
+  strict: false
+  honor_think_time: false
+  dry_run: false
+
+ttft_lmcache:
+  model: Qwen/Qwen3-8B
+  server_url: http://localhost:8000
+  config_file: benchmarks/ttft-lmcache/configs/lmcache-disk.yaml
+  hit_rates: [0, 25, 50, 75, 100]
+  context_tokens: 10000
+  repeats: 3
+  seed: 42
+  cache_dir: /cache/lmcache
+  results: benchmarks/ttft-lmcache/results.jsonl
+  vllm_startup_timeout: 300
+  gpu_memory_utilization: 0.50
+  tensor_parallel_size: 1

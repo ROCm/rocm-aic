@@ -36,6 +36,25 @@ make run ITERATIONS=5
 make run-parallel WORKERS=4 ITERATIONS=10
 ```
 
+## Runtime YAML
+
+The benchmark can read defaults from a YAML file so common run settings do not
+need to be exported before every test. Copy the repo-level example, edit the
+`llm_prefill` section, then run the scripts or Make targets normally:
+
+```bash
+cp ../runtime.yaml.example ../runtime.yaml
+make run-parallel
+```
+
+Use `RUNTIME_CONFIG_FILE=/path/to/runtime.yaml` to select a different file.
+Environment variables and command-line Make variables still win over YAML
+values, so one-off overrides keep working:
+
+```bash
+make run-parallel ITERATIONS=20
+```
+
 ## Environment
 
 | Variable | Default | Purpose |

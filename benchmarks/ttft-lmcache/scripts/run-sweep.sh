@@ -19,6 +19,15 @@ set -euo pipefail
 # ── defaults ────────────────────────────────────────────────────
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 APP_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
+RUNTIME_LOADER="${APP_DIR}/../lib/load-runtime.sh"
+if [[ -x "${RUNTIME_LOADER}" ]]; then
+    if ! runtime_exports="$("${RUNTIME_LOADER}" ttft-lmcache "${APP_DIR}")"; then
+        exit 1
+    fi
+    if [[ -n "${runtime_exports}" ]]; then
+        source /dev/stdin <<<"${runtime_exports}"
+    fi
+fi
 
 CONFIG="${LMCACHE_CONFIG_FILE:-${APP_DIR}/configs/lmcache-disk.yaml}"
 HIT_RATES="${HIT_RATES:-0 25 50 75 100}"

@@ -27,6 +27,8 @@ AGENTX_HONOR_THINK_TIME ?= 0
 AGENTX_MAX_CONTEXT ?=
 AGENTX_STRICT ?= 0
 
+_runtime_env = $(foreach var,$(1),$(if $(filter environment command line environment override,$(origin $(var))),$(var)="$(value $(var))"))
+
 .PHONY: help install check-deps check-data check-server data run run-parallel report
 
 .DEFAULT_GOAL := help
@@ -62,46 +64,53 @@ check-deps:
 	}
 
 check-data:
-	@test -f "$(AGENTX_DATA_ROOT)/traces.jsonl" || { \
-		echo "ERROR: missing $(AGENTX_DATA_ROOT)/traces.jsonl — run 'make data' first" >&2; \
+	@set -e; \
+	runtime_loader="$(BENCH_ROOT)/../lib/load-runtime.sh"; \
+	if [ -x "$$runtime_loader" ]; then \
+		eval "$$("$$runtime_loader" llm-agentx "$(BENCH_ROOT)")"; \
+	fi; \
+	data_root="$${AGENTX_DATA_ROOT:-$(AGENTX_DATA_ROOT)}"; \
+	test -f "$$data_root/traces.jsonl" || { \
+		echo "ERROR: missing $$data_root/traces.jsonl — run 'make data' first" >&2; \
 		exit 1; \
 	}
 
 check-server: check-deps
-	@$(PYTHON) "$(BENCH_ROOT)/scripts/replay-trace.py" \
-		--url "$(BASE_URL)" --data-root "$(AGENTX_DATA_ROOT)" \
-		--model "$(MODEL)" --check-only
+	@set -e; \
+	runtime_loader="$(BENCH_ROOT)/../lib/load-runtime.sh"; \
+	if [ -x "$$runtime_loader" ]; then \
+		eval "$$("$$runtime_loader" llm-agentx "$(BENCH_ROOT)")"; \
+	fi; \
+	python_bin="$${PYTHON:-$(PYTHON)}"; \
+	"$$python_bin" "$(BENCH_ROOT)/scripts/replay-trace.py" \
+		--url "$${BASE_URL:-$(BASE_URL)}" \
+		--data-root "$${AGENTX_DATA_ROOT:-$(AGENTX_DATA_ROOT)}" \
+		--model "$${MODEL:-$(MODEL)}" --check-only
 
 data: check-deps
 	@set -e; \
-	echo "make data: -> $(AGENTX_DATA_ROOT) (python=$(PYTHON))"; \
-	$(PYTHON) "$(BENCH_ROOT)/scripts/download-dataset.py" \
-		--config $(HF_CONFIG) --output $(AGENTX_DATA_ROOT)
+	runtime_loader="$(BENCH_ROOT)/../lib/load-runtime.sh"; \
+	if [ -x "$$runtime_loader" ]; then \
+		eval "$$("$$runtime_loader" llm-agentx "$(BENCH_ROOT)")"; \
+	fi; \
+	python_bin="$${PYTHON:-$(PYTHON)}"; \
+	data_root="$${AGENTX_DATA_ROOT:-$(AGENTX_DATA_ROOT)}"; \
+	echo "make data: -> $$data_root (python=$$python_bin)"; \
+	"$$python_bin" "$(BENCH_ROOT)/scripts/download-dataset.py" \
+		--config $(HF_CONFIG) --output "$$data_root"
 
 run: check-deps check-data
 	@set -e; \
-	"$(PYTHON)" "$(BENCH_ROOT)/scripts/replay-trace.py" \
-		--url "$(BASE_URL)" --data-root "$(AGENTX_DATA_ROOT)" \
-		--model "$(MODEL)" --check-only; \
 	ts=$$(date -u +%Y%m%dT%H%M%SZ); \
 	out="$(BENCH_ROOT)/logs/run-agent/$$ts/run.jsonl"; \
 	mkdir -p "$$(dirname "$$out")"; \
-	PYTHON="$(PYTHON)" BASE_URL="$(BASE_URL)" MODEL="$(MODEL)" \
-		AGENTX_DATA_ROOT="$(AGENTX_DATA_ROOT)" \
-		ITERATIONS="$(ITERATIONS)" 		AGENTX_MAX_REQUESTS="$(AGENTX_MAX_REQUESTS)" \
-		AGENTX_MAX_CONTEXT="$(AGENTX_MAX_CONTEXT)" AGENTX_STRICT="$(AGENTX_STRICT)" \
-		AGENTX_HONOR_THINK_TIME="$(AGENTX_HONOR_THINK_TIME)" MAX_TOKENS="$(MAX_TOKENS)" \
+	env $(call _runtime_env,RUNTIME_CONFIG_FILE PYTHON BASE_URL MODEL AGENTX_DATA_ROOT ITERATIONS AGENTX_MAX_REQUESTS AGENTX_MAX_CONTEXT AGENTX_STRICT AGENTX_HONOR_THINK_TIME MAX_TOKENS AGENTX_DRY_RUN) \
 		bash "$(BENCH_ROOT)/run-agent.sh" >"$$out"; \
 	echo "wrote $$out"
 
 run-parallel: check-deps check-data
-	@PYTHON="$(PYTHON)" BASE_URL="$(BASE_URL)" MODEL="$(MODEL)" \
-		AGENTX_DATA_ROOT="$(AGENTX_DATA_ROOT)" \
-		WORKERS="$(WORKERS)" ITERATIONS="$(ITERATIONS)" BASE_SEED="$(BASE_SEED)" \
-		AGENTX_MAX_REQUESTS="$(AGENTX_MAX_REQUESTS)" \
-		AGENTX_HONOR_THINK_TIME="$(AGENTX_HONOR_THINK_TIME)" \
-		MAX_TOKENS="$(MAX_TOKENS)" \
-		bash "$(BENCH_ROOT)/run-agent-parallel.sh" "$(WORKERS)"
+	@env $(call _runtime_env,RUNTIME_CONFIG_FILE PYTHON BASE_URL MODEL AGENTX_DATA_ROOT WORKERS ITERATIONS BASE_SEED AGENTX_MAX_REQUESTS AGENTX_MAX_CONTEXT AGENTX_STRICT AGENTX_HONOR_THINK_TIME MAX_TOKENS AGENTX_DRY_RUN OUTPUT_DIR STAGGER_SEC) \
+		bash "$(BENCH_ROOT)/run-agent-parallel.sh" $(if $(filter command line,$(origin WORKERS)),"$(WORKERS)")
 
 report: check-deps
 	@set -e; \

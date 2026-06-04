@@ -61,6 +61,8 @@ recipies/vllm-lmcache-nixl/logs/
 recipies/vllm-atom-andy/logs/
 
 # benchmark logs and reports
+benchmarks/runtime.yaml
+benchmarks/*/runtime.yaml
 benchmarks/ttft-lmcache/logs/
 benchmarks/ttft-lmcache/reports/
 benchmarks/ttft-llamacpp/logs/
@@ -69,6 +71,7 @@ benchmarks/llm-prefill-benchmark/logs/
 benchmarks/llm-prefill-benchmark/reports/
 benchmarks/llm-agentx/logs/
 benchmarks/llm-agentx/reports/
+recipies/llm-d/benchmarks/runtime.yaml
 
 # Generated CC trace corpus (repo-root data/cc-traces/)
 data/cc-traces/

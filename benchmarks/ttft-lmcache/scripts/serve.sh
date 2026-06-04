@@ -8,12 +8,23 @@
 #
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+APP_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
+RUNTIME_LOADER="${APP_DIR}/../lib/load-runtime.sh"
+if [[ -x "${RUNTIME_LOADER}" ]]; then
+    if ! runtime_exports="$("${RUNTIME_LOADER}" ttft-lmcache "${APP_DIR}")"; then
+        exit 1
+    fi
+    if [[ -n "${runtime_exports}" ]]; then
+        source /dev/stdin <<<"${runtime_exports}"
+    fi
+fi
+
 MODEL="${MODEL:-Qwen/Qwen3-8B}"
 GPU_MEMORY_UTILIZATION="${GPU_MEMORY_UTILIZATION:-0.50}"
 TENSOR_PARALLEL_SIZE="${TENSOR_PARALLEL_SIZE:-1}"
 SEED="${SEED:-42}"
 
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 LMCACHE_CONFIG_FILE="${LMCACHE_CONFIG_FILE:-${SCRIPT_DIR}/../configs/lmcache-disk.yaml}"
 export LMCACHE_CONFIG_FILE
 

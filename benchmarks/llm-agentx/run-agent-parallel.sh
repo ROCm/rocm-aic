@@ -18,6 +18,15 @@ set -euo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 run_agent="${here}/run-agent.sh"
+runtime_loader="${here}/../lib/load-runtime.sh"
+if [[ -x "${runtime_loader}" ]]; then
+	if ! runtime_exports="$("${runtime_loader}" llm-agentx "${here}")"; then
+		exit 1
+	fi
+	if [[ -n "${runtime_exports}" ]]; then
+		source /dev/stdin <<<"${runtime_exports}"
+	fi
+fi
 
 if [[ ! -x "${run_agent}" ]]; then
 	echo "error: missing or non-executable ${run_agent}" >&2

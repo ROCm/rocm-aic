@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+# Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+#
 """
 Benchmarking sweep orchestrator.
 Runs parameterized deployments, load generation, and result collection.
@@ -355,6 +359,87 @@ def substitute_env_vars_in_dict(data: Any, strict: bool = False) -> Any:
     else:
         return data
 
+
+def load_yaml_config_with_env(config_file: str) -> Dict[str, Any]:
+    """
+    Load a YAML file after applying ${VAR} host environment substitution.
+
+    Undefined variables are kept unchanged to match the existing sweep config
+    behavior.
+    """
+    with open(config_file) as f:
+        raw_content = f.read()
+
+    substituted_content = substitute_env_vars(raw_content, strict=False)
+    config = yaml.safe_load(substituted_content) or {}
+    if not isinstance(config, dict):
+        raise ValueError(f"YAML config must contain a mapping: {config_file}")
+    return config
+
+
+def resolve_runtime_config_path(runtime_arg: Optional[str] = None) -> Optional[str]:
+    """
+    Resolve an optional runtime YAML file.
+
+    If a path is provided, it must exist. Without an explicit path, the sweep
+    runner auto-loads recipies/llm-d/benchmarks/runtime.yaml when present.
+    """
+    if runtime_arg:
+        runtime_path = Path(runtime_arg).expanduser()
+        if runtime_path.exists() and runtime_path.is_file():
+            return str(runtime_path)
+        raise FileNotFoundError(f"Runtime config file not found: {runtime_arg}")
+
+    benchmark_dir = Path(__file__).parent.parent
+    candidate = benchmark_dir / "runtime.yaml"
+    if candidate.exists() and candidate.is_file():
+        return str(candidate)
+    return None
+
+
+def get_nested(config: Dict[str, Any], *keys: str) -> Any:
+    """Return a nested runtime config value or None when any key is missing."""
+    current: Any = config
+    for key in keys:
+        if not isinstance(current, dict):
+            return None
+        current = current.get(key)
+    return current
+
+
+def merge_runtime_config(
+    sweep_config: Dict[str, Any],
+    runtime_config: Dict[str, Any],
+) -> Dict[str, Any]:
+    """
+    Merge runtime YAML defaults into a sweep config.
+
+    Runtime env_vars are defaults for all runs. The sweep config keeps final
+    precedence for any duplicate env var keys because it is closer to the test.
+    """
+    merged = sweep_config.copy()
+    runtime_env_vars: Dict[str, Any] = {}
+
+    for env_section in (
+        runtime_config.get("env_vars"),
+        get_nested(runtime_config, "sweep", "env_vars"),
+    ):
+        if env_section is None:
+            continue
+        if not isinstance(env_section, dict):
+            raise ValueError("runtime env_vars must be a mapping")
+        runtime_env_vars.update(env_section)
+
+    if runtime_env_vars:
+        config_env_vars = merged.get("env_vars", {})
+        if config_env_vars is None:
+            config_env_vars = {}
+        if not isinstance(config_env_vars, dict):
+            raise ValueError("sweep env_vars must be a mapping")
+        merged["env_vars"] = {**runtime_env_vars, **config_env_vars}
+
+    return merged
+
 # ============================================================================
 # End Environment Variable Substitution
 # ============================================================================
@@ -504,7 +589,8 @@ class SweepOrchestrator:
 
     def __init__(self, config_file: str, gpu_budget: Optional[int] = None,
                  max_concurrent: int = 1, exclusive_mode: bool = False,
-                 max_gpus_per_node: int = 8, output_dir: Optional[str] = None):
+                 max_gpus_per_node: int = 8, output_dir: Optional[str] = None,
+                 runtime_file: Optional[str] = None):
         """
         Initialize the orchestrator.
 
@@ -515,17 +601,15 @@ class SweepOrchestrator:
             exclusive_mode: If True, pods request max GPUs per node
             max_gpus_per_node: Maximum GPUs available per node
             output_dir: Custom sweep directory name (optional, overrides auto-generated name)
+            runtime_file: Optional host-specific runtime YAML file
         """
-        # Load configuration with environment variable substitution
-        with open(config_file) as f:
-            raw_content = f.read()
-
-        # Apply ${VAR} substitution to the entire YAML content
-        # Use strict=False to allow undefined variables (they remain as ${VAR})
-        substituted_content = substitute_env_vars(raw_content, strict=False)
-
-        # Parse YAML
-        self.config = yaml.safe_load(substituted_content)
+        self.config = load_yaml_config_with_env(config_file)
+        self.runtime_config_file = resolve_runtime_config_path(runtime_file)
+        self.runtime_config: Dict[str, Any] = {}
+        if self.runtime_config_file:
+            self.runtime_config = load_yaml_config_with_env(self.runtime_config_file)
+            self.config = merge_runtime_config(self.config, self.runtime_config)
+            print(f"Runtime config: {self.runtime_config_file}")
 
         # Validate model-specific args schema early
         self._validate_model_specific_args()
@@ -540,8 +624,13 @@ class SweepOrchestrator:
         self.deployment = self.config['deployment']
         self.timestamp = datetime.now().strftime('%Y-%m-%d')
 
-        # Get base results directory from environment with default fallback
-        base_results_dir = os.environ.get('SWEEP_RESULTS_DIR', 'results/sweeps')
+        # Environment remains the highest-precedence host-specific override.
+        base_results_dir = (
+            os.environ.get('SWEEP_RESULTS_DIR')
+            or get_nested(self.runtime_config, 'sweep', 'results_dir')
+            or get_nested(self.runtime_config, 'paths', 'sweep_results_dir')
+            or 'results/sweeps'
+        )
         base_results_path = Path(base_results_dir)
 
         # Determine sweep directory name
@@ -600,7 +689,8 @@ class SweepOrchestrator:
             'exclusive_mode': exclusive_mode,
             'max_gpus_per_node': max_gpus_per_node,
             'user_id': self.user_id,
-            'timestamp': self.timestamp
+            'timestamp': self.timestamp,
+            'runtime_config_file': self.runtime_config_file
         }
         with open(self.results_dir / "metadata.yaml", 'w') as f:
             yaml.dump(metadata, f)
@@ -1518,12 +1608,36 @@ class SweepOrchestrator:
                 raise RuntimeError(f"Failed to create namespace: {result.stderr}")
             print(f"  Namespace already exists or unchanged, continuing...")
 
+    def _resolve_hf_token(self) -> Optional[str]:
+        """Resolve HF token from env, token file, or runtime YAML."""
+        hf_token = os.environ.get('HF_TOKEN')
+        if hf_token:
+            return hf_token
+
+        hf_token_file = (
+            os.environ.get('HF_TOKEN_FILE')
+            or get_nested(self.runtime_config, 'secrets', 'hf_token_file')
+        )
+        if hf_token_file:
+            token_path = Path(str(hf_token_file)).expanduser()
+            if token_path.is_file():
+                return token_path.read_text().strip()
+            raise RuntimeError(f"HF_TOKEN_FILE is not readable: {hf_token_file}")
+
+        runtime_token = get_nested(self.runtime_config, 'secrets', 'hf_token')
+        if runtime_token:
+            return str(runtime_token)
+
+        return None
+
     def inject_hf_token_secret(self, namespace: str):
         """Inject HuggingFace token secret into namespace."""
-        # Get HF_TOKEN from environment
-        hf_token = os.environ.get('HF_TOKEN')
+        hf_token = self._resolve_hf_token()
         if not hf_token:
-            raise RuntimeError("HF_TOKEN environment variable is not set. Please set it before running sweeps.")
+            raise RuntimeError(
+                "HF_TOKEN is not set. Set HF_TOKEN, HF_TOKEN_FILE, or "
+                "secrets.hf_token_file in runtime YAML before running sweeps."
+            )
 
         print(f"  Injecting HF token secret...")
 
@@ -1938,15 +2052,18 @@ class SweepOrchestrator:
                     else:
                         print(f"    {key}: {value}")
 
-            # Show generated vLLM command
-            if 'vllm_args' in params:
+            # Show generated serving engine command
+            engine_args_key = self.serving_engine.args_key
+            if engine_args_key in params:
                 print()
-                print("  Generated vLLM command:")
-                vllm_args_str = self.build_vllm_args(params['vllm_args'])
-                print(f"    vllm serve {params.get('model', '<model>')} \\")
+                print(f"  Generated {self.serving_engine.display_name} command:")
+                engine_args_str = self.serving_engine.build_server_args(
+                    params[engine_args_key]
+                )
+                print(f"    {self.serving_engine.name} serve {params.get('model', '<model>')} \\")
                 print(f"      --tensor-parallel-size {params.get('tensor_parallel_size', 1)} \\")
                 print(f"      --port 8000 \\")
-                for line in vllm_args_str.split('\n'):
+                for line in engine_args_str.split('\n'):
                     if line.strip():
                         print(f"      {line.strip()}")
 
@@ -2457,6 +2574,12 @@ Examples:
         default=None,
         help="Custom sweep directory name (default: auto-generated {sweep_name}_{timestamp})"
     )
+    parser.add_argument(
+        "--runtime-config",
+        type=str,
+        default=None,
+        help="Optional runtime YAML file (default: runtime.yaml next to sweep-configs)"
+    )
     args = parser.parse_args()
 
     try:
@@ -2467,7 +2590,8 @@ Examples:
             max_concurrent=args.max_concurrent,
             exclusive_mode=args.exclusive_mode,
             max_gpus_per_node=args.max_gpus_per_node,
-            output_dir=args.output_dir
+            output_dir=args.output_dir,
+            runtime_file=args.runtime_config
         )
 
         if args.dry_run:

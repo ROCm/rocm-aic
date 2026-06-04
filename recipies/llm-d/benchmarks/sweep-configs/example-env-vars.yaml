@@ -1,0 +1,41 @@
+# Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+#
+
+name: example-env-vars
+description: Demonstrates global, per-run, and host-substituted env vars.
+deployment: inference-scheduling-vllm
+
+env_vars:
+  LMCACHE_LOG_LEVEL: "${LMCACHE_LOG_LEVEL:-WARNING}"
+  OTEL_SERVICE_NAME: llm-d-benchmark
+  STATIC_CONFIG: enabled
+
+parameters:
+  model:
+    type: fixed
+    value: "${MODEL_NAME:-facebook/opt-125m}"
+
+  tensor_parallel_size:
+    type: categorical
+    values: [1, 2]
+    env_vars:
+      - TP_SIZE: "1"
+        CACHE_SIZE: 10GB
+      - TP_SIZE: "2"
+        CACHE_SIZE: 20GB
+        ENABLE_TRACING: "true"
+
+  vllm_args:
+    type: fixed
+    value:
+      max_num_seq: 16
+      gpu_memory_utilization: 0.90
+
+load_generation:
+  tool: lmcache-bench
+  image: vllm/vllm-openai:latest
+  benchmark_args:
+    num-prompts: 8
+    max-concurrency: 4

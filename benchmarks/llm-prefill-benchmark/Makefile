@@ -28,6 +28,8 @@ ITERATIONS ?= 1
 BASE_SEED ?= 42
 RUN_LONG_MAX_TOKENS ?= 512
 
+_runtime_env = $(foreach var,$(1),$(if $(filter environment command line environment override,$(origin $(var))),$(var)="$(value $(var))"))
+
 .PHONY: help data data-all run run-parallel
 
 .DEFAULT_GOAL := help
@@ -71,12 +73,9 @@ data-all:
 	$(PYTHON) "$(BENCH_ROOT)/scripts/build-gutenberg-library.py" $$_opts
 
 run:
-	@BASE_URL="$(BASE_URL)" MODEL="$(MODEL)" BOOK_DATA_ROOT="$(BOOK_DATA_ROOT)" \
-		ITERATIONS="$(ITERATIONS)" RUN_LONG_MAX_TOKENS="$(RUN_LONG_MAX_TOKENS)" \
+	@env $(call _runtime_env,RUNTIME_CONFIG_FILE BASE_URL MODEL BOOK_DATA_ROOT BOOK_SLUG BOOK_SLUGS BOOK_SLUG_FILE ITERATIONS RUN_LONG_MAX_TOKENS RUN_LONG_COMBINE_CHUNKS) \
 		bash "$(BENCH_ROOT)/run-long.sh"
 
 run-parallel:
-	@BASE_URL="$(BASE_URL)" MODEL="$(MODEL)" BOOK_DATA_ROOT="$(BOOK_DATA_ROOT)" \
-		WORKERS="$(WORKERS)" ITERATIONS="$(ITERATIONS)" BASE_SEED="$(BASE_SEED)" \
-		RUN_LONG_MAX_TOKENS="$(RUN_LONG_MAX_TOKENS)" \
-		bash "$(BENCH_ROOT)/run-long-parallel.sh" "$(WORKERS)"
+	@env $(call _runtime_env,RUNTIME_CONFIG_FILE BASE_URL MODEL BOOK_DATA_ROOT BOOK_SLUG BOOK_SLUGS BOOK_SLUG_FILE WORKERS ITERATIONS BASE_SEED RUN_LONG_MAX_TOKENS RUN_LONG_COMBINE_CHUNKS OUTPUT_DIR STAGGER_SEC) \
+		bash "$(BENCH_ROOT)/run-long-parallel.sh" $(if $(filter command line,$(origin WORKERS)),"$(WORKERS)")

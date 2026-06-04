@@ -1,4 +1,8 @@
 #!/bin/bash
+# Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+#
 
 # Launch N parallel run-long.sh workers, each with a distinct RUN_LONG_SEED.
 #
@@ -23,6 +27,15 @@ set -euo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 run_long="${here}/run-long.sh"
+runtime_loader="${here}/../lib/load-runtime.sh"
+if [[ -x "${runtime_loader}" ]]; then
+  if ! runtime_exports="$("${runtime_loader}" llm-prefill "${here}")"; then
+    exit 1
+  fi
+  if [[ -n "${runtime_exports}" ]]; then
+    source /dev/stdin <<<"${runtime_exports}"
+  fi
+fi
 
 if [[ ! -x "${run_long}" ]]; then
   echo "error: missing or non-executable ${run_long}" >&2

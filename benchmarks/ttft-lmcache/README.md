@@ -86,6 +86,20 @@ SEED=123 \
     ./scripts/run-sweep.sh
 ```
 
+### Runtime YAML
+
+For repeated runs, put the common settings in YAML instead of exporting each
+variable. Copy the shared example, edit the `ttft_lmcache` section, then run
+the sweep normally:
+
+```bash
+cp ../runtime.yaml.example ../runtime.yaml
+./scripts/run-sweep.sh
+```
+
+Use `RUNTIME_CONFIG_FILE=/path/to/runtime.yaml` to select another file.
+Environment variables still override YAML values for one-off changes.
+
 ### 4. Read results
 
 Results are written as JSON-lines to `/app/results.jsonl`

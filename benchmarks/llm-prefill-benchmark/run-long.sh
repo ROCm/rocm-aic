@@ -1,4 +1,8 @@
 #!/bin/bash
+# Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+#
 
 # Random chunk + random question from one book or the whole library.
 # Env: BASE_URL, MODEL, BOOK_DATA_ROOT, BOOK_SLUG, BOOK_SLUGS, BOOK_SLUG_FILE,
@@ -14,6 +18,15 @@
 # Parallel load: use run-long-parallel.sh (distinct RUN_LONG_SEED per worker).
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+runtime_loader="${here}/../lib/load-runtime.sh"
+if [[ -x "${runtime_loader}" ]]; then
+  if ! runtime_exports="$("${runtime_loader}" llm-prefill "${here}")"; then
+    exit 1
+  fi
+  if [[ -n "${runtime_exports}" ]]; then
+    source /dev/stdin <<<"${runtime_exports}"
+  fi
+fi
 STREAM_CHAT="${RUN_LONG_STREAM_CHAT:-${here}/scripts/stream-chat-completion.py}"
 BASE_URL="${BASE_URL:-http://127.0.0.1:8000}"
 MODEL="${MODEL:-openai/gpt-oss-120b}"

@@ -14,6 +14,15 @@ here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=./benchmarks/llm-agentx/lib/bench-root.sh
 source "${here}/lib/bench-root.sh"
 BENCH_ROOT="${LLM_AGENTX_BENCH_ROOT:-${here}}"
+runtime_loader="${BENCH_ROOT}/../lib/load-runtime.sh"
+if [[ -x "${runtime_loader}" ]]; then
+	if ! runtime_exports="$("${runtime_loader}" llm-agentx "${BENCH_ROOT}")"; then
+		exit 1
+	fi
+	if [[ -n "${runtime_exports}" ]]; then
+		source /dev/stdin <<<"${runtime_exports}"
+	fi
+fi
 REPLAY="${RUN_AGENT_REPLAY:-${BENCH_ROOT}/scripts/replay-trace.py}"
 _default_python() {
 	local repo_root

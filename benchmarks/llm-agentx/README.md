@@ -70,6 +70,25 @@ Cap requests per trace (useful for smoke tests):
 AGENTX_MAX_REQUESTS=3 make run ITERATIONS=1
 ```
 
+## Runtime YAML
+
+The benchmark can read defaults from YAML, which avoids re-exporting the same
+server, model, corpus, and worker settings for each run. Copy the shared
+example, edit the `llm_agentx` section, then use the existing Make targets:
+
+```bash
+cp ../runtime.yaml.example ../runtime.yaml
+make run-parallel
+```
+
+Use `RUNTIME_CONFIG_FILE=/path/to/runtime.yaml` to select another file.
+Environment variables and command-line Make variables still override YAML
+values for one-off experiments:
+
+```bash
+make run AGENTX_MAX_REQUESTS=3
+```
+
 ## Environment
 
 | Variable | Default | Purpose |
