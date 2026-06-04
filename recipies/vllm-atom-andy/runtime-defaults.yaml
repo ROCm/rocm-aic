@@ -3,8 +3,9 @@
 # SPDX-License-Identifier: MIT
 #
 
-# Copy to runtime.yaml, or set RECIPE_RUNTIME_FILE=/path/to/runtime.yaml.
-# Existing environment variables and make VAR=value overrides still win.
+# Checked-in defaults loaded by recipe launchers. Put overrides in runtime.yaml,
+# or set RECIPE_RUNTIME_FILE=/path/to/runtime.yaml. Existing environment
+# variables and make VAR=value overrides still win.
 
 host:
   gpu: 0

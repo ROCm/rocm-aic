@@ -88,12 +88,12 @@ SEED=123 \
 
 ### Runtime YAML
 
-For repeated runs, put the common settings in YAML instead of exporting each
-variable. Copy the shared example, edit the `ttft_lmcache` section, then run
-the sweep normally:
+For repeated runs, common settings come from the checked-in
+`../runtime-defaults.yaml` instead of exports. Put local changes in
+`../runtime.yaml`, then run the sweep normally:
 
 ```bash
-cp ../runtime.yaml.example ../runtime.yaml
+$EDITOR ../runtime.yaml
 ./scripts/run-sweep.sh
 ```
 

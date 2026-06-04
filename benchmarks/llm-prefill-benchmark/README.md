@@ -38,12 +38,12 @@ make run-parallel WORKERS=4 ITERATIONS=10
 
 ## Runtime YAML
 
-The benchmark can read defaults from a YAML file so common run settings do not
-need to be exported before every test. Copy the repo-level example, edit the
-`llm_prefill` section, then run the scripts or Make targets normally:
+The benchmark reads checked-in defaults from `../runtime-defaults.yaml` so
+common run settings do not need to be exported before every test. Put local
+changes in `../runtime.yaml`, then run the scripts or Make targets normally:
 
 ```bash
-cp ../runtime.yaml.example ../runtime.yaml
+$EDITOR ../runtime.yaml
 make run-parallel
 ```
 

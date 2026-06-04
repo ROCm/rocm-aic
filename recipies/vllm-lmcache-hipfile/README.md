@@ -62,13 +62,12 @@ or add matching **`-v`** flags with **`EXTRA_DOCKER_RUN_FLAGS`**.
 
 ## Runtime YAML
 
-For repeated local or Slurm runs, copy **`runtime.yaml.example`** to
-**`runtime.yaml`** and edit the host, server, LMCache, Slurm, and benchmark
-sections instead of exporting each **`VLH_*`** variable:
+For repeated local or Slurm runs, checked-in defaults come from
+**`runtime-defaults.yaml`**. Put local overrides in **`runtime.yaml`** instead
+of exporting each **`VLH_*`** variable:
 
 ```bash
-cp recipies/vllm-lmcache-hipfile/runtime.yaml.example \
-  recipies/vllm-lmcache-hipfile/runtime.yaml
+$EDITOR recipies/vllm-lmcache-hipfile/runtime.yaml
 make -C recipies/vllm-lmcache-hipfile run
 ```
 

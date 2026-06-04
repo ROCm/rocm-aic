@@ -3,8 +3,9 @@
 # SPDX-License-Identifier: MIT
 #
 
-# Copy this file to benchmarks/runtime.yaml, or point RUNTIME_CONFIG_FILE at a
-# copy in another directory. Environment variables still override these values.
+# Checked-in defaults loaded by benchmark scripts. Put overrides in
+# benchmarks/runtime.yaml, or point RUNTIME_CONFIG_FILE at another file.
+# Environment variables still override YAML values.
 
 server:
   base_url: http://127.0.0.1:8000

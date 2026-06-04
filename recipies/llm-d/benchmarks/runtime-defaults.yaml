@@ -3,8 +3,9 @@
 # SPDX-License-Identifier: MIT
 #
 
-# Copy this file to runtime.yaml, or pass --runtime-config /path/to/file.yaml.
-# Host environment variables still override host runtime settings.
+# Checked-in defaults loaded by run-sweep.py. Put overrides in runtime.yaml, or
+# pass --runtime-config /path/to/file.yaml. Host environment variables still
+# override host runtime settings.
 
 sweep:
   results_dir: results/sweeps

@@ -18,25 +18,35 @@ repo_root="$(cd "${script_dir}/../../.." && pwd)"
 recipies_root="${repo_root}/recipies"
 
 config_file="${RECIPE_RUNTIME_FILE:-${RECIPE_RUNTIME_CONFIG:-${RUNTIME_CONFIG_FILE:-}}}"
-if [[ -z "${config_file}" ]]; then
-	for candidate in "${recipe_root}/runtime.yaml" "${recipies_root}/runtime.yaml"; do
+config_files=()
+if [[ -f "${recipies_root}/runtime-defaults.yaml" ]]; then
+	config_files+=("${recipies_root}/runtime-defaults.yaml")
+fi
+if [[ -f "${recipe_root}/runtime-defaults.yaml" ]]; then
+	config_files+=("${recipe_root}/runtime-defaults.yaml")
+fi
+if [[ -n "${config_file}" ]]; then
+	config_files+=("${config_file}")
+else
+	for candidate in "${recipies_root}/runtime.yaml" "${recipe_root}/runtime.yaml"; do
 		if [[ -n "${candidate}" && -f "${candidate}" ]]; then
-			config_file="${candidate}"
-			break
+			config_files+=("${candidate}")
 		fi
 	done
 fi
 
-if [[ -z "${config_file}" ]]; then
+if [[ "${#config_files[@]}" -eq 0 ]]; then
 	exit 0
 fi
 
-if [[ ! -r "${config_file}" ]]; then
-	printf 'error: recipe runtime YAML is not readable: %s\n' "${config_file}" >&2
-	exit 1
-fi
+for config_file in "${config_files[@]}"; do
+	if [[ ! -r "${config_file}" ]]; then
+		printf 'error: recipe runtime YAML is not readable: %s\n' "${config_file}" >&2
+		exit 1
+	fi
+done
 
-python3 - "${config_file}" "${context}" "${repo_root}" <<'PY'
+python3 - "${context}" "${repo_root}" "${config_files[@]}" <<'PY'
 import os
 import re
 import shlex
@@ -51,9 +61,9 @@ except ImportError as exc:
     ) from exc
 
 
-config_path = Path(sys.argv[1]).expanduser().resolve()
-context = sys.argv[2]
-repo_root = Path(sys.argv[3]).expanduser().resolve()
+context = sys.argv[1]
+repo_root = Path(sys.argv[2]).expanduser().resolve()
+config_paths = [Path(arg).expanduser().resolve() for arg in sys.argv[3:]]
 
 
 def normalize_key(key):
@@ -116,13 +126,30 @@ def put(env, name, value, *, separator=" ", path=False):
     env[name] = text
 
 
-with open(config_path, encoding="utf-8") as fh:
-    config = yaml.safe_load(fh) or {}
+def deep_merge(base, override):
+    result = dict(base)
+    for key, value in override.items():
+        if (
+            key in result
+            and isinstance(result[key], dict)
+            and isinstance(value, dict)
+        ):
+            result[key] = deep_merge(result[key], value)
+        else:
+            result[key] = value
+    return result
 
-if not isinstance(config, dict):
-    raise SystemExit(f"error: runtime YAML must contain a mapping: {config_path}")
 
-config = substitute_env(config)
+config = {}
+for config_path in config_paths:
+    with open(config_path, encoding="utf-8") as fh:
+        part = yaml.safe_load(fh) or {}
+    if not isinstance(part, dict):
+        raise SystemExit(
+            f"error: runtime YAML must contain a mapping: {config_path}"
+        )
+    config = deep_merge(config, substitute_env(part))
+
 exports = {}
 
 for env_section in (

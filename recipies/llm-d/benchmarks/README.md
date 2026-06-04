@@ -241,9 +241,9 @@ See `sweep-configs/example-env-vars.yaml` for a complete example demonstrating:
 
 #### Runtime YAML Defaults
 
-For host-specific settings that should apply across many sweeps, copy
-`runtime.yaml.example` to `runtime.yaml` and edit it locally. The runner
-auto-loads that file when present, or you can pass a different file:
+The runner loads checked-in defaults from `runtime-defaults.yaml`. For
+host-specific settings that should apply across many sweeps, put overrides in
+`runtime.yaml`, or pass a different override file:
 
 ```bash
 python3 scripts/run-sweep.py my-sweep --runtime-config /path/to/runtime.yaml

@@ -64,13 +64,12 @@ host **`LOG`** (default **`recipies/vllm-atom-andy/logs`**, file **`server.txt`*
 
 ## Runtime YAML
 
-For repeated runs, copy **`runtime.yaml.example`** to **`runtime.yaml`** and
-edit the host, server, and LMCache sections instead of exporting each
-**`VAA_*`** variable:
+For repeated runs, checked-in defaults come from **`runtime-defaults.yaml`**.
+Put local overrides in **`runtime.yaml`** instead of exporting each **`VAA_*`**
+variable:
 
 ```bash
-cp recipies/vllm-atom-andy/runtime.yaml.example \
-  recipies/vllm-atom-andy/runtime.yaml
+$EDITOR recipies/vllm-atom-andy/runtime.yaml
 make -C recipies/vllm-atom-andy run
 ```
 

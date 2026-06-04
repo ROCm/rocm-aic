@@ -377,24 +377,31 @@ def load_yaml_config_with_env(config_file: str) -> Dict[str, Any]:
     return config
 
 
-def resolve_runtime_config_path(runtime_arg: Optional[str] = None) -> Optional[str]:
+def resolve_runtime_config_paths(runtime_arg: Optional[str] = None) -> List[str]:
     """
-    Resolve an optional runtime YAML file.
+    Resolve runtime YAML files in precedence order.
 
-    If a path is provided, it must exist. Without an explicit path, the sweep
-    runner auto-loads recipies/llm-d/benchmarks/runtime.yaml when present.
+    The checked-in runtime-defaults.yaml is loaded first. A provided runtime
+    file, or local runtime.yaml when no file is provided, overrides defaults.
     """
+    benchmark_dir = Path(__file__).parent.parent
+    runtime_paths: List[str] = []
+
+    defaults_path = benchmark_dir / "runtime-defaults.yaml"
+    if defaults_path.exists() and defaults_path.is_file():
+        runtime_paths.append(str(defaults_path))
+
     if runtime_arg:
         runtime_path = Path(runtime_arg).expanduser()
         if runtime_path.exists() and runtime_path.is_file():
-            return str(runtime_path)
+            runtime_paths.append(str(runtime_path))
+            return runtime_paths
         raise FileNotFoundError(f"Runtime config file not found: {runtime_arg}")
 
-    benchmark_dir = Path(__file__).parent.parent
     candidate = benchmark_dir / "runtime.yaml"
     if candidate.exists() and candidate.is_file():
-        return str(candidate)
-    return None
+        runtime_paths.append(str(candidate))
+    return runtime_paths
 
 
 def get_nested(config: Dict[str, Any], *keys: str) -> Any:
@@ -405,6 +412,21 @@ def get_nested(config: Dict[str, Any], *keys: str) -> Any:
             return None
         current = current.get(key)
     return current
+
+
+def deep_merge_dicts(base: Dict[str, Any], override: Dict[str, Any]) -> Dict[str, Any]:
+    """Recursively merge override into base without mutating either input."""
+    merged = base.copy()
+    for key, value in override.items():
+        if (
+            key in merged
+            and isinstance(merged[key], dict)
+            and isinstance(value, dict)
+        ):
+            merged[key] = deep_merge_dicts(merged[key], value)
+        else:
+            merged[key] = value
+    return merged
 
 
 def merge_runtime_config(
@@ -604,12 +626,17 @@ class SweepOrchestrator:
             runtime_file: Optional host-specific runtime YAML file
         """
         self.config = load_yaml_config_with_env(config_file)
-        self.runtime_config_file = resolve_runtime_config_path(runtime_file)
+        self.runtime_config_files = resolve_runtime_config_paths(runtime_file)
+        self.runtime_config_file = (
+            self.runtime_config_files[-1] if self.runtime_config_files else None
+        )
         self.runtime_config: Dict[str, Any] = {}
-        if self.runtime_config_file:
-            self.runtime_config = load_yaml_config_with_env(self.runtime_config_file)
+        for runtime_config_file in self.runtime_config_files:
+            runtime_part = load_yaml_config_with_env(runtime_config_file)
+            self.runtime_config = deep_merge_dicts(self.runtime_config, runtime_part)
+        if self.runtime_config_files:
             self.config = merge_runtime_config(self.config, self.runtime_config)
-            print(f"Runtime config: {self.runtime_config_file}")
+            print(f"Runtime config: {', '.join(self.runtime_config_files)}")
 
         # Validate model-specific args schema early
         self._validate_model_specific_args()
@@ -690,7 +717,7 @@ class SweepOrchestrator:
             'max_gpus_per_node': max_gpus_per_node,
             'user_id': self.user_id,
             'timestamp': self.timestamp,
-            'runtime_config_file': self.runtime_config_file
+            'runtime_config_files': self.runtime_config_files
         }
         with open(self.results_dir / "metadata.yaml", 'w') as f:
             yaml.dump(metadata, f)
@@ -2578,7 +2605,10 @@ Examples:
         "--runtime-config",
         type=str,
         default=None,
-        help="Optional runtime YAML file (default: runtime.yaml next to sweep-configs)"
+        help=(
+            "Optional runtime override YAML file; runtime-defaults.yaml is "
+            "always loaded when present"
+        )
     )
     args = parser.parse_args()
 

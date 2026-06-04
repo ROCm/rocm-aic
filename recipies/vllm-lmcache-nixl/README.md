@@ -23,13 +23,12 @@ make -C recipies/vllm-lmcache-nixl run VLN_LMCACHE_IO=nixl-posix
 
 ## Runtime YAML
 
-For repeated local or Slurm runs, copy `runtime.yaml.example` to
-`runtime.yaml` and edit the host, server, LMCache, NIXL, Slurm, and benchmark
-sections instead of exporting each `VLN_*` variable:
+For repeated local or Slurm runs, checked-in defaults come from
+`runtime-defaults.yaml`. Put local overrides in `runtime.yaml` instead of
+exporting each `VLN_*` variable:
 
 ```bash
-cp recipies/vllm-lmcache-nixl/runtime.yaml.example \
-  recipies/vllm-lmcache-nixl/runtime.yaml
+$EDITOR recipies/vllm-lmcache-nixl/runtime.yaml
 make -C recipies/vllm-lmcache-nixl run
 ```
 
