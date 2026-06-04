@@ -11,7 +11,7 @@
 set -euo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-# shellcheck source=lib/bench-root.sh
+# shellcheck source=./benchmarks/llm-agentx/lib/bench-root.sh
 source "${here}/lib/bench-root.sh"
 BENCH_ROOT="${LLM_AGENTX_BENCH_ROOT:-${here}}"
 REPLAY="${RUN_AGENT_REPLAY:-${BENCH_ROOT}/scripts/replay-trace.py}"
