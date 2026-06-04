@@ -1,0 +1,34 @@
+# Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+#
+
+# Copy to runtime.yaml, or set RECIPE_RUNTIME_FILE=/path/to/runtime.yaml.
+# Existing environment variables and make VAR=value overrides still win.
+
+host:
+  gpu: 0
+  data: /mnt/lmcache-nvme
+  log: recipies/vllm-atom-andy/logs
+  hf_home: ~/.cache/huggingface
+  timezone: America/Edmonton
+
+secrets:
+  hf_token_file: "${HF_TOKEN_FILE:-}"
+
+server:
+  # model: /work/models/MiniMax-M2.5
+  dev_mode: true
+  tensor_parallel_size: 1
+  gpu_memory_utilization: 0.90
+  max_model_len:
+  max_num_batched_tokens:
+  model_profile:
+  enable_mfu_metrics: true
+
+lmcache:
+  tier: cpu
+  log_level: INFO
+  max_local_cpu_size:
+  enable_chunk_statistics: false
+  chunk_statistics_strategy: file_hash

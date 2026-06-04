@@ -56,9 +56,13 @@ tools/lmcache-io-tester/**/*.token
 # vllm-lmcache-hipfile logs and legacy per-recipe Gutenberg fixtures
 recipies/vllm-lmcache-hipfile/logs/
 recipies/vllm-lmcache-hipfile/data/
+recipies/vllm-lmcache-hipfile/runtime.yaml
 recipies/vllm-lmcache-nixl/data/
 recipies/vllm-lmcache-nixl/logs/
+recipies/vllm-lmcache-nixl/runtime.yaml
 recipies/vllm-atom-andy/logs/
+recipies/vllm-atom-andy/runtime.yaml
+recipies/runtime.yaml
 
 # benchmark logs and reports
 benchmarks/runtime.yaml

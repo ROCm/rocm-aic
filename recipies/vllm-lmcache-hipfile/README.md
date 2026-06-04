@@ -17,6 +17,7 @@ and **`test-aic.py`**: from the repo root, `pip install -r requirements.txt`
 
 - [Where things live](#where-things-live)
 - [Quick start](#quick-start)
+- [Runtime YAML](#runtime-yaml)
 - [rocm-aic-exporter.py](#rocm-aic-exporterpy-prometheus-textfile)
 - [MFU metrics](#mfu-metrics---enable-mfu-metrics)
 - [vLLM dev mode](#vllm-dev-mode-vllm_server_dev_mode)
@@ -58,6 +59,22 @@ The **Makefile** bind-mounts **`configs/`** and **`scripts/`** to **`/app/config
 and **`/app/scripts`**, so YAML and Python helpers update without **`docker build`**.
 Run **`make run`** from **`recipies/vllm-lmcache-hipfile/`** (so **`$(CURDIR)`** is correct),
 or add matching **`-v`** flags with **`EXTRA_DOCKER_RUN_FLAGS`**.
+
+## Runtime YAML
+
+For repeated local or Slurm runs, copy **`runtime.yaml.example`** to
+**`runtime.yaml`** and edit the host, server, LMCache, Slurm, and benchmark
+sections instead of exporting each **`VLH_*`** variable:
+
+```bash
+cp recipies/vllm-lmcache-hipfile/runtime.yaml.example \
+  recipies/vllm-lmcache-hipfile/runtime.yaml
+make -C recipies/vllm-lmcache-hipfile run
+```
+
+Use **`RECIPE_RUNTIME_FILE=/path/to/runtime.yaml`** to select another file.
+Explicit environment variables and **`make VAR=value`** overrides still win over
+YAML values, so one-off tests can keep using the current command style.
 
 Prepare the host path you mount as LMCache data (default host **`DATA`**
 in **`Makefile`**: **`/mnt/lmcache-nvme`** → container **`/data`**). That

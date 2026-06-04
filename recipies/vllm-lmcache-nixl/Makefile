@@ -28,6 +28,12 @@ VLN_DOCKER_NOFILE ?= 1048576
 VLN_MAX_MODEL_LEN ?=
 VLN_GPU_MEMORY_UTILIZATION ?=
 VLN_MAX_NUM_BATCHED_TOKENS ?=
+VLN_LMCACHE_ENABLE_CHUNK_STATISTICS ?=
+VLN_LMCACHE_CHUNK_STATISTICS_STRATEGY ?=
+VLN_LMCACHE_ENABLE_KV_EVENTS ?=
+VLN_ENABLE_MFU_METRICS ?=
+VLN_ENFORCE_EAGER ?=
+VLN_PYTORCH_ALLOC_CONF ?=
 # hipFile AIS stats for ais-stats (0=off, 1=basic, 2=detailed, 3=max). AIS modes only.
 VLH_HIPFILE_STATS_LEVEL ?=
 NIXL_PLUGIN_DIR ?= /opt/nixl/lib/x86_64-linux-gnu/plugins
@@ -38,6 +44,21 @@ VLLM_MODEL ?=
 ARGS ?=
 EXTRA_DOCKER_RUN_FLAGS ?=
 DOCKER_RUN_ATTACH ?= -it
+RECIPE_RUNTIME_LOADER := $(REPO_ROOT)/recipies/common/scripts/load-recipe-runtime.sh
+_recipe_runtime_env = $(foreach var,$(1),$(if $(filter environment command line environment override,$(origin $(var))),$(var)="$(value $(var))"))
+_recipe_runtime_vars = RUNTIME_CONFIG_FILE RECIPE_RUNTIME_FILE RECIPE_RUNTIME_CONFIG \
+	IMAGE_NAME GPU CONTAINER_NAME DATA LOG HF_HOME HF_TOKEN HF_TOKEN_FILE \
+	CONTAINER_HF_HOME CONTAINER_DATA_DIR CONTAINER_LOG_DIR TZ ARGS \
+	EXTRA_DOCKER_RUN_FLAGS ROCM_ARCH PYTORCH_ALLOC_CONF \
+	VLLM_PYTORCH_ALLOC_CONF VLLM_MODEL VLLM_SERVER_DEV_MODE \
+	VLLM_GPU_MEMORY_UTILIZATION VLLM_ENFORCE_EAGER VLLM_ENABLE_MFU_METRICS \
+	VLN_LMCACHE_IO VLN_LMCACHE_LOG_LEVEL VLN_NIXL_BUFFER_SIZE \
+	VLN_NIXL_BUFFER_DEVICE VLN_NIXL_POOL_SIZE VLN_DOCKER_NOFILE \
+	VLN_MAX_MODEL_LEN VLN_GPU_MEMORY_UTILIZATION \
+	VLN_MAX_NUM_BATCHED_TOKENS VLN_LMCACHE_ENABLE_CHUNK_STATISTICS \
+	VLN_LMCACHE_CHUNK_STATISTICS_STRATEGY VLN_LMCACHE_ENABLE_KV_EVENTS \
+	VLN_ENABLE_MFU_METRICS VLN_ENFORCE_EAGER VLN_PYTORCH_ALLOC_CONF \
+	VLH_HIPFILE_STATS_LEVEL NIXL_PLUGIN_DIR
 
 # Gutenberg long-context fixtures (gitignored under data/; not LMCache DATA mount)
 BOOK_SLUG ?= war-and-peace
@@ -131,10 +152,22 @@ data:
 		BOOK_DATA_DIR="$(BOOK_DATA_DIR)"
 
 run:
-	@$(MAKE) -f "$(CURDIR)/Makefile" _docker_run DOCKER_RUN_ATTACH=-it
+	@set -e; \
+	if [ -x "$(RECIPE_RUNTIME_LOADER)" ]; then \
+		runtime_exports="$$("$(RECIPE_RUNTIME_LOADER)" vllm-lmcache-nixl "$(CURDIR)")"; \
+		if [ -n "$$runtime_exports" ]; then eval "$$runtime_exports"; fi; \
+	fi; \
+	env $(call _recipe_runtime_env,$(_recipe_runtime_vars)) \
+		$(MAKE) -f "$(CURDIR)/Makefile" _docker_run DOCKER_RUN_ATTACH=-it
 
 run-batch:
-	@$(MAKE) -f "$(CURDIR)/Makefile" _docker_run DOCKER_RUN_ATTACH=-d
+	@set -e; \
+	if [ -x "$(RECIPE_RUNTIME_LOADER)" ]; then \
+		runtime_exports="$$("$(RECIPE_RUNTIME_LOADER)" vllm-lmcache-nixl "$(CURDIR)")"; \
+		if [ -n "$$runtime_exports" ]; then eval "$$runtime_exports"; fi; \
+	fi; \
+	env $(call _recipe_runtime_env,$(_recipe_runtime_vars)) \
+		$(MAKE) -f "$(CURDIR)/Makefile" _docker_run DOCKER_RUN_ATTACH=-d
 
 _docker_run:
 	@set -e; \
@@ -180,9 +213,15 @@ _docker_run:
 		--env VLN_NIXL_BUFFER_SIZE="$(VLN_NIXL_BUFFER_SIZE)" \
 		$$(if [ -n "$(VLN_NIXL_BUFFER_DEVICE)" ]; then printf '%s' "--env VLN_NIXL_BUFFER_DEVICE=$(VLN_NIXL_BUFFER_DEVICE)"; fi) \
 		$$(if [ -n "$(VLN_NIXL_POOL_SIZE)" ]; then printf '%s' "--env VLN_NIXL_POOL_SIZE=$(VLN_NIXL_POOL_SIZE)"; fi) \
+		$$(if [ -n "$(VLN_LMCACHE_ENABLE_CHUNK_STATISTICS)" ]; then printf '%s' "--env VLN_LMCACHE_ENABLE_CHUNK_STATISTICS=$(VLN_LMCACHE_ENABLE_CHUNK_STATISTICS)"; fi) \
+		$$(if [ -n "$(VLN_LMCACHE_CHUNK_STATISTICS_STRATEGY)" ]; then printf '%s' "--env VLN_LMCACHE_CHUNK_STATISTICS_STRATEGY=$(VLN_LMCACHE_CHUNK_STATISTICS_STRATEGY)"; fi) \
+		$$(if [ -n "$(VLN_LMCACHE_ENABLE_KV_EVENTS)" ]; then printf '%s' "--env VLN_LMCACHE_ENABLE_KV_EVENTS=$(VLN_LMCACHE_ENABLE_KV_EVENTS)"; fi) \
 		$$(if [ -n "$(VLN_MAX_MODEL_LEN)" ]; then printf '%s' "--env VLN_MAX_MODEL_LEN=$(VLN_MAX_MODEL_LEN)"; fi) \
 		$$(if [ -n "$(VLN_GPU_MEMORY_UTILIZATION)" ]; then printf '%s' "--env VLN_GPU_MEMORY_UTILIZATION=$(VLN_GPU_MEMORY_UTILIZATION)"; fi) \
 		$$(if [ -n "$(VLN_MAX_NUM_BATCHED_TOKENS)" ]; then printf '%s' "--env VLN_MAX_NUM_BATCHED_TOKENS=$(VLN_MAX_NUM_BATCHED_TOKENS)"; fi) \
+		$$(if [ -n "$(VLN_ENABLE_MFU_METRICS)" ]; then printf '%s' "--env VLN_ENABLE_MFU_METRICS=$(VLN_ENABLE_MFU_METRICS)"; fi) \
+		$$(if [ -n "$(VLN_ENFORCE_EAGER)" ]; then printf '%s' "--env VLN_ENFORCE_EAGER=$(VLN_ENFORCE_EAGER)"; fi) \
+		$$(if [ -n "$(VLN_PYTORCH_ALLOC_CONF)" ]; then printf '%s' "--env VLN_PYTORCH_ALLOC_CONF=$(VLN_PYTORCH_ALLOC_CONF)"; fi) \
 		$$(if [ -n "$(VLH_HIPFILE_STATS_LEVEL)" ]; then printf '%s' "--env VLH_HIPFILE_STATS_LEVEL=$(VLH_HIPFILE_STATS_LEVEL)"; fi) \
 		--env NIXL_PLUGIN_DIR="$(NIXL_PLUGIN_DIR)" \
 		--env VLLM_SERVER_DEV_MODE="$(VLLM_SERVER_DEV_MODE)" \

@@ -11,6 +11,17 @@
 set -euo pipefail
 cd "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
+_runtime_loader="${PWD}/recipies/common/scripts/load-recipe-runtime.sh"
+if [[ -x "${_runtime_loader}" ]]; then
+    if ! _runtime_exports="$("${_runtime_loader}" vllm-lmcache-nixl \
+        "${PWD}/recipies/vllm-lmcache-nixl")"; then
+        exit 1
+    fi
+    if [[ -n "${_runtime_exports}" ]]; then
+        source /dev/stdin <<<"${_runtime_exports}"
+    fi
+fi
+
 if [[ -z "${HF_TOKEN:-}" && -z "${HF_TOKEN_FILE:-}" ]]; then
     if [[ -r "${HOME}/.batesste-hugging-face-read-march-2026.token" ]]; then
         export HF_TOKEN_FILE="${HOME}/.batesste-hugging-face-read-march-2026.token"
@@ -45,6 +56,7 @@ export VLN_LMCACHE_IO
 export VLN_BENCHMARK VLN_RUN_LONG_PARALLEL
 export VLN_RUN_LONG_WORKERS VLN_RUN_LONG_ITERATIONS VLN_RUN_LONG_BASE_SEED
 
-export VLN_SLURM_CONSTRAINT='MARKHAM&NVME'
+: "${VLN_SLURM_CONSTRAINT:=MARKHAM&NVME}"
+export VLN_SLURM_CONSTRAINT
 
 exec "${PWD}/.slurm/run-vllm-lmcache-nixl.sh" "$@"

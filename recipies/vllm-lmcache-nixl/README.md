@@ -21,6 +21,22 @@ export HF_TOKEN=...
 make -C recipies/vllm-lmcache-nixl run VLN_LMCACHE_IO=nixl-posix
 ```
 
+## Runtime YAML
+
+For repeated local or Slurm runs, copy `runtime.yaml.example` to
+`runtime.yaml` and edit the host, server, LMCache, NIXL, Slurm, and benchmark
+sections instead of exporting each `VLN_*` variable:
+
+```bash
+cp recipies/vllm-lmcache-nixl/runtime.yaml.example \
+  recipies/vllm-lmcache-nixl/runtime.yaml
+make -C recipies/vllm-lmcache-nixl run
+```
+
+Use `RECIPE_RUNTIME_FILE=/path/to/runtime.yaml` to select another file.
+Explicit environment variables and `make VAR=value` overrides still win over
+YAML values.
+
 ## Storage modes (`VLN_LMCACHE_IO`)
 
 | Value | LMCache / NIXL backend |

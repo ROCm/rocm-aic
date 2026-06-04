@@ -11,6 +11,23 @@ if [[ -z "${REPO_DIR:-}" ]]; then
 fi
 # shellcheck source=/dev/null
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/recipe-bench.sh"
+
+_recipe_load_runtime_config() {
+    local loader context runtime_exports
+    context="$(basename "${RECIPE_DIR:-}")"
+    loader="${REPO_DIR}/recipies/common/scripts/load-recipe-runtime.sh"
+    if [[ -z "${context}" || ! -x "${loader}" ]]; then
+        return 0
+    fi
+    if ! runtime_exports="$("${loader}" "${context}" "${RECIPE_DIR}")"; then
+        return 1
+    fi
+    if [[ -n "${runtime_exports}" ]]; then
+        source /dev/stdin <<<"${runtime_exports}"
+    fi
+}
+
+_recipe_load_runtime_config
 _recipe_export_bench_root
 
 _vlh_env_aliases() {

@@ -26,6 +26,17 @@ set -euo pipefail
 cd "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 mkdir -p .slurm/logs
 
+_runtime_loader="${PWD}/recipies/common/scripts/load-recipe-runtime.sh"
+if [[ -x "${_runtime_loader}" ]]; then
+    if ! _runtime_exports="$("${_runtime_loader}" vllm-lmcache-hipfile \
+        "${PWD}/recipies/vllm-lmcache-hipfile")"; then
+        exit 1
+    fi
+    if [[ -n "${_runtime_exports}" ]]; then
+        source /dev/stdin <<<"${_runtime_exports}"
+    fi
+fi
+
 _exports="ALL"
 if [[ -n "${VLH_NVME_BASE:-}" ]]; then
     _exports="${_exports},VLH_NVME_BASE=${VLH_NVME_BASE}"

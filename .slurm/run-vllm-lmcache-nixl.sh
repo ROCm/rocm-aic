@@ -10,6 +10,17 @@ set -euo pipefail
 cd "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 mkdir -p .slurm/logs
 
+_runtime_loader="${PWD}/recipies/common/scripts/load-recipe-runtime.sh"
+if [[ -x "${_runtime_loader}" ]]; then
+    if ! _runtime_exports="$("${_runtime_loader}" vllm-lmcache-nixl \
+        "${PWD}/recipies/vllm-lmcache-nixl")"; then
+        exit 1
+    fi
+    if [[ -n "${_runtime_exports}" ]]; then
+        source /dev/stdin <<<"${_runtime_exports}"
+    fi
+fi
+
 _exports="ALL"
 if [[ -n "${VLN_NVME_BASE:-}" ]]; then
     _exports="${_exports},VLN_NVME_BASE=${VLN_NVME_BASE}"

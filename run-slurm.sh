@@ -20,6 +20,17 @@
 set -euo pipefail
 cd "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
+_runtime_loader="${PWD}/recipies/common/scripts/load-recipe-runtime.sh"
+if [[ -x "${_runtime_loader}" ]]; then
+    if ! _runtime_exports="$("${_runtime_loader}" vllm-lmcache-hipfile \
+        "${PWD}/recipies/vllm-lmcache-hipfile")"; then
+        exit 1
+    fi
+    if [[ -n "${_runtime_exports}" ]]; then
+        source /dev/stdin <<<"${_runtime_exports}"
+    fi
+fi
+
 # --- Hugging Face auth (override or export HF_TOKEN instead) ---
 if [[ -z "${HF_TOKEN:-}" && -z "${HF_TOKEN_FILE:-}" ]]; then
     if [[ -r "${HOME}/.batesste-hugging-face-read-march-2026.token" ]]; then
@@ -73,8 +84,9 @@ export VLH_RUN_LONG_WORKERS VLH_RUN_LONG_ITERATIONS VLH_RUN_LONG_BASE_SEED
 
 # --- Optional Slurm (uncomment to narrow nodes / raise memory) ---
 # export VLH_SLURM_CONSTRAINT=MARKHAM
-export VLH_SLURM_CONSTRAINT='MARKHAM&NVME'
-export VLH_SLURM_EXCLUDE='ctr-cx65-mi300x-30'
+: "${VLH_SLURM_CONSTRAINT:=MARKHAM&NVME}"
+: "${VLH_SLURM_EXCLUDE:=ctr-cx65-mi300x-30}"
+export VLH_SLURM_CONSTRAINT VLH_SLURM_EXCLUDE
 # Pin to a workstation where you built the image (local docker only):
 # export VLH_SLURM_NODELIST='mlse-alola-b39-ws2'
 # export VLH_SKIP_BUILD=1

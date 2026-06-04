@@ -1,0 +1,52 @@
+# Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+#
+
+# Copy to runtime.yaml, or set RECIPE_RUNTIME_FILE=/path/to/runtime.yaml.
+# Existing environment variables and make VAR=value overrides still win.
+
+host:
+  gpu: 0
+  data: /mnt/lmcache-nvme
+  log: recipies/vllm-lmcache-hipfile/logs
+  hf_home: ~/.cache/huggingface
+  timezone: America/Edmonton
+
+secrets:
+  hf_token_file: "${HF_TOKEN_FILE:-}"
+
+server:
+  # model: openai/gpt-oss-120b
+  dev_mode: true
+  gpu_memory_utilization: 0.90
+  max_model_len:
+  max_num_batched_tokens:
+  enforce_eager: true
+  enable_mfu_metrics: true
+  pytorch_alloc_conf: expandable_segments:True
+
+lmcache:
+  io: hipfile
+  log_level: INFO
+  gds_buffer_size: 2048
+  enable_chunk_statistics: true
+  chunk_statistics_strategy: file_hash
+  enable_kv_events: true
+
+slurm:
+  shared_root: /scratch/${USER}/vllm-lmcache-hipfile
+  hf_home: /scratch/${USER}/vllm-lmcache-hipfile/hf
+  gutenberg_data_root: /scratch/${USER}/vllm-lmcache-hipfile/gutenberg
+  nvme_auto_use: true
+  nvme_scratch_fallback: true
+  nvme_mkfs: true
+  constraint: MARKHAM&NVME
+  benchmark: gutenberg
+
+benchmark:
+  run_long_parallel: true
+  workers: 4
+  iterations: 1
+  base_seed: 42
+  max_tokens: 512

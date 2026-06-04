@@ -20,6 +20,15 @@ TZ ?= America/Edmonton
 VLH_LMCACHE_IO ?= hipfile
 VLH_LMCACHE_LOG_LEVEL ?=
 VLH_LMCACHE_GDS_BUFFER_SIZE ?=
+VLH_LMCACHE_ENABLE_CHUNK_STATISTICS ?=
+VLH_LMCACHE_CHUNK_STATISTICS_STRATEGY ?=
+VLH_LMCACHE_ENABLE_KV_EVENTS ?=
+VLH_GPU_MEMORY_UTILIZATION ?=
+VLH_MAX_MODEL_LEN ?=
+VLH_MAX_NUM_BATCHED_TOKENS ?=
+VLH_ENABLE_MFU_METRICS ?=
+VLH_ENFORCE_EAGER ?=
+VLH_PYTORCH_ALLOC_CONF ?=
 # Enables vLLM dev HTTP APIs (e.g. POST /reset_prefix_cache). Set to 0 to disable.
 VLLM_SERVER_DEV_MODE ?= 1
 # Served model (vllm-server + Slurm benchmarks). Unset → configs/vllm-lmcache-hipfile.yaml default.
@@ -27,6 +36,20 @@ VLLM_MODEL ?=
 ARGS ?=
 EXTRA_DOCKER_RUN_FLAGS ?=
 DOCKER_RUN_ATTACH ?= -it
+RECIPE_RUNTIME_LOADER := $(REPO_ROOT)/recipies/common/scripts/load-recipe-runtime.sh
+_recipe_runtime_env = $(foreach var,$(1),$(if $(filter environment command line environment override,$(origin $(var))),$(var)="$(value $(var))"))
+_recipe_runtime_vars = RUNTIME_CONFIG_FILE RECIPE_RUNTIME_FILE RECIPE_RUNTIME_CONFIG \
+	IMAGE_NAME GPU CONTAINER_NAME DATA LOG HF_HOME HF_TOKEN HF_TOKEN_FILE \
+	CONTAINER_HF_HOME CONTAINER_DATA_DIR CONTAINER_LOG_DIR TZ ARGS \
+	EXTRA_DOCKER_RUN_FLAGS ROCM_ARCH PYTORCH_ALLOC_CONF \
+	VLLM_PYTORCH_ALLOC_CONF VLLM_MODEL VLLM_SERVER_DEV_MODE \
+	VLLM_GPU_MEMORY_UTILIZATION VLLM_ENFORCE_EAGER VLLM_ENABLE_MFU_METRICS \
+	VLH_LMCACHE_IO VLH_LMCACHE_LOG_LEVEL VLH_LMCACHE_GDS_BUFFER_SIZE \
+	VLH_LMCACHE_ENABLE_CHUNK_STATISTICS \
+	VLH_LMCACHE_CHUNK_STATISTICS_STRATEGY VLH_LMCACHE_ENABLE_KV_EVENTS \
+	VLH_GPU_MEMORY_UTILIZATION VLH_MAX_MODEL_LEN \
+	VLH_MAX_NUM_BATCHED_TOKENS VLH_ENABLE_MFU_METRICS \
+	VLH_ENFORCE_EAGER VLH_PYTORCH_ALLOC_CONF
 
 # Gutenberg long-context fixtures (gitignored under data/; not LMCache DATA mount)
 BOOK_SLUG ?= war-and-peace
@@ -111,10 +134,22 @@ data:
 		BOOK_DATA_DIR="$(BOOK_DATA_DIR)"
 
 run:
-	@$(MAKE) -f "$(CURDIR)/Makefile" _docker_run DOCKER_RUN_ATTACH=-it
+	@set -e; \
+	if [ -x "$(RECIPE_RUNTIME_LOADER)" ]; then \
+		runtime_exports="$$("$(RECIPE_RUNTIME_LOADER)" vllm-lmcache-hipfile "$(CURDIR)")"; \
+		if [ -n "$$runtime_exports" ]; then eval "$$runtime_exports"; fi; \
+	fi; \
+	env $(call _recipe_runtime_env,$(_recipe_runtime_vars)) \
+		$(MAKE) -f "$(CURDIR)/Makefile" _docker_run DOCKER_RUN_ATTACH=-it
 
 run-batch:
-	@$(MAKE) -f "$(CURDIR)/Makefile" _docker_run DOCKER_RUN_ATTACH=-d
+	@set -e; \
+	if [ -x "$(RECIPE_RUNTIME_LOADER)" ]; then \
+		runtime_exports="$$("$(RECIPE_RUNTIME_LOADER)" vllm-lmcache-hipfile "$(CURDIR)")"; \
+		if [ -n "$$runtime_exports" ]; then eval "$$runtime_exports"; fi; \
+	fi; \
+	env $(call _recipe_runtime_env,$(_recipe_runtime_vars)) \
+		$(MAKE) -f "$(CURDIR)/Makefile" _docker_run DOCKER_RUN_ATTACH=-d
 
 _docker_run:
 	@set -e; \
@@ -157,6 +192,15 @@ _docker_run:
 		--env VLH_LMCACHE_IO="$(VLH_LMCACHE_IO)" \
 		--env VLH_LMCACHE_LOG_LEVEL="$(VLH_LMCACHE_LOG_LEVEL)" \
 		--env VLH_LMCACHE_GDS_BUFFER_SIZE="$(VLH_LMCACHE_GDS_BUFFER_SIZE)" \
+		$$(if [ -n "$(VLH_LMCACHE_ENABLE_CHUNK_STATISTICS)" ]; then printf '%s' "--env VLH_LMCACHE_ENABLE_CHUNK_STATISTICS=$(VLH_LMCACHE_ENABLE_CHUNK_STATISTICS)"; fi) \
+		$$(if [ -n "$(VLH_LMCACHE_CHUNK_STATISTICS_STRATEGY)" ]; then printf '%s' "--env VLH_LMCACHE_CHUNK_STATISTICS_STRATEGY=$(VLH_LMCACHE_CHUNK_STATISTICS_STRATEGY)"; fi) \
+		$$(if [ -n "$(VLH_LMCACHE_ENABLE_KV_EVENTS)" ]; then printf '%s' "--env VLH_LMCACHE_ENABLE_KV_EVENTS=$(VLH_LMCACHE_ENABLE_KV_EVENTS)"; fi) \
+		$$(if [ -n "$(VLH_GPU_MEMORY_UTILIZATION)" ]; then printf '%s' "--env VLH_GPU_MEMORY_UTILIZATION=$(VLH_GPU_MEMORY_UTILIZATION)"; fi) \
+		$$(if [ -n "$(VLH_MAX_MODEL_LEN)" ]; then printf '%s' "--env VLH_MAX_MODEL_LEN=$(VLH_MAX_MODEL_LEN)"; fi) \
+		$$(if [ -n "$(VLH_MAX_NUM_BATCHED_TOKENS)" ]; then printf '%s' "--env VLH_MAX_NUM_BATCHED_TOKENS=$(VLH_MAX_NUM_BATCHED_TOKENS)"; fi) \
+		$$(if [ -n "$(VLH_ENABLE_MFU_METRICS)" ]; then printf '%s' "--env VLH_ENABLE_MFU_METRICS=$(VLH_ENABLE_MFU_METRICS)"; fi) \
+		$$(if [ -n "$(VLH_ENFORCE_EAGER)" ]; then printf '%s' "--env VLH_ENFORCE_EAGER=$(VLH_ENFORCE_EAGER)"; fi) \
+		$$(if [ -n "$(VLH_PYTORCH_ALLOC_CONF)" ]; then printf '%s' "--env VLH_PYTORCH_ALLOC_CONF=$(VLH_PYTORCH_ALLOC_CONF)"; fi) \
 		--env VLLM_SERVER_DEV_MODE="$(VLLM_SERVER_DEV_MODE)" \
 		$$(if [ -n "$(VLLM_MODEL)" ]; then printf '%s' "--env VLLM_MODEL=$(VLLM_MODEL)"; fi) \
 		--env HF_TOKEN="$$HF_TOKEN" \

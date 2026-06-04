@@ -19,6 +19,7 @@ for HBM L1 + CPU DRAM L2 + optional NVMe L3.
 
 - [Where things live](#where-things-live)
 - [Quick start](#quick-start)
+- [Runtime YAML](#runtime-yaml)
 - [LMCache tiers](#lmcache-tiers-vaa_lmcache_tier)
 - [Critical pitfalls](#critical-pitfalls)
 - [Blog reproduction (2× MI300X, MiniMax-M2.5)](#blog-reproduction-2-mi300x-minimax-m25)
@@ -60,6 +61,22 @@ The **Makefile** bind-mounts **`configs/`** and **`scripts/`** so YAML and
 Python update without **`docker build`**. LMCache NVMe state uses host **`DATA`**
 (default **`/mnt/lmcache-nvme`** → container **`/data`**). Server logs tee to
 host **`LOG`** (default **`recipies/vllm-atom-andy/logs`**, file **`server.txt`**).
+
+## Runtime YAML
+
+For repeated runs, copy **`runtime.yaml.example`** to **`runtime.yaml`** and
+edit the host, server, and LMCache sections instead of exporting each
+**`VAA_*`** variable:
+
+```bash
+cp recipies/vllm-atom-andy/runtime.yaml.example \
+  recipies/vllm-atom-andy/runtime.yaml
+make -C recipies/vllm-atom-andy run
+```
+
+Use **`RECIPE_RUNTIME_FILE=/path/to/runtime.yaml`** to select another file.
+Explicit environment variables and **`make VAR=value`** overrides still win over
+YAML values.
 
 Port **`800{GPU}`** matches the first index in **`ROCR_VISIBLE_DEVICES`** (e.g.
 **`8000`** for **`GPU=0`**). Override **`CONTAINER_NAME`**, **`DATA`**, **`LOG`**

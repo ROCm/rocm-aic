@@ -111,7 +111,7 @@ def put(env, name, value, *, separator=" ", path=False):
     if os.environ.get(name):
         return
     text = resolve_path(value) if path else scalar(value, separator)
-    if text is None:
+    if text is None or text == "":
         return
     env[name] = text
 

@@ -23,11 +23,27 @@ VAA_MAX_MODEL_LEN ?=
 VAA_MAX_NUM_BATCHED_TOKENS ?=
 VAA_LMCACHE_MAX_LOCAL_CPU_SIZE ?=
 VAA_MODEL_PROFILE ?=
+VAA_ENABLE_MFU_METRICS ?=
+VAA_LMCACHE_ENABLE_CHUNK_STATISTICS ?=
+VAA_LMCACHE_CHUNK_STATISTICS_STRATEGY ?=
 VLLM_SERVER_DEV_MODE ?= 1
 VLLM_MODEL ?=
 ARGS ?=
 EXTRA_DOCKER_RUN_FLAGS ?=
 DOCKER_RUN_ATTACH ?= -it
+RECIPE_RUNTIME_LOADER := $(REPO_ROOT)/recipies/common/scripts/load-recipe-runtime.sh
+_recipe_runtime_env = $(foreach var,$(1),$(if $(filter environment command line environment override,$(origin $(var))),$(var)="$(value $(var))"))
+_recipe_runtime_vars = RUNTIME_CONFIG_FILE RECIPE_RUNTIME_FILE RECIPE_RUNTIME_CONFIG \
+	IMAGE_NAME GPU CONTAINER_NAME DATA LOG HF_HOME HF_TOKEN HF_TOKEN_FILE \
+	CONTAINER_HF_HOME CONTAINER_DATA_DIR CONTAINER_LOG_DIR TZ ARGS \
+	EXTRA_DOCKER_RUN_FLAGS ROCM_ARCH PYTORCH_ALLOC_CONF \
+	VLLM_MODEL VLLM_SERVER_DEV_MODE VLLM_GPU_MEMORY_UTILIZATION \
+	VAA_LMCACHE_TIER VAA_LMCACHE_LOG_LEVEL VAA_TENSOR_PARALLEL_SIZE \
+	VAA_GPU_MEMORY_UTILIZATION VAA_MAX_MODEL_LEN \
+	VAA_MAX_NUM_BATCHED_TOKENS VAA_LMCACHE_MAX_LOCAL_CPU_SIZE \
+	VAA_MODEL_PROFILE VAA_ENABLE_MFU_METRICS \
+	VAA_LMCACHE_ENABLE_CHUNK_STATISTICS \
+	VAA_LMCACHE_CHUNK_STATISTICS_STRATEGY
 
 # rocm/atom-dev:vllm-v0.19.0-nightly_20260522 (Andy blog era; not vllm-latest)
 ATOM_DEV_DIGEST ?= sha256:c7e019b4872efe85557097731e863207189aaaa80ce8071c534565b20d03a509
@@ -70,10 +86,22 @@ help:
 	@echo ""
 
 run:
-	@$(MAKE) -f "$(CURDIR)/Makefile" _docker_run DOCKER_RUN_ATTACH=-it
+	@set -e; \
+	if [ -x "$(RECIPE_RUNTIME_LOADER)" ]; then \
+		runtime_exports="$$("$(RECIPE_RUNTIME_LOADER)" vllm-atom-andy "$(CURDIR)")"; \
+		if [ -n "$$runtime_exports" ]; then eval "$$runtime_exports"; fi; \
+	fi; \
+	env $(call _recipe_runtime_env,$(_recipe_runtime_vars)) \
+		$(MAKE) -f "$(CURDIR)/Makefile" _docker_run DOCKER_RUN_ATTACH=-it
 
 run-batch:
-	@$(MAKE) -f "$(CURDIR)/Makefile" _docker_run DOCKER_RUN_ATTACH=-d
+	@set -e; \
+	if [ -x "$(RECIPE_RUNTIME_LOADER)" ]; then \
+		runtime_exports="$$("$(RECIPE_RUNTIME_LOADER)" vllm-atom-andy "$(CURDIR)")"; \
+		if [ -n "$$runtime_exports" ]; then eval "$$runtime_exports"; fi; \
+	fi; \
+	env $(call _recipe_runtime_env,$(_recipe_runtime_vars)) \
+		$(MAKE) -f "$(CURDIR)/Makefile" _docker_run DOCKER_RUN_ATTACH=-d
 
 _docker_run:
 	@set -e; \
@@ -122,6 +150,9 @@ _docker_run:
 		$$(if [ -n "$(VAA_MAX_NUM_BATCHED_TOKENS)" ]; then printf '%s' "--env VAA_MAX_NUM_BATCHED_TOKENS=$(VAA_MAX_NUM_BATCHED_TOKENS)"; fi) \
 		$$(if [ -n "$(VAA_LMCACHE_MAX_LOCAL_CPU_SIZE)" ]; then printf '%s' "--env VAA_LMCACHE_MAX_LOCAL_CPU_SIZE=$(VAA_LMCACHE_MAX_LOCAL_CPU_SIZE)"; fi) \
 		$$(if [ -n "$(VAA_MODEL_PROFILE)" ]; then printf '%s' "--env VAA_MODEL_PROFILE=$(VAA_MODEL_PROFILE)"; fi) \
+		$$(if [ -n "$(VAA_ENABLE_MFU_METRICS)" ]; then printf '%s' "--env VAA_ENABLE_MFU_METRICS=$(VAA_ENABLE_MFU_METRICS)"; fi) \
+		$$(if [ -n "$(VAA_LMCACHE_ENABLE_CHUNK_STATISTICS)" ]; then printf '%s' "--env VAA_LMCACHE_ENABLE_CHUNK_STATISTICS=$(VAA_LMCACHE_ENABLE_CHUNK_STATISTICS)"; fi) \
+		$$(if [ -n "$(VAA_LMCACHE_CHUNK_STATISTICS_STRATEGY)" ]; then printf '%s' "--env VAA_LMCACHE_CHUNK_STATISTICS_STRATEGY=$(VAA_LMCACHE_CHUNK_STATISTICS_STRATEGY)"; fi) \
 		$$(if [ -n "$(VLLM_MODEL)" ]; then printf '%s' "--env VLLM_MODEL=$(VLLM_MODEL)"; fi) \
 		--env HF_TOKEN="$$HF_TOKEN" \
 		--env ROCR_VISIBLE_DEVICES="$(GPU)" \
