@@ -27,7 +27,9 @@ AGENTX_HONOR_THINK_TIME ?= 0
 AGENTX_MAX_CONTEXT ?=
 AGENTX_STRICT ?= 0
 
-_runtime_env = $(foreach var,$(1),$(if $(filter environment command line environment override,$(origin $(var))),$(var)="$(value $(var))"))
+_runtime_file_present = $(or $(RUNTIME_CONFIG_FILE),$(BENCHMARK_RUNTIME_FILE),$(BENCHMARK_RUNTIME_CONFIG),$(wildcard $(REPO_ROOT)/benchmarks/runtime.yaml),$(wildcard $(CURDIR)/runtime.yaml))
+_runtime_env_origins = $(if $(_runtime_file_present),command line,environment command line environment override)
+_runtime_env = $(foreach var,$(1),$(if $(filter $(_runtime_env_origins),$(origin $(var))),$(var)="$(value $(var))"))
 
 .PHONY: help install check-deps check-data check-server data run run-parallel report
 

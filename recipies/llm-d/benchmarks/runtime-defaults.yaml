@@ -4,8 +4,9 @@
 #
 
 # Checked-in defaults loaded by run-sweep.py. Put overrides in runtime.yaml, or
-# pass --runtime-config /path/to/file.yaml. Host environment variables still
-# override host runtime settings.
+# pass --runtime-config /path/to/file.yaml. Host environment variables override
+# this defaults file. If an override YAML file is detected, mapped host runtime
+# env vars are ignored so that file is the source of truth.
 
 sweep:
   results_dir: results/sweeps

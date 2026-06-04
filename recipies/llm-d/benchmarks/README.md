@@ -251,8 +251,9 @@ python3 scripts/run-sweep.py my-sweep --runtime-config /path/to/runtime.yaml
 
 Runtime YAML can set the sweep results directory, default pod `env_vars`, and
 Hugging Face token-file location. Sweep config `env_vars` still override
-runtime `env_vars`, and host environment variables still override host runtime
-settings such as `sweep.results_dir`.
+runtime `env_vars`. Host environment variables override checked-in defaults,
+but an override YAML file wins over mapped host runtime vars such as
+`SWEEP_RESULTS_DIR`.
 
 ### Deployment Configuration
 

@@ -630,6 +630,10 @@ class SweepOrchestrator:
         self.runtime_config_file = (
             self.runtime_config_files[-1] if self.runtime_config_files else None
         )
+        self.runtime_overrides_env = any(
+            Path(path).name != "runtime-defaults.yaml"
+            for path in self.runtime_config_files
+        )
         self.runtime_config: Dict[str, Any] = {}
         for runtime_config_file in self.runtime_config_files:
             runtime_part = load_yaml_config_with_env(runtime_config_file)
@@ -651,13 +655,20 @@ class SweepOrchestrator:
         self.deployment = self.config['deployment']
         self.timestamp = datetime.now().strftime('%Y-%m-%d')
 
-        # Environment remains the highest-precedence host-specific override.
-        base_results_dir = (
-            os.environ.get('SWEEP_RESULTS_DIR')
-            or get_nested(self.runtime_config, 'sweep', 'results_dir')
+        # Local/explicit runtime YAML wins over stale host env. With only the
+        # checked-in defaults present, host env remains an override.
+        runtime_results_dir = (
+            get_nested(self.runtime_config, 'sweep', 'results_dir')
             or get_nested(self.runtime_config, 'paths', 'sweep_results_dir')
-            or 'results/sweeps'
         )
+        if self.runtime_overrides_env:
+            base_results_dir = runtime_results_dir or 'results/sweeps'
+        else:
+            base_results_dir = (
+                os.environ.get('SWEEP_RESULTS_DIR')
+                or runtime_results_dir
+                or 'results/sweeps'
+            )
         base_results_path = Path(base_results_dir)
 
         # Determine sweep directory name

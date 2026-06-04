@@ -45,7 +45,9 @@ ARGS ?=
 EXTRA_DOCKER_RUN_FLAGS ?=
 DOCKER_RUN_ATTACH ?= -it
 RECIPE_RUNTIME_LOADER := $(REPO_ROOT)/recipies/common/scripts/load-recipe-runtime.sh
-_recipe_runtime_env = $(foreach var,$(1),$(if $(filter environment command line environment override,$(origin $(var))),$(var)="$(value $(var))"))
+_recipe_runtime_file_present = $(or $(RUNTIME_CONFIG_FILE),$(RECIPE_RUNTIME_FILE),$(RECIPE_RUNTIME_CONFIG),$(wildcard $(REPO_ROOT)/recipies/runtime.yaml),$(wildcard $(CURDIR)/runtime.yaml))
+_recipe_runtime_env_origins = $(if $(_recipe_runtime_file_present),command line,environment command line environment override)
+_recipe_runtime_env = $(foreach var,$(1),$(if $(filter $(_recipe_runtime_env_origins),$(origin $(var))),$(var)="$(value $(var))"))
 _recipe_runtime_vars = RUNTIME_CONFIG_FILE RECIPE_RUNTIME_FILE RECIPE_RUNTIME_CONFIG \
 	IMAGE_NAME GPU CONTAINER_NAME DATA LOG HF_HOME HF_TOKEN HF_TOKEN_FILE \
 	CONTAINER_HF_HOME CONTAINER_DATA_DIR CONTAINER_LOG_DIR TZ ARGS \

@@ -72,8 +72,9 @@ make -C recipies/vllm-lmcache-hipfile run
 ```
 
 Use **`RECIPE_RUNTIME_FILE=/path/to/runtime.yaml`** to select another file.
-Explicit environment variables and **`make VAR=value`** overrides still win over
-YAML values, so one-off tests can keep using the current command style.
+Environment variables override checked-in defaults. When an override YAML file
+is detected, mapped runtime env vars are ignored so the file wins;
+**`make VAR=value`** remains an explicit one-off override.
 
 Prepare the host path you mount as LMCache data (default host **`DATA`**
 in **`Makefile`**: **`/mnt/lmcache-nvme`** → container **`/data`**). That

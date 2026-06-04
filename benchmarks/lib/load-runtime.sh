@@ -19,15 +19,18 @@ repo_root="$(cd "${benchmarks_root}/.." && pwd)"
 
 config_file="${RUNTIME_CONFIG_FILE:-${BENCHMARK_RUNTIME_FILE:-${BENCHMARK_RUNTIME_CONFIG:-}}}"
 config_files=()
+env_overrides_enabled=1
 if [[ -f "${benchmarks_root}/runtime-defaults.yaml" ]]; then
 	config_files+=("${benchmarks_root}/runtime-defaults.yaml")
 fi
 if [[ -n "${config_file}" ]]; then
 	config_files+=("${config_file}")
+	env_overrides_enabled=0
 else
 	for candidate in "${benchmarks_root}/runtime.yaml" "${bench_root}/runtime.yaml"; do
 		if [[ -n "${candidate}" && -f "${candidate}" ]]; then
 			config_files+=("${candidate}")
+			env_overrides_enabled=0
 		fi
 	done
 fi
@@ -43,7 +46,7 @@ for config_file in "${config_files[@]}"; do
 	fi
 done
 
-python3 - "${context}" "${repo_root}" "${config_files[@]}" <<'PY'
+python3 - "${context}" "${repo_root}" "${env_overrides_enabled}" "${config_files[@]}" <<'PY'
 import os
 import re
 import shlex
@@ -60,7 +63,14 @@ except ImportError as exc:
 
 context = sys.argv[1]
 repo_root = Path(sys.argv[2]).expanduser().resolve()
-config_paths = [Path(arg).expanduser().resolve() for arg in sys.argv[3:]]
+env_overrides_enabled = sys.argv[3] == "1"
+config_paths = [Path(arg).expanduser().resolve() for arg in sys.argv[4:]]
+
+ENV_OVERRIDE_ALLOWLIST = {
+    "HF_TOKEN",
+    "HF_TOKEN_FILE",
+    "OPENAI_API_KEY",
+}
 
 
 def normalize_key(key):
@@ -115,7 +125,9 @@ def resolve_path(value):
 def put(env, name, value, *, separator=" ", path=False):
     if value is None:
         return
-    if os.environ.get(name):
+    if os.environ.get(name) and (
+        env_overrides_enabled or name in ENV_OVERRIDE_ALLOWLIST
+    ):
         return
     text = resolve_path(value) if path else scalar(value, separator)
     if text is None or text == "":

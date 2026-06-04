@@ -5,7 +5,9 @@
 
 # Checked-in defaults loaded by benchmark scripts. Put overrides in
 # benchmarks/runtime.yaml, or point RUNTIME_CONFIG_FILE at another file.
-# Environment variables still override YAML values.
+# Environment variables override this defaults file. If an override YAML file is
+# detected, mapped runtime env vars are ignored so that file is the source of
+# truth for runtime settings.
 
 server:
   base_url: http://127.0.0.1:8000

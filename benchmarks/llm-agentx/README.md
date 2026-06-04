@@ -83,8 +83,9 @@ make run-parallel
 ```
 
 Use `RUNTIME_CONFIG_FILE=/path/to/runtime.yaml` to select another file.
-Environment variables and command-line Make variables still override YAML
-values for one-off experiments:
+Environment variables override checked-in defaults. When an override YAML file
+is detected, mapped runtime env vars are ignored so the file wins; command-line
+Make variables remain explicit one-off overrides:
 
 ```bash
 make run AGENTX_MAX_REQUESTS=3

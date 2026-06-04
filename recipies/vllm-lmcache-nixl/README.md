@@ -33,8 +33,9 @@ make -C recipies/vllm-lmcache-nixl run
 ```
 
 Use `RECIPE_RUNTIME_FILE=/path/to/runtime.yaml` to select another file.
-Explicit environment variables and `make VAR=value` overrides still win over
-YAML values.
+Environment variables override checked-in defaults. When an override YAML file
+is detected, mapped runtime env vars are ignored so the file wins;
+`make VAR=value` remains an explicit one-off override.
 
 ## Storage modes (`VLN_LMCACHE_IO`)
 

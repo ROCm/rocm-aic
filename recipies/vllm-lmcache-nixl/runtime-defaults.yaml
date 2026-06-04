@@ -5,7 +5,8 @@
 
 # Checked-in defaults loaded by recipe launchers. Put overrides in runtime.yaml,
 # or set RECIPE_RUNTIME_FILE=/path/to/runtime.yaml. Existing environment
-# variables and make VAR=value overrides still win.
+# variables override this defaults file. If an override YAML file is detected,
+# mapped runtime env vars are ignored; make VAR=value remains explicit.
 
 host:
   gpu: 0

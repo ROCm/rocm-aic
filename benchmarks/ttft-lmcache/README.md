@@ -98,7 +98,8 @@ $EDITOR ../runtime.yaml
 ```
 
 Use `RUNTIME_CONFIG_FILE=/path/to/runtime.yaml` to select another file.
-Environment variables still override YAML values for one-off changes.
+Environment variables override checked-in defaults. When an override YAML file
+is detected, mapped runtime env vars are ignored so the file wins.
 
 ### 4. Read results
 

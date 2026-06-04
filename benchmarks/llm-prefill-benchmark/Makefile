@@ -28,7 +28,9 @@ ITERATIONS ?= 1
 BASE_SEED ?= 42
 RUN_LONG_MAX_TOKENS ?= 512
 
-_runtime_env = $(foreach var,$(1),$(if $(filter environment command line environment override,$(origin $(var))),$(var)="$(value $(var))"))
+_runtime_file_present = $(or $(RUNTIME_CONFIG_FILE),$(BENCHMARK_RUNTIME_FILE),$(BENCHMARK_RUNTIME_CONFIG),$(wildcard $(REPO_ROOT)/benchmarks/runtime.yaml),$(wildcard $(CURDIR)/runtime.yaml))
+_runtime_env_origins = $(if $(_runtime_file_present),command line,environment command line environment override)
+_runtime_env = $(foreach var,$(1),$(if $(filter $(_runtime_env_origins),$(origin $(var))),$(var)="$(value $(var))"))
 
 .PHONY: help data data-all run run-parallel
 

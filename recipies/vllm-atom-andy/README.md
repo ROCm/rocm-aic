@@ -74,8 +74,9 @@ make -C recipies/vllm-atom-andy run
 ```
 
 Use **`RECIPE_RUNTIME_FILE=/path/to/runtime.yaml`** to select another file.
-Explicit environment variables and **`make VAR=value`** overrides still win over
-YAML values.
+Environment variables override checked-in defaults. When an override YAML file
+is detected, mapped runtime env vars are ignored so the file wins;
+**`make VAR=value`** remains an explicit one-off override.
 
 Port **`800{GPU}`** matches the first index in **`ROCR_VISIBLE_DEVICES`** (e.g.
 **`8000`** for **`GPU=0`**). Override **`CONTAINER_NAME`**, **`DATA`**, **`LOG`**
