@@ -1,0 +1,8 @@
+# Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+#
+# SemiAnalysis Claude Code agent traces for Weka-style KV-cache replay.
+repo_id: semianalysisai/cc-traces-weka-with-subagents-052726-256k
+revision: main
+trace_file: traces.jsonl

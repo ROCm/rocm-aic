@@ -67,9 +67,13 @@ benchmarks/ttft-llamacpp/logs/
 benchmarks/ttft-llamacpp/reports/
 benchmarks/llm-prefill-benchmark/logs/
 benchmarks/llm-prefill-benchmark/reports/
+benchmarks/llm-agentx/logs/
+benchmarks/llm-agentx/reports/
 
-# Generated Gutenberg benchmark corpus (repo-root data/gutenberg/)
-data/gutenberg/
+# Generated CC trace corpus (repo-root data/cc-traces/)
+data/cc-traces/
+# Legacy Agent-X download path (safe to remove locally)
+data/agentx/
 
 # slurm logs and reports
 .slurm/logs/

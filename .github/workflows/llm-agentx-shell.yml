@@ -1,0 +1,65 @@
+# Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+#
+name: llm-agentx Shell
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'benchmarks/llm-agentx/**'
+      - '.github/workflows/llm-agentx-shell.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  run-agent-smoke:
+    name: run-agent dry-run smoke
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: benchmarks/llm-agentx
+        shell: bash
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install deps
+        run: pip install -r requirements.txt
+
+      - name: Serial run-agent (dry-run fixtures)
+        env:
+          AGENTX_DATA_ROOT: ${{ github.workspace }}/benchmarks/llm-agentx/tests/fixtures
+          AGENTX_DRY_RUN: '1'
+          AGENTX_SEED: '42'
+          ITERATIONS: '1'
+        run: |
+          set -euo pipefail
+          ./run-agent.sh 2>&1 | tee "${RUNNER_TEMP}/run-agent.log"
+          grep -q 'run-agent: iteration=1/1' "${RUNNER_TEMP}/run-agent.log"
+
+      - name: run-agent-parallel (2 workers, dry-run)
+        env:
+          AGENTX_DATA_ROOT: ${{ github.workspace }}/benchmarks/llm-agentx/tests/fixtures
+          AGENTX_DRY_RUN: '1'
+          BASE_SEED: '100'
+          ITERATIONS: '1'
+        run: |
+          set -euo pipefail
+          WORKERS=2 OUTPUT_DIR="${RUNNER_TEMP}/parallel-out" ./run-agent-parallel.sh
+          test -f "${RUNNER_TEMP}/parallel-out/"*/worker-0.jsonl
+          test -f "${RUNNER_TEMP}/parallel-out/"*/worker-1.jsonl
+
+      - name: parse-results on parallel output
+        run: |
+          set -euo pipefail
+          run_dir="$(ls -td "${RUNNER_TEMP}/parallel-out"/*/ | head -1)"
+          python3 scripts/parse-results.py "${run_dir}" -o "${RUNNER_TEMP}/summary.json"
+          python3 -c "import json; s=json.load(open('${RUNNER_TEMP}/summary.json')); assert s['step_count'] >= 4"
