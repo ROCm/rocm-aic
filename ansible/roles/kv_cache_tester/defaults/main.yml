@@ -7,6 +7,11 @@
 kv_cache_tester_repo_url: https://github.com/callanjfox/kv-cache-tester.git
 kv_cache_tester_repo_ref: master
 
+# Prefer benchmarks/kv-cache-tester wrapper (make install data run).
+kv_cache_tester_use_benchmark_wrapper: true
+kv_cache_tester_benchmark_dir: "{{ role_path }}/../../../benchmarks/kv-cache-tester"
+kv_cache_tester_benchmark_config: configs/trace-replay-blog.yaml
+
 kv_cache_tester_install_basename: kv-cache-tester
 # Leave empty to install under {{ ansible_user_dir }}/kv_cache_tester_install_basename.
 kv_cache_tester_install_dir: ""

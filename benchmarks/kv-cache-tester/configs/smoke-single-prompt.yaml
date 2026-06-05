@@ -1,0 +1,14 @@
+# Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+#
+# Quick smoke profile (single_prompt_tester.py).
+
+script: single_prompt_tester.py
+output_dir: logs/smoke-latest
+args:
+  min_tokens: 1000
+  max_tokens: 8192
+upstream:
+  repo: https://github.com/callanjfox/kv-cache-tester.git
+  ref: master

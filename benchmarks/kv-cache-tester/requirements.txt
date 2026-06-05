@@ -1,0 +1,7 @@
+# Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+#
+# Host deps for benchmarks/kv-cache-tester wrapper (upstream has its own venv).
+
+pyyaml>=6.0

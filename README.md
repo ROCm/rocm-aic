@@ -37,10 +37,12 @@ need only `openai` unless you use the full tool stack.
 | TTFT benchmark (llama.cpp) | [benchmarks/ttft-llamacpp][b-lcp] | [README][r-lcp] |
 | LLM prefill benchmark (Gutenberg) | [benchmarks/llm-prefill-benchmark][b-lpb] | [README][r-lpb] |
 | LLM Agent-X benchmark (CC trace replay) | [benchmarks/llm-agentx][b-lax] | [README][r-lax] |
+| kv-cache-tester benchmark (trace replay) | [benchmarks/kv-cache-tester][b-kct] | [README][r-kct] |
 | vLLM + LMCache hipfile recipe | [recipies/vllm-lmcache-hipfile][r-vr] | [README][r-vr] |
 | Grafana dashboards | [grafana/][grafana-dir] | [README][grafana-readme] |
 | vLLM + LMCache NIXL recipe | [recipies/vllm-lmcache-nixl][r-vn] | [README][r-vn] |
 | vLLM + ATOM + LMCache (Andy blog) | [recipies/vllm-atom-andy][r-vaa] | [README][r-vaa] |
+| vLLM + LMCache gfx950 (DriveNets) | [recipies/aic-drivenets][r-ade] | [README][r-ade] |
 | LMCache patch index | [recipies/vllm-lmcache-hipfile/patches][r-patches] | [README][r-patches] |
 | ROCm inference stack image | [recipies/rocm-inference-stack][r-ris] | [README][r-ris] |
 | LMCache IO simulator | [tools/lmcache-io-tester][t-lit] | [README][t-lit-readme] |
@@ -63,6 +65,7 @@ NVMe, hipFile/AIS, NFS).
 | [ttft-llamacpp][b-lcp] | llama.cpp | Instinct + Radeon | [README][r-lcp] |
 | [llm-prefill-benchmark][b-lpb] | vLLM (OpenAI API) | Engine-agnostic | [README][r-lpb] |
 | [llm-agentx][b-lax] | Text LLM (OpenAI API) | Engine-agnostic | [README][r-lax] |
+| [kv-cache-tester][b-kct] | vLLM (OpenAI API) | Engine-agnostic | [README][r-kct] |
 
 The llama.cpp benchmark includes a `--cache-disk` patch for automatic
 disk-tier prompt caching (see [patches/0001-cache-disk.patch][patch]).
@@ -91,7 +94,7 @@ discovery. From `ansible/`, run `ansible-playbook site.yml` (or
 
 GitHub Actions under [`.github/workflows/`][gh-workflows] include spellcheck,
 lint, benchmark-adjacent recipes (`vllm-lmcache-hipfile-*`, `vllm-lmcache-nixl-*`,
-`llm-prefill-benchmark-*`, `lmcache-io-tester`), and
+`aic-drivenets-*`, `kv-cache-tester-*`, `llm-prefill-benchmark-*`, `lmcache-io-tester`), and
 `test-amdgpu-dkms`.
 
 ## LLM Deployment Infrastructure
@@ -157,16 +160,19 @@ rocm-aic/
 [b-lcp]: benchmarks/ttft-llamacpp/
 [b-lpb]: benchmarks/llm-prefill-benchmark/
 [b-lax]: benchmarks/llm-agentx/
+[b-kct]: benchmarks/kv-cache-tester/
 [r-lmc]: benchmarks/ttft-lmcache/README.md
 [r-lcp]: benchmarks/ttft-llamacpp/README.md
 [r-lpb]: benchmarks/llm-prefill-benchmark/README.md
 [r-lax]: benchmarks/llm-agentx/README.md
+[r-kct]: benchmarks/kv-cache-tester/README.md
 [patch]: benchmarks/ttft-llamacpp/patches/0001-cache-disk.patch
 [r-vr]: recipies/vllm-lmcache-hipfile/
 [grafana-dir]: grafana/
 [grafana-readme]: grafana/README.md
 [r-vn]: recipies/vllm-lmcache-nixl/
 [r-vaa]: recipies/vllm-atom-andy/
+[r-ade]: recipies/aic-drivenets/
 [r-patches]: recipies/vllm-lmcache-hipfile/patches/README.md
 [r-ris]: recipies/rocm-inference-stack/README.md
 [t-lit]: tools/lmcache-io-tester/

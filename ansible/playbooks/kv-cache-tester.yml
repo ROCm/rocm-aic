@@ -3,7 +3,8 @@
 # SPDX-License-Identifier: MIT
 #
 # Install kv-cache-tester on hosts in group kv_cache_tester and run a probe
-# against kv_cache_tester_api_endpoint (OpenAI-compatible HTTP API). Upstream:
+# against kv_cache_tester_api_endpoint (OpenAI-compatible HTTP API). Default:
+# benchmarks/kv-cache-tester wrapper (trace-replay-blog.yaml). Upstream:
 # https://github.com/callanjfox/kv-cache-tester
 #
 # Run from ansible/:

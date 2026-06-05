@@ -1,0 +1,317 @@
+#!/usr/bin/env python3
+#
+# Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+#
+
+from __future__ import annotations
+
+import json
+import os
+import shutil
+import subprocess
+import sys
+import threading
+from pathlib import Path
+from typing import Any
+
+try:
+    import yaml
+except ImportError as e:
+    print("ERROR: PyYAML is required (import yaml).", file=sys.stderr)
+    raise SystemExit(1) from e
+
+import importlib.util
+
+_script_dir = Path(__file__).resolve().parent
+
+
+def _load_defaults_module():
+    path = _script_dir / "aic-drivenets-defaults.py"
+    spec = importlib.util.spec_from_file_location("vllm_ade_defaults", path)
+    if spec is None or spec.loader is None:
+        raise ImportError(f"cannot load {path}")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+_defaults = _load_defaults_module()
+container_data_root = _defaults.container_data_root
+container_server_log_dir = _defaults.container_server_log_dir
+_cfg_next_to_script = _script_dir / "configs"
+_CONFIG_DIR = (
+    _cfg_next_to_script
+    if _cfg_next_to_script.is_dir()
+    else _script_dir.parent / "configs"
+)
+_SERVICE_YAML = _CONFIG_DIR / "aic-drivenets.yaml"
+
+
+def _lmcache_tier() -> str:
+    return os.environ.get("ADE_LMCACHE_TIER", "cpu-nvme").strip().lower()
+
+
+def _apply_lmcache_log_level(env: dict[str, str]) -> None:
+    v = os.environ.get("ADE_LMCACHE_LOG_LEVEL", "").strip()
+    env["LMCACHE_LOG_LEVEL"] = v if v else "INFO"
+
+
+def _apply_lmcache_tier_env(
+    env: dict[str, str],
+    tier: str,
+    lmc_cfg: dict[str, Any],
+    data_root: Path,
+) -> bool:
+    """Return True when LMCache connector should be enabled."""
+    if tier in ("hbm", "hbm-only", "none", "off"):
+        for k in (
+            "LMCACHE_LOCAL_CPU",
+            "LMCACHE_LOCAL_DISK",
+            "LMCACHE_MAX_LOCAL_CPU_SIZE",
+            "LMCACHE_MAX_LOCAL_DISK_SIZE",
+            "LMCACHE_CHUNK_SIZE",
+            "USE_GDS",
+            "NUMA_MODE",
+        ):
+            env.pop(k, None)
+        return False
+
+    if tier not in ("cpu", "cpu-nvme", "cpu_nvme", "cpu+disk"):
+        print(
+            f"ERROR: ADE_LMCACHE_TIER must be hbm, cpu, or cpu-nvme (got {tier!r})",
+            file=sys.stderr,
+        )
+        raise SystemExit(1)
+
+    chunk = lmc_cfg.get("chunk_size", 256)
+    max_cpu = lmc_cfg.get("max_local_cpu_size_gb", 64)
+    override_cpu = os.environ.get("ADE_LMCACHE_MAX_LOCAL_CPU_SIZE", "").strip()
+    if override_cpu:
+        max_cpu = override_cpu
+
+    env["LMCACHE_LOCAL_CPU"] = "true"
+    env["LMCACHE_CHUNK_SIZE"] = str(int(chunk))
+    env["LMCACHE_MAX_LOCAL_CPU_SIZE"] = str(max_cpu)
+    env.setdefault("PYTHONHASHSEED", "0")
+
+    if tier in ("cpu-nvme", "cpu_nvme", "cpu+disk"):
+        subdir = lmc_cfg.get("disk_subdir", "lmcache")
+        if not isinstance(subdir, str) or not subdir.strip():
+            subdir = "lmcache"
+        disk_path = (data_root / subdir).resolve()
+        disk_path.mkdir(parents=True, exist_ok=True)
+        env["LMCACHE_LOCAL_DISK"] = str(disk_path)
+
+        max_disk = lmc_cfg.get("max_local_disk_size_gb", 1500)
+        override_disk = os.environ.get("ADE_LMCACHE_MAX_LOCAL_DISK_SIZE", "").strip()
+        if override_disk:
+            max_disk = override_disk
+        env["LMCACHE_MAX_LOCAL_DISK_SIZE"] = str(max_disk)
+
+        use_gds = lmc_cfg.get("use_gds", False)
+        env["USE_GDS"] = "true" if use_gds else "false"
+
+        numa_mode = lmc_cfg.get("numa_mode", "auto")
+        if isinstance(numa_mode, str) and numa_mode.strip():
+            env["NUMA_MODE"] = numa_mode.strip()
+
+    return True
+
+
+def _tee_thread(stream: Any, log_f: Any) -> None:
+    for line in iter(stream.readline, b""):
+        if not line:
+            break
+        log_f.write(line)
+        log_f.flush()
+        try:
+            sys.stdout.buffer.write(line)
+            sys.stdout.buffer.flush()
+        except BrokenPipeError:
+            break
+
+
+def _first_gpu_index(rocr: str) -> str:
+    port = rocr.split(",", 1)[0].strip()
+    if not port.isdigit():
+        print(
+            "error: first GPU index in ROCR_VISIBLE_DEVICES must be a "
+            f"non-negative integer (got: {rocr})",
+            file=sys.stderr,
+        )
+        raise SystemExit(1)
+    if "," in rocr:
+        print(
+            f"aic-drivenets: using first index {port} from "
+            f"ROCR_VISIBLE_DEVICES={rocr} for ports",
+            file=sys.stderr,
+        )
+    return port
+
+
+def _vllm_binary() -> str:
+    path = shutil.which("vllm")
+    if not path:
+        print("ERROR: vllm not found on PATH", file=sys.stderr)
+        raise SystemExit(1)
+    return path
+
+
+def main() -> int:
+    if not os.environ.get("ROCR_VISIBLE_DEVICES", "").strip():
+        print("Error: ROCR_VISIBLE_DEVICES not set", file=sys.stderr)
+        return 1
+
+    if not _SERVICE_YAML.is_file():
+        print(f"ERROR: missing {_SERVICE_YAML}", file=sys.stderr)
+        return 1
+
+    svc = yaml.safe_load(_SERVICE_YAML.read_text(encoding="utf-8"))
+    vcfg = svc["vllm"]
+    prof = svc.get("serve")
+    if not isinstance(prof, dict):
+        print("ERROR: aic-drivenets.yaml must define serve (mapping)", file=sys.stderr)
+        return 1
+
+    lmc_cfg = svc.get("lmcache")
+    if not isinstance(lmc_cfg, dict):
+        lmc_cfg = {}
+
+    data_root = container_data_root()
+    data_root.mkdir(parents=True, exist_ok=True)
+
+    rocr = os.environ.get("ROCR_VISIBLE_DEVICES", "0").strip() or "0"
+    gpu_idx = _first_gpu_index(rocr)
+    vllm_port = int(f"800{gpu_idx}")
+
+    env = os.environ.copy()
+    env["PYTHONHASHSEED"] = "0"
+    env["VLLM_FLOAT32_MATMUL_PRECISION"] = "high"
+    _apply_lmcache_log_level(env)
+    _prepend_rocm_ld_library_path(env)
+
+    tier = _lmcache_tier()
+    use_lmcache = _apply_lmcache_tier_env(env, tier, lmc_cfg, data_root)
+
+    if _truthy("VLLM_SERVER_DEV_MODE", "1"):
+        env["VLLM_SERVER_DEV_MODE"] = "1"
+    else:
+        env.pop("VLLM_SERVER_DEV_MODE", None)
+
+    model = os.environ.get("VLLM_MODEL", "").strip() or str(vcfg["model_default"])
+
+    tp_override = os.environ.get("ADE_TENSOR_PARALLEL_SIZE", "").strip()
+    if tp_override:
+        tp_size = int(tp_override)
+    else:
+        tp_size = int(vcfg["tensor_parallel_size"])
+
+    gpu_mem = (
+        os.environ.get("ADE_GPU_MEMORY_UTILIZATION", "").strip()
+        or os.environ.get("VLLM_GPU_MEMORY_UTILIZATION", "").strip()
+        or str(vcfg["gpu_memory_utilization_default"])
+    )
+    max_len = (
+        os.environ.get("ADE_MAX_MODEL_LEN", "").strip()
+        or str(vcfg["max_model_len_default"])
+    )
+    max_batched = (
+        os.environ.get("ADE_MAX_NUM_BATCHED_TOKENS", "").strip()
+        or str(vcfg["max_num_batched_tokens_default"])
+    )
+
+    cmd: list[str] = [
+        _vllm_binary(),
+        "serve",
+        model,
+        "--host",
+        str(vcfg["host"]),
+        "--port",
+        str(vllm_port),
+        "--tensor-parallel-size",
+        str(tp_size),
+        "--gpu-memory-utilization",
+        gpu_mem,
+        "--max-model-len",
+        max_len,
+        "--max-num-batched-tokens",
+        max_batched,
+    ]
+
+    if prof.get("enable_prefix_caching", True):
+        cmd.append("--enable-prefix-caching")
+
+    if use_lmcache:
+        kv_obj = svc.get("vllm_kv_transfer")
+        if not isinstance(kv_obj, dict):
+            print(
+                "ERROR: aic-drivenets.yaml must define vllm_kv_transfer",
+                file=sys.stderr,
+            )
+            return 1
+        kv_raw = json.dumps(kv_obj, separators=(",", ":"))
+        cmd.extend(["--kv-transfer-config", kv_raw])
+
+    lf = prof.get("load_format")
+    if isinstance(lf, str) and lf and lf != "auto":
+        cmd.extend(["--load-format", lf])
+
+    if prof.get("disable_uvicorn_access_log", True):
+        cmd.append("--disable-uvicorn-access-log")
+
+    log_root = container_server_log_dir()
+    log_root.mkdir(parents=True, exist_ok=True)
+    log_path = log_root / "server.txt"
+    log_f = log_path.open("ab", buffering=0)
+    listen = str(vcfg["host"])
+    print(
+        f"aic-drivenets ADE_LMCACHE_TIER={tier} lmcache={'on' if use_lmcache else 'off'} "
+        f"http://{listen}:{vllm_port}/v1 log={log_path}",
+        flush=True,
+    )
+    proc = subprocess.Popen(
+        cmd,
+        env=env,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        start_new_session=True,
+    )
+    assert proc.stdout is not None
+    tee = threading.Thread(
+        target=_tee_thread,
+        args=(proc.stdout, log_f),
+        daemon=True,
+    )
+    tee.start()
+    rc = proc.wait()
+    tee.join(timeout=30)
+    proc.stdout.close()
+    log_f.close()
+    return int(rc)
+
+
+def _truthy(name: str, default: str = "1") -> bool:
+    v = os.environ.get(name, default).strip().lower()
+    return v not in ("0", "false", "no", "off", "")
+
+
+def _prepend_rocm_ld_library_path(env: dict[str, str]) -> None:
+    try:
+        import torch
+
+        torch_lib = str(Path(torch.__file__).resolve().parent / "lib")
+    except ImportError:
+        torch_lib = ""
+    rocm_lib = "/opt/rocm/lib"
+    prev_ld = env.get("LD_LIBRARY_PATH", "")
+    parts = [p for p in (torch_lib, rocm_lib) if p] + [
+        p for p in prev_ld.split(":") if p
+    ]
+    env["LD_LIBRARY_PATH"] = ":".join(dict.fromkeys(parts))
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
