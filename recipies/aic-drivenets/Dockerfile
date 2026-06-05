@@ -42,9 +42,9 @@ RUN cd /app && \
         BUILD_WITH_HIP=1 \
         python3 -m pip install --no-build-isolation --no-cache-dir -e . --no-deps && \
     python3 -m pip install --no-cache-dir -r /app/patches/requirements-lmcache-runtime.txt && \
-    python3 -m pip uninstall -y \
+    (python3 -m pip uninstall -y \
         nixl nixl-cu12 nixl-cu13 cupy-cuda12x cufile-python cuda-pathfinder \
-        2>/dev/null || true
+        2>/dev/null || true)
 
 RUN python3 <<'PY'
 from pathlib import Path
