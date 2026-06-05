@@ -132,21 +132,20 @@ if serving from that path.
 ## kv-cache-tester / trace replay
 
 The blog uses **`trace_replay_tester.py`** from
-[callanjfox/kv-cache-tester][kv-cache-tester] (739 Claude Code traces). This repo
-ships an Ansible role at
-[ansible/roles/kv_cache_tester](../../ansible/roles/kv_cache_tester).
-
-Stress run parameters from the blog (after the server is up on port 8000):
+[callanjfox/kv-cache-tester][kv-cache-tester] (739 Claude Code traces). Run it
+via the repo benchmark wrapper at
+[benchmarks/kv-cache-tester](../../benchmarks/kv-cache-tester):
 
 ```bash
-ansible-playbook ansible/playbooks/kv-cache-tester.yml \
-  -e kv_cache_tester_api_endpoint=http://127.0.0.1:8000 \
-  -e kv_cache_tester_script=trace_replay_tester.py \
-  -e 'kv_cache_tester_extra_args=["--trace-directory","traces","--start-users","4","--max-users","32","--max-ttft","60.0","--test-duration","1200","--max-context","100000","--warm-prefix-pct","0.5","--timing-strategy","think-only","--recycle","--seed","42"]'
+make -C benchmarks/kv-cache-tester install data check-server
+make -C benchmarks/kv-cache-tester run BASE_URL=http://127.0.0.1:8000
 ```
 
+See [benchmarks/kv-cache-tester/README.md](../../benchmarks/kv-cache-tester/README.md)
+for profiles, smoke tests, and Ansible integration.
+
 Traces must exist under the kv-cache-tester checkout (**`traces/`**). Clone with
-**`git clone --recursive`** per upstream instructions.
+**`git clone --recursive`** per upstream instructions (handled by **`make data`**).
 
 ## Compare to other recipes
 

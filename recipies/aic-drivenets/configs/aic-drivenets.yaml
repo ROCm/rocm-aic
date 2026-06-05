@@ -1,0 +1,30 @@
+# Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+#
+# aic-drivenets: vLLM + LMCache local CPU/NVMe tiers (gfx950 dGPU).
+
+lmcache:
+  chunk_size: 256
+  max_local_cpu_size_gb: 64
+  max_local_disk_size_gb: 1500
+  disk_subdir: lmcache
+  use_gds: false
+  numa_mode: auto
+
+vllm_kv_transfer:
+  kv_connector: LMCacheConnectorV1
+  kv_role: kv_both
+
+vllm:
+  host: "0.0.0.0"
+  tensor_parallel_size: 1
+  model_default: "openai/gpt-oss-120b"
+  max_model_len_default: "32768"
+  max_num_batched_tokens_default: "8192"
+  gpu_memory_utilization_default: "0.90"
+
+serve:
+  enable_prefix_caching: true
+  disable_uvicorn_access_log: true
+  load_format: auto

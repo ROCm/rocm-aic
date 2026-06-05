@@ -59,6 +59,12 @@ recipies/vllm-lmcache-hipfile/data/
 recipies/vllm-lmcache-nixl/data/
 recipies/vllm-lmcache-nixl/logs/
 recipies/vllm-atom-andy/logs/
+recipies/aic-drivenets/logs/
+
+# kv-cache-tester benchmark (upstream clone + logs)
+data/kv-cache-tester/
+benchmarks/kv-cache-tester/logs/
+benchmarks/kv-cache-tester/.venv/
 
 # benchmark logs and reports
 benchmarks/ttft-lmcache/logs/

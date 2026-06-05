@@ -1,0 +1,52 @@
+# Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+#
+name: kv-cache-tester Shell
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'benchmarks/kv-cache-tester/**'
+      - '.github/workflows/kv-cache-tester-shell.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    name: YAML, scripts, and unit tests
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: benchmarks/kv-cache-tester
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install tools
+        run: |
+          set -euo pipefail
+          pip install yamllint pyyaml
+          pip install -r requirements.txt
+
+      - name: yamllint configs
+        run: |
+          set -euo pipefail
+          yamllint -c ../../.yamllint configs/
+
+      - name: py_compile scripts
+        run: |
+          set -euo pipefail
+          python3 -m py_compile scripts/*.py
+
+      - name: unit tests
+        run: |
+          set -euo pipefail
+          make test
