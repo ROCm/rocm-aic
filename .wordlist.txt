@@ -362,3 +362,16 @@ Strix
 argv
 dGPU
 drivenets
+SSD
+Optimus
+optimus
+kvd
+async
+chown
+entrypoint
+fsync
+iter
+iters
+prefills
+sudo
+fp
