@@ -14,7 +14,7 @@ PORT="${PORT:-8000}"
 VLLM_MODEL="${VLLM_MODEL:-openai/gpt-oss-120b}"
 
 docker exec -it "${CONTAINER_NAME}" \
-    python3 /app/tests/run_cliff.py \
+    python3 /app/cliff/run_cliff.py \
         --endpoint "http://127.0.0.1:${PORT}" \
         --model "${VLLM_MODEL}" \
         --concurrencies "16,32,48,64" \

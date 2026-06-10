@@ -114,7 +114,7 @@ build:
 		--build-arg ROCM_ARCH=$(ROCM_ARCH) \
 		--build-arg OPTIMUS_GIT_REF=$(if $(OPTIMUS_GIT_REF),$(OPTIMUS_GIT_REF),main) \
 		--secret id=gh_token,env=GH_TOKEN \
-		-f recipies/vllm-optimus-gpu-direct/Dockerfile \
+		-f recipies/vllm-optimus-ais/Dockerfile \
 		-t $(IMAGE_NAME) \
 		.
 
@@ -146,6 +146,7 @@ _docker_run:
 		-v "$(CURDIR)/configs":/app/configs \
 		-v "$(CURDIR)/scripts":/app/scripts \
 		-v "$(CURDIR)/tests":/app/tests \
+		-v "$(REPO_ROOT)/benchmarks/kv-cache-cliff":/app/cliff \
 		-v "$(DATA)":$(CONTAINER_DATA_DIR) \
 		-v "$(LOG)":$(CONTAINER_LOG_DIR) \
 		-v "$(HF_HOME)":$(CONTAINER_HF_HOME) \
@@ -175,7 +176,7 @@ _docker_run:
 
 cliff:
 	@docker exec $(if $(shell tty -s && echo yes),-it,-i) "$(CONTAINER_NAME)" \
-		python3 /app/tests/run_cliff.py \
+		python3 /app/cliff/run_cliff.py \
 			--endpoint http://127.0.0.1:$(PORT) \
 			--model $(VLLM_MODEL) \
 			--concurrencies $(CLIFF_CONCURRENCIES) \

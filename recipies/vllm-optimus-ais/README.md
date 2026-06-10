@@ -26,7 +26,7 @@ hipFile from **ROCm/rocm-systems**, fio with libhipfile.
 | Image build (vLLM base → hipFile → fio → async patch → Optimus clone) | `Dockerfile` |
 | Container entrypoint: start `python3 -m rocserve.kvd` daemon, then `exec vllm serve --kv-transfer-config '{...RocserveKvdConnector...}'` | `scripts/vllm-server` |
 | Reference defaults (also documented inline in Makefile + scripts) | `configs/kvd-defaults.yaml` |
-| Cliff sweep | `tests/run_cliff.py` |
+| Cliff sweep | `benchmarks/kv-cache-cliff/run_cliff.py` (repo root; mounted into the container at `/app/cliff`) |
 | Standalone smoke cliff (against running container) | `run-this.sh` |
 
 ## Quick start
@@ -49,7 +49,7 @@ make run                                  # foreground; Ctrl-C to stop
 make cliff                                # writes CSV under LOG dir
 ```
 
-`make build` runs from `recipies/vllm-optimus-gpu-direct/`. The Dockerfile
+`make build` runs from `recipies/vllm-optimus-ais/`. The Dockerfile
 `COPY`s from the rocm-aic repo root, so the Makefile passes
 `$(REPO_ROOT)` as build context automatically.
 
@@ -82,7 +82,7 @@ on the data path) and stream chunks back via hipFile P2PDMA.
 
 ## Cliff sweep
 
-`make cliff` (or `tests/run_cliff.py` directly) sweeps concurrency at
+`make cliff` (or `benchmarks/kv-cache-cliff/run_cliff.py` directly) sweeps concurrency at
 a long deterministic per-client prefix (default 60k tokens, suffix=0,
 greedy decoding). For each `c`:
 
@@ -141,5 +141,5 @@ divergence so it composes with CI.
 This catches the class of bugs `Optimus@fe056f8` fixed (coverage
 arithmetic / staging buffer race / fp8 dtype name mismatch) and the
 file-tier durability bugs (`Optimus@b35a6f3`: tmp filename collision /
-unverified file size on GPU-direct load / no fsync on publish).
+unverified file size on AIS load / no fsync on publish).
 

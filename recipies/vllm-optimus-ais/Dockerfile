@@ -3,8 +3,8 @@
 # SPDX-License-Identifier: MIT
 #
 # vllm-optimus-kvd: ROCm vLLM + AMD-AGI Optimus kvd connector with
-# chunked-fusion v2 + hipFile GPU-direct (PR #49 / branch
-# feat/vllm-kvd-chunked-fusion-v2-mergemain-phase2).
+# chunked-fusion v2 + hipFile AIS (AMD Infinity Storage), now merged
+# to Optimus main.
 #
 # Image layers, top-down:
 #   1. Base: vllm/vllm-openai-rocm:v0.21.0
@@ -34,7 +34,7 @@ RUN test -n "$ROCM_ARCH" || (echo "ERROR: ROCM_ARCH is not set" && exit 1)
 ARG HIPFILE_SHA=adc1a2d2f8e886e93c5e55e674dbff6e05db2dbe
 ARG OPTIMUS_GIT_URL=https://github.com/AMD-AGI/Optimus.git
 
-# gpu-direct storage work is now merged into Optimus main
+# AIS (AMD Infinity Storage) work is now merged into Optimus main
 ARG OPTIMUS_GIT_REF=main
 
 # ----- 1. Build deps ---------------------------------------------------
@@ -118,7 +118,7 @@ RUN --mount=type=secret,id=gh_token,target=/run/secrets/gh_token \
 # ----- 5. Async patch over hipFile python binding ----------------------
 # Optimus deploy/docker/patches/hipfile_async/ adds the async API
 # (cuFileReadAsync / cuFileWriteAsync via heap-allocated _AsyncIOHandle).
-# Without this, Optimus's GPU-direct load path can't issue async I/O
+# Without this, Optimus's AIS load path can't issue async I/O
 # and silently falls back to sync mmap+H2D.
 RUN bash /app/optimus/deploy/docker/patches/hipfile_async/patch_hipfile_async.sh
 
@@ -128,12 +128,15 @@ RUN bash /app/optimus/deploy/docker/patches/hipfile_async/patch_hipfile_async.sh
 #   - pyyaml for our config parsing
 RUN python3 -m pip install --no-cache-dir httpx pyyaml
 
-# ----- 7. Recipe overlay (scripts, configs, tests) ---------------------
+# ----- 7. Recipe overlay (scripts, configs, tests) + cliff bench -------
 RUN mkdir -p /app/configs /app/scripts
 
-COPY recipies/vllm-optimus-gpu-direct/scripts/ /app/scripts/
-COPY recipies/vllm-optimus-gpu-direct/configs/ /app/configs/
-COPY recipies/vllm-optimus-gpu-direct/tests/   /app/tests/
+COPY recipies/vllm-optimus-ais/scripts/ /app/scripts/
+COPY recipies/vllm-optimus-ais/configs/ /app/configs/
+COPY recipies/vllm-optimus-ais/tests/   /app/tests/
+# Cliff sweep lives under the shared benchmarks/ tree; baked in so the
+# image is self-contained (Makefile also bind-mounts it for live edits).
+COPY benchmarks/kv-cache-cliff/ /app/cliff/
 
 # PYTHONHASHSEED=0 is required for cross-restart KV reuse — vLLM v1's
 # `NONE_HASH = os.urandom(32)` salts every block hash per process,
