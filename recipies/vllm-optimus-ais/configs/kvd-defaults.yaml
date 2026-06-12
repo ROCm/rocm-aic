@@ -1,0 +1,40 @@
+# Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+# SPDX-License-Identifier: MIT
+#
+# Defaults for the vllm-optimus-kvd recipe.
+#
+# This is reference / documentation. The runtime values are set via env
+# in `scripts/vllm-server` (overridable from the Makefile). Edit the
+# Makefile or pass --env on `make run` to change them.
+
+vllm:
+  model_default: "openai/gpt-oss-120b"
+  tensor_parallel_size: 1
+  max_model_len: 131072
+  gpu_memory_utilization: 0.90
+  kv_cache_memory_bytes: 85899345920   # 80 GiB; size by card
+  port: 8000
+  trust_remote_code: true
+
+vllm_kv_transfer:
+  kv_connector: "RocserveKvdConnector"
+  kv_connector_module_path: "rocserve.engine.vllm.kvd_connector"
+  kv_role: "kv_both"
+
+kvd_daemon:
+  socket: "/run/rocserve-kvd/kvd.sock"
+  max_bytes: 4294967296            # 4 GiB RAM tier
+  long_bytes: 549755813888         # 512 GiB persistent SSD tier
+  short_bytes: 68719476736         #  64 GiB short SSD tier
+
+connector:
+  # Load path
+  layerwise_load: parallel         # off|stepped|prefetch|parallel
+  gpu_direct: auto                 # 0|1|auto (auto = ais-check P2PDMA)
+  load_workers: 8
+  chunk_target_mib: 128            # P2PDMA sweet spot
+  # Save / dedupe
+  saved_keys_ttl_s: -1             # -1 = LRU-only (no TTL re-emit)
+  fsync_save: ""                   # "" / "1" — crash-safe save (default off)
+  # is_active() opt-in (needs the kzjeef/vllm c635630 framework patch)
+  active_mode: "always"            # always|silent|on_admission
