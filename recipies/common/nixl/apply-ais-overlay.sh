@@ -17,6 +17,24 @@ if [[ ! -f "${NIXL_SRC}/meson.build" ]]; then
 	exit 1
 fi
 
+# Detect whether this nixl checkout already has native HIP + AIS_MT support
+# (sbates130272/nixl@9d14642+ and later). If so, no patching or overlay copying
+# is needed — the repo ships everything we need out of the box.
+_NATIVE_AIS_MT=0
+if grep -q "enabled_plugins.get('AIS_MT')" "${NIXL_SRC}/src/plugins/meson.build" 2>/dev/null \
+	&& grep -q "hip_dep" "${NIXL_SRC}/meson.build" 2>/dev/null; then
+	_NATIVE_AIS_MT=1
+fi
+
+if [[ "${_NATIVE_AIS_MT}" == "1" ]]; then
+	echo "nixl has native HIP + AIS_MT support; skipping overlay and meson patches"
+	echo "AIS overlay complete for ${NIXL_SRC}"
+	exit 0
+fi
+
+# --- Older nixl (andyluo7/nixl amd-support pre-native-HIP) ---
+
+# Inject ROCm/HIP toolchain support into meson.build.
 python3 "${SCRIPT_DIR}/patch-rocm-meson.py"
 
 if [[ -d "${OVERLAY}/src/plugins/ais" ]]; then

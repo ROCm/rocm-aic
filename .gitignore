@@ -1,3 +1,9 @@
+# Claude Code session state and project memory
+.claude/
+
+# Downloaded Gutenberg benchmark corpus (generated on demand via make data)
+data/gutenberg/
+
 # Python related
 .venv
 __pycache__
