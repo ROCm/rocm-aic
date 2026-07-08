@@ -52,6 +52,19 @@ Part of [rocm-aic](../../README.md).
 
 ## Prerequisites
 
+### 0. Corporate CA certificate (AMD internal networks)
+
+On AMD hosts behind the Zscaler proxy, populate the gitignored cert file before
+building so Docker can reach GitHub and PyPI:
+
+```bash
+cp /usr/local/share/ca-certificates/amd-corp-cert-zscalar.crt \
+   recipies/vllm-lmcache-mp/certs/corp-ca.crt
+```
+
+This file is gitignored and never committed. Skip this step on networks without
+SSL inspection.
+
 ### 1. NFS-over-RDMA mount
 
 Mount the NFS export on the host before `make up`. The container bind-mounts
