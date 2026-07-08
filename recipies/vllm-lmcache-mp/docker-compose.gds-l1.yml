@@ -1,0 +1,39 @@
+# Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+#
+# Compose override: GDS/hipFile L1 mode (no L2 adapters).
+#
+# Use with:
+#   make up-gds-l1  /  make up-gds-l1-batch
+#
+# Overrides the lmcache service to use a hipFile NVMe slab as L1
+# instead of GPU/CPU DRAM.  --l1-size-gb sizes the slab.
+# L2 adapters are not compatible with this mode.
+#
+# Required additional env:
+#   GDS_SLAB_DATA — host path for the hipFile slab file (e.g. /mnt/lmcache-nvme)
+
+services:
+  lmcache:
+    volumes:
+      - ${GDS_SLAB_DATA:?GDS_SLAB_DATA must be set for GDS L1 mode}:/data/slab
+      # Kernel interfaces required for hipFile KFD GPUDirect fastpath
+      - /lib/modules:/lib/modules:ro
+      - /usr/src:/usr/src:ro
+      - /sys/kernel/debug:/sys/kernel/debug
+      - /sys/kernel/btf:/sys/kernel/btf:ro
+      - /boot:/boot:ro
+    environment:
+      - GDS_SLAB_DATA=${GDS_SLAB_DATA}
+      - HIPFILE_ALLOW_COMPAT_MODE=false
+      - HIPFILE_UNSUPPORTED_FILE_SYSTEMS=true
+    command:
+      - |
+        exec lmcache server \
+          --host 0.0.0.0 \
+          --port "$$LMCACHE_PORT" \
+          --l1-size-gb "$$LMCACHE_L1_SIZE_GB" \
+          --eviction-policy LRU \
+          --gds-l1-path /data/slab \
+          --gds-l1-backend hipfile

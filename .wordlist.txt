@@ -1,4 +1,5 @@
 AIS
+AIS_MT
 AMD
 Ansible
 BlueField
@@ -424,13 +425,18 @@ Mooncake
 myst
 NAS
 NetApp
+nfs
 og
 OSS
+oss
 Pensando
 PowerScale
 recomputation
 releasedate
 roadmap
+ROCR
 SmartNIC
 TCO
+VLM
 WekaFS
+ZMQ

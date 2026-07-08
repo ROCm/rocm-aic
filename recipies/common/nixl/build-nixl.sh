@@ -32,11 +32,20 @@ fi
 if [[ "${NIXL_ENABLE_AIS}" == "1" ]]; then
 	chmod +x "${SCRIPT_DIR}/apply-ais-overlay.sh"
 	NIXL_SRC="${NIXL_SRC}" "${SCRIPT_DIR}/apply-ais-overlay.sh"
-	if [[ ! -f "${NIXL_SRC}/meson_options.txt" ]] \
-		|| ! grep -q "option('rocm_path'" "${NIXL_SRC}/meson_options.txt"; then
-		echo "ERROR: ROCm overlay did not add rocm_path to meson_options.txt" >&2
-		exit 1
-	fi
+fi
+
+# Determine whether this nixl checkout uses the old injected rocm_path option
+# or the newer native HIP detection (hippath_inc/hippath_lib + hip_dep).
+_NATIVE_HIP=0
+_HAS_ROCM_PATH_OPT=0
+if grep -q "option('rocm_path'" "${NIXL_SRC}/meson_options.txt" 2>/dev/null; then
+	_HAS_ROCM_PATH_OPT=1
+elif grep -q "hip_dep" "${NIXL_SRC}/meson.build" 2>/dev/null; then
+	_NATIVE_HIP=1
+fi
+if [[ "${_NATIVE_HIP}" == "0" && "${_HAS_ROCM_PATH_OPT}" == "0" ]]; then
+	echo "ERROR: unable to determine HIP configuration for ${NIXL_SRC}: missing rocm_path option and hip_dep (unexpected nixl revision or overlay not applied)" >&2
+	exit 1
 fi
 
 export DEBIAN_FRONTEND=noninteractive
@@ -94,14 +103,23 @@ rm -rf build
 
 MESON_EXTRA=(
 	"-Dwheel_variant=rocm"
-	"-Drocm_path=${ROCM_PATH}"
 	"-Ducx_path=${UCX_PREFIX}"
 	"-Ddisable_gds_backend=true"
 	"--prefix=${NIXL_INSTALL_PREFIX}"
 )
 
-if [[ "${NIXL_ENABLE_AIS}" == "1" && -n "${AIS_PATH}" ]]; then
-	MESON_EXTRA+=("-Dais_path=${AIS_PATH}")
+if [[ "${_NATIVE_HIP}" == "1" ]]; then
+	# Native HIP: ROCM_PATH env is auto-detected by meson; rocm_ais_path for AIS_MT.
+	export ROCM_PATH="${ROCM_PATH}"
+	if [[ "${NIXL_ENABLE_AIS}" == "1" && -n "${AIS_PATH}" ]]; then
+		MESON_EXTRA+=("-Drocm_ais_path=${AIS_PATH}")
+	fi
+else
+	# Older injected rocm_path option (pre-native-HIP nixl).
+	MESON_EXTRA+=("-Drocm_path=${ROCM_PATH}")
+	if [[ "${NIXL_ENABLE_AIS}" == "1" && -n "${AIS_PATH}" ]]; then
+		MESON_EXTRA+=("-Dais_path=${AIS_PATH}")
+	fi
 fi
 
 meson setup build "${MESON_EXTRA[@]}"
