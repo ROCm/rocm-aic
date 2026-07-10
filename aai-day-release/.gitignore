@@ -1,0 +1,5 @@
+results/
+plots/
+logs/
+__pycache__/
+*.pyc
