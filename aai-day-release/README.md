@@ -5,10 +5,10 @@ Self-contained inference stack and benchmarking bundle for the AMD AAI Day (July
 ## Stack overview
 
 ```text
-Ubuntu 24.04  (rocm/dev-ubuntu-24.04:7.2.2-complete, ROCm 7.2.2, Python 3.12)
-  └── vLLM v0.23.0+rocm722  (pre-built wheel — bundles torch/triton/flash-attn)
+Ubuntu 24.04  (rocm/dev-ubuntu-24.04:7.2.4-complete, ROCm 7.2.4, Python 3.12)
+  └── vLLM v0.24.0+rocm722  (pre-built wheel — bundles torch/triton/flash-attn)
         └── LMCacheMPConnector (ZMQ)
-              └── LMCache server (standalone MP mode)  [upstream + 6 AMD patches]
+              └── LMCache server (standalone MP mode)  [operator-v0.5.0 + 7 AMD patches]
                     ├── L1:  GPU / CPU DRAM   (--l1-size-gb)
                     │    or  hipFile NVMe slab (GDS L1 mode)
                     ├── L2a: NIXL AIS_MT → local NVMe   (hipFile P2PDMA, GDS)
@@ -19,11 +19,11 @@ Component versions (pinned SHAs — update to latest branch heads before each re
 
 | Component | Source | Ref |
 | --- | --- | --- |
-| Base OS | `rocm/dev-ubuntu-24.04:7.2.2-complete` | Ubuntu 24.04, ROCm 7.2.2, Python 3.12 |
-| vLLM | `wheels.vllm.ai/rocm/0.23.0/rocm722` | v0.23.0+rocm722 (pre-built wheel, bundles torch) |
-| LMCache | `LMCache/LMCache` (upstream) | `main` + 6 AMD patches |
-| NIXL | `sbates130272/nixl` | `feat/amd-ais-mt` @ `9d146424` |
-| hipFile | `ROCm/rocm-systems` | `main` @ `adc1a2d2` |
+| Base OS | `rocm/dev-ubuntu-24.04:7.2.4-complete` | Ubuntu 24.04, ROCm 7.2.4, Python 3.12 |
+| vLLM | `wheels.vllm.ai/rocm/0.24.0/rocm722` | v0.24.0+rocm722 (pre-built wheel, bundles torch) |
+| LMCache | `LMCache/LMCache` (upstream) | `operator-v0.5.0` @ `7dacaba` + 7 AMD patches |
+| NIXL | `ai-dynamo/nixl` (upstream) | `main` @ `644facf0` + `amd-support-ais.patch` |
+| hipFile | `ROCm/rocm-systems` | `rocm-7.2.3` @ `e86f8efd` |
 
 ## Prerequisites
 
@@ -155,11 +155,12 @@ To pick up the latest commits from each AMD branch before a release:
 
 ```bash
 # Check latest SHAs for pinned components:
-git ls-remote https://github.com/LMCache/LMCache.git refs/heads/main
-git ls-remote https://github.com/sbates130272/nixl.git refs/heads/feat/amd-ais-mt
-git ls-remote https://github.com/ROCm/rocm-systems.git refs/heads/main
+git ls-remote https://github.com/LMCache/LMCache.git refs/tags/operator-v0.5.0
+git ls-remote https://github.com/ai-dynamo/nixl.git refs/heads/main
+git ls-remote https://github.com/ROCm/rocm-systems.git refs/tags/rocm-7.2.3
 
-# Then update LMCACHE_SHA, NIXL_SHA, and HIPFILE_SHA in Dockerfile.
+# Then update LMCACHE_SHA, NIXL_SHA, HIPFILE_SHA, VLLM_VERSION, and
+# the FROM base image tag in Dockerfile.
 ```
 
 ## Related recipes

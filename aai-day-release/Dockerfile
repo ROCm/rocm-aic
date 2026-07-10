@@ -4,11 +4,11 @@
 #
 # aai-day-release: Ubuntu 24.04 + ROCm 7.2.2 inference stack.
 #
-#   Base image: rocm/dev-ubuntu-24.04:7.2.2-complete  (Ubuntu 24.04, ROCm 7.2.2, Python 3.12)
+#   Base image: rocm/dev-ubuntu-24.04:7.2.4-complete  (Ubuntu 24.04, ROCm 7.2.4, Python 3.12)
 #   vLLM:       installed from pre-built ROCm wheel (bundles its own torch/triton/flash-attn)
 #   LMCache:    LMCache/LMCache upstream main + 6 AMD patches
 #   hipFile:    ROCm/rocm-systems (GDS/P2PDMA NVMe transfers)
-#   NIXL:       sbates130272/nixl @ feat/amd-ais-mt (AIS_MT plugin)
+#   NIXL:       ai-dynamo/nixl upstream main + amd-support-ais.patch (AIS/AIS_MT plugin)
 #
 # Two compose services share this single image:
 #   lmcache — standalone lmcache-server (MP mode)
@@ -34,16 +34,24 @@
 #   make -C aai-day-release build                                  # no proxy
 #   make -C aai-day-release build TLS_CERT=/path/to/corp-ca.crt   # behind proxy
 #
-# LMCache patches applied (in order):
+# LMCache patches applied from patches/lmcache/ (in order):
 #   lmcache-pr-3008-cache-salt.patch      — vLLM cache_salt → lmcache.tag.cachesalt
 #   lmcache-controller-log.patch          — demote noisy controller-absent warning
+#   lmcache-gds-eviction-log.patch        — demote noisy GDS eviction warning
 #   lmcache-chunk-statistics-hash.patch   — pass config into ChunkedTokenDatabase
 #   lmcache-nixl-ais-backend.patch        — AIS/AIS_MT in nixl_storage_backend
 #   lmcache-hipfile-mp.patch              — hipFile driver ordering fix + Prometheus gauges
 #   lmcache-nixl-ais-mt-l2-adapter.patch  — AIS_MT in nixl_store_l2_adapter + GDS L1 compat
 # NOTE: lmcache-sha256-cbor-int.patch intentionally omitted — merged upstream (PR #2999).
+#
+# NIXL patches in patches/nixl/ (applied via apply-ais-overlay.sh):
+#   amd-support-ais.patch — adds AIS/AIS_MT to all_plugins, disable_ais_backend option, and
+#     AIS/AIS_MT plugin sections in src/plugins/meson.build, keyed off the existing use_rocm
+#     option (no ais_path; hipFile is found via use_rocm=/opt/rocm).
+#   The overlay sources (ais/ and ais_mt/ plugin C++ + meson.build) are copied from
+#   recipies/common/nixl/overlay/ by apply-ais-overlay.sh before the meson patch is applied.
 
-FROM rocm/dev-ubuntu-24.04:7.2.2-complete
+FROM rocm/dev-ubuntu-24.04:7.2.4-complete
 
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 
@@ -51,20 +59,21 @@ ARG ROCM_ARCH
 RUN test -n "$ROCM_ARCH" || (echo "ERROR: ROCM_ARCH is not set" && exit 1)
 
 # vLLM wheel version on wheels.vllm.ai.  rocm722 = ROCm 7.2.x, Python 3.12.
-ARG VLLM_VERSION=0.23.0
+ARG VLLM_VERSION=0.24.0
 ARG VLLM_ROCM_VARIANT=rocm722
 
 # Pinned component revisions — bump together when validating a new combo.
-ARG HIPFILE_SHA=adc1a2d2f8e886e93c5e55e674dbff6e05db2dbe
-ARG NIXL_GIT_URL=https://github.com/sbates130272/nixl.git
-ARG NIXL_SHA=9d146424117a7cd022bdbaec8cbd7551f1c08add
+# rocm-7.2.3 release tag (2026-05-04)
+ARG HIPFILE_SHA=e86f8efd29cf45edb01507c76bdbdebc38e0fbcf
+# ai-dynamo/nixl upstream main (2026-07-10)
+ARG NIXL_GIT_URL=https://github.com/ai-dynamo/nixl.git
+ARG NIXL_SHA=644facf0eb3de14ec63c1d2831238f63cd03c0e0
 ARG NIXL_ENABLE_AIS=1
 
-# LMCache: upstream repo.  Patches below add AMD-specific features.
+# LMCache: upstream repo, pinned to the operator-v0.5.0 stable release.
 ARG LMCACHE_GIT_URL=https://github.com/LMCache/LMCache.git
 ARG LMCACHE_GIT_REF=main
-# Pin to a validated commit; leave empty to track branch head.
-ARG LMCACHE_SHA=
+ARG LMCACHE_SHA=7dacabafd5a5e002e8526a297a379a31ac3f7559
 
 # ----- 0. Corporate CA (optional, Zscaler/AMD) --------------------------------
 # Pass a CA cert at build time via BuildKit secret to reach HTTPS through a
@@ -119,12 +128,13 @@ COPY aai-day-release/patches/ /app/patches/
 
 RUN cd /app/LMCache && \
     for patch in \
-        /app/patches/lmcache-pr-3008-cache-salt.patch \
-        /app/patches/lmcache-controller-log.patch \
-        /app/patches/lmcache-chunk-statistics-hash.patch \
-        /app/patches/lmcache-nixl-ais-backend.patch \
-        /app/patches/lmcache-hipfile-mp.patch \
-        /app/patches/lmcache-nixl-ais-mt-l2-adapter.patch; do \
+        /app/patches/lmcache/lmcache-pr-3008-cache-salt.patch \
+        /app/patches/lmcache/lmcache-controller-log.patch \
+        /app/patches/lmcache/lmcache-gds-eviction-log.patch \
+        /app/patches/lmcache/lmcache-chunk-statistics-hash.patch \
+        /app/patches/lmcache/lmcache-nixl-ais-backend.patch \
+        /app/patches/lmcache/lmcache-hipfile-mp.patch \
+        /app/patches/lmcache/lmcache-nixl-ais-mt-l2-adapter.patch; do \
         if git apply --check "$patch" 2>/dev/null; then \
             git apply "$patch" && echo "Applied: $patch"; \
         else \
@@ -168,13 +178,14 @@ RUN git clone --no-checkout --filter=blob:none \
         /app/ais-stats && \
     ln -sf /app/ais-stats /usr/local/bin/ais-stats
 
-# ----- 6. NIXL (sbates130272/nixl @ feat/amd-ais-mt + AIS overlay) ----------
+# ----- 6. NIXL (ai-dynamo/nixl upstream + AIS/AIS_MT overlay + patch) --------
 COPY recipies/common/nixl /tmp/nixl-common
+COPY aai-day-release/patches/nixl/ /tmp/nixl-patches/
 RUN chmod +x /tmp/nixl-common/*.sh /tmp/nixl-common/apply-ais-overlay.sh && \
-    NIXL_GIT_URL="${NIXL_GIT_URL}" NIXL_SHA="${NIXL_SHA}" NIXL_REQUIRE_ROCM=1 \
+    NIXL_GIT_URL="${NIXL_GIT_URL}" NIXL_SHA="${NIXL_SHA}" NIXL_REQUIRE_ROCM=0 \
         NIXL_DEST=/tmp/nixl /tmp/nixl-common/clone-nixl.sh && \
     NIXL_SRC=/tmp/nixl NIXL_ENABLE_AIS="${NIXL_ENABLE_AIS}" \
-        AIS_PATH=/opt/rocm ROCM_PATH=/opt/rocm \
+        ROCM_PATH=/opt/rocm \
         NIXL_INSTALL_PREFIX=/opt/nixl \
         UV_NATIVE_TLS=1 \
         /tmp/nixl-common/build-nixl.sh

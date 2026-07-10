@@ -34,17 +34,24 @@ if [[ "${NIXL_ENABLE_AIS}" == "1" ]]; then
 	NIXL_SRC="${NIXL_SRC}" "${SCRIPT_DIR}/apply-ais-overlay.sh"
 fi
 
-# Determine whether this nixl checkout uses the old injected rocm_path option
-# or the newer native HIP detection (hippath_inc/hippath_lib + hip_dep).
+# Determine how this nixl checkout expects ROCm/HIP to be configured.
+# Three patterns in ascending age order:
+#   USE_ROCM_OPT  — ai-dynamo/nixl upstream: use_rocm string option (path or empty)
+#   NATIVE_HIP    — sbates130272/nixl feat/amd-ais-mt: hip_dep auto-detected by meson
+#   ROCM_PATH_OPT — andyluo7/nixl amd-support: injected rocm_path string option
+_USE_ROCM_OPT=0
 _NATIVE_HIP=0
 _HAS_ROCM_PATH_OPT=0
-if grep -q "option('rocm_path'" "${NIXL_SRC}/meson_options.txt" 2>/dev/null; then
+if grep -q "option('use_rocm'" "${NIXL_SRC}/meson_options.txt" 2>/dev/null \
+		&& ! grep -q "option('rocm_path'" "${NIXL_SRC}/meson_options.txt" 2>/dev/null; then
+	_USE_ROCM_OPT=1
+elif grep -q "option('rocm_path'" "${NIXL_SRC}/meson_options.txt" 2>/dev/null; then
 	_HAS_ROCM_PATH_OPT=1
 elif grep -q "hip_dep" "${NIXL_SRC}/meson.build" 2>/dev/null; then
 	_NATIVE_HIP=1
 fi
-if [[ "${_NATIVE_HIP}" == "0" && "${_HAS_ROCM_PATH_OPT}" == "0" ]]; then
-	echo "ERROR: unable to determine HIP configuration for ${NIXL_SRC}: missing rocm_path option and hip_dep (unexpected nixl revision or overlay not applied)" >&2
+if [[ "${_USE_ROCM_OPT}" == "0" && "${_NATIVE_HIP}" == "0" && "${_HAS_ROCM_PATH_OPT}" == "0" ]]; then
+	echo "ERROR: unable to determine HIP configuration for ${NIXL_SRC}: missing use_rocm/rocm_path option and hip_dep" >&2
 	exit 1
 fi
 
@@ -102,22 +109,25 @@ cd "${NIXL_SRC}"
 rm -rf build
 
 MESON_EXTRA=(
-	"-Dwheel_variant=rocm"
 	"-Ducx_path=${UCX_PREFIX}"
 	"-Ddisable_gds_backend=true"
 	"--prefix=${NIXL_INSTALL_PREFIX}"
 )
 
-if [[ "${_NATIVE_HIP}" == "1" ]]; then
-	# Native HIP: ROCM_PATH env is auto-detected by meson; rocm_ais_path for AIS_MT.
+if [[ "${_USE_ROCM_OPT}" == "1" ]]; then
+	# ai-dynamo/nixl upstream: use_rocm is the path (or empty for CUDA).
+	MESON_EXTRA+=("-Duse_rocm=${ROCM_PATH}")
+elif [[ "${_NATIVE_HIP}" == "1" ]]; then
+	# sbates130272/nixl: native HIP auto-detected; wheel_variant=rocm sets Python package name.
+	MESON_EXTRA+=("-Dwheel_variant=rocm")
 	export ROCM_PATH="${ROCM_PATH}"
-	if [[ "${NIXL_ENABLE_AIS}" == "1" && -n "${AIS_PATH}" ]]; then
+	if [[ "${NIXL_ENABLE_AIS}" == "1" && -n "${AIS_PATH:-}" ]]; then
 		MESON_EXTRA+=("-Drocm_ais_path=${AIS_PATH}")
 	fi
 else
-	# Older injected rocm_path option (pre-native-HIP nixl).
-	MESON_EXTRA+=("-Drocm_path=${ROCM_PATH}")
-	if [[ "${NIXL_ENABLE_AIS}" == "1" && -n "${AIS_PATH}" ]]; then
+	# andyluo7/nixl: older injected rocm_path + wheel_variant options.
+	MESON_EXTRA+=("-Dwheel_variant=rocm" "-Drocm_path=${ROCM_PATH}")
+	if [[ "${NIXL_ENABLE_AIS}" == "1" && -n "${AIS_PATH:-}" ]]; then
 		MESON_EXTRA+=("-Dais_path=${AIS_PATH}")
 	fi
 fi

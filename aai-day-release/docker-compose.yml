@@ -10,7 +10,7 @@
 #                 L2a: nixl_store AIS_MT → local NVMe at NVME_DATA (hipFile P2PDMA)
 #                 L2b: nixl_store POSIX  → NFS-over-RDMA (host pre-mounted)
 #               GDS L1 mode (GDS_MODE=1):
-#                 L1:  hipFile NVMe slab at GDS_SLAB_DATA (GPU-direct, no L2 adapters)
+#                 L1:  NVMe slab at GDS_SLAB_DATA (hipFile on ROCm, cuFile on NVIDIA — auto-detected)
 #
 #   vllm    — vllm serve with LMCacheMPConnector
 #               Connects to lmcache:${LMCACHE_PORT:-6555} over ZMQ
@@ -106,8 +106,7 @@ services:
             --port "$$LMCACHE_PORT" \
             --l1-size-gb "$$LMCACHE_L1_SIZE_GB" \
             --eviction-policy LRU \
-            --gds-l1-path /data/slab \
-            --gds-l1-backend hipfile
+            --gds-l1-path /data/slab
         else
           exec lmcache server \
             --host 0.0.0.0 \

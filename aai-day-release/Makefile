@@ -5,9 +5,9 @@
 REPO_ROOT := $(abspath $(CURDIR)/..)
 include $(abspath $(CURDIR)/../recipies/common/nixl/defaults.mk)
 
-# Override NIXL source: sbates130272/nixl @ feat/amd-ais-mt (adds AIS_MT plugin).
-NIXL_GIT_URL := https://github.com/sbates130272/nixl.git
-NIXL_SHA     := 9d146424117a7cd022bdbaec8cbd7551f1c08add
+# ai-dynamo/nixl upstream main (2026-07-10); AIS/AIS_MT added via patches/nixl/.
+NIXL_GIT_URL := https://github.com/ai-dynamo/nixl.git
+NIXL_SHA     := 644facf0eb3de14ec63c1d2831238f63cd03c0e0
 
 IMAGE_NAME ?= rocm-aic-aai-day
 
