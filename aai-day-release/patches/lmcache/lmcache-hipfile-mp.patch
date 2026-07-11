@@ -137,6 +137,7 @@ index 2182623..f3c8d1e 100644
              seg_len = min(nbytes - pos, region_nbytes - dev_offset)
              slab_op(memory_obj.slab_offset + pos, seg_len, dev_offset, base_ptr)
              pos += seg_len
+ 
 +        with _gds_counter_lock:
 +            if direction is SlabDirection.READ:
 +                _gds_bytes_read += nbytes

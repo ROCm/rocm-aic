@@ -24,7 +24,7 @@ diff --git a/meson_options.txt b/meson_options.txt
 diff --git a/src/plugins/meson.build b/src/plugins/meson.build
 --- a/src/plugins/meson.build
 +++ b/src/plugins/meson.build
-@@ -68,6 +68,36 @@ if enabled_plugins.get('GDS_MT')
+@@ -68,6 +68,37 @@ if enabled_plugins.get('GDS_MT')
      endif
  endif
  
