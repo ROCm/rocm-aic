@@ -72,7 +72,7 @@ jobs:
           fi
           cd /tmp/LMCache
           for patch in "${patches[@]}"; do
-            echo "==> git apply --check $(basename ${patch})"
+            echo "==> git apply --check $(basename "${patch}")"
             if git apply --check "${patch}" 2>/dev/null; then
               echo "    OK (applies cleanly)"
             else
@@ -129,7 +129,7 @@ jobs:
           fi
           cd /tmp/nixl
           for patch in "${patches[@]}"; do
-            echo "==> git apply --check $(basename ${patch})"
+            echo "==> git apply --check $(basename "${patch}")"
             if git apply --check "${patch}" 2>/dev/null; then
               echo "    OK (applies cleanly)"
             else
