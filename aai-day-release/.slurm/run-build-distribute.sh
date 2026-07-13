@@ -1,0 +1,517 @@
+#!/bin/bash
+#
+# Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+#
+# Build the aai-day-release inference image on an alola compile node and make it
+# available across the cluster, using save -> shared BeeGFS scratch -> load.
+#
+# Image *distribution* uses save -> shared BeeGFS scratch -> load: each node keeps
+# its images in local /docker/overlay2, so an image built on one node is invisible
+# to the rest.  /scratch (BeeGFS) and /home (NFS) *are* shared on every node, so
+# this script builds the image once on a CPU compile node, `docker save`s it to a
+# tarball on /scratch, then `docker load`s it on each target node -- every node
+# reading the one shared tarball, no per-node copy.
+#
+# Image *build cache* is optional and off by default.  Two backends:
+#   * File-based (simplest): set AAI_CACHE_DIR to a dir on shared /scratch and the
+#     build switches to `docker buildx` with a local cache -- every good layer is
+#     written under that dir (in a per-arch subdir), so a later build on ANY node
+#     reads it back and resumes from the step that failed instead of from scratch.
+#     No registry, auth, or TLS needed; /scratch is shared on every node.
+#   * Registry: set AAI_CACHE_REF to a registry ref instead (takes precedence over
+#     AAI_CACHE_DIR).  Pushes/pulls layers to a registry; needs `docker login`.
+# Either backend uses a docker-container buildx builder (the default `docker`
+# driver cannot export type=local/registry cache); the script creates it on the
+# build node on demand.
+#
+# The image bakes GPU arch(es) into hipFile and the LMCache HIP extension when it
+# compiles them (NIXL AIS is host-only, so arch-independent).  AAI_ROCM_ARCH is a
+# ';'-separated list; by default it covers every gfx the vLLM ROCm wheel supports,
+# so one image runs on any of them.  Narrow it (e.g. AAI_ROCM_ARCH=gfx942) for a
+# faster, smaller single-arch build.
+#
+# Usage (run from the aai-day-release/ tree root; paths resolve relative to this script):
+#
+#   # Build on a compile node AND load onto MI300X targets in one go:
+#   AAI_TARGETS=ctr-cx63-mi300x-3,ctr-cx64-mi300x-4 \
+#     bash .slurm/run-build-distribute.sh all
+#
+#   # Just build + save the tarball:
+#   bash .slurm/run-build-distribute.sh build
+#
+#   # Just load an already-saved tarball onto targets:
+#   AAI_TARGETS=ctr-cx63-mi300x-3,ctr-cx64-mi300x-4 \
+#     bash .slurm/run-build-distribute.sh load
+#
+#   # Push the built image to a registry (pull-based distribution):
+#   AAI_PUSH_REF=registry-sc-harbor.amd.com/<proj>/aai-day:latest \
+#     bash .slurm/run-build-distribute.sh push
+#
+# Commands:
+#   build   Build the image on AAI_BUILD_NODE, then save the tarball to AAI_IMAGE_DIR
+#   load    Load the saved tarball on every node in AAI_TARGETS, then verify
+#   push    Tag the built image as AAI_PUSH_REF and `docker push` it to a registry
+#           (loads from the shared tarball first if the image is not present)
+#   test    Smoke-test the image on a GPU+NVMe node (loads it there if missing):
+#           checks GPU visibility + arch, and vLLM / LMCache / NIXL-AIS / hipFile
+#   all     build, then load   (default)
+#
+# Key environment:
+#   AAI_ROCM_ARCH        gfx arch(es) baked in; ';'-list   (default: all vLLM archs)
+#   AAI_IMAGE            image name:tag                    (default: rocm-aic-aai-day:latest)
+#   AAI_IMAGE_DIR        shared dir for the tarball        (default: /scratch/$USER/images)
+#   AAI_TARGETS          comma-separated nodes to load     (required for load/all)
+#   AAI_PUSH_REF         registry-qualified ref to push the final image to
+#                        (required for push; needs `docker login <registry>` first)
+#                        (e.g. registry-sc-harbor.amd.com/<proj>/aai-day:latest)
+#
+#   AAI_BUILD_CONSTRAINT Slurm -C feature expr for the build node
+#                        (default: MARKHAM&CPUONLY -- CPU-only alola build boxes
+#                         on the same Markham /scratch).
+#                         Used only when AAI_BUILD_NODE is unset.
+#   AAI_BUILD_NODE       pin an exact build node via --nodelist (overrides
+#                        AAI_BUILD_CONSTRAINT)             (default: unset)
+#   AAI_BUILD_LOCAL      set to 1 to build on THIS host, no srun/Slurm  (default: unset)
+#   AAI_BUILD_PARTITION  Slurm partition for build + load  (default: defq)
+#   AAI_BUILD_CPUS       --cpus-per-task for the build job (default: 32)
+#   AAI_BUILD_TIME       build job time limit              (default: 02:00:00)
+#   AAI_LOAD_TIME        per-node load job time limit      (default: 00:30:00)
+#
+#   AAI_CACHE_DIR        base dir on shared /scratch for a file-based BuildKit
+#                        cache; when set, the build uses `docker buildx` with a
+#                        type=local cache under <dir>/<arch> so a failed build
+#                        resumes from the last good layer on any node.  No registry
+#                        or auth needed.  (default: unset -- plain `docker build`)
+#   AAI_CACHE_REF        registry ref for a shared BuildKit cache instead of a dir;
+#                        takes precedence over AAI_CACHE_DIR.  Uses --cache-to/
+#                        --cache-from type=registry.  Requires `docker login` first.
+#                        (e.g. registry-sc-harbor.amd.com/<proj>/aai-day:buildcache)
+#                        (default: unset)
+#   AAI_CACHE_MODE       cache mode: min | max              (default: max)
+#   AAI_BUILDX_BUILDER   docker-container buildx builder name (default: aai-cache)
+#   AAI_CACHE_INSECURE   set to 1 when AAI_CACHE_REF has an untrusted TLS cert
+#                        (self-signed / private-CA HTTPS, e.g. the in-cluster
+#                        Artifactory): the docker-container builder does NOT inherit
+#                        the daemon's insecure-registries, so it is told to skip
+#                        cert verification explicitly                (default: unset)
+#
+#   AAI_TEST_CONSTRAINT  Slurm -C feature expr for the test node
+#                        (default: MARKHAM&GFX942&NVME -- MI300X + local NVMe).
+#                        Used only when AAI_TEST_NODE is unset.
+#   AAI_TEST_NODE        pin an exact test node via --nodelist  (default: unset)
+#   AAI_TEST_TIME        test job time limit               (default: 00:20:00)
+#   AAI_TEST_CPUS        --cpus-per-task for the test job  (default: 8)
+#   AAI_TEST_MEM         --mem for the test job            (default: 32G)
+#
+#   AAI_TLS_CERT         corporate CA cert (BuildKit secret, never baked into image)
+#                        (default: $HOME/certs/zscaler-ca.crt if it exists; else none)
+#   AAI_COMPRESS         zstd | gzip | none                (default: zstd if available,
+#                                                            else gzip)
+#
+set -euo pipefail
+
+# --- Resolve paths (script lives at aai-day-release/.slurm/) ------------------
+# The tree is self-contained: the Docker build context IS aai-day-release/.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+AAI_DAY_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
+
+# --- Defaults ----------------------------------------------------------------
+# Multi-arch by default: every gfx the vLLM ROCm wheel ships kernels for.
+# hipFile + the LMCache HIP extension are compiled for all of these (cmake and
+# PYTORCH_ROCM_ARCH both accept ';'-lists); NIXL AIS is host-only, so arch-
+# independent.  NOTE: the RDNA entries (gfx11xx/gfx12xx) have no NVMe-DMA /
+# Infinity-Storage hardware -- if hipFile fails to build for them, narrow this
+# to the CDNA set "gfx90a;gfx942;gfx950".  Override via AAI_ROCM_ARCH.
+AAI_ROCM_ARCH="${AAI_ROCM_ARCH:-gfx90a;gfx942;gfx950;gfx1100;gfx1101;gfx1150;gfx1151;gfx1200;gfx1201}"
+AAI_IMAGE="${AAI_IMAGE:-rocm-aic-aai-day:latest}"
+AAI_IMAGE_DIR="${AAI_IMAGE_DIR:-/scratch/${USER}/images}"
+AAI_BUILD_PARTITION="${AAI_BUILD_PARTITION:-defq}"
+AAI_BUILD_CONSTRAINT="${AAI_BUILD_CONSTRAINT:-MARKHAM&CPUONLY}"
+AAI_BUILD_CPUS="${AAI_BUILD_CPUS:-32}"
+AAI_BUILD_TIME="${AAI_BUILD_TIME:-02:00:00}"
+AAI_LOAD_TIME="${AAI_LOAD_TIME:-00:30:00}"
+AAI_TARGETS="${AAI_TARGETS:-}"
+AAI_PUSH_REF="${AAI_PUSH_REF:-}"
+AAI_CACHE_DIR="${AAI_CACHE_DIR:-}"
+AAI_CACHE_REF="${AAI_CACHE_REF:-}"
+AAI_CACHE_MODE="${AAI_CACHE_MODE:-max}"
+AAI_BUILDX_BUILDER="${AAI_BUILDX_BUILDER:-aai-cache}"
+AAI_CACHE_INSECURE="${AAI_CACHE_INSECURE:-}"
+AAI_TEST_CONSTRAINT="${AAI_TEST_CONSTRAINT:-MARKHAM&GFX942&NVME}"
+AAI_TEST_TIME="${AAI_TEST_TIME:-00:20:00}"
+AAI_TEST_CPUS="${AAI_TEST_CPUS:-8}"
+AAI_TEST_MEM="${AAI_TEST_MEM:-32G}"
+
+# Corporate CA: default to the conventional path only if it actually exists.
+if [[ -z "${AAI_TLS_CERT:-}" && -r "${HOME}/certs/zscaler-ca.crt" ]]; then
+    AAI_TLS_CERT="${HOME}/certs/zscaler-ca.crt"
+fi
+AAI_TLS_CERT="${AAI_TLS_CERT:-}"
+
+log()  { printf '[build-distribute] %s\n' "$*" >&2; }
+die()  { printf '[build-distribute] ERROR: %s\n' "$*" >&2; exit 1; }
+
+# --- Compression: pick tool + file extension --------------------------------
+_pick_compress() {
+    local choice="${AAI_COMPRESS:-}"
+    if [[ -z "${choice}" ]]; then
+        if command -v zstd >/dev/null 2>&1; then choice=zstd; else choice=gzip; fi
+    fi
+    case "${choice}" in
+        zstd) COMPRESS_EXT="tar.zst"; COMPRESS_CMD="zstd -T0 -3 -q"; DECOMPRESS_CMD="zstd -dc" ;;
+        gzip) COMPRESS_EXT="tar.gz";  COMPRESS_CMD="gzip";           DECOMPRESS_CMD="gzip -dc" ;;
+        none) COMPRESS_EXT="tar";     COMPRESS_CMD="cat";            DECOMPRESS_CMD="cat" ;;
+        *)    die "AAI_COMPRESS must be zstd, gzip, or none (got '${choice}')" ;;
+    esac
+    AAI_COMPRESS="${choice}"
+}
+
+# --- Filesystem-safe tag for the arch value --------------------------------
+# AAI_ROCM_ARCH may be a ';'-separated multi-arch list, which is not a valid
+# filename/path component; map separators to '-' for use in the tarball name
+# and the per-arch cache dir (e.g. "gfx90a;gfx942" -> "gfx90a-gfx942").
+_arch_tag() {
+    printf '%s' "${AAI_ROCM_ARCH}" | tr ';,: ' '----' | tr -s '-' | sed 's/^-//;s/-$//'
+}
+
+# --- Tarball path (name:tag + arch, sanitized for a filename) ----------------
+_tarball_path() {
+    local base
+    base="$(printf '%s' "${AAI_IMAGE}" | tr '/:' '--')"
+    printf '%s/%s-%s.%s' "${AAI_IMAGE_DIR}" "${base}" "$(_arch_tag)" "${COMPRESS_EXT}"
+}
+
+# --- build: build the image on a compile node, save tarball to shared scratch -
+cmd_build() {
+    _pick_compress
+    local tarball; tarball="$(_tarball_path)"
+
+    log "image      : ${AAI_IMAGE}  (arch ${AAI_ROCM_ARCH})"
+    log "tarball    : ${tarball}  (compress: ${AAI_COMPRESS})"
+    if [[ -n "${AAI_TLS_CERT}" ]]; then
+        [[ -r "${AAI_TLS_CERT}" ]] || die "AAI_TLS_CERT not readable: ${AAI_TLS_CERT}"
+        log "tls cert   : ${AAI_TLS_CERT} (BuildKit secret)"
+    fi
+
+    # BuildKit secret arg for the corporate CA, only when a cert was provided.
+    local _secret_arg=""
+    [[ -n "${AAI_TLS_CERT}" ]] && _secret_arg="--secret id=tls_cert,src=${AAI_TLS_CERT}"
+
+    # --- Build program: plain `docker build`, or `docker buildx` with a shared
+    #     registry cache when AAI_CACHE_REF is set.  The registry cache pushes each
+    #     good layer as it builds, so a failed build resumes from the last good
+    #     layer on ANY node instead of restarting from scratch.  It needs the
+    #     docker-container buildx driver (the default `docker` driver cannot export
+    #     type=registry cache); the driver is created on the build node on demand.
+    #     `--load` re-imports the finished image into the local docker store so the
+    #     `docker save` below still produces the shared tarball.
+    local _build_program="DOCKER_BUILDKIT=1 docker build"
+    local _cache_args=""
+    local _builder_setup=""
+    if [[ -n "${AAI_CACHE_REF}" || -n "${AAI_CACHE_DIR}" ]]; then
+        case "${AAI_CACHE_MODE}" in
+            min|max) ;;
+            *) die "AAI_CACHE_MODE must be min or max (got '${AAI_CACHE_MODE}')" ;;
+        esac
+        _build_program="docker buildx build --builder ${AAI_BUILDX_BUILDER} --load"
+        # _pre / _mkdir run before the build; _cfg_arg tweaks builder creation.
+        local _cfg_arg="" _pre="" _mkdir=""
+        if [[ -n "${AAI_CACHE_REF}" ]]; then
+            # Registry backend (takes precedence over AAI_CACHE_DIR).
+            log "build cache: registry ${AAI_CACHE_REF} (mode ${AAI_CACHE_MODE}, builder ${AAI_BUILDX_BUILDER})"
+            _cache_args="--cache-from type=registry,ref=${AAI_CACHE_REF} --cache-to type=registry,ref=${AAI_CACHE_REF},mode=${AAI_CACHE_MODE}"
+            # Optional buildkitd config for a cache registry with an untrusted TLS
+            # cert (self-signed / private-CA HTTPS).  The docker-container builder
+            # does NOT inherit /etc/docker/daemon.json's insecure-registries, so it
+            # must be told to skip cert verification.  `insecure = true` keeps HTTPS
+            # but skips verification; we do NOT set `http = true` since these
+            # registries speak HTTPS (plain HTTP gets a 400).
+            if [[ "${AAI_CACHE_INSECURE}" == "1" ]]; then
+                local _cache_host="${AAI_CACHE_REF%%/*}"
+                _cfg_arg=" --config /tmp/buildkitd-aai.toml"
+                _pre="printf '[registry.\"%s\"]\n  insecure = true\n' '${_cache_host}' > /tmp/buildkitd-aai.toml; "
+                log "build cache: skipping TLS verification for ${_cache_host} (AAI_CACHE_INSECURE=1)"
+            fi
+        else
+            # File-based backend: type=local cache under <dir>/<arch> on shared
+            # /scratch.  buildx reads/writes these paths from the srun task (which
+            # has /scratch mounted), so no registry or auth is involved.
+            local _cdir="${AAI_CACHE_DIR%/}/$(_arch_tag)"
+            log "build cache: local dir ${_cdir} (mode ${AAI_CACHE_MODE}, builder ${AAI_BUILDX_BUILDER})"
+            _cache_args="--cache-from type=local,src=${_cdir} --cache-to type=local,dest=${_cdir},mode=${AAI_CACHE_MODE}"
+            _mkdir="mkdir -p '${_cdir}'; "
+        fi
+        # Create the docker-container builder once per node (idempotent), then
+        # bootstrap it so its BuildKit is ready before the build starts.
+        _builder_setup="${_pre}${_mkdir}if ! docker buildx inspect ${AAI_BUILDX_BUILDER} >/dev/null 2>&1; then echo '[build] creating buildx builder ${AAI_BUILDX_BUILDER} (docker-container)'; docker buildx create --name ${AAI_BUILDX_BUILDER} --driver docker-container${_cfg_arg} >/dev/null; fi; docker buildx inspect --bootstrap ${AAI_BUILDX_BUILDER} >/dev/null"
+    fi
+
+    # The build + save block runs on ONE node so the saved tarball comes from the
+    # image that was just built.  Values are baked in here (not passed via env)
+    # to keep it robust regardless of srun environment propagation.
+    #
+    # Build with plain `docker build` (not `make build`) so the only requirement
+    # on the build node is docker itself -- the compose plugin is not installed
+    # on every CPU node and is only needed to *run* the stack, not to build it.
+    local remote_script
+    remote_script="$(cat <<REMOTE
+set -euo pipefail
+command -v docker >/dev/null 2>&1 || { echo 'docker not found on build node' >&2; exit 1; }
+echo "[build] host=\$(hostname) docker=\$(docker --version)"
+cd "${AAI_DAY_DIR}"
+${_builder_setup}
+${_build_program} \
+    --build-arg ROCM_ARCH="${AAI_ROCM_ARCH}" \
+    ${_secret_arg} \
+    ${_cache_args} \
+    -f "${AAI_DAY_DIR}/Dockerfile" \
+    -t "${AAI_IMAGE}" \
+    "${AAI_DAY_DIR}"
+echo "[build] built ${AAI_IMAGE}"
+mkdir -p "${AAI_IMAGE_DIR}"
+tmp="${tarball}.partial.\$\$"
+docker save "${AAI_IMAGE}" | ${COMPRESS_CMD} > "\${tmp}"
+mv -f "\${tmp}" "${tarball}"
+echo "[build] saved \$(du -h "${tarball}" | cut -f1) -> ${tarball}"
+REMOTE
+)"
+
+    if [[ "${AAI_BUILD_LOCAL:-}" == "1" ]]; then
+        log "building locally on $(hostname) (AAI_BUILD_LOCAL=1)"
+        bash -c "${remote_script}"
+    else
+        command -v srun >/dev/null 2>&1 || die "srun not found; set AAI_BUILD_LOCAL=1 to build here"
+        # Pin an exact node if AAI_BUILD_NODE is set; otherwise let Slurm choose
+        # any idle node matching the CPU-only build constraint.
+        local -a _sel
+        if [[ -n "${AAI_BUILD_NODE:-}" ]]; then
+            _sel=(--nodelist="${AAI_BUILD_NODE}")
+            log "building on ${AAI_BUILD_NODE} via srun (partition ${AAI_BUILD_PARTITION})"
+        else
+            _sel=(--constraint="${AAI_BUILD_CONSTRAINT}")
+            log "building via srun (partition ${AAI_BUILD_PARTITION}, constraint ${AAI_BUILD_CONSTRAINT})"
+        fi
+        srun \
+            --job-name=aai-day-build \
+            --partition="${AAI_BUILD_PARTITION}" \
+            "${_sel[@]}" \
+            --nodes=1 --ntasks=1 \
+            --cpus-per-task="${AAI_BUILD_CPUS}" \
+            --time="${AAI_BUILD_TIME}" \
+            bash -c "${remote_script}"
+    fi
+    log "build complete: ${tarball}"
+}
+
+# --- load: docker load the tarball on every target node, then verify ---------
+cmd_load() {
+    _pick_compress
+    local tarball; tarball="$(_tarball_path)"
+
+    [[ -n "${AAI_TARGETS}" ]] || die "set AAI_TARGETS=node1,node2,... for the load step"
+    command -v srun >/dev/null 2>&1 || die "srun not found; cannot load onto remote nodes"
+    [[ -r "${tarball}" ]] || die "tarball not found: ${tarball} (run 'build' first)"
+
+    local n; n="$(awk -F, '{print NF}' <<<"${AAI_TARGETS}")"
+    log "loading ${AAI_IMAGE} onto ${n} node(s): ${AAI_TARGETS}"
+    log "tarball: ${tarball}"
+
+    # Small, oversubscribable request so the load can slip in alongside running
+    # GPU jobs -- docker load needs no GPU.  --overcommit/--oversubscribe are
+    # honored only if the partition allows them; harmless otherwise.
+    srun \
+        --job-name=aai-day-load \
+        --partition="${AAI_BUILD_PARTITION}" \
+        --nodelist="${AAI_TARGETS}" \
+        --nodes="${n}" --ntasks-per-node=1 \
+        --cpus-per-task=2 --mem=8G --overcommit \
+        --time="${AAI_LOAD_TIME}" \
+        bash -c "
+set -euo pipefail
+command -v docker >/dev/null 2>&1 || { echo \"\$(hostname): docker not found\" >&2; exit 1; }
+${DECOMPRESS_CMD} '${tarball}' | docker load >/dev/null
+echo \"\$(hostname): loaded ${AAI_IMAGE} -> \$(docker images -q '${AAI_IMAGE}')\"
+"
+    log "load complete on: ${AAI_TARGETS}"
+}
+
+# --- push: tag the built image as AAI_PUSH_REF and push it to a registry ------
+# Registry-based (pull) distribution as an alternative to the save->scratch->load
+# tarball flow.  Runs on a build-class node; if that node does not already have
+# the image locally (e.g. Slurm placed this job on a different node than build),
+# it loads it from the shared tarball first, then tags and pushes.  Registry
+# creds come from ~/.docker/config.json on shared /home; `docker login` once.
+cmd_push() {
+    _pick_compress
+    local tarball; tarball="$(_tarball_path)"
+
+    [[ -n "${AAI_PUSH_REF}" ]] || die "set AAI_PUSH_REF=registry/host/path:tag for the push step"
+    command -v srun >/dev/null 2>&1 || die "srun not found; cannot run the push job"
+    [[ -r "${tarball}" ]] || die "tarball not found: ${tarball} (run 'build' first)"
+
+    log "pushing ${AAI_IMAGE} -> ${AAI_PUSH_REF}"
+    log "tarball (load fallback): ${tarball}"
+
+    local remote_script
+    remote_script="$(cat <<REMOTE
+set -euo pipefail
+command -v docker >/dev/null 2>&1 || { echo "\$(hostname): docker not found" >&2; exit 1; }
+echo "[push] host=\$(hostname) docker=\$(docker --version)"
+if [ -z "\$(docker images -q '${AAI_IMAGE}')" ]; then
+    echo "[push] image absent; loading from ${tarball}"
+    ${DECOMPRESS_CMD} '${tarball}' | docker load >/dev/null
+fi
+docker tag '${AAI_IMAGE}' '${AAI_PUSH_REF}'
+docker push '${AAI_PUSH_REF}'
+echo "[push] pushed ${AAI_PUSH_REF}"
+REMOTE
+)"
+
+    # Reuse the build-node selection: push needs no GPU, just docker + the creds
+    # on shared /home.  Small, oversubscribable request so it can slip in.
+    local -a _sel
+    if [[ -n "${AAI_BUILD_NODE:-}" ]]; then
+        _sel=(--nodelist="${AAI_BUILD_NODE}")
+        log "pushing from ${AAI_BUILD_NODE} via srun (partition ${AAI_BUILD_PARTITION})"
+    else
+        _sel=(--constraint="${AAI_BUILD_CONSTRAINT}")
+        log "pushing via srun (partition ${AAI_BUILD_PARTITION}, constraint ${AAI_BUILD_CONSTRAINT})"
+    fi
+    srun \
+        --job-name=aai-day-push \
+        --partition="${AAI_BUILD_PARTITION}" \
+        "${_sel[@]}" \
+        --nodes=1 --ntasks=1 \
+        --cpus-per-task=2 --mem=8G --overcommit \
+        --time="${AAI_LOAD_TIME}" \
+        bash -c "${remote_script}"
+    log "push complete: ${AAI_PUSH_REF}"
+}
+
+# --- test: smoke-test the image on a GPU+NVMe node ---------------------------
+# Loads the image on the node if absent, then runs a container that verifies GPU
+# visibility/arch and that the key stack components import/resolve.  No HF token
+# or model download -- this validates the *image*, not an end-to-end serve.
+cmd_test() {
+    _pick_compress
+    local tarball; tarball="$(_tarball_path)"
+    command -v srun >/dev/null 2>&1 || die "srun not found; cannot run the GPU test job"
+    [[ -r "${tarball}" ]] || die "tarball not found: ${tarball} (run 'build' first)"
+
+    # In-container checks live in a standalone script on shared /scratch (visible
+    # on the GPU node) and are bind-mounted in -- avoids nested shell quoting.
+    mkdir -p "${AAI_IMAGE_DIR}"
+    local smoketest="${AAI_IMAGE_DIR}/aai-day-smoketest.sh"
+    cat > "${smoketest}" <<'SMOKE'
+#!/bin/bash
+# Runs INSIDE the aai-day image.  EXPECT_ARCH is passed via docker -e.
+set -uo pipefail
+fail=0
+note()  { printf '[smoketest] %s\n' "$*"; }
+check() { local d="$1"; shift; if "$@" >/tmp/_ck 2>&1; then note "OK   ${d}"; \
+          else note "FAIL ${d}"; sed 's/^/           /' /tmp/_ck; fail=1; fi; }
+
+note "container: $(uname -srm)"
+
+# GPU visibility + arch match (EXPECT_ARCH may be a ';'-separated arch list)
+if command -v rocminfo >/dev/null 2>&1; then
+    gfx="$(rocminfo 2>/dev/null | grep -om1 'gfx[0-9a-z]*' || true)"
+    if [ -n "${gfx}" ]; then
+        note "OK   GPU visible: ${gfx} (image built for ${EXPECT_ARCH:-?})"
+        if [ -n "${EXPECT_ARCH:-}" ]; then
+            case ";${EXPECT_ARCH};" in
+                *";${gfx};"*) : ;;  # GPU arch is in the image's arch set
+                *) note "WARN GPU arch ${gfx} not in image arch set ${EXPECT_ARCH}" ;;
+            esac
+        fi
+    else
+        note "FAIL no GPU reported by rocminfo"; fail=1
+    fi
+else
+    note "FAIL rocminfo not found"; fail=1
+fi
+
+check "import vllm"    python3 -c 'import vllm; print("vllm", vllm.__version__)'
+check "import lmcache" python3 -c 'import lmcache; print("lmcache", getattr(lmcache, "__version__", "?"))'
+check "lmcache CLI"    command -v lmcache
+check "ais-stats (hipFile)" command -v ais-stats
+
+# NIXL plugins, incl. the AIS/AIS_MT overlay
+plug="${NIXL_PLUGIN_DIR:-/opt/nixl/lib/x86_64-linux-gnu/plugins}"
+if [ -d "${plug}" ]; then
+    note "OK   NIXL plugins: $(printf '%s ' "${plug}"/*)"
+    shopt -s nullglob nocaseglob; ais=("${plug}"/*ais*); shopt -u nocaseglob
+    [ "${#ais[@]}" -gt 0 ] || note "WARN no AIS/AIS_MT plugin in ${plug}"
+else
+    note "FAIL NIXL plugin dir missing: ${plug}"; fail=1
+fi
+
+[ "${fail}" -eq 0 ] && note "ALL CHECKS PASSED" || note "SOME CHECKS FAILED"
+exit "${fail}"
+SMOKE
+    chmod +x "${smoketest}"
+
+    local -a _sel
+    if [[ -n "${AAI_TEST_NODE:-}" ]]; then
+        _sel=(--nodelist="${AAI_TEST_NODE}")
+        log "testing on ${AAI_TEST_NODE} via srun (partition ${AAI_BUILD_PARTITION})"
+    else
+        _sel=(--constraint="${AAI_TEST_CONSTRAINT}")
+        log "testing via srun (partition ${AAI_BUILD_PARTITION}, constraint ${AAI_TEST_CONSTRAINT})"
+    fi
+    log "image: ${AAI_IMAGE}  smoketest: ${smoketest}"
+
+    # docker run mirrors the compose vllm service's device/ipc/cap setup so the
+    # GPU is reachable; entrypoint is overridden to run the smoke test.
+    local remote_script
+    remote_script="$(cat <<REMOTE
+set -euo pipefail
+command -v docker >/dev/null 2>&1 || { echo "\$(hostname): docker not found" >&2; exit 1; }
+echo "[test] host=\$(hostname) docker=\$(docker --version)"
+if [ -z "\$(docker images -q '${AAI_IMAGE}')" ]; then
+    echo "[test] image absent; loading from ${tarball}"
+    ${DECOMPRESS_CMD} '${tarball}' | docker load >/dev/null
+fi
+docker run --rm \
+    --device /dev/kfd --device /dev/dri \
+    --ipc host \
+    --cap-add SYS_PTRACE --cap-add SYS_ADMIN \
+    --security-opt seccomp=unconfined \
+    -e EXPECT_ARCH='${AAI_ROCM_ARCH}' \
+    -v '${smoketest}':/tmp/aai-day-smoketest.sh:ro \
+    --entrypoint /bin/bash \
+    '${AAI_IMAGE}' /tmp/aai-day-smoketest.sh
+REMOTE
+)"
+
+    srun \
+        --job-name=aai-day-test \
+        --partition="${AAI_BUILD_PARTITION}" \
+        "${_sel[@]}" \
+        --gres=gpu:1 \
+        --nodes=1 --ntasks=1 \
+        --cpus-per-task="${AAI_TEST_CPUS}" --mem="${AAI_TEST_MEM}" \
+        --time="${AAI_TEST_TIME}" \
+        bash -c "${remote_script}"
+    log "test complete"
+}
+
+# --- main --------------------------------------------------------------------
+main() {
+    local sub="${1:-all}"
+    case "${sub}" in
+        build) cmd_build ;;
+        load)  cmd_load ;;
+        push)  cmd_push ;;
+        test)  cmd_test ;;
+        all)   cmd_build; cmd_load ;;
+        -h|--help|help)
+            sed -n '2,70p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+            ;;
+        *) die "unknown command '${sub}' (use: build | load | push | test | all | help)" ;;
+    esac
+}
+
+main "$@"

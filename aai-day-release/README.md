@@ -6,9 +6,9 @@ Self-contained inference stack and benchmarking bundle for the AMD AAI Day (July
 
 ```text
 Ubuntu 24.04  (rocm/dev-ubuntu-24.04:7.2.4-complete, ROCm 7.2.4, Python 3.12)
-  └── vLLM v0.24.0+rocm722  (pre-built wheel — bundles torch/triton/flash-attn)
+  └── vLLM v0.25.0+rocm723  (pre-built wheel — bundles torch/triton/flash-attn)
         └── LMCacheMPConnector (ZMQ)
-              └── LMCache server (standalone MP mode)  [operator-v0.5.0 + 7 AMD patches]
+              └── LMCache server (standalone MP mode)  [dev @ 21b3341 + 7 AMD patches]
                     ├── L1:  GPU / CPU DRAM   (--l1-size-gb)
                     │    or  hipFile NVMe slab (GDS L1 mode)
                     ├── L2a: NIXL AIS_MT → local NVMe   (hipFile P2PDMA, GDS)
@@ -20,14 +20,17 @@ Component versions (pinned SHAs — update to latest branch heads before each re
 | Component | Source | Ref |
 | --- | --- | --- |
 | Base OS | `rocm/dev-ubuntu-24.04:7.2.4-complete` | Ubuntu 24.04, ROCm 7.2.4, Python 3.12 |
-| vLLM | `wheels.vllm.ai/rocm/0.24.0/rocm722` | v0.24.0+rocm722 (pre-built wheel, bundles torch) |
-| LMCache | `LMCache/LMCache` (upstream) | `operator-v0.5.0` @ `7dacaba` + 7 AMD patches |
-| NIXL | `ai-dynamo/nixl` (upstream) | `main` @ `644facf0` + `amd-support-ais.patch` |
-| hipFile | `ROCm/rocm-systems` | `rocm-7.2.3` @ `e86f8efd` |
+| vLLM | `wheels.vllm.ai/rocm/0.25.0/rocm723` | v0.25.0+rocm723 (pre-built wheel, bundles torch) |
+| LMCache | `LMCache/LMCache` (upstream) | `dev` @ `21b3341` (> v0.5.1) + 7 AMD patches |
+| NIXL | `ai-dynamo/nixl` (upstream) | `main` @ `644facf0` + `nixl-rocm-ais.patch` |
+| hipFile | `ROCm/rocm-systems` | `develop` @ `6901b670` |
 
 ## Prerequisites
 
-- ROCm-capable host (MI300X recommended; `gfx942` arch)
+- ROCm-capable host (MI300X recommended; `gfx942`). The default build is
+  multi-arch — it bakes in every gfx the vLLM wheel supports (`gfx90a`, `gfx942`,
+  `gfx950`, and the RDNA `gfx11xx`/`gfx12xx` line), so one image runs on any of
+  them. Narrow with `ROCM_ARCH=gfx942` for a faster single-arch build.
 - Docker with BuildKit and the `docker compose` plugin (Docker 23+)
 - Host mounts: local NVMe (`NVME_DATA`) and NFS-over-RDMA (`NFS_DATA`) pre-mounted
 - HuggingFace token with access to the target model

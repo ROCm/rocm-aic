@@ -6,9 +6,9 @@
 #
 #   Base image: rocm/dev-ubuntu-24.04:7.2.4-complete  (Ubuntu 24.04, ROCm 7.2.4, Python 3.12)
 #   vLLM:       installed from pre-built ROCm wheel (bundles its own torch/triton/flash-attn)
-#   LMCache:    LMCache/LMCache upstream main + 6 AMD patches
+#   LMCache:    LMCache/LMCache upstream dev + 7 AMD patches
 #   hipFile:    ROCm/rocm-systems (GDS/P2PDMA NVMe transfers)
-#   NIXL:       ai-dynamo/nixl upstream main + amd-support-ais.patch (AIS/AIS_MT plugin)
+#   NIXL:       ai-dynamo/nixl upstream main + nixl-rocm-ais.patch (ROCm/HIP + AIS/AIS_MT)
 #
 # Two compose services share this single image:
 #   lmcache — standalone lmcache-server (MP mode)
@@ -17,39 +17,26 @@
 #               L2b: nixl_store POSIX  → NFS-over-RDMA
 #   vllm    — vllm serve with LMCacheMPConnector (ZMQ to lmcache)
 #
-# Build (from repo root):
+# Build (from this directory, aai-day-release/ — the build context is this tree):
 #   DOCKER_BUILDKIT=1 docker build \
 #     --build-arg ROCM_ARCH=gfx942 \
-#     -f aai-day-release/Dockerfile \
+#     -f Dockerfile \
 #     -t rocm-aic-aai-day .
 #
 #   # Behind AMD Zscaler proxy — pass cert as a BuildKit secret (never baked into image):
 #   DOCKER_BUILDKIT=1 docker build \
 #     --build-arg ROCM_ARCH=gfx942 \
 #     --secret id=tls_cert,src=/path/to/corp-ca.crt \
-#     -f aai-day-release/Dockerfile \
+#     -f Dockerfile \
 #     -t rocm-aic-aai-day .
 #
 # Orchestration: make -C aai-day-release up
 #   make -C aai-day-release build                                  # no proxy
 #   make -C aai-day-release build TLS_CERT=/path/to/corp-ca.crt   # behind proxy
 #
-# LMCache patches applied from patches/lmcache/ (in order):
-#   lmcache-pr-3008-cache-salt.patch      — vLLM cache_salt → lmcache.tag.cachesalt
-#   lmcache-controller-log.patch          — demote noisy controller-absent warning
-#   lmcache-gds-eviction-log.patch        — demote noisy GDS eviction warning
-#   lmcache-chunk-statistics-hash.patch   — pass config into ChunkedTokenDatabase
-#   lmcache-nixl-ais-backend.patch        — AIS/AIS_MT in nixl_storage_backend
-#   lmcache-hipfile-mp.patch              — hipFile driver ordering fix + Prometheus gauges
-#   lmcache-nixl-ais-mt-l2-adapter.patch  — AIS_MT in nixl_store_l2_adapter + GDS L1 compat
-# NOTE: lmcache-sha256-cbor-int.patch intentionally omitted — merged upstream (PR #2999).
-#
-# NIXL patches in patches/nixl/ (applied via apply-ais-overlay.sh):
-#   amd-support-ais.patch — adds AIS/AIS_MT to all_plugins, disable_ais_backend option, and
-#     AIS/AIS_MT plugin sections in src/plugins/meson.build, keyed off the existing use_rocm
-#     option (no ais_path; hipFile is found via use_rocm=/opt/rocm).
-#   The overlay sources (ais/ and ais_mt/ plugin C++ + meson.build) are copied from
-#   recipies/common/nixl/overlay/ by apply-ais-overlay.sh before the meson patch is applied.
+# Patches: every *.patch under patches/lmcache/ and patches/nixl/ is applied to
+# its upstream checkout during the build, in lexical (filename) order -- hence
+# the NN- prefixes.  Drop a new NN-*.patch into the directory to include it.
 
 FROM rocm/dev-ubuntu-24.04:7.2.4-complete
 
@@ -58,22 +45,24 @@ SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 ARG ROCM_ARCH
 RUN test -n "$ROCM_ARCH" || (echo "ERROR: ROCM_ARCH is not set" && exit 1)
 
-# vLLM wheel version on wheels.vllm.ai.  rocm722 = ROCm 7.2.x, Python 3.12.
-ARG VLLM_VERSION=0.24.0
-ARG VLLM_ROCM_VARIANT=rocm722
+# vLLM wheel version on wheels.vllm.ai.  rocm723 = ROCm 7.2.3, Python 3.12 --
+# the only ROCm variant published for 0.25.0 (ABI-compatible with the 7.2.4 base).
+# Check https://wheels.vllm.ai/rocm/<version>/ for the variant tag on version bumps.
+ARG VLLM_VERSION=0.25.0
+ARG VLLM_ROCM_VARIANT=rocm723
 
 # Pinned component revisions — bump together when validating a new combo.
-# rocm-7.2.3 release tag (2026-05-04)
-ARG HIPFILE_SHA=e86f8efd29cf45edb01507c76bdbdebc38e0fbcf
-# ai-dynamo/nixl upstream main (2026-07-10)
+# ROCm/rocm-systems develop HEAD (2026-07-13); default branch is 'develop'.
+ARG HIPFILE_SHA=6901b670c3e186f9c7052d6fc9748f0286536bdc
+# ai-dynamo/nixl upstream main (2026-07-10) + nixl-rocm-ais.patch for ROCm/AIS.
 ARG NIXL_GIT_URL=https://github.com/ai-dynamo/nixl.git
 ARG NIXL_SHA=644facf0eb3de14ec63c1d2831238f63cd03c0e0
-ARG NIXL_ENABLE_AIS=1
 
-# LMCache: upstream repo, pinned to the operator-v0.5.0 stable release.
+# LMCache: upstream repo, pinned to a dev commit above the v0.5.1 tag
+# (dev HEAD as of 2026-07-13; upstream's default branch is 'dev', not 'main').
+# All 7 AMD patches in patches/lmcache/ apply cleanly against this SHA.
 ARG LMCACHE_GIT_URL=https://github.com/LMCache/LMCache.git
-ARG LMCACHE_GIT_REF=main
-ARG LMCACHE_SHA=7dacabafd5a5e002e8526a297a379a31ac3f7559
+ARG LMCACHE_SHA=21b3341943342991534d30249c093d0ddc390bdf
 
 # ----- 0. Corporate CA (optional, Zscaler/AMD) --------------------------------
 # Pass a CA cert at build time via BuildKit secret to reach HTTPS through a
@@ -106,6 +95,12 @@ RUN apt-get update && \
     && rm -rf /var/lib/apt/lists/* \
     && update-ca-certificates
 
+# Ubuntu 24.04 marks the system interpreter PEP-668 "externally managed", which
+# makes both `uv pip install --system` and plain `python3 -m pip install` refuse
+# to touch /usr.  This is a single-purpose container built entirely on the system
+# Python, so drop the marker to allow system-wide installs.
+RUN rm -f /usr/lib/python3.*/EXTERNALLY-MANAGED
+
 # ----- 2. uv (fast Python package manager) + pip bootstrap ------------------
 RUN curl -fsSL https://astral.sh/uv/install.sh | sh && \
     ln -s /root/.local/bin/uv /usr/local/bin/uv && \
@@ -118,27 +113,29 @@ RUN uv pip install --system \
         "vllm==${VLLM_VERSION}+${VLLM_ROCM_VARIANT}" \
         --extra-index-url "https://wheels.vllm.ai/rocm/${VLLM_VERSION}/${VLLM_ROCM_VARIANT}"
 
-# ----- 4. LMCache (upstream main + AMD patches) ------------------------------
-RUN git clone --branch "${LMCACHE_GIT_REF}" "${LMCACHE_GIT_URL}" /app/LMCache && \
-    if [ -n "${LMCACHE_SHA}" ]; then \
-        git -C /app/LMCache checkout "${LMCACHE_SHA}"; \
-    fi
+# ----- 4. LMCache (upstream dev + AMD patches) -------------------------------
+# Clone the default branch (fetches all branches + tags), then check out the
+# pinned SHA -- avoids depending on a specific branch name that may not exist.
+RUN git clone "${LMCACHE_GIT_URL}" /app/LMCache && \
+    git -C /app/LMCache checkout "${LMCACHE_SHA}"
 
-COPY aai-day-release/patches/ /app/patches/
+COPY patches/ /app/patches/
 
+# Apply every patch under patches/lmcache/ in lexical (filename) order -- the
+# NN- prefixes fix the sequence.  Drop a new NN-*.patch in to include it.
 RUN cd /app/LMCache && \
-    for patch in \
-        /app/patches/lmcache/lmcache-pr-3008-cache-salt.patch \
-        /app/patches/lmcache/lmcache-controller-log.patch \
-        /app/patches/lmcache/lmcache-gds-eviction-log.patch \
-        /app/patches/lmcache/lmcache-chunk-statistics-hash.patch \
-        /app/patches/lmcache/lmcache-nixl-ais-backend.patch \
-        /app/patches/lmcache/lmcache-hipfile-mp.patch \
-        /app/patches/lmcache/lmcache-nixl-ais-mt-l2-adapter.patch; do \
-        if git apply --check "$patch" 2>/dev/null; then \
-            git apply "$patch" && echo "Applied: $patch"; \
+    shopt -s nullglob && \
+    patches=(/app/patches/lmcache/*.patch) && \
+    if [ "${#patches[@]}" -eq 0 ]; then \
+        echo "ERROR: no patches found in /app/patches/lmcache/" >&2; exit 1; \
+    fi && \
+    for patch in "${patches[@]}"; do \
+        if git apply "$patch"; then \
+            echo "Applied: $patch"; \
         else \
-            echo "Skipped (already merged or conflict): $patch"; \
+            echo "ERROR: LMCache patch does not apply cleanly: $patch" >&2; \
+            echo "The LMCache pin (${LMCACHE_SHA}) likely drifted; rebase this patch against it." >&2; \
+            exit 1; \
         fi; \
     done
 
@@ -178,14 +175,31 @@ RUN git clone --no-checkout --filter=blob:none \
         /app/ais-stats && \
     ln -sf /app/ais-stats /usr/local/bin/ais-stats
 
-# ----- 6. NIXL (ai-dynamo/nixl upstream + AIS/AIS_MT overlay + patch) --------
-COPY recipies/common/nixl /tmp/nixl-common
-COPY aai-day-release/patches/nixl/ /tmp/nixl-patches/
+# ----- 6. NIXL (ai-dynamo/nixl upstream + nixl-rocm-ais.patch) ---------------
+# Clone upstream ai-dynamo/nixl, then apply nixl-rocm-ais.patch to add ROCm/HIP
+# detection and the AIS/AIS_MT plugin tree.  After patching, the checkout looks
+# native, so apply-ais-overlay.sh (called by build-nixl.sh) self-skips and the
+# _NATIVE_HIP build path runs with AIS_PATH=/opt/rocm.
+COPY common/nixl /tmp/nixl-common
+COPY patches/nixl/ /tmp/nixl-patches/
+# Apply every patch under patches/nixl/ (lexical order) to the fresh checkout.
 RUN chmod +x /tmp/nixl-common/*.sh /tmp/nixl-common/apply-ais-overlay.sh && \
-    NIXL_GIT_URL="${NIXL_GIT_URL}" NIXL_SHA="${NIXL_SHA}" NIXL_REQUIRE_ROCM=0 \
+    NIXL_GIT_URL="${NIXL_GIT_URL}" NIXL_SHA="${NIXL_SHA}" NIXL_REQUIRE_ROCM=1 \
         NIXL_DEST=/tmp/nixl /tmp/nixl-common/clone-nixl.sh && \
-    NIXL_SRC=/tmp/nixl NIXL_ENABLE_AIS="${NIXL_ENABLE_AIS}" \
-        ROCM_PATH=/opt/rocm \
+    shopt -s nullglob && \
+    nixl_patches=(/tmp/nixl-patches/*.patch) && \
+    if [ "${#nixl_patches[@]}" -eq 0 ]; then \
+        echo "ERROR: no patches found in /tmp/nixl-patches/" >&2; exit 1; \
+    fi && \
+    for patch in "${nixl_patches[@]}"; do \
+        if git -C /tmp/nixl apply --verbose "$patch"; then \
+            echo "[nixl] applied $(basename "$patch")"; \
+        else \
+            echo "ERROR: nixl patch does not apply cleanly: $patch" >&2; exit 1; \
+        fi; \
+    done && \
+    NIXL_SRC=/tmp/nixl \
+        AIS_PATH=/opt/rocm ROCM_PATH=/opt/rocm \
         NIXL_INSTALL_PREFIX=/opt/nixl \
         UV_NATIVE_TLS=1 \
         /tmp/nixl-common/build-nixl.sh

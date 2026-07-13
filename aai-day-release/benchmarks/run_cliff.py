@@ -64,6 +64,13 @@ def _ckpt(msg: str) -> None:
 # rate over exactly that measurement window — which lets us correlate
 # arm B's bimodal latency variance with hit-rate drops (the 2026-06-04
 # round-1 finding that the c=64 crossover is unstable).
+#
+# vLLM flushes these counters ASYNCHRONOUSLY (engine-side), lagging the
+# client-observed request completion, so a bare after-snapshot taken the
+# instant run_wave() returns misses part of the window and misattributes
+# it to the next iter — that lag is what made the earlier hit-rate stats
+# inconsistent. _snap_cache_settled() polls until the counters quiesce
+# before snapshotting, so each window's delta is complete and stable.
 
 
 def _parse_prometheus(text: str) -> dict[str, float]:
@@ -119,15 +126,58 @@ async def _snap_cache(http_client, metrics_url: str) -> dict[str, float] | None:
         return None
 
 
+async def _snap_cache_settled(
+    http_client, metrics_url: str,
+    *, poll_interval: float, max_wait: float,
+) -> dict[str, float] | None:
+    """Scrape /metrics repeatedly until the prefix-cache counters stop
+    moving, then return that stable snapshot.
+
+    vLLM updates its Prometheus prefix-cache counters asynchronously in
+    the engine process — the update lags the client-observed request
+    completion (more so with async scheduling / async-save connectors).
+    Snapshotting the instant ``run_wave`` returns therefore captures only
+    PART of the window's cache activity; the rest flushes a moment later
+    and gets misattributed to the NEXT window, producing the bimodal /
+    unstable hit rates seen around the c=64 crossover.
+
+    Polling until the total query counter is unchanged across one
+    ``poll_interval`` guarantees every update for this window has landed
+    before we snapshot.  Falls back to the latest read on timeout, and to
+    a plain single scrape if ``max_wait <= 0``.
+    """
+    prev = await _snap_cache(http_client, metrics_url)
+    if prev is None or max_wait <= 0 or poll_interval <= 0:
+        return prev
+    waited = 0.0
+    while waited < max_wait:
+        await asyncio.sleep(poll_interval)
+        waited += poll_interval
+        cur = await _snap_cache(http_client, metrics_url)
+        if cur is None:
+            return prev
+        # Total queries (L1 + external) is the movement signal; once it
+        # holds steady over a full interval, the counters have quiesced.
+        if (cur["l1_q"] + cur["ext_q"]) == (prev["l1_q"] + prev["ext_q"]):
+            return cur
+        prev = cur
+    return prev
+
+
 def _window_rate(before: dict | None, after: dict | None,
                  kq: str, kh: str) -> tuple[str, str, str]:
     """Delta query/hit counts and hit-rate % over a [before, after]
-    snapshot window. Returns ("","","" ) when either snapshot is missing."""
+    snapshot window. Returns ("","","") when a snapshot is missing or the
+    window shows no queries / a counter reset (delta <= 0), so the CSV
+    reflects "no data" rather than a misleading 0.0% or negative count."""
     if before is None or after is None:
         return ("", "", "")
     dq = after[kq] - before[kq]
     dh = after[kh] - before[kh]
-    rate = (100.0 * dh / dq) if dq > 0 else 0.0
+    if dq <= 0:
+        return ("", "", "")
+    dh = max(0.0, min(dh, dq))  # hits can't be negative or exceed queries
+    rate = 100.0 * dh / dq
     return (f"{dq:.0f}", f"{dh:.0f}", f"{rate:.1f}")
 
 
@@ -582,7 +632,13 @@ async def amain(args: argparse.Namespace) -> None:
                 _ckpt(f"--- concurrency c={c} ({args.iters} iter(s)) ---")
                 point_throughputs: list[float] = []
                 for it in range(args.iters):
-                    snap0 = (await _snap_cache(http_client, metrics_url)
+                    # Settle both snapshots so each window captures ALL of
+                    # its (async-flushed) prefix-cache updates -- see
+                    # _snap_cache_settled for why a bare scrape is unstable.
+                    snap0 = (await _snap_cache_settled(
+                                 http_client, metrics_url,
+                                 poll_interval=args.metrics_settle_interval,
+                                 max_wait=args.metrics_settle_timeout)
                              if scrape_metrics else None)
                     wall, results = await _run_one_concurrency(
                         http_client, args.endpoint, args.model,
@@ -593,7 +649,10 @@ async def amain(args: argparse.Namespace) -> None:
                         request_timeout=args.request_timeout,
                         prefix_mode=args.prefix_mode,
                     )
-                    snap1 = (await _snap_cache(http_client, metrics_url)
+                    snap1 = (await _snap_cache_settled(
+                                 http_client, metrics_url,
+                                 poll_interval=args.metrics_settle_interval,
+                                 max_wait=args.metrics_settle_timeout)
                              if scrape_metrics else None)
                     l1q, l1h, l1r = _window_rate(snap0, snap1, "l1_q", "l1_h")
                     exq, exh, exr = _window_rate(snap0, snap1, "ext_q", "ext_h")
@@ -694,6 +753,15 @@ def main() -> None:
     parser.add_argument("--no-metrics", action="store_true",
                         help="disable /metrics scraping; the six hit-rate "
                              "columns are still written but left blank")
+    parser.add_argument("--metrics-settle-interval", type=float, default=0.5,
+                        help="poll interval (s) when waiting for vLLM's "
+                             "prefix-cache counters to quiesce before each "
+                             "snapshot (default: 0.5)")
+    parser.add_argument("--metrics-settle-timeout", type=float, default=10.0,
+                        help="max time (s) to wait for the prefix-cache "
+                             "counters to settle before snapshotting; 0 "
+                             "disables settling and takes a single scrape "
+                             "(default: 10.0)")
     parser.add_argument("--out", required=True,
                         help="CSV output path; created if missing")
     parser.add_argument("--append", action="store_true",

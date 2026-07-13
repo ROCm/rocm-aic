@@ -1,30 +1,14 @@
-From bf164b9424ddd862356db720c563807341d324e9 Mon Sep 17 00:00:00 2001
-From: Stephen Bates <sbates@raithlin.com>
-Date: Tue, 30 Jun 2026 13:19:52 -0600
-Subject: [PATCH] Fix hipFile driver not opened before slab handle register; add Prometheus metrics
-
-hipFileHandleRegister() requires the hipFile driver to already be open
-(via hipFileDriverOpen / Driver().open()).  In the MP mode path the
-driver was opened lazily inside register_stream(), which runs *after*
-_open_and_register_slab() completes.  Registering the slab handle while
-the driver is closed leaves an inconsistent internal state that causes a
-segfault on the first async DMA (hipFileReadAsync / hipFileWriteAsync).
-
-Fix: call ca._ensure_driver_open() inside _open_and_register_slab()
-before hipFileHandleRegister() so the driver is always open first.
-_ensure_driver_open() is idempotent so the subsequent call inside
-register_stream() is harmless.
-
-Also adds Prometheus gauges for GDS L1 slab utilisation and DMA byte
-counters (NVMe->GPU reads, GPU->NVMe writes).
-
----
- lmcache/v1/distributed/l1_manager.py    | 54 +++++++++++++++++--------
- lmcache/v1/gpu_connector/gds_context.py | 35 ++++++++++++++++
- 2 files changed, 73 insertions(+), 16 deletions(-)
-
+# Re-ported against LMCache operator-v0.5.0 (7dacaba).
+# l1_manager.py: 3-way merge (context drift).  gds_context.py: hand-ported
+# onto upstream's current GDS/hipFile impl (the original targeted an
+# AMD-internal gds_context.py).  Fix: open the (hipFile) driver before
+# register_handle() to avoid a segfault on first async DMA; plus Prometheus
+# gauges for DMA byte counters.  _ensure_driver_open() is idempotent.
+#
+# !! UNVERIFIED: applies + imports cleanly, NOT validated on a GPU.
+#
 diff --git a/lmcache/v1/distributed/l1_manager.py b/lmcache/v1/distributed/l1_manager.py
-index 64ae54c..0fca645 100644
+index 64ae54cf..c1ed3562 100644
 --- a/lmcache/v1/distributed/l1_manager.py
 +++ b/lmcache/v1/distributed/l1_manager.py
 @@ -208,22 +208,44 @@ class L1Manager:
@@ -85,16 +69,16 @@ index 64ae54c..0fca645 100644
 +                    "L1 used/total ratio (0.0-1.0)",
 +                    lambda: _l1_usage_ratio_or_zero(L1Manager._gauge_target),
 +                )
-
+ 
      def register_listener(self, listener: L1ManagerListener) -> None:
          """Register a listener for L1Manager events.
 diff --git a/lmcache/v1/gpu_connector/gds_context.py b/lmcache/v1/gpu_connector/gds_context.py
-index 2182623..f3c8d1e 100644
+index 4ce183a0..af95c999 100644
 --- a/lmcache/v1/gpu_connector/gds_context.py
 +++ b/lmcache/v1/gpu_connector/gds_context.py
-@@ -32,6 +32,12 @@ from lmcache import torch_dev
- from lmcache.logging import init_logger
+@@ -33,6 +33,12 @@ from lmcache.logging import init_logger
  from lmcache.v1.distributed.config import GdsL1Config
+ from lmcache.v1.gpu_connector import _gds_async as ca
  from lmcache.v1.memory_management import GDSMemoryObject
 +from lmcache.v1.mp_observability.otel_init import register_gauge
 +
@@ -102,30 +86,32 @@ index 2182623..f3c8d1e 100644
 +_gds_bytes_read: int = 0
 +_gds_bytes_written: int = 0
 +_gds_counter_lock = threading.Lock()
-
+ 
  logger = init_logger(__name__)
-
-@@ -133,6 +139,19 @@ class GDSContext:
+ 
+@@ -127,6 +133,21 @@ class GDSContext:
          self._open_and_register_slab(config.use_direct_io)
          self.initialized = True
-
+ 
 +        register_gauge(
 +            "lmcache.gds",
 +            "lmcache_mp.gds_l1_bytes_read",
-+            "Total bytes transferred NVMe->GPU via hipFile DMA (monotonically increasing)",
++            "Total bytes transferred NVMe->GPU via GDS/hipFile DMA "
++            "(monotonically increasing)",
 +            lambda: _gds_bytes_read,
 +        )
 +        register_gauge(
 +            "lmcache.gds",
 +            "lmcache_mp.gds_l1_bytes_written",
-+            "Total bytes transferred GPU->NVMe via hipFile DMA (monotonically increasing)",
++            "Total bytes transferred GPU->NVMe via GDS/hipFile DMA "
++            "(monotonically increasing)",
 +            lambda: _gds_bytes_written,
 +        )
 +
      # --- Public API ---------------------------------------------------
-
+ 
      def register_gpu_buffer(self, buffer: torch.Tensor) -> None:
-@@ -210,6 +229,7 @@ class GDSContext:
+@@ -202,6 +223,7 @@ class GDSContext:
                  ``get_size()`` bytes are transferred.
              direction: :attr:`SlabDirection.READ` or ``.WRITE``.
          """
@@ -133,8 +119,7 @@ index 2182623..f3c8d1e 100644
          slab_op = (
              self._slab_read if direction is SlabDirection.READ else self._slab_write
          )
-@@ -221,6 +241,11 @@ class GDSContext:
-             seg_len = min(nbytes - pos, region_nbytes - dev_offset)
+@@ -214,6 +236,12 @@ class GDSContext:
              slab_op(memory_obj.slab_offset + pos, seg_len, dev_offset, base_ptr)
              pos += seg_len
  
@@ -143,22 +128,19 @@ index 2182623..f3c8d1e 100644
 +                _gds_bytes_read += nbytes
 +            else:
 +                _gds_bytes_written += nbytes
-
++
      def close(self) -> None:
-@@ -260,6 +285,14 @@ class GDSContext:
-             use_direct_io: Open with ``O_DIRECT`` (required for the GDS fast path).
-         """
-         ca = self._ca
-+        # hipFile requires the driver to be open before any handle can be
-+        # registered.  The driver is normally opened lazily in register_stream(),
-+        # but that runs after _open_and_register_slab() returns.  Open it here
-+        # so hipFileHandleRegister() always finds an initialised driver.
-+        # _ensure_driver_open() is idempotent so the later call in
-+        # register_stream() is harmless.
-+        if self._backend == "hipfile":
-+            ca._ensure_driver_open()
-         # Create, truncate, and fallocate via a regular (non-O_DIRECT) fd.
-         creator_fd = os.open(
-             self._slab_path, os.O_CREAT | os.O_RDWR | os.O_TRUNC, 0o644
---
-2.43.0
+         """Sync the stream, deregister GDS state, and close the slab handle."""
+         if self._buffers:
+@@ -265,6 +293,11 @@ class GDSContext:
+         if use_direct_io:
+             flags |= os.O_DIRECT
+         fd = os.open(self._slab_path, flags)
++        # hipFile requires the driver to be open before a handle can be
++        # registered; register_handle() otherwise leaves inconsistent state and
++        # segfaults on the first async DMA.  _ensure_driver_open() is idempotent
++        # (and a no-op on cuFile), so calling it here is always safe.
++        ca._ensure_driver_open()
+         try:
+             handle = ca.register_handle(fd)
+         except Exception:

@@ -48,8 +48,8 @@ services:
   # ---------------------------------------------------------------------------
   lmcache:
     build:
-      context: ..
-      dockerfile: aai-day-release/Dockerfile
+      context: .
+      dockerfile: Dockerfile
       args:
         ROCM_ARCH: ${ROCM_ARCH}
     image: ${IMAGE_NAME:-rocm-aic-aai-day}
@@ -178,8 +178,7 @@ services:
         --kv-cache-dtype fp8
         --stream-interval 20
         --async-scheduling
-        --enforce-eager
-        --disable-uvicorn-access-log
+        --disable-access-log-for-endpoints "/health,/metrics,/v1/models"
         --enable-mfu-metrics
         --kv-transfer-config '{"kv_connector":"LMCacheMPConnector","kv_role":"kv_both","kv_connector_extra_config":{"lmcache.mp.host":"tcp://lmcache","lmcache.mp.port":${LMCACHE_PORT:-6555}}}'
     depends_on:
