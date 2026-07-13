@@ -1,0 +1,28 @@
+---
+# Configure NVMe-oF storage (optional).
+# Run explicitly with: ansible-playbook site.yml --tags nvmeof
+#
+# This sets up one NVMe-oF target (nvmeof_target group) and initiators
+# (nvmeof_hosts group). The NVMe-oF namespace is used as the LMCache L2a
+# AIS_MT pool (NVME_DATA).
+#
+# This is an advanced configuration. Most deployments use local NVMe directly
+# (NVME_DATA pointing to a local mount) and do not need NVMe-oF.
+
+- name: Configure NVMe-oF target
+  hosts: nvmeof_target
+  become: true
+  gather_facts: true
+  roles:
+    - nvmeof_setup_minimal
+  vars:
+    nvmeof_setup_minimal_role: target
+
+- name: Configure NVMe-oF initiators
+  hosts: nvmeof_hosts
+  become: true
+  gather_facts: true
+  roles:
+    - nvmeof_setup_minimal
+  vars:
+    nvmeof_setup_minimal_role: initiator

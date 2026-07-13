@@ -1,0 +1,88 @@
+---
+- name: Ensure Grafana dashboard directories exist
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: grafana
+    group: grafana
+    mode: "0755"
+  loop:
+    - /etc/grafana/provisioning/dashboards
+    - /var/lib/grafana/dashboards
+
+- name: Deploy Grafana dashboard file provisioning
+  ansible.builtin.copy:
+    src: grafana-dashboard-provider.yml
+    dest: /etc/grafana/provisioning/dashboards/aai-day.yaml
+    owner: root
+    group: grafana
+    mode: "0644"
+  notify: Reload systemd and restart grafana-server
+
+- name: Download Node Exporter Full dashboard from Grafana.com
+  ansible.builtin.uri:
+    url: >-
+      https://grafana.com/api/dashboards/{{
+      monitoring_grafana_dashboard_node_exporter_id }}/revisions/latest/download
+    method: GET
+    return_content: true
+    status_code: 200
+  register: _grafana_node_dash_dl
+  when: monitoring_grafana_provision_node_exporter_dashboard | bool
+
+- name: Prepare Node Exporter dashboard JSON for provisioning
+  ansible.builtin.set_fact:
+    _grafana_node_dashboard_json: >-
+      {{ _grafana_node_dash_dl.content | from_json |
+         combine({'uid': 'node-exporter-full'}, recursive=True) |
+         combine({'__inputs': []}, recursive=True) |
+         to_json }}
+  when:
+    - monitoring_grafana_provision_node_exporter_dashboard | bool
+    - _grafana_node_dash_dl.content is defined
+
+- name: Install Node Exporter Full dashboard JSON
+  ansible.builtin.copy:
+    content: "{{ _grafana_node_dashboard_json }}"
+    dest: /var/lib/grafana/dashboards/node-exporter-full.json
+    owner: grafana
+    group: grafana
+    mode: "0644"
+  when:
+    - monitoring_grafana_provision_node_exporter_dashboard | bool
+    - _grafana_node_dashboard_json is defined
+  notify: Reload systemd and restart grafana-server
+
+- name: Download AMD GPU dashboard from Grafana.com
+  ansible.builtin.uri:
+    url: >-
+      https://grafana.com/api/dashboards/{{
+      monitoring_grafana_dashboard_amd_gpu_id }}/revisions/latest/download
+    method: GET
+    return_content: true
+    status_code: 200
+  register: _grafana_amd_dash_dl
+  when: monitoring_grafana_provision_amd_gpu_dashboard | bool
+
+- name: Prepare AMD GPU dashboard JSON for provisioning
+  ansible.builtin.set_fact:
+    _grafana_amd_dashboard_json: >-
+      {{ _grafana_amd_dash_dl.content | from_json |
+         combine({'uid': 'amd-gpu-metrics'}, recursive=True) |
+         combine({'__inputs': []}, recursive=True) |
+         to_json }}
+  when:
+    - monitoring_grafana_provision_amd_gpu_dashboard | bool
+    - _grafana_amd_dash_dl.content is defined
+
+- name: Install AMD GPU dashboard JSON
+  ansible.builtin.copy:
+    content: "{{ _grafana_amd_dashboard_json }}"
+    dest: /var/lib/grafana/dashboards/amd-gpu-metrics.json
+    owner: grafana
+    group: grafana
+    mode: "0644"
+  when:
+    - monitoring_grafana_provision_amd_gpu_dashboard | bool
+    - _grafana_amd_dashboard_json is defined
+  notify: Reload systemd and restart grafana-server

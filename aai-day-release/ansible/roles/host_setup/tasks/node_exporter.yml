@@ -1,0 +1,22 @@
+---
+- name: Ensure node_exporter textfile collector directory exists
+  ansible.builtin.file:
+    path: "{{ host_setup_node_exporter_textfile_dir }}"
+    state: directory
+    mode: "0755"
+  when: "'prometheus-node-exporter' in (extra_packages | default([]))"
+
+- name: Configure prometheus-node-exporter textfile collector
+  ansible.builtin.template:
+    src: prometheus-node-exporter.default.j2
+    dest: /etc/default/prometheus-node-exporter
+    mode: "0644"
+  notify: Restart prometheus-node-exporter
+  when: "'prometheus-node-exporter' in (extra_packages | default([]))"
+
+- name: Enable and start prometheus-node-exporter
+  ansible.builtin.service:
+    name: prometheus-node-exporter
+    state: started
+    enabled: true
+  when: "'prometheus-node-exporter' in (extra_packages | default([]))"

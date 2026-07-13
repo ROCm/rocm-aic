@@ -1,0 +1,20 @@
+---
+# PVC for the LMCache L2 NFS pool.
+# Requires a StorageClass that provides ReadWriteMany NFS volumes.
+# Common options:
+#   - nfs-subdir-external-provisioner
+#   - A pre-provisioned PV bound to the NFS-over-RDMA mount from ansible
+#
+# To use a pre-provisioned PV, set storageClassName to "" and add a
+# volumeName field pointing to the PV name.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: aai-day-nfs-cache
+spec:
+  accessModes:
+    - ReadWriteMany
+  storageClassName: ""    # REPLACE with your NFS StorageClass name
+  resources:
+    requests:
+      storage: 500Gi

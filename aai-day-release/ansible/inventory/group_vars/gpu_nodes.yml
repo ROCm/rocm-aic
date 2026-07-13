@@ -1,0 +1,57 @@
+---
+# Variables applied to all GPU nodes.
+# Review every REPLACE comment below before running any playbook.
+
+# ---------------------------------------------------------------------------
+# ROCm
+# ---------------------------------------------------------------------------
+# GPU architecture for Docker build args (e.g. gfx942 for MI300X, gfx1100 for RX 7900 XTX).
+rocm_arch: gfx942   # REPLACE
+
+# Set true to install ROCm drivers from AMD's apt repository.
+# Set false (default) when drivers are already on the host.
+host_setup_enable_rocm_install: false
+
+# ---------------------------------------------------------------------------
+# aai-day Docker stack
+# ---------------------------------------------------------------------------
+aai_day_image_name: rocm-aic-aai-day
+
+# Model to serve via vLLM. Must be a HuggingFace repo ID accessible with HF_TOKEN.
+# Example: meta-llama/Llama-3.1-8B-Instruct
+aai_day_vllm_model: ""    # REPLACE
+
+# HuggingFace access token. Set via vault or ANSIBLE_BECOME_PASS / env var.
+# Do NOT commit a real token here.
+aai_day_hf_token: "{{ lookup('env', 'HF_TOKEN') | default('', true) }}"
+
+# Host paths used for LMCache KV tiers.
+aai_day_nvme_data: /mnt/lmcache-nvme    # Local NVMe mount (L2a AIS_MT pool)
+aai_day_nfs_data: /mnt/lmcache-nfs     # NFS-over-RDMA mount (L2b POSIX pool)
+
+# ---------------------------------------------------------------------------
+# Monitoring
+# ---------------------------------------------------------------------------
+monitoring_scrape_vllm_enabled: true
+monitoring_scrape_vllm_port: 8000
+
+monitoring_scrape_lmcache_enabled: true
+monitoring_scrape_lmcache_port: 8080
+
+# ---------------------------------------------------------------------------
+# Extra packages installed on all GPU nodes
+# ---------------------------------------------------------------------------
+extra_packages:
+  - nvme-cli
+  - fio
+  - ibverbs-utils
+  - rdma-core
+  - rdmacm-utils
+  - infiniband-diags
+  - perftest
+  - iperf3
+  - ethtool
+  - htop
+  - pciutils
+  - jq
+  - prometheus-node-exporter

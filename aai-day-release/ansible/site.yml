@@ -1,0 +1,36 @@
+---
+# aai-day-release master playbook.
+#
+# Run individual stages with --tags:
+#   ansible-playbook site.yml --tags provision
+#   ansible-playbook site.yml --tags build-image
+#   ansible-playbook site.yml --tags deploy-stack
+#   ansible-playbook site.yml --tags monitoring
+#
+# NFS/RDMA and NVMe-oF are tagged `never` — run explicitly when needed:
+#   ansible-playbook site.yml --tags nfs-rdma
+#   ansible-playbook site.yml --tags nvmeof
+
+- name: Provision GPU nodes (Docker, packages, node_exporter)
+  import_playbook: playbooks/provision.yml
+  tags: [provision]
+
+- name: Build or pull aai-day Docker image
+  import_playbook: playbooks/build-image.yml
+  tags: [build-image]
+
+- name: Deploy aai-day Docker Compose stack
+  import_playbook: playbooks/deploy-stack.yml
+  tags: [deploy-stack]
+
+- name: Configure NFS-over-RDMA storage (optional)
+  import_playbook: playbooks/nfs-rdma.yml
+  tags: [never, nfs-rdma]
+
+- name: Configure NVMe-oF storage (optional)
+  import_playbook: playbooks/nvme-of.yml
+  tags: [never, nvmeof]
+
+- name: Install Prometheus and Grafana monitoring
+  import_playbook: playbooks/monitoring.yml
+  tags: [monitoring]

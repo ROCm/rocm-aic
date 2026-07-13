@@ -1,0 +1,21 @@
+---
+# PVC for the LMCache L2 NVMe pool (local storage).
+# Requires a StorageClass backed by local NVMe (ReadWriteOnce).
+# Common options:
+#   - local-path-provisioner (Rancher/K3s)
+#   - openebs-hostpath
+#   - A manually created local PV pointing to a pre-mounted NVMe path
+#
+# Pool sizing: pool_size * file_size per slot.
+# Default: 4096 slots x 256 MiB = 1 TiB NVMe space.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: aai-day-nvme-cache
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: ""    # REPLACE with your local NVMe StorageClass name
+  resources:
+    requests:
+      storage: 1Ti

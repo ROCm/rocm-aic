@@ -1,0 +1,100 @@
+---
+# Flavor: TP=4, DRAM L1 + local NVMe L2 (AIS_MT adapter).
+# GPU requirement: 4x AMD GPUs on one node.
+# Storage requirement: local NVMe PVC (see pvc-nvme.yaml).
+#
+# LMCache tiers:
+#   L1: GPU/CPU DRAM (20 GiB default)
+#   L2: Local NVMe via NIXL AIS_MT adapter (hipFile P2PDMA)
+#
+# The NVMe PVC requires a StorageClass backed by local storage.
+# Common options:
+#   - local-path-provisioner (Rancher)
+#   - openebs-hostpath
+#   - A manually created local PV
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - ../../base
+  - pvc-nvme.yaml
+
+patches:
+  - target:
+      kind: Deployment
+      name: aai-day-vllm
+    patch: |-
+      - op: replace
+        path: /spec/template/spec/containers/0/env/6/value
+        value: "0,1,2,3"
+      - op: replace
+        path: /spec/template/spec/containers/0/args/2
+        value: "--tensor-parallel-size=4"
+      - op: replace
+        path: /spec/template/spec/containers/0/resources/limits/amd.com~1gpu
+        value: 4
+      - op: replace
+        path: /spec/template/spec/containers/0/resources/requests/memory
+        value: 400Gi
+      - op: replace
+        path: /spec/template/spec/containers/0/resources/limits/memory
+        value: 800Gi
+      # Override lmcache-server command to add NVMe L2 adapter (AIS_MT).
+      - op: replace
+        path: /spec/template/spec/initContainers/0/args/0
+        value: |
+          exec lmcache server \
+            --host 0.0.0.0 \
+            --port "${LMCACHE_PORT}" \
+            --l1-size-gb "${LMCACHE_L1_SIZE_GB}" \
+            --eviction-policy LRU \
+            --l2-adapter '{"type":"nixl_store","backend":"AIS_MT","backend_params":{"file_path":"/data/nvme/lmcache","use_direct_io":"true","file_size":268435456},"pool_size":4096}'
+      - op: add
+        path: /spec/template/spec/initContainers/0/volumeMounts/-
+        value:
+          name: nvme-cache
+          mountPath: /data/nvme
+      - op: add
+        path: /spec/template/spec/initContainers/0/volumeMounts/-
+        value:
+          name: sys-kernel-debug
+          mountPath: /sys/kernel/debug
+      - op: add
+        path: /spec/template/spec/initContainers/0/volumeMounts/-
+        value:
+          name: sys-kernel-btf
+          mountPath: /sys/kernel/btf
+          readOnly: true
+      - op: add
+        path: /spec/template/spec/initContainers/0/volumeMounts/-
+        value:
+          name: boot
+          mountPath: /boot
+          readOnly: true
+      - op: add
+        path: /spec/template/spec/volumes/-
+        value:
+          name: nvme-cache
+          persistentVolumeClaim:
+            claimName: aai-day-nvme-cache
+      - op: add
+        path: /spec/template/spec/volumes/-
+        value:
+          name: sys-kernel-debug
+          hostPath:
+            path: /sys/kernel/debug
+            type: Directory
+      - op: add
+        path: /spec/template/spec/volumes/-
+        value:
+          name: sys-kernel-btf
+          hostPath:
+            path: /sys/kernel/btf
+            type: Directory
+      - op: add
+        path: /spec/template/spec/volumes/-
+        value:
+          name: boot
+          hostPath:
+            path: /boot
+            type: Directory

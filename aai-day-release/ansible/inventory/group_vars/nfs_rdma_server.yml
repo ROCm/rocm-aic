@@ -1,0 +1,25 @@
+---
+# NFS-over-RDMA server configuration.
+# See roles/nfs_rdma_server/defaults/main.yml for the full option list.
+
+# Numeric IP of the RDMA fabric interface on the NFS server host.
+# Must be a numeric IP — do not use a hostname.
+# Find it with: ip -4 addr show
+nfs_rdma_server_ip: ""    # REPLACE e.g. "192.0.2.10"
+
+# Numeric IPs of all client nodes that may mount this export.
+nfs_rdma_export_clients:
+  - ""    # REPLACE with RDMA fabric IP of each client node
+
+# Set true to export a plain directory (no block device or LVM required).
+# Set false (default) to export a block device / LVM logical volume.
+nfs_rdma_plain_dir_mode: true
+
+# When nfs_rdma_plain_dir_mode is true:
+#   Path that will be created and exported. Pre-create it if needed.
+nfs_rdma_export_mount: /srv/aai-day-cache
+
+# When nfs_rdma_plain_dir_mode is false:
+#   Full path to the block device or LV to mount and export.
+#   Example: /dev/sdb1 or /dev/vg0/lv_cache
+nfs_rdma_export_device: ""    # REPLACE (ignored when plain_dir_mode is true)

@@ -1,0 +1,33 @@
+---
+# Docker image to run.
+aai_day_image_name: rocm-aic-aai-day
+aai_day_image_tag: latest
+
+# Directory on each node where docker-compose.yml and .env are placed.
+aai_day_compose_dir: /opt/aai-day-release
+
+# GPU and model settings (mirror docker-compose.yml env vars).
+aai_day_gpu: "0"
+aai_day_vllm_model: ""
+aai_day_tensor_parallel_size: 1
+aai_day_gpu_memory_utilization: "0.90"
+aai_day_max_model_len: 32768
+aai_day_max_num_batched_tokens: 4096
+
+# LMCache settings.
+aai_day_lmcache_port: 6555
+aai_day_l1_size_gb: 20
+aai_day_gds_mode: false
+aai_day_nvme_data: /mnt/lmcache-nvme
+aai_day_nfs_data: /mnt/lmcache-nfs
+
+# HuggingFace.
+aai_day_hf_token: ""
+aai_day_hf_home: /opt/aai-day-release/hf-cache
+
+# Log directory on the host.
+aai_day_log_dir: /var/log/aai-day
+
+# Install a systemd unit that starts the stack on boot.
+aai_day_install_systemd_unit: false
+aai_day_service_name: aai-day-stack

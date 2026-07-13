@@ -1,0 +1,33 @@
+---
+- name: Ensure compose directory exists
+  ansible.builtin.file:
+    path: "{{ aai_day_compose_dir }}"
+    state: directory
+    mode: "0755"
+
+- name: Ensure NVMe data directory exists
+  ansible.builtin.file:
+    path: "{{ aai_day_nvme_data }}"
+    state: directory
+    mode: "0755"
+
+- name: Ensure NFS data directory exists
+  ansible.builtin.file:
+    path: "{{ aai_day_nfs_data }}"
+    state: directory
+    mode: "0755"
+
+- name: Ensure log directories exist
+  ansible.builtin.file:
+    path: "{{ aai_day_log_dir }}/{{ item }}"
+    state: directory
+    mode: "0755"
+  loop:
+    - lmcache
+    - vllm
+
+- name: Ensure HF cache directory exists
+  ansible.builtin.file:
+    path: "{{ aai_day_hf_home }}"
+    state: directory
+    mode: "0755"

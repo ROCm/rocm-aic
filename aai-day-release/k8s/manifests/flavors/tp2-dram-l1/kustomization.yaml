@@ -1,0 +1,34 @@
+---
+# Flavor: TP=2, DRAM L1 only.
+# Quickstart — requires no persistent storage.
+# GPU requirement: 2x AMD GPUs on one node.
+#
+# LMCache tiers:
+#   L1: GPU/CPU DRAM (20 GiB default)
+#   L2: none
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - ../../base
+
+patches:
+  - target:
+      kind: Deployment
+      name: aai-day-vllm
+    patch: |-
+      - op: replace
+        path: /spec/replicas
+        value: 1
+      - op: replace
+        path: /spec/template/spec/initContainers/0/env/0/value
+        value: "6555"
+      - op: replace
+        path: /spec/template/spec/containers/0/env/6/value
+        value: "0,1"
+      - op: replace
+        path: /spec/template/spec/containers/0/args/2
+        value: "--tensor-parallel-size=2"
+      - op: replace
+        path: /spec/template/spec/containers/0/resources/limits/amd.com~1gpu
+        value: 2

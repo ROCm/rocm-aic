@@ -1,0 +1,18 @@
+---
+# PVC for the LMCache GDS slab file (L1 NVMe slab mode).
+# Must be on a local NVMe device on the same node as the Pod.
+# Use a local StorageClass with node affinity or a hostPath PV.
+#
+# GDS slab size: set LMCACHE_L1_SIZE_GB env var on the lmcache-server container.
+# Default: 20 GiB. For MI300X with large models, consider 100-200 GiB.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: aai-day-gds-slab
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: ""    # REPLACE with your local NVMe StorageClass name
+  resources:
+    requests:
+      storage: 200Gi

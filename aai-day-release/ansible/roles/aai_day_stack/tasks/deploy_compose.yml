@@ -1,0 +1,23 @@
+---
+- name: Resolve repo root (three levels above roles/)
+  ansible.builtin.set_fact:
+    _aai_day_repo_root: "{{ playbook_dir | dirname | dirname | dirname }}"
+
+- name: Copy docker-compose.yml to compose directory
+  ansible.builtin.copy:
+    src: "{{ _aai_day_repo_root }}/aai-day-release/docker-compose.yml"
+    dest: "{{ aai_day_compose_dir }}/docker-compose.yml"
+    mode: "0644"
+
+- name: Render .env file from template
+  ansible.builtin.template:
+    src: env.j2
+    dest: "{{ aai_day_compose_dir }}/.env"
+    mode: "0600"
+  no_log: true
+
+- name: Start aai-day stack with docker compose
+  community.docker.docker_compose_v2:
+    project_src: "{{ aai_day_compose_dir }}"
+    state: present
+    pull: never

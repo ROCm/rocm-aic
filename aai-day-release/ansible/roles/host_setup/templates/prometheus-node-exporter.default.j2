@@ -1,0 +1,4 @@
+# Managed by Ansible (host_setup). Do not edit on host.
+# Enables the textfile collector for node_exporter.
+
+ARGS="--collector.textfile.directory={{ host_setup_node_exporter_textfile_dir }}{% for arg in host_setup_node_exporter_extra_args | default([]) %} {{ arg }}{% endfor %}"

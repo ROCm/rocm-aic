@@ -1,0 +1,12 @@
+[Unit]
+Description=Enable NFS over RDMA listener for aai-day
+After=nfs-server.service
+Requires=nfs-server.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/bin/bash -c 'set -e; modprobe svcrdma; mountpoint -q /proc/fs/nfsd || mount -t nfsd nfsd /proc/fs/nfsd; while read -r proto port rest; do [ "$proto" = rdma ] && [ "$port" = {{ nfs_rdma_port }} ] && exit 0; done < /proc/fs/nfsd/portlist; echo "rdma {{ nfs_rdma_port }}" > /proc/fs/nfsd/portlist'
+
+[Install]
+WantedBy=multi-user.target

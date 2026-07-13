@@ -1,0 +1,4 @@
+# Managed by Ansible (monitoring_stack).
+[Service]
+ExecStart=
+ExecStart=/usr/bin/prometheus $ARGS{% if monitoring_prometheus_enable_remote_write_receiver | default(false) | bool %} --web.enable-remote-write-receiver{% endif %}{% for arg in monitoring_prometheus_extra_args | default([]) %} {{ arg }}{% endfor %}

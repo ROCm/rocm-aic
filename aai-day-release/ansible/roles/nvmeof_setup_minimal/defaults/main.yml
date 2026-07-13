@@ -1,0 +1,22 @@
+---
+# Role: target or initiator (set per host group in playbook vars).
+nvmeof_setup_minimal_role: target   # or: initiator
+
+# Target configuration (role: target).
+nvmeof_setup_nqn: ""          # REPLACE — see inventory/group_vars/nvmeof_target.yml
+nvmeof_setup_target_interface: ""   # REPLACE — netdev carrying RDMA fabric traffic
+nvmeof_target_devices: []     # REPLACE — list of block device paths to present
+
+# Initiator configuration (role: initiator).
+nvmeof_setup_target_ip: ""    # REPLACE — RDMA fabric IP of the target host
+
+nvmeof_packages:
+  - nvme-cli
+
+nvmeof_target_modules:
+  - nvmet
+  - nvmet-rdma
+
+nvmeof_initiator_modules:
+  - nvme
+  - nvme-rdma

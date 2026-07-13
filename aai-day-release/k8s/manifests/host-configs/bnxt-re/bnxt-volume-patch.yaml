@@ -1,0 +1,22 @@
+---
+# Inject host libbnxt_re RDMA library into the lmcache-server sidecar.
+# The host path matches the default install location for the bnxt_re driver.
+# Adjust if your distribution places it elsewhere.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: aai-day-vllm
+spec:
+  template:
+    spec:
+      initContainers:
+        - name: lmcache-server
+          volumeMounts:
+            - name: bnxt-re
+              mountPath: /usr/lib/x86_64-linux-gnu/libibverbs/libbnxt_re-rdmav34.so
+              readOnly: true
+      volumes:
+        - name: bnxt-re
+          hostPath:
+            path: /usr/local/lib/libbnxt_re-rdmav34.so
+            type: File

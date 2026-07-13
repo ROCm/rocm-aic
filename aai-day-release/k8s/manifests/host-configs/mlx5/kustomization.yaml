@@ -1,0 +1,19 @@
+---
+# Kustomize Component: Mellanox/NVIDIA ConnectX (mlx5_ib/mlx5_core) RDMA library injection.
+# Apply this component when your cluster uses Mellanox or NVIDIA ConnectX
+# network adapters for RDMA (InfiniBand or RoCE v2).
+#
+# Common environments: AWS EFA, Azure HPC, GCP H3/A3 nodes,
+# on-premises HPC clusters with InfiniBand.
+#
+# Usage: add to a flavor's kustomization.yaml:
+#   components:
+#     - ../../host-configs/mlx5
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+
+patches:
+  - path: mlx5-volume-patch.yaml
+    target:
+      kind: Deployment
+      name: aai-day-vllm

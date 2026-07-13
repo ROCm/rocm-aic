@@ -1,0 +1,54 @@
+---
+# Flavor: TP=2, DRAM L1 + NFS L2.
+# GPU requirement: 2x AMD GPUs on one node.
+# Storage requirement: ReadWriteMany NFS PVC (see pvc-nfs.yaml).
+#
+# LMCache tiers:
+#   L1: GPU/CPU DRAM (20 GiB default)
+#   L2: NFS-over-RDMA via POSIX adapter (ReadWriteMany PVC)
+#
+# The NFS PVC can be provisioned by:
+#   - The aai-day ansible NFS-over-RDMA playbook (nfs-rdma.yml)
+#   - Any NFS StorageClass in your cluster (e.g. nfs-subdir-external-provisioner)
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - ../../base
+  - pvc-nfs.yaml
+
+patches:
+  - target:
+      kind: Deployment
+      name: aai-day-vllm
+    patch: |-
+      - op: replace
+        path: /spec/template/spec/containers/0/env/6/value
+        value: "0,1"
+      - op: replace
+        path: /spec/template/spec/containers/0/args/2
+        value: "--tensor-parallel-size=2"
+      - op: replace
+        path: /spec/template/spec/containers/0/resources/limits/amd.com~1gpu
+        value: 2
+      # Override lmcache-server command to add NFS L2 adapter.
+      - op: replace
+        path: /spec/template/spec/initContainers/0/args/0
+        value: |
+          exec lmcache server \
+            --host 0.0.0.0 \
+            --port "${LMCACHE_PORT}" \
+            --l1-size-gb "${LMCACHE_L1_SIZE_GB}" \
+            --eviction-policy LRU \
+            --l2-adapter '{"type":"nixl_store","backend":"POSIX","backend_params":{"file_path":"/data/nfs/lmcache"},"pool_size":1024}'
+      - op: add
+        path: /spec/template/spec/initContainers/0/volumeMounts/-
+        value:
+          name: nfs-cache
+          mountPath: /data/nfs
+      - op: add
+        path: /spec/template/spec/volumes/-
+        value:
+          name: nfs-cache
+          persistentVolumeClaim:
+            claimName: aai-day-nfs-cache

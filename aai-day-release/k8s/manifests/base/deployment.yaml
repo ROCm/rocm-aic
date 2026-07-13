@@ -1,0 +1,206 @@
+---
+# aai-day-release Kubernetes Deployment.
+#
+# Architecture: two-container Pod matching the docker-compose.yml stack.
+#   lmcache-server — native sidecar (k8s 1.29+), starts before vllm.
+#                    Runs lmcache server in MP mode on loopback :6555.
+#   vllm           — vLLM serving engine, connects via LMCacheMPConnector
+#                    over tcp://127.0.0.1:6555.
+#
+# Required before deploying:
+#   kubectl create secret generic aai-day-hf-token \
+#     --from-literal=HF_TOKEN=<your-token>
+#
+# Image substitution: IMAGE_REGISTRY, IMAGE_NAME, IMAGE_TAG env vars are
+# expanded by `envsubst` in the justfile before `kubectl apply`.
+# Set them or use the just recipes which handle this automatically.
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: aai-day-vllm
+  labels:
+    app: aai-day-vllm
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: aai-day-vllm
+  template:
+    metadata:
+      labels:
+        app: aai-day-vllm
+    spec:
+      serviceAccountName: aai-day-vllm
+
+      # Shared loopback so vllm can reach lmcache-server on 127.0.0.1:6555.
+      # Equivalent to docker-compose `ipc: host`.
+      hostIPC: true
+
+      securityContext:
+        seccompProfile:
+          type: Unconfined
+
+      # lmcache-server as a native sidecar (k8s 1.29+ restartPolicy: Always).
+      # On older clusters, move this entry to containers[] and manage ordering
+      # with a readiness probe on the vllm container.
+      initContainers:
+        - name: lmcache-server
+          image: ${IMAGE_REGISTRY}/${IMAGE_NAME}:${IMAGE_TAG}
+          restartPolicy: Always   # Native sidecar — stays running alongside vllm.
+          ports:
+            - name: lmcache-api
+              containerPort: 8080
+              protocol: TCP
+          env:
+            - name: LMCACHE_PORT
+              value: "6555"
+            - name: LMCACHE_L1_SIZE_GB
+              value: "20"
+            - name: GDS_MODE
+              value: ""
+            - name: HIPFILE_ALLOW_COMPAT_MODE
+              value: "false"
+            - name: HIPFILE_UNSUPPORTED_FILE_SYSTEMS
+              value: "true"
+            - name: PYTHONHASHSEED
+              value: "0"
+          command: ["/bin/bash", "-o", "pipefail", "-c"]
+          args:
+            - |
+              exec lmcache server \
+                --host 0.0.0.0 \
+                --port "${LMCACHE_PORT}" \
+                --l1-size-gb "${LMCACHE_L1_SIZE_GB}" \
+                --eviction-policy LRU
+          resources:
+            requests:
+              cpu: "4"
+              memory: 32Gi
+            limits:
+              cpu: "8"
+              memory: 64Gi
+          securityContext:
+            capabilities:
+              add:
+                - SYS_ADMIN
+                - SYS_PTRACE
+                - IPC_LOCK
+          volumeMounts:
+            - name: dev-kfd
+              mountPath: /dev/kfd
+            - name: dev-dri
+              mountPath: /dev/dri
+            - name: lib-modules
+              mountPath: /lib/modules
+              readOnly: true
+            - name: usr-src
+              mountPath: /usr/src
+              readOnly: true
+          # lmcache-server is healthy once the ZMQ port is open.
+          livenessProbe:
+            exec:
+              command:
+                - python3
+                - -c
+                - "import socket; s=socket.create_connection(('127.0.0.1',6555),2); s.close()"
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            failureThreshold: 18
+
+      containers:
+        - name: vllm
+          image: ${IMAGE_REGISTRY}/${IMAGE_NAME}:${IMAGE_TAG}
+          ports:
+            - name: http
+              containerPort: 8000
+              protocol: TCP
+          env:
+            - name: HF_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: aai-day-hf-token
+                  key: HF_TOKEN
+            - name: HF_HOME
+              value: /hf
+            - name: HF_HUB_CACHE
+              value: /hf/hub
+            - name: HF_DATASETS_CACHE
+              value: /hf/datasets
+            - name: VLLM_CACHE_ROOT
+              value: /hf/vllm
+            - name: VLLM_CONFIG_ROOT
+              value: /hf/vllm_config
+            - name: TORCH_HOME
+              value: /hf/torch
+            - name: ROCR_VISIBLE_DEVICES
+              value: "0"
+            - name: AMDGCN_USE_BUFFER_OPS
+              value: "0"
+            - name: MIOPEN_FIND_MODE
+              value: FAST
+            - name: PYTHONHASHSEED
+              value: "0"
+          args:
+            - --model
+            - ""     # Set via flavor patch: -e VLLM_MODEL=... or ConfigMap
+            - --host=0.0.0.0
+            - --port=8000
+            - --tensor-parallel-size=1
+            - --gpu-memory-utilization=0.90
+            - --max-model-len=32768
+            - --max-num-batched-tokens=4096
+            - --block-size=64
+            - --enable-prefix-caching
+            - --kv-cache-dtype=fp8
+            - --enforce-eager
+            - --disable-uvicorn-access-log
+            - --kv-transfer-config
+            - '{"kv_connector":"LMCacheMPConnector","kv_role":"kv_both","kv_connector_extra_config":{"lmcache.mp.host":"tcp://127.0.0.1","lmcache.mp.port":6555}}'
+          resources:
+            requests:
+              cpu: "16"
+              memory: 200Gi
+            limits:
+              amd.com/gpu: 1
+              cpu: "32"
+              memory: 400Gi
+          securityContext:
+            capabilities:
+              add:
+                - SYS_ADMIN
+                - SYS_PTRACE
+          volumeMounts:
+            - name: hf-cache
+              mountPath: /hf
+            - name: dev-kfd
+              mountPath: /dev/kfd
+            - name: dev-dri
+              mountPath: /dev/dri
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 120
+            periodSeconds: 15
+            failureThreshold: 20
+
+      volumes:
+        - name: hf-cache
+          emptyDir: {}   # Override in flavors with a PVC for persistent model cache.
+        - name: dev-kfd
+          hostPath:
+            path: /dev/kfd
+            type: CharDevice
+        - name: dev-dri
+          hostPath:
+            path: /dev/dri
+            type: Directory
+        - name: lib-modules
+          hostPath:
+            path: /lib/modules
+            type: Directory
+        - name: usr-src
+          hostPath:
+            path: /usr/src
+            type: Directory

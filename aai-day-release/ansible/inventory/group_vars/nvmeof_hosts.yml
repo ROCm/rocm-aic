@@ -1,0 +1,6 @@
+---
+# NVMe-oF initiator (host) configuration (optional).
+# Only needed on nodes that connect to an NVMe-oF target.
+
+nvmeof_setup_nqn: "nqn.2024-01.com.example.aai-day:shared-storage-01"   # REPLACE (must match target)
+nvmeof_setup_target_ip: ""    # REPLACE: RDMA fabric IP of the NVMe-oF target host

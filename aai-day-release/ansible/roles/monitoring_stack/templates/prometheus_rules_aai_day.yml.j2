@@ -1,0 +1,16 @@
+# Managed by Ansible (monitoring_stack). Do not edit on host.
+groups:
+  - name: aai_day_join
+    interval: 30s
+    rules:
+      - record: aai_day:nvme:key
+        expr: |
+          max by (job, instance, device, k) (
+            label_join(
+              node_disk_info{job="node_exporter", device=~"nvme.*"},
+              "k",
+              "@",
+              "instance",
+              "device"
+            ) * 0 + 1
+          )

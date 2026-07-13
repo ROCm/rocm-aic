@@ -1,0 +1,7 @@
+---
+- name: Deploy aai-day Docker Compose stack
+  hosts: gpu_nodes
+  become: true
+  gather_facts: true
+  roles:
+    - aai_day_stack

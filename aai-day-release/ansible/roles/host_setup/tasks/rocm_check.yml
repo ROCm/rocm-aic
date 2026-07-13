@@ -1,0 +1,16 @@
+---
+- name: Check ROCm GPU visibility (rocm-smi)
+  ansible.builtin.command:
+    argv: [rocm-smi]
+  register: _rocm_smi
+  changed_when: false
+  failed_when: _rocm_smi.rc != 0
+  ignore_errors: true
+
+- name: Warn when ROCm is not detected
+  ansible.builtin.debug:
+    msg: >-
+      rocm-smi returned non-zero (rc={{ _rocm_smi.rc }}). Ensure ROCm drivers
+      are installed and the amdgpu kernel module is loaded. Set
+      host_setup_enable_rocm_install: true to have this role install ROCm.
+  when: _rocm_smi.rc != 0
