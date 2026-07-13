@@ -58,6 +58,10 @@ ARG HIPFILE_SHA=6901b670c3e186f9c7052d6fc9748f0286536bdc
 ARG NIXL_GIT_URL=https://github.com/ai-dynamo/nixl.git
 ARG NIXL_SHA=644facf0eb3de14ec63c1d2831238f63cd03c0e0
 
+# hsa-snoop: HSA AQL queue/dispatch snooper + Prometheus exporter (main HEAD 2026-07-13).
+ARG HSA_SNOOP_GIT_URL=https://github.com/sbates130272/hsa-snoop.git
+ARG HSA_SNOOP_SHA=3bb046763f03e429c4fd983b36346b4727fc3744
+
 # LMCache: upstream repo, pinned to a dev commit above the v0.5.1 tag
 # (dev HEAD as of 2026-07-13; upstream's default branch is 'dev', not 'main').
 # All 7 AMD patches in patches/lmcache/ apply cleanly against this SHA.
@@ -207,6 +211,24 @@ RUN chmod +x /tmp/nixl-common/*.sh && \
         NIXL_INSTALL_PREFIX=/opt/nixl \
         UV_NATIVE_TLS=1 \
         /tmp/nixl-common/build-nixl.sh
+
+# ----- 6b. hsa-snoop (HSA AQL queue snooper + Prometheus exporter) -----------
+# GPU dispatch/queue telemetry on :9488 (/metrics).  Built WITH the Prometheus
+# exporter (-DHSA_SNOOP_PROMETHEUS=ON fetches prometheus-cpp via CMake); the
+# build is rejected if the resulting binary lacks --prometheus.  At runtime it
+# must run as root in the host PID namespace, privileged (tracefs + pagemap +
+# process_vm_readv), to see the vLLM/LMCache GPU processes -- see
+# monitoring/docker-compose.monitoring.yml.
+RUN git clone "${HSA_SNOOP_GIT_URL}" /app/hsa-snoop && \
+    git -C /app/hsa-snoop checkout "${HSA_SNOOP_SHA}" && \
+    cmake -S /app/hsa-snoop -B /app/hsa-snoop/build -G Ninja \
+        -DCMAKE_BUILD_TYPE=Release -DHSA_SNOOP_PROMETHEUS=ON && \
+    cmake --build /app/hsa-snoop/build --parallel "$(nproc)" && \
+    cmake --install /app/hsa-snoop/build --prefix /usr/local && \
+    test -x /usr/local/bin/hsa-snoop && \
+    { /usr/local/bin/hsa-snoop --help 2>&1 || true; } | grep -q -- '--prometheus' \
+        || { echo "ERROR: hsa-snoop built without Prometheus mode (--prometheus absent)" >&2; exit 1; } && \
+    echo "PASS: hsa-snoop with Prometheus exporter installed"
 
 # ----- 7. Runtime environment ------------------------------------------------
 ENV PYTHONUNBUFFERED=1 \

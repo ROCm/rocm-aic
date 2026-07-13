@@ -1,0 +1,6 @@
+{
+  "ServerPort": 5000,
+  "CommonConfig": {
+    "MetricsFieldPrefix": "amd_"
+  }
+}

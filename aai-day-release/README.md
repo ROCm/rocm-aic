@@ -120,6 +120,74 @@ make -C aai-day-release plot
 # → plots/cliff-latency-p95.png
 ```
 
+## Metrics & observability
+
+A host-network Prometheus sidecar can capture the whole run so it can be
+explored afterward. It scrapes, all at `localhost`:
+
+| Source | Port | Notes |
+| --- | --- | --- |
+| vLLM `/metrics` | 8000, 8001 | 8000 = kvd arm, 8001 = vram_only baseline |
+| LMCache `/metrics` | 8080 | includes NIXL-backed tier counters |
+| NIXL telemetry `/metrics` | 19090 | native NIXL exporter on the LMCache process (see below) |
+| node_exporter | 9100 | CPU/mem/net + **NVMe I/O** (diskstats/nvme) + **RDMA** (infiniband) |
+| nvme_exporter | 9998 | dedicated NVMe exporter (batesste Ansible role, host service) |
+| rdma_exporter | 9879 | dedicated RDMA exporter (batesste Ansible role, host service) |
+| amd_metrics_exporter | 5000 | AMD GPU device-metrics-exporter (`amd_*` metrics) |
+| hsa_snoop | 9488 | HSA AQL queue/dispatch telemetry (`hsa_kernel_launches_total`, `hsa_kernel_duration_seconds`, `hsa_active_queues`) |
+
+The TSDB is written to `AAI_METRICS_DIR`. For `--cliff` runs it defaults to
+`logs/<job-id>/prometheus` (the SLURM job id, or `manual` off-Slurm);
+**bind-mount / point it at an NFS directory** to explore the capture later by
+pointing a Prometheus at it. Job names/ports
+mirror the repo-root `ansible/` monitoring stack, so the same Grafana dashboards
+and recording rules apply.
+
+**NIXL native telemetry (`:19090`).** NIXL ships its own (experimental/beta)
+Prometheus exporter — `agent_tx_bytes_total`, `agent_errors_total{status=...}`,
+etc. It's compiled into the image (the `prometheus-cpp` plugin is built by
+[common/nixl/build-nixl.sh](common/nixl/build-nixl.sh)) and enabled at runtime
+on the **LMCache** process — the one that runs the NIXL agent — via
+`NIXL_TELEMETRY_ENABLE=y NIXL_TELEMETRY_EXPORTER=prometheus
+NIXL_TELEMETRY_PROMETHEUS_PORT=19090` (set by default in `docker-compose.yml`
+and the cliff sbatch). Under LMCache MP mode only one worker process wins the
+port; the rest run without a sink. Metric names may change between NIXL
+versions. Set `NIXL_TELEMETRY_ENABLE=` (empty) to disable, or
+`NIXL_METRICS_PORT` to move the port.
+
+**During `--cliff` runs** it is auto-started (see below). **Standalone / with
+`make up`:**
+
+```bash
+# scrape-only: exporters already installed on the host (Ansible)
+make -C aai-day-release monitoring-up AAI_METRICS_DIR=/mnt/lmcache-nfs/metrics
+
+# bare node: also launch containerized node + AMD GPU exporters
+make -C aai-day-release monitoring-up \
+    AAI_METRICS_DIR=/mnt/lmcache-nfs/metrics AAI_EXPORTERS=1
+
+make -C aai-day-release monitoring-down     # stop (TSDB retained)
+```
+
+`nvme_exporter` / `rdma_exporter` are host services (batesste galaxy roles) and
+are **not** containerized; Prometheus scrapes them when present. On a node that
+lacks them, NVMe I/O still comes from node-exporter's `diskstats`/`nvme`
+collectors and RDMA from its `infiniband` collector.
+
+**hsa-snoop (`:9488`).** [sbates130272/hsa-snoop](https://github.com/sbates130272/hsa-snoop)
+is compiled into the `rocm-aic-aai-day` image with its Prometheus exporter
+(`-DHSA_SNOOP_PROMETHEUS=ON`; see [Dockerfile](Dockerfile) step 6b — the build
+fails if the resulting binary lacks `--prometheus`). It runs in the `exporters`
+profile as `hsa-snoop --all --prometheus`, and because it snoops HSA AQL queues
+from userspace (ftrace kprobe + pagemap + `process_vm_readv`) it needs
+**`privileged: true`, `pid: host`, and root** to see the vLLM/LMCache GPU
+processes. It's a sampling snoop (very short kernels between poll intervals can
+be missed) and is upstream-verified on gfx90a / ROCm 7.1.0.
+
+> **NFS caveat:** Prometheus' TSDB uses `mmap` + POSIX file locks, which NFS
+> handles poorly. Keep to a single writer; this is fine for lab/demo capture,
+> not a durable production store.
+
 ## Key environment variables
 
 | Variable | Default | Description |
@@ -136,6 +204,9 @@ make -C aai-day-release plot
 | `LMCACHE_NFS_POOL` | `1024` | NIXL pool slots for NFS adapter |
 | `TENSOR_PARALLEL_SIZE` | `1` | vLLM tensor parallel degree |
 | `GPU` | `0` | ROCR_VISIBLE_DEVICES for the vllm container |
+| `AAI_MONITORING` | `1` | Auto-start the Prometheus sidecar in `--cliff` runs (`0` to skip) |
+| `AAI_METRICS_DIR` | `logs/<job-id>/prometheus` (cliff) | Prometheus TSDB dir — bind-mount an NFS path here |
+| `AAI_EXPORTERS` | `1` (cliff) / `0` (make) | Also launch containerized node + AMD GPU exporters |
 
 ## Directory layout
 
@@ -148,6 +219,12 @@ aai-day-release/
 ├── benchmarks/
 │   ├── run_cliff.py        # KV cache cliff benchmark runner
 │   └── plot_cliff.py       # Cliff chart plotter (matplotlib)
+├── monitoring/             # Prometheus metrics-capture sidecar
+│   ├── docker-compose.monitoring.yml
+│   ├── prometheus/
+│   │   ├── prometheus.yml  # localhost scrape config (vLLM/LMCache/exporters)
+│   │   └── rules/aai_day.yml
+│   └── amdgpu-exporter/config.json
 └── certs/
     └── corp-ca.crt         # Gitignored; add AMD/Zscaler CA cert here
 ```

@@ -10,6 +10,7 @@
 #   ./run-this.sh --push        # push the built image to a registry (needs AAI_PUSH_REF)
 #   ./run-this.sh --run-smoke-test  # smoke-test the image on a GPU+NVMe node
 #   ./run-this.sh --cliff       # sbatch the full run_cliff.py sweep on a GPU+NVMe node
+#   ./run-this.sh --cliff-short # sbatch a 1-point cliff (concur=1, 1 iter) to smoke-test the flow
 #   ./run-this.sh --build --push --run-smoke-test   # build, push, then smoke-test (in order)
 #
 # Node selection is via constraints in run-build-distribute.sh:
@@ -20,6 +21,13 @@
 #   --push needs AAI_PUSH_REF, e.g. registry-sc-harbor.amd.com/<proj>/aai-day:latest
 #   (run `docker login <registry>` once first)
 #   --cliff submits .slurm/run-cliff.sbatch; pin a node with AAI_CLIFF_NODE=<node>
+#   --cliff-short is --cliff with AAI_BENCH_CONCUR=1 AAI_BENCH_ITERS=1 (fast setup check);
+#     it runs all three arms unless narrowed with --cliff-arm
+#   --cliff-arm=<list> runs only the named arms (vram,nvme,gds; default all), e.g.
+#     --cliff-arm=nvme for just the AIS_MT NVMe arm; implies --cliff, composes with
+#     --cliff-short (fastest single-arm check)
+#   --cliff auto-starts a Prometheus metrics sidecar (AAI_MONITORING=0 to skip);
+#     set AAI_METRICS_DIR=<nfs-dir> for the TSDB, AAI_EXPORTERS=0 to use host exporters
 #
 set -euo pipefail
 
@@ -39,14 +47,17 @@ do_build=0
 do_push=0
 do_test=0
 do_cliff=0
+do_cliff_short=0
 for arg in "$@"; do
     case "${arg}" in
         --build)          do_build=1 ;;
         --push)           do_push=1 ;;
         --run-smoke-test) do_test=1 ;;
         --cliff)          do_cliff=1 ;;
-        -h|--help)  sed -n '7,22p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
-        *)          echo "unknown arg: ${arg} (use --build, --push, --run-smoke-test and/or --cliff)" >&2; exit 1 ;;
+        --cliff-short)    do_cliff=1; do_cliff_short=1 ;;
+        --cliff-arm=*)    do_cliff=1; export AAI_CLIFF_ARMS="${arg#*=}" ;;
+        -h|--help)  awk 'NR>=7{ if(/^#/){sub(/^# ?/,"");print} else exit }' "${BASH_SOURCE[0]}"; exit 0 ;;
+        *)          echo "unknown arg: ${arg} (use --build, --push, --run-smoke-test, --cliff, --cliff-short, --cliff-arm=<list>)" >&2; exit 1 ;;
     esac
 done
 
@@ -72,5 +83,20 @@ if (( do_cliff )); then
     command -v sbatch >/dev/null 2>&1 || { echo "sbatch not found" >&2; exit 1; }
     sbatch_args=()
     [[ -n "${AAI_CLIFF_NODE:-}" ]] && sbatch_args+=(--nodelist="${AAI_CLIFF_NODE}")
-    ( cd "${HERE}" && sbatch "${sbatch_args[@]}" .slurm/run-cliff.sbatch )
+    if (( do_cliff_short )); then
+        # Fast setup check: a single concurrency point, one timed iteration.  Still
+        # runs all three arms (vram_only, kvd_v2 nvme, kvd_v2 gds) so the AIS_MT and
+        # GDS paths are exercised.  Exported so the sbatch job inherits them; user
+        # overrides of either variable are respected.
+        export AAI_BENCH_CONCUR="${AAI_BENCH_CONCUR:-1}"
+        export AAI_BENCH_ITERS="${AAI_BENCH_ITERS:-1}"
+        sbatch_args+=(--job-name=aai-day-cliff-short)
+        echo "cliff-short: single point (AAI_BENCH_CONCUR=${AAI_BENCH_CONCUR} AAI_BENCH_ITERS=${AAI_BENCH_ITERS})"
+    fi
+    # Pre-create logs/ so the Slurm bootstrap --output (logs/...) can be written;
+    # the job then redirects its full output into logs/<job-id>/cliff.out.
+    mkdir -p "${HERE}/logs"
+    jobid="$(cd "${HERE}" && sbatch --parsable "${sbatch_args[@]}" .slurm/run-cliff.sbatch)"
+    echo "submitted cliff job ${jobid}"
+    echo "log: ${HERE}/logs/${jobid}/cliff.out"
 fi

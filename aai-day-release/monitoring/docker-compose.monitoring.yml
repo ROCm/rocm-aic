@@ -1,0 +1,129 @@
+# Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+#
+# aai-day-release metrics-capture sidecar.
+#
+# A host-network Prometheus that scrapes the running inference stack (vLLM,
+# LMCache/NIXL) plus the host/GPU/NVMe/RDMA exporters, and writes its TSDB to a
+# bind-mounted NFS directory so the run can be explored afterward.
+#
+# Because everything runs with network_mode: host, Prometheus reaches every
+# target at localhost:<port> -- identical for `make up` (published ports) and
+# `--cliff` (`docker run --network host`).  See prometheus/prometheus.yml.
+#
+# Usage:
+#   # scrape-only (exporters already installed on the host by Ansible):
+#   AAI_METRICS_DIR=/mnt/lmcache-nfs/metrics \
+#     docker compose -f monitoring/docker-compose.monitoring.yml up -d
+#
+#   # also launch containerized exporters (node + AMD GPU + hsa-snoop) on bare nodes:
+#   AAI_METRICS_DIR=/mnt/lmcache-nfs/metrics \
+#     docker compose -f monitoring/docker-compose.monitoring.yml --profile exporters up -d
+#
+# The `exporters` profile adds: node-exporter (:9100), amdgpu-exporter (:5000),
+# and hsa-snoop (:9488, from the aai-day image -- set IMAGE_NAME to its tag).
+#
+# Required env:
+#   AAI_METRICS_DIR — host path (bind-mount an NFS dir here) for the Prometheus TSDB
+#
+# Optional env:
+#   AAI_PROM_PORT        — Prometheus web/listen port (default: 9090)
+#   AAI_PROM_RETENTION   — TSDB retention (default: 90d)
+#   AAI_PROM_IMAGE       — Prometheus image (default: prom/prometheus:v2.55.1)
+#   AAI_NODE_EXPORTER_IMAGE — node-exporter image (exporters profile)
+#   AAI_AMDGPU_EXPORTER_IMAGE — AMD device-metrics-exporter image (exporters profile)
+#   AAI_HSA_SNOOP_IMAGE / IMAGE_NAME — image carrying hsa-snoop (default: rocm-aic-aai-day)
+#   HSA_SNOOP_PORT       — hsa-snoop /metrics port (default: 9488)
+#   PROM_UID / PROM_GID  — uid:gid Prometheus runs as, so it can write the NFS
+#                          TSDB dir (default: 65534:65534 = nobody). The cliff
+#                          sbatch sets these to the submitting user.
+#
+# NOTE: Prometheus' TSDB uses mmap + POSIX file locks; NFS handles these poorly.
+# Keep to a SINGLE writer and expect it to work for lab/demo capture, not as a
+# durable production store.
+
+services:
+
+  # ---------------------------------------------------------------------------
+  # prometheus: scrapes localhost targets, TSDB on the bind-mounted NFS dir
+  # ---------------------------------------------------------------------------
+  prometheus:
+    image: ${AAI_PROM_IMAGE:-prom/prometheus:v2.55.1}
+    container_name: aai-day-prometheus
+    network_mode: host
+    user: "${PROM_UID:-65534}:${PROM_GID:-65534}"
+    restart: unless-stopped
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./prometheus/rules:/etc/prometheus/rules:ro
+      - ${AAI_METRICS_DIR:?set AAI_METRICS_DIR to the (NFS) TSDB dir}:/prometheus
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=${AAI_PROM_RETENTION:-90d}
+      - --web.enable-lifecycle
+      - --web.listen-address=:${AAI_PROM_PORT:-9090}
+
+  # ---------------------------------------------------------------------------
+  # node-exporter (exporters profile): host CPU/mem/net + NVMe I/O (diskstats,
+  # nvme collectors) + RDMA/InfiniBand port counters (infiniband collector).
+  # Enable ONLY on nodes where the host prometheus-node-exporter is NOT already
+  # running, or the two will clash on :9100.
+  # ---------------------------------------------------------------------------
+  node-exporter:
+    image: ${AAI_NODE_EXPORTER_IMAGE:-quay.io/prometheus/node-exporter:v1.8.2}
+    container_name: aai-day-node-exporter
+    profiles: ["exporters"]
+    network_mode: host
+    pid: host
+    restart: unless-stopped
+    volumes:
+      - /:/host:ro,rslave
+    command:
+      - --path.rootfs=/host
+      - --collector.diskstats
+      - --collector.nvme
+      - --collector.infiniband
+      - --web.listen-address=:9100
+
+  # ---------------------------------------------------------------------------
+  # amdgpu-exporter (exporters profile): AMD device-metrics-exporter, amd_*
+  # prefixed metrics (Grafana dashboard 23434). Enable ONLY where the host
+  # amd-metrics-exporter is NOT already running, or they clash on :5000.
+  # ---------------------------------------------------------------------------
+  amdgpu-exporter:
+    image: ${AAI_AMDGPU_EXPORTER_IMAGE:-rocm/device-metrics-exporter:v1.4.2}
+    container_name: aai-day-amdgpu-exporter
+    profiles: ["exporters"]
+    network_mode: host
+    restart: unless-stopped
+    devices:
+      - /dev/kfd
+      - /dev/dri
+    volumes:
+      - /sys:/sys:ro
+      - ./amdgpu-exporter/config.json:/etc/metrics/config.json:ro
+
+  # ---------------------------------------------------------------------------
+  # hsa-snoop (exporters profile): HSA AQL queue/dispatch snooper with a
+  # Prometheus exporter on :9488. Userspace GPU telemetry (ftrace kprobe +
+  # pagemap + process_vm_readv) -- must run as root, PRIVILEGED, in the host PID
+  # namespace to see the vLLM/LMCache GPU processes. Ships in the aai-day image
+  # (built with -DHSA_SNOOP_PROMETHEUS=ON; see Dockerfile step 6b).
+  # ---------------------------------------------------------------------------
+  hsa-snoop:
+    image: ${AAI_HSA_SNOOP_IMAGE:-${IMAGE_NAME:-rocm-aic-aai-day}}
+    container_name: aai-day-hsa-snoop
+    profiles: ["exporters"]
+    network_mode: host
+    pid: host
+    privileged: true
+    restart: unless-stopped
+    devices:
+      - /dev/kfd
+      - /dev/dri
+    volumes:
+      - /sys/kernel/debug:/sys/kernel/debug
+    entrypoint: ["/usr/local/bin/hsa-snoop"]
+    command: ["--all", "--prometheus", "--prometheus-port", "${HSA_SNOOP_PORT:-9488}"]

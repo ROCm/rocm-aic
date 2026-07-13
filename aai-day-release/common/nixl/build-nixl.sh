@@ -56,6 +56,7 @@ apt-get install -y --no-install-recommends \
 	automake \
 	build-essential \
 	ca-certificates \
+	cmake \
 	git \
 	libaio-dev \
 	libibverbs-dev \
@@ -180,6 +181,45 @@ if [[ -n "${found}" ]]; then
 else
 	echo "ERROR: libplugin_AIS_MT.so not built (hipFile missing at NIXL build time?)" >&2
 	exit 1
+fi
+
+# The NIXL Prometheus telemetry exporter is MANDATORY here: builds without a
+# working plugin are rejected (like the AIS_MT check above).  NIXL meson builds
+# it only when the prometheus-cpp CMake subproject resolves (see
+# src/plugins/telemetry/prometheus/meson.build; wrap = jupp0r/prometheus-cpp
+# v1.3.0, ENABLE_PULL=ON/PUSH=OFF, USE_THIRDPARTY_LIBRARIES=ON -> bundled
+# civetweb).  Enable it at runtime on the process that runs the NIXL agent (the
+# LMCache server in this stack) with:
+#     NIXL_TELEMETRY_ENABLE=y NIXL_TELEMETRY_EXPORTER=prometheus \
+#     NIXL_TELEMETRY_PROMETHEUS_PORT=19090     # serves /metrics on :19090
+prom_plugin="$(find "${NIXL_SRC}/build" -name "libtelemetry_exporter_prometheus.so" 2>/dev/null | head -1 || true)"
+if [[ -z "${prom_plugin}" ]]; then
+	echo "ERROR: prometheus telemetry exporter plugin NOT built (prometheus-cpp subproject unavailable at NIXL build time); this build is not permitted without it" >&2
+	exit 1
+fi
+echo "PASS: prometheus telemetry exporter plugin: ${prom_plugin}"
+# meson installs the plugin itself, but the prometheus-cpp/civetweb shared libs
+# from the CMake subproject build tree are NOT installed by `ninja install`.
+# Copy them onto a dir already on the runtime LD_LIBRARY_PATH so the plugin can
+# dlopen its deps at load time.
+install -Dm0755 "${prom_plugin}" \
+	"${NIXL_PLUGIN_DIR}/$(basename "${prom_plugin}")"
+while IFS= read -r _lib; do
+	[[ -n "${_lib}" ]] || continue
+	install -Dm0755 "${_lib}" \
+		"${NIXL_INSTALL_PREFIX}/lib/x86_64-linux-gnu/$(basename "${_lib}")"
+done < <(find "${NIXL_SRC}/build" \
+	\( -name 'libprometheus-cpp*.so*' -o -name 'libcivetweb*.so*' \) 2>/dev/null)
+ldconfig
+# A plugin that can't resolve its shared libs is as good as absent -> fatal.
+if command -v ldd >/dev/null 2>&1; then
+	if ldd "${NIXL_PLUGIN_DIR}/$(basename "${prom_plugin}")" 2>/dev/null \
+		| grep -q "not found"; then
+		echo "ERROR: prometheus telemetry plugin has unresolved shared libs:" >&2
+		ldd "${NIXL_PLUGIN_DIR}/$(basename "${prom_plugin}")" \
+			| grep "not found" >&2 || true
+		exit 1
+	fi
 fi
 
 echo "NIXL build complete prefix=${NIXL_INSTALL_PREFIX}"

@@ -1,5 +1,8 @@
 results/
 plots/
 logs/
+# stray Slurm job logs written to the tree root (e.g. a manual `sbatch` run, or
+# jobs from before per-job logs/<job-id>/ logging); run-this.sh now writes to logs/
+aai-day-cliff-*.out
 __pycache__/
 *.pyc

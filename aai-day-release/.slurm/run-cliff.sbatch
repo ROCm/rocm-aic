@@ -13,7 +13,11 @@
 #SBATCH --cpus-per-task=16
 #SBATCH --mem=64G
 #SBATCH --time=03:00:00
-#SBATCH --output=%x-%j.out
+# Bootstrap log only: the script re-redirects all output into logs/<job-id>/ as
+# soon as it starts (see below).  This file lives under logs/ (created by
+# run-this.sh before submit) and is normally empty -- it just catches any failure
+# before the redirect.  Slurm cannot create the parent dir, hence the two-step.
+#SBATCH --output=logs/%x-%j.bootstrap.out
 #
 # Run the KV-cache cliff benchmark (benchmarks/run_cliff.py) end-to-end on ONE
 # Markham MI300X + local-NVMe node, sweeping all three arms sequentially:
@@ -47,8 +51,23 @@
 set -uo pipefail
 
 # --- Config (all overridable via environment) --------------------------------
+# Under sbatch, Slurm copies this script to the node's spool dir and runs it from
+# there, so ${BASH_SOURCE[0]} points at /var/spool/slurmd/... -- deriving REPO
+# from it lands results/plots (and the /work bind-mount of benchmarks/) in an
+# unwritable, wrong place.  Prefer SLURM_SUBMIT_DIR (the dir sbatch was invoked
+# from; run-this.sh cds to aai-day-release first), and fall back to BASH_SOURCE
+# for a direct, non-sbatch invocation.
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO="$(cd "${SCRIPT_DIR}/.." && pwd)"
+REPO="${SLURM_SUBMIT_DIR:-$(cd "${SCRIPT_DIR}/.." && pwd)}"
+
+# Send all output to logs/<job-id>/cliff.out under the repo.  Slurm can't create
+# the parent dir (and the job id isn't known at submit time), so we make it here
+# and redirect the whole script's stdout+stderr into it.  If mkdir fails (e.g. a
+# misresolved REPO), output stays in the Slurm bootstrap file instead.
+LOGDIR="${REPO}/logs/${SLURM_JOB_ID:-manual}"
+if mkdir -p "${LOGDIR}" 2>/dev/null; then
+    exec >>"${LOGDIR}/cliff.out" 2>&1
+fi
 
 AAI_IMAGE="${AAI_IMAGE:-rocm-aic-aai-day:latest}"
 AAI_IMAGE_DIR="${AAI_IMAGE_DIR:-/scratch/${USER}/images}"
@@ -69,6 +88,10 @@ AAI_BENCH_CONCUR="${AAI_BENCH_CONCUR:-1,2,4,8,16,32,48,64,80,100,128,160,200,250
 AAI_BENCH_ITERS="${AAI_BENCH_ITERS:-3}"
 AAI_BENCH_PREFIX_MODE="${AAI_BENCH_PREFIX_MODE:-per_client}"  # per_client => a real cliff
 
+# Arm selector: comma list of arms to run (vram, nvme, gds).  Default all three;
+# narrow it for a quick check, e.g. AAI_CLIFF_ARMS=nvme (run-this.sh --cliff-arm).
+AAI_CLIFF_ARMS="${AAI_CLIFF_ARMS:-vram,nvme,gds}"
+
 # vLLM knobs.
 AAI_TP="${AAI_TP:-1}"
 AAI_GPU_MEM_UTIL="${AAI_GPU_MEM_UTIL:-0.90}"
@@ -86,6 +109,18 @@ STAMP="$(date +%Y%m%d-%H%M%S)"
 RESULTS="${REPO}/results"
 PLOTS="${REPO}/plots"
 
+# --- Metrics capture (Prometheus sidecar) ------------------------------------
+# Auto-on; set AAI_MONITORING=0 to skip.  AAI_METRICS_DIR is the Prometheus TSDB
+# location -- defaults to logs/<job-id>/prometheus (job-id is the SLURM job, or
+# "manual" off-Slurm); override with an NFS path to explore the run afterward.
+# AAI_EXPORTERS=1 also launches the containerized node + AMD GPU exporters (for
+# nodes without the host services); set 0 to rely on host-installed exporters
+# and avoid :9100/:5000 clashes.
+AAI_MONITORING="${AAI_MONITORING:-1}"
+AAI_METRICS_DIR="${AAI_METRICS_DIR:-${REPO}/logs/${SLURM_JOB_ID:-manual}/prometheus}"
+AAI_EXPORTERS="${AAI_EXPORTERS:-1}"
+MON_COMPOSE="${REPO}/monitoring/docker-compose.monitoring.yml"
+
 log() { printf '[cliff-job] %s\n' "$*" >&2; }
 die() { printf '[cliff-job] ERROR: %s\n' "$*" >&2; exit 1; }
 
@@ -95,6 +130,10 @@ log "model       : ${AAI_MODEL}  (HF_HOME=${AAI_HF_HOME}, offline)"
 log "local NVMe  : ${AAI_NVME_DIR}"
 log "results     : ${RESULTS}"
 command -v docker >/dev/null 2>&1 || die "docker not found on $(hostname)"
+# REPO must be the aai-day-release tree (it is bind-mounted at /work so the
+# benchmark can run benchmarks/run_cliff.py); fail early and clearly otherwise.
+[[ -f "${REPO}/benchmarks/run_cliff.py" ]] || \
+    die "benchmarks/run_cliff.py not found under REPO=${REPO}; submit from the aai-day-release/ dir (SLURM_SUBMIT_DIR)"
 
 mkdir -p "${RESULTS}" "${PLOTS}" "${AAI_NVME_DIR}" "${AAI_NFS_DIR}" "${AAI_SLAB_DIR}"
 [[ -d "${AAI_HF_HOME}/hub" ]] || die "HF cache not found at ${AAI_HF_HOME}/hub"
@@ -157,6 +196,37 @@ run_bench() {  # $1=arm $2=endpoint_port $3=out_csv $4=extra args...
 
 stop_containers() { docker rm -f "$@" >/dev/null 2>&1 || true; }
 
+# --- Metrics-capture sidecar (Prometheus + optional exporters) ---------------
+have_compose() { docker compose version >/dev/null 2>&1; }
+
+mon_profile() {  # echo the compose --profile args for the exporters profile
+    [[ "${AAI_EXPORTERS}" == "1" ]] && printf -- '--profile\nexporters\n'
+}
+
+start_monitoring() {
+    [[ "${AAI_MONITORING}" == "1" ]] || { log "monitoring disabled (AAI_MONITORING=0)"; return 0; }
+    [[ -f "${MON_COMPOSE}" ]] || { log "monitoring: ${MON_COMPOSE} not found, skipping"; return 0; }
+    have_compose || { log "monitoring: 'docker compose' unavailable, skipping"; return 0; }
+    mkdir -p "${AAI_METRICS_DIR}" 2>/dev/null || { log "monitoring: cannot create ${AAI_METRICS_DIR}, skipping"; AAI_MONITORING=0; return 0; }
+    local -a profile; mapfile -t profile < <(mon_profile)
+    log "starting metrics capture -> ${AAI_METRICS_DIR} (exporters=${AAI_EXPORTERS})"
+    AAI_METRICS_DIR="${AAI_METRICS_DIR}" PROM_UID="$(id -u)" PROM_GID="$(id -g)" \
+        IMAGE_NAME="${AAI_IMAGE}" \
+        docker compose -f "${MON_COMPOSE}" "${profile[@]}" up -d \
+        || log "monitoring: compose up failed (continuing without metrics)"
+}
+
+stop_monitoring() {
+    [[ "${AAI_MONITORING}" == "1" ]] || return 0
+    { [[ -f "${MON_COMPOSE}" ]] && have_compose; } || return 0
+    local -a profile; mapfile -t profile < <(mon_profile)
+    log "stopping metrics capture (TSDB retained at ${AAI_METRICS_DIR})"
+    AAI_METRICS_DIR="${AAI_METRICS_DIR}" IMAGE_NAME="${AAI_IMAGE}" \
+        docker compose -f "${MON_COMPOSE}" "${profile[@]}" down >/dev/null 2>&1 || true
+}
+# Guarantee teardown (containers only; the NFS TSDB is retained) on any exit.
+trap stop_monitoring EXIT
+
 # =============================================================================
 # Arm A — vram_only : plain vLLM, no LMCache connector
 # =============================================================================
@@ -218,6 +288,8 @@ launch_lmcache() {  # $1=mode(nvme|gds)
         "${mounts[@]}" \
         -e LMCACHE_PORT="${LMCACHE_PORT}" -e HIPFILE_ALLOW_COMPAT_MODE=false \
         -e HIPFILE_UNSUPPORTED_FILE_SYSTEMS=true -e PYTHONHASHSEED=0 \
+        -e NIXL_TELEMETRY_ENABLE=y -e NIXL_TELEMETRY_EXPORTER=prometheus \
+        -e NIXL_TELEMETRY_PROMETHEUS_PORT="${NIXL_METRICS_PORT:-19090}" \
         --entrypoint /bin/bash "${AAI_IMAGE}" -o pipefail -c "${cmd}" >/dev/null
 }
 
@@ -265,9 +337,20 @@ KVD_NVME_CSV="${RESULTS}/cliff-kvd_v2-nvme-${STAMP}.csv"
 KVD_GDS_CSV="${RESULTS}/cliff-kvd_v2-gds-${STAMP}.csv"
 declare -A STATUS
 
-run_arm_vram                    && STATUS[vram_only]=ok       || STATUS[vram_only]=FAIL
-run_arm_kvd nvme "${KVD_NVME_CSV}" && STATUS[kvd_nvme]=ok     || STATUS[kvd_nvme]=FAIL
-run_arm_kvd gds  "${KVD_GDS_CSV}"  && STATUS[kvd_gds]=ok      || STATUS[kvd_gds]=FAIL
+# Bring up the Prometheus metrics-capture sidecar before the first arm so it
+# scrapes the whole sweep; torn down via the EXIT trap (TSDB retained on NFS).
+start_monitoring
+
+# Run only the arms named in AAI_CLIFF_ARMS (comma list of vram,nvme,gds).
+_arm_on() { case ",${AAI_CLIFF_ARMS}," in *",$1,"*) return 0 ;; *) return 1 ;; esac; }
+for _a in ${AAI_CLIFF_ARMS//,/ }; do
+    case "${_a}" in vram|nvme|gds) ;; *) die "unknown arm '${_a}' in AAI_CLIFF_ARMS (valid: vram,nvme,gds)" ;; esac
+done
+log "arms        : ${AAI_CLIFF_ARMS}"
+
+if _arm_on vram; then run_arm_vram && STATUS[vram_only]=ok || STATUS[vram_only]=FAIL; else STATUS[vram_only]=skip; fi
+if _arm_on nvme; then run_arm_kvd nvme "${KVD_NVME_CSV}" && STATUS[kvd_nvme]=ok || STATUS[kvd_nvme]=FAIL; else STATUS[kvd_nvme]=skip; fi
+if _arm_on gds;  then run_arm_kvd gds  "${KVD_GDS_CSV}"  && STATUS[kvd_gds]=ok  || STATUS[kvd_gds]=FAIL;  else STATUS[kvd_gds]=skip;  fi
 
 # --- Plot: baseline vs each kvd backend separately ---------------------------
 # Both kvd runs carry arm="kvd_v2", so plot them against the shared vram_only
@@ -293,6 +376,9 @@ log "===================== SUMMARY ====================="
 for k in vram_only kvd_nvme kvd_gds; do log "  ${k}: ${STATUS[$k]:-?}"; done
 log "  CSVs  : ${RESULTS}"
 log "  plots : ${PLOTS}/{nvme,gds}"
+[[ "${AAI_MONITORING}" == "1" ]] && log "  metrics: ${AAI_METRICS_DIR} (Prometheus TSDB)"
 log "==================================================="
-[[ "${STATUS[vram_only]}" == ok ]] || exit 1
-exit 0
+# Fail the job if any arm that actually ran failed; skipped arms don't count.
+rc=0
+for k in vram_only kvd_nvme kvd_gds; do [[ "${STATUS[$k]:-skip}" == FAIL ]] && rc=1; done
+exit "${rc}"

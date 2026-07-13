@@ -65,10 +65,21 @@ comma := ,
 _COMPOSE_BIN := $(shell docker compose version >/dev/null 2>&1 && echo "docker compose" || echo "docker-compose")
 COMPOSE      := DOCKER_BUILDKIT=1 $(_COMPOSE_BIN) -f "$(CURDIR)/docker-compose.yml"
 
+# ---- Metrics capture (Prometheus sidecar) ----------------------------------
+# AAI_METRICS_DIR: Prometheus TSDB dir (bind-mount an NFS path here to explore
+# a run afterward).  AAI_EXPORTERS=1 also launches the containerized node + AMD
+# GPU exporters (for nodes without the host-installed exporter services).
+AAI_METRICS_DIR ?= $(CURDIR)/logs/prometheus
+AAI_EXPORTERS   ?= 0
+MON_COMPOSE     := $(_COMPOSE_BIN) -f "$(CURDIR)/monitoring/docker-compose.monitoring.yml"
+_MON_PROFILE    := $(if $(filter 1,$(AAI_EXPORTERS)),--profile exporters,)
+export AAI_METRICS_DIR
+
 PYTHON := $(if $(wildcard $(REPO_ROOT)/.venv/bin/python3),$(REPO_ROOT)/.venv/bin/python3,python3)
 
 .PHONY: help build up up-batch up-gds-l1 up-gds-l1-batch down logs logs-lmcache logs-vllm \
         ps shell-lmcache shell-vllm restart-vllm restart-lmcache cliff plot venv \
+        monitoring-up monitoring-down monitoring-logs \
         _check_hf_token _prep_dirs _check_gds_slab
 
 .DEFAULT_GOAL := help
@@ -96,6 +107,13 @@ help:
 	@echo "  make venv              Create/update repo-root .venv with bench+plot deps"
 	@echo "  make cliff             Run KV-cache cliff benchmark, write CSV to results/"
 	@echo "  make plot              Generate cliff PNG charts from results/ CSVs"
+	@echo ""
+	@echo "Metrics targets (Prometheus sidecar; scrapes vLLM/LMCache/exporters):"
+	@echo "  make monitoring-up     Start Prometheus, TSDB -> AAI_METRICS_DIR"
+	@echo "  make monitoring-down   Stop the metrics sidecar (TSDB retained)"
+	@echo "  make monitoring-logs   Follow Prometheus logs"
+	@echo "    AAI_METRICS_DIR=$(AAI_METRICS_DIR)"
+	@echo "    AAI_EXPORTERS=$(AAI_EXPORTERS)  (1 = also launch node + AMD GPU exporters)"
 	@echo ""
 	@echo "Required env:"
 	@echo "  HF_TOKEN       HuggingFace access token"
@@ -217,3 +235,15 @@ plot: _prep_dirs
 		--input results/ \
 		--output-dir plots/
 	@echo "Charts written to plots/"
+
+monitoring-up:
+	@mkdir -p "$(AAI_METRICS_DIR)"
+	PROM_UID="$$(id -u)" PROM_GID="$$(id -g)" \
+		$(MON_COMPOSE) $(_MON_PROFILE) up -d
+	@echo "Prometheus up on :9090  (TSDB -> $(AAI_METRICS_DIR))"
+
+monitoring-down:
+	$(MON_COMPOSE) $(_MON_PROFILE) down
+
+monitoring-logs:
+	$(MON_COMPOSE) logs -f prometheus
