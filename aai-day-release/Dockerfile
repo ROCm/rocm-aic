@@ -173,7 +173,12 @@ RUN git clone --no-checkout --filter=blob:none \
     test -x /app/rocm-systems/projects/hipfile/build/tools/ais-stats/ais-stats && \
     ln -sf /app/rocm-systems/projects/hipfile/build/tools/ais-stats/ais-stats \
         /app/ais-stats && \
-    ln -sf /app/ais-stats /usr/local/bin/ais-stats
+    ln -sf /app/ais-stats /usr/local/bin/ais-stats && \
+    # ais-check is a source-tree Python script (checks HIP-runtime + amdgpu AIS
+    # support at run time); no build/DEB install rule, so symlink it onto PATH.
+    test -f /app/rocm-systems/projects/hipfile/tools/ais-check/ais-check && \
+    install -m0755 /app/rocm-systems/projects/hipfile/tools/ais-check/ais-check \
+        /usr/local/bin/ais-check
 
 # ----- 6. NIXL (ai-dynamo/nixl upstream + nixl-rocm-ais-mt.patch) ------------
 # Clone upstream ai-dynamo/nixl, then apply nixl-rocm-ais-mt.patch to add ROCm/HIP

@@ -55,13 +55,21 @@
 #   push    Tag the built image as AAI_PUSH_REF and `docker push` it to a registry
 #           (loads from the shared tarball first if the image is not present)
 #   test    Smoke-test the image on a GPU+NVMe node (loads it there if missing):
-#           checks GPU visibility + arch, and vLLM / LMCache / NIXL-AIS_MT / hipFile
+#           checks GPU visibility + arch, vLLM / LMCache / hipFile, ais-check
+#           (HIP+amdgpu AIS support), and the NIXL AIS_MT plugin (hard fail if
+#           AIS_MT or ais-check fail)
 #   all     build, then load   (default)
 #
 # Key environment:
 #   AAI_ROCM_ARCH        gfx arch(es) baked in; ';'-list   (default: all vLLM archs)
 #   AAI_IMAGE            image name:tag                    (default: rocm-aic-aai-day:latest)
 #   AAI_IMAGE_DIR        shared dir for the tarball        (default: /scratch/$USER/images)
+#   AAI_FORCE_LOAD       test/push: force a reload from the tarball even when the
+#                        node's image is already current (default: 0).  By default
+#                        a node auto-reloads only when the /scratch tarball is
+#                        newer than what it last loaded (tracked per node via a
+#                        marker under /var/tmp), so a rebuild is picked up
+#                        automatically without setting this.
 #   AAI_TARGETS          comma-separated nodes to load     (required for load/all)
 #   AAI_PUSH_REF         registry-qualified ref to push the final image to
 #                        (required for push; needs `docker login <registry>` first)
@@ -393,9 +401,19 @@ cmd_push() {
 set -euo pipefail
 command -v docker >/dev/null 2>&1 || { echo "\$(hostname): docker not found" >&2; exit 1; }
 echo "[push] host=\$(hostname) docker=\$(docker --version)"
-if [ -z "\$(docker images -q '${AAI_IMAGE}')" ]; then
-    echo "[push] image absent; loading from ${tarball}"
+# Load the image from the shared tarball only when needed (see cmd_test for the
+# marker/mtime rationale): reload when the tarball is newer than the last load
+# here, when the image is absent, or when forced.
+_marker="/var/tmp/aai-day-loaded-\$(id -u)-\$(echo '${AAI_IMAGE}' | tr '/:' '__').mtime"
+_tar_mtime="\$(stat -c %Y '${tarball}' 2>/dev/null || echo 0)"
+_have_img="\$(docker images -q '${AAI_IMAGE}')"
+_loaded_mtime="\$(cat "\${_marker}" 2>/dev/null || echo 0)"
+if [ "${AAI_FORCE_LOAD:-0}" = "1" ] || [ -z "\${_have_img}" ] || [ "\${_tar_mtime}" -gt "\${_loaded_mtime}" ]; then
+    echo "[push] loading ${AAI_IMAGE} from ${tarball} (tarball=\${_tar_mtime} last-loaded=\${_loaded_mtime} present=\$([ -n "\${_have_img}" ] && echo yes || echo no) force=${AAI_FORCE_LOAD:-0})"
     ${DECOMPRESS_CMD} '${tarball}' | docker load >/dev/null
+    echo "\${_tar_mtime}" > "\${_marker}" 2>/dev/null || true
+else
+    echo "[push] image up to date on \$(hostname) (id \${_have_img}); AAI_FORCE_LOAD=1 forces a reload"
 fi
 docker tag '${AAI_IMAGE}' '${AAI_PUSH_REF}'
 docker push '${AAI_PUSH_REF}'
@@ -426,8 +444,10 @@ REMOTE
 
 # --- test: smoke-test the image on a GPU+NVMe node ---------------------------
 # Loads the image on the node if absent, then runs a container that verifies GPU
-# visibility/arch and that the key stack components import/resolve.  No HF token
-# or model download -- this validates the *image*, not an end-to-end serve.
+# visibility/arch and that the key stack components import/resolve, that AIS is
+# usable (ais-check: HIP runtime + amdgpu driver), and that the NIXL AIS_MT
+# plugin is present.  No HF token or model download -- this validates the *image*
+# (and the node's AIS runtime support), not an end-to-end serve.
 cmd_test() {
     _pick_compress
     local tarball; tarball="$(_tarball_path)"
@@ -471,13 +491,47 @@ check "import vllm"    python3 -c 'import vllm; print("vllm", vllm.__version__)'
 check "import lmcache" python3 -c 'import lmcache; print("lmcache", getattr(lmcache, "__version__", "?"))'
 check "lmcache CLI"    command -v lmcache
 check "ais-stats (hipFile)" command -v ais-stats
+# ais-check reports AIS readiness across 4 components: kernel P2PDMA, HIP runtime,
+# amdgpu driver, and a hipFile-capable mounted volume.  Two of those (P2PDMA and
+# the volume) depend on the *run environment*, not the image -- so ais-check is
+# INFORMATIONAL here (we print its report but never fail on its exit code); full
+# AIS validation happens in the cliff run, which mounts a real NVMe volume.  We do
+# hard-fail if the ais-check binary is missing, since that is an image defect.
+if command -v ais-check >/dev/null 2>&1; then
+    note "INFO ais-check (image/driver AIS pass; P2PDMA + volume depend on deployment):"
+    ais-check 2>&1 | sed 's/^/           /'
+else
+    note "FAIL ais-check not found on PATH (image build problem)"; fail=1
+fi
 
-# NIXL plugins, incl. the AIS_MT (hipFile) backend
+# Kernel release + block-device layout (informational) -- context for the
+# ais-check volume/P2PDMA table above.  lsblk/nvme read the host's /sys and
+# /dev, so they reflect the node's real disks/NVMe.
+note "INFO kernel release: $(uname -r)"
+if command -v lsblk >/dev/null 2>&1; then
+    note "INFO lsblk:"
+    lsblk 2>&1 | sed 's/^/           /'
+else
+    note "INFO lsblk not available in image"
+fi
+if command -v nvme >/dev/null 2>&1; then
+    note "INFO nvme list:"
+    nvme list 2>&1 | sed 's/^/           /'
+else
+    note "INFO nvme (nvme-cli) not installed in image"
+fi
+
+# NIXL plugins, incl. the AIS_MT (hipFile) backend.  AIS_MT is the only hipFile
+# backend and is mandatory, so its absence is a hard failure (matches the build).
 plug="${NIXL_PLUGIN_DIR:-/opt/nixl/lib/x86_64-linux-gnu/plugins}"
 if [ -d "${plug}" ]; then
     note "OK   NIXL plugins: $(printf '%s ' "${plug}"/*)"
     shopt -s nullglob nocaseglob; ais_mt=("${plug}"/*ais_mt*); shopt -u nocaseglob
-    [ "${#ais_mt[@]}" -gt 0 ] || note "WARN no AIS_MT plugin in ${plug}"
+    if [ "${#ais_mt[@]}" -gt 0 ]; then
+        note "OK   AIS_MT plugin: ${ais_mt[*]}"
+    else
+        note "FAIL no AIS_MT plugin in ${plug}"; fail=1
+    fi
 else
     note "FAIL NIXL plugin dir missing: ${plug}"; fail=1
 fi
@@ -504,15 +558,34 @@ SMOKE
 set -euo pipefail
 command -v docker >/dev/null 2>&1 || { echo "\$(hostname): docker not found" >&2; exit 1; }
 echo "[test] host=\$(hostname) docker=\$(docker --version)"
-if [ -z "\$(docker images -q '${AAI_IMAGE}')" ]; then
-    echo "[test] image absent; loading from ${tarball}"
+# Load the image from the shared tarball only when needed.  A node-local marker
+# records the tarball mtime that was last loaded here; we reload when the tarball
+# is newer (a rebuild happened), when the image is absent, or when forced.  We
+# compare the tarball's current mtime against the previously-recorded tarball
+# mtime -- both are build-side values, so there is no build/test clock skew.
+_marker="/var/tmp/aai-day-loaded-\$(id -u)-\$(echo '${AAI_IMAGE}' | tr '/:' '__').mtime"
+_tar_mtime="\$(stat -c %Y '${tarball}' 2>/dev/null || echo 0)"
+_have_img="\$(docker images -q '${AAI_IMAGE}')"
+_loaded_mtime="\$(cat "\${_marker}" 2>/dev/null || echo 0)"
+if [ "${AAI_FORCE_LOAD:-0}" = "1" ] || [ -z "\${_have_img}" ] || [ "\${_tar_mtime}" -gt "\${_loaded_mtime}" ]; then
+    echo "[test] loading ${AAI_IMAGE} from ${tarball} (tarball=\${_tar_mtime} last-loaded=\${_loaded_mtime} present=\$([ -n "\${_have_img}" ] && echo yes || echo no) force=${AAI_FORCE_LOAD:-0})"
     ${DECOMPRESS_CMD} '${tarball}' | docker load >/dev/null
+    echo "\${_tar_mtime}" > "\${_marker}" 2>/dev/null || true
+else
+    echo "[test] image up to date on \$(hostname) (id \${_have_img}, tarball mtime \${_tar_mtime} not newer than last load); AAI_FORCE_LOAD=1 forces a reload"
 fi
+# Expose the node's kernel config read-only so ais-check's P2PDMA probe can read
+# /boot/config-* or /lib/modules/*/build/.config (informational; both may be
+# absent on a given node, in which case the mounts are simply skipped).
+kmounts=""
+[ -d /boot ] && kmounts="\${kmounts} -v /boot:/boot:ro"
+[ -d /lib/modules ] && kmounts="\${kmounts} -v /lib/modules:/lib/modules:ro"
 docker run --rm \
     --device /dev/kfd --device /dev/dri \
     --ipc host \
     --cap-add SYS_PTRACE --cap-add SYS_ADMIN \
     --security-opt seccomp=unconfined \
+    \${kmounts} \
     -e EXPECT_ARCH='${AAI_ROCM_ARCH}' \
     -v '${smoketest}':/tmp/aai-day-smoketest.sh:ro \
     --entrypoint /bin/bash \

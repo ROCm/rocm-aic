@@ -8,9 +8,9 @@
 #
 #   ./run-this.sh --build       # build the image on a CPU-only alola node + save tarball
 #   ./run-this.sh --push        # push the built image to a registry (needs AAI_PUSH_REF)
-#   ./run-this.sh --run-test    # smoke-test the image on a GPU+NVMe node
+#   ./run-this.sh --run-smoke-test  # smoke-test the image on a GPU+NVMe node
 #   ./run-this.sh --cliff       # sbatch the full run_cliff.py sweep on a GPU+NVMe node
-#   ./run-this.sh --build --push --run-test   # build, push, then test (runs in order)
+#   ./run-this.sh --build --push --run-smoke-test   # build, push, then smoke-test (in order)
 #
 # Node selection is via constraints in run-build-distribute.sh:
 #   build : MARKHAM&CPUONLY        (override with AAI_BUILD_CONSTRAINT / AAI_BUILD_NODE)
@@ -41,12 +41,12 @@ do_test=0
 do_cliff=0
 for arg in "$@"; do
     case "${arg}" in
-        --build)    do_build=1 ;;
-        --push)     do_push=1 ;;
-        --run-test) do_test=1 ;;
-        --cliff)    do_cliff=1 ;;
-        -h|--help)  sed -n '7,21p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
-        *)          echo "unknown arg: ${arg} (use --build, --push, --run-test and/or --cliff)" >&2; exit 1 ;;
+        --build)          do_build=1 ;;
+        --push)           do_push=1 ;;
+        --run-smoke-test) do_test=1 ;;
+        --cliff)          do_cliff=1 ;;
+        -h|--help)  sed -n '7,22p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
+        *)          echo "unknown arg: ${arg} (use --build, --push, --run-smoke-test and/or --cliff)" >&2; exit 1 ;;
     esac
 done
 
