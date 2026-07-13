@@ -22,7 +22,7 @@ Component versions (pinned SHAs — update to latest branch heads before each re
 | Base OS | `rocm/dev-ubuntu-24.04:7.2.4-complete` | Ubuntu 24.04, ROCm 7.2.4, Python 3.12 |
 | vLLM | `wheels.vllm.ai/rocm/0.25.0/rocm723` | v0.25.0+rocm723 (pre-built wheel, bundles torch) |
 | LMCache | `LMCache/LMCache` (upstream) | `dev` @ `21b3341` (> v0.5.1) + 7 AMD patches |
-| NIXL | `ai-dynamo/nixl` (upstream) | `main` @ `644facf0` + `nixl-rocm-ais.patch` |
+| NIXL | `ai-dynamo/nixl` (upstream) | `main` @ `644facf0` + `nixl-rocm-ais-mt.patch` |
 | hipFile | `ROCm/rocm-systems` | `develop` @ `6901b670` |
 
 ## Prerequisites

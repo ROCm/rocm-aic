@@ -1,10 +1,10 @@
-# Re-ported against LMCache operator-v0.5.0 (7dacaba).  The original patch
-# predated upstream's PathSharder/NixlFilePool refactor, so this integrates
-# AIS/AIS_MT into the current sharder-based pool API and threads slot_size
+# Re-ported for the current LMCache dev pin.  The original patch predated
+# upstream's PathSharder/NixlFilePool refactor, so this integrates the AIS_MT
+# backend into the current sharder-based pool API and threads slot_size
 # (O_DIRECT slot sizing) through createPool -> NixlFilePool.ensure_slot_sized.
 #
-# !! UNVERIFIED: applies + imports cleanly, but AIS storage-backend correctness
-#    has NOT been validated on a GPU.  Needs a real AIS/hipFile run to confirm.
+# !! UNVERIFIED: applies + imports cleanly, but AIS_MT storage-backend
+#    correctness has NOT been validated on a GPU.  Needs a real hipFile run.
 #
 diff --git a/lmcache/v1/storage_backend/nixl_storage_backend.py b/lmcache/v1/storage_backend/nixl_storage_backend.py
 index 0064f262..a228480e 100644
@@ -15,7 +15,7 @@ index 0064f262..a228480e 100644
      def validate_nixl_backend(backend: str, device: str) -> bool:
          device = device.split(":", 1)[0]
 -        if backend in ("GDS", "GDS_MT", "OBJ"):
-+        if backend in ("GDS", "GDS_MT", "OBJ", "AIS", "AIS_MT"):
++        if backend in ("GDS", "GDS_MT", "OBJ", "AIS_MT"):
              return device == "cpu" or device == "cuda"
          elif backend in ("POSIX", "HF3FS", "AZURE_BLOB", "DOCA_MEMOS"):
              return device == "cpu"
@@ -81,7 +81,7 @@ index 0064f262..a228480e 100644
          """
  
 -        if backend in ("GDS", "GDS_MT", "POSIX", "HF3FS"):
-+        if backend in ("GDS", "GDS_MT", "POSIX", "HF3FS", "AIS", "AIS_MT"):
++        if backend in ("GDS", "GDS_MT", "POSIX", "HF3FS", "AIS_MT"):
              if isinstance(path, list) and any("," in p for p in path):
                  logger.warning(
                      "nixl_path entries contain commas; joining for PathSharder may "

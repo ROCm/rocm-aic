@@ -9,10 +9,8 @@
 # (CI/bench/docs/tests from the fork are intentionally excluded).
 #
 # After this applies, meson.build has hip_dep and src/plugins/meson.build has
-# enabled_plugins.get('AIS_MT'), so apply-ais-overlay.sh detects a "native"
-# checkout and skips the legacy andyluo7-era overlay/injection entirely, and
-# build-nixl.sh takes its _NATIVE_HIP branch (-Dwheel_variant=rocm
-# -Drocm_ais_path=$AIS_PATH).
+# enabled_plugins.get('AIS_MT'), so build-nixl.sh takes its _NATIVE_HIP branch
+# (-Dwheel_variant=rocm -Drocm_ais_path=$AIS_PATH) and builds the AIS_MT plugin.
 #
 # To regenerate on a NIXL bump: cherry-pick the two commits above onto the new
 # ai-dynamo pin, then `git diff --cached --no-renames -- meson.build \

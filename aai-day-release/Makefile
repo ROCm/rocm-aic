@@ -7,7 +7,7 @@
 REPO_ROOT := $(CURDIR)
 include $(CURDIR)/common/nixl/defaults.mk
 
-# ai-dynamo/nixl upstream main (2026-07-10); AIS/AIS_MT added via patches/nixl/.
+# ai-dynamo/nixl upstream main (2026-07-10); AIS_MT added via patches/nixl/.
 NIXL_GIT_URL := https://github.com/ai-dynamo/nixl.git
 NIXL_SHA     := 644facf0eb3de14ec63c1d2831238f63cd03c0e0
 

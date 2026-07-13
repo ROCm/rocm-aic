@@ -3,8 +3,9 @@
 #
 # SPDX-License-Identifier: MIT
 #
-# Build NIXL from $NIXL_SRC for AMD ROCm (andyluo7/nixl amd-support + overlays).
-# Meson: -Dwheel_variant=rocm -Drocm_path=/opt/rocm (see patch-rocm-meson.py).
+# Build NIXL from $NIXL_SRC for AMD ROCm.  The checkout arrives pre-patched with
+# nixl-rocm-ais-mt.patch (native HIP + the AIS_MT plugin), applied in the
+# Dockerfile.  Meson: -Dwheel_variant=rocm -Drocm_ais_path=$AIS_PATH.
 set -euo pipefail
 
 NIXL_SRC="${NIXL_SRC:-/tmp/nixl}"
@@ -13,7 +14,6 @@ UCX_PREFIX="${UCX_PREFIX:-/opt/rocnixl-ucx}"
 ROCM_PATH="${ROCM_PATH:-/opt/rocm}"
 AIS_PATH="${AIS_PATH:-${ROCM_PATH}}"
 NIXL_INSTALL_PREFIX="${NIXL_INSTALL_PREFIX:-/opt/nixl}"
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 if [[ ! -f "${NIXL_SRC}/meson.build" ]]; then
 	echo "ERROR: ${NIXL_SRC}/meson.build not found" >&2
@@ -27,10 +27,6 @@ if [[ "${NIXL_REQUIRE_ROCM}" == "1" ]]; then
 		exit 1
 	fi
 fi
-
-# AIS/AIS_MT overlay is always applied -- this stack always builds AIS.
-chmod +x "${SCRIPT_DIR}/apply-ais-overlay.sh"
-NIXL_SRC="${NIXL_SRC}" "${SCRIPT_DIR}/apply-ais-overlay.sh"
 
 # Determine how this nixl checkout expects ROCm/HIP to be configured.
 # Three patterns in ascending age order:
@@ -176,13 +172,14 @@ export LD_LIBRARY_PATH="${NIXL_INSTALL_PREFIX}/lib/x86_64-linux-gnu:${NIXL_INSTA
 
 python3 -c "import nixl; print('nixl import OK:', nixl.__file__)"
 
-for plug in AIS AIS_MT; do
-	found="$(find "${NIXL_SRC}/build" -name "libplugin_${plug}.so" 2>/dev/null | head -1 || true)"
-	if [[ -n "${found}" ]]; then
-		echo "PASS: ${found}"
-	else
-		echo "WARN: libplugin_${plug}.so not found (hipFile may be missing)"
-	fi
-done
+# The AIS_MT plugin (LMCache's l2-adapter backend) is mandatory; its absence
+# means hipFile wasn't found at NIXL build time (AIS_MT links hipFileRead/Write).
+found="$(find "${NIXL_SRC}/build" -name "libplugin_AIS_MT.so" 2>/dev/null | head -1 || true)"
+if [[ -n "${found}" ]]; then
+	echo "PASS: ${found}"
+else
+	echo "ERROR: libplugin_AIS_MT.so not built (hipFile missing at NIXL build time?)" >&2
+	exit 1
+fi
 
 echo "NIXL build complete prefix=${NIXL_INSTALL_PREFIX}"

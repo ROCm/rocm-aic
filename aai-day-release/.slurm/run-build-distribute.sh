@@ -27,7 +27,7 @@
 # build node on demand.
 #
 # The image bakes GPU arch(es) into hipFile and the LMCache HIP extension when it
-# compiles them (NIXL AIS is host-only, so arch-independent).  AAI_ROCM_ARCH is a
+# compiles them (NIXL AIS_MT is host-only, so arch-independent).  AAI_ROCM_ARCH is a
 # ';'-separated list; by default it covers every gfx the vLLM ROCm wheel supports,
 # so one image runs on any of them.  Narrow it (e.g. AAI_ROCM_ARCH=gfx942) for a
 # faster, smaller single-arch build.
@@ -55,7 +55,7 @@
 #   push    Tag the built image as AAI_PUSH_REF and `docker push` it to a registry
 #           (loads from the shared tarball first if the image is not present)
 #   test    Smoke-test the image on a GPU+NVMe node (loads it there if missing):
-#           checks GPU visibility + arch, and vLLM / LMCache / NIXL-AIS / hipFile
+#           checks GPU visibility + arch, and vLLM / LMCache / NIXL-AIS_MT / hipFile
 #   all     build, then load   (default)
 #
 # Key environment:
@@ -120,7 +120,7 @@ AAI_DAY_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 # --- Defaults ----------------------------------------------------------------
 # Multi-arch by default: every gfx the vLLM ROCm wheel ships kernels for.
 # hipFile + the LMCache HIP extension are compiled for all of these (cmake and
-# PYTORCH_ROCM_ARCH both accept ';'-lists); NIXL AIS is host-only, so arch-
+# PYTORCH_ROCM_ARCH both accept ';'-lists); NIXL AIS_MT is host-only, so arch-
 # independent.  NOTE: the RDNA entries (gfx11xx/gfx12xx) have no NVMe-DMA /
 # Infinity-Storage hardware -- if hipFile fails to build for them, narrow this
 # to the CDNA set "gfx90a;gfx942;gfx950".  Override via AAI_ROCM_ARCH.
@@ -205,8 +205,12 @@ cmd_build() {
     #     layer on ANY node instead of restarting from scratch.  It needs the
     #     docker-container buildx driver (the default `docker` driver cannot export
     #     type=registry cache); the driver is created on the build node on demand.
-    #     `--load` re-imports the finished image into the local docker store so the
-    #     `docker save` below still produces the shared tarball.
+    #     In the buildx path we do NOT `--load` + `docker save`; instead we export
+    #     the tarball straight from BuildKit with `--output type=docker,dest=-`
+    #     (see the build+save block below).  `docker save` on a large BuildKit
+    #     image (34GB+) deadlocks -- the build finishes but `docker save` hangs
+    #     forever writing 0 bytes -- so exporting from BuildKit sidesteps it.
+    #     `_build_program` (plain `docker build`) is used only by the no-cache path.
     local _build_program="DOCKER_BUILDKIT=1 docker build"
     local _cache_args=""
     local _builder_setup=""
@@ -215,7 +219,6 @@ cmd_build() {
             min|max) ;;
             *) die "AAI_CACHE_MODE must be min or max (got '${AAI_CACHE_MODE}')" ;;
         esac
-        _build_program="docker buildx build --builder ${AAI_BUILDX_BUILDER} --load"
         # _pre / _mkdir run before the build; _cfg_arg tweaks builder creation.
         local _cfg_arg="" _pre="" _mkdir=""
         if [[ -n "${AAI_CACHE_REF}" ]]; then
@@ -256,7 +259,37 @@ cmd_build() {
     # on the build node is docker itself -- the compose plugin is not installed
     # on every CPU node and is only needed to *run* the stack, not to build it.
     local remote_script
-    remote_script="$(cat <<REMOTE
+    if [[ -n "${AAI_CACHE_REF}" || -n "${AAI_CACHE_DIR}" ]]; then
+        # Cache/buildx path: stream a docker-format tar straight from the
+        # docker-container builder into the compressor with
+        # `--output type=docker,dest=-`.  This deliberately avoids `--load` +
+        # `docker save`, whose daemon export path deadlocks on large BuildKit
+        # images (the build finishes but `docker save` hangs forever at 0 bytes).
+        # `set -o pipefail` (from set -euo pipefail) makes a build failure fail
+        # the whole pipeline instead of writing a truncated tarball.
+        remote_script="$(cat <<REMOTE
+set -euo pipefail
+command -v docker >/dev/null 2>&1 || { echo 'docker not found on build node' >&2; exit 1; }
+echo "[build] host=\$(hostname) docker=\$(docker --version)"
+cd "${AAI_DAY_DIR}"
+${_builder_setup}
+mkdir -p "${AAI_IMAGE_DIR}"
+tmp="${tarball}.partial.\$\$"
+docker buildx build --builder ${AAI_BUILDX_BUILDER} --output type=docker,dest=- \
+    --build-arg ROCM_ARCH="${AAI_ROCM_ARCH}" \
+    ${_secret_arg} \
+    ${_cache_args} \
+    -f "${AAI_DAY_DIR}/Dockerfile" \
+    -t "${AAI_IMAGE}" \
+    "${AAI_DAY_DIR}" | ${COMPRESS_CMD} > "\${tmp}"
+mv -f "\${tmp}" "${tarball}"
+echo "[build] saved \$(du -h "${tarball}" | cut -f1) -> ${tarball}"
+REMOTE
+)"
+    else
+        # No-cache path: plain `docker build` into the local daemon, then
+        # `docker save` the result.  Fine for smaller/simpler builds.
+        remote_script="$(cat <<REMOTE
 set -euo pipefail
 command -v docker >/dev/null 2>&1 || { echo 'docker not found on build node' >&2; exit 1; }
 echo "[build] host=\$(hostname) docker=\$(docker --version)"
@@ -277,6 +310,7 @@ mv -f "\${tmp}" "${tarball}"
 echo "[build] saved \$(du -h "${tarball}" | cut -f1) -> ${tarball}"
 REMOTE
 )"
+    fi
 
     if [[ "${AAI_BUILD_LOCAL:-}" == "1" ]]; then
         log "building locally on $(hostname) (AAI_BUILD_LOCAL=1)"
@@ -438,12 +472,12 @@ check "import lmcache" python3 -c 'import lmcache; print("lmcache", getattr(lmca
 check "lmcache CLI"    command -v lmcache
 check "ais-stats (hipFile)" command -v ais-stats
 
-# NIXL plugins, incl. the AIS/AIS_MT overlay
+# NIXL plugins, incl. the AIS_MT (hipFile) backend
 plug="${NIXL_PLUGIN_DIR:-/opt/nixl/lib/x86_64-linux-gnu/plugins}"
 if [ -d "${plug}" ]; then
     note "OK   NIXL plugins: $(printf '%s ' "${plug}"/*)"
-    shopt -s nullglob nocaseglob; ais=("${plug}"/*ais*); shopt -u nocaseglob
-    [ "${#ais[@]}" -gt 0 ] || note "WARN no AIS/AIS_MT plugin in ${plug}"
+    shopt -s nullglob nocaseglob; ais_mt=("${plug}"/*ais_mt*); shopt -u nocaseglob
+    [ "${#ais_mt[@]}" -gt 0 ] || note "WARN no AIS_MT plugin in ${plug}"
 else
     note "FAIL NIXL plugin dir missing: ${plug}"; fail=1
 fi

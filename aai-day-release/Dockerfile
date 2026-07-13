@@ -8,7 +8,7 @@
 #   vLLM:       installed from pre-built ROCm wheel (bundles its own torch/triton/flash-attn)
 #   LMCache:    LMCache/LMCache upstream dev + 7 AMD patches
 #   hipFile:    ROCm/rocm-systems (GDS/P2PDMA NVMe transfers)
-#   NIXL:       ai-dynamo/nixl upstream main + nixl-rocm-ais.patch (ROCm/HIP + AIS/AIS_MT)
+#   NIXL:       ai-dynamo/nixl upstream main + nixl-rocm-ais-mt.patch (ROCm/HIP + AIS_MT)
 #
 # Two compose services share this single image:
 #   lmcache — standalone lmcache-server (MP mode)
@@ -54,7 +54,7 @@ ARG VLLM_ROCM_VARIANT=rocm723
 # Pinned component revisions — bump together when validating a new combo.
 # ROCm/rocm-systems develop HEAD (2026-07-13); default branch is 'develop'.
 ARG HIPFILE_SHA=6901b670c3e186f9c7052d6fc9748f0286536bdc
-# ai-dynamo/nixl upstream main (2026-07-10) + nixl-rocm-ais.patch for ROCm/AIS.
+# ai-dynamo/nixl upstream main (2026-07-10) + nixl-rocm-ais-mt.patch (ROCm/HIP + AIS_MT).
 ARG NIXL_GIT_URL=https://github.com/ai-dynamo/nixl.git
 ARG NIXL_SHA=644facf0eb3de14ec63c1d2831238f63cd03c0e0
 
@@ -175,15 +175,14 @@ RUN git clone --no-checkout --filter=blob:none \
         /app/ais-stats && \
     ln -sf /app/ais-stats /usr/local/bin/ais-stats
 
-# ----- 6. NIXL (ai-dynamo/nixl upstream + nixl-rocm-ais.patch) ---------------
-# Clone upstream ai-dynamo/nixl, then apply nixl-rocm-ais.patch to add ROCm/HIP
-# detection and the AIS/AIS_MT plugin tree.  After patching, the checkout looks
-# native, so apply-ais-overlay.sh (called by build-nixl.sh) self-skips and the
-# _NATIVE_HIP build path runs with AIS_PATH=/opt/rocm.
+# ----- 6. NIXL (ai-dynamo/nixl upstream + nixl-rocm-ais-mt.patch) ------------
+# Clone upstream ai-dynamo/nixl, then apply nixl-rocm-ais-mt.patch to add ROCm/HIP
+# detection and the AIS_MT plugin tree.  The patched checkout is a native-HIP
+# tree, so build-nixl.sh's _NATIVE_HIP path builds AIS_MT with AIS_PATH=/opt/rocm.
 COPY common/nixl /tmp/nixl-common
 COPY patches/nixl/ /tmp/nixl-patches/
 # Apply every patch under patches/nixl/ (lexical order) to the fresh checkout.
-RUN chmod +x /tmp/nixl-common/*.sh /tmp/nixl-common/apply-ais-overlay.sh && \
+RUN chmod +x /tmp/nixl-common/*.sh && \
     NIXL_GIT_URL="${NIXL_GIT_URL}" NIXL_SHA="${NIXL_SHA}" NIXL_REQUIRE_ROCM=1 \
         NIXL_DEST=/tmp/nixl /tmp/nixl-common/clone-nixl.sh && \
     shopt -s nullglob && \
