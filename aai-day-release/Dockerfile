@@ -213,16 +213,23 @@ RUN chmod +x /tmp/nixl-common/*.sh && \
         /tmp/nixl-common/build-nixl.sh
 
 # ----- 6b. hsa-snoop (HSA AQL queue snooper + Prometheus exporter) -----------
-# GPU dispatch/queue telemetry on :9488 (/metrics).  Built WITH the Prometheus
-# exporter (-DHSA_SNOOP_PROMETHEUS=ON fetches prometheus-cpp via CMake); the
-# build is rejected if the resulting binary lacks --prometheus.  At runtime it
-# must run as root in the host PID namespace, privileged (tracefs + pagemap +
-# process_vm_readv), to see the vLLM/LMCache GPU processes -- see
-# monitoring/docker-compose.monitoring.yml.
+# GPU dispatch/queue telemetry on :9488 (/metrics).  The snooper binary is
+# host-only C++ (x86-64) and ARCH-INDEPENDENT -- it parses HSA AQL queues from
+# userspace, so one binary runs on every gfx target we ship.  We disable the
+# optional examples/ (CMAKE_DISABLE_FIND_PACKAGE_hip=ON): they compile HIP
+# device code (examples/vecwork.hip) for a single auto-detected arch -- and on
+# this CPU-only build node detection falls back to gfx1100, which neither
+# matches our multi-arch set nor is needed by the exporter.
+# Built WITH the Prometheus exporter (-DHSA_SNOOP_PROMETHEUS=ON fetches
+# prometheus-cpp via CMake); the build is rejected if the resulting binary lacks
+# --prometheus.  At runtime it must run as root in the host PID namespace,
+# privileged (tracefs + pagemap + process_vm_readv), to see the vLLM/LMCache GPU
+# processes -- see monitoring/docker-compose.monitoring.yml.
 RUN git clone "${HSA_SNOOP_GIT_URL}" /app/hsa-snoop && \
     git -C /app/hsa-snoop checkout "${HSA_SNOOP_SHA}" && \
     cmake -S /app/hsa-snoop -B /app/hsa-snoop/build -G Ninja \
-        -DCMAKE_BUILD_TYPE=Release -DHSA_SNOOP_PROMETHEUS=ON && \
+        -DCMAKE_BUILD_TYPE=Release -DHSA_SNOOP_PROMETHEUS=ON \
+        -DCMAKE_DISABLE_FIND_PACKAGE_hip=ON && \
     cmake --build /app/hsa-snoop/build --parallel "$(nproc)" && \
     cmake --install /app/hsa-snoop/build --prefix /usr/local && \
     test -x /usr/local/bin/hsa-snoop && \

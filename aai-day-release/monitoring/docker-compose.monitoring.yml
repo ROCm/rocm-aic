@@ -106,6 +106,38 @@ services:
       - ./amdgpu-exporter/config.json:/etc/metrics/config.json:ro
 
   # ---------------------------------------------------------------------------
+  # nvme-exporter (exporters-fabric profile): dedicated NVMe metrics on :9998.
+  # No standard published image (the batesste role installs a host binary) --
+  # set AAI_NVME_EXPORTER_IMAGE to an image you built.  Kept in its own profile
+  # so the default `exporters` profile does not require the image.
+  # ---------------------------------------------------------------------------
+  nvme-exporter:
+    image: ${AAI_NVME_EXPORTER_IMAGE:?set AAI_NVME_EXPORTER_IMAGE to containerize the NVMe exporter}
+    container_name: aai-day-nvme-exporter
+    profiles: ["exporters-fabric"]
+    network_mode: host
+    pid: host
+    privileged: true
+    restart: unless-stopped
+    volumes:
+      - /dev:/dev
+      - /sys:/sys:ro
+
+  # ---------------------------------------------------------------------------
+  # rdma-exporter (exporters-fabric profile): yuuki-style sysfs RDMA metrics on
+  # :9879.  Build-your-own image (github.com/yuuki/rdma_exporter ships a
+  # Dockerfile; no published image) -- set AAI_RDMA_EXPORTER_IMAGE.
+  # ---------------------------------------------------------------------------
+  rdma-exporter:
+    image: ${AAI_RDMA_EXPORTER_IMAGE:?set AAI_RDMA_EXPORTER_IMAGE to containerize the RDMA exporter}
+    container_name: aai-day-rdma-exporter
+    profiles: ["exporters-fabric"]
+    network_mode: host
+    restart: unless-stopped
+    volumes:
+      - /sys:/sys:ro
+
+  # ---------------------------------------------------------------------------
   # hsa-snoop (exporters profile): HSA AQL queue/dispatch snooper with a
   # Prometheus exporter on :9488. Userspace GPU telemetry (ftrace kprobe +
   # pagemap + process_vm_readv) -- must run as root, PRIVILEGED, in the host PID
@@ -125,5 +157,8 @@ services:
       - /dev/dri
     volumes:
       - /sys/kernel/debug:/sys/kernel/debug
+      # hsa-snoop installs its kprobe via tracefs (/sys/kernel/tracing); with only
+      # debugfs mounted it fails with ENOENT ("failed to install kprobe").
+      - /sys/kernel/tracing:/sys/kernel/tracing
     entrypoint: ["/usr/local/bin/hsa-snoop"]
     command: ["--all", "--prometheus", "--prometheus-port", "${HSA_SNOOP_PORT:-9488}"]

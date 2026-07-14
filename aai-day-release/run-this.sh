@@ -93,9 +93,8 @@ if (( do_cliff )); then
         sbatch_args+=(--job-name=aai-day-cliff-short)
         echo "cliff-short: single point (AAI_BENCH_CONCUR=${AAI_BENCH_CONCUR} AAI_BENCH_ITERS=${AAI_BENCH_ITERS})"
     fi
-    # Pre-create logs/ so the Slurm bootstrap --output (logs/...) can be written;
-    # the job then redirects its full output into logs/<job-id>/cliff.out.
-    mkdir -p "${HERE}/logs"
+    # The job creates logs/<job-id>/ itself and redirects its output there
+    # (Slurm's own --output is /dev/null), so nothing to pre-create here.
     jobid="$(cd "${HERE}" && sbatch --parsable "${sbatch_args[@]}" .slurm/run-cliff.sbatch)"
     echo "submitted cliff job ${jobid}"
     echo "log: ${HERE}/logs/${jobid}/cliff.out"

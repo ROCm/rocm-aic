@@ -13,11 +13,11 @@
 #SBATCH --cpus-per-task=16
 #SBATCH --mem=64G
 #SBATCH --time=03:00:00
-# Bootstrap log only: the script re-redirects all output into logs/<job-id>/ as
-# soon as it starts (see below).  This file lives under logs/ (created by
-# run-this.sh before submit) and is normally empty -- it just catches any failure
-# before the redirect.  Slurm cannot create the parent dir, hence the two-step.
-#SBATCH --output=logs/%x-%j.bootstrap.out
+# Discard Slurm's own stdout: the script re-redirects all output into
+# logs/<job-id>/cliff.out as soon as it starts (see below), so this only ever
+# sees the few lines before that redirect -- not worth a file.  (Slurm can't
+# create logs/<job-id>/ itself, hence the in-script redirect rather than %j here.)
+#SBATCH --output=/dev/null
 #
 # Run the KV-cache cliff benchmark (benchmarks/run_cliff.py) end-to-end on ONE
 # Markham MI300X + local-NVMe node, sweeping all three arms sequentially:
@@ -62,8 +62,9 @@ REPO="${SLURM_SUBMIT_DIR:-$(cd "${SCRIPT_DIR}/.." && pwd)}"
 
 # Send all output to logs/<job-id>/cliff.out under the repo.  Slurm can't create
 # the parent dir (and the job id isn't known at submit time), so we make it here
-# and redirect the whole script's stdout+stderr into it.  If mkdir fails (e.g. a
-# misresolved REPO), output stays in the Slurm bootstrap file instead.
+# and redirect the whole script's stdout+stderr into it.  Slurm's own --output is
+# /dev/null, so if mkdir fails (e.g. a misresolved REPO) the few pre-redirect
+# lines are lost -- acceptable; sacct still reports the failure.
 LOGDIR="${REPO}/logs/${SLURM_JOB_ID:-manual}"
 if mkdir -p "${LOGDIR}" 2>/dev/null; then
     exec >>"${LOGDIR}/cliff.out" 2>&1
@@ -120,6 +121,7 @@ AAI_MONITORING="${AAI_MONITORING:-1}"
 AAI_METRICS_DIR="${AAI_METRICS_DIR:-${REPO}/logs/${SLURM_JOB_ID:-manual}/prometheus}"
 AAI_EXPORTERS="${AAI_EXPORTERS:-1}"
 MON_COMPOSE="${REPO}/monitoring/docker-compose.monitoring.yml"
+MON_DIR="${REPO}/monitoring"
 
 log() { printf '[cliff-job] %s\n' "$*" >&2; }
 die() { printf '[cliff-job] ERROR: %s\n' "$*" >&2; exit 1; }
@@ -138,16 +140,29 @@ command -v docker >/dev/null 2>&1 || die "docker not found on $(hostname)"
 mkdir -p "${RESULTS}" "${PLOTS}" "${AAI_NVME_DIR}" "${AAI_NFS_DIR}" "${AAI_SLAB_DIR}"
 [[ -d "${AAI_HF_HOME}/hub" ]] || die "HF cache not found at ${AAI_HF_HOME}/hub"
 
-# --- Load the image from the shared tarball if the node doesn't have it -------
-if [[ -z "$(docker images -q "${AAI_IMAGE}" 2>/dev/null)" ]]; then
-    tarball="$(ls -t "${AAI_IMAGE_DIR}"/rocm-aic-aai-day-latest-*.tar.* 2>/dev/null | head -1 || true)"
+# --- Load the image from the shared tarball when needed ----------------------
+# Reload when the node's image is absent, when the /scratch tarball is newer than
+# what this node last loaded, or when AAI_FORCE_LOAD=1 -- so a rebuild is picked
+# up automatically instead of a stale cached image being reused (mirrors cmd_test
+# / cmd_push in run-build-distribute.sh).  A per-uid+image marker under /var/tmp
+# records the tarball mtime last loaded here; comparing tarball-mtime vs the
+# recorded tarball-mtime (both build-side values) avoids build/node clock skew.
+tarball="$(ls -t "${AAI_IMAGE_DIR}"/rocm-aic-aai-day-latest-*.tar.* 2>/dev/null | head -1 || true)"
+_marker="/var/tmp/aai-day-loaded-$(id -u)-$(printf '%s' "${AAI_IMAGE}" | tr '/:' '__').mtime"
+_have_img="$(docker images -q "${AAI_IMAGE}" 2>/dev/null)"
+_tar_mtime="$(stat -c %Y "${tarball}" 2>/dev/null || echo 0)"
+_loaded_mtime="$(cat "${_marker}" 2>/dev/null || echo 0)"
+if [[ "${AAI_FORCE_LOAD:-0}" == "1" || -z "${_have_img}" || "${_tar_mtime}" -gt "${_loaded_mtime}" ]]; then
     [[ -n "${tarball}" ]] || die "image ${AAI_IMAGE} absent and no tarball in ${AAI_IMAGE_DIR} (run the build first)"
-    log "loading image from ${tarball}"
+    log "loading image from ${tarball} (tarball=${_tar_mtime} last-loaded=${_loaded_mtime} present=$([[ -n "${_have_img}" ]] && echo yes || echo no) force=${AAI_FORCE_LOAD:-0})"
     case "${tarball}" in
         *.zst) zstd -dc "${tarball}" | docker load ;;
         *.gz)  gzip  -dc "${tarball}" | docker load ;;
         *)     docker load -i "${tarball}" ;;
     esac || die "docker load failed"
+    echo "${_tar_mtime}" > "${_marker}" 2>/dev/null || true
+else
+    log "image up to date on $(hostname) (id ${_have_img}); AAI_FORCE_LOAD=1 forces a reload"
 fi
 
 # --- Container / GPU flags (mirror docker-compose.yml + cmd_test) -------------
@@ -194,7 +209,21 @@ run_bench() {  # $1=arm $2=endpoint_port $3=out_csv $4=extra args...
             --out "results/$(basename "${out}")" "$@"
 }
 
-stop_containers() { docker rm -f "$@" >/dev/null 2>&1 || true; }
+# Capture each container's full stdout/stderr into the per-job logs dir before
+# removing it.  The compute node is ephemeral, so `docker logs` is lost at
+# teardown otherwise -- and Prometheus captures metrics, not container stdout
+# (vLLM/LMCache/NIXL startup errors, stack traces, AIS debug lines live here).
+stop_containers() {
+    local c
+    for c in "$@"; do
+        # Only when the container actually exists -- this is also called as a
+        # pre-launch cleanup, when dumping logs would just write "No such
+        # container" over a real capture from earlier.
+        docker inspect "${c}" >/dev/null 2>&1 || continue
+        docker logs "${c}" > "${LOGDIR}/container-${c}.log" 2>&1 || true
+    done
+    docker rm -f "$@" >/dev/null 2>&1 || true
+}
 
 # --- Metrics-capture sidecar (Prometheus + optional exporters) ---------------
 have_compose() { docker compose version >/dev/null 2>&1; }
@@ -203,26 +232,142 @@ mon_profile() {  # echo the compose --profile args for the exporters profile
     [[ "${AAI_EXPORTERS}" == "1" ]] && printf -- '--profile\nexporters\n'
 }
 
+# Compose service container_names -- reused by the docker-run fallback so both
+# paths produce identically-named containers and share one teardown.
+MON_CONTAINERS=(aai-day-prometheus aai-day-node-exporter aai-day-amdgpu-exporter
+                aai-day-nvme-exporter aai-day-rdma-exporter aai-day-hsa-snoop)
+
+# True (0) if something is already listening on the given local TCP port -- used
+# to skip launching a containerized exporter when a host exporter serves it
+# already (Prometheus scrapes the host one on the same port either way).
+_port_in_use() { timeout 1 bash -c "exec 3<>/dev/tcp/127.0.0.1/$1" 2>/dev/null; }
+
+# Launch one exporter container unless its port is already served on the host.
+# $1=container name  $2=port  rest=docker run flags + image + command.
+_run_exporter() {
+    local name="$1" port="$2"; shift 2
+    if _port_in_use "${port}"; then
+        log "  ${name}: :${port} already served (host exporter?), skipping container"
+        return 0
+    fi
+    docker rm -f "${name}" >/dev/null 2>&1 || true
+    docker run -d --name "${name}" "$@" >/dev/null \
+        && log "  ${name} on :${port}" \
+        || log "  ${name}: docker run failed"
+}
+
+# docker run fallback for nodes without the compose plugin (the Markham GPU
+# nodes have docker but not `docker compose`).  Mirrors the services in
+# monitoring/docker-compose.monitoring.yml: same images, host networking, ports,
+# mounts, and container names.  Containerized exporters are skipped when a host
+# exporter already serves the port (see _run_exporter).  Idempotent (rm -f first).
+_monitoring_run_up() {
+    docker rm -f "${MON_CONTAINERS[@]}" >/dev/null 2>&1 || true
+
+    # prometheus (always, our capture process -- not port-skipped): scrape
+    # localhost targets, TSDB on AAI_METRICS_DIR.
+    docker run -d --name aai-day-prometheus --network host --restart unless-stopped \
+        --user "$(id -u):$(id -g)" \
+        -v "${MON_DIR}/prometheus/prometheus.yml":/etc/prometheus/prometheus.yml:ro \
+        -v "${MON_DIR}/prometheus/rules":/etc/prometheus/rules:ro \
+        -v "${AAI_METRICS_DIR}":/prometheus \
+        "${AAI_PROM_IMAGE:-prom/prometheus:v2.55.1}" \
+        --config.file=/etc/prometheus/prometheus.yml \
+        --storage.tsdb.path=/prometheus \
+        --storage.tsdb.retention.time="${AAI_PROM_RETENTION:-90d}" \
+        --web.enable-lifecycle \
+        --web.listen-address=":${AAI_PROM_PORT:-9090}" >/dev/null \
+        && log "  prometheus on :${AAI_PROM_PORT:-9090}" \
+        || log "  prometheus: docker run failed"
+
+    [[ "${AAI_EXPORTERS}" == "1" ]] || return 0
+
+    # node-exporter: host CPU/mem/net + NVMe (diskstats/nvme) + RDMA (infiniband).
+    _run_exporter aai-day-node-exporter 9100 \
+        --network host --pid host --restart unless-stopped -v /:/host:ro,rslave \
+        "${AAI_NODE_EXPORTER_IMAGE:-quay.io/prometheus/node-exporter:v1.8.2}" \
+        --path.rootfs=/host --collector.diskstats --collector.nvme \
+        --collector.infiniband --web.listen-address=":9100"
+
+    # amdgpu-exporter: AMD device-metrics-exporter (amd_* metrics) on :5000.
+    _run_exporter aai-day-amdgpu-exporter 5000 \
+        --network host --restart unless-stopped --device /dev/kfd --device /dev/dri \
+        -v /sys:/sys:ro \
+        -v "${MON_DIR}/amdgpu-exporter/config.json":/etc/metrics/config.json:ro \
+        "${AAI_AMDGPU_EXPORTER_IMAGE:-rocm/device-metrics-exporter:v1.4.2}"
+
+    # nvme-exporter (:9998, dedicated NVMe metrics).  No standard published image
+    # (batesste host service); set AAI_NVME_EXPORTER_IMAGE to containerize it,
+    # else rely on the host service or node-exporter's nvme/diskstats collectors.
+    if [[ -n "${AAI_NVME_EXPORTER_IMAGE:-}" ]]; then
+        _run_exporter aai-day-nvme-exporter "${NVME_EXPORTER_PORT:-9998}" \
+            --network host --pid host --privileged --restart unless-stopped \
+            -v /dev:/dev -v /sys:/sys:ro \
+            "${AAI_NVME_EXPORTER_IMAGE}" ${AAI_NVME_EXPORTER_ARGS:-}
+    else
+        log "  nvme-exporter: set AAI_NVME_EXPORTER_IMAGE to containerize (else host service / node-exporter nvme collector)"
+    fi
+
+    # rdma-exporter (:9879, yuuki-style, sysfs).  Build-your-own image (no
+    # published one -- github.com/yuuki/rdma_exporter ships a Dockerfile); set
+    # AAI_RDMA_EXPORTER_IMAGE to containerize, else rely on the host service or
+    # node-exporter's infiniband collector.
+    if [[ -n "${AAI_RDMA_EXPORTER_IMAGE:-}" ]]; then
+        _run_exporter aai-day-rdma-exporter "${RDMA_EXPORTER_PORT:-9879}" \
+            --network host --restart unless-stopped -v /sys:/sys:ro \
+            "${AAI_RDMA_EXPORTER_IMAGE}" ${AAI_RDMA_EXPORTER_ARGS:-}
+    else
+        log "  rdma-exporter: set AAI_RDMA_EXPORTER_IMAGE to containerize (else host service / node-exporter infiniband collector)"
+    fi
+
+    # hsa-snoop (:9488): HSA AQL queue snooper from the aai-day image.  It installs
+    # its kprobe via tracefs at /sys/kernel/tracing -- so BOTH debugfs and tracefs
+    # must be mounted; with only /sys/kernel/debug it fails with ENOENT ("failed
+    # to install kprobe").  Needs root + privileged + host PID ns to see the
+    # vLLM/LMCache GPU processes.
+    if _port_in_use "${HSA_SNOOP_PORT:-9488}"; then
+        log "  hsa-snoop: :${HSA_SNOOP_PORT:-9488} already served, skipping container"
+    else
+        docker rm -f aai-day-hsa-snoop >/dev/null 2>&1 || true
+        local -a _tracefs=()
+        [[ -d /sys/kernel/tracing ]] && _tracefs=(-v /sys/kernel/tracing:/sys/kernel/tracing)
+        docker run -d --name aai-day-hsa-snoop --network host --pid host --privileged \
+            --restart unless-stopped --device /dev/kfd --device /dev/dri \
+            -v /sys/kernel/debug:/sys/kernel/debug "${_tracefs[@]}" \
+            --entrypoint /usr/local/bin/hsa-snoop "${AAI_IMAGE}" \
+            --all --prometheus --prometheus-port "${HSA_SNOOP_PORT:-9488}" >/dev/null \
+            && log "  hsa-snoop on :${HSA_SNOOP_PORT:-9488}" \
+            || log "  hsa-snoop: docker run failed"
+    fi
+}
+
 start_monitoring() {
     [[ "${AAI_MONITORING}" == "1" ]] || { log "monitoring disabled (AAI_MONITORING=0)"; return 0; }
-    [[ -f "${MON_COMPOSE}" ]] || { log "monitoring: ${MON_COMPOSE} not found, skipping"; return 0; }
-    have_compose || { log "monitoring: 'docker compose' unavailable, skipping"; return 0; }
     mkdir -p "${AAI_METRICS_DIR}" 2>/dev/null || { log "monitoring: cannot create ${AAI_METRICS_DIR}, skipping"; AAI_MONITORING=0; return 0; }
-    local -a profile; mapfile -t profile < <(mon_profile)
     log "starting metrics capture -> ${AAI_METRICS_DIR} (exporters=${AAI_EXPORTERS})"
-    AAI_METRICS_DIR="${AAI_METRICS_DIR}" PROM_UID="$(id -u)" PROM_GID="$(id -g)" \
-        IMAGE_NAME="${AAI_IMAGE}" \
-        docker compose -f "${MON_COMPOSE}" "${profile[@]}" up -d \
-        || log "monitoring: compose up failed (continuing without metrics)"
+    if have_compose && [[ -f "${MON_COMPOSE}" ]]; then
+        local -a profile; mapfile -t profile < <(mon_profile)
+        AAI_METRICS_DIR="${AAI_METRICS_DIR}" PROM_UID="$(id -u)" PROM_GID="$(id -g)" \
+            IMAGE_NAME="${AAI_IMAGE}" \
+            docker compose -f "${MON_COMPOSE}" "${profile[@]}" up -d \
+            || log "monitoring: compose up failed (continuing without metrics)"
+    else
+        # No compose plugin on this node -> equivalent docker-run sidecar.
+        log "monitoring: 'docker compose' unavailable; using docker run sidecar"
+        _monitoring_run_up
+    fi
 }
 
 stop_monitoring() {
     [[ "${AAI_MONITORING}" == "1" ]] || return 0
-    { [[ -f "${MON_COMPOSE}" ]] && have_compose; } || return 0
-    local -a profile; mapfile -t profile < <(mon_profile)
     log "stopping metrics capture (TSDB retained at ${AAI_METRICS_DIR})"
-    AAI_METRICS_DIR="${AAI_METRICS_DIR}" IMAGE_NAME="${AAI_IMAGE}" \
-        docker compose -f "${MON_COMPOSE}" "${profile[@]}" down >/dev/null 2>&1 || true
+    # Compose down when available; then rm any docker-run containers (same names).
+    if have_compose && [[ -f "${MON_COMPOSE}" ]]; then
+        local -a profile; mapfile -t profile < <(mon_profile)
+        AAI_METRICS_DIR="${AAI_METRICS_DIR}" IMAGE_NAME="${AAI_IMAGE}" \
+            docker compose -f "${MON_COMPOSE}" "${profile[@]}" down >/dev/null 2>&1 || true
+    fi
+    docker rm -f "${MON_CONTAINERS[@]}" >/dev/null 2>&1 || true
 }
 # Guarantee teardown (containers only; the NFS TSDB is retained) on any exit.
 trap stop_monitoring EXIT

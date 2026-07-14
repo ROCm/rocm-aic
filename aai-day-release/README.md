@@ -177,12 +177,15 @@ collectors and RDMA from its `infiniband` collector.
 **hsa-snoop (`:9488`).** [sbates130272/hsa-snoop](https://github.com/sbates130272/hsa-snoop)
 is compiled into the `rocm-aic-aai-day` image with its Prometheus exporter
 (`-DHSA_SNOOP_PROMETHEUS=ON`; see [Dockerfile](Dockerfile) step 6b — the build
-fails if the resulting binary lacks `--prometheus`). It runs in the `exporters`
-profile as `hsa-snoop --all --prometheus`, and because it snoops HSA AQL queues
-from userspace (ftrace kprobe + pagemap + `process_vm_readv`) it needs
-**`privileged: true`, `pid: host`, and root** to see the vLLM/LMCache GPU
-processes. It's a sampling snoop (very short kernels between poll intervals can
-be missed) and is upstream-verified on gfx90a / ROCm 7.1.0.
+fails if the resulting binary lacks `--prometheus`). The snooper is host-only
+C++ and **architecture-independent** — one binary runs on every gfx target we
+ship — so the build disables the optional HIP `examples/`
+(`CMAKE_DISABLE_FIND_PACKAGE_hip=ON`) rather than pinning them to a single arch.
+It runs in the `exporters` profile as `hsa-snoop --all --prometheus`, and because
+it snoops HSA AQL queues from userspace (ftrace kprobe + pagemap +
+`process_vm_readv`) it needs **`privileged: true`, `pid: host`, and root** to see
+the vLLM/LMCache GPU processes. It's a sampling snoop (very short kernels between
+poll intervals can be missed) and is upstream-verified on gfx90a / ROCm 7.1.0.
 
 > **NFS caveat:** Prometheus' TSDB uses `mmap` + POSIX file locks, which NFS
 > handles poorly. Keep to a single writer; this is fine for lab/demo capture,
