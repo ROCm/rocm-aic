@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: MIT
 #
-# Recording rules adapted from the repo-root ansible monitoring_stack. They
+# Recording rules adapted from the batesste Ansible monitoring roles. They
 # synthesize stable join keys (instance@device[@port]) so NVMe and RDMA series
 # from different exporters can be correlated when exploring the captured TSDB.
 

@@ -1,9 +1,0 @@
----
-# NFS-over-RDMA client configuration.
-# Must match the server-side nfs_rdma_server_ip and export path.
-
-nfs_rdma_server_ip: ""    # REPLACE: same value as in nfs_rdma_server.yml
-nfs_rdma_export_path: /srv/aai-day-cache
-
-# Where the NFS export is mounted on each client node.
-nfs_rdma_client_mount: /mnt/lmcache-nfs

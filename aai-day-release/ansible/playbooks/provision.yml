@@ -1,7 +1,0 @@
----
-- name: Provision GPU nodes
-  hosts: gpu_nodes
-  become: true
-  gather_facts: true
-  roles:
-    - host_setup

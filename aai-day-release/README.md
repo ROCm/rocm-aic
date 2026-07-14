@@ -175,7 +175,7 @@ The TSDB is written to `AAI_METRICS_DIR`. For `--cliff` runs it defaults to
 `logs/<job-id>/prometheus` (the SLURM job id, or `manual` off-Slurm);
 **bind-mount / point it at an NFS directory** to explore the capture later by
 pointing a Prometheus at it. Job names/ports
-mirror the repo-root `ansible/` monitoring stack, so the same Grafana dashboards
+mirror the batesste Ansible monitoring roles, so the same Grafana dashboards
 and recording rules apply.
 
 **NIXL native telemetry (`:19090`).** NIXL ships its own (experimental/beta)

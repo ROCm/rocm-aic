@@ -14,8 +14,8 @@
 #                  as host systemd services (or the compose `exporters` profile
 #                  launches containerized node/amdgpu exporters as a fallback).
 #
-# Job names and ports mirror the repo-root ansible monitoring_stack so the same
-# Grafana dashboards / recording rules apply.  NIXL exposes its own (beta)
+# Job names and ports mirror the batesste Ansible monitoring roles (above) so the
+# same Grafana dashboards / recording rules apply.  NIXL exposes its own (beta)
 # Prometheus telemetry exporter on :19090 when the prometheus-cpp plugin is
 # compiled into the image and NIXL_TELEMETRY_* is set on the LMCache process;
 # its transfer counters also surface through the LMCache job on :8080.
