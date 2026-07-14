@@ -317,11 +317,11 @@ RUN git clone "${HSA_SNOOP_GIT_URL}" /app/hsa-snoop && \
 
 # ----- 6c. ais-snoop (AIS KFD kprobe -> Prometheus exporter) -----------------
 # AIS-path sibling of hsa-snoop: a small bpftrace + Python wrapper that attaches
-# a kprobe/kretprobe to the AIS (AMD Infinity Storage / hipFile GDS/P2PDMA) KFD
-# kernel symbol and exports ais_* metrics on :9489 (/metrics).  The kernel symbol
-# is a RUNTIME input (AIS_KFD_SYMBOL) -- hipFile source is cloned at build time
-# and the exact function is not known here -- so nothing to compile: we install
-# the script and rely on `bpftrace` (apt, step 1) and prometheus_client (already
+# a kprobe/kretprobe to the AIS (AMD Infinity Storage) KFD ioctl handler and
+# exports ais_* metrics on :9489 (/metrics).  The kprobe target defaults to
+# kfd_ioctl_ais (the AMDKFD_IOC_AIS_OP handler in the amdgpu-dkms driver) and is
+# overridable at runtime via AIS_KFD_SYMBOL -- nothing to compile: we install the
+# script and rely on `bpftrace` (apt, step 1) and prometheus_client (already
 # present via vLLM's deps).  Runs privileged in the host PID ns with tracefs, same
 # as hsa-snoop -- see monitoring/docker-compose.monitoring.yml / ais-snoop/README.
 COPY monitoring/ais-snoop/ais-snoop.py /usr/local/bin/ais-snoop

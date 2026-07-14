@@ -818,7 +818,7 @@ if [ '${_smoke_exporters}' = "1" ]; then
     AAI_METRICS_DIR="\${_logdir}/prometheus"
     AAI_EXPORTERS=1
     AAI_MONITORING=1
-    AIS_KFD_SYMBOL="\${AIS_KFD_SYMBOL:-}"
+    AIS_KFD_SYMBOL="\${AIS_KFD_SYMBOL:-kfd_ioctl_ais}"
     # shellcheck source=/dev/null
     source '${AAI_DAY_DIR}/monitoring/monitoring-lib.sh'
     mkdir -p "\${AAI_METRICS_DIR}"
