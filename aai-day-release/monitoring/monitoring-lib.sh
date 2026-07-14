@@ -64,6 +64,31 @@ _endpoint_serves_gpu() {
     curl -fsS --max-time 2 "http://127.0.0.1:$1/metrics" 2>/dev/null | grep -qE '^(amd_)?gpu_'
 }
 
+# Like _endpoint_serves_gpu but polls a few times before giving up.  A real GPU
+# exporter (host service, or one launched by a prior run under --restart) can
+# still be warming up when we probe; without the retry it gets misclassified as a
+# phantom, spawning a redundant :5050 exporter and double-scraping GPU series.
+# $1=port  $2=tries (default 5, ~1s apart).
+_endpoint_serves_gpu_retry() {
+    local port="$1" tries="${2:-5}" i
+    for (( i = 0; i < tries; i++ )); do
+        _endpoint_serves_gpu "${port}" && return 0
+        sleep 1
+    done
+    return 1
+}
+
+# Best-effort quiet pull so a subsequent `docker run` doesn't flood the log with
+# layer-by-layer pull progress.  No-op when the image is already present (the
+# local aai-day image + tarball-loaded exporters); on a bare node it pulls
+# quietly, and a pull failure is left for `docker run` to surface.
+_pull_quiet() {
+    local img="$1"
+    docker image inspect "${img}" >/dev/null 2>&1 && return 0
+    log "  pulling ${img} ..."
+    docker pull -q "${img}" >/dev/null 2>&1 || log "  ${img}: pull failed (will retry at run)"
+}
+
 # Launch one exporter container unless its port is already served on the host.
 # $1=container name  $2=port  rest=docker run flags + image + command.
 _run_exporter() {
@@ -86,6 +111,11 @@ _run_exporter() {
 _monitoring_run_up() {
     docker rm -f "${MON_CONTAINERS[@]}" >/dev/null 2>&1 || true
 
+    # Pre-pull the registry-hosted images quietly so the docker runs below don't
+    # flood the log with pull progress (hsa/ais-snoop use the local aai-day image
+    # and nvme/rdma are tarball-loaded, so they never pull here).
+    _pull_quiet "${AAI_PROM_IMAGE:-prom/prometheus:v2.55.1}"
+
     # prometheus (always, our capture process -- not port-skipped): scrape
     # localhost targets, TSDB on AAI_METRICS_DIR.
     docker run -d --name aai-day-prometheus --network host --restart unless-stopped \
@@ -104,6 +134,11 @@ _monitoring_run_up() {
 
     [[ "${AAI_EXPORTERS}" == "1" ]] || return 0
 
+    # Pre-pull the other registry images quietly (node-exporter only when :9100 is
+    # free, since a host node-exporter makes us skip it anyway).
+    _port_in_use 9100 || _pull_quiet "${AAI_NODE_EXPORTER_IMAGE:-quay.io/prometheus/node-exporter:v1.8.2}"
+    _pull_quiet "${AAI_AMDGPU_EXPORTER_IMAGE:-rocm/device-metrics-exporter:v1.4.2}"
+
     # node-exporter: host CPU/mem/net + NVMe (diskstats/nvme) + RDMA (infiniband).
     _run_exporter aai-day-node-exporter 9100 \
         --network host --pid host --restart unless-stopped -v /:/host:ro,rslave \
@@ -117,8 +152,10 @@ _monitoring_run_up() {
     # serves no gpu_* series, and skipping our container in favour of it leaves
     # the GPU panels blank.  So: reuse :5000 only if it actually serves gpu_*
     # metrics; if :5000 is busy but is a phantom, launch ours on :5050 instead
-    # (prometheus.yml scrapes both); if :5000 is free, use it.
-    if _port_in_use 5000 && _endpoint_serves_gpu 5000; then
+    # (prometheus.yml scrapes both); if :5000 is free, use it.  The gpu-serve
+    # probe is retried (a real exporter on :5000 may still be warming up) so we
+    # don't spawn a redundant :5050 and double-scrape GPU series.
+    if _port_in_use 5000 && _endpoint_serves_gpu_retry 5000; then
         log "  aai-day-amdgpu-exporter: real GPU exporter already on :5000, reusing"
     else
         local amdgpu_port=5000 amdgpu_cfg="${MON_DIR}/amdgpu-exporter/config.json"
@@ -296,6 +333,9 @@ for r in sorted(res, key=lambda x: x["metric"].get("job", "")):
     m = r["metric"]
     print("up=%s job=%s instance=%s" % (r["value"][1], m.get("job", "?"), m.get("instance", "?")))
 ' 2>&1 | sed 's/^/    /' || log "  WARN tsdb summary query failed"
+    # The vllm/lmcache/nixl jobs are the inference stack, which the exporter
+    # sanity check does not start -- so up=0 for those is expected here.
+    log "  note: vllm/lmcache/nixl up=0 is expected unless an inference stack is serving"
     if [[ -n "${AAI_METRICS_DIR}" && -d "${AAI_METRICS_DIR}" ]]; then
         log "  TSDB: ${AAI_METRICS_DIR} ($(du -sh "${AAI_METRICS_DIR}" 2>/dev/null | cut -f1))"
     fi
