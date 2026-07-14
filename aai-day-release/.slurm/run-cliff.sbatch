@@ -42,11 +42,18 @@
 #       sbatch .slurm/run-cliff.sbatch
 #
 # Storage note (from a live probe of ctr-cx63-mi300x-21, 2026-07-13): the MI300X
-# nodes expose 4x 3.5T Samsung NVMe, but the spares (nvme1-3) are UNMOUNTED and
-# /mnt is empty -- the compose default NVME_DATA=/mnt/lmcache-nvme does not exist.
-# The OS root (/) is itself ext4-on-NVMe with ~3T free, so this script points the
-# NVMe pools at node-local /tmp (physically the same local NVMe, writable by the
-# job user). If a dedicated data NVMe gets mounted later, set NVME_DATA to it.
+# nodes expose 4x 3.5T Samsung NVMe -- nvme0 is the OS root, and the spares
+# (nvme1-3) are typically RAW and UNMOUNTED.  To keep the LMCache NVMe tier off
+# the busy root disk, AAI_NVME_AUTO=1 (default) auto-detects a dedicated local
+# NVMe (needs passwordless sudo on the node), in priority order:
+#   1) reuse an aai-lmcache volume already mounted at AAI_NVME_MOUNT (no format),
+#   2) format + mount a raw, unmounted, non-root NVMe spare at AAI_NVME_MOUNT,
+#   3) use a non-root NVMe filesystem that is already mounted somewhere, else
+#   4) fall back to node-local /tmp on the root disk (the original behavior).
+# Formatting (case 2) only ever touches a disk that is non-root, unmounted, has
+# NO filesystem, is not swap, and is >=100G.  Set AAI_NVME_AUTO=0 to force (4);
+# set NVME_DATA / AAI_LOCAL_ROOT explicitly to pin a path (auto-detect skipped).
+# A provisioned mount is left mounted for reuse by later jobs on the same node.
 #
 set -uo pipefail
 
@@ -82,11 +89,15 @@ VLLM_MODEL="${VLLM_MODEL:-openai/gpt-oss-120b}"
 # Shared HF cache that already holds gpt-oss-120b (see plan); offline so no token.
 HF_HOME="${HF_HOME:-/scratch/${USER}/vllm-lmcache-hipfile/hf}"
 
-# Node-local NVMe-backed scratch for the LMCache tiers (see storage note above).
-AAI_LOCAL_ROOT="${AAI_LOCAL_ROOT:-/tmp/aai-cliff.${SLURM_JOB_ID:-manual}}"
-NVME_DATA="${NVME_DATA:-${AAI_LOCAL_ROOT}/nvme}"   # L2a AIS_MT pool
-NFS_DATA="${NFS_DATA:-${AAI_LOCAL_ROOT}/nfs}"      # L2b POSIX pool (local stand-in)
-GDS_SLAB_DATA="${GDS_SLAB_DATA:-${AAI_LOCAL_ROOT}/slab}"   # GDS L1 slab
+# Storage for the LMCache tiers (see the storage note above).  With
+# AAI_NVME_AUTO=1 (default) the tiers are pointed at a dedicated local NVMe;
+# provision_storage() (below, once log() exists) finalizes the paths.  An
+# explicit NVME_DATA / AAI_LOCAL_ROOT is always honored as-is.
+AAI_NVME_AUTO="${AAI_NVME_AUTO:-1}"
+AAI_NVME_MOUNT="${AAI_NVME_MOUNT:-/mnt/aai-lmcache}"   # where a provisioned spare is mounted
+AAI_NVME_LABEL="${AAI_NVME_LABEL:-aai-lmcache}"        # ext4 label to recognize/reuse our fs
+_AAI_NVME_DATA_PINNED="${NVME_DATA:+1}"
+_AAI_LOCAL_ROOT_PINNED="${AAI_LOCAL_ROOT:+1}"
 
 # Benchmark sweep knobs (defaults mirror the Makefile `cliff` target).
 BENCH_ISL="${BENCH_ISL:-20000}"
@@ -149,9 +160,97 @@ MON_DIR="${REPO}/monitoring"
 log() { printf '[cliff-job] %s\n' "$*" >&2; }
 die() { printf '[cliff-job] ERROR: %s\n' "$*" >&2; exit 1; }
 
+# --- Dedicated-NVMe auto-detection (see the storage note near the top) --------
+# The disk backing / (e.g. nvme0n1); used to exclude the root disk everywhere.
+_root_disk() {
+    local src; src="$(findmnt -no SOURCE / 2>/dev/null)"
+    [[ -n "${src}" ]] || return 0
+    local pk; pk="$(lsblk -no PKNAME "${src}" 2>/dev/null | head -1)"
+    printf '%s\n' "${pk:-$(basename "${src}")}"
+}
+
+# Echo a base directory on a dedicated local NVMe (or nothing -> caller uses
+# /tmp).  Logs go to stderr so stdout carries only the chosen path.
+_detect_or_provision_nvme() {
+    command -v lsblk   >/dev/null 2>&1 || { log "  nvme-auto: lsblk missing; using /tmp" >&2; return 0; }
+    command -v findmnt >/dev/null 2>&1 || { log "  nvme-auto: findmnt missing; using /tmp" >&2; return 0; }
+    local rootdev; rootdev="$(_root_disk)"
+    log "  nvme-auto: root disk = ${rootdev:-unknown}" >&2
+
+    # (1) Reuse an aai-lmcache volume already mounted at AAI_NVME_MOUNT.
+    if mountpoint -q "${AAI_NVME_MOUNT}" 2>/dev/null; then
+        log "  nvme-auto: reusing already-mounted ${AAI_NVME_MOUNT}" >&2
+        printf '%s\n' "${AAI_NVME_MOUNT}"; return 0
+    fi
+
+    # (2) Format + mount a raw, unmounted, non-root NVMe spare.
+    local name fstype mnt cand="" szb
+    while read -r name fstype mnt; do
+        [[ "${name}" =~ ^nvme[0-9]+n[0-9]+$ ]] || continue
+        [[ "${name}" == "${rootdev}" ]] && continue
+        [[ -n "${fstype}" ]] && continue                                   # whole-disk has a fs -> not raw
+        [[ -n "${mnt}" ]] && continue                                      # disk itself mounted
+        [[ "$(lsblk -rno NAME "/dev/${name}" 2>/dev/null | wc -l)" -eq 1 ]] || continue  # has partitions
+        grep -q "^/dev/${name}[[:space:]]" /proc/swaps 2>/dev/null && continue           # in swap
+        szb="$(lsblk -brndo SIZE "/dev/${name}" 2>/dev/null | head -1)"
+        [[ -n "${szb}" && "${szb}" -ge 100000000000 ]] || continue          # >= ~100G
+        cand="/dev/${name}"; break
+    done < <(lsblk -rndo NAME,FSTYPE,MOUNTPOINT 2>/dev/null)
+
+    if [[ -n "${cand}" ]]; then
+        log "  nvme-auto: raw spare ${cand} -> mkfs.ext4 (label ${AAI_NVME_LABEL}) + mount ${AAI_NVME_MOUNT}" >&2
+        if sudo -n mkfs.ext4 -q -F -L "${AAI_NVME_LABEL}" "${cand}" >/dev/null 2>&1 \
+           && sudo -n mkdir -p "${AAI_NVME_MOUNT}" >/dev/null 2>&1 \
+           && sudo -n mount -o noatime "${cand}" "${AAI_NVME_MOUNT}" >/dev/null 2>&1; then
+            sudo -n chown "$(id -u):$(id -g)" "${AAI_NVME_MOUNT}" >/dev/null 2>&1 \
+                || sudo -n chmod 1777 "${AAI_NVME_MOUNT}" >/dev/null 2>&1 || true
+            log "  nvme-auto: mounted ${cand} at ${AAI_NVME_MOUNT} (left mounted for reuse; 'sudo umount ${AAI_NVME_MOUNT}' to release)" >&2
+            printf '%s\n' "${AAI_NVME_MOUNT}"; return 0
+        fi
+        log "  nvme-auto: provisioning ${cand} failed (passwordless sudo required?); trying already-mounted NVMe" >&2
+    fi
+
+    # (3) Use a non-root NVMe filesystem that is already mounted somewhere.
+    local target source fstype2 pk base=""
+    while read -r target source fstype2; do
+        case "${fstype2}" in ext4|xfs) ;; *) continue ;; esac
+        case "${target}" in /|/boot|/boot/*|/usr|/usr/*|/var|/var/*|/etc|/etc/*|/run|/run/*|/home) continue ;; esac
+        pk="$(lsblk -no PKNAME "${source}" 2>/dev/null | head -1)"; pk="${pk:-$(basename "${source}")}"
+        [[ "${pk}" == nvme* ]] || continue
+        [[ "${pk}" == "${rootdev}" ]] && continue
+        [[ -w "${target}" ]] || continue
+        base="${target}"; break
+    done < <(findmnt -rno TARGET,SOURCE,FSTYPE 2>/dev/null)
+    if [[ -n "${base}" ]]; then
+        log "  nvme-auto: using non-root mounted NVMe fs ${base}" >&2
+        printf '%s\n' "${base}"; return 0
+    fi
+
+    log "  nvme-auto: no dedicated NVMe found; falling back to node-local /tmp" >&2
+    return 0
+}
+
+# Finalize AAI_LOCAL_ROOT and the NVME/NFS/slab tier paths.
+provision_storage() {
+    if [[ -n "${_AAI_LOCAL_ROOT_PINNED}" || -n "${_AAI_NVME_DATA_PINNED}" ]]; then
+        log "storage: honoring caller-pinned NVME_DATA/AAI_LOCAL_ROOT (auto-detect skipped)"
+    elif [[ "${AAI_NVME_AUTO}" == "1" ]]; then
+        log "storage: AAI_NVME_AUTO=1 -- detecting a dedicated local NVMe"
+        local base; base="$(_detect_or_provision_nvme)"
+        [[ -n "${base}" ]] && AAI_LOCAL_ROOT="${base}/aai-cliff.${SLURM_JOB_ID:-manual}"
+    else
+        log "storage: AAI_NVME_AUTO=0 -- using node-local /tmp on the root disk"
+    fi
+    AAI_LOCAL_ROOT="${AAI_LOCAL_ROOT:-/tmp/aai-cliff.${SLURM_JOB_ID:-manual}}"
+    NVME_DATA="${NVME_DATA:-${AAI_LOCAL_ROOT}/nvme}"          # L2a AIS_MT pool
+    NFS_DATA="${NFS_DATA:-${AAI_LOCAL_ROOT}/nfs}"             # L2b POSIX pool (local stand-in)
+    GDS_SLAB_DATA="${GDS_SLAB_DATA:-${AAI_LOCAL_ROOT}/slab}"  # GDS L1 slab
+}
+
 log "host        : $(hostname)  job=${SLURM_JOB_ID:-manual}"
 log "image       : ${AAI_IMAGE}"
 log "model       : ${VLLM_MODEL}  (HF_HOME=${HF_HOME}, offline)"
+provision_storage
 log "local NVMe  : ${NVME_DATA}"
 log "results     : ${RESULTS}"
 command -v docker >/dev/null 2>&1 || die "docker not found on $(hostname)"
