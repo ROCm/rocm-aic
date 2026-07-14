@@ -12,7 +12,7 @@ on:
   push:
     branches: [aai-day]
     paths:
-      - 'aai-day-release/Dockerfile'
+      - 'aai-day-release/docker/Dockerfile'
       - 'aai-day-release/patches/**'
       - 'recipies/common/nixl/patches/**'
       - 'recipies/common/nixl/overlay/**'
@@ -20,7 +20,7 @@ on:
   pull_request:
     branches: [main]
     paths:
-      - 'aai-day-release/Dockerfile'
+      - 'aai-day-release/docker/Dockerfile'
       - 'aai-day-release/patches/**'
       - 'recipies/common/nixl/patches/**'
       - 'recipies/common/nixl/overlay/**'
@@ -43,8 +43,8 @@ jobs:
         working-directory: aai-day-release
         run: |
           set -euo pipefail
-          sha="$(grep -E '^ARG LMCACHE_SHA=' Dockerfile | head -1 | cut -d= -f2-)"
-          url="$(grep -E '^ARG LMCACHE_GIT_URL=' Dockerfile | head -1 | cut -d= -f2-)"
+          sha="$(grep -E '^ARG LMCACHE_SHA=' docker/Dockerfile | head -1 | cut -d= -f2-)"
+          url="$(grep -E '^ARG LMCACHE_GIT_URL=' docker/Dockerfile | head -1 | cut -d= -f2-)"
           test -n "${sha}" || { echo "LMCACHE_SHA not set in Dockerfile"; exit 1; }
           test -n "${url}" || { echo "LMCACHE_GIT_URL not set in Dockerfile"; exit 1; }
           echo "sha=${sha}" >> "${GITHUB_OUTPUT}"
@@ -100,8 +100,8 @@ jobs:
         working-directory: aai-day-release
         run: |
           set -euo pipefail
-          sha="$(grep -E '^ARG NIXL_SHA=' Dockerfile | head -1 | cut -d= -f2-)"
-          url="$(grep -E '^ARG NIXL_GIT_URL=' Dockerfile | head -1 | cut -d= -f2-)"
+          sha="$(grep -E '^ARG NIXL_SHA=' docker/Dockerfile | head -1 | cut -d= -f2-)"
+          url="$(grep -E '^ARG NIXL_GIT_URL=' docker/Dockerfile | head -1 | cut -d= -f2-)"
           test -n "${sha}" || { echo "NIXL_SHA not set in Dockerfile"; exit 1; }
           test -n "${url}" || { echo "NIXL_GIT_URL not set in Dockerfile"; exit 1; }
           echo "sha=${sha}" >> "${GITHUB_OUTPUT}"

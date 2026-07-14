@@ -90,8 +90,8 @@ jobs:
       - name: Build aai-day-release (no load; saves runner disk)
         uses: docker/build-push-action@v6
         with:
-          context: .
-          file: aai-day-release/Dockerfile
+          context: aai-day-release
+          file: aai-day-release/docker/Dockerfile
           push: ${{ github.event.inputs.push_image == 'true' }}
           load: false
           tags: |

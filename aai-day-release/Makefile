@@ -66,7 +66,7 @@ export NIXL_GIT_URL NIXL_SHA
 
 comma := ,
 _COMPOSE_BIN := $(shell docker compose version >/dev/null 2>&1 && echo "docker compose" || echo "docker-compose")
-COMPOSE      := DOCKER_BUILDKIT=1 $(_COMPOSE_BIN) -f "$(CURDIR)/docker-compose.yml"
+COMPOSE      := DOCKER_BUILDKIT=1 $(_COMPOSE_BIN) -f "$(CURDIR)/docker/docker-compose.yml"
 
 # ---- Metrics capture (Prometheus sidecar) ----------------------------------
 # AAI_METRICS_DIR: Prometheus TSDB dir (bind-mount an NFS path here to explore
@@ -100,11 +100,26 @@ PYTHON := $(if $(wildcard $(REPO_ROOT)/.venv/bin/python3),$(REPO_ROOT)/.venv/bin
 DIST := $(CURDIR)/.slurm/run-build-distribute.sh
 export AAI_CACHE_DIR ?= /scratch/$(USER)/images/buildcache
 
+# ---- Export tarball --------------------------------------------------------
+# `make export` packages the sources needed to run this tooling into a single
+# self-contained tarball.  It captures the current WORKING TREE -- tracked files
+# with any local edits, plus new-but-not-yet-committed files -- while honoring
+# .gitignore, so logs/, __pycache__/, *.pyc and prior tarballs stay out.  The
+# default filename stamps today's date + the HEAD short rev (with a -dirty suffix
+# when the tree has uncommitted changes).  Override the whole path with
+# EXPORT_TARBALL=... or just the top-level dir inside the tarball via
+# EXPORT_PREFIX=...
+EXPORT_PREFIX  ?= aai-day-release
+_GIT_SHORT_REV := $(shell git -C "$(CURDIR)" rev-parse --short HEAD 2>/dev/null || echo nogit)
+_GIT_DIRTY     := $(if $(shell git -C "$(CURDIR)" status --porcelain -- . 2>/dev/null),-dirty,)
+_GEN_DATE      := $(shell date +%Y%m%d)
+EXPORT_TARBALL ?= $(CURDIR)/$(EXPORT_PREFIX)-$(_GEN_DATE)-$(_GIT_SHORT_REV)$(_GIT_DIRTY).tar.gz
+
 .PHONY: help build up up-batch up-gds-l1 up-gds-l1-batch down logs logs-lmcache logs-vllm \
         ps shell-lmcache shell-vllm restart-vllm restart-lmcache cliff plot venv \
         monitoring-up monitoring-down monitoring-logs monitoring-build-exporters \
-        dist-build dist-push smoke-test cliff-submit cliff-short \
-        _check_hf_token _prep_dirs _check_gds_slab
+        dist-build dist-build-exporters dist-push smoke-test cliff-submit cliff-short \
+        export _check_hf_token _prep_dirs _check_gds_slab
 
 .DEFAULT_GOAL := help
 
@@ -134,6 +149,7 @@ help:
 	@echo ""
 	@echo "Distribute / cliff targets (Slurm; wrap .slurm/ scripts + sbatch):"
 	@echo "  make dist-build        Build image (+ fabric exporters) on a Slurm build node, save tarballs"
+	@echo "  make dist-build-exporters  Build ONLY the nvme/rdma exporter images (no main rebuild)"
 	@echo "  make dist-push         Tag + push the built image (needs AAI_PUSH_REF)"
 	@echo "  make smoke-test        Load + smoke-test the image on a GPU+NVMe node"
 	@echo "  make cliff-submit      sbatch the full 3-arm cliff sweep -> logs/<job-id>/"
@@ -142,6 +158,11 @@ help:
 	@echo "    Pin a node: AAI_CLIFF_NODE=<node>   Narrow arms: AAI_CLIFF_ARMS=nvme (vram,nvme,gds)"
 	@echo "    Override sweep/model via env: BENCH_CONCUR=1,8,64 VLLM_MODEL=... make cliff-submit"
 	@echo "    AAI_CACHE_DIR=$(AAI_CACHE_DIR)  (shared BuildKit cache; set empty to disable)"
+	@echo ""
+	@echo "Export target:"
+	@echo "  make export            Tarball the working-tree sources (tracked + local edits)"
+	@echo "    Default: $(notdir $(EXPORT_TARBALL))"
+	@echo "    Override: make export EXPORT_TARBALL=/path/to/foo.tar.gz"
 	@echo ""
 	@echo "Metrics targets (Prometheus sidecar; scrapes vLLM/LMCache/exporters):"
 	@echo "  make monitoring-up     Start Prometheus, TSDB -> AAI_METRICS_DIR"
@@ -312,6 +333,13 @@ dist-build:                    # Build image (+ fabric exporters) on a Slurm bui
 	@[ "$(AAI_BUILD_EXPORTERS)" = "0" ] || "$(DIST)" build-exporters \
 	    || echo "WARNING: fabric-exporter build failed (optional; main image is built). Retry on a node with Docker Hub access, or set AAI_BUILD_EXPORTERS=0."
 
+dist-build-exporters:          # Build ONLY the fabric exporters (no main-image rebuild)
+	@# Rebuild just the nvme/rdma exporter images -- e.g. after `make dist-build`
+	@# succeeded for the main image but the exporter step failed for lack of Docker
+	@# Hub egress.  Pin an egress-capable node with AAI_BUILD_NODE=<node>, or build
+	@# on the current host with AAI_BUILD_LOCAL=1.
+	"$(DIST)" build-exporters
+
 dist-push:                     # Tag + push the built image to a registry (needs AAI_PUSH_REF)
 	"$(DIST)" push
 
@@ -337,3 +365,18 @@ cliff-short:
 	    .slurm/run-cliff.sbatch) && \
 	    echo "submitted cliff-short job $$jobid (BENCH_CONCUR=$${BENCH_CONCUR:-1} BENCH_ITERS=$${BENCH_ITERS:-1})" && \
 	    echo "log: $(CURDIR)/logs/$$jobid/cliff.out"
+
+# ---- Export tarball --------------------------------------------------------
+export:                        # Package the working-tree sources into a dated, rev-stamped tarball
+	@git -C "$(CURDIR)" rev-parse HEAD >/dev/null 2>&1 || { \
+		echo "ERROR: not a git checkout; cannot enumerate sources" >&2; exit 1; }
+	@# ls-files (cached + others, minus .gitignore'd) gives the working set as
+	@# NUL-separated relative paths; tar reads their on-disk content so local
+	@# edits are included, --transform renames the top dir to EXPORT_PREFIX, and
+	@# --ignore-failed-read tolerates index-only entries (e.g. a tracked file
+	@# deleted on disk) instead of aborting.
+	@cd "$(CURDIR)" && git ls-files -z --cached --others --exclude-standard \
+		| tar --null --no-recursion --ignore-failed-read --owner=0 --group=0 \
+			--transform='s|^|$(EXPORT_PREFIX)/|' \
+			-czf "$(EXPORT_TARBALL)" -T -
+	@echo "Wrote $(EXPORT_TARBALL)"

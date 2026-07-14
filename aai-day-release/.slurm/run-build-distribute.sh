@@ -312,7 +312,7 @@ docker buildx build --builder ${AAI_BUILDX_BUILDER} --output type=docker,dest=- 
     --build-arg ROCM_ARCH="${AAI_ROCM_ARCH}" \
     ${_secret_arg} \
     ${_cache_args} \
-    -f "${AAI_DAY_DIR}/Dockerfile" \
+    -f "${AAI_DAY_DIR}/docker/Dockerfile" \
     -t "${AAI_IMAGE}" \
     "${AAI_DAY_DIR}" | ${COMPRESS_CMD} > "\${tmp}"
 mv -f "\${tmp}" "${tarball}"
@@ -332,7 +332,7 @@ ${_build_program} \
     --build-arg ROCM_ARCH="${AAI_ROCM_ARCH}" \
     ${_secret_arg} \
     ${_cache_args} \
-    -f "${AAI_DAY_DIR}/Dockerfile" \
+    -f "${AAI_DAY_DIR}/docker/Dockerfile" \
     -t "${AAI_IMAGE}" \
     "${AAI_DAY_DIR}"
 echo "[build] built ${AAI_IMAGE}"

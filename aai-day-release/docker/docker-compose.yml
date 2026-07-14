@@ -26,7 +26,7 @@
 #   GDS_MODE               — set to 1 to enable hipFile NVMe slab as L1 (requires GDS_SLAB_DATA)
 #   GDS_SLAB_DATA          — host path for the hipFile slab file (required when GDS_MODE=1)
 #   HF_HOME                — host HF cache dir (default: ~/.cache/huggingface)
-#   LOG                    — host log dir (default: ./logs)
+#   LOG                    — host log dir (default: ../logs, i.e. aai-day-release/logs)
 #   IMAGE_NAME             — Docker image tag (default: rocm-aic-aai-day)
 #   VLLM_MODEL             — model to serve
 #   LMCACHE_PORT           — lmcache ZMQ listen port (default: 6555)
@@ -48,8 +48,11 @@ services:
   # ---------------------------------------------------------------------------
   lmcache:
     build:
-      context: .
-      dockerfile: Dockerfile
+      # Compose lives in docker/; the build context is the aai-day-release tree
+      # root (one level up) so the Dockerfile's COPY scripts/ patches/ benchmarks/
+      # monitoring/ paths still resolve.
+      context: ..
+      dockerfile: docker/Dockerfile
       args:
         ROCM_ARCH: ${ROCM_ARCH}
     image: ${IMAGE_NAME:-rocm-aic-aai-day}
@@ -87,7 +90,7 @@ services:
       - /sys/kernel/debug:/sys/kernel/debug
       - /sys/kernel/btf:/sys/kernel/btf:ro
       - /boot:/boot:ro
-      - ${LOG:-./logs}/lmcache:/var/log/aai-day-lmcache
+      - ${LOG:-../logs}/lmcache:/var/log/aai-day-lmcache
     environment:
       - LMCACHE_PORT=${LMCACHE_PORT:-6555}
       - LMCACHE_L1_SIZE_GB=${LMCACHE_L1_SIZE_GB:-20}
@@ -155,7 +158,7 @@ services:
       - /dev/dri
     volumes:
       - ${HF_HOME:-~/.cache/huggingface}:/hf
-      - ${LOG:-./logs}/vllm:/var/log/aai-day-vllm
+      - ${LOG:-../logs}/vllm:/var/log/aai-day-vllm
     environment:
       - HF_TOKEN=${HF_TOKEN}
       - HF_HOME=/hf

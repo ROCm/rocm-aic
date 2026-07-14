@@ -154,7 +154,7 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: aai-day-release
-          file: aai-day-release/Dockerfile
+          file: aai-day-release/docker/Dockerfile
           target: wheels
           outputs: type=local,dest=wheels
           build-args: |
@@ -180,7 +180,7 @@ jobs:
         id: notes
         run: |
           set -euo pipefail
-          df="aai-day-release/Dockerfile"
+          df="aai-day-release/docker/Dockerfile"
           get() { grep -E "^ARG $1=" "$df" | head -1 | cut -d= -f2-; }
           {
             echo "Nightly ROCm wheels for the **aai-day-release** patched stack."

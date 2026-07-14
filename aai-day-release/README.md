@@ -83,11 +83,13 @@ make -C aai-day-release build TLS_CERT=/path/to/corp-ca.crt
 Or with plain `docker build`:
 
 ```bash
+# Context is the aai-day-release tree (the Dockerfile COPYs scripts/, patches/,
+# benchmarks/, monitoring/ from it); the Dockerfile itself lives in docker/.
 DOCKER_BUILDKIT=1 docker build \
   --build-arg ROCM_ARCH=gfx942 \
   --secret id=tls_cert,src=/path/to/corp-ca.crt \
-  -f aai-day-release/Dockerfile \
-  -t rocm-aic-aai-day .
+  -f aai-day-release/docker/Dockerfile \
+  -t rocm-aic-aai-day aai-day-release
 ```
 
 Omit `TLS_CERT` / `--secret` entirely when building outside AMD's network.
@@ -203,7 +205,7 @@ etc. It's compiled into the image (the `prometheus-cpp` plugin is built by
 [scripts/nixl/build-nixl.sh](scripts/nixl/build-nixl.sh)) and enabled at runtime
 on the **LMCache** process — the one that runs the NIXL agent — via
 `NIXL_TELEMETRY_ENABLE=y NIXL_TELEMETRY_EXPORTER=prometheus
-NIXL_TELEMETRY_PROMETHEUS_PORT=19090` (set by default in `docker-compose.yml`
+NIXL_TELEMETRY_PROMETHEUS_PORT=19090` (set by default in `docker/docker-compose.yml`
 and the cliff sbatch). Under LMCache MP mode only one worker process wins the
 port; the rest run without a sink. Metric names may change between NIXL
 versions. Set `NIXL_TELEMETRY_ENABLE=` (empty) to disable, or
@@ -255,7 +257,7 @@ On a node lacking both, NVMe I/O still comes from node-exporter's
 
 **hsa-snoop (`:9488`).** [sbates130272/hsa-snoop](https://github.com/sbates130272/hsa-snoop)
 is compiled into the `rocm-aic-aai-day` image with its Prometheus exporter
-(`-DHSA_SNOOP_PROMETHEUS=ON`; see [Dockerfile](Dockerfile) step 6b — the build
+(`-DHSA_SNOOP_PROMETHEUS=ON`; see [docker/Dockerfile](docker/Dockerfile) step 6b — the build
 fails if the resulting binary lacks `--prometheus`). The snooper is host-only
 C++ and **architecture-independent** — one binary runs on every gfx target we
 ship — so the build disables the optional HIP `examples/`
@@ -294,10 +296,11 @@ poll intervals can be missed) and is upstream-verified on gfx90a / ROCm 7.1.0.
 
 ```text
 aai-day-release/
-├── Dockerfile              # ROCm inference stack image
 ├── Makefile                # Local stack + benchmark + distribute/cliff targets
 ├── pyproject.toml          # Host-side bench + plot Python deps
-├── docker-compose.yml      # lmcache + vllm services (standard + GDS L1)
+├── docker/
+│   ├── Dockerfile          # ROCm inference stack image (build context = tree root)
+│   └── docker-compose.yml  # lmcache + vllm services (standard + GDS L1)
 ├── benchmarks/
 │   ├── run_cliff.py        # KV cache cliff benchmark runner
 │   └── plot_cliff.py       # Cliff chart plotter (matplotlib)
@@ -334,7 +337,7 @@ git ls-remote https://github.com/ai-dynamo/nixl.git refs/heads/main
 git ls-remote https://github.com/ROCm/rocm-systems.git refs/tags/rocm-7.2.3
 
 # Then update LMCACHE_SHA, NIXL_SHA, HIPFILE_SHA, VLLM_VERSION, and
-# the FROM base image tag in Dockerfile.
+# the FROM base image tag in docker/Dockerfile.
 ```
 
 ## Related recipes
