@@ -117,6 +117,13 @@
 #   AAI_TEST_TIME        test job time limit               (default: 00:20:00)
 #   AAI_TEST_CPUS        --cpus-per-task for the test job  (default: 8)
 #   AAI_TEST_MEM         --mem for the test job            (default: 32G)
+#   AAI_SMOKE_EXPORTERS  test: 1 to also stand up the exporter fleet + Prometheus
+#                        after the in-image checks, health-check each /metrics
+#                        endpoint, and leave a TSDB under logs/<job-id>/prometheus
+#                        (informational -- never changes the exit code); 0 to skip
+#                        (default: 1)
+#   AAI_SMOKE_SCRAPE_S   test: seconds to let Prometheus scrape before the health
+#                        check / TSDB summary                       (default: 45)
 #
 #   AAI_TLS_CERT         corporate CA cert (BuildKit secret, never baked into image)
 #                        (default: $HOME/certs/zscaler-ca.crt if it exists; else none)
@@ -640,6 +647,17 @@ cmd_test() {
     command -v sbatch >/dev/null 2>&1 || die "sbatch not found; cannot run the GPU test job"
     [[ -r "${tarball}" ]] || die "tarball not found: ${tarball} (run 'build' first)"
 
+    # After the in-image checks, optionally stand up the exporter fleet +
+    # Prometheus (via monitoring/monitoring-lib.sh, shared with the cliff),
+    # scrape briefly, health-check each /metrics endpoint, and leave a TSDB under
+    # logs/<job-id>/prometheus to sanity-check.  Informational only -- these never
+    # change the smoke-test's exit code (the in-image checks alone govern that).
+    local _smoke_exporters="${AAI_SMOKE_EXPORTERS:-1}"
+    local _smoke_scrape_s="${AAI_SMOKE_SCRAPE_S:-45}"
+    local nvme_tar rdma_tar
+    nvme_tar="$(_exporter_tarball_path "${AAI_NVME_EXPORTER_IMAGE}")"
+    rdma_tar="$(_exporter_tarball_path "${AAI_RDMA_EXPORTER_IMAGE}")"
+
     # In-container checks live in a standalone script on shared /scratch (visible
     # on the GPU node) and are bind-mounted in -- avoids nested shell quoting.
     mkdir -p "${AAI_IMAGE_DIR}"
@@ -766,6 +784,9 @@ fi
 kmounts=""
 [ -d /boot ] && kmounts="\${kmounts} -v /boot:/boot:ro"
 [ -d /lib/modules ] && kmounts="\${kmounts} -v /lib/modules:/lib/modules:ro"
+# In-image checks govern the exit code; capture it so the exporter phase below
+# (informational) can run regardless and we still exit with the real result.
+img_rc=0
 docker run --rm \
     --device /dev/kfd --device /dev/dri \
     --ipc host \
@@ -775,7 +796,42 @@ docker run --rm \
     -e EXPECT_ARCH='${AAI_ROCM_ARCH}' \
     -v '${smoketest}':/tmp/aai-day-smoketest.sh:ro \
     --entrypoint /bin/bash \
-    '${AAI_IMAGE}' /tmp/aai-day-smoketest.sh
+    '${AAI_IMAGE}' /tmp/aai-day-smoketest.sh || img_rc=\$?
+
+# --- exporter + Prometheus sanity check (informational; never fails the test) --
+# Stands up the same exporter fleet + Prometheus the cliff uses (docker-run path;
+# GPU nodes lack the compose plugin), scrapes briefly, curls each /metrics, and
+# leaves a TSDB under logs/<job-id>/prometheus.  All best-effort: missing images
+# or absent hardware -> WARN and continue.
+if [ '${_smoke_exporters}' = "1" ]; then
+    set +e
+    echo "[test] === exporter + Prometheus sanity check (scrape ${_smoke_scrape_s}s) ==="
+    log() { printf '[test] %s\n' "\$*"; }
+    # Best-effort load the fabric exporter images from /scratch, then advertise
+    # them to the lib only when actually present on the node.
+    if [ -r '${nvme_tar}' ]; then ${DECOMPRESS_CMD} '${nvme_tar}' | docker load >/dev/null 2>&1 || true; fi
+    if [ -r '${rdma_tar}' ]; then ${DECOMPRESS_CMD} '${rdma_tar}' | docker load >/dev/null 2>&1 || true; fi
+    docker image inspect '${AAI_NVME_EXPORTER_IMAGE}' >/dev/null 2>&1 && export AAI_NVME_EXPORTER_IMAGE='${AAI_NVME_EXPORTER_IMAGE}'
+    docker image inspect '${AAI_RDMA_EXPORTER_IMAGE}' >/dev/null 2>&1 && export AAI_RDMA_EXPORTER_IMAGE='${AAI_RDMA_EXPORTER_IMAGE}'
+    AAI_IMAGE='${AAI_IMAGE}'
+    MON_DIR='${AAI_DAY_DIR}/monitoring'
+    AAI_METRICS_DIR="\${_logdir}/prometheus"
+    AAI_EXPORTERS=1
+    AAI_MONITORING=1
+    AIS_KFD_SYMBOL="\${AIS_KFD_SYMBOL:-}"
+    # shellcheck source=/dev/null
+    source '${AAI_DAY_DIR}/monitoring/monitoring-lib.sh'
+    mkdir -p "\${AAI_METRICS_DIR}"
+    start_monitoring
+    echo "[test] scraping metrics for ${_smoke_scrape_s}s ..."
+    sleep '${_smoke_scrape_s}'
+    monitoring_healthcheck
+    monitoring_tsdb_summary
+    stop_monitoring
+    echo "[test] exporter sanity check complete (TSDB at \${AAI_METRICS_DIR})"
+fi
+
+exit \${img_rc}
 REMOTE
 )"
 

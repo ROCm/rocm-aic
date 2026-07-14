@@ -104,6 +104,7 @@ RUN apt-get update && \
         ibverbs-providers \
         libmount-dev \
         ninja-build \
+        nvme-cli \
         pkg-config \
         python3-dev \
         bpftrace \

@@ -153,6 +153,8 @@ help:
 	@echo "  make dist-build-exporters  Build ONLY the nvme/rdma exporter images (no main rebuild)"
 	@echo "  make dist-push         Tag + push the built image (needs AAI_PUSH_REF)"
 	@echo "  make smoke-test        Load + smoke-test the image on a GPU+NVMe node"
+	@echo "                         (also sanity-checks exporters + writes a Prometheus TSDB"
+	@echo "                          to logs/<job-id>/prometheus; AAI_SMOKE_EXPORTERS=0 skips)"
 	@echo "  make cliff-submit      sbatch the full 3-arm cliff sweep -> logs/<job-id>/"
 	@echo "  make cliff-short       sbatch a 1-point cliff (concur=1, 1 iter) to smoke-test the flow"
 	@echo "    Chain like the old run-this.sh:  make dist-build dist-push smoke-test"

@@ -175,6 +175,15 @@ make -C aai-day-release cliff-submit AAI_CLIFF_ARMS=nvme BENCH_CONCUR=1,8,64
 make -C aai-day-release cliff-short          # 1-point smoke test of the whole flow
 ```
 
+`smoke-test` validates the *image* on a GPU+NVMe node (GPU/arch, vLLM + LMCache
+imports, `ais-check`, `nvme list`, the NIXL AIS_MT plugin). After those checks it
+also stands up the full exporter fleet + Prometheus (the same
+`monitoring/monitoring-lib.sh` the cliff uses), scrapes briefly, health-checks
+each `/metrics` endpoint, and leaves a TSDB under `logs/<job-id>/prometheus` to
+sanity-check — all **informational** (only the in-image checks affect the exit
+code). Tune with `AAI_SMOKE_EXPORTERS=0` (skip) and `AAI_SMOKE_SCRAPE_S=<secs>`
+(default 45).
+
 ## Metrics & observability
 
 A host-network Prometheus sidecar can capture the whole run so it can be
