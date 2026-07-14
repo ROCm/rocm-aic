@@ -111,6 +111,12 @@ RUN apt-get update && \
     && rm -rf /var/lib/apt/lists/* \
     && update-ca-certificates
 
+# Silence git's detached-HEAD advisory.  Every source below is cloned then
+# checked out at a pinned SHA (detached HEAD by design), which otherwise prints a
+# multi-line advice block per clone.  Written to /root/.gitconfig, so it applies
+# to every later git in this stage (LMCache, the NIXL clone script, hsa-snoop).
+RUN git config --global advice.detachedHead false
+
 # Ubuntu 24.04 marks the system interpreter PEP-668 "externally managed", which
 # makes both `uv pip install --system` and plain `python3 -m pip install` refuse
 # to touch /usr.  This is a single-purpose container built entirely on the system
