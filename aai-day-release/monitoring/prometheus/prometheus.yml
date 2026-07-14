@@ -87,3 +87,11 @@ scrape_configs:
     metrics_path: /metrics
     static_configs:
       - targets: ["localhost:9488"]
+
+  # ais-snoop: AIS (AMD Infinity Storage / hipFile GDS/P2PDMA) KFD kprobe
+  # telemetry (ais_kfd_calls_total, ais_kfd_latency_seconds_{sum,count},
+  # ais_kfd_inflight, ais_snoop_up). Reports up=0 until AIS_KFD_SYMBOL is set.
+  - job_name: ais_snoop
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["localhost:9489"]

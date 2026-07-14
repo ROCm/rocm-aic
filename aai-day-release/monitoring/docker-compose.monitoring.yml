@@ -17,12 +17,13 @@
 #   AAI_METRICS_DIR=/mnt/lmcache-nfs/metrics \
 #     docker compose -f monitoring/docker-compose.monitoring.yml up -d
 #
-#   # also launch containerized exporters (node + AMD GPU + hsa-snoop) on bare nodes:
+#   # also launch containerized exporters (node + AMD GPU + hsa-snoop + ais-snoop) on bare nodes:
 #   AAI_METRICS_DIR=/mnt/lmcache-nfs/metrics \
 #     docker compose -f monitoring/docker-compose.monitoring.yml --profile exporters up -d
 #
 # The `exporters` profile adds: node-exporter (:9100), amdgpu-exporter (:5000),
-# and hsa-snoop (:9488, from the aai-day image -- set IMAGE_NAME to its tag).
+# hsa-snoop (:9488) and ais-snoop (:9489) -- the last two from the aai-day image
+# (set IMAGE_NAME to its tag).
 #
 # Required env:
 #   AAI_METRICS_DIR — host path (bind-mount an NFS dir here) for the Prometheus TSDB
@@ -35,6 +36,12 @@
 #   AAI_AMDGPU_EXPORTER_IMAGE — AMD device-metrics-exporter image (exporters profile)
 #   AAI_HSA_SNOOP_IMAGE / IMAGE_NAME — image carrying hsa-snoop (default: rocm-aic-aai-day)
 #   HSA_SNOOP_PORT       — hsa-snoop /metrics port (default: 9488)
+#   AAI_AIS_SNOOP_IMAGE / IMAGE_NAME — image carrying ais-snoop (default: rocm-aic-aai-day)
+#   AIS_SNOOP_PORT       — ais-snoop /metrics port (default: 9489)
+#   AIS_KFD_SYMBOL       — amdgpu/KFD kernel symbol the AIS kprobe attaches to.
+#                          MUST be set to the real AIS KFD function; unset ->
+#                          ais_snoop_up=0{reason="no_symbol_configured"}. See
+#                          monitoring/ais-snoop/README.md for how to discover it.
 #   PROM_UID / PROM_GID  — uid:gid Prometheus runs as, so it can write the NFS
 #                          TSDB dir (default: 65534:65534 = nobody). The cliff
 #                          sbatch sets these to the submitting user.
@@ -180,3 +187,37 @@ services:
       - /sys/kernel/tracing:/sys/kernel/tracing
     entrypoint: ["/usr/local/bin/hsa-snoop"]
     command: ["--all", "--prometheus", "--prometheus-port", "${HSA_SNOOP_PORT:-9488}"]
+
+  # ---------------------------------------------------------------------------
+  # ais-snoop (exporters profile): AIS (AMD Infinity Storage / hipFile
+  # GDS/P2PDMA) KFD kprobe exporter on :9489. Sibling of hsa-snoop -- same
+  # privileged / host-PID / tracefs runtime model, same aai-day image -- but a
+  # bpftrace + Python wrapper that attaches a kprobe/kretprobe to the AIS KFD
+  # kernel symbol (AIS_KFD_SYMBOL) and exports ais_* metrics. The symbol is a
+  # runtime input (hipFile is cloned at build time); with none set the exporter
+  # still serves, reporting ais_snoop_up=0{reason="no_symbol_configured"}.
+  # /lib/modules + /usr/src let bpftrace resolve kernel symbols; /sys/kernel/btf
+  # is only needed if the probe is extended to read function arguments.
+  # ---------------------------------------------------------------------------
+  ais-snoop:
+    image: ${AAI_AIS_SNOOP_IMAGE:-${IMAGE_NAME:-rocm-aic-aai-day}}
+    container_name: aai-day-ais-snoop
+    profiles: ["exporters"]
+    network_mode: host
+    pid: host
+    privileged: true
+    restart: unless-stopped
+    devices:
+      - /dev/kfd
+      - /dev/dri
+    environment:
+      AIS_KFD_SYMBOL: ${AIS_KFD_SYMBOL:-}
+      AIS_SNOOP_PORT: ${AIS_SNOOP_PORT:-9489}
+    volumes:
+      - /sys/kernel/debug:/sys/kernel/debug
+      - /sys/kernel/tracing:/sys/kernel/tracing
+      - /lib/modules:/lib/modules:ro
+      - /usr/src:/usr/src:ro
+      - /sys/kernel/btf:/sys/kernel/btf:ro
+    entrypoint: ["/usr/local/bin/ais-snoop"]
+    command: ["--prometheus-port", "${AIS_SNOOP_PORT:-9489}"]

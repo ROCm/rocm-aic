@@ -294,7 +294,8 @@ mon_profile() {  # echo the compose --profile args for the exporters profile
 # Compose service container_names -- reused by the docker-run fallback so both
 # paths produce identically-named containers and share one teardown.
 MON_CONTAINERS=(aai-day-prometheus aai-day-node-exporter aai-day-amdgpu-exporter
-                aai-day-nvme-exporter aai-day-rdma-exporter aai-day-hsa-snoop)
+                aai-day-nvme-exporter aai-day-rdma-exporter aai-day-hsa-snoop
+                aai-day-ais-snoop)
 
 # True (0) if something is already listening on the given local TCP port -- used
 # to skip launching a containerized exporter when a host exporter serves it
@@ -398,6 +399,31 @@ _monitoring_run_up() {
             && log "  hsa-snoop on :${HSA_SNOOP_PORT:-9488}" \
             || log "  hsa-snoop: docker run failed"
     fi
+
+    # ais-snoop (:9489): AIS (AMD Infinity Storage / hipFile GDS/P2PDMA) KFD
+    # kprobe exporter from the aai-day image.  Sibling of hsa-snoop: same
+    # privileged + host-PID + tracefs model, plus /lib/modules + /usr/src so
+    # bpftrace can resolve kernel symbols (and /sys/kernel/btf when present, for
+    # future arg introspection).  The kprobe target is AIS_KFD_SYMBOL -- unset
+    # ->ais_snoop_up=0{reason="no_symbol_configured"}, so it's harmless to launch
+    # before the symbol is chosen.
+    if _port_in_use "${AIS_SNOOP_PORT:-9489}"; then
+        log "  ais-snoop: :${AIS_SNOOP_PORT:-9489} already served, skipping container"
+    else
+        docker rm -f aai-day-ais-snoop >/dev/null 2>&1 || true
+        local -a _aisfs=()
+        [[ -d /sys/kernel/tracing ]] && _aisfs+=(-v /sys/kernel/tracing:/sys/kernel/tracing)
+        [[ -d /sys/kernel/btf ]] && _aisfs+=(-v /sys/kernel/btf:/sys/kernel/btf:ro)
+        docker run -d --name aai-day-ais-snoop --network host --pid host --privileged \
+            --restart unless-stopped --device /dev/kfd --device /dev/dri \
+            -v /sys/kernel/debug:/sys/kernel/debug \
+            -v /lib/modules:/lib/modules:ro -v /usr/src:/usr/src:ro "${_aisfs[@]}" \
+            -e AIS_KFD_SYMBOL="${AIS_KFD_SYMBOL:-}" \
+            --entrypoint /usr/local/bin/ais-snoop "${AAI_IMAGE}" \
+            --prometheus-port "${AIS_SNOOP_PORT:-9489}" >/dev/null \
+            && log "  ais-snoop on :${AIS_SNOOP_PORT:-9489} (symbol='${AIS_KFD_SYMBOL:-<unset>}')" \
+            || log "  ais-snoop: docker run failed"
+    fi
 }
 
 start_monitoring() {
@@ -408,6 +434,7 @@ start_monitoring() {
         local -a profile; mapfile -t profile < <(mon_profile)
         AAI_METRICS_DIR="${AAI_METRICS_DIR}" PROM_UID="$(id -u)" PROM_GID="$(id -g)" \
             IMAGE_NAME="${AAI_IMAGE}" \
+            AIS_KFD_SYMBOL="${AIS_KFD_SYMBOL:-}" AIS_SNOOP_PORT="${AIS_SNOOP_PORT:-9489}" \
             docker compose -f "${MON_COMPOSE}" "${profile[@]}" up -d \
             || log "monitoring: compose up failed (continuing without metrics)"
     else
@@ -489,6 +516,11 @@ write_lmcache_nixl_config() {
 chunk_size: 256
 local_cpu: false
 save_decode_cache: true
+# Deterministic, seed-independent chunk hashing.  The 'builtin' default uses
+# Python hash() (PYTHONHASHSEED-dependent) and doesn't match across LMCache's
+# separate lookup subprocess -> external lookups miss -> ext_hit stays 0 even
+# under L1 overflow.  sha256_cbor (as in recipies/vllm-lmcache-nixl) is stable.
+pre_caching_hash_algorithm: sha256_cbor
 nixl_buffer_size: ${AAI_NIXL_BUFFER_SIZE}
 nixl_buffer_device: cuda
 extra_config:

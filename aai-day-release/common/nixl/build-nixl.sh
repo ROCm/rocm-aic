@@ -223,3 +223,39 @@ if command -v ldd >/dev/null 2>&1; then
 fi
 
 echo "NIXL build complete prefix=${NIXL_INSTALL_PREFIX}"
+
+# ----- Optional: build a pip-installable ROCm wheel (nixl-rocm) --------------
+# When NIXL_BUILD_WHEEL=1, also emit a wheel into NIXL_WHEEL_DIR (default
+# /wheels) via meson-python, reusing the SAME meson args resolved above
+# (MESON_EXTRA, minus --prefix which meson-python manages itself).  The wheel is
+# named nixl-rocm (upstream pyproject defaults to nixl-cu12) and bundles libnixl
+# + the NIXL plugins/UCX libs; the ROCm runtime (libamdhip64, hipFile) stays an
+# external dependency of the target environment -- see the aai-day README.
+#
+# CXX must NOT be hipcc for this build: meson would try to use it as the host C++
+# compiler and hipcc fails meson's compiler sanity check.  The Dockerfile keeps
+# CXX=hipcc scoped to the LMCache layer, but `env -u CXX` here makes the wheel
+# build robust regardless of the caller's environment.
+if [[ "${NIXL_BUILD_WHEEL:-0}" == "1" ]]; then
+	NIXL_WHEEL_DIR="${NIXL_WHEEL_DIR:-/wheels}"
+	mkdir -p "${NIXL_WHEEL_DIR}"
+	python3 -m pip install --no-cache-dir meson-python patchelf
+	cd "${NIXL_SRC}"
+	if [[ -x contrib/tomlutil.py ]]; then
+		./contrib/tomlutil.py --wheel-name nixl-rocm pyproject.toml
+	fi
+	wheel_setup_args=()
+	for _arg in "${MESON_EXTRA[@]}"; do
+		[[ "${_arg}" == --prefix=* ]] && continue
+		wheel_setup_args+=("-Csetup-args=${_arg}")
+	done
+	env -u CXX ROCM_PATH="${ROCM_PATH}" \
+		uv build --wheel --no-build-isolation \
+			--out-dir "${NIXL_WHEEL_DIR}" "${wheel_setup_args[@]}"
+	_nixl_whl="$(find "${NIXL_WHEEL_DIR}" -maxdepth 1 -name 'nixl*rocm*.whl' | head -1)"
+	if [[ -z "${_nixl_whl}" ]]; then
+		echo "ERROR: NIXL_BUILD_WHEEL=1 but no nixl*rocm*.whl in ${NIXL_WHEEL_DIR}" >&2
+		exit 1
+	fi
+	echo "PASS: NIXL wheel built -> ${_nixl_whl}"
+fi

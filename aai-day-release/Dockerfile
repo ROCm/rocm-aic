@@ -37,8 +37,18 @@
 # Patches: every *.patch under patches/lmcache/ and patches/nixl/ is applied to
 # its upstream checkout during the build, in lexical (filename) order -- hence
 # the NN- prefixes.  Drop a new NN-*.patch into the directory to include it.
+#
+# Wheels: the build also produces pip-installable wheels for the patched LMCache
+# and ROCm NIXL under /wheels.  Extract them with the `wheels` stage:
+#   docker build --target wheels --output type=local,dest=./wheels .
+# (the default target remains the full runtime image -- see stages 8/9 below).
 
-FROM rocm/dev-ubuntu-24.04:7.2.4-complete
+# The main build stage is named `build`; two trailing stages at the end of this
+# file expose the pip wheels (`wheels`) and the final runtime image (`runtime`,
+# the default target -- identical to `build`, so existing `docker build` callers
+# are unaffected).  Publishing wheels: `docker build --target wheels
+# --output type=local,dest=<dir>` extracts /wheels without loading the image.
+FROM rocm/dev-ubuntu-24.04:7.2.4-complete AS build
 
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 
@@ -96,6 +106,7 @@ RUN apt-get update && \
         ninja-build \
         pkg-config \
         python3-dev \
+        bpftrace \
     && rm -rf /var/lib/apt/lists/* \
     && update-ca-certificates
 
@@ -143,17 +154,35 @@ RUN cd /app/LMCache && \
         fi; \
     done
 
-RUN cd /app/LMCache && \
+# Build the LMCache wheel (with the AMD patches + HIP extension) and install THAT,
+# instead of `pip install -e .`, so the wheel we publish is byte-for-byte what the
+# image runs.  The wheel lands in /wheels (extracted by the `wheels` stage below).
+#
+# ROCM_TARGET_LST pins the arch that hipcc auto-detects for the host-side .cpp
+# files (which torch compiles without an explicit --offload-arch): on a GPU-less
+# build host, rocm_agent_enumerator can report a phantom arch (e.g. gfx1105) that
+# this ROCm's clang rejects, breaking the compile.  GPU kernels still get the full
+# multi-arch set from PYTORCH_ROCM_ARCH via torch, so a single valid arch here
+# (the first of the list) is enough to satisfy the host compiles.
+RUN mkdir -p /wheels && \
+    printf '%s\n' "${ROCM_ARCH%%;*}" > /etc/rocm_target.lst && \
+    cd /app/LMCache && \
     PYTORCH_ROCM_ARCH="${ROCM_ARCH}" \
         TORCH_DONT_CHECK_COMPILER_ABI=1 \
         CXX=hipcc \
         BUILD_WITH_HIP=1 \
-        uv pip install --system --no-build-isolation --no-cache -e .
+        ROCM_TARGET_LST=/etc/rocm_target.lst \
+        python3 -m pip wheel --no-build-isolation --no-deps -w /wheels . && \
+    uv pip install --system --no-cache /wheels/lmcache-*.whl
 
 RUN uv pip install --system --no-cache "matplotlib>=3.8,<4"
 
 # Remove any NIXL wheels that upstream packages may have pulled — we build from source below.
-RUN uv pip uninstall --system nixl nixl-cu12 nixl-cu13 2>/dev/null || true
+# Also purge stray CUDA-only deps (cupy-cuda12x, cufile-python, cuda-pathfinder): if they
+# remain, vLLM/LMCache can try to import non-existent CUDA .so files at runtime on ROCm.
+RUN uv pip uninstall --system \
+        nixl nixl-cu12 nixl-cu13 \
+        cupy-cuda12x cufile-python cuda-pathfinder 2>/dev/null || true
 
 # ----- 5. ROCm/rocm-systems hipFile (DEB + Python binding) ------------------
 RUN git clone --no-checkout --filter=blob:none \
@@ -209,6 +238,7 @@ RUN chmod +x /tmp/nixl-common/*.sh && \
     NIXL_SRC=/tmp/nixl \
         AIS_PATH=/opt/rocm ROCM_PATH=/opt/rocm \
         NIXL_INSTALL_PREFIX=/opt/nixl \
+        NIXL_BUILD_WHEEL=1 NIXL_WHEEL_DIR=/wheels \
         UV_NATIVE_TLS=1 \
         /tmp/nixl-common/build-nixl.sh
 
@@ -237,6 +267,26 @@ RUN git clone "${HSA_SNOOP_GIT_URL}" /app/hsa-snoop && \
         || { echo "ERROR: hsa-snoop built without Prometheus mode (--prometheus absent)" >&2; exit 1; } && \
     echo "PASS: hsa-snoop with Prometheus exporter installed"
 
+# ----- 6c. ais-snoop (AIS KFD kprobe -> Prometheus exporter) -----------------
+# AIS-path sibling of hsa-snoop: a small bpftrace + Python wrapper that attaches
+# a kprobe/kretprobe to the AIS (AMD Infinity Storage / hipFile GDS/P2PDMA) KFD
+# kernel symbol and exports ais_* metrics on :9489 (/metrics).  The kernel symbol
+# is a RUNTIME input (AIS_KFD_SYMBOL) -- hipFile source is cloned at build time
+# and the exact function is not known here -- so nothing to compile: we install
+# the script and rely on `bpftrace` (apt, step 1) and prometheus_client (already
+# present via vLLM's deps).  Runs privileged in the host PID ns with tracefs, same
+# as hsa-snoop -- see monitoring/docker-compose.monitoring.yml / ais-snoop/README.
+COPY monitoring/ais-snoop/ais-snoop.py /usr/local/bin/ais-snoop
+RUN chmod +x /usr/local/bin/ais-snoop && \
+    python3 -m py_compile /usr/local/bin/ais-snoop && \
+    python3 -c "import prometheus_client" \
+        || { echo "ERROR: prometheus_client missing (ais-snoop needs it)" >&2; exit 1; } && \
+    command -v bpftrace >/dev/null \
+        || { echo "ERROR: bpftrace not installed (ais-snoop needs it)" >&2; exit 1; } && \
+    /usr/local/bin/ais-snoop --help >/dev/null \
+        || { echo "ERROR: ais-snoop failed to start (--help)" >&2; exit 1; } && \
+    echo "PASS: ais-snoop (AIS KFD exporter) installed"
+
 # ----- 7. Runtime environment ------------------------------------------------
 ENV PYTHONUNBUFFERED=1 \
     PYTHONHASHSEED=0 \
@@ -246,3 +296,18 @@ ENV PYTHONUNBUFFERED=1 \
 
 # vLLM OpenAI-compatible server is the default entrypoint.
 ENTRYPOINT ["python3", "-m", "vllm.entrypoints.openai.api_server"]
+
+# ----- 8. Wheel export stage -------------------------------------------------
+# A scratch image whose only content is the pip wheels built above (patched
+# LMCache + ROCm NIXL).  Extract them WITHOUT building/loading the full image:
+#   docker build --target wheels --output type=local,dest=./wheels .
+# The nightly-wheels GitHub workflow uses exactly this to publish the wheels.
+FROM scratch AS wheels
+COPY --from=build /wheels /
+
+# ----- 9. Runtime image (default target) -------------------------------------
+# Aliases the `build` stage so the DEFAULT build target (no --target) is the full
+# runtime image, exactly as before -- Makefile/compose/run-build-distribute.sh
+# and the existing Docker CI all keep getting the runtime image unchanged.  Must
+# be the LAST stage in this file so BuildKit treats it as the default.
+FROM build AS runtime

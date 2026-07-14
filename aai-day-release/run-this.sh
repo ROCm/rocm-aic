@@ -28,6 +28,8 @@
 #     --cliff-short (fastest single-arm check)
 #   --cliff auto-starts a Prometheus metrics sidecar (AAI_MONITORING=0 to skip);
 #     set AAI_METRICS_DIR=<nfs-dir> for the TSDB, AAI_EXPORTERS=0 to use host exporters
+#     set AIS_KFD_SYMBOL=<fn> to arm the AIS KFD kprobe exporter (ais-snoop, :9489);
+#       unset -> ais_snoop_up=0 (see monitoring/ais-snoop/README.md to find the symbol)
 #   --build also builds the nvme/rdma exporter images (AAI_BUILD_EXPORTERS=0 to skip);
 #     --cliff then auto-loads them on the node and points the sidecar at them when
 #     present (else it falls back to host exporters / node-exporter collectors)
