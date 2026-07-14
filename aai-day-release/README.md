@@ -181,7 +181,7 @@ and recording rules apply.
 **NIXL native telemetry (`:19090`).** NIXL ships its own (experimental/beta)
 Prometheus exporter — `agent_tx_bytes_total`, `agent_errors_total{status=...}`,
 etc. It's compiled into the image (the `prometheus-cpp` plugin is built by
-[common/nixl/build-nixl.sh](common/nixl/build-nixl.sh)) and enabled at runtime
+[scripts/nixl/build-nixl.sh](scripts/nixl/build-nixl.sh)) and enabled at runtime
 on the **LMCache** process — the one that runs the NIXL agent — via
 `NIXL_TELEMETRY_ENABLE=y NIXL_TELEMETRY_EXPORTER=prometheus
 NIXL_TELEMETRY_PROMETHEUS_PORT=19090` (set by default in `docker-compose.yml`

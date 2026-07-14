@@ -217,12 +217,12 @@ RUN git clone --no-checkout --filter=blob:none \
 # Clone upstream ai-dynamo/nixl, then apply nixl-rocm-ais-mt.patch to add ROCm/HIP
 # detection and the AIS_MT plugin tree.  The patched checkout is a native-HIP
 # tree, so build-nixl.sh's _NATIVE_HIP path builds AIS_MT with AIS_PATH=/opt/rocm.
-COPY common/nixl /tmp/nixl-common
+COPY scripts/nixl /tmp/nixl-scripts
 COPY patches/nixl/ /tmp/nixl-patches/
 # Apply every patch under patches/nixl/ (lexical order) to the fresh checkout.
-RUN chmod +x /tmp/nixl-common/*.sh && \
+RUN chmod +x /tmp/nixl-scripts/*.sh && \
     NIXL_GIT_URL="${NIXL_GIT_URL}" NIXL_SHA="${NIXL_SHA}" NIXL_REQUIRE_ROCM=1 \
-        NIXL_DEST=/tmp/nixl /tmp/nixl-common/clone-nixl.sh && \
+        NIXL_DEST=/tmp/nixl /tmp/nixl-scripts/clone-nixl.sh && \
     shopt -s nullglob && \
     nixl_patches=(/tmp/nixl-patches/*.patch) && \
     if [ "${#nixl_patches[@]}" -eq 0 ]; then \
@@ -240,7 +240,7 @@ RUN chmod +x /tmp/nixl-common/*.sh && \
         NIXL_INSTALL_PREFIX=/opt/nixl \
         NIXL_BUILD_WHEEL=1 NIXL_WHEEL_DIR=/wheels \
         UV_NATIVE_TLS=1 \
-        /tmp/nixl-common/build-nixl.sh
+        /tmp/nixl-scripts/build-nixl.sh
 
 # ----- 6b. hsa-snoop (HSA AQL queue snooper + Prometheus exporter) -----------
 # GPU dispatch/queue telemetry on :9488 (/metrics).  The snooper binary is

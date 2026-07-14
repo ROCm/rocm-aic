@@ -5,7 +5,7 @@
 # This tree is self-contained: the build context and all sources live here, so
 # "repo root" is this directory (no dependency on any parent checkout).
 REPO_ROOT := $(CURDIR)
-include $(CURDIR)/common/nixl/defaults.mk
+include $(CURDIR)/scripts/nixl/defaults.mk
 
 # ai-dynamo/nixl upstream main (2026-07-10); AIS_MT added via patches/nixl/.
 NIXL_GIT_URL := https://github.com/ai-dynamo/nixl.git
