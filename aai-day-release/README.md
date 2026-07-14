@@ -155,6 +155,24 @@ make -C aai-day-release plot
 # → logs/manual/plots/cliff-latency-p95.png
 ```
 
+### 7. Slurm build & cliff sweep (multi-node)
+
+Sections 1–6 drive the stack locally. On a Slurm cluster, the `dist-*` / `cliff-*`
+targets build/distribute the image and run the full three-arm sweep end-to-end
+(they wrap `.slurm/run-build-distribute.sh` and `sbatch .slurm/run-cliff.sbatch`):
+
+```bash
+# Build the image (+ fabric exporters) on a CPU build node and save tarballs to
+# the shared /scratch image dir; chain push + smoke-test like the old run-this.sh:
+make -C aai-day-release dist-build dist-push smoke-test AAI_PUSH_REF=<registry>/aai-day:latest
+
+# Submit the full sweep (vram_only + kvd_v2 nvme + kvd_v2 gds) on a GPU+NVMe node.
+# Output lands in logs/<job-id>/. Pin a node / narrow arms / override the sweep via env:
+make -C aai-day-release cliff-submit AAI_CLIFF_NODE=ctr-s95-mi300x-3
+make -C aai-day-release cliff-submit AAI_CLIFF_ARMS=nvme BENCH_CONCUR=1,8,64
+make -C aai-day-release cliff-short          # 1-point smoke test of the whole flow
+```
+
 ## Metrics & observability
 
 A host-network Prometheus sidecar can capture the whole run so it can be
@@ -171,7 +189,8 @@ explored afterward. It scrapes, all at `localhost`:
 | amd_metrics_exporter | 5000 | AMD GPU device-metrics-exporter (`amd_*` metrics) |
 | hsa_snoop | 9488 | HSA AQL queue/dispatch telemetry (`hsa_kernel_launches_total`, `hsa_kernel_duration_seconds`, `hsa_active_queues`) |
 
-The TSDB is written to `AAI_METRICS_DIR`. For `--cliff` runs it defaults to
+The TSDB is written to `AAI_METRICS_DIR`. For cliff sbatch runs (`make
+cliff-submit`) it defaults to
 `logs/<job-id>/prometheus` (the SLURM job id, or `manual` off-Slurm);
 **bind-mount / point it at an NFS directory** to explore the capture later by
 pointing a Prometheus at it. Job names/ports
@@ -190,7 +209,7 @@ port; the rest run without a sink. Metric names may change between NIXL
 versions. Set `NIXL_TELEMETRY_ENABLE=` (empty) to disable, or
 `NIXL_METRICS_PORT` to move the port.
 
-**During `--cliff` runs** it is auto-started (see below). **Standalone / with
+**During cliff sbatch runs** it is auto-started (see below). **Standalone / with
 `make up`:**
 
 ```bash
@@ -219,7 +238,7 @@ AAI_METRICS_DIR=/mnt/lmcache-nfs/metrics \
     --profile exporters --profile exporters-fabric up -d
 ```
 
-For the `--cliff` docker-run path (nodes without the compose plugin), set
+For the cliff sbatch docker-run path (nodes without the compose plugin), set
 `AAI_NVME_EXPORTER_IMAGE=aai-day-nvme-exporter:local` /
 `AAI_RDMA_EXPORTER_IMAGE=aai-day-rdma-exporter:local` after building. Each
 container is skipped automatically if a host service already serves its port.
@@ -259,7 +278,7 @@ poll intervals can be missed) and is upstream-verified on gfx90a / ROCm 7.1.0.
 | `LMCACHE_NFS_POOL` | `1024` | NIXL pool slots for NFS adapter |
 | `TENSOR_PARALLEL_SIZE` | `1` | vLLM tensor parallel degree |
 | `GPU` | `0` | ROCR_VISIBLE_DEVICES for the vllm container |
-| `AAI_MONITORING` | `1` | Auto-start the Prometheus sidecar in `--cliff` runs (`0` to skip) |
+| `AAI_MONITORING` | `1` | Auto-start the Prometheus sidecar in cliff sbatch runs (`0` to skip) |
 | `AAI_METRICS_DIR` | `logs/<job-id>/prometheus` (cliff) | Prometheus TSDB dir — bind-mount an NFS path here |
 | `AAI_EXPORTERS` | `1` (cliff) / `0` (make) | Also launch containerized node + AMD GPU exporters |
 
@@ -268,20 +287,32 @@ poll intervals can be missed) and is upstream-verified on gfx90a / ROCm 7.1.0.
 ```text
 aai-day-release/
 ├── Dockerfile              # ROCm inference stack image
-├── Makefile                # All orchestration and benchmark targets
+├── Makefile                # Local stack + benchmark + distribute/cliff targets
 ├── pyproject.toml          # Host-side bench + plot Python deps
 ├── docker-compose.yml      # lmcache + vllm services (standard + GDS L1)
 ├── benchmarks/
 │   ├── run_cliff.py        # KV cache cliff benchmark runner
 │   └── plot_cliff.py       # Cliff chart plotter (matplotlib)
+├── .slurm/                 # Slurm entrypoints (see `make dist-* / cliff-*`)
+│   ├── run-cliff.sbatch    # Full 3-arm cliff sweep as a batch job
+│   └── run-build-distribute.sh  # Build/push/test the image across nodes
+├── scripts/
+│   └── nixl/               # NIXL clone/build helpers + defaults.mk (used by Dockerfile)
+├── patches/
+│   ├── lmcache/            # LMCache source patches applied at build
+│   └── nixl/               # NIXL ROCm/AIS_MT patch applied at build
 ├── monitoring/             # Prometheus metrics-capture sidecar
 │   ├── docker-compose.monitoring.yml
 │   ├── prometheus/
 │   │   ├── prometheus.yml  # localhost scrape config (vLLM/LMCache/exporters)
 │   │   └── rules/aai_day.yml
-│   └── amdgpu-exporter/config.json
+│   ├── amdgpu-exporter/config.json
+│   ├── nvme-exporter/      # containerized NVMe exporter (bare-node fallback)
+│   ├── rdma-exporter/      # containerized RDMA exporter (bare-node fallback)
+│   └── ais-snoop/          # AIS/hipFile KFD kprobe exporter
+├── logs/                   # Per-job output: logs/<job-id>/{cliff.out,results,plots,prometheus} (gitignored)
 └── certs/
-    └── corp-ca.crt         # Gitignored; add AMD/Zscaler CA cert here
+    └── corp-ca.crt         # Gitignored; add AMD/Zscaler CA cert here (create as needed)
 ```
 
 ## Upgrading component versions

@@ -90,9 +90,20 @@ RDMA_EXPORTER_VERSION ?= 0.3.0
 
 PYTHON := $(if $(wildcard $(REPO_ROOT)/.venv/bin/python3),$(REPO_ROOT)/.venv/bin/python3,python3)
 
+# ---- Distribute / cliff (Slurm) --------------------------------------------
+# The dist-* / cliff-* targets shell out to the .slurm scripts; the AAI_* knobs
+# they read pass straight through the environment (e.g. make dist-build
+# AAI_ROCM_ARCH=gfx942, make cliff-submit AAI_CLIFF_NODE=ctr-s95-mi300x-3
+# AAI_CLIFF_ARMS=nvme).  AAI_CACHE_DIR is the shared BuildKit file cache on
+# /scratch so a failed build resumes from the last good layer on any node
+# (set AAI_CACHE_DIR= to disable); AAI_BUILD_EXPORTERS=0 skips the fabric images.
+DIST := $(CURDIR)/.slurm/run-build-distribute.sh
+export AAI_CACHE_DIR ?= /scratch/$(USER)/images/buildcache
+
 .PHONY: help build up up-batch up-gds-l1 up-gds-l1-batch down logs logs-lmcache logs-vllm \
         ps shell-lmcache shell-vllm restart-vllm restart-lmcache cliff plot venv \
         monitoring-up monitoring-down monitoring-logs monitoring-build-exporters \
+        dist-build dist-push smoke-test cliff-submit cliff-short \
         _check_hf_token _prep_dirs _check_gds_slab
 
 .DEFAULT_GOAL := help
@@ -120,6 +131,17 @@ help:
 	@echo "  make venv              Create/update repo-root .venv with bench+plot deps"
 	@echo "  make cliff             Run KV-cache cliff benchmark, write CSV to $(BENCH_LOGDIR)/results/"
 	@echo "  make plot              Generate cliff PNG charts from $(BENCH_LOGDIR)/results/ CSVs"
+	@echo ""
+	@echo "Distribute / cliff targets (Slurm; wrap .slurm/ scripts + sbatch):"
+	@echo "  make dist-build        Build image (+ fabric exporters) on a Slurm build node, save tarballs"
+	@echo "  make dist-push         Tag + push the built image (needs AAI_PUSH_REF)"
+	@echo "  make smoke-test        Load + smoke-test the image on a GPU+NVMe node"
+	@echo "  make cliff-submit      sbatch the full 3-arm cliff sweep -> logs/<job-id>/"
+	@echo "  make cliff-short       sbatch a 1-point cliff (concur=1, 1 iter) to smoke-test the flow"
+	@echo "    Chain like the old run-this.sh:  make dist-build dist-push smoke-test"
+	@echo "    Pin a node: AAI_CLIFF_NODE=<node>   Narrow arms: AAI_CLIFF_ARMS=nvme (vram,nvme,gds)"
+	@echo "    Override sweep/model via env: BENCH_CONCUR=1,8,64 VLLM_MODEL=... make cliff-submit"
+	@echo "    AAI_CACHE_DIR=$(AAI_CACHE_DIR)  (shared BuildKit cache; set empty to disable)"
 	@echo ""
 	@echo "Metrics targets (Prometheus sidecar; scrapes vLLM/LMCache/exporters):"
 	@echo "  make monitoring-up     Start Prometheus, TSDB -> AAI_METRICS_DIR"
@@ -274,3 +296,39 @@ monitoring-build-exporters:
 	@echo "Built $(NVME_EXPORTER_IMAGE) and $(RDMA_EXPORTER_IMAGE)."
 	@echo "Run them via:  AAI_EXPORTERS=1 with --profile exporters-fabric, or set"
 	@echo "AAI_NVME_EXPORTER_IMAGE / AAI_RDMA_EXPORTER_IMAGE for the .slurm docker-run path."
+
+# ---- Distribute / cliff (Slurm) --------------------------------------------
+# Thin wrappers over .slurm/run-build-distribute.sh (build/push/test on a Slurm
+# node) and `sbatch .slurm/run-cliff.sbatch` (the full cliff sweep).  These
+# replace the former ./run-this.sh driver; chain them like the old one-shot, e.g.
+# `make dist-build dist-push smoke-test` (make runs goals left-to-right).
+
+dist-build:                    # Build image (+ fabric exporters) on a Slurm build node, save tarballs
+	"$(DIST)" build
+	@[ "$(AAI_BUILD_EXPORTERS)" = "0" ] || "$(DIST)" build-exporters
+
+dist-push:                     # Tag + push the built image to a registry (needs AAI_PUSH_REF)
+	"$(DIST)" push
+
+smoke-test:                    # Load + smoke-test the image on a GPU+NVMe node
+	"$(DIST)" test
+
+# Submit the full 3-arm cliff sweep (vram_only + kvd_v2 nvme + kvd_v2 gds).  Pin
+# a node with AAI_CLIFF_NODE, narrow arms with AAI_CLIFF_ARMS=nvme (etc).  The job
+# creates logs/<job-id>/ itself and redirects its output there.
+cliff-submit:
+	@cd "$(CURDIR)" && jobid=$$(sbatch --parsable \
+	    $(if $(AAI_CLIFF_NODE),--nodelist=$(AAI_CLIFF_NODE),) \
+	    .slurm/run-cliff.sbatch) && \
+	    echo "submitted cliff job $$jobid" && \
+	    echo "log: $(CURDIR)/logs/$$jobid/cliff.out"
+
+# Fast setup check: a single concurrency point, one timed iteration, all 3 arms.
+# Respects user overrides of BENCH_CONCUR / BENCH_ITERS.
+cliff-short:
+	@cd "$(CURDIR)" && jobid=$$(BENCH_CONCUR="$${BENCH_CONCUR:-1}" BENCH_ITERS="$${BENCH_ITERS:-1}" \
+	    sbatch --parsable --job-name=aai-day-cliff-short \
+	    $(if $(AAI_CLIFF_NODE),--nodelist=$(AAI_CLIFF_NODE),) \
+	    .slurm/run-cliff.sbatch) && \
+	    echo "submitted cliff-short job $$jobid (BENCH_CONCUR=$${BENCH_CONCUR:-1} BENCH_ITERS=$${BENCH_ITERS:-1})" && \
+	    echo "log: $(CURDIR)/logs/$$jobid/cliff.out"

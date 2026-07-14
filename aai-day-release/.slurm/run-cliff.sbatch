@@ -38,7 +38,7 @@
 #   # pin a node:
 #   sbatch --nodelist=ctr-s95-mi300x-3 .slurm/run-cliff.sbatch
 #   # override the sweep / model:
-#   AAI_BENCH_CONCUR=1,8,32,64,128,250 AAI_MODEL=openai/gpt-oss-120b \
+#   BENCH_CONCUR=1,8,32,64,128,250 VLLM_MODEL=openai/gpt-oss-120b \
 #       sbatch .slurm/run-cliff.sbatch
 #
 # Storage note (from a live probe of ctr-cx63-mi300x-21, 2026-07-13): the MI300X
@@ -46,7 +46,7 @@
 # /mnt is empty -- the compose default NVME_DATA=/mnt/lmcache-nvme does not exist.
 # The OS root (/) is itself ext4-on-NVMe with ~3T free, so this script points the
 # NVMe pools at node-local /tmp (physically the same local NVMe, writable by the
-# job user). If a dedicated data NVMe gets mounted later, set AAI_NVME_DIR to it.
+# job user). If a dedicated data NVMe gets mounted later, set NVME_DATA to it.
 #
 set -uo pipefail
 
@@ -55,8 +55,8 @@ set -uo pipefail
 # there, so ${BASH_SOURCE[0]} points at /var/spool/slurmd/... -- deriving REPO
 # from it lands logs/<job-id> (and the /work bind-mount of benchmarks/) in an
 # unwritable, wrong place.  Prefer SLURM_SUBMIT_DIR (the dir sbatch was invoked
-# from; run-this.sh cds to aai-day-release first), and fall back to BASH_SOURCE
-# for a direct, non-sbatch invocation.
+# from; `make cliff-submit` cds to aai-day-release first), and fall back to
+# BASH_SOURCE for a direct, non-sbatch invocation.
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO="${SLURM_SUBMIT_DIR:-$(cd "${SCRIPT_DIR}/.." && pwd)}"
 
@@ -78,42 +78,40 @@ fi
 
 AAI_IMAGE="${AAI_IMAGE:-rocm-aic-aai-day:latest}"
 AAI_IMAGE_DIR="${AAI_IMAGE_DIR:-/scratch/${USER}/images}"
-AAI_MODEL="${AAI_MODEL:-openai/gpt-oss-120b}"
+VLLM_MODEL="${VLLM_MODEL:-openai/gpt-oss-120b}"
 # Shared HF cache that already holds gpt-oss-120b (see plan); offline so no token.
-AAI_HF_HOME="${AAI_HF_HOME:-/scratch/${USER}/vllm-lmcache-hipfile/hf}"
+HF_HOME="${HF_HOME:-/scratch/${USER}/vllm-lmcache-hipfile/hf}"
 
 # Node-local NVMe-backed scratch for the LMCache tiers (see storage note above).
 AAI_LOCAL_ROOT="${AAI_LOCAL_ROOT:-/tmp/aai-cliff.${SLURM_JOB_ID:-manual}}"
-AAI_NVME_DIR="${AAI_NVME_DIR:-${AAI_LOCAL_ROOT}/nvme}"   # L2a AIS_MT pool
-AAI_NFS_DIR="${AAI_NFS_DIR:-${AAI_LOCAL_ROOT}/nfs}"      # L2b POSIX pool (local stand-in)
-AAI_SLAB_DIR="${AAI_SLAB_DIR:-${AAI_LOCAL_ROOT}/slab}"   # GDS L1 slab
+NVME_DATA="${NVME_DATA:-${AAI_LOCAL_ROOT}/nvme}"   # L2a AIS_MT pool
+NFS_DATA="${NFS_DATA:-${AAI_LOCAL_ROOT}/nfs}"      # L2b POSIX pool (local stand-in)
+GDS_SLAB_DATA="${GDS_SLAB_DATA:-${AAI_LOCAL_ROOT}/slab}"   # GDS L1 slab
 
 # Benchmark sweep knobs (defaults mirror the Makefile `cliff` target).
-AAI_BENCH_ISL="${AAI_BENCH_ISL:-20000}"
-AAI_BENCH_SHARED_TOK="${AAI_BENCH_SHARED_TOK:-18000}"
-AAI_BENCH_CONCUR="${AAI_BENCH_CONCUR:-1,2,4,8,16,32,48,64,80,100,128,160,200,250}"
-AAI_BENCH_ITERS="${AAI_BENCH_ITERS:-3}"
-AAI_BENCH_PREFIX_MODE="${AAI_BENCH_PREFIX_MODE:-per_client}"  # per_client => a real cliff
+BENCH_ISL="${BENCH_ISL:-20000}"
+BENCH_SHARED_TOK="${BENCH_SHARED_TOK:-18000}"
+BENCH_CONCUR="${BENCH_CONCUR:-1,2,4,8,16,32,48,64,80,100,128,160,200,250}"
+BENCH_ITERS="${BENCH_ITERS:-3}"
+BENCH_PREFIX_MODE="${BENCH_PREFIX_MODE:-per_client}"  # per_client => a real cliff
 
 # Arm selector: comma list of arms to run (vram, nvme, gds).  Default all three;
-# narrow it for a quick check, e.g. AAI_CLIFF_ARMS=nvme (run-this.sh --cliff-arm).
+# narrow it for a quick check, e.g. `make cliff-submit AAI_CLIFF_ARMS=nvme`.
 AAI_CLIFF_ARMS="${AAI_CLIFF_ARMS:-vram,nvme,gds}"
 
 # vLLM knobs.
-AAI_TP="${AAI_TP:-1}"
-AAI_GPU_MEM_UTIL="${AAI_GPU_MEM_UTIL:-0.90}"
-AAI_MAX_MODEL_LEN="${AAI_MAX_MODEL_LEN:-32768}"
-AAI_MAX_BATCHED_TOKENS="${AAI_MAX_BATCHED_TOKENS:-4096}"
-AAI_L1_SIZE_GB="${AAI_L1_SIZE_GB:-20}"
-AAI_NVME_POOL="${AAI_NVME_POOL:-4096}"
-AAI_NVME_SLOT_SIZE="${AAI_NVME_SLOT_SIZE:-268435456}"
-AAI_NFS_POOL="${AAI_NFS_POOL:-1024}"
+TENSOR_PARALLEL_SIZE="${TENSOR_PARALLEL_SIZE:-1}"
+VLM_GPU_MEMORY_UTILIZATION="${VLM_GPU_MEMORY_UTILIZATION:-0.90}"
+VLM_MAX_MODEL_LEN="${VLM_MAX_MODEL_LEN:-32768}"
+VLM_MAX_NUM_BATCHED_TOKENS="${VLM_MAX_NUM_BATCHED_TOKENS:-4096}"
+LMCACHE_L1_SIZE_GB="${LMCACHE_L1_SIZE_GB:-20}"
+LMCACHE_NVME_POOL="${LMCACHE_NVME_POOL:-4096}"
 # hipFile GDS compat fallback.  Default 'false' fails loudly if true GPU-direct
 # (P2PDMA) registration is unavailable -- so kvd arms measure real GDS.  Set to
 # 'true' to allow hipFile's staged/bounce-buffer fallback when hipFileBufRegister
 # fails (err 5013) on a node where GDS is not fully enabled -- lets the AIS_MT /
 # GDS arms run, but NOT as true GPU-direct.
-AAI_HIPFILE_COMPAT="${AAI_HIPFILE_COMPAT:-false}"
+HIPFILE_ALLOW_COMPAT_MODE="${HIPFILE_ALLOW_COMPAT_MODE:-false}"
 # VRAM NIXL staging buffer for the AIS_MT nvme arm (bytes).  MUST be a GPU (cuda)
 # buffer so hipFileBufRegister succeeds -- registering a host/DRAM buffer returns
 # err 5013.  512 MiB default (mirrors recipies/vllm-lmcache-nixl).
@@ -121,7 +119,7 @@ AAI_NIXL_BUFFER_SIZE="${AAI_NIXL_BUFFER_SIZE:-536870912}"
 # Attention backend for all arms.  On vLLM 0.25 the ROCm backends (ROCM_ATTN,
 # ROCM_AITER_UNIFIED_ATTN) report supports_kv_connector()=False, so the kvd arms
 # (LMCache connector) MUST use TRITON_ATTN, which supports connectors.  It also
-# requires a full-attention model (AAI_MODEL): a sliding-window/hybrid model like
+# requires a full-attention model (VLLM_MODEL): a sliding-window/hybrid model like
 # gpt-oss can't unify its KV-cache specs under a connector on 0.25.  Same backend
 # on all arms keeps baseline (vram) and kvd comparable.
 AAI_ATTENTION_BACKEND="${AAI_ATTENTION_BACKEND:-TRITON_ATTN}"
@@ -153,8 +151,8 @@ die() { printf '[cliff-job] ERROR: %s\n' "$*" >&2; exit 1; }
 
 log "host        : $(hostname)  job=${SLURM_JOB_ID:-manual}"
 log "image       : ${AAI_IMAGE}"
-log "model       : ${AAI_MODEL}  (HF_HOME=${AAI_HF_HOME}, offline)"
-log "local NVMe  : ${AAI_NVME_DIR}"
+log "model       : ${VLLM_MODEL}  (HF_HOME=${HF_HOME}, offline)"
+log "local NVMe  : ${NVME_DATA}"
 log "results     : ${RESULTS}"
 command -v docker >/dev/null 2>&1 || die "docker not found on $(hostname)"
 # REPO must be the aai-day-release tree (it is bind-mounted at /work so the
@@ -162,8 +160,8 @@ command -v docker >/dev/null 2>&1 || die "docker not found on $(hostname)"
 [[ -f "${REPO}/benchmarks/run_cliff.py" ]] || \
     die "benchmarks/run_cliff.py not found under REPO=${REPO}; submit from the aai-day-release/ dir (SLURM_SUBMIT_DIR)"
 
-mkdir -p "${RESULTS}" "${PLOTS}" "${AAI_NVME_DIR}" "${AAI_NFS_DIR}" "${AAI_SLAB_DIR}"
-[[ -d "${AAI_HF_HOME}/hub" ]] || die "HF cache not found at ${AAI_HF_HOME}/hub"
+mkdir -p "${RESULTS}" "${PLOTS}" "${NVME_DATA}" "${NFS_DATA}" "${GDS_SLAB_DATA}"
+[[ -d "${HF_HOME}/hub" ]] || die "HF cache not found at ${HF_HOME}/hub"
 
 # --- Load images from shared tarballs when needed ----------------------------
 # Reload when the node's image is absent, when the /scratch tarball is newer than
@@ -259,17 +257,17 @@ run_bench() {  # $1=arm $2=endpoint_port $3=out_csv $4=extra args...
     log "running sweep: arm=${arm} endpoint=:${port} -> ${out}"
     docker run --rm --network host \
         -v "${REPO}":/work -w /work \
-        -v "${AAI_HF_HOME}":/hf "${HF_ENV[@]}" \
+        -v "${HF_HOME}":/hf "${HF_ENV[@]}" \
         --entrypoint python3 "${AAI_IMAGE}" \
         benchmarks/run_cliff.py \
             --endpoint "http://localhost:${port}" \
-            --model "${AAI_MODEL}" \
+            --model "${VLLM_MODEL}" \
             --arm "${arm}" \
-            --isl "${AAI_BENCH_ISL}" \
-            --shared-prefix-tokens "${AAI_BENCH_SHARED_TOK}" \
-            --concurrencies "${AAI_BENCH_CONCUR}" \
-            --iters "${AAI_BENCH_ITERS}" \
-            --prefix-mode "${AAI_BENCH_PREFIX_MODE}" \
+            --isl "${BENCH_ISL}" \
+            --shared-prefix-tokens "${BENCH_SHARED_TOK}" \
+            --concurrencies "${BENCH_CONCUR}" \
+            --iters "${BENCH_ITERS}" \
+            --prefix-mode "${BENCH_PREFIX_MODE}" \
             --warmup-iters 1 \
             --out "${LOGDIR_REL}/results/$(basename "${out}")" "$@"
 }
@@ -474,13 +472,13 @@ run_arm_vram() {
     rm_containers aai-cliff-vram
     log "=== Arm A (vram_only): launching plain vLLM on :${VRAM_PORT} ==="
     docker run -d --name aai-cliff-vram --network host "${GPU_FLAGS[@]}" \
-        -v "${AAI_HF_HOME}":/hf "${HF_ENV[@]}" \
+        -v "${HF_HOME}":/hf "${HF_ENV[@]}" \
         "${AAI_IMAGE}" \
-            --model "${AAI_MODEL}" --host 0.0.0.0 --port "${VRAM_PORT}" \
-            --tensor-parallel-size "${AAI_TP}" \
-            --gpu-memory-utilization "${AAI_GPU_MEM_UTIL}" \
-            --max-model-len "${AAI_MAX_MODEL_LEN}" \
-            --max-num-batched-tokens "${AAI_MAX_BATCHED_TOKENS}" \
+            --model "${VLLM_MODEL}" --host 0.0.0.0 --port "${VRAM_PORT}" \
+            --tensor-parallel-size "${TENSOR_PARALLEL_SIZE}" \
+            --gpu-memory-utilization "${VLM_GPU_MEMORY_UTILIZATION}" \
+            --max-model-len "${VLM_MAX_MODEL_LEN}" \
+            --max-num-batched-tokens "${VLM_MAX_NUM_BATCHED_TOKENS}" \
             --block-size 64 --enable-prefix-caching --kv-cache-dtype fp8 \
             --async-scheduling \
             --attention-backend "${AAI_ATTENTION_BACKEND}" \
@@ -534,7 +532,7 @@ nixl_buffer_device: cuda
 extra_config:
   enable_nixl_storage: true
   nixl_backend: AIS_MT
-  nixl_pool_size: ${AAI_NVME_POOL}
+  nixl_pool_size: ${LMCACHE_NVME_POOL}
   use_direct_io: true
   nixl_path: /data/nvme/lmcache
 YML
@@ -547,12 +545,12 @@ launch_lmcache_gds() {
     docker run -d --name aai-cliff-lmcache --network host \
         --device /dev/kfd --device /dev/dri --ipc host \
         --cap-add CAP_SYS_ADMIN --cap-add SYS_PTRACE --security-opt seccomp=unconfined \
-        "${HIPFILE_FLAGS[@]}" -v "${AAI_SLAB_DIR}":/data/slab \
-        -e LMCACHE_PORT="${LMCACHE_PORT}" -e HIPFILE_ALLOW_COMPAT_MODE="${AAI_HIPFILE_COMPAT}" \
+        "${HIPFILE_FLAGS[@]}" -v "${GDS_SLAB_DATA}":/data/slab \
+        -e LMCACHE_PORT="${LMCACHE_PORT}" -e HIPFILE_ALLOW_COMPAT_MODE="${HIPFILE_ALLOW_COMPAT_MODE}" \
         -e HIPFILE_UNSUPPORTED_FILE_SYSTEMS=true -e PYTHONHASHSEED=0 \
         --entrypoint /bin/bash "${AAI_IMAGE}" -o pipefail -c \
         "exec lmcache server --host 0.0.0.0 --port ${LMCACHE_PORT} \
-             --l1-size-gb ${AAI_L1_SIZE_GB} --eviction-policy LRU --gds-l1-path /data/slab" >/dev/null
+             --l1-size-gb ${LMCACHE_L1_SIZE_GB} --eviction-policy LRU --gds-l1-path /data/slab" >/dev/null
 }
 
 # nvme arm: in-process LMCacheConnectorV1 with connector-side NIXL AIS_MT storage
@@ -564,19 +562,19 @@ launch_vllm_kvd_nvme() {
     local kvcfg="{\"kv_connector\":\"LMCacheConnectorV1\",\"kv_role\":\"kv_both\"}"
     log "launching connector'd vLLM (LMCacheConnectorV1 + NIXL AIS_MT, cuda buffer) on :${KVD_PORT}"
     docker run -d --name aai-cliff-kvd-vllm --network host "${GPU_FLAGS[@]}" "${HIPFILE_FLAGS[@]}" \
-        -v "${AAI_HF_HOME}":/hf "${HF_ENV[@]}" \
-        -v "${AAI_NVME_DIR}":/data/nvme \
+        -v "${HF_HOME}":/hf "${HF_ENV[@]}" \
+        -v "${NVME_DATA}":/data/nvme \
         -v "${LOGDIR}/lmcache-nixl-ais.yml":/config/lmcache-nixl-ais.yml:ro \
         -e LMCACHE_CONFIG_FILE=/config/lmcache-nixl-ais.yml \
-        -e HIPFILE_ALLOW_COMPAT_MODE="${AAI_HIPFILE_COMPAT}" -e HIPFILE_UNSUPPORTED_FILE_SYSTEMS=true \
+        -e HIPFILE_ALLOW_COMPAT_MODE="${HIPFILE_ALLOW_COMPAT_MODE}" -e HIPFILE_UNSUPPORTED_FILE_SYSTEMS=true \
         -e NIXL_TELEMETRY_ENABLE=y -e NIXL_TELEMETRY_EXPORTER=prometheus \
         -e NIXL_TELEMETRY_PROMETHEUS_PORT="${NIXL_METRICS_PORT:-19090}" -e PYTHONHASHSEED=0 \
         "${AAI_IMAGE}" \
-            --model "${AAI_MODEL}" --host 0.0.0.0 --port "${KVD_PORT}" \
-            --tensor-parallel-size "${AAI_TP}" \
-            --gpu-memory-utilization "${AAI_GPU_MEM_UTIL}" \
-            --max-model-len "${AAI_MAX_MODEL_LEN}" \
-            --max-num-batched-tokens "${AAI_MAX_BATCHED_TOKENS}" \
+            --model "${VLLM_MODEL}" --host 0.0.0.0 --port "${KVD_PORT}" \
+            --tensor-parallel-size "${TENSOR_PARALLEL_SIZE}" \
+            --gpu-memory-utilization "${VLM_GPU_MEMORY_UTILIZATION}" \
+            --max-model-len "${VLM_MAX_MODEL_LEN}" \
+            --max-num-batched-tokens "${VLM_MAX_NUM_BATCHED_TOKENS}" \
             --block-size 64 --enable-prefix-caching --kv-cache-dtype fp8 \
             --async-scheduling \
             --attention-backend "${AAI_ATTENTION_BACKEND}" \
@@ -590,13 +588,13 @@ launch_vllm_kvd_gds() {
     local kvcfg="{\"kv_connector\":\"LMCacheMPConnector\",\"kv_role\":\"kv_both\",\"kv_connector_extra_config\":{\"lmcache.mp.host\":\"tcp://localhost\",\"lmcache.mp.port\":${LMCACHE_PORT}}}"
     log "launching connector'd vLLM (LMCacheMPConnector) on :${KVD_PORT}"
     docker run -d --name aai-cliff-kvd-vllm --network host "${GPU_FLAGS[@]}" \
-        -v "${AAI_HF_HOME}":/hf "${HF_ENV[@]}" \
+        -v "${HF_HOME}":/hf "${HF_ENV[@]}" \
         "${AAI_IMAGE}" \
-            --model "${AAI_MODEL}" --host 0.0.0.0 --port "${KVD_PORT}" \
-            --tensor-parallel-size "${AAI_TP}" \
-            --gpu-memory-utilization "${AAI_GPU_MEM_UTIL}" \
-            --max-model-len "${AAI_MAX_MODEL_LEN}" \
-            --max-num-batched-tokens "${AAI_MAX_BATCHED_TOKENS}" \
+            --model "${VLLM_MODEL}" --host 0.0.0.0 --port "${KVD_PORT}" \
+            --tensor-parallel-size "${TENSOR_PARALLEL_SIZE}" \
+            --gpu-memory-utilization "${VLM_GPU_MEMORY_UTILIZATION}" \
+            --max-model-len "${VLM_MAX_MODEL_LEN}" \
+            --max-num-batched-tokens "${VLM_MAX_NUM_BATCHED_TOKENS}" \
             --block-size 64 --enable-prefix-caching --kv-cache-dtype fp8 \
             --async-scheduling \
             --attention-backend "${AAI_ATTENTION_BACKEND}" \
