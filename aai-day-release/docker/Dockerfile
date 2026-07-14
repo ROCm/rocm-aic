@@ -93,22 +93,43 @@ RUN --mount=type=secret,id=tls_cert,required=false \
     fi
 
 # ----- 1. System dependencies ------------------------------------------------
-RUN apt-get update && \
+# apt's package lists + downloaded debs live in BuildKit cache mounts, so they
+# are NOT baked into the image layer (nothing to rm afterward) yet are reused by
+# later rebuilds.  The base image ships /etc/apt/apt.conf.d/docker-clean, which
+# purges the archive cache after each install -- drop it here so the cache mount
+# actually persists.  `sharing=locked` serializes concurrent builds on the mount.
+#
+# libboost-dev (headers only) rather than libboost-all-dev: none of our C++
+# components (NIXL, hipFile, hsa-snoop) declare a boost dependency, and the full
+# metapackage drags in libboost-mpi-dev -> openmpi-bin/-dev + gfortran + automake,
+# which emit a raft of update-alternatives man-page warnings and bloat the image.
+# Headers stay available for any transitive #include.
+#
+# libopenmpi3t64 (openmpi RUNTIME libs) is required on its own, though: the ROCm
+# torch bundled in the vLLM wheel has a hard NEEDED on libmpi_cxx.so.40, loaded
+# via torch._load_global_deps() on `import torch` -- it was previously satisfied
+# incidentally by libboost-all-dev pulling openmpi.  We add just the runtime lib
+# (not openmpi-bin/-dev), so torch imports but the mpirun/mpicc alternatives that
+# caused the warnings are never registered.
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
+    rm -f /etc/apt/apt.conf.d/docker-clean && \
+    apt-get update && \
     DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
         ca-certificates \
         cmake \
         curl \
         git \
-        libboost-all-dev \
+        libboost-dev \
         libibverbs-dev \
         ibverbs-providers \
         libmount-dev \
+        libopenmpi3t64 \
         ninja-build \
         nvme-cli \
         pkg-config \
         python3-dev \
         bpftrace \
-    && rm -rf /var/lib/apt/lists/* \
     && update-ca-certificates
 
 # Silence git's detached-HEAD advisory.  Every source below is cloned then
@@ -123,6 +144,15 @@ RUN git config --global advice.detachedHead false
 # Python, so drop the marker to allow system-wide installs.
 RUN rm -f /usr/lib/python3.*/EXTERNALLY-MANAGED
 
+# Every pip/uv install below runs as root by design (single-purpose container on
+# system Python).  PIP_ROOT_USER_ACTION silences the "Running pip as the 'root'
+# user" advisory at build time (also persists to the final image).  UV_LINK_MODE
+# is set to copy because uv's download cache lives on a BuildKit cache mount (a
+# separate filesystem from /usr), so uv cannot hardlink installs across it and
+# would otherwise warn "Failed to hardlink files; falling back to full copy".
+ENV PIP_ROOT_USER_ACTION=ignore \
+    UV_LINK_MODE=copy
+
 # ----- 2. uv (fast Python package manager) + pip bootstrap ------------------
 RUN curl -fsSL https://astral.sh/uv/install.sh | sh && \
     ln -s /root/.local/bin/uv /usr/local/bin/uv && \
@@ -131,7 +161,10 @@ RUN curl -fsSL https://astral.sh/uv/install.sh | sh && \
 # ----- 3. vLLM (pre-built ROCm wheel — bundles its own torch/triton/flash-attn)
 # vllm 0.23.0+rocm722 requires Python 3.12; rocm/dev-ubuntu-24.04 ships 3.12 by default.
 # The wheel comes from AMD's wheel server; --extra-index-url lets uv find the +rocm722 variant.
-RUN uv pip install --system \
+# The uv download cache is a BuildKit cache mount (not in the layer), so a rebuild
+# reuses the large vLLM/torch wheels instead of re-downloading them.
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv pip install --system \
         "vllm==${VLLM_VERSION}+${VLLM_ROCM_VARIANT}" \
         --extra-index-url "https://wheels.vllm.ai/rocm/${VLLM_VERSION}/${VLLM_ROCM_VARIANT}"
 
@@ -171,7 +204,11 @@ RUN cd /app/LMCache && \
 # this ROCm's clang rejects, breaking the compile.  GPU kernels still get the full
 # multi-arch set from PYTORCH_ROCM_ARCH via torch, so a single valid arch here
 # (the first of the list) is enough to satisfy the host compiles.
-RUN mkdir -p /wheels && \
+# MAX_JOBS / CMAKE_BUILD_PARALLEL_LEVEL parallelize the HIP extension compile
+# (torch's build_ext is single-threaded otherwise -- the dominant build step).
+# The pip build cache is a BuildKit cache mount, so repeated builds reuse it.
+RUN --mount=type=cache,target=/root/.cache/pip \
+    mkdir -p /wheels && \
     printf '%s\n' "${ROCM_ARCH%%;*}" > /etc/rocm_target.lst && \
     cd /app/LMCache && \
     PYTORCH_ROCM_ARCH="${ROCM_ARCH}" \
@@ -179,10 +216,13 @@ RUN mkdir -p /wheels && \
         CXX=hipcc \
         BUILD_WITH_HIP=1 \
         ROCM_TARGET_LST=/etc/rocm_target.lst \
+        MAX_JOBS="$(nproc)" \
+        CMAKE_BUILD_PARALLEL_LEVEL="$(nproc)" \
         python3 -m pip wheel --no-build-isolation --no-deps -w /wheels . && \
     uv pip install --system --no-cache /wheels/lmcache-*.whl
 
-RUN uv pip install --system --no-cache "matplotlib>=3.8,<4"
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv pip install --system "matplotlib>=3.8,<4"
 
 # Remove any NIXL wheels that upstream packages may have pulled — we build from source below.
 # Also purge stray CUDA-only deps (cupy-cuda12x, cufile-python, cuda-pathfinder): if they
@@ -192,7 +232,8 @@ RUN uv pip uninstall --system \
         cupy-cuda12x cufile-python cuda-pathfinder 2>/dev/null || true
 
 # ----- 5. ROCm/rocm-systems hipFile (DEB + Python binding) ------------------
-RUN git clone --no-checkout --filter=blob:none \
+RUN --mount=type=cache,target=/root/.cache/uv \
+    git clone --no-checkout --filter=blob:none \
         https://github.com/ROCm/rocm-systems.git /app/rocm-systems && \
     cd /app/rocm-systems && \
     git sparse-checkout set --cone projects/hipfile && \
@@ -200,14 +241,13 @@ RUN git clone --no-checkout --filter=blob:none \
     cd projects/hipfile && \
     mkdir -p build && cd build && \
     cmake -DCMAKE_HIP_PLATFORM=amd -DAIS_INSTALL_TOOLS=ON \
-          -DAMDGPU_TARGETS="${ROCM_ARCH}" \
           -DGPU_TARGETS="${ROCM_ARCH}" \
           -DCMAKE_HIP_ARCHITECTURES="${ROCM_ARCH}" .. && \
     cmake --build . -j"$(nproc)" && \
     cpack -G DEB && \
     dpkg -i hipfile*deb && \
     cd ../python && \
-    uv pip install --system --no-cache -e . \
+    uv pip install --system -e . \
         -Ccmake.define.HIPFILE_INCLUDE_DIR=../include \
         -Ccmake.define.HIP_INCLUDE_DIR=/opt/rocm/include && \
     test -x /app/rocm-systems/projects/hipfile/build/tools/ais-stats/ais-stats && \
@@ -227,7 +267,8 @@ RUN git clone --no-checkout --filter=blob:none \
 COPY scripts/nixl /tmp/nixl-scripts
 COPY patches/nixl/ /tmp/nixl-patches/
 # Apply every patch under patches/nixl/ (lexical order) to the fresh checkout.
-RUN chmod +x /tmp/nixl-scripts/*.sh && \
+RUN --mount=type=cache,target=/root/.cache/uv \
+    chmod +x /tmp/nixl-scripts/*.sh && \
     NIXL_GIT_URL="${NIXL_GIT_URL}" NIXL_SHA="${NIXL_SHA}" NIXL_REQUIRE_ROCM=1 \
         NIXL_DEST=/tmp/nixl /tmp/nixl-scripts/clone-nixl.sh && \
     shopt -s nullglob && \
@@ -246,7 +287,7 @@ RUN chmod +x /tmp/nixl-scripts/*.sh && \
         AIS_PATH=/opt/rocm ROCM_PATH=/opt/rocm \
         NIXL_INSTALL_PREFIX=/opt/nixl \
         NIXL_BUILD_WHEEL=1 NIXL_WHEEL_DIR=/wheels \
-        UV_NATIVE_TLS=1 \
+        UV_SYSTEM_CERTS=1 \
         /tmp/nixl-scripts/build-nixl.sh
 
 # ----- 6b. hsa-snoop (HSA AQL queue snooper + Prometheus exporter) -----------
