@@ -75,11 +75,13 @@ scrape_configs:
     static_configs:
       - targets: ["localhost:9879"]
 
-  # AMD GPU device-metrics-exporter (amd_* prefixed metrics for dashboard 23434).
+  # AMD GPU device-metrics-exporter (gpu_* metrics).  :5000 is the default; :5050
+  # is the fallback the sbatch uses when :5000 is occupied by a non-GPU listener
+  # (only one actually serves gpu_* series, so no duplicate metrics).
   - job_name: amd_metrics_exporter
     metrics_path: /metrics
     static_configs:
-      - targets: ["localhost:5000"]
+      - targets: ["localhost:5000", "localhost:5050"]
 
   # hsa-snoop: HSA AQL queue/dispatch telemetry (hsa_kernel_launches_total,
   # hsa_kernel_duration_seconds, hsa_active_queues, hsa_snoop_up, ...).

@@ -308,6 +308,13 @@ MON_CONTAINERS=(aai-day-prometheus aai-day-node-exporter aai-day-amdgpu-exporter
 # already (Prometheus scrapes the host one on the same port either way).
 _port_in_use() { timeout 1 bash -c "exec 3<>/dev/tcp/127.0.0.1/$1" 2>/dev/null; }
 
+# True (0) if the /metrics endpoint on the given local port actually serves AMD
+# GPU device-metrics series (gpu_* or amd_gpu_*).  Distinguishes a real GPU
+# exporter from a stray/empty listener occupying the port (see amdgpu launch).
+_endpoint_serves_gpu() {
+    curl -fsS --max-time 2 "http://127.0.0.1:$1/metrics" 2>/dev/null | grep -qE '^(amd_)?gpu_'
+}
+
 # Launch one exporter container unless its port is already served on the host.
 # $1=container name  $2=port  rest=docker run flags + image + command.
 _run_exporter() {
@@ -355,12 +362,33 @@ _monitoring_run_up() {
         --path.rootfs=/host --collector.diskstats --collector.nvme \
         --collector.infiniband --web.listen-address=":9100"
 
-    # amdgpu-exporter: AMD device-metrics-exporter (amd_* metrics) on :5000.
-    _run_exporter aai-day-amdgpu-exporter 5000 \
-        --network host --restart unless-stopped --device /dev/kfd --device /dev/dri \
-        -v /sys:/sys:ro \
-        -v "${MON_DIR}/amdgpu-exporter/config.json":/etc/metrics/config.json:ro \
-        "${AAI_AMDGPU_EXPORTER_IMAGE:-rocm/device-metrics-exporter:v1.4.2}"
+    # amdgpu-exporter: AMD device-metrics-exporter (gpu_* metrics) on :5000.
+    # A bare TCP check (_port_in_use) is NOT enough here: some nodes have an
+    # unrelated/empty listener on :5000 (e.g. a stray promhttp handler) that
+    # serves no gpu_* series, and skipping our container in favour of it leaves
+    # the GPU panels blank.  So: reuse :5000 only if it actually serves gpu_*
+    # metrics; if :5000 is busy but is a phantom, launch ours on :5050 instead
+    # (prometheus.yml scrapes both); if :5000 is free, use it.
+    if _port_in_use 5000 && _endpoint_serves_gpu 5000; then
+        log "  aai-day-amdgpu-exporter: real GPU exporter already on :5000, reusing"
+    else
+        local amdgpu_port=5000 amdgpu_cfg="${MON_DIR}/amdgpu-exporter/config.json"
+        if _port_in_use 5000; then
+            amdgpu_port=5050
+            amdgpu_cfg="/tmp/aai-amdgpu-config.${SLURM_JOB_ID:-$$}.json"
+            sed 's/"ServerPort":[[:space:]]*5000/"ServerPort": 5050/' \
+                "${MON_DIR}/amdgpu-exporter/config.json" > "${amdgpu_cfg}"
+            log "  aai-day-amdgpu-exporter: :5000 busy but not a GPU exporter (phantom); using :5050"
+        fi
+        docker rm -f aai-day-amdgpu-exporter >/dev/null 2>&1 || true
+        docker run -d --name aai-day-amdgpu-exporter \
+            --network host --restart unless-stopped --device /dev/kfd --device /dev/dri \
+            -v /sys:/sys:ro \
+            -v "${amdgpu_cfg}":/etc/metrics/config.json:ro \
+            "${AAI_AMDGPU_EXPORTER_IMAGE:-rocm/device-metrics-exporter:v1.4.2}" >/dev/null \
+            && log "  aai-day-amdgpu-exporter on :${amdgpu_port}" \
+            || log "  aai-day-amdgpu-exporter: docker run failed"
+    fi
 
     # nvme-exporter (:9998, dedicated NVMe metrics).  No standard published image
     # (batesste host service); set AAI_NVME_EXPORTER_IMAGE to containerize it,
