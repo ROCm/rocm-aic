@@ -474,7 +474,7 @@ command -v docker >/dev/null 2>&1 || { echo 'docker not found on build node' >&2
 echo "[build-exporters] host=\$(hostname) docker=\$(docker --version)"
 mkdir -p "${AAI_IMAGE_DIR}"
 # A docker-container builder is required to stream a docker-format tar from
-# BuildKit (the default `docker` driver cannot export type=docker to stdout).
+# BuildKit (the default 'docker' driver cannot export type=docker to stdout).
 # Reuse/create the same builder cmd_build uses; idempotent, then bootstrap it.
 if ! docker buildx inspect ${AAI_BUILDX_BUILDER} >/dev/null 2>&1; then
     echo "[build-exporters] creating buildx builder ${AAI_BUILDX_BUILDER} (docker-container)"
