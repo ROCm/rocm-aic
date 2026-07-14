@@ -9,8 +9,8 @@ exceeds VRAM and the engine starts evicting + re-prefilling. AIC arms
 (kvd_v2) avoid this by spilling to NVMe/NFS via LMCache+NIXL+hipFile.
 
 Usage:
-    python plot_cliff.py --input results/ --output-dir plots/
-    python plot_cliff.py --input cliff-vram.csv cliff-kvd.csv --output-dir plots/
+    python plot_cliff.py --input logs/manual/results/ --output-dir logs/manual/plots/
+    python plot_cliff.py --input cliff-vram.csv cliff-kvd.csv --output-dir logs/manual/plots/
 
 Arm display names (override with --arm-labels key=label,...):
     vram_only  → "VRAM only (no AIC)"

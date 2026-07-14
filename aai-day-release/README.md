@@ -150,9 +150,9 @@ make -C aai-day-release cliff \
 
 ```bash
 make -C aai-day-release plot
-# → plots/cliff-throughput.png
-# → plots/cliff-latency-p50.png
-# → plots/cliff-latency-p95.png
+# → logs/manual/plots/cliff-throughput.png
+# → logs/manual/plots/cliff-latency-p50.png
+# → logs/manual/plots/cliff-latency-p95.png
 ```
 
 ## Metrics & observability

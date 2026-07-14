@@ -26,11 +26,11 @@ Usage:
       --isl 20000 --shared-prefix-tokens 18000 \\
       --concurrencies 1,2,4,8,16,32,48,64,80,100,128,160,200,250 \\
       --iters 3 --warmup-iters 1 \\
-      --out results/cliff-vram-only.csv
+      --out logs/manual/results/cliff-vram-only.csv
 
   # Then re-run with the kvd-attached server:
   python -u -m bench.kv_cache_cliff.run_cliff ... --arm kvd_v2 \\
-      --out results/cliff-kvd-v2.csv
+      --out logs/manual/results/cliff-kvd-v2.csv
 """
 
 from __future__ import annotations

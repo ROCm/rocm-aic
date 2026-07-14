@@ -1,5 +1,5 @@
-results/
-plots/
+# Benchmark CSVs, plots, container logs and the Prometheus TSDB all land under
+# logs/<job-id>/ (or logs/manual/ for non-Slurm runs) -- one ignored tree.
 logs/
 # stray Slurm job logs written to the tree root (e.g. a manual `sbatch` run, or
 # jobs from before per-job logs/<job-id>/ logging); run-this.sh now writes to logs/

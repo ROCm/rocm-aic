@@ -53,7 +53,7 @@ set -uo pipefail
 # --- Config (all overridable via environment) --------------------------------
 # Under sbatch, Slurm copies this script to the node's spool dir and runs it from
 # there, so ${BASH_SOURCE[0]} points at /var/spool/slurmd/... -- deriving REPO
-# from it lands results/plots (and the /work bind-mount of benchmarks/) in an
+# from it lands logs/<job-id> (and the /work bind-mount of benchmarks/) in an
 # unwritable, wrong place.  Prefer SLURM_SUBMIT_DIR (the dir sbatch was invoked
 # from; run-this.sh cds to aai-day-release first), and fall back to BASH_SOURCE
 # for a direct, non-sbatch invocation.
@@ -65,7 +65,13 @@ REPO="${SLURM_SUBMIT_DIR:-$(cd "${SCRIPT_DIR}/.." && pwd)}"
 # and redirect the whole script's stdout+stderr into it.  Slurm's own --output is
 # /dev/null, so if mkdir fails (e.g. a misresolved REPO) the few pre-redirect
 # lines are lost -- acceptable; sacct still reports the failure.
-LOGDIR="${REPO}/logs/${SLURM_JOB_ID:-manual}"
+# Everything this job produces -- cliff.out, container logs, the Prometheus TSDB,
+# the generated LMCache config, and now the benchmark CSVs + plots -- lives under
+# this one per-job dir, so the tree root stays clean (no stray results/ or plots/).
+# LOGDIR_REL is the same path relative to REPO: containers bind-mount REPO at /work
+# and write via this relative path (see run_bench / plot_pair).
+LOGDIR_REL="logs/${SLURM_JOB_ID:-manual}"
+LOGDIR="${REPO}/${LOGDIR_REL}"
 if mkdir -p "${LOGDIR}" 2>/dev/null; then
     exec >>"${LOGDIR}/cliff.out" 2>&1
 fi
@@ -124,8 +130,10 @@ VRAM_PORT=8001
 KVD_PORT=8000
 LMCACHE_PORT=6555
 STAMP="$(date +%Y%m%d-%H%M%S)"
-RESULTS="${REPO}/results"
-PLOTS="${REPO}/plots"
+# CSVs and plots go under the per-job logs dir so the run is self-contained and
+# the tree root needs no results/ or plots/ dirs.
+RESULTS="${LOGDIR}/results"
+PLOTS="${LOGDIR}/plots"
 
 # --- Metrics capture (Prometheus sidecar) ------------------------------------
 # Auto-on; set AAI_MONITORING=0 to skip.  AAI_METRICS_DIR is the Prometheus TSDB
@@ -263,7 +271,7 @@ run_bench() {  # $1=arm $2=endpoint_port $3=out_csv $4=extra args...
             --iters "${AAI_BENCH_ITERS}" \
             --prefix-mode "${AAI_BENCH_PREFIX_MODE}" \
             --warmup-iters 1 \
-            --out "results/$(basename "${out}")" "$@"
+            --out "${LOGDIR_REL}/results/$(basename "${out}")" "$@"
 }
 
 # Pre-launch cleanup: drop any leftover container WITHOUT capturing its log --
@@ -660,8 +668,8 @@ plot_pair() {  # $1=out_subdir $2=kvd_csv
     docker run --rm --network host -v "${REPO}":/work -w /work \
         --entrypoint python3 "${AAI_IMAGE}" \
         benchmarks/plot_cliff.py \
-            --input "results/$(basename "${VRAM_CSV}")" "results/$(basename "${kvd}")" \
-            --output-dir "plots/${sub}" \
+            --input "${LOGDIR_REL}/results/$(basename "${VRAM_CSV}")" "${LOGDIR_REL}/results/$(basename "${kvd}")" \
+            --output-dir "${LOGDIR_REL}/plots/${sub}" \
         && log "plots (${sub}) -> ${PLOTS}/${sub}" || log "plot ${sub}: failed"
 }
 plot_pair nvme "${KVD_NVME_CSV}"

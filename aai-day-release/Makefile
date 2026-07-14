@@ -48,7 +48,10 @@ BENCH_CONCUR      ?= 1,2,4,8,16,32,48,64,80,100,128,160,200,250
 BENCH_ITERS       ?= 3
 BENCH_ENDPOINT    ?= http://localhost:8000
 BENCH_MODEL       ?= $(VLLM_MODEL)
-BENCH_OUT         := results/cliff-$(BENCH_ARM)-$(shell date +%Y%m%d-%H%M%S).csv
+# Non-Slurm runs have no job id, so they mirror the sbatch "manual" fallback and
+# land under logs/manual/ -- keeping the tree root free of results/ and plots/.
+BENCH_LOGDIR      := logs/manual
+BENCH_OUT         := $(BENCH_LOGDIR)/results/cliff-$(BENCH_ARM)-$(shell date +%Y%m%d-%H%M%S).csv
 
 # ---- ROCm arch (auto-detected if not set) ----------------------------------
 _ROCM_ARCH_DETECTED := $(shell rocm_agent_enumerator 2>/dev/null | grep -E '^gfx' | head -1)
@@ -115,8 +118,8 @@ help:
 	@echo ""
 	@echo "Benchmark targets:"
 	@echo "  make venv              Create/update repo-root .venv with bench+plot deps"
-	@echo "  make cliff             Run KV-cache cliff benchmark, write CSV to results/"
-	@echo "  make plot              Generate cliff PNG charts from results/ CSVs"
+	@echo "  make cliff             Run KV-cache cliff benchmark, write CSV to $(BENCH_LOGDIR)/results/"
+	@echo "  make plot              Generate cliff PNG charts from $(BENCH_LOGDIR)/results/ CSVs"
 	@echo ""
 	@echo "Metrics targets (Prometheus sidecar; scrapes vLLM/LMCache/exporters):"
 	@echo "  make monitoring-up     Start Prometheus, TSDB -> AAI_METRICS_DIR"
@@ -168,7 +171,7 @@ _prep_dirs:
 		"$(LOG)/lmcache" "$(LOG)/vllm" \
 		"$(HF_HOME)/hub" "$(HF_HOME)/datasets" "$(HF_HOME)/vllm" \
 		"$(HF_HOME)/vllm_config" "$(HF_HOME)/torch" "$(HF_HOME)/torch_inductor" \
-		results plots
+		"$(BENCH_LOGDIR)/results" "$(BENCH_LOGDIR)/plots"
 
 build:
 	@test -n "$(ROCM_ARCH)" || { \
@@ -243,9 +246,9 @@ cliff: _prep_dirs
 
 plot: _prep_dirs
 	$(PYTHON) "$(CURDIR)/benchmarks/plot_cliff.py" \
-		--input results/ \
-		--output-dir plots/
-	@echo "Charts written to plots/"
+		--input "$(BENCH_LOGDIR)/results/" \
+		--output-dir "$(BENCH_LOGDIR)/plots/"
+	@echo "Charts written to $(BENCH_LOGDIR)/plots/"
 
 monitoring-up:
 	@mkdir -p "$(AAI_METRICS_DIR)"
