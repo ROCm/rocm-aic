@@ -40,6 +40,14 @@ ARG LMCACHE_GIT_REF=hipfile-for-mp
 # Pin SHA for reproducible builds; leave empty to track branch head.
 ARG LMCACHE_SHA=301f04a114ac1089d51807cac5ccc549e6afc71a
 
+# ----- 0. Corporate CA (Zscaler/AMD) -----------------------------------------
+# certs/corp-ca.crt is gitignored and populated by the host before building.
+# Without it, git/apt/uv cannot reach HTTPS endpoints through AMD's Zscaler proxy.
+# If the file is absent the COPY is a no-op (buildkit skips missing optional sources
+# only via --mount; use a placeholder approach instead: copy if present).
+COPY recipies/vllm-lmcache-mp/certs/corp-ca.crt /usr/local/share/ca-certificates/corp-ca.crt
+RUN update-ca-certificates
+
 # ----- 1. Build dependencies -----------------------------------------------
 RUN apt-get clean && rm -rf /var/lib/apt/lists/* && \
     apt-get update && \
@@ -51,7 +59,8 @@ RUN apt-get clean && rm -rf /var/lib/apt/lists/* && \
         libmount-dev \
         ninja-build \
         pkg-config \
-    && rm -rf /var/lib/apt/lists/*
+    && rm -rf /var/lib/apt/lists/* \
+    && update-ca-certificates
 
 RUN python3 -m pip install --no-cache-dir --upgrade pip
 
@@ -140,6 +149,7 @@ RUN chmod +x /tmp/nixl-common/*.sh /tmp/nixl-common/apply-ais-overlay.sh && \
     NIXL_SRC=/tmp/nixl NIXL_ENABLE_AIS="${NIXL_ENABLE_AIS}" \
         AIS_PATH=/opt/rocm ROCM_PATH=/opt/rocm \
         NIXL_INSTALL_PREFIX=/opt/nixl \
+        UV_NATIVE_TLS=1 \
         /tmp/nixl-common/build-nixl.sh
 
 ENV PYTHONUNBUFFERED=1 \

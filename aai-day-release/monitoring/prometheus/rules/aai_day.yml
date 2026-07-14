@@ -1,0 +1,31 @@
+# Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+#
+# Recording rules adapted from the batesste Ansible monitoring roles. They
+# synthesize stable join keys (instance@device[@port]) so NVMe and RDMA series
+# from different exporters can be correlated when exploring the captured TSDB.
+
+groups:
+  - name: aai_day_join
+    interval: 30s
+    rules:
+      # NVMe device key: instance@device, gated on node_exporter disk info.
+      - record: aai_day:nvme:key
+        expr: |
+          max by (job, instance, device, k) (
+            label_join(
+              node_disk_info{job="node_exporter", device=~"nvme.*"},
+              "k", "@", "instance", "device"
+            ) * 0 + 1
+          )
+
+      # RDMA port key: instance@device@port, from the yuuki-style rdma_exporter.
+      - record: aai_day:rdma:key
+        expr: |
+          max by (job, instance, device, port, k) (
+            label_join(
+              rdma_port_rcv_data_total{job="rdma_exporter"},
+              "k", "@", "instance", "device", "port"
+            ) * 0 + 1
+          )

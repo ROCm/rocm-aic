@@ -1,0 +1,146 @@
+# Re-ported against LMCache operator-v0.5.0 (7dacaba).
+# l1_manager.py: 3-way merge (context drift).  gds_context.py: hand-ported
+# onto upstream's current GDS/hipFile impl (the original targeted an
+# AMD-internal gds_context.py).  Fix: open the (hipFile) driver before
+# register_handle() to avoid a segfault on first async DMA; plus Prometheus
+# gauges for DMA byte counters.  _ensure_driver_open() is idempotent.
+#
+# !! UNVERIFIED: applies + imports cleanly, NOT validated on a GPU.
+#
+diff --git a/lmcache/v1/distributed/l1_manager.py b/lmcache/v1/distributed/l1_manager.py
+index 64ae54cf..c1ed3562 100644
+--- a/lmcache/v1/distributed/l1_manager.py
++++ b/lmcache/v1/distributed/l1_manager.py
+@@ -208,22 +208,44 @@ class L1Manager:
+         L1Manager._gauge_target = self
+         if not L1Manager._gauge_registered:
+             L1Manager._gauge_registered = True
+-            register_gauge(
+-                "lmcache.l1_manager",
+-                "lmcache_mp.l1_memory_usage_bytes",
+-                "Bytes currently held in L1 cache",
+-                lambda: (
+-                    L1Manager._gauge_target.get_memory_usage()[0]
+-                    if L1Manager._gauge_target is not None
+-                    else 0
+-                ),
+-            )
+-            register_gauge(
+-                "lmcache.l1_manager",
+-                "lmcache_mp.l1_usage_ratio",
+-                "L1 used/total ratio (0.0–1.0)",
+-                lambda: _l1_usage_ratio_or_zero(L1Manager._gauge_target),
+-            )
++            if config.gds_l1_config is not None:
++                register_gauge(
++                    "lmcache.l1_manager",
++                    "lmcache_mp.gds_l1_slab_used_bytes",
++                    "Bytes currently allocated in the GDS NVMe slab",
++                    lambda: (
++                        L1Manager._gauge_target.get_memory_usage()[0]
++                        if L1Manager._gauge_target is not None
++                        else 0
++                    ),
++                )
++                register_gauge(
++                    "lmcache.l1_manager",
++                    "lmcache_mp.gds_l1_slab_total_bytes",
++                    "Total GDS NVMe slab capacity in bytes",
++                    lambda: (
++                        L1Manager._gauge_target.get_memory_usage()[1]
++                        if L1Manager._gauge_target is not None
++                        else 0
++                    ),
++                )
++            else:
++                register_gauge(
++                    "lmcache.l1_manager",
++                    "lmcache_mp.l1_memory_usage_bytes",
++                    "Bytes currently held in L1 cache",
++                    lambda: (
++                        L1Manager._gauge_target.get_memory_usage()[0]
++                        if L1Manager._gauge_target is not None
++                        else 0
++                    ),
++                )
++                register_gauge(
++                    "lmcache.l1_manager",
++                    "lmcache_mp.l1_usage_ratio",
++                    "L1 used/total ratio (0.0-1.0)",
++                    lambda: _l1_usage_ratio_or_zero(L1Manager._gauge_target),
++                )
+ 
+     def register_listener(self, listener: L1ManagerListener) -> None:
+         """Register a listener for L1Manager events.
+diff --git a/lmcache/v1/gpu_connector/gds_context.py b/lmcache/v1/gpu_connector/gds_context.py
+index 4ce183a0..af95c999 100644
+--- a/lmcache/v1/gpu_connector/gds_context.py
++++ b/lmcache/v1/gpu_connector/gds_context.py
+@@ -33,6 +33,12 @@ from lmcache.logging import init_logger
+ from lmcache.v1.distributed.config import GdsL1Config
+ from lmcache.v1.gpu_connector import _gds_async as ca
+ from lmcache.v1.memory_management import GDSMemoryObject
++from lmcache.v1.mp_observability.otel_init import register_gauge
++
++# Module-level DMA byte counters -- incremented in transfer_async(), read by gauges.
++_gds_bytes_read: int = 0
++_gds_bytes_written: int = 0
++_gds_counter_lock = threading.Lock()
+ 
+ logger = init_logger(__name__)
+ 
+@@ -127,6 +133,21 @@ class GDSContext:
+         self._open_and_register_slab(config.use_direct_io)
+         self.initialized = True
+ 
++        register_gauge(
++            "lmcache.gds",
++            "lmcache_mp.gds_l1_bytes_read",
++            "Total bytes transferred NVMe->GPU via GDS/hipFile DMA "
++            "(monotonically increasing)",
++            lambda: _gds_bytes_read,
++        )
++        register_gauge(
++            "lmcache.gds",
++            "lmcache_mp.gds_l1_bytes_written",
++            "Total bytes transferred GPU->NVMe via GDS/hipFile DMA "
++            "(monotonically increasing)",
++            lambda: _gds_bytes_written,
++        )
++
+     # --- Public API ---------------------------------------------------
+ 
+     def register_gpu_buffer(self, buffer: torch.Tensor) -> None:
+@@ -202,6 +223,7 @@ class GDSContext:
+                 ``get_size()`` bytes are transferred.
+             direction: :attr:`SlabDirection.READ` or ``.WRITE``.
+         """
++        global _gds_bytes_read, _gds_bytes_written
+         slab_op = (
+             self._slab_read if direction is SlabDirection.READ else self._slab_write
+         )
+@@ -214,6 +236,12 @@ class GDSContext:
+             slab_op(memory_obj.slab_offset + pos, seg_len, dev_offset, base_ptr)
+             pos += seg_len
+ 
++        with _gds_counter_lock:
++            if direction is SlabDirection.READ:
++                _gds_bytes_read += nbytes
++            else:
++                _gds_bytes_written += nbytes
++
+     def close(self) -> None:
+         """Sync the stream, deregister GDS state, and close the slab handle."""
+         if self._buffers:
+@@ -265,6 +293,11 @@ class GDSContext:
+         if use_direct_io:
+             flags |= os.O_DIRECT
+         fd = os.open(self._slab_path, flags)
++        # hipFile requires the driver to be open before a handle can be
++        # registered; register_handle() otherwise leaves inconsistent state and
++        # segfaults on the first async DMA.  _ensure_driver_open() is idempotent
++        # (and a no-op on cuFile), so calling it here is always safe.
++        ca._ensure_driver_open()
+         try:
+             handle = ca.register_handle(fd)
+         except Exception:

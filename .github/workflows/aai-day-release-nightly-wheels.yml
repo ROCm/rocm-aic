@@ -1,0 +1,222 @@
+# Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+#
+# Nightly pip wheels for the aai-day-release patched LMCache + ROCm NIXL.
+#
+# Each night, if the source branch (aai-day) changed since the last nightly, this
+# builds the aai-day-release image's `wheels` stage on a GitHub-hosted runner
+# (no GPU needed -- hipcc host-compiles), extracts the .whl files, and publishes
+# them to a single rolling GitHub Release tagged `nightly`.  People then:
+#
+#   pip install \
+#     https://github.com/ROCm/rocm-aic/releases/download/nightly/lmcache-<ver>-cp312-cp312-linux_x86_64.whl \
+#     https://github.com/ROCm/rocm-aic/releases/download/nightly/nixl_rocm-<ver>-cp312-cp312-linux_x86_64.whl
+#
+# COMPATIBILITY: the wheels are ROCm 7.2.x / Python 3.12 / x86_64 and are NOT
+# manylinux -- they only install-and-work on a matching ROCm host.  The NIXL
+# wheel carries libnixl + plugins/UCX but leaves the ROCm runtime (libamdhip64,
+# hipFile) as an external dependency.  See aai-day-release/README.md.
+#
+# NOTE ON SCHEDULING: GitHub only fires `schedule:` triggers from a workflow file
+# on the repository's DEFAULT branch (main).  This file therefore has to live on
+# main for the nightly cron to run -- but it always checks out and builds the
+# SOURCE_BRANCH (aai-day) below, so the nightly tracks aai-day content even while
+# running from main's schedule.  Until this file is on main, drive it manually via
+# "Run workflow" (workflow_dispatch).  Once aai-day merges to main, set
+# SOURCE_BRANCH to main.
+#
+# The multi-arch default (ROCM_ARCH below) covers every gfx the vLLM ROCm wheel
+# ships.  If a future component pin fails to build for the RDNA archs
+# (gfx11xx/gfx12xx), narrow it to the CDNA set "gfx90a;gfx942;gfx950" via the
+# rocm_arch input.
+name: aai-day-release nightly wheels
+
+on:
+  schedule:
+    # 06:37 UTC daily -- off the :00 mark on purpose.
+    - cron: '37 6 * * *'
+  workflow_dispatch:
+    inputs:
+      rocm_arch:
+        description: 'ROCm gfx arch(es), ; -separated (default: all vLLM archs)'
+        required: false
+        default: 'gfx90a;gfx942;gfx950;gfx1100;gfx1101;gfx1150;gfx1151;gfx1200;gfx1201'
+      force:
+        description: 'Build + publish even if the source branch has not changed'
+        required: false
+        default: 'false'
+        type: choice
+        options: ['false', 'true']
+
+permissions:
+  contents: write   # create/update the rolling `nightly` release
+
+env:
+  SOURCE_BRANCH: aai-day
+  RELEASE_TAG: nightly
+  ROCM_ARCH: ${{ github.event.inputs.rocm_arch || 'gfx90a;gfx942;gfx950;gfx1100;gfx1101;gfx1150;gfx1151;gfx1200;gfx1201' }}
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Decide whether there is anything new to build: compare the source branch
+  # HEAD to the commit the current `nightly` release points at.  Skips cleanly
+  # on scheduled runs when nothing changed; a manual run or force=true always
+  # proceeds.
+  # ---------------------------------------------------------------------------
+  check:
+    name: Check for changes on source branch
+    runs-on: ubuntu-latest
+    outputs:
+      should_build: ${{ steps.decide.outputs.should_build }}
+      sha: ${{ steps.head.outputs.sha }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.SOURCE_BRANCH }}
+          fetch-depth: 1
+
+      - name: Resolve source branch HEAD
+        id: head
+        run: echo "sha=$(git rev-parse HEAD)" >> "${GITHUB_OUTPUT}"
+
+      - name: Compare to last published nightly
+        id: decide
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          head_sha='${{ steps.head.outputs.sha }}'
+          force='${{ github.event.inputs.force }}'
+          # targetCommitish of the rolling release == the sha we last built.
+          last="$(gh release view "${RELEASE_TAG}" \
+                    --repo "${GITHUB_REPOSITORY}" \
+                    --json targetCommitish -q .targetCommitish 2>/dev/null || echo '')"
+          echo "source HEAD:      ${head_sha}"
+          echo "last nightly sha: ${last:-<none>}"
+          if [ "${force}" = "true" ] || [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "should_build=true" >> "${GITHUB_OUTPUT}"
+            echo "reason: manual/force run"
+          elif [ -z "${last}" ] || [ "${last}" != "${head_sha}" ]; then
+            echo "should_build=true" >> "${GITHUB_OUTPUT}"
+            echo "reason: source changed since last nightly (or none published yet)"
+          else
+            echo "should_build=false" >> "${GITHUB_OUTPUT}"
+            echo "reason: no change -- skipping"
+          fi
+
+  # ---------------------------------------------------------------------------
+  # Build the `wheels` stage and publish to the rolling `nightly` release.
+  # ---------------------------------------------------------------------------
+  build-release:
+    name: Build wheels + publish nightly
+    needs: check
+    if: needs.check.outputs.should_build == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.check.outputs.sha }}
+          fetch-depth: 1
+
+      - name: Free disk space on runner
+        run: |
+          set -euo pipefail
+          echo "Disk before cleanup:"; df -h /
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+                      /opt/hostedtoolcache /usr/local/share/boost || true
+          sudo rm -rf "$AGENT_TOOLSDIRECTORY" || true
+          sudo docker system prune -af --volumes || true
+          echo "Disk after cleanup:"; df -h /
+
+      - uses: docker/setup-buildx-action@v3
+
+      # Corp CA cert (AMD Zscaler) as a BuildKit secret, only if the secret is
+      # set.  Never written into any image layer.  Same pattern as the Docker
+      # build workflow.
+      - name: Write corp CA cert secret
+        id: cert
+        run: |
+          if [ -n "${{ secrets.CORP_CA_CERT }}" ]; then
+            echo "${{ secrets.CORP_CA_CERT }}" > /tmp/corp-ca.crt
+            echo "path=/tmp/corp-ca.crt" >> "${GITHUB_OUTPUT}"
+            echo "present=true" >> "${GITHUB_OUTPUT}"
+          else
+            echo "present=false" >> "${GITHUB_OUTPUT}"
+          fi
+
+      # Build ONLY the `wheels` stage and export it to ./wheels -- no image is
+      # loaded into the daemon.  Shares the GHA layer cache with the Docker build
+      # workflow (scope=aai-day-release), so warm nightlies reuse all layers up
+      # to the first change and finish quickly.
+      - name: Build + extract wheels (target=wheels)
+        uses: docker/build-push-action@v6
+        with:
+          context: aai-day-release
+          file: aai-day-release/docker/Dockerfile
+          target: wheels
+          outputs: type=local,dest=wheels
+          build-args: |
+            ROCM_ARCH=${{ env.ROCM_ARCH }}
+          secrets: |
+            ${{ steps.cert.outputs.present == 'true' && format('tls_cert={0}', steps.cert.outputs.path) || '' }}
+          cache-from: type=gha,scope=aai-day-release
+          cache-to: type=gha,mode=max,scope=aai-day-release
+
+      - name: Verify wheels
+        id: wheels
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          wheels=(wheels/*.whl)
+          echo "Extracted ${#wheels[@]} wheel(s):"
+          for w in "${wheels[@]}"; do echo "  - $(basename "$w") ($(du -h "$w" | cut -f1))"; done
+          # Expect at least one lmcache and one nixl_rocm wheel.
+          ls wheels/lmcache-*.whl   >/dev/null || { echo "ERROR: no lmcache wheel"   >&2; exit 1; }
+          ls wheels/nixl*rocm*.whl  >/dev/null || { echo "ERROR: no nixl_rocm wheel" >&2; exit 1; }
+
+      - name: Compose release notes
+        id: notes
+        run: |
+          set -euo pipefail
+          df="aai-day-release/docker/Dockerfile"
+          get() { grep -E "^ARG $1=" "$df" | head -1 | cut -d= -f2-; }
+          {
+            echo "Nightly ROCm wheels for the **aai-day-release** patched stack."
+            echo ""
+            echo "- **Source:** \`${SOURCE_BRANCH}\` @ \`${{ needs.check.outputs.sha }}\`"
+            echo "- **Built (UTC):** ${{ github.run_id }} / ${GITHUB_SHA}"
+            echo "- **GPU arch set:** \`${ROCM_ARCH}\`"
+            echo "- **Base:** rocm/dev-ubuntu-24.04:7.2.4-complete (ROCm 7.2.4, Python 3.12, x86_64)"
+            echo "- **LMCache:** $(get LMCACHE_GIT_URL) @ \`$(get LMCACHE_SHA)\` + aai-day patches"
+            echo "- **NIXL:** $(get NIXL_GIT_URL) @ \`$(get NIXL_SHA)\` + nixl-rocm-ais-mt patch"
+            echo ""
+            echo "### Install"
+            echo '```bash'
+            echo "pip install \\"
+            echo "  https://github.com/${GITHUB_REPOSITORY}/releases/download/${RELEASE_TAG}/<lmcache-wheel> \\"
+            echo "  https://github.com/${GITHUB_REPOSITORY}/releases/download/${RELEASE_TAG}/<nixl_rocm-wheel>"
+            echo '```'
+            echo ""
+            echo "> These wheels are **not** manylinux: ROCm 7.2.x + Python 3.12 + x86_64 only."
+            echo "> The \`nixl_rocm\` wheel needs the ROCm runtime (libamdhip64) and hipFile"
+            echo "> present on the host; see aai-day-release/README.md."
+          } > release-notes.md
+          cat release-notes.md
+
+      # Rolling tag: delete the old release + tag, then recreate at this sha with
+      # a clean asset set (wheel filenames change as versions/SHAs move).
+      - name: Publish rolling `nightly` release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh release delete "${RELEASE_TAG}" --repo "${GITHUB_REPOSITORY}" --yes --cleanup-tag 2>/dev/null || true
+          gh release create "${RELEASE_TAG}" wheels/*.whl \
+            --repo "${GITHUB_REPOSITORY}" \
+            --title "aai-day-release nightly wheels" \
+            --notes-file release-notes.md \
+            --target "${{ needs.check.outputs.sha }}" \
+            --prerelease
+          echo "Published ${RELEASE_TAG} at ${{ needs.check.outputs.sha }}"

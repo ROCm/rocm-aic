@@ -1,0 +1,99 @@
+# Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+#
+# Prometheus scrape config for the aai-day-release metrics-capture sidecar.
+#
+# Prometheus runs with network_mode: host (see docker-compose.monitoring.yml),
+# so every target is reached at localhost:<port>. This one model works for all
+# run styles:
+#   - `make up`  : the app compose publishes vLLM :8000 / LMCache :8080 to the host
+#   - `--cliff`  : the sbatch runs the app with `docker run --network host`
+#   - exporters  : the batesste Ansible galaxy roles install node_exporter,
+#                  nvme_exporter, rdma_exporter and the AMD device-metrics-exporter
+#                  as host systemd services (or the compose `exporters` profile
+#                  launches containerized node/amdgpu exporters as a fallback).
+#
+# Job names and ports mirror the batesste Ansible monitoring roles (above) so the
+# same Grafana dashboards / recording rules apply.  NIXL exposes its own (beta)
+# Prometheus telemetry exporter on :19090 when the prometheus-cpp plugin is
+# compiled into the image and NIXL_TELEMETRY_* is set on the LMCache process;
+# its transfer counters also surface through the LMCache job on :8080.
+#
+# Targets that are absent for a given run simply show as `down` -- harmless.
+
+global:
+  scrape_interval: 5s        # cliff arms are short; keep resolution high
+  evaluation_interval: 15s
+  external_labels:
+    cluster: aai-day
+
+rule_files:
+  - /etc/prometheus/rules/aai_day.yml
+
+scrape_configs:
+  - job_name: prometheus
+    static_configs:
+      - targets: ["localhost:9090"]
+
+  # vLLM OpenAI server /metrics. The cliff sweep uses :8000 for the kvd_v2 arms
+  # and :8001 for the vram_only baseline; list both so whichever arm is live is
+  # captured. `make up` publishes :8000.
+  - job_name: vllm
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["localhost:8000", "localhost:8001"]
+
+  # LMCache HTTP API + /metrics (includes NIXL-backed tier counters).
+  - job_name: lmcache
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["localhost:8080"]
+
+  # NIXL native telemetry exporter (agent_tx_bytes_total, agent_errors_total,
+  # ...). Present only when the prometheus-cpp plugin is built into the image and
+  # NIXL_TELEMETRY_* is set on the LMCache process. Beta; metric names may change.
+  - job_name: nixl
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["localhost:19090"]
+
+  # Host node_exporter: CPU/mem/net + NVMe I/O (diskstats/nvme collectors) and
+  # RDMA/InfiniBand port counters (infiniband collector).
+  - job_name: node_exporter
+    static_configs:
+      - targets: ["localhost:9100"]
+
+  # Dedicated NVMe exporter (batesste nvme_exporter_setup role, host service).
+  - job_name: nvme_exporter
+    static_configs:
+      - targets: ["localhost:9998"]
+
+  # Dedicated RDMA exporter (batesste rdma_setup role, host service; yuuki-style
+  # rdma_port_rcv_data_total / rdma_port_xmit_data_total metrics).
+  - job_name: rdma_exporter
+    static_configs:
+      - targets: ["localhost:9879"]
+
+  # AMD GPU device-metrics-exporter (gpu_* metrics).  :5000 is the default; :5050
+  # is the fallback the sbatch uses when :5000 is occupied by a non-GPU listener
+  # (only one actually serves gpu_* series, so no duplicate metrics).
+  - job_name: amd_metrics_exporter
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["localhost:5000", "localhost:5050"]
+
+  # hsa-snoop: HSA AQL queue/dispatch telemetry (hsa_kernel_launches_total,
+  # hsa_kernel_duration_seconds, hsa_active_queues, hsa_snoop_up, ...).
+  - job_name: hsa_snoop
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["localhost:9488"]
+
+  # ais-snoop: AIS (AMD Infinity Storage / hipFile GDS/P2PDMA) KFD kprobe
+  # telemetry (ais_kfd_calls_total, ais_kfd_latency_seconds_{sum,count},
+  # ais_kfd_inflight, ais_snoop_up). Reports up=0 until AIS_KFD_SYMBOL is set.
+  - job_name: ais_snoop
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["localhost:9489"]

@@ -59,6 +59,9 @@ tools/lmcache-io-tester/data/lmsys-chat-*.json
 tools/lmcache-io-tester/data/wildchat-*.json
 tools/lmcache-io-tester/**/*.token
 
+# Corporate CA certs — host-specific, never committed
+recipies/*/certs/
+
 # vllm-lmcache-hipfile logs and legacy per-recipe Gutenberg fixtures
 recipies/vllm-lmcache-hipfile/logs/
 recipies/vllm-lmcache-hipfile/data/

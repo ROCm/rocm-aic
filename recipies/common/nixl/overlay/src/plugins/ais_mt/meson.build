@@ -2,17 +2,10 @@
 #
 # SPDX-License-Identifier: MIT
 
-ais_path = get_option('ais_path')
-rocm_path = get_option('rocm_path')
-if ais_path != ''
-    ais_lib_path = ais_path + '/lib'
-    ais_inc_path = ais_path + '/include'
-    hipfile_dep = declare_dependency(
-        link_args: ['-L' + ais_lib_path, '-lhipfile'],
-        include_directories: include_directories(ais_inc_path))
-elif rocm_path != ''
-    ais_lib_path = rocm_path + '/lib'
-    ais_inc_path = rocm_path + '/include'
+use_rocm = get_option('use_rocm')
+if use_rocm != ''
+    ais_lib_path = use_rocm + '/lib'
+    ais_inc_path = use_rocm + '/include'
     hipfile_dep = declare_dependency(
         link_args: ['-L' + ais_lib_path, '-lhipfile'],
         include_directories: include_directories(ais_inc_path))

@@ -1,0 +1,84 @@
+# Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+#
+# Lightweight CI for the aai-day-release `make export` target.
+# Runs the export, sanity-checks the resulting tarball (non-empty, no ignored
+# artifacts leaked in, key sources present), and uploads it as a downloadable
+# workflow artifact.  No Docker build required.
+#
+name: aai-day-release export tarball
+
+on:
+  push:
+    branches: [aai-day]
+    paths:
+      - 'aai-day-release/**'
+      - '.github/workflows/aai-day-release-export.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'aai-day-release/**'
+      - '.github/workflows/aai-day-release-export.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  export:
+    name: make export (build + validate tarball)
+    runs-on: ubuntu-latest
+
+    steps:
+      # Full history so `git ls-files` / `git rev-parse --short HEAD` (used by the
+      # export target for the filename stamp) resolve against a real commit.
+      - uses: actions/checkout@v4
+
+      - name: Build export tarball
+        id: export
+        working-directory: aai-day-release
+        run: |
+          set -euo pipefail
+          make export
+          tarball="$(ls -1 aai-day-release-*.tar.gz)"
+          test -f "${tarball}" || { echo "ERROR: no tarball produced" >&2; exit 1; }
+          echo "tarball=${tarball}" >> "${GITHUB_OUTPUT}"
+          echo "path=aai-day-release/${tarball}" >> "${GITHUB_OUTPUT}"
+          echo "Built ${tarball}"
+
+      - name: Validate tarball contents
+        working-directory: aai-day-release
+        run: |
+          set -euo pipefail
+          tarball="${{ steps.export.outputs.tarball }}"
+          echo "Inspecting ${tarball}"
+
+          # Must contain something.
+          count="$(tar tzf "${tarball}" | wc -l)"
+          test "${count}" -gt 0 || { echo "ERROR: tarball is empty" >&2; exit 1; }
+          echo "entries: ${count}"
+
+          # .gitignore must have kept build/run detritus out.
+          if tar tzf "${tarball}" | grep -E 'logs/|__pycache__|\.pyc$|\.tar\.gz$'; then
+            echo "ERROR: tarball contains files .gitignore should exclude" >&2
+            exit 1
+          fi
+
+          # Sources needed to actually run the tooling must be present. These are
+          # stable paths (kept deliberately clear of files mid-reorg).
+          tarball_contents="$(tar tzf "${tarball}")"
+          for f in Makefile README.md pyproject.toml \
+                   benchmarks/run_cliff.py benchmarks/plot_cliff.py; do
+            echo "${tarball_contents}" | grep -qx "aai-day-release/${f}" \
+              || { echo "ERROR: expected ${f} missing from tarball" >&2; exit 1; }
+          done
+          echo "All required sources present"
+
+      - name: Upload tarball artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: aai-day-release-export-${{ github.sha }}
+          path: ${{ steps.export.outputs.path }}
+          if-no-files-found: error
+          retention-days: 14
