@@ -107,12 +107,22 @@ services:
 
   # ---------------------------------------------------------------------------
   # nvme-exporter (exporters-fabric profile): dedicated NVMe metrics on :9998.
-  # No standard published image (the batesste role installs a host binary) --
-  # set AAI_NVME_EXPORTER_IMAGE to an image you built.  Kept in its own profile
-  # so the default `exporters` profile does not require the image.
+  # No published upstream image (the batesste role installs a host binary), so we
+  # build one from ./nvme-exporter/Dockerfile:
+  #   docker compose -f monitoring/docker-compose.monitoring.yml \
+  #     --profile exporters-fabric build nvme-exporter
+  # Override AAI_NVME_EXPORTER_IMAGE to use a prebuilt/pushed tag instead.  Kept
+  # in its own profile so the default `exporters` profile does not require it.
   # ---------------------------------------------------------------------------
   nvme-exporter:
-    image: ${AAI_NVME_EXPORTER_IMAGE:?set AAI_NVME_EXPORTER_IMAGE to containerize the NVMe exporter}
+    build:
+      context: ./nvme-exporter
+    # `:-` (not `:?`) default: Compose interpolates mandatory vars at parse time
+    # for the WHOLE file before profile filtering, so a `:?` here would abort
+    # `--profile exporters` runs that never touch this service.  A concrete
+    # default tag keeps the field populated and matches the built image; the
+    # image is only built/pulled when `exporters-fabric` is actually selected.
+    image: ${AAI_NVME_EXPORTER_IMAGE:-aai-day-nvme-exporter:local}
     container_name: aai-day-nvme-exporter
     profiles: ["exporters-fabric"]
     network_mode: host
@@ -125,11 +135,19 @@ services:
 
   # ---------------------------------------------------------------------------
   # rdma-exporter (exporters-fabric profile): yuuki-style sysfs RDMA metrics on
-  # :9879.  Build-your-own image (github.com/yuuki/rdma_exporter ships a
-  # Dockerfile; no published image) -- set AAI_RDMA_EXPORTER_IMAGE.
+  # :9879.  No published upstream image, so we build one from
+  # ./rdma-exporter/Dockerfile:
+  #   docker compose -f monitoring/docker-compose.monitoring.yml \
+  #     --profile exporters-fabric build rdma-exporter
+  # Override AAI_RDMA_EXPORTER_IMAGE to use a prebuilt/pushed tag instead.
   # ---------------------------------------------------------------------------
   rdma-exporter:
-    image: ${AAI_RDMA_EXPORTER_IMAGE:?set AAI_RDMA_EXPORTER_IMAGE to containerize the RDMA exporter}
+    build:
+      context: ./rdma-exporter
+    # `:-` (not `:?`) default -- see nvme-exporter above: `:?` would abort
+    # unrelated `--profile exporters` runs at parse time.  Concrete default tag
+    # matches the built image; only built/pulled under `exporters-fabric`.
+    image: ${AAI_RDMA_EXPORTER_IMAGE:-aai-day-rdma-exporter:local}
     container_name: aai-day-rdma-exporter
     profiles: ["exporters-fabric"]
     network_mode: host

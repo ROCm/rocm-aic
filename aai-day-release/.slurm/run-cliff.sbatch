@@ -102,6 +102,23 @@ AAI_L1_SIZE_GB="${AAI_L1_SIZE_GB:-20}"
 AAI_NVME_POOL="${AAI_NVME_POOL:-4096}"
 AAI_NVME_SLOT_SIZE="${AAI_NVME_SLOT_SIZE:-268435456}"
 AAI_NFS_POOL="${AAI_NFS_POOL:-1024}"
+# hipFile GDS compat fallback.  Default 'false' fails loudly if true GPU-direct
+# (P2PDMA) registration is unavailable -- so kvd arms measure real GDS.  Set to
+# 'true' to allow hipFile's staged/bounce-buffer fallback when hipFileBufRegister
+# fails (err 5013) on a node where GDS is not fully enabled -- lets the AIS_MT /
+# GDS arms run, but NOT as true GPU-direct.
+AAI_HIPFILE_COMPAT="${AAI_HIPFILE_COMPAT:-false}"
+# VRAM NIXL staging buffer for the AIS_MT nvme arm (bytes).  MUST be a GPU (cuda)
+# buffer so hipFileBufRegister succeeds -- registering a host/DRAM buffer returns
+# err 5013.  512 MiB default (mirrors recipies/vllm-lmcache-nixl).
+AAI_NIXL_BUFFER_SIZE="${AAI_NIXL_BUFFER_SIZE:-536870912}"
+# Attention backend for all arms.  On vLLM 0.25 the ROCm backends (ROCM_ATTN,
+# ROCM_AITER_UNIFIED_ATTN) report supports_kv_connector()=False, so the kvd arms
+# (LMCache connector) MUST use TRITON_ATTN, which supports connectors.  It also
+# requires a full-attention model (AAI_MODEL): a sliding-window/hybrid model like
+# gpt-oss can't unify its KV-cache specs under a connector on 0.25.  Same backend
+# on all arms keeps baseline (vram) and kvd comparable.
+AAI_ATTENTION_BACKEND="${AAI_ATTENTION_BACKEND:-TRITON_ATTN}"
 
 VRAM_PORT=8001
 KVD_PORT=8000
@@ -140,29 +157,63 @@ command -v docker >/dev/null 2>&1 || die "docker not found on $(hostname)"
 mkdir -p "${RESULTS}" "${PLOTS}" "${AAI_NVME_DIR}" "${AAI_NFS_DIR}" "${AAI_SLAB_DIR}"
 [[ -d "${AAI_HF_HOME}/hub" ]] || die "HF cache not found at ${AAI_HF_HOME}/hub"
 
-# --- Load the image from the shared tarball when needed ----------------------
+# --- Load images from shared tarballs when needed ----------------------------
 # Reload when the node's image is absent, when the /scratch tarball is newer than
 # what this node last loaded, or when AAI_FORCE_LOAD=1 -- so a rebuild is picked
 # up automatically instead of a stale cached image being reused (mirrors cmd_test
 # / cmd_push in run-build-distribute.sh).  A per-uid+image marker under /var/tmp
 # records the tarball mtime last loaded here; comparing tarball-mtime vs the
 # recorded tarball-mtime (both build-side values) avoids build/node clock skew.
-tarball="$(ls -t "${AAI_IMAGE_DIR}"/rocm-aic-aai-day-latest-*.tar.* 2>/dev/null | head -1 || true)"
-_marker="/var/tmp/aai-day-loaded-$(id -u)-$(printf '%s' "${AAI_IMAGE}" | tr '/:' '__').mtime"
-_have_img="$(docker images -q "${AAI_IMAGE}" 2>/dev/null)"
-_tar_mtime="$(stat -c %Y "${tarball}" 2>/dev/null || echo 0)"
-_loaded_mtime="$(cat "${_marker}" 2>/dev/null || echo 0)"
-if [[ "${AAI_FORCE_LOAD:-0}" == "1" || -z "${_have_img}" || "${_tar_mtime}" -gt "${_loaded_mtime}" ]]; then
-    [[ -n "${tarball}" ]] || die "image ${AAI_IMAGE} absent and no tarball in ${AAI_IMAGE_DIR} (run the build first)"
-    log "loading image from ${tarball} (tarball=${_tar_mtime} last-loaded=${_loaded_mtime} present=$([[ -n "${_have_img}" ]] && echo yes || echo no) force=${AAI_FORCE_LOAD:-0})"
-    case "${tarball}" in
-        *.zst) zstd -dc "${tarball}" | docker load ;;
-        *.gz)  gzip  -dc "${tarball}" | docker load ;;
-        *)     docker load -i "${tarball}" ;;
-    esac || die "docker load failed"
-    echo "${_tar_mtime}" > "${_marker}" 2>/dev/null || true
-else
-    log "image up to date on $(hostname) (id ${_have_img}); AAI_FORCE_LOAD=1 forces a reload"
+#
+#   $1=image name:tag  $2=tarball glob  $3=mode ("required" -> die if no tarball;
+#   otherwise best-effort).  Returns 0 iff the image is present afterward.
+load_image_if_needed() {
+    local image="$1" glob="$2" mode="${3:-optional}"
+    local tb marker have tarm loadedm
+    tb="$(ls -t ${glob} 2>/dev/null | head -1 || true)"
+    marker="/var/tmp/aai-day-loaded-$(id -u)-$(printf '%s' "${image}" | tr '/:' '__').mtime"
+    have="$(docker images -q "${image}" 2>/dev/null)"
+    tarm="$(stat -c %Y "${tb}" 2>/dev/null || echo 0)"
+    loadedm="$(cat "${marker}" 2>/dev/null || echo 0)"
+    if [[ "${AAI_FORCE_LOAD:-0}" == "1" || -z "${have}" || "${tarm}" -gt "${loadedm}" ]]; then
+        if [[ -z "${tb}" ]]; then
+            [[ "${mode}" == "required" ]] && die "image ${image} absent and no tarball matching ${glob} (run the build first)"
+            [[ -n "${have}" ]] && return 0   # no tarball, but image already present
+            log "  ${image}: absent and no tarball (${glob}); skipping"
+            return 1
+        fi
+        log "loading ${image} from ${tb} (tarball=${tarm} last-loaded=${loadedm} present=$([[ -n "${have}" ]] && echo yes || echo no) force=${AAI_FORCE_LOAD:-0})"
+        case "${tb}" in
+            *.zst) zstd -dc "${tb}" | docker load ;;
+            *.gz)  gzip  -dc "${tb}" | docker load ;;
+            *)     docker load -i "${tb}" ;;
+        esac || { [[ "${mode}" == "required" ]] && die "docker load failed"; log "  ${image}: docker load failed"; return 1; }
+        echo "${tarm}" > "${marker}" 2>/dev/null || true
+    else
+        log "image up to date on $(hostname): ${image} (id ${have}); AAI_FORCE_LOAD=1 forces a reload"
+    fi
+    return 0
+}
+
+# Main inference image (required -- the whole run needs it).
+_img_base="$(printf '%s' "${AAI_IMAGE}" | tr '/:' '--')"
+load_image_if_needed "${AAI_IMAGE}" "${AAI_IMAGE_DIR}/${_img_base}-*.tar.*" required
+
+# Fabric exporter images (optional).  When metrics exporters are on and the user
+# has not pinned an explicit image, try the distributed tarball (built by
+# run-build-distribute.sh build-exporters) and point the monitoring sidecar at it
+# ONLY when the image is actually present.  On a node with the batesste host
+# service the container is port-skipped anyway; with neither, node-exporter's
+# nvme/infiniband collectors still cover it -- see _monitoring_run_up.
+if [[ "${AAI_EXPORTERS}" == "1" ]]; then
+    if [[ -z "${AAI_NVME_EXPORTER_IMAGE:-}" ]]; then
+        _t="aai-day-nvme-exporter:latest"; _b="$(printf '%s' "${_t}" | tr '/:' '--')"
+        load_image_if_needed "${_t}" "${AAI_IMAGE_DIR}/${_b}.tar.*" && export AAI_NVME_EXPORTER_IMAGE="${_t}"
+    fi
+    if [[ -z "${AAI_RDMA_EXPORTER_IMAGE:-}" ]]; then
+        _t="aai-day-rdma-exporter:latest"; _b="$(printf '%s' "${_t}" | tr '/:' '--')"
+        load_image_if_needed "${_t}" "${AAI_IMAGE_DIR}/${_b}.tar.*" && export AAI_RDMA_EXPORTER_IMAGE="${_t}"
+    fi
 fi
 
 # --- Container / GPU flags (mirror docker-compose.yml + cmd_test) -------------
@@ -174,7 +225,13 @@ GPU_FLAGS=(--device /dev/kfd --device /dev/dri --ipc host
 HF_ENV=(-e HF_HOME=/hf -e HF_HUB_CACHE=/hf/hub -e HF_HUB_OFFLINE=1
         -e TRANSFORMERS_OFFLINE=1 -e VLLM_CACHE_ROOT=/hf/vllm
         -e ROCR_VISIBLE_DEVICES=0 -e PYTHONHASHSEED=0
-        -e AMDGCN_USE_BUFFER_OPS=0 -e MIOPEN_FIND_MODE=FAST)
+        -e AMDGCN_USE_BUFFER_OPS=0 -e MIOPEN_FIND_MODE=FAST
+        # AITER unified attention: required so a KV connector (LMCache) can unify
+        # gpt-oss's hybrid (sliding-window + full) KV-cache specs.  Without
+        # VLLM_ROCM_USE_AITER=1 the ROCM_AITER_UNIFIED_ATTN backend is rejected and
+        # vLLM falls back to TRITON_ATTN -> "Hybrid KV cache manager is disabled but
+        # failed to convert the KV cache specs" at engine init.
+        -e VLLM_ROCM_USE_AITER=1)
 
 # --- Helpers -----------------------------------------------------------------
 wait_ready() {  # $1=port $2=timeout_s
@@ -209,16 +266,18 @@ run_bench() {  # $1=arm $2=endpoint_port $3=out_csv $4=extra args...
             --out "results/$(basename "${out}")" "$@"
 }
 
-# Capture each container's full stdout/stderr into the per-job logs dir before
-# removing it.  The compute node is ephemeral, so `docker logs` is lost at
+# Pre-launch cleanup: drop any leftover container WITHOUT capturing its log --
+# it belongs to a previous run, and capturing here would pollute this job's dir
+# with a stale container-<name>.log (until the real teardown overwrites it).
+rm_containers() { docker rm -f "$@" >/dev/null 2>&1 || true; }
+
+# Teardown: capture each container's full stdout/stderr into the per-job logs dir
+# before removing it.  The compute node is ephemeral, so `docker logs` is lost at
 # teardown otherwise -- and Prometheus captures metrics, not container stdout
 # (vLLM/LMCache/NIXL startup errors, stack traces, AIS debug lines live here).
 stop_containers() {
     local c
     for c in "$@"; do
-        # Only when the container actually exists -- this is also called as a
-        # pre-launch cleanup, when dumping logs would just write "No such
-        # container" over a real capture from earlier.
         docker inspect "${c}" >/dev/null 2>&1 || continue
         docker logs "${c}" > "${LOGDIR}/container-${c}.log" 2>&1 || true
     done
@@ -377,7 +436,7 @@ trap stop_monitoring EXIT
 # =============================================================================
 VRAM_CSV="${RESULTS}/cliff-vram_only-${STAMP}.csv"
 run_arm_vram() {
-    stop_containers aai-cliff-vram
+    rm_containers aai-cliff-vram
     log "=== Arm A (vram_only): launching plain vLLM on :${VRAM_PORT} ==="
     docker run -d --name aai-cliff-vram --network host "${GPU_FLAGS[@]}" \
         -v "${AAI_HF_HOME}":/hf "${HF_ENV[@]}" \
@@ -389,6 +448,7 @@ run_arm_vram() {
             --max-num-batched-tokens "${AAI_MAX_BATCHED_TOKENS}" \
             --block-size 64 --enable-prefix-caching --kv-cache-dtype fp8 \
             --async-scheduling \
+            --attention-backend "${AAI_ATTENTION_BACKEND}" \
             --disable-access-log-for-endpoints "/health,/metrics,/v1/models" \
         >/dev/null || { log "Arm A: docker run failed"; return 1; }
     if ! wait_ready "${VRAM_PORT}"; then
@@ -402,46 +462,93 @@ run_arm_vram() {
 }
 
 # =============================================================================
-# Arm B — kvd_v2 : LMCache stack (lmcache-server + connector'd vLLM)
-#   mode "nvme" -> DRAM L1 + AIS_MT NVMe L2a (+ POSIX L2b stand-in)
-#   mode "gds"  -> hipFile GDS NVMe slab as L1, no L2
+# Arm B — kvd_v2 : LMCache KV offload
+#   mode "nvme" -> connector-side NIXL AIS_MT storage with a VRAM staging buffer
+#                  (nixl_buffer_device=cuda) so hipFileBufRegister does TRUE GDS;
+#                  in-process LMCacheConnectorV1, no standalone server, no L2b.
+#                  Models recipies/vllm-lmcache-nixl (the proven AIS_MT path).
+#                  A DRAM staging buffer -- what the old l2-adapter server used --
+#                  makes hipFileBufRegister fail err 5013; cuda VRAM is required.
+#   mode "gds"  -> hipFile GDS NVMe slab as L1 via a standalone lmcache-server
+#                  (LMCache-native GDS; unchanged).
 # =============================================================================
-launch_lmcache() {  # $1=mode(nvme|gds)
-    local mode="$1"
-    stop_containers aai-cliff-lmcache
-    local -a mounts=(-v "${AAI_NVME_DIR}":/data/nvme -v "${AAI_NFS_DIR}":/data/nfs
-                     -v "${AAI_SLAB_DIR}":/data/slab
-                     -v /lib/modules:/lib/modules:ro -v /usr/src:/usr/src:ro
-                     -v /sys/kernel/debug:/sys/kernel/debug)
-    local cmd
-    if [[ "${mode}" == "gds" ]]; then
-        cmd="exec lmcache server --host 0.0.0.0 --port ${LMCACHE_PORT} \
-             --l1-size-gb ${AAI_L1_SIZE_GB} --eviction-policy LRU \
-             --gds-l1-path /data/slab"
-    else
-        local ais="{\"type\":\"nixl_store\",\"backend\":\"AIS_MT\",\"backend_params\":{\"file_path\":\"/data/nvme/lmcache\",\"use_direct_io\":\"true\",\"file_size\":${AAI_NVME_SLOT_SIZE}},\"pool_size\":${AAI_NVME_POOL}}"
-        local posix="{\"type\":\"nixl_store\",\"backend\":\"POSIX\",\"backend_params\":{\"file_path\":\"/data/nfs/lmcache\"},\"pool_size\":${AAI_NFS_POOL}}"
-        cmd="exec lmcache server --host 0.0.0.0 --port ${LMCACHE_PORT} \
-             --l1-size-gb ${AAI_L1_SIZE_GB} --eviction-policy LRU \
-             --l2-adapter '${ais}' --l2-adapter '${posix}'"
-    fi
-    log "launching lmcache-server (mode=${mode}) on :${LMCACHE_PORT}"
-    docker run -d --name aai-cliff-lmcache --network host \
-        --device /dev/kfd --device /dev/dri --ipc host \
-        --cap-add CAP_SYS_ADMIN --cap-add SYS_PTRACE --cap-add IPC_LOCK \
-        --security-opt seccomp=unconfined --ulimit nofile=1048576:1048576 \
-        "${mounts[@]}" \
-        -e LMCACHE_PORT="${LMCACHE_PORT}" -e HIPFILE_ALLOW_COMPAT_MODE=false \
-        -e HIPFILE_UNSUPPORTED_FILE_SYSTEMS=true -e PYTHONHASHSEED=0 \
-        -e NIXL_TELEMETRY_ENABLE=y -e NIXL_TELEMETRY_EXPORTER=prometheus \
-        -e NIXL_TELEMETRY_PROMETHEUS_PORT="${NIXL_METRICS_PORT:-19090}" \
-        --entrypoint /bin/bash "${AAI_IMAGE}" -o pipefail -c "${cmd}" >/dev/null
+# hipFile/GDS extras any container doing hipFileBufRegister needs: kernel headers/
+# modules + debugfs/tracefs for the ftrace kprobe, IPC_LOCK + unlimited memlock
+# for pinning the registered buffer.
+HIPFILE_FLAGS=(--cap-add IPC_LOCK --ulimit memlock=-1 --ulimit nofile=1048576:1048576
+               -v /lib/modules:/lib/modules:ro -v /usr/src:/usr/src:ro
+               -v /sys/kernel/debug:/sys/kernel/debug)
+[[ -d /sys/kernel/tracing ]] && HIPFILE_FLAGS+=(-v /sys/kernel/tracing:/sys/kernel/tracing)
+
+# Write the connector-side LMCache config for the nvme (AIS_MT) arm into the
+# per-job logs dir (so it's captured), for mounting into the vLLM container.  The
+# VRAM staging buffer (nixl_buffer_device=cuda) is the key to true GDS.
+write_lmcache_nixl_config() {
+    cat > "${LOGDIR}/lmcache-nixl-ais.yml" <<YML
+# Generated by run-cliff.sbatch (kvd_v2 nvme arm) -- connector-side NIXL AIS_MT.
+chunk_size: 256
+local_cpu: false
+save_decode_cache: true
+nixl_buffer_size: ${AAI_NIXL_BUFFER_SIZE}
+nixl_buffer_device: cuda
+extra_config:
+  enable_nixl_storage: true
+  nixl_backend: AIS_MT
+  nixl_pool_size: ${AAI_NVME_POOL}
+  use_direct_io: true
+  nixl_path: /data/nvme/lmcache
+YML
 }
 
-launch_vllm_kvd() {
-    stop_containers aai-cliff-kvd-vllm
+# gds arm only: standalone lmcache-server with a hipFile GDS L1 slab.
+launch_lmcache_gds() {
+    rm_containers aai-cliff-lmcache
+    log "launching lmcache-server (gds L1 slab) on :${LMCACHE_PORT}"
+    docker run -d --name aai-cliff-lmcache --network host \
+        --device /dev/kfd --device /dev/dri --ipc host \
+        --cap-add CAP_SYS_ADMIN --cap-add SYS_PTRACE --security-opt seccomp=unconfined \
+        "${HIPFILE_FLAGS[@]}" -v "${AAI_SLAB_DIR}":/data/slab \
+        -e LMCACHE_PORT="${LMCACHE_PORT}" -e HIPFILE_ALLOW_COMPAT_MODE="${AAI_HIPFILE_COMPAT}" \
+        -e HIPFILE_UNSUPPORTED_FILE_SYSTEMS=true -e PYTHONHASHSEED=0 \
+        --entrypoint /bin/bash "${AAI_IMAGE}" -o pipefail -c \
+        "exec lmcache server --host 0.0.0.0 --port ${LMCACHE_PORT} \
+             --l1-size-gb ${AAI_L1_SIZE_GB} --eviction-policy LRU --gds-l1-path /data/slab" >/dev/null
+}
+
+# nvme arm: in-process LMCacheConnectorV1 with connector-side NIXL AIS_MT storage
+# (VRAM staging buffer -> true GDS).  No standalone server.  NIXL telemetry runs
+# in this process, so its exporter env lives here.
+launch_vllm_kvd_nvme() {
+    rm_containers aai-cliff-kvd-vllm
+    write_lmcache_nixl_config
+    local kvcfg="{\"kv_connector\":\"LMCacheConnectorV1\",\"kv_role\":\"kv_both\"}"
+    log "launching connector'd vLLM (LMCacheConnectorV1 + NIXL AIS_MT, cuda buffer) on :${KVD_PORT}"
+    docker run -d --name aai-cliff-kvd-vllm --network host "${GPU_FLAGS[@]}" "${HIPFILE_FLAGS[@]}" \
+        -v "${AAI_HF_HOME}":/hf "${HF_ENV[@]}" \
+        -v "${AAI_NVME_DIR}":/data/nvme \
+        -v "${LOGDIR}/lmcache-nixl-ais.yml":/config/lmcache-nixl-ais.yml:ro \
+        -e LMCACHE_CONFIG_FILE=/config/lmcache-nixl-ais.yml \
+        -e HIPFILE_ALLOW_COMPAT_MODE="${AAI_HIPFILE_COMPAT}" -e HIPFILE_UNSUPPORTED_FILE_SYSTEMS=true \
+        -e NIXL_TELEMETRY_ENABLE=y -e NIXL_TELEMETRY_EXPORTER=prometheus \
+        -e NIXL_TELEMETRY_PROMETHEUS_PORT="${NIXL_METRICS_PORT:-19090}" -e PYTHONHASHSEED=0 \
+        "${AAI_IMAGE}" \
+            --model "${AAI_MODEL}" --host 0.0.0.0 --port "${KVD_PORT}" \
+            --tensor-parallel-size "${AAI_TP}" \
+            --gpu-memory-utilization "${AAI_GPU_MEM_UTIL}" \
+            --max-model-len "${AAI_MAX_MODEL_LEN}" \
+            --max-num-batched-tokens "${AAI_MAX_BATCHED_TOKENS}" \
+            --block-size 64 --enable-prefix-caching --kv-cache-dtype fp8 \
+            --async-scheduling \
+            --attention-backend "${AAI_ATTENTION_BACKEND}" \
+            --disable-access-log-for-endpoints "/health,/metrics,/v1/models" \
+            --kv-transfer-config "${kvcfg}" >/dev/null
+}
+
+# gds arm: connector'd vLLM pointing at the standalone lmcache-server (MP).
+launch_vllm_kvd_gds() {
+    rm_containers aai-cliff-kvd-vllm
     local kvcfg="{\"kv_connector\":\"LMCacheMPConnector\",\"kv_role\":\"kv_both\",\"kv_connector_extra_config\":{\"lmcache.mp.host\":\"tcp://localhost\",\"lmcache.mp.port\":${LMCACHE_PORT}}}"
-    log "launching connector'd vLLM on :${KVD_PORT}"
+    log "launching connector'd vLLM (LMCacheMPConnector) on :${KVD_PORT}"
     docker run -d --name aai-cliff-kvd-vllm --network host "${GPU_FLAGS[@]}" \
         -v "${AAI_HF_HOME}":/hf "${HF_ENV[@]}" \
         "${AAI_IMAGE}" \
@@ -452,6 +559,7 @@ launch_vllm_kvd() {
             --max-num-batched-tokens "${AAI_MAX_BATCHED_TOKENS}" \
             --block-size 64 --enable-prefix-caching --kv-cache-dtype fp8 \
             --async-scheduling \
+            --attention-backend "${AAI_ATTENTION_BACKEND}" \
             --disable-access-log-for-endpoints "/health,/metrics,/v1/models" \
             --kv-transfer-config "${kvcfg}" >/dev/null
 }
@@ -459,19 +567,32 @@ launch_vllm_kvd() {
 run_arm_kvd() {  # $1=mode(nvme|gds) $2=out_csv
     local mode="$1" out="$2"
     log "=== Arm B (kvd_v2, mode=${mode}) ==="
-    launch_lmcache "${mode}" || { log "kvd/${mode}: lmcache failed to start"; return 1; }
-    sleep 5
-    launch_vllm_kvd     || { log "kvd/${mode}: vllm failed to start"; stop_containers aai-cliff-lmcache; return 1; }
+    if [[ "${mode}" == "gds" ]]; then
+        launch_lmcache_gds || { log "kvd/gds: lmcache failed to start"; return 1; }
+        sleep 5
+        launch_vllm_kvd_gds || { log "kvd/gds: vllm failed to start"; stop_containers aai-cliff-lmcache; return 1; }
+        if ! wait_ready "${KVD_PORT}"; then
+            log "kvd/gds: server never became ready; last logs:"
+            docker logs --tail 40 aai-cliff-lmcache 2>&1 | sed 's/^/  [lmcache] /'
+            docker logs --tail 40 aai-cliff-kvd-vllm 2>&1 | sed 's/^/  [vllm]    /'
+            stop_containers aai-cliff-kvd-vllm aai-cliff-lmcache; return 1
+        fi
+        run_bench kvd_v2 "${KVD_PORT}" "${out}" --warmup-at-each-c --post-warmup-sleep-s 5
+        local rc=$?
+        stop_containers aai-cliff-kvd-vllm aai-cliff-lmcache
+        return $rc
+    fi
+    # nvme: in-process LMCacheConnectorV1, no standalone server.
+    launch_vllm_kvd_nvme || { log "kvd/nvme: vllm failed to start"; return 1; }
     if ! wait_ready "${KVD_PORT}"; then
-        log "kvd/${mode}: server never became ready; last logs:"
-        docker logs --tail 40 aai-cliff-lmcache 2>&1 | sed 's/^/  [lmcache] /'
-        docker logs --tail 40 aai-cliff-kvd-vllm 2>&1 | sed 's/^/  [vllm]    /'
-        stop_containers aai-cliff-kvd-vllm aai-cliff-lmcache; return 1
+        log "kvd/nvme: server never became ready; last logs:"
+        docker logs --tail 60 aai-cliff-kvd-vllm 2>&1 | sed 's/^/  [vllm] /'
+        stop_containers aai-cliff-kvd-vllm; return 1
     fi
     # Per-c warmup + drain: required for per_client mode and async-save kvd.
     run_bench kvd_v2 "${KVD_PORT}" "${out}" --warmup-at-each-c --post-warmup-sleep-s 5
     local rc=$?
-    stop_containers aai-cliff-kvd-vllm aai-cliff-lmcache
+    stop_containers aai-cliff-kvd-vllm
     return $rc
 }
 

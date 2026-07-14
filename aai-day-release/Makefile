@@ -75,11 +75,21 @@ MON_COMPOSE     := $(_COMPOSE_BIN) -f "$(CURDIR)/monitoring/docker-compose.monit
 _MON_PROFILE    := $(if $(filter 1,$(AAI_EXPORTERS)),--profile exporters,)
 export AAI_METRICS_DIR
 
+# ---- Fabric exporters (nvme_exporter / rdma_exporter) ----------------------
+# No published upstream images; we build them from monitoring/*/Dockerfile so the
+# `exporters-fabric` compose profile and the .slurm docker-run fallback (nodes
+# without the compose plugin) can containerize them.  Versions match the batesste
+# host services for Grafana parity; override to bump.
+NVME_EXPORTER_IMAGE   ?= aai-day-nvme-exporter:local
+RDMA_EXPORTER_IMAGE   ?= aai-day-rdma-exporter:local
+NVME_EXPORTER_VERSION ?= 3.0.0
+RDMA_EXPORTER_VERSION ?= 0.3.0
+
 PYTHON := $(if $(wildcard $(REPO_ROOT)/.venv/bin/python3),$(REPO_ROOT)/.venv/bin/python3,python3)
 
 .PHONY: help build up up-batch up-gds-l1 up-gds-l1-batch down logs logs-lmcache logs-vllm \
         ps shell-lmcache shell-vllm restart-vllm restart-lmcache cliff plot venv \
-        monitoring-up monitoring-down monitoring-logs \
+        monitoring-up monitoring-down monitoring-logs monitoring-build-exporters \
         _check_hf_token _prep_dirs _check_gds_slab
 
 .DEFAULT_GOAL := help
@@ -112,6 +122,7 @@ help:
 	@echo "  make monitoring-up     Start Prometheus, TSDB -> AAI_METRICS_DIR"
 	@echo "  make monitoring-down   Stop the metrics sidecar (TSDB retained)"
 	@echo "  make monitoring-logs   Follow Prometheus logs"
+	@echo "  make monitoring-build-exporters  Build nvme_exporter + rdma_exporter images"
 	@echo "    AAI_METRICS_DIR=$(AAI_METRICS_DIR)"
 	@echo "    AAI_EXPORTERS=$(AAI_EXPORTERS)  (1 = also launch node + AMD GPU exporters)"
 	@echo ""
@@ -247,3 +258,16 @@ monitoring-down:
 
 monitoring-logs:
 	$(MON_COMPOSE) logs -f prometheus
+
+# Build the two fabric-exporter images (plain `docker build`, so it works on
+# nodes without the compose plugin).  Tag/version overridable via the vars above.
+monitoring-build-exporters:
+	DOCKER_BUILDKIT=1 docker build \
+		--build-arg NVME_EXPORTER_VERSION=$(NVME_EXPORTER_VERSION) \
+		-t "$(NVME_EXPORTER_IMAGE)" "$(CURDIR)/monitoring/nvme-exporter"
+	DOCKER_BUILDKIT=1 docker build \
+		--build-arg RDMA_EXPORTER_VERSION=$(RDMA_EXPORTER_VERSION) \
+		-t "$(RDMA_EXPORTER_IMAGE)" "$(CURDIR)/monitoring/rdma-exporter"
+	@echo "Built $(NVME_EXPORTER_IMAGE) and $(RDMA_EXPORTER_IMAGE)."
+	@echo "Run them via:  AAI_EXPORTERS=1 with --profile exporters-fabric, or set"
+	@echo "AAI_NVME_EXPORTER_IMAGE / AAI_RDMA_EXPORTER_IMAGE for the .slurm docker-run path."

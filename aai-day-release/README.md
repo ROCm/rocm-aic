@@ -131,8 +131,8 @@ explored afterward. It scrapes, all at `localhost`:
 | LMCache `/metrics` | 8080 | includes NIXL-backed tier counters |
 | NIXL telemetry `/metrics` | 19090 | native NIXL exporter on the LMCache process (see below) |
 | node_exporter | 9100 | CPU/mem/net + **NVMe I/O** (diskstats/nvme) + **RDMA** (infiniband) |
-| nvme_exporter | 9998 | dedicated NVMe exporter (batesste Ansible role, host service) |
-| rdma_exporter | 9879 | dedicated RDMA exporter (batesste Ansible role, host service) |
+| nvme_exporter | 9998 | dedicated NVMe exporter (batesste host service, or container — see below) |
+| rdma_exporter | 9879 | dedicated RDMA exporter (batesste host service, or container — see below) |
 | amd_metrics_exporter | 5000 | AMD GPU device-metrics-exporter (`amd_*` metrics) |
 | hsa_snoop | 9488 | HSA AQL queue/dispatch telemetry (`hsa_kernel_launches_total`, `hsa_kernel_duration_seconds`, `hsa_active_queues`) |
 
@@ -169,10 +169,27 @@ make -C aai-day-release monitoring-up \
 make -C aai-day-release monitoring-down     # stop (TSDB retained)
 ```
 
-`nvme_exporter` / `rdma_exporter` are host services (batesste galaxy roles) and
-are **not** containerized; Prometheus scrapes them when present. On a node that
-lacks them, NVMe I/O still comes from node-exporter's `diskstats`/`nvme`
-collectors and RDMA from its `infiniband` collector.
+`nvme_exporter` / `rdma_exporter` are normally host services (batesste galaxy
+roles). For bare nodes without those services there are now container images too,
+built from the same upstream release binaries so the `nvme_*` / `rdma_port_*`
+series match:
+
+```bash
+# build both fabric-exporter images (works without the compose plugin)
+make -C aai-day-release monitoring-build-exporters
+
+# run them alongside the sidecar via the exporters-fabric compose profile
+AAI_METRICS_DIR=/mnt/lmcache-nfs/metrics \
+  docker compose -f aai-day-release/monitoring/docker-compose.monitoring.yml \
+    --profile exporters --profile exporters-fabric up -d
+```
+
+For the `--cliff` docker-run path (nodes without the compose plugin), set
+`AAI_NVME_EXPORTER_IMAGE=aai-day-nvme-exporter:local` /
+`AAI_RDMA_EXPORTER_IMAGE=aai-day-rdma-exporter:local` after building. Each
+container is skipped automatically if a host service already serves its port.
+On a node lacking both, NVMe I/O still comes from node-exporter's
+`diskstats`/`nvme` collectors and RDMA from its `infiniband` collector.
 
 **hsa-snoop (`:9488`).** [sbates130272/hsa-snoop](https://github.com/sbates130272/hsa-snoop)
 is compiled into the `rocm-aic-aai-day` image with its Prometheus exporter

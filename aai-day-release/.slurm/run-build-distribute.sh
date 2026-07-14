@@ -51,14 +51,19 @@
 #
 # Commands:
 #   build   Build the image on AAI_BUILD_NODE, then save the tarball to AAI_IMAGE_DIR
+#   build-exporters
+#           Build the fabric exporter images (nvme_exporter / rdma_exporter) from
+#           monitoring/*/Dockerfile and save their tarballs to AAI_IMAGE_DIR, so
+#           bare cliff nodes (no batesste host service) can containerize them.
 #   load    Load the saved tarball on every node in AAI_TARGETS, then verify
+#           (also loads the exporter tarballs when present)
 #   push    Tag the built image as AAI_PUSH_REF and `docker push` it to a registry
 #           (loads from the shared tarball first if the image is not present)
 #   test    Smoke-test the image on a GPU+NVMe node (loads it there if missing):
 #           checks GPU visibility + arch, vLLM / LMCache / hipFile, ais-check
 #           (HIP+amdgpu AIS support), and the NIXL AIS_MT plugin (hard fail if
 #           AIS_MT or ais-check fail)
-#   all     build, then load   (default)
+#   all     build, build-exporters, then load   (default)
 #
 # Key environment:
 #   AAI_ROCM_ARCH        gfx arch(es) baked in; ';'-list   (default: all vLLM archs)
@@ -152,6 +157,16 @@ AAI_TEST_TIME="${AAI_TEST_TIME:-00:20:00}"
 AAI_TEST_CPUS="${AAI_TEST_CPUS:-8}"
 AAI_TEST_MEM="${AAI_TEST_MEM:-32G}"
 
+# --- Fabric exporter images (nvme_exporter / rdma_exporter) -------------------
+# Built from monitoring/*/Dockerfile and distributed alongside the main image so
+# bare cliff nodes (no batesste host service) can containerize them.  Names must
+# match run-cliff.sbatch's defaults so the tarballs written here are found there.
+# Versions default to the batesste host-service versions for Grafana parity.
+AAI_NVME_EXPORTER_IMAGE="${AAI_NVME_EXPORTER_IMAGE:-aai-day-nvme-exporter:latest}"
+AAI_RDMA_EXPORTER_IMAGE="${AAI_RDMA_EXPORTER_IMAGE:-aai-day-rdma-exporter:latest}"
+AAI_NVME_EXPORTER_VERSION="${AAI_NVME_EXPORTER_VERSION:-3.0.0}"
+AAI_RDMA_EXPORTER_VERSION="${AAI_RDMA_EXPORTER_VERSION:-0.3.0}"
+
 # Corporate CA: default to the conventional path only if it actually exists.
 if [[ -z "${AAI_TLS_CERT:-}" && -r "${HOME}/certs/zscaler-ca.crt" ]]; then
     AAI_TLS_CERT="${HOME}/certs/zscaler-ca.crt"
@@ -189,6 +204,15 @@ _tarball_path() {
     local base
     base="$(printf '%s' "${AAI_IMAGE}" | tr '/:' '--')"
     printf '%s/%s-%s.%s' "${AAI_IMAGE_DIR}" "${base}" "$(_arch_tag)" "${COMPRESS_EXT}"
+}
+
+# --- Exporter tarball path ($1=image name:tag) -------------------------------
+# The exporters bake a host-CPU-arch binary (not a gfx arch), so unlike the main
+# image their tarball name carries no arch tag -- just the sanitized name:tag.
+_exporter_tarball_path() {
+    local base
+    base="$(printf '%s' "$1" | tr '/:' '--')"
+    printf '%s/%s.%s' "${AAI_IMAGE_DIR}" "${base}" "${COMPRESS_EXT}"
 }
 
 # --- build: build the image on a compile node, save tarball to shared scratch -
@@ -348,6 +372,80 @@ REMOTE
     log "build complete: ${tarball}"
 }
 
+# --- build-exporters: build the fabric exporter images, save tarballs ---------
+# The nvme_exporter / rdma_exporter images are small (Debian slim + a prebuilt
+# release binary) and gfx-arch-independent.  Like cmd_build, we do NOT `docker
+# save`: on a node whose default builder is the docker-container driver (the
+# `aai-cache` builder this script creates), `docker build` builds inside BuildKit
+# and `docker save` can miss the layer blobs -- yielding a truncated tarball
+# (observed: a 1.5K "image").  Instead we export a docker-format tar straight
+# from BuildKit with `--output type=docker,dest=-` piped into the compressor,
+# which captures the full image regardless of the node's default builder/driver.
+# Runs on a build-class node (or locally with AAI_BUILD_LOCAL=1); needs docker +
+# reachability to GitHub/Debian.
+cmd_build_exporters() {
+    _pick_compress
+    local nvme_tar rdma_tar
+    nvme_tar="$(_exporter_tarball_path "${AAI_NVME_EXPORTER_IMAGE}")"
+    rdma_tar="$(_exporter_tarball_path "${AAI_RDMA_EXPORTER_IMAGE}")"
+
+    log "exporter images: ${AAI_NVME_EXPORTER_IMAGE} (nvme v${AAI_NVME_EXPORTER_VERSION}), ${AAI_RDMA_EXPORTER_IMAGE} (rdma v${AAI_RDMA_EXPORTER_VERSION})"
+    log "tarballs   : ${nvme_tar}, ${rdma_tar}  (compress: ${AAI_COMPRESS})"
+
+    local remote_script
+    remote_script="$(cat <<REMOTE
+set -euo pipefail
+command -v docker >/dev/null 2>&1 || { echo 'docker not found on build node' >&2; exit 1; }
+echo "[build-exporters] host=\$(hostname) docker=\$(docker --version)"
+mkdir -p "${AAI_IMAGE_DIR}"
+# A docker-container builder is required to stream a docker-format tar from
+# BuildKit (the default `docker` driver cannot export type=docker to stdout).
+# Reuse/create the same builder cmd_build uses; idempotent, then bootstrap it.
+if ! docker buildx inspect ${AAI_BUILDX_BUILDER} >/dev/null 2>&1; then
+    echo "[build-exporters] creating buildx builder ${AAI_BUILDX_BUILDER} (docker-container)"
+    docker buildx create --name ${AAI_BUILDX_BUILDER} --driver docker-container >/dev/null
+fi
+docker buildx inspect --bootstrap ${AAI_BUILDX_BUILDER} >/dev/null
+tmp="${nvme_tar}.partial.\$\$"
+docker buildx build --builder ${AAI_BUILDX_BUILDER} --output type=docker,dest=- \
+    --build-arg NVME_EXPORTER_VERSION="${AAI_NVME_EXPORTER_VERSION}" \
+    -t "${AAI_NVME_EXPORTER_IMAGE}" "${AAI_DAY_DIR}/monitoring/nvme-exporter" | ${COMPRESS_CMD} > "\${tmp}"
+mv -f "\${tmp}" "${nvme_tar}"
+tmp="${rdma_tar}.partial.\$\$"
+docker buildx build --builder ${AAI_BUILDX_BUILDER} --output type=docker,dest=- \
+    --build-arg RDMA_EXPORTER_VERSION="${AAI_RDMA_EXPORTER_VERSION}" \
+    -t "${AAI_RDMA_EXPORTER_IMAGE}" "${AAI_DAY_DIR}/monitoring/rdma-exporter" | ${COMPRESS_CMD} > "\${tmp}"
+mv -f "\${tmp}" "${rdma_tar}"
+echo "[build-exporters] saved \$(du -h "${nvme_tar}" | cut -f1) -> ${nvme_tar}"
+echo "[build-exporters] saved \$(du -h "${rdma_tar}" | cut -f1) -> ${rdma_tar}"
+REMOTE
+)"
+
+    if [[ "${AAI_BUILD_LOCAL:-}" == "1" ]]; then
+        log "building exporters locally on $(hostname) (AAI_BUILD_LOCAL=1)"
+        bash -c "${remote_script}"
+    else
+        command -v srun >/dev/null 2>&1 || die "srun not found; set AAI_BUILD_LOCAL=1 to build here"
+        local -a _sel
+        if [[ -n "${AAI_BUILD_NODE:-}" ]]; then
+            _sel=(--nodelist="${AAI_BUILD_NODE}")
+            log "building exporters on ${AAI_BUILD_NODE} via srun (partition ${AAI_BUILD_PARTITION})"
+        else
+            _sel=(--constraint="${AAI_BUILD_CONSTRAINT}")
+            log "building exporters via srun (partition ${AAI_BUILD_PARTITION}, constraint ${AAI_BUILD_CONSTRAINT})"
+        fi
+        srun \
+            --job-name=aai-day-build-exporters \
+            --partition="${AAI_BUILD_PARTITION}" \
+            "${_sel[@]}" \
+            --nodes=1 --ntasks=1 \
+            --cpus-per-task=2 --mem=8G --overcommit \
+            --time="${AAI_LOAD_TIME}" \
+            bash -c "${remote_script}"
+    fi
+    log "exporter build complete: ${nvme_tar}, ${rdma_tar}"
+}
+
 # --- load: docker load the tarball on every target node, then verify ---------
 cmd_load() {
     _pick_compress
@@ -357,8 +455,17 @@ cmd_load() {
     command -v srun >/dev/null 2>&1 || die "srun not found; cannot load onto remote nodes"
     [[ -r "${tarball}" ]] || die "tarball not found: ${tarball} (run 'build' first)"
 
+    # Also ship the fabric exporter tarballs when they exist (built by
+    # 'build-exporters').  Best-effort: absent tarballs are simply skipped, so a
+    # main-image-only build still loads fine.  Paths carry no spaces (/scratch...).
+    local tarballs="${tarball}" et
+    for et in "$(_exporter_tarball_path "${AAI_NVME_EXPORTER_IMAGE}")" \
+              "$(_exporter_tarball_path "${AAI_RDMA_EXPORTER_IMAGE}")"; do
+        [[ -r "${et}" ]] && { tarballs+=" ${et}"; log "  + exporter tarball: ${et}"; }
+    done
+
     local n; n="$(awk -F, '{print NF}' <<<"${AAI_TARGETS}")"
-    log "loading ${AAI_IMAGE} onto ${n} node(s): ${AAI_TARGETS}"
+    log "loading ${AAI_IMAGE} (+ present exporter images) onto ${n} node(s): ${AAI_TARGETS}"
     log "tarball: ${tarball}"
 
     # Small, oversubscribable request so the load can slip in alongside running
@@ -374,8 +481,9 @@ cmd_load() {
         bash -c "
 set -euo pipefail
 command -v docker >/dev/null 2>&1 || { echo \"\$(hostname): docker not found\" >&2; exit 1; }
-${DECOMPRESS_CMD} '${tarball}' | docker load >/dev/null
-echo \"\$(hostname): loaded ${AAI_IMAGE} -> \$(docker images -q '${AAI_IMAGE}')\"
+for _tb in ${tarballs}; do
+    ${DECOMPRESS_CMD} \"\${_tb}\" | docker load >/dev/null && echo \"\$(hostname): loaded \${_tb}\"
+done
 "
     log "load complete on: ${AAI_TARGETS}"
 }
@@ -610,15 +718,16 @@ REMOTE
 main() {
     local sub="${1:-all}"
     case "${sub}" in
-        build) cmd_build ;;
-        load)  cmd_load ;;
-        push)  cmd_push ;;
-        test)  cmd_test ;;
-        all)   cmd_build; cmd_load ;;
+        build)           cmd_build ;;
+        build-exporters) cmd_build_exporters ;;
+        load)            cmd_load ;;
+        push)            cmd_push ;;
+        test)            cmd_test ;;
+        all)             cmd_build; cmd_build_exporters; cmd_load ;;
         -h|--help|help)
             sed -n '2,70p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
             ;;
-        *) die "unknown command '${sub}' (use: build | load | push | test | all | help)" ;;
+        *) die "unknown command '${sub}' (use: build | build-exporters | load | push | test | all | help)" ;;
     esac
 }
 

@@ -6,7 +6,7 @@
 #
 # Convenience driver for the aai-day-release build + distribute flow.
 #
-#   ./run-this.sh --build       # build the image on a CPU-only alola node + save tarball
+#   ./run-this.sh --build       # build the image (+ nvme/rdma exporter images) on a CPU-only alola node + save tarballs
 #   ./run-this.sh --push        # push the built image to a registry (needs AAI_PUSH_REF)
 #   ./run-this.sh --run-smoke-test  # smoke-test the image on a GPU+NVMe node
 #   ./run-this.sh --cliff       # sbatch the full run_cliff.py sweep on a GPU+NVMe node
@@ -28,6 +28,9 @@
 #     --cliff-short (fastest single-arm check)
 #   --cliff auto-starts a Prometheus metrics sidecar (AAI_MONITORING=0 to skip);
 #     set AAI_METRICS_DIR=<nfs-dir> for the TSDB, AAI_EXPORTERS=0 to use host exporters
+#   --build also builds the nvme/rdma exporter images (AAI_BUILD_EXPORTERS=0 to skip);
+#     --cliff then auto-loads them on the node and points the sidecar at them when
+#     present (else it falls back to host exporters / node-exporter collectors)
 #
 set -euo pipefail
 
@@ -64,6 +67,11 @@ done
 if (( do_build )); then
     # picks any idle CPU-only Markham build node, builds, and saves the tarball
     "${DIST}" build
+    # Also build + save the fabric exporter images (nvme_exporter / rdma_exporter)
+    # so --cliff can auto-load them on bare nodes.  Skip with AAI_BUILD_EXPORTERS=0.
+    if [[ "${AAI_BUILD_EXPORTERS:-1}" == "1" ]]; then
+        "${DIST}" build-exporters
+    fi
 fi
 
 if (( do_push )); then
