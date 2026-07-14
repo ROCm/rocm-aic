@@ -305,7 +305,12 @@ monitoring-build-exporters:
 
 dist-build:                    # Build image (+ fabric exporters) on a Slurm build node, save tarballs
 	"$(DIST)" build
-	@[ "$(AAI_BUILD_EXPORTERS)" = "0" ] || "$(DIST)" build-exporters
+	@# The fabric exporters are optional (bare-node fallback) and their Dockerfile
+	@# pulls debian:12-slim from Docker Hub, so the build node needs registry egress.
+	@# Keep a failure here non-fatal: the main image (the artifact that matters) is
+	@# already built.  Set AAI_BUILD_EXPORTERS=0 to skip the step entirely.
+	@[ "$(AAI_BUILD_EXPORTERS)" = "0" ] || "$(DIST)" build-exporters \
+	    || echo "WARNING: fabric-exporter build failed (optional; main image is built). Retry on a node with Docker Hub access, or set AAI_BUILD_EXPORTERS=0."
 
 dist-push:                     # Tag + push the built image to a registry (needs AAI_PUSH_REF)
 	"$(DIST)" push

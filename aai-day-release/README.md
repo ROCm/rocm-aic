@@ -228,6 +228,14 @@ roles). For bare nodes without those services there are now container images too
 built from the same upstream release binaries so the `nvme_*` / `rdma_port_*`
 series match:
 
+> **Note:** these exporter images are **optional** and their Dockerfiles pull
+> `debian:12-slim` from Docker Hub, so the build node needs registry egress
+> (Zscaler proxy / DNS). `make dist-build` builds them after the main image but
+> treats a failure as a non-fatal warning — the main image (which builds entirely
+> from the shared `/scratch` BuildKit cache, no registry pull) is unaffected. Skip
+> the step with `AAI_BUILD_EXPORTERS=0`; if the images are absent the cliff job
+> falls back to host exporters / node-exporter's nvme+infiniband collectors.
+
 ```bash
 # build both fabric-exporter images (works without the compose plugin)
 make -C aai-day-release monitoring-build-exporters
