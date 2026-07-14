@@ -100,6 +100,23 @@ PYTHON := $(if $(wildcard $(REPO_ROOT)/.venv/bin/python3),$(REPO_ROOT)/.venv/bin
 DIST := $(CURDIR)/.slurm/run-build-distribute.sh
 export AAI_CACHE_DIR ?= /scratch/$(USER)/images/buildcache
 
+# The cliff sbatch has its own node-appropriate defaults for the HuggingFace
+# cache (staged on /scratch), the LMCache storage tiers (node-local /tmp), and
+# the Prometheus TSDB (per-job logs/<job-id>/prometheus).  But the Makefile
+# export'd HF_HOME / NVME_DATA / NFS_DATA / GDS_SLAB_DATA / AAI_METRICS_DIR with
+# compose-oriented defaults (/mnt/..., ~/.cache, logs/prometheus), which
+# sbatch --export=ALL would otherwise push into the job and clobber those
+# defaults -- breaking cliff runs launched via make (the old run-this.sh never
+# exported them).  So for cliff submits, strip ONLY the ones that came from the
+# Makefile's own defaults ($(origin ...) = "file"); a value the user set on the
+# command line or in their environment is kept and still flows through.
+_CLIFF_STRIP := env \
+    $(if $(filter file,$(origin HF_HOME)),-u HF_HOME) \
+    $(if $(filter file,$(origin NVME_DATA)),-u NVME_DATA) \
+    $(if $(filter file,$(origin NFS_DATA)),-u NFS_DATA) \
+    $(if $(filter file,$(origin GDS_SLAB_DATA)),-u GDS_SLAB_DATA) \
+    $(if $(filter file,$(origin AAI_METRICS_DIR)),-u AAI_METRICS_DIR)
+
 # ---- Export tarball --------------------------------------------------------
 # `make export` packages the sources needed to run this tooling into a single
 # self-contained tarball.  It captures the current WORKING TREE -- tracked files
@@ -353,7 +370,7 @@ smoke-test:                    # Load + smoke-test the image on a GPU+NVMe node
 # a node with AAI_CLIFF_NODE, narrow arms with AAI_CLIFF_ARMS=nvme (etc).  The job
 # creates logs/<job-id>/ itself and redirects its output there.
 cliff-submit:
-	@cd "$(CURDIR)" && jobid=$$(sbatch --parsable \
+	@cd "$(CURDIR)" && jobid=$$($(_CLIFF_STRIP) sbatch --parsable \
 	    $(if $(AAI_CLIFF_NODE),--nodelist=$(AAI_CLIFF_NODE),) \
 	    .slurm/run-cliff.sbatch) && \
 	    echo "submitted cliff job $$jobid" && \
@@ -363,7 +380,7 @@ cliff-submit:
 # Respects user overrides of BENCH_CONCUR / BENCH_ITERS.
 cliff-short:
 	@cd "$(CURDIR)" && jobid=$$(BENCH_CONCUR="$${BENCH_CONCUR:-1}" BENCH_ITERS="$${BENCH_ITERS:-1}" \
-	    sbatch --parsable --job-name=aai-day-cliff-short \
+	    $(_CLIFF_STRIP) sbatch --parsable --job-name=aai-day-cliff-short \
 	    $(if $(AAI_CLIFF_NODE),--nodelist=$(AAI_CLIFF_NODE),) \
 	    .slurm/run-cliff.sbatch) && \
 	    echo "submitted cliff-short job $$jobid (BENCH_CONCUR=$${BENCH_CONCUR:-1} BENCH_ITERS=$${BENCH_ITERS:-1})" && \
