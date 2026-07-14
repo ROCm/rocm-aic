@@ -3,7 +3,7 @@ Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
 SPDX-License-Identifier: MIT
 -->
 
-# NIXL build (ROCm, ai-dynamo upstream + AIS_MT patch)
+# NIXL build (ROCm, `ai-dynamo` upstream + AIS_MT patch)
 
 Clone + build scripts for the NIXL step of the aai-day-release image.
 

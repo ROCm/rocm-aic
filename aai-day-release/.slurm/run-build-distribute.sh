@@ -249,7 +249,8 @@ cmd_build() {
             # File-based backend: type=local cache under <dir>/<arch> on shared
             # /scratch.  buildx reads/writes these paths from the srun task (which
             # has /scratch mounted), so no registry or auth is involved.
-            local _cdir="${AAI_CACHE_DIR%/}/$(_arch_tag)"
+            local _cdir
+            _cdir="${AAI_CACHE_DIR%/}/$(_arch_tag)"
             log "build cache: local dir ${_cdir} (mode ${AAI_CACHE_MODE}, builder ${AAI_BUILDX_BUILDER})"
             _cache_args="--cache-from type=local,src=${_cdir} --cache-to type=local,dest=${_cdir},mode=${AAI_CACHE_MODE}"
             _mkdir="mkdir -p '${_cdir}'; "
