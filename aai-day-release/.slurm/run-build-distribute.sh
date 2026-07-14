@@ -86,7 +86,7 @@
 #                         Used only when AAI_BUILD_NODE is unset.
 #   AAI_BUILD_NODE       pin an exact build node via --nodelist (overrides
 #                        AAI_BUILD_CONSTRAINT)             (default: unset)
-#   AAI_BUILD_LOCAL      set to 1 to build on THIS host, no srun/Slurm  (default: unset)
+#   AAI_BUILD_LOCAL      set to 1 to build on THIS host, no Slurm  (default: unset)
 #   AAI_BUILD_PARTITION  Slurm partition for build + load  (default: defq)
 #   AAI_BUILD_CPUS       --cpus-per-task for the build job (default: 32)
 #   AAI_BUILD_TIME       build job time limit              (default: 02:00:00)
@@ -215,6 +215,85 @@ _exporter_tarball_path() {
     printf '%s/%s.%s' "${AAI_IMAGE_DIR}" "${base}" "${COMPRESS_EXT}"
 }
 
+# --- sbatch dispatch (mirrors run-cliff.sbatch's per-job logging) -------------
+# Submit BODY as an sbatch batch job whose output streams into
+# logs/<job-id>/<logname>.out under the tree -- the SAME per-job structure
+# run-cliff.sbatch uses for logs/<job-id>/cliff.out.  Unlike `make cliff-submit`
+# (fire-and-forget), this BLOCKS until the job finishes and returns its exit
+# code, so the chained goals `make dist-build dist-push smoke-test` still run in
+# order and stop on failure.  The job's log is live-tailed while it runs so
+# `make dist-build` / `make smoke-test` still show progress in the terminal.
+#
+#   $1    = job name       (e.g. aai-day-build)
+#   $2    = log basename   (build -> logs/<job-id>/build.out)
+#   $3    = body script    (the work; runs on the compute node)
+#   $4..  = extra sbatch options (node selection, cpus, mem, gres, time, ...)
+_sbatch_run() {
+    local jobname="$1" logname="$2" body="$3"; shift 3
+    command -v sbatch >/dev/null 2>&1 || die "sbatch not found; set AAI_BUILD_LOCAL=1 to build here"
+
+    # Batch script = shebang (sbatch requires one) + a prologue that creates the
+    # per-job log dir and redirects everything into <logname>.out, then the
+    # caller's body.  AAI_DAY_DIR is absolute and on shared storage, so it
+    # resolves on the compute node without relying on SLURM_SUBMIT_DIR.  Slurm's
+    # own --output is /dev/null, so only the pre-redirect lines (none here) would
+    # be discarded -- mirrors run-cliff.sbatch.
+    local script
+    script="$(cat <<PROLOGUE
+#!/bin/bash
+_logdir="${AAI_DAY_DIR}/logs/\${SLURM_JOB_ID:-manual}"
+mkdir -p "\${_logdir}" 2>/dev/null && exec >>"\${_logdir}/${logname}.out" 2>&1
+PROLOGUE
+)"
+    script+=$'\n'"${body}"
+
+    # Submit in the background so we can read the (parsable) job id as soon as it
+    # is printed, report the log path, and live-tail while --wait blocks the
+    # client until the job ends.  stdbuf -oL forces the id line to flush to the
+    # temp file at once (stdout to a file is otherwise fully buffered).
+    local idfile; idfile="$(mktemp)"
+    local -a _stdbuf=(); command -v stdbuf >/dev/null 2>&1 && _stdbuf=(stdbuf -oL)
+    "${_stdbuf[@]}" sbatch --parsable --wait \
+        --job-name="${jobname}" \
+        --partition="${AAI_BUILD_PARTITION}" \
+        --output=/dev/null \
+        "$@" \
+        <<<"${script}" >"${idfile}" &
+    local sb_pid=$!
+
+    # Wait briefly for the parsable job id to land in the temp file.
+    local jobid="" tries=0
+    while [[ ! -s "${idfile}" ]] && kill -0 "${sb_pid}" 2>/dev/null && (( tries < 150 )); do
+        sleep 0.2; tries=$((tries + 1))
+    done
+    jobid="$(head -n1 "${idfile}" 2>/dev/null | tr -d '[:space:]' | cut -d';' -f1)"
+
+    local logfile="${AAI_DAY_DIR}/logs/${jobid:-unknown}/${logname}.out"
+    if [[ -n "${jobid}" ]]; then
+        log "submitted ${jobname} as job ${jobid} (partition ${AAI_BUILD_PARTITION})"
+        log "log: ${logfile}"
+    else
+        log "submitted ${jobname} (job id not yet available; partition ${AAI_BUILD_PARTITION})"
+    fi
+
+    # Follow the job's log live (tail -F retries until the job creates the file).
+    local tail_pid=""
+    if [[ -n "${jobid}" ]]; then
+        ( tail -F "${logfile}" 2>/dev/null ) & tail_pid=$!
+    fi
+
+    # Block on the sbatch client; with --wait its exit status IS the job's.
+    local rc=0
+    wait "${sb_pid}" || rc=$?
+    if [[ -n "${tail_pid}" ]]; then
+        sleep 1  # let tail's final poll flush the last lines before we stop it
+        kill "${tail_pid}" >/dev/null 2>&1 || true
+        wait "${tail_pid}" 2>/dev/null || true
+    fi
+    rm -f "${idfile}" 2>/dev/null || true
+    return "${rc}"
+}
+
 # --- build: build the image on a compile node, save tarball to shared scratch -
 cmd_build() {
     _pick_compress
@@ -271,7 +350,7 @@ cmd_build() {
             fi
         else
             # File-based backend: type=local cache under <dir>/<arch> on shared
-            # /scratch.  buildx reads/writes these paths from the srun task (which
+            # /scratch.  buildx reads/writes these paths from the sbatch job (which
             # has /scratch mounted), so no registry or auth is involved.
             local _cdir
             _cdir="${AAI_CACHE_DIR%/}/$(_arch_tag)"
@@ -286,7 +365,7 @@ cmd_build() {
 
     # The build + save block runs on ONE node so the saved tarball comes from the
     # image that was just built.  Values are baked in here (not passed via env)
-    # to keep it robust regardless of srun environment propagation.
+    # to keep it robust regardless of sbatch environment propagation.
     #
     # Build with plain `docker build` (not `make build`) so the only requirement
     # on the build node is docker itself -- the compose plugin is not installed
@@ -349,25 +428,21 @@ REMOTE
         log "building locally on $(hostname) (AAI_BUILD_LOCAL=1)"
         bash -c "${remote_script}"
     else
-        command -v srun >/dev/null 2>&1 || die "srun not found; set AAI_BUILD_LOCAL=1 to build here"
         # Pin an exact node if AAI_BUILD_NODE is set; otherwise let Slurm choose
         # any idle node matching the CPU-only build constraint.
         local -a _sel
         if [[ -n "${AAI_BUILD_NODE:-}" ]]; then
             _sel=(--nodelist="${AAI_BUILD_NODE}")
-            log "building on ${AAI_BUILD_NODE} via srun (partition ${AAI_BUILD_PARTITION})"
+            log "building on ${AAI_BUILD_NODE} via sbatch (partition ${AAI_BUILD_PARTITION})"
         else
             _sel=(--constraint="${AAI_BUILD_CONSTRAINT}")
-            log "building via srun (partition ${AAI_BUILD_PARTITION}, constraint ${AAI_BUILD_CONSTRAINT})"
+            log "building via sbatch (partition ${AAI_BUILD_PARTITION}, constraint ${AAI_BUILD_CONSTRAINT})"
         fi
-        srun \
-            --job-name=aai-day-build \
-            --partition="${AAI_BUILD_PARTITION}" \
+        _sbatch_run aai-day-build build "${remote_script}" \
             "${_sel[@]}" \
             --nodes=1 --ntasks=1 \
             --cpus-per-task="${AAI_BUILD_CPUS}" \
-            --time="${AAI_BUILD_TIME}" \
-            bash -c "${remote_script}"
+            --time="${AAI_BUILD_TIME}"
     fi
     log "build complete: ${tarball}"
 }
@@ -425,28 +500,30 @@ REMOTE
         log "building exporters locally on $(hostname) (AAI_BUILD_LOCAL=1)"
         bash -c "${remote_script}"
     else
-        command -v srun >/dev/null 2>&1 || die "srun not found; set AAI_BUILD_LOCAL=1 to build here"
         local -a _sel
         if [[ -n "${AAI_BUILD_NODE:-}" ]]; then
             _sel=(--nodelist="${AAI_BUILD_NODE}")
-            log "building exporters on ${AAI_BUILD_NODE} via srun (partition ${AAI_BUILD_PARTITION})"
+            log "building exporters on ${AAI_BUILD_NODE} via sbatch (partition ${AAI_BUILD_PARTITION})"
         else
             _sel=(--constraint="${AAI_BUILD_CONSTRAINT}")
-            log "building exporters via srun (partition ${AAI_BUILD_PARTITION}, constraint ${AAI_BUILD_CONSTRAINT})"
+            log "building exporters via sbatch (partition ${AAI_BUILD_PARTITION}, constraint ${AAI_BUILD_CONSTRAINT})"
         fi
-        srun \
-            --job-name=aai-day-build-exporters \
-            --partition="${AAI_BUILD_PARTITION}" \
+        _sbatch_run aai-day-build-exporters build-exporters "${remote_script}" \
             "${_sel[@]}" \
             --nodes=1 --ntasks=1 \
             --cpus-per-task=2 --mem=8G --overcommit \
-            --time="${AAI_LOAD_TIME}" \
-            bash -c "${remote_script}"
+            --time="${AAI_LOAD_TIME}"
     fi
     log "exporter build complete: ${nvme_tar}, ${rdma_tar}"
 }
 
 # --- load: docker load the tarball on every target node, then verify ---------
+# NOTE: load stays on `srun` (not the sbatch/_sbatch_run path used by build/test):
+# it is a MULTI-NODE fan-out (--nodelist=<N nodes> --ntasks-per-node=1 runs the
+# docker load on every target at once), whereas an sbatch batch script runs on
+# only the first allocated node.  push likewise stays on srun (a quick single
+# registry op).  build/build-exporters/test are the single-node "do work + log it"
+# jobs that map cleanly onto run-cliff.sbatch's per-job logs/<job-id>/ structure.
 cmd_load() {
     _pick_compress
     local tarball; tarball="$(_tarball_path)"
@@ -560,7 +637,7 @@ REMOTE
 cmd_test() {
     _pick_compress
     local tarball; tarball="$(_tarball_path)"
-    command -v srun >/dev/null 2>&1 || die "srun not found; cannot run the GPU test job"
+    command -v sbatch >/dev/null 2>&1 || die "sbatch not found; cannot run the GPU test job"
     [[ -r "${tarball}" ]] || die "tarball not found: ${tarball} (run 'build' first)"
 
     # In-container checks live in a standalone script on shared /scratch (visible
@@ -653,10 +730,10 @@ SMOKE
     local -a _sel
     if [[ -n "${AAI_TEST_NODE:-}" ]]; then
         _sel=(--nodelist="${AAI_TEST_NODE}")
-        log "testing on ${AAI_TEST_NODE} via srun (partition ${AAI_BUILD_PARTITION})"
+        log "testing on ${AAI_TEST_NODE} via sbatch (partition ${AAI_BUILD_PARTITION})"
     else
         _sel=(--constraint="${AAI_TEST_CONSTRAINT}")
-        log "testing via srun (partition ${AAI_BUILD_PARTITION}, constraint ${AAI_TEST_CONSTRAINT})"
+        log "testing via sbatch (partition ${AAI_BUILD_PARTITION}, constraint ${AAI_TEST_CONSTRAINT})"
     fi
     log "image: ${AAI_IMAGE}  smoketest: ${smoketest}"
 
@@ -702,15 +779,12 @@ docker run --rm \
 REMOTE
 )"
 
-    srun \
-        --job-name=aai-day-test \
-        --partition="${AAI_BUILD_PARTITION}" \
+    _sbatch_run aai-day-test smoke-test "${remote_script}" \
         "${_sel[@]}" \
         --gres=gpu:1 \
         --nodes=1 --ntasks=1 \
         --cpus-per-task="${AAI_TEST_CPUS}" --mem="${AAI_TEST_MEM}" \
-        --time="${AAI_TEST_TIME}" \
-        bash -c "${remote_script}"
+        --time="${AAI_TEST_TIME}"
     log "test complete"
 }
 

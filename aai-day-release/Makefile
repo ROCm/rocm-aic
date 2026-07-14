@@ -148,6 +148,7 @@ help:
 	@echo "  make plot              Generate cliff PNG charts from $(BENCH_LOGDIR)/results/ CSVs"
 	@echo ""
 	@echo "Distribute / cliff targets (Slurm; wrap .slurm/ scripts + sbatch):"
+	@echo "  (dist-build/dist-build-exporters/smoke-test submit via sbatch and log to logs/<job-id>/)"
 	@echo "  make dist-build        Build image (+ fabric exporters) on a Slurm build node, save tarballs"
 	@echo "  make dist-build-exporters  Build ONLY the nvme/rdma exporter images (no main rebuild)"
 	@echo "  make dist-push         Tag + push the built image (needs AAI_PUSH_REF)"
