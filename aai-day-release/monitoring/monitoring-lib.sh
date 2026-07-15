@@ -222,13 +222,14 @@ _monitoring_run_up() {
             || log "  hsa-snoop: docker run failed"
     fi
 
-    # ais-snoop (:9489): AIS (AMD Infinity Storage / hipFile GDS/P2PDMA) KFD
-    # kprobe exporter from the aai-day image.  Sibling of hsa-snoop: same
-    # privileged + host-PID + tracefs model, plus /lib/modules + /usr/src so
-    # bpftrace can resolve kernel symbols (and /sys/kernel/btf when present, for
-    # future arg introspection).  The kprobe target is AIS_KFD_SYMBOL -- unset
-    # ->ais_snoop_up=0{reason="no_symbol_configured"}, so it's harmless to launch
-    # before the symbol is chosen.
+    # ais-snoop (:9489): AIS (AMD Infinity Storage) KFD kprobe exporter from the
+    # aai-day image.  Sibling of hsa-snoop: same privileged + host-PID + tracefs
+    # model, plus /lib/modules + /usr/src so bpftrace can resolve kernel symbols
+    # (and /sys/kernel/btf when present, for future arg introspection).  The
+    # kprobe target is AIS_KFD_SYMBOL, default kfd_ioctl_ais (the AIS ioctl
+    # handler in amdgpu-dkms); if that symbol isn't in the running kernel the
+    # exporter still serves ais_snoop_up=0{reason="symbol_not_in_kallsyms"}, so
+    # it's harmless to launch on a node whose driver lacks AIS.
     if _port_in_use "${AIS_SNOOP_PORT:-9489}"; then
         log "  ais-snoop: :${AIS_SNOOP_PORT:-9489} already served, skipping container"
     else
@@ -240,10 +241,10 @@ _monitoring_run_up() {
             --restart unless-stopped --device /dev/kfd --device /dev/dri \
             -v /sys/kernel/debug:/sys/kernel/debug \
             -v /lib/modules:/lib/modules:ro -v /usr/src:/usr/src:ro "${_aisfs[@]}" \
-            -e AIS_KFD_SYMBOL="${AIS_KFD_SYMBOL:-}" \
+            -e AIS_KFD_SYMBOL="${AIS_KFD_SYMBOL:-kfd_ioctl_ais}" \
             --entrypoint /usr/local/bin/ais-snoop "${AAI_IMAGE}" \
             --prometheus-port "${AIS_SNOOP_PORT:-9489}" >/dev/null \
-            && log "  ais-snoop on :${AIS_SNOOP_PORT:-9489} (symbol='${AIS_KFD_SYMBOL:-<unset>}')" \
+            && log "  ais-snoop on :${AIS_SNOOP_PORT:-9489} (symbol='${AIS_KFD_SYMBOL:-kfd_ioctl_ais}')" \
             || log "  ais-snoop: docker run failed"
     fi
 }
@@ -256,7 +257,7 @@ start_monitoring() {
         local -a profile; mapfile -t profile < <(mon_profile)
         AAI_METRICS_DIR="${AAI_METRICS_DIR}" PROM_UID="$(id -u)" PROM_GID="$(id -g)" \
             IMAGE_NAME="${AAI_IMAGE}" \
-            AIS_KFD_SYMBOL="${AIS_KFD_SYMBOL:-}" AIS_SNOOP_PORT="${AIS_SNOOP_PORT:-9489}" \
+            AIS_KFD_SYMBOL="${AIS_KFD_SYMBOL:-kfd_ioctl_ais}" AIS_SNOOP_PORT="${AIS_SNOOP_PORT:-9489}" \
             docker compose -f "${MON_COMPOSE}" "${profile[@]}" up -d \
             || log "monitoring: compose up failed (continuing without metrics)"
     else

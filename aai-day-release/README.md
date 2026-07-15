@@ -297,6 +297,8 @@ poll intervals can be missed) and is upstream-verified on gfx90a / ROCm 7.1.0.
 | `LMCACHE_NFS_POOL` | `1024` | NIXL pool slots for NFS adapter |
 | `TENSOR_PARALLEL_SIZE` | `1` | vLLM tensor parallel degree |
 | `GPU` | `0` | ROCR_VISIBLE_DEVICES for the vllm container |
+| `AAI_NVME_AUTO` | `1` (cliff) | Auto-detect a dedicated local NVMe for the LMCache tiers: reuse a mounted `aai-lmcache` volume, else format+mount a raw non-root spare, else use a non-root mounted NVMe, else node-local `/tmp`. `0` forces `/tmp`; needs passwordless `sudo` to format/mount |
+| `AAI_NVME_MOUNT` | `/mnt/aai-lmcache` | Mountpoint used when auto-provisioning a spare NVMe (left mounted for reuse) |
 | `AAI_MONITORING` | `1` | Auto-start the Prometheus sidecar in cliff sbatch runs (`0` to skip) |
 | `AAI_METRICS_DIR` | `logs/<job-id>/prometheus` (cliff) | Prometheus TSDB dir — bind-mount an NFS path here |
 | `AAI_EXPORTERS` | `1` (cliff) / `0` (make) | Also launch containerized node + AMD GPU exporters |

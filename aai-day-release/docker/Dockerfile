@@ -6,9 +6,9 @@
 #
 #   Base image: rocm/dev-ubuntu-24.04:7.2.4-complete  (Ubuntu 24.04, ROCm 7.2.4, Python 3.12)
 #   vLLM:       installed from pre-built ROCm wheel (bundles its own torch/triton/flash-attn)
-#   LMCache:    LMCache/LMCache upstream dev + 7 AMD patches
+#   LMCache:    LMCache/LMCache v0.5.1 release + 7 AMD patches
 #   hipFile:    ROCm/rocm-systems (GDS/P2PDMA NVMe transfers)
-#   NIXL:       ai-dynamo/nixl upstream main + nixl-rocm-ais-mt.patch (ROCm/HIP + AIS_MT)
+#   NIXL:       ai-dynamo/nixl v1.3.1 release + nixl-rocm-ais-mt.patch (ROCm/HIP + AIS_MT)
 #
 # Two compose services share this single image:
 #   lmcache — standalone lmcache-server (MP mode)
@@ -64,19 +64,20 @@ ARG VLLM_ROCM_VARIANT=rocm723
 # Pinned component revisions — bump together when validating a new combo.
 # ROCm/rocm-systems develop HEAD (2026-07-13); default branch is 'develop'.
 ARG HIPFILE_SHA=6901b670c3e186f9c7052d6fc9748f0286536bdc
-# ai-dynamo/nixl upstream main (2026-07-10) + nixl-rocm-ais-mt.patch (ROCm/HIP + AIS_MT).
+# ai-dynamo/nixl release tag + nixl-rocm-ais-mt.patch (ROCm/HIP + AIS_MT).
+# The patch is AIS_MT-only (it no longer relocates upstream GDS_MT), so it applies
+# cleanly on both v1.3.0 and v1.3.1 -- bump NIXL_REF and re-run the patch --check.
 ARG NIXL_GIT_URL=https://github.com/ai-dynamo/nixl.git
-ARG NIXL_SHA=644facf0eb3de14ec63c1d2831238f63cd03c0e0
+ARG NIXL_REF=v1.3.1
 
 # hsa-snoop: HSA AQL queue/dispatch snooper + Prometheus exporter (main HEAD 2026-07-13).
 ARG HSA_SNOOP_GIT_URL=https://github.com/sbates130272/hsa-snoop.git
-ARG HSA_SNOOP_SHA=3bb046763f03e429c4fd983b36346b4727fc3744
+ARG HSA_SNOOP_SHA=b1526dde9b86efb6a566eb50279a04c96be78b31
 
-# LMCache: upstream repo, pinned to a dev commit above the v0.5.1 tag
-# (dev HEAD as of 2026-07-13; upstream's default branch is 'dev', not 'main').
-# All 7 AMD patches in patches/lmcache/ apply cleanly against this SHA.
+# LMCache: upstream repo, pinned to the v0.5.1 release tag.
+# All 7 AMD patches in patches/lmcache/ apply cleanly against this tag.
 ARG LMCACHE_GIT_URL=https://github.com/LMCache/LMCache.git
-ARG LMCACHE_SHA=21b3341943342991534d30249c093d0ddc390bdf
+ARG LMCACHE_REF=v0.5.1
 
 # ----- 0. Corporate CA (optional, Zscaler/AMD) --------------------------------
 # Pass a CA cert at build time via BuildKit secret to reach HTTPS through a
@@ -168,11 +169,9 @@ RUN --mount=type=cache,target=/root/.cache/uv \
         "vllm==${VLLM_VERSION}+${VLLM_ROCM_VARIANT}" \
         --extra-index-url "https://wheels.vllm.ai/rocm/${VLLM_VERSION}/${VLLM_ROCM_VARIANT}"
 
-# ----- 4. LMCache (upstream dev + AMD patches) -------------------------------
-# Clone the default branch (fetches all branches + tags), then check out the
-# pinned SHA -- avoids depending on a specific branch name that may not exist.
-RUN git clone "${LMCACHE_GIT_URL}" /app/LMCache && \
-    git -C /app/LMCache checkout "${LMCACHE_SHA}"
+# ----- 4. LMCache (upstream release + AMD patches) ---------------------------
+# Shallow-clone the pinned release tag directly (no history/other branches).
+RUN git clone --depth 1 --branch "${LMCACHE_REF}" "${LMCACHE_GIT_URL}" /app/LMCache
 
 COPY patches/ /app/patches/
 
@@ -189,7 +188,7 @@ RUN cd /app/LMCache && \
             echo "Applied: $patch"; \
         else \
             echo "ERROR: LMCache patch does not apply cleanly: $patch" >&2; \
-            echo "The LMCache pin (${LMCACHE_SHA}) likely drifted; rebase this patch against it." >&2; \
+            echo "The LMCache pin (${LMCACHE_REF}) likely drifted; rebase this patch against it." >&2; \
             exit 1; \
         fi; \
     done
@@ -269,7 +268,7 @@ COPY patches/nixl/ /tmp/nixl-patches/
 # Apply every patch under patches/nixl/ (lexical order) to the fresh checkout.
 RUN --mount=type=cache,target=/root/.cache/uv \
     chmod +x /tmp/nixl-scripts/*.sh && \
-    NIXL_GIT_URL="${NIXL_GIT_URL}" NIXL_SHA="${NIXL_SHA}" NIXL_REQUIRE_ROCM=1 \
+    NIXL_GIT_URL="${NIXL_GIT_URL}" NIXL_REF="${NIXL_REF}" NIXL_REQUIRE_ROCM=1 \
         NIXL_DEST=/tmp/nixl /tmp/nixl-scripts/clone-nixl.sh && \
     shopt -s nullglob && \
     nixl_patches=(/tmp/nixl-patches/*.patch) && \
@@ -317,11 +316,11 @@ RUN git clone "${HSA_SNOOP_GIT_URL}" /app/hsa-snoop && \
 
 # ----- 6c. ais-snoop (AIS KFD kprobe -> Prometheus exporter) -----------------
 # AIS-path sibling of hsa-snoop: a small bpftrace + Python wrapper that attaches
-# a kprobe/kretprobe to the AIS (AMD Infinity Storage / hipFile GDS/P2PDMA) KFD
-# kernel symbol and exports ais_* metrics on :9489 (/metrics).  The kernel symbol
-# is a RUNTIME input (AIS_KFD_SYMBOL) -- hipFile source is cloned at build time
-# and the exact function is not known here -- so nothing to compile: we install
-# the script and rely on `bpftrace` (apt, step 1) and prometheus_client (already
+# a kprobe/kretprobe to the AIS (AMD Infinity Storage) KFD ioctl handler and
+# exports ais_* metrics on :9489 (/metrics).  The kprobe target defaults to
+# kfd_ioctl_ais (the AMDKFD_IOC_AIS_OP handler in the amdgpu-dkms driver) and is
+# overridable at runtime via AIS_KFD_SYMBOL -- nothing to compile: we install the
+# script and rely on `bpftrace` (apt, step 1) and prometheus_client (already
 # present via vLLM's deps).  Runs privileged in the host PID ns with tracefs, same
 # as hsa-snoop -- see monitoring/docker-compose.monitoring.yml / ais-snoop/README.
 COPY monitoring/ais-snoop/ais-snoop.py /usr/local/bin/ais-snoop

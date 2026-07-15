@@ -42,11 +42,18 @@
 #       sbatch .slurm/run-cliff.sbatch
 #
 # Storage note (from a live probe of ctr-cx63-mi300x-21, 2026-07-13): the MI300X
-# nodes expose 4x 3.5T Samsung NVMe, but the spares (nvme1-3) are UNMOUNTED and
-# /mnt is empty -- the compose default NVME_DATA=/mnt/lmcache-nvme does not exist.
-# The OS root (/) is itself ext4-on-NVMe with ~3T free, so this script points the
-# NVMe pools at node-local /tmp (physically the same local NVMe, writable by the
-# job user). If a dedicated data NVMe gets mounted later, set NVME_DATA to it.
+# nodes expose 4x 3.5T Samsung NVMe -- nvme0 is the OS root, and the spares
+# (nvme1-3) are typically RAW and UNMOUNTED.  To keep the LMCache NVMe tier off
+# the busy root disk, AAI_NVME_AUTO=1 (default) auto-detects a dedicated local
+# NVMe (needs passwordless sudo on the node), in priority order:
+#   1) reuse an aai-lmcache volume already mounted at AAI_NVME_MOUNT (no format),
+#   2) format + mount a raw, unmounted, non-root NVMe spare at AAI_NVME_MOUNT,
+#   3) use a non-root NVMe filesystem that is already mounted somewhere, else
+#   4) fall back to node-local /tmp on the root disk (the original behavior).
+# Formatting (case 2) only ever touches a disk that is non-root, unmounted, has
+# NO filesystem, is not swap, and is >=100G.  Set AAI_NVME_AUTO=0 to force (4);
+# set NVME_DATA / AAI_LOCAL_ROOT explicitly to pin a path (auto-detect skipped).
+# A provisioned mount is left mounted for reuse by later jobs on the same node.
 #
 set -uo pipefail
 
@@ -82,11 +89,15 @@ VLLM_MODEL="${VLLM_MODEL:-openai/gpt-oss-120b}"
 # Shared HF cache that already holds gpt-oss-120b (see plan); offline so no token.
 HF_HOME="${HF_HOME:-/scratch/${USER}/vllm-lmcache-hipfile/hf}"
 
-# Node-local NVMe-backed scratch for the LMCache tiers (see storage note above).
-AAI_LOCAL_ROOT="${AAI_LOCAL_ROOT:-/tmp/aai-cliff.${SLURM_JOB_ID:-manual}}"
-NVME_DATA="${NVME_DATA:-${AAI_LOCAL_ROOT}/nvme}"   # L2a AIS_MT pool
-NFS_DATA="${NFS_DATA:-${AAI_LOCAL_ROOT}/nfs}"      # L2b POSIX pool (local stand-in)
-GDS_SLAB_DATA="${GDS_SLAB_DATA:-${AAI_LOCAL_ROOT}/slab}"   # GDS L1 slab
+# Storage for the LMCache tiers (see the storage note above).  With
+# AAI_NVME_AUTO=1 (default) the tiers are pointed at a dedicated local NVMe;
+# provision_storage() (below, once log() exists) finalizes the paths.  An
+# explicit NVME_DATA / AAI_LOCAL_ROOT is always honored as-is.
+AAI_NVME_AUTO="${AAI_NVME_AUTO:-1}"
+AAI_NVME_MOUNT="${AAI_NVME_MOUNT:-/mnt/aai-lmcache}"   # where a provisioned spare is mounted
+AAI_NVME_LABEL="${AAI_NVME_LABEL:-aai-lmcache}"        # ext4 label to recognize/reuse our fs
+_AAI_NVME_DATA_PINNED="${NVME_DATA:+1}"
+_AAI_LOCAL_ROOT_PINNED="${AAI_LOCAL_ROOT:+1}"
 
 # Benchmark sweep knobs (defaults mirror the Makefile `cliff` target).
 BENCH_ISL="${BENCH_ISL:-20000}"
@@ -106,6 +117,18 @@ VLM_MAX_MODEL_LEN="${VLM_MAX_MODEL_LEN:-32768}"
 VLM_MAX_NUM_BATCHED_TOKENS="${VLM_MAX_NUM_BATCHED_TOKENS:-4096}"
 LMCACHE_L1_SIZE_GB="${LMCACHE_L1_SIZE_GB:-20}"
 LMCACHE_NVME_POOL="${LMCACHE_NVME_POOL:-4096}"
+# CPU DRAM (L1) tier for the nvme arm.  Default 'false' = KV flows GPU VRAM
+# staging -> NVMe (no host DRAM tier).  Set AAI_LOCAL_CPU=true to add an LMCache
+# DRAM L1 in front of the NIXL NVMe L2 (a proper DRAM->NVMe tiered cache);
+# LMCACHE_MAX_LOCAL_CPU_SIZE is that DRAM L1 size in GB.
+AAI_LOCAL_CPU="${AAI_LOCAL_CPU:-false}"
+LMCACHE_MAX_LOCAL_CPU_SIZE="${LMCACHE_MAX_LOCAL_CPU_SIZE:-40}"
+# vLLM KVTransferConfig.kv_load_failure_policy for the kvd arms.  Default 'fail'
+# (a KV-load failure -> HTTP 500).  Set AAI_KV_LOAD_FAILURE_POLICY=recompute to
+# gracefully recompute the prefill when the connector can't return the KV (e.g.
+# DRAM L1 / NIXL staging pressure at high concurrency) instead of erroring.
+# Empty -> omit the field entirely (vLLM's own default applies).
+AAI_KV_LOAD_FAILURE_POLICY="${AAI_KV_LOAD_FAILURE_POLICY:-}"
 # hipFile GDS compat fallback.  Default 'false' fails loudly if true GPU-direct
 # (P2PDMA) registration is unavailable -- so kvd arms measure real GDS.  Set to
 # 'true' to allow hipFile's staged/bounce-buffer fallback when hipFileBufRegister
@@ -149,9 +172,97 @@ MON_DIR="${REPO}/monitoring"
 log() { printf '[cliff-job] %s\n' "$*" >&2; }
 die() { printf '[cliff-job] ERROR: %s\n' "$*" >&2; exit 1; }
 
+# --- Dedicated-NVMe auto-detection (see the storage note near the top) --------
+# The disk backing / (e.g. nvme0n1); used to exclude the root disk everywhere.
+_root_disk() {
+    local src; src="$(findmnt -no SOURCE / 2>/dev/null)"
+    [[ -n "${src}" ]] || return 0
+    local pk; pk="$(lsblk -no PKNAME "${src}" 2>/dev/null | head -1)"
+    printf '%s\n' "${pk:-$(basename "${src}")}"
+}
+
+# Echo a base directory on a dedicated local NVMe (or nothing -> caller uses
+# /tmp).  Logs go to stderr so stdout carries only the chosen path.
+_detect_or_provision_nvme() {
+    command -v lsblk   >/dev/null 2>&1 || { log "  nvme-auto: lsblk missing; using /tmp" >&2; return 0; }
+    command -v findmnt >/dev/null 2>&1 || { log "  nvme-auto: findmnt missing; using /tmp" >&2; return 0; }
+    local rootdev; rootdev="$(_root_disk)"
+    log "  nvme-auto: root disk = ${rootdev:-unknown}" >&2
+
+    # (1) Reuse an aai-lmcache volume already mounted at AAI_NVME_MOUNT.
+    if mountpoint -q "${AAI_NVME_MOUNT}" 2>/dev/null; then
+        log "  nvme-auto: reusing already-mounted ${AAI_NVME_MOUNT}" >&2
+        printf '%s\n' "${AAI_NVME_MOUNT}"; return 0
+    fi
+
+    # (2) Format + mount a raw, unmounted, non-root NVMe spare.
+    local name fstype mnt cand="" szb
+    while read -r name fstype mnt; do
+        [[ "${name}" =~ ^nvme[0-9]+n[0-9]+$ ]] || continue
+        [[ "${name}" == "${rootdev}" ]] && continue
+        [[ -n "${fstype}" ]] && continue                                   # whole-disk has a fs -> not raw
+        [[ -n "${mnt}" ]] && continue                                      # disk itself mounted
+        [[ "$(lsblk -rno NAME "/dev/${name}" 2>/dev/null | wc -l)" -eq 1 ]] || continue  # has partitions
+        grep -q "^/dev/${name}[[:space:]]" /proc/swaps 2>/dev/null && continue           # in swap
+        szb="$(lsblk -brndo SIZE "/dev/${name}" 2>/dev/null | head -1)"
+        [[ -n "${szb}" && "${szb}" -ge 100000000000 ]] || continue          # >= ~100G
+        cand="/dev/${name}"; break
+    done < <(lsblk -rndo NAME,FSTYPE,MOUNTPOINT 2>/dev/null)
+
+    if [[ -n "${cand}" ]]; then
+        log "  nvme-auto: raw spare ${cand} -> mkfs.ext4 (label ${AAI_NVME_LABEL}) + mount ${AAI_NVME_MOUNT}" >&2
+        if sudo -n mkfs.ext4 -q -F -L "${AAI_NVME_LABEL}" "${cand}" >/dev/null 2>&1 \
+           && sudo -n mkdir -p "${AAI_NVME_MOUNT}" >/dev/null 2>&1 \
+           && sudo -n mount -o noatime "${cand}" "${AAI_NVME_MOUNT}" >/dev/null 2>&1; then
+            sudo -n chown "$(id -u):$(id -g)" "${AAI_NVME_MOUNT}" >/dev/null 2>&1 \
+                || sudo -n chmod 1777 "${AAI_NVME_MOUNT}" >/dev/null 2>&1 || true
+            log "  nvme-auto: mounted ${cand} at ${AAI_NVME_MOUNT} (left mounted for reuse; 'sudo umount ${AAI_NVME_MOUNT}' to release)" >&2
+            printf '%s\n' "${AAI_NVME_MOUNT}"; return 0
+        fi
+        log "  nvme-auto: provisioning ${cand} failed (passwordless sudo required?); trying already-mounted NVMe" >&2
+    fi
+
+    # (3) Use a non-root NVMe filesystem that is already mounted somewhere.
+    local target source fstype2 pk base=""
+    while read -r target source fstype2; do
+        case "${fstype2}" in ext4|xfs) ;; *) continue ;; esac
+        case "${target}" in /|/boot|/boot/*|/usr|/usr/*|/var|/var/*|/etc|/etc/*|/run|/run/*|/home) continue ;; esac
+        pk="$(lsblk -no PKNAME "${source}" 2>/dev/null | head -1)"; pk="${pk:-$(basename "${source}")}"
+        [[ "${pk}" == nvme* ]] || continue
+        [[ "${pk}" == "${rootdev}" ]] && continue
+        [[ -w "${target}" ]] || continue
+        base="${target}"; break
+    done < <(findmnt -rno TARGET,SOURCE,FSTYPE 2>/dev/null)
+    if [[ -n "${base}" ]]; then
+        log "  nvme-auto: using non-root mounted NVMe fs ${base}" >&2
+        printf '%s\n' "${base}"; return 0
+    fi
+
+    log "  nvme-auto: no dedicated NVMe found; falling back to node-local /tmp" >&2
+    return 0
+}
+
+# Finalize AAI_LOCAL_ROOT and the NVME/NFS/slab tier paths.
+provision_storage() {
+    if [[ -n "${_AAI_LOCAL_ROOT_PINNED}" || -n "${_AAI_NVME_DATA_PINNED}" ]]; then
+        log "storage: honoring caller-pinned NVME_DATA/AAI_LOCAL_ROOT (auto-detect skipped)"
+    elif [[ "${AAI_NVME_AUTO}" == "1" ]]; then
+        log "storage: AAI_NVME_AUTO=1 -- detecting a dedicated local NVMe"
+        local base; base="$(_detect_or_provision_nvme)"
+        [[ -n "${base}" ]] && AAI_LOCAL_ROOT="${base}/aai-cliff.${SLURM_JOB_ID:-manual}"
+    else
+        log "storage: AAI_NVME_AUTO=0 -- using node-local /tmp on the root disk"
+    fi
+    AAI_LOCAL_ROOT="${AAI_LOCAL_ROOT:-/tmp/aai-cliff.${SLURM_JOB_ID:-manual}}"
+    NVME_DATA="${NVME_DATA:-${AAI_LOCAL_ROOT}/nvme}"          # L2a AIS_MT pool
+    NFS_DATA="${NFS_DATA:-${AAI_LOCAL_ROOT}/nfs}"             # L2b POSIX pool (local stand-in)
+    GDS_SLAB_DATA="${GDS_SLAB_DATA:-${AAI_LOCAL_ROOT}/slab}"  # GDS L1 slab
+}
+
 log "host        : $(hostname)  job=${SLURM_JOB_ID:-manual}"
 log "image       : ${AAI_IMAGE}"
 log "model       : ${VLLM_MODEL}  (HF_HOME=${HF_HOME}, offline)"
+provision_storage
 log "local NVMe  : ${NVME_DATA}"
 log "results     : ${RESULTS}"
 command -v docker >/dev/null 2>&1 || die "docker not found on $(hostname)"
@@ -355,7 +466,10 @@ write_lmcache_nixl_config() {
     cat > "${LOGDIR}/lmcache-nixl-ais.yml" <<YML
 # Generated by run-cliff.sbatch (kvd_v2 nvme arm) -- connector-side NIXL AIS_MT.
 chunk_size: 256
-local_cpu: false
+# CPU DRAM (L1) tier: local_cpu=true adds an LMCache host-DRAM L1 in front of the
+# NIXL NVMe L2 (max_local_cpu_size = DRAM L1 GB, ignored when local_cpu=false).
+local_cpu: ${AAI_LOCAL_CPU}
+max_local_cpu_size: ${LMCACHE_MAX_LOCAL_CPU_SIZE}
 save_decode_cache: true
 # Deterministic, seed-independent chunk hashing.  The 'builtin' default uses
 # Python hash() (PYTHONHASHSEED-dependent) and doesn't match across LMCache's
@@ -394,7 +508,8 @@ launch_lmcache_gds() {
 launch_vllm_kvd_nvme() {
     rm_containers aai-cliff-kvd-vllm
     write_lmcache_nixl_config
-    local kvcfg="{\"kv_connector\":\"LMCacheConnectorV1\",\"kv_role\":\"kv_both\"}"
+    local _fp=""; [[ -n "${AAI_KV_LOAD_FAILURE_POLICY}" ]] && _fp=",\"kv_load_failure_policy\":\"${AAI_KV_LOAD_FAILURE_POLICY}\""
+    local kvcfg="{\"kv_connector\":\"LMCacheConnectorV1\",\"kv_role\":\"kv_both\"${_fp}}"
     log "launching connector'd vLLM (LMCacheConnectorV1 + NIXL AIS_MT, cuda buffer) on :${KVD_PORT}"
     docker run -d --name aai-cliff-kvd-vllm --network host "${GPU_FLAGS[@]}" "${HIPFILE_FLAGS[@]}" \
         -v "${HF_HOME}":/hf "${HF_ENV[@]}" \
@@ -420,7 +535,8 @@ launch_vllm_kvd_nvme() {
 # gds arm: connector'd vLLM pointing at the standalone lmcache-server (MP).
 launch_vllm_kvd_gds() {
     rm_containers aai-cliff-kvd-vllm
-    local kvcfg="{\"kv_connector\":\"LMCacheMPConnector\",\"kv_role\":\"kv_both\",\"kv_connector_extra_config\":{\"lmcache.mp.host\":\"tcp://localhost\",\"lmcache.mp.port\":${LMCACHE_PORT}}}"
+    local _fp=""; [[ -n "${AAI_KV_LOAD_FAILURE_POLICY}" ]] && _fp=",\"kv_load_failure_policy\":\"${AAI_KV_LOAD_FAILURE_POLICY}\""
+    local kvcfg="{\"kv_connector\":\"LMCacheMPConnector\",\"kv_role\":\"kv_both\"${_fp},\"kv_connector_extra_config\":{\"lmcache.mp.host\":\"tcp://localhost\",\"lmcache.mp.port\":${LMCACHE_PORT}}}"
     log "launching connector'd vLLM (LMCacheMPConnector) on :${KVD_PORT}"
     docker run -d --name aai-cliff-kvd-vllm --network host "${GPU_FLAGS[@]}" \
         -v "${HF_HOME}":/hf "${HF_ENV[@]}" \

@@ -90,9 +90,11 @@ scrape_configs:
     static_configs:
       - targets: ["localhost:9488"]
 
-  # ais-snoop: AIS (AMD Infinity Storage / hipFile GDS/P2PDMA) KFD kprobe
-  # telemetry (ais_kfd_calls_total, ais_kfd_latency_seconds_{sum,count},
-  # ais_kfd_inflight, ais_snoop_up). Reports up=0 until AIS_KFD_SYMBOL is set.
+  # ais-snoop: AIS (AMD Infinity Storage) KFD kprobe telemetry
+  # (ais_kfd_calls_total, ais_kfd_latency_seconds_{sum,count} for successful
+  # calls, ais_kfd_errors_total by errno, ais_kfd_inflight, ais_snoop_up).
+  # Probes kfd_ioctl_ais by default and gates latency vs errors on the ioctl
+  # return value; ais_snoop_up=0 if the amdgpu-dkms driver lacks the AIS ioctl.
   - job_name: ais_snoop
     metrics_path: /metrics
     static_configs:

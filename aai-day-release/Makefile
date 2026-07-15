@@ -367,11 +367,13 @@ smoke-test:                    # Load + smoke-test the image on a GPU+NVMe node
 	"$(DIST)" test
 
 # Submit the full 3-arm cliff sweep (vram_only + kvd_v2 nvme + kvd_v2 gds).  Pin
-# a node with AAI_CLIFF_NODE, narrow arms with AAI_CLIFF_ARMS=nvme (etc).  The job
-# creates logs/<job-id>/ itself and redirects its output there.
+# a node with AAI_CLIFF_NODE, narrow arms with AAI_CLIFF_ARMS=nvme (etc), and
+# override the job wall-time with AAI_CLIFF_TIME=HH:MM:SS (e.g. an overnight full
+# sweep).  The job creates logs/<job-id>/ itself and redirects its output there.
 cliff-submit:
 	@cd "$(CURDIR)" && jobid=$$($(_CLIFF_STRIP) sbatch --parsable \
 	    $(if $(AAI_CLIFF_NODE),--nodelist=$(AAI_CLIFF_NODE),) \
+	    $(if $(AAI_CLIFF_TIME),--time=$(AAI_CLIFF_TIME),) \
 	    .slurm/run-cliff.sbatch) && \
 	    echo "submitted cliff job $$jobid" && \
 	    echo "log: $(CURDIR)/logs/$$jobid/cliff.out"
