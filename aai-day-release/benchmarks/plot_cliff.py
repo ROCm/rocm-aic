@@ -1,3 +1,8 @@
+# Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+#
+
 """Cliff chart plotter — AIC vs non-AIC KV cache comparison.
 
 Reads one or more CSV files produced by run_cliff.py and generates:
