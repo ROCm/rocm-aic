@@ -1,11 +1,14 @@
-# Re-ported against LMCache operator-v0.5.0 (7dacaba).
-# l1_manager.py: 3-way merge (context drift).  gds_context.py: hand-ported
-# onto upstream's current GDS/hipFile impl (the original targeted an
-# AMD-internal gds_context.py).  Fix: open the (hipFile) driver before
-# register_handle() to avoid a segfault on first async DMA; plus Prometheus
-# gauges for DMA byte counters.  _ensure_driver_open() is idempotent.
+# Re-ported against LMCache v0.5.1.
+# l1_manager.py: 3-way merge (context drift).  gds_context.py: adds Prometheus
+# gauges for the NVMe<->GPU DMA byte counters (read/written).
 #
-# !! UNVERIFIED: applies + imports cleanly, NOT validated on a GPU.
+# Note: earlier revisions of this patch also called ca._ensure_driver_open()
+# in _open_and_register_slab() before ca.register_handle().  Dropped on v0.5.1 --
+# upstream's register_handle()/register_buffer()/register_stream() now call
+# _ensure_driver_open() internally as their first action, and the _gds_async
+# dispatch shim re-exports only the public surface (register_* / close_driver),
+# not the private _ensure_driver_open helper -- so the external call both was
+# redundant and raised AttributeError on the shim.
 #
 diff --git a/lmcache/v1/distributed/l1_manager.py b/lmcache/v1/distributed/l1_manager.py
 index 64ae54cf..c1ed3562 100644
@@ -132,15 +135,3 @@ index 4ce183a0..af95c999 100644
      def close(self) -> None:
          """Sync the stream, deregister GDS state, and close the slab handle."""
          if self._buffers:
-@@ -265,6 +293,11 @@ class GDSContext:
-         if use_direct_io:
-             flags |= os.O_DIRECT
-         fd = os.open(self._slab_path, flags)
-+        # hipFile requires the driver to be open before a handle can be
-+        # registered; register_handle() otherwise leaves inconsistent state and
-+        # segfaults on the first async DMA.  _ensure_driver_open() is idempotent
-+        # (and a no-op on cuFile), so calling it here is always safe.
-+        ca._ensure_driver_open()
-         try:
-             handle = ca.register_handle(fd)
-         except Exception:
