@@ -1,3 +1,8 @@
+# Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+#
+
 """KV Cache Cliff bench — mirrors LMCache's June 1 chart on MI300X.
 
 Workload: shared 18K-token prefix + 2K-token per-client unique suffix
