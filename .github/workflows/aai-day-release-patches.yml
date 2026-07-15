@@ -38,26 +38,25 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Resolve LMCache SHA and URL from Dockerfile
+      - name: Resolve LMCache ref and URL from Dockerfile
         id: meta
         working-directory: aai-day-release
         run: |
           set -euo pipefail
-          sha="$(grep -E '^ARG LMCACHE_SHA=' docker/Dockerfile | head -1 | cut -d= -f2-)"
+          ref="$(grep -E '^ARG LMCACHE_REF=' docker/Dockerfile | head -1 | cut -d= -f2-)"
           url="$(grep -E '^ARG LMCACHE_GIT_URL=' docker/Dockerfile | head -1 | cut -d= -f2-)"
-          test -n "${sha}" || { echo "LMCACHE_SHA not set in Dockerfile"; exit 1; }
+          test -n "${ref}" || { echo "LMCACHE_REF not set in Dockerfile"; exit 1; }
           test -n "${url}" || { echo "LMCACHE_GIT_URL not set in Dockerfile"; exit 1; }
-          echo "sha=${sha}" >> "${GITHUB_OUTPUT}"
+          echo "ref=${ref}" >> "${GITHUB_OUTPUT}"
           echo "url=${url}" >> "${GITHUB_OUTPUT}"
-          echo "LMCache: ${url} @ ${sha}"
+          echo "LMCache: ${url} @ ${ref}"
 
-      - name: Clone LMCache at pinned SHA
+      - name: Clone LMCache at pinned ref
         run: |
           set -euo pipefail
-          git clone --filter=blob:none "${{ steps.meta.outputs.url }}" /tmp/LMCache
+          git clone --depth 1 --branch "${{ steps.meta.outputs.ref }}" \
+            --filter=blob:none "${{ steps.meta.outputs.url }}" /tmp/LMCache
           cd /tmp/LMCache
-          git fetch --depth 1 origin "${{ steps.meta.outputs.sha }}"
-          git checkout "${{ steps.meta.outputs.sha }}"
           echo "Checked out: $(git log --oneline -1)"
 
       - name: Verify all LMCache patches apply cleanly
@@ -95,26 +94,25 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Resolve NIXL SHA and URL from Dockerfile
+      - name: Resolve NIXL ref and URL from Dockerfile
         id: meta
         working-directory: aai-day-release
         run: |
           set -euo pipefail
-          sha="$(grep -E '^ARG NIXL_SHA=' docker/Dockerfile | head -1 | cut -d= -f2-)"
+          ref="$(grep -E '^ARG NIXL_REF=' docker/Dockerfile | head -1 | cut -d= -f2-)"
           url="$(grep -E '^ARG NIXL_GIT_URL=' docker/Dockerfile | head -1 | cut -d= -f2-)"
-          test -n "${sha}" || { echo "NIXL_SHA not set in Dockerfile"; exit 1; }
+          test -n "${ref}" || { echo "NIXL_REF not set in Dockerfile"; exit 1; }
           test -n "${url}" || { echo "NIXL_GIT_URL not set in Dockerfile"; exit 1; }
-          echo "sha=${sha}" >> "${GITHUB_OUTPUT}"
+          echo "ref=${ref}" >> "${GITHUB_OUTPUT}"
           echo "url=${url}" >> "${GITHUB_OUTPUT}"
-          echo "NIXL: ${url} @ ${sha}"
+          echo "NIXL: ${url} @ ${ref}"
 
-      - name: Clone NIXL at pinned SHA
+      - name: Clone NIXL at pinned ref
         run: |
           set -euo pipefail
-          git clone --filter=blob:none "${{ steps.meta.outputs.url }}" /tmp/nixl
+          git clone --depth 1 --branch "${{ steps.meta.outputs.ref }}" \
+            --filter=blob:none "${{ steps.meta.outputs.url }}" /tmp/nixl
           cd /tmp/nixl
-          git fetch --depth 1 origin "${{ steps.meta.outputs.sha }}"
-          git checkout "${{ steps.meta.outputs.sha }}"
           echo "Checked out: $(git log --oneline -1)"
 
       - name: Verify NIXL patches apply cleanly
