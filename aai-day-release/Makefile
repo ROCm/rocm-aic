@@ -136,6 +136,7 @@ EXPORT_TARBALL ?= $(CURDIR)/$(EXPORT_PREFIX)-$(_GEN_DATE)-$(_GIT_SHORT_REV)$(_GI
         ps shell-lmcache shell-vllm restart-vllm restart-lmcache cliff plot venv \
         monitoring-up monitoring-down monitoring-logs monitoring-build-exporters \
         dist-build dist-build-exporters dist-push smoke-test cliff-submit cliff-short \
+        cliff-long-64k cliff-long-128k \
         export _check_hf_token _prep_dirs _check_gds_slab
 
 .DEFAULT_GOAL := help
@@ -174,6 +175,8 @@ help:
 	@echo "                          to logs/<job-id>/prometheus; AAI_SMOKE_EXPORTERS=0 skips)"
 	@echo "  make cliff-submit      sbatch the full 3-arm cliff sweep -> logs/<job-id>/"
 	@echo "  make cliff-short       sbatch a 1-point cliff (concur=1, 1 iter) to smoke-test the flow"
+	@echo "  make cliff-long-64k    sbatch a 64k-ISL YaRN(x2) 3-arm sweep (pools sized for the working set)"
+	@echo "  make cliff-long-128k   sbatch a 128k-ISL YaRN(x4) 3-arm sweep (extreme; big DRAM/slab pools)"
 	@echo "    Chain like the old run-this.sh:  make dist-build dist-push smoke-test"
 	@echo "    Pin a node: AAI_CLIFF_NODE=<node>   Narrow arms: AAI_CLIFF_ARMS=nvme (vram,nvme,gds)"
 	@echo "    Override sweep/model via env: BENCH_CONCUR=1,8,64 VLLM_MODEL=... make cliff-submit"
@@ -386,6 +389,50 @@ cliff-short:
 	    $(if $(AAI_CLIFF_NODE),--nodelist=$(AAI_CLIFF_NODE),) \
 	    .slurm/run-cliff.sbatch) && \
 	    echo "submitted cliff-short job $$jobid (BENCH_CONCUR=$${BENCH_CONCUR:-1} BENCH_ITERS=$${BENCH_ITERS:-1})" && \
+	    echo "log: $(CURDIR)/logs/$$jobid/cliff.out"
+
+# Long-ISL sweeps with YaRN RoPE scaling (all 3 arms).  Sizing philosophy: a
+# MODEST, portable DRAM L1 (64 GB -- realistic on real servers) in front of a
+# BIG NVMe L2, so the bulk of the working set lives on NVMe (the representative
+# tiered config).  LMCACHE_NVME_POOL is a SLOT COUNT (~4.5 MiB/slot for
+# Qwen2.5-3B, one FD per slot, cap <= container nofile 1048576); slots are
+# lazily sized on disk, so a large pool caps capacity without pre-consuming it
+# -- real disk use = the working set.  Working set ~= concurrency x shared-prefix
+# KV: 64k/60k ~= 1.05 GiB/client (~263 GB @ c=250); 128k/126k ~= 2.16 GiB/client
+# (~540 GB @ c=250) -- both fit the spare NVMe.  Qwen2.5 is YaRN-trained to 128k.
+# Every knob is overridable, e.g. LMCACHE_MAX_LOCAL_CPU_SIZE=128 make cliff-long-64k.
+cliff-long-64k:                # sbatch a 64k-ISL YaRN(x2 -> 65536) 3-arm sweep
+	@cd "$(CURDIR)" && jobid=$$( \
+	    VLLM_MODEL="$${VLLM_MODEL:-Qwen/Qwen2.5-3B-Instruct}" \
+	    VLM_GPU_MEMORY_UTILIZATION="$${VLM_GPU_MEMORY_UTILIZATION:-0.12}" \
+	    VLM_YARN_FACTOR="$${VLM_YARN_FACTOR:-2.0}" VLM_MAX_MODEL_LEN="$${VLM_MAX_MODEL_LEN:-65536}" \
+	    BENCH_ISL="$${BENCH_ISL:-64000}" BENCH_SHARED_TOK="$${BENCH_SHARED_TOK:-60000}" \
+	    BENCH_PREFIX_MODE="$${BENCH_PREFIX_MODE:-per_client}" BENCH_ITERS="$${BENCH_ITERS:-2}" \
+	    AAI_LOCAL_CPU="$${AAI_LOCAL_CPU:-true}" LMCACHE_MAX_LOCAL_CPU_SIZE="$${LMCACHE_MAX_LOCAL_CPU_SIZE:-64}" \
+	    LMCACHE_NVME_POOL="$${LMCACHE_NVME_POOL:-262144}" AAI_NIXL_BUFFER_SIZE="$${AAI_NIXL_BUFFER_SIZE:-8589934592}" \
+	    LMCACHE_L1_SIZE_GB="$${LMCACHE_L1_SIZE_GB:-320}" \
+	    $(_CLIFF_STRIP) sbatch --parsable --job-name=aai-day-cliff-long64k \
+	    $(if $(AAI_CLIFF_NODE),--nodelist=$(AAI_CLIFF_NODE),) \
+	    --time=$(if $(AAI_CLIFF_TIME),$(AAI_CLIFF_TIME),16:00:00) \
+	    .slurm/run-cliff.sbatch) && \
+	    echo "submitted cliff-long-64k job $$jobid (ISL=64000, YaRN x2 -> 65536, DRAM L1=64G, NVMe pool=262144, all 3 arms)" && \
+	    echo "log: $(CURDIR)/logs/$$jobid/cliff.out"
+
+cliff-long-128k:               # sbatch a 128k-ISL YaRN(x4 -> 131072) 3-arm sweep (extreme)
+	@cd "$(CURDIR)" && jobid=$$( \
+	    VLLM_MODEL="$${VLLM_MODEL:-Qwen/Qwen2.5-3B-Instruct}" \
+	    VLM_GPU_MEMORY_UTILIZATION="$${VLM_GPU_MEMORY_UTILIZATION:-0.12}" \
+	    VLM_YARN_FACTOR="$${VLM_YARN_FACTOR:-4.0}" VLM_MAX_MODEL_LEN="$${VLM_MAX_MODEL_LEN:-131072}" \
+	    BENCH_ISL="$${BENCH_ISL:-128000}" BENCH_SHARED_TOK="$${BENCH_SHARED_TOK:-126000}" \
+	    BENCH_PREFIX_MODE="$${BENCH_PREFIX_MODE:-per_client}" BENCH_ITERS="$${BENCH_ITERS:-1}" \
+	    AAI_LOCAL_CPU="$${AAI_LOCAL_CPU:-true}" LMCACHE_MAX_LOCAL_CPU_SIZE="$${LMCACHE_MAX_LOCAL_CPU_SIZE:-64}" \
+	    LMCACHE_NVME_POOL="$${LMCACHE_NVME_POOL:-524288}" AAI_NIXL_BUFFER_SIZE="$${AAI_NIXL_BUFFER_SIZE:-8589934592}" \
+	    LMCACHE_L1_SIZE_GB="$${LMCACHE_L1_SIZE_GB:-640}" \
+	    $(_CLIFF_STRIP) sbatch --parsable --job-name=aai-day-cliff-long128k \
+	    $(if $(AAI_CLIFF_NODE),--nodelist=$(AAI_CLIFF_NODE),) \
+	    --time=$(if $(AAI_CLIFF_TIME),$(AAI_CLIFF_TIME),24:00:00) \
+	    .slurm/run-cliff.sbatch) && \
+	    echo "submitted cliff-long-128k job $$jobid (ISL=128000, YaRN x4 -> 131072, DRAM L1=64G, NVMe pool=524288, all 3 arms)" && \
 	    echo "log: $(CURDIR)/logs/$$jobid/cliff.out"
 
 # ---- Export tarball --------------------------------------------------------
