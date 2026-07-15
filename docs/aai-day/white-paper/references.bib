@@ -1,0 +1,148 @@
+% AIC Whitepaper Bibliography
+% Generated 2026-07-15
+
+% ── Inference Serving & KV Cache Management ──────────────────────────────────
+
+@inproceedings{kwon2023pagedattention,
+  author    = {Kwon, Woosuk and Li, Zhuohan and Zhuang, Siyuan and Sheng, Ying and
+               Zheng, Lianmin and Yu, Cody Hao and Gonzalez, Joseph E. and
+               Zhang, Hao and Stoica, Ion},
+  title     = {Efficient Memory Management for Large Language Model Serving with {PagedAttention}},
+  booktitle = {Proceedings of the 29th Symposium on Operating Systems Principles (SOSP)},
+  pages     = {611--626},
+  year      = {2023},
+  doi       = {10.1145/3600006.3613165},
+  eprint    = {2309.06180},
+  archivePrefix = {arXiv}
+}
+
+@inproceedings{zheng2024sglang,
+  author    = {Zheng, Lianmin and Yin, Liangsheng and Xie, Zhiqiang and Sun, Chuyue and
+               Huang, Jeff and Yu, Cody Hao and Cao, Shiyi and Kozyrakis, Christos and
+               Stoica, Ion and Gonzalez, Joseph E. and Barrett, Clark and Sheng, Ying},
+  title     = {{SGLang}: Efficient Execution of Structured Language Model Programs},
+  booktitle = {Advances in Neural Information Processing Systems (NeurIPS)},
+  year      = {2024},
+  eprint    = {2312.07104},
+  archivePrefix = {arXiv}
+}
+
+@article{liu2025lmcache,
+  author    = {Liu, Yuhan and Cheng, Yihua and Yao, Jiayi and An, Yuwei and
+               Chen, Xiaokun and Feng, Shaoting and Huang, Yuyang and Shen, Samuel and
+               Zhang, Rui and Du, Kuntai and Jiang, Junchen},
+  title     = {{LMCache}: An Efficient {KV} Cache Layer for Enterprise-Scale {LLM} Inference},
+  journal   = {arXiv preprint arXiv:2510.09665},
+  year      = {2025},
+  eprint    = {2510.09665},
+  archivePrefix = {arXiv}
+}
+
+@online{sglanghicache2025,
+  author = {{LMSYS Org}},
+  title  = {{SGLang HiCache}: Fast Hierarchical {KV} Caching with Your Favorite Storage Backends},
+  year   = {2025},
+  url    = {https://www.lmsys.org/blog/2025-09-10-sglang-hicache/},
+}
+
+@article{zhu2026tracelab,
+  author    = {Zhu, Kan and Jacob, Mathew and Ma, Chenxi and Pan, Yi and Wang, Stephanie and
+               Krishnamurthy, Arvind and Kasikci, Baris},
+  title     = {{TraceLab}: Characterizing Coding Agent Workloads for {LLM} Serving},
+  journal   = {arXiv preprint arXiv:2606.30560},
+  year      = {2026},
+  url       = {https://arxiv.org/abs/2606.30560},
+  doi       = {10.48550/arXiv.2606.30560}
+}
+
+% ── Disaggregated Inference ───────────────────────────────────────────────────
+
+@inproceedings{zhong2024distserve,
+  author    = {Zhong, Yinmin and Liu, Shengyu and Chen, Junda and Hu, Jianbo and
+               Zhu, Yibo and Liu, Xuanzhe and Jin, Xin and Zhang, Hao},
+  title     = {{DistServe}: Disaggregating Prefill and Decoding for Goodput-Optimized
+               Large Language Model Serving},
+  booktitle = {Proceedings of the 18th USENIX Symposium on Operating Systems Design
+               and Implementation (OSDI)},
+  year      = {2024},
+  eprint    = {2401.09670},
+  archivePrefix = {arXiv}
+}
+
+@inproceedings{patel2024splitwise,
+  author    = {Patel, Pratyush and Choukse, Esha and Zhang, Chaojie and Shah, Aashaka and
+               Goiri, {\'I}{\~n}igo and Maleki, Saeed and Bianchini, Ricardo},
+  title     = {Splitwise: Efficient Generative {LLM} Inference Using Phase Splitting},
+  booktitle = {Proceedings of the 51st Annual International Symposium on Computer Architecture (ISCA)},
+  pages     = {118--132},
+  year      = {2024},
+  doi       = {10.1109/ISCA59077.2024.00019},
+  eprint    = {2311.18677},
+  archivePrefix = {arXiv}
+}
+
+@article{qin2024mooncake,
+  author    = {Qin, Ruoyu and Li, Zheming and He, Weiran and Zhang, Mingxing and
+               Wu, Yongwei and Zheng, Weimin and Xu, Xinran},
+  title     = {Mooncake: A {KVCache}-centric Disaggregated Architecture for {LLM} Serving},
+  journal   = {arXiv preprint arXiv:2407.00079},
+  year      = {2024},
+  note      = {Published in ACM Transactions on Storage, 2025},
+  eprint    = {2407.00079},
+  archivePrefix = {arXiv}
+}
+
+% ── Agentic Workload Characteristics ─────────────────────────────────────────
+
+% ── Transfer & Storage Infrastructure ────────────────────────────────────────
+
+@misc{nvidia2024nixl,
+  author       = {{NVIDIA}},
+  title        = {{NIXL}: {NVIDIA} Inference {Xfer} Library},
+  howpublished = {\url{https://github.com/ai-dynamo/nixl}},
+  year         = {2024},
+  note         = {Apache 2.0 license; v1.3.1 as of July 2026}
+}
+
+@misc{ietfrfc8267,
+  author       = {Lever, Charles},
+  title        = {Network File System ({NFS}) Upper-Layer Binding to {RPC}-over-{RDMA} Version 1},
+  howpublished = {IETF RFC 8267},
+  year         = {2017},
+  url          = {https://datatracker.ietf.org/doc/html/rfc8267}
+}
+
+@misc{ietfrfc8166,
+  author       = {Lever, Charles and Simpson, Weston and Talpey, Tom},
+  title        = {Remote Direct Memory Access Transport for Remote Procedure Call Version 1},
+  howpublished = {IETF RFC 8166},
+  year         = {2017},
+  url          = {https://datatracker.ietf.org/doc/html/rfc8166}
+}
+
+% ── Orchestration & Deployment ────────────────────────────────────────────────
+
+@misc{llmd2024,
+  author       = {{Red Hat and Google Cloud and IBM Research and CoreWeave and NVIDIA}},
+  title        = {llm-d: {Kubernetes}-native High-Performance Distributed {LLM} Inference},
+  howpublished = {\url{https://github.com/llm-d}},
+  year         = {2024},
+  note         = {CNCF Sandbox Project}
+}
+
+% ── Industry / Related Work ───────────────────────────────────────────────────
+
+@misc{weka2026icms,
+  author       = {{WEKA}},
+  title        = {{BlueField-4} {ICMS}: Optimizing {KV} Cache and {AI} Inference},
+  howpublished = {\url{https://www.weka.io/blog/ai-ml/demystifying-the-bluefield-4-inference-context-memory-storage-announcement/}},
+  year         = {2026},
+  month        = feb
+}
+
+@misc{nvidia2026icms,
+  author       = {{NVIDIA}},
+  title        = {Introducing {NVIDIA} {BlueField-4} Powered Inference Context Memory Storage Platform},
+  howpublished = {\url{https://developer.nvidia.com/blog/introducing-nvidia-bluefield-4-powered-inference-context-memory-storage-platform-for-the-next-frontier-of-ai/}},
+  year         = {2026}
+}

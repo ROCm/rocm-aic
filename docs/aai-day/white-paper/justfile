@@ -1,0 +1,63 @@
+src := "aic-whitepaper.md"
+bib := "references.bib"
+csl := "ieee.csl"
+
+data_dir := "results"
+csv_gpu  := data_dir / "lmcache_gpu_tp1_isl60k_cliff_mi300_gpt_oss_120b.csv"
+csv_dram := data_dir / "lmcache_gpu_cpu_tp1_isl60k_cliff_mi300_gpt_oss_120b.csv"
+csv_aic  := data_dir / "lmcache_gpu_aic_tp1_isl60k_cliff_mi300_gpt_oss_120b.csv"
+series   := csv_gpu + " " + csv_dram + " " + csv_aic
+labels   := '"GPU HBM" "HBM+DRAM" "HBM+AIC"'
+
+# Install Python dependencies
+install:
+    pip install -r requirements.txt
+
+# Generate two-column PDF article
+pdf:
+    pandoc {{src}} --citeproc \
+        -o aic-whitepaper.pdf \
+        --pdf-engine=xelatex \
+        -V documentclass=article \
+        -V classoption=twocolumn \
+        -V geometry="margin=1in" \
+        -V fontsize=10pt \
+        -V linestretch=1.1 \
+        --highlight-style=tango \
+        -H header.tex \
+        -V mainfont="DejaVu Serif" \
+        -V monofont="DejaVu Sans Mono"
+
+# Generate Word document for collaborative editing
+docx:
+    pandoc {{src}} --citeproc \
+        -o aic-whitepaper.docx \
+        $([ -f reference.docx ] && echo "--reference-doc=reference.docx" || true)
+
+# Plot throughput cliff chart (warm run, tokens/s)
+plot-throughput:
+    python3 plot_metrics.py \
+        --metric total_token_throughput --run-label run2 \
+        --labels {{labels}} \
+        --title '' \
+        --ylabel "Throughput" --yunit "tok/s" --ydiv 1000 \
+        --gap-annotation 250 0 2 \
+        --out kv-throughput-cliff-mi300x.png \
+        {{series}}
+
+# Plot TTFT climb chart (warm run, ms → s)
+plot-ttft:
+    python3 plot_metrics.py \
+        --metric ttft_mean_ms --run-label run2 \
+        --labels {{labels}} \
+        --title '' \
+        --ylabel "TTFT" --yunit "s" --ydiv 1000 \
+        --gap-annotation 250 1 2 \
+        --out kv-ttft-climb-mi300x.png \
+        {{series}}
+
+# Generate both plots
+plots: plot-throughput plot-ttft
+
+# Build both outputs
+all: plots pdf docx
