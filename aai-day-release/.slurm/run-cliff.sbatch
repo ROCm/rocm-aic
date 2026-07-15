@@ -115,6 +115,24 @@ TENSOR_PARALLEL_SIZE="${TENSOR_PARALLEL_SIZE:-1}"
 VLM_GPU_MEMORY_UTILIZATION="${VLM_GPU_MEMORY_UTILIZATION:-0.90}"
 VLM_MAX_MODEL_LEN="${VLM_MAX_MODEL_LEN:-32768}"
 VLM_MAX_NUM_BATCHED_TOKENS="${VLM_MAX_NUM_BATCHED_TOKENS:-4096}"
+# Optional RoPE context extension (YaRN etc.) for long-ISL runs.  Only RoPE-based
+# models support this; ALiBi/absolute-position models will error or ignore it.
+# Two ways to set it (applied to ALL arms via vLLM --hf-overrides):
+#   1. VLM_ROPE_SCALING = raw JSON for the HF rope_scaling dict, e.g.
+#        VLM_ROPE_SCALING='{"rope_type":"yarn","factor":4.0,"original_max_position_embeddings":32768}'
+#   2. VLM_YARN_FACTOR (+ optional VLM_YARN_ORIG_LEN) = convenience shortcut that
+#      builds the YaRN dict for you; VLM_YARN_ORIG_LEN defaults to 32768 (Qwen2.5).
+# You MUST also raise VLM_MAX_MODEL_LEN to the extended length (e.g. factor 4.0 on a
+# 32768 native window => set VLM_MAX_MODEL_LEN=131072).  Empty => no scaling.
+VLM_ROPE_SCALING="${VLM_ROPE_SCALING:-}"
+VLM_YARN_FACTOR="${VLM_YARN_FACTOR:-}"
+VLM_YARN_ORIG_LEN="${VLM_YARN_ORIG_LEN:-32768}"
+# Build the optional --hf-overrides arg once (empty array when no scaling asked).
+if [[ -z "${VLM_ROPE_SCALING}" && -n "${VLM_YARN_FACTOR}" ]]; then
+    VLM_ROPE_SCALING="{\"rope_type\":\"yarn\",\"factor\":${VLM_YARN_FACTOR},\"original_max_position_embeddings\":${VLM_YARN_ORIG_LEN}}"
+fi
+ROPE_ARGS=()
+[[ -n "${VLM_ROPE_SCALING}" ]] && ROPE_ARGS=(--hf-overrides "{\"rope_scaling\": ${VLM_ROPE_SCALING}}")
 LMCACHE_L1_SIZE_GB="${LMCACHE_L1_SIZE_GB:-20}"
 LMCACHE_NVME_POOL="${LMCACHE_NVME_POOL:-4096}"
 # CPU DRAM (L1) tier for the nvme arm.  Default 'false' = KV flows GPU VRAM
@@ -425,6 +443,7 @@ run_arm_vram() {
             --gpu-memory-utilization "${VLM_GPU_MEMORY_UTILIZATION}" \
             --max-model-len "${VLM_MAX_MODEL_LEN}" \
             --max-num-batched-tokens "${VLM_MAX_NUM_BATCHED_TOKENS}" \
+            "${ROPE_ARGS[@]}" \
             --block-size 64 --enable-prefix-caching --kv-cache-dtype fp8 \
             --async-scheduling \
             --attention-backend "${AAI_ATTENTION_BACKEND}" \
@@ -525,6 +544,7 @@ launch_vllm_kvd_nvme() {
             --gpu-memory-utilization "${VLM_GPU_MEMORY_UTILIZATION}" \
             --max-model-len "${VLM_MAX_MODEL_LEN}" \
             --max-num-batched-tokens "${VLM_MAX_NUM_BATCHED_TOKENS}" \
+            "${ROPE_ARGS[@]}" \
             --block-size 64 --enable-prefix-caching --kv-cache-dtype fp8 \
             --async-scheduling \
             --attention-backend "${AAI_ATTENTION_BACKEND}" \
@@ -546,6 +566,7 @@ launch_vllm_kvd_gds() {
             --gpu-memory-utilization "${VLM_GPU_MEMORY_UTILIZATION}" \
             --max-model-len "${VLM_MAX_MODEL_LEN}" \
             --max-num-batched-tokens "${VLM_MAX_NUM_BATCHED_TOKENS}" \
+            "${ROPE_ARGS[@]}" \
             --block-size 64 --enable-prefix-caching --kv-cache-dtype fp8 \
             --async-scheduling \
             --attention-backend "${AAI_ATTENTION_BACKEND}" \
@@ -602,27 +623,40 @@ for _a in ${AAI_CLIFF_ARMS//,/ }; do
     case "${_a}" in vram|nvme|gds) ;; *) die "unknown arm '${_a}' in AAI_CLIFF_ARMS (valid: vram,nvme,gds)" ;; esac
 done
 log "arms        : ${AAI_CLIFF_ARMS}"
+log "isl/prefix  : ISL=${BENCH_ISL} shared=${BENCH_SHARED_TOK} max_model_len=${VLM_MAX_MODEL_LEN}${VLM_ROPE_SCALING:+ rope_scaling=${VLM_ROPE_SCALING}}"
 
 if _arm_on vram; then run_arm_vram && STATUS[vram_only]=ok || STATUS[vram_only]=FAIL; else STATUS[vram_only]=skip; fi
 if _arm_on nvme; then run_arm_kvd nvme "${KVD_NVME_CSV}" && STATUS[kvd_nvme]=ok || STATUS[kvd_nvme]=FAIL; else STATUS[kvd_nvme]=skip; fi
 if _arm_on gds;  then run_arm_kvd gds  "${KVD_GDS_CSV}"  && STATUS[kvd_gds]=ok  || STATUS[kvd_gds]=FAIL;  else STATUS[kvd_gds]=skip;  fi
 
 # --- Plot: baseline vs each kvd backend separately ---------------------------
-# Both kvd runs carry arm="kvd_v2", so plot them against the shared vram_only
-# baseline in separate output dirs to keep the two backends distinct.
-plot_pair() {  # $1=out_subdir $2=kvd_csv
-    local sub="$1" kvd="$2"
-    [[ -s "${VRAM_CSV}" && -s "${kvd}" ]] || { log "plot ${sub}: missing CSV(s), skipping"; return; }
+# Both kvd runs carry arm="kvd_v2", so each is plotted in its own output dir to
+# keep the backends distinct, with the shared vram_only baseline overlaid when
+# present.  Any arm can be skipped: run_plot drops CSVs that don't exist and
+# plots whatever remains (plot_cliff.py already handles one-or-more arms), so a
+# single-arm run still produces a chart instead of being silently skipped.
+run_plot() {  # $1=out_subdir  $2..=candidate CSV paths (absolute)
+    local sub="$1"; shift
+    local -a inputs=() csv
+    for csv in "$@"; do
+        [[ -s "${csv}" ]] && inputs+=( "${LOGDIR_REL}/results/$(basename "${csv}")" )
+    done
+    (( ${#inputs[@]} )) || { log "plot ${sub}: no CSVs, skipping"; return; }
     mkdir -p "${PLOTS}/${sub}"
     docker run --rm --network host -v "${REPO}":/work -w /work \
         --entrypoint python3 "${AAI_IMAGE}" \
         benchmarks/plot_cliff.py \
-            --input "${LOGDIR_REL}/results/$(basename "${VRAM_CSV}")" "${LOGDIR_REL}/results/$(basename "${kvd}")" \
+            --input "${inputs[@]}" \
             --output-dir "${LOGDIR_REL}/plots/${sub}" \
         && log "plots (${sub}) -> ${PLOTS}/${sub}" || log "plot ${sub}: failed"
 }
-plot_pair nvme "${KVD_NVME_CSV}"
-plot_pair gds  "${KVD_GDS_CSV}"
+# Plot each kvd backend that produced a CSV, baseline optional.  If only the
+# vram arm ran, still emit the baseline-only cliff chart.
+[[ -s "${KVD_NVME_CSV}" ]] && run_plot nvme "${VRAM_CSV}" "${KVD_NVME_CSV}"
+[[ -s "${KVD_GDS_CSV}"  ]] && run_plot gds  "${VRAM_CSV}" "${KVD_GDS_CSV}"
+if [[ ! -s "${KVD_NVME_CSV}" && ! -s "${KVD_GDS_CSV}" && -s "${VRAM_CSV}" ]]; then
+    run_plot vram "${VRAM_CSV}"
+fi
 
 # --- Cleanup local NVMe scratch ---------------------------------------------
 rm -rf "${AAI_LOCAL_ROOT}" 2>/dev/null || true
@@ -630,7 +664,7 @@ rm -rf "${AAI_LOCAL_ROOT}" 2>/dev/null || true
 log "===================== SUMMARY ====================="
 for k in vram_only kvd_nvme kvd_gds; do log "  ${k}: ${STATUS[$k]:-?}"; done
 log "  CSVs  : ${RESULTS}"
-log "  plots : ${PLOTS}/{nvme,gds}"
+log "  plots : ${PLOTS}/{vram,nvme,gds} (per arm that ran)"
 [[ "${AAI_MONITORING}" == "1" ]] && log "  metrics: ${AAI_METRICS_DIR} (Prometheus TSDB)"
 log "==================================================="
 # Fail the job if any arm that actually ran failed; skipped arms don't count.
