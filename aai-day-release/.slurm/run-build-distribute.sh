@@ -148,7 +148,7 @@ AAI_ROCM_ARCH="${AAI_ROCM_ARCH:-gfx90a;gfx942;gfx950;gfx1100;gfx1101;gfx1150;gfx
 AAI_IMAGE="${AAI_IMAGE:-rocm-aic-aai-day:latest}"
 AAI_IMAGE_DIR="${AAI_IMAGE_DIR:-/scratch/${USER}/images}"
 AAI_BUILD_PARTITION="${AAI_BUILD_PARTITION:-defq}"
-AAI_BUILD_CONSTRAINT="${AAI_BUILD_CONSTRAINT:-MARKHAM&CPUONLY}"
+AAI_BUILD_CONSTRAINT="${AAI_BUILD_CONSTRAINT-MARKHAM&CPUONLY}"
 AAI_BUILD_CPUS="${AAI_BUILD_CPUS:-32}"
 AAI_BUILD_TIME="${AAI_BUILD_TIME:-02:00:00}"
 AAI_LOAD_TIME="${AAI_LOAD_TIME:-00:30:00}"
@@ -182,6 +182,8 @@ AAI_TLS_CERT="${AAI_TLS_CERT:-}"
 
 log()  { printf '[build-distribute] %s\n' "$*" >&2; }
 die()  { printf '[build-distribute] ERROR: %s\n' "$*" >&2; exit 1; }
+
+_is_spur() { return 0; }
 
 # --- Compression: pick tool + file extension --------------------------------
 _pick_compress() {
@@ -254,49 +256,97 @@ PROLOGUE
 )"
     script+=$'\n'"${body}"
 
-    # Submit in the background so we can read the (parsable) job id as soon as it
-    # is printed, report the log path, and live-tail while --wait blocks the
-    # client until the job ends.  stdbuf -oL forces the id line to flush to the
-    # temp file at once (stdout to a file is otherwise fully buffered).
     local idfile; idfile="$(mktemp)"
-    local -a _stdbuf=(); command -v stdbuf >/dev/null 2>&1 && _stdbuf=(stdbuf -oL)
-    "${_stdbuf[@]}" sbatch --parsable --wait \
-        --job-name="${jobname}" \
-        --partition="${AAI_BUILD_PARTITION}" \
-        --output=/dev/null \
-        "$@" \
-        <<<"${script}" >"${idfile}" &
-    local sb_pid=$!
+    local jobid="" rc=0
 
-    # Wait briefly for the parsable job id to land in the temp file.
-    local jobid="" tries=0
-    while [[ ! -s "${idfile}" ]] && kill -0 "${sb_pid}" 2>/dev/null && (( tries < 150 )); do
-        sleep 0.2; tries=$((tries + 1))
-    done
-    jobid="$(head -n1 "${idfile}" 2>/dev/null | tr -d '[:space:]' | cut -d';' -f1)"
+    if _is_spur; then
+        # Spur does not support --parsable or --wait.  Submit synchronously,
+        # extract the job id from "Submitted batch job <id>", then poll squeue
+        # until the job leaves the queue and read the exit code from sacct.
+        local -a _stdbuf=(); command -v stdbuf >/dev/null 2>&1 && _stdbuf=(stdbuf -oL)
+        "${_stdbuf[@]}" sbatch \
+            --job-name="${jobname}" \
+            --partition="${AAI_BUILD_PARTITION}" \
+            --output=/dev/null \
+            "$@" \
+            <<<"${script}" >"${idfile}"
+        jobid="$(awk 'NR==1{print $NF}' "${idfile}" 2>/dev/null | tr -d '[:space:]')"
 
-    local logfile="${AAI_DAY_DIR}/logs/${jobid:-unknown}/${logname}.out"
-    if [[ -n "${jobid}" ]]; then
-        log "submitted ${jobname} as job ${jobid} (partition ${AAI_BUILD_PARTITION})"
-        log "log: ${logfile}"
+        local logfile="${AAI_DAY_DIR}/logs/${jobid:-unknown}/${logname}.out"
+        if [[ -n "${jobid}" ]]; then
+            log "submitted ${jobname} as job ${jobid} (partition ${AAI_BUILD_PARTITION})"
+            log "log: ${logfile}"
+        else
+            log "submitted ${jobname} (job id not yet available; partition ${AAI_BUILD_PARTITION})"
+        fi
+
+        # Live-tail the job log while polling squeue for completion.
+        local tail_pid=""
+        if [[ -n "${jobid}" ]]; then
+            ( tail -F "${logfile}" 2>/dev/null ) & tail_pid=$!
+            # Wait for the job to appear in squeue before polling for its exit,
+            # otherwise a fast scheduler may not have queued it yet and the loop
+            # exits immediately with an empty result.
+            local appear_tries=0
+            until squeue -j "${jobid}" -h 2>/dev/null | grep -q . || (( appear_tries >= 60 )); do
+                sleep 1; appear_tries=$((appear_tries + 1))
+            done
+            while squeue -j "${jobid}" -h 2>/dev/null | grep -q .; do
+                sleep 5
+            done
+            # Read exit code from sacct ("<code>:<signal>" format).
+            local acct_exit
+            acct_exit="$(sacct -j "${jobid}" --format=ExitCode --noheader 2>/dev/null \
+                | awk 'NR==1{split($1,a,":"); print a[1]}')"
+            rc="${acct_exit:-1}"
+        fi
+
+        if [[ -n "${tail_pid}" ]]; then
+            sleep 1
+            kill "${tail_pid}" >/dev/null 2>&1 || true
+            wait "${tail_pid}" 2>/dev/null || true
+        fi
     else
-        log "submitted ${jobname} (job id not yet available; partition ${AAI_BUILD_PARTITION})"
+        # Real Slurm: submit in the background with --parsable --wait so the
+        # client blocks until the job ends and its exit status is the job's.
+        # stdbuf -oL forces the id line to flush to the temp file immediately.
+        local -a _stdbuf=(); command -v stdbuf >/dev/null 2>&1 && _stdbuf=(stdbuf -oL)
+        "${_stdbuf[@]}" sbatch --parsable --wait \
+            --job-name="${jobname}" \
+            --partition="${AAI_BUILD_PARTITION}" \
+            --output=/dev/null \
+            "$@" \
+            <<<"${script}" >"${idfile}" &
+        local sb_pid=$!
+
+        # Wait briefly for the parsable job id to land in the temp file.
+        local tries=0
+        while [[ ! -s "${idfile}" ]] && kill -0 "${sb_pid}" 2>/dev/null && (( tries < 150 )); do
+            sleep 0.2; tries=$((tries + 1))
+        done
+        jobid="$(head -n1 "${idfile}" 2>/dev/null | tr -d '[:space:]' | cut -d';' -f1)"
+
+        local logfile="${AAI_DAY_DIR}/logs/${jobid:-unknown}/${logname}.out"
+        if [[ -n "${jobid}" ]]; then
+            log "submitted ${jobname} as job ${jobid} (partition ${AAI_BUILD_PARTITION})"
+            log "log: ${logfile}"
+        else
+            log "submitted ${jobname} (job id not yet available; partition ${AAI_BUILD_PARTITION})"
+        fi
+
+        local tail_pid=""
+        if [[ -n "${jobid}" ]]; then
+            ( tail -F "${logfile}" 2>/dev/null ) & tail_pid=$!
+        fi
+
+        wait "${sb_pid}" || rc=$?
+        if [[ -n "${tail_pid}" ]]; then
+            sleep 1
+            kill "${tail_pid}" >/dev/null 2>&1 || true
+            wait "${tail_pid}" 2>/dev/null || true
+        fi
     fi
 
-    # Follow the job's log live (tail -F retries until the job creates the file).
-    local tail_pid=""
-    if [[ -n "${jobid}" ]]; then
-        ( tail -F "${logfile}" 2>/dev/null ) & tail_pid=$!
-    fi
-
-    # Block on the sbatch client; with --wait its exit status IS the job's.
-    local rc=0
-    wait "${sb_pid}" || rc=$?
-    if [[ -n "${tail_pid}" ]]; then
-        sleep 1  # let tail's final poll flush the last lines before we stop it
-        kill "${tail_pid}" >/dev/null 2>&1 || true
-        wait "${tail_pid}" 2>/dev/null || true
-    fi
     rm -f "${idfile}" 2>/dev/null || true
     return "${rc}"
 }
@@ -394,7 +444,7 @@ cd "${AAI_DAY_DIR}"
 ${_builder_setup}
 mkdir -p "${AAI_IMAGE_DIR}"
 tmp="${tarball}.partial.\$\$"
-docker buildx build --builder ${AAI_BUILDX_BUILDER} --output type=docker,dest=- \
+docker buildx build --builder ${AAI_BUILDX_BUILDER} --progress=plain --output type=docker,dest=- \
     --build-arg ROCM_ARCH="${AAI_ROCM_ARCH}" \
     ${_secret_arg} \
     ${_cache_args} \
@@ -442,7 +492,9 @@ REMOTE
             _sel=(--nodelist="${AAI_BUILD_NODE}")
             log "building on ${AAI_BUILD_NODE} via sbatch (partition ${AAI_BUILD_PARTITION})"
         else
-            _sel=(--constraint="${AAI_BUILD_CONSTRAINT}")
+            if [[ -n "${AAI_BUILD_CONSTRAINT:-}" ]]; then
+                _sel=(--constraint="${AAI_BUILD_CONSTRAINT}")
+            fi
             log "building via sbatch (partition ${AAI_BUILD_PARTITION}, constraint ${AAI_BUILD_CONSTRAINT})"
         fi
         _sbatch_run aai-day-build build "${remote_script}" \
@@ -512,13 +564,15 @@ REMOTE
             _sel=(--nodelist="${AAI_BUILD_NODE}")
             log "building exporters on ${AAI_BUILD_NODE} via sbatch (partition ${AAI_BUILD_PARTITION})"
         else
-            _sel=(--constraint="${AAI_BUILD_CONSTRAINT}")
+            if [[ -n "${AAI_BUILD_CONSTRAINT:-}" ]]; then
+                _sel=(--constraint="${AAI_BUILD_CONSTRAINT}")
+            fi
             log "building exporters via sbatch (partition ${AAI_BUILD_PARTITION}, constraint ${AAI_BUILD_CONSTRAINT})"
         fi
         _sbatch_run aai-day-build-exporters build-exporters "${remote_script}" \
             "${_sel[@]}" \
             --nodes=1 --ntasks=1 \
-            --cpus-per-task=2 --mem=8G --overcommit \
+            --cpus-per-task=2 --mem=8G \
             --time="${AAI_LOAD_TIME}"
     fi
     log "exporter build complete: ${nvme_tar}, ${rdma_tar}"
@@ -555,12 +609,13 @@ cmd_load() {
     # Small, oversubscribable request so the load can slip in alongside running
     # GPU jobs -- docker load needs no GPU.  --overcommit/--oversubscribe are
     # honored only if the partition allows them; harmless otherwise.
+    local -a _overcommit_flag=(); _is_spur || _overcommit_flag=(--overcommit)
     srun \
         --job-name=aai-day-load \
         --partition="${AAI_BUILD_PARTITION}" \
         --nodelist="${AAI_TARGETS}" \
         --nodes="${n}" --ntasks-per-node=1 \
-        --cpus-per-task=2 --mem=8G --overcommit \
+        --cpus-per-task=2 --mem=8G "${_overcommit_flag[@]}" \
         --time="${AAI_LOAD_TIME}" \
         bash -c "
 set -euo pipefail
@@ -616,12 +671,15 @@ REMOTE
 
     # Reuse the build-node selection: push needs no GPU, just docker + the creds
     # on shared /home.  Small, oversubscribable request so it can slip in.
+    local -a _overcommit_flag=(); _is_spur || _overcommit_flag=(--overcommit)
     local -a _sel
     if [[ -n "${AAI_BUILD_NODE:-}" ]]; then
         _sel=(--nodelist="${AAI_BUILD_NODE}")
         log "pushing from ${AAI_BUILD_NODE} via srun (partition ${AAI_BUILD_PARTITION})"
     else
-        _sel=(--constraint="${AAI_BUILD_CONSTRAINT}")
+        if [[ -n "${AAI_BUILD_CONSTRAINT:-}" ]]; then
+            _sel=(--constraint="${AAI_BUILD_CONSTRAINT}")
+        fi
         log "pushing via srun (partition ${AAI_BUILD_PARTITION}, constraint ${AAI_BUILD_CONSTRAINT})"
     fi
     srun \
@@ -629,7 +687,7 @@ REMOTE
         --partition="${AAI_BUILD_PARTITION}" \
         "${_sel[@]}" \
         --nodes=1 --ntasks=1 \
-        --cpus-per-task=2 --mem=8G --overcommit \
+        --cpus-per-task=2 --mem=8G "${_overcommit_flag[@]}" \
         --time="${AAI_LOAD_TIME}" \
         bash -c "${remote_script}"
     log "push complete: ${AAI_PUSH_REF}"

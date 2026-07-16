@@ -11,3 +11,6 @@ __pycache__/
 
 # `make export` artifacts (aai-day-release-<date>-<rev>.tar.gz by default).
 /*.tar.gz
+
+# Local env overrides — may contain tokens and hostnames, never commit.
+spur-launchers/env.local
