@@ -98,7 +98,26 @@ PYTHON := $(if $(wildcard $(REPO_ROOT)/.venv/bin/python3),$(REPO_ROOT)/.venv/bin
 # /scratch so a failed build resumes from the last good layer on any node
 # (set AAI_CACHE_DIR= to disable); AAI_BUILD_EXPORTERS=0 skips the fabric images.
 DIST := $(CURDIR)/.slurm/run-build-distribute.sh
-export AAI_CACHE_DIR ?= /scratch/$(USER)/images/buildcache
+
+# ---- SPUR cluster overrides ------------------------------------------------
+# When AAI_SPUR_CLUSTER=1, default storage paths to /shared_nfs (the NFS volume
+# shared across all SPUR compute nodes) instead of /scratch (not present on
+# this cluster), and wire up the known controller address.
+AAI_SPUR_CLUSTER ?= 0
+ifeq ($(AAI_SPUR_CLUSTER),1)
+export AAI_SPUR_CLUSTER
+export AAI_SPUR_CONTROLLER  ?= http://crs-m2m-cpu-spur-005.crusoe.amd.com:6817
+export AAI_IMAGE_DIR        ?= /shared_nfs/$(USER)/images
+export AAI_CACHE_DIR        ?= /shared_nfs/$(USER)/images/buildcache
+# SPUR nodes have 8x NVMe drives combined into a single LVM at /mnt/m2m_nobackup.
+# Use override (not ?=) so these win over the top-level ?= defaults set earlier.
+# HF_HOME points to shared_nfs since /scratch does not exist on this cluster.
+override export NVME_DATA     := /mnt/m2m_nobackup/aai-cliff/nvme
+override export GDS_SLAB_DATA := /mnt/m2m_nobackup/aai-cliff/slab
+override export HF_HOME       := /shared_nfs/$(USER)/hf
+else
+export AAI_CACHE_DIR        ?= /scratch/$(USER)/images/buildcache
+endif
 
 # The cliff sbatch has its own node-appropriate defaults for the HuggingFace
 # cache (staged on /scratch), the LMCache storage tiers (node-local /tmp), and
@@ -111,10 +130,10 @@ export AAI_CACHE_DIR ?= /scratch/$(USER)/images/buildcache
 # Makefile's own defaults ($(origin ...) = "file"); a value the user set on the
 # command line or in their environment is kept and still flows through.
 _CLIFF_STRIP := env \
-    $(if $(filter file,$(origin HF_HOME)),-u HF_HOME) \
-    $(if $(filter file,$(origin NVME_DATA)),-u NVME_DATA) \
+    $(if $(filter 0,$(AAI_SPUR_CLUSTER)),$(if $(filter file,$(origin HF_HOME)),-u HF_HOME)) \
+    $(if $(filter 0,$(AAI_SPUR_CLUSTER)),$(if $(filter file,$(origin NVME_DATA)),-u NVME_DATA)) \
     $(if $(filter file,$(origin NFS_DATA)),-u NFS_DATA) \
-    $(if $(filter file,$(origin GDS_SLAB_DATA)),-u GDS_SLAB_DATA) \
+    $(if $(filter 0,$(AAI_SPUR_CLUSTER)),$(if $(filter file,$(origin GDS_SLAB_DATA)),-u GDS_SLAB_DATA)) \
     $(if $(filter file,$(origin AAI_METRICS_DIR)),-u AAI_METRICS_DIR)
 
 # ---- Export tarball --------------------------------------------------------
@@ -373,11 +392,27 @@ smoke-test:                    # Load + smoke-test the image on a GPU+NVMe node
 # a node with AAI_CLIFF_NODE, narrow arms with AAI_CLIFF_ARMS=nvme (etc), and
 # override the job wall-time with AAI_CLIFF_TIME=HH:MM:SS (e.g. an overnight full
 # sweep).  The job creates logs/<job-id>/ itself and redirects its output there.
+# _CLIFF_SBATCH_ARGS: partition + constraint overrides passed on the sbatch
+# command line (takes precedence over #SBATCH directives in run-cliff.sbatch).
+# On SPUR, override to amd-spur with no constraint and no --gres (no GPU GRES
+# configured); on standard Slurm the script's own #SBATCH lines take effect.
+ifeq ($(AAI_SPUR_CLUSTER),1)
+_CLIFF_SPUR_CTL  := SPUR_CONTROLLER_ADDR=$(AAI_SPUR_CONTROLLER)
+_CLIFF_SBATCH_ARGS := --partition=amd-spur --constraint= \
+    $(if $(AAI_CLIFF_NODE),--nodelist=$(AAI_CLIFF_NODE),)
+# SPUR sbatch does not support --parsable; parse job id from "Submitted batch job N"
+_CLIFF_SUBMIT     = $(_CLIFF_SPUR_CTL) $(_CLIFF_STRIP) sbatch \
+    $(_CLIFF_SBATCH_ARGS) $(1) .slurm/run-cliff.sbatch 2>&1 | \
+    tee /dev/stderr | grep -oE '[0-9]+$$' | tail -1
+else
+_CLIFF_SBATCH_ARGS := $(if $(AAI_CLIFF_NODE),--nodelist=$(AAI_CLIFF_NODE),)
+_CLIFF_SUBMIT     = $(_CLIFF_STRIP) sbatch --parsable \
+    $(_CLIFF_SBATCH_ARGS) $(1) .slurm/run-cliff.sbatch
+endif
+
 cliff-submit:
-	@cd "$(CURDIR)" && jobid=$$($(_CLIFF_STRIP) sbatch --parsable \
-	    $(if $(AAI_CLIFF_NODE),--nodelist=$(AAI_CLIFF_NODE),) \
-	    $(if $(AAI_CLIFF_TIME),--time=$(AAI_CLIFF_TIME),) \
-	    .slurm/run-cliff.sbatch) && \
+	@cd "$(CURDIR)" && jobid=$$($(call _CLIFF_SUBMIT,\
+	    $(if $(AAI_CLIFF_TIME),--time=$(AAI_CLIFF_TIME),))) && \
 	    echo "submitted cliff job $$jobid" && \
 	    echo "log: $(CURDIR)/logs/$$jobid/cliff.out"
 
@@ -385,9 +420,7 @@ cliff-submit:
 # Respects user overrides of BENCH_CONCUR / BENCH_ITERS.
 cliff-short:
 	@cd "$(CURDIR)" && jobid=$$(BENCH_CONCUR="$${BENCH_CONCUR:-1}" BENCH_ITERS="$${BENCH_ITERS:-1}" \
-	    $(_CLIFF_STRIP) sbatch --parsable --job-name=aai-day-cliff-short \
-	    $(if $(AAI_CLIFF_NODE),--nodelist=$(AAI_CLIFF_NODE),) \
-	    .slurm/run-cliff.sbatch) && \
+	    $(call _CLIFF_SUBMIT,--job-name=aai-day-cliff-short)) && \
 	    echo "submitted cliff-short job $$jobid (BENCH_CONCUR=$${BENCH_CONCUR:-1} BENCH_ITERS=$${BENCH_ITERS:-1})" && \
 	    echo "log: $(CURDIR)/logs/$$jobid/cliff.out"
 
@@ -421,10 +454,8 @@ cliff-long-64k:                # sbatch a 64k-ISL YaRN(x2 -> 65536) 3-arm sweep
 	    AAI_LOCAL_CPU="$${AAI_LOCAL_CPU:-true}" LMCACHE_MAX_LOCAL_CPU_SIZE="$${LMCACHE_MAX_LOCAL_CPU_SIZE:-64}" \
 	    LMCACHE_NVME_POOL="$(if $(filter file,$(origin LMCACHE_NVME_POOL)),262144,$(LMCACHE_NVME_POOL))" AAI_NIXL_BUFFER_SIZE="$${AAI_NIXL_BUFFER_SIZE:-8589934592}" \
 	    LMCACHE_L1_SIZE_GB="$(if $(filter file,$(origin LMCACHE_L1_SIZE_GB)),320,$(LMCACHE_L1_SIZE_GB))" \
-	    $(_CLIFF_STRIP) sbatch --parsable --job-name=aai-day-cliff-long64k \
-	    $(if $(AAI_CLIFF_NODE),--nodelist=$(AAI_CLIFF_NODE),) \
-	    --time=$(if $(AAI_CLIFF_TIME),$(AAI_CLIFF_TIME),16:00:00) \
-	    .slurm/run-cliff.sbatch) && \
+	    $(call _CLIFF_SUBMIT,--job-name=aai-day-cliff-long64k \
+	    --time=$(if $(AAI_CLIFF_TIME),$(AAI_CLIFF_TIME),16:00:00))) && \
 	    echo "submitted cliff-long-64k job $$jobid (ISL=64000, YaRN x2 -> 65536, DRAM L1=64G, NVMe pool=262144, all 3 arms)" && \
 	    echo "log: $(CURDIR)/logs/$$jobid/cliff.out"
 
@@ -438,10 +469,8 @@ cliff-long-128k:               # sbatch a 128k-ISL YaRN(x4 -> 131072) 3-arm swee
 	    AAI_LOCAL_CPU="$${AAI_LOCAL_CPU:-true}" LMCACHE_MAX_LOCAL_CPU_SIZE="$${LMCACHE_MAX_LOCAL_CPU_SIZE:-64}" \
 	    LMCACHE_NVME_POOL="$(if $(filter file,$(origin LMCACHE_NVME_POOL)),524288,$(LMCACHE_NVME_POOL))" AAI_NIXL_BUFFER_SIZE="$${AAI_NIXL_BUFFER_SIZE:-8589934592}" \
 	    LMCACHE_L1_SIZE_GB="$(if $(filter file,$(origin LMCACHE_L1_SIZE_GB)),640,$(LMCACHE_L1_SIZE_GB))" \
-	    $(_CLIFF_STRIP) sbatch --parsable --job-name=aai-day-cliff-long128k \
-	    $(if $(AAI_CLIFF_NODE),--nodelist=$(AAI_CLIFF_NODE),) \
-	    --time=$(if $(AAI_CLIFF_TIME),$(AAI_CLIFF_TIME),24:00:00) \
-	    .slurm/run-cliff.sbatch) && \
+	    $(call _CLIFF_SUBMIT,--job-name=aai-day-cliff-long128k \
+	    --time=$(if $(AAI_CLIFF_TIME),$(AAI_CLIFF_TIME),24:00:00))) && \
 	    echo "submitted cliff-long-128k job $$jobid (ISL=128000, YaRN x4 -> 131072, DRAM L1=64G, NVMe pool=524288, all 3 arms)" && \
 	    echo "log: $(CURDIR)/logs/$$jobid/cliff.out"
 

@@ -94,3 +94,7 @@ data/agentx/
 .slurm/logs/
 .slurm/reports/
 
+# spur output files
+spur-*.out
+rdma-test-*.out
+rdma-test-*.err
