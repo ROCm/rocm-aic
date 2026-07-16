@@ -317,3 +317,156 @@ vram arm: 0 (tier off). Root NVMe untouched. Host DRAM footprint negligible.
   at c=200 (recompute floor ~15.9k, err=0), nearly done (c=250 left, then Arm B).
   Peak GPU power **749 W**. vram cliff reproduced; Arm B recompute-fix validation
   still pending.
+- **2026-07-15 14:51 EDT** — `67535846` **COMPLETED**. Verdict: `recompute` gave the
+  **best-yet clean low-c curve (c≤64, err=0, up to 84k)** but **crashed the vLLM
+  EngineCore at c=80** (`AssertionError` → `EngineDeadError`) → c≥80 all failed
+  instantly (BW=0). So recompute is **not** a safe high-c fix — it's *worse* than
+  `fail` (hard crash vs degraded 500s). Full analysis below. **Tracking stopped.**
+
+## Final analysis — job 67535846 (recompute fix: helps low-c, crashes high-c)
+
+**Config:** vram+nvme, DRAM L1 16 GB, NVMe pool 65536, NIXL buffer 8 GiB,
+`kv_load_failure_policy=recompute`. Node `ctr-cx66-mi300x-31`.
+
+### With vs without NVMe (median tok/s)
+| c | vram_only | nvme (DRAM+NVMe, recompute) | NVMe × |
+|---:|---:|---:|---:|
+| 16 | ~88k | 83,916 | 0.95 |
+| 32 | ~89k | 84,014 | 0.94 |
+| 48 | 23.6k | **81,401** | **3.4** |
+| 64 | 15.5k | **78,505** | **5.1** |
+| 80 | 15.5k | **0 (engine crash)** | — |
+| 100–250 | 15.3–15.5k | **0 (engine dead)** | — |
+
+- **Best clean low-c curve of all three runs:** the DRAM+NVMe tier holds **~78–84k
+  through c=64** with **0 errors** (vs pure-NVMe's flat ~63k) — 3.4× at c=48, **5.1×
+  at c=64** over the vram_only cliff.
+- **Then it dies:** at **c=80** the `recompute` path hit a fatal
+  `AssertionError` in vLLM's EngineCore (`vllm.v1.engine.exceptions.EngineDeadError`
+  at 18:42:58) — the engine crashed, so every request from c=80 on failed instantly
+  (wall ~0.2 s, ok=0, BW=0). This is a **regression** vs the `fail` policy, which at
+  least degraded to partial-500s and kept serving ~60 req.
+
+### Power
+GPU chip `0000:e4:00…`. VRAM arm **avg 726 W / peak 752 W**; NVMe arm **peak 748 W**
+(avg 573 W, pulled down by the post-crash idle). In the clean range the GPU is
+~equally power-pinned, so with nvme delivering **5× the throughput at c=64** the
+**tokens-per-joule advantage is again ~5×** (W/(tok/s): vram ~0.047 vs nvme ~0.009).
+(nvme1n1 diskstats read 0 — on this node the spare auto-detect likely used a
+different NVMe device name, and the arm crashed early; power/throughput are the
+reliable signals here.)
+
+### Cross-run verdict (67534362 → 67534497 → 67535846)
+All three give the **same strong, clean curve to c≤64 (~78–84k, beating pure-NVMe
+63k)** and **all break at c≥80** — the **16 GB DRAM L1 + high concurrency is the
+fundamental limiter**, independent of staging-buffer size or failure policy:
+| run | high-c failure mode |
+|---|---|
+| 67534362 (512 MiB buffer, `fail`) | partial-500s from c≥100, growing |
+| 67534497 (8 GiB buffer, `fail`) | partial-500s from c≥80, growing to 604 |
+| 67535846 (8 GiB buffer, `recompute`) | **EngineCore crash at c=80** (worse) |
+
+**Recommendations (deliberate, not overnight guesses):**
+1. **Revert `kv_load_failure_policy` to `fail`** (or unset) — `recompute` crashes the
+   engine; it's not viable as-is (looks like a vLLM recompute-path bug worth filing).
+2. For a **clean full high-c curve today**, use **pure NVMe (no DRAM L1)** — run
+   `67534106` did c=1→250 with 0 errors at flat ~63k. The DRAM L1 is what breaks high-c.
+3. If DRAM L1 is desired at high concurrency, it needs a **much larger pool** (hold
+   the top-of-sweep working set, ~83 GB) or an LMCache-side fix for the 16 GB-pool
+   exhaustion — not a vLLM failure-policy toggle.
+4. **Headline stands:** past the ~46-req cliff the offload tier is **3–5× faster at
+   ~equal power (≈5× better tokens/joule)** — robustly demonstrated up to c≤64 here
+   and across the full sweep in the pure-NVMe run.
+
+---
+
+## Planned next run — larger DRAM + NVMe pools (avoid the failure entirely)
+
+**Goal:** a **clean full DRAM+NVMe curve through c=250** by sizing the cache tiers
+so KV loads never fail (which also sidesteps the vLLM recompute crash — see
+`vllm-recompute-bug.md`). Root cause of all high-c failures so far: the **16 GB
+DRAM L1 pool exhausts** at c≥80.
+
+**Sizing:** KV per token (Qwen2.5-3B, fp8) = 18.4 KB. Reusable prefix = 18k
+tokens = **332 MB/request**; at c=250 the working set is ~**83 GB** (~92 GB incl.
+the 2k unique tails). So:
+- **DRAM L1 = 128 GB** (`LMCACHE_MAX_LOCAL_CPU_SIZE=128`) — holds the full c=250
+  working set with headroom (node has ~1.6 TB DRAM). Expect it to *not* exhaust →
+  no KV-load failures → no 500s / no recompute crash.
+- **NVMe pool = 131072** (`LMCACHE_NVME_POOL=131072`, 2× prior) — overflow
+  insurance on the dedicated spare (~3.5 TB).
+- Keep 8 GiB NIXL staging buffer. **Leave `AAI_KV_LOAD_FAILURE_POLICY` unset**
+  (default `fail`) — recompute is buggy with async scheduling; here we avoid
+  failures rather than handle them.
+
+**Command:**
+```bash
+VLLM_MODEL=Qwen/Qwen2.5-3B-Instruct VLM_GPU_MEMORY_UTILIZATION=0.12 \
+AAI_CLIFF_ARMS=vram,nvme \
+AAI_LOCAL_CPU=true LMCACHE_MAX_LOCAL_CPU_SIZE=128 \
+LMCACHE_NVME_POOL=131072 AAI_NIXL_BUFFER_SIZE=8589934592 \
+BENCH_ITERS=3 AAI_CLIFF_TIME=08:00:00 \
+make -C aai-day-release cliff-submit
+```
+
+**Caveat:** a 128 GB DRAM L1 will absorb most/all of the working set, so `ext_hit`
+(NVMe) will be low and NVMe barely exercised — this yields a **clean DRAM-tier full
+curve** (high throughput held across the sweep), not an NVMe-stress test. Stressing
+NVMe cleanly at high-c needs the recompute fix (or a fail-tolerant load path); that
+config is blocked on the vLLM bug.
+
+### Result — job 67536084 (COMPLETED, 1h44m, err=0 everywhere) ✅
+
+**The big-pool hypothesis is confirmed: the c≥80 crash is gone, and the offload
+tier holds ~79k tok/s flat all the way to c=250.** Both arms ran the full
+1→250 sweep (3 iters each) with **zero errors** — no `AssertionError` /
+`EngineDeadError` / HTTP 500 anywhere. `gds` arm skipped this run.
+
+**Full curve (median tok/s):**
+
+| c | vram_only | kvd_v2 nvme | ext_hit | speed-up |
+|---|---|---|---|---|
+| 1   | 71.6k | 67.7k | 0%    | 0.9× |
+| 4   | 84.4k | 79.5k | 0%    | 0.9× |
+| 8   | 89.0k | 82.1k | 0%    | 0.9× |
+| 16  | 90.4k | 83.9k | 0%    | 0.9× |
+| 32  | 90.5k | 84.4k | 0%    | 0.9× |
+| 48  | 24.2k | 82.3k | 87%   | **3.4×** |
+| 64  | 15.9k | 79.4k | 89%   | **5.0×** |
+| **80**  | 15.9k | **79.1k** | 90% | **5.0×** |
+| 100 | 15.9k | 78.9k | 90%   | **5.0×** |
+| 128 | 15.9k | 79.2k | 90%   | **5.0×** |
+| 160 | 15.9k | 78.8k | 90%   | **5.0×** |
+| 200 | 15.9k | 78.7k | 90%   | **5.0×** |
+| 250 | 15.8k | 78.5k | 90%   | **5.0×** |
+
+- **c=80 is exactly where job 67535846 crashed** (async placeholder underflow, see
+  `vllm-recompute-bug.md`). With the 128 GB DRAM L1 the pool never exhausts, no KV
+  load fails, so neither `fail` nor `recompute` is ever invoked — the trigger is
+  gone. The arm holds **~78–79k tok/s from c=48 through c=250 with no decay**.
+- Below the cliff (c≤32) the offload arm is ~7–10% *slower* than pure VRAM (the
+  connector's save/lookup overhead when everything already fits in VRAM) — expected
+  and irrelevant; that regime isn't the point.
+- At c≥48 the VRAM prefix cache overflows, `ext_hit` jumps to ~89–90%, and the
+  external tier (DRAM L1 + NVMe) carries the load. The earlier "NVMe barely
+  exercised" caveat was too pessimistic.
+
+**Power / tokens-per-joule (from the run's retained Prometheus TSDB).** The active
+GPU **pins ~750 W under load in *both* arms** (peak 751 W kvd / 752 W vram — the
+750 W cap). Power is identical, so tokens-per-joule tracks throughput 1:1:
+
+| regime | tok/s | GPU W | **tokens/joule** |
+|---|---|---|---|
+| vram_only, past cliff (c≥64) | 15.9k | ~750 | **~21** |
+| kvd_v2 nvme, past cliff (c≥64) | ~79k | ~750 | **~105** |
+
+→ **~5× better tokens/joule at the same power**, now demonstrated across the *entire*
+high-concurrency range (c=64→250), not just c≤64. This is the headline efficiency
+result: past the KV-cache cliff, DRAM+NVMe offload delivers ~5× the useful work per
+watt as pure-VRAM, with zero failures.
+
+**Bottom line:** sizing the DRAM L1 to hold the working set (128 GB here vs the
+16 GB that failed) turns the offload arm from "crashes at c≥80" into a clean, flat,
+~5×-throughput / ~5×-efficiency curve across the full sweep. Recompute stays
+disabled (buggy under async scheduling) — and with correct pool sizing it's never
+needed.
