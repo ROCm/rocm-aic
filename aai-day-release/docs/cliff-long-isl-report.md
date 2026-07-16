@@ -11,14 +11,14 @@ async-scheduler crash that big pools sidestepped in the 20k run.
 
 Resubmitted after run 1 hit long-ISL pacing/data-quality limits (see below), then
 resubmitted again with a **3 h wall** (`AAI_CLIFF_TIME=03:00:00`) — the 16 h default
-made the job un-schedulable (a 16 h reservation on the narrow MARKHAM&GFX942&NVME
+made the job unschedulable (a 16 h reservation on the narrow MARKHAM&GFX942&NVME
 node pool kept backfilling behind shorter jobs). 3 h scheduled instantly.
 
 Changes vs run 1: **trimmed ladder `BENCH_CONCUR=1,8,16,32,64`** (stays at/below the
-ReadTimeout onset so every point is clean). Arms run in the sbatch's hardcoded
+ReadTimeout onset so every point is clean). Arms run in the sbatch's hard-coded
 order **vram → nvme → gds** (`AAI_CLIFF_ARMS` only selects, doesn't reorder — so gds
 runs last, but the fast trimmed ladder lets all three finish in ~2.5 h < 3 h wall).
-Sizing unchanged (DRAM L1 64 GB, NVMe pool 262144, YaRN ×2). Node ctr-cx66-mi300x-13.
+Sizing unchanged (DRAM L1 64 GB, NVMe pool 262144, YaRN ×2). Node `ctr-cx66-mi300x-13`.
 
 <!-- RUN2 -->
 
@@ -27,7 +27,7 @@ Sizing unchanged (DRAM L1 64 GB, NVMe pool 262144, YaRN ×2). Node ctr-cx66-mi30
 |---|---|---|
 | 1 | 44.9k | |
 | 8 | 27.9k | peak plateau |
-| 16 | 8.7k | **cliff** (HBM full ~14 reqs) — matches run 1 (8.9k) |
+| 16 | 8.7k | **cliff** (HBM full ~14 requests) — matches run 1 (8.9k) |
 | 32 | 5.9k | floor |
 | 64 | ~5.8k | err=10 **ReadTimeout** (client, p95 580s) — not 500/crash |
 
@@ -325,7 +325,7 @@ Conversion: fp8 KV = **18,432 B/token** → `MiB = tokens × 0.017578` (1 MiB �
 
 | tier | source (what's actually in the TSDB) | capacity |
 |---|---|---|
-| **HBM** (VRAM KV) | **analytical** — `vllm:kv_cache_usage_perc` scrape times out under long-ISL load (reads 0); HBM = min(active_reqs × 1,125 MiB, budget) | 928,128 tok = **16,320 MiB** (14502×64 blocks @ util 0.12) |
+| **HBM** (VRAM KV) | **analytical** — `vllm:kv_cache_usage_perc` scrape times out under long-ISL load (reads 0); HBM = min(active_requests × 1,125 MiB, budget) | 928,128 tok = **16,320 MiB** (14502×64 blocks @ util 0.12) |
 | **CPU DRAM L1** | **analytical** — no direct LMCache gauge in this build | 64 GB ≈ **3,640,889 tok** |
 | **NVMe L2** | **measured** — NIXL `agent_tx_bytes_total` (bytes written) / `agent_rx_bytes_total` (read back), :19090 | 262,144 slots (~1.15 TiB cap; lazily sized) |
 
@@ -353,7 +353,7 @@ for future runs (harness change, see “Follow-up”)._
 | 2 | 28.9k | |
 | 4 | 30.0k | |
 | 8 | 30.1k | peak plateau |
-| 16 | 8.9k | **cliff** — HBM KV budget (16.3 GiB ≈ 14 reqs) full |
+| 16 | 8.9k | **cliff** — HBM KV budget (16.3 GiB ≈ 14 requests) full |
 | 32 | 5.9k | floor |
 | 48 | 5.9k | floor (wall 524s/iter, p95 ~508s) |
 | 64 | ~5.8k | **err=10 ReadTimeout** (client-side, p95 570s > client timeout) — NOT 500/crash |
