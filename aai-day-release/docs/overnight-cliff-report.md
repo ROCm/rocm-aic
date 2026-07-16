@@ -362,9 +362,9 @@ All three give the **same strong, clean curve to c≤64 (~78–84k, beating pure
 fundamental limiter**, independent of staging-buffer size or failure policy:
 | run | high-c failure mode |
 |---|---|
-| 67534362 (512 MiB buf, `fail`) | partial-500s from c≥100, growing |
-| 67534497 (8 GiB buf, `fail`) | partial-500s from c≥80, growing to 604 |
-| 67535846 (8 GiB buf, `recompute`) | **EngineCore crash at c=80** (worse) |
+| 67534362 (512 MiB buffer, `fail`) | partial-500s from c≥100, growing |
+| 67534497 (8 GiB buffer, `fail`) | partial-500s from c≥80, growing to 604 |
+| 67535846 (8 GiB buffer, `recompute`) | **EngineCore crash at c=80** (worse) |
 
 **Recommendations (deliberate, not overnight guesses):**
 1. **Revert `kv_load_failure_policy` to `fail`** (or unset) — `recompute` crashes the
