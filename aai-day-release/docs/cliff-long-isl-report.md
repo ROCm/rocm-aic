@@ -42,7 +42,7 @@ Sizing unchanged (DRAM L1 64 GB, NVMe pool 262144, YaRN ×2). Node ctr-cx66-mi30
 
 #### Arm C — kvd_v2 gds (hipFile GDS NVMe slab L1, the FIX), in progress
 **Bring-up succeeded** (was the fragile part): `lmcache-server (gds L1 slab) on
-:6555` started, connector'd vLLM connected on :8000, sweep running. err=0, no
+:6555` started, vLLM connected on :8000, sweep running. err=0, no
 crash/500.
 
 | c | gds tok/s | nvme | vram | note |
