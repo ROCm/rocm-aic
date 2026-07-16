@@ -624,6 +624,11 @@ for _a in ${AAI_CLIFF_ARMS//,/ }; do
 done
 log "arms        : ${AAI_CLIFF_ARMS}"
 log "isl/prefix  : ISL=${BENCH_ISL} shared=${BENCH_SHARED_TOK} max_model_len=${VLM_MAX_MODEL_LEN}${VLM_ROPE_SCALING:+ rope_scaling=${VLM_ROPE_SCALING}}"
+# Tier sizing — echo the EFFECTIVE values so a mis-propagated override is visible.
+# nixl_pool_size is a SLOT count (~4.5 MiB/slot for Qwen2.5-3B); 4096 slots ≈ 18 GiB
+# is far too small for long-ISL working sets (a silent 4096 caused the c>=32 cliff
+# collapse in jobs 67536798/67537066 — the LMCACHE_NVME_POOL override didn't land).
+log "tiers       : local_cpu=${AAI_LOCAL_CPU} max_local_cpu_size=${LMCACHE_MAX_LOCAL_CPU_SIZE}GB nixl_pool_size=${LMCACHE_NVME_POOL} slots (~$(( LMCACHE_NVME_POOL * 45 / 10 / 1024 )) GiB) gds_l1=${LMCACHE_L1_SIZE_GB}GB nixl_buffer=${AAI_NIXL_BUFFER_SIZE}B"
 
 if _arm_on vram; then run_arm_vram && STATUS[vram_only]=ok || STATUS[vram_only]=FAIL; else STATUS[vram_only]=skip; fi
 if _arm_on nvme; then run_arm_kvd nvme "${KVD_NVME_CSV}" && STATUS[kvd_nvme]=ok || STATUS[kvd_nvme]=FAIL; else STATUS[kvd_nvme]=skip; fi

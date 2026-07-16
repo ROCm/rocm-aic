@@ -401,6 +401,16 @@ cliff-short:
 # KV: 64k/60k ~= 1.05 GiB/client (~263 GB @ c=250); 128k/126k ~= 2.16 GiB/client
 # (~540 GB @ c=250) -- both fit the spare NVMe.  Qwen2.5 is YaRN-trained to 128k.
 # Every knob is overridable, e.g. LMCACHE_MAX_LOCAL_CPU_SIZE=128 make cliff-long-64k.
+#
+# NOTE on the origin-guarded pool/slab sizing below: LMCACHE_NVME_POOL and
+# LMCACHE_L1_SIZE_GB are BOTH Makefile-defaulted (?=) AND exported (line ~61), so
+# they arrive in the recipe shell already SET to the small compose defaults
+# (4096 / 20).  A plain $${VAR:-262144} therefore never fires -- the var is set,
+# so it silently kept 4096 / 20, which caused the c>=32 cliff collapse (pool was
+# 18 GiB not 1.15 TiB; gds slab 20 GB not 320 GB) in jobs 67536798/67537066.
+# Use $(origin ...)=file to mean "came from the Makefile default, not the user":
+# a Makefile default -> the long-ISL value; a real user override (command line /
+# environment) is kept.  Mirrors the _CLIFF_STRIP idiom above.
 cliff-long-64k:                # sbatch a 64k-ISL YaRN(x2 -> 65536) 3-arm sweep
 	@cd "$(CURDIR)" && jobid=$$( \
 	    VLLM_MODEL="$${VLLM_MODEL:-Qwen/Qwen2.5-3B-Instruct}" \
@@ -409,8 +419,8 @@ cliff-long-64k:                # sbatch a 64k-ISL YaRN(x2 -> 65536) 3-arm sweep
 	    BENCH_ISL="$${BENCH_ISL:-64000}" BENCH_SHARED_TOK="$${BENCH_SHARED_TOK:-60000}" \
 	    BENCH_PREFIX_MODE="$${BENCH_PREFIX_MODE:-per_client}" BENCH_ITERS="$${BENCH_ITERS:-2}" \
 	    AAI_LOCAL_CPU="$${AAI_LOCAL_CPU:-true}" LMCACHE_MAX_LOCAL_CPU_SIZE="$${LMCACHE_MAX_LOCAL_CPU_SIZE:-64}" \
-	    LMCACHE_NVME_POOL="$${LMCACHE_NVME_POOL:-262144}" AAI_NIXL_BUFFER_SIZE="$${AAI_NIXL_BUFFER_SIZE:-8589934592}" \
-	    LMCACHE_L1_SIZE_GB="$${LMCACHE_L1_SIZE_GB:-320}" \
+	    LMCACHE_NVME_POOL="$(if $(filter file,$(origin LMCACHE_NVME_POOL)),262144,$(LMCACHE_NVME_POOL))" AAI_NIXL_BUFFER_SIZE="$${AAI_NIXL_BUFFER_SIZE:-8589934592}" \
+	    LMCACHE_L1_SIZE_GB="$(if $(filter file,$(origin LMCACHE_L1_SIZE_GB)),320,$(LMCACHE_L1_SIZE_GB))" \
 	    $(_CLIFF_STRIP) sbatch --parsable --job-name=aai-day-cliff-long64k \
 	    $(if $(AAI_CLIFF_NODE),--nodelist=$(AAI_CLIFF_NODE),) \
 	    --time=$(if $(AAI_CLIFF_TIME),$(AAI_CLIFF_TIME),16:00:00) \
@@ -426,8 +436,8 @@ cliff-long-128k:               # sbatch a 128k-ISL YaRN(x4 -> 131072) 3-arm swee
 	    BENCH_ISL="$${BENCH_ISL:-128000}" BENCH_SHARED_TOK="$${BENCH_SHARED_TOK:-126000}" \
 	    BENCH_PREFIX_MODE="$${BENCH_PREFIX_MODE:-per_client}" BENCH_ITERS="$${BENCH_ITERS:-1}" \
 	    AAI_LOCAL_CPU="$${AAI_LOCAL_CPU:-true}" LMCACHE_MAX_LOCAL_CPU_SIZE="$${LMCACHE_MAX_LOCAL_CPU_SIZE:-64}" \
-	    LMCACHE_NVME_POOL="$${LMCACHE_NVME_POOL:-524288}" AAI_NIXL_BUFFER_SIZE="$${AAI_NIXL_BUFFER_SIZE:-8589934592}" \
-	    LMCACHE_L1_SIZE_GB="$${LMCACHE_L1_SIZE_GB:-640}" \
+	    LMCACHE_NVME_POOL="$(if $(filter file,$(origin LMCACHE_NVME_POOL)),524288,$(LMCACHE_NVME_POOL))" AAI_NIXL_BUFFER_SIZE="$${AAI_NIXL_BUFFER_SIZE:-8589934592}" \
+	    LMCACHE_L1_SIZE_GB="$(if $(filter file,$(origin LMCACHE_L1_SIZE_GB)),640,$(LMCACHE_L1_SIZE_GB))" \
 	    $(_CLIFF_STRIP) sbatch --parsable --job-name=aai-day-cliff-long128k \
 	    $(if $(AAI_CLIFF_NODE),--nodelist=$(AAI_CLIFF_NODE),) \
 	    --time=$(if $(AAI_CLIFF_TIME),$(AAI_CLIFF_TIME),24:00:00) \
