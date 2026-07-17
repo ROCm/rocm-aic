@@ -71,7 +71,7 @@ jobs:
 
   hardware-test:
     needs: authorize
-    runs-on: [self-hosted, amd-aic-spur-bridge]
+    runs-on: [self-hosted, rocm-aic-amd-bridge]
     timeout-minutes: 90
     permissions:
       pull-requests: write
