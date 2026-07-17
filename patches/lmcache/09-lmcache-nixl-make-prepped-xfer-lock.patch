@@ -1,0 +1,89 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Stephen Bates <stephen.bates@amd.com>
+Date: 2026-07-29
+Subject: [PATCH 09] fix: serialise make_prepped_xfer to prevent NIXL_ERR_INVALID_PARAM
+
+NixlStorageAgent holds two shared pre-built NIXL dlist handles built at
+init time: mem_xfer_handler (registered L1 DRAM buffer) and
+storage_xfer_handler (registered NVMe slot file pool).
+
+Both get_mem_to_storage_handle() and get_storage_to_mem_handle() call
+nixl_agent.make_prepped_xfer() with these shared handles and caller-
+supplied index subsets.  When --max-gpu-workers > 1 or
+--l2-prefetch-max-in-flight > 1, multiple asyncio coroutines interleave
+at every 'await' in post_non_blocking and reach make_prepped_xfer()
+concurrently.  The NIXL C++ makeXferReq() is not thread-safe for
+concurrent calls on the same shared dlist handle, raising:
+
+  nixl_rocm._bindings.nixlInvalidParamError: NIXL_ERR_INVALID_PARAM
+
+This silently zeros all L2 reads (agent_rx_bytes_total stays 0,
+ext_hit stays 0%) even when KV chunks are on NVMe, and causes request
+timeouts as prefetch tasks fail and queue up.
+
+Observed: SPUR MI355X gfx950, NIXL POSIX backend, LMCache v0.5.2,
+c=32 per-client prefix with max-gpu-workers=4.
+
+Fix: add _xfer_handle_lock (threading.Lock) in __init__ and hold it in
+both handle-creation helpers. Lock scope covers only makeXferReq(), not
+the subsequent async DMA transfer, so in-flight transfers stay parallel.
+
+Applies after patches 01-08.
+---
+--- a/lmcache/v1/distributed/l2_adapters/nixl_store_l2_adapter.py
++++ b/lmcache/v1/distributed/l2_adapters/nixl_store_l2_adapter.py
+@@ -237,6 +237,12 @@
+         else:
+             raise TypeError(f"Unsupported backend type: {self.backend}")
+ 
++        # Lock serialising calls to make_prepped_xfer().
++        # The NIXL C++ makeXferReq() is not safe to call concurrently on the
++        # same pre-built dlist handles (mem_xfer_handler / storage_xfer_handler).
++        # Concurrent calls produce nixlInvalidParamError: NIXL_ERR_INVALID_PARAM.
++        self._xfer_handle_lock = threading.Lock()
++
+     def init_mem_handlers(self, device, buffer_ptr, buffer_size, page_size, device_id):
+         """
+         Initialize memory handlers for the given device and buffer.
+@@ -363,23 +369,27 @@
+     def get_mem_to_storage_handle(self, mem_indices, storage_indices) -> NixlXferHandle:
+         """Get a Nixl transfer handle for transferring data from memory to storage."""
+ 
+-        return self.nixl_agent.make_prepped_xfer(
+-            "WRITE",
+-            self.mem_xfer_handler,
+-            mem_indices,
+-            self.storage_xfer_handler,
+-            storage_indices,
+-        )
++        # Serialise: makeXferReq is not thread-safe on shared dlist handles.
++        with self._xfer_handle_lock:
++            return self.nixl_agent.make_prepped_xfer(
++                "WRITE",
++                self.mem_xfer_handler,
++                mem_indices,
++                self.storage_xfer_handler,
++                storage_indices,
++            )
+ 
+     def get_storage_to_mem_handle(self, mem_indices, storage_indices) -> NixlXferHandle:
+         """Get a Nixl transfer handle for transferring data from storage to memory."""
+-        return self.nixl_agent.make_prepped_xfer(
+-            "READ",
+-            self.mem_xfer_handler,
+-            mem_indices,
+-            self.storage_xfer_handler,
+-            storage_indices,
+-        )
++        # Serialise: makeXferReq is not thread-safe on shared dlist handles.
++        with self._xfer_handle_lock:
++            return self.nixl_agent.make_prepped_xfer(
++                "READ",
++                self.mem_xfer_handler,
++                mem_indices,
++                self.storage_xfer_handler,
++                storage_indices,
++            )
+ 
+     def post_blocking(self, handle: NixlXferHandle):
+         """Post a Nixl transfer handle and block until the transfer is done."""

@@ -594,6 +594,16 @@ docker buildx build --builder ${AIC_BUILDX_BUILDER} --progress=plain --output ty
     -t "${AIC_IMAGE}" \
     -t "${latest_ref}" \
     "${AIC_DAY_DIR}" | ${COMPRESS_CMD} > "\${tmp}"
+_rc=("\${PIPESTATUS[@]}")
+set -o pipefail
+if [ "\${_rc[1]}" -ne 0 ]; then
+    echo "[build] ERROR: compressor exited \${_rc[1]}; tarball may be corrupt" >&2; exit 1
+fi
+if [ "\${_rc[0]}" -ne 0 ]; then
+    echo "[build] ERROR: docker buildx exited \${_rc[0]}; build failed (patch apply error or Dockerfile issue)" >&2
+    rm -f "\${tmp}"
+    exit 1
+fi
 mv -f "\${tmp}" "${tarball}"
 echo "[build] saved \$(du -h "${tarball}" | cut -f1) -> ${tarball}"
 exit 0

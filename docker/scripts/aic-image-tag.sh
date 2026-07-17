@@ -7,8 +7,11 @@
 # the versions pinned in the Dockerfile.
 #
 # Emits just the tag component (no image name) in the following format:
-#   0.1.0-rocm7.2.4-vllm0.25.0-rocm723-lmcache0.5.2-nixl1.3.2-hipfile6901b67-hsasnoop1.0.0
+#   0.1.0-rocm7.14.0-vllm0.26.0-lmcache0.5.2-nixl1.3.2-hsasnoop1.0.0
 # Where 0.1.0 represents the AIC version.
+#
+# hipFile has no component here: since ROCm 7.14 it ships in the base image, so
+# it is pinned by ROCM_VERSION rather than independently.
 #
 # Usage:  aic-image-tag.sh [path/to/Dockerfile]
 set -euo pipefail
@@ -41,21 +44,19 @@ _arg() {
 
 rocm="$(_arg ROCM_VERSION)"
 
-vllm="$(_arg VLLM_VERSION)"
-vllm_variant="$(_arg VLLM_ROCM_VARIANT)"
 # Refs are git tags like v0.5.1 so we drop the leading v.
+# vLLM is built from source, so VLLM_REF is the pin (no prebuilt-wheel variant).
+vllm="$(_arg VLLM_REF | sed 's/^v//')"
 lmcache="$(_arg LMCACHE_REF | sed 's/^v//')"
 nixl="$(_arg NIXL_REF | sed 's/^v//')"
 hsasnoop="$(_arg HSA_SNOOP_REF | sed 's/^v//')"
-# hipFile is SHA-pinned (no release tag) so we get truncated hash.
-hipfile="$(_arg HIPFILE_SHA | cut -c1-7)"
 
-for _v in aic rocm vllm vllm_variant lmcache nixl hsasnoop hipfile; do
+for _v in aic rocm vllm lmcache nixl hsasnoop; do
   [[ -n "${!_v}" ]] || {
     echo "aic-image-tag: could not resolve ${_v}" >&2
     exit 1
   }
 done
 
-printf '%s-rocm%s-vllm%s-%s-lmcache%s-nixl%s-hipfile%s-hsasnoop%s\n' \
-  "${aic}" "${rocm}" "${vllm}" "${vllm_variant}" "${lmcache}" "${nixl}" "${hipfile}" "${hsasnoop}"
+printf '%s-rocm%s-vllm%s-lmcache%s-nixl%s-hsasnoop%s\n' \
+  "${aic}" "${rocm}" "${vllm}" "${lmcache}" "${nixl}" "${hsasnoop}"

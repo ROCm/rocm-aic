@@ -13,7 +13,9 @@ NIXL_SHA     := v1.3.2
 IMAGE_NAME ?= rocm-aic
 override AIC_VERSION := $(strip $(file <$(REPO_ROOT)/VERSION))
 
-_FRAMEWORK_VERSION_ARGS := AIC_VERSION ROCM_VERSION VLLM_VERSION VLLM_ROCM_VARIANT LMCACHE_REF NIXL_REF HIPFILE_SHA HSA_SNOOP_REF
+# vLLM is source-built from VLLM_REF, so there is no VLLM_VERSION/VLLM_ROCM_VARIANT
+# wheel pin, and hipFile now ships in the ROCm base image (pinned by ROCM_VERSION).
+_FRAMEWORK_VERSION_ARGS := AIC_VERSION ROCM_VERSION VLLM_REF LMCACHE_REF NIXL_REF HSA_SNOOP_REF
 _single_quote := '
 _shell_quote = '$(subst $(_single_quote),'"'"',$(1))'
 _FRAMEWORK_VERSION_ENV := $(foreach _arg,$(_FRAMEWORK_VERSION_ARGS),$(if $(filter undefined,$(origin $(_arg))),,$(_arg)=$(call _shell_quote,$(value $(_arg)))))
@@ -160,6 +162,30 @@ export AIC_CACHE_DIR        ?= $(AIC_SHARED_NFS)/rocm-aic/images/buildcache
 override export NVME_DATA     := /mnt/m2m_nobackup/aic-cliff/nvme
 override export GDS_SLAB_DATA := /mnt/m2m_nobackup/aic-cliff/slab
 override export HF_HOME       := $(AIC_SHARED_NFS)/huggingface
+# SPUR nodes use XFS LVM (not bare NVMe); hipFile P2PDMA (AIS_MT backend) fails at
+# register_memory because GPUDirect storage is not available on this filesystem.
+# Default the nvme arm to the NIXL first-class POSIX plugin (cpu staging buffer),
+# which avoids hipFileBufRegister entirely.  A user override still takes precedence.
+export AIC_L2_BACKEND         ?= nixl_posix
+# Right-size the POSIX slot file for gpt-oss-120b fp8 KV chunks:
+#   chunk_size=256 tok × 8 KV heads × 64 head_dim × 2 (K+V) × 36 layers × 1 B = ~9 MiB.
+#   Use 16 MiB for headroom (vs the 256 MiB AIS_MT default, which pre-allocates the full
+#   staging buffer — 28× too large for POSIX where only actual KV bytes are written).
+# Also enlarge the pool: 18K-tok prefix = 71 chunks/client; at c=250 need ~18K slots;
+#   32K at 16 MiB = 512 GiB on disk (lazy, fine for the 30 TB XFS LVM).
+# Parallel POSIX workers: lmcache server default is 1 GPU worker — bump to 4 so
+#   concurrent client writes overlap instead of serializing on the ZMQ channel.
+export LMCACHE_NIXL_POSIX_SLOT_SIZE ?= 16777216
+export LMCACHE_NIXL_POSIX_POOL      ?= 32768
+# SPUR authz plugin blocks --pid=host, so the exporter fleet (node-exporter, hsa-snoop,
+# amdgpu-exporter) fails to start.  Prometheus-only mode avoids all pid:host containers.
+# Set AIC_EXPORTERS=1 to attempt the full exporter fleet if authz allows it.
+export AIC_EXPORTERS                ?= 0
+# Reduce POSIX GPU workers: at high concurrency (c=32) the NIXL POSIX read path hits
+# NIXL_ERR_INVALID_PARAM in makeXferReq when too many concurrent handles are in flight.
+# 1 worker serialises STORE/RETRIEVE so the NIXL descriptor pool is never exhausted.
+# The write cost at c=1/8 is still acceptable; L2 reads work reliably at 1 worker.
+export LMCACHE_MAX_GPU_WORKERS      ?= 1
 else
 export AIC_CACHE_DIR        ?= /scratch/$(USER)/images/buildcache
 endif
@@ -201,7 +227,7 @@ EXPORT_TARBALL ?= $(CURDIR)/$(EXPORT_PREFIX)-$(_GEN_DATE)-$(_GIT_SHORT_REV)$(_GI
         monitoring-up monitoring-down monitoring-logs monitoring-build-exporters \
         dist-build dist-build-fast dist-build-exporters dist-push smoke-test smoke-test-fast \
         tiny-test tiny-test-fast install-ci-scripts cliff-submit cliff-short \
-        cliff-long-64k cliff-long-128k \
+        cliff-kvd cliff-spur-l2 cliff-long-64k cliff-long-128k \
         export _check_hf_token _prep_dirs _check_gds_slab
 
 .DEFAULT_GOAL := help
@@ -245,6 +271,8 @@ help:
 	@echo "  make tiny-test-fast    Fast variant of tiny-test"
 	@echo "  make install-ci-scripts  Deploy .github/scripts/spur-*.sh to $(AIC_CI_LIB_DIR) (sudo if needed)"
 	@echo "  make cliff-submit      sbatch the full 3-arm cliff sweep -> logs/<job-id>/"
+	@echo "  make cliff-kvd         sbatch focused KVD cliff: shared prefix, sparse c ladder (1,8,32,64,128,250)"
+	@echo "  make cliff-spur-l2     sbatch SPUR-tuned L2 cliff: per_client prefix, util=0.40, 8GB DRAM L1, c=1/8/32 (vram+nvme)"
 	@echo "  make cliff-short       sbatch a 1-point cliff (concur=1, 1 iter) to smoke-test the flow"
 	@echo "  make cliff-long-64k    sbatch a 64k-ISL YaRN(x2) 3-arm sweep (pools sized for the working set)"
 	@echo "  make cliff-long-128k   sbatch a 128k-ISL YaRN(x4) 3-arm sweep (extreme; big DRAM/slab pools)"
@@ -544,7 +572,7 @@ ifeq ($(AIC_SPUR_CLUSTER),1)
 _CLIFF_SPUR_CTL  := SPUR_CONTROLLER_ADDR=$(AIC_SPUR_CONTROLLER)
 _CLIFF_SBATCH_ARGS := --partition=amd-spur --constraint= \
     $(if $(AIC_CLIFF_NODE),--nodelist=$(AIC_CLIFF_NODE),)
-# SPUR sbatch does not support --parsable; parse job id from "Submitted batch job N"
+# SPUR sbatch does not support --parsable or --no-requeue; parse job id from "Submitted batch job N"
 _CLIFF_SUBMIT     = $(_CLIFF_SPUR_CTL) $(_CLIFF_STRIP) sbatch \
     $(_CLIFF_SBATCH_ARGS) $(1) .slurm/run-cliff.sbatch 2>&1 | \
     tee /dev/stderr | grep -oE '[0-9]+$$' | tail -1
@@ -561,6 +589,59 @@ cliff-submit:
 	@cd "$(CURDIR)" && jobid=$$($(call _CLIFF_SUBMIT,\
 	    $(if $(AIC_CLIFF_TIME),--time=$(AIC_CLIFF_TIME),))) && \
 	    echo "submitted cliff job $$jobid" && \
+	    echo "log: $(CURDIR)/logs/$$jobid/cliff.out"
+
+# Focused KVD cliff: shared prefix mode + sparse concurrency ladder.
+# Rationale: per_client mode never exercises L2 read-back (VRAM L1 holds
+# all per-client prefixes without evicting to L2).  shared mode makes every
+# second+ client hit the same cached prefix, so the vram/kvd performance
+# difference is visible.  The concurrency ladder skips the dense plateau
+# (c=48–160 all plateau at ~145K tok/s) and captures the ramp + cliff edge:
+#   1 (cold), 8, 32 (near-peak), 64, 128 (peak), 250 (beyond peak).
+# With 2 iters and shared prefix the sweep runs in ~30–45 min per arm.
+cliff-kvd:
+	@cd "$(CURDIR)" && jobid=$$( \
+	    BENCH_PREFIX_MODE=shared \
+	    BENCH_CONCUR="$${BENCH_CONCUR:-1,8,32,64,128,250}" \
+	    BENCH_ITERS="$${BENCH_ITERS:-2}" \
+	    $(call _CLIFF_SUBMIT,--job-name=aic-cliff-kvd \
+	    --time=$(if $(AIC_CLIFF_TIME),$(AIC_CLIFF_TIME),02:00:00))) && \
+	    echo "submitted cliff-kvd job $$jobid (shared prefix, c=1,8,32,64,128,250, 2 iters)" && \
+	    echo "log: $(CURDIR)/logs/$$jobid/cliff.out"
+
+# SPUR-tuned L2 cliff: exercises real KV eviction through the DRAM L1 into the POSIX NVMe L2.
+#
+# Why per_client prefix:
+#   With shared prefix, all c clients share ~630 MiB of KV chunks, which fits 13× in the
+#   8 GB DRAM L1 regardless of c — ext_hit stays 0% at every concurrency (confirmed job 11301).
+#   per_client gives each client a unique stable prefix; the combined working set is c × 630 MiB,
+#   which overflows the 8 GB DRAM L1 at c≥13 and forces real NVMe L2 reads (ext_hit > 0%).
+#
+# Tier sizing:
+#   VLM_GPU_MEMORY_UTILIZATION=0.40   VRAM KV cache ~17 GB; evicts at c≈7 per_client
+#   AIC_LOCAL_CPU=true / DRAM L1=8 GB absorbs VRAM evictions; spills to NVMe at c≥13
+#   POSIX NVMe L2 (nixl_posix, 16 MiB slots, pool=32768) on /mnt/m2m_nobackup XFS LVM
+#
+# Single concurrency point: c=32.
+#   c=32 overflows the 8 GB DRAM L1 (32 × 630 MiB ≈ 20 GB) → ext_hit > 0% expected.
+#   vram arm skipped — we have clean vram_only data from previous runs.
+#   post-warmup-sleep scaled to 300s so the POSIX write queue drains before
+#   timed iters begin (workers=1 serialises writes; c=32 warmup takes ~450s).
+#   BENCH_ITERS=2 for speed; iters are identical once cache is primed.
+# Arms: nvme only — vram arm skipped (data already collected), gds skipped (SPUR XFS).
+cliff-spur-l2:
+	@cd "$(CURDIR)" && jobid=$$( \
+	    BENCH_PREFIX_MODE=per_client \
+	    BENCH_CONCUR="$${BENCH_CONCUR:-32}" \
+	    BENCH_ITERS="$${BENCH_ITERS:-2}" \
+	    VLM_GPU_MEMORY_UTILIZATION="$(if $(filter command line environment override,$(origin VLM_GPU_MEMORY_UTILIZATION)),$(VLM_GPU_MEMORY_UTILIZATION),0.40)" \
+	    AIC_LOCAL_CPU=true \
+	    LMCACHE_MAX_LOCAL_CPU_SIZE="$(if $(filter command line environment override,$(origin LMCACHE_MAX_LOCAL_CPU_SIZE)),$(LMCACHE_MAX_LOCAL_CPU_SIZE),8)" \
+	    AIC_CLIFF_ARMS="$${AIC_CLIFF_ARMS:-nvme}" \
+	    $(call _CLIFF_SUBMIT,--job-name=aic-cliff-spur-l2 \
+	    --time=$(if $(AIC_CLIFF_TIME),$(AIC_CLIFF_TIME),03:00:00))) && \
+	    echo "submitted cliff-spur-l2 job $$jobid" && \
+	    echo "  util=0.40, DRAM L1=8GB, POSIX NVMe L2, per_client, c=32 only, 2 iters, nvme arm only" && \
 	    echo "log: $(CURDIR)/logs/$$jobid/cliff.out"
 
 # Fast setup check: a single concurrency point, one timed iteration, all 3 arms.
@@ -594,8 +675,8 @@ cliff-short:
 cliff-long-64k:                # sbatch a 64k-ISL YaRN(x2 -> 65536) 3-arm sweep
 	@cd "$(CURDIR)" && jobid=$$( \
 	    VLLM_MODEL="$${VLLM_MODEL:-Qwen/Qwen2.5-3B-Instruct}" \
-	    VLM_GPU_MEMORY_UTILIZATION="$${VLM_GPU_MEMORY_UTILIZATION:-0.12}" \
-	    VLM_YARN_FACTOR="$${VLM_YARN_FACTOR:-2.0}" VLM_MAX_MODEL_LEN="$${VLM_MAX_MODEL_LEN:-65536}" \
+	    VLM_GPU_MEMORY_UTILIZATION="$(if $(filter command line environment override,$(origin VLM_GPU_MEMORY_UTILIZATION)),$(VLM_GPU_MEMORY_UTILIZATION),0.12)" \
+	    VLM_YARN_FACTOR="$${VLM_YARN_FACTOR:-2.0}" VLM_MAX_MODEL_LEN="$(if $(filter command line environment override,$(origin VLM_MAX_MODEL_LEN)),$(VLM_MAX_MODEL_LEN),65536)" \
 	    BENCH_ISL="$${BENCH_ISL:-64000}" BENCH_SHARED_TOK="$${BENCH_SHARED_TOK:-60000}" \
 	    BENCH_PREFIX_MODE="$${BENCH_PREFIX_MODE:-per_client}" BENCH_ITERS="$${BENCH_ITERS:-2}" \
 	    AIC_LOCAL_CPU="$${AIC_LOCAL_CPU:-true}" LMCACHE_MAX_LOCAL_CPU_SIZE="$${LMCACHE_MAX_LOCAL_CPU_SIZE:-64}" \
@@ -609,8 +690,8 @@ cliff-long-64k:                # sbatch a 64k-ISL YaRN(x2 -> 65536) 3-arm sweep
 cliff-long-128k:               # sbatch a 128k-ISL YaRN(x4 -> 131072) 3-arm sweep (extreme)
 	@cd "$(CURDIR)" && jobid=$$( \
 	    VLLM_MODEL="$${VLLM_MODEL:-Qwen/Qwen2.5-3B-Instruct}" \
-	    VLM_GPU_MEMORY_UTILIZATION="$${VLM_GPU_MEMORY_UTILIZATION:-0.12}" \
-	    VLM_YARN_FACTOR="$${VLM_YARN_FACTOR:-4.0}" VLM_MAX_MODEL_LEN="$${VLM_MAX_MODEL_LEN:-131072}" \
+	    VLM_GPU_MEMORY_UTILIZATION="$(if $(filter command line environment override,$(origin VLM_GPU_MEMORY_UTILIZATION)),$(VLM_GPU_MEMORY_UTILIZATION),0.12)" \
+	    VLM_YARN_FACTOR="$${VLM_YARN_FACTOR:-4.0}" VLM_MAX_MODEL_LEN="$(if $(filter command line environment override,$(origin VLM_MAX_MODEL_LEN)),$(VLM_MAX_MODEL_LEN),131072)" \
 	    BENCH_ISL="$${BENCH_ISL:-128000}" BENCH_SHARED_TOK="$${BENCH_SHARED_TOK:-126000}" \
 	    BENCH_PREFIX_MODE="$${BENCH_PREFIX_MODE:-per_client}" BENCH_ITERS="$${BENCH_ITERS:-1}" \
 	    AIC_LOCAL_CPU="$${AIC_LOCAL_CPU:-true}" LMCACHE_MAX_LOCAL_CPU_SIZE="$${LMCACHE_MAX_LOCAL_CPU_SIZE:-64}" \
