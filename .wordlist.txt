@@ -47,7 +47,6 @@ amdgpu
 amdkcl
 amdkfd
 amirs
-aai
 ais
 buildx
 bdf
@@ -162,6 +161,7 @@ VFS
 yaml
 yml
 ARG
+ARGs
 amd
 BuildKit
 HTTPS

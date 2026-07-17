@@ -1,100 +1,32 @@
 # Claude Code session state and project memory
 .claude/
 
-# Downloaded Gutenberg benchmark corpus (generated on demand via make data)
-data/gutenberg/
-
-# Python related
+# Python
 .venv
-__pycache__
+__pycache__/
+*.pyc
 
-# VSCode related
+# VSCode
 .vscode/
 
 # Large archives
-vendors/weka/weka-drops/*.tar
-vendors/weka/weka-drops/*.squashfs
 *.tgz
 
-# Generated benchmark corpus (downloaded on demand)
-vendors/dell/vllm-lmcache-hipfile/scripts/configs/*.txt
-benchmarks/ttft-lmcache/configs/books.txt
-benchmarks/ttft-llamacpp/corpus.txt
+# Benchmark CSVs, plots, container logs and the Prometheus TSDB all land under
+# logs/<job-id>/ (or logs/manual/ for non-Slurm runs) -- one ignored tree.
+logs/
 
-# Benchmark results and reports
-benchmarks/ttft-lmcache/results.jsonl
-benchmarks/ttft-llamacpp/results.jsonl
-results-*.jsonl
-report-*/
-summary.csv
-report_meta.json
-*.png
+# Slurm job logs written to the tree root
+*.out
+spur-*.out
+rdma-test-*.out
+rdma-test-*.err
 
-# Guttenberg benchmark config files
-benchmarks/llm-prefill-benchmark/configs/
-
-# Slurm logs
-.slurm/logs/*.log
-ttft-llamacpp-*.log
-vllm-lmcache-hipfile-*.log
+# `make export` artifacts (aic-<date>-<rev>.tar.gz by default).
+/*.tar.gz
 
 # Debian package files
 *.deb
 
-# Ansible discovery reports
-ansible/reports/
-ansible/playbooks/reports/
-
-# Local overrides for deploy.sh (Grafana URL / credentials)
-deploy.local.env
-
-#Codespell disctionary cache
+# Codespell dictionary cache
 dictionary.dic
-
-# tools/lmcache-io-tester (local logs, datasets, HF tokens)
-tools/lmcache-io-tester/logs/
-tools/lmcache-io-tester/**/*.log
-tools/lmcache-io-tester/data/sharegpt-*.json
-tools/lmcache-io-tester/data/lmsys-chat-*.json
-tools/lmcache-io-tester/data/wildchat-*.json
-tools/lmcache-io-tester/**/*.token
-
-# Corporate CA certs — host-specific, never committed
-recipies/*/certs/
-
-# vllm-lmcache-hipfile logs and legacy per-recipe Gutenberg fixtures
-recipies/vllm-lmcache-hipfile/logs/
-recipies/vllm-lmcache-hipfile/data/
-recipies/vllm-lmcache-nixl/data/
-recipies/vllm-lmcache-nixl/logs/
-recipies/vllm-atom-andy/logs/
-recipies/aic-drivenets/logs/
-
-# kv-cache-tester benchmark (upstream clone + logs)
-data/kv-cache-tester/
-benchmarks/kv-cache-tester/logs/
-benchmarks/kv-cache-tester/.venv/
-
-# benchmark logs and reports
-benchmarks/ttft-lmcache/logs/
-benchmarks/ttft-lmcache/reports/
-benchmarks/ttft-llamacpp/logs/
-benchmarks/ttft-llamacpp/reports/
-benchmarks/llm-prefill-benchmark/logs/
-benchmarks/llm-prefill-benchmark/reports/
-benchmarks/llm-agentx/logs/
-benchmarks/llm-agentx/reports/
-
-# Generated CC trace corpus (repo-root data/cc-traces/)
-data/cc-traces/
-# Legacy Agent-X download path (safe to remove locally)
-data/agentx/
-
-# slurm logs and reports
-.slurm/logs/
-.slurm/reports/
-
-# spur output files
-spur-*.out
-rdma-test-*.out
-rdma-test-*.err

@@ -1,4 +1,0 @@
-The quick brown fox jumps over the lazy dog. This minimal fixture exists
-only for CI validation of run-long.sh and run-long-parallel.sh. It does not
-need ten thousand words because the load scripts only read one chunk file per
-iteration and never verify chunk length against the filename label.

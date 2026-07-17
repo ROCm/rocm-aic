@@ -1,0 +1,137 @@
+# Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+#
+# Lightweight push-triggered CI for the AMD Infinity Context (AIC) stack.
+# Validates that all LMCache and NIXL patches apply cleanly against their
+# pinned upstream SHAs without requiring a full Docker build.
+#
+name: AIC patch validation
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'docker/Dockerfile'
+      - 'patches/**'
+      - '.github/workflows/aic-patches.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'docker/Dockerfile'
+      - 'patches/**'
+      - '.github/workflows/aic-patches.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  lmcache-patches:
+    name: LMCache patches (git apply --check)
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve LMCache ref and URL from Dockerfile
+        id: meta
+        run: |
+          set -euo pipefail
+          ref="$(grep -E '^ARG LMCACHE_REF=' docker/Dockerfile | head -1 | cut -d= -f2-)"
+          url="$(grep -E '^ARG LMCACHE_GIT_URL=' docker/Dockerfile | head -1 | cut -d= -f2-)"
+          test -n "${ref}" || { echo "LMCACHE_REF not set in Dockerfile"; exit 1; }
+          test -n "${url}" || { echo "LMCACHE_GIT_URL not set in Dockerfile"; exit 1; }
+          echo "ref=${ref}" >> "${GITHUB_OUTPUT}"
+          echo "url=${url}" >> "${GITHUB_OUTPUT}"
+          echo "LMCache: ${url} @ ${ref}"
+
+      - name: Clone LMCache at pinned ref
+        run: |
+          set -euo pipefail
+          git clone --depth 1 --branch "${{ steps.meta.outputs.ref }}" \
+            --filter=blob:none "${{ steps.meta.outputs.url }}" /tmp/LMCache
+          cd /tmp/LMCache
+          echo "Checked out: $(git log --oneline -1)"
+
+      - name: Verify all LMCache patches apply cleanly
+        run: |
+          set -euo pipefail
+          patch_dir="${GITHUB_WORKSPACE}/patches/lmcache"
+          shopt -s nullglob
+          patches=( "${patch_dir}"/*.patch )
+          if (( ${#patches[@]} == 0 )); then
+            echo "ERROR: no .patch files in ${patch_dir}" >&2
+            exit 1
+          fi
+          cd /tmp/LMCache
+          for patch in "${patches[@]}"; do
+            echo "==> git apply --check $(basename "${patch}")"
+            if git apply --check "${patch}" 2>/dev/null; then
+              echo "    OK (applies cleanly)"
+            else
+              # Check if it was already merged
+              if git apply --check --reverse "${patch}" 2>/dev/null; then
+                echo "    SKIP (already merged upstream)"
+              else
+                echo "    FAIL: patch does not apply and is not already merged"
+                git apply --check "${patch}"  # re-run to show error
+                exit 1
+              fi
+            fi
+          done
+          echo "All LMCache patches OK"
+
+  nixl-patches:
+    name: NIXL patches (git apply --check)
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve NIXL ref and URL from Dockerfile
+        id: meta
+        run: |
+          set -euo pipefail
+          ref="$(grep -E '^ARG NIXL_REF=' docker/Dockerfile | head -1 | cut -d= -f2-)"
+          url="$(grep -E '^ARG NIXL_GIT_URL=' docker/Dockerfile | head -1 | cut -d= -f2-)"
+          test -n "${ref}" || { echo "NIXL_REF not set in Dockerfile"; exit 1; }
+          test -n "${url}" || { echo "NIXL_GIT_URL not set in Dockerfile"; exit 1; }
+          echo "ref=${ref}" >> "${GITHUB_OUTPUT}"
+          echo "url=${url}" >> "${GITHUB_OUTPUT}"
+          echo "NIXL: ${url} @ ${ref}"
+
+      - name: Clone NIXL at pinned ref
+        run: |
+          set -euo pipefail
+          git clone --depth 1 --branch "${{ steps.meta.outputs.ref }}" \
+            --filter=blob:none "${{ steps.meta.outputs.url }}" /tmp/nixl
+          cd /tmp/nixl
+          echo "Checked out: $(git log --oneline -1)"
+
+      - name: Verify NIXL patches apply cleanly
+        run: |
+          set -euo pipefail
+          patch_dir="${GITHUB_WORKSPACE}/patches/nixl"
+          shopt -s nullglob
+          patches=( "${patch_dir}"/*.patch )
+          if (( ${#patches[@]} == 0 )); then
+            echo "ERROR: no .patch files in ${patch_dir}" >&2
+            exit 1
+          fi
+          cd /tmp/nixl
+          for patch in "${patches[@]}"; do
+            echo "==> git apply --check $(basename "${patch}")"
+            if git apply --check "${patch}" 2>/dev/null; then
+              echo "    OK (applies cleanly)"
+            else
+              if git apply --check --reverse "${patch}" 2>/dev/null; then
+                echo "    SKIP (already merged upstream)"
+              else
+                echo "    FAIL: patch does not apply and is not already merged"
+                git apply --check "${patch}"
+                exit 1
+              fi
+            fi
+          done
+          echo "All NIXL patches OK"

@@ -1,0 +1,1030 @@
+# ROCm/HIP + AIS_MT support for upstream ai-dynamo/nixl.
+#
+# Adds an AMD ROCm/HIP multi-threaded storage backend (AIS_MT, hipFile-backed)
+# to upstream NIXL, plus HIP detection in meson that is independent of CUDA.
+# Derived from sbates130272/nixl @ feat/amd-ais-mt (commits 70aa274 "plugins:
+# add ROCM_AIS and AIS_MT" + 409e486 "build: detect HIP independently of CUDA"),
+# reduced to the AIS_MT-only footprint: upstream's CUDA GDS_MT plugin is left
+# untouched where upstream keeps it (src/plugins/gds_mt) rather than relocated
+# under src/plugins/mt/gds. Decoupling from GDS_MT keeps this patch stable across
+# upstream churn -- it applies cleanly on both NIXL v1.3.0 and v1.3.1.
+#
+# Scope: meson HIP detection + AIS_MT registration + the new
+# src/plugins/mt/{ais,common} tree only. The GDS_MT relocation, and the
+# CI/bench/docs/tests from the fork, are intentionally excluded.
+#
+# After this applies, meson.build has hip_dep and src/plugins/meson.build has
+# enabled_plugins.get('AIS_MT'), so build-nixl.sh takes its _NATIVE_HIP branch
+# (-Dwheel_variant=rocm -Drocm_ais_path=$AIS_PATH) and builds the AIS_MT plugin.
+#
+# To regenerate on a NIXL bump: clone the new tag, `git apply` this patch, and
+# if it fails, re-derive it -- add the AIS_MT block + subdir('mt') beside the
+# upstream GDS_MT block in src/plugins/meson.build (leave subdir('gds_mt')
+# intact), keep src/plugins/mt/{ais,common} (no mt/gds), then
+#   git diff --cached --no-renames -- meson.build meson_options.txt \
+#     src/plugins/meson.build src/plugins/mt
+#
+diff --git a/meson.build b/meson.build
+index 85fae88..02b3804 100644
+--- a/meson.build
++++ b/meson.build
+@@ -29,7 +29,7 @@ if enable_plugins_opt != '' and disable_plugins_opt != ''
+     error('Cannot specify both enable_plugins and disable_plugins options')
+ endif
+ 
+-all_plugins = ['UCX', 'LIBFABRIC', 'POSIX', 'OBJ', 'GDS', 'GDS_MT', 'MOONCAKE', 'HF3FS', 'GUSLI', 'GPUNETIO', 'UCCL', 'AZURE_BLOB', 'INFINIA', 'TELEMETRY_DOCA']
++all_plugins = ['UCX', 'LIBFABRIC', 'POSIX', 'OBJ', 'GDS', 'GDS_MT', 'AIS_MT', 'MOONCAKE', 'HF3FS', 'GUSLI', 'GPUNETIO', 'UCCL', 'AZURE_BLOB', 'INFINIA', 'TELEMETRY_DOCA']
+ 
+ enabled_plugins = {}
+ 
+@@ -324,6 +324,33 @@ else
+     cuda_wheel_dir = 'nixl_cu12'
+ endif
+ 
++# --- ROCm / HIP detection (independent of CUDA; both stacks may coexist) ---
++hip_dep = disabler()
++rocm_home = run_command('bash', '-c', 'echo ${ROCM_PATH:-${ROCM_HOME:-/opt/rocm}}').stdout().strip()
++if rocm_home == ''
++    rocm_home = '/opt/rocm'
++endif
++hip_lib = rocm_home + '/lib'
++hip_inc = rocm_home + '/include'
++if fs.exists(hip_lib) and fs.exists(hip_inc)
++    hip_dep = declare_dependency(
++        link_args : ['-L' + hip_lib, '-lamdhip64'],
++        include_directories : include_directories(hip_inc))
++    message('Found ROCm/HIP installation: ' + rocm_home)
++endif
++
++if hip_dep.found()
++    add_project_arguments('-DHAVE_HIP', language: 'cpp')
++    add_project_arguments('-D__HIP_PLATFORM_AMD__', language: 'cpp')
++    message('ROCm/HIP support enabled')
++endif
++
++if cuda_dep.found() and hip_dep.found()
++    message('CUDA and ROCm/HIP are both available; NVIDIA and AMD plugin stacks may be built together when enabled.')
++endif
++
++has_gpu = cuda_dep.found() or hip_dep.found()
++
+ # Allow callers (e.g. ROCm CI/Dockerfile) to override the wheel variant suffix
+ # without otherwise affecting the build. Non-empty value wins over the
+ # autodetected CUDA-major value above: e.g. -Dwheel_variant=rocm -> nixl_rocm.
+diff --git a/meson_options.txt b/meson_options.txt
+index eb875fc..c97e4f1 100644
+--- a/meson_options.txt
++++ b/meson_options.txt
+@@ -18,14 +18,16 @@ option('libfabric_path', type: 'string', value: '', description: 'Path to LIBFAB
+ option('etcd_inc_path', type: 'string', value: '', description: 'Path to ETCD Headers')
+ option('etcd_lib_path', type: 'string', value: '', description: 'Path to ETCD Libraries')
+ option('disable_gds_backend', type : 'boolean', value : false, description : 'disable gds backend')
++option('disable_rocm_ais_backend', type : 'boolean', value : false, description : 'disable AIS_MT hipFile (AMD Infinity Storage) support')
+ option('disable_mooncake_backend', type : 'boolean', value : false, description : 'disable mooncake backend')
+ option('disable_infinia_backend', type : 'boolean', value : false, description : 'disable infinia backend')
+ option('infinia_path', type: 'string', value: '/opt/ddn/red/', description: 'Path to Infinia client install')
+ option('install_headers', type : 'boolean', value : true, description : 'install headers')
+ option('gds_path', type: 'string', value: '/usr/local/cuda/', description: 'Path to GDS CuFile install')
++option('rocm_ais_path', type: 'string', value: '', description: 'Path to hipFile install for AIS_MT (default: auto-detect via ROCM_PATH or /opt/rocm)')
+ option('cudapath_inc', type: 'string', value: '', description: 'Include path for CUDA')
+ option('cudapath_lib', type: 'string', value: '', description: 'Library path for CUDA')
+ option('cudapath_stub', type: 'string', value: '', description: 'Extra Stub path for CUDA')
+ option('nixl_cuda_arch_list', type: 'string', value: 'auto', description: 'Comma-separated CUDA SM targets (e.g. 90,100), or auto to select defaults (sm_80+ normally, sm_90+ when build_nixl_ep is enabled). Use a single target like 100 for faster single-GPU builds.')
+ option('wheel_variant', type: 'string', value: '', description: 'Override wheel variant suffix (e.g. -Dwheel_variant=rocm yields nixl_rocm). Empty = autodetect from CUDA major version.')
+ option('static_plugins', type: 'string', value: '', description: 'Plugins to be built-in, comma-separated')
+diff --git a/src/plugins/meson.build b/src/plugins/meson.build
+index ce7103c..aeeb9ad 100644
+--- a/src/plugins/meson.build
++++ b/src/plugins/meson.build
+@@ -68,6 +68,21 @@ if enabled_plugins.get('GDS_MT')
+     endif
+ endif
+ 
++disable_rocm_ais_backend = get_option('disable_rocm_ais_backend')
++if enabled_plugins.get('AIS_MT')
++    if (disable_rocm_ais_backend or not hip_dep.found() or not taskflow_proj.found()) and is_explicit_enable
++        if disable_rocm_ais_backend
++            error('AIS_MT plugin requested but AIS_MT hipFile support is disabled (-Ddisable_rocm_ais_backend=true)')
++        elif not hip_dep.found()
++            error('AIS_MT plugin requested but HIP/ROCm dependency not found')
++        else
++            error('AIS_MT plugin requested but Taskflow dependency not found')
++        endif
++    elif not disable_rocm_ais_backend and hip_dep.found() and taskflow_proj.found()
++        subdir('mt')
++    endif
++endif
++
+ cc = meson.get_compiler('cpp')
+ libtransfer_engine = cc.find_library('transfer_engine', required: false)
+ if enabled_plugins.get('MOONCAKE')
+diff --git a/src/plugins/mt/ais/ais_mt_backend.cpp b/src/plugins/mt/ais/ais_mt_backend.cpp
+new file mode 100644
+index 0000000..acb8afb
+--- /dev/null
++++ b/src/plugins/mt/ais/ais_mt_backend.cpp
+@@ -0,0 +1,423 @@
++/* Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
++ *
++ * SPDX-License-Identifier: Apache-2.0
++ *
++ */
++
++#include <nixl.h>
++#include <nixl_types.h>
++#include <backend/backend_engine.h>
++#include <hip/hip_runtime.h>
++#include <hipfile.h>
++#include <thread>
++#include <memory>
++#include <stdexcept>
++#include <algorithm>
++#include <string>
++#include <exception>
++#include <cstring>
++#include <variant>
++#include <future>
++#include <atomic>
++#include "common/nixl_log.h"
++#include "ais_mt_backend.h"
++#include "ais_mt_utils.h"
++#include "file/file_utils.h"
++#include <taskflow/taskflow.hpp>
++#include <unordered_map>
++#include <unordered_set>
++
++namespace {
++const size_t default_thread_count = std::max(1u, std::thread::hardware_concurrency() / 2);
++
++struct FileSegData {
++    std::shared_ptr<aisMtFileHandle> handle;
++
++    FileSegData(std::shared_ptr<aisMtFileHandle> h) : handle(std::move(h)) {}
++};
++
++struct MemSegData {
++    std::unique_ptr<aisMtMemBuf> buf;
++
++    MemSegData(void *addr, size_t size, int flags)
++        : buf(std::make_unique<aisMtMemBuf>(addr, size, flags)) {}
++};
++
++struct AisMtTransferRequestH {
++    AisMtTransferRequestH(void *a,
++                                 size_t s,
++                                 size_t offset,
++                                 hipFileHandle_t handle,
++                                 hipFileOpcode_t operation,
++                                 int device_id)
++        : addr{a},
++          size{s},
++          file_offset{offset},
++          fh{handle},
++          op{operation},
++          dev_id{device_id} {}
++
++    void *addr;
++    size_t size;
++    size_t file_offset;
++    hipFileHandle_t fh;
++    hipFileOpcode_t op;
++    int dev_id;
++};
++
++class nixlAisMtMetadata : public nixlBackendMD {
++public:
++    explicit nixlAisMtMetadata(std::shared_ptr<aisMtFileHandle> file_handle)
++        : nixlBackendMD(true),
++          data_(FileSegData{std::move(file_handle)}) {}
++
++    explicit nixlAisMtMetadata(void *addr, size_t size, int flags)
++        : nixlBackendMD(true),
++          data_(MemSegData{addr, size, flags}) {}
++
++    ~nixlAisMtMetadata() = default;
++
++    nixlAisMtMetadata(const nixlAisMtMetadata &) = delete;
++    nixlAisMtMetadata &
++    operator=(const nixlAisMtMetadata &) = delete;
++
++    nixlAisMtMetadata(nixlAisMtMetadata &&) = default;
++    nixlAisMtMetadata &
++    operator=(nixlAisMtMetadata &&) = default;
++
++    std::variant<FileSegData, MemSegData> data_;
++};
++
++class nixlAisMtBackendReqH : public nixlBackendReqH {
++public:
++    ~nixlAisMtBackendReqH();
++
++    std::vector<AisMtTransferRequestH> request_list;
++    tf::Taskflow taskflow;
++    std::future<void> running_transfer;
++    std::atomic<nixl_status_t> overall_status;
++};
++
++size_t
++getThreadCount(const nixlBackendInitParams *init_params) {
++    size_t thread_count = default_thread_count;
++
++    nixl_b_params_t *custom_params = init_params->customParams;
++    if (custom_params) {
++        if (custom_params->count("thread_count") > 0) {
++            try {
++                size_t tcount = std::stoul((*custom_params)["thread_count"]);
++                if (tcount != 0) {
++                    thread_count = tcount;
++                }
++            }
++            catch (const std::exception &e) {
++                throw std::runtime_error("AIS_MT: invalid thread_count parameter: " +
++                                         std::string(e.what()));
++            }
++        }
++    }
++    return thread_count;
++}
++
++void
++runHipFileOp(AisMtTransferRequestH *req, std::atomic<nixl_status_t> *overall_status) {
++    if (req->dev_id >= 0) {
++        const hipError_t dev_err = hipSetDevice(req->dev_id);
++        if (dev_err != hipSuccess) {
++            NIXL_ERROR << "AIS_MT: hipSetDevice failed: " << hipGetErrorString(dev_err);
++            overall_status->store(NIXL_ERR_BACKEND);
++            return;
++        }
++    }
++
++    ssize_t nbytes = 0;
++    if (req->op == hipFileBatchRead) {
++        nbytes = hipFileRead(req->fh, req->addr, req->size, req->file_offset, 0);
++        if (nbytes < 0) {
++            NIXL_ERROR << "AIS_MT: hipFileRead failed: " << strerror(errno);
++            overall_status->store(NIXL_ERR_BACKEND);
++            return;
++        }
++    } else if (req->op == hipFileBatchWrite) {
++        nbytes = hipFileWrite(req->fh, req->addr, req->size, req->file_offset, 0);
++        if (nbytes < 0) {
++            NIXL_ERROR << "AIS_MT: hipFileWrite failed: " << strerror(errno);
++            overall_status->store(NIXL_ERR_BACKEND);
++            return;
++        }
++    } else {
++        overall_status->store(NIXL_ERR_INVALID_PARAM);
++        return;
++    }
++
++    if ((size_t)nbytes != req->size) {
++        NIXL_ERROR << "AIS_MT: error: short "
++                   << ((req->op == hipFileBatchRead) ? "read: " : "write: ") << nbytes << " out of "
++                   << req->size << " bytes - address=" << req->addr;
++        overall_status->store(NIXL_ERR_BACKEND);
++        return;
++    }
++}
++
++nixl_status_t
++extractTransferParams(
++    const nixlMetaDesc &mem_desc,
++    const nixlMetaDesc &file_desc,
++    const std::unordered_map<int, std::weak_ptr<aisMtFileHandle>> &file_map,
++    void *&base_addr,
++    size_t &total_size,
++    size_t &base_offset,
++    hipFileHandle_t &hip_fhandle) {
++    base_addr = (void *)mem_desc.addr;
++    total_size = mem_desc.len;
++    base_offset = (size_t)file_desc.addr;
++
++    auto it = file_map.find(file_desc.devId);
++    if (it == file_map.end()) {
++        NIXL_ERROR << "AIS_MT: error: file metadata not found";
++        return NIXL_ERR_NOT_FOUND;
++    }
++
++    auto handle = it->second.lock();
++    NIXL_ASSERT(handle);
++    hip_fhandle = handle->hip_fhandle;
++    return NIXL_SUCCESS;
++}
++} // namespace
++
++nixlAisMtBackendReqH::~nixlAisMtBackendReqH() {
++    if (running_transfer.valid()) {
++        running_transfer.wait();
++    }
++}
++
++nixlAisMtEngine::nixlAisMtEngine(const nixlBackendInitParams *init_params)
++    : FileMtEngineBase<nixlAisMtEngine>(init_params),
++      ais_mt_utils_(),
++      thread_count_(getThreadCount(init_params)),
++      executor_(std::make_unique<tf::Executor>(thread_count_)) {
++    NIXL_DEBUG << "AIS_MT: thread count=" << thread_count_;
++}
++
++nixl_status_t
++nixlAisMtEngine::registerMem(const nixlBlobDesc &mem,
++                                    const nixl_mem_t &nixl_mem,
++                                    nixlBackendMD *&out) {
++    switch (nixl_mem) {
++    case FILE_SEG: {
++        auto it = ais_mt_file_map_.find(mem.devId);
++        std::shared_ptr<aisMtFileHandle> handle;
++        if (it != ais_mt_file_map_.end()) {
++            handle = it->second.lock();
++            if (handle) {
++                out = new nixlAisMtMetadata(handle);
++                return NIXL_SUCCESS;
++            }
++            ais_mt_file_map_.erase(it);
++        }
++
++        try {
++            handle = std::make_shared<aisMtFileHandle>(mem.devId);
++        }
++        catch (const std::exception &e) {
++            NIXL_ERROR << "AIS_MT: failed to create file handle: " << e.what();
++            return NIXL_ERR_BACKEND;
++        }
++        ais_mt_file_map_[mem.devId] = handle;
++        out = new nixlAisMtMetadata(handle);
++        return NIXL_SUCCESS;
++    }
++
++    case VRAM_SEG: {
++        const hipError_t error_id = hipSetDevice(mem.devId);
++        if (error_id != hipSuccess) {
++            NIXL_ERROR << "AIS_MT: error: hipSetDevice returned "
++                       << hipGetErrorString(error_id) << " for device ID " << mem.devId;
++            return NIXL_ERR_BACKEND;
++        }
++        [[fallthrough]];
++    }
++
++    case DRAM_SEG: {
++        try {
++            out = new nixlAisMtMetadata((void *)mem.addr, mem.len, 0);
++            return NIXL_SUCCESS;
++        }
++        catch (const std::exception &e) {
++            NIXL_ERROR << "AIS_MT: failed to create memory buffer: " << e.what();
++            return NIXL_ERR_BACKEND;
++        }
++    }
++
++    default:
++        return NIXL_ERR_BACKEND;
++    }
++}
++
++nixl_status_t
++nixlAisMtEngine::deregisterMem(nixlBackendMD *meta) {
++    std::unique_ptr<nixlAisMtMetadata> md((nixlAisMtMetadata *)meta);
++
++    if (auto *file_data = std::get_if<FileSegData>(&md->data_)) {
++        if (file_data->handle) {
++            int key = file_data->handle->fd;
++            md.reset();
++
++            auto it = ais_mt_file_map_.find(key);
++            if (it != ais_mt_file_map_.end() && it->second.expired()) {
++                ais_mt_file_map_.erase(it);
++            }
++        }
++    }
++
++    return NIXL_SUCCESS;
++}
++
++nixl_status_t
++nixlAisMtEngine::prepXfer(const nixl_xfer_op_t &operation,
++                                 const nixl_meta_dlist_t &local,
++                                 const nixl_meta_dlist_t &remote,
++                                 const std::string &remote_agent,
++                                 nixlBackendReqH *&handle,
++                                 const nixl_opt_b_args_t *opt_args) const {
++    auto ais_mt_handle = std::make_unique<nixlAisMtBackendReqH>();
++    size_t buf_cnt = local.descCount();
++    size_t file_cnt = remote.descCount();
++
++    if ((buf_cnt != file_cnt) || ((operation != NIXL_READ) && (operation != NIXL_WRITE))) {
++        NIXL_ERROR << "AIS_MT: error: incorrect count or operation selection";
++        return NIXL_ERR_INVALID_PARAM;
++    }
++
++    if ((remote.getType() != FILE_SEG) && (local.getType() != FILE_SEG)) {
++        NIXL_ERROR << "AIS_MT: error: backend only supports I/O between memory "
++                      "(DRAM/VRAM_SEG) and "
++                      "files (FILE_SEG)";
++        return NIXL_ERR_INVALID_PARAM;
++    }
++
++    ais_mt_handle->request_list.clear();
++    bool is_local_file = (local.getType() == FILE_SEG);
++    for (size_t i = 0; i < buf_cnt; i++) {
++        void *base_addr;
++        size_t total_size;
++        size_t base_offset;
++        hipFileHandle_t hip_fhandle;
++
++        nixl_status_t param_status;
++        if (is_local_file) {
++            param_status = extractTransferParams(remote[i],
++                                                 local[i],
++                                                 ais_mt_file_map_,
++                                                 base_addr,
++                                                 total_size,
++                                                 base_offset,
++                                                 hip_fhandle);
++        } else {
++            param_status = extractTransferParams(local[i],
++                                                 remote[i],
++                                                 ais_mt_file_map_,
++                                                 base_addr,
++                                                 total_size,
++                                                 base_offset,
++                                                 hip_fhandle);
++        }
++
++        if (param_status != NIXL_SUCCESS) {
++            return param_status;
++        }
++
++        const int dev_id = is_local_file ? remote[i].devId : local[i].devId;
++
++        ais_mt_handle->request_list.emplace_back(
++            base_addr,
++            total_size,
++            base_offset,
++            hip_fhandle,
++            (operation == NIXL_READ) ? hipFileBatchRead : hipFileBatchWrite,
++            dev_id);
++    }
++
++    if (ais_mt_handle->request_list.empty()) {
++        return NIXL_ERR_INVALID_PARAM;
++    }
++    ais_mt_handle->taskflow.emplace(
++        [reqs = &ais_mt_handle->request_list,
++         overall_status = &ais_mt_handle->overall_status]() {
++            for (AisMtTransferRequestH &req : *reqs) {
++                if (overall_status->load() != NIXL_SUCCESS) {
++                    return;
++                }
++                runHipFileOp(&req, overall_status);
++            }
++        });
++
++    handle = ais_mt_handle.release();
++    return NIXL_SUCCESS;
++}
++
++nixl_status_t
++nixlAisMtEngine::postXfer(const nixl_xfer_op_t &operation,
++                                 const nixl_meta_dlist_t &local,
++                                 const nixl_meta_dlist_t &remote,
++                                 const std::string &remote_agent,
++                                 nixlBackendReqH *&handle,
++                                 const nixl_opt_b_args_t *opt_args) const {
++    nixlAisMtBackendReqH *ais_mt_handle = (nixlAisMtBackendReqH *)handle;
++
++    ais_mt_handle->overall_status.store(NIXL_SUCCESS);
++    ais_mt_handle->running_transfer = executor_->run(ais_mt_handle->taskflow);
++    return NIXL_IN_PROG;
++}
++
++nixl_status_t
++nixlAisMtEngine::checkXfer(nixlBackendReqH *handle) const {
++    nixlAisMtBackendReqH *ais_mt_handle = (nixlAisMtBackendReqH *)handle;
++    if (ais_mt_handle->running_transfer.wait_for(nixlTime::seconds(0)) !=
++        std::future_status::ready) {
++        return NIXL_IN_PROG;
++    }
++    ais_mt_handle->running_transfer.get();
++
++    std::unordered_set<int> devices;
++    for (const AisMtTransferRequestH &req : ais_mt_handle->request_list) {
++        if (req.dev_id >= 0) {
++            devices.insert(req.dev_id);
++        }
++    }
++    for (int dev_id : devices) {
++        const hipError_t dev_err = hipSetDevice(dev_id);
++        if (dev_err != hipSuccess) {
++            NIXL_ERROR << "AIS_MT: hipSetDevice failed during sync: "
++                       << hipGetErrorString(dev_err);
++            return NIXL_ERR_BACKEND;
++        }
++        const hipError_t sync_err = hipDeviceSynchronize();
++        if (sync_err != hipSuccess) {
++            NIXL_ERROR << "AIS_MT: hipDeviceSynchronize failed: "
++                       << hipGetErrorString(sync_err);
++            return NIXL_ERR_BACKEND;
++        }
++    }
++
++    return ais_mt_handle->overall_status.load();
++}
++
++nixl_status_t
++nixlAisMtEngine::releaseReqH(nixlBackendReqH *handle) const {
++    std::unique_ptr<nixlAisMtBackendReqH> ais_mt_handle(
++        (nixlAisMtBackendReqH *)handle);
++    return NIXL_SUCCESS;
++}
++
++nixl_status_t
++nixlAisMtEngine::queryMem(const nixl_reg_dlist_t &descs,
++                                 std::vector<nixl_query_resp_t> &resp) const {
++    std::vector<nixl_blob_t> metadata(descs.descCount());
++    for (int i = 0; i < descs.descCount(); ++i) {
++        metadata[i] = descs[i].metaInfo;
++    }
++
++    return nixl::queryFileInfoList(metadata, resp);
++}
+diff --git a/src/plugins/mt/ais/ais_mt_backend.h b/src/plugins/mt/ais/ais_mt_backend.h
+new file mode 100644
+index 0000000..30d0a48
+--- /dev/null
++++ b/src/plugins/mt/ais/ais_mt_backend.h
+@@ -0,0 +1,65 @@
++/* Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
++ *
++ * SPDX-License-Identifier: Apache-2.0
++ *
++ */
++
++#ifndef __AIS_MT_BACKEND_H
++#define __AIS_MT_BACKEND_H
++
++#include <nixl.h>
++#include <nixl_types.h>
++#include <backend/backend_engine.h>
++#include <memory>
++#include <string>
++#include <unordered_map>
++#include <hipfile.h>
++#include "file_mt_engine_base.hpp"
++#include "ais_mt_utils.h"
++#include "taskflow/core/executor.hpp"
++
++class nixlAisMtEngine : public FileMtEngineBase<nixlAisMtEngine> {
++public:
++    nixlAisMtEngine(const nixlBackendInitParams *init_params);
++    ~nixlAisMtEngine() = default;
++
++    nixlAisMtEngine(const nixlAisMtEngine &) = delete;
++    nixlAisMtEngine &
++    operator=(const nixlAisMtEngine &) = delete;
++
++    nixl_status_t
++    registerMem(const nixlBlobDesc &mem, const nixl_mem_t &nixl_mem, nixlBackendMD *&out) override;
++    nixl_status_t
++    deregisterMem(nixlBackendMD *meta) override;
++
++    nixl_status_t
++    prepXfer(const nixl_xfer_op_t &operation,
++             const nixl_meta_dlist_t &local,
++             const nixl_meta_dlist_t &remote,
++             const std::string &remote_agent,
++             nixlBackendReqH *&handle,
++             const nixl_opt_b_args_t *opt_args = nullptr) const override;
++
++    nixl_status_t
++    postXfer(const nixl_xfer_op_t &operation,
++             const nixl_meta_dlist_t &local,
++             const nixl_meta_dlist_t &remote,
++             const std::string &remote_agent,
++             nixlBackendReqH *&handle,
++             const nixl_opt_b_args_t *opt_args = nullptr) const override;
++
++    nixl_status_t
++    checkXfer(nixlBackendReqH *handle) const override;
++    nixl_status_t
++    releaseReqH(nixlBackendReqH *handle) const override;
++
++    nixl_status_t
++    queryMem(const nixl_reg_dlist_t &descs, std::vector<nixl_query_resp_t> &resp) const override;
++
++private:
++    aisMtUtil ais_mt_utils_;
++    std::unordered_map<int, std::weak_ptr<aisMtFileHandle>> ais_mt_file_map_;
++    size_t thread_count_;
++    std::unique_ptr<tf::Executor> executor_;
++};
++#endif
+diff --git a/src/plugins/mt/ais/ais_mt_plugin.cpp b/src/plugins/mt/ais/ais_mt_plugin.cpp
+new file mode 100644
+index 0000000..b61e2b5
+--- /dev/null
++++ b/src/plugins/mt/ais/ais_mt_plugin.cpp
+@@ -0,0 +1,27 @@
++/* Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
++ *
++ * SPDX-License-Identifier: Apache-2.0
++ *
++ */
++
++#include "backend/backend_plugin.h"
++#include "ais_mt_backend.h"
++
++using ais_mt_plugin_t = nixlBackendPluginCreator<nixlAisMtEngine>;
++
++#ifdef STATIC_PLUGIN_AIS_MT
++nixlBackendPlugin *
++createStaticAIS_MTPlugin() {
++    return ais_mt_plugin_t::create(
++        NIXL_PLUGIN_API_VERSION, "AIS_MT", "0.1.0", {}, {DRAM_SEG, VRAM_SEG, FILE_SEG});
++}
++#else
++extern "C" NIXL_PLUGIN_EXPORT nixlBackendPlugin *
++nixl_plugin_init() {
++    return ais_mt_plugin_t::create(
++        NIXL_PLUGIN_API_VERSION, "AIS_MT", "0.1.0", {}, {DRAM_SEG, VRAM_SEG, FILE_SEG});
++}
++
++extern "C" NIXL_PLUGIN_EXPORT void
++nixl_plugin_fini() {}
++#endif
+diff --git a/src/plugins/mt/ais/ais_mt_utils.cpp b/src/plugins/mt/ais/ais_mt_utils.cpp
+new file mode 100644
+index 0000000..1f21f4c
+--- /dev/null
++++ b/src/plugins/mt/ais/ais_mt_utils.cpp
+@@ -0,0 +1,77 @@
++/* Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
++ *
++ * SPDX-License-Identifier: Apache-2.0
++ *
++ */
++
++#include <stdexcept>
++#include <cstdlib>
++#include <cstring>
++#include <strings.h>
++#include "common/nixl_log.h"
++#include "ais_mt_utils.h"
++
++namespace {
++bool
++aisMtCompatModeAllowed() {
++    const char *v = std::getenv("HIPFILE_ALLOW_COMPAT_MODE");
++    if (v == nullptr || v[0] == '\0') {
++        return false;
++    }
++    return std::strcmp(v, "1") == 0 || strcasecmp(v, "true") == 0 || strcasecmp(v, "yes") == 0;
++}
++} // namespace
++
++aisMtUtil::aisMtUtil() {
++    const hipFileError_t status = hipFileDriverOpen();
++    if (status.err != hipFileSuccess) {
++        throw std::runtime_error(
++            "AIS_MT: error initializing AMD Infinity Storage driver: error=" +
++            std::to_string(status.err));
++    }
++}
++
++aisMtUtil::~aisMtUtil() {
++    (void)hipFileDriverClose();
++}
++
++aisMtMemBuf::aisMtMemBuf(void *ptr, size_t sz, int flags) : base_(ptr) {
++    const hipFileError_t status = hipFileBufRegister(ptr, sz, flags);
++    if (status.err != hipFileSuccess) {
++        if (aisMtCompatModeAllowed()) {
++            NIXL_WARN << "AIS_MT: buffer registration failed - compat mode: err="
++                      << status.err;
++            return;
++        }
++        throw std::runtime_error(
++            "AIS_MT: hipFileBufRegister failed (err=" + std::to_string(status.err) +
++            "); set HIPFILE_ALLOW_COMPAT_MODE=true to allow fallback");
++    }
++    registered_ = true;
++}
++
++aisMtMemBuf::~aisMtMemBuf() {
++    if (registered_) {
++        const hipFileError_t status = hipFileBufDeregister(base_);
++        if (status.err != hipFileSuccess) {
++            NIXL_WARN << "AIS_MT: warning: deregistering buffer: error=" << status.err
++                      << " ptr=" << base_;
++        }
++    }
++}
++
++aisMtFileHandle::aisMtFileHandle(int file_fd) : fd(file_fd) {
++    hipFileDescr_t descr = {};
++    descr.handle.fd = fd;
++    descr.type = hipFileHandleTypeOpaqueFD;
++
++    const hipFileError_t status = hipFileHandleRegister(&hip_fhandle, &descr);
++    if (status.err != hipFileSuccess) {
++        throw std::runtime_error("AIS_MT: file register error: error=" +
++                                 std::to_string(status.err) + ", fd=" + std::to_string(fd));
++    }
++}
++
++aisMtFileHandle::~aisMtFileHandle() {
++    (void)hipFileHandleDeregister(hip_fhandle);
++}
+diff --git a/src/plugins/mt/ais/ais_mt_utils.h b/src/plugins/mt/ais/ais_mt_utils.h
+new file mode 100644
+index 0000000..c5eb929
+--- /dev/null
++++ b/src/plugins/mt/ais/ais_mt_utils.h
+@@ -0,0 +1,53 @@
++/* Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
++ *
++ * SPDX-License-Identifier: Apache-2.0
++ *
++ */
++
++#ifndef __AIS_MT_UTILS_H
++#define __AIS_MT_UTILS_H
++
++#include <fcntl.h>
++#include <unistd.h>
++#include <nixl.h>
++#include <hipfile.h>
++
++class aisMtFileHandle {
++public:
++    aisMtFileHandle(int fd);
++    ~aisMtFileHandle();
++
++    aisMtFileHandle(const aisMtFileHandle &) = delete;
++    aisMtFileHandle &
++    operator=(const aisMtFileHandle &) = delete;
++    aisMtFileHandle(aisMtFileHandle &&) = delete;
++    aisMtFileHandle &
++    operator=(aisMtFileHandle &&) = delete;
++
++    int fd{-1};
++    hipFileHandle_t hip_fhandle{nullptr};
++};
++
++class aisMtMemBuf {
++public:
++    aisMtMemBuf(void *ptr, size_t sz, int flags = 0);
++    ~aisMtMemBuf();
++
++    aisMtMemBuf(const aisMtMemBuf &) = delete;
++    aisMtMemBuf &
++    operator=(const aisMtMemBuf &) = delete;
++    aisMtMemBuf(aisMtMemBuf &&) = delete;
++    aisMtMemBuf &
++    operator=(aisMtMemBuf &&) = delete;
++
++private:
++    void *base_{nullptr};
++    bool registered_{false};
++};
++
++class aisMtUtil {
++public:
++    aisMtUtil();
++    ~aisMtUtil();
++};
++#endif
+diff --git a/src/plugins/mt/ais/meson.build b/src/plugins/mt/ais/meson.build
+new file mode 100644
+index 0000000..f6c0652
+--- /dev/null
++++ b/src/plugins/mt/ais/meson.build
+@@ -0,0 +1,93 @@
++# SPDX-FileCopyrightText: Copyright (c) 2026 AMD CORPORATION & AFFILIATES. All rights reserved.
++# SPDX-License-Identifier: Apache-2.0
++#
++# Licensed under the Apache License, Version 2.0 (the "License");
++# you may not use this file except in compliance with the License.
++# You may obtain a copy of the License at
++#
++# http://www.apache.org/licenses/LICENSE-2.0
++#
++# Unless required by applicable law or agreed to in writing, software
++# distributed under the License is distributed on an "AS IS" BASIS,
++# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++# See the License for the specific language governing permissions and
++# limitations under the License.
++
++rocm_ais_path_opt = get_option('rocm_ais_path')
++if rocm_ais_path_opt == ''
++    rocm_path = run_command('bash', '-c', 'echo ${ROCM_PATH:-$ROCM_HOME}').stdout().strip()
++    if rocm_path == ''
++        rocm_path = '/opt/rocm'
++    endif
++    hipfile_search_dirs = [rocm_path, '/opt/rocs-ais', '/usr/local']
++    hipfile_lib_found = false
++    cc_local = meson.get_compiler('cpp')
++    foreach search_dir : hipfile_search_dirs
++        hipfile_lib_candidate = search_dir + '/lib'
++        hipfile_inc_candidate = search_dir + '/include'
++        if fs.exists(hipfile_lib_candidate) and fs.exists(hipfile_inc_candidate)
++            hipfile_lib_check = cc_local.find_library('hipfile',
++                dirs: [hipfile_lib_candidate], required: false)
++            if hipfile_lib_check.found()
++                hipfile_dep = declare_dependency(
++                    link_args: ['-L' + hipfile_lib_candidate, '-lhipfile',
++                                '-Wl,-rpath,' + hipfile_lib_candidate],
++                    include_directories: include_directories(hipfile_inc_candidate))
++                hipfile_lib_found = true
++                message('Found hipFile at: ' + search_dir)
++                break
++            endif
++        endif
++    endforeach
++    if not hipfile_lib_found
++        hipfile_dep = declare_dependency()
++        subdir_done()
++    endif
++else
++    hipfile_lib_path = rocm_ais_path_opt + '/lib'
++    hipfile_inc_path = rocm_ais_path_opt + '/include'
++    hipfile_dep = declare_dependency(
++        link_args: ['-L' + hipfile_lib_path, '-lhipfile',
++                    '-Wl,-rpath,' + hipfile_lib_path],
++        include_directories: include_directories(hipfile_inc_path))
++endif
++
++if not hip_dep.found()
++    subdir_done()
++endif
++
++if 'AIS_MT' in static_plugins
++    ais_mt_backend_lib = static_library('AIS_MT',
++        'ais_mt_utils.cpp', 'ais_mt_utils.h',
++        'ais_mt_backend.cpp', 'ais_mt_backend.h',
++        'ais_mt_plugin.cpp',
++        dependencies: [nixl_infra, nixl_common_dep, hip_dep, hipfile_dep, taskflow_proj,
++                         file_utils_interface, file_mt_common_dep],
++        include_directories: [nixl_inc_dirs, utils_inc_dirs],
++        install: false,
++        cpp_args: compile_flags,
++        name_prefix: 'libplugin_')
++else
++    ais_mt_backend_lib = shared_library('AIS_MT',
++        'ais_mt_utils.cpp', 'ais_mt_utils.h',
++        'ais_mt_backend.cpp', 'ais_mt_backend.h',
++        'ais_mt_plugin.cpp',
++        dependencies: [nixl_infra, nixl_common_dep, hip_dep, hipfile_dep, taskflow_proj,
++                         file_utils_interface, file_mt_common_dep],
++        include_directories: [nixl_inc_dirs, utils_inc_dirs],
++        install: true,
++        cpp_args: ['-fPIC'],
++        name_prefix: 'libplugin_',
++        install_dir: plugin_install_dir,
++        install_rpath: '$ORIGIN/..')
++    if get_option('buildtype') == 'debug'
++        run_command('sh', '-c',
++            'echo "AIS_MT=' + ais_mt_backend_lib.full_path() +
++            '" >> ' + plugin_build_dir + '/pluginlist',
++            check: true
++        )
++    endif
++endif
++
++ais_mt_backend_interface = declare_dependency(
++    link_with: ais_mt_backend_lib)
+diff --git a/src/plugins/mt/common/file_mt_engine_base.hpp b/src/plugins/mt/common/file_mt_engine_base.hpp
+new file mode 100644
+index 0000000..9398871
+--- /dev/null
++++ b/src/plugins/mt/common/file_mt_engine_base.hpp
+@@ -0,0 +1,78 @@
++/*
++ * SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
++ * SPDX-License-Identifier: Apache-2.0
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ * You may obtain a copy of the License at
++ *
++ * http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++
++#ifndef FILE_MT_ENGINE_BASE_HPP
++#define FILE_MT_ENGINE_BASE_HPP
++
++#include <nixl.h>
++#include <nixl_types.h>
++#include <backend/backend_engine.h>
++#include <string>
++
++/** Shared trivial nixlBackendEngine overrides for multi-threaded file backends. */
++template<typename Derived>
++class FileMtEngineBase : public nixlBackendEngine {
++public:
++    explicit FileMtEngineBase(const nixlBackendInitParams *init_params)
++        : nixlBackendEngine(init_params) {}
++
++    bool
++    supportsNotif() const override {
++        return false;
++    }
++
++    bool
++    supportsRemote() const override {
++        return false;
++    }
++
++    bool
++    supportsLocal() const override {
++        return true;
++    }
++
++    nixl_mem_list_t
++    getSupportedMems() const override {
++        return {DRAM_SEG, VRAM_SEG, FILE_SEG};
++    }
++
++    nixl_status_t
++    connect(const std::string &remote_agent) override {
++        (void)remote_agent;
++        return NIXL_SUCCESS;
++    }
++
++    nixl_status_t
++    disconnect(const std::string &remote_agent) override {
++        (void)remote_agent;
++        return NIXL_SUCCESS;
++    }
++
++    nixl_status_t
++    loadLocalMD(nixlBackendMD *input, nixlBackendMD *&output) override {
++        output = input;
++        return NIXL_SUCCESS;
++    }
++
++    nixl_status_t
++    unloadMD(nixlBackendMD *input) override {
++        (void)input;
++        return NIXL_SUCCESS;
++    }
++};
++
++#endif
+diff --git a/src/plugins/mt/common/meson.build b/src/plugins/mt/common/meson.build
+new file mode 100644
+index 0000000..c14816b
+--- /dev/null
++++ b/src/plugins/mt/common/meson.build
+@@ -0,0 +1,17 @@
++# SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
++# SPDX-License-Identifier: Apache-2.0
++#
++# Licensed under the Apache License, Version 2.0 (the "License");
++# you may not use this file except in compliance with the License.
++# You may obtain a copy of the License at
++#
++# http://www.apache.org/licenses/LICENSE-2.0
++#
++# Unless required by applicable law or agreed to in writing, software
++# distributed under the License is distributed on an "AS IS" BASIS,
++# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++# See the License for the specific language governing permissions and
++# limitations under the License.
++
++file_mt_common_inc = include_directories('.')
++file_mt_common_dep = declare_dependency(include_directories: file_mt_common_inc)
+diff --git a/src/plugins/mt/meson.build b/src/plugins/mt/meson.build
+new file mode 100644
+index 0000000..e90a108
+--- /dev/null
++++ b/src/plugins/mt/meson.build
+@@ -0,0 +1,23 @@
++# SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
++# SPDX-License-Identifier: Apache-2.0
++#
++# Licensed under the Apache License, Version 2.0 (the "License");
++# you may not use this file except in compliance with the License.
++# You may obtain a copy of the License at
++#
++# http://www.apache.org/licenses/LICENSE-2.0
++#
++# Unless required by applicable law or agreed to in writing, software
++# distributed under the License is distributed on an "AS IS" BASIS,
++# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++# See the License for the specific language governing permissions and
++# limitations under the License.
++
++subdir('common')
++
++disable_rocm_ais_backend = get_option('disable_rocm_ais_backend')
++build_ais_mt = enabled_plugins.get('AIS_MT') and not disable_rocm_ais_backend and hip_dep.found() and taskflow_proj.found()
++
++if build_ais_mt
++    subdir('ais')
++endif

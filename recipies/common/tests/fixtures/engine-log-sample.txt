@@ -1,2 +1,0 @@
-(APIServer pid=1) INFO 05-20 19:00:00 [loggers.py:1] Engine 0: Avg prompt throughput: 10.0 tokens/s, Avg generation throughput: 5.0 tokens/s, Running: 0 reqs, External prefix cache hit rate: 25.0%
-(APIServer pid=1) INFO 05-20 19:00:10 [loggers.py:1] Engine 0: Avg prompt throughput: 12.0 tokens/s, Avg generation throughput: 6.0 tokens/s, Running: 1 reqs, External prefix cache hit rate: 50.0%

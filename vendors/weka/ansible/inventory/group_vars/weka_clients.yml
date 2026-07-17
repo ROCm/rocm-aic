@@ -1,4 +1,0 @@
----
-# Client-only nodes mount the Weka filesystem but
-# do not contribute NVMe storage or run containers.
-# No server-specific variables are needed here.

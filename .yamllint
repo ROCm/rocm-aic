@@ -1,8 +1,0 @@
----
-# Merged with `yamllint -d relaxed` in CI (.github/workflows/lint.yml).
-extends: relaxed
-
-rules:
-  line-length:
-    max: 200
-    allow-non-breakable-inline-mappings: true

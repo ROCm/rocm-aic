@@ -1,5 +1,0 @@
-pid=2875307 READ size=4718592 copied=4718592 ret=0 dur_us=10261
-pid=2875307 READ size=4718592 copied=4718592 ret=0 dur_us=9869
-pid=2875307 READ size=4718592 copied=4718592 ret=0 dur_us=6894
-pid=2875307 WRITE size=4718592 copied=4718592 ret=0 dur_us=10310
-pid=2875307 READ size=4718592 copied=4718592 ret=-5 dur_us=1200

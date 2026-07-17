@@ -1,9 +1,0 @@
-# Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
-#
-# SPDX-License-Identifier: MIT
-#
-# Managed by Ansible (host_setup). Enables the textfile collector for
-# rocm-aic-exporter, stack versions, and AIS hipFile metrics.
-
-# Command-line arguments for prometheus-node-exporter (Ubuntu package).
-ARGS="--collector.textfile.directory={{ host_setup_node_exporter_textfile_dir }}{% for arg in host_setup_node_exporter_extra_args | default([]) %} {{ arg }}{% endfor %}"
