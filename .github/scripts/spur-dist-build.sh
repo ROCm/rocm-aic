@@ -11,12 +11,19 @@ set -euo pipefail
 SHA="${1:?usage: $0 <full-sha>}"
 SHORT="${SHA:0:7}"
 REPO="git@github.com:ROCm/rocm-icms.git"
-WORKDIR="\$HOME/Projects/rocm-aic.${SHORT}"
 IMAGE_NAME="rocm-aic-ci-${SHORT}"
 TARBALL_DIR="/tmp/aic-ci-${SHORT}"
 
-ssh amd-aic-spur bash << REMOTE
+ssh amd-aic-spur env \
+    SHA="${SHA}" \
+    REPO="${REPO}" \
+    IMAGE_NAME="${IMAGE_NAME}" \
+    TARBALL_DIR="${TARBALL_DIR}" \
+    bash << 'REMOTE'
 set -euo pipefail
+
+SHORT="${SHA:0:7}"
+WORKDIR="$HOME/Projects/rocm-aic.${SHORT}"
 
 cleanup_on_fail() {
     echo "=== Build failed — cleaning up ==="
