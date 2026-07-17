@@ -111,8 +111,8 @@ export AIC_CACHE_DIR        ?= /shared_nfs/$(USER)/images/buildcache
 # SPUR nodes have 8x NVMe drives combined into a single LVM at /mnt/m2m_nobackup.
 # Use override (not ?=) so these win over the top-level ?= defaults set earlier.
 # HF_HOME points to shared_nfs since /scratch does not exist on this cluster.
-override export NVME_DATA     := /mnt/m2m_nobackup/aai-cliff/nvme
-override export GDS_SLAB_DATA := /mnt/m2m_nobackup/aai-cliff/slab
+override export NVME_DATA     := /mnt/m2m_nobackup/aic-cliff/nvme
+override export GDS_SLAB_DATA := /mnt/m2m_nobackup/aic-cliff/slab
 override export HF_HOME       := /shared_nfs/$(USER)/hf
 else
 export AIC_CACHE_DIR        ?= /scratch/$(USER)/images/buildcache

@@ -4,7 +4,7 @@
 #
 # SPDX-License-Identifier: MIT
 #
-#SBATCH --job-name=aai-day-cliff
+#SBATCH --job-name=aic-day-cliff
 #SBATCH --partition=defq
 #SBATCH --constraint=MARKHAM&GFX942&NVME
 #SBATCH --gres=gpu:1
@@ -32,7 +32,7 @@
 # The two kvd_v2 arms are plotted separately against the shared vram_only
 # baseline so the NVMe-L2 and GDS-L1 backends can be compared.
 #
-# Submit from the aai-day-release/ tree root:
+# Submit from the aic-day-release/ tree root:
 #
 #   sbatch .slurm/run-cliff.sbatch
 #   # pin a node:
@@ -44,15 +44,15 @@
 # Storage note (from a live probe of ctr-cx63-mi300x-21, 2026-07-13): the MI300X
 # nodes expose 4x 3.5T Samsung NVMe -- nvme0 is the OS root, and the spares
 # (nvme1-3) are typically RAW and UNMOUNTED.  To keep the LMCache NVMe tier off
-# the busy root disk, AAI_NVME_AUTO=1 (default) auto-detects a dedicated local
+# the busy root disk, AIC_NVME_AUTO=1 (default) auto-detects a dedicated local
 # NVMe (needs passwordless sudo on the node), in priority order:
-#   1) reuse an aai-lmcache volume already mounted at AAI_NVME_MOUNT (no format),
-#   2) format + mount a raw, unmounted, non-root NVMe spare at AAI_NVME_MOUNT,
+#   1) reuse an aic-lmcache volume already mounted at AIC_NVME_MOUNT (no format),
+#   2) format + mount a raw, unmounted, non-root NVMe spare at AIC_NVME_MOUNT,
 #   3) use a non-root NVMe filesystem that is already mounted somewhere, else
 #   4) fall back to node-local /tmp on the root disk (the original behavior).
 # Formatting (case 2) only ever touches a disk that is non-root, unmounted, has
-# NO filesystem, is not swap, and is >=100G.  Set AAI_NVME_AUTO=0 to force (4);
-# set NVME_DATA / AAI_LOCAL_ROOT explicitly to pin a path (auto-detect skipped).
+# NO filesystem, is not swap, and is >=100G.  Set AIC_NVME_AUTO=0 to force (4);
+# set NVME_DATA / AIC_LOCAL_ROOT explicitly to pin a path (auto-detect skipped).
 # A provisioned mount is left mounted for reuse by later jobs on the same node.
 #
 set -uo pipefail
@@ -62,7 +62,7 @@ set -uo pipefail
 # there, so ${BASH_SOURCE[0]} points at /var/spool/slurmd/... -- deriving REPO
 # from it lands logs/<job-id> (and the /work bind-mount of benchmarks/) in an
 # unwritable, wrong place.  Prefer SLURM_SUBMIT_DIR (the dir sbatch was invoked
-# from; `make cliff-submit` cds to aai-day-release first), and fall back to
+# from; `make cliff-submit` cds to aic-day-release first), and fall back to
 # BASH_SOURCE for a direct, non-sbatch invocation.
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO="${SLURM_SUBMIT_DIR:-$(cd "${SCRIPT_DIR}/.." && pwd)}"
@@ -83,21 +83,21 @@ if mkdir -p "${LOGDIR}" 2>/dev/null; then
     exec >>"${LOGDIR}/cliff.out" 2>&1
 fi
 
-AAI_IMAGE="${AAI_IMAGE:-rocm-aic-aai-day:latest}"
-AAI_IMAGE_DIR="${AAI_IMAGE_DIR:-/scratch/${USER}/images}"
+AIC_IMAGE="${AIC_IMAGE:-rocm-aic:latest}"
+AIC_IMAGE_DIR="${AIC_IMAGE_DIR:-/scratch/${USER}/images}"
 VLLM_MODEL="${VLLM_MODEL:-openai/gpt-oss-120b}"
 # Shared HF cache that already holds gpt-oss-120b (see plan); offline so no token.
 HF_HOME="${HF_HOME:-/scratch/${USER}/vllm-lmcache-hipfile/hf}"
 
 # Storage for the LMCache tiers (see the storage note above).  With
-# AAI_NVME_AUTO=1 (default) the tiers are pointed at a dedicated local NVMe;
+# AIC_NVME_AUTO=1 (default) the tiers are pointed at a dedicated local NVMe;
 # provision_storage() (below, once log() exists) finalizes the paths.  An
-# explicit NVME_DATA / AAI_LOCAL_ROOT is always honored as-is.
-AAI_NVME_AUTO="${AAI_NVME_AUTO:-1}"
-AAI_NVME_MOUNT="${AAI_NVME_MOUNT:-/mnt/aai-lmcache}"   # where a provisioned spare is mounted
-AAI_NVME_LABEL="${AAI_NVME_LABEL:-aai-lmcache}"        # ext4 label to recognize/reuse our fs
-_AAI_NVME_DATA_PINNED="${NVME_DATA:+1}"
-_AAI_LOCAL_ROOT_PINNED="${AAI_LOCAL_ROOT:+1}"
+# explicit NVME_DATA / AIC_LOCAL_ROOT is always honored as-is.
+AIC_NVME_AUTO="${AIC_NVME_AUTO:-1}"
+AIC_NVME_MOUNT="${AIC_NVME_MOUNT:-/mnt/aic-lmcache}"   # where a provisioned spare is mounted
+AIC_NVME_LABEL="${AIC_NVME_LABEL:-aic-lmcache}"        # ext4 label to recognize/reuse our fs
+_AIC_NVME_DATA_PINNED="${NVME_DATA:+1}"
+_AIC_LOCAL_ROOT_PINNED="${AIC_LOCAL_ROOT:+1}"
 
 # Benchmark sweep knobs (defaults mirror the Makefile `cliff` target).
 BENCH_ISL="${BENCH_ISL:-20000}"
@@ -107,8 +107,8 @@ BENCH_ITERS="${BENCH_ITERS:-3}"
 BENCH_PREFIX_MODE="${BENCH_PREFIX_MODE:-per_client}"  # per_client => a real cliff
 
 # Arm selector: comma list of arms to run (vram, nvme, gds).  Default all three;
-# narrow it for a quick check, e.g. `make cliff-submit AAI_CLIFF_ARMS=nvme`.
-AAI_CLIFF_ARMS="${AAI_CLIFF_ARMS:-vram,nvme,gds}"
+# narrow it for a quick check, e.g. `make cliff-submit AIC_CLIFF_ARMS=nvme`.
+AIC_CLIFF_ARMS="${AIC_CLIFF_ARMS:-vram,nvme,gds}"
 
 # vLLM knobs.
 TENSOR_PARALLEL_SIZE="${TENSOR_PARALLEL_SIZE:-1}"
@@ -136,17 +136,17 @@ ROPE_ARGS=()
 LMCACHE_L1_SIZE_GB="${LMCACHE_L1_SIZE_GB:-20}"
 LMCACHE_NVME_POOL="${LMCACHE_NVME_POOL:-4096}"
 # CPU DRAM (L1) tier for the nvme arm.  Default 'false' = KV flows GPU VRAM
-# staging -> NVMe (no host DRAM tier).  Set AAI_LOCAL_CPU=true to add an LMCache
+# staging -> NVMe (no host DRAM tier).  Set AIC_LOCAL_CPU=true to add an LMCache
 # DRAM L1 in front of the NIXL NVMe L2 (a proper DRAM->NVMe tiered cache);
 # LMCACHE_MAX_LOCAL_CPU_SIZE is that DRAM L1 size in GB.
-AAI_LOCAL_CPU="${AAI_LOCAL_CPU:-false}"
+AIC_LOCAL_CPU="${AIC_LOCAL_CPU:-false}"
 LMCACHE_MAX_LOCAL_CPU_SIZE="${LMCACHE_MAX_LOCAL_CPU_SIZE:-40}"
 # vLLM KVTransferConfig.kv_load_failure_policy for the kvd arms.  Default 'fail'
-# (a KV-load failure -> HTTP 500).  Set AAI_KV_LOAD_FAILURE_POLICY=recompute to
+# (a KV-load failure -> HTTP 500).  Set AIC_KV_LOAD_FAILURE_POLICY=recompute to
 # gracefully recompute the prefill when the connector can't return the KV (e.g.
 # DRAM L1 / NIXL staging pressure at high concurrency) instead of erroring.
 # Empty -> omit the field entirely (vLLM's own default applies).
-AAI_KV_LOAD_FAILURE_POLICY="${AAI_KV_LOAD_FAILURE_POLICY:-}"
+AIC_KV_LOAD_FAILURE_POLICY="${AIC_KV_LOAD_FAILURE_POLICY:-}"
 # hipFile GDS compat fallback.  Default 'false' fails loudly if true GPU-direct
 # (P2PDMA) registration is unavailable -- so kvd arms measure real GDS.  Set to
 # 'true' to allow hipFile's staged/bounce-buffer fallback when hipFileBufRegister
@@ -156,35 +156,35 @@ HIPFILE_ALLOW_COMPAT_MODE="${HIPFILE_ALLOW_COMPAT_MODE:-false}"
 # VRAM NIXL staging buffer for the AIS_MT nvme arm (bytes).  MUST be a GPU (cuda)
 # buffer so hipFileBufRegister succeeds -- registering a host/DRAM buffer returns
 # err 5013.  512 MiB default (mirrors recipies/vllm-lmcache-nixl).
-AAI_NIXL_BUFFER_SIZE="${AAI_NIXL_BUFFER_SIZE:-536870912}"
+AIC_NIXL_BUFFER_SIZE="${AIC_NIXL_BUFFER_SIZE:-536870912}"
 # NIXL AIS_MT staging-buffer device: 'cuda' -> VRAM buffer -> hipFileBufRegister
 # succeeds -> TRUE GDS (GPU-direct) reads/writes.  'cpu' -> DRAM buffer ->
 # registration fails (err 5013) -> with HIPFILE_ALLOW_COMPAT_MODE=true this falls
 # back to hipFile COMPAT mode = POSIX pread/pwrite through a host bounce buffer
 # (i.e. NVMe L2 over POSIX, not GDS).  Use cpu+allow-compat to A/B POSIX vs GDS.
-AAI_NIXL_BUFFER_DEVICE="${AAI_NIXL_BUFFER_DEVICE:-cuda}"
+AIC_NIXL_BUFFER_DEVICE="${AIC_NIXL_BUFFER_DEVICE:-cuda}"
 # O_DIRECT for the NIXL NVMe L2.  true mirrors the GDS path; set false if the POSIX
 # (compat) path errors on unaligned direct I/O.
-AAI_NIXL_USE_DIRECT_IO="${AAI_NIXL_USE_DIRECT_IO:-true}"
+AIC_NIXL_USE_DIRECT_IO="${AIC_NIXL_USE_DIRECT_IO:-true}"
 # nvme-arm L2 backend selector: 'nixl' (default) -> NIXL AIS_MT (GDS or POSIX/compat
-# per AAI_NIXL_BUFFER_DEVICE).  'local_disk' -> LMCache's NATIVE POSIX LocalDiskBackend
+# per AIC_NIXL_BUFFER_DEVICE).  'local_disk' -> LMCache's NATIVE POSIX LocalDiskBackend
 # (one .pt file per chunk, no NIXL) -- a real indexed persistent tier that coexists
 # with the DRAM L1.  Lets us A/B native-POSIX-disk vs NIXL for the L2.
-AAI_L2_BACKEND="${AAI_L2_BACKEND:-nixl}"
-# When AAI_L2_BACKEND=nixl(_posix): which NIXL plugin.  AIS_MT = hipFile (GDS w/ cuda
+AIC_L2_BACKEND="${AIC_L2_BACKEND:-nixl}"
+# When AIC_L2_BACKEND=nixl(_posix): which NIXL plugin.  AIS_MT = hipFile (GDS w/ cuda
 # buffer, or POSIX/compat w/ cpu buffer).  POSIX = NIXL's FIRST-CLASS POSIX plugin
-# (requires cpu buffer).  AAI_L2_BACKEND=nixl_posix forces POSIX + cpu buffer below.
-AAI_NIXL_BACKEND="${AAI_NIXL_BACKEND:-AIS_MT}"
-# local_disk L2 knobs (only used when AAI_L2_BACKEND=local_disk):
-AAI_LOCAL_DISK_SIZE_GB="${AAI_LOCAL_DISK_SIZE_GB:-320}"   # max_local_disk_size (GB)
+# (requires cpu buffer).  AIC_L2_BACKEND=nixl_posix forces POSIX + cpu buffer below.
+AIC_NIXL_BACKEND="${AIC_NIXL_BACKEND:-AIS_MT}"
+# local_disk L2 knobs (only used when AIC_L2_BACKEND=local_disk):
+AIC_LOCAL_DISK_SIZE_GB="${AIC_LOCAL_DISK_SIZE_GB:-320}"   # max_local_disk_size (GB)
 # use_odirect=false -> buffered I/O through the PAGE CACHE (page cache acts as a fast
 # second tier); true -> O_DIRECT (bypass page cache, needs block-aligned chunks).
-AAI_L2_ODIRECT="${AAI_L2_ODIRECT:-false}"
+AIC_L2_ODIRECT="${AIC_L2_ODIRECT:-false}"
 # nixl_posix is shorthand for the NIXL first-class POSIX plugin: normalize it here (at
 # top level) to POSIX + cpu buffer so the tiers log and the config writer agree.
-if [[ "${AAI_L2_BACKEND}" == nixl_posix ]]; then
-    AAI_NIXL_BACKEND=POSIX
-    AAI_NIXL_BUFFER_DEVICE=cpu
+if [[ "${AIC_L2_BACKEND}" == nixl_posix ]]; then
+    AIC_NIXL_BACKEND=POSIX
+    AIC_NIXL_BUFFER_DEVICE=cpu
 fi
 # Attention backend for all arms.  On vLLM 0.25 the ROCm backends (ROCM_ATTN,
 # ROCM_AITER_UNIFIED_ATTN) report supports_kv_connector()=False, so the kvd arms
@@ -192,7 +192,7 @@ fi
 # requires a full-attention model (VLLM_MODEL): a sliding-window/hybrid model like
 # gpt-oss can't unify its KV-cache specs under a connector on 0.25.  Same backend
 # on all arms keeps baseline (vram) and kvd comparable.
-AAI_ATTENTION_BACKEND="${AAI_ATTENTION_BACKEND:-TRITON_ATTN}"
+AIC_ATTENTION_BACKEND="${AIC_ATTENTION_BACKEND:-TRITON_ATTN}"
 
 VRAM_PORT=8001
 KVD_PORT=8000
@@ -204,15 +204,15 @@ RESULTS="${LOGDIR}/results"
 PLOTS="${LOGDIR}/plots"
 
 # --- Metrics capture (Prometheus sidecar) ------------------------------------
-# Auto-on; set AAI_MONITORING=0 to skip.  AAI_METRICS_DIR is the Prometheus TSDB
+# Auto-on; set AIC_MONITORING=0 to skip.  AIC_METRICS_DIR is the Prometheus TSDB
 # location -- defaults to logs/<job-id>/prometheus (job-id is the SLURM job, or
 # "manual" off-Slurm); override with an NFS path to explore the run afterward.
-# AAI_EXPORTERS=1 also launches the containerized node + AMD GPU exporters (for
+# AIC_EXPORTERS=1 also launches the containerized node + AMD GPU exporters (for
 # nodes without the host services); set 0 to rely on host-installed exporters
 # and avoid :9100/:5000 clashes.
-AAI_MONITORING="${AAI_MONITORING:-1}"
-AAI_METRICS_DIR="${AAI_METRICS_DIR:-${REPO}/logs/${SLURM_JOB_ID:-manual}/prometheus}"
-AAI_EXPORTERS="${AAI_EXPORTERS:-1}"
+AIC_MONITORING="${AIC_MONITORING:-1}"
+AIC_METRICS_DIR="${AIC_METRICS_DIR:-${REPO}/logs/${SLURM_JOB_ID:-manual}/prometheus}"
+AIC_EXPORTERS="${AIC_EXPORTERS:-1}"
 MON_COMPOSE="${REPO}/monitoring/docker-compose.monitoring.yml"
 MON_DIR="${REPO}/monitoring"
 
@@ -236,10 +236,10 @@ _detect_or_provision_nvme() {
     local rootdev; rootdev="$(_root_disk)"
     log "  nvme-auto: root disk = ${rootdev:-unknown}" >&2
 
-    # (1) Reuse an aai-lmcache volume already mounted at AAI_NVME_MOUNT.
-    if mountpoint -q "${AAI_NVME_MOUNT}" 2>/dev/null; then
-        log "  nvme-auto: reusing already-mounted ${AAI_NVME_MOUNT}" >&2
-        printf '%s\n' "${AAI_NVME_MOUNT}"; return 0
+    # (1) Reuse an aic-lmcache volume already mounted at AIC_NVME_MOUNT.
+    if mountpoint -q "${AIC_NVME_MOUNT}" 2>/dev/null; then
+        log "  nvme-auto: reusing already-mounted ${AIC_NVME_MOUNT}" >&2
+        printf '%s\n' "${AIC_NVME_MOUNT}"; return 0
     fi
 
     # (2) Format + mount a raw, unmounted, non-root NVMe spare.
@@ -257,14 +257,14 @@ _detect_or_provision_nvme() {
     done < <(lsblk -rndo NAME,FSTYPE,MOUNTPOINT 2>/dev/null)
 
     if [[ -n "${cand}" ]]; then
-        log "  nvme-auto: raw spare ${cand} -> mkfs.ext4 (label ${AAI_NVME_LABEL}) + mount ${AAI_NVME_MOUNT}" >&2
-        if sudo -n mkfs.ext4 -q -F -L "${AAI_NVME_LABEL}" "${cand}" >/dev/null 2>&1 \
-           && sudo -n mkdir -p "${AAI_NVME_MOUNT}" >/dev/null 2>&1 \
-           && sudo -n mount -o noatime "${cand}" "${AAI_NVME_MOUNT}" >/dev/null 2>&1; then
-            sudo -n chown "$(id -u):$(id -g)" "${AAI_NVME_MOUNT}" >/dev/null 2>&1 \
-                || sudo -n chmod 1777 "${AAI_NVME_MOUNT}" >/dev/null 2>&1 || true
-            log "  nvme-auto: mounted ${cand} at ${AAI_NVME_MOUNT} (left mounted for reuse; 'sudo umount ${AAI_NVME_MOUNT}' to release)" >&2
-            printf '%s\n' "${AAI_NVME_MOUNT}"; return 0
+        log "  nvme-auto: raw spare ${cand} -> mkfs.ext4 (label ${AIC_NVME_LABEL}) + mount ${AIC_NVME_MOUNT}" >&2
+        if sudo -n mkfs.ext4 -q -F -L "${AIC_NVME_LABEL}" "${cand}" >/dev/null 2>&1 \
+           && sudo -n mkdir -p "${AIC_NVME_MOUNT}" >/dev/null 2>&1 \
+           && sudo -n mount -o noatime "${cand}" "${AIC_NVME_MOUNT}" >/dev/null 2>&1; then
+            sudo -n chown "$(id -u):$(id -g)" "${AIC_NVME_MOUNT}" >/dev/null 2>&1 \
+                || sudo -n chmod 1777 "${AIC_NVME_MOUNT}" >/dev/null 2>&1 || true
+            log "  nvme-auto: mounted ${cand} at ${AIC_NVME_MOUNT} (left mounted for reuse; 'sudo umount ${AIC_NVME_MOUNT}' to release)" >&2
+            printf '%s\n' "${AIC_NVME_MOUNT}"; return 0
         fi
         log "  nvme-auto: provisioning ${cand} failed (passwordless sudo required?); trying already-mounted NVMe" >&2
     fi
@@ -289,41 +289,41 @@ _detect_or_provision_nvme() {
     return 0
 }
 
-# Finalize AAI_LOCAL_ROOT and the NVME/NFS/slab tier paths.
+# Finalize AIC_LOCAL_ROOT and the NVME/NFS/slab tier paths.
 provision_storage() {
-    if [[ -n "${_AAI_LOCAL_ROOT_PINNED}" || -n "${_AAI_NVME_DATA_PINNED}" ]]; then
-        log "storage: honoring caller-pinned NVME_DATA/AAI_LOCAL_ROOT (auto-detect skipped)"
-    elif [[ "${AAI_NVME_AUTO}" == "1" ]]; then
-        log "storage: AAI_NVME_AUTO=1 -- detecting a dedicated local NVMe"
+    if [[ -n "${_AIC_LOCAL_ROOT_PINNED}" || -n "${_AIC_NVME_DATA_PINNED}" ]]; then
+        log "storage: honoring caller-pinned NVME_DATA/AIC_LOCAL_ROOT (auto-detect skipped)"
+    elif [[ "${AIC_NVME_AUTO}" == "1" ]]; then
+        log "storage: AIC_NVME_AUTO=1 -- detecting a dedicated local NVMe"
         local base; base="$(_detect_or_provision_nvme)"
-        [[ -n "${base}" ]] && AAI_LOCAL_ROOT="${base}/aai-cliff.${SLURM_JOB_ID:-manual}"
+        [[ -n "${base}" ]] && AIC_LOCAL_ROOT="${base}/aic-cliff.${SLURM_JOB_ID:-manual}"
     else
-        log "storage: AAI_NVME_AUTO=0 -- using node-local /tmp on the root disk"
+        log "storage: AIC_NVME_AUTO=0 -- using node-local /tmp on the root disk"
     fi
-    AAI_LOCAL_ROOT="${AAI_LOCAL_ROOT:-/tmp/aai-cliff.${SLURM_JOB_ID:-manual}}"
-    NVME_DATA="${NVME_DATA:-${AAI_LOCAL_ROOT}/nvme}"          # L2a AIS_MT pool
-    NFS_DATA="${NFS_DATA:-${AAI_LOCAL_ROOT}/nfs}"             # L2b POSIX pool (local stand-in)
-    GDS_SLAB_DATA="${GDS_SLAB_DATA:-${AAI_LOCAL_ROOT}/slab}"  # GDS L1 slab
+    AIC_LOCAL_ROOT="${AIC_LOCAL_ROOT:-/tmp/aic-cliff.${SLURM_JOB_ID:-manual}}"
+    NVME_DATA="${NVME_DATA:-${AIC_LOCAL_ROOT}/nvme}"          # L2a AIS_MT pool
+    NFS_DATA="${NFS_DATA:-${AIC_LOCAL_ROOT}/nfs}"             # L2b POSIX pool (local stand-in)
+    GDS_SLAB_DATA="${GDS_SLAB_DATA:-${AIC_LOCAL_ROOT}/slab}"  # GDS L1 slab
 }
 
 log "host        : $(hostname)  job=${SLURM_JOB_ID:-manual}"
-log "image       : ${AAI_IMAGE}"
+log "image       : ${AIC_IMAGE}"
 log "model       : ${VLLM_MODEL}  (HF_HOME=${HF_HOME}, offline)"
 provision_storage
 log "local NVMe  : ${NVME_DATA}"
 log "results     : ${RESULTS}"
 command -v docker >/dev/null 2>&1 || die "docker not found on $(hostname)"
-# REPO must be the aai-day-release tree (it is bind-mounted at /work so the
+# REPO must be the aic-day-release tree (it is bind-mounted at /work so the
 # benchmark can run benchmarks/run_cliff.py); fail early and clearly otherwise.
 [[ -f "${REPO}/benchmarks/run_cliff.py" ]] || \
-    die "benchmarks/run_cliff.py not found under REPO=${REPO}; submit from the aai-day-release/ dir (SLURM_SUBMIT_DIR)"
+    die "benchmarks/run_cliff.py not found under REPO=${REPO}; submit from the aic-day-release/ dir (SLURM_SUBMIT_DIR)"
 
 mkdir -p "${RESULTS}" "${PLOTS}" "${NVME_DATA}" "${NFS_DATA}" "${GDS_SLAB_DATA}"
 [[ -d "${HF_HOME}/hub" ]] || die "HF cache not found at ${HF_HOME}/hub"
 
 # --- Load images from shared tarballs when needed ----------------------------
 # Reload when the node's image is absent, when the /scratch tarball is newer than
-# what this node last loaded, or when AAI_FORCE_LOAD=1 -- so a rebuild is picked
+# what this node last loaded, or when AIC_FORCE_LOAD=1 -- so a rebuild is picked
 # up automatically instead of a stale cached image being reused (mirrors cmd_test
 # / cmd_push in run-build-distribute.sh).  A per-uid+image marker under /var/tmp
 # records the tarball mtime last loaded here; comparing tarball-mtime vs the
@@ -335,18 +335,18 @@ load_image_if_needed() {
     local image="$1" glob="$2" mode="${3:-optional}"
     local tb marker have tarm loadedm
     tb="$(ls -t ${glob} 2>/dev/null | head -1 || true)"
-    marker="/var/tmp/aai-day-loaded-$(id -u)-$(printf '%s' "${image}" | tr '/:' '__').mtime"
+    marker="/var/tmp/aic-loaded-$(id -u)-$(printf '%s' "${image}" | tr '/:' '__').mtime"
     have="$(docker images -q "${image}" 2>/dev/null)"
     tarm="$(stat -c %Y "${tb}" 2>/dev/null || echo 0)"
     loadedm="$(cat "${marker}" 2>/dev/null || echo 0)"
-    if [[ "${AAI_FORCE_LOAD:-0}" == "1" || -z "${have}" || "${tarm}" -gt "${loadedm}" ]]; then
+    if [[ "${AIC_FORCE_LOAD:-0}" == "1" || -z "${have}" || "${tarm}" -gt "${loadedm}" ]]; then
         if [[ -z "${tb}" ]]; then
             [[ "${mode}" == "required" ]] && die "image ${image} absent and no tarball matching ${glob} (run the build first)"
             [[ -n "${have}" ]] && return 0   # no tarball, but image already present
             log "  ${image}: absent and no tarball (${glob}); skipping"
             return 1
         fi
-        log "loading ${image} from ${tb} (tarball=${tarm} last-loaded=${loadedm} present=$([[ -n "${have}" ]] && echo yes || echo no) force=${AAI_FORCE_LOAD:-0})"
+        log "loading ${image} from ${tb} (tarball=${tarm} last-loaded=${loadedm} present=$([[ -n "${have}" ]] && echo yes || echo no) force=${AIC_FORCE_LOAD:-0})"
         case "${tb}" in
             *.zst) zstd -dc "${tb}" | docker load ;;
             *.gz)  gzip  -dc "${tb}" | docker load ;;
@@ -354,14 +354,14 @@ load_image_if_needed() {
         esac || { [[ "${mode}" == "required" ]] && die "docker load failed"; log "  ${image}: docker load failed"; return 1; }
         echo "${tarm}" > "${marker}" 2>/dev/null || true
     else
-        log "image up to date on $(hostname): ${image} (id ${have}); AAI_FORCE_LOAD=1 forces a reload"
+        log "image up to date on $(hostname): ${image} (id ${have}); AIC_FORCE_LOAD=1 forces a reload"
     fi
     return 0
 }
 
 # Main inference image (required -- the whole run needs it).
-_img_base="$(printf '%s' "${AAI_IMAGE}" | tr '/:' '--')"
-load_image_if_needed "${AAI_IMAGE}" "${AAI_IMAGE_DIR}/${_img_base}-*.tar.*" required
+_img_base="$(printf '%s' "${AIC_IMAGE}" | tr '/:' '--')"
+load_image_if_needed "${AIC_IMAGE}" "${AIC_IMAGE_DIR}/${_img_base}-*.tar.*" required
 
 # Fabric exporter images (optional).  When metrics exporters are on and the user
 # has not pinned an explicit image, try the distributed tarball (built by
@@ -369,14 +369,14 @@ load_image_if_needed "${AAI_IMAGE}" "${AAI_IMAGE_DIR}/${_img_base}-*.tar.*" requ
 # ONLY when the image is actually present.  On a node with the batesste host
 # service the container is port-skipped anyway; with neither, node-exporter's
 # nvme/infiniband collectors still cover it -- see _monitoring_run_up.
-if [[ "${AAI_EXPORTERS}" == "1" ]]; then
-    if [[ -z "${AAI_NVME_EXPORTER_IMAGE:-}" ]]; then
-        _t="aai-day-nvme-exporter:latest"; _b="$(printf '%s' "${_t}" | tr '/:' '--')"
-        load_image_if_needed "${_t}" "${AAI_IMAGE_DIR}/${_b}.tar.*" && export AAI_NVME_EXPORTER_IMAGE="${_t}"
+if [[ "${AIC_EXPORTERS}" == "1" ]]; then
+    if [[ -z "${AIC_NVME_EXPORTER_IMAGE:-}" ]]; then
+        _t="aic-nvme-exporter:latest"; _b="$(printf '%s' "${_t}" | tr '/:' '--')"
+        load_image_if_needed "${_t}" "${AIC_IMAGE_DIR}/${_b}.tar.*" && export AIC_NVME_EXPORTER_IMAGE="${_t}"
     fi
-    if [[ -z "${AAI_RDMA_EXPORTER_IMAGE:-}" ]]; then
-        _t="aai-day-rdma-exporter:latest"; _b="$(printf '%s' "${_t}" | tr '/:' '--')"
-        load_image_if_needed "${_t}" "${AAI_IMAGE_DIR}/${_b}.tar.*" && export AAI_RDMA_EXPORTER_IMAGE="${_t}"
+    if [[ -z "${AIC_RDMA_EXPORTER_IMAGE:-}" ]]; then
+        _t="aic-rdma-exporter:latest"; _b="$(printf '%s' "${_t}" | tr '/:' '--')"
+        load_image_if_needed "${_t}" "${AIC_IMAGE_DIR}/${_b}.tar.*" && export AIC_RDMA_EXPORTER_IMAGE="${_t}"
     fi
 fi
 
@@ -416,7 +416,7 @@ run_bench() {  # $1=arm $2=endpoint_port $3=out_csv $4=extra args...
     docker run --rm --network host \
         -v "${REPO}":/work -w /work \
         -v "${HF_HOME}":/hf "${HF_ENV[@]}" \
-        --entrypoint python3 "${AAI_IMAGE}" \
+        --entrypoint python3 "${AIC_IMAGE}" \
         benchmarks/run_cliff.py \
             --endpoint "http://localhost:${port}" \
             --model "${VLLM_MODEL}" \
@@ -451,8 +451,8 @@ stop_containers() {
 # --- Metrics-capture sidecar (Prometheus + optional exporters) ---------------
 # The exporter/Prometheus stand-up, health checks, and teardown live in a shared
 # lib so the cliff sweep and the build smoke-test (run-build-distribute.sh) drive
-# metrics identically.  The lib's functions read log(), AAI_IMAGE, MON_DIR,
-# AAI_METRICS_DIR, MON_COMPOSE, AAI_EXPORTERS, AAI_MONITORING -- all defined above.
+# metrics identically.  The lib's functions read log(), AIC_IMAGE, MON_DIR,
+# AIC_METRICS_DIR, MON_COMPOSE, AIC_EXPORTERS, AIC_MONITORING -- all defined above.
 source "${REPO}/monitoring/monitoring-lib.sh"
 # Guarantee teardown (containers only; the NFS TSDB is retained) on any exit.
 trap stop_monitoring EXIT
@@ -462,11 +462,11 @@ trap stop_monitoring EXIT
 # =============================================================================
 VRAM_CSV="${RESULTS}/cliff-vram_only-${STAMP}.csv"
 run_arm_vram() {
-    rm_containers aai-cliff-vram
+    rm_containers aic-cliff-vram
     log "=== Arm A (vram_only): launching plain vLLM on :${VRAM_PORT} ==="
-    docker run -d --name aai-cliff-vram --network host "${GPU_FLAGS[@]}" \
+    docker run -d --name aic-cliff-vram --network host "${GPU_FLAGS[@]}" \
         -v "${HF_HOME}":/hf "${HF_ENV[@]}" \
-        "${AAI_IMAGE}" \
+        "${AIC_IMAGE}" \
             --model "${VLLM_MODEL}" --host 0.0.0.0 --port "${VRAM_PORT}" \
             --tensor-parallel-size "${TENSOR_PARALLEL_SIZE}" \
             --gpu-memory-utilization "${VLM_GPU_MEMORY_UTILIZATION}" \
@@ -475,16 +475,16 @@ run_arm_vram() {
             "${ROPE_ARGS[@]}" \
             --block-size 64 --enable-prefix-caching --kv-cache-dtype fp8 \
             --async-scheduling \
-            --attention-backend "${AAI_ATTENTION_BACKEND}" \
+            --attention-backend "${AIC_ATTENTION_BACKEND}" \
             --disable-access-log-for-endpoints "/health,/metrics,/v1/models" \
         >/dev/null || { log "Arm A: docker run failed"; return 1; }
     if ! wait_ready "${VRAM_PORT}"; then
-        log "Arm A: server never became ready; last logs:"; docker logs --tail 40 aai-cliff-vram 2>&1 | sed 's/^/    /'
-        stop_containers aai-cliff-vram; return 1
+        log "Arm A: server never became ready; last logs:"; docker logs --tail 40 aic-cliff-vram 2>&1 | sed 's/^/    /'
+        stop_containers aic-cliff-vram; return 1
     fi
     run_bench vram_only "${VRAM_PORT}" "${VRAM_CSV}"
     local rc=$?
-    stop_containers aai-cliff-vram
+    stop_containers aic-cliff-vram
     return $rc
 }
 
@@ -515,13 +515,13 @@ write_lmcache_nixl_config() {
     # REJECTS it for a cpu buffer -- in CPU/POSIX mode NIXL shares LocalCPUBackend's
     # pinned DRAM pool (sized by max_local_cpu_size), so it must be omitted.
     local _bufsize_line=""
-    [[ "${AAI_NIXL_BUFFER_DEVICE}" == cuda ]] && _bufsize_line="nixl_buffer_size: ${AAI_NIXL_BUFFER_SIZE}"
+    [[ "${AIC_NIXL_BUFFER_DEVICE}" == cuda ]] && _bufsize_line="nixl_buffer_size: ${AIC_NIXL_BUFFER_SIZE}"
     cat > "${LOGDIR}/lmcache-nixl-ais.yml" <<YML
 # Generated by run-cliff.sbatch (kvd_v2 nvme arm) -- connector-side NIXL AIS_MT.
 chunk_size: 256
 # CPU DRAM (L1) tier: local_cpu=true adds an LMCache host-DRAM L1 in front of the
 # NIXL NVMe L2 (max_local_cpu_size = DRAM L1 GB, ignored when local_cpu=false).
-local_cpu: ${AAI_LOCAL_CPU}
+local_cpu: ${AIC_LOCAL_CPU}
 max_local_cpu_size: ${LMCACHE_MAX_LOCAL_CPU_SIZE}
 save_decode_cache: true
 # Deterministic, seed-independent chunk hashing.  The 'builtin' default uses
@@ -530,45 +530,45 @@ save_decode_cache: true
 # under L1 overflow.  sha256_cbor (as in recipies/vllm-lmcache-nixl) is stable.
 pre_caching_hash_algorithm: sha256_cbor
 ${_bufsize_line}
-nixl_buffer_device: ${AAI_NIXL_BUFFER_DEVICE}
+nixl_buffer_device: ${AIC_NIXL_BUFFER_DEVICE}
 extra_config:
   enable_nixl_storage: true
-  nixl_backend: ${AAI_NIXL_BACKEND}
+  nixl_backend: ${AIC_NIXL_BACKEND}
   nixl_pool_size: ${LMCACHE_NVME_POOL}
-  use_direct_io: ${AAI_NIXL_USE_DIRECT_IO}
+  use_direct_io: ${AIC_NIXL_USE_DIRECT_IO}
   nixl_path: /data/nvme/lmcache
 YML
 }
 
-# nvme arm, AAI_L2_BACKEND=local_disk: LMCache NATIVE POSIX LocalDiskBackend as L2
+# nvme arm, AIC_L2_BACKEND=local_disk: LMCache NATIVE POSIX LocalDiskBackend as L2
 # (no NIXL).  DRAM L1 (local_cpu) in front of a .pt-file-per-chunk disk tier at
 # /data/nvme/lmcache-disk.  use_odirect=false -> buffered (page cache); true -> O_DIRECT.
 write_lmcache_localdisk_config() {
     cat > "${LOGDIR}/lmcache-nixl-ais.yml" <<YML
 # Generated by run-cliff.sbatch (kvd_v2 nvme arm) -- NATIVE LocalDiskBackend (POSIX), no NIXL.
 chunk_size: 256
-local_cpu: ${AAI_LOCAL_CPU}
+local_cpu: ${AIC_LOCAL_CPU}
 max_local_cpu_size: ${LMCACHE_MAX_LOCAL_CPU_SIZE}
 local_disk: "file:///data/nvme/lmcache-disk"
-max_local_disk_size: ${AAI_LOCAL_DISK_SIZE_GB}
+max_local_disk_size: ${AIC_LOCAL_DISK_SIZE_GB}
 save_decode_cache: true
 pre_caching_hash_algorithm: sha256_cbor
 extra_config:
-  use_odirect: ${AAI_L2_ODIRECT}
+  use_odirect: ${AIC_L2_ODIRECT}
 YML
 }
 
 # gds arm only: standalone lmcache-server with a hipFile GDS L1 slab.
 launch_lmcache_gds() {
-    rm_containers aai-cliff-lmcache
+    rm_containers aic-cliff-lmcache
     log "launching lmcache-server (gds L1 slab) on :${LMCACHE_PORT}"
-    docker run -d --name aai-cliff-lmcache --network host \
+    docker run -d --name aic-cliff-lmcache --network host \
         --device /dev/kfd --device /dev/dri --ipc host \
         --cap-add CAP_SYS_ADMIN --cap-add SYS_PTRACE --security-opt seccomp=unconfined \
         "${HIPFILE_FLAGS[@]}" -v "${GDS_SLAB_DATA}":/data/slab \
         -e LMCACHE_PORT="${LMCACHE_PORT}" -e HIPFILE_ALLOW_COMPAT_MODE="${HIPFILE_ALLOW_COMPAT_MODE}" \
         -e HIPFILE_UNSUPPORTED_FILE_SYSTEMS=true -e PYTHONHASHSEED=0 \
-        --entrypoint /bin/bash "${AAI_IMAGE}" -o pipefail -c \
+        --entrypoint /bin/bash "${AIC_IMAGE}" -o pipefail -c \
         "exec lmcache server --host 0.0.0.0 --port ${LMCACHE_PORT} \
              --l1-size-gb ${LMCACHE_L1_SIZE_GB} --eviction-policy LRU --gds-l1-path /data/slab" >/dev/null
 }
@@ -577,13 +577,13 @@ launch_lmcache_gds() {
 # (VRAM staging buffer -> true GDS).  No standalone server.  NIXL telemetry runs
 # in this process, so its exporter env lives here.
 launch_vllm_kvd_nvme() {
-    rm_containers aai-cliff-kvd-vllm
+    rm_containers aic-cliff-kvd-vllm
     local _l2desc
-    case "${AAI_L2_BACKEND}" in
+    case "${AIC_L2_BACKEND}" in
       local_disk)
         mkdir -p "${NVME_DATA}/lmcache-disk"          # host path -> /data/nvme/lmcache-disk in container
         write_lmcache_localdisk_config
-        _l2desc="LMCache native LocalDiskBackend (POSIX, $([[ "${AAI_L2_ODIRECT}" == true ]] && echo O_DIRECT || echo buffered/page-cache))" ;;
+        _l2desc="LMCache native LocalDiskBackend (POSIX, $([[ "${AIC_L2_ODIRECT}" == true ]] && echo O_DIRECT || echo buffered/page-cache))" ;;
       nixl_posix)
         # NIXL's first-class POSIX plugin (normalized to POSIX + cpu buffer up top).
         # cpu buffer shares LocalCPUBackend's pool (nixl_buffer_size omitted for cpu).
@@ -591,13 +591,13 @@ launch_vllm_kvd_nvme() {
         _l2desc="NIXL POSIX plugin (cpu buffer, shares DRAM pool)" ;;
       *)
         write_lmcache_nixl_config
-        local _iomode; [[ "${AAI_NIXL_BUFFER_DEVICE}" == cuda ]] && _iomode="GDS/GPU-direct" || _iomode="POSIX/compat"
-        _l2desc="NIXL ${AAI_NIXL_BACKEND}, ${AAI_NIXL_BUFFER_DEVICE} buffer -> ${_iomode}" ;;
+        local _iomode; [[ "${AIC_NIXL_BUFFER_DEVICE}" == cuda ]] && _iomode="GDS/GPU-direct" || _iomode="POSIX/compat"
+        _l2desc="NIXL ${AIC_NIXL_BACKEND}, ${AIC_NIXL_BUFFER_DEVICE} buffer -> ${_iomode}" ;;
     esac
-    local _fp=""; [[ -n "${AAI_KV_LOAD_FAILURE_POLICY}" ]] && _fp=",\"kv_load_failure_policy\":\"${AAI_KV_LOAD_FAILURE_POLICY}\""
+    local _fp=""; [[ -n "${AIC_KV_LOAD_FAILURE_POLICY}" ]] && _fp=",\"kv_load_failure_policy\":\"${AIC_KV_LOAD_FAILURE_POLICY}\""
     local kvcfg="{\"kv_connector\":\"LMCacheConnectorV1\",\"kv_role\":\"kv_both\"${_fp}}"
     log "launching connector'd vLLM (LMCacheConnectorV1 + ${_l2desc}) on :${KVD_PORT}"
-    docker run -d --name aai-cliff-kvd-vllm --network host "${GPU_FLAGS[@]}" "${HIPFILE_FLAGS[@]}" \
+    docker run -d --name aic-cliff-kvd-vllm --network host "${GPU_FLAGS[@]}" "${HIPFILE_FLAGS[@]}" \
         -v "${HF_HOME}":/hf "${HF_ENV[@]}" \
         -v "${NVME_DATA}":/data/nvme \
         -v "${LOGDIR}/lmcache-nixl-ais.yml":/config/lmcache-nixl-ais.yml:ro \
@@ -605,7 +605,7 @@ launch_vllm_kvd_nvme() {
         -e HIPFILE_ALLOW_COMPAT_MODE="${HIPFILE_ALLOW_COMPAT_MODE}" -e HIPFILE_UNSUPPORTED_FILE_SYSTEMS=true \
         -e NIXL_TELEMETRY_ENABLE=y -e NIXL_TELEMETRY_EXPORTER=prometheus \
         -e NIXL_TELEMETRY_PROMETHEUS_PORT="${NIXL_METRICS_PORT:-19090}" -e PYTHONHASHSEED=0 \
-        "${AAI_IMAGE}" \
+        "${AIC_IMAGE}" \
             --model "${VLLM_MODEL}" --host 0.0.0.0 --port "${KVD_PORT}" \
             --tensor-parallel-size "${TENSOR_PARALLEL_SIZE}" \
             --gpu-memory-utilization "${VLM_GPU_MEMORY_UTILIZATION}" \
@@ -614,20 +614,20 @@ launch_vllm_kvd_nvme() {
             "${ROPE_ARGS[@]}" \
             --block-size 64 --enable-prefix-caching --kv-cache-dtype fp8 \
             --async-scheduling \
-            --attention-backend "${AAI_ATTENTION_BACKEND}" \
+            --attention-backend "${AIC_ATTENTION_BACKEND}" \
             --disable-access-log-for-endpoints "/health,/metrics,/v1/models" \
             --kv-transfer-config "${kvcfg}" >/dev/null
 }
 
 # gds arm: connector'd vLLM pointing at the standalone lmcache-server (MP).
 launch_vllm_kvd_gds() {
-    rm_containers aai-cliff-kvd-vllm
-    local _fp=""; [[ -n "${AAI_KV_LOAD_FAILURE_POLICY}" ]] && _fp=",\"kv_load_failure_policy\":\"${AAI_KV_LOAD_FAILURE_POLICY}\""
+    rm_containers aic-cliff-kvd-vllm
+    local _fp=""; [[ -n "${AIC_KV_LOAD_FAILURE_POLICY}" ]] && _fp=",\"kv_load_failure_policy\":\"${AIC_KV_LOAD_FAILURE_POLICY}\""
     local kvcfg="{\"kv_connector\":\"LMCacheMPConnector\",\"kv_role\":\"kv_both\"${_fp},\"kv_connector_extra_config\":{\"lmcache.mp.host\":\"tcp://localhost\",\"lmcache.mp.port\":${LMCACHE_PORT}}}"
     log "launching connector'd vLLM (LMCacheMPConnector) on :${KVD_PORT}"
-    docker run -d --name aai-cliff-kvd-vllm --network host "${GPU_FLAGS[@]}" \
+    docker run -d --name aic-cliff-kvd-vllm --network host "${GPU_FLAGS[@]}" \
         -v "${HF_HOME}":/hf "${HF_ENV[@]}" \
-        "${AAI_IMAGE}" \
+        "${AIC_IMAGE}" \
             --model "${VLLM_MODEL}" --host 0.0.0.0 --port "${KVD_PORT}" \
             --tensor-parallel-size "${TENSOR_PARALLEL_SIZE}" \
             --gpu-memory-utilization "${VLM_GPU_MEMORY_UTILIZATION}" \
@@ -636,7 +636,7 @@ launch_vllm_kvd_gds() {
             "${ROPE_ARGS[@]}" \
             --block-size 64 --enable-prefix-caching --kv-cache-dtype fp8 \
             --async-scheduling \
-            --attention-backend "${AAI_ATTENTION_BACKEND}" \
+            --attention-backend "${AIC_ATTENTION_BACKEND}" \
             --disable-access-log-for-endpoints "/health,/metrics,/v1/models" \
             --kv-transfer-config "${kvcfg}" >/dev/null
 }
@@ -647,29 +647,29 @@ run_arm_kvd() {  # $1=mode(nvme|gds) $2=out_csv
     if [[ "${mode}" == "gds" ]]; then
         launch_lmcache_gds || { log "kvd/gds: lmcache failed to start"; return 1; }
         sleep 5
-        launch_vllm_kvd_gds || { log "kvd/gds: vllm failed to start"; stop_containers aai-cliff-lmcache; return 1; }
+        launch_vllm_kvd_gds || { log "kvd/gds: vllm failed to start"; stop_containers aic-cliff-lmcache; return 1; }
         if ! wait_ready "${KVD_PORT}"; then
             log "kvd/gds: server never became ready; last logs:"
-            docker logs --tail 40 aai-cliff-lmcache 2>&1 | sed 's/^/  [lmcache] /'
-            docker logs --tail 40 aai-cliff-kvd-vllm 2>&1 | sed 's/^/  [vllm]    /'
-            stop_containers aai-cliff-kvd-vllm aai-cliff-lmcache; return 1
+            docker logs --tail 40 aic-cliff-lmcache 2>&1 | sed 's/^/  [lmcache] /'
+            docker logs --tail 40 aic-cliff-kvd-vllm 2>&1 | sed 's/^/  [vllm]    /'
+            stop_containers aic-cliff-kvd-vllm aic-cliff-lmcache; return 1
         fi
         run_bench kvd_v2 "${KVD_PORT}" "${out}" --warmup-at-each-c --post-warmup-sleep-s 5
         local rc=$?
-        stop_containers aai-cliff-kvd-vllm aai-cliff-lmcache
+        stop_containers aic-cliff-kvd-vllm aic-cliff-lmcache
         return $rc
     fi
     # nvme: in-process LMCacheConnectorV1, no standalone server.
     launch_vllm_kvd_nvme || { log "kvd/nvme: vllm failed to start"; return 1; }
     if ! wait_ready "${KVD_PORT}"; then
         log "kvd/nvme: server never became ready; last logs:"
-        docker logs --tail 60 aai-cliff-kvd-vllm 2>&1 | sed 's/^/  [vllm] /'
-        stop_containers aai-cliff-kvd-vllm; return 1
+        docker logs --tail 60 aic-cliff-kvd-vllm 2>&1 | sed 's/^/  [vllm] /'
+        stop_containers aic-cliff-kvd-vllm; return 1
     fi
     # Per-c warmup + drain: required for per_client mode and async-save kvd.
     run_bench kvd_v2 "${KVD_PORT}" "${out}" --warmup-at-each-c --post-warmup-sleep-s 5
     local rc=$?
-    stop_containers aai-cliff-kvd-vllm
+    stop_containers aic-cliff-kvd-vllm
     return $rc
 }
 
@@ -684,18 +684,18 @@ declare -A STATUS
 # scrapes the whole sweep; torn down via the EXIT trap (TSDB retained on NFS).
 start_monitoring
 
-# Run only the arms named in AAI_CLIFF_ARMS (comma list of vram,nvme,gds).
-_arm_on() { case ",${AAI_CLIFF_ARMS}," in *",$1,"*) return 0 ;; *) return 1 ;; esac; }
-for _a in ${AAI_CLIFF_ARMS//,/ }; do
-    case "${_a}" in vram|nvme|gds) ;; *) die "unknown arm '${_a}' in AAI_CLIFF_ARMS (valid: vram,nvme,gds)" ;; esac
+# Run only the arms named in AIC_CLIFF_ARMS (comma list of vram,nvme,gds).
+_arm_on() { case ",${AIC_CLIFF_ARMS}," in *",$1,"*) return 0 ;; *) return 1 ;; esac; }
+for _a in ${AIC_CLIFF_ARMS//,/ }; do
+    case "${_a}" in vram|nvme|gds) ;; *) die "unknown arm '${_a}' in AIC_CLIFF_ARMS (valid: vram,nvme,gds)" ;; esac
 done
-log "arms        : ${AAI_CLIFF_ARMS}"
+log "arms        : ${AIC_CLIFF_ARMS}"
 log "isl/prefix  : ISL=${BENCH_ISL} shared=${BENCH_SHARED_TOK} max_model_len=${VLM_MAX_MODEL_LEN}${VLM_ROPE_SCALING:+ rope_scaling=${VLM_ROPE_SCALING}}"
 # Tier sizing — echo the EFFECTIVE values so a mis-propagated override is visible.
 # nixl_pool_size is a SLOT count (~4.5 MiB/slot for Qwen2.5-3B); 4096 slots ≈ 18 GiB
 # is far too small for long-ISL working sets (a silent 4096 caused the c>=32 cliff
 # collapse in jobs 67536798/67537066 — the LMCACHE_NVME_POOL override didn't land).
-log "tiers       : l2_backend=${AAI_L2_BACKEND} nixl_backend=${AAI_NIXL_BACKEND} local_cpu=${AAI_LOCAL_CPU} max_local_cpu_size=${LMCACHE_MAX_LOCAL_CPU_SIZE}GB nixl_pool_size=${LMCACHE_NVME_POOL} slots (~$(( LMCACHE_NVME_POOL * 45 / 10 / 1024 )) GiB) nixl_buffer_device=${AAI_NIXL_BUFFER_DEVICE} gds_l1=${LMCACHE_L1_SIZE_GB}GB local_disk=${AAI_LOCAL_DISK_SIZE_GB}GB(odirect=${AAI_L2_ODIRECT})"
+log "tiers       : l2_backend=${AIC_L2_BACKEND} nixl_backend=${AIC_NIXL_BACKEND} local_cpu=${AIC_LOCAL_CPU} max_local_cpu_size=${LMCACHE_MAX_LOCAL_CPU_SIZE}GB nixl_pool_size=${LMCACHE_NVME_POOL} slots (~$(( LMCACHE_NVME_POOL * 45 / 10 / 1024 )) GiB) nixl_buffer_device=${AIC_NIXL_BUFFER_DEVICE} gds_l1=${LMCACHE_L1_SIZE_GB}GB local_disk=${AIC_LOCAL_DISK_SIZE_GB}GB(odirect=${AIC_L2_ODIRECT})"
 
 if _arm_on vram; then run_arm_vram && STATUS[vram_only]=ok || STATUS[vram_only]=FAIL; else STATUS[vram_only]=skip; fi
 if _arm_on nvme; then run_arm_kvd nvme "${KVD_NVME_CSV}" && STATUS[kvd_nvme]=ok || STATUS[kvd_nvme]=FAIL; else STATUS[kvd_nvme]=skip; fi
@@ -716,7 +716,7 @@ run_plot() {  # $1=out_subdir  $2..=candidate CSV paths (absolute)
     (( ${#inputs[@]} )) || { log "plot ${sub}: no CSVs, skipping"; return; }
     mkdir -p "${PLOTS}/${sub}"
     docker run --rm --network host -v "${REPO}":/work -w /work \
-        --entrypoint python3 "${AAI_IMAGE}" \
+        --entrypoint python3 "${AIC_IMAGE}" \
         benchmarks/plot_cliff.py \
             --input "${inputs[@]}" \
             --output-dir "${LOGDIR_REL}/plots/${sub}" \
@@ -731,13 +731,13 @@ if [[ ! -s "${KVD_NVME_CSV}" && ! -s "${KVD_GDS_CSV}" && -s "${VRAM_CSV}" ]]; th
 fi
 
 # --- Cleanup local NVMe scratch ---------------------------------------------
-rm -rf "${AAI_LOCAL_ROOT}" 2>/dev/null || true
+rm -rf "${AIC_LOCAL_ROOT}" 2>/dev/null || true
 
 log "===================== SUMMARY ====================="
 for k in vram_only kvd_nvme kvd_gds; do log "  ${k}: ${STATUS[$k]:-?}"; done
 log "  CSVs  : ${RESULTS}"
 log "  plots : ${PLOTS}/{vram,nvme,gds} (per arm that ran)"
-[[ "${AAI_MONITORING}" == "1" ]] && log "  metrics: ${AAI_METRICS_DIR} (Prometheus TSDB)"
+[[ "${AIC_MONITORING}" == "1" ]] && log "  metrics: ${AIC_METRICS_DIR} (Prometheus TSDB)"
 log "==================================================="
 # Fail the job if any arm that actually ran failed; skipped arms don't count.
 rc=0

@@ -161,7 +161,7 @@ _monitoring_run_up() {
         local amdgpu_port=5000 amdgpu_cfg="${MON_DIR}/amdgpu-exporter/config.json"
         if _port_in_use 5000; then
             amdgpu_port=5050
-            amdgpu_cfg="/tmp/aai-amdgpu-config.${SLURM_JOB_ID:-$$}.json"
+            amdgpu_cfg="/tmp/aic-amdgpu-config.${SLURM_JOB_ID:-$$}.json"
             sed 's/"ServerPort":[[:space:]]*5000/"ServerPort": 5050/' \
                 "${MON_DIR}/amdgpu-exporter/config.json" > "${amdgpu_cfg}"
             log "  aic-amdgpu-exporter: :5000 busy but not a GPU exporter (phantom); using :5050"

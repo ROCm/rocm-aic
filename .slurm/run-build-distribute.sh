@@ -103,7 +103,7 @@
 #                        (e.g. registry-sc-harbor.amd.com/<proj>/rocm-aic:buildcache)
 #                        (default: unset)
 #   AIC_CACHE_MODE       cache mode: min | max              (default: max)
-#   AIC_BUILDX_BUILDER   docker-container buildx builder name (default: aai-cache)
+#   AIC_BUILDX_BUILDER   docker-container buildx builder name (default: aic-cache)
 #   AIC_CACHE_INSECURE   set to 1 when AIC_CACHE_REF has an untrusted TLS cert
 #                        (self-signed / private-CA HTTPS, e.g. the in-cluster
 #                        Artifactory): the docker-container builder does NOT inherit
@@ -185,7 +185,7 @@ AIC_PUSH_REF="${AIC_PUSH_REF:-}"
 AIC_CACHE_DIR="${AIC_CACHE_DIR:-}"
 AIC_CACHE_REF="${AIC_CACHE_REF:-}"
 AIC_CACHE_MODE="${AIC_CACHE_MODE:-max}"
-AIC_BUILDX_BUILDER="${AIC_BUILDX_BUILDER:-aai-cache}"
+AIC_BUILDX_BUILDER="${AIC_BUILDX_BUILDER:-aic-cache}"
 AIC_CACHE_INSECURE="${AIC_CACHE_INSECURE:-}"
 AIC_TEST_TIME="${AIC_TEST_TIME:-00:20:00}"
 AIC_TEST_CPUS="${AIC_TEST_CPUS:-8}"
@@ -429,8 +429,8 @@ cmd_build() {
             # registries speak HTTPS (plain HTTP gets a 400).
             if [[ "${AIC_CACHE_INSECURE}" == "1" ]]; then
                 local _cache_host="${AIC_CACHE_REF%%/*}"
-                _cfg_arg=" --config /tmp/buildkitd-aai.toml"
-                _pre="printf '[registry.\"%s\"]\n  insecure = true\n' '${_cache_host}' > /tmp/buildkitd-aai.toml; "
+                _cfg_arg=" --config /tmp/buildkitd-aic.toml"
+                _pre="printf '[registry.\"%s\"]\n  insecure = true\n' '${_cache_host}' > /tmp/buildkitd-aic.toml; "
                 log "build cache: skipping TLS verification for ${_cache_host} (AIC_CACHE_INSECURE=1)"
             fi
         else
@@ -538,7 +538,7 @@ REMOTE
 # The nvme_exporter / rdma_exporter images are small (Debian slim + a prebuilt
 # release binary) and gfx-arch-independent.  Like cmd_build, we do NOT `docker
 # save`: on a node whose default builder is the docker-container driver (the
-# `aai-cache` builder this script creates), `docker build` builds inside BuildKit
+# `aic-cache` builder this script creates), `docker build` builds inside BuildKit
 # and `docker save` can miss the layer blobs -- yielding a truncated tarball
 # (observed: a 1.5K "image").  Instead we export a docker-format tar straight
 # from BuildKit with `--output type=docker,dest=-` piped into the compressor,
