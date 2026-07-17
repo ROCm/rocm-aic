@@ -9,7 +9,7 @@ on:
     types: [created]
 
 jobs:
-  # Validate /run-ci slash command on PRs; skipped for push and schedule triggers
+  # Validate /run-ci slash command on PRs; skipped for schedule and manual triggers
   authorize:
     if: >
       github.event_name != 'issue_comment' || (
@@ -69,10 +69,10 @@ jobs:
               content: 'eyes',
             });
 
-  hardware-test:
+  dist-build:
     needs: authorize
     runs-on: [self-hosted, rocm-aic-cicd]
-    timeout-minutes: 90
+    timeout-minutes: 120
     permissions:
       pull-requests: write
       statuses: write
@@ -88,13 +88,14 @@ jobs:
               repo: context.repo.repo,
               sha: '${{ needs.authorize.outputs.sha }}',
               state: 'pending',
-              context: 'hardware-ci / amd-aic-spur',
-              description: 'Running on amd-aic-spur...',
+              context: 'hardware-ci / dist-build',
+              description: 'Building image on amd-aic-spur...',
             });
 
-      - name: Run CI on amd-aic-spur
-        id: spur
-        run: bash /usr/local/lib/aic-ci/run-spur-ci.sh
+      - uses: actions/checkout@v4
+
+      - name: Build image on amd-aic-spur
+        run: bash .github/scripts/spur-dist-build.sh "${{ needs.authorize.outputs.sha }}"
 
       - name: Set commit status on success
         if: success() && needs.authorize.outputs.pr_number != ''
@@ -106,8 +107,8 @@ jobs:
               repo: context.repo.repo,
               sha: '${{ needs.authorize.outputs.sha }}',
               state: 'success',
-              context: 'hardware-ci / amd-aic-spur',
-              description: 'All hardware tests passed',
+              context: 'hardware-ci / dist-build',
+              description: 'Image built successfully',
             });
 
       - name: Set commit status on failure
@@ -120,8 +121,76 @@ jobs:
               repo: context.repo.repo,
               sha: '${{ needs.authorize.outputs.sha }}',
               state: 'failure',
-              context: 'hardware-ci / amd-aic-spur',
-              description: 'Hardware tests failed — check the run logs',
+              context: 'hardware-ci / dist-build',
+              description: 'Image build failed — check the run logs',
+            });
+
+      - name: Post failure comment on PR
+        if: failure() && needs.authorize.outputs.pr_number != ''
+        uses: actions/github-script@v8
+        with:
+          script: |
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: ${{ needs.authorize.outputs.pr_number || 0 }},
+              body: `❌ dist-build failed for ${{ needs.authorize.outputs.sha }}. [View logs](https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}).`,
+            });
+
+  smoke-test:
+    needs: [authorize, dist-build]
+    runs-on: [self-hosted, rocm-aic-cicd]
+    timeout-minutes: 60
+    permissions:
+      pull-requests: write
+      statuses: write
+
+    steps:
+      - name: Set commit status to pending
+        if: needs.authorize.outputs.pr_number != ''
+        uses: actions/github-script@v8
+        with:
+          script: |
+            await github.rest.repos.createCommitStatus({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              sha: '${{ needs.authorize.outputs.sha }}',
+              state: 'pending',
+              context: 'hardware-ci / smoke-test',
+              description: 'Running smoke test on amd-aic-spur...',
+            });
+
+      - uses: actions/checkout@v4
+
+      - name: Run smoke test on amd-aic-spur
+        run: bash .github/scripts/spur-smoke-test.sh "${{ needs.authorize.outputs.sha }}"
+
+      - name: Set commit status on success
+        if: success() && needs.authorize.outputs.pr_number != ''
+        uses: actions/github-script@v8
+        with:
+          script: |
+            await github.rest.repos.createCommitStatus({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              sha: '${{ needs.authorize.outputs.sha }}',
+              state: 'success',
+              context: 'hardware-ci / smoke-test',
+              description: 'Smoke test passed',
+            });
+
+      - name: Set commit status on failure
+        if: failure() && needs.authorize.outputs.pr_number != ''
+        uses: actions/github-script@v8
+        with:
+          script: |
+            await github.rest.repos.createCommitStatus({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              sha: '${{ needs.authorize.outputs.sha }}',
+              state: 'failure',
+              context: 'hardware-ci / smoke-test',
+              description: 'Smoke test failed — check the run logs',
             });
 
       - name: Post result comment on PR
@@ -136,5 +205,5 @@ jobs:
               issue_number: ${{ needs.authorize.outputs.pr_number || 0 }},
               body: success
                 ? `✅ Hardware CI passed for ${{ needs.authorize.outputs.sha }}.`
-                : `❌ Hardware CI failed for ${{ needs.authorize.outputs.sha }}. [View logs](https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}).`,
+                : `❌ Smoke test failed for ${{ needs.authorize.outputs.sha }}. [View logs](https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}).`,
             });
