@@ -197,6 +197,9 @@ help:
 	@echo "  make cliff-long-128k   sbatch a 128k-ISL YaRN(x4) 3-arm sweep (extreme; big DRAM/slab pools)"
 	@echo "    Chain like the old run-this.sh:  make dist-build dist-push smoke-test"
 	@echo "    Pin a node: AIC_CLIFF_NODE=<node>   Narrow arms: AIC_CLIFF_ARMS=nvme (vram,nvme,gds)"
+	@echo "    Target another GFX: AIC_CLIFF_GFX=gfx950 (or AIC_CLIFF_CONSTRAINT=MARKHAM&GFX90A)"
+	@echo "      non-gfx942 nodes: no local NVMe (nvme/gds arms fall back to /tmp); the model"
+	@echo "      auto-selects by GPU arch (big CDNA=gpt-oss-120b, else Qwen2.5-3B); image is multi-arch"
 	@echo "    Override sweep/model via env: BENCH_CONCUR=1,8,64 VLLM_MODEL=... make cliff-submit"
 	@echo "    AIC_CACHE_DIR=$(AIC_CACHE_DIR)  (shared BuildKit cache; set empty to disable)"
 	@echo ""
@@ -394,7 +397,38 @@ smoke-test:                    # Load + smoke-test the image on a GPU+NVMe node
 # _CLIFF_SBATCH_ARGS: partition + constraint overrides passed on the sbatch
 # command line (takes precedence over #SBATCH directives in run-cliff.sbatch).
 # On SPUR, override to amd-spur with no constraint and no --gres (no GPU GRES
-# configured); on standard Slurm the script's own #SBATCH lines take effect.
+# configured); on standard Slurm we pass $(AIC_CLIFF_CONSTRAINT) (below).
+#
+# ---- cliff GFX / constraint selection ----
+# By default the cliff job runs on a Markham MI300X (gfx942) node with local
+# NVMe -- the validated tiered-cache path.  To target another GFX arch, set
+#   AIC_CLIFF_GFX=gfx950        -> expands to constraint "MARKHAM&GFX950"
+# (the &NVME requirement is dropped, since only gfx942 nodes advertise NVME),
+# or pass a full Slurm constraint expression directly via
+#   AIC_CLIFF_CONSTRAINT=MARKHAM&GFX90A
+# AIC_CLIFF_CONSTRAINT wins if both are set; either overrides the #SBATCH
+# --constraint line baked into run-cliff.sbatch.  Caveats for non-gfx942 nodes:
+#   * no local NVMe -> the nvme/gds arms fall back to root-disk /tmp
+#     (AIC_NVME_AUTO case 4): slower and less representative, but they run.
+#   * gpt-oss-120b will NOT fit on small-VRAM parts (gfx1100/1151/1201; tight on
+#     gfx90a), so the job auto-selects the model from the node's detected GPU
+#     arch (big CDNA gfx942/gfx950 -> gpt-oss-120b, everything else -> a small
+#     model); see select_default_model in .slurm/run-cliff.sbatch.  Override with
+#     VLLM_MODEL=<pre-staged model> (offline HF_HOME) or the AIC_MODEL_BIG/
+#     AIC_MODEL_SMALL tier knobs.
+#   * the loaded image must contain kernels for the target arch.  This is
+#     already the case: `make dist-build` is multi-arch by default (AIC_ROCM_ARCH
+#     defaults to gfx90a;gfx942;gfx950;gfx1100;gfx1101;gfx1150;gfx1151;gfx1200;
+#     gfx1201 -- see .slurm/run-build-distribute.sh).  RDNA parts have no
+#     NVMe-DMA hardware, so the gds arm is CDNA-only there.
+AIC_CLIFF_GFX ?=
+ifeq ($(strip $(AIC_CLIFF_CONSTRAINT)),)
+ifneq ($(strip $(AIC_CLIFF_GFX)),)
+AIC_CLIFF_CONSTRAINT := MARKHAM&$(shell echo '$(AIC_CLIFF_GFX)' | tr '[:lower:]' '[:upper:]')
+else
+AIC_CLIFF_CONSTRAINT := MARKHAM&GFX942&NVME
+endif
+endif
 ifeq ($(AIC_SPUR_CLUSTER),1)
 _CLIFF_SPUR_CTL  := SPUR_CONTROLLER_ADDR=$(AIC_SPUR_CONTROLLER)
 _CLIFF_SBATCH_ARGS := --partition=amd-spur --constraint= \
@@ -404,7 +438,10 @@ _CLIFF_SUBMIT     = $(_CLIFF_SPUR_CTL) $(_CLIFF_STRIP) sbatch \
     $(_CLIFF_SBATCH_ARGS) $(1) .slurm/run-cliff.sbatch 2>&1 | \
     tee /dev/stderr | grep -oE '[0-9]+$$' | tail -1
 else
-_CLIFF_SBATCH_ARGS := $(if $(AIC_CLIFF_NODE),--nodelist=$(AIC_CLIFF_NODE),)
+# NB: single-quote the constraint -- it contains '&' (a shell metacharacter) that
+# would otherwise background the sbatch call in the recipe subshell.
+_CLIFF_SBATCH_ARGS := --constraint='$(AIC_CLIFF_CONSTRAINT)' \
+    $(if $(AIC_CLIFF_NODE),--nodelist=$(AIC_CLIFF_NODE),)
 _CLIFF_SUBMIT     = $(_CLIFF_STRIP) sbatch --parsable \
     $(_CLIFF_SBATCH_ARGS) $(1) .slurm/run-cliff.sbatch
 endif

@@ -6,6 +6,18 @@
 #
 #SBATCH --job-name=aic-day-cliff
 #SBATCH --partition=defq
+# Default: a Markham MI300X (gfx942) node with local NVMe -- the validated
+# tiered-cache path.  To target another GFX arch, override the constraint on the
+# sbatch command line (a command-line --constraint wins over this directive),
+# most easily via the Makefile knobs:
+#   make cliff-submit AIC_CLIFF_GFX=gfx950
+#   make cliff-submit AIC_CLIFF_CONSTRAINT=MARKHAM&GFX90A
+# Non-gfx942 nodes have no local NVMe, so the nvme/gds arms drop to /tmp
+# (AIC_NVME_AUTO case 4).  The model is auto-selected from the node's GPU arch
+# (big CDNA gfx942/gfx950 -> gpt-oss-120b, else a small model; see
+# select_default_model below) unless VLLM_MODEL is set.  The default image
+# already carries kernels for every arch (`make dist-build` is multi-arch by
+# default), so no rebuild is needed.
 #SBATCH --constraint=MARKHAM&GFX942&NVME
 #SBATCH --gres=gpu:1
 #SBATCH --nodes=1
@@ -85,8 +97,17 @@ fi
 
 AIC_IMAGE="${AIC_IMAGE:-rocm-aic:latest}"
 AIC_IMAGE_DIR="${AIC_IMAGE_DIR:-/scratch/${USER}/images}"
-VLLM_MODEL="${VLLM_MODEL:-openai/gpt-oss-120b}"
-# Shared HF cache that already holds gpt-oss-120b (see plan); offline so no token.
+# Model selection.  Leave VLLM_MODEL empty to auto-pick a default from the node's
+# detected GPU arch (select_default_model(), below): gpt-oss-120b (~60 GB MXFP4)
+# fits the big-VRAM CDNA parts (MI300X gfx942 / MI350X gfx950) but NOT the
+# smaller-VRAM arches (MI210 gfx90a 64 GB, MI100 gfx908, and all RDNA gfx11xx/
+# gfx12xx), which get a small model instead.  A caller-set VLLM_MODEL is always
+# honored as-is (no arch check).  Both tier defaults are overridable and MUST be
+# pre-staged in HF_HOME (offline): AIC_MODEL_BIG / AIC_MODEL_SMALL.
+VLLM_MODEL="${VLLM_MODEL:-}"
+AIC_MODEL_BIG="${AIC_MODEL_BIG:-openai/gpt-oss-120b}"            # >=128 GB HBM CDNA (gfx942/gfx950)
+AIC_MODEL_SMALL="${AIC_MODEL_SMALL:-Qwen/Qwen2.5-3B-Instruct}"  # small-VRAM parts (staged in the shared HF cache)
+# Shared HF cache that already holds gpt-oss-120b + Qwen2.5-3B; offline so no token.
 HF_HOME="${HF_HOME:-/scratch/${USER}/vllm-lmcache-hipfile/hf}"
 
 # Storage for the LMCache tiers (see the storage note above).  With
@@ -193,6 +214,12 @@ fi
 # gpt-oss can't unify its KV-cache specs under a connector on 0.25.  Same backend
 # on all arms keeps baseline (vram) and kvd comparable.
 AIC_ATTENTION_BACKEND="${AIC_ATTENTION_BACKEND:-TRITON_ATTN}"
+# KV-cache dtype + AITER are MI300/MI350 (CDNA3+) features: fp8 KV cache and the
+# ROCm AITER kernels fail vLLM engine init on MI100/MI210 (no native fp8) and on
+# RDNA.  Defaults reproduce the release config (fp8 + aiter) for gfx942/gfx950;
+# for older/consumer arches pass AIC_KV_CACHE_DTYPE=auto AIC_ROCM_USE_AITER=0.
+AIC_KV_CACHE_DTYPE="${AIC_KV_CACHE_DTYPE:-fp8}"
+AIC_ROCM_USE_AITER="${AIC_ROCM_USE_AITER:-1}"
 
 VRAM_PORT=8001
 KVD_PORT=8000
@@ -306,9 +333,54 @@ provision_storage() {
     GDS_SLAB_DATA="${GDS_SLAB_DATA:-${AIC_LOCAL_ROOT}/slab}"  # GDS L1 slab
 }
 
+# Detect the node's GPU arch (gfxNNNN) for default-model selection.  Prefer the
+# host ROCm tools; if neither is on the host PATH, peek at KFD sysfs
+# (gfx_target_version, e.g. 90402 -> gfx942, 110000 -> gfx1100).  Echoes the arch
+# or nothing.
+detect_gpu_arch() {
+    local a v maj min stp
+    a="$(rocm_agent_enumerator 2>/dev/null | grep -m1 -E '^gfx[0-9a-f]+')" \
+        && [[ -n "${a}" ]] && { printf '%s' "${a}"; return; }
+    a="$(rocminfo 2>/dev/null | grep -m1 -oE 'gfx[0-9a-f]+')" \
+        && [[ -n "${a}" ]] && { printf '%s' "${a}"; return; }
+    for f in /sys/class/kfd/kfd/topology/nodes/*/properties; do
+        v="$(grep -m1 '^gfx_target_version ' "${f}" 2>/dev/null | awk '{print $2}')"
+        [[ "${v}" =~ ^[0-9]+$ && "${v}" -gt 0 ]] || continue
+        maj=$(( v / 10000 )); min=$(( (v / 100) % 100 )); stp=$(( v % 100 ))
+        printf 'gfx%d%x%x' "${maj}" "${min}" "${stp}"; return
+    done
+}
+
+# Choose VLLM_MODEL from the detected arch unless the caller pinned it.  Big-VRAM
+# CDNA -> AIC_MODEL_BIG; everything else (incl. unknown/undetectable, played
+# safe) -> AIC_MODEL_SMALL, except detection failure defaults to BIG to preserve
+# the historical gfx942 behavior.
+select_default_model() {
+    if [[ -n "${VLLM_MODEL}" ]]; then
+        log "model       : ${VLLM_MODEL} (pinned by caller)"
+        return
+    fi
+    local arch; arch="$(detect_gpu_arch)"
+    case "${arch}" in
+        gfx942|gfx950)
+            VLLM_MODEL="${AIC_MODEL_BIG}"
+            log "model       : auto (${arch}, big-VRAM CDNA) -> ${VLLM_MODEL}" ;;
+        gfx90a|gfx908|gfx906|gfx11??|gfx12??)
+            VLLM_MODEL="${AIC_MODEL_SMALL}"
+            log "model       : auto (${arch}, small-VRAM) -> ${VLLM_MODEL}" ;;
+        "")
+            VLLM_MODEL="${AIC_MODEL_BIG}"
+            log "model       : WARN could not detect GPU arch; defaulting to ${VLLM_MODEL} (set VLLM_MODEL to override)" ;;
+        *)
+            VLLM_MODEL="${AIC_MODEL_SMALL}"
+            log "model       : auto (unrecognized arch ${arch}) -> conservative ${VLLM_MODEL}" ;;
+    esac
+}
+
 log "host        : $(hostname)  job=${SLURM_JOB_ID:-manual}"
 log "image       : ${AIC_IMAGE}"
-log "model       : ${VLLM_MODEL}  (HF_HOME=${HF_HOME}, offline)"
+select_default_model
+log "model HF_HOME: ${HF_HOME} (offline)"
 provision_storage
 log "local NVMe  : ${NVME_DATA}"
 log "results     : ${RESULTS}"
@@ -395,7 +467,7 @@ HF_ENV=(-e HF_HOME=/hf -e HF_HUB_CACHE=/hf/hub -e HF_HUB_OFFLINE=1
         # VLLM_ROCM_USE_AITER=1 the ROCM_AITER_UNIFIED_ATTN backend is rejected and
         # vLLM falls back to TRITON_ATTN -> "Hybrid KV cache manager is disabled but
         # failed to convert the KV cache specs" at engine init.
-        -e VLLM_ROCM_USE_AITER=1)
+        -e VLLM_ROCM_USE_AITER=${AIC_ROCM_USE_AITER})
 
 # --- Helpers -----------------------------------------------------------------
 wait_ready() {  # $1=port $2=timeout_s
@@ -473,7 +545,7 @@ run_arm_vram() {
             --max-model-len "${VLM_MAX_MODEL_LEN}" \
             --max-num-batched-tokens "${VLM_MAX_NUM_BATCHED_TOKENS}" \
             "${ROPE_ARGS[@]}" \
-            --block-size 64 --enable-prefix-caching --kv-cache-dtype fp8 \
+            --block-size 64 --enable-prefix-caching --kv-cache-dtype ${AIC_KV_CACHE_DTYPE} \
             --async-scheduling \
             --attention-backend "${AIC_ATTENTION_BACKEND}" \
             --disable-access-log-for-endpoints "/health,/metrics,/v1/models" \
@@ -612,7 +684,7 @@ launch_vllm_kvd_nvme() {
             --max-model-len "${VLM_MAX_MODEL_LEN}" \
             --max-num-batched-tokens "${VLM_MAX_NUM_BATCHED_TOKENS}" \
             "${ROPE_ARGS[@]}" \
-            --block-size 64 --enable-prefix-caching --kv-cache-dtype fp8 \
+            --block-size 64 --enable-prefix-caching --kv-cache-dtype ${AIC_KV_CACHE_DTYPE} \
             --async-scheduling \
             --attention-backend "${AIC_ATTENTION_BACKEND}" \
             --disable-access-log-for-endpoints "/health,/metrics,/v1/models" \
@@ -634,7 +706,7 @@ launch_vllm_kvd_gds() {
             --max-model-len "${VLM_MAX_MODEL_LEN}" \
             --max-num-batched-tokens "${VLM_MAX_NUM_BATCHED_TOKENS}" \
             "${ROPE_ARGS[@]}" \
-            --block-size 64 --enable-prefix-caching --kv-cache-dtype fp8 \
+            --block-size 64 --enable-prefix-caching --kv-cache-dtype ${AIC_KV_CACHE_DTYPE} \
             --async-scheduling \
             --attention-backend "${AIC_ATTENTION_BACKEND}" \
             --disable-access-log-for-endpoints "/health,/metrics,/v1/models" \
