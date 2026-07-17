@@ -1,0 +1,37 @@
+# vLLM v0.25.1: break circular import in _get_gcn_arch() module-level call
+#
+# _get_gcn_arch() is called at rocm.py module-load time (_GCN_ARCH = _get_gcn_arch()).
+# When amdsmi fails (which it does after torch has init'd the HIP runtime — see
+# patch 01), the fallback calls logger.warning_once().  warning_once() checks log
+# scope by importing vllm.distributed.parallel_state → vllm.distributed.utils →
+# vllm.utils.system_utils → `from vllm.platforms import current_platform`.  But
+# current_platform is the thing that triggered the import of rocm.py in the first
+# place, so this is a circular import that ends with:
+#   ImportError: cannot import name 'current_platform' from 'vllm.platforms'
+#
+# Fix: replace the logger.warning_once() call with a plain sys.stderr write.
+# The fallback (torch.cuda.get_device_properties) still runs; only the log
+# mechanism changes to break the cycle.
+#
+--- a/vllm/platforms/rocm.py
++++ b/vllm/platforms/rocm.py
+@@ -194,11 +194,14 @@
+         return _query_gcn_arch_from_amdsmi()
+     except Exception as e:
+         logger.debug("Failed to get GCN arch via amdsmi: %s", e)
+-        logger.warning_once(
+-            "Failed to get GCN arch via amdsmi, falling back to torch.cuda. "
+-            "This will initialize CUDA and may cause "
+-            "issues if CUDA_VISIBLE_DEVICES is not set yet."
+-        )
++        # Use sys.stderr instead of logger.warning_once here: warning_once
++        # triggers a logger scope check that imports vllm.distributed, which
++        # imports vllm.platforms.current_platform — a circular import at
++        # module-load time (this function is called as _GCN_ARCH = _get_gcn_arch()).
++        import sys
++        print("[vllm] WARNING: Failed to get GCN arch via amdsmi, "
++              "falling back to torch.cuda (will initialize CUDA).\n",
++              file=sys.stderr)
+     # Ultimate fallback: use torch.cuda (will initialize CUDA)
+     return torch.cuda.get_device_properties("cuda").gcnArchName
+ 

@@ -2,7 +2,8 @@
 #
 # SPDX-License-Identifier: MIT
 #
-# Nightly pip wheels for the AMD Infinity Context (AIC) patched LMCache + ROCm NIXL.
+# Nightly pip wheels for the AMD Infinity Context (AIC): source-built vLLM,
+# patched LMCache, and ROCm NIXL.
 #
 # Each night, if main changed since the last nightly, this builds the AIC
 # image's `wheels` stage on a GitHub-hosted runner (no GPU needed -- hipcc
@@ -10,10 +11,11 @@
 # rolling GitHub Release tagged `nightly`.  People then:
 #
 #   pip install \
+#     https://github.com/ROCm/rocm-aic/releases/download/nightly/vllm-<ver>-cp312-cp312-linux_x86_64.whl \
 #     https://github.com/ROCm/rocm-aic/releases/download/nightly/lmcache-<ver>-cp312-cp312-linux_x86_64.whl \
 #     https://github.com/ROCm/rocm-aic/releases/download/nightly/nixl_rocm-<ver>-cp312-cp312-linux_x86_64.whl
 #
-# COMPATIBILITY: the wheels are ROCm 7.2.x / Python 3.12 / x86_64 and are NOT
+# COMPATIBILITY: the wheels are ROCm 7.14 / Python 3.12 / x86_64 and are NOT
 # manylinux -- they only install-and-work on a matching ROCm host.  The NIXL
 # wheel carries libnixl + plugins/UCX but leaves the ROCm runtime (libamdhip64,
 # hipFile) as an external dependency.  See README.md.
@@ -163,7 +165,8 @@ jobs:
           wheels=(wheels/*.whl)
           echo "Extracted ${#wheels[@]} wheel(s):"
           for w in "${wheels[@]}"; do echo "  - $(basename "$w") ($(du -h "$w" | cut -f1))"; done
-          # Expect at least one lmcache and one nixl_rocm wheel.
+          # Expect vllm, lmcache, and nixl_rocm wheels.
+          ls wheels/vllm-*.whl      >/dev/null || { echo "ERROR: no vllm wheel"      >&2; exit 1; }
           ls wheels/lmcache-*.whl   >/dev/null || { echo "ERROR: no lmcache wheel"   >&2; exit 1; }
           ls wheels/nixl*rocm*.whl  >/dev/null || { echo "ERROR: no nixl_rocm wheel" >&2; exit 1; }
 
@@ -179,20 +182,22 @@ jobs:
             echo "- **Source:** main @ \`${{ needs.check.outputs.sha }}\`"
             echo "- **Built (UTC):** ${{ github.run_id }} / ${GITHUB_SHA}"
             echo "- **GPU arch set:** \`${ROCM_ARCH}\`"
-            echo "- **Base:** rocm/dev-ubuntu-24.04:7.2.4-complete (ROCm 7.2.4, Python 3.12, x86_64)"
-            echo "- **LMCache:** $(get LMCACHE_GIT_URL) @ \`$(get LMCACHE_SHA)\` + AIC patches"
-            echo "- **NIXL:** $(get NIXL_GIT_URL) @ \`$(get NIXL_SHA)\` + nixl-rocm-ais-mt patch"
+            echo "- **Base:** rocm/dev-ubuntu-24.04:7.14.0-full (ROCm 7.14, Python 3.12, x86_64)"
+            echo "- **vLLM:** $(get VLLM_GIT_URL) @ \`$(get VLLM_REF)\` (source build)"
+            echo "- **LMCache:** $(get LMCACHE_GIT_URL) @ \`$(get LMCACHE_REF)\` + AIC patches"
+            echo "- **NIXL:** $(get NIXL_GIT_URL) @ \`$(get NIXL_REF)\` + nixl-rocm-ais-mt patch"
             echo ""
             echo "### Install"
             echo '```bash'
             echo "pip install \\"
+            echo "  https://github.com/${GITHUB_REPOSITORY}/releases/download/${RELEASE_TAG}/<vllm-wheel> \\"
             echo "  https://github.com/${GITHUB_REPOSITORY}/releases/download/${RELEASE_TAG}/<lmcache-wheel> \\"
             echo "  https://github.com/${GITHUB_REPOSITORY}/releases/download/${RELEASE_TAG}/<nixl_rocm-wheel>"
             echo '```'
             echo ""
-            echo "> These wheels are **not** manylinux: ROCm 7.2.x + Python 3.12 + x86_64 only."
+            echo "> These wheels are **not** manylinux: ROCm 7.14 + Python 3.12 + x86_64 only."
             echo "> The \`nixl_rocm\` wheel needs the ROCm runtime (libamdhip64) and hipFile"
-            echo "> present on the host; see README.md."
+            echo "> present on the host (hipFile is GA in ROCm 7.14); see README.md."
           } > release-notes.md
           cat release-notes.md
 
