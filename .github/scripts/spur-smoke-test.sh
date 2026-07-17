@@ -10,7 +10,7 @@ SHORT="${SHA:0:7}"
 AIC_IMAGE="rocm-aic-ci-${SHORT}:latest"
 TARBALL_DIR="/shared_nfs/${USER}/images/aic-ci-${SHORT}"
 
-ssh amd-aic-spur env \
+ssh -o ServerAliveInterval=30 -o ServerAliveCountMax=4 amd-aic-spur env \
     SHA="${SHA}" \
     AIC_IMAGE="${AIC_IMAGE}" \
     TARBALL_DIR="${TARBALL_DIR}" \

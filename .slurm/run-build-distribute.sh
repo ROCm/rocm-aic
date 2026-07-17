@@ -307,32 +307,46 @@ PROLOGUE
         log "submitted ${jobname} as job ${jobid} (partition ${AIC_BUILD_PARTITION})"
         log "log: ${logfile}"
 
-        # Live-tail the log while polling squeue for job completion.
-        local tail_pid=""
-        ( tail -F "${logfile}" 2>/dev/null ) & tail_pid=$!
+        # Poll squeue until the job leaves the queue, printing new log lines each
+        # iteration. Avoids tail -F which hangs on SPUR when the background
+        # subshell cannot be reliably killed inside an SSH heredoc.
+        # SPUR squeue ignores -j; filter by job ID in awk.
+        local last_line=0
 
-        # Wait for the job to appear in the queue before polling for its exit;
-        # a fast scheduler may dequeue it before the first squeue check fires.
+        _print_new_lines() {
+            if [[ -f "${logfile}" ]]; then
+                local total; total=$(wc -l < "${logfile}" 2>/dev/null || echo 0)
+                if (( total > last_line )); then
+                    tail -n +"$((last_line + 1))" "${logfile}" 2>/dev/null
+                    last_line=${total}
+                fi
+            fi
+        }
+
+        # Wait up to 60s for the job to appear.
         local appear_tries=0
-        until squeue --controller="${AIC_SPUR_CONTROLLER}" -j "${jobid}" -h 2>/dev/null | grep -q . \
+        until squeue --controller="${AIC_SPUR_CONTROLLER}" -j "${jobid}" -h 2>/dev/null | awk '{print $1}' | grep -qx "${jobid}" \
               || (( appear_tries >= 60 )); do
             sleep 1; appear_tries=$((appear_tries + 1))
         done
-        # Poll until the job leaves the queue.
-        while squeue --controller="${AIC_SPUR_CONTROLLER}" -j "${jobid}" -h 2>/dev/null | grep -q .; do
+
+        # Poll until the job leaves the queue, streaming new log lines.
+        while squeue --controller="${AIC_SPUR_CONTROLLER}" -j "${jobid}" -h 2>/dev/null | awk '{print $1}' | grep -qx "${jobid}"; do
+            _print_new_lines
             sleep 10
         done
 
-        # Give the log a moment to flush its last lines.
+        # Flush any remaining lines after job completes.
         sleep 2
-        kill "${tail_pid}" >/dev/null 2>&1 || true
-        wait "${tail_pid}" 2>/dev/null || true
+        _print_new_lines
 
         # Read the real exit code from sacct ("<code>:<signal>" format).
+        # SPUR sacct ignores -j and returns all jobs; grep for the exact job ID
+        # in JobID+ExitCode output to avoid picking up an unrelated row.
         local acct_exit
         acct_exit="$(sacct --controller="${AIC_SPUR_CONTROLLER}" -j "${jobid}" \
-            --format=ExitCode --noheader 2>/dev/null \
-            | awk 'NR==1{split($1,a,":"); print a[1]}')"
+            --format=JobID,ExitCode --noheader 2>/dev/null \
+            | awk -v id="${jobid}" '$1==id{split($2,a,":"); print a[1]; exit}')"
         rc="${acct_exit:-1}"
     else
         # Standard Slurm path: --parsable prints the bare job id; --wait blocks
