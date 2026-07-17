@@ -2,9 +2,9 @@
 #
 # SPDX-License-Identifier: MIT
 #
-# Full Docker build for the AMD Infinity Context (AIC) stack (~45-60 min cold).
-# Triggered manually — the base image (rocm/dev-ubuntu-24.04:7.2.4-complete,
-# ~7 GB) plus vLLM wheel + LMCache + hipFile + NIXL source builds exceed
+# Full Docker build for the AMD Infinity Context (AIC) stack (~60-90 min cold).
+# Triggered manually — the base image (rocm/dev-ubuntu-24.04:7.14.0-full,
+# ~7 GB) plus vLLM source build + LMCache + NIXL source builds exceed
 # GitHub-hosted runner disk on cold runs without the GHA layer cache.
 #
 # GHA cache key: scope=aic

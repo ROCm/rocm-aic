@@ -40,8 +40,8 @@ platform.
 ## Stack overview
 
 ```text
-Ubuntu 24.04  (rocm/dev-ubuntu-24.04:7.2.4-complete, ROCm 7.2.4, Python 3.12)
-  └── vLLM v0.25.0+rocm723  (pre-built wheel — bundles torch/triton/flash-attn)
+Ubuntu 24.04  (rocm/dev-ubuntu-24.04:7.14.0-full, ROCm 7.14, Python 3.12)
+  └── vLLM v0.25.1  (built from source — torch/triton/flash-attn via requirements/rocm.txt)
         └── LMCacheMPConnector (ZMQ)
               └── LMCache server (standalone MP mode)  [v0.5.2 + 8 AMD patches]
                     ├── L1:  GPU / CPU DRAM   (--l1-size-gb)
@@ -55,11 +55,11 @@ each release):
 
 | Component | Source | Ref |
 | --- | --- | --- |
-| Base OS | `rocm/dev-ubuntu-24.04:7.2.4-complete` | Ubuntu 24.04, ROCm 7.2.4, Python 3.12 |
-| vLLM | `wheels.vllm.ai/rocm/0.25.0/rocm723` | v0.25.0+rocm723 (pre-built wheel, bundles torch) |
-| LMCache | `LMCache/LMCache` (upstream) | `v0.5.2` + 8 AMD patches |
+| Base OS | `rocm/dev-ubuntu-24.04:7.14.0-full` | Ubuntu 24.04, ROCm 7.14, Python 3.12 |
+| vLLM | `github.com/vllm-project/vllm` (source build) | `v0.26.0` + 2 AMD patches |
+| LMCache | `LMCache/LMCache` (upstream) | `v0.5.2` + 9 AMD patches |
 | NIXL | `ai-dynamo/nixl` (upstream) | `v1.3.2` + `nixl-rocm-ais-mt.patch` |
-| hipFile | `ROCm/rocm-systems` | `develop` @ `6901b670` |
+| hipFile | ROCm 7.14 base image | GA in ROCm 7.14 — no separate source build |
 
 ## Pip-installable nightly wheels
 
@@ -69,15 +69,14 @@ compatibility notes. Wheels are rebuilt nightly from `main` and published to the
 
 ## Prerequisites
 
-- ROCm-capable host (MI300X recommended; `gfx942`). The default build is
-  multi-arch — it bakes in every gfx the vLLM wheel supports (`gfx90a`, `gfx942`,
-  `gfx950`, and the RDNA `gfx11xx`/`gfx12xx` line), so one image runs on any of
-  them. Narrow with `ROCM_ARCH=gfx942` for a faster single-arch build.
+- ROCm-capable host (MI300X recommended; `gfx942`). Pass `ROCM_ARCH` as a
+  `;`-separated list (e.g. `gfx90a;gfx942;gfx950`) to build a multi-arch image,
+  or a single arch (e.g. `ROCM_ARCH=gfx942`) for a faster build. The vLLM source
+  build compiles GPU kernels for exactly the archs specified.
 - Docker with BuildKit and the `docker compose` (v2) plugin (Docker 23+). On a
   node that lacks it, `make ensure-compose` installs the plugin user-locally
   (`~/.docker/cli-plugins`); the Slurm cliff / smoke / tiny-test jobs self-install
-  it automatically. The whole stack is `docker compose` only — there is no
-  `docker-compose` v1 or docker-run fallback.
+  it automatically.
 - Host mounts: local NVMe (`NVME_DATA`) and NFS-over-RDMA (`NFS_DATA`) pre-mounted
 - HuggingFace token with access to the target model
 - Python 3.10+ for host-side benchmarks
