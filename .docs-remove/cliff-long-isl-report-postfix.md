@@ -369,3 +369,63 @@ over DRAM-L1+NVMe, until the DRAM-L1→NVMe read fallthrough is fixed upstream.
 - File/track the upstream LMCache issue: DRAM-L1 miss does not fall through to a
   NIXL-L2 read in `local_cpu:true`.
 - Harness: add `lmcache_mp_*` tier counters to `run_cliff.py` per-c CSV columns.
+
+---
+
+# Production-L1 (64 GB) overnight confirmation — full L2-backend matrix
+
+Three runs at the **representative product config** (DRAM L1 = 64 GB, 64k ISL / 60k prefix,
+YaRN ×2, ladder c = 1/16/32/64, iters 2), on the rebranded/restructured harness (`AIC_*`
+knobs, `rocm-aic:latest` image). These confirm the c=32/16 GB bake-off findings above at the
+real production L1 size and add the NIXL-POSIX and O_DIRECT-LocalDisk L2 backends.
+
+- **Job 67538748** — `AIC_CLIFF_ARMS=vram,nvme,gds`, nvme L2 = **AIS_MT + cuda buffer (GDS)**.
+- **Job 67544761** — nvme arm, L2 = **NIXL POSIX plugin** (`nixl_posix`, cpu buffer, O_DIRECT).
+- **Job 67544874** — nvme arm, L2 = **LMCache LocalDiskBackend, O_DIRECT** (`local_disk`, `use_odirect:true`).
+
+## Throughput — median tok/s (L1 = 64 GB)
+
+| c | vram | nvme GDS-L2 | gds slab | nvme POSIX (NIXL, O_DIRECT) | nvme LocalDisk (O_DIRECT) |
+|---|---|---|---|---|---|
+| 1  | 45.5k | 44.6k | 44.8k | 44.9k | 44.6k |
+| 16 | 6.3k (cliff) | 47.0k | 48.4k | 47.0k | 46.9k |
+| 32 | 6.1k | 46.6k | 48.0k | 46.1k | 46.3k |
+| 64 | 6.0k (err=16 timeout) | **9.9k ⬇** | **48.7k** | **42.3k** | **40.6k** |
+
+All arms err=0 except vram c=64 client ReadTimeouts. **Only nvme+GDS-L2 collapses at c=64**;
+every "real L2" backend (GDS slab, NIXL-POSIX, LocalDisk) holds ~40–49k.
+
+## NVMe reads — CORRECTED methodology (use the right metric per backend)
+
+⚠️ **`node_disk_read_bytes` (/proc/diskstats, block layer) does NOT capture GDS reads** — true
+GDS is P2PDMA (NVMe→VRAM direct) and bypasses the block layer. Use `lmcache_mp_gds_l1_bytes_read`
+for GDS; `node_disk_read` for POSIX O_DIRECT (which does traverse the block layer). GDS never
+uses page cache. (Earlier "0 reads → page cache" was wrong — corrected here.)
+
+| arm | NVMe read @ run | read path | metric |
+|---|---|---|---|
+| nvme GDS-L2 | **0 GB** | never falls through DRAM-L1→L2 → **the collapse** (not caching) | NIXL `agent_rx` |
+| gds slab | **266.8 GB** | GDS P2PDMA, invisible to node_disk | `gds_l1_bytes_read` |
+| nvme POSIX (NIXL O_DIRECT) | **106 GB** | POSIX O_DIRECT via block layer | `node_disk_read` (`agent_rx` 101.6 GB ✓) |
+| nvme LocalDisk (O_DIRECT) | **102 GB** | POSIX O_DIRECT via block layer | `node_disk_read` |
+
+NVMe writes ≈ 94–97 GB per offload run (KV persistence). Node page cache peaked 736–1044 GB
+(explains why *buffered* paths and node_disk-invisible GDS show 0 block-layer reads).
+
+## Verdict
+
+1. **The DRAM-L1+NVMe c=64 collapse is real at production L1 (64 GB)** and specific to the
+   **AIS_MT/GDS L2** path: it issues **0 L2 reads** (no DRAM-L1→NVMe-L2 read-fallthrough) →
+   recompute → 9.9k. Confirms the mechanism found in the c=32/16 GB isolation.
+2. **All three first-class L2 backends avoid it** and hold the full ladder to c=64:
+   - **GDS slab: 48.7k** (fastest read path — 266.8 GB via GDS P2PDMA).
+   - **NIXL POSIX plugin: 42.3k** (106 GB real block-layer O_DIRECT reads).
+   - **LocalDiskBackend: 40.6k** (102 GB real block-layer O_DIRECT reads).
+3. The two POSIX O_DIRECT paths are effectively equivalent (~40–42k, ~100 GB real device
+   reads); the GDS slab leads by ~6k because its P2PDMA read path is faster than block-layer
+   O_DIRECT — at the cost of node_disk observability.
+4. **Recommendation:** for long-ISL beyond a modest DRAM L1, use **GDS slab** (top perf) or a
+   **POSIX L2** (NIXL-POSIX / LocalDisk — robust, observable device reads); avoid the
+   DRAM-L1 + AIS_MT/GDS-L2 combo until its read-fallthrough is fixed upstream.
+
+Per-run detail: `.docs-remove/cliff-run-{67538748,67544761,67544874}-progress.md`.
