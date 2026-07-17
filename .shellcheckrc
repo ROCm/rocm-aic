@@ -1,2 +1,0 @@
-# Follow # shellcheck source= directives for static sibling sources (recipe-bench.sh).
-external-sources=true

@@ -1,1 +1,0 @@
-{"id": "ci-trace-0", "models": ["ci-model"], "block_size": 64, "hash_id_scope": "local", "requests": [{"t": 0.0, "type": "s", "model": "ci-model", "in": 48, "out": 12, "hash_ids": [0, 1, 2, 3], "api_time": 0.42, "ttft": 0.18}, {"t": 1.2, "type": "s", "model": "ci-model", "in": 72, "out": 16, "hash_ids": [0, 1, 2, 3, 4, 5], "api_time": 0.55, "think_time": 0.1, "ttft": 0.22}]}

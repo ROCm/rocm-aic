@@ -1,2 +1,0 @@
-openai>=1.40.0
-transformers>=4.45.0

@@ -162,6 +162,7 @@ VFS
 yaml
 yml
 ARG
+ARGs
 amd
 BuildKit
 HTTPS
