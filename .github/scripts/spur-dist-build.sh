@@ -14,7 +14,7 @@ REPO="git@github.com:ROCm/rocm-icms.git"
 AIC_IMAGE="rocm-aic-ci-${SHORT}:latest"
 TARBALL_DIR="/shared_nfs/${USER}/images/aic-ci-${SHORT}"
 
-ssh amd-aic-spur env \
+ssh -o ServerAliveInterval=30 -o ServerAliveCountMax=4 amd-aic-spur env \
     SHA="${SHA}" \
     REPO="${REPO}" \
     AIC_IMAGE="${AIC_IMAGE}" \
