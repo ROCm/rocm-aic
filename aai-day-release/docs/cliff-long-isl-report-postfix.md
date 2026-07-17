@@ -189,7 +189,7 @@ _Filled per arm as the sweep runs. Pre-fix column = job 67536798 (yesterday, run
 > nvme arm's DRAM-L1 throughput. So the pure GPU-direct NVMe-slab path **does** sustain
 > long-ISL churn when sized correctly. The prior future-work list (GDS queue depth /
 > async-drain / DRAM staging / chunk coalescing) was chasing an artifact of the
-> mis-sized slab — **de-prioritize pending the c=64 point.**
+> mis-sized slab — **deprioritize pending the c=64 point.**
 
 ## Telemetry evidence (recovered from the retained Prometheus TSDB)
 
@@ -303,7 +303,7 @@ shared-DRAM-pool / cpu-buffer problem.** (POSIX plugin IS built in the image; ea
 job 67538340 failed only on a transient GPU OOM at startup, not config/plugin.)
 
 **Native LMCache `LocalDiskBackend` (POSIX, `use_odirect:false`) is the best option** —
-highest throughput (beats even GDS's 28k), zero errors, full read serving. It config's
+highest throughput (beats even GDS's 28k), zero errors, full read serving. It configures
 as DRAM L1 + `local_disk: file:///data/nvme/lmcache-disk` (one `.pt` file per chunk),
 **no NIXL** (`AAI_L2_BACKEND=local_disk`). Why it wins: a *real indexed* persistent tier
 (`contains()` + files) with the **page cache as a fast second tier** and **no VRAM
@@ -343,7 +343,7 @@ runs to confirm it scales past c=32).
 1. **gds I/O-rate diagnosis: REFUTED — was capacity overflow.** Pre-fix slab 20 GB
    (Makefile bug) < ~34 GB c=32 WS → collapse. Real 320 GB slab → gds holds ~48k all
    the way to c=64. The prior GDS future-work list (queue depth, async-drain,
-   DRAM staging, chunk coalescing) chased a phantom; **de-prioritized.**
+   DRAM staging, chunk coalescing) chased a phantom; **deprioritized.**
 2. **gds wins at the extreme (c=64):** 48.3k vs nvme 7.5k vs vram 6.0k. Its 320 GB
    slab holds the ~67 GB working set and GDS slab reads work → sustained serving.
 3. **nvme DRAM-L1→NVMe-L2 read fallthrough: CONFIRMED broken** (upgraded from
