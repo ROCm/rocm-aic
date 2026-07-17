@@ -12,7 +12,7 @@ SHA="${1:?usage: $0 <full-sha>}"
 SHORT="${SHA:0:7}"
 REPO="git@github.com:ROCm/rocm-icms.git"
 AIC_IMAGE="rocm-aic-ci-${SHORT}:latest"
-TARBALL_DIR="/tmp/aic-ci-${SHORT}"
+TARBALL_DIR="/shared_nfs/${USER}/images/aic-ci-${SHORT}"
 
 ssh amd-aic-spur env \
     SHA="${SHA}" \
