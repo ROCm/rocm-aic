@@ -1,0 +1,18 @@
+name: AIC Nightly Dist Build
+
+on:
+  schedule:
+    # 1am PST = 09:00 UTC (UTC-8 in winter; adjust to 08:00 UTC during PDT)
+    - cron: '0 9 * * *'
+  workflow_dispatch:
+
+jobs:
+  dist-build:
+    runs-on: [self-hosted, rocm-aic-cicd]
+    timeout-minutes: 120
+    permissions:
+      statuses: write
+
+    steps:
+      - name: Build image on amd-aic-spur
+        run: bash /usr/local/lib/aic-ci/spur-dist-build.sh "${{ github.sha }}"

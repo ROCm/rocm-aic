@@ -1,0 +1,19 @@
+name: AIC Nightly Cliff
+
+on:
+  workflow_run:
+    workflows: ["AIC Nightly Smoke Test"]
+    types: [completed]
+
+jobs:
+  cliff:
+    if: github.event.workflow_run.conclusion == 'success'
+    runs-on: [self-hosted, rocm-aic-cicd]
+    timeout-minutes: 240
+
+    steps:
+      - name: Run full cliff sweep on amd-aic-spur
+        run: |
+          bash /usr/local/lib/aic-ci/spur-cliff.sh \
+            "${{ github.event.workflow_run.head_sha }}" \
+            cliff-submit
