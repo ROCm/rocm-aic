@@ -7,12 +7,12 @@ set -euo pipefail
 
 SHA="${1:?usage: $0 <full-sha>}"
 SHORT="${SHA:0:7}"
-IMAGE_NAME="rocm-aic-ci-${SHORT}"
+AIC_IMAGE="rocm-aic-ci-${SHORT}:latest"
 TARBALL_DIR="/tmp/aic-ci-${SHORT}"
 
 ssh amd-aic-spur env \
     SHA="${SHA}" \
-    IMAGE_NAME="${IMAGE_NAME}" \
+    AIC_IMAGE="${AIC_IMAGE}" \
     TARBALL_DIR="${TARBALL_DIR}" \
     bash << 'REMOTE'
 set -euo pipefail
@@ -26,9 +26,9 @@ cleanup() {
 }
 trap cleanup EXIT
 
-echo "=== Running smoke-test (image=${IMAGE_NAME}) ==="
+echo "=== Running smoke-test (AIC_IMAGE=${AIC_IMAGE}) ==="
 AIC_SPUR_CLUSTER=1 \
-    IMAGE_NAME="${IMAGE_NAME}" \
+    AIC_IMAGE="${AIC_IMAGE}" \
     AIC_IMAGE_DIR="${TARBALL_DIR}" \
     make -C "${WORKDIR}" smoke-test
 

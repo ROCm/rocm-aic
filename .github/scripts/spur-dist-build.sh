@@ -11,13 +11,13 @@ set -euo pipefail
 SHA="${1:?usage: $0 <full-sha>}"
 SHORT="${SHA:0:7}"
 REPO="git@github.com:ROCm/rocm-icms.git"
-IMAGE_NAME="rocm-aic-ci-${SHORT}"
+AIC_IMAGE="rocm-aic-ci-${SHORT}:latest"
 TARBALL_DIR="/tmp/aic-ci-${SHORT}"
 
 ssh amd-aic-spur env \
     SHA="${SHA}" \
     REPO="${REPO}" \
-    IMAGE_NAME="${IMAGE_NAME}" \
+    AIC_IMAGE="${AIC_IMAGE}" \
     TARBALL_DIR="${TARBALL_DIR}" \
     bash << 'REMOTE'
 set -euo pipefail
@@ -38,9 +38,9 @@ git checkout "${SHA}"
 
 mkdir -p "${TARBALL_DIR}"
 
-echo "=== Running dist-build (AIC_SPUR_CLUSTER=1, image=${IMAGE_NAME}) ==="
+echo "=== Running dist-build (AIC_SPUR_CLUSTER=1, AIC_IMAGE=${AIC_IMAGE}) ==="
 AIC_SPUR_CLUSTER=1 \
-    IMAGE_NAME="${IMAGE_NAME}" \
+    AIC_IMAGE="${AIC_IMAGE}" \
     AIC_IMAGE_DIR="${TARBALL_DIR}" \
     make dist-build
 
