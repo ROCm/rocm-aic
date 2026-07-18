@@ -6,7 +6,7 @@
 [![vLLM](https://img.shields.io/badge/vLLM-0.25.0+rocm723-blue.svg)](https://github.com/vllm-project/vllm)
 [![LMCache](https://img.shields.io/badge/LMCache-v0.5.1-blue.svg)](https://github.com/LMCache/LMCache)
 [![NIXL](https://img.shields.io/badge/NIXL-v1.3.1-blue.svg)](https://github.com/ai-dynamo/nixl)
-[![Spelling](https://github.com/ROCm/rocm-aic/actions/workflows/spellcheck.yml/badge.svg)](https://github.com/ROCm/rocm-aic/actions/workflows/spellcheck.yml)
+[![Spelling](https://github.com/ROCm/rocm-aic/actions/workflows/aic-spellcheck.yml/badge.svg)](https://github.com/ROCm/rocm-aic/actions/workflows/aic-spellcheck.yml)
 [![Nightly Dist Build](https://github.com/ROCm/rocm-aic/actions/workflows/aic-amd-nightly-dist-build.yml/badge.svg)](https://github.com/ROCm/rocm-aic/actions/workflows/aic-amd-nightly-dist-build.yml)
 [![Nightly Smoke Test](https://github.com/ROCm/rocm-aic/actions/workflows/aic-amd-nightly-smoke-test.yml/badge.svg)](https://github.com/ROCm/rocm-aic/actions/workflows/aic-amd-nightly-smoke-test.yml)
 [![Nightly Cliff](https://github.com/ROCm/rocm-aic/actions/workflows/aic-amd-nightly-cliff.yml/badge.svg)](https://github.com/ROCm/rocm-aic/actions/workflows/aic-amd-nightly-cliff.yml)
