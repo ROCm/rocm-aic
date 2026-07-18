@@ -220,6 +220,11 @@ AIC_ATTENTION_BACKEND="${AIC_ATTENTION_BACKEND:-TRITON_ATTN}"
 # for older/consumer arches pass AIC_KV_CACHE_DTYPE=auto AIC_ROCM_USE_AITER=0.
 AIC_KV_CACHE_DTYPE="${AIC_KV_CACHE_DTYPE:-fp8}"
 AIC_ROCM_USE_AITER="${AIC_ROCM_USE_AITER:-1}"
+# How long wait_ready() polls a vLLM endpoint before giving up.  Large models
+# (e.g. Qwen2.5-72B, ~145 GB) can spend >18 min just loading weights off a busy
+# NFS HF cache, exceeding the 1200 s default -> spurious "never became ready".
+# Raise for big models / slow shared storage.
+AIC_VLLM_READY_TIMEOUT="${AIC_VLLM_READY_TIMEOUT:-1200}"
 
 VRAM_PORT=8001
 KVD_PORT=8000
@@ -471,7 +476,7 @@ HF_ENV=(-e HF_HOME=/hf -e HF_HUB_CACHE=/hf/hub -e HF_HUB_OFFLINE=1
 
 # --- Helpers -----------------------------------------------------------------
 wait_ready() {  # $1=port $2=timeout_s
-    local port="$1" timeout="${2:-1200}" waited=0
+    local port="$1" timeout="${2:-${AIC_VLLM_READY_TIMEOUT:-1200}}" waited=0
     log "waiting for vLLM on :${port} (up to ${timeout}s)"
     while (( waited < timeout )); do
         if curl -fsS "http://localhost:${port}/v1/models" >/dev/null 2>&1; then
