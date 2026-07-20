@@ -19,15 +19,14 @@
 # bare source harmless and the linter quiet):
 #   log()             -- logger; a no-op '[monitoring] ...' printer is provided
 #                        if the caller has not defined one.
-#   AIC_IMAGE         -- AIC image tag (hsa-snoop / ais-snoop run from it).
+#   AIC_IMAGE         -- AIC image tag (hsa-snoop runs from it).
 #   MON_DIR           -- path to the monitoring/ dir (prometheus.yml, configs).
 #   AIC_METRICS_DIR   -- Prometheus TSDB dir (bind-mounted into the container).
 #   MON_COMPOSE       -- optional compose file; used when the plugin is present.
 #   AIC_EXPORTERS     -- 1 to also launch the exporter fleet (0 = Prometheus only).
 #   AIC_MONITORING    -- 1 to enable start_monitoring/stop_monitoring at all.
 #   Optional: AIC_PROM_IMAGE/PORT/RETENTION, AIC_{NODE,AMDGPU,NVME,RDMA}_EXPORTER_IMAGE,
-#             AIC_{NVME,RDMA}_EXPORTER_ARGS, {NVME,RDMA}_EXPORTER_PORT,
-#             {HSA,AIS}_SNOOP_PORT, AIS_KFD_SYMBOL.
+#             AIC_{NVME,RDMA}_EXPORTER_ARGS, {NVME,RDMA}_EXPORTER_PORT, HSA_SNOOP_PORT.
 
 # --- Caller-provided vars: defaults so the lib is self-contained + SC2154-clean.
 : "${AIC_IMAGE:=rocm-aic:latest}"
@@ -49,8 +48,7 @@ mon_profile() {  # echo the compose --profile args for the exporters profile
 # Compose service container_names -- reused by the docker-run fallback so both
 # paths produce identically-named containers and share one teardown.
 MON_CONTAINERS=(aic-prometheus aic-node-exporter aic-amdgpu-exporter
-                aic-nvme-exporter aic-rdma-exporter aic-hsa-snoop
-                aic-ais-snoop)
+                aic-nvme-exporter aic-rdma-exporter aic-hsa-snoop)
 
 # True (0) if something is already listening on the given local TCP port -- used
 # to skip launching a containerized exporter when a host exporter serves it
@@ -112,7 +110,7 @@ _monitoring_run_up() {
     docker rm -f "${MON_CONTAINERS[@]}" >/dev/null 2>&1 || true
 
     # Pre-pull the registry-hosted images quietly so the docker runs below don't
-    # flood the log with pull progress (hsa/ais-snoop use the local AIC image
+    # flood the log with pull progress (hsa-snoop uses the local AIC image
     # and nvme/rdma are tarball-loaded, so they never pull here).
     _pull_quiet "${AIC_PROM_IMAGE:-prom/prometheus:v2.55.1}"
 
@@ -202,11 +200,13 @@ _monitoring_run_up() {
         log "  rdma-exporter: set AIC_RDMA_EXPORTER_IMAGE to containerize (else host service / node-exporter infiniband collector)"
     fi
 
-    # hsa-snoop (:9488): HSA AQL queue snooper from the AIC image.  It installs
-    # its kprobe via tracefs at /sys/kernel/tracing -- so BOTH debugfs and tracefs
-    # must be mounted; with only /sys/kernel/debug it fails with ENOENT ("failed
-    # to install kprobe").  Needs root + privileged + host PID ns to see the
-    # vLLM/LMCache GPU processes.
+    # hsa-snoop (:9488): HSA AQL queue snooper from the AIC image (v1.0.0+).
+    # Exports both HSA dispatch metrics (hsa_*) and AIS (AMD Infinity Storage)
+    # P2P storage metrics (ais_rx_ops_total, ais_tx_bytes_total, etc.) on the
+    # same endpoint.  Installs its kprobe via tracefs at /sys/kernel/tracing --
+    # so BOTH debugfs and tracefs must be mounted; with only /sys/kernel/debug it
+    # fails with ENOENT ("failed to install kprobe").  Needs root + privileged +
+    # host PID ns to see the vLLM/LMCache GPU processes.
     if _port_in_use "${HSA_SNOOP_PORT:-9488}"; then
         log "  hsa-snoop: :${HSA_SNOOP_PORT:-9488} already served, skipping container"
     else
@@ -218,34 +218,8 @@ _monitoring_run_up() {
             -v /sys/kernel/debug:/sys/kernel/debug "${_tracefs[@]}" \
             --entrypoint /usr/local/bin/hsa-snoop "${AIC_IMAGE}" \
             --all --prometheus --prometheus-port "${HSA_SNOOP_PORT:-9488}" >/dev/null \
-            && log "  hsa-snoop on :${HSA_SNOOP_PORT:-9488}" \
+            && log "  hsa-snoop on :${HSA_SNOOP_PORT:-9488} (HSA + AIS metrics)" \
             || log "  hsa-snoop: docker run failed"
-    fi
-
-    # ais-snoop (:9489): AIS (AMD Infinity Storage) KFD kprobe exporter from the
-    # AIC image.  Sibling of hsa-snoop: same privileged + host-PID + tracefs
-    # model, plus /lib/modules + /usr/src so bpftrace can resolve kernel symbols
-    # (and /sys/kernel/btf when present, for future arg introspection).  The
-    # kprobe target is AIS_KFD_SYMBOL, default kfd_ioctl_ais (the AIS ioctl
-    # handler in amdgpu-dkms); if that symbol isn't in the running kernel the
-    # exporter still serves ais_snoop_up=0{reason="symbol_not_in_kallsyms"}, so
-    # it's harmless to launch on a node whose driver lacks AIS.
-    if _port_in_use "${AIS_SNOOP_PORT:-9489}"; then
-        log "  ais-snoop: :${AIS_SNOOP_PORT:-9489} already served, skipping container"
-    else
-        docker rm -f aic-ais-snoop >/dev/null 2>&1 || true
-        local -a _aisfs=()
-        [[ -d /sys/kernel/tracing ]] && _aisfs+=(-v /sys/kernel/tracing:/sys/kernel/tracing)
-        [[ -d /sys/kernel/btf ]] && _aisfs+=(-v /sys/kernel/btf:/sys/kernel/btf:ro)
-        docker run -d --name aic-ais-snoop --network host --pid host --privileged \
-            --restart unless-stopped --device /dev/kfd --device /dev/dri \
-            -v /sys/kernel/debug:/sys/kernel/debug \
-            -v /lib/modules:/lib/modules:ro -v /usr/src:/usr/src:ro "${_aisfs[@]}" \
-            -e AIS_KFD_SYMBOL="${AIS_KFD_SYMBOL:-kfd_ioctl_ais}" \
-            --entrypoint /usr/local/bin/ais-snoop "${AIC_IMAGE}" \
-            --prometheus-port "${AIS_SNOOP_PORT:-9489}" >/dev/null \
-            && log "  ais-snoop on :${AIS_SNOOP_PORT:-9489} (symbol='${AIS_KFD_SYMBOL:-kfd_ioctl_ais}')" \
-            || log "  ais-snoop: docker run failed"
     fi
 }
 
@@ -257,7 +231,6 @@ start_monitoring() {
         local -a profile; mapfile -t profile < <(mon_profile)
         AIC_METRICS_DIR="${AIC_METRICS_DIR}" PROM_UID="$(id -u)" PROM_GID="$(id -g)" \
             IMAGE_NAME="${AIC_IMAGE}" \
-            AIS_KFD_SYMBOL="${AIS_KFD_SYMBOL:-kfd_ioctl_ais}" AIS_SNOOP_PORT="${AIS_SNOOP_PORT:-9489}" \
             docker compose -f "${MON_COMPOSE}" "${profile[@]}" up -d \
             || log "monitoring: compose up failed (continuing without metrics)"
     else
@@ -305,8 +278,7 @@ monitoring_healthcheck() {
     fi
     _check_endpoint nvme-exporter   "${NVME_EXPORTER_PORT:-9998}"  '^nvme_'       || true
     _check_endpoint rdma-exporter   "${RDMA_EXPORTER_PORT:-9879}"  '^rdma_'       || true
-    _check_endpoint hsa-snoop       "${HSA_SNOOP_PORT:-9488}"      '^hsa_'        || true
-    _check_endpoint ais-snoop       "${AIS_SNOOP_PORT:-9489}"      '^ais_'        || true
+    _check_endpoint hsa-snoop       "${HSA_SNOOP_PORT:-9488}"      '^hsa_\|^ais_' || true
     _check_endpoint prometheus      "${AIC_PROM_PORT:-9090}"       '^prometheus_' || true
 }
 

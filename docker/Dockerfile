@@ -70,9 +70,9 @@ ARG HIPFILE_SHA=6901b670c3e186f9c7052d6fc9748f0286536bdc
 ARG NIXL_GIT_URL=https://github.com/ai-dynamo/nixl.git
 ARG NIXL_REF=v1.3.1
 
-# hsa-snoop: HSA AQL queue/dispatch snooper + Prometheus exporter (main HEAD 2026-07-13).
+# hsa-snoop: HSA AQL queue/dispatch snooper + Prometheus exporter (includes AIS metrics).
 ARG HSA_SNOOP_GIT_URL=https://github.com/sbates130272/hsa-snoop.git
-ARG HSA_SNOOP_SHA=b1526dde9b86efb6a566eb50279a04c96be78b31
+ARG HSA_SNOOP_REF=v1.0.0
 
 # LMCache: upstream repo, pinned to the v0.5.1 release tag.
 # All 7 AMD patches in patches/lmcache/ apply cleanly against this tag.
@@ -289,20 +289,21 @@ RUN --mount=type=cache,target=/root/.cache/uv \
         /tmp/nixl-scripts/build-nixl.sh
 
 # ----- 6b. hsa-snoop (HSA AQL queue snooper + Prometheus exporter) -----------
-# GPU dispatch/queue telemetry on :9488 (/metrics).  The snooper binary is
-# host-only C++ (x86-64) and ARCH-INDEPENDENT -- it parses HSA AQL queues from
-# userspace, so one binary runs on every gfx target we ship.  We disable the
-# optional examples/ (CMAKE_DISABLE_FIND_PACKAGE_hip=ON): they compile HIP
-# device code (examples/vecwork.hip) for a single auto-detected arch -- and on
-# this CPU-only build node detection falls back to gfx1100, which neither
-# matches our multi-arch set nor is needed by the exporter.
+# GPU dispatch/queue telemetry on :9488 (/metrics), including AIS (AMD Infinity
+# Storage) P2P metrics (ais_rx_ops_total, ais_tx_bytes_total, etc.) added in
+# v1.0.0.  The snooper binary is host-only C++ (x86-64) and ARCH-INDEPENDENT --
+# it parses HSA AQL queues and AIS ioctls from userspace, so one binary runs on
+# every gfx target we ship.  We disable the optional examples/
+# (CMAKE_DISABLE_FIND_PACKAGE_hip=ON): they compile HIP device code
+# (examples/vecwork.hip) for a single auto-detected arch -- and on this CPU-only
+# build node detection falls back to gfx1100, which neither matches our
+# multi-arch set nor is needed by the exporter.
 # Built WITH the Prometheus exporter (-DHSA_SNOOP_PROMETHEUS=ON fetches
 # prometheus-cpp via CMake); the build is rejected if the resulting binary lacks
 # --prometheus.  At runtime it must run as root in the host PID namespace,
 # privileged (tracefs + pagemap + process_vm_readv), to see the vLLM/LMCache GPU
 # processes -- see monitoring/docker-compose.monitoring.yml.
-RUN git clone "${HSA_SNOOP_GIT_URL}" /app/hsa-snoop && \
-    git -C /app/hsa-snoop checkout "${HSA_SNOOP_SHA}" && \
+RUN git clone --depth 1 --branch "${HSA_SNOOP_REF}" "${HSA_SNOOP_GIT_URL}" /app/hsa-snoop && \
     cmake -S /app/hsa-snoop -B /app/hsa-snoop/build -G Ninja \
         -DCMAKE_BUILD_TYPE=Release -DHSA_SNOOP_PROMETHEUS=ON \
         -DCMAKE_DISABLE_FIND_PACKAGE_hip=ON && \
@@ -311,27 +312,7 @@ RUN git clone "${HSA_SNOOP_GIT_URL}" /app/hsa-snoop && \
     test -x /usr/local/bin/hsa-snoop && \
     { /usr/local/bin/hsa-snoop --help 2>&1 || true; } | grep -q -- '--prometheus' \
         || { echo "ERROR: hsa-snoop built without Prometheus mode (--prometheus absent)" >&2; exit 1; } && \
-    echo "PASS: hsa-snoop with Prometheus exporter installed"
-
-# ----- 6c. ais-snoop (AIS KFD kprobe -> Prometheus exporter) -----------------
-# AIS-path sibling of hsa-snoop: a small bpftrace + Python wrapper that attaches
-# a kprobe/kretprobe to the AIS (AMD Infinity Storage) KFD ioctl handler and
-# exports ais_* metrics on :9489 (/metrics).  The kprobe target defaults to
-# kfd_ioctl_ais (the AMDKFD_IOC_AIS_OP handler in the amdgpu-dkms driver) and is
-# overridable at runtime via AIS_KFD_SYMBOL -- nothing to compile: we install the
-# script and rely on `bpftrace` (apt, step 1) and prometheus_client (already
-# present via vLLM's deps).  Runs privileged in the host PID ns with tracefs, same
-# as hsa-snoop -- see monitoring/docker-compose.monitoring.yml / ais-snoop/README.
-COPY monitoring/ais-snoop/ais-snoop.py /usr/local/bin/ais-snoop
-RUN chmod +x /usr/local/bin/ais-snoop && \
-    python3 -m py_compile /usr/local/bin/ais-snoop && \
-    python3 -c "import prometheus_client" \
-        || { echo "ERROR: prometheus_client missing (ais-snoop needs it)" >&2; exit 1; } && \
-    command -v bpftrace >/dev/null \
-        || { echo "ERROR: bpftrace not installed (ais-snoop needs it)" >&2; exit 1; } && \
-    /usr/local/bin/ais-snoop --help >/dev/null \
-        || { echo "ERROR: ais-snoop failed to start (--help)" >&2; exit 1; } && \
-    echo "PASS: ais-snoop (AIS KFD exporter) installed"
+    echo "PASS: hsa-snoop v${HSA_SNOOP_REF} with Prometheus exporter (incl. AIS metrics) installed"
 
 # ----- 7. Runtime environment ------------------------------------------------
 ENV PYTHONUNBUFFERED=1 \

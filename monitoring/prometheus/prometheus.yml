@@ -84,18 +84,13 @@ scrape_configs:
       - targets: ["localhost:5000", "localhost:5050"]
 
   # hsa-snoop: HSA AQL queue/dispatch telemetry (hsa_kernel_launches_total,
-  # hsa_kernel_duration_seconds, hsa_active_queues, hsa_snoop_up, ...).
+  # hsa_kernel_duration_seconds, hsa_active_queues, hsa_snoop_up, ...) and AIS
+  # (AMD Infinity Storage) P2P storage telemetry (ais_rx_ops_total,
+  # ais_tx_ops_total, ais_rx_bytes_total, ais_tx_bytes_total,
+  # ais_rx_errors_total, ais_tx_errors_total, ais_rx_latency_seconds,
+  # ais_tx_latency_seconds, ais_rx_io_size_bytes, ais_tx_io_size_bytes) --
+  # both metric families served on the same :9488 endpoint from v1.0.0.
   - job_name: hsa_snoop
     metrics_path: /metrics
     static_configs:
       - targets: ["localhost:9488"]
-
-  # ais-snoop: AIS (AMD Infinity Storage) KFD kprobe telemetry
-  # (ais_kfd_calls_total, ais_kfd_latency_seconds_{sum,count} for successful
-  # calls, ais_kfd_errors_total by errno, ais_kfd_inflight, ais_snoop_up).
-  # Probes kfd_ioctl_ais by default and gates latency vs errors on the ioctl
-  # return value; ais_snoop_up=0 if the amdgpu-dkms driver lacks the AIS ioctl.
-  - job_name: ais_snoop
-    metrics_path: /metrics
-    static_configs:
-      - targets: ["localhost:9489"]
