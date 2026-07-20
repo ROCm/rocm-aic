@@ -1,0 +1,105 @@
+# Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+#
+# Full Docker build for the AMD Infinity Context (AIC) stack (~45-60 min cold).
+# Triggered manually — the base image (rocm/dev-ubuntu-24.04:7.2.4-complete,
+# ~7 GB) plus vLLM wheel + LMCache + hipFile + NIXL source builds exceed
+# GitHub-hosted runner disk on cold runs without the GHA layer cache.
+#
+# GHA cache key: scope=aic
+#   Warm builds (only patches or minor source changes) typically complete in
+#   10-15 min by reusing all layers up to the first changed RUN step.
+#
+# Usage:
+#   Actions → "AIC Docker build" → Run workflow
+#   Optional: pass TLS_CERT_SECRET=true to inject a corp CA cert via
+#   the CORP_CA_CERT repository secret (see step below).
+#
+name: AIC Docker Build
+
+on:
+  workflow_dispatch:
+    inputs:
+      rocm_arch:
+        description: 'ROCm GPU arch (e.g. gfx942 for MI300X)'
+        required: false
+        default: 'gfx942'
+      push_image:
+        description: 'Push image to Docker Hub after build'
+        required: false
+        default: 'false'
+        type: choice
+        options: ['false', 'true']
+
+permissions:
+  contents: read
+
+env:
+  IMAGE_NAME: rocm-aic
+  ROCM_ARCH: ${{ github.event.inputs.rocm_arch || 'gfx942' }}
+
+jobs:
+  build:
+    name: Build image (BuildKit GHA layer cache)
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Free disk space on runner
+        run: |
+          set -euo pipefail
+          echo "Disk before cleanup:"
+          df -h /
+          sudo rm -rf /usr/share/dotnet
+          sudo rm -rf /usr/local/lib/android
+          sudo rm -rf /opt/ghc
+          sudo rm -rf /opt/hostedtoolcache
+          sudo rm -rf /usr/local/share/boost
+          sudo rm -rf "$AGENT_TOOLSDIRECTORY" || true
+          sudo docker system prune -af --volumes || true
+          echo "Disk after cleanup:"
+          df -h /
+
+      - name: Log in to Docker Hub
+        if: github.event.inputs.push_image == 'true'
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - uses: docker/setup-buildx-action@v3
+
+      # Write the corp CA cert secret to a temp file so it can be passed as a
+      # BuildKit secret (--secret id=tls_cert). The secret is never written into
+      # any image layer. If CORP_CA_CERT is not set, the step is skipped and the
+      # build proceeds without injecting a cert (correct for non-proxy builds).
+      - name: Write corp CA cert secret (AMD Zscaler proxy)
+        id: cert
+        run: |
+          if [ -n "${{ secrets.CORP_CA_CERT }}" ]; then
+            echo "${{ secrets.CORP_CA_CERT }}" > /tmp/corp-ca.crt
+            echo "path=/tmp/corp-ca.crt" >> "${GITHUB_OUTPUT}"
+            echo "present=true" >> "${GITHUB_OUTPUT}"
+          else
+            echo "present=false" >> "${GITHUB_OUTPUT}"
+          fi
+
+      - name: Build AIC image (no load; saves runner disk)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/Dockerfile
+          push: ${{ github.event.inputs.push_image == 'true' }}
+          load: false
+          tags: |
+            ${{ env.IMAGE_NAME }}:ci
+            ${{ env.IMAGE_NAME }}:${{ github.sha }}
+          build-args: |
+            ROCM_ARCH=${{ env.ROCM_ARCH }}
+          secrets: |
+            ${{ steps.cert.outputs.present == 'true' && format('tls_cert={0}', steps.cert.outputs.path) || '' }}
+          cache-from: type=gha,scope=aic
+          cache-to: type=gha,mode=max,scope=aic

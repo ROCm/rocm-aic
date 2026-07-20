@@ -1,0 +1,37 @@
+# Python
+.venv
+__pycache__/
+*.pyc
+
+# VSCode
+.vscode/
+
+# Large archives
+*.tgz
+
+# Benchmark CSVs, plots, container logs and the Prometheus TSDB all land under
+# logs/<job-id>/ (or logs/manual/ for non-Slurm runs) -- one ignored tree.
+logs/
+
+# Slurm job logs written to the tree root
+*.out
+spur-*.out
+rdma-test-*.out
+rdma-test-*.err
+
+# `make export` artifacts (aic-<date>-<rev>.tar.gz by default).
+/*.tar.gz
+
+# Debian package files
+*.deb
+
+# Codespell dictionary cache
+dictionary.dic
+
+# AI assistant / tool caches
+.claude/
+.cline_storage/
+.mypy_cache/
+
+# Local AMD cluster environment (see .env.amd.example if it exists)
+.env.amd

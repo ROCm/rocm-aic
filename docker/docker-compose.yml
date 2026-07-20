@@ -1,0 +1,200 @@
+# Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+#
+# : two-container inference stack (single compose file).
+#
+#   lmcache — standalone lmcache-server (MP mode)
+#               Standard mode (GDS_MODE unset):
+#                 L1:  GPU/CPU DRAM (--l1-size-gb)
+#                 L2a: nixl_store AIS_MT → local NVMe at NVME_DATA (hipFile P2PDMA)
+#                 L2b: nixl_store POSIX  → NFS-over-RDMA (host pre-mounted)
+#               GDS L1 mode (GDS_MODE=1):
+#                 L1:  NVMe slab at GDS_SLAB_DATA (hipFile on ROCm, cuFile on NVIDIA — auto-detected)
+#
+#   vllm    — vllm serve with LMCacheMPConnector
+#               Connects to lmcache:${LMCACHE_PORT:-6555} over ZMQ
+#
+# Required env:
+#   ROCM_ARCH      — e.g. gfx942
+#   HF_TOKEN       — HuggingFace access token
+#   NVME_DATA      — host path to local NVMe mount (L2a AIS_MT pool; e.g. /mnt/lmcache-nvme)
+#   NFS_DATA       — host path to NFS-over-RDMA mount (L2b; e.g. /mnt/lmcache-nfs)
+#
+# Optional:
+#   GPU                    — ROCR_VISIBLE_DEVICES for vllm (default: 0)
+#   GDS_MODE               — set to 1 to enable hipFile NVMe slab as L1 (requires GDS_SLAB_DATA)
+#   GDS_SLAB_DATA          — host path for the hipFile slab file (required when GDS_MODE=1)
+#   HF_HOME                — host HF cache dir (default: ~/.cache/huggingface)
+#   LOG                    — host log dir (default: ../logs, i.e. /logs)
+#   IMAGE_NAME             — Docker image tag (default: rocm-aic)
+#   VLLM_MODEL             — model to serve
+#   LMCACHE_PORT           — lmcache ZMQ listen port (default: 6555)
+#   LMCACHE_L1_SIZE_GB     — L1 cap in GiB (DRAM mode) or slab size (GDS mode, default: 20)
+#   LMCACHE_NVME_POOL      — nixl pool slots for NVMe adapter (default: 4096)
+#   LMCACHE_NVME_SLOT_SIZE — nixl file size per slot in bytes (default: 256 MiB)
+#   LMCACHE_NFS_POOL       — nixl pool slots for NFS adapter (default: 1024)
+#   VLM_GPU_MEMORY_UTILIZATION — vllm --gpu-memory-utilization (default: 0.90)
+#   VLM_MAX_MODEL_LEN          — vllm --max-model-len (default: 32768)
+#   VLM_MAX_NUM_BATCHED_TOKENS — vllm --max-num-batched-tokens (default: 4096)
+#   TENSOR_PARALLEL_SIZE       — vllm --tensor-parallel-size (default: 1)
+
+services:
+
+  # ---------------------------------------------------------------------------
+  # lmcache: standalone LMCache server in MP mode
+  # Selects between DRAM L1 + AIS_MT/NFS L2 (default) and GDS NVMe slab L1
+  # via the GDS_MODE environment variable.
+  # ---------------------------------------------------------------------------
+  lmcache:
+    build:
+      # Compose lives in docker/; the build context is the  tree
+      # root (one level up) so the Dockerfile's COPY scripts/ patches/ benchmarks/
+      # monitoring/ paths still resolve.
+      context: ..
+      dockerfile: docker/Dockerfile
+      args:
+        ROCM_ARCH: ${ROCM_ARCH}
+    image: ${IMAGE_NAME:-rocm-aic}
+    container_name: aic-lmcache
+    ports:
+      - "8080:8080"   # lmcache HTTP API + /metrics
+      - "${NIXL_METRICS_PORT:-19090}:${NIXL_METRICS_PORT:-19090}"   # NIXL telemetry /metrics
+    networks:
+      - aic-net
+    ipc: host
+    cap_add:
+      - CAP_SYS_ADMIN
+      - SYS_PTRACE
+      - IPC_LOCK
+    security_opt:
+      - seccomp:unconfined
+    ulimits:
+      # NIXL opens one FD per pool slot at init; keep above pool sizes.
+      nofile:
+        soft: 1048576
+        hard: 1048576
+    devices:
+      - /dev/kfd
+      - /dev/dri
+    volumes:
+      # L2a NVMe — AIS_MT pool files (standard mode)
+      - ${NVME_DATA:-/mnt/lmcache-nvme}:/data/nvme
+      # L2b NFS — POSIX pool files (standard mode)
+      - ${NFS_DATA:-/mnt/lmcache-nfs}:/data/nfs
+      # GDS L1 slab (GDS_MODE=1 only; mount is harmless when GDS_MODE is unset)
+      - ${GDS_SLAB_DATA:-/tmp/gds-slab-unused}:/data/slab
+      # Kernel interfaces for hipFile KFD GPUDirect fastpath (GDS L1 mode)
+      - /lib/modules:/lib/modules:ro
+      - /usr/src:/usr/src:ro
+      - /sys/kernel/debug:/sys/kernel/debug
+      - /sys/kernel/btf:/sys/kernel/btf:ro
+      - /boot:/boot:ro
+      - ${LOG:-../logs}/lmcache:/var/log/aic-lmcache
+    environment:
+      - LMCACHE_PORT=${LMCACHE_PORT:-6555}
+      - LMCACHE_L1_SIZE_GB=${LMCACHE_L1_SIZE_GB:-20}
+      - GDS_MODE=${GDS_MODE:-}
+      - GDS_SLAB_DATA=${GDS_SLAB_DATA:-}
+      - HIPFILE_ALLOW_COMPAT_MODE=false
+      - HIPFILE_UNSUPPORTED_FILE_SYSTEMS=true
+      # NIXL native Prometheus telemetry exporter (serves /metrics on :19090).
+      # Requires the prometheus-cpp plugin compiled into the image (build-nixl.sh);
+      # a no-op fallback if absent.  Set NIXL_TELEMETRY_ENABLE= to disable.
+      - NIXL_TELEMETRY_ENABLE=${NIXL_TELEMETRY_ENABLE-y}
+      - NIXL_TELEMETRY_EXPORTER=${NIXL_TELEMETRY_EXPORTER:-prometheus}
+      - NIXL_TELEMETRY_PROMETHEUS_PORT=${NIXL_METRICS_PORT:-19090}
+      - PYTHONHASHSEED=0
+      - TZ=${TZ:-America/Edmonton}
+    # The entrypoint script selects standard vs GDS L1 mode based on GDS_MODE.
+    entrypoint: ["/bin/bash", "-o", "pipefail", "-c"]
+    command:
+      - |
+        if [ "${GDS_MODE:-0}" = "1" ]; then
+          exec lmcache server \
+            --host 0.0.0.0 \
+            --port "$$LMCACHE_PORT" \
+            --l1-size-gb "$$LMCACHE_L1_SIZE_GB" \
+            --eviction-policy LRU \
+            --gds-l1-path /data/slab
+        else
+          exec lmcache server \
+            --host 0.0.0.0 \
+            --port "$$LMCACHE_PORT" \
+            --l1-size-gb "$$LMCACHE_L1_SIZE_GB" \
+            --eviction-policy LRU \
+            --l2-adapter "{\"type\":\"nixl_store\",\"backend\":\"AIS_MT\",\"backend_params\":{\"file_path\":\"/data/nvme/lmcache\",\"use_direct_io\":\"true\",\"file_size\":${LMCACHE_NVME_SLOT_SIZE:-268435456}},\"pool_size\":${LMCACHE_NVME_POOL:-4096}}" \
+            --l2-adapter "{\"type\":\"nixl_store\",\"backend\":\"POSIX\",\"backend_params\":{\"file_path\":\"/data/nfs/lmcache\"},\"pool_size\":${LMCACHE_NFS_POOL:-1024}}"
+        fi
+    healthcheck:
+      test:
+        - CMD
+        - python3
+        - -c
+        - "import os, socket; port=int(os.getenv('LMCACHE_PORT','6555')); s=socket.create_connection(('127.0.0.1', port), 2); s.close()"
+      interval: 10s
+      timeout: 5s
+      retries: 18
+      start_period: 30s
+
+  # ---------------------------------------------------------------------------
+  # vllm: vLLM serve with LMCacheMPConnector
+  # ---------------------------------------------------------------------------
+  vllm:
+    image: ${IMAGE_NAME:-rocm-aic}
+    container_name: aic-vllm-gpu${GPU:-0}
+    ports:
+      - "8000:8000"   # vLLM OpenAI API + /metrics
+    networks:
+      - aic-net
+    ipc: host
+    cap_add:
+      - CAP_SYS_ADMIN
+      - SYS_PTRACE
+    security_opt:
+      - seccomp:unconfined
+    devices:
+      - /dev/kfd
+      - /dev/dri
+    volumes:
+      - ${HF_HOME:-~/.cache/huggingface}:/hf
+      - ${LOG:-../logs}/vllm:/var/log/aic-vllm
+    environment:
+      - HF_TOKEN=${HF_TOKEN}
+      - HF_HOME=/hf
+      - HF_HUB_CACHE=/hf/hub
+      - HF_DATASETS_CACHE=/hf/datasets
+      - VLLM_CACHE_ROOT=/hf/vllm
+      - VLLM_CONFIG_ROOT=/hf/vllm_config
+      - TORCH_HOME=/hf/torch
+      - TORCHINDUCTOR_CACHE_DIR=/hf/torch_inductor
+      - ROCR_VISIBLE_DEVICES=${GPU:-0}
+      - AMDGCN_USE_BUFFER_OPS=0
+      - MIOPEN_FIND_MODE=FAST
+      - MIOPEN_USER_DB_PATH=/app/miopen
+      - PYTORCH_ALLOC_CONF=${PYTORCH_ALLOC_CONF:-expandable_segments:False}
+      - PYTHONHASHSEED=0
+      - TZ=${TZ:-America/Edmonton}
+    command: >
+      --model ${VLLM_MODEL:-openai/gpt-oss-120b}
+        --host 0.0.0.0
+        --port 8000
+        --tensor-parallel-size ${TENSOR_PARALLEL_SIZE:-1}
+        --gpu-memory-utilization ${VLM_GPU_MEMORY_UTILIZATION:-0.90}
+        --max-model-len ${VLM_MAX_MODEL_LEN:-32768}
+        --max-num-batched-tokens ${VLM_MAX_NUM_BATCHED_TOKENS:-4096}
+        --block-size 64
+        --enable-prefix-caching
+        --kv-cache-dtype fp8
+        --stream-interval 20
+        --async-scheduling
+        --disable-access-log-for-endpoints "/health,/metrics,/v1/models"
+        --enable-mfu-metrics
+        --kv-transfer-config '{"kv_connector":"LMCacheMPConnector","kv_role":"kv_both","kv_connector_extra_config":{"lmcache.mp.host":"tcp://lmcache","lmcache.mp.port":${LMCACHE_PORT:-6555}}}'
+    depends_on:
+      lmcache:
+        condition: service_healthy
+
+networks:
+  aic-net:
+    driver: bridge

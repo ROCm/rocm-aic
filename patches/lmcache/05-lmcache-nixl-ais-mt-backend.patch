@@ -1,0 +1,107 @@
+# Re-ported for the current LMCache dev pin.  The original patch predated
+# upstream's PathSharder/NixlFilePool refactor, so this integrates the AIS_MT
+# backend into the current sharder-based pool API and threads slot_size
+# (O_DIRECT slot sizing) through createPool -> NixlFilePool.ensure_slot_sized.
+#
+# !! UNVERIFIED: applies + imports cleanly, but AIS_MT storage-backend
+#    correctness has NOT been validated on a GPU.  Needs a real hipFile run.
+#
+diff --git a/lmcache/v1/storage_backend/nixl_storage_backend.py b/lmcache/v1/storage_backend/nixl_storage_backend.py
+index 0064f262..a228480e 100644
+--- a/lmcache/v1/storage_backend/nixl_storage_backend.py
++++ b/lmcache/v1/storage_backend/nixl_storage_backend.py
+@@ -121,7 +121,7 @@ class NixlStorageConfig:
+     @staticmethod
+     def validate_nixl_backend(backend: str, device: str) -> bool:
+         device = device.split(":", 1)[0]
+-        if backend in ("GDS", "GDS_MT", "OBJ"):
++        if backend in ("GDS", "GDS_MT", "OBJ", "AIS_MT"):
+             return device == "cpu" or device == "cuda"
+         elif backend in ("POSIX", "HF3FS", "AZURE_BLOB", "DOCA_MEMOS"):
+             return device == "cpu"
+@@ -293,9 +293,13 @@ class NixlFilePool(NixlDescPool):
+         size: int,
+         sharder: PathSharder,
+         use_direct_io: bool,
++        slot_size: int = 0,
+     ):
+         super().__init__(size)
+         self.fds: List[int] = []
++        self.use_direct_io = use_direct_io
++        self.slot_size = slot_size
++        self._sized_slots: set[int] = set()
+ 
+         flags = os.O_CREAT | os.O_RDWR
+         if use_direct_io:
+@@ -314,6 +318,26 @@ class NixlFilePool(NixlDescPool):
+             fd = os.open(tmp_path, flags)
+             self.fds.append(fd)
+ 
++    def _fd_for_index(self, index: int) -> int:
++        return self.fds[self.size - 1 - index]
++
++    def ensure_slot_sized(self, index: int) -> None:
++        """Size a pool file before the first O_DIRECT transfer to that slot."""
++        if not self.use_direct_io or self.slot_size <= 0:
++            return
++        with self.lock:
++            if index in self._sized_slots:
++                return
++            fd = self._fd_for_index(index)
++            try:
++                if os.fstat(fd).st_size >= self.slot_size:
++                    self._sized_slots.add(index)
++                    return
++            except OSError:
++                pass
++            os.ftruncate(fd, self.slot_size)
++            self._sized_slots.add(index)
++
+     def close(self):
+         # TODO: do we need to delete the files?
+         with self.lock:
+@@ -1007,6 +1031,7 @@ class NixlStaticStorageBackend(NixlStorageBackend):
+             nixl_config.use_direct_io,
+             nixl_config.path_sharding,
+             f"cuda:{metadata.worker_id}",
++            slot_size=self.memory_allocator.align_bytes,
+         )
+         assert self.pool is not None
+ 
+@@ -1031,6 +1056,7 @@ class NixlStaticStorageBackend(NixlStorageBackend):
+         use_direct_io: bool,
+         path_sharding: str,
+         dst_device: str,
++        slot_size: int = 0,
+     ) -> NixlDescPool:
+         """Create a NIXL descriptor pool with path sharding support.
+ 
+@@ -1054,7 +1080,7 @@ class NixlStaticStorageBackend(NixlStorageBackend):
+             prevent unintended sharding.
+         """
+ 
+-        if backend in ("GDS", "GDS_MT", "POSIX", "HF3FS"):
++        if backend in ("GDS", "GDS_MT", "POSIX", "HF3FS", "AIS_MT"):
+             if isinstance(path, list) and any("," in p for p in path):
+                 logger.warning(
+                     "nixl_path entries contain commas; joining for PathSharder may "
+@@ -1067,7 +1093,7 @@ class NixlStaticStorageBackend(NixlStorageBackend):
+                 dst_device=dst_device,
+                 create_dirs=True,
+             )
+-            return NixlFilePool(size, sharder, use_direct_io)
++            return NixlFilePool(size, sharder, use_direct_io, slot_size)
+         elif backend in ("OBJ", "AZURE_BLOB", "DOCA_MEMOS"):
+             return NixlObjectPool(size, b128=(backend == "DOCA_MEMOS"))
+         else:
+@@ -1097,6 +1123,10 @@ class NixlStaticStorageBackend(NixlStorageBackend):
+             storage_indices.append(index)
+             self.add_key_to_dict(keys[i], mem_objs[i].meta, index)
+ 
++        if isinstance(self.pool, NixlFilePool):
++            for index in storage_indices:
++                self.pool.ensure_slot_sized(index)
++
+         handle = self.agent.get_mem_to_storage_handle(mem_indices, storage_indices)
+         self.agent.post_blocking(handle)
+         self.agent.release_handle(handle)

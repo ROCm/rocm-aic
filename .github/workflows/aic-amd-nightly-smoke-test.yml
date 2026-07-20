@@ -1,0 +1,20 @@
+name: AIC Nightly Smoke Test
+
+on:
+  workflow_run:
+    workflows: ["AIC Nightly Dist Build"]
+    types: [completed]
+
+jobs:
+  smoke-test:
+    if: github.event.workflow_run.conclusion == 'success'
+    runs-on: [self-hosted, rocm-aic-cicd]
+    timeout-minutes: 60
+    env:
+      AIC_SPUR_HOST: ${{ secrets.AIC_SPUR_HOST }}
+      AIC_SHARED_NFS: ${{ secrets.AIC_SHARED_NFS }}
+      AIC_SPUR_CONTROLLER: ${{ secrets.AIC_SPUR_CONTROLLER }}
+
+    steps:
+      - name: Run smoke test on the SPUR head node
+        run: bash /usr/local/lib/aic-ci/spur-smoke-test.sh "${{ github.event.workflow_run.head_sha }}"

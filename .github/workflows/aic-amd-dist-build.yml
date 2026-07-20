@@ -1,0 +1,216 @@
+name: AIC AMD Dist Build
+
+on:
+  workflow_dispatch:
+  issue_comment:
+    types: [created]
+
+jobs:
+  # Validate /run-ci slash command on PRs; skipped for manual triggers
+  authorize:
+    if: >
+      github.event_name != 'issue_comment' || (
+        github.event.issue.pull_request != null &&
+        contains(github.event.comment.body, '/run-ci')
+      )
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
+    outputs:
+      sha: ${{ steps.resolve.outputs.sha }}
+      pr_number: ${{ steps.resolve.outputs.pr_number }}
+
+    steps:
+      - name: Check commenter is a maintainer or admin
+        if: github.event_name == 'issue_comment'
+        uses: actions/github-script@v9
+        with:
+          script: |
+            const { data } = await github.rest.repos.getCollaboratorPermissionLevel({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              username: context.actor,
+            });
+            const level = data.permission;
+            if (level !== 'admin' && level !== 'maintain' && level !== 'write') {
+              core.setFailed(`@${context.actor} does not have write/maintain/admin permission (got: ${level})`);
+            }
+
+      - name: Resolve SHA and PR number
+        id: resolve
+        uses: actions/github-script@v9
+        with:
+          script: |
+            if (context.eventName === 'issue_comment') {
+              const { data: pr } = await github.rest.pulls.get({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                pull_number: context.issue.number,
+              });
+              core.setOutput('sha', pr.head.sha);
+              core.setOutput('pr_number', String(context.issue.number));
+            } else {
+              core.setOutput('sha', context.sha);
+              core.setOutput('pr_number', '');
+            }
+
+      - name: React to comment with eyes
+        if: github.event_name == 'issue_comment'
+        uses: actions/github-script@v9
+        with:
+          script: |
+            await github.rest.reactions.createForIssueComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              comment_id: context.payload.comment.id,
+              content: 'eyes',
+            });
+
+  dist-build:
+    needs: authorize
+    runs-on: [self-hosted, rocm-aic-cicd]
+    timeout-minutes: 120
+    permissions:
+      pull-requests: write
+      statuses: write
+    env:
+      AIC_SPUR_HOST: ${{ secrets.AIC_SPUR_HOST }}
+      AIC_SHARED_NFS: ${{ secrets.AIC_SHARED_NFS }}
+      AIC_SPUR_CONTROLLER: ${{ secrets.AIC_SPUR_CONTROLLER }}
+
+    steps:
+      - name: Set commit status to pending
+        if: needs.authorize.outputs.pr_number != ''
+        uses: actions/github-script@v9
+        with:
+          script: |
+            await github.rest.repos.createCommitStatus({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              sha: '${{ needs.authorize.outputs.sha }}',
+              state: 'pending',
+              target_url: `https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`,
+              context: 'hardware-ci / dist-build',
+              description: 'Building image on the SPUR head node...',
+            });
+
+      - name: Build image on the SPUR head node
+        run: bash /usr/local/lib/aic-ci/spur-dist-build.sh "${{ needs.authorize.outputs.sha }}"
+
+      - name: Set commit status on success
+        if: success() && needs.authorize.outputs.pr_number != ''
+        uses: actions/github-script@v9
+        with:
+          script: |
+            await github.rest.repos.createCommitStatus({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              sha: '${{ needs.authorize.outputs.sha }}',
+              state: 'success',
+              target_url: `https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`,
+              context: 'hardware-ci / dist-build',
+              description: 'Image built successfully',
+            });
+
+      - name: Set commit status on failure
+        if: failure() && needs.authorize.outputs.pr_number != ''
+        uses: actions/github-script@v9
+        with:
+          script: |
+            await github.rest.repos.createCommitStatus({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              sha: '${{ needs.authorize.outputs.sha }}',
+              state: 'failure',
+              target_url: `https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`,
+              context: 'hardware-ci / dist-build',
+              description: 'Image build failed — check the run logs',
+            });
+
+      - name: Post failure comment on PR
+        if: failure() && needs.authorize.outputs.pr_number != ''
+        uses: actions/github-script@v9
+        with:
+          script: |
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: ${{ needs.authorize.outputs.pr_number || 0 }},
+              body: `❌ dist-build failed for ${{ needs.authorize.outputs.sha }}. [View logs](https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}).`,
+            });
+
+  smoke-test:
+    needs: [authorize, dist-build]
+    runs-on: [self-hosted, rocm-aic-cicd]
+    timeout-minutes: 60
+    permissions:
+      pull-requests: write
+      statuses: write
+    env:
+      AIC_SPUR_HOST: ${{ secrets.AIC_SPUR_HOST }}
+      AIC_SHARED_NFS: ${{ secrets.AIC_SHARED_NFS }}
+      AIC_SPUR_CONTROLLER: ${{ secrets.AIC_SPUR_CONTROLLER }}
+
+    steps:
+      - name: Set commit status to pending
+        if: needs.authorize.outputs.pr_number != ''
+        uses: actions/github-script@v9
+        with:
+          script: |
+            await github.rest.repos.createCommitStatus({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              sha: '${{ needs.authorize.outputs.sha }}',
+              state: 'pending',
+              target_url: `https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`,
+              context: 'hardware-ci / smoke-test',
+              description: 'Running smoke test on the SPUR head node...',
+            });
+
+      - name: Run smoke test on the SPUR head node
+        run: bash /usr/local/lib/aic-ci/spur-smoke-test.sh "${{ needs.authorize.outputs.sha }}"
+
+      - name: Set commit status on success
+        if: success() && needs.authorize.outputs.pr_number != ''
+        uses: actions/github-script@v9
+        with:
+          script: |
+            await github.rest.repos.createCommitStatus({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              sha: '${{ needs.authorize.outputs.sha }}',
+              state: 'success',
+              target_url: `https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`,
+              context: 'hardware-ci / smoke-test',
+              description: 'Smoke test passed',
+            });
+
+      - name: Set commit status on failure
+        if: failure() && needs.authorize.outputs.pr_number != ''
+        uses: actions/github-script@v9
+        with:
+          script: |
+            await github.rest.repos.createCommitStatus({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              sha: '${{ needs.authorize.outputs.sha }}',
+              state: 'failure',
+              target_url: `https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`,
+              context: 'hardware-ci / smoke-test',
+              description: 'Smoke test failed — check the run logs',
+            });
+
+      - name: Post result comment on PR
+        if: always() && needs.authorize.outputs.pr_number != ''
+        uses: actions/github-script@v9
+        with:
+          script: |
+            const success = '${{ job.status }}' === 'success';
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: ${{ needs.authorize.outputs.pr_number || 0 }},
+              body: success
+                ? `✅ Hardware CI passed for ${{ needs.authorize.outputs.sha }}.`
+                : `❌ Smoke test failed for ${{ needs.authorize.outputs.sha }}. [View logs](https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}).`,
+            });

@@ -1,0 +1,106 @@
+diff --git a/lmcache/v1/distributed/l2_adapters/nixl_store_l2_adapter.py b/lmcache/v1/distributed/l2_adapters/nixl_store_l2_adapter.py
+index 41a54be3..6bcde845 100644
+--- a/lmcache/v1/distributed/l2_adapters/nixl_store_l2_adapter.py
++++ b/lmcache/v1/distributed/l2_adapters/nixl_store_l2_adapter.py
+@@ -170,30 +170,37 @@ class NixlStorageAgent:
+         self.device = device
+         self.backend_params = backend_params
+ 
+-        self.l1_align_bytes = l1_memory_desc.align_bytes
++        # l1_memory_desc is None when GDS L1 is active (NVMe slab mode).
++        # Derive align_bytes from backend_params["file_size"]; skip L1 buffer
++        # registration since there is no pinned DRAM pool in that mode.
++        if l1_memory_desc is not None:
++            self.l1_align_bytes = l1_memory_desc.align_bytes
++        else:
++            self.l1_align_bytes = int(backend_params["file_size"])
+ 
+         self.agent_name = "NixlAgent_" + str(uuid.uuid4())
+         nixl_conf = NixlAgentConfig(backends=[])
+         self.nixl_agent = NixlAgent(self.agent_name, nixl_conf)
+         self.nixl_agent.create_backend(backend, backend_params)
+ 
+-        self.init_mem_handlers(
+-            self.device,
+-            l1_memory_desc.ptr,
+-            l1_memory_desc.size,
+-            l1_memory_desc.align_bytes,
+-            device_id=0,  # 0 indicates cpu
+-        )
++        if l1_memory_desc is not None:
++            self.init_mem_handlers(
++                self.device,
++                l1_memory_desc.ptr,
++                l1_memory_desc.size,
++                l1_memory_desc.align_bytes,
++                device_id=0,  # 0 indicates cpu
++            )
+ 
+-        if self.backend in ["GDS", "GDS_MT", "POSIX", "HF3FS"]:
++        if self.backend in ["GDS", "GDS_MT", "POSIX", "HF3FS", "AIS_MT"]:
+             file_size = int(
+-                self.backend_params.get("file_size", l1_memory_desc.align_bytes)
++                self.backend_params.get("file_size", self.l1_align_bytes)
+             )
+-            pages_per_file = file_size // l1_memory_desc.align_bytes
++            pages_per_file = file_size // self.l1_align_bytes
+             self.pool = NixlObjPool(num_total_objs=self.pool_size * pages_per_file)
+             self.init_storage_handlers_file(
+                 num_files=self.pool_size,
+-                page_size=l1_memory_desc.align_bytes,
++                page_size=self.l1_align_bytes,
+                 file_size=file_size,
+                 file_path=self.backend_params["file_path"],
+                 # TODO(Jiayi): Need to make argument parsing more elegant
+@@ -203,7 +210,7 @@ class NixlStorageAgent:
+         elif self.backend in ["OBJ", "AZURE_BLOB"]:
+             self.pool = NixlObjPool(num_total_objs=self.pool_size)
+             self.init_storage_handlers_object(
+-                page_size=l1_memory_desc.align_bytes,
++                page_size=self.l1_align_bytes,
+                 num_pages=self.pool_size,
+             )
+         else:
+@@ -443,8 +450,13 @@ class NixlStoreL2Adapter(L2AdapterInterface):
+             pool_size=config.pool_size,
+             l1_memory_desc=l1_memory_desc,
+         )
++        align_bytes = (
++            l1_memory_desc.align_bytes
++            if l1_memory_desc is not None
++            else self.nixl_agent.l1_align_bytes
++        )
+         max_capacity_bytes = (
+-            self.nixl_agent.pool.total_objs * l1_memory_desc.align_bytes
++            self.nixl_agent.pool.total_objs * align_bytes
+         )
+         super().__init__(max_capacity_bytes=max_capacity_bytes)
+         self._config = config
+@@ -905,11 +917,12 @@ _VALID_NIXL_BACKENDS = (
+     "GDS",
+     "GDS_MT",
+     "POSIX",
++    "AIS_MT",
+     "HF3FS",
+     "OBJ",
+     "AZURE_BLOB",
+ )
+-_FILE_BACKENDS = ("GDS", "GDS_MT", "POSIX", "HF3FS")
++_FILE_BACKENDS = ("GDS", "GDS_MT", "POSIX", "HF3FS", "AIS_MT")
+ 
+ 
+ class NixlStoreL2AdapterConfig(L2AdapterConfigBase):
+@@ -1004,7 +1017,12 @@ def _create_nixl_store_adapter(
+ ) -> L2AdapterInterface:
+     """Create a NixlStoreL2Adapter from config."""
+     if l1_memory_desc is None:
+-        raise ValueError("l1_memory_desc is required to create a NixlStoreL2Adapter.")
++        bp = getattr(config, "backend_params", {})
++        if "file_size" not in bp:
++            raise ValueError(
++                "l1_memory_desc is None (GDS L1 mode): backend_params must "
++                "include 'file_size' so the nixl_store adapter can size its pool."
++            )
+     return NixlStoreL2Adapter(config, l1_memory_desc)  # type: ignore[arg-type]
+ 
+ 
