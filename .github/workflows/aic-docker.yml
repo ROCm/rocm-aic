@@ -16,7 +16,7 @@
 #   Optional: pass TLS_CERT_SECRET=true to inject a corp CA cert via
 #   the CORP_CA_CERT repository secret (see step below).
 #
-name: AIC Docker build
+name: AIC Docker Build
 
 on:
   workflow_dispatch:
