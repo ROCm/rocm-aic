@@ -1,6 +1,3 @@
-# Claude Code session state and project memory
-.claude/
-
 # Python
 .venv
 __pycache__/
@@ -30,3 +27,11 @@ rdma-test-*.err
 
 # Codespell dictionary cache
 dictionary.dic
+
+# AI assistant / tool caches
+.claude/
+.cline_storage/
+.mypy_cache/
+
+# Local AMD cluster environment (see .env.amd.example if it exists)
+.env.amd

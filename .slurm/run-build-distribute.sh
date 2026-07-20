@@ -4,7 +4,7 @@
 #
 # SPDX-License-Identifier: MIT
 #
-# Build the aic-release inference image on an alola compile node and make it
+# Build the aic-release inference image on a CPU-only build node and make it
 # available across the cluster, using save -> shared BeeGFS scratch -> load.
 #
 # Image *distribution* uses save -> shared BeeGFS scratch -> load: each node keeps
@@ -35,18 +35,18 @@
 # Usage (run from the aic-release/ tree root; paths resolve relative to this script):
 #
 #   # Build on a compile node AND load onto MI300X targets in one go:
-#   AIC_TARGETS=ctr-cx63-mi300x-3,ctr-cx64-mi300x-4 \
+#   AIC_TARGETS=<node-a>,<node-b> \
 #     bash .slurm/run-build-distribute.sh all
 #
 #   # Just build + save the tarball:
 #   bash .slurm/run-build-distribute.sh build
 #
 #   # Just load an already-saved tarball onto targets:
-#   AIC_TARGETS=ctr-cx63-mi300x-3,ctr-cx64-mi300x-4 \
+#   AIC_TARGETS=<node-a>,<node-b> \
 #     bash .slurm/run-build-distribute.sh load
 #
 #   # Push the built image to a registry (pull-based distribution):
-#   AIC_PUSH_REF=registry-sc-harbor.amd.com/<proj>/rocm-aic:latest \
+#   AIC_PUSH_REF=<your-registry>/<project>/rocm-aic:latest \
 #     bash .slurm/run-build-distribute.sh push
 #
 # Commands:
@@ -54,7 +54,7 @@
 #   build-exporters
 #           Build the fabric exporter images (nvme_exporter / rdma_exporter) from
 #           monitoring/*/Dockerfile and save their tarballs to AIC_IMAGE_DIR, so
-#           bare cliff nodes (no batesste host service) can containerize them.
+#           bare cliff nodes can containerize them (no host-installed exporter service needed).
 #   load    Load the saved tarball on every node in AIC_TARGETS, then verify
 #           (also loads the exporter tarballs when present)
 #   push    Tag the built image as AIC_PUSH_REF and `docker push` it to a registry
@@ -78,11 +78,10 @@
 #   AIC_TARGETS          comma-separated nodes to load     (required for load/all)
 #   AIC_PUSH_REF         registry-qualified ref to push the final image to
 #                        (required for push; needs `docker login <registry>` first)
-#                        (e.g. registry-sc-harbor.amd.com/<proj>/rocm-aic:latest)
+#                        (e.g. <your-registry>/<project>/rocm-aic:latest)
 #
 #   AIC_BUILD_CONSTRAINT Slurm -C feature expr for the build node
-#                        (default: MARKHAM&CPUONLY -- CPU-only alola build boxes
-#                         on the same Markham /scratch).
+#                        (default: <site>&CPUONLY -- CPU-only build nodes).
 #                         Used only when AIC_BUILD_NODE is unset.
 #   AIC_BUILD_NODE       pin an exact build node via --nodelist (overrides
 #                        AIC_BUILD_CONSTRAINT)             (default: unset)
@@ -100,7 +99,7 @@
 #   AIC_CACHE_REF        registry ref for a shared BuildKit cache instead of a dir;
 #                        takes precedence over AIC_CACHE_DIR.  Uses --cache-to/
 #                        --cache-from type=registry.  Requires `docker login` first.
-#                        (e.g. registry-sc-harbor.amd.com/<proj>/rocm-aic:buildcache)
+#                        (e.g. <your-registry>/<project>/rocm-aic:buildcache)
 #                        (default: unset)
 #   AIC_CACHE_MODE       cache mode: min | max              (default: max)
 #   AIC_BUILDX_BUILDER   docker-container buildx builder name (default: aic-cache)
@@ -111,7 +110,7 @@
 #                        cert verification explicitly                (default: unset)
 #
 #   AIC_TEST_CONSTRAINT  Slurm -C feature expr for the test node
-#                        (default: MARKHAM&GFX942&NVME -- MI300X + local NVMe).
+#                        (default: <site>&GFX942&NVME -- MI300X + local NVMe).
 #                        Used only when AIC_TEST_NODE is unset.
 #   AIC_TEST_NODE        pin an exact test node via --nodelist  (default: unset)
 #   AIC_TEST_TIME        test job time limit               (default: 00:20:00)
@@ -135,8 +134,7 @@
 #                        (default: 0)
 #   AIC_SPUR_CONTROLLER  SPUR controller address passed as --controller to every
 #                        sbatch/srun/squeue call when AIC_SPUR_CLUSTER=1.
-#                        (default: $SPUR_CONTROLLER_ADDR if set, else
-#                         http://crs-m2m-cpu-spur-005.crusoe.amd.com:6817)
+#                        (default: $SPUR_CONTROLLER_ADDR)
 #
 #   AIC_TLS_CERT         corporate CA cert (BuildKit secret, never baked into image)
 #                        (default: $HOME/certs/zscaler-ca.crt if it exists; else none)
@@ -161,7 +159,7 @@ AIC_ROCM_ARCH="${AIC_ROCM_ARCH:-gfx90a;gfx942;gfx950;gfx1100;gfx1101;gfx1150;gfx
 AIC_IMAGE="${AIC_IMAGE:-rocm-aic:latest}"
 AIC_IMAGE_DIR="${AIC_IMAGE_DIR:-/scratch/${USER}/images}"
 AIC_SPUR_CLUSTER="${AIC_SPUR_CLUSTER:-0}"
-AIC_SPUR_CONTROLLER="${AIC_SPUR_CONTROLLER:-${SPUR_CONTROLLER_ADDR:-http://crs-m2m-cpu-spur-005.crusoe.amd.com:6817}}"
+AIC_SPUR_CONTROLLER="${AIC_SPUR_CONTROLLER:-${SPUR_CONTROLLER_ADDR:?set SPUR_CONTROLLER_ADDR or AIC_SPUR_CONTROLLER before using AIC_SPUR_CLUSTER=1}}"
 
 # When running on SPUR, default the partition to amd-spur (the only partition)
 # and clear the build/test constraints (SPUR nodes have no MARKHAM/CPUONLY/GFX942
@@ -174,8 +172,8 @@ if [[ "${AIC_SPUR_CLUSTER}" == "1" ]]; then
     AIC_TEST_CONSTRAINT="${AIC_TEST_CONSTRAINT-}"
 else
     AIC_BUILD_PARTITION="${AIC_BUILD_PARTITION:-defq}"
-    AIC_BUILD_CONSTRAINT="${AIC_BUILD_CONSTRAINT:-MARKHAM&CPUONLY}"
-    AIC_TEST_CONSTRAINT="${AIC_TEST_CONSTRAINT:-MARKHAM&GFX942&NVME}"
+    AIC_BUILD_CONSTRAINT="${AIC_BUILD_CONSTRAINT:-CPUONLY}"
+    AIC_TEST_CONSTRAINT="${AIC_TEST_CONSTRAINT:-GFX942&NVME}"
 fi
 AIC_BUILD_CPUS="${AIC_BUILD_CPUS:-32}"
 AIC_BUILD_TIME="${AIC_BUILD_TIME:-02:00:00}"
@@ -193,13 +191,13 @@ AIC_TEST_MEM="${AIC_TEST_MEM:-32G}"
 
 # --- Fabric exporter images (nvme_exporter / rdma_exporter) -------------------
 # Built from monitoring/*/Dockerfile and distributed alongside the main image so
-# bare cliff nodes (no batesste host service) can containerize them.  Names must
-# match run-cliff.sbatch's defaults so the tarballs written here are found there.
-# Versions default to the batesste host-service versions for Grafana parity.
+# bare cliff nodes can containerize them (no host-installed exporter service needed).  Names
+# must match run-cliff.sbatch's defaults so the tarballs written here are found there.
+# Versions default to the Grafana-parity versions; override via AIC_NVME/RDMA_EXPORTER_VERSION.
 AIC_NVME_EXPORTER_IMAGE="${AIC_NVME_EXPORTER_IMAGE:-aic-nvme-exporter:latest}"
 AIC_RDMA_EXPORTER_IMAGE="${AIC_RDMA_EXPORTER_IMAGE:-aic-rdma-exporter:latest}"
-AIC_NVME_EXPORTER_VERSION="${AIC_NVME_EXPORTER_VERSION:-3.0.0}"
-AIC_RDMA_EXPORTER_VERSION="${AIC_RDMA_EXPORTER_VERSION:-0.3.0}"
+AIC_NVME_EXPORTER_VERSION="${AIC_NVME_EXPORTER_VERSION:-3.0.0}"  # matches host-service default; override as needed
+AIC_RDMA_EXPORTER_VERSION="${AIC_RDMA_EXPORTER_VERSION:-0.3.0}"  # matches host-service default; override as needed
 
 # Corporate CA: default to the conventional path only if it actually exists.
 if [[ -z "${AIC_TLS_CERT:-}" && -r "${HOME}/certs/zscaler-ca.crt" ]]; then
@@ -565,7 +563,7 @@ cmd_build_exporters() {
     nvme_tar="$(_exporter_tarball_path "${AIC_NVME_EXPORTER_IMAGE}")"
     rdma_tar="$(_exporter_tarball_path "${AIC_RDMA_EXPORTER_IMAGE}")"
 
-    log "exporter images: ${AIC_NVME_EXPORTER_IMAGE} (nvme v${AIC_NVME_EXPORTER_VERSION}), ${AIC_RDMA_EXPORTER_IMAGE} (rdma v${AIC_RDMA_EXPORTER_VERSION})"
+    log "exporter images : ${AIC_NVME_EXPORTER_IMAGE} (nvme v${AIC_NVME_EXPORTER_VERSION}), ${AIC_RDMA_EXPORTER_IMAGE} (rdma v${AIC_RDMA_EXPORTER_VERSION})"
     log "tarballs   : ${nvme_tar}, ${rdma_tar}  (compress: ${AIC_COMPRESS})"
 
     local remote_script

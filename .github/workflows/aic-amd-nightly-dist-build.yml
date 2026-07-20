@@ -12,7 +12,11 @@ jobs:
     timeout-minutes: 120
     permissions:
       statuses: write
+    env:
+      AIC_SPUR_HOST: ${{ secrets.AIC_SPUR_HOST }}
+      AIC_SHARED_NFS: ${{ secrets.AIC_SHARED_NFS }}
+      AIC_SPUR_CONTROLLER: ${{ secrets.AIC_SPUR_CONTROLLER }}
 
     steps:
-      - name: Build image on amd-aic-spur
+      - name: Build image on the SPUR head node
         run: bash /usr/local/lib/aic-ci/spur-dist-build.sh "${{ github.sha }}"

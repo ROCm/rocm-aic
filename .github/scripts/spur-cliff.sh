@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Runs on the self-hosted runner; SSHes to amd-aic-spur, uses the clone and
+# Runs on the self-hosted runner; SSHes to the SPUR head node (AIC_SPUR_HOST), uses the clone and
 # tarball left by spur-dist-build.sh, and runs a cliff benchmark.
 #
 # Usage: spur-cliff.sh <full-sha> <target>
@@ -14,18 +14,25 @@ SHA="${1:?usage: $0 <full-sha> <cliff-short|cliff-submit>}"
 TARGET="${2:?usage: $0 <full-sha> <cliff-short|cliff-submit>}"
 SHORT="${SHA:0:7}"
 AIC_IMAGE="rocm-aic-ci-${SHORT}:latest"
-TARBALL_DIR="/shared_nfs/\${USER}/images/aic-ci-${SHORT}"
+AIC_SPUR_HOST="${AIC_SPUR_HOST:?AIC_SPUR_HOST must be set (e.g. via GitHub repo variable)}"
+AIC_SPUR_HOST="${AIC_SPUR_HOST//[$'\t\r\n ']}"
+AIC_SHARED_NFS="${AIC_SHARED_NFS:?AIC_SHARED_NFS must be set (e.g. via GitHub repo variable)}"
+AIC_SPUR_CONTROLLER="${AIC_SPUR_CONTROLLER:?AIC_SPUR_CONTROLLER must be set (e.g. via GitHub repo variable)}"
+TARBALL_DIR="${AIC_SHARED_NFS}/\${USER}/images/aic-ci-${SHORT}"
 
 case "${TARGET}" in
     cliff-short|cliff-submit) ;;
     *) echo "ERROR: target must be cliff-short or cliff-submit" >&2; exit 1 ;;
 esac
 
-ssh -o ServerAliveInterval=30 -o ServerAliveCountMax=4 amd-aic-spur env \
+ssh -o ServerAliveInterval=30 -o ServerAliveCountMax=4 "${AIC_SPUR_HOST}" env \
     SHA="${SHA}" \
     TARGET="${TARGET}" \
     AIC_IMAGE="${AIC_IMAGE}" \
     TARBALL_DIR="${TARBALL_DIR}" \
+    AIC_SHARED_NFS="${AIC_SHARED_NFS}" \
+    AIC_SPUR_CONTROLLER="${AIC_SPUR_CONTROLLER}" \
+    SPUR_CONTROLLER_ADDR="${AIC_SPUR_CONTROLLER}" \
     bash << 'REMOTE'
 set -euo pipefail
 

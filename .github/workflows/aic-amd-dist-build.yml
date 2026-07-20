@@ -73,6 +73,10 @@ jobs:
     permissions:
       pull-requests: write
       statuses: write
+    env:
+      AIC_SPUR_HOST: ${{ secrets.AIC_SPUR_HOST }}
+      AIC_SHARED_NFS: ${{ secrets.AIC_SHARED_NFS }}
+      AIC_SPUR_CONTROLLER: ${{ secrets.AIC_SPUR_CONTROLLER }}
 
     steps:
       - name: Set commit status to pending
@@ -87,10 +91,10 @@ jobs:
               state: 'pending',
               target_url: `https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`,
               context: 'hardware-ci / dist-build',
-              description: 'Building image on amd-aic-spur...',
+              description: 'Building image on the SPUR head node...',
             });
 
-      - name: Build image on amd-aic-spur
+      - name: Build image on the SPUR head node
         run: bash /usr/local/lib/aic-ci/spur-dist-build.sh "${{ needs.authorize.outputs.sha }}"
 
       - name: Set commit status on success
@@ -142,6 +146,10 @@ jobs:
     permissions:
       pull-requests: write
       statuses: write
+    env:
+      AIC_SPUR_HOST: ${{ secrets.AIC_SPUR_HOST }}
+      AIC_SHARED_NFS: ${{ secrets.AIC_SHARED_NFS }}
+      AIC_SPUR_CONTROLLER: ${{ secrets.AIC_SPUR_CONTROLLER }}
 
     steps:
       - name: Set commit status to pending
@@ -156,10 +164,10 @@ jobs:
               state: 'pending',
               target_url: `https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`,
               context: 'hardware-ci / smoke-test',
-              description: 'Running smoke test on amd-aic-spur...',
+              description: 'Running smoke test on the SPUR head node...',
             });
 
-      - name: Run smoke test on amd-aic-spur
+      - name: Run smoke test on the SPUR head node
         run: bash /usr/local/lib/aic-ci/spur-smoke-test.sh "${{ needs.authorize.outputs.sha }}"
 
       - name: Set commit status on success

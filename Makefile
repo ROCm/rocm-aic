@@ -92,28 +92,30 @@ PYTHON := $(if $(wildcard $(REPO_ROOT)/.venv/bin/python3),$(REPO_ROOT)/.venv/bin
 # ---- Distribute / cliff (Slurm) --------------------------------------------
 # The dist-* / cliff-* targets shell out to the .slurm scripts; the AIC_* knobs
 # they read pass straight through the environment (e.g. make dist-build
-# AIC_ROCM_ARCH=gfx942, make cliff-submit AIC_CLIFF_NODE=ctr-s95-mi300x-3
+# AIC_ROCM_ARCH=gfx942, make cliff-submit AIC_CLIFF_NODE=<node-name>
 # AIC_CLIFF_ARMS=nvme).  AIC_CACHE_DIR is the shared BuildKit file cache on
 # /scratch so a failed build resumes from the last good layer on any node
 # (set AIC_CACHE_DIR= to disable); AIC_BUILD_EXPORTERS=0 skips the fabric images.
 DIST := $(CURDIR)/.slurm/run-build-distribute.sh
 
 # ---- SPUR cluster overrides ------------------------------------------------
-# When AIC_SPUR_CLUSTER=1, default storage paths to /shared_nfs (the NFS volume
-# shared across all SPUR compute nodes) instead of /scratch (not present on
-# this cluster), and wire up the known controller address.
+# When AIC_SPUR_CLUSTER=1, default storage paths to AIC_SHARED_NFS (the NFS
+# volume shared across all SPUR compute nodes) instead of /scratch (not present
+# on this cluster), and wire up the controller address via AIC_SPUR_CONTROLLER
+# (set SPUR_CONTROLLER_ADDR in your environment, or pass AIC_SPUR_CONTROLLER=).
 AIC_SPUR_CLUSTER ?= 0
+AIC_SHARED_NFS ?=
 ifeq ($(AIC_SPUR_CLUSTER),1)
 export AIC_SPUR_CLUSTER
-export AIC_SPUR_CONTROLLER  ?= http://crs-m2m-cpu-spur-005.crusoe.amd.com:6817
-export AIC_IMAGE_DIR        ?= /shared_nfs/$(USER)/images
-export AIC_CACHE_DIR        ?= /shared_nfs/$(USER)/images/buildcache
+export AIC_SPUR_CONTROLLER  ?= $(SPUR_CONTROLLER_ADDR)
+export AIC_IMAGE_DIR        ?= $(AIC_SHARED_NFS)/$(USER)/images
+export AIC_CACHE_DIR        ?= $(AIC_SHARED_NFS)/$(USER)/images/buildcache
 # SPUR nodes have 8x NVMe drives combined into a single LVM at /mnt/m2m_nobackup.
 # Use override (not ?=) so these win over the top-level ?= defaults set earlier.
-# HF_HOME points to shared_nfs since /scratch does not exist on this cluster.
+# HF_HOME points to AIC_SHARED_NFS since /scratch does not exist on this cluster.
 override export NVME_DATA     := /mnt/m2m_nobackup/aic-cliff/nvme
 override export GDS_SLAB_DATA := /mnt/m2m_nobackup/aic-cliff/slab
-override export HF_HOME       := /shared_nfs/$(USER)/hf
+override export HF_HOME       := $(AIC_SHARED_NFS)/$(USER)/hf
 else
 export AIC_CACHE_DIR        ?= /scratch/$(USER)/images/buildcache
 endif
@@ -197,7 +199,7 @@ help:
 	@echo "  make cliff-long-128k   sbatch a 128k-ISL YaRN(x4) 3-arm sweep (extreme; big DRAM/slab pools)"
 	@echo "    Chain like the old run-this.sh:  make dist-build dist-push smoke-test"
 	@echo "    Pin a node: AIC_CLIFF_NODE=<node>   Narrow arms: AIC_CLIFF_ARMS=nvme (vram,nvme,gds)"
-	@echo "    Target another GFX: AIC_CLIFF_GFX=gfx950 (or AIC_CLIFF_CONSTRAINT=MARKHAM&GFX90A)"
+	@echo "    Target another GFX: AIC_CLIFF_GFX=gfx950 (or AIC_CLIFF_CONSTRAINT=<site>&GFX90A)"
 	@echo "      non-gfx942 nodes: no local NVMe (nvme/gds arms fall back to /tmp); the model"
 	@echo "      auto-selects by GPU arch (big CDNA=gpt-oss-120b, else Qwen2.5-3B); image is multi-arch"
 	@echo "    Override sweep/model via env: BENCH_CONCUR=1,8,64 VLLM_MODEL=... make cliff-submit"
@@ -400,12 +402,12 @@ smoke-test:                    # Load + smoke-test the image on a GPU+NVMe node
 # configured); on standard Slurm we pass $(AIC_CLIFF_CONSTRAINT) (below).
 #
 # ---- cliff GFX / constraint selection ----
-# By default the cliff job runs on a Markham MI300X (gfx942) node with local
-# NVMe -- the validated tiered-cache path.  To target another GFX arch, set
-#   AIC_CLIFF_GFX=gfx950        -> expands to constraint "MARKHAM&GFX950"
+# By default the cliff job runs on a gfx942 node with local NVMe -- the
+# validated tiered-cache path.  To target another GFX arch, set
+#   AIC_CLIFF_GFX=gfx950        -> expands to constraint "GFX950"
 # (the &NVME requirement is dropped, since only gfx942 nodes advertise NVME),
 # or pass a full Slurm constraint expression directly via
-#   AIC_CLIFF_CONSTRAINT=MARKHAM&GFX90A
+#   AIC_CLIFF_CONSTRAINT=GFX90A
 # AIC_CLIFF_CONSTRAINT wins if both are set; either overrides the #SBATCH
 # --constraint line baked into run-cliff.sbatch.  Caveats for non-gfx942 nodes:
 #   * no local NVMe -> the nvme/gds arms fall back to root-disk /tmp
@@ -424,9 +426,9 @@ smoke-test:                    # Load + smoke-test the image on a GPU+NVMe node
 AIC_CLIFF_GFX ?=
 ifeq ($(strip $(AIC_CLIFF_CONSTRAINT)),)
 ifneq ($(strip $(AIC_CLIFF_GFX)),)
-AIC_CLIFF_CONSTRAINT := MARKHAM&$(shell echo '$(AIC_CLIFF_GFX)' | tr '[:lower:]' '[:upper:]')
+AIC_CLIFF_CONSTRAINT := $(shell echo '$(AIC_CLIFF_GFX)' | tr '[:lower:]' '[:upper:]')
 else
-AIC_CLIFF_CONSTRAINT := MARKHAM&GFX942&NVME
+AIC_CLIFF_CONSTRAINT := GFX942&NVME
 endif
 endif
 ifeq ($(AIC_SPUR_CLUSTER),1)

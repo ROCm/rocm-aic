@@ -81,6 +81,10 @@ jobs:
     permissions:
       pull-requests: write
       statuses: write
+    env:
+      AIC_SPUR_HOST: ${{ secrets.AIC_SPUR_HOST }}
+      AIC_SHARED_NFS: ${{ secrets.AIC_SHARED_NFS }}
+      AIC_SPUR_CONTROLLER: ${{ secrets.AIC_SPUR_CONTROLLER }}
 
     steps:
       - name: Set commit status to pending
@@ -94,10 +98,10 @@ jobs:
               sha: '${{ needs.authorize.outputs.sha }}',
               state: 'pending',
               context: 'hardware-ci / cliff',
-              description: 'Running cliff benchmark on amd-aic-spur...',
+              description: 'Running cliff benchmark on the SPUR head node...',
             });
 
-      - name: Run cliff on amd-aic-spur
+      - name: Run cliff on the SPUR head node
         run: |
           bash /usr/local/lib/aic-ci/spur-cliff.sh \
             "${{ needs.authorize.outputs.sha }}" \

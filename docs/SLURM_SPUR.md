@@ -12,7 +12,7 @@ make dist-build dist-push smoke-test AIC_PUSH_REF=<registry>/rocm-aic:latest
 
 # Submit the full sweep (vram_only + kvd_v2 nvme + kvd_v2 gds) on a GPU+NVMe node.
 # Output lands in logs/<job-id>/. Pin a node / narrow arms / override the sweep via env:
-make cliff-submit AIC_CLIFF_NODE=ctr-s95-mi300x-3
+make cliff-submit AIC_CLIFF_NODE=<node-name>
 make cliff-submit AIC_CLIFF_ARMS=nvme BENCH_CONCUR=1,8,64
 make cliff-short          # 1-point smoke test of the whole flow
 ```
@@ -35,5 +35,5 @@ see [CLAUDE.md](../CLAUDE.md).
 Set `AIC_SPUR_CLUSTER=1` to activate the SPUR-aware submission path:
 
 ```bash
-make cliff-submit AIC_SPUR_CLUSTER=1 AIC_CLIFF_NODE=crsuse2-m2m-042
+make cliff-submit AIC_SPUR_CLUSTER=1 AIC_CLIFF_NODE=<node-name>
 ```

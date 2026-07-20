@@ -6,19 +6,21 @@
 #
 #SBATCH --job-name=aic-day-cliff
 #SBATCH --partition=defq
-# Default: a Markham MI300X (gfx942) node with local NVMe -- the validated
-# tiered-cache path.  To target another GFX arch, override the constraint on the
-# sbatch command line (a command-line --constraint wins over this directive),
-# most easily via the Makefile knobs:
+# Default: a gfx942 (MI300X) node with local NVMe -- the validated tiered-cache
+# path.  To target another GFX arch, override the constraint on the sbatch
+# command line (a command-line --constraint wins over this directive), most
+# easily via the Makefile knobs:
 #   make cliff-submit AIC_CLIFF_GFX=gfx950
-#   make cliff-submit AIC_CLIFF_CONSTRAINT=MARKHAM&GFX90A
+#   make cliff-submit AIC_CLIFF_CONSTRAINT=<site>&GFX90A
 # Non-gfx942 nodes have no local NVMe, so the nvme/gds arms drop to /tmp
 # (AIC_NVME_AUTO case 4).  The model is auto-selected from the node's GPU arch
 # (big CDNA gfx942/gfx950 -> gpt-oss-120b, else a small model; see
 # select_default_model below) unless VLLM_MODEL is set.  The default image
 # already carries kernels for every arch (`make dist-build` is multi-arch by
 # default), so no rebuild is needed.
-#SBATCH --constraint=MARKHAM&GFX942&NVME
+# Constraint: set via --constraint on the sbatch command line or via
+# AIC_CLIFF_CONSTRAINT / AIC_CLIFF_GFX in the Makefile.
+#SBATCH --constraint=GFX942&NVME
 #SBATCH --gres=gpu:1
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
@@ -32,7 +34,7 @@
 #SBATCH --output=/dev/null
 #
 # Run the KV-cache cliff benchmark (benchmarks/run_cliff.py) end-to-end on ONE
-# Markham MI300X + local-NVMe node, sweeping all three arms sequentially:
+# MI300X + local-NVMe node, sweeping all three arms sequentially:
 #
 #   1. vram_only        plain vLLM, VRAM prefix cache only (the "cliff" baseline)
 #   2. kvd_v2 (nvme)    LMCache: DRAM L1 + NIXL AIS_MT -> local NVMe L2a
@@ -48,14 +50,13 @@
 #
 #   sbatch .slurm/run-cliff.sbatch
 #   # pin a node:
-#   sbatch --nodelist=ctr-s95-mi300x-3 .slurm/run-cliff.sbatch
+#   sbatch --nodelist=<node-name> .slurm/run-cliff.sbatch
 #   # override the sweep / model:
 #   BENCH_CONCUR=1,8,32,64,128,250 VLLM_MODEL=openai/gpt-oss-120b \
 #       sbatch .slurm/run-cliff.sbatch
 #
-# Storage note (from a live probe of ctr-cx63-mi300x-21, 2026-07-13): the MI300X
-# nodes expose 4x 3.5T Samsung NVMe -- nvme0 is the OS root, and the spares
-# (nvme1-3) are typically RAW and UNMOUNTED.  To keep the LMCache NVMe tier off
+# Storage note: MI300X nodes typically expose 4x 3.5T Samsung NVMe -- nvme0 is
+# the OS root, and the spares (nvme1-3) are typically RAW and UNMOUNTED.  To keep the LMCache NVMe tier off
 # the busy root disk, AIC_NVME_AUTO=1 (default) auto-detects a dedicated local
 # NVMe (needs passwordless sudo on the node), in priority order:
 #   1) reuse an aic-lmcache volume already mounted at AIC_NVME_MOUNT (no format),
