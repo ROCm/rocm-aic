@@ -7,7 +7,7 @@
 # artifacts leaked in, key sources present), and uploads it as a downloadable
 # workflow artifact.  No Docker build required.
 #
-name: AIC export tarball
+name: AIC Export Tarball
 
 on:
   push:

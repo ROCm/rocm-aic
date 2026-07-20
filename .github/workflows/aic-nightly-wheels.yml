@@ -22,7 +22,7 @@
 # ships.  If a future component pin fails to build for the RDNA archs
 # (gfx11xx/gfx12xx), narrow it to the CDNA set "gfx90a;gfx942;gfx950" via the
 # rocm_arch input.
-name: AIC nightly wheels
+name: AIC Nightly Wheels
 
 on:
   schedule:

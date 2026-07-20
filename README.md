@@ -6,10 +6,15 @@
 [![vLLM](https://img.shields.io/badge/vLLM-0.25.0+rocm723-blue.svg)](https://github.com/vllm-project/vllm)
 [![LMCache](https://img.shields.io/badge/LMCache-v0.5.1-blue.svg)](https://github.com/LMCache/LMCache)
 [![NIXL](https://img.shields.io/badge/NIXL-v1.3.1-blue.svg)](https://github.com/ai-dynamo/nixl)
+[![hsa-snoop](https://img.shields.io/badge/hsa--snoop-v1.0.0-blue.svg)](https://github.com/sbates130272/hsa-snoop)
 [![Spelling](https://github.com/ROCm/rocm-aic/actions/workflows/aic-spellcheck.yml/badge.svg)](https://github.com/ROCm/rocm-aic/actions/workflows/aic-spellcheck.yml)
+[![Lint](https://github.com/ROCm/rocm-aic/actions/workflows/aic-lint.yml/badge.svg)](https://github.com/ROCm/rocm-aic/actions/workflows/aic-lint.yml)
+[![Export Tarball](https://github.com/ROCm/rocm-aic/actions/workflows/aic-export.yml/badge.svg)](https://github.com/ROCm/rocm-aic/actions/workflows/aic-export.yml)
 [![Nightly Dist Build](https://github.com/ROCm/rocm-aic/actions/workflows/aic-amd-nightly-dist-build.yml/badge.svg)](https://github.com/ROCm/rocm-aic/actions/workflows/aic-amd-nightly-dist-build.yml)
 [![Nightly Smoke Test](https://github.com/ROCm/rocm-aic/actions/workflows/aic-amd-nightly-smoke-test.yml/badge.svg)](https://github.com/ROCm/rocm-aic/actions/workflows/aic-amd-nightly-smoke-test.yml)
 [![Nightly Cliff](https://github.com/ROCm/rocm-aic/actions/workflows/aic-amd-nightly-cliff.yml/badge.svg)](https://github.com/ROCm/rocm-aic/actions/workflows/aic-amd-nightly-cliff.yml)
+[![Nightly Wheels](https://github.com/ROCm/rocm-aic/actions/workflows/aic-nightly-wheels.yml/badge.svg)](https://github.com/ROCm/rocm-aic/actions/workflows/aic-nightly-wheels.yml)
+[![Nightly Patch Validation](https://github.com/ROCm/rocm-aic/actions/workflows/aic-patches.yml/badge.svg)](https://github.com/ROCm/rocm-aic/actions/workflows/aic-patches.yml)
 
 > [!CAUTION]
 > This release is an *early-access* software technology preview. Running
