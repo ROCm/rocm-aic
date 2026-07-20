@@ -6,7 +6,7 @@
 # Validates that all LMCache and NIXL patches apply cleanly against their
 # pinned upstream SHAs without requiring a full Docker build.
 #
-name: AIC patch validation
+name: AIC Nightly Patch Validation
 
 on:
   push:
