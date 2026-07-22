@@ -15,6 +15,9 @@
 | `LMCACHE_NVME_POOL` | `4096` | NIXL pool slots for NVMe adapter |
 | `LMCACHE_NVME_SLOT_SIZE` | `268435456` | NIXL file size per NVMe pool slot, bytes (256 MiB) |
 | `LMCACHE_NFS_POOL` | `1024` | NIXL pool slots for NFS adapter |
+| `LMCACHE_NFS_SLOT_SIZE` | `268435456` | NIXL file size per POSIX/NFS pool slot, bytes (256 MiB); must cover the largest serialized KV chunk |
+| `AIC_NIXL_NVME_BACKEND` | `AIS_MT` | NIXL backend for `NVME_DATA`; use `POSIX` for ordinary filesystems such as `/tmp` that do not support hipFile P2PDMA |
+| `HIPFILE_ALLOW_COMPAT_MODE` | `false` | Allow hipFile fallback when P2PDMA buffer registration is unavailable; this may permit initialization but does not guarantee writes on unsupported filesystems |
 | `VLM_ATTENTION_BACKEND` | `TRITON_ATTN` | vLLM `--attention-backend` (TRITON_ATTN supports KV connectors) |
 | `VLM_KV_CACHE_DTYPE` | `fp8` | vLLM `--kv-cache-dtype` (`auto` for non-fp8 arches) |
 | `VLLM_EXTRA_ARGS` | — | Extra vLLM args appended verbatim (e.g. `--hf-overrides '{...}'`; single-quote embedded JSON) |
