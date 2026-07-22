@@ -1028,7 +1028,7 @@ export VLM_MAX_NUM_BATCHED_TOKENS=4096
 export VLM_ATTENTION_BACKEND=TRITON_ATTN
 export VLM_KV_CACHE_DTYPE=auto
 export LMCACHE_L1_SIZE_GB=4
-export KV_TRANSFER_ARG="--kv-transfer-config '{\"kv_connector\":\"LMCacheMPConnector\",\"kv_role\":\"kv_both\",\"kv_connector_extra_config\":{\"lmcache.mp.host\":\"tcp://lmcache\",\"lmcache.mp.port\":6555}}'"
+export KV_TRANSFER_ARG="--kv-transfer-config '{\"kv_connector\":\"LMCacheMPConnector\",\"kv_role\":\"kv_both\",\"kv_connector_extra_config\":{\"lmcache.mp.host\":\"tcp://127.0.0.1\",\"lmcache.mp.port\":6555}}'"
 mkdir -p "\${HF_HOME}" /tmp/aic-tiny-nvme /tmp/aic-tiny-nfs
 
 compose() { docker compose -f '${AIC_DAY_DIR}/docker/docker-compose.yml' "\$@"; }

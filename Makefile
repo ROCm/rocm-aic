@@ -31,6 +31,7 @@ LMCACHE_L1_SIZE_GB     ?= 20
 LMCACHE_NVME_POOL      ?= 4096
 LMCACHE_NVME_SLOT_SIZE ?= 268435456
 LMCACHE_NFS_POOL       ?= 1024
+LMCACHE_NFS_SLOT_SIZE  ?= 268435456
 
 # ---- vLLM knobs ------------------------------------------------------------
 VLLM_MODEL                  ?=
@@ -57,7 +58,7 @@ _ROCM_ARCH_DETECTED := $(shell rocm_agent_enumerator 2>/dev/null | grep -E '^gfx
 ROCM_ARCH := $(if $(strip $(ROCM_ARCH)),$(strip $(ROCM_ARCH)),$(_ROCM_ARCH_DETECTED))
 
 export ROCM_ARCH GPU GDS_SLAB_DATA LOG HF_HOME IMAGE_NAME
-export LMCACHE_PORT LMCACHE_L1_SIZE_GB LMCACHE_NVME_POOL LMCACHE_NVME_SLOT_SIZE LMCACHE_NFS_POOL
+export LMCACHE_PORT LMCACHE_L1_SIZE_GB LMCACHE_NVME_POOL LMCACHE_NVME_SLOT_SIZE LMCACHE_NFS_POOL LMCACHE_NFS_SLOT_SIZE
 export NVME_DATA NFS_DATA
 export VLLM_MODEL TENSOR_PARALLEL_SIZE
 export VLM_GPU_MEMORY_UTILIZATION VLM_MAX_MODEL_LEN VLM_MAX_NUM_BATCHED_TOKENS
@@ -80,7 +81,7 @@ COMPOSE_PLUGIN_VERSION ?= v2.40.0
 # vLLM --kv-transfer-config for the MP connector (interactive `make up`).  The JSON
 # is wrapped in single quotes so compose's shlex splitting preserves the inner
 # double quotes; leave KV_TRANSFER_ARG empty for a plain (baseline) vLLM.
-_MP_CONNECTOR_JSON := {"kv_connector":"LMCacheMPConnector","kv_role":"kv_both","kv_connector_extra_config":{"lmcache.mp.host":"tcp://lmcache","lmcache.mp.port":$(LMCACHE_PORT)}}
+_MP_CONNECTOR_JSON := {"kv_connector":"LMCacheMPConnector","kv_role":"kv_both","kv_connector_extra_config":{"lmcache.mp.host":"tcp://127.0.0.1","lmcache.mp.port":$(LMCACHE_PORT)}}
 KV_TRANSFER_ARG    ?= --kv-transfer-config '$(_MP_CONNECTOR_JSON)'
 export KV_TRANSFER_ARG
 

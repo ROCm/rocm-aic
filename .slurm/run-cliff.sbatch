@@ -647,7 +647,7 @@ run_arm_kvd() {  # $1=mode(nvme|gds) $2=out_csv
     # MP connector arg for vLLM (+ optional kv_load_failure_policy).  Single-quote
     # the JSON so compose's shlex splitting preserves the inner double quotes.
     local _fp=""; [[ -n "${AIC_KV_LOAD_FAILURE_POLICY}" ]] && _fp=",\"kv_load_failure_policy\":\"${AIC_KV_LOAD_FAILURE_POLICY}\""
-    export KV_TRANSFER_ARG="--kv-transfer-config '{\"kv_connector\":\"LMCacheMPConnector\",\"kv_role\":\"kv_both\"${_fp},\"kv_connector_extra_config\":{\"lmcache.mp.host\":\"tcp://lmcache\",\"lmcache.mp.port\":${LMCACHE_PORT}}}'"
+    export KV_TRANSFER_ARG="--kv-transfer-config '{\"kv_connector\":\"LMCacheMPConnector\",\"kv_role\":\"kv_both\"${_fp},\"kv_connector_extra_config\":{\"lmcache.mp.host\":\"tcp://127.0.0.1\",\"lmcache.mp.port\":${LMCACHE_PORT}}}'"
 
     local _l2desc
     if [[ "${mode}" == "gds" ]]; then

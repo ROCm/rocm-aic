@@ -17,8 +17,15 @@
 #   vllm    — vllm serve, optionally with LMCacheMPConnector
 #               KV_TRANSFER_ARG selects the connector.  Set it to the
 #               LMCacheMPConnector JSON (default via `make up`) to connect to the
-#               lmcache service over ZMQ, or leave it EMPTY for a plain
+#               same-host lmcache service over ZMQ, or leave it EMPTY for a plain
 #               VRAM-prefix-cache-only vLLM (the cliff `vram` baseline arm).
+#
+# HIP IPC between the vLLM and LMCache containers requires both services to use
+# the host network and host PID namespace in this cross-container topology.  With
+# host networking there is no Compose DNS name for lmcache and no port publishing:
+# vLLM connects to
+# tcp://127.0.0.1:${LMCACHE_PORT:-6555}, while the service ports bind directly on
+# the host (vLLM 8000, LMCache HTTP 8080, NIXL metrics 19090).
 #
 # This one compose file is the single source of truth for every launch path:
 #   make up / up-gds-l1                — interactive MP stack
@@ -51,7 +58,10 @@
 #   LMCACHE_NVME_POOL      — nixl pool slots for NVMe adapter (default: 4096)
 #   LMCACHE_NVME_SLOT_SIZE — nixl file size per slot in bytes (default: 256 MiB)
 #   LMCACHE_NFS_POOL       — nixl pool slots for NFS adapter (default: 1024)
+#   LMCACHE_NFS_SLOT_SIZE  — nixl file size per NFS slot in bytes (default: 256 MiB)
+#   AIC_NIXL_NVME_BACKEND  — NIXL backend for NVME_DATA: AIS_MT (default) or POSIX
 #   AIC_NIXL_USE_DIRECT_IO — O_DIRECT for the AIS_MT NVMe L2 (default: true)
+#   HIPFILE_ALLOW_COMPAT_MODE — allow hipFile fallback when P2PDMA registration fails (default: false)
 #   VLM_GPU_MEMORY_UTILIZATION — vllm --gpu-memory-utilization (default: 0.90)
 #   VLM_MAX_MODEL_LEN          — vllm --max-model-len (default: 32768)
 #   VLM_MAX_NUM_BATCHED_TOKENS — vllm --max-num-batched-tokens (default: 4096)
@@ -81,11 +91,11 @@ services:
         ROCM_ARCH: ${ROCM_ARCH}
     image: ${IMAGE_NAME:-rocm-aic}
     container_name: aic-lmcache
-    ports:
-      - "8080:8080"   # lmcache HTTP API + /metrics
-      - "${NIXL_METRICS_PORT:-19090}:${NIXL_METRICS_PORT:-19090}"   # NIXL telemetry /metrics
-    networks:
-      - aic-net
+    # LMCache imports vLLM's HIP IPC memory handles and exports synchronization
+    # event handles in the reverse direction.  Use the host namespaces on both
+    # services so either process can be the HIP IPC producer.
+    network_mode: host
+    pid: host
     ipc: host
     cap_add:
       - CAP_SYS_ADMIN
@@ -131,10 +141,12 @@ services:
       - LMCACHE_NVME_POOL=${LMCACHE_NVME_POOL:-4096}
       - LMCACHE_NVME_SLOT_SIZE=${LMCACHE_NVME_SLOT_SIZE:-268435456}
       - LMCACHE_NFS_POOL=${LMCACHE_NFS_POOL:-1024}
+      - LMCACHE_NFS_SLOT_SIZE=${LMCACHE_NFS_SLOT_SIZE:-268435456}
+      - AIC_NIXL_NVME_BACKEND=${AIC_NIXL_NVME_BACKEND:-AIS_MT}
       - AIC_NIXL_USE_DIRECT_IO=${AIC_NIXL_USE_DIRECT_IO:-true}
       # Only set when a real config file is mounted (local_disk / advanced tuning).
       - LMCACHE_CONFIG_FILE=${LMCACHE_CONFIG_FILE:-}
-      - HIPFILE_ALLOW_COMPAT_MODE=false
+      - HIPFILE_ALLOW_COMPAT_MODE=${HIPFILE_ALLOW_COMPAT_MODE:-false}
       - HIPFILE_UNSUPPORTED_FILE_SYSTEMS=true
       # NIXL native Prometheus telemetry exporter (serves /metrics on :19090).
       # Requires the prometheus-cpp plugin compiled into the image (build-nixl.sh);
@@ -171,8 +183,8 @@ services:
             --port "$$LMCACHE_PORT" \
             --l1-size-gb "$$LMCACHE_L1_SIZE_GB" \
             --eviction-policy LRU \
-            --l2-adapter "{\"type\":\"nixl_store\",\"backend\":\"AIS_MT\",\"backend_params\":{\"file_path\":\"/data/nvme/lmcache\",\"use_direct_io\":\"$$AIC_NIXL_USE_DIRECT_IO\",\"file_size\":$$LMCACHE_NVME_SLOT_SIZE},\"pool_size\":$$LMCACHE_NVME_POOL}" \
-            --l2-adapter "{\"type\":\"nixl_store\",\"backend\":\"POSIX\",\"backend_params\":{\"file_path\":\"/data/nfs/lmcache\"},\"pool_size\":$$LMCACHE_NFS_POOL}"
+            --l2-adapter "{\"type\":\"nixl_store\",\"backend\":\"$$AIC_NIXL_NVME_BACKEND\",\"backend_params\":{\"file_path\":\"/data/nvme/lmcache\",\"use_direct_io\":\"$$AIC_NIXL_USE_DIRECT_IO\",\"file_size\":\"$$LMCACHE_NVME_SLOT_SIZE\"},\"pool_size\":$$LMCACHE_NVME_POOL}" \
+            --l2-adapter "{\"type\":\"nixl_store\",\"backend\":\"POSIX\",\"backend_params\":{\"file_path\":\"/data/nfs/lmcache\",\"use_direct_io\":\"false\",\"file_size\":\"$$LMCACHE_NFS_SLOT_SIZE\"},\"pool_size\":$$LMCACHE_NFS_POOL}"
         fi
     healthcheck:
       test:
@@ -191,10 +203,11 @@ services:
   vllm:
     image: ${IMAGE_NAME:-rocm-aic}
     container_name: aic-vllm-gpu${GPU:-0}
-    ports:
-      - "8000:8000"   # vLLM OpenAI API + /metrics
-    networks:
-      - aic-net
+    # vLLM owns and exports the KV-cache GPU allocations consumed by LMCache.
+    # Host networking + host PID visibility are required for cross-container
+    # HIP IPC; the API binds directly to host port 8000.
+    network_mode: host
+    pid: host
     ipc: host
     cap_add:
       - CAP_SYS_ADMIN
@@ -252,7 +265,3 @@ services:
         # required:false lets the plain baseline run `vllm` alone (lmcache not in
         # the active profile) without a dependency error (needs Compose v2.20+).
         required: false
-
-networks:
-  aic-net:
-    driver: bridge
