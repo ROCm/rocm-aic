@@ -22,7 +22,7 @@
 #   NFS_DATA       — host path to NFS-over-RDMA mount (L2b; e.g. /mnt/lmcache-nfs)
 #
 # Optional:
-#   GPU                    — ROCR_VISIBLE_DEVICES for vllm (default: 0)
+#   GPU                    — ROCR_VISIBLE_DEVICES for vllm and lmcache (default: 0)
 #   GDS_MODE               — set to 1 to enable hipFile NVMe slab as L1 (requires GDS_SLAB_DATA)
 #   GDS_SLAB_DATA          — host path for the hipFile slab file (required when GDS_MODE=1)
 #   HF_HOME                — host HF cache dir (default: ~/.cache/huggingface)
@@ -104,6 +104,7 @@ services:
       - NIXL_TELEMETRY_ENABLE=${NIXL_TELEMETRY_ENABLE-y}
       - NIXL_TELEMETRY_EXPORTER=${NIXL_TELEMETRY_EXPORTER:-prometheus}
       - NIXL_TELEMETRY_PROMETHEUS_PORT=${NIXL_METRICS_PORT:-19090}
+      - ROCR_VISIBLE_DEVICES=${GPU:-0}
       - PYTHONHASHSEED=0
       - TZ=${TZ:-America/Edmonton}
     # The entrypoint script selects standard vs GDS L1 mode based on GDS_MODE.
