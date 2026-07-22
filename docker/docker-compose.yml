@@ -11,9 +11,23 @@
 #                 L2b: nixl_store POSIX  → NFS-over-RDMA (host pre-mounted)
 #               GDS L1 mode (GDS_MODE=1):
 #                 L1:  NVMe slab at GDS_SLAB_DATA (hipFile on ROCm, cuFile on NVIDIA — auto-detected)
+#               local_disk L2 (AIC_L2_BACKEND=local_disk):
+#                 L1:  DRAM (--l1-size-gb) + native LocalDiskBackend L2 via LMCACHE_CONFIG_FILE
 #
-#   vllm    — vllm serve with LMCacheMPConnector
-#               Connects to lmcache:${LMCACHE_PORT:-6555} over ZMQ
+#   vllm    — vllm serve, optionally with LMCacheMPConnector
+#               KV_TRANSFER_ARG selects the connector.  Set it to the
+#               LMCacheMPConnector JSON (default via `make up`) to connect to the
+#               lmcache service over ZMQ, or leave it EMPTY for a plain
+#               VRAM-prefix-cache-only vLLM (the cliff `vram` baseline arm).
+#
+# This one compose file is the single source of truth for every launch path:
+#   make up / up-gds-l1                — interactive MP stack
+#   .slurm/run-cliff.sbatch            — all cliff arms (vram baseline + nvme + gds)
+#   .slurm/run-build-distribute.sh     — tiny-test end-to-end serve
+#
+# The lmcache service sits behind the `cache` compose profile, so the plain
+# `vram` baseline can start `vllm` alone (`docker compose up vllm`) without
+# pulling in lmcache — vllm's depends_on uses `required: false` for that.
 #
 # Required env:
 #   ROCM_ARCH      — e.g. gfx942
@@ -25,6 +39,9 @@
 #   GPU                    — ROCR_VISIBLE_DEVICES for vllm and lmcache (default: 0)
 #   GDS_MODE               — set to 1 to enable hipFile NVMe slab as L1 (requires GDS_SLAB_DATA)
 #   GDS_SLAB_DATA          — host path for the hipFile slab file (required when GDS_MODE=1)
+#   AIC_L2_BACKEND         — nixl (default AIS_MT + POSIX L2) or local_disk (native LocalDiskBackend)
+#   LMCACHE_CONFIG_FILE_HOST — host path to an LMCache YAML config to mount (advanced; local_disk)
+#   KV_TRANSFER_ARG        — vLLM --kv-transfer-config arg (empty = plain vLLM baseline)
 #   HF_HOME                — host HF cache dir (default: ~/.cache/huggingface)
 #   LOG                    — host log dir (default: ../logs, i.e. /logs)
 #   IMAGE_NAME             — Docker image tag (default: rocm-aic)
@@ -34,19 +51,26 @@
 #   LMCACHE_NVME_POOL      — nixl pool slots for NVMe adapter (default: 4096)
 #   LMCACHE_NVME_SLOT_SIZE — nixl file size per slot in bytes (default: 256 MiB)
 #   LMCACHE_NFS_POOL       — nixl pool slots for NFS adapter (default: 1024)
+#   AIC_NIXL_USE_DIRECT_IO — O_DIRECT for the AIS_MT NVMe L2 (default: true)
 #   VLM_GPU_MEMORY_UTILIZATION — vllm --gpu-memory-utilization (default: 0.90)
 #   VLM_MAX_MODEL_LEN          — vllm --max-model-len (default: 32768)
 #   VLM_MAX_NUM_BATCHED_TOKENS — vllm --max-num-batched-tokens (default: 4096)
+#   VLM_ATTENTION_BACKEND      — vllm --attention-backend (default: TRITON_ATTN)
+#   VLM_KV_CACHE_DTYPE         — vllm --kv-cache-dtype (default: fp8)
+#   VLLM_EXTRA_ARGS            — extra vllm args appended verbatim (e.g. --hf-overrides ...)
 #   TENSOR_PARALLEL_SIZE       — vllm --tensor-parallel-size (default: 1)
 
 services:
 
   # ---------------------------------------------------------------------------
   # lmcache: standalone LMCache server in MP mode
-  # Selects between DRAM L1 + AIS_MT/NFS L2 (default) and GDS NVMe slab L1
-  # via the GDS_MODE environment variable.
+  # Selects between DRAM L1 + AIS_MT/NFS L2 (default), GDS NVMe slab L1
+  # (GDS_MODE=1), and native LocalDiskBackend L2 (AIC_L2_BACKEND=local_disk).
+  # Behind the `cache` profile so the plain vram baseline can skip it.
   # ---------------------------------------------------------------------------
   lmcache:
+    profiles:
+      - cache
     build:
       # Compose lives in docker/; the build context is the  tree
       # root (one level up) so the Dockerfile's COPY scripts/ patches/ benchmarks/
@@ -74,6 +98,10 @@ services:
       nofile:
         soft: 1048576
         hard: 1048576
+      # hipFileBufRegister pins the registered staging buffer; needs unlimited memlock.
+      memlock:
+        soft: -1
+        hard: -1
     devices:
       - /dev/kfd
       - /dev/dri
@@ -84,6 +112,9 @@ services:
       - ${NFS_DATA:-/mnt/lmcache-nfs}:/data/nfs
       # GDS L1 slab (GDS_MODE=1 only; mount is harmless when GDS_MODE is unset)
       - ${GDS_SLAB_DATA:-/tmp/gds-slab-unused}:/data/slab
+      # Optional LMCache YAML config (local_disk / advanced tuning).  Defaults to a
+      # harmless mount; only read when LMCACHE_CONFIG_FILE is set in the environment.
+      - ${LMCACHE_CONFIG_FILE_HOST:-/dev/null}:/config/lmcache.yml:ro
       # Kernel interfaces for hipFile KFD GPUDirect fastpath (GDS L1 mode)
       - /lib/modules:/lib/modules:ro
       - /usr/src:/usr/src:ro
@@ -96,6 +127,13 @@ services:
       - LMCACHE_L1_SIZE_GB=${LMCACHE_L1_SIZE_GB:-20}
       - GDS_MODE=${GDS_MODE:-}
       - GDS_SLAB_DATA=${GDS_SLAB_DATA:-}
+      - AIC_L2_BACKEND=${AIC_L2_BACKEND:-nixl}
+      - LMCACHE_NVME_POOL=${LMCACHE_NVME_POOL:-4096}
+      - LMCACHE_NVME_SLOT_SIZE=${LMCACHE_NVME_SLOT_SIZE:-268435456}
+      - LMCACHE_NFS_POOL=${LMCACHE_NFS_POOL:-1024}
+      - AIC_NIXL_USE_DIRECT_IO=${AIC_NIXL_USE_DIRECT_IO:-true}
+      # Only set when a real config file is mounted (local_disk / advanced tuning).
+      - LMCACHE_CONFIG_FILE=${LMCACHE_CONFIG_FILE:-}
       - HIPFILE_ALLOW_COMPAT_MODE=false
       - HIPFILE_UNSUPPORTED_FILE_SYSTEMS=true
       # NIXL native Prometheus telemetry exporter (serves /metrics on :19090).
@@ -107,7 +145,8 @@ services:
       - ROCR_VISIBLE_DEVICES=${GPU:-0}
       - PYTHONHASHSEED=0
       - TZ=${TZ:-America/Edmonton}
-    # The entrypoint script selects standard vs GDS L1 mode based on GDS_MODE.
+    # The entrypoint script selects the L1/L2 topology from GDS_MODE +
+    # AIC_L2_BACKEND.  local_disk relies on LMCACHE_CONFIG_FILE (mounted above).
     entrypoint: ["/bin/bash", "-o", "pipefail", "-c"]
     command:
       - |
@@ -118,14 +157,22 @@ services:
             --l1-size-gb "$$LMCACHE_L1_SIZE_GB" \
             --eviction-policy LRU \
             --gds-l1-path /data/slab
+        elif [ "$$AIC_L2_BACKEND" = "local_disk" ]; then
+          # Native LocalDiskBackend L2: DRAM L1 (--l1-size-gb) in front of a
+          # .pt-per-chunk disk tier configured via the mounted LMCACHE_CONFIG_FILE.
+          exec lmcache server \
+            --host 0.0.0.0 \
+            --port "$$LMCACHE_PORT" \
+            --l1-size-gb "$$LMCACHE_L1_SIZE_GB" \
+            --eviction-policy LRU
         else
           exec lmcache server \
             --host 0.0.0.0 \
             --port "$$LMCACHE_PORT" \
             --l1-size-gb "$$LMCACHE_L1_SIZE_GB" \
             --eviction-policy LRU \
-            --l2-adapter "{\"type\":\"nixl_store\",\"backend\":\"AIS_MT\",\"backend_params\":{\"file_path\":\"/data/nvme/lmcache\",\"use_direct_io\":\"true\",\"file_size\":${LMCACHE_NVME_SLOT_SIZE:-268435456}},\"pool_size\":${LMCACHE_NVME_POOL:-4096}}" \
-            --l2-adapter "{\"type\":\"nixl_store\",\"backend\":\"POSIX\",\"backend_params\":{\"file_path\":\"/data/nfs/lmcache\"},\"pool_size\":${LMCACHE_NFS_POOL:-1024}}"
+            --l2-adapter "{\"type\":\"nixl_store\",\"backend\":\"AIS_MT\",\"backend_params\":{\"file_path\":\"/data/nvme/lmcache\",\"use_direct_io\":\"$$AIC_NIXL_USE_DIRECT_IO\",\"file_size\":$$LMCACHE_NVME_SLOT_SIZE},\"pool_size\":$$LMCACHE_NVME_POOL}" \
+            --l2-adapter "{\"type\":\"nixl_store\",\"backend\":\"POSIX\",\"backend_params\":{\"file_path\":\"/data/nfs/lmcache\"},\"pool_size\":$$LMCACHE_NFS_POOL}"
         fi
     healthcheck:
       test:
@@ -139,7 +186,7 @@ services:
       start_period: 30s
 
   # ---------------------------------------------------------------------------
-  # vllm: vLLM serve with LMCacheMPConnector
+  # vllm: vLLM serve, optionally with LMCacheMPConnector (via KV_TRANSFER_ARG)
   # ---------------------------------------------------------------------------
   vllm:
     image: ${IMAGE_NAME:-rocm-aic}
@@ -161,10 +208,12 @@ services:
       - ${HF_HOME:-~/.cache/huggingface}:/hf
       - ${LOG:-../logs}/vllm:/var/log/aic-vllm
     environment:
-      - HF_TOKEN=${HF_TOKEN}
+      - HF_TOKEN=${HF_TOKEN:-}
       - HF_HOME=/hf
       - HF_HUB_CACHE=/hf/hub
       - HF_DATASETS_CACHE=/hf/datasets
+      - HF_HUB_OFFLINE=${HF_HUB_OFFLINE:-0}
+      - TRANSFORMERS_OFFLINE=${TRANSFORMERS_OFFLINE:-0}
       - VLLM_CACHE_ROOT=/hf/vllm
       - VLLM_CONFIG_ROOT=/hf/vllm_config
       - TORCH_HOME=/hf/torch
@@ -173,6 +222,9 @@ services:
       - AMDGCN_USE_BUFFER_OPS=0
       - MIOPEN_FIND_MODE=FAST
       - MIOPEN_USER_DB_PATH=/app/miopen
+      # AITER unified attention: required so a KV connector (LMCache) can unify a
+      # hybrid model's KV-cache specs.  Harmless for the plain baseline.
+      - VLLM_ROCM_USE_AITER=${AIC_ROCM_USE_AITER:-1}
       - PYTORCH_ALLOC_CONF=${PYTORCH_ALLOC_CONF:-expandable_segments:False}
       - PYTHONHASHSEED=0
       - TZ=${TZ:-America/Edmonton}
@@ -186,15 +238,20 @@ services:
         --max-num-batched-tokens ${VLM_MAX_NUM_BATCHED_TOKENS:-4096}
         --block-size 64
         --enable-prefix-caching
-        --kv-cache-dtype fp8
+        --kv-cache-dtype ${VLM_KV_CACHE_DTYPE:-fp8}
+        --attention-backend ${VLM_ATTENTION_BACKEND:-TRITON_ATTN}
         --stream-interval 20
         --async-scheduling
         --disable-access-log-for-endpoints "/health,/metrics,/v1/models"
         --enable-mfu-metrics
-        --kv-transfer-config '{"kv_connector":"LMCacheMPConnector","kv_role":"kv_both","kv_connector_extra_config":{"lmcache.mp.host":"tcp://lmcache","lmcache.mp.port":${LMCACHE_PORT:-6555}}}'
+        ${KV_TRANSFER_ARG:-}
+        ${VLLM_EXTRA_ARGS:-}
     depends_on:
       lmcache:
         condition: service_healthy
+        # required:false lets the plain baseline run `vllm` alone (lmcache not in
+        # the active profile) without a dependency error (needs Compose v2.20+).
+        required: false
 
 networks:
   aic-net:

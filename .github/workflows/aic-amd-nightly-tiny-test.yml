@@ -1,0 +1,18 @@
+name: AIC Nightly Tiny Test
+
+on:
+  workflow_run:
+    workflows: ["AIC Nightly Smoke Test"]
+    types: [completed]
+
+jobs:
+  tiny-test:
+    if: github.event.workflow_run.conclusion == 'success'
+    runs-on: [self-hosted, rocm-aic-cicd]
+    timeout-minutes: 60
+
+    steps:
+      - name: Run tiny-test on amd-aic-spur
+        # Keep the clone + tarball so the following nightly cliff stage can reuse
+        # them (spur-cliff.sh owns the final cleanup in the nightly chain).
+        run: KEEP_ARTIFACTS=1 bash /usr/local/lib/aic-ci/spur-tiny-test.sh "${{ github.event.workflow_run.head_sha }}"

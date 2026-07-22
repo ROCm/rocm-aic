@@ -9,9 +9,18 @@
 | `NFS_DATA` | `/mnt/lmcache-nfs` | Host path for NFS-over-RDMA L2b pool |
 | `GDS_SLAB_DATA` | — | Host path for GDS NVMe slab (GDS L1 mode only) |
 | `GDS_MODE` | — | Set to `1` to enable GDS L1 mode |
-| `LMCACHE_L1_SIZE_GB` | `20` | L1 memory cap in GiB |
+| `AIC_L2_BACKEND` | `nixl` | LMCache L2 backend: `nixl` (AIS_MT NVMe + POSIX NFS) or `local_disk` (native LocalDiskBackend via a mounted config) |
+| `KV_TRANSFER_ARG` | LMCacheMPConnector JSON | vLLM `--kv-transfer-config` arg; empty = plain vLLM (the cliff `vram` baseline). Wrap the JSON in single quotes |
+| `LMCACHE_L1_SIZE_GB` | `20` | MP server L1 cap in GiB (DRAM L1 in nvme mode, hipFile slab size in GDS mode) |
 | `LMCACHE_NVME_POOL` | `4096` | NIXL pool slots for NVMe adapter |
+| `LMCACHE_NVME_SLOT_SIZE` | `268435456` | NIXL file size per NVMe pool slot, bytes (256 MiB) |
 | `LMCACHE_NFS_POOL` | `1024` | NIXL pool slots for NFS adapter |
+| `VLM_ATTENTION_BACKEND` | `TRITON_ATTN` | vLLM `--attention-backend` (TRITON_ATTN supports KV connectors) |
+| `VLM_KV_CACHE_DTYPE` | `fp8` | vLLM `--kv-cache-dtype` (`auto` for non-fp8 arches) |
+| `VLLM_EXTRA_ARGS` | — | Extra vLLM args appended verbatim (e.g. `--hf-overrides '{...}'`; single-quote embedded JSON) |
+| `COMPOSE_PLUGIN_VERSION` | `v2.40.0` | docker compose v2 plugin version installed by `make ensure-compose` / `ensure_compose` when missing |
+| `AIC_TINY_MODEL` | `Qwen/Qwen2.5-0.5B-Instruct` | Model served by `make tiny-test` (end-to-end serve check) |
+| `AIC_TINY_HF_HOME` | `<image-dir>/tiny-hf` | Persistent HF cache the tiny model is downloaded into for `tiny-test` |
 | `TENSOR_PARALLEL_SIZE` | `1` | vLLM tensor parallel degree |
 | `GPU` | `0` | ROCR_VISIBLE_DEVICES for the vllm container |
 | `AIC_NVME_AUTO` | `1` (cliff) | Auto-detect a dedicated local NVMe for the LMCache tiers: reuse a mounted `aic-lmcache` volume, else format+mount a raw non-root spare, else use a non-root mounted NVMe, else node-local `/tmp`. `0` forces `/tmp`; needs passwordless `sudo` to format/mount |

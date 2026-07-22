@@ -64,8 +64,25 @@ export VLM_GPU_MEMORY_UTILIZATION VLM_MAX_MODEL_LEN VLM_MAX_NUM_BATCHED_TOKENS
 export NIXL_GIT_URL NIXL_SHA
 
 comma := ,
-_COMPOSE_BIN := $(shell docker compose version >/dev/null 2>&1 && echo "docker compose" || echo "docker-compose")
+# The whole stack is `docker compose` (v2) only -- the docker-compose v1 standalone
+# and the old docker-run sidecar fallbacks are gone.  `make ensure-compose` installs
+# the v2 plugin into ~/.docker/cli-plugins (shared $HOME) on nodes that lack it.
+_COMPOSE_BIN := docker compose
 COMPOSE      := DOCKER_BUILDKIT=1 $(_COMPOSE_BIN) -f "$(CURDIR)/docker/docker-compose.yml"
+# The lmcache service lives behind the `cache` profile; the interactive stack and
+# the cliff kvd arms enable it, the plain vram baseline does not.
+COMPOSE_CACHE := $(COMPOSE) --profile cache
+
+# docker compose v2 plugin (installed by `ensure-compose` when missing).  Override
+# the version to bump.  Downloaded from the docker/compose GitHub releases.
+COMPOSE_PLUGIN_VERSION ?= v2.40.0
+
+# vLLM --kv-transfer-config for the MP connector (interactive `make up`).  The JSON
+# is wrapped in single quotes so compose's shlex splitting preserves the inner
+# double quotes; leave KV_TRANSFER_ARG empty for a plain (baseline) vLLM.
+_MP_CONNECTOR_JSON := {"kv_connector":"LMCacheMPConnector","kv_role":"kv_both","kv_connector_extra_config":{"lmcache.mp.host":"tcp://lmcache","lmcache.mp.port":$(LMCACHE_PORT)}}
+KV_TRANSFER_ARG    ?= --kv-transfer-config '$(_MP_CONNECTOR_JSON)'
+export KV_TRANSFER_ARG
 
 # ---- Metrics capture (Prometheus sidecar) ----------------------------------
 # AIC_METRICS_DIR: Prometheus TSDB dir (bind-mount an NFS path here to explore
@@ -97,6 +114,15 @@ PYTHON := $(if $(wildcard $(REPO_ROOT)/.venv/bin/python3),$(REPO_ROOT)/.venv/bin
 # /scratch so a failed build resumes from the last good layer on any node
 # (set AIC_CACHE_DIR= to disable); AIC_BUILD_EXPORTERS=0 skips the fabric images.
 DIST := $(CURDIR)/.slurm/run-build-distribute.sh
+
+# ---- Self-hosted CI runner scripts -----------------------------------------
+# The hardware-CI workflows call helper scripts from AIC_CI_LIB_DIR on the
+# self-hosted runner (spur-dist-build.sh / spur-smoke-test.sh / spur-tiny-test.sh
+# / spur-cliff.sh).  `make install-ci-scripts` deploys the source copies from
+# .github/scripts there.  Writing under /usr/local usually needs root, so the
+# target uses sudo when the destination is not writable by the current user.
+AIC_CI_LIB_DIR    ?= /usr/local/lib/aic-ci
+AIC_CI_SCRIPT_DIR := $(CURDIR)/.github/scripts
 
 # ---- SPUR cluster overrides ------------------------------------------------
 # When AIC_SPUR_CLUSTER=1, default storage paths to AIC_SHARED_NFS (the NFS
@@ -152,10 +178,10 @@ _GIT_DIRTY     := $(if $(shell git -C "$(CURDIR)" status --porcelain -- . 2>/dev
 _GEN_DATE      := $(shell date +%Y%m%d)
 EXPORT_TARBALL ?= $(CURDIR)/$(EXPORT_PREFIX)-$(_GEN_DATE)-$(_GIT_SHORT_REV)$(_GIT_DIRTY).tar.gz
 
-.PHONY: help build up up-batch up-gds-l1 up-gds-l1-batch down logs logs-lmcache logs-vllm \
+.PHONY: help ensure-compose build up up-batch up-gds-l1 up-gds-l1-batch down logs logs-lmcache logs-vllm \
         ps shell-lmcache shell-vllm restart-vllm restart-lmcache cliff plot venv \
         monitoring-up monitoring-down monitoring-logs monitoring-build-exporters \
-        dist-build dist-build-exporters dist-push smoke-test cliff-submit cliff-short \
+        dist-build dist-build-exporters dist-push smoke-test tiny-test install-ci-scripts cliff-submit cliff-short \
         cliff-long-64k cliff-long-128k \
         export _check_hf_token _prep_dirs _check_gds_slab
 
@@ -165,6 +191,7 @@ help:
 	@echo "rocm-aic aic-release — AMD Infinity Context inference stack + benchmarks"
 	@echo ""
 	@echo "Stack targets:"
+	@echo "  make ensure-compose    Install the docker compose v2 plugin if missing (user-local)"
 	@echo "  make build             Build the shared image ($(IMAGE_NAME))"
 	@echo "  make up                Start lmcache + vllm (foreground, DRAM L1 + AIS_MT/NFS L2)"
 	@echo "  make up-batch          Start lmcache + vllm (background)"
@@ -193,6 +220,8 @@ help:
 	@echo "  make smoke-test        Load + smoke-test the image on a GPU+NVMe node"
 	@echo "                         (also sanity-checks exporters + writes a Prometheus TSDB"
 	@echo "                          to logs/<job-id>/prometheus; AIC_SMOKE_EXPORTERS=0 skips)"
+	@echo "  make tiny-test         End-to-end serve check (MP stack + tiny model, one completion)"
+	@echo "  make install-ci-scripts  Deploy .github/scripts/spur-*.sh to $(AIC_CI_LIB_DIR) (sudo if needed)"
 	@echo "  make cliff-submit      sbatch the full 3-arm cliff sweep -> logs/<job-id>/"
 	@echo "  make cliff-short       sbatch a 1-point cliff (concur=1, 1 iter) to smoke-test the flow"
 	@echo "  make cliff-long-64k    sbatch a 64k-ISL YaRN(x2) 3-arm sweep (pools sized for the working set)"
@@ -262,40 +291,59 @@ _prep_dirs:
 		"$(HF_HOME)/vllm_config" "$(HF_HOME)/torch" "$(HF_HOME)/torch_inductor" \
 		"$(BENCH_LOGDIR)/results" "$(BENCH_LOGDIR)/plots"
 
-build:
+# Ensure the `docker compose` (v2) plugin is available.  Docker checks
+# $HOME/.docker/cli-plugins before the system dir, and $HOME is shared across the
+# Slurm/SPUR nodes, so a user-local install fixes every node without root.  No-op
+# when compose is already present; idempotent.
+ensure-compose:
+	@if docker compose version >/dev/null 2>&1; then \
+		echo "docker compose present: $$(docker compose version --short 2>/dev/null)"; \
+	else \
+		echo "docker compose plugin missing; installing $(COMPOSE_PLUGIN_VERSION) -> ~/.docker/cli-plugins"; \
+		mkdir -p "$$HOME/.docker/cli-plugins" && \
+		arch="$$(uname -m)" && \
+		curl -fsSL "https://github.com/docker/compose/releases/download/$(COMPOSE_PLUGIN_VERSION)/docker-compose-linux-$$arch" \
+			-o "$$HOME/.docker/cli-plugins/docker-compose" && \
+		chmod +x "$$HOME/.docker/cli-plugins/docker-compose" && \
+		docker compose version >/dev/null 2>&1 || { \
+			echo "ERROR: docker compose still unavailable after install" >&2; exit 1; }; \
+		echo "installed: $$(docker compose version --short 2>/dev/null)"; \
+	fi
+
+build: ensure-compose
 	@test -n "$(ROCM_ARCH)" || { \
 		echo "ERROR: ROCM_ARCH empty (install ROCm or set ROCM_ARCH=gfxNNNN)" >&2; exit 1; }
-	cd "$(REPO_ROOT)" && $(COMPOSE) build \
+	cd "$(REPO_ROOT)" && $(COMPOSE_CACHE) build \
 		$(if $(TLS_CERT),--secret id=tls_cert$(comma)src=$(TLS_CERT),)
 
-up: _check_hf_token _prep_dirs
-	$(COMPOSE) up
+up: ensure-compose _check_hf_token _prep_dirs
+	$(COMPOSE_CACHE) up
 
-up-batch: _check_hf_token _prep_dirs
-	$(COMPOSE) up -d
+up-batch: ensure-compose _check_hf_token _prep_dirs
+	$(COMPOSE_CACHE) up -d
 	@echo "Started. Use 'make logs' to follow or 'make down' to stop."
 
-up-gds-l1: _check_hf_token _check_gds_slab _prep_dirs
-	GDS_MODE=1 $(COMPOSE) up
+up-gds-l1: ensure-compose _check_hf_token _check_gds_slab _prep_dirs
+	GDS_MODE=1 $(COMPOSE_CACHE) up
 
-up-gds-l1-batch: _check_hf_token _check_gds_slab _prep_dirs
-	GDS_MODE=1 $(COMPOSE) up -d
+up-gds-l1-batch: ensure-compose _check_hf_token _check_gds_slab _prep_dirs
+	GDS_MODE=1 $(COMPOSE_CACHE) up -d
 	@echo "Started (GDS L1 mode). Use 'make logs' to follow or 'make down' to stop."
 
 down:
-	$(COMPOSE) down
+	$(COMPOSE_CACHE) down
 
 logs:
-	$(COMPOSE) logs -f
+	$(COMPOSE_CACHE) logs -f
 
 logs-lmcache:
-	$(COMPOSE) logs -f lmcache
+	$(COMPOSE_CACHE) logs -f lmcache
 
 logs-vllm:
-	$(COMPOSE) logs -f vllm
+	$(COMPOSE_CACHE) logs -f vllm
 
 ps:
-	$(COMPOSE) ps
+	$(COMPOSE_CACHE) ps
 
 shell-lmcache:
 	docker exec -it aic-lmcache bash -l
@@ -304,10 +352,10 @@ shell-vllm:
 	docker exec -it aic-vllm-gpu$(GPU) bash -l
 
 restart-vllm:
-	$(COMPOSE) restart vllm
+	$(COMPOSE_CACHE) restart vllm
 
 restart-lmcache:
-	$(COMPOSE) restart lmcache
+	$(COMPOSE_CACHE) restart lmcache
 
 venv:
 	@if [ ! -d "$(REPO_ROOT)/.venv" ]; then \
@@ -339,7 +387,7 @@ plot: _prep_dirs
 		--output-dir "$(BENCH_LOGDIR)/plots/"
 	@echo "Charts written to $(BENCH_LOGDIR)/plots/"
 
-monitoring-up:
+monitoring-up: ensure-compose
 	@mkdir -p "$(AIC_METRICS_DIR)"
 	PROM_UID="$$(id -u)" PROM_GID="$$(id -g)" \
 		$(MON_COMPOSE) $(_MON_PROFILE) up -d
@@ -391,6 +439,25 @@ dist-push:                     # Tag + push the built image to a registry (needs
 
 smoke-test:                    # Load + smoke-test the image on a GPU+NVMe node
 	"$(DIST)" test
+
+tiny-test:                     # End-to-end serve check: MP stack + a tiny model, one real completion
+	@# Stages Qwen/Qwen2.5-0.5B-Instruct, brings up the compose MP stack (nvme arm),
+	@# waits for the endpoint, and asserts one non-empty chat completion.  Fast
+	@# functional gate that exercises the connector path a smoke-test cannot.
+	"$(DIST)" tiny-test
+
+install-ci-scripts:            # Deploy .github/scripts/spur-*.sh to the runner's AIC_CI_LIB_DIR
+	@set -e; \
+	src="$(AIC_CI_SCRIPT_DIR)"; dst="$(AIC_CI_LIB_DIR)"; \
+	ls "$$src"/spur-*.sh >/dev/null 2>&1 || { echo "ERROR: no spur-*.sh under $$src" >&2; exit 1; }; \
+	if [ -w "$$(dirname "$$dst")" ] || [ -w "$$dst" ]; then SUDO=; else SUDO="sudo"; \
+		echo "$$dst not writable; using sudo"; fi; \
+	$$SUDO install -d -m 0755 "$$dst"; \
+	for f in "$$src"/spur-*.sh; do \
+		$$SUDO install -m 0755 "$$f" "$$dst/$$(basename "$$f")"; \
+		echo "installed $$(basename "$$f") -> $$dst/"; \
+	done; \
+	echo "CI runner scripts deployed to $$dst"
 
 # Submit the full 3-arm cliff sweep (vram_only + kvd_v2 nvme + kvd_v2 gds).  Pin
 # a node with AIC_CLIFF_NODE, narrow arms with AIC_CLIFF_ARMS=nvme (etc), and
