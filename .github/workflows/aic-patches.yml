@@ -69,6 +69,7 @@ jobs:
             echo "==> git apply --check $(basename "${patch}")"
             if git apply --check "${patch}" 2>/dev/null; then
               echo "    OK (applies cleanly)"
+              git apply "${patch}"
             else
               # Check if it was already merged
               if git apply --check --reverse "${patch}" 2>/dev/null; then
@@ -124,6 +125,7 @@ jobs:
             echo "==> git apply --check $(basename "${patch}")"
             if git apply --check "${patch}" 2>/dev/null; then
               echo "    OK (applies cleanly)"
+              git apply "${patch}"
             else
               if git apply --check --reverse "${patch}" 2>/dev/null; then
                 echo "    SKIP (already merged upstream)"
