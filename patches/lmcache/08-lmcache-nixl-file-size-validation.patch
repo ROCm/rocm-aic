@@ -1,0 +1,51 @@
+diff --git a/lmcache/v1/distributed/l2_adapters/nixl_store_l2_adapter.py b/lmcache/v1/distributed/l2_adapters/nixl_store_l2_adapter.py
+index 6bcde84..c551120 100644
+--- a/lmcache/v1/distributed/l2_adapters/nixl_store_l2_adapter.py
++++ b/lmcache/v1/distributed/l2_adapters/nixl_store_l2_adapter.py
+@@ -178,6 +178,27 @@ class NixlStorageAgent:
+         else:
+             self.l1_align_bytes = int(backend_params["file_size"])
+ 
++        # Guard: file_size must cover at least one L1 chunk page (l1_align_bytes).
++        # A smaller slot silently truncates stored KV chunks - the NIXL transfer
++        # API succeeds but only writes file_size bytes of an l1_align_bytes-sized
++        # chunk. Subsequent lookups return miss (or load corrupt data), causing
++        # l2_prefetch_hit_chunks_total to stay at 0 with no error logged.
++        if self.backend in _FILE_BACKENDS:
++            _file_size = int(
++                self.backend_params.get("file_size", self.l1_align_bytes)
++            )
++            if _file_size < self.l1_align_bytes:
++                raise ValueError(
++                    f"nixl_store backend {self.backend!r}: file_size "
++                    f"({_file_size:,} bytes) is smaller than the L1 chunk "
++                    f"page size ({self.l1_align_bytes:,} bytes). Each pool "
++                    f"slot must hold at least one full chunk page. Set "
++                    f"file_size >= {self.l1_align_bytes} in backend_params. "
++                    f"For a typical MP-mode deployment, file_size should "
++                    f"equal the full KV chunk size in bytes (e.g. 8388608 "
++                    f"for a 7B fp8 model with chunk_size=256)."
++                )
++
+         self.agent_name = "NixlAgent_" + str(uuid.uuid4())
+         nixl_conf = NixlAgentConfig(backends=[])
+         self.nixl_agent = NixlAgent(self.agent_name, nixl_conf)
+@@ -961,6 +982,18 @@ class NixlStoreL2AdapterConfig(L2AdapterConfigBase):
+                     "'use_direct_io' for file-based "
+                     "backend %r" % backend
+                 )
++            if "file_size" not in backend_params:
++                logger.warning(
++                    "nixl_store backend %r: 'file_size' not set in "
++                    "backend_params. The slot size will default to "
++                    "l1_align_bytes (typically 4096 bytes). This is almost "
++                    "certainly wrong for MP-mode deployments where a single "
++                    "KV chunk can be several MiB - stores will silently "
++                    "truncate and lookups will return miss. Set file_size to "
++                    "at least the KV chunk size in bytes. Example: 8388608 "
++                    "(8 MiB) for a 7B fp8 model with chunk_size=256.",
++                    backend,
++                )
+         self.backend = backend
+         self.backend_params = backend_params
+         self.pool_size = pool_size
