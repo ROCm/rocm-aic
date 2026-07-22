@@ -111,14 +111,15 @@ jobs:
           fetch-depth: 1
 
       - name: Free disk space on runner
-        run: |
-          set -euo pipefail
-          echo "Disk before cleanup:"; df -h /
-          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
-                      /opt/hostedtoolcache /usr/local/share/boost || true
-          sudo rm -rf "$AGENT_TOOLSDIRECTORY" || true
-          sudo docker system prune -af --volumes || true
-          echo "Disk after cleanup:"; df -h /
+        uses: jlumbroso/free-disk-space@v1.3.1
+        with:
+          tool-cache: true
+          android: true
+          dotnet: true
+          haskell: true
+          large-packages: true
+          docker-images: true
+          swap-storage: true
 
       - uses: docker/setup-buildx-action@v3
 
