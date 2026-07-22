@@ -22,11 +22,15 @@ HTTPS
 HuggingFace
 Huggingface
 InfiniBand
+JSON
 KV
 LLM
 LMCache
 LMCache's
+LMCacheMPConnector
+LocalDiskBackend
 MERCHANTABILITY
+MiB
 Mountpoint
 NFS
 NIXL
@@ -55,7 +59,9 @@ aic
 ais
 amd
 ansible
+arg
 args
+backend
 benchmarking
 config
 cpp
@@ -67,6 +73,7 @@ disaggregated
 diskstats
 dispatch
 env
+fp
 ftrace
 gds
 gfx
