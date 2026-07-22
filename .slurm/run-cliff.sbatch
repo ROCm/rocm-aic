@@ -37,14 +37,17 @@
 # MI300X + local-NVMe node, sweeping all three arms sequentially:
 #
 #   1. vram_only        plain vLLM, VRAM prefix cache only (the "cliff" baseline)
-#   2. kvd_v2 (nvme)    LMCache: DRAM L1 + NIXL AIS_MT -> local NVMe L2a
-#   3. kvd_v2 (gds)     LMCache: hipFile GDS NVMe slab as L1 (no L2)
+#   2. kvd_v2 (nvme)    LMCache MP: DRAM L1 + NIXL AIS_MT -> local NVMe L2a (+POSIX L2b)
+#   3. kvd_v2 (gds)     LMCache MP: hipFile GDS NVMe slab as L1
 #
-# Each arm launches its own container stack via `docker run` (no compose/make
-# dependency -- mirrors .slurm/run-build-distribute.sh's cmd_test), waits for the
-# endpoint, runs the sweep in a sidecar container, then tears the stack down.
-# The two kvd_v2 arms are plotted separately against the shared vram_only
-# baseline so the NVMe-L2 and GDS-L1 backends can be compared.
+# ALL arms drive the SAME docker/docker-compose.yml (docker compose v2, installed
+# by ensure_compose if the node lacks it).  The kvd arms run LMCache MP mode: a
+# standalone lmcache server + a vLLM that connects to it with LMCacheMPConnector
+# over ZMQ (identical to `make up`); the vram baseline starts vLLM alone via the
+# compose `cache` profile toggle.  Each arm waits for the endpoint, runs the sweep
+# in a bench container, then `compose down`s the stack.  The two kvd_v2 arms are
+# plotted separately against the shared vram_only baseline so the NVMe-L2 and
+# GDS-L1 backends can be compared.
 #
 # Submit from the aic-day-release/ tree root:
 #
@@ -153,8 +156,8 @@ VLM_YARN_ORIG_LEN="${VLM_YARN_ORIG_LEN:-32768}"
 if [[ -z "${VLM_ROPE_SCALING}" && -n "${VLM_YARN_FACTOR}" ]]; then
     VLM_ROPE_SCALING="{\"rope_type\":\"yarn\",\"factor\":${VLM_YARN_FACTOR},\"original_max_position_embeddings\":${VLM_YARN_ORIG_LEN}}"
 fi
-ROPE_ARGS=()
-[[ -n "${VLM_ROPE_SCALING}" ]] && ROPE_ARGS=(--hf-overrides "{\"rope_scaling\": ${VLM_ROPE_SCALING}}")
+# The RoPE override is passed to every arm through the compose ${VLLM_EXTRA_ARGS}
+# knob (built in the compose-stack setup block below).  Empty => no scaling.
 LMCACHE_L1_SIZE_GB="${LMCACHE_L1_SIZE_GB:-20}"
 LMCACHE_NVME_POOL="${LMCACHE_NVME_POOL:-4096}"
 # CPU DRAM (L1) tier for the nvme arm.  Default 'false' = KV flows GPU VRAM
@@ -227,8 +230,9 @@ AIC_ROCM_USE_AITER="${AIC_ROCM_USE_AITER:-1}"
 # Raise for big models / slow shared storage.
 AIC_VLLM_READY_TIMEOUT="${AIC_VLLM_READY_TIMEOUT:-1200}"
 
-VRAM_PORT=8001
-KVD_PORT=8000
+# Every arm now serves vLLM on the compose-published :8000 (arms run sequentially,
+# each stack torn down before the next), so one endpoint port suffices.
+VLLM_ENDPOINT_PORT=8000
 LMCACHE_PORT=6555
 STAMP="$(date +%Y%m%d-%H%M%S)"
 # CSVs and plots go under the per-job logs dir so the run is self-contained and
@@ -396,7 +400,10 @@ command -v docker >/dev/null 2>&1 || die "docker not found on $(hostname)"
 [[ -f "${REPO}/benchmarks/run_cliff.py" ]] || \
     die "benchmarks/run_cliff.py not found under REPO=${REPO}; submit from the aic-day-release/ dir (SLURM_SUBMIT_DIR)"
 
-mkdir -p "${RESULTS}" "${PLOTS}" "${NVME_DATA}" "${NFS_DATA}" "${GDS_SLAB_DATA}"
+# Pre-create the compose log-mount dirs too, so docker doesn't auto-create them
+# as root under the per-job logs tree (the lmcache/vllm services bind-mount these).
+mkdir -p "${RESULTS}" "${PLOTS}" "${NVME_DATA}" "${NFS_DATA}" "${GDS_SLAB_DATA}" \
+         "${LOGDIR}/lmcache" "${LOGDIR}/vllm"
 [[ -d "${HF_HOME}/hub" ]] || die "HF cache not found at ${HF_HOME}/hub"
 
 # --- Load images from shared tarballs when needed ----------------------------
@@ -458,12 +465,11 @@ if [[ "${AIC_EXPORTERS}" == "1" ]]; then
     fi
 fi
 
-# --- Container / GPU flags (mirror docker-compose.yml + cmd_test) -------------
-GPU_FLAGS=(--device /dev/kfd --device /dev/dri --ipc host
-           --cap-add SYS_PTRACE --cap-add CAP_SYS_ADMIN
-           --security-opt seccomp=unconfined)
-# --network host: the sidecar bench + the ZMQ connector reach services at
-# localhost, so no compose bridge / service DNS is needed.
+# --- Benchmark client env (offline HF cache) ---------------------------------
+# The bench + plot containers run with --network host and reach the vLLM endpoint
+# at localhost:<published port>.  The inference stack itself is launched via
+# docker/docker-compose.yml (see the compose-stack setup block below), not raw
+# docker run -- all container/GPU/cap flags now live in that compose file.
 HF_ENV=(-e HF_HOME=/hf -e HF_HUB_CACHE=/hf/hub -e HF_HUB_OFFLINE=1
         -e TRANSFORMERS_OFFLINE=1 -e VLLM_CACHE_ROOT=/hf/vllm
         -e ROCR_VISIBLE_DEVICES=0 -e PYTHONHASHSEED=0
@@ -474,6 +480,46 @@ HF_ENV=(-e HF_HOME=/hf -e HF_HUB_CACHE=/hf/hub -e HF_HUB_OFFLINE=1
         # vLLM falls back to TRITON_ATTN -> "Hybrid KV cache manager is disabled but
         # failed to convert the KV cache specs" at engine init.
         -e VLLM_ROCM_USE_AITER=${AIC_ROCM_USE_AITER})
+
+# --- Compose stack (single source of truth: docker/docker-compose.yml) --------
+# Every arm drives the SAME compose file.  The plain vram baseline starts only the
+# `vllm` service (empty KV_TRANSFER_ARG; lmcache is skipped via its `cache`
+# profile, and vllm's depends_on uses required:false so it can run alone).  The
+# nvme/gds arms add `--profile cache`, so the standalone lmcache server runs and
+# vllm connects to it with LMCacheMPConnector -- i.e. LMCache MP mode on every
+# kvd arm.  Per-arm topology (GDS slab vs AIS_MT NVMe L2 vs local_disk) is
+# selected through the env exported below; the arm functions flip GDS_MODE /
+# AIC_L2_BACKEND / LMCACHE_L1_SIZE_GB / KV_TRANSFER_ARG before `compose up`.
+COMPOSE_FILE="${REPO}/docker/docker-compose.yml"
+compose() { docker compose -f "${COMPOSE_FILE}" "$@"; }
+
+# Knobs the compose file interpolates (already resolved above).  ROCM_ARCH is only
+# read by build.args, but compose interpolates it even on `up`, so keep it set.
+export IMAGE_NAME="${AIC_IMAGE}"
+export ROCM_ARCH="${ROCM_ARCH:-$(detect_gpu_arch)}"
+export GPU=0
+export HF_HOME NVME_DATA NFS_DATA GDS_SLAB_DATA
+export LOG="${LOGDIR}"                       # lmcache/vllm container logs land under the job dir
+export HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1
+export VLLM_MODEL TENSOR_PARALLEL_SIZE
+export VLM_GPU_MEMORY_UTILIZATION VLM_MAX_MODEL_LEN VLM_MAX_NUM_BATCHED_TOKENS
+export VLM_ATTENTION_BACKEND="${AIC_ATTENTION_BACKEND}"
+export VLM_KV_CACHE_DTYPE="${AIC_KV_CACHE_DTYPE}"
+export AIC_ROCM_USE_AITER
+export LMCACHE_PORT LMCACHE_NVME_POOL LMCACHE_NFS_POOL
+export LMCACHE_NVME_SLOT_SIZE="${LMCACHE_NVME_SLOT_SIZE:-268435456}"
+export AIC_NIXL_USE_DIRECT_IO
+export NIXL_METRICS_PORT="${NIXL_METRICS_PORT:-19090}"
+# RoPE override (YaRN etc.) applied to ALL arms via vLLM --hf-overrides.  Single-
+# quote the JSON so compose's shlex splitting keeps the inner double quotes.
+VLLM_EXTRA_ARGS=""
+[[ -n "${VLM_ROPE_SCALING}" ]] && VLLM_EXTRA_ARGS="--hf-overrides '{\"rope_scaling\": ${VLM_ROPE_SCALING}}'"
+export VLLM_EXTRA_ARGS
+# The MP server's --l1-size-gb is the DRAM L1 (nvme arm) OR the hipFile slab size
+# (gds arm).  The cliff sizes these from two different knobs, so preserve the
+# original LMCACHE_L1_SIZE_GB (the gds slab) here and derive the nvme DRAM L1 from
+# LMCACHE_MAX_LOCAL_CPU_SIZE per arm (see run_arm_kvd).
+AIC_GDS_SLAB_GB="${LMCACHE_L1_SIZE_GB}"
 
 # --- Helpers -----------------------------------------------------------------
 wait_ready() {  # $1=port $2=timeout_s
@@ -513,17 +559,18 @@ run_bench() {  # $1=arm $2=endpoint_port $3=out_csv $4=extra args...
 # with a stale container-<name>.log (until the real teardown overwrites it).
 rm_containers() { docker rm -f "$@" >/dev/null 2>&1 || true; }
 
-# Teardown: capture each container's full stdout/stderr into the per-job logs dir
-# before removing it.  The compute node is ephemeral, so `docker logs` is lost at
-# teardown otherwise -- and Prometheus captures metrics, not container stdout
+# Teardown: capture the compose services' full stdout/stderr into the per-job logs
+# dir before tearing the stack down.  The compute node is ephemeral, so the logs
+# are lost otherwise -- and Prometheus captures metrics, not container stdout
 # (vLLM/LMCache/NIXL startup errors, stack traces, AIS debug lines live here).
-stop_containers() {
-    local c
-    for c in "$@"; do
-        docker inspect "${c}" >/dev/null 2>&1 || continue
-        docker logs "${c}" > "${LOGDIR}/container-${c}.log" 2>&1 || true
+# `compose logs` for a service not started (e.g. lmcache on the vram arm) is a
+# harmless empty capture.  `compose down` removes containers + the bridge network.
+stop_stack() {
+    local svc
+    for svc in vllm lmcache; do
+        compose logs --no-color --no-log-prefix "${svc}" > "${LOGDIR}/container-aic-${svc}.log" 2>&1 || true
     done
-    docker rm -f "$@" >/dev/null 2>&1 || true
+    compose --profile cache down --remove-orphans >/dev/null 2>&1 || true
 }
 
 # --- Metrics-capture sidecar (Prometheus + optional exporters) ---------------
@@ -532,101 +579,57 @@ stop_containers() {
 # metrics identically.  The lib's functions read log(), AIC_IMAGE, MON_DIR,
 # AIC_METRICS_DIR, MON_COMPOSE, AIC_EXPORTERS, AIC_MONITORING -- all defined above.
 source "${REPO}/monitoring/monitoring-lib.sh"
+# The whole stack (arms + metrics) is docker compose v2 only -- install the plugin
+# user-locally if the node lacks it (ensure_compose lives in monitoring-lib.sh).
+ensure_compose || die "docker compose unavailable and could not be installed"
 # Guarantee teardown (containers only; the NFS TSDB is retained) on any exit.
 trap stop_monitoring EXIT
 
 # =============================================================================
-# Arm A — vram_only : plain vLLM, no LMCache connector
+# Arm A — vram_only : plain vLLM baseline, no LMCache connector
 # =============================================================================
+# `compose up vllm` with an empty KV_TRANSFER_ARG starts vLLM alone -- lmcache is
+# behind the `cache` profile (skipped) and vllm's depends_on is required:false.
 VRAM_CSV="${RESULTS}/cliff-vram_only-${STAMP}.csv"
 run_arm_vram() {
-    rm_containers aic-cliff-vram
-    log "=== Arm A (vram_only): launching plain vLLM on :${VRAM_PORT} ==="
-    docker run -d --name aic-cliff-vram --network host "${GPU_FLAGS[@]}" \
-        -v "${HF_HOME}":/hf "${HF_ENV[@]}" \
-        "${AIC_IMAGE}" \
-            --model "${VLLM_MODEL}" --host 0.0.0.0 --port "${VRAM_PORT}" \
-            --tensor-parallel-size "${TENSOR_PARALLEL_SIZE}" \
-            --gpu-memory-utilization "${VLM_GPU_MEMORY_UTILIZATION}" \
-            --max-model-len "${VLM_MAX_MODEL_LEN}" \
-            --max-num-batched-tokens "${VLM_MAX_NUM_BATCHED_TOKENS}" \
-            "${ROPE_ARGS[@]}" \
-            --block-size 64 --enable-prefix-caching --kv-cache-dtype ${AIC_KV_CACHE_DTYPE} \
-            --async-scheduling \
-            --attention-backend "${AIC_ATTENTION_BACKEND}" \
-            --disable-access-log-for-endpoints "/health,/metrics,/v1/models" \
-        >/dev/null || { log "Arm A: docker run failed"; return 1; }
-    if ! wait_ready "${VRAM_PORT}"; then
-        log "Arm A: server never became ready; last logs:"; docker logs --tail 40 aic-cliff-vram 2>&1 | sed 's/^/    /'
-        stop_containers aic-cliff-vram; return 1
+    rm_containers aic-vllm-gpu0 aic-lmcache
+    log "=== Arm A (vram_only): plain vLLM (no LMCache) on :${VLLM_ENDPOINT_PORT} ==="
+    export KV_TRANSFER_ARG=""     # no connector -> plain VRAM-prefix-cache-only vLLM
+    export GDS_MODE=""
+    if ! compose up -d vllm; then
+        log "Arm A: compose up vllm failed"; stop_stack; return 1
     fi
-    run_bench vram_only "${VRAM_PORT}" "${VRAM_CSV}"
+    if ! wait_ready "${VLLM_ENDPOINT_PORT}"; then
+        log "Arm A: server never became ready; last logs:"
+        compose logs --tail 40 --no-color vllm 2>&1 | sed 's/^/    /'
+        stop_stack; return 1
+    fi
+    run_bench vram_only "${VLLM_ENDPOINT_PORT}" "${VRAM_CSV}"
     local rc=$?
-    stop_containers aic-cliff-vram
+    stop_stack
     return $rc
 }
 
 # =============================================================================
-# Arm B — kvd_v2 : LMCache KV offload
-#   mode "nvme" -> connector-side NIXL AIS_MT storage with a VRAM staging buffer
-#                  (nixl_buffer_device=cuda) so hipFileBufRegister does TRUE GDS;
-#                  in-process LMCacheConnectorV1, no standalone server, no L2b.
-#                  Models recipies/vllm-lmcache-nixl (the proven AIS_MT path).
-#                  A DRAM staging buffer -- what the old l2-adapter server used --
-#                  makes hipFileBufRegister fail err 5013; cuda VRAM is required.
-#   mode "gds"  -> hipFile GDS NVMe slab as L1 via a standalone lmcache-server
-#                  (LMCache-native GDS; unchanged).
+# Arm B — kvd_v2 : LMCache MP mode (standalone lmcache server + LMCacheMPConnector)
+#   mode "nvme" -> DRAM L1 + NIXL AIS_MT NVMe L2 (hipFile P2PDMA) [+ POSIX L2b].
+#                  AIC_L2_BACKEND=local_disk swaps the L2 for LMCache's native
+#                  LocalDiskBackend (POSIX .pt-per-chunk) via a mounted config.
+#   mode "gds"  -> hipFile GDS NVMe slab as L1 (GDS_MODE=1).
+# Both arms run the SAME compose stack (--profile cache): a standalone lmcache
+# server and a vLLM that reaches it over ZMQ with LMCacheMPConnector -- the
+# canonical MP topology, identical to `make up`.  The kernel mounts, IPC_LOCK,
+# memlock/nofile ulimits, and NIXL telemetry env all live in the compose file.
 # =============================================================================
-# hipFile/GDS extras any container doing hipFileBufRegister needs: kernel headers/
-# modules + debugfs/tracefs for the ftrace kprobe, IPC_LOCK + unlimited memlock
-# for pinning the registered buffer.
-HIPFILE_FLAGS=(--cap-add IPC_LOCK --ulimit memlock=-1 --ulimit nofile=1048576:1048576
-               -v /lib/modules:/lib/modules:ro -v /usr/src:/usr/src:ro
-               -v /sys/kernel/debug:/sys/kernel/debug)
-[[ -d /sys/kernel/tracing ]] && HIPFILE_FLAGS+=(-v /sys/kernel/tracing:/sys/kernel/tracing)
 
-# Write the connector-side LMCache config for the nvme (AIS_MT) arm into the
-# per-job logs dir (so it's captured), for mounting into the vLLM container.  The
-# VRAM staging buffer (nixl_buffer_device=cuda) is the key to true GDS.
-write_lmcache_nixl_config() {
-    # nixl_buffer_size is REQUIRED for a cuda (VRAM/GDS) staging buffer, but LMCache
-    # REJECTS it for a cpu buffer -- in CPU/POSIX mode NIXL shares LocalCPUBackend's
-    # pinned DRAM pool (sized by max_local_cpu_size), so it must be omitted.
-    local _bufsize_line=""
-    [[ "${AIC_NIXL_BUFFER_DEVICE}" == cuda ]] && _bufsize_line="nixl_buffer_size: ${AIC_NIXL_BUFFER_SIZE}"
-    cat > "${LOGDIR}/lmcache-nixl-ais.yml" <<YML
-# Generated by run-cliff.sbatch (kvd_v2 nvme arm) -- connector-side NIXL AIS_MT.
-chunk_size: 256
-# CPU DRAM (L1) tier: local_cpu=true adds an LMCache host-DRAM L1 in front of the
-# NIXL NVMe L2 (max_local_cpu_size = DRAM L1 GB, ignored when local_cpu=false).
-local_cpu: ${AIC_LOCAL_CPU}
-max_local_cpu_size: ${LMCACHE_MAX_LOCAL_CPU_SIZE}
-save_decode_cache: true
-# Deterministic, seed-independent chunk hashing.  The 'builtin' default uses
-# Python hash() (PYTHONHASHSEED-dependent) and doesn't match across LMCache's
-# separate lookup subprocess -> external lookups miss -> ext_hit stays 0 even
-# under L1 overflow.  sha256_cbor (as in recipies/vllm-lmcache-nixl) is stable.
-pre_caching_hash_algorithm: sha256_cbor
-${_bufsize_line}
-nixl_buffer_device: ${AIC_NIXL_BUFFER_DEVICE}
-extra_config:
-  enable_nixl_storage: true
-  nixl_backend: ${AIC_NIXL_BACKEND}
-  nixl_pool_size: ${LMCACHE_NVME_POOL}
-  use_direct_io: ${AIC_NIXL_USE_DIRECT_IO}
-  nixl_path: /data/nvme/lmcache
-YML
-}
-
-# nvme arm, AIC_L2_BACKEND=local_disk: LMCache NATIVE POSIX LocalDiskBackend as L2
-# (no NIXL).  DRAM L1 (local_cpu) in front of a .pt-file-per-chunk disk tier at
-# /data/nvme/lmcache-disk.  use_odirect=false -> buffered (page cache); true -> O_DIRECT.
+# local_disk L2 config for the MP lmcache server (mounted at /config/lmcache.yml
+# via LMCACHE_CONFIG_FILE_HOST).  DRAM L1 is set by --l1-size-gb (compose), so the
+# file carries only the disk tier + hashing.  use_odirect=false -> buffered
+# (page cache); true -> O_DIRECT.
 write_lmcache_localdisk_config() {
-    cat > "${LOGDIR}/lmcache-nixl-ais.yml" <<YML
-# Generated by run-cliff.sbatch (kvd_v2 nvme arm) -- NATIVE LocalDiskBackend (POSIX), no NIXL.
+    cat > "${LOGDIR}/lmcache-localdisk.yml" <<YML
+# Generated by run-cliff.sbatch (kvd_v2 nvme arm, local_disk L2) -- native LocalDiskBackend (POSIX).
 chunk_size: 256
-local_cpu: ${AIC_LOCAL_CPU}
-max_local_cpu_size: ${LMCACHE_MAX_LOCAL_CPU_SIZE}
 local_disk: "file:///data/nvme/lmcache-disk"
 max_local_disk_size: ${AIC_LOCAL_DISK_SIZE_GB}
 save_decode_cache: true
@@ -636,118 +639,64 @@ extra_config:
 YML
 }
 
-# gds arm only: standalone lmcache-server with a hipFile GDS L1 slab.
-launch_lmcache_gds() {
-    rm_containers aic-cliff-lmcache
-    log "launching lmcache-server (gds L1 slab) on :${LMCACHE_PORT}"
-    docker run -d --name aic-cliff-lmcache --network host \
-        --device /dev/kfd --device /dev/dri --ipc host \
-        --cap-add CAP_SYS_ADMIN --cap-add SYS_PTRACE --security-opt seccomp=unconfined \
-        "${HIPFILE_FLAGS[@]}" -v "${GDS_SLAB_DATA}":/data/slab \
-        -e LMCACHE_PORT="${LMCACHE_PORT}" -e HIPFILE_ALLOW_COMPAT_MODE="${HIPFILE_ALLOW_COMPAT_MODE}" \
-        -e HIPFILE_UNSUPPORTED_FILE_SYSTEMS=true -e PYTHONHASHSEED=0 \
-        --entrypoint /bin/bash "${AIC_IMAGE}" -o pipefail -c \
-        "exec lmcache server --host 0.0.0.0 --port ${LMCACHE_PORT} \
-             --l1-size-gb ${LMCACHE_L1_SIZE_GB} --eviction-policy LRU --gds-l1-path /data/slab" >/dev/null
-}
-
-# nvme arm: in-process LMCacheConnectorV1 with connector-side NIXL AIS_MT storage
-# (VRAM staging buffer -> true GDS).  No standalone server.  NIXL telemetry runs
-# in this process, so its exporter env lives here.
-launch_vllm_kvd_nvme() {
-    rm_containers aic-cliff-kvd-vllm
-    local _l2desc
-    case "${AIC_L2_BACKEND}" in
-      local_disk)
-        mkdir -p "${NVME_DATA}/lmcache-disk"          # host path -> /data/nvme/lmcache-disk in container
-        write_lmcache_localdisk_config
-        _l2desc="LMCache native LocalDiskBackend (POSIX, $([[ "${AIC_L2_ODIRECT}" == true ]] && echo O_DIRECT || echo buffered/page-cache))" ;;
-      nixl_posix)
-        # NIXL's first-class POSIX plugin (normalized to POSIX + cpu buffer up top).
-        # cpu buffer shares LocalCPUBackend's pool (nixl_buffer_size omitted for cpu).
-        write_lmcache_nixl_config
-        _l2desc="NIXL POSIX plugin (cpu buffer, shares DRAM pool)" ;;
-      *)
-        write_lmcache_nixl_config
-        local _iomode; [[ "${AIC_NIXL_BUFFER_DEVICE}" == cuda ]] && _iomode="GDS/GPU-direct" || _iomode="POSIX/compat"
-        _l2desc="NIXL ${AIC_NIXL_BACKEND}, ${AIC_NIXL_BUFFER_DEVICE} buffer -> ${_iomode}" ;;
-    esac
-    local _fp=""; [[ -n "${AIC_KV_LOAD_FAILURE_POLICY}" ]] && _fp=",\"kv_load_failure_policy\":\"${AIC_KV_LOAD_FAILURE_POLICY}\""
-    local kvcfg="{\"kv_connector\":\"LMCacheConnectorV1\",\"kv_role\":\"kv_both\"${_fp}}"
-    log "launching connector'd vLLM (LMCacheConnectorV1 + ${_l2desc}) on :${KVD_PORT}"
-    docker run -d --name aic-cliff-kvd-vllm --network host "${GPU_FLAGS[@]}" "${HIPFILE_FLAGS[@]}" \
-        -v "${HF_HOME}":/hf "${HF_ENV[@]}" \
-        -v "${NVME_DATA}":/data/nvme \
-        -v "${LOGDIR}/lmcache-nixl-ais.yml":/config/lmcache-nixl-ais.yml:ro \
-        -e LMCACHE_CONFIG_FILE=/config/lmcache-nixl-ais.yml \
-        -e HIPFILE_ALLOW_COMPAT_MODE="${HIPFILE_ALLOW_COMPAT_MODE}" -e HIPFILE_UNSUPPORTED_FILE_SYSTEMS=true \
-        -e NIXL_TELEMETRY_ENABLE=y -e NIXL_TELEMETRY_EXPORTER=prometheus \
-        -e NIXL_TELEMETRY_PROMETHEUS_PORT="${NIXL_METRICS_PORT:-19090}" -e PYTHONHASHSEED=0 \
-        "${AIC_IMAGE}" \
-            --model "${VLLM_MODEL}" --host 0.0.0.0 --port "${KVD_PORT}" \
-            --tensor-parallel-size "${TENSOR_PARALLEL_SIZE}" \
-            --gpu-memory-utilization "${VLM_GPU_MEMORY_UTILIZATION}" \
-            --max-model-len "${VLM_MAX_MODEL_LEN}" \
-            --max-num-batched-tokens "${VLM_MAX_NUM_BATCHED_TOKENS}" \
-            "${ROPE_ARGS[@]}" \
-            --block-size 64 --enable-prefix-caching --kv-cache-dtype ${AIC_KV_CACHE_DTYPE} \
-            --async-scheduling \
-            --attention-backend "${AIC_ATTENTION_BACKEND}" \
-            --disable-access-log-for-endpoints "/health,/metrics,/v1/models" \
-            --kv-transfer-config "${kvcfg}" >/dev/null
-}
-
-# gds arm: connector'd vLLM pointing at the standalone lmcache-server (MP).
-launch_vllm_kvd_gds() {
-    rm_containers aic-cliff-kvd-vllm
-    local _fp=""; [[ -n "${AIC_KV_LOAD_FAILURE_POLICY}" ]] && _fp=",\"kv_load_failure_policy\":\"${AIC_KV_LOAD_FAILURE_POLICY}\""
-    local kvcfg="{\"kv_connector\":\"LMCacheMPConnector\",\"kv_role\":\"kv_both\"${_fp},\"kv_connector_extra_config\":{\"lmcache.mp.host\":\"tcp://localhost\",\"lmcache.mp.port\":${LMCACHE_PORT}}}"
-    log "launching connector'd vLLM (LMCacheMPConnector) on :${KVD_PORT}"
-    docker run -d --name aic-cliff-kvd-vllm --network host "${GPU_FLAGS[@]}" \
-        -v "${HF_HOME}":/hf "${HF_ENV[@]}" \
-        "${AIC_IMAGE}" \
-            --model "${VLLM_MODEL}" --host 0.0.0.0 --port "${KVD_PORT}" \
-            --tensor-parallel-size "${TENSOR_PARALLEL_SIZE}" \
-            --gpu-memory-utilization "${VLM_GPU_MEMORY_UTILIZATION}" \
-            --max-model-len "${VLM_MAX_MODEL_LEN}" \
-            --max-num-batched-tokens "${VLM_MAX_NUM_BATCHED_TOKENS}" \
-            "${ROPE_ARGS[@]}" \
-            --block-size 64 --enable-prefix-caching --kv-cache-dtype ${AIC_KV_CACHE_DTYPE} \
-            --async-scheduling \
-            --attention-backend "${AIC_ATTENTION_BACKEND}" \
-            --disable-access-log-for-endpoints "/health,/metrics,/v1/models" \
-            --kv-transfer-config "${kvcfg}" >/dev/null
-}
-
 run_arm_kvd() {  # $1=mode(nvme|gds) $2=out_csv
     local mode="$1" out="$2"
-    log "=== Arm B (kvd_v2, mode=${mode}) ==="
+    log "=== Arm B (kvd_v2, mode=${mode}) — LMCache MP connector ==="
+    rm_containers aic-vllm-gpu0 aic-lmcache
+
+    # MP connector arg for vLLM (+ optional kv_load_failure_policy).  Single-quote
+    # the JSON so compose's shlex splitting preserves the inner double quotes.
+    local _fp=""; [[ -n "${AIC_KV_LOAD_FAILURE_POLICY}" ]] && _fp=",\"kv_load_failure_policy\":\"${AIC_KV_LOAD_FAILURE_POLICY}\""
+    export KV_TRANSFER_ARG="--kv-transfer-config '{\"kv_connector\":\"LMCacheMPConnector\",\"kv_role\":\"kv_both\"${_fp},\"kv_connector_extra_config\":{\"lmcache.mp.host\":\"tcp://lmcache\",\"lmcache.mp.port\":${LMCACHE_PORT}}}'"
+
+    local _l2desc
     if [[ "${mode}" == "gds" ]]; then
-        launch_lmcache_gds || { log "kvd/gds: lmcache failed to start"; return 1; }
-        sleep 5
-        launch_vllm_kvd_gds || { log "kvd/gds: vllm failed to start"; stop_containers aic-cliff-lmcache; return 1; }
-        if ! wait_ready "${KVD_PORT}"; then
-            log "kvd/gds: server never became ready; last logs:"
-            docker logs --tail 40 aic-cliff-lmcache 2>&1 | sed 's/^/  [lmcache] /'
-            docker logs --tail 40 aic-cliff-kvd-vllm 2>&1 | sed 's/^/  [vllm]    /'
-            stop_containers aic-cliff-kvd-vllm aic-cliff-lmcache; return 1
+        export GDS_MODE=1
+        export AIC_L2_BACKEND=nixl                       # unused in GDS mode
+        export LMCACHE_L1_SIZE_GB="${AIC_GDS_SLAB_GB}"   # hipFile slab size
+        unset LMCACHE_CONFIG_FILE LMCACHE_CONFIG_FILE_HOST
+        _l2desc="hipFile GDS NVMe slab L1 (${LMCACHE_L1_SIZE_GB}GB)"
+    else
+        export GDS_MODE=""
+        export AIC_L2_BACKEND="${AIC_L2_BACKEND}"
+        # DRAM L1 for the MP server: the tuned DRAM-L1 size when local_cpu is on,
+        # else the default L1 (a modest server-side DRAM tier in front of the L2).
+        if [[ "${AIC_LOCAL_CPU}" == "true" ]]; then
+            export LMCACHE_L1_SIZE_GB="${LMCACHE_MAX_LOCAL_CPU_SIZE}"
+        else
+            export LMCACHE_L1_SIZE_GB="${AIC_GDS_SLAB_GB}"
         fi
-        run_bench kvd_v2 "${KVD_PORT}" "${out}" --warmup-at-each-c --post-warmup-sleep-s 5
-        local rc=$?
-        stop_containers aic-cliff-kvd-vllm aic-cliff-lmcache
-        return $rc
+        if [[ "${AIC_L2_BACKEND}" == "local_disk" ]]; then
+            mkdir -p "${NVME_DATA}/lmcache-disk"
+            write_lmcache_localdisk_config
+            export LMCACHE_CONFIG_FILE_HOST="${LOGDIR}/lmcache-localdisk.yml"
+            export LMCACHE_CONFIG_FILE=/config/lmcache.yml
+            _l2desc="LMCache native LocalDiskBackend L2 (POSIX, $([[ "${AIC_L2_ODIRECT}" == true ]] && echo O_DIRECT || echo buffered), DRAM L1 ${LMCACHE_L1_SIZE_GB}GB)"
+        else
+            unset LMCACHE_CONFIG_FILE LMCACHE_CONFIG_FILE_HOST
+            _l2desc="NIXL AIS_MT NVMe L2 + POSIX L2b (DRAM L1 ${LMCACHE_L1_SIZE_GB}GB, pool ${LMCACHE_NVME_POOL})"
+        fi
     fi
-    # nvme: in-process LMCacheConnectorV1, no standalone server.
-    launch_vllm_kvd_nvme || { log "kvd/nvme: vllm failed to start"; return 1; }
-    if ! wait_ready "${KVD_PORT}"; then
-        log "kvd/nvme: server never became ready; last logs:"
-        docker logs --tail 60 aic-cliff-kvd-vllm 2>&1 | sed 's/^/  [vllm] /'
-        stop_containers aic-cliff-kvd-vllm; return 1
+    log "  stack: standalone lmcache server (${_l2desc}) + vLLM LMCacheMPConnector on :${VLLM_ENDPOINT_PORT}"
+
+    # `compose up` waits for lmcache's healthcheck before starting vllm
+    # (depends_on: service_healthy), so no manual inter-container sleep is needed.
+    if ! compose --profile cache up -d; then
+        log "kvd/${mode}: compose up failed; last logs:"
+        compose logs --tail 40 --no-color lmcache 2>&1 | sed 's/^/  [lmcache] /'
+        compose logs --tail 40 --no-color vllm    2>&1 | sed 's/^/  [vllm]    /'
+        stop_stack; return 1
+    fi
+    if ! wait_ready "${VLLM_ENDPOINT_PORT}"; then
+        log "kvd/${mode}: server never became ready; last logs:"
+        compose logs --tail 40 --no-color lmcache 2>&1 | sed 's/^/  [lmcache] /'
+        compose logs --tail 60 --no-color vllm    2>&1 | sed 's/^/  [vllm]    /'
+        stop_stack; return 1
     fi
     # Per-c warmup + drain: required for per_client mode and async-save kvd.
-    run_bench kvd_v2 "${KVD_PORT}" "${out}" --warmup-at-each-c --post-warmup-sleep-s 5
+    run_bench kvd_v2 "${VLLM_ENDPOINT_PORT}" "${out}" --warmup-at-each-c --post-warmup-sleep-s 5
     local rc=$?
-    stop_containers aic-cliff-kvd-vllm
+    stop_stack
     return $rc
 }
 
@@ -770,10 +719,12 @@ done
 log "arms        : ${AIC_CLIFF_ARMS}"
 log "isl/prefix  : ISL=${BENCH_ISL} shared=${BENCH_SHARED_TOK} max_model_len=${VLM_MAX_MODEL_LEN}${VLM_ROPE_SCALING:+ rope_scaling=${VLM_ROPE_SCALING}}"
 # Tier sizing — echo the EFFECTIVE values so a mis-propagated override is visible.
-# nixl_pool_size is a SLOT count (~4.5 MiB/slot for Qwen2.5-3B); 4096 slots ≈ 18 GiB
+# LMCACHE_NVME_POOL is a SLOT count (~4.5 MiB/slot for Qwen2.5-3B); 4096 slots ≈ 18 GiB
 # is far too small for long-ISL working sets (a silent 4096 caused the c>=32 cliff
 # collapse in jobs 67536798/67537066 — the LMCACHE_NVME_POOL override didn't land).
-log "tiers       : l2_backend=${AIC_L2_BACKEND} nixl_backend=${AIC_NIXL_BACKEND} local_cpu=${AIC_LOCAL_CPU} max_local_cpu_size=${LMCACHE_MAX_LOCAL_CPU_SIZE}GB nixl_pool_size=${LMCACHE_NVME_POOL} slots (~$(( LMCACHE_NVME_POOL * 45 / 10 / 1024 )) GiB) nixl_buffer_device=${AIC_NIXL_BUFFER_DEVICE} gds_l1=${LMCACHE_L1_SIZE_GB}GB local_disk=${AIC_LOCAL_DISK_SIZE_GB}GB(odirect=${AIC_L2_ODIRECT})"
+# In MP mode the DRAM L1 is --l1-size-gb (nvme arm: max_local_cpu_size when
+# local_cpu=true, else the default) and the slab is --l1-size-gb (gds arm).
+log "tiers       : l2_backend=${AIC_L2_BACKEND} local_cpu=${AIC_LOCAL_CPU} dram_l1(nvme)=${LMCACHE_MAX_LOCAL_CPU_SIZE}GB nvme_pool=${LMCACHE_NVME_POOL} slots (~$(( LMCACHE_NVME_POOL * 45 / 10 / 1024 )) GiB) gds_slab=${AIC_GDS_SLAB_GB}GB local_disk=${AIC_LOCAL_DISK_SIZE_GB}GB(odirect=${AIC_L2_ODIRECT})"
 
 if _arm_on vram; then run_arm_vram && STATUS[vram_only]=ok || STATUS[vram_only]=FAIL; else STATUS[vram_only]=skip; fi
 if _arm_on nvme; then run_arm_kvd nvme "${KVD_NVME_CSV}" && STATUS[kvd_nvme]=ok || STATUS[kvd_nvme]=FAIL; else STATUS[kvd_nvme]=skip; fi

@@ -200,6 +200,75 @@ jobs:
               description: 'Smoke test failed — check the run logs',
             });
 
+      - name: Post failure comment on PR
+        if: failure() && needs.authorize.outputs.pr_number != ''
+        uses: actions/github-script@v9
+        with:
+          script: |
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: ${{ needs.authorize.outputs.pr_number || 0 }},
+              body: `❌ Smoke test failed for ${{ needs.authorize.outputs.sha }}. [View logs](https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}).`,
+            });
+
+  tiny-test:
+    needs: [authorize, dist-build, smoke-test]
+    runs-on: [self-hosted, rocm-aic-cicd]
+    timeout-minutes: 60
+    permissions:
+      pull-requests: write
+      statuses: write
+
+    steps:
+      - name: Set commit status to pending
+        if: needs.authorize.outputs.pr_number != ''
+        uses: actions/github-script@v9
+        with:
+          script: |
+            await github.rest.repos.createCommitStatus({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              sha: '${{ needs.authorize.outputs.sha }}',
+              state: 'pending',
+              target_url: `https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`,
+              context: 'hardware-ci / tiny-test',
+              description: 'Running tiny-model end-to-end serve on amd-aic-spur...',
+            });
+
+      - name: Run tiny-test on amd-aic-spur
+        run: bash /usr/local/lib/aic-ci/spur-tiny-test.sh "${{ needs.authorize.outputs.sha }}"
+
+      - name: Set commit status on success
+        if: success() && needs.authorize.outputs.pr_number != ''
+        uses: actions/github-script@v9
+        with:
+          script: |
+            await github.rest.repos.createCommitStatus({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              sha: '${{ needs.authorize.outputs.sha }}',
+              state: 'success',
+              target_url: `https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`,
+              context: 'hardware-ci / tiny-test',
+              description: 'Tiny-model end-to-end serve passed',
+            });
+
+      - name: Set commit status on failure
+        if: failure() && needs.authorize.outputs.pr_number != ''
+        uses: actions/github-script@v9
+        with:
+          script: |
+            await github.rest.repos.createCommitStatus({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              sha: '${{ needs.authorize.outputs.sha }}',
+              state: 'failure',
+              target_url: `https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`,
+              context: 'hardware-ci / tiny-test',
+              description: 'Tiny-test failed — check the run logs',
+            });
+
       - name: Post result comment on PR
         if: always() && needs.authorize.outputs.pr_number != ''
         uses: actions/github-script@v9
@@ -211,6 +280,6 @@ jobs:
               repo: context.repo.repo,
               issue_number: ${{ needs.authorize.outputs.pr_number || 0 }},
               body: success
-                ? `✅ Hardware CI passed for ${{ needs.authorize.outputs.sha }}.`
-                : `❌ Smoke test failed for ${{ needs.authorize.outputs.sha }}. [View logs](https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}).`,
+                ? `✅ Hardware CI passed for ${{ needs.authorize.outputs.sha }} (dist-build + smoke-test + tiny-test).`
+                : `❌ Tiny-test failed for ${{ needs.authorize.outputs.sha }}. [View logs](https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}).`,
             });

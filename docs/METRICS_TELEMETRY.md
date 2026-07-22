@@ -59,21 +59,24 @@ same upstream release binaries so the `nvme_*` / `rdma_port_*` series match:
 > / node-exporter's nvme+infiniband collectors.
 
 ```bash
-# build both fabric-exporter images (works without the compose plugin)
+# build both fabric-exporter images (plain docker build)
 make monitoring-build-exporters
 
-# run them alongside the sidecar via the exporters-fabric compose profile
+# run them via the exporters-fabric compose profile
 AIC_METRICS_DIR=/mnt/lmcache-nfs/metrics \
   docker compose -f monitoring/docker-compose.monitoring.yml \
     --profile exporters --profile exporters-fabric up -d
 ```
 
-For the cliff sbatch docker-run path (nodes without the compose plugin), set
-`AIC_NVME_EXPORTER_IMAGE=aic-nvme-exporter:local` /
-`AIC_RDMA_EXPORTER_IMAGE=aic-rdma-exporter:local` after building. Each
-container is skipped automatically if a host service already serves its port.
-On a node lacking both, NVMe I/O still comes from node-exporter's
-`diskstats`/`nvme` collectors and RDMA from its `infiniband` collector.
+The whole metrics path is `docker compose` (v2) only. The cliff sbatch and the
+smoke-test run `ensure_compose` first, which installs the plugin user-locally
+(`~/.docker/cli-plugins`, shared `$HOME`) on any node that lacks it — so there is
+no longer a `docker run` sidecar fallback. When the fabric-exporter images are
+present on the node, set `AIC_NVME_EXPORTER_IMAGE=aic-nvme-exporter:latest` /
+`AIC_RDMA_EXPORTER_IMAGE=aic-rdma-exporter:latest` and the cliff enables the
+`exporters-fabric` compose profile automatically. On a node without them, NVMe
+I/O still comes from node-exporter's `diskstats`/`nvme` collectors and RDMA from
+its `infiniband` collector.
 
 **hsa-snoop (`:9488`).**
 [sbates130272/hsa-snoop](https://github.com/sbates130272/hsa-snoop)

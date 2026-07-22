@@ -3,7 +3,9 @@ set -euo pipefail
 
 # Runs on the self-hosted runner; SSHes to the SPUR head node (AIC_SPUR_HOST) and runs smoke-test
 # against the tarball produced by spur-dist-build.sh for the same SHA.
-# Always cleans up the clone and tarball dir on exit regardless of pass/fail.
+# The clone and tarball are left in place for spur-tiny-test.sh (the next stage)
+# to use; spur-tiny-test.sh owns the final cleanup.  On failure, cleans up
+# immediately so no stale state is left behind.
 
 SHA="${1:?usage: $0 <full-sha>}"
 SHORT="${SHA:0:7}"
@@ -27,11 +29,11 @@ set -euo pipefail
 SHORT="${SHA:0:7}"
 WORKDIR="$HOME/Projects/rocm-aic.${SHORT}"
 
-cleanup() {
-    echo "=== Cleaning up ==="
+cleanup_on_fail() {
+    echo "=== Smoke test failed — cleaning up ==="
     rm -rf "${WORKDIR}" "${TARBALL_DIR}"
 }
-trap cleanup EXIT
+trap cleanup_on_fail ERR
 
 echo "=== Running smoke-test (AIC_IMAGE=${AIC_IMAGE}) ==="
 AIC_SPUR_CLUSTER=1 \
