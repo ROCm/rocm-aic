@@ -56,7 +56,11 @@ BENCH_OUT         := $(BENCH_LOGDIR)/results/cliff-$(BENCH_ARM)-$(shell date +%Y
 _ROCM_ARCH_DETECTED := $(shell rocm_agent_enumerator 2>/dev/null | grep -E '^gfx' | head -1)
 ROCM_ARCH := $(if $(strip $(ROCM_ARCH)),$(strip $(ROCM_ARCH)),$(_ROCM_ARCH_DETECTED))
 
-export ROCM_ARCH GPU GDS_SLAB_DATA LOG HF_HOME IMAGE_NAME
+# ---- Build parallelism -----------------------------------------------------
+# Caps parallel compile jobs in the image build, Empty = use all cores ($(nproc)).
+BUILD_JOBS ?=
+
+export ROCM_ARCH GPU GDS_SLAB_DATA LOG HF_HOME IMAGE_NAME BUILD_JOBS
 export LMCACHE_PORT LMCACHE_L1_SIZE_GB LMCACHE_NVME_POOL LMCACHE_NVME_SLOT_SIZE LMCACHE_NFS_POOL
 export NVME_DATA NFS_DATA
 export VLLM_MODEL TENSOR_PARALLEL_SIZE
@@ -226,6 +230,7 @@ help:
 	@echo "  TLS_CERT       Path to corporate CA cert (e.g. Zscaler); passed as a"
 	@echo "                 BuildKit secret — never baked into the image."
 	@echo "                 Example: make build TLS_CERT=/etc/ssl/certs/zscaler-ca.crt"
+	@echo "  BUILD_JOBS     Cap parallel compile jobs (default: all cores)."
 	@echo ""
 	@echo "Key storage vars (current):"
 	@echo "  NVME_DATA=$(NVME_DATA)  NFS_DATA=$(NFS_DATA)  GDS_SLAB_DATA=$(GDS_SLAB_DATA)"
@@ -236,6 +241,7 @@ help:
 	@echo ""
 	@echo "Examples:"
 	@echo "  make build"
+	@echo "  make build BUILD_JOBS=3          # cap parallelism on low-RAM hosts"
 	@echo "  make up HF_TOKEN=hf_... NVME_DATA=/mnt/nvme NFS_DATA=/mnt/nfs"
 	@echo "  make up-gds-l1 GDS_SLAB_DATA=/mnt/nvme HF_TOKEN=hf_..."
 	@echo "  make cliff BENCH_ARM=vram_only BENCH_ENDPOINT=http://localhost:8000"

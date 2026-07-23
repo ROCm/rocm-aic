@@ -55,6 +55,7 @@ services:
       dockerfile: docker/Dockerfile
       args:
         ROCM_ARCH: ${ROCM_ARCH}
+        BUILD_JOBS: ${BUILD_JOBS:-}
     image: ${IMAGE_NAME:-rocm-aic}
     container_name: aic-lmcache
     ports:

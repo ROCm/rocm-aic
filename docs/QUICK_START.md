@@ -8,6 +8,12 @@ All commands run from the repo root with `make <target>`.
 make build ROCM_ARCH=gfx942
 ```
 
+> **Low on RAM?**
+>
+> ```bash
+> make build ROCM_ARCH=gfx942 BUILD_JOBS=8
+> ```
+
 ## 2. Start the stack (standard mode: DRAM L1 + NVMe L2a + NFS L2b)
 
 ```bash
