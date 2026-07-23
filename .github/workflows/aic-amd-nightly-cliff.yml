@@ -2,7 +2,7 @@ name: AIC Nightly Cliff
 
 on:
   workflow_run:
-    workflows: ["AIC Nightly Smoke Test"]
+    workflows: ["AIC Nightly Tiny Test"]
     types: [completed]
 
 jobs:

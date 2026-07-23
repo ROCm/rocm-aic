@@ -7,6 +7,49 @@
 # from different exporters can be correlated when exploring the captured TSDB.
 
 groups:
+  - name: aic_lmcache_mp
+    interval: 15s
+    rules:
+      # LMCache MP-mode L1/L2 hit rates (chunk-based).
+      # Counters are emitted by the server's OTel event-bus subscribers
+      # (L1MetricsSubscriber, L2MetricsSubscriber, LookupMetricsSubscriber)
+      # and scraped from localhost:8080/metrics (job: lmcache).
+
+      # L1 hit rate: fraction of looked-up chunks served from L1 DRAM.
+      # Denominator is l2_prefetch_lookup_objects (chunks that missed L1 and
+      # went to L2) + l1_read (chunks served directly from L1).
+      # Actual metric names (verified from live scrape):
+      #   lmcache_mp_l1_read_chunks_total
+      #   lmcache_mp_l2_prefetch_hit_chunks_total
+      #   lmcache_mp_l2_prefetch_lookup_objects_chunks_total
+      #   lmcache_mp_lookup_hit_tokens_total    {model_name, cache_salt}
+      #   lmcache_mp_lookup_requested_tokens_total {model_name, cache_salt}
+
+      - record: aic:lmcache_mp:l1_hit_rate
+        expr: |
+          rate(lmcache_mp_l1_read_chunks_total[1m])
+          /
+          clamp_min(
+            rate(lmcache_mp_l1_read_chunks_total[1m])
+            + rate(lmcache_mp_l2_prefetch_lookup_objects_chunks_total[1m]),
+            1e-9
+          )
+
+      # L2 hit rate: fraction of L2-prefetch lookups that found a result.
+      - record: aic:lmcache_mp:l2_hit_rate
+        expr: |
+          rate(lmcache_mp_l2_prefetch_hit_chunks_total[1m])
+          /
+          clamp_min(rate(lmcache_mp_l2_prefetch_lookup_objects_chunks_total[1m]), 1e-9)
+
+      # Combined L1+L2 token hit rate (labeled by model_name, cache_salt).
+      # Uses the token-granularity counters from LookupMetricsSubscriber.
+      - record: aic:lmcache_mp:combined_hit_rate
+        expr: |
+          rate(lmcache_mp_lookup_hit_tokens_total[1m])
+          /
+          clamp_min(rate(lmcache_mp_lookup_requested_tokens_total[1m]), 1e-9)
+
   - name: aic_join
     interval: 30s
     rules:

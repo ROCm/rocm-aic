@@ -12,6 +12,7 @@
 [![Export Tarball](https://github.com/ROCm/rocm-aic/actions/workflows/aic-export.yml/badge.svg)](https://github.com/ROCm/rocm-aic/actions/workflows/aic-export.yml)
 [![Nightly Dist Build](https://github.com/ROCm/rocm-aic/actions/workflows/aic-amd-nightly-dist-build.yml/badge.svg)](https://github.com/ROCm/rocm-aic/actions/workflows/aic-amd-nightly-dist-build.yml)
 [![Nightly Smoke Test](https://github.com/ROCm/rocm-aic/actions/workflows/aic-amd-nightly-smoke-test.yml/badge.svg)](https://github.com/ROCm/rocm-aic/actions/workflows/aic-amd-nightly-smoke-test.yml)
+[![Nightly Tiny Test](https://github.com/ROCm/rocm-aic/actions/workflows/aic-amd-nightly-tiny-test.yml/badge.svg)](https://github.com/ROCm/rocm-aic/actions/workflows/aic-amd-nightly-tiny-test.yml)
 [![Nightly Cliff](https://github.com/ROCm/rocm-aic/actions/workflows/aic-amd-nightly-cliff.yml/badge.svg)](https://github.com/ROCm/rocm-aic/actions/workflows/aic-amd-nightly-cliff.yml)
 [![Nightly Wheels](https://github.com/ROCm/rocm-aic/actions/workflows/aic-nightly-wheels.yml/badge.svg)](https://github.com/ROCm/rocm-aic/actions/workflows/aic-nightly-wheels.yml)
 [![Nightly Patch Validation](https://github.com/ROCm/rocm-aic/actions/workflows/aic-patches.yml/badge.svg)](https://github.com/ROCm/rocm-aic/actions/workflows/aic-patches.yml)
@@ -69,7 +70,11 @@ compatibility notes. Wheels are rebuilt nightly from `main` and published to the
   multi-arch — it bakes in every gfx the vLLM wheel supports (`gfx90a`, `gfx942`,
   `gfx950`, and the RDNA `gfx11xx`/`gfx12xx` line), so one image runs on any of
   them. Narrow with `ROCM_ARCH=gfx942` for a faster single-arch build.
-- Docker with BuildKit and the `docker compose` plugin (Docker 23+)
+- Docker with BuildKit and the `docker compose` (v2) plugin (Docker 23+). On a
+  node that lacks it, `make ensure-compose` installs the plugin user-locally
+  (`~/.docker/cli-plugins`); the Slurm cliff / smoke / tiny-test jobs self-install
+  it automatically. The whole stack is `docker compose` only — there is no
+  `docker-compose` v1 or docker-run fallback.
 - Host mounts: local NVMe (`NVME_DATA`) and NFS-over-RDMA (`NFS_DATA`) pre-mounted
 - HuggingFace token with access to the target model
 - Python 3.10+ for host-side benchmarks

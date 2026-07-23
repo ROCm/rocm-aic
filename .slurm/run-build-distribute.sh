@@ -63,6 +63,10 @@
 #           checks GPU visibility + arch, vLLM / LMCache / hipFile, ais-check
 #           (HIP+amdgpu AIS support), and the NIXL AIS_MT plugin (hard fail if
 #           AIS_MT or ais-check fail)
+#   tiny-test  End-to-end serve check on a GPU node: brings up the compose MP
+#           stack (standalone lmcache server + vLLM LMCacheMPConnector) with a tiny
+#           model (Qwen/Qwen2.5-0.5B-Instruct) and asserts one non-empty chat
+#           completion.  Exercises the full connector path a smoke-test cannot.
 #   all     build, build-exporters, then load   (default)
 #
 # Key environment:
@@ -188,6 +192,18 @@ AIC_CACHE_INSECURE="${AIC_CACHE_INSECURE:-}"
 AIC_TEST_TIME="${AIC_TEST_TIME:-00:20:00}"
 AIC_TEST_CPUS="${AIC_TEST_CPUS:-8}"
 AIC_TEST_MEM="${AIC_TEST_MEM:-32G}"
+
+# --- tiny-test: end-to-end serve check with a tiny model ---------------------
+# Brings up the compose MP stack (standalone lmcache + vLLM LMCacheMPConnector)
+# with a small model and asserts one non-empty chat completion.  A fast functional
+# gate that exercises the connector path a smoke-test cannot.  The model is
+# downloaded once into AIC_TINY_HF_HOME (a persistent shared HF cache) and reused.
+AIC_TINY_MODEL="${AIC_TINY_MODEL:-Qwen/Qwen2.5-0.5B-Instruct}"
+AIC_TINY_HF_HOME="${AIC_TINY_HF_HOME:-${AIC_IMAGE_DIR}/tiny-hf}"
+AIC_TINY_TIME="${AIC_TINY_TIME:-00:25:00}"
+AIC_TINY_CPUS="${AIC_TINY_CPUS:-8}"
+AIC_TINY_MEM="${AIC_TINY_MEM:-32G}"
+AIC_TINY_READY_TIMEOUT="${AIC_TINY_READY_TIMEOUT:-120}"   # x5s = up to 10 min for weights + download
 
 # --- Fabric exporter images (nvme_exporter / rdma_exporter) -------------------
 # Built from monitoring/*/Dockerfile and distributed alongside the main image so
@@ -948,6 +964,131 @@ REMOTE
     log "test complete"
 }
 
+# --- tiny-test: end-to-end serve check (compose MP stack + a tiny model) ------
+# Loads the image on a GPU node if needed, brings up the SAME compose stack the
+# cliff/`make up` use (standalone lmcache server + vLLM LMCacheMPConnector), waits
+# for the endpoint, and asserts one non-empty chat completion.  Unlike smoke-test
+# (which validates the image in isolation) this exercises the full MP connector
+# path end-to-end -- the functional gate wired into CI after smoke-test.
+cmd_tiny_test() {
+    _pick_compress
+    local tarball; tarball="$(_tarball_path)"
+    command -v sbatch >/dev/null 2>&1 || die "sbatch not found; cannot run the GPU tiny-test job"
+    [[ -r "${tarball}" ]] || die "tarball not found: ${tarball} (run 'build' first)"
+
+    local -a _sel
+    if [[ -n "${AIC_TEST_NODE:-}" ]]; then
+        _sel=(--nodelist="${AIC_TEST_NODE}")
+        log "tiny-test on ${AIC_TEST_NODE} via sbatch (partition ${AIC_BUILD_PARTITION})"
+    else
+        _sel=(--constraint="${AIC_TEST_CONSTRAINT}")
+        log "tiny-test via sbatch (partition ${AIC_BUILD_PARTITION}, constraint ${AIC_TEST_CONSTRAINT})"
+    fi
+    log "image: ${AIC_IMAGE}  model: ${AIC_TINY_MODEL}  hf: ${AIC_TINY_HF_HOME}"
+
+    local remote_script
+    remote_script="$(cat <<REMOTE
+set -uo pipefail
+command -v docker >/dev/null 2>&1 || { echo "\$(hostname): docker not found" >&2; exit 1; }
+echo "[tiny-test] host=\$(hostname) docker=\$(docker --version)"
+
+# Load the image from the shared tarball only when needed (same marker logic as
+# smoke-test): reload when forced, absent, or the tarball is newer.
+_marker="/var/tmp/aic-loaded-\$(id -u)-\$(echo '${AIC_IMAGE}' | tr '/:' '__').mtime"
+_tar_mtime="\$(stat -c %Y '${tarball}' 2>/dev/null || echo 0)"
+_have_img="\$(docker images -q '${AIC_IMAGE}')"
+_loaded_mtime="\$(cat "\${_marker}" 2>/dev/null || echo 0)"
+if [ "${AIC_FORCE_LOAD:-0}" = "1" ] || [ -z "\${_have_img}" ] || [ "\${_tar_mtime}" -gt "\${_loaded_mtime}" ]; then
+    echo "[tiny-test] loading ${AIC_IMAGE} from ${tarball}"
+    ${DECOMPRESS_CMD} '${tarball}' | docker load >/dev/null
+    echo "\${_tar_mtime}" > "\${_marker}" 2>/dev/null || true
+else
+    echo "[tiny-test] image up to date on \$(hostname) (id \${_have_img})"
+fi
+
+cd '${AIC_DAY_DIR}'
+# docker compose v2 only -- install user-locally if the node lacks the plugin.
+# shellcheck source=/dev/null
+source '${AIC_DAY_DIR}/monitoring/monitoring-lib.sh'
+ensure_compose || { echo "[tiny-test] docker compose unavailable and could not be installed" >&2; exit 1; }
+
+# Tiny-model MP stack env.  Small footprint; the tiny model is downloaded online
+# into the persistent AIC_TINY_HF_HOME (Qwen2.5-0.5B is ungated -- no HF token).
+export IMAGE_NAME='${AIC_IMAGE}'
+export ROCM_ARCH='${AIC_ROCM_ARCH}'
+export GPU=0
+export VLLM_MODEL='${AIC_TINY_MODEL}'
+export HF_HOME='${AIC_TINY_HF_HOME}'
+export HF_HUB_OFFLINE=0 TRANSFORMERS_OFFLINE=0
+export LOG="\${_logdir}"
+export NVME_DATA=/tmp/aic-tiny-nvme NFS_DATA=/tmp/aic-tiny-nfs
+export VLM_GPU_MEMORY_UTILIZATION=0.30
+export VLM_MAX_MODEL_LEN=4096
+export VLM_MAX_NUM_BATCHED_TOKENS=4096
+export VLM_ATTENTION_BACKEND=TRITON_ATTN
+export VLM_KV_CACHE_DTYPE=auto
+export LMCACHE_L1_SIZE_GB=4
+export KV_TRANSFER_ARG="--kv-transfer-config '{\"kv_connector\":\"LMCacheMPConnector\",\"kv_role\":\"kv_both\",\"kv_connector_extra_config\":{\"lmcache.mp.host\":\"tcp://lmcache\",\"lmcache.mp.port\":6555}}'"
+mkdir -p "\${HF_HOME}" /tmp/aic-tiny-nvme /tmp/aic-tiny-nfs
+
+compose() { docker compose -f '${AIC_DAY_DIR}/docker/docker-compose.yml' "\$@"; }
+cleanup() {
+    local svc
+    for svc in vllm lmcache; do
+        compose logs --no-color --no-log-prefix "\$svc" > "\${_logdir}/tiny-\${svc}.log" 2>&1 || true
+    done
+    compose --profile cache down --remove-orphans >/dev/null 2>&1 || true
+    rm -rf /tmp/aic-tiny-nvme /tmp/aic-tiny-nfs 2>/dev/null || true
+}
+trap cleanup EXIT
+
+echo "[tiny-test] bringing up compose MP stack (model=${AIC_TINY_MODEL}) ..."
+if ! compose --profile cache up -d; then
+    echo "[tiny-test] FAIL: compose up failed" >&2
+    compose logs --tail 60 --no-color lmcache 2>&1 | sed 's/^/  [lmcache] /'
+    compose logs --tail 60 --no-color vllm    2>&1 | sed 's/^/  [vllm]    /'
+    exit 1
+fi
+
+# Wait for the vLLM endpoint (weights load + one-time model download).
+ready=0
+for _i in \$(seq 1 ${AIC_TINY_READY_TIMEOUT}); do
+    if curl -fsS http://localhost:8000/v1/models >/dev/null 2>&1; then ready=1; break; fi
+    sleep 5
+done
+if [ "\${ready}" != "1" ]; then
+    echo "[tiny-test] FAIL: vLLM never became ready" >&2
+    compose logs --tail 80 --no-color vllm 2>&1 | sed 's/^/  [vllm] /'
+    exit 1
+fi
+echo "[tiny-test] endpoint ready; sending one chat completion ..."
+
+# One real completion; assert a NON-EMPTY assistant content came back through the
+# LMCacheMPConnector path.
+resp="\$(curl -fsS http://localhost:8000/v1/chat/completions \
+    -H 'Content-Type: application/json' \
+    -d '{"model":"${AIC_TINY_MODEL}","messages":[{"role":"user","content":"Reply with the single word: pong"}],"max_tokens":16,"temperature":0}' 2>&1)" || {
+    echo "[tiny-test] FAIL: completion request failed: \${resp}" >&2; exit 1; }
+echo "[tiny-test] response: \${resp}"
+if printf '%s' "\${resp}" | grep -qE '"content"[[:space:]]*:[[:space:]]*"[^"]+'; then
+    echo "[tiny-test] OK: got a non-empty completion via LMCacheMPConnector"
+    exit 0
+fi
+echo "[tiny-test] FAIL: empty or missing completion content" >&2
+exit 1
+REMOTE
+)"
+
+    local -a _gres_arg=(); [[ "${AIC_SPUR_CLUSTER}" != "1" ]] && _gres_arg=(--gres=gpu:1)
+    _sbatch_run aic-tiny-test tiny-test "${remote_script}" \
+        "${_sel[@]}" \
+        "${_gres_arg[@]}" \
+        --nodes=1 --ntasks=1 \
+        --cpus-per-task="${AIC_TINY_CPUS}" --mem="${AIC_TINY_MEM}" \
+        --time="${AIC_TINY_TIME}"
+    log "tiny-test complete"
+}
+
 # --- main --------------------------------------------------------------------
 main() {
     local sub="${1:-all}"
@@ -957,11 +1098,12 @@ main() {
         load)            cmd_load ;;
         push)            cmd_push ;;
         test)            cmd_test ;;
+        tiny-test)       cmd_tiny_test ;;
         all)             cmd_build; cmd_build_exporters; cmd_load ;;
         -h|--help|help)
             sed -n '2,70p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
             ;;
-        *) die "unknown command '${sub}' (use: build | build-exporters | load | push | test | all | help)" ;;
+        *) die "unknown command '${sub}' (use: build | build-exporters | load | push | test | tiny-test | all | help)" ;;
     esac
 }
 
