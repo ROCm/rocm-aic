@@ -240,6 +240,7 @@ RUN --mount=type=cache,target=/root/.cache/uv \
     cd projects/hipfile && \
     mkdir -p build && cd build && \
     cmake -DCMAKE_HIP_PLATFORM=amd -DAIS_INSTALL_TOOLS=ON \
+          -DBUILD_TESTING=OFF \
           -DGPU_TARGETS="${ROCM_ARCH}" \
           -DCMAKE_HIP_ARCHITECTURES="${ROCM_ARCH}" .. && \
     cmake --build . -j"$(nproc)" && \
