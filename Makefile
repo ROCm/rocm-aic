@@ -57,10 +57,7 @@ _ROCM_ARCH_DETECTED := $(shell rocm_agent_enumerator 2>/dev/null | grep -E '^gfx
 ROCM_ARCH := $(if $(strip $(ROCM_ARCH)),$(strip $(ROCM_ARCH)),$(_ROCM_ARCH_DETECTED))
 
 # ---- Build parallelism -----------------------------------------------------
-# Caps parallel compile jobs in the image build (passed through to the
-# Dockerfile BUILD_JOBS arg).  Empty = use all cores ($(nproc) inside the
-# build).  Lower it on high-core / low-RAM hosts where nproc-wide cc1plus
-# fan-out OOMs (issue #89), e.g. `make build BUILD_JOBS=3`.
+# Caps parallel compile jobs in the image build, Empty = use all cores ($(nproc)).
 BUILD_JOBS ?=
 
 export ROCM_ARCH GPU GDS_SLAB_DATA LOG HF_HOME IMAGE_NAME BUILD_JOBS
@@ -233,6 +230,7 @@ help:
 	@echo "  TLS_CERT       Path to corporate CA cert (e.g. Zscaler); passed as a"
 	@echo "                 BuildKit secret — never baked into the image."
 	@echo "                 Example: make build TLS_CERT=/etc/ssl/certs/zscaler-ca.crt"
+	@echo "  BUILD_JOBS     Cap parallel compile jobs (default: all cores)."
 	@echo ""
 	@echo "Key storage vars (current):"
 	@echo "  NVME_DATA=$(NVME_DATA)  NFS_DATA=$(NFS_DATA)  GDS_SLAB_DATA=$(GDS_SLAB_DATA)"
@@ -243,6 +241,7 @@ help:
 	@echo ""
 	@echo "Examples:"
 	@echo "  make build"
+	@echo "  make build BUILD_JOBS=3          # cap parallelism on low-RAM hosts"
 	@echo "  make up HF_TOKEN=hf_... NVME_DATA=/mnt/nvme NFS_DATA=/mnt/nfs"
 	@echo "  make up-gds-l1 GDS_SLAB_DATA=/mnt/nvme HF_TOKEN=hf_..."
 	@echo "  make cliff BENCH_ARM=vram_only BENCH_ENDPOINT=http://localhost:8000"
