@@ -15,6 +15,8 @@ ROCM_PATH="${ROCM_PATH:-/opt/rocm}"
 AIS_PATH="${AIS_PATH:-${ROCM_PATH}}"
 NIXL_INSTALL_PREFIX="${NIXL_INSTALL_PREFIX:-/opt/nixl}"
 
+BUILD_JOBS="${BUILD_JOBS:-$(nproc)}"
+
 if [[ ! -f "${NIXL_SRC}/meson.build" ]]; then
 	echo "ERROR: ${NIXL_SRC}/meson.build not found" >&2
 	exit 1
@@ -72,7 +74,7 @@ cd build
 	--with-verbs \
 	--with-dm \
 	--enable-mt
-make -j"$(nproc)"
+make -j"${BUILD_JOBS}"
 make install
 ldconfig
 
@@ -91,7 +93,7 @@ MESON_EXTRA=(
 )
 
 meson setup build "${MESON_EXTRA[@]}"
-ninja -C build
+ninja -C build -j"${BUILD_JOBS}"
 ninja -C build install
 ldconfig
 
@@ -212,6 +214,7 @@ if [[ "${NIXL_BUILD_WHEEL:-0}" == "1" ]]; then
 		[[ "${_arg}" == --prefix=* ]] && continue
 		wheel_setup_args+=("-Csetup-args=${_arg}")
 	done
+	wheel_setup_args+=("-Ccompile-args=-j${BUILD_JOBS}")
 	env -u CXX ROCM_PATH="${ROCM_PATH}" \
 		uv build --wheel --no-build-isolation \
 			--out-dir "${NIXL_WHEEL_DIR}" "${wheel_setup_args[@]}"

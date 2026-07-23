@@ -56,7 +56,14 @@ BENCH_OUT         := $(BENCH_LOGDIR)/results/cliff-$(BENCH_ARM)-$(shell date +%Y
 _ROCM_ARCH_DETECTED := $(shell rocm_agent_enumerator 2>/dev/null | grep -E '^gfx' | head -1)
 ROCM_ARCH := $(if $(strip $(ROCM_ARCH)),$(strip $(ROCM_ARCH)),$(_ROCM_ARCH_DETECTED))
 
-export ROCM_ARCH GPU GDS_SLAB_DATA LOG HF_HOME IMAGE_NAME
+# ---- Build parallelism -----------------------------------------------------
+# Caps parallel compile jobs in the image build (passed through to the
+# Dockerfile BUILD_JOBS arg).  Empty = use all cores ($(nproc) inside the
+# build).  Lower it on high-core / low-RAM hosts where nproc-wide cc1plus
+# fan-out OOMs (issue #89), e.g. `make build BUILD_JOBS=3`.
+BUILD_JOBS ?=
+
+export ROCM_ARCH GPU GDS_SLAB_DATA LOG HF_HOME IMAGE_NAME BUILD_JOBS
 export LMCACHE_PORT LMCACHE_L1_SIZE_GB LMCACHE_NVME_POOL LMCACHE_NVME_SLOT_SIZE LMCACHE_NFS_POOL
 export NVME_DATA NFS_DATA
 export VLLM_MODEL TENSOR_PARALLEL_SIZE

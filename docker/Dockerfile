@@ -55,6 +55,10 @@ SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 ARG ROCM_ARCH
 RUN test -n "$ROCM_ARCH" || (echo "ERROR: ROCM_ARCH is not set" && exit 1)
 
+# Parallel compile jobs for the C++/HIP source builds below (LMCache, hipFile,
+# hsa-snoop). Defaults to $(nproc).
+ARG BUILD_JOBS=
+
 # vLLM wheel version on wheels.vllm.ai.  rocm723 = ROCm 7.2.3, Python 3.12 --
 # the only ROCm variant published for 0.25.0 (ABI-compatible with the 7.2.4 base).
 # Check https://wheels.vllm.ai/rocm/<version>/ for the variant tag on version bumps.
@@ -215,8 +219,8 @@ RUN --mount=type=cache,target=/root/.cache/pip \
         CXX=hipcc \
         BUILD_WITH_HIP=1 \
         ROCM_TARGET_LST=/etc/rocm_target.lst \
-        MAX_JOBS="$(nproc)" \
-        CMAKE_BUILD_PARALLEL_LEVEL="$(nproc)" \
+        MAX_JOBS="${BUILD_JOBS:-$(nproc)}" \
+        CMAKE_BUILD_PARALLEL_LEVEL="${BUILD_JOBS:-$(nproc)}" \
         python3 -m pip wheel --no-build-isolation --no-deps -w /wheels . && \
     uv pip install --system --no-cache /wheels/lmcache-*.whl
 
@@ -243,7 +247,7 @@ RUN --mount=type=cache,target=/root/.cache/uv \
           -DBUILD_TESTING=OFF \
           -DGPU_TARGETS="${ROCM_ARCH}" \
           -DCMAKE_HIP_ARCHITECTURES="${ROCM_ARCH}" .. && \
-    cmake --build . -j"$(nproc)" && \
+    cmake --build . -j"${BUILD_JOBS:-$(nproc)}" && \
     cpack -G DEB && \
     dpkg -i hipfile*deb && \
     cd ../python && \
@@ -286,6 +290,7 @@ RUN --mount=type=cache,target=/root/.cache/uv \
         AIS_PATH=/opt/rocm ROCM_PATH=/opt/rocm \
         NIXL_INSTALL_PREFIX=/opt/nixl \
         NIXL_BUILD_WHEEL=1 NIXL_WHEEL_DIR=/wheels \
+        BUILD_JOBS="${BUILD_JOBS}" \
         UV_SYSTEM_CERTS=1 \
         /tmp/nixl-scripts/build-nixl.sh
 
@@ -308,7 +313,7 @@ RUN git clone --depth 1 --branch "${HSA_SNOOP_REF}" "${HSA_SNOOP_GIT_URL}" /app/
     cmake -S /app/hsa-snoop -B /app/hsa-snoop/build -G Ninja \
         -DCMAKE_BUILD_TYPE=Release -DHSA_SNOOP_PROMETHEUS=ON \
         -DCMAKE_DISABLE_FIND_PACKAGE_hip=ON && \
-    cmake --build /app/hsa-snoop/build --parallel "$(nproc)" && \
+    cmake --build /app/hsa-snoop/build --parallel "${BUILD_JOBS:-$(nproc)}" && \
     cmake --install /app/hsa-snoop/build --prefix /usr/local && \
     test -x /usr/local/bin/hsa-snoop && \
     { /usr/local/bin/hsa-snoop --help 2>&1 || true; } | grep -q -- '--prometheus' \
