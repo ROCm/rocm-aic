@@ -6,9 +6,9 @@
 #
 #   Base image: rocm/dev-ubuntu-24.04:7.2.4-complete  (Ubuntu 24.04, ROCm 7.2.4, Python 3.12)
 #   vLLM:       installed from pre-built ROCm wheel (bundles its own torch/triton/flash-attn)
-#   LMCache:    LMCache/LMCache v0.5.1 release + 7 AMD patches
+#   LMCache:    LMCache/LMCache v0.5.2 release + 8 AMD patches
 #   hipFile:    ROCm/rocm-systems (GDS/P2PDMA NVMe transfers)
-#   NIXL:       ai-dynamo/nixl v1.3.1 release + nixl-rocm-ais-mt.patch (ROCm/HIP + AIS_MT)
+#   NIXL:       ai-dynamo/nixl v1.3.2 release + nixl-rocm-ais-mt.patch (ROCm/HIP + AIS_MT)
 #
 # Two compose services share this single image:
 #   lmcache — standalone lmcache-server (MP mode)
@@ -60,9 +60,9 @@ RUN test -n "$ROCM_ARCH" || (echo "ERROR: ROCM_ARCH is not set" && exit 1)
 ARG BUILD_JOBS=
 
 # vLLM wheel version on wheels.vllm.ai.  rocm723 = ROCm 7.2.3, Python 3.12 --
-# the only ROCm variant published for 0.25.0 (ABI-compatible with the 7.2.4 base).
+# the only ROCm variant published for 0.26.0 (ABI-compatible with the 7.2.4 base).
 # Check https://wheels.vllm.ai/rocm/<version>/ for the variant tag on version bumps.
-ARG VLLM_VERSION=0.25.0
+ARG VLLM_VERSION=0.26.0
 ARG VLLM_ROCM_VARIANT=rocm723
 
 # Pinned component revisions — bump together when validating a new combo.
@@ -72,16 +72,17 @@ ARG HIPFILE_SHA=6901b670c3e186f9c7052d6fc9748f0286536bdc
 # The patch is AIS_MT-only (it no longer relocates upstream GDS_MT), so it applies
 # cleanly on both v1.3.0 and v1.3.1 -- bump NIXL_REF and re-run the patch --check.
 ARG NIXL_GIT_URL=https://github.com/ai-dynamo/nixl.git
-ARG NIXL_REF=v1.3.1
+ARG NIXL_REF=v1.3.2
 
 # hsa-snoop: HSA AQL queue/dispatch snooper + Prometheus exporter (includes AIS metrics).
 ARG HSA_SNOOP_GIT_URL=https://github.com/sbates130272/hsa-snoop.git
 ARG HSA_SNOOP_REF=v1.0.0
 
-# LMCache: upstream repo, pinned to the v0.5.1 release tag.
-# All 7 AMD patches in patches/lmcache/ apply cleanly against this tag.
+# LMCache: upstream repo, pinned to the v0.5.2 release tag.
+# All 8 AMD patches in patches/lmcache/ apply cleanly against this tag.
+# Note: LMCache v0.5.2+ is required for vLLM >= 0.26.0.
 ARG LMCACHE_GIT_URL=https://github.com/LMCache/LMCache.git
-ARG LMCACHE_REF=v0.5.1
+ARG LMCACHE_REF=v0.5.2
 
 # ----- 0. Corporate CA (optional, Zscaler/AMD) --------------------------------
 # Pass a CA cert at build time via BuildKit secret to reach HTTPS through a

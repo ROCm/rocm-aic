@@ -6,9 +6,9 @@
 # "repo root" is this directory (no dependency on any parent checkout).
 REPO_ROOT := $(CURDIR)
 
-# ai-dynamo/nixl upstream main (2026-07-10); AIS_MT added via patches/nixl/.
+# ai-dynamo/nixl v1.3.2 release; AIS_MT added via patches/nixl/.
 NIXL_GIT_URL := https://github.com/ai-dynamo/nixl.git
-NIXL_SHA     := 644facf0eb3de14ec63c1d2831238f63cd03c0e0
+NIXL_SHA     := de8115ca97d3f8fb63a4988e9b4d4a038b2e0f72
 
 IMAGE_NAME ?= rocm-aic
 
