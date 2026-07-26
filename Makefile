@@ -8,7 +8,7 @@ REPO_ROOT := $(CURDIR)
 
 # ai-dynamo/nixl v1.3.2 release; AIS_MT added via patches/nixl/.
 NIXL_GIT_URL := https://github.com/ai-dynamo/nixl.git
-NIXL_SHA     := de8115ca97d3f8fb63a4988e9b4d4a038b2e0f72
+NIXL_SHA     := v1.3.2
 
 IMAGE_NAME ?= rocm-aic
 

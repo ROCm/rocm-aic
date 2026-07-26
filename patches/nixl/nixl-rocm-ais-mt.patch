@@ -7,7 +7,7 @@
 # reduced to the AIS_MT-only footprint: upstream's CUDA GDS_MT plugin is left
 # untouched where upstream keeps it (src/plugins/gds_mt) rather than relocated
 # under src/plugins/mt/gds. Decoupling from GDS_MT keeps this patch stable across
-# upstream churn -- it applies cleanly on both NIXL v1.3.0 and v1.3.1.
+# upstream churn -- it applies cleanly on both NIXL v1.3.1 and v1.3.2.
 #
 # Scope: meson HIP detection + AIS_MT registration + the new
 # src/plugins/mt/{ais,common} tree only. The GDS_MT relocation, and the
@@ -25,19 +25,19 @@
 #     src/plugins/meson.build src/plugins/mt
 #
 diff --git a/meson.build b/meson.build
-index 85fae88..02b3804 100644
+index 0b9c7d0..10ba75f 100644
 --- a/meson.build
 +++ b/meson.build
 @@ -29,7 +29,7 @@ if enable_plugins_opt != '' and disable_plugins_opt != ''
      error('Cannot specify both enable_plugins and disable_plugins options')
  endif
  
--all_plugins = ['UCX', 'LIBFABRIC', 'POSIX', 'OBJ', 'GDS', 'GDS_MT', 'MOONCAKE', 'HF3FS', 'GUSLI', 'GPUNETIO', 'UCCL', 'AZURE_BLOB', 'INFINIA', 'TELEMETRY_DOCA']
-+all_plugins = ['UCX', 'LIBFABRIC', 'POSIX', 'OBJ', 'GDS', 'GDS_MT', 'AIS_MT', 'MOONCAKE', 'HF3FS', 'GUSLI', 'GPUNETIO', 'UCCL', 'AZURE_BLOB', 'INFINIA', 'TELEMETRY_DOCA']
+-all_plugins = ['UCX', 'LIBFABRIC', 'POSIX', 'OBJ', 'GDS', 'GDS_MT', 'MOONCAKE', 'HF3FS', 'GUSLI', 'GPUNETIO', 'UCCL', 'AZURE_BLOB', 'INFINIA']
++all_plugins = ['UCX', 'LIBFABRIC', 'POSIX', 'OBJ', 'GDS', 'GDS_MT', 'AIS_MT', 'MOONCAKE', 'HF3FS', 'GUSLI', 'GPUNETIO', 'UCCL', 'AZURE_BLOB', 'INFINIA']
  
  enabled_plugins = {}
  
-@@ -324,6 +324,33 @@ else
+@@ -285,6 +285,33 @@ else
      cuda_wheel_dir = 'nixl_cu12'
  endif
  
@@ -72,10 +72,10 @@ index 85fae88..02b3804 100644
  # without otherwise affecting the build. Non-empty value wins over the
  # autodetected CUDA-major value above: e.g. -Dwheel_variant=rocm -> nixl_rocm.
 diff --git a/meson_options.txt b/meson_options.txt
-index eb875fc..c97e4f1 100644
+index d447843..e4bf861 100644
 --- a/meson_options.txt
 +++ b/meson_options.txt
-@@ -18,14 +18,16 @@ option('libfabric_path', type: 'string', value: '', description: 'Path to LIBFAB
+@@ -18,11 +18,13 @@ option('libfabric_path', type: 'string', value: '', description: 'Path to LIBFAB
  option('etcd_inc_path', type: 'string', value: '', description: 'Path to ETCD Headers')
  option('etcd_lib_path', type: 'string', value: '', description: 'Path to ETCD Libraries')
  option('disable_gds_backend', type : 'boolean', value : false, description : 'disable gds backend')
@@ -89,11 +89,8 @@ index eb875fc..c97e4f1 100644
  option('cudapath_inc', type: 'string', value: '', description: 'Include path for CUDA')
  option('cudapath_lib', type: 'string', value: '', description: 'Library path for CUDA')
  option('cudapath_stub', type: 'string', value: '', description: 'Extra Stub path for CUDA')
- option('nixl_cuda_arch_list', type: 'string', value: 'auto', description: 'Comma-separated CUDA SM targets (e.g. 90,100), or auto to select defaults (sm_80+ normally, sm_90+ when build_nixl_ep is enabled). Use a single target like 100 for faster single-GPU builds.')
- option('wheel_variant', type: 'string', value: '', description: 'Override wheel variant suffix (e.g. -Dwheel_variant=rocm yields nixl_rocm). Empty = autodetect from CUDA major version.')
- option('static_plugins', type: 'string', value: '', description: 'Plugins to be built-in, comma-separated')
 diff --git a/src/plugins/meson.build b/src/plugins/meson.build
-index ce7103c..aeeb9ad 100644
+index 055ed17..4b69d29 100644
 --- a/src/plugins/meson.build
 +++ b/src/plugins/meson.build
 @@ -68,6 +68,21 @@ if enabled_plugins.get('GDS_MT')
