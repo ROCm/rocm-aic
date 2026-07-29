@@ -186,7 +186,8 @@ EXPORT_TARBALL ?= $(CURDIR)/$(EXPORT_PREFIX)-$(_GEN_DATE)-$(_GIT_SHORT_REV)$(_GI
         ps shell-lmcache shell-vllm restart-vllm restart-lmcache cliff plot venv \
         monitoring-up monitoring-down monitoring-logs monitoring-build-exporters \
         dist-build dist-build-exporters dist-push smoke-test tiny-test install-ci-scripts cliff-submit cliff-short \
-        cliff-long-64k cliff-long-128k p2p-submit \
+        cliff-long-64k cliff-long-128k p2p-submit p2p-submit-single p2p-submit-nogpu \
+        p2p-local p2p-local-down \
         export _check_hf_token _prep_dirs _check_gds_slab
 
 .DEFAULT_GOAL := help
@@ -236,6 +237,13 @@ help:
 	@echo "    Scrapes every allocated node (rdma/nvme/node exporters + vLLM + LMCache) into"
 	@echo "      one Prometheus; TSDB kept at logs/<job-id>/tsdb.  Build the fabric exporter"
 	@echo "      images first with 'make dist-build-exporters'.  AIC_MONITORING=0 skips it."
+	@echo "  make p2p-submit-single sbatch the 1-node LMCache P2P plumbing smoke test (2 GPUs)"
+	@echo "    Validates coordinator/NIXL/KV-pull without a 2-node queue wait.  Same-host"
+	@echo "      peers use shm, so the IB columns are blank -- run p2p-submit for RDMA numbers."
+	@echo "  make p2p-submit-nogpu  sbatch the 2-node transport-only P2P benchmark (NO GPU)"
+	@echo "    LMCache's transfer-channel benchmark over the same nixl/UCX path: real RDMA"
+	@echo "      bandwidth + IB counters + payload verify, no model and no gres/gpu, so it"
+	@echo "      backfills onto busy nodes.  No TTFT -- that needs p2p-submit."
 	@echo "    Chain like the old run-this.sh:  make dist-build dist-push smoke-test"
 	@echo "    Pin a node: AIC_CLIFF_NODE=<node>   Narrow arms: AIC_CLIFF_ARMS=nvme (vram,nvme,gds)"
 	@echo "    Target another GFX: AIC_CLIFF_GFX=gfx950 (or AIC_CLIFF_CONSTRAINT=<site>&GFX90A)"
@@ -548,7 +556,10 @@ cliff-submit:
 # for anything you intend to report.  NOTE: the `rccl` partition groups the same
 # nodes but rejects this user ("Invalid account or account/partition
 # combination"), hence defq + a feature constraint.
-AIC_P2P_CONSTRAINT ?= SUPERMICRO&CX7&NVME
+# CX7&NVME is the real requirement (ConnectX-7 IB + local NVMe + shared NFS
+# $HOME).  Vendor is not: adding SUPERMICRO only shrinks the eligible pool and
+# lengthens the defq queue wait.
+AIC_P2P_CONSTRAINT ?= CX7&NVME
 AIC_P2P_NODES      ?=
 AIC_P2P_TIME       ?=
 AIC_P2P_EXCLUSIVE  ?=
@@ -570,6 +581,90 @@ endif
 p2p-submit:                    # sbatch the 2-node LMCache P2P (RDMA) benchmark
 	@cd "$(CURDIR)" && jobid=$$($(_P2P_SUBMIT)) && \
 	    echo "submitted p2p job $$jobid" && \
+	    echo "log:     $(CURDIR)/logs/$$jobid/p2p.out" && \
+	    echo "results: $(CURDIR)/logs/$$jobid/results.csv"
+
+# ---- Single-node LMCache P2P (plumbing smoke test) --------------------------
+# Both instances on ONE node: two containers, two GPUs, role B's ports shifted.
+# Exercises coordinator registration, lookup, the NIXL handshake, the KV pull
+# and the vLLM MP connector without waiting for a two-node allocation -- which
+# on this cluster is the difference between minutes and hours of queue time.
+#
+# It does NOT measure RDMA: same-host peers make UCX pick shm/self, so the job
+# blanks the IB columns rather than reporting a fabric number it did not take.
+# Run this first, confirm the stack works, then spend the 2-node allocation.
+#
+#   make p2p-submit-single                              # 2-GPU smoke test
+#   make p2p-submit-single AIC_P2P_PREFLIGHT_ONLY=1     # placement check only
+#   make p2p-submit-single AIC_P2P_ISL_LIST=4096        # single point
+AIC_P2P_SINGLE_GPUS ?= 2
+_P2P_SINGLE_ARGS := --nodes=1 --gres=gpu:$(AIC_P2P_SINGLE_GPUS) \
+    --constraint='$(AIC_P2P_CONSTRAINT)' \
+    $(if $(AIC_P2P_NODES),--nodelist=$(AIC_P2P_NODES),) \
+    --time=$(if $(AIC_P2P_TIME),$(AIC_P2P_TIME),01:30:00) \
+    $(if $(AIC_P2P_EXCLUSIVE),--exclusive,)
+
+p2p-submit-single:             # sbatch the 1-node LMCache P2P plumbing smoke test
+	@cd "$(CURDIR)" && jobid=$$(AIC_P2P_SINGLE_NODE=1 \
+	    sbatch --parsable $(_P2P_SINGLE_ARGS) .slurm/run-p2p.sbatch) && \
+	    echo "submitted single-node p2p job $$jobid" && \
+	    echo "log:     $(CURDIR)/logs/$$jobid/p2p.out" && \
+	    echo "results: $(CURDIR)/logs/$$jobid/results.csv"
+
+# ---- Local LMCache P2P (containers on this machine, no Slurm) ---------------
+# The simplest form of the test: N+1 containers on ONE host.  Checks that the
+# servers register with the coordinator and discover each other, then moves
+# verified bytes between two containers over the same nixl/UCX channel the P2P
+# path uses.  No GPU, no RDMA NIC, no NVMe, no scheduler -- just docker + RAM.
+#
+#   make p2p-local                 # 2 servers + coordinator
+#   make p2p-local N=4             # 4-way discovery
+#   make p2p-local ARGS=--see-only # discovery only, skip the transfer
+#   make p2p-local ARGS=--keep     # leave containers up; `make p2p-local-down`
+N ?= 2
+p2p-local:                     # run the whole LMCache P2P test locally in containers
+	@cd "$(CURDIR)" && AIC_IMAGE=$(IMAGE_NAME):latest \
+	    tools/p2p-local.sh -n $(N) $(ARGS)
+
+p2p-local-down:                # tear down a `make p2p-local ARGS=--keep` run
+	@cd "$(CURDIR)" && tools/p2p-local.sh --down
+
+# ---- No-GPU LMCache P2P (transport-only benchmark) --------------------------
+# Nothing in the KV path between two LMCache instances touches a GPU: L1 is host
+# DRAM, and a peer fetch is DRAM -> NIC -> DRAM over nixl/UCX.  The GPU in the
+# default mode is there solely so vLLM can run a model and produce a TTFT.  Drop
+# vLLM and this becomes a CPU job that still measures the real fabric.
+#
+# Uses LMCache's upstream `lmcache tool transfer-channel-benchmark`: one server
+# registers a host L1 buffer, one client reads objects out of it over the SAME
+# nixl/UCX channel the P2P path uses, with --verify checking the bytes.  The job
+# brackets each run with the IB port counters, so a shm/TCP fallback cannot pass
+# itself off as RDMA.
+#
+#   measures: RDMA read bandwidth, latency, payload correctness, IB counters
+#   does not: TTFT, cold-vs-warm speedup, the vLLM MP connector path
+#
+# No --gres=gpu, so Slurm backfills it onto the CPU side of a busy GPU node
+# instead of queueing behind whole-GPU allocations.  NVMe is not needed either
+# (pure DRAM), hence the looser constraint.
+#
+#   make p2p-submit-nogpu                                  # 2-node, real RDMA
+#   make p2p-submit-nogpu AIC_P2P_NOGPU_CONSTRAINT='CX7'   # widen the pool
+#   make p2p-submit-nogpu AIC_P2P_BENCH_OBJ_LIST=1MB,64MB  # narrow the sweep
+AIC_P2P_NOGPU_CONSTRAINT ?= CX7&IB
+AIC_P2P_NOGPU_CPUS       ?= 8
+AIC_P2P_NOGPU_MEM        ?= 64G
+_P2P_NOGPU_ARGS := --nodes=2 --ntasks-per-node=1 --gres=none \
+    --cpus-per-task=$(AIC_P2P_NOGPU_CPUS) --mem=$(AIC_P2P_NOGPU_MEM) \
+    --constraint='$(AIC_P2P_NOGPU_CONSTRAINT)' \
+    $(if $(AIC_P2P_NODES),--nodelist=$(AIC_P2P_NODES),) \
+    --time=$(if $(AIC_P2P_TIME),$(AIC_P2P_TIME),01:00:00) \
+    $(if $(AIC_P2P_EXCLUSIVE),--exclusive,)
+
+p2p-submit-nogpu:              # sbatch the 2-node transport-only P2P benchmark (no GPU)
+	@cd "$(CURDIR)" && jobid=$$(AIC_P2P_NO_GPU=1 \
+	    sbatch --parsable $(_P2P_NOGPU_ARGS) .slurm/run-p2p.sbatch) && \
+	    echo "submitted no-gpu p2p job $$jobid" && \
 	    echo "log:     $(CURDIR)/logs/$$jobid/p2p.out" && \
 	    echo "results: $(CURDIR)/logs/$$jobid/results.csv"
 
