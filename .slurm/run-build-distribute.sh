@@ -160,7 +160,7 @@ AIC_DAY_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 # Infinity-Storage hardware -- if hipFile fails to build for them, narrow this
 # to the CDNA set "gfx90a;gfx942;gfx950".  Override via AIC_ROCM_ARCH.
 AIC_ROCM_ARCH="${AIC_ROCM_ARCH:-gfx90a;gfx942;gfx950;gfx1100;gfx1101;gfx1150;gfx1151;gfx1200;gfx1201}"
-AIC_IMAGE="${AIC_IMAGE:-rocm-aic:latest}"
+AIC_IMAGE="${AIC_IMAGE:-${IMAGE_NAME:-rocm-aic}:${IMAGE_TAG:-7.14-latest}}"
 AIC_IMAGE_DIR="${AIC_IMAGE_DIR:-/scratch/${USER}/images}"
 AIC_SPUR_CLUSTER="${AIC_SPUR_CLUSTER:-0}"
 AIC_SPUR_CONTROLLER="${AIC_SPUR_CONTROLLER:-${SPUR_CONTROLLER_ADDR:?set SPUR_CONTROLLER_ADDR or AIC_SPUR_CONTROLLER before using AIC_SPUR_CLUSTER=1}}"
@@ -549,7 +549,9 @@ if [ "\${_rc[1]}" -ne 0 ]; then
     echo "[build] ERROR: compressor exited \${_rc[1]}; tarball may be corrupt" >&2; exit 1
 fi
 if [ "\${_rc[0]}" -ne 0 ]; then
-    echo "[build] WARN: docker buildx exited \${_rc[0]} (cache lock race?); tarball written, continuing"
+    echo "[build] ERROR: docker buildx exited \${_rc[0]}; build failed (patch apply error or Dockerfile issue)" >&2
+    rm -f "\${tmp}"
+    exit 1
 fi
 mv -f "\${tmp}" "${tarball}"
 echo "[build] saved \$(du -h "${tarball}" | cut -f1) -> ${tarball}"

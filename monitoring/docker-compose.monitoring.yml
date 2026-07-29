@@ -74,7 +74,7 @@ services:
   # running, or the two will clash on :9100.
   # ---------------------------------------------------------------------------
   node-exporter:
-    image: ${AIC_NODE_EXPORTER_IMAGE:-quay.io/prometheus/node-exporter:v1.8.2}
+    image: ${AIC_NODE_EXPORTER_IMAGE:-quay.io/prometheus/node-exporter:v1.12.1}
     container_name: aic-node-exporter
     profiles: ["exporters"]
     network_mode: host
@@ -95,7 +95,7 @@ services:
   # amd-metrics-exporter is NOT already running, or they clash on :5000.
   # ---------------------------------------------------------------------------
   amdgpu-exporter:
-    image: ${AIC_AMDGPU_EXPORTER_IMAGE:-rocm/device-metrics-exporter:v1.4.2}
+    image: ${AIC_AMDGPU_EXPORTER_IMAGE:-rocm/device-metrics-exporter:v1.5.1}
     container_name: aic-amdgpu-exporter
     profiles: ["exporters"]
     network_mode: host

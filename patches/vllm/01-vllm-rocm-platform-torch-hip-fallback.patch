@@ -1,0 +1,38 @@
+# vLLM v0.25.1: ROCm platform detection falls back to torch.version.hip
+#
+# amdsmi_get_processor_handles() returns 0 devices when torch has already
+# initialised the HIP runtime (which it does during import).  vLLM imports
+# torch before rocm_platform_plugin() runs, so the amdsmi probe always fails
+# with AMD ROCm wheels (torch.cuda.device_count() or any GPU op triggers it).
+#
+# Fix: after the amdsmi finally block, if amdsmi found 0 handles but
+# torch.version.hip is set, accept that as confirmation of a ROCm build.
+# torch.version.hip is set at wheel build time ("7.14.60850" etc.) and is
+# independent of runtime device state, so it is a reliable signal.
+#
+--- a/vllm/platforms/__init__.py
++++ b/vllm/platforms/__init__.py
+@@ -111,6 +111,7 @@
+     is_rocm = False
+     logger.debug("Checking if ROCm platform is available.")
+     try:
++        import torch
+         import amdsmi
+ 
+         amdsmi.amdsmi_init()
+@@ -121,6 +122,15 @@
+             else:
+                 logger.debug("ROCm platform is not available because no GPU is found.")
+         finally:
++            # If amdsmi found 0 handles but torch.version.hip is set,
++            # the HIP runtime was initialised before amdsmi_init() ran
++            # (torch is always imported first in vLLM).  Trust
++            # torch.version.hip as authoritative for ROCm builds.
++            if not is_rocm and getattr(torch.version, "hip", None):
++                is_rocm = True
++                logger.debug(
++                    "ROCm platform confirmed via torch.version.hip=%s",
++                    torch.version.hip)
+             amdsmi.amdsmi_shut_down()
+     except Exception as e:
+         logger.debug("ROCm platform is not available because: %s", str(e))
