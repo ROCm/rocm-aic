@@ -8,6 +8,7 @@ Ansible
 Benchmarking
 BuildKit
 Config
+ConnectX
 Dockerfile
 Dockerfiles
 GDS
@@ -21,6 +22,7 @@ HSA
 HTTPS
 HuggingFace
 Huggingface
+IB
 InfiniBand
 JSON
 KV
@@ -50,6 +52,7 @@ ROCR
 ROCm
 SVG
 Slurm
+TCP
 TSDB
 UCX
 USAGE
@@ -111,6 +114,7 @@ passwordless
 png
 posix
 pre
+prefill
 prometheus
 rdma
 recomputation
@@ -121,6 +125,7 @@ sbates
 slurm
 sublicense
 sudo
+teardown
 tm
 tmp
 userspace

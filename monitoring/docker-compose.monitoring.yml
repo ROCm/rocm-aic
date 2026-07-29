@@ -33,6 +33,9 @@
 #   AIC_PROM_PORT        — Prometheus web/listen port (default: 9090)
 #   AIC_PROM_RETENTION   — TSDB retention (default: 90d)
 #   AIC_PROM_IMAGE       — Prometheus image (default: prom/prometheus:v2.55.1)
+#   AIC_PROM_CONFIG      — scrape config to mount (default: ./prometheus/prometheus.yml).
+#                          Point at a generated file for multi-node scraping.
+#   AIC_PROM_RULES       — rules dir to mount (default: ./prometheus/rules)
 #   AIC_NODE_EXPORTER_IMAGE — node-exporter image (exporters profile)
 #   AIC_AMDGPU_EXPORTER_IMAGE — AMD device-metrics-exporter image (exporters profile)
 #   AIC_HSA_SNOOP_IMAGE / IMAGE_NAME — image carrying hsa-snoop (default: rocm-aic)
@@ -57,8 +60,13 @@ services:
     user: "${PROM_UID:-65534}:${PROM_GID:-65534}"
     restart: unless-stopped
     volumes:
-      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
-      - ./prometheus/rules:/etc/prometheus/rules:ro
+      # AIC_PROM_CONFIG lets a caller substitute a GENERATED scrape config for the
+      # checked-in single-node one.  The multi-node p2p job (.slurm/run-p2p.sbatch)
+      # uses this: its targets are <node-ip>:<port> across every allocated node,
+      # not localhost, and each carries node/role labels -- so one Prometheus
+      # covers the whole allocation.  Default keeps existing callers unchanged.
+      - ${AIC_PROM_CONFIG:-./prometheus/prometheus.yml}:/etc/prometheus/prometheus.yml:ro
+      - ${AIC_PROM_RULES:-./prometheus/rules}:/etc/prometheus/rules:ro
       - ${AIC_METRICS_DIR:?set AIC_METRICS_DIR to the (NFS) TSDB dir}:/prometheus
     command:
       - --config.file=/etc/prometheus/prometheus.yml

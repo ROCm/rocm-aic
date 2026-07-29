@@ -186,7 +186,7 @@ EXPORT_TARBALL ?= $(CURDIR)/$(EXPORT_PREFIX)-$(_GEN_DATE)-$(_GIT_SHORT_REV)$(_GI
         ps shell-lmcache shell-vllm restart-vllm restart-lmcache cliff plot venv \
         monitoring-up monitoring-down monitoring-logs monitoring-build-exporters \
         dist-build dist-build-exporters dist-push smoke-test tiny-test install-ci-scripts cliff-submit cliff-short \
-        cliff-long-64k cliff-long-128k \
+        cliff-long-64k cliff-long-128k p2p-submit \
         export _check_hf_token _prep_dirs _check_gds_slab
 
 .DEFAULT_GOAL := help
@@ -230,6 +230,12 @@ help:
 	@echo "  make cliff-short       sbatch a 1-point cliff (concur=1, 1 iter) to smoke-test the flow"
 	@echo "  make cliff-long-64k    sbatch a 64k-ISL YaRN(x2) 3-arm sweep (pools sized for the working set)"
 	@echo "  make cliff-long-128k   sbatch a 128k-ISL YaRN(x4) 3-arm sweep (extreme; big DRAM/slab pools)"
+	@echo "  make p2p-submit        sbatch the 2-node LMCache P2P (cross-node KV over RDMA) benchmark"
+	@echo "    Whole nodes: AIC_P2P_EXCLUSIVE=1   Pin the pair: AIC_P2P_NODES=<nodeA>,<nodeB>"
+	@echo "    Narrow the sweep: AIC_P2P_ISL_LIST=4096,16384   Needs 2 nodes on ONE IB fabric"
+	@echo "    Scrapes every allocated node (rdma/nvme/node exporters + vLLM + LMCache) into"
+	@echo "      one Prometheus; TSDB kept at logs/<job-id>/tsdb.  Build the fabric exporter"
+	@echo "      images first with 'make dist-build-exporters'.  AIC_MONITORING=0 skips it."
 	@echo "    Chain like the old run-this.sh:  make dist-build dist-push smoke-test"
 	@echo "    Pin a node: AIC_CLIFF_NODE=<node>   Narrow arms: AIC_CLIFF_ARMS=nvme (vram,nvme,gds)"
 	@echo "    Target another GFX: AIC_CLIFF_GFX=gfx950 (or AIC_CLIFF_CONSTRAINT=<site>&GFX90A)"
@@ -526,6 +532,46 @@ cliff-submit:
 	    $(if $(AIC_CLIFF_TIME),--time=$(AIC_CLIFF_TIME),))) && \
 	    echo "submitted cliff job $$jobid" && \
 	    echo "log: $(CURDIR)/logs/$$jobid/cliff.out"
+
+# ---- Two-node LMCache P2P (cross-node KV over RDMA) -------------------------
+# Submits .slurm/run-p2p.sbatch on TWO nodes of the same InfiniBand fabric and
+# measures cold-prefill vs peer-fetch TTFT, with per-port IB counter deltas as
+# proof the KV actually crossed the wire over RDMA rather than TCP.
+#
+#   make p2p-submit                                   # default cx6x MI300X pool
+#   make p2p-submit AIC_P2P_EXCLUSIVE=1               # whole nodes (publishable)
+#   make p2p-submit AIC_P2P_NODES=nodeA,nodeB         # pin the pair
+#   make p2p-submit AIC_P2P_ISL_LIST=4096,16384       # narrow the sweep
+#
+# The cx6x nodes are shared by default (Slurm state `mix`); a co-tenant both
+# perturbs the timings and can hold the fixed ports, so use AIC_P2P_EXCLUSIVE=1
+# for anything you intend to report.  NOTE: the `rccl` partition groups the same
+# nodes but rejects this user ("Invalid account or account/partition
+# combination"), hence defq + a feature constraint.
+AIC_P2P_CONSTRAINT ?= SUPERMICRO&CX7&NVME
+AIC_P2P_NODES      ?=
+AIC_P2P_TIME       ?=
+AIC_P2P_EXCLUSIVE  ?=
+_P2P_SBATCH_ARGS := --constraint='$(AIC_P2P_CONSTRAINT)' \
+    $(if $(AIC_P2P_NODES),--nodelist=$(AIC_P2P_NODES),) \
+    $(if $(AIC_P2P_TIME),--time=$(AIC_P2P_TIME),) \
+    $(if $(AIC_P2P_EXCLUSIVE),--exclusive,)
+ifeq ($(AIC_SPUR_CLUSTER),1)
+_P2P_SUBMIT = SPUR_CONTROLLER_ADDR=$(AIC_SPUR_CONTROLLER) sbatch \
+    --partition=amd-spur --constraint= \
+    $(if $(AIC_P2P_NODES),--nodelist=$(AIC_P2P_NODES),) \
+    $(if $(AIC_P2P_TIME),--time=$(AIC_P2P_TIME),) \
+    $(if $(AIC_P2P_EXCLUSIVE),--exclusive,) \
+    .slurm/run-p2p.sbatch 2>&1 | tee /dev/stderr | grep -oE '[0-9]+$$' | tail -1
+else
+_P2P_SUBMIT = sbatch --parsable $(_P2P_SBATCH_ARGS) .slurm/run-p2p.sbatch
+endif
+
+p2p-submit:                    # sbatch the 2-node LMCache P2P (RDMA) benchmark
+	@cd "$(CURDIR)" && jobid=$$($(_P2P_SUBMIT)) && \
+	    echo "submitted p2p job $$jobid" && \
+	    echo "log:     $(CURDIR)/logs/$$jobid/p2p.out" && \
+	    echo "results: $(CURDIR)/logs/$$jobid/results.csv"
 
 # Fast setup check: a single concurrency point, one timed iteration, all 3 arms.
 # Respects user overrides of BENCH_CONCUR / BENCH_ITERS.
