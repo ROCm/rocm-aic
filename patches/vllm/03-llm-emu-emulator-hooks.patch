@@ -1,0 +1,340 @@
+From: AMD AIC Team <aic@amd.com>
+Date: 2026-07-29
+Subject: [PATCH] Add llm-emu emulator hooks to vLLM v0.26.0
+
+Wire the vllm_emulator package (from vllm/vllm_emulator/ in the AIC repo)
+into three vLLM source files so that:
+
+  1. vllm/v1/engine/core.py      — StepCycleTracer init + per-step record
+                                   points; emulator-None guard in step paths
+  2. vllm/v1/executor/uniproc_executor.py — executor-level hook that short-
+                                   circuits execute_model/sample_tokens with
+                                   a timer-resolved Future when
+                                   VLLM_EMULATOR_EXECUTOR_HOOK=1
+  3. vllm/v1/core/sched/scheduler.py — cosmetic blank-line shim (no logic)
+
+All changes are gated on environment variables and have zero runtime cost
+when the emulator is not enabled.
+
+Ported from llm-emu vllm_patches/llm-emu-vllm-0.18.1.patch
+(upstream commit a26e8dc7f0, tag ~v0.18.1) to vLLM v0.26.0.
+
+diff --git a/vllm/v1/core/sched/scheduler.py b/vllm/v1/core/sched/scheduler.py
+--- a/vllm/v1/core/sched/scheduler.py
++++ b/vllm/v1/core/sched/scheduler.py
+@@ -1,6 +1,7 @@
+ # SPDX-License-Identifier: Apache-2.0
+ # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
+ import itertools
++import os
+ import time
+ from collections import defaultdict, deque
+ from collections.abc import Iterable
+@@ -393,6 +394,8 @@ class Scheduler(SchedulerInterface):
+                 + request.num_output_placeholders
+                 - request.num_computed_tokens
+             )
++
++
+             if 0 < self.scheduler_config.long_prefill_token_threshold < num_new_tokens:
+                 num_new_tokens = self.scheduler_config.long_prefill_token_threshold
+             num_new_tokens = min(num_new_tokens, token_budget)
+diff --git a/vllm/v1/engine/core.py b/vllm/v1/engine/core.py
+--- a/vllm/v1/engine/core.py
++++ b/vllm/v1/engine/core.py
+@@ -210,6 +210,20 @@ class EngineCore:
+
+         self.aborts_queue = queue.Queue[list[str]]()
+
++        # Optional emulator step-cycle tracer (for profile capture and
++        # emulation mode timing instrumentation).
++        self._emulator_step_tracer = None
++        try:
++            import os
++            if os.environ.get("VLLM_EMULATOR_TRACE_STEP_CYCLE", "").lower() in ("1", "true", "yes"):
++                from vllm_emulator.profiler.trace_profiler import StepCycleTracer
++                self._emulator_step_tracer = StepCycleTracer(
++                    os.environ.get("VLLM_EMULATOR_STEP_TRACE_OUTPUT",
++                                   "/tmp/emulator_step_trace.jsonl")
++                )
++                self._emulator_step_tracer.write_header(vllm_config)
++        except ImportError:
++            pass
++
+         self._idle_state_callbacks: list[Callable] = []
+
+         # Mark the startup heap as static so that it's ignored by GC.
+@@ -398,6 +412,8 @@ class EngineCore:
+         if not self.scheduler.has_requests():
+             return {}, False
+         scheduler_output = self.scheduler.schedule()
++        # Store for step cycle tracer (batch info capture)
++        self._last_scheduler_output = scheduler_output
+         future = self.model_executor.execute_model(scheduler_output, non_block=True)
+         grammar_output = self.scheduler.get_grammar_bitmask(scheduler_output)
+         with (
+@@ -406,7 +422,12 @@ class EngineCore:
+         ):
+             model_output = future.result()
+             if model_output is None:
++                # Empty batch in emulator mock mode
++                if scheduler_output.total_num_scheduled_tokens == 0:
++                    return {}, False
+                 model_output = self.model_executor.sample_tokens(grammar_output)
++                if model_output is None:
++                    return {}, False
+
+         # Before processing the model output, process any aborts that happened
+         # during the model execution.
+@@ -455,9 +476,17 @@ class EngineCore:
+         model_executed = False
+         deferred_scheduler_output = None
+         if self.scheduler.has_requests():
++            _t_sched = time.perf_counter()
+             scheduler_output = self.scheduler.schedule()
++            _t_sched_end = time.perf_counter()
++            # Store for step cycle tracer (batch info capture)
++            self._last_scheduler_output = scheduler_output
+             with self.log_error_detail(scheduler_output):
++                _t_exec = time.perf_counter()
+                 exec_future = self.model_executor.execute_model(
+                     scheduler_output, non_block=True
+                 )
++                _t_exec_end = time.perf_counter()
+             if self.is_ec_consumer:
+                 model_executed = scheduler_output.total_num_scheduled_tokens > 0
+
+@@ -474,9 +503,11 @@ class EngineCore:
+                     grammar_output = self.scheduler.get_grammar_bitmask(
+                         scheduler_output
+                     )
++                    _t_sample = time.perf_counter()
+                     future = self.model_executor.sample_tokens(
+                         grammar_output, non_block=True
+                     )
++                    _t_sample_end = time.perf_counter()
+                 else:
+                     # We need to defer sampling until we have processed the model output
+                     # from the prior step.
+@@ -500,10 +531,16 @@ class EngineCore:
+
+         # Block until the next result is available.
+         future, scheduler_output, exec_model_fut = batch_queue.pop()
++        _t_wait_start = time.perf_counter()
+         with (
+             self.log_error_detail(scheduler_output),
+             self.log_iteration_details(scheduler_output),
+         ):
+             model_output = future.result()
+             if model_output is None:
++                # Empty batch in emulator mock mode
++                if scheduler_output.total_num_scheduled_tokens == 0:
++                    return {}, False
+                 # None from sample_tokens() implies that the original execute_model()
+                 # call failed - raise that exception.
+                 exec_model_fut.result()
+                 raise RuntimeError("unexpected error")
++        _t_wait_end = time.perf_counter()
+
+         # Before processing the model output, process any aborts that happened
+         # during the model execution.
+         self._process_aborts_queue()
++        _t_update_start = time.perf_counter()
+         engine_core_outputs = self.scheduler.update_from_output(
+             scheduler_output, model_output
+         )
++        _t_update_end = time.perf_counter()
++
++        # Record detailed timing for step_cycle tracer
++        _step_tracer = getattr(self, '_emulator_step_tracer', None)
++        if _step_tracer is not None:
++            _detail = {
++                "wait_ms": round((_t_wait_end - _t_wait_start) * 1000, 2),
++                "update_ms": round((_t_update_end - _t_update_start) * 1000, 2),
++            }
++            try:
++                _detail["sched_ms"] = round((_t_sched_end - _t_sched) * 1000, 2)
++                _detail["exec_ms"] = round((_t_exec_end - _t_exec) * 1000, 2)
++                _detail["sample_ms"] = round((_t_sample_end - _t_sample) * 1000, 2)
++            except NameError:
++                pass
++            _step_tracer._pending_detail = _detail
+
+         # NOTE(nick): We can either handle the deferred tasks here or save
+@@ -1168,11 +1215,60 @@ class EngineCoreProc(EngineCore):
+
+     def run_busy_loop(self):
+         """Core busy loop of the EngineCore."""
++        # Loop timing instrumentation — resets at benchmark_start marker
++        _loop_tracer = getattr(self, '_emulator_step_tracer', None)
++        _loop_count = 0
++        _bench_count = 0
++        _bench_input_us = 0.0
++        _bench_step_us = 0.0
++        _bench_between_us_total = 0.0
++        _bench_started = False
++        _loop_last_step_end = time.perf_counter()
++
+         while self._handle_shutdown():
++            _lt0 = time.perf_counter()
++            _between_us = (_lt0 - _loop_last_step_end) * 1e6
+             # 1) Poll the input queue until there is work to do.
+             self._process_input_queue()
++            _lt1 = time.perf_counter()
+             # 2) Step the engine core and return the outputs.
+             self._process_engine_step()
++            _lt2 = time.perf_counter()
++            _loop_last_step_end = _lt2
++
++            _loop_count += 1
++
++            # Detect benchmark start via step_tracer marker
++            if _loop_tracer and not _bench_started:
++                trace_path = getattr(_loop_tracer, '_output_path', None)
++                if trace_path and _loop_count % 100 == 0:
++                    try:
++                        size = os.path.getsize(str(trace_path))
++                        # Marker written = benchmark started
++                        # Reset counters after sufficient warmup
++                        if size > 100000 and _loop_count > 1000:
++                            _bench_started = True
++                            _bench_count = 0
++                            _bench_input_us = 0.0
++                            _bench_step_us = 0.0
++                            _bench_between_us_total = 0.0
++                            print(f"[LoopTiming] Benchmark detected at iter={_loop_count}, resetting counters")
++                    except Exception:
++                        pass
++
++            if _bench_started:
++                _bench_count += 1
++                _bench_input_us += (_lt1 - _lt0) * 1e6
++                _bench_step_us += (_lt2 - _lt1) * 1e6
++                _bench_between_us_total += _between_us
++
++                if _loop_tracer and _bench_count % 1000 == 0 and _bench_count > 0:
++                    ai = _bench_input_us / _bench_count / 1000
++                    ast = _bench_step_us / _bench_count / 1000
++                    ab = _bench_between_us_total / _bench_count / 1000
++                    print(f"[LoopTiming:bench] n={_bench_count} "
++                          f"input={ai:.2f}ms step={ast:.2f}ms "
++                          f"between={ab:.3f}ms total={ai+ast+ab:.2f}ms")
+
+         raise SystemExit
+
+@@ -1257,14 +1353,54 @@ class EngineCoreProc(EngineCore):
+     def _process_engine_step(self) -> bool:
+         """Called only when there are unfinished local requests."""
+
++        # Optional: trace full step cycle time (for emulator calibration)
++        _step_t0 = None
++        _step_tracer = getattr(self, '_emulator_step_tracer', None)
++        if _step_tracer is not None:
++            _step_t0 = time.perf_counter()
++
+         # Step the engine core.
+         outputs, model_executed = self.step_fn()
++
+         # Put EngineCoreOutputs into the output queue.
++        _t_queue_start = time.perf_counter()
+         for output in outputs.items() if outputs else ():
+             self.output_queue.put_nowait(output)
++        _t_queue_end = time.perf_counter()
++
+         # Post-step hook.
+         self.post_step(model_executed)
+
++        # Optional: record full step cycle time with batch context
++        if _step_t0 is not None and model_executed:
++            step_us = (time.perf_counter() - _step_t0) * 1e6
++            so = getattr(self, '_last_scheduler_output', None)
++            if so is not None and so.total_num_scheduled_tokens > 0:
++                new_req_ids = {r.req_id for r in so.scheduled_new_reqs}
++                num_decode = sum(
++                    1 for rid in so.num_scheduled_tokens
++                    if rid not in new_req_ids
++                )
++                # sum_kv: total KV-cache depth across scheduled cached
++                # (decode + chunked-continuation) requests.
++                cached = so.scheduled_cached_reqs
++                sum_kv = sum(cached.num_computed_tokens) if cached.num_reqs > 0 else 0
++                _step_tracer.set_batch_info(
++                    total_tokens=so.total_num_scheduled_tokens,
++                    num_new_reqs=len(so.scheduled_new_reqs),
++                    num_decode_seqs=num_decode,
++                    sum_kv=sum_kv,
++                )
++                # Add detailed timing if available
++                detail = getattr(_step_tracer, '_pending_detail', None)
++                if detail:
++                    detail["queue_ms"] = round((_t_queue_end - _t_queue_start) * 1000, 2)
++                    detail["has_output"] = outputs is not None and len(outputs) > 0
++                    _step_tracer.set_extra_fields(detail)
++                    _step_tracer._pending_detail = None
++            _step_tracer.record_step(step_us)
++
+         # If no model execution happened but there are waiting requests
+         # (e.g., WAITING_FOR_REMOTE_KVS), yield the GIL briefly to allow
+         # background threads (like NIXL handshake) to make progress.
+diff --git a/vllm/v1/executor/uniproc_executor.py b/vllm/v1/executor/uniproc_executor.py
+--- a/vllm/v1/executor/uniproc_executor.py
++++ b/vllm/v1/executor/uniproc_executor.py
+@@ -40,6 +40,18 @@ class UniProcExecutor(Executor):
+                 max_workers=1, thread_name_prefix="WorkerAsyncOutput"
+             )
+
++        # Executor-level emulator hook (experimental, opt-in).
++        # Disabled by default — the worker-level hook is more accurate for
++        # online serving. Enable with VLLM_EMULATOR_EXECUTOR_HOOK=1.
++        self._emulator_executor_hook = None
++        if os.environ.get("VLLM_EMULATOR_EXECUTOR_HOOK", "").lower() in ("1", "true"):
++            try:
++                from vllm_emulator.hooks.executor_hook import get_executor_hook
++                self._emulator_executor_hook = get_executor_hook()
++            except ImportError:
++                pass
++
+         is_eep_new_worker = envs.VLLM_ELASTIC_EP_SCALE_UP_LAUNCH
+         self.driver_worker.init_worker(all_kwargs=[kwargs])
+         if not is_eep_new_worker:
+@@ -100,6 +112,16 @@ class UniProcExecutor(Executor):
+     def execute_model(  # type: ignore[override]
+         self, scheduler_output: SchedulerOutput, non_block: bool = False
+     ) -> ModelRunnerOutput | None | Future[ModelRunnerOutput | None]:
++        # Emulator fast path: return a timer-based Future that resolves
++        # after predicted GPU time. This preserves the engine core's
++        # batch queue pipelining — the scheduler runs while the Future
++        # is pending, exactly like real GPU/CPU overlap.
++        emu_hook = getattr(self, '_emulator_executor_hook', None)
++        if emu_hook is not None and emu_hook.is_enabled:
++            if emu_hook.should_use_oracle(scheduler_output):
++                return emu_hook.create_delayed_future(
++                    scheduler_output, non_block=non_block)
++
+         output = self.collective_rpc(
+             "execute_model",
+             args=(scheduler_output,),
+@@ -115,6 +137,16 @@ class UniProcExecutor(Executor):
+     def sample_tokens(  # type: ignore[override]
+         self, grammar_output: GrammarOutput | None, non_block: bool = False
+     ) -> ModelRunnerOutput | None | Future[ModelRunnerOutput | None]:
++        # Emulator: return the pending timer Future from execute_model.
++        # The Future resolves after the profiled GPU time, keeping the
++        # async scheduler's num_output_placeholders tracking correct.
++        emu_hook = getattr(self, '_emulator_executor_hook', None)
++        if emu_hook is not None and emu_hook.is_enabled and emu_hook.has_pending_future():
++            if non_block:
++                return emu_hook.get_sample_future()
++            else:
++                return emu_hook.get_sample_future().result()
++
+         return self.collective_rpc(
+             "sample_tokens",
+             args=(grammar_output,),
+@@ -133,6 +165,9 @@ class UniProcExecutor(Executor):
+     def shutdown(self) -> None:
+         if worker := self.driver_worker:
+             worker.shutdown()
++        emu_hook = getattr(self, '_emulator_executor_hook', None)
++        if emu_hook is not None:
++            emu_hook.shutdown()

@@ -236,6 +236,16 @@ RUN --mount=type=cache,target=/root/.cache/pip \
         pip3 wheel --no-build-isolation --no-deps --no-cache-dir -w /wheels . && \
     pip3 install --no-cache-dir /wheels/vllm-*.whl
 
+# ----- 3b. vllm_emulator (llm-emu profile-driven emulation plugin) -----------
+# Clone llm-emu at the pinned commit and install vllm_emulator as a
+# vllm.platform_plugins entry point.  --no-deps skips the pinned vllm==0.18.1
+# dependency from the upstream pyproject.toml; we already have v0.26.0 above.
+ARG LLM_EMU_GIT_URL=https://github.com/AKafakA/llm-emu.git
+ARG LLM_EMU_REF=3e87da6
+RUN git clone "${LLM_EMU_GIT_URL}" /app/llm-emu && \
+    git -C /app/llm-emu checkout "${LLM_EMU_REF}" && \
+    pip3 install --no-cache-dir --no-build-isolation --no-deps /app/llm-emu/
+
 # ----- 4. LMCache (upstream release + AMD patches) ---------------------------
 # Shallow-clone the pinned release tag directly (no history/other branches).
 RUN git clone --depth 1 --branch "${LMCACHE_REF}" "${LMCACHE_GIT_URL}" /app/LMCache
