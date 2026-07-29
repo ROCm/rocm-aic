@@ -66,6 +66,19 @@
 #   VLM_KV_CACHE_DTYPE         — vllm --kv-cache-dtype (default: fp8)
 #   VLLM_EXTRA_ARGS            — extra vllm args appended verbatim (e.g. --hf-overrides ...)
 #   TENSOR_PARALLEL_SIZE       — vllm --tensor-parallel-size (default: 1)
+#
+# Emulation mode (profile-driven, no GPU required):
+#   docker compose --profile emulate up vllm-emulator
+#
+# Required env (emulation mode):
+#   VLLM_EMULATOR_PROFILE_PACK — path to a profile pack JSON (e.g. from llm-emu profiling tools)
+#   VLLM_MODEL                 — model name/path to serve (must match the profile pack)
+#
+# Optional env (emulation mode):
+#   VLLM_EMULATOR_MODE         — realtime (default, wall-clock sleep) or accelerated (instant)
+#   VLLM_EMULATOR_ORACLE_K     — kNN neighbour count or "auto" (default: 1)
+#   EMU_PROFILE_PACK_HOST      — host path to profile pack dir (mounted at /profiles)
+#   HF_HOME                    — host HF cache dir (default: ~/.cache/huggingface)
 
 services:
 
@@ -310,3 +323,66 @@ services:
         # required:false lets the plain baseline run `vllm` alone (lmcache not in
         # the active profile) without a dependency error (needs Compose v2.20+).
         required: false
+
+  # ---------------------------------------------------------------------------
+  # vllm-emulator: profile-driven emulation mode (no GPU required)
+  #
+  # Runs the standard vLLM OpenAI API server with the llm-emu executor hook
+  # (VLLM_EMULATOR_EXECUTOR_HOOK=1 + VLLM_EMULATOR_ENABLE_ORACLE=1). The hook
+  # intercepts execute_model() and returns timer-resolved Futures sampled from
+  # the offline profile pack instead of running real GPU kernels, so the full
+  # scheduling / KV-cache / HTTP stack runs unmodified.
+  #
+  # No /dev/kfd or /dev/dri devices needed — CPU-only nodes work fine.
+  #
+  # Usage:
+  #   docker compose --profile emulate up vllm-emulator
+  #
+  # Required env:
+  #   VLLM_EMULATOR_PROFILE_PACK — absolute container path to the profile pack JSON
+  #                                 (mount the host dir via EMU_PROFILE_PACK_HOST)
+  #   VLLM_MODEL                 — model name matching the profile pack
+  # ---------------------------------------------------------------------------
+  vllm-emulator:
+    profiles:
+      - emulate
+    image: ${IMAGE_NAME:-rocm-aic}
+    container_name: aic-vllm-emulator
+    ports:
+      - "8000:8000"
+    # No GPU devices block — emulator runs on CPU.
+    volumes:
+      - ${HF_HOME:-~/.cache/huggingface}:/hf
+      - ${EMU_PROFILE_PACK_HOST:-/tmp}:/profiles:ro
+    environment:
+      - HF_TOKEN=${HF_TOKEN:-}
+      - HF_HOME=/hf
+      - HF_HUB_CACHE=/hf/hub
+      - HF_HUB_OFFLINE=${HF_HUB_OFFLINE:-0}
+      - TRANSFORMERS_OFFLINE=${TRANSFORMERS_OFFLINE:-0}
+      - VLLM_CACHE_ROOT=/hf/vllm
+      - VLLM_CONFIG_ROOT=/hf/vllm_config
+      - PYTHONHASHSEED=0
+      # llm-emu emulator activation flags
+      - VLLM_EMULATOR_ENABLE_ORACLE=1
+      - VLLM_EMULATOR_EXECUTOR_HOOK=1
+      - VLLM_EMULATOR_PROFILE_PACK=${VLLM_EMULATOR_PROFILE_PACK:-/profiles/profile.json}
+      - VLLM_EMULATOR_MODE=${VLLM_EMULATOR_MODE:-realtime}
+      - VLLM_EMULATOR_ORACLE_K=${VLLM_EMULATOR_ORACLE_K:-1}
+      - PYTHONUNBUFFERED=1
+    # Use the standard vLLM OpenAI API entrypoint — the emulator hooks in via
+    # the vllm.platform_plugins entry point and executor hook env vars above.
+    command: >
+      --model ${VLLM_MODEL:-Qwen/Qwen3-8B}
+        --host 0.0.0.0
+        --port 8000
+        --max-model-len ${VLM_MAX_MODEL_LEN:-4096}
+        --max-num-batched-tokens ${VLM_MAX_NUM_BATCHED_TOKENS:-4096}
+        --disable-access-log-for-endpoints "/health,/metrics,/v1/models"
+        ${VLLM_EXTRA_ARGS:-}
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:8000/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 20
+      start_period: 60s
