@@ -123,7 +123,8 @@ DIST := $(CURDIR)/.slurm/run-build-distribute.sh
 # ---- Self-hosted CI runner scripts -----------------------------------------
 # The hardware-CI workflows call helper scripts from AIC_CI_LIB_DIR on the
 # self-hosted runner (spur-dist-build.sh / spur-smoke-test.sh / spur-tiny-test.sh
-# / spur-cliff.sh).  `make install-ci-scripts` deploys the source copies from
+# / spur-cliff.sh / spur-emulate-test.sh -- the last of which needs no GPU at
+# either end).  `make install-ci-scripts` deploys the source copies from
 # .github/scripts there.  Writing under /usr/local usually needs root, so the
 # target uses sudo when the destination is not writable by the current user.
 AIC_CI_LIB_DIR    ?= /usr/local/lib/aic-ci

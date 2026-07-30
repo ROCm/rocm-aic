@@ -3,8 +3,14 @@
 # SPDX-License-Identifier: MIT
 #
 # Lightweight push-triggered CI for the AMD Infinity Context (AIC) stack.
-# Validates that all LMCache and NIXL patches apply cleanly against their
-# pinned upstream SHAs without requiring a full Docker build.
+# Validates that every patch we carry -- vLLM, LMCache, NIXL and LLM-Emu --
+# applies cleanly against its pinned upstream ref, and that the emulator profile
+# packs in profiles/ load and are self-describing.  No Docker build, no GPU, so
+# this runs on an ordinary GitHub runner in about a minute.
+#
+# This exists because a corrupt vLLM patch once reached main: the Dockerfile
+# hard-fails on a patch that does not apply, so the image simply could not be
+# built, and nothing in CI noticed.
 #
 name: AIC Nightly Patch Validation
 
@@ -27,6 +33,151 @@ permissions:
   contents: read
 
 jobs:
+  vllm-patches:
+    name: vLLM patches (git apply --check)
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve vLLM ref and URL from Dockerfile
+        id: meta
+        run: |
+          set -euo pipefail
+          ref="$(grep -E '^ARG VLLM_REF=' docker/Dockerfile | head -1 | cut -d= -f2-)"
+          url="$(grep -E '^ARG VLLM_GIT_URL=' docker/Dockerfile | head -1 | cut -d= -f2-)"
+          test -n "${ref}" || { echo "VLLM_REF not set in Dockerfile"; exit 1; }
+          test -n "${url}" || { echo "VLLM_GIT_URL not set in Dockerfile"; exit 1; }
+          echo "ref=${ref}" >> "${GITHUB_OUTPUT}"
+          echo "url=${url}" >> "${GITHUB_OUTPUT}"
+          echo "vLLM: ${url} @ ${ref}"
+
+      - name: Clone vLLM at pinned ref
+        run: |
+          set -euo pipefail
+          git clone --depth 1 --branch "${{ steps.meta.outputs.ref }}" \
+            --filter=blob:none "${{ steps.meta.outputs.url }}" /tmp/vllm
+          cd /tmp/vllm
+          echo "Checked out: $(git log --oneline -1)"
+
+      - name: Verify vLLM patches apply cleanly, in order
+        run: |
+          set -euo pipefail
+          patch_dir="${GITHUB_WORKSPACE}/patches/vllm"
+          shopt -s nullglob
+          patches=( "${patch_dir}"/*.patch )
+          if (( ${#patches[@]} == 0 )); then
+            echo "ERROR: no .patch files in ${patch_dir}" >&2
+            exit 1
+          fi
+          cd /tmp/vllm
+          # Applied in sequence, exactly as the Dockerfile does: a patch that
+          # only applies to a pristine tree is still broken for us.
+          for patch in "${patches[@]}"; do
+            echo "==> git apply --check $(basename "${patch}")"
+            if git apply --check "${patch}" 2>/dev/null; then
+              echo "    OK (applies cleanly)"
+              git apply "${patch}"
+            else
+              if git apply --check --reverse "${patch}" 2>/dev/null; then
+                echo "    SKIP (already merged upstream)"
+              else
+                echo "    FAIL: patch does not apply and is not already merged"
+                git apply --check "${patch}"
+                exit 1
+              fi
+            fi
+          done
+          echo "All vLLM patches OK"
+
+      - name: Byte-compile the patched files
+        run: |
+          set -euo pipefail
+          cd /tmp/vllm
+          # A patch can apply cleanly and still leave invalid Python.
+          python3 -m py_compile \
+            vllm/v1/engine/core.py \
+            vllm/v1/executor/uniproc_executor.py \
+            vllm/platforms/__init__.py \
+            vllm/platforms/rocm.py
+          echo "Patched vLLM sources compile"
+
+  llm-emu-patches:
+    name: LLM-Emu patches + profile packs
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve LLM-Emu ref and URL from Dockerfile
+        id: meta
+        run: |
+          set -euo pipefail
+          ref="$(grep -E '^ARG LLM_EMU_REF=' docker/Dockerfile | head -1 | cut -d= -f2-)"
+          url="$(grep -E '^ARG LLM_EMU_GIT_URL=' docker/Dockerfile | head -1 | cut -d= -f2-)"
+          test -n "${ref}" || { echo "LLM_EMU_REF not set in Dockerfile"; exit 1; }
+          test -n "${url}" || { echo "LLM_EMU_GIT_URL not set in Dockerfile"; exit 1; }
+          echo "ref=${ref}" >> "${GITHUB_OUTPUT}"
+          echo "url=${url}" >> "${GITHUB_OUTPUT}"
+          echo "LLM-Emu: ${url} @ ${ref}"
+
+      - name: Clone LLM-Emu at pinned ref
+        run: |
+          set -euo pipefail
+          # LLM_EMU_REF is a commit SHA, not a tag, so --branch cannot be used;
+          # the repo is small enough to clone whole.
+          git clone "${{ steps.meta.outputs.url }}" /tmp/llm-emu
+          git -C /tmp/llm-emu checkout "${{ steps.meta.outputs.ref }}"
+          echo "Checked out: $(git -C /tmp/llm-emu log --oneline -1)"
+
+      - name: Verify LLM-Emu patches apply cleanly, in order
+        run: |
+          set -euo pipefail
+          patch_dir="${GITHUB_WORKSPACE}/patches/llm-emu"
+          shopt -s nullglob
+          patches=( "${patch_dir}"/*.patch )
+          if (( ${#patches[@]} == 0 )); then
+            echo "ERROR: no .patch files in ${patch_dir}" >&2
+            exit 1
+          fi
+          cd /tmp/llm-emu
+          for patch in "${patches[@]}"; do
+            echo "==> git apply --check $(basename "${patch}")"
+            if git apply --check "${patch}" 2>/dev/null; then
+              echo "    OK (applies cleanly)"
+              git apply "${patch}"
+            else
+              if git apply --check --reverse "${patch}" 2>/dev/null; then
+                echo "    SKIP (already merged upstream)"
+              else
+                echo "    FAIL: patch does not apply and is not already merged"
+                git apply --check "${patch}"
+                exit 1
+              fi
+            fi
+          done
+          echo "All LLM-Emu patches OK"
+
+      - name: Install the patched plugin (no deps -- no torch, no vLLM needed)
+        run: |
+          set -euo pipefail
+          python3 -m pip install --quiet --upgrade pip setuptools wheel
+          python3 -m pip install --quiet --no-deps /tmp/llm-emu
+          # Upstream's pyproject declares no subpackages; they survive only via a
+          # package-data catch-all, so assert every one of them is importable.
+          python3 -c "
+          import vllm_emulator.hooks.executor_hook
+          import vllm_emulator.oracle
+          import vllm_emulator.profile.loader
+          import vllm_emulator.profiler.trace_profiler
+          print('vllm_emulator subpackages import OK')
+          "
+
+      - name: Validate the committed profile packs
+        run: |
+          set -euo pipefail
+          python3 "${GITHUB_WORKSPACE}/.github/scripts/validate-profile-packs.py"
+
   lmcache-patches:
     name: LMCache patches (git apply --check)
     runs-on: ubuntu-latest

@@ -2,8 +2,8 @@
 
 [![MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://github.com/ROCm/rocm-aic/blob/main/LICENSE.md)
 [![Platform](https://img.shields.io/badge/platform-linux-lightgrey.svg)](README.md)
-[![ROCm](https://img.shields.io/badge/ROCm-7.2.4-green.svg)](https://rocm.docs.amd.com)
-[![vLLM](https://img.shields.io/badge/vLLM-0.25.0+rocm723-blue.svg)](https://github.com/vllm-project/vllm)
+[![ROCm](https://img.shields.io/badge/ROCm-7.14.0-green.svg)](https://rocm.docs.amd.com)
+[![vLLM](https://img.shields.io/badge/vLLM-0.26.0+rocm-blue.svg)](https://github.com/vllm-project/vllm)
 [![LMCache](https://img.shields.io/badge/LMCache-v0.5.2-blue.svg)](https://github.com/LMCache/LMCache)
 [![NIXL](https://img.shields.io/badge/NIXL-v1.3.2-blue.svg)](https://github.com/ai-dynamo/nixl)
 [![hsa-snoop](https://img.shields.io/badge/hsa--snoop-v1.0.0-blue.svg)](https://github.com/sbates130272/hsa-snoop)
@@ -14,6 +14,7 @@
 [![Nightly Smoke Test](https://github.com/ROCm/rocm-aic/actions/workflows/aic-amd-nightly-smoke-test.yml/badge.svg)](https://github.com/ROCm/rocm-aic/actions/workflows/aic-amd-nightly-smoke-test.yml)
 [![Nightly Tiny Test](https://github.com/ROCm/rocm-aic/actions/workflows/aic-amd-nightly-tiny-test.yml/badge.svg)](https://github.com/ROCm/rocm-aic/actions/workflows/aic-amd-nightly-tiny-test.yml)
 [![Nightly Cliff](https://github.com/ROCm/rocm-aic/actions/workflows/aic-amd-nightly-cliff.yml/badge.svg)](https://github.com/ROCm/rocm-aic/actions/workflows/aic-amd-nightly-cliff.yml)
+[![Nightly Emulate Test](https://github.com/ROCm/rocm-aic/actions/workflows/aic-amd-nightly-emulate-test.yml/badge.svg)](https://github.com/ROCm/rocm-aic/actions/workflows/aic-amd-nightly-emulate-test.yml)
 [![Nightly Wheels](https://github.com/ROCm/rocm-aic/actions/workflows/aic-nightly-wheels.yml/badge.svg)](https://github.com/ROCm/rocm-aic/actions/workflows/aic-nightly-wheels.yml)
 [![Nightly Patch Validation](https://github.com/ROCm/rocm-aic/actions/workflows/aic-patches.yml/badge.svg)](https://github.com/ROCm/rocm-aic/actions/workflows/aic-patches.yml)
 [![Monitoring CPU Smoke](https://github.com/ROCm/rocm-aic/actions/workflows/aic-monitoring-cpu-smoke.yml/badge.svg)](https://github.com/ROCm/rocm-aic/actions/workflows/aic-monitoring-cpu-smoke.yml)
@@ -40,10 +41,10 @@ platform.
 ## Stack overview
 
 ```text
-Ubuntu 24.04  (rocm/dev-ubuntu-24.04:7.14.0-full, ROCm 7.14, Python 3.12)
-  └── vLLM v0.25.1  (built from source — torch/triton/flash-attn via requirements/rocm.txt)
+Ubuntu 24.04  (rocm/dev-ubuntu-24.04:7.14.0-full, ROCm 7.14.0, Python 3.12)
+  └── vLLM v0.26.0  (built from source — torch/triton/flash-attn via requirements/rocm.txt)
         └── LMCacheMPConnector (ZMQ)
-              └── LMCache server (standalone MP mode)  [v0.5.2 + 8 AMD patches]
+              └── LMCache server (standalone MP mode)  [v0.5.2 + 9 AMD patches]
                     ├── L1:  GPU / CPU DRAM   (--l1-size-gb)
                     │    or  hipFile NVMe slab (GDS L1 mode)
                     ├── L2a: NIXL AIS_MT → local NVMe   (hipFile P2PDMA, GDS)
@@ -55,11 +56,12 @@ each release):
 
 | Component | Source | Ref |
 | --- | --- | --- |
-| Base OS | `rocm/dev-ubuntu-24.04:7.14.0-full` | Ubuntu 24.04, ROCm 7.14, Python 3.12 |
-| vLLM | `github.com/vllm-project/vllm` (source build) | `v0.26.0` + 2 AMD patches |
+| Base OS | `rocm/dev-ubuntu-24.04:7.14.0-full` | Ubuntu 24.04, ROCm 7.14.0, Python 3.12 |
+| vLLM | `github.com/vllm-project/vllm` (source build) | `v0.26.0` + 3 AMD patches |
 | LMCache | `LMCache/LMCache` (upstream) | `v0.5.2` + 9 AMD patches |
 | NIXL | `ai-dynamo/nixl` (upstream) | `v1.3.2` + `nixl-rocm-ais-mt.patch` |
 | hipFile | ROCm 7.14 base image | GA in ROCm 7.14 — no separate source build |
+| llm-emu | `github.com/AKafakA/llm-emu` (emulation plugin) | `3e87da6` + 3 AMD patches |
 
 ## Pip-installable nightly wheels
 
