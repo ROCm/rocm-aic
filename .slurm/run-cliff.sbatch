@@ -271,6 +271,10 @@ PLOTS="${LOGDIR}/plots"
 AIC_MONITORING="${AIC_MONITORING:-1}"
 AIC_METRICS_DIR="${AIC_METRICS_DIR:-${REPO}/logs/${SLURM_JOB_ID:-manual}/prometheus}"
 AIC_EXPORTERS="${AIC_EXPORTERS:-1}"
+# hsa-snoop PID mode: 'host' (default non-SPUR) requires --pid=host which is blocked by
+# spur-authz on SPUR nodes.  'container:aic-lmcache' shares the lmcache+vLLM PID ns
+# instead -- valid because vllm uses pid:service:lmcache so both processes are visible.
+AIC_HSA_SNOOP_PID_MODE="${AIC_HSA_SNOOP_PID_MODE:-host}"
 MON_COMPOSE="${REPO}/monitoring/docker-compose.monitoring.yml"
 MON_DIR="${REPO}/monitoring"
 
@@ -547,6 +551,7 @@ export AIC_NIXL_USE_DIRECT_IO
 export AIC_NIXL_BACKEND
 export LMCACHE_NIXL_POSIX_SLOT_SIZE LMCACHE_NIXL_POSIX_POOL LMCACHE_MAX_GPU_WORKERS LMCACHE_L2_PREFETCH_MAX_IN_FLIGHT
 export NIXL_METRICS_PORT="${NIXL_METRICS_PORT:-19090}"
+export AIC_HSA_SNOOP_PID_MODE
 # RoPE override (YaRN etc.) applied to ALL arms via vLLM --hf-overrides.  Single-
 # quote the JSON so compose's shlex splitting keeps the inner double quotes.
 VLLM_EXTRA_ARGS=""
@@ -696,7 +701,15 @@ run_arm_kvd() {  # $1=mode(nvme|gds) $2=out_csv
     # MP connector arg for vLLM (+ optional kv_load_failure_policy).  Single-quote
     # the JSON so compose's shlex splitting preserves the inner double quotes.
     local _fp=""; [[ -n "${AIC_KV_LOAD_FAILURE_POLICY}" ]] && _fp=",\"kv_load_failure_policy\":\"${AIC_KV_LOAD_FAILURE_POLICY}\""
-    export KV_TRANSFER_ARG="--kv-transfer-config '{\"kv_connector\":\"LMCacheMPConnector\",\"kv_role\":\"kv_both\"${_fp},\"kv_connector_extra_config\":{\"lmcache.mp.host\":\"tcp://localhost\",\"lmcache.mp.port\":${LMCACHE_PORT}}}'"
+    # heartbeat_interval: lmcache pings the server every N seconds to detect crashes.
+    # Default 10s means a single missed ping during POSIX write-queue saturation triggers
+    # an unhealthy→recovery cycle which rebuilds IPC handles and causes a stale-handle
+    # crash (hipErrorInvalidValue) in any in-flight future from the pre-recovery session.
+    # Set high enough that transient write delays (warmup at c=32: up to 600s) don't
+    # falsely trigger recovery. Real crashes will still be detected once vLLM stops
+    # responding entirely (the ZMQ channel closes cleanly on process exit).
+    local _hb="${LMCACHE_HEARTBEAT_INTERVAL:-900}"
+    export KV_TRANSFER_ARG="--kv-transfer-config '{\"kv_connector\":\"LMCacheMPConnector\",\"kv_role\":\"kv_both\"${_fp},\"kv_connector_extra_config\":{\"lmcache.mp.host\":\"tcp://localhost\",\"lmcache.mp.port\":${LMCACHE_PORT},\"lmcache.mp.heartbeat_interval\":${_hb}}}'"
     export VLLM_PID_MODE=service:lmcache   # share lmcache PID ns for cross-container HIP IPC
 
     local _l2desc
@@ -779,6 +792,14 @@ run_arm_kvd() {  # $1=mode(nvme|gds) $2=out_csv
 KVD_NVME_CSV="${RESULTS}/cliff-kvd_v2-nvme-${STAMP}.csv"
 KVD_GDS_CSV="${RESULTS}/cliff-kvd_v2-gds-${STAMP}.csv"
 declare -A STATUS
+
+# Pre-pull the Prometheus image so start_monitoring doesn't block on a Docker Hub
+# download (prom/prometheus is ~75 MB; on a cold node this adds 10+ minutes before
+# the first arm starts).  docker pull is a no-op when the image is already present.
+_prom_img="${AIC_PROM_IMAGE:-prom/prometheus:v2.55.1}"
+log "pre-pulling ${_prom_img} (no-op if cached)..."
+docker pull "${_prom_img}" >/dev/null 2>&1 && log "  ${_prom_img}: ready" \
+    || log "  WARN: pull failed for ${_prom_img} (will try again at compose up)"
 
 # Bring up the Prometheus metrics-capture sidecar before the first arm so it
 # scrapes the whole sweep; torn down via the EXIT trap (TSDB retained on NFS).

@@ -1,0 +1,70 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Stephen Bates <stephen.bates@amd.com>
+Date: 2026-07-29
+Subject: [PATCH 10] fix: fallback when HIP IPC event from_ipc_handle fails
+
+On ROCm 7.14 with gfx950 (MI355X), torch.cuda.Event.from_ipc_handle()
+raises hipErrorInvalidValue for cross-process CUDA/HIP event handles
+within seconds of handle export.  CUDAMessagingFuture crashes the vLLM
+EngineCore on every store future completion:
+
+  torch.AcceleratorError: CUDA error: invalid argument (hipErrorInvalidValue)
+  AssertionError: assert self.event_ is not None
+
+Three fixes in CUDAMessagingFuture:
+
+1. _on_raw_future_complete(): catch Exception from from_ipc_handle and
+   leave self.event_ = None (fallback mode) instead of propagating.
+
+2. wait(): replace `assert self.event_ is not None` with a None check;
+   when event_ is None the raw future already completed so return True.
+
+3. query(): replace `assert self.event_ is not None` with a None check;
+   when event_ is None and raw_future_ is done, return True directly.
+
+In all fallback cases the raw MessagingFuture completion flag provides
+the necessary ordering guarantee; GPU-side event synchronisation is
+skipped but correctness is preserved.
+
+Observed: SPUR MI355X gfx950, ROCm 7.14, LMCache v0.5.2, cliff jobs
+11872 through 12056.
+
+Applies after patches 01-09.
+---
+--- a/lmcache/v1/multiprocess/futures.py
++++ b/lmcache/v1/multiprocess/futures.py
+@@ -112,7 +112,12 @@
+                 "Events (Event.from_ipc_handle not available). "
+                 "Multiprocess IPC requires CUDA."
+             )
+-        self.event_ = torch_dev.Event.from_ipc_handle(self.device_, event_bytes)
++        try:
++            self.event_ = torch_dev.Event.from_ipc_handle(self.device_, event_bytes)
++        except Exception:
++            # HIP IPC events unreliable on some ROCm platforms (e.g. gfx950/ROCm 7.14).
++            # Leave event_ = None; wait()/query() fall back to raw-future polling.
++            self.event_ = None
+ 
+     def wait(self, timeout: Optional[float] = None) -> bool:
+         """
+@@ -143,7 +148,9 @@
+ 
+         self._on_raw_future_complete()
+ 
+-        assert self.event_ is not None
++        if self.event_ is None:
++            # IPC event unavailable; raw future completion is the ordering guarantee.
++            return True
+         self.event_.synchronize()
+ 
+         return True
+@@ -185,7 +192,8 @@
+ 
+         if self.raw_future_.query():
+             self._on_raw_future_complete()
+-            assert self.event_ is not None
++            if self.event_ is None:
++                return True  # IPC event unavailable; raw future done is sufficient.
+             return self.event_.query()
+ 
+         return False

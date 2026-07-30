@@ -152,20 +152,31 @@ override export HF_HOME       := $(AIC_SHARED_NFS)/$(USER)/hf
 # Default the nvme arm to the NIXL first-class POSIX plugin (cpu staging buffer),
 # which avoids hipFileBufRegister entirely.  A user override still takes precedence.
 export AIC_L2_BACKEND         ?= nixl_posix
-# Right-size the POSIX slot file for gpt-oss-120b fp8 KV chunks:
-#   chunk_size=256 tok × 8 KV heads × 64 head_dim × 2 (K+V) × 36 layers × 1 B = ~9 MiB.
-#   Use 16 MiB for headroom (vs the 256 MiB AIS_MT default, which pre-allocates the full
-#   staging buffer — 28× too large for POSIX where only actual KV bytes are written).
+# Right-size the POSIX slot file: must be >= KV chunk size for the target model.
+#   gpt-oss-120b fp8: 256 tok × 8 KV heads × 64 dim × 2 × 36 layers × 1B = 9 MiB
+#   Qwen2.5-3B fp8:  256 tok × 8 KV heads × 128 dim × 2 × 36 layers × 1B = 18 MiB
+#   Default 32 MiB covers both; override for other models.
+#   (vs the 256 MiB AIS_MT default, which pre-allocates a full staging buffer —
+#    28× too large for POSIX where only actual KV bytes are written per slot).
 # Also enlarge the pool: 18K-tok prefix = 71 chunks/client; at c=250 need ~18K slots;
-#   32K at 16 MiB = 512 GiB on disk (lazy, fine for the 30 TB XFS LVM).
+#   32K at 32 MiB = 1 TiB on disk (lazy, fine for the 30 TB XFS LVM).
 # Parallel POSIX workers: lmcache server default is 1 GPU worker — bump to 4 so
 #   concurrent client writes overlap instead of serializing on the ZMQ channel.
-export LMCACHE_NIXL_POSIX_SLOT_SIZE ?= 16777216
+# Slot size: must be >= the KV chunk size for the target model.
+#   gpt-oss-120b fp8: 256 tok × 8 heads × 64 dim × 2 × 36 layers × 1B = 9 MiB → 16 MiB OK
+#   Qwen2.5-3B fp8:  256 tok × 8 heads × 128 dim × 2 × 36 layers × 1B = 18 MiB → 32 MiB needed
+# Default 32 MiB covers both; override per model if needed.
+export LMCACHE_NIXL_POSIX_SLOT_SIZE ?= 33554432
 export LMCACHE_NIXL_POSIX_POOL      ?= 32768
-# SPUR authz plugin blocks --pid=host, so the exporter fleet (node-exporter, hsa-snoop,
-# amdgpu-exporter) fails to start.  Prometheus-only mode avoids all pid:host containers.
-# Set AIC_EXPORTERS=1 to attempt the full exporter fleet if authz allows it.
-export AIC_EXPORTERS                ?= 0
+# SPUR authz plugin blocks --pid=host, so node-exporter, hsa-snoop, and nvme-exporter
+# (which all need --pid=host) cannot start.  Use "safe" mode: amdgpu-exporter and
+# rdma-exporter do NOT need --pid=host and work fine on SPUR.
+# Set AIC_EXPORTERS=1 for the full fleet on nodes that allow --pid=host.
+# Set AIC_EXPORTERS=0 for Prometheus-only (no exporters at all).
+override export AIC_EXPORTERS            := safe
+# hsa-snoop: use container PID namespace instead of host to avoid spur-authz block.
+# vLLM joins lmcache's PID ns (pid:service:lmcache), so aic-lmcache sees both processes.
+override export AIC_HSA_SNOOP_PID_MODE  := container:aic-lmcache
 # Reduce POSIX GPU workers: at high concurrency (c=32) the NIXL POSIX read path hits
 # NIXL_ERR_INVALID_PARAM in makeXferReq when too many concurrent handles are in flight.
 # 1 worker serialises STORE/RETRIEVE so the NIXL descriptor pool is never exhausted.
@@ -599,6 +610,7 @@ cliff-spur-l2:
 	    BENCH_PREFIX_MODE=per_client \
 	    BENCH_CONCUR="$${BENCH_CONCUR:-32}" \
 	    BENCH_ITERS="$${BENCH_ITERS:-2}" \
+	    VLLM_MODEL="$${VLLM_MODEL:-Qwen/Qwen2.5-3B-Instruct}" \
 	    VLM_GPU_MEMORY_UTILIZATION="$(if $(filter command line environment override,$(origin VLM_GPU_MEMORY_UTILIZATION)),$(VLM_GPU_MEMORY_UTILIZATION),0.40)" \
 	    AIC_LOCAL_CPU=true \
 	    LMCACHE_MAX_LOCAL_CPU_SIZE="$(if $(filter command line environment override,$(origin LMCACHE_MAX_LOCAL_CPU_SIZE)),$(LMCACHE_MAX_LOCAL_CPU_SIZE),8)" \
@@ -606,7 +618,7 @@ cliff-spur-l2:
 	    $(call _CLIFF_SUBMIT,--job-name=aic-cliff-spur-l2 \
 	    --time=$(if $(AIC_CLIFF_TIME),$(AIC_CLIFF_TIME),03:00:00))) && \
 	    echo "submitted cliff-spur-l2 job $$jobid" && \
-	    echo "  util=0.40, DRAM L1=8GB, POSIX NVMe L2, per_client, c=32 only, 2 iters, nvme arm only" && \
+	    echo "  util=0.40, DRAM L1=8GB, POSIX NVMe L2, per_client, Qwen2.5-3B, c=32, 2 iters, nvme only" && \
 	    echo "log: $(CURDIR)/logs/$$jobid/cliff.out"
 
 # Fast setup check: a single concurrency point, one timed iteration, all 3 arms.

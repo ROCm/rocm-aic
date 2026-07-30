@@ -177,7 +177,7 @@ services:
             --l1-size-gb "$$LMCACHE_L1_SIZE_GB" \
             --eviction-policy LRU \
             --max-gpu-workers "$${LMCACHE_MAX_GPU_WORKERS:-1}" \
-            --prometheus-port 9091 \
+            --worker-reap-timeout-seconds "$${LMCACHE_WORKER_REAP_TIMEOUT:-3600}" \
             --gds-l1-path /data/slab
         elif [ "$$AIC_L2_BACKEND" = "local_disk" ] || [ "$$AIC_L2_BACKEND" = "none" ]; then
           # DRAM L1 only on the CLI.  local_disk adds a native LocalDiskBackend L2
@@ -190,7 +190,7 @@ services:
             --l1-size-gb "$$LMCACHE_L1_SIZE_GB" \
             --eviction-policy LRU \
             --max-gpu-workers "$${LMCACHE_MAX_GPU_WORKERS:-1}" \
-            --prometheus-port 9091
+            --worker-reap-timeout-seconds "$${LMCACHE_WORKER_REAP_TIMEOUT:-3600}" \
         elif [ "$${AIC_NIXL_BACKEND:-AIS_MT}" = "POSIX" ] || [ "$$AIC_L2_BACKEND" = "nixl_posix" ]; then
           # NIXL first-class POSIX plugin (cpu staging buffer, no hipFileBufRegister).
           # Use for nodes where GPUDirect P2PDMA is unavailable (e.g. XFS LVM).
@@ -204,7 +204,7 @@ services:
             --eviction-policy LRU \
             --max-gpu-workers "$${LMCACHE_MAX_GPU_WORKERS:-1}" \
             --l2-prefetch-max-in-flight "$${LMCACHE_L2_PREFETCH_MAX_IN_FLIGHT:-4}" \
-            --prometheus-port 9091 \
+            --worker-reap-timeout-seconds "$${LMCACHE_WORKER_REAP_TIMEOUT:-3600}" \
             --l2-adapter "{\"type\":\"nixl_store\",\"backend\":\"POSIX\",\"backend_params\":{\"file_path\":\"/data/nvme/lmcache\",\"use_direct_io\":\"false\",\"file_size\":\"$$LMCACHE_NIXL_POSIX_SLOT_SIZE\"},\"pool_size\":$$LMCACHE_NIXL_POSIX_POOL}"
         else
           # nixl AIS_MT NVMe L2a + POSIX NFS L2b.  Both are file-based nixl_store
@@ -217,7 +217,7 @@ services:
             --l1-size-gb "$$LMCACHE_L1_SIZE_GB" \
             --eviction-policy LRU \
             --max-gpu-workers "$${LMCACHE_MAX_GPU_WORKERS:-1}" \
-            --prometheus-port 9091 \
+            --worker-reap-timeout-seconds "$${LMCACHE_WORKER_REAP_TIMEOUT:-3600}" \
             --l2-adapter "{\"type\":\"nixl_store\",\"backend\":\"AIS_MT\",\"backend_params\":{\"file_path\":\"/data/nvme/lmcache\",\"use_direct_io\":\"$$AIC_NIXL_USE_DIRECT_IO\",\"file_size\":\"$$LMCACHE_NVME_SLOT_SIZE\"},\"pool_size\":$$LMCACHE_NVME_POOL}" \
             --l2-adapter "{\"type\":\"nixl_store\",\"backend\":\"POSIX\",\"backend_params\":{\"file_path\":\"/data/nfs/lmcache\",\"use_direct_io\":\"false\"},\"pool_size\":$$LMCACHE_NFS_POOL}"
         fi
