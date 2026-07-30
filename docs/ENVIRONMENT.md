@@ -28,3 +28,36 @@
 | `AIC_MONITORING` | `1` | Auto-start the Prometheus sidecar in cliff sbatch runs (`0` to skip) |
 | `AIC_METRICS_DIR` | `logs/<job-id>/prometheus` (cliff) | Prometheus TSDB dir — bind-mount an NFS path here |
 | `AIC_EXPORTERS` | `1` (cliff) / `0` (make) | Also launch containerized node + AMD GPU exporters |
+
+## Emulation mode and profile capture
+
+See [EMULATE.md](EMULATE.md) for the workflow these belong to.
+
+| Variable | Default | Description |
+| --- | --- | --- |
+| `VLLM_EMULATOR_ENABLE_ORACLE` | — | `1` turns on emulation: platform plugin, `torch.cuda` shims, model-load stubs. Unset = ordinary serve |
+| `VLLM_EMULATOR_EXECUTOR_HOOK` | — | `1` swaps `UniProcExecutor.execute_model()` for the profile-pack latency draw |
+| `VLLM_EMULATOR_PROFILE_PACK` | `/opt/llm-emu/profiles/MI300X-Qwen3-8B.json` | Profile pack to replay (in-image path, or `/profiles/<pack>.json` with `EMU_PROFILE_PACK_HOST`) |
+| `VLLM_EMULATOR_MODE` | `realtime` | `realtime` sleeps for the predicted latency; `accelerated` resolves immediately |
+| `VLLM_EMULATOR_ORACLE_K` | `1` | Oracle neighbor count (`auto` for adaptive) |
+| `VLLM_EMULATOR_MEMORY` | from pack | Override the emulated device memory, bytes. Pass only when set — an empty value is not the same as unset |
+| `VLLM_EMULATOR_DEBUG` | — | `1` logs every oracle lookup |
+| `VLLM_EMULATOR_TRACE_STEP_CYCLE` | — | `1` records one step-latency sample per step on **real** hardware (profile capture); does not enable emulation |
+| `VLLM_EMULATOR_STEP_TRACE_OUTPUT` | `/tmp/emulator_step_trace.jsonl` | Where that trace is written |
+| `EMU_PROFILE_PACK_HOST` | `/tmp` | Host dir bind-mounted at `/profiles` in the emulator container |
+| `AIC_EMULATE_IMAGE` | `rocm-aic:7.14-emulate` | Image tag built by `make dist-build-emulate` |
+| `AIC_EMULATE_ARCH` | `gfx942` | `ROCM_ARCH` for the emulation build (only selects torch's wheel extra) |
+| `AIC_EMULATE_VLLM_DEVICE` | `empty` | `VLLM_TARGET_DEVICE` for that build: `empty` compiles no GPU kernels, `rocm` builds them |
+| `AIC_EMULATE_MODEL` | `Qwen/Qwen3-8B` | Model served by `make emulate-test` |
+| `AIC_EMULATE_PROFILE_PACK` | `/opt/llm-emu/profiles/MI300X-Qwen3-8B.json` | Pack used by `make emulate-test` |
+| `AIC_EMULATE_PACK_HOST` | — | Host dir of packs to mount for `make emulate-test` / `emulate-validate` |
+| `AIC_EMULATE_TEST_NODE` / `AIC_EMULATE_TEST_CONSTRAINT` | — / `CPUONLY` | Node selection for the CPU-only emulation jobs |
+| `AIC_CAPTURE_MODEL` | `Qwen/Qwen3-8B` | Model served during `make profile-capture` |
+| `AIC_CAPTURE_SWEEP` | 9 points | `input_len,output_len,concurrency,num_prompts` list driving the capture |
+| `AIC_CAPTURE_DIR` | `<image-dir>/profiles` | Where pack, trace, provenance and benchmark results land |
+| `AIC_CAPTURE_HF_HOME` | `<image-dir>/capture-hf` | HF cache for the capture serve (real weights, so size it accordingly) |
+| `AIC_CAPTURE_CONSTRAINT` / `AIC_CAPTURE_NODE` | `GFX942` / — | GPU node selection for the capture job |
+| `AIC_CAPTURE_MAX_MODEL_LEN` / `AIC_CAPTURE_MAX_BATCHED_TOKENS` / `AIC_CAPTURE_GPU_UTIL` | `8192` / `4096` / `0.85` | Serve flags baked into the captured pack |
+| `AIC_VALIDATE_PACK` | — | Pack scored by `make emulate-validate` (required) |
+| `AIC_VALIDATE_SWEEP` | 3 points | Benchmark points replayed for the real-vs-emulated diff |
+| `AIC_VALIDATE_REAL_DIR` | `<pack dir>/bench` | Real-hardware benchmark results to diff against |

@@ -1,0 +1,8 @@
+model                 : Qwen/Qwen3-8B
+image                 : rocm-aic:7.14-latest
+node                  : ctr-rack31-mi300x-2.adc.amd.com
+serve flags           : --max-model-len 8192 --max-num-batched-tokens 4096 --gpu-memory-utilization 0.85 --attention-backend TRITON_ATTN --no-enable-prefix-caching
+env                   : VLLM_ROCM_USE_AITER=1, no async scheduling, kv-cache-dtype auto
+sweep (isl,osl,c,n)   : 128,16,1,24 128,16,16,480 128,16,64,960 512,16,1,24 512,16,16,480 512,16,64,960 1024,16,1,24 1024,16,16,480 1024,16,64,960 2048,16,1,16 2048,16,16,320 2048,16,64,640 3072,16,1,12 3072,16,16,240 4096,16,1,12 4096,16,16,240 4096,16,64,480 6144,16,1,8 6144,16,16,160 256,64,1,16 256,64,8,64 1024,128,1,12 1024,128,4,32 1024,128,16,64 1024,128,64,128 4096,128,1,8 4096,128,8,32 4096,128,32,64
+trace                 : step-trace-Qwen-Qwen3-8B-20260730-121308.jsonl
+real-hardware results : bench/real-Qwen-Qwen3-8B-*.json
