@@ -121,6 +121,20 @@ Then use it like any vLLM endpoint on `:8000`. Useful env:
 > the plugin's `cuda_mock` import, leaving the emulator half-installed. The
 > compose service therefore uses the pass-through form (`- VLLM_EMULATOR_MEMORY`).
 
+### 2.1 In CI
+
+Two GPU-free gates cover this path:
+
+- **AIC Nightly Patch Validation** (`ubuntu-latest`, on every push/PR touching
+  `docker/Dockerfile` or `patches/**`) checks that the vLLM, LMCache, NIXL and
+  LLM-Emu patches all apply against their pinned upstream refs, byte-compiles
+  the patched vLLM files, and validates every pack in `profiles/` through the
+  emulator's own loader and oracle — including that the pack compose defaults to
+  actually exists.
+- **AIC Nightly Emulate Test** (self-hosted → cluster) builds the emulation
+  image and serve-tests it on a CPU-only node. It is the only hardware-CI stage
+  that needs no GPU, so it does not compete with the smoke/tiny/cliff chain.
+
 ## 3. Profile packs
 
 A pack buckets measured step latencies by **(batch total tokens × concurrency ×

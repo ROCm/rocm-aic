@@ -27,29 +27,42 @@ jobs:
       - name: Extract versions from Dockerfile
         id: vers
         run: |
+          set -euo pipefail
+          # vLLM is built FROM SOURCE at VLLM_REF; the ARG VLLM_VERSION /
+          # VLLM_ROCM_VARIANT pair this used to read described the old
+          # pre-built-wheel install and no longer exists, so every extraction
+          # silently produced an empty string and the badge became "vLLM-+".
           ROCM=$(grep '^FROM' docker/Dockerfile | grep -oP '\d+\.\d+\.\d+' | head -1)
-          VLLM_VER=$(grep 'ARG VLLM_VERSION=' docker/Dockerfile | grep -oP '[\d.]+')
-          VLLM_ROC=$(grep 'ARG VLLM_ROCM_VARIANT=' docker/Dockerfile | grep -oP 'rocm\w+')
+          VLLM_REF=$(grep -E '^ARG VLLM_REF=' docker/Dockerfile | head -1 | cut -d= -f2-)
+          VLLM_VER="${VLLM_REF#v}"
           LMCACHE=$(grep 'ARG LMCACHE_REF=' docker/Dockerfile | grep -oP 'v[\d.]+')
           NIXL=$(grep 'ARG NIXL_REF=' docker/Dockerfile | grep -oP 'v[\d.]+')
           HSA=$(grep 'ARG HSA_SNOOP_REF=' docker/Dockerfile | grep -oP 'v[\d.]+')
-          echo "rocm=$ROCM"                    >> "$GITHUB_OUTPUT"
-          echo "vllm=${VLLM_VER}+${VLLM_ROC}" >> "$GITHUB_OUTPUT"
-          echo "vllm_ver=$VLLM_VER"            >> "$GITHUB_OUTPUT"
-          echo "vllm_roc=$VLLM_ROC"            >> "$GITHUB_OUTPUT"
-          echo "lmcache=$LMCACHE"              >> "$GITHUB_OUTPUT"
-          echo "nixl=$NIXL"                    >> "$GITHUB_OUTPUT"
-          echo "hsa=$HSA"                      >> "$GITHUB_OUTPUT"
+          LLM_EMU=$(grep -E '^ARG LLM_EMU_REF=' docker/Dockerfile | head -1 | cut -d= -f2-)
+          for v in ROCM VLLM_VER LMCACHE NIXL HSA LLM_EMU; do
+            test -n "${!v}" || { echo "ERROR: could not extract ${v} from docker/Dockerfile"; exit 1; }
+          done
+          # The source build tags the wheel <ref>+rocm (see the Dockerfile's
+          # VLLM_VERSION_OVERRIDE), which is what the badge should say.
+          echo "rocm=$ROCM"                 >> "$GITHUB_OUTPUT"
+          echo "vllm=${VLLM_VER}+rocm"      >> "$GITHUB_OUTPUT"
+          echo "vllm_ver=$VLLM_VER"         >> "$GITHUB_OUTPUT"
+          echo "vllm_ref=$VLLM_REF"         >> "$GITHUB_OUTPUT"
+          echo "lmcache=$LMCACHE"           >> "$GITHUB_OUTPUT"
+          echo "nixl=$NIXL"                 >> "$GITHUB_OUTPUT"
+          echo "hsa=$HSA"                   >> "$GITHUB_OUTPUT"
+          echo "llm_emu=$LLM_EMU"           >> "$GITHUB_OUTPUT"
 
       - name: Update README shields and prose
         env:
           ROCM:     ${{ steps.vers.outputs.rocm }}
           VLLM:     ${{ steps.vers.outputs.vllm }}
           VLLM_VER: ${{ steps.vers.outputs.vllm_ver }}
-          VLLM_ROC: ${{ steps.vers.outputs.vllm_roc }}
+          VLLM_REF: ${{ steps.vers.outputs.vllm_ref }}
           LMCACHE:  ${{ steps.vers.outputs.lmcache }}
           NIXL:     ${{ steps.vers.outputs.nixl }}
           HSA:      ${{ steps.vers.outputs.hsa }}
+          LLM_EMU:  ${{ steps.vers.outputs.llm_emu }}
         run: |
           # Badge URLs
           sed -i "s|ROCm-[0-9.]*-green|ROCm-${ROCM}-green|g" README.md
@@ -58,19 +71,26 @@ jobs:
           sed -i "s|NIXL-v[0-9.]*-blue\.svg|NIXL-${NIXL}-blue.svg|" README.md
           sed -i "s|hsa--snoop-v[0-9.]*-blue\.svg|hsa--snoop-${HSA}-blue.svg|" README.md
 
-          # Stack overview diagram (line starting with "rocm/dev-ubuntu-24.04:")
-          sed -i "s|rocm/dev-ubuntu-24.04:[0-9.]*-complete|rocm/dev-ubuntu-24.04:${ROCM}-complete|g" README.md
+          # Stack overview diagram: base image tag and the "ROCm x.y, Python"
+          # caption.  The tag suffix is -full (it was -complete before 7.14).
+          sed -i "s|rocm/dev-ubuntu-24.04:[0-9.]*-full|rocm/dev-ubuntu-24.04:${ROCM}-full|g" README.md
           sed -i "s|ROCm [0-9.]*\(, Python\)|ROCm ${ROCM}\1|g" README.md
-          # vLLM in diagram/table (e.g. "v0.25.0+rocm723" or "0.25.0+rocm723")
-          sed -i "s|vLLM v[0-9.+a-z]*  (pre-built|vLLM v${VLLM}  (pre-built|" README.md
-          sed -i "s|v[0-9.]*+rocm[0-9]* (pre-built wheel, bundles torch)|v${VLLM} (pre-built wheel, bundles torch)|" README.md
-          # vLLM source URL in component table
-          sed -i "s|wheels\.vllm\.ai/rocm/[0-9.]*/rocm[0-9]*|wheels.vllm.ai/rocm/${VLLM_VER}/${VLLM_ROC}|" README.md
-          # LMCache version in prose (table row)
-          PATCH_COUNT=$(ls patches/lmcache/*.patch 2>/dev/null | wc -l)
-          sed -i "s|\`v[0-9.]*\` + [0-9]* AMD patches|\`${LMCACHE}\` + ${PATCH_COUNT} AMD patches|" README.md
+          # vLLM in the stack diagram (source build, one line)
+          sed -i "s|vLLM v[0-9.]*  (built from source|vLLM v${VLLM_VER}  (built from source|" README.md
+          # Per-component patch counts, each read from the tree so the table
+          # cannot drift from what the build actually applies.
+          VLLM_PATCHES=$(ls patches/vllm/*.patch 2>/dev/null | wc -l)
+          LMCACHE_PATCHES=$(ls patches/lmcache/*.patch 2>/dev/null | wc -l)
+          LLM_EMU_PATCHES=$(ls patches/llm-emu/*.patch 2>/dev/null | wc -l)
+          # vLLM table row
+          sed -i "s@(source build) | \`v[0-9.]*\` + [0-9]* AMD patches@(source build) | \`${VLLM_REF}\` + ${VLLM_PATCHES} AMD patches@" README.md
+          # LMCache: version in the diagram AND the table row
+          sed -i "s@\[v[0-9.]* + [0-9]* AMD patches\]@[${LMCACHE} + ${LMCACHE_PATCHES} AMD patches]@" README.md
+          sed -i "s@(upstream) | \`v[0-9.]*\` + [0-9]* AMD patches@(upstream) | \`${LMCACHE}\` + ${LMCACHE_PATCHES} AMD patches@" README.md
           # NIXL version in table row
           sed -i "s|\`v[0-9.]*\` + \`nixl-rocm|\`${NIXL}\` + \`nixl-rocm|" README.md
+          # llm-emu (emulation plugin) table row
+          sed -i "s@(emulation plugin) | \`[0-9a-f]*\` + [0-9]* AMD patches@(emulation plugin) | \`${LLM_EMU}\` + ${LLM_EMU_PATCHES} AMD patches@" README.md
 
       - name: Open PR if README changed
         uses: peter-evans/create-pull-request@v7
