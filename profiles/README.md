@@ -14,15 +14,19 @@ ships inside `llm-emu` itself.
 
 | Pack | GPU | Model | Notes |
 | --- | --- | --- | --- |
-| `MI300X-Qwen3-8B.json` | AMD Instinct MI300X (gfx942) | `Qwen/Qwen3-8B` | AIC default; captured 2026-07-30 with `make profile-capture` (13 400 step samples; prefix caching off) |
+| `MI300X-Qwen3-8B.json` | AMD Instinct MI300X (gfx942) | `Qwen/Qwen3-8B` | AIC default; captured 2026-07-30 with `make profile-capture` (13 400 step samples, KV-depth aware, prefix caching off) |
 | `A40-Q8-Qwen3-8B.json` | NVIDIA A40 | `Qwen/Qwen3-8B` | upstream example, from the `llm-emu` repo (not in this directory) |
 
-Accuracy of the shipped MI300X pack, measured by `make emulate-validate`
-(real MI300X vs emulated, same benchmark points): TTFT within ~2% at
-concurrency 16 and ~40% at the extremes, TPOT within ~15% at concurrency 1-8
-and +50% at concurrency 16. Good enough to study scheduling and admission
-behavior, not a substitute for a real benchmark — see
-[../docs/EMULATE.md](../docs/EMULATE.md) §4.2 for where the error comes from.
+Accuracy of the shipped MI300X pack, measured by `make emulate-validate` (real
+MI300X vs emulated, same benchmark points): every metric within **15%** at
+concurrency 1 and 8 (TTFT -14.7%/-8.5%, TPOT +7.0%/+8.1%, throughput
+-5.1%/-2.2%), but still ~40% out on TTFT and TPOT at concurrency 16. Good enough
+to study scheduling and admission behavior at low concurrency, not a substitute
+for a real benchmark — see [../docs/EMULATE.md](../docs/EMULATE.md) §4.2.
+
+The pack is self-describing: it records the GPU (including the KV pool vLLM
+measured — 147 GiB here) and the serving configuration it was captured under, so
+a replay can be checked against the capture rather than trusted.
 
 ## Provenance
 
