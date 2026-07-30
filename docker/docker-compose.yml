@@ -67,14 +67,14 @@
 #   VLLM_EXTRA_ARGS            — extra vllm args appended verbatim (e.g. --hf-overrides ...)
 #   TENSOR_PARALLEL_SIZE       — vllm --tensor-parallel-size (default: 1)
 #
-# Emulation mode (profile-driven, no GPU required):
-#   docker compose --profile emulate up vllm-emulator
-#
-# Required env (emulation mode):
-#   VLLM_EMULATOR_PROFILE_PACK — path to a profile pack JSON (e.g. from llm-emu profiling tools)
-#   VLLM_MODEL                 — model name/path to serve (must match the profile pack)
+# Emulation mode (profile-driven, no GPU required — needs the `emulate` image):
+#   IMAGE_NAME=rocm-aic:7.14-emulate docker compose --profile emulate up vllm-emulator
 #
 # Optional env (emulation mode):
+#   VLLM_MODEL                 — model to serve; should match the profile pack
+#                                (default: Qwen/Qwen3-8B, matching the baked-in pack)
+#   VLLM_EMULATOR_PROFILE_PACK — container path to the profile pack JSON
+#                                (default: the A40/Qwen3-8B example baked into the image)
 #   VLLM_EMULATOR_MODE         — realtime (default, wall-clock sleep) or accelerated (instant)
 #   VLLM_EMULATOR_ORACLE_K     — kNN neighbour count or "auto" (default: 1)
 #   EMU_PROFILE_PACK_HOST      — host path to profile pack dir (mounted at /profiles)
@@ -333,27 +333,38 @@ services:
   # the offline profile pack instead of running real GPU kernels, so the full
   # scheduling / KV-cache / HTTP stack runs unmodified.
   #
-  # No /dev/kfd or /dev/dri devices needed — CPU-only nodes work fine.
+  # No /dev/kfd or /dev/dri devices needed — CPU-only nodes work fine.  Model
+  # WEIGHTS are never loaded either (vllm_emulator stubs load_model/profile_run),
+  # so only the HF config + tokenizer are fetched: an 8B model costs a few MB of
+  # download and no VRAM/RAM for parameters.
   #
-  # Usage:
+  # Usage (image built with `--target emulate`, see docker/Dockerfile):
   #   docker compose --profile emulate up vllm-emulator
   #
-  # Required env:
-  #   VLLM_EMULATOR_PROFILE_PACK — absolute container path to the profile pack JSON
-  #                                 (mount the host dir via EMU_PROFILE_PACK_HOST)
-  #   VLLM_MODEL                 — model name matching the profile pack
+  # Optional env:
+  #   VLLM_EMULATOR_PROFILE_PACK — container path to the profile pack JSON.
+  #                                Defaults to the MI300X/Qwen3-8B pack from
+  #                                profiles/, baked into the image.  The upstream
+  #                                NVIDIA A40 example is also present at
+  #                                /opt/llm-emu/profiles/A40-Q8-Qwen3-8B.json.
+  #                                For a pack that is not in the image, set
+  #                                EMU_PROFILE_PACK_HOST to its host dir and
+  #                                point this at /profiles/<pack>.json.
+  #   VLLM_MODEL                 — model to serve; should match the profile pack
   # ---------------------------------------------------------------------------
   vllm-emulator:
     profiles:
       - emulate
     image: ${IMAGE_NAME:-rocm-aic}
     container_name: aic-vllm-emulator
-    ports:
-      - "8000:8000"
-    # No GPU devices block — emulator runs on CPU.
+    # host net (like the vllm/lmcache services above) — vLLM's OpenAI API and
+    # /metrics land on host :8000 with no bridge/NAT in the way.
+    network_mode: host
+    # No devices/ipc/cap_add block: the emulator touches neither GPU nor IPC.
     volumes:
       - ${HF_HOME:-~/.cache/huggingface}:/hf
       - ${EMU_PROFILE_PACK_HOST:-/tmp}:/profiles:ro
+      - ${LOG:-../logs}/vllm-emulator:/var/log/aic-vllm-emulator
     environment:
       - HF_TOKEN=${HF_TOKEN:-}
       - HF_HOME=/hf
@@ -363,21 +374,32 @@ services:
       - VLLM_CACHE_ROOT=/hf/vllm
       - VLLM_CONFIG_ROOT=/hf/vllm_config
       - PYTHONHASHSEED=0
-      # llm-emu emulator activation flags
+      # llm-emu activation.  ENABLE_ORACLE switches on the platform plugin +
+      # torch.cuda shims + model-load stubs; EXECUTOR_HOOK swaps the forward
+      # pass for the profile-pack latency draw (patches/vllm/03-*.patch).
       - VLLM_EMULATOR_ENABLE_ORACLE=1
       - VLLM_EMULATOR_EXECUTOR_HOOK=1
-      - VLLM_EMULATOR_PROFILE_PACK=${VLLM_EMULATOR_PROFILE_PACK:-/profiles/profile.json}
+      - VLLM_EMULATOR_PROFILE_PACK=${VLLM_EMULATOR_PROFILE_PACK:-/opt/llm-emu/profiles/MI300X-Qwen3-8B.json}
       - VLLM_EMULATOR_MODE=${VLLM_EMULATOR_MODE:-realtime}
       - VLLM_EMULATOR_ORACLE_K=${VLLM_EMULATOR_ORACLE_K:-1}
+      # Pass-through form (no `=`): these reach the container only when set in
+      # the caller's environment.  Do NOT rewrite them as `VAR=${VAR:-}` -- an
+      # empty VLLM_EMULATOR_MEMORY used to abort the cuda_mock import, which
+      # vllm_emulator swallows, leaving the emulator half-installed (see
+      # patches/llm-emu/01-vllm-026-compat.patch).
+      - VLLM_EMULATOR_DEBUG
+      - VLLM_EMULATOR_MEMORY
       - PYTHONUNBUFFERED=1
-    # Use the standard vLLM OpenAI API entrypoint — the emulator hooks in via
-    # the vllm.platform_plugins entry point and executor hook env vars above.
+      - TZ=${TZ:-America/Edmonton}
+    # Standard vLLM OpenAI API entrypoint — the emulator wires itself in via the
+    # vllm.platform_plugins entry point and the env vars above.
     command: >
       --model ${VLLM_MODEL:-Qwen/Qwen3-8B}
         --host 0.0.0.0
         --port 8000
         --max-model-len ${VLM_MAX_MODEL_LEN:-4096}
         --max-num-batched-tokens ${VLM_MAX_NUM_BATCHED_TOKENS:-4096}
+        --gpu-memory-utilization ${VLM_GPU_MEMORY_UTILIZATION:-0.85}
         --disable-access-log-for-endpoints "/health,/metrics,/v1/models"
         ${VLLM_EXTRA_ARGS:-}
     healthcheck:

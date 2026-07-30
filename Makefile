@@ -214,8 +214,10 @@ EXPORT_TARBALL ?= $(CURDIR)/$(EXPORT_PREFIX)-$(_GEN_DATE)-$(_GIT_SHORT_REV)$(_GI
 .PHONY: help ensure-compose build up up-batch up-gds-l1 up-gds-l1-batch down logs logs-lmcache logs-vllm \
         ps shell-lmcache shell-vllm restart-vllm restart-lmcache cliff plot venv \
         monitoring-up monitoring-down monitoring-logs monitoring-build-exporters \
-        dist-build dist-build-fast dist-build-exporters dist-push smoke-test smoke-test-fast \
-        tiny-test tiny-test-fast install-ci-scripts cliff-submit cliff-short \
+        dist-build dist-build-fast dist-build-emulate dist-build-exporters dist-push \
+        smoke-test smoke-test-fast tiny-test tiny-test-fast \
+        emulate-test emulate-validate profile-capture \
+        install-ci-scripts cliff-submit cliff-short \
         cliff-kvd cliff-spur-l2 cliff-long-64k cliff-long-128k \
         export _check_hf_token _prep_dirs _check_gds_slab
 
@@ -250,6 +252,7 @@ help:
 	@echo "  (dist-build/dist-build-exporters/smoke-test submit via sbatch and log to logs/<job-id>/)"
 	@echo "  make dist-build        Build image (+ fabric exporters) on a Slurm build node, save tarballs"
 	@echo "  make dist-build-fast   Single-arch dev build (AIC_FAST_ARCH=$(AIC_FAST_ARCH), no exporters) -- faster iteration"
+	@echo "  make dist-build-emulate  Build the CPU-only emulation image (no GPU kernels compiled)"
 	@echo "  make dist-build-exporters  Build ONLY the nvme/rdma exporter images (no main rebuild)"
 	@echo "  make dist-push         Tag + push the built image (needs AIC_PUSH_REF)"
 	@echo "  make smoke-test        Load + smoke-test the image on a GPU+NVMe node"
@@ -258,6 +261,9 @@ help:
 	@echo "  make smoke-test-fast   Smoke-test the single-arch dev image (AIC_FAST_ARCH=$(AIC_FAST_ARCH))"
 	@echo "  make tiny-test         End-to-end serve check (MP stack + tiny model, one completion)"
 	@echo "  make tiny-test-fast    Fast variant of tiny-test"
+	@echo "  make emulate-test      Serve check of the emulation image on a CPU-only node (no GPU)"
+	@echo "  make profile-capture   Capture an AMD profile pack from a REAL GPU serve (gfx942/gfx950)"
+	@echo "  make emulate-validate  Replay a captured pack on CPU and diff vs the real-hardware run"
 	@echo "  make install-ci-scripts  Deploy .github/scripts/spur-*.sh to $(AIC_CI_LIB_DIR) (sudo if needed)"
 	@echo "  make cliff-submit      sbatch the full 3-arm cliff sweep -> logs/<job-id>/"
 	@echo "  make cliff-kvd         sbatch focused KVD cliff: shared prefix, sparse c ladder (1,8,32,64,128,250)"
@@ -474,6 +480,13 @@ dist-build-fast:               # Single-arch (AIC_FAST_ARCH) dev build -- fast e
 	@# A cut-down version of dist-build.
 	@$(MAKE) --no-print-directory dist-build \
 	    AIC_ROCM_ARCH='$(AIC_FAST_ARCH)' AIC_BUILD_EXPORTERS=0 AIC_UCX_FAST=1
+dist-build-emulate:            # Build the CPU-only emulation image on a Slurm build node
+	@# Dockerfile `emulate` stage + VLLM_TARGET_DEVICE=empty: vLLM + the llm-emu
+	@# plugin with NO GPU kernels compiled (no HIP kernels, no LMCache HIP ext, no
+	@# NIXL, no hsa-snoop).  Tagged separately (AIC_EMULATE_IMAGE, default
+	@# $(IMAGE_NAME):7.14-emulate) with its own tarball, so `make dist-build`'s
+	@# GPU image is untouched.  Pair with `make emulate-test`.
+	"$(DIST)" build-emulate
 
 dist-build-exporters:          # Build ONLY the fabric exporters (no main-image rebuild)
 	@# Rebuild just the nvme/rdma exporter images -- e.g. after `make dist-build`
@@ -504,6 +517,27 @@ tiny-test-fast:
 	@# Must pin the SAME AIC_ROCM_ARCH as dist-build-fast and smoke-test-fast.
 	@$(MAKE) --no-print-directory tiny-test \
 	    AIC_ROCM_ARCH='$(AIC_FAST_ARCH)'
+profile-capture:               # Capture an AMD profile pack from a REAL GPU serve
+	@# Runs the full image on a GPU node with VLLM_EMULATOR_TRACE_STEP_CYCLE=1 (real
+	@# weights, real kernels), drives a vllm bench serve sweep over input-length x
+	@# concurrency, and turns the step trace into a profile pack the emulator can
+	@# replay.  The pack, the raw trace and the real-hardware benchmark JSONs land in
+	@# AIC_CAPTURE_DIR.  AIC_ROCM_ARCH must match the built image tarball, e.g.
+	@#   AIC_ROCM_ARCH=gfx942 AIC_CAPTURE_NODE=<mi300x-node> make profile-capture
+	"$(DIST)" profile-capture
+
+emulate-validate:              # Replay a captured pack and diff against real hardware
+	@# Runs the capture's benchmark points against the emulator on a CPU node and
+	@# prints real-vs-emulated TTFT / TPOT / throughput deltas.  Needs the pack from
+	@# `make profile-capture`:
+	@#   AIC_VALIDATE_PACK=/scratch/$(USER)/images/profiles/<pack>.json make emulate-validate
+	"$(DIST)" emulate-validate
+
+emulate-test:                  # Serve check of the emulation image on a CPU-ONLY node
+	@# Brings up the compose `emulate` profile (no GPU, no weights loaded), asserts
+	@# a non-empty completion, and asserts the llm-emu executor hook -- not a real
+	@# forward pass -- produced it.  Needs `make dist-build-emulate` first.
+	"$(DIST)" emulate-test
 
 install-ci-scripts:            # Deploy .github/scripts/spur-*.sh to the runner's AIC_CI_LIB_DIR
 	@set -e; \

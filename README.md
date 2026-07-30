@@ -87,6 +87,24 @@ See [docs/QUICK_START.md](docs/QUICK_START.md) for the full step-by-step guide
 (build, start, benchmark, plot). For Slurm / SPUR cluster usage see
 [docs/SLURM_SPUR.md](docs/SLURM_SPUR.md).
 
+## Emulation mode (no GPU required)
+
+The stack can serve on a **CPU-only** node with the GPU forward pass replaced by
+a latency drawn from a profile pack captured on real hardware — the scheduler,
+KV-cache accounting and OpenAI API are the real thing, only the forward pass is
+faked. Useful for reproducing scheduling behavior, CI, and development without
+a GPU.
+
+```bash
+make dist-build-emulate   # CPU-only image; no GPU kernels compiled
+make emulate-test         # serve + assert on a Slurm CPU node
+```
+
+See [docs/EMULATE.md](docs/EMULATE.md) for how it works, its limits (output text
+is meaningless by design), and how to capture a profile pack for a new gfx with
+`make profile-capture` / `make emulate-validate`. Packs live in
+[profiles/](profiles/).
+
 ## Metrics & observability
 
 See [docs/METRICS_TELEMETRY.md](docs/METRICS_TELEMETRY.md) for the full
