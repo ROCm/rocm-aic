@@ -388,6 +388,12 @@ services:
       # patches/llm-emu/01-vllm-026-compat.patch).
       - VLLM_EMULATOR_DEBUG
       - VLLM_EMULATOR_MEMORY
+      # Trace the EMULATED run's own steps, so its batch composition can be
+      # diffed against the real capture's (that is how you find out whether a
+      # replay mismatch is the cost model or the scheduling).  Writes into the
+      # mounted log dir; unset = no tracing, no overhead.
+      - VLLM_EMULATOR_TRACE_STEP_CYCLE
+      - VLLM_EMULATOR_STEP_TRACE_OUTPUT
       - PYTHONUNBUFFERED=1
       - TZ=${TZ:-America/Edmonton}
     # Standard vLLM OpenAI API entrypoint — the emulator wires itself in via the

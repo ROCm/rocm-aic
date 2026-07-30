@@ -9,6 +9,7 @@ BPE
 Backticks
 Benchmarking
 BuildKit
+CPUs
 CUs
 Config
 Dockerfile
@@ -115,6 +116,7 @@ infiniband
 init
 inlined
 io
+isl
 kprobe
 kv
 kvd
@@ -133,6 +135,7 @@ nvme
 oF
 observability
 openai
+osl
 oss
 pagemap
 passwordless
@@ -148,6 +151,7 @@ rdma
 rebase
 rebasing
 recomputation
+reframes
 repo
 rocm
 sbatch
@@ -159,6 +163,7 @@ subpackages
 sudo
 tm
 tmp
+tok
 tokenizer
 tt
 unpatched
