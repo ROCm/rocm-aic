@@ -39,7 +39,9 @@ See [EMULATE.md](EMULATE.md) for the workflow these belong to.
 | `VLLM_EMULATOR_EXECUTOR_HOOK` | — | `1` swaps `UniProcExecutor.execute_model()` for the profile-pack latency draw |
 | `VLLM_EMULATOR_PROFILE_PACK` | `/opt/llm-emu/profiles/MI300X-Qwen3-8B.json` | Profile pack to replay (in-image path, or `/profiles/<pack>.json` with `EMU_PROFILE_PACK_HOST`) |
 | `VLLM_EMULATOR_MODE` | `realtime` | `realtime` sleeps for the predicted latency; `accelerated` resolves immediately |
-| `VLLM_EMULATOR_ORACLE_K` | `1` | Oracle neighbor count (`auto` for adaptive) |
+| `VLLM_EMULATOR_ORACLE_K` | `1` | Oracle neighbor count (`auto` for adaptive Shepard pooling) |
+| `VLLM_EMULATOR_ORACLE_MIN_SAMPLES` | `30` | Sample floor adaptive-K pools up to |
+| `VLLM_EMULATOR_ORACLE_IGNORE_KV` | — | `1` forces the 2-axis lookup, ignoring the pack's KV-depth tables (A/B a pack) |
 | `VLLM_EMULATOR_MEMORY` | from pack | Override the emulated device memory, bytes. Pass only when set — an empty value is not the same as unset |
 | `VLLM_EMULATOR_DEBUG` | — | `1` logs every oracle lookup |
 | `VLLM_EMULATOR_TRACE_STEP_CYCLE` | — | `1` records one step-latency sample per step on **real** hardware (profile capture); does not enable emulation |
@@ -58,6 +60,9 @@ See [EMULATE.md](EMULATE.md) for the workflow these belong to.
 | `AIC_CAPTURE_HF_HOME` | `<image-dir>/capture-hf` | HF cache for the capture serve (real weights, so size it accordingly) |
 | `AIC_CAPTURE_CONSTRAINT` / `AIC_CAPTURE_NODE` | `GFX942` / — | GPU node selection for the capture job |
 | `AIC_CAPTURE_MAX_MODEL_LEN` / `AIC_CAPTURE_MAX_BATCHED_TOKENS` / `AIC_CAPTURE_GPU_UTIL` | `8192` / `4096` / `0.85` | Serve flags baked into the captured pack |
+| `AIC_CAPTURE_EXTRA_ARGS` | `--no-enable-prefix-caching` | Extra serve flags for the capture; must match `AIC_VALIDATE_EXTRA_ARGS` |
 | `AIC_VALIDATE_PACK` | — | Pack scored by `make emulate-validate` (required) |
 | `AIC_VALIDATE_SWEEP` | 3 points | Benchmark points replayed for the real-vs-emulated diff |
 | `AIC_VALIDATE_REAL_DIR` | `<pack dir>/bench` | Real-hardware benchmark results to diff against |
+| `AIC_VALIDATE_EXTRA_ARGS` | `--no-enable-prefix-caching` | Extra serve flags for the replay; must match the capture |
+| `AIC_VALIDATE_ORACLE_K` | `1` | `VLLM_EMULATOR_ORACLE_K` for the replay |

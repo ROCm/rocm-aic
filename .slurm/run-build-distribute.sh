@@ -1438,8 +1438,8 @@ else
 fi
 
 # Prove the emulator -- not a real forward pass -- produced that output.
-# Grep a FILE, not a pipe: `grep -q` exits on the first match, the writer then
-# dies of SIGPIPE, and `set -o pipefail` reports the whole pipeline as failed --
+# Grep a FILE, not a pipe: \`grep -q\` exits on the first match, the writer then
+# dies of SIGPIPE, and \`set -o pipefail\` reports the whole pipeline as failed --
 # an intermittent false negative that depends on how big the log is.
 logfile="\${_logdir}/emulate-checks.log"
 compose --profile emulate logs --no-color --no-log-prefix vllm-emulator \
@@ -1702,8 +1702,14 @@ echo "[capture] using GPU index \${_gpu} (slurm ROCR_VISIBLE_DEVICES=\${ROCR_VIS
 
 stamp="\$(date +%Y%m%d-%H%M%S)"
 model_tag="\$(echo '${AIC_CAPTURE_MODEL}' | tr '/' '-')"
-trace="/trace/step-trace-\${model_tag}-\${stamp}.jsonl"
-mkdir -p '${AIC_CAPTURE_DIR}/bench' '${AIC_CAPTURE_HF_HOME}'
+# Write the trace to NODE-LOCAL disk, not the shared filesystem: the tracer
+# writes from inside the engine loop, and a shared-FS stall shows up as a
+# fabricated multi-hundred-ms "step" in the very next sample.  Copied to
+# AIC_CAPTURE_DIR when the run ends.
+trace_local_host="/var/tmp/aic-capture-\${SLURM_JOB_ID:-\$\$}"
+trace_name="step-trace-\${model_tag}-\${stamp}.jsonl"
+trace="/tracelocal/\${trace_name}"
+mkdir -p "\${trace_local_host}" '${AIC_CAPTURE_DIR}/bench' '${AIC_CAPTURE_HF_HOME}'
 
 cleanup() {
     docker logs aic-vllm-capture > "\${_logdir}/capture-vllm.log" 2>&1 || true
@@ -1719,6 +1725,7 @@ docker run -d --name aic-vllm-capture \
     --security-opt seccomp=unconfined \
     -v '${AIC_CAPTURE_HF_HOME}':/hf \
     -v '${AIC_CAPTURE_DIR}':/trace \
+    -v "\${trace_local_host}":/tracelocal \
     -e HF_HOME=/hf -e HF_HUB_CACHE=/hf/hub \
     -e VLLM_CACHE_ROOT=/hf/vllm -e VLLM_CONFIG_ROOT=/hf/vllm_config \
     -e HF_TOKEN='${HF_TOKEN:-}' -e HF_HUB_OFFLINE=0 -e TRANSFORMERS_OFFLINE=0 \
@@ -1758,8 +1765,8 @@ echo "[capture] endpoint ready; running the sweep ..."
 
 # Sanity: the tracer must have written its header (GPU + model metadata), or
 # the pack would come out with gpu=unknown and no model_config.
-# Grep a FILE, not a pipe: `grep -q` exits on the first match, `docker logs`
-# then dies of SIGPIPE, and `set -o pipefail` turns that into a false failure.
+# Grep a FILE, not a pipe: \`grep -q\` exits on the first match, \`docker logs\`
+# then dies of SIGPIPE, and \`set -o pipefail\` turns that into a false failure.
 docker logs aic-vllm-capture > "\${_logdir}/capture-startup.log" 2>&1 || true
 if grep -q '\[StepCycleTracer\] Header written' "\${_logdir}/capture-startup.log"; then
     grep -m1 '\[StepCycleTracer\] Header written' "\${_logdir}/capture-startup.log" | sed 's/^/[capture] /'
@@ -1798,11 +1805,13 @@ echo "[capture] sweep done (rc=\${sweep_rc}); stopping the server ..."
 docker stop -t 60 aic-vllm-capture >/dev/null 2>&1 || true
 sleep 5
 
-host_trace='${AIC_CAPTURE_DIR}'/"\$(basename "\${trace}")"
-if [ ! -s "\${host_trace}" ]; then
-    echo "[capture] FAIL: no trace records were written (\${host_trace})" >&2
+if [ ! -s "\${trace_local_host}/\${trace_name}" ]; then
+    echo "[capture] FAIL: no trace records were written" >&2
     exit 1
 fi
+cp "\${trace_local_host}/\${trace_name}" '${AIC_CAPTURE_DIR}'/
+rm -rf "\${trace_local_host}"
+host_trace='${AIC_CAPTURE_DIR}'/"\${trace_name}"
 echo "[capture] trace: \$(wc -l < "\${host_trace}") lines, \$(du -h "\${host_trace}" | cut -f1)"
 
 pack='${AIC_CAPTURE_DIR}'/"\${model_tag}-\${stamp}.json"
@@ -1811,7 +1820,7 @@ docker run --rm \
     -v '${AIC_CAPTURE_DIR}':/trace \
     --entrypoint python3 '${AIC_IMAGE}' \
     -m vllm_emulator.profile.build_serving_profile_filtered \
-    "\${trace}" "/trace/\$(basename "\${pack}")" \
+    "/trace/\${trace_name}" "/trace/\$(basename "\${pack}")" \
     2>&1 | sed 's/^/  [pack] /'
 [ "\${PIPESTATUS[0]}" -eq 0 ] || { echo "[capture] FAIL: profile-pack build failed" >&2; exit 1; }
 
@@ -1821,11 +1830,22 @@ docker run --rm -v '${AIC_CAPTURE_DIR}':/trace --entrypoint python3 '${AIC_IMAGE
 import json, sys
 from vllm_emulator.profile.loader import load_profile_pack
 p = load_profile_pack('/trace/\$(basename "\${pack}")')
-gpu = p.get('model_config', {}).get('gpu', {})
+mc = p.get('model_config', {})
+gpu = mc.get('gpu', {})
 cells = len(p.get('step_cycle_2d_distribution', []))
+cells3d = len(p.get('step_cycle_3d_distribution', []))
 samples = sum(c['num_samples'] for c in p.get('step_cycle_2d_distribution', []))
+kv_bytes = gpu.get('available_kv_cache_bytes')
 print(f\"pack OK: gpu={p.get('gpu_model')} model={p.get('model_name')} \"
-      f\"cells={cells} samples={samples} mem={gpu.get('gpu_memory_bytes')} cu={gpu.get('gpu_sm_count')}\")
+      f\"cells={cells} (3d {cells3d}) samples={samples} \"
+      f\"mem={gpu.get('gpu_memory_bytes')} cu={gpu.get('gpu_sm_count')}\")
+print(f\"  measured KV pool: {kv_bytes} bytes\" if kv_bytes else
+      \"  WARNING: no available_kv_cache_bytes in the pack -- the emulator will \"
+      \"ESTIMATE the KV pool, so its admission point will not match the capture\")
+print(f\"  captured under: max_num_batched_tokens={mc.get('max_num_batched_tokens')} \"
+      f\"prefix_caching={mc.get('enable_prefix_caching')} \"
+      f\"async_scheduling={mc.get('async_scheduling')} \"
+      f\"kv_cache_dtype={mc.get('kv_cache_dtype')} vllm={mc.get('vllm_version')}\")
 if p.get('gpu_model') in (None, 'unknown') or not cells:
     sys.exit('pack is missing GPU identity or has no cells')
 " 2>&1 | sed 's/^/[capture] /'
@@ -1837,9 +1857,12 @@ model                 : ${AIC_CAPTURE_MODEL}
 image                 : ${AIC_IMAGE}
 node                  : \$(hostname)
 serve flags           : --max-model-len ${AIC_CAPTURE_MAX_MODEL_LEN} --max-num-batched-tokens ${AIC_CAPTURE_MAX_BATCHED_TOKENS} --gpu-memory-utilization ${AIC_CAPTURE_GPU_UTIL} --attention-backend TRITON_ATTN ${AIC_CAPTURE_EXTRA_ARGS}
-env                   : VLLM_ROCM_USE_AITER=1, no async scheduling, kv-cache-dtype auto
+env                   : VLLM_ROCM_USE_AITER=1
+                        (the effective serving config -- async scheduling, prefix
+                        caching, kv-cache-dtype, KV pool size -- is recorded
+                        inside the pack itself, under model_config)
 sweep (isl,osl,c,n)   : ${AIC_CAPTURE_SWEEP}
-trace                 : \$(basename "\${trace}")
+trace                 : \${trace_name}
 real-hardware results : bench/real-\${model_tag}-*.json
 META
 echo "[capture] wrote \${pack%.json}.capture.txt"

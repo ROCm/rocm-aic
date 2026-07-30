@@ -123,10 +123,23 @@ Then use it like any vLLM endpoint on `:8000`. Useful env:
 
 ## 3. Profile packs
 
-A pack buckets measured step latencies by **(batch total tokens × concurrency)**,
-split into prefill and decode, and stores the raw samples per cell. At serve
-time the oracle looks up the cell for the batch the scheduler just built and
-draws a latency from it.
+A pack buckets measured step latencies by **(batch total tokens × concurrency ×
+KV depth)**, split into prefill and decode, and stores the raw samples per cell.
+At serve time the oracle looks up the cell for the batch the scheduler just
+built and draws a latency from it.
+
+The third axis, `sum_kv`, is the total KV depth of the batch. It matters more
+than it looks: on MI300X/Qwen3-8B the deep-context quartile of a *single*
+(tokens, concurrency) cell runs 1.13x-1.45x slower than the shallow quartile,
+worst at high concurrency. Packs also carry the 2-axis tables for compatibility;
+set `VLLM_EMULATOR_ORACLE_IGNORE_KV=1` to force the old behavior (useful when
+comparing two packs). Build with `--kv-bucket-width 0` to omit the 3-axis tables.
+
+A pack is **self-describing**: alongside the latency cells it records the GPU
+(name, memory, CUs, and the KV pool vLLM actually measured) and the serving
+configuration it was captured under (`max_num_batched_tokens`, `max_num_seqs`,
+prefix caching, chunked prefill, `kv_cache_dtype`, async scheduling,
+`gpu_memory_utilization`, vLLM version).
 
 Packs baked into the image, under `/opt/llm-emu/profiles/`:
 
@@ -154,6 +167,9 @@ AIC_ROCM_ARCH=gfx950 AIC_CAPTURE_CONSTRAINT=GFX950 \
 This runs a **real serve on a real GPU** with `VLLM_EMULATOR_TRACE_STEP_CYCLE=1`
 — a passive measurement; the emulator itself is *not* enabled — drives a
 `vllm bench serve` sweep, and converts the resulting step trace into a pack.
+The trace is written to node-local disk and copied at the end: the tracer writes
+from inside the engine loop, so a shared-filesystem stall would be recorded as a
+fabricated multi-hundred-millisecond step.
 Everything lands in `AIC_CAPTURE_DIR` (default
 `/scratch/$USER/images/profiles/`):
 
@@ -203,19 +219,23 @@ prints real-vs-emulated deltas. From the shipped MI300X pack:
 
 ```text
 point                             metric                 real     emulated   delta
-Qwen-Qwen3-8B-isl1024-osl128-c1   mean_ttft_ms          53.98        44.79   -17.0%
-Qwen-Qwen3-8B-isl1024-osl128-c1   mean_tpot_ms           5.15         5.82   +13.0%
-Qwen-Qwen3-8B-isl1024-osl128-c16  mean_ttft_ms         328.64       330.77    +0.6%
-Qwen-Qwen3-8B-isl1024-osl128-c16  mean_tpot_ms           8.62        13.42   +55.8%
-Qwen-Qwen3-8B-isl4096-osl128-c8   mean_ttft_ms         810.35       488.90   -39.7%
-Qwen-Qwen3-8B-isl4096-osl128-c8   mean_tpot_ms          12.00        10.31   -14.1%
+Qwen-Qwen3-8B-isl1024-osl128-c1   mean_ttft_ms          53.23        45.42   -14.7%
+Qwen-Qwen3-8B-isl1024-osl128-c1   mean_tpot_ms           5.11         5.47    +7.0%
+Qwen-Qwen3-8B-isl1024-osl128-c1   output_throughput    182.22       172.98    -5.1%
+Qwen-Qwen3-8B-isl1024-osl128-c16  mean_ttft_ms         332.17       202.78   -39.0%
+Qwen-Qwen3-8B-isl1024-osl128-c16  mean_tpot_ms           8.65        12.13   +40.2%
+Qwen-Qwen3-8B-isl1024-osl128-c16  output_throughput   1428.31      1172.75   -17.9%
+Qwen-Qwen3-8B-isl4096-osl128-c8   mean_ttft_ms         828.31       757.76    -8.5%
+Qwen-Qwen3-8B-isl4096-osl128-c8   mean_tpot_ms          12.04        13.01    +8.1%
+Qwen-Qwen3-8B-isl4096-osl128-c8   output_throughput    433.14       423.74    -2.2%
 ```
 
 The upstream paper reports ±1-2% on TPOT/ITL and ~±10% on TTFT for packs built
 from hours of ShareGPT traffic (~46 k prefill and ~232 k decode samples). Our
 20-minute synthetic sweep gets an order of magnitude fewer samples and lands
-within ~15% on TPOT at low concurrency and ~±40% on TTFT, degrading to +50% on
-TPOT at concurrency 16. Treat a fresh pack as **directionally useful, not
+within ~15% on every metric at concurrency 1 and 8, but is still ~40% out on
+both TTFT and TPOT at concurrency 16 — it finishes queued prefills too fast and
+decodes too slowly there. Treat a fresh pack as **directionally useful, not
 quantitatively trustworthy**, until you have validated it at the concurrencies
 you care about.
 
@@ -225,13 +245,11 @@ Where the remaining error comes from, in rough order:
    more distinct input lengths is the first lever;
    `VLLM_EMULATOR_ORACLE_K=auto` (adaptive-K pooling) is the second, worth a few
    percent.
-2. **The pack keys on `(scheduled tokens x concurrency)` only.** `sum_kv` — the
-   attention depth of the batch — is recorded in the trace but not used for
-   bucketing, so a decode step over 4 k-token contexts is modeled the same as
-   one over 200-token contexts. This is the main gap for KV-cache-cliff work and
-   shows up as TPOT error that grows with concurrency and context length.
-3. **The emulator serializes steps** on a virtual GPU timeline, so it cannot
+2. **The emulator serializes steps** on a virtual GPU timeline, so it cannot
    reproduce whatever CPU/GPU overlap the real engine achieved.
+3. **Bucket resolution.** `--kv-bucket-width` (default 4096) and
+   `--conc-bucket-width` (default 5) trade cell resolution against samples per
+   cell. Narrow them only if the capture has the samples to fill them.
 
 ### 4.3 Ship it
 

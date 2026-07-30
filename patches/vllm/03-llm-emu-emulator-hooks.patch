@@ -27,10 +27,10 @@
 # deliberately dropped (paper-benchmark scaffolding, no emulator function).
 #
 diff --git a/vllm/v1/engine/core.py b/vllm/v1/engine/core.py
-index 476f53d..e7e4275 100644
+index 476f53d..568bf93 100644
 --- a/vllm/v1/engine/core.py
 +++ b/vllm/v1/engine/core.py
-@@ -228,6 +228,42 @@ class EngineCore:
+@@ -228,6 +228,58 @@ class EngineCore:
  
          self.aborts_queue = queue.Queue[list[str]]()
  
@@ -62,7 +62,23 @@ index 476f53d..e7e4275 100644
 +                        "/tmp/emulator_step_trace.jsonl",
 +                    )
 +                )
-+                self._emulator_step_tracer.write_header(vllm_config)
++                # available_gpu_memory_for_kv_cache is the KV pool this GPU
++                # actually measured (set by _initialize_kv_caches above).  The
++                # emulator prefers it over estimating the pool from total
++                # memory, which is what makes a replayed KV-admission point
++                # land where the real one did.  Older vllm_emulator builds do
++                # not take **extra, hence the fallback.
++                try:
++                    self._emulator_step_tracer.write_header(
++                        vllm_config,
++                        available_kv_cache_bytes=(
++                            self.available_gpu_memory_for_kv_cache
++                            if self.available_gpu_memory_for_kv_cache > 0
++                            else None
++                        ),
++                    )
++                except TypeError:
++                    self._emulator_step_tracer.write_header(vllm_config)
 +            except ImportError:
 +                logger.warning(
 +                    "VLLM_EMULATOR_TRACE_STEP_CYCLE is set but the "
@@ -73,7 +89,7 @@ index 476f53d..e7e4275 100644
          self._idle_state_callbacks: list[Callable] = []
  
          # Mark the startup heap as static so that it's ignored by GC.
-@@ -585,6 +621,8 @@ class EngineCore:
+@@ -585,6 +637,8 @@ class EngineCore:
          if not self.scheduler.has_requests():
              return {}, False
          scheduler_output = self.scheduler.schedule(self._should_throttle_prefills())
@@ -82,7 +98,7 @@ index 476f53d..e7e4275 100644
          future = self.model_executor.execute_model(scheduler_output, non_block=True)
          grammar_output = self.scheduler.get_grammar_bitmask(scheduler_output)
          with (
-@@ -593,7 +631,15 @@ class EngineCore:
+@@ -593,7 +647,15 @@ class EngineCore:
          ):
              model_output = future.result()
              if model_output is None:
@@ -98,7 +114,7 @@ index 476f53d..e7e4275 100644
  
          # Before processing the model output, process any aborts that happened
          # during the model execution.
-@@ -643,6 +689,8 @@ class EngineCore:
+@@ -643,6 +705,8 @@ class EngineCore:
          deferred_scheduler_output = None
          if self.scheduler.has_requests():
              scheduler_output = self.scheduler.schedule(self._should_throttle_prefills())
@@ -107,7 +123,7 @@ index 476f53d..e7e4275 100644
              with self.log_error_detail(scheduler_output):
                  exec_future = self.model_executor.execute_model(
                      scheduler_output, non_block=True
-@@ -692,6 +740,12 @@ class EngineCore:
+@@ -692,6 +756,12 @@ class EngineCore:
          ):
              model_output = future.result()
              if model_output is None:
@@ -120,7 +136,7 @@ index 476f53d..e7e4275 100644
                  # None from sample_tokens() implies that the original execute_model()
                  # call failed - raise that exception.
                  exec_model_fut.result()
-@@ -1399,6 +1453,11 @@ class EngineCoreProc(EngineCore):
+@@ -1399,6 +1469,11 @@ class EngineCoreProc(EngineCore):
      def _process_engine_step(self) -> bool:
          """Called only when there are unfinished local requests."""
  
@@ -132,7 +148,7 @@ index 476f53d..e7e4275 100644
          # Step the engine core.
          outputs, model_executed = self.step_fn()
          # Put EngineCoreOutputs into the output queue.
-@@ -1407,6 +1466,9 @@ class EngineCoreProc(EngineCore):
+@@ -1407,6 +1482,9 @@ class EngineCoreProc(EngineCore):
          # Post-step hook.
          self.post_step(model_executed)
  
@@ -142,7 +158,7 @@ index 476f53d..e7e4275 100644
          # If no model execution happened but there is still scheduler work
          # (e.g. WAITING_FOR_REMOTE_KVS or delayed KV connector frees), yield
          # the GIL briefly to allow background transfer threads to make progress.
-@@ -1415,6 +1477,33 @@ class EngineCoreProc(EngineCore):
+@@ -1415,6 +1493,33 @@ class EngineCoreProc(EngineCore):
  
          return model_executed
  
