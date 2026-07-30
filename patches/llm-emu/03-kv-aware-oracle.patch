@@ -1,35 +1,5 @@
-# Make the oracle KV-aware: bucket step latency on (tokens, concurrency, sum_kv).
-#
-# The pack keyed step latency on (scheduled tokens x concurrency) only, and the
-# oracle sampled uniformly inside that cell.  But sum_kv -- the batch's total KV
-# depth, already recorded in every trace record and already passed to
-# estimate_step_latency_us() -- explains a large part of the within-cell spread.
-# Measured on the MI300X/Qwen3-8B capture, high-sum_kv quartile vs low-sum_kv
-# quartile of a SINGLE cell:
-#
-#     cell (tt=1,  conc=2)   5021us -> 5666us   1.13x
-#     cell (tt=16, conc=17)  6494us -> 7339us   1.13x
-#     cell (tt=8,  conc=7)   6344us -> 7989us   1.26x
-#     cell (tt=64, conc=62)  8233us -> 11925us  1.45x
-#
-# i.e. a decode step over 4k-token contexts was modelled identically to one over
-# 200-token contexts, and the error grew exactly where emulation is most used:
-# high concurrency, deep context, the KV-cache cliff.
-#
-# The builder now also emits {prefill,decode,step_cycle}_3d_distribution keyed by
-# (tt, conc, kv) with --kv-bucket-width (default 4096, 0 disables), and the
-# oracle prefers those tables, falling back to the 2D ones for older packs or
-# when VLLM_EMULATOR_ORACLE_IGNORE_KV=1.  The 2D tables are still emitted
-# unchanged, so an unpatched oracle reads a new pack exactly as before.
-#
-# Back-test replaying all 13 400 captured steps through the oracle and comparing
-# against the measured latency of each step:
-#
-#     2D (tt, conc)        MAE 31.1%   median |err| 4.2%   prefill MAE 22.2%
-#     3D (tt, conc, kv)    MAE 25.7%   median |err| 1.1%   prefill MAE 12.6%
-#
 diff --git a/vllm_emulator/oracle/gpu_cost_oracle.py b/vllm_emulator/oracle/gpu_cost_oracle.py
-index 8437315..5dfb957 100644
+index 8437315..4773139 100644
 --- a/vllm_emulator/oracle/gpu_cost_oracle.py
 +++ b/vllm_emulator/oracle/gpu_cost_oracle.py
 @@ -96,10 +96,40 @@ class ProfileGpuCostOracle(BaseGpuCostOracle):
@@ -74,7 +44,7 @@ index 8437315..5dfb957 100644
              for bucket in table.values():
                  raw = bucket.get("samples")
                  if raw:
-@@ -268,6 +298,88 @@ class ProfileGpuCostOracle(BaseGpuCostOracle):
+@@ -268,6 +298,77 @@ class ProfileGpuCostOracle(BaseGpuCostOracle):
                  break
          return self._sample(table[chosen_k].get("samples"))
  
@@ -100,70 +70,59 @@ index 8437315..5dfb957 100644
 +        else:
 +            return None
 +
-+        keys = list(table.keys())
-+        if not keys:
++        # Hierarchical, NOT Euclidean-over-normalised-axes.  The KV tables
++        # REFINE the 2D cell; they do not replace the metric.  A single
++        # normalised distance lets a kv mismatch outvote a tt mismatch, and
++        # since tt is the dominant cost driver for prefill that produced
++        # 4x-too-cheap prefill steps in replay: a query for
++        # (tt=4096, conc=17, kv=17k) was answered by a low-tt cell whose kv
++        # happened to match, instead of the tt=4096 cell whose kv did not.
++        # So: pick the tt exactly as the 2D path does, then the concurrency
++        # within that tt, and only then the nearest KV depth within that cell.
++        tts_in_table = sorted({k[0] for k in table})
++        if not tts_in_table:
 +            return None
-+        tts = [k[0] for k in keys]
-+        concs = [k[1] for k in keys]
-+        kvs = [k[2] for k in keys]
-+        tt_range = (max(tts) - min(tts)) or 1
-+        conc_range = (max(concs) - min(concs)) or 1
-+        kv_range = (max(kvs) - min(kvs)) or 1
++        if total_tokens <= tts_in_table[0]:
++            tt_near = tts_in_table[0]
++        elif total_tokens >= tts_in_table[-1]:
++            tt_near = tts_in_table[-1]
++        else:
++            tt_near = min(tts_in_table, key=lambda t: abs(t - total_tokens))
 +
-+        def _dist(k):
-+            dt = (k[0] - total_tokens) / tt_range
-+            dc = (k[1] - num_requests) / conc_range
-+            dk = (k[2] - sum_kv) / kv_range
-+            return (dt * dt + dc * dc + dk * dk) ** 0.5
++        concs = sorted({k[1] for k in table if k[0] == tt_near})
++        if not concs:
++            return None
++        conc_near = min(concs, key=lambda c: abs(c - num_requests))
 +
-+        ranked = sorted(((_dist(k), k) for k in keys), key=lambda x: x[0])
++        kv_keys = [k for k in table
++                   if k[0] == tt_near and k[1] == conc_near and table[k].get("samples")]
++        if not kv_keys:
++            return None
++        kv_keys.sort(key=lambda k: abs(k[2] - sum_kv))
 +
 +        if self._oracle_k_mode == "auto":
-+            floor = self._oracle_k_min_samples
-+        elif self._oracle_k > 1:
-+            floor = 0
++            # Pool outwards along the KV axis only, nearest first, until the
++            # sample floor is met -- so a thin kv sub-cell borrows from its
++            # neighbours in the same (tt, conc) cell rather than from some
++            # unrelated batch shape.
++            chosen, cum = [], 0
++            for k in kv_keys:
++                chosen.append(k)
++                cum += len(table[k]["samples"])
++                if cum >= self._oracle_k_min_samples:
++                    break
 +        else:
-+            # K=1: nearest populated cell.
-+            for _d, k in ranked:
-+                if table[k].get("samples"):
-+                    return self._sample(table[k]["samples"])
-+            return None
++            chosen = kv_keys[: max(self._oracle_k, 1)]
 +
-+        chosen = []
-+        cum = 0
-+        for d, k in ranked:
-+            n = len(table[k].get("samples") or [])
-+            if n == 0:
-+                continue
-+            chosen.append((d, k))
-+            cum += n
-+            if floor and cum >= floor:
-+                break
-+            if not floor and len(chosen) >= self._oracle_k:
-+                break
-+        if not chosen:
-+            return None
-+        if chosen[0][0] == 0.0 or len(chosen) == 1:
-+            return self._sample(table[chosen[0][1]].get("samples"))
-+
-+        weights = [1.0 / (d * d) for d, _ in chosen]
-+        total_w = sum(weights)
-+        if total_w == 0:
-+            return None
-+        r = self._rng.random() * total_w
-+        cum_w = 0.0
-+        chosen_k = chosen[-1][1]
-+        for (d, k), w in zip(chosen, weights):
-+            cum_w += w
-+            if r <= cum_w:
-+                chosen_k = k
-+                break
-+        return self._sample(table[chosen_k].get("samples"))
++        if len(chosen) == 1:
++            return self._sample(table[chosen[0]]["samples"])
++        pooled = [s for k in chosen for s in table[k]["samples"]]
++        return self._sample(pooled)
 +
      def estimate_step_latency_us(
          self, total_tokens: int,
          has_prefill: bool = False,
-@@ -280,10 +392,17 @@ class ProfileGpuCostOracle(BaseGpuCostOracle):
+@@ -280,10 +381,17 @@ class ProfileGpuCostOracle(BaseGpuCostOracle):
          if total_tokens <= 0:
              return 0.0
  
@@ -186,20 +145,26 @@ index 8437315..5dfb957 100644
              result = 0.0
          _dbg(
 diff --git a/vllm_emulator/profile/build_serving_profile_filtered.py b/vllm_emulator/profile/build_serving_profile_filtered.py
-index 9d6e6c6..851ced5 100644
+index 9d6e6c6..8953afd 100644
 --- a/vllm_emulator/profile/build_serving_profile_filtered.py
 +++ b/vllm_emulator/profile/build_serving_profile_filtered.py
-@@ -29,6 +29,9 @@ def parse_args():
+@@ -29,6 +29,15 @@ def parse_args():
                          help="Total-tokens bucket width (default: 1, no bucketing)")
      parser.add_argument("--conc-bucket-width", type=int, default=5,
                          help="Concurrency bucket width (default: 5)")
++    parser.add_argument("--warmup-skip", type=int, default=25,
++                        help="Drop the first N step records: the engine's first "
++                             "steps include one-off warm-up work (we have "
++                             "measured a 2.3s 'prefill' among them) that would "
++                             "otherwise poison a bucket the oracle samples "
++                             "uniformly from (default: 25, 0 keeps everything)")
 +    parser.add_argument("--kv-bucket-width", type=int, default=4096,
 +                        help="sum_kv bucket width for the 3D distributions "
 +                             "(default: 4096; 0 disables the 3D tables)")
      return parser.parse_args()
  
  
-@@ -116,6 +119,30 @@ def build_2d_distribution(data, label):
+@@ -116,10 +125,39 @@ def build_2d_distribution(data, label):
      return distribution
  
  
@@ -230,7 +195,16 @@ index 9d6e6c6..851ced5 100644
  def main():
      args = parse_args()
  
-@@ -136,11 +163,21 @@ def main():
+     trace_header, records = load_trace(args.step_cycle_file)
++    if args.warmup_skip and len(records) > args.warmup_skip:
++        dropped, records = records[:args.warmup_skip], records[args.warmup_skip:]
++        worst = max((r["step_cycle_us"] for r in dropped), default=0) / 1000.0
++        print(f"Dropped {len(dropped)} warm-up records "
++              f"(worst {worst:.1f}ms); {len(records)} remain")
+     model_name, gpu_model, model_config = extract_metadata(
+         trace_header, args.model_name, args.gpu_model)
+ 
+@@ -136,11 +174,21 @@ def main():
      def conc_bucket(n):
          return (n // conc_w) * conc_w + conc_w // 2
  
@@ -252,7 +226,7 @@ index 9d6e6c6..851ced5 100644
  
      for r in records:
          tt = r["total_tokens"]
-@@ -150,17 +187,29 @@ def main():
+@@ -150,17 +198,29 @@ def main():
              conc = 1
          ttb = tt_bucket(tt)
          cb = conc_bucket(conc)
@@ -282,7 +256,7 @@ index 9d6e6c6..851ced5 100644
      if step_cycle_dist:
          tt_set = sorted({e["tt"] for e in step_cycle_dist})
          conc_set = sorted({e["conc"] for e in step_cycle_dist})
-@@ -176,11 +225,19 @@ def main():
+@@ -176,11 +236,19 @@ def main():
          "bucketing": {
              "tt_bucket_width": tt_w,
              "conc_bucket_width": conc_w,

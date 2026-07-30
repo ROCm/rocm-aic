@@ -224,6 +224,12 @@ of `input_len,output_len,concurrency,num_prompts` points. Rules of thumb:
 
 ### 4.2 Validate — always
 
+Set `VLLM_EMULATOR_TRACE_STEP_CYCLE=1` on the *emulated* service (the compose
+`emulate` profile passes it through) to record the replay's own steps. Diffing
+that trace against the capture's — step counts, prefill/decode split, per-step
+medians — localises a mismatch to scheduling, cost model, or reference noise in
+one run. That is how the prefill lookup bug above was found.
+
 ```bash
 AIC_VALIDATE_PACK=/scratch/$USER/images/profiles/<pack>.json make emulate-validate
 ```
@@ -253,6 +259,14 @@ decodes too slowly there. Treat a fresh pack as **directionally useful, not
 quantitatively trustworthy**, until you have validated it at the concurrencies
 you care about.
 
+> [!IMPORTANT]
+> **Read TPOT first.** Two runs of the *same* benchmark point on the *same*
+> MI300X differed by +215% on TTFT and −34% on throughput (cold engine vs warm,
+> on a shared node) while TPOT moved 1.9%. So TPOT is the metric worth tuning
+> against; TTFT and throughput deltas smaller than about 35% are inside the
+> reference's own run-to-run spread. Lead `AIC_CAPTURE_SWEEP` with a throwaway
+> warm-up point, and repeat the reference before believing a TTFT delta.
+
 Where the remaining error comes from, in rough order:
 
 1. **Sample count.** Thin cells make the oracle's draw noisy. More prompts and
@@ -261,7 +275,12 @@ Where the remaining error comes from, in rough order:
    percent.
 2. **The emulator serializes steps** on a virtual GPU timeline, so it cannot
    reproduce whatever CPU/GPU overlap the real engine achieved.
-3. **Bucket resolution.** `--kv-bucket-width` (default 4096) and
+3. **Not scheduling.** Diffing an emulated step trace against a real one for the
+   same point (see below) showed 400 steps against 400 and 20 prefill-bearing
+   steps against 23 — the emulated engine builds the same batches, because it is
+   the same scheduler. Per-step decode cost matched to 0.7%. If a replay is off,
+   suspect the cost model or the reference, not the scheduler.
+4. **Bucket resolution.** `--kv-bucket-width` (default 4096) and
    `--conc-bucket-width` (default 5) trade cell resolution against samples per
    cell. Narrow them only if the capture has the samples to fill them.
 
