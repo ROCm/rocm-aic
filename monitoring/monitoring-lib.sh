@@ -68,18 +68,33 @@ ensure_compose() {
 }
 
 mon_profile() {  # echo the compose --profile args for the exporter fleet
-    [[ "${AIC_EXPORTERS}" == "1" ]] || return 0
-    # AIC_CPU_SMOKE=1: use the cpu-only exporter subset (node+nvme+rdma, no GPU
-    # exporters).  Default: full exporters profile (includes amdgpu + hsa-snoop).
-    if [[ "${AIC_CPU_SMOKE:-0}" == "1" ]]; then
-        printf -- '--profile\nexporters-cpu\n'
-    else
-        printf -- '--profile\nexporters\n'
-    fi
-    # Also enable the fabric exporters (nvme/rdma) when their images are provided
-    # (built by run-build-distribute.sh build-exporters, loaded on the node).
-    [[ -n "${AIC_NVME_EXPORTER_IMAGE:-}${AIC_RDMA_EXPORTER_IMAGE:-}" ]] \
-        && printf -- '--profile\nexporters-fabric\n'
+    case "${AIC_EXPORTERS}" in
+    1)
+        # Full exporter fleet: node-exporter, amdgpu, hsa-snoop (all require pid:host).
+        # Use only on nodes where the spur-authz plugin allows --pid=host.
+        #
+        # AIC_CPU_SMOKE=1: use the cpu-only exporter subset (node+nvme+rdma, no GPU
+        # exporters).  Default: full exporters profile (includes amdgpu + hsa-snoop).
+        if [[ "${AIC_CPU_SMOKE:-0}" == "1" ]]; then
+            printf -- '--profile\nexporters-cpu\n'
+        else
+            printf -- '--profile\nexporters\n'
+        fi
+        # Also enable the fabric exporters (nvme/rdma) when their images are provided
+        # (built by run-build-distribute.sh build-exporters, loaded on the node).
+        [[ -n "${AIC_NVME_EXPORTER_IMAGE:-}${AIC_RDMA_EXPORTER_IMAGE:-}" ]] \
+            && printf -- '--profile\nexporters-fabric\n'
+        ;;
+    safe)
+        # Safe subset: amdgpu-exporter + rdma-exporter only.  These do NOT use
+        # pid:host so they work on SPUR nodes where spur-authz blocks host-namespace
+        # containers.  Provides GPU metrics (amd_*) and RDMA port counters.
+        printf -- '--profile\nexporters-safe\n'
+        # rdma-exporter image only loaded when AIC_RDMA_EXPORTER_IMAGE is set
+        # (built by run-build-distribute.sh build-exporters).
+        ;;
+    esac
+    # 0 or unset: no exporters
 }
 
 # Compose service container_names -- used to sweep up any leftovers from a

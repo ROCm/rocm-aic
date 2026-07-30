@@ -96,7 +96,7 @@ services:
   amdgpu-exporter:
     image: ${AIC_AMDGPU_EXPORTER_IMAGE:-rocm/device-metrics-exporter:v1.5.1}
     container_name: aic-amdgpu-exporter
-    profiles: ["exporters"]
+    profiles: ["exporters", "exporters-safe"]
     network_mode: host
     restart: unless-stopped
     devices:
@@ -149,7 +149,7 @@ services:
     # matches the built image; only built/pulled under `exporters-fabric`.
     image: ${AIC_RDMA_EXPORTER_IMAGE:-aic-rdma-exporter:local}
     container_name: aic-rdma-exporter
-    profiles: ["exporters-fabric", "exporters-cpu"]
+    profiles: ["exporters-fabric", "exporters-cpu", "exporters-safe"]
     network_mode: host
     restart: unless-stopped
     volumes:
@@ -167,9 +167,13 @@ services:
   hsa-snoop:
     image: ${AIC_HSA_SNOOP_IMAGE:-${IMAGE_NAME:-rocm-aic}}
     container_name: aic-hsa-snoop
-    profiles: ["exporters"]
+    profiles: ["exporters", "exporters-safe"]
     network_mode: host
-    pid: host
+    # SPUR authz blocks --pid=host ("host-namespace escape").  vLLM and lmcache share
+    # a PID namespace (vllm uses pid:service:lmcache), so hsa-snoop joining that same
+    # namespace via pid:container gives it visibility into both processes without needing
+    # host PID.  Falls back to pid:host (non-SPUR) via AIC_HSA_SNOOP_PID_MODE override.
+    pid: "${AIC_HSA_SNOOP_PID_MODE:-container:aic-lmcache}"
     privileged: true
     restart: unless-stopped
     devices:
