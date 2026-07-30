@@ -1,0 +1,485 @@
+# Let a KV connector (LMCache MP, NIXL, ...) run against an emulated vLLM.
+#
+# Emulation replaces the forward pass, and both halves of that replacement
+# break a KV connector:
+#
+#   1. cuda_mock's initialize_from_config stub allocates nothing, so
+#      ensure_kv_transfer_initialized() never runs (no worker-side connector
+#      exists) and register_kv_caches() is never called (no buffers to give
+#      it).
+#   2. The executor hook short-circuits before GPUModelRunner.execute_model,
+#      which is where vLLM drives the worker side of the connector
+#      (KVConnectorModelRunnerMixin._get_kv_connector_output:
+#      bind_connector_metadata / start_load_kv / wait_for_save /
+#      get_finished).  ModelRunnerOutput.kv_connector_output therefore stays
+#      None: the scheduler never learns an async load finished, so requests
+#      park in WAITING_FOR_REMOTE_KVS forever, and nothing is ever stored, so
+#      the cache stays empty and no request ever hits.
+#
+# Both are fixed here, and both are inert without --kv-transfer-config, so a
+# connector-free emulation run is unchanged.
+#
+# 1. cuda_mock._synthesize_kv_caches / _maybe_init_kv_connector
+#    A connector does not care that KV buffers live in VRAM; it cares about
+#    their shape, dtype and byte count, all of which vLLM has already computed
+#    and put in the KVCacheConfig.  So allocate them in HOST memory from that
+#    config and register those.  Contents are zeros; volumes are real, which
+#    is what makes the measured transfer cost real.
+#
+#    Note this must NOT go through GPUModelRunner.initialize_kv_cache(): its
+#    bind_kv_cache() resolves layer names against
+#    compilation_config.static_forward_context, which is populated by Attention
+#    module construction during load_model -- stubbed out here, so that dict is
+#    empty and the real path raises.
+#
+#    LMCache needs no changes to accept host buffers: with DEVICE_TYPE=cpu
+#    (see patches/lmcache/10-*.patch) its device detection resolves to
+#    StubCPUDevice, and lmcache/v1/platform/cpu/shm.py migrates a CPU tensor's
+#    storage into a POSIX SHM segment the mp server can map -- the same
+#    server-pull topology as HIP IPC, minus the GPU.  The emulator container
+#    needs `ipc: host` for that, since Docker isolates /dev/shm per container.
+#
+#    Sizing: these are the full pool vLLM asked for, which on a real MI300X
+#    pack is the captured available_kv_cache_bytes (~100+ GiB).  torch.zeros on
+#    CPU is lazily backed, so untouched blocks cost no resident memory;
+#    VLLM_EMULATOR_MEMORY shrinks the emulated pool -- and the emulated cliff --
+#    to fit the node, and VLLM_EMULATOR_KV_BUFFERS=0 opts out entirely.
+#
+# 2. executor_hook._kv_connector_step
+#    Reproduces the mixin's lifecycle around the emulated forward, and
+#    attaches the resulting KVConnectorOutput to the fake ModelRunnerOutput.
+#    should_use_oracle() now also fires on a zero-token batch that has
+#    connector metadata -- vLLM's kv_connector_no_forward() case, where every
+#    request is parked on an async load and only a connector poll can un-park
+#    them.  Skipping it is a deadlock, not an optimisation.
+#
+#    Known fidelity gap, documented in the code: the cycle runs synchronously
+#    on the engine thread (where vLLM runs it) rather than inside the
+#    threading.Timer modelling emulated compute time, so a store is submitted
+#    up to one step early.  Fine for hit rate, transfer volume and throughput;
+#    wrong for tight per-step store-latency attribution.
+#
+# 3. _stub_get_kv_cache_spec built FullAttentionSpec with model_config.dtype.
+#    The KV pool is sized in the CACHE dtype: --kv-cache-dtype fp8 reported
+#    bf16-sized pages, i.e. 2x page_size_bytes and 2x too few blocks for the
+#    same budget.  That moved the emulated KV-admission cliff on its own, and
+#    would now also missize every registered buffer.
+#
+diff --git a/vllm_emulator/cuda_mock.py b/vllm_emulator/cuda_mock.py
+index 05505e4..1c80c23 100644
+--- a/vllm_emulator/cuda_mock.py
++++ b/vllm_emulator/cuda_mock.py
+@@ -151,6 +151,155 @@ def _patch_gpu_model_runner(module):
+         cls.get_model = _stub_get_model
+ 
+ 
++def _kv_cache_dtype(cache_config, model_config):
++    """Resolve the KV-cache torch dtype the way vLLM's model runner does.
++
++    ``--kv-cache-dtype fp8`` halves page_size_bytes relative to the model
++    dtype, so getting this wrong moves the emulated KV-admission point and
++    missizes anything a KV connector registers.
++    """
++    try:
++        from vllm.utils.torch_utils import kv_cache_dtype_str_to_dtype
++        return kv_cache_dtype_str_to_dtype(cache_config.cache_dtype, model_config)
++    except Exception as e:
++        print(f"[EmulatorCudaMock] kv dtype fallback to model dtype: {e}")
++        return model_config.dtype
++
++
++# ---------------------------------------------------------------------------
++# Fake KV buffers for KV-connector emulation
++# ---------------------------------------------------------------------------
++# A KV connector (LMCache, NIXL, ...) is handed vLLM's paged KV tensors once,
++# at startup, via register_kv_caches().  Emulation never allocates them: the
++# executor hook fakes every step's output, so the buffers are dead weight --
++# until you want to emulate the connector too, at which point their absence is
++# the whole problem.  There is nothing device-specific about them from the
++# connector's point of view; they are paged byte buffers of a shape fixed by
++# (num_blocks, block_size, num_kv_heads, head_size, kv dtype), all of which
++# vLLM has already computed and put in the KVCacheConfig.  So synthesize them
++# in HOST memory and register those.
++#
++# LMCache in particular needs no changes to accept them: its device detection
++# resolves to StubCPUDevice, and lmcache/v1/platform/cpu/shm.py migrates a CPU
++# tensor's storage into a POSIX SHM segment so the mp server can map it --
++# the same server-pull topology as HIP IPC on a real GPU, minus the GPU.
++#
++# Sizing: these are the full pool vLLM asked for, which on a real MI300X pack
++# is the captured available_kv_cache_bytes (~100+ GiB).  torch.zeros on CPU is
++# lazily backed, so untouched blocks cost no resident memory and RSS grows
++# only as blocks are actually written.  VLLM_EMULATOR_MEMORY shrinks the
++# emulated pool -- and therefore the emulated cliff -- to fit the node.
++# VLLM_EMULATOR_KV_BUFFERS=0 opts out entirely (no connector emulation).
++
++def _synthesize_kv_caches(kv_cache_config) -> dict:
++    """Build {layer_name: host tensor} matching vLLM's paged KV layout.
++
++    Sized from ``kv_cache_config`` rather than from the HF config: vLLM has
++    already turned the memory budget into an exact per-tensor byte count, and
++    that count is what the connector will move.
++    """
++    import torch as _t
++    from vllm.v1.kv_cache_interface import AttentionSpec
++
++    spec_by_layer = {}
++    for group in kv_cache_config.kv_cache_groups:
++        for layer_name in group.layer_names:
++            spec_by_layer[layer_name] = group.kv_cache_spec
++
++    kv_caches: dict = {}
++    total_bytes = 0
++    for tensor_cfg in kv_cache_config.kv_cache_tensors:
++        if not tensor_cfg.shared_by:
++            continue
++        spec = spec_by_layer.get(tensor_cfg.shared_by[0])
++        if not isinstance(spec, AttentionSpec):
++            # Mamba / encoder-only / other non-attention groups: no paged KV
++            # for a connector to move, so nothing to fake.
++            continue
++        page_size = spec.page_size_bytes
++        if page_size <= 0:
++            continue
++        num_blocks = tensor_cfg.size // page_size
++        if num_blocks <= 0:
++            continue
++        shape = (2, num_blocks, spec.block_size, spec.num_kv_heads, spec.head_size)
++        buf = _t.zeros(shape, dtype=spec.dtype, device="cpu")
++        total_bytes += buf.numel() * buf.element_size()
++        for layer_name in tensor_cfg.shared_by:
++            kv_caches[layer_name] = buf
++
++    if kv_caches:
++        print(f"[EmulatorKVBuffers] synthesized {len(kv_caches)} layer buffers, "
++              f"{total_bytes / 1024**3:.1f} GiB of host-backed fake KV "
++              f"(lazily paged; cap with VLLM_EMULATOR_MEMORY)")
++    return kv_caches
++
++
++def _maybe_init_kv_connector(worker, kv_cache_config) -> None:
++    """Create the worker-side KV connector and register fake KV buffers.
++
++    The real Worker.initialize_from_config does exactly this before handing
++    off to the model runner; the emulator stub replaced the whole method, so
++    without this the worker-side connector is never constructed
++    (has_kv_transfer_group() stays False) and the executor hook has nothing to
++    drive.  No-op when the serve has no --kv-transfer-config.
++    """
++    if kv_cache_config is None:
++        return
++    vllm_config = getattr(worker, "vllm_config", None)
++    if vllm_config is None or getattr(vllm_config, "kv_transfer_config", None) is None:
++        return
++    if os.environ.get("VLLM_EMULATOR_KV_BUFFERS", "1").lower() in ("0", "false", "no"):
++        print("[EmulatorKVBuffers] VLLM_EMULATOR_KV_BUFFERS=0 → KV connector "
++              "NOT initialized; --kv-transfer-config will be inert")
++        return
++
++    try:
++        from vllm.distributed.kv_transfer import (
++            ensure_kv_transfer_initialized,
++            get_kv_transfer_group,
++            has_kv_transfer_group,
++        )
++    except ImportError as e:
++        print(f"[EmulatorKVBuffers] vLLM KV-transfer API unavailable: {e}")
++        return
++
++    try:
++        ensure_kv_transfer_initialized(vllm_config, kv_cache_config)
++    except TypeError:
++        # Older vLLM took only the config.
++        ensure_kv_transfer_initialized(vllm_config)
++    if not has_kv_transfer_group():
++        print("[EmulatorKVBuffers] no KV transfer group after init; "
++              "connector emulation disabled")
++        return
++
++    connector = get_kv_transfer_group()
++    kv_caches = _synthesize_kv_caches(kv_cache_config)
++    if not kv_caches:
++        print("[EmulatorKVBuffers] no attention groups to fake; "
++              "connector registered with no buffers")
++        return
++
++    connector.register_kv_caches(kv_caches)
++    # Keep the buffers alive for the process lifetime: nothing else holds a
++    # reference, and the connector may only keep a wrapper/handle.
++    worker._emulator_kv_caches = kv_caches
++    if hasattr(worker, "model_runner") and worker.model_runner is not None:
++        worker.model_runner.kv_caches = list(kv_caches.values())
++
++    try:
++        from vllm.distributed.kv_transfer.kv_connector.utils import copy_kv_blocks
++        connector.set_host_xfer_buffer_ops(copy_kv_blocks)
++    except Exception as e:
++        # Only used by connectors with a host staging buffer; the empty build
++        # may not even have the import.
++        print(f"[EmulatorKVBuffers] set_host_xfer_buffer_ops skipped: {e}")
++
++    print(f"[EmulatorKVBuffers] registered {len(kv_caches)} fake KV buffers with "
++          f"{type(connector).__name__}")
++
++
+ def _patch_gpu_worker(module):
+     """Stub out model-touching gpu_worker.Worker methods. Together
+     with _patch_gpu_model_runner, this prevents any model weight
+@@ -313,18 +462,25 @@ def _patch_gpu_worker(module):
+         tp_size = self.parallel_config.tensor_parallel_size
+         num_kv_heads_per_tp = max(1, num_kv_heads // tp_size)
+         block_size = self.cache_config.block_size
++        # The KV pool is sized in the CACHE dtype, not the model dtype.  Using
++        # model_config.dtype here made --kv-cache-dtype fp8 report bf16-sized
++        # pages: 2x the real page_size_bytes, so 2x too few blocks for the same
++        # budget -- the emulated KV-admission cliff moved, and any KV connector
++        # registered buffers of the wrong size.
++        kv_dtype = _kv_cache_dtype(self.cache_config, self.model_config)
+         specs = {}
+         for i in range(num_layers):
+             specs[f"model.layers.{i}.self_attn.attn"] = FullAttentionSpec(
+                 num_kv_heads=num_kv_heads_per_tp,
+                 head_size=head_dim,
+-                dtype=self.model_config.dtype,
++                dtype=kv_dtype,
+                 sliding_window=self.model_config.get_sliding_window(),
+                 block_size=block_size,
+             )
+         print(f"[EmulatorCudaMock] gpu_worker.Worker.get_kv_cache_spec"
+               f" → {num_layers} layers, kv_heads/tp={num_kv_heads_per_tp},"
+-              f" head_dim={head_dim}, block_size={block_size}")
++              f" head_dim={head_dim}, block_size={block_size},"
++              f" kv_dtype={kv_dtype}")
+         return specs
+     cls.get_kv_cache_spec = _stub_get_kv_cache_spec
+ 
+@@ -351,8 +507,16 @@ def _patch_gpu_worker(module):
+         self.kv_cache_config = kv_cache_config
+         if hasattr(self, 'model_runner') and self.model_runner is not None:
+             self.model_runner.kv_cache_config = kv_cache_config
++        # num_gpu_blocks is what the real initialize_from_config sets before
++        # anything else; downstream config readers (and any KV connector) take
++        # the pool size from here.
++        try:
++            self.cache_config.num_gpu_blocks = kv_cache_config.num_blocks
++        except Exception:
++            pass
+         print("[EmulatorCudaMock] gpu_worker.Worker.initialize_from_config "
+               "→ stored kv_cache_config (no GPU alloc)")
++        _maybe_init_kv_connector(self, kv_cache_config)
+     cls.initialize_from_config = _stub_initialize_from_config
+ 
+     def _stub_get_supported_tasks(self):
+diff --git a/vllm_emulator/hooks/executor_hook.py b/vllm_emulator/hooks/executor_hook.py
+index 0601bb0..c936b47 100644
+--- a/vllm_emulator/hooks/executor_hook.py
++++ b/vllm_emulator/hooks/executor_hook.py
+@@ -8,6 +8,7 @@ the output directly (sync engine).
+ 
+ from __future__ import annotations
+ 
++import contextlib
+ import os
+ import threading
+ import time
+@@ -18,8 +19,9 @@ from vllm_emulator.oracle import BaseGpuCostOracle, create_oracle_from_profile_p
+ from vllm_emulator.profile.loader import load_profile_pack
+ 
+ if TYPE_CHECKING:
++    from vllm.config import VllmConfig
+     from vllm.v1.core.sched.output import SchedulerOutput
+-    from vllm.v1.outputs import ModelRunnerOutput
++    from vllm.v1.outputs import KVConnectorOutput, ModelRunnerOutput
+ 
+ ORACLE_ENABLED_ENV = "VLLM_EMULATOR_ENABLE_ORACLE"
+ ORACLE_PROFILE_PATH_ENV = "VLLM_EMULATOR_PROFILE_PACK"
+@@ -42,12 +44,16 @@ class ExecutorEmulatorHook:
+     on time.sleep() and returns the output directly.
+     """
+ 
+-    def __init__(self):
++    def __init__(self, vllm_config: "VllmConfig | None" = None):
+         self._oracle: BaseGpuCostOracle | None = None
+         self._enabled = False
+         self._emulator_mode = EMULATOR_MODE_REALTIME
+         self._sample_future: Future | None = None
+         self._gpu_free_time = 0.0  # virtual GPU timeline for chain timer
++        # Needed only to open a forward context around the KV-connector
++        # lifecycle below; None when the executor could not supply it, in
++        # which case connector emulation stays off.
++        self._vllm_config = vllm_config
+ 
+         # Fake-output sampling. _filler_token_id is a fixed non-stop id;
+         # _eos_token_ids are populated from the profile pack so we never
+@@ -105,7 +111,17 @@ class ExecutorEmulatorHook:
+         return self._enabled
+ 
+     def should_use_oracle(self, scheduler_output: "SchedulerOutput") -> bool:
+-        return self._enabled and scheduler_output.total_num_scheduled_tokens > 0
++        if not self._enabled:
++            return False
++        if scheduler_output.total_num_scheduled_tokens > 0:
++            return True
++        # A batch with no scheduled tokens is not necessarily a no-op: with a
++        # KV connector, every request may be parked in WAITING_FOR_REMOTE_KVS
++        # waiting on an async load, and the only thing that can un-park them is
++        # a step that polls the connector.  vLLM handles this with
++        # GPUModelRunner.kv_connector_no_forward(); skipping it here is a
++        # deadlock, not an optimisation.
++        return self._kv_connector_active(scheduler_output)
+ 
+     def has_pending_future(self) -> bool:
+         return self._sample_future is not None
+@@ -115,6 +131,81 @@ class ExecutorEmulatorHook:
+         self._sample_future = None
+         return fut
+ 
++    # ------------------------------------------------------------------
++    # KV connector emulation
++    # ------------------------------------------------------------------
++    # The hook short-circuits at the EXECUTOR, so GPUModelRunner.execute_model
++    # never runs -- and that is where vLLM drives the worker side of a KV
++    # connector (bind_connector_metadata / start_load_kv / wait_for_save /
++    # get_finished, see KVConnectorModelRunnerMixin._get_kv_connector_output).
++    # Without it, ModelRunnerOutput.kv_connector_output is always None: the
++    # scheduler never learns an async load finished, so requests park in
++    # WAITING_FOR_REMOTE_KVS forever, and nothing is ever stored, so the cache
++    # stays empty and no request ever hits.  Reproduce that lifecycle here.
++    #
++    # The buffers the connector moves are the host-backed fakes registered by
++    # cuda_mock._maybe_init_kv_connector; their CONTENTS are zeros, but their
++    # shape, dtype and byte count are the ones vLLM computed, so transfer
++    # volumes -- and therefore measured LMCache/NIXL cost -- are real.
++    #
++    # Known fidelity gap: this runs synchronously on the engine thread, where
++    # vLLM runs it, rather than inside the threading.Timer that models the
++    # emulated compute time.  So a store is submitted up to one step earlier
++    # than a real run would submit it.  That is fine for hit rate, transfer
++    # volume and throughput; it is wrong for tight per-step store-latency
++    # attribution.  Moving it into the timer callback would also put LMCache's
++    # ZMQ client on a second thread, which is why it is not the default.
++
++    def _kv_connector_active(self, scheduler_output: "SchedulerOutput") -> bool:
++        if self._vllm_config is None:
++            return False
++        if getattr(scheduler_output, "kv_connector_metadata", None) is None:
++            return False
++        try:
++            from vllm.distributed.kv_transfer import has_kv_transfer_group
++        except ImportError:
++            return False
++        return has_kv_transfer_group()
++
++    @contextlib.contextmanager
++    def _kv_connector_step(self, scheduler_output: "SchedulerOutput"):
++        """Run one worker-side connector cycle around the emulated forward.
++
++        Yields a one-element list that receives the KVConnectorOutput, so the
++        caller can attach it to whatever ModelRunnerOutput it ends up building.
++        """
++        from vllm.distributed.kv_transfer import get_kv_transfer_group
++        from vllm.forward_context import get_forward_context, set_forward_context
++        from vllm.v1.outputs import KVConnectorOutput
++
++        holder: list = [None]
++        output = KVConnectorOutput()
++        connector = get_kv_transfer_group()
++        with set_forward_context(None, self._vllm_config):
++            connector.bind_connector_metadata(
++                scheduler_output.kv_connector_metadata)
++            connector.start_load_kv(get_forward_context())
++            try:
++                yield holder
++            finally:
++                connector.wait_for_save()
++                (output.finished_sending,
++                 output.finished_recving) = connector.get_finished(
++                     scheduler_output.finished_req_ids)
++                output.invalid_block_ids = \
++                    connector.get_block_ids_with_load_errors()
++                output.kv_connector_stats = connector.get_kv_connector_stats()
++                # Added in later vLLM releases than this plugin's floor.
++                for attr, field in (
++                    ("get_kv_connector_kv_cache_events", "kv_cache_events"),
++                    ("build_connector_worker_meta", "kv_connector_worker_meta"),
++                ):
++                    getter = getattr(connector, attr, None)
++                    if getter is not None:
++                        setattr(output, field, getter())
++                connector.clear_connector_metadata()
++                holder[0] = output
++
+     def create_delayed_future(
+         self,
+         scheduler_output: "SchedulerOutput",
+@@ -140,22 +231,42 @@ class ExecutorEmulatorHook:
+         cached = scheduler_output.scheduled_cached_reqs
+         sum_kv = sum(cached.num_computed_tokens) if cached.num_reqs > 0 else 0
+ 
+-        latency_us = self._oracle.estimate_step_latency_us(
+-            total_tokens,
+-            has_prefill=has_prefill,
+-            num_requests=num_total_reqs,
+-            num_new_reqs=num_new,
+-            sum_kv=sum_kv,
+-        )
++        if total_tokens > 0:
++            latency_us = self._oracle.estimate_step_latency_us(
++                total_tokens,
++                has_prefill=has_prefill,
++                num_requests=num_total_reqs,
++                num_new_reqs=num_new,
++                sum_kv=sum_kv,
++            )
++        else:
++            # Connector-only step: no compute to emulate, just the poll.
++            latency_us = 0.0
+         latency_s = latency_us / 1e6
+ 
+-        fake_output = self._create_fake_output(scheduler_output)
++        kv_output: "KVConnectorOutput | None" = None
++        if self._kv_connector_active(scheduler_output):
++            with self._kv_connector_step(scheduler_output) as holder:
++                fake_output = self._create_fake_output(scheduler_output)
++            kv_output = holder[0]
++        else:
++            fake_output = self._create_fake_output(scheduler_output)
++
+         if fake_output is None:
+-            if non_block:
++            if kv_output is not None and not kv_output.is_empty():
++                # vLLM's kv_connector_no_forward() equivalent: no tokens, but
++                # transfers completed that the scheduler has to hear about.
++                from vllm.v1.outputs import ModelRunnerOutput
++                fake_output = ModelRunnerOutput.with_kv_conn_output_only(
++                    kv_output)
++            elif non_block:
+                 fut: Future = Future()
+                 fut.set_result(None)
+                 return fut
+-            return None
++            else:
++                return None
++        elif kv_output is not None:
++            fake_output.kv_connector_output = kv_output
+ 
+         if not non_block:
+             return self._handle_sync(latency_s, fake_output)
+@@ -268,8 +379,15 @@ class ExecutorEmulatorHook:
+         pass
+ 
+ 
+-def get_executor_hook() -> ExecutorEmulatorHook | None:
++def get_executor_hook(
++    vllm_config: "VllmConfig | None" = None,
++) -> ExecutorEmulatorHook | None:
++    """Build the hook.
++
++    `vllm_config` is optional so older call sites keep working; without it the
++    hook cannot open a forward context and KV-connector emulation stays off.
++    """
+     if os.environ.get(ORACLE_ENABLED_ENV, "").lower() not in ("1", "true", "yes"):
+         return None
+-    hook = ExecutorEmulatorHook()
++    hook = ExecutorEmulatorHook(vllm_config=vllm_config)
+     return hook if hook.is_enabled else None

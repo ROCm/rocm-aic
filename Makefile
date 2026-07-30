@@ -217,7 +217,7 @@ EXPORT_TARBALL ?= $(CURDIR)/$(EXPORT_PREFIX)-$(_GEN_DATE)-$(_GIT_SHORT_REV)$(_GI
         monitoring-up monitoring-down monitoring-logs monitoring-build-exporters \
         dist-build dist-build-fast dist-build-emulate dist-build-exporters dist-push \
         smoke-test smoke-test-fast tiny-test tiny-test-fast \
-        emulate-test emulate-validate profile-capture \
+        emulate-test emulate-mp-test emulate-validate profile-capture \
         install-ci-scripts cliff-submit cliff-short \
         cliff-kvd cliff-spur-l2 cliff-long-64k cliff-long-128k \
         export _check_hf_token _prep_dirs _check_gds_slab
@@ -263,6 +263,7 @@ help:
 	@echo "  make tiny-test         End-to-end serve check (MP stack + tiny model, one completion)"
 	@echo "  make tiny-test-fast    Fast variant of tiny-test"
 	@echo "  make emulate-test      Serve check of the emulation image on a CPU-only node (no GPU)"
+	@echo "  make emulate-mp-test   Emulation + the full LMCache MP recipe on a CPU-only node"
 	@echo "  make profile-capture   Capture an AMD profile pack from a REAL GPU serve (gfx942/gfx950)"
 	@echo "  make emulate-validate  Replay a captured pack on CPU and diff vs the real-hardware run"
 	@echo "  make install-ci-scripts  Deploy .github/scripts/spur-*.sh to $(AIC_CI_LIB_DIR) (sudo if needed)"
@@ -539,6 +540,20 @@ emulate-test:                  # Serve check of the emulation image on a CPU-ONL
 	@# a non-empty completion, and asserts the llm-emu executor hook -- not a real
 	@# forward pass -- produced it.  Needs `make dist-build-emulate` first.
 	"$(DIST)" emulate-test
+
+emulate-mp-test:               # Emulation + the FULL LMCache MP recipe, still no GPU
+	@# The compose `emulate-mp` profile: standalone lmcache server + vLLM with
+	@# LMCacheMPConnector, on a CPU-only node.  The KV tensors the connector
+	@# registers are synthesized in host memory (zeros, but vLLM's own shape and
+	@# byte count), so LMCache/NIXL transfer cost is measured on top of the
+	@# profile-pack compute cost.  Asserts the PATH, not just a 200: buffers
+	@# registered, LMCache on the CPU SHM lmcache-driven route, bytes stored,
+	@# nothing left waiting on a remote KV load.
+	@#
+	@# Uses the PRODUCTION image -- the `emulate` stage stops before LMCache --
+	@# so run `make dist-build` first, not `dist-build-emulate`:
+	@#   AIC_ROCM_ARCH=gfx942 make dist-build emulate-mp-test
+	"$(DIST)" emulate-mp-test
 
 install-ci-scripts:            # Deploy .github/scripts/spur-*.sh to the runner's AIC_CI_LIB_DIR
 	@set -e; \

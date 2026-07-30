@@ -1,0 +1,60 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Stephen Bates <stephen.bates@amd.com>
+Date: 2026-07-30
+Subject: [PATCH 10] fix: make DEVICE_TYPE=cpu an unconditional opt-in
+
+lmcache/v1/platform/_detect_device() advertises DEVICE_TYPE as a forced
+device selection, and CpuDeviceSpec's own docstring calls DEVICE_TYPE=cpu
+"the supported path for forcing CPU selection".  It is not reachable:
+the branch is gated on spec.is_available(), and CpuDeviceSpec
+deliberately inherits the base-class False (documented invariant -- the
+auto-detection loop's `if spec.device_type == "cpu": continue` is the
+paired defence).  So DEVICE_TYPE=cpu logs "not available or not
+registered" and falls through to auto-detection.
+
+That is harmless when auto-detection is honest.  It is not harmless when
+torch.cuda.is_available() lies -- which is exactly the AIC emulation
+case: vllm_emulator's cuda_mock shims torch.cuda.is_available() to True
+on a CPU-only node so vLLM's GPU code paths run, and CudaDeviceSpec.
+is_available() is a bare torch.cuda.is_available().  LMCache then selects
+CUDA, resolve_kv_wrapper_factory binds the CUDA IPC wrapper, and
+create_transfer_context() tries to export device handles for KV tensors
+that live in host memory.
+
+Honour the opt-in without the availability probe.  Note the returned
+module is StubCPUDevice, not torch.cpu: torch.cpu has no
+Event/Stream/current_stream, which is the surface LMCacheMPConnector's
+start_load_kv()/wait_for_save() call through torch_dev.  This is the same
+object the no-accelerator tail fallback already returns.
+
+The auto-detection loop and the CpuDeviceSpec.is_available() invariant
+are untouched, so nothing changes when DEVICE_TYPE is unset.
+
+diff --git a/lmcache/v1/platform/__init__.py b/lmcache/v1/platform/__init__.py
+index f498b2b..35989c2 100644
+--- a/lmcache/v1/platform/__init__.py
++++ b/lmcache/v1/platform/__init__.py
+@@ -89,6 +89,23 @@ def _detect_device() -> tuple[Any, str]:
+     if env_device_type is not None:
+         env_device_type = env_device_type.strip().lower()
+         spec = _DEVICE_REGISTRY.get(env_device_type)
++        if env_device_type == "cpu" and spec is not None:
++            # Explicit CPU opt-in, which the docstring of ``CpuDeviceSpec``
++            # already calls "the supported path for forcing CPU selection" --
++            # but gating it on ``spec.is_available()`` made it unreachable,
++            # because that class deliberately inherits the base-class False.
++            # DEVICE_TYPE=cpu therefore fell through to auto-detection, and on
++            # a host where ``torch.cuda.is_available()`` lies (an emulated /
++            # mocked accelerator, or CUDA visible but unusable) auto-detection
++            # picks CUDA and every later dispatch assumes device handles that
++            # the CPU tensors cannot produce.  Honour the opt-in without the
++            # availability probe; ``StubCPUDevice`` -- not ``torch.cpu`` -- is
++            # the module that implements the stream/event surface callers use.
++            # First Party
++            from lmcache.v1.platform.cpu.stub_cpu_device import StubCPUDevice
++
++            logger.info("DEVICE_TYPE=cpu: forcing the CPU device (StubCPUDevice)")
++            return StubCPUDevice("cpu"), "cpu"
+         if spec is not None and spec.is_available():
+             torch_module = getattr(torch, spec.torch_module_name, None)
+             if torch_module is not None:

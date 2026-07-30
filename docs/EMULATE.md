@@ -10,6 +10,10 @@ It is built on [llm-emu](https://github.com/AKafakA/llm-emu) (pinned in
 `docker/Dockerfile` as `LLM_EMU_REF`), wired into vLLM by
 `patches/vllm/03-llm-emu-emulator-hooks.patch`.
 
+The stack above the forward pass can include the **full LMCache MP recipe** —
+standalone `lmcache server` plus `LMCacheMPConnector` — with the KV tensors the
+connector registers synthesized in host memory. See [§6](#6-emulating-the-full-lmcache-mp-stack).
+
 ## What it is for
 
 - Reproducing and debugging **scheduling / admission / KV-cache** behavior
@@ -28,6 +32,11 @@ It is built on [llm-emu](https://github.com/AKafakA/llm-emu) (pinned in
   enable async scheduling, or switch attention backend and the pack is stale.
 - **Anything with `tensor-parallel-size > 1`** — only `UniProcExecutor` is
   hooked today.
+- **`--async-scheduling`.** v0.26.0's `step_with_batch_queue()` only sets
+  `model_executed` for EC-consumer engines, so it takes `exec_future` and never
+  calls `sample_tokens()` — and the hook splits its work across exactly those
+  two calls. Emulation is sync-scheduling only. The GPU compose service does use
+  `--async-scheduling`; the emulated services deliberately do not.
 
 | Layer | Real serve | Emulation |
 | --- | --- | --- |
@@ -36,6 +45,8 @@ It is built on [llm-emu](https://github.com/AKafakA/llm-emu) (pinned in
 | `UniProcExecutor.execute_model()` | worker → GPU kernels | timer future resolving after the profiled step latency |
 | Model weights | loaded into VRAM | **never loaded** |
 | Sampled tokens | real | fixed filler token id |
+| Paged KV tensors | allocated in VRAM | not allocated — unless a KV connector is attached, see §6 |
+| KV connector (LMCache MP, NIXL) | real | real, against host-memory KV buffers (§6) |
 
 Because weights are never loaded, an 8B model costs a few MB of HuggingFace
 download (config + tokenizer) and no parameter memory.
@@ -113,6 +124,7 @@ Then use it like any vLLM endpoint on `:8000`. Useful env:
 | `VLLM_EMULATOR_MODE` | `realtime` | `realtime` sleeps for the predicted latency; `accelerated` resolves instantly |
 | `VLLM_EMULATOR_ORACLE_K` | `1` | oracle neighbor count (`auto` for adaptive) |
 | `VLLM_EMULATOR_MEMORY` | from pack | override the emulated device memory, bytes |
+| `VLLM_EMULATOR_KV_BUFFERS` | `1` | `0` skips the fake KV buffers, making a KV connector inert (§6) |
 | `VLLM_EMULATOR_DEBUG` | — | `1` logs every oracle lookup |
 
 > [!NOTE]
@@ -134,6 +146,10 @@ Two GPU-free gates cover this path:
 - **AIC Nightly Emulate Test** (self-hosted → cluster) builds the emulation
   image and serve-tests it on a CPU-only node. It is the only hardware-CI stage
   that needs no GPU, so it does not compete with the smoke/tiny/cliff chain.
+
+`make emulate-mp-test` (§6) is deliberately not in that nightly: it needs the
+production image, which needs a GPU-capable build node, so it belongs with the
+smoke/tiny chain rather than the GPU-free lane.
 
 ## 3. Profile packs
 
@@ -315,6 +331,107 @@ The trace records only `(total_tokens, num_new_reqs, num_decode_seqs, sum_kv,
 step_cycle_us)` per step plus a header of GPU/model metadata — no prompts, no
 outputs, so a pack is safe to share when the traffic is not.
 
+## 6. Emulating the full LMCache MP stack
+
+Everything above fakes the *compute*. The `emulate-mp` compose profile keeps
+that and adds the rest of the shipped stack back: a standalone `lmcache server`,
+vLLM talking to it over ZMQ with `LMCacheMPConnector`, KV bytes really moving
+into L1/L2 and back — on a node with no `/dev/kfd`. The point is to measure
+LMCache/NIXL transfer cost *on top of* the profile-pack compute cost, which is
+what makes the emulated cliff resemble the deployed one.
+
+```bash
+AIC_ROCM_ARCH=gfx942 make dist-build     # emulate-mp needs LMCache in the image
+make emulate-mp-test
+```
+
+By hand:
+
+```bash
+IMAGE_NAME=rocm-aic:7.14-latest AIC_L2_BACKEND=local_disk \
+  VLLM_EMULATOR_MEMORY=$((8 * 1024**3)) \
+  docker compose -f docker/docker-compose.yml --profile emulate-mp up
+```
+
+> [!IMPORTANT]
+> `emulate-mp` runs on the **production** image, not `:7.14-emulate`. The
+> `emulate` Dockerfile stage stops before LMCache, so the connector import fails
+> there. The production image ships the emulator plugin too, and the plugin is
+> inert without `VLLM_EMULATOR_ENABLE_ORACLE=1`, so one image covers both.
+
+### 6.1 How the VRAM gets faked
+
+A KV connector is handed vLLM's paged KV tensors once, at startup, via
+`register_kv_caches()`. Emulation never allocates them — and it cannot, on a
+node with no VRAM.
+
+But nothing about those buffers is device-specific *from the connector's point
+of view*: they are paged byte buffers whose shape, dtype and byte count vLLM has
+already computed and put in the `KVCacheConfig`. So `vllm_emulator` synthesizes
+them in **host memory** from that config and registers those
+(`patches/llm-emu/04-kv-connector-emulation.patch`). Their contents are zeros;
+their volume is real, which is what makes the measured transfer cost real.
+
+LMCache needs no persuading to accept them. Its device detection resolves to
+`StubCPUDevice`, and `lmcache/v1/platform/cpu/shm.py` migrates a CPU tensor's
+storage into a POSIX SHM segment the mp server can map — the same server-pull
+topology as HIP IPC, with `/dev/shm` in place of the GPU. Two consequences:
+
+- both emulated services need `ipc: host`, because Docker gives each container
+  its own `/dev/shm`;
+- `DEVICE_TYPE=cpu` is mandatory. `cuda_mock` shims `torch.cuda.is_available()`
+  to `True` so vLLM's GPU code paths run, and LMCache's `CudaDeviceSpec.
+  is_available()` is that same call — auto-detection would pick CUDA and then
+  try to export device handles for host memory. Honouring that env var needs
+  `patches/lmcache/10-lmcache-cpu-device-type-optin.patch`; upstream gates it on
+  `CpuDeviceSpec.is_available()`, which is deliberately `False`.
+
+The connector JSON also pins `"lmcache.mp.mp_transfer_mode":"lmcache_driven"`.
+Left on `auto`, `create_transfer_context()` dispatches on `tensor.device.type`
+and host-memory KV falls to `engine_driven`, which moves the copy into the vLLM
+worker — a working configuration, but one that exercises less of the shipped
+stack. Use it as a fallback if the SHM pull path misbehaves.
+
+### 6.2 Sizing
+
+Unlike the plain `emulate` profile, the KV pool here is genuinely allocated.
+`torch.zeros` on CPU is lazily backed, so untouched blocks cost no resident
+memory — but RSS grows toward the full pool as blocks get written, and a real
+MI300X pack records ~100+ GiB of `available_kv_cache_bytes`. **Set
+`VLLM_EMULATOR_MEMORY`** to something the node can hold; that also moves the
+emulated admission cliff, which is usually what you want to control anyway.
+`make emulate-mp-test` defaults to 8 GiB (`AIC_EMULATE_MP_KV_BYTES`).
+
+`AIC_L2_BACKEND` defaults to `local_disk` for this profile: the AIS_MT NVMe
+adapter is hipFile P2PDMA and cannot initialise without `/dev/kfd`. Use
+`nixl_posix` to keep NIXL in the path via its POSIX plugin, which needs no
+GPUDirect.
+
+### 6.3 What this does and does not model
+
+Real: batch composition, admission, prefix-cache and LMCache hit accounting, the
+number and size of chunks crossing ZMQ/SHM, L1 eviction, L2 writes and reads,
+and the wall-clock those take.
+
+Not real:
+
+- **The bytes.** Every KV block is zeros. Do not draw conclusions about
+  compression, dedup, or anything content-dependent.
+- **Store timing.** The connector cycle runs synchronously on the engine thread,
+  where vLLM runs it, rather than inside the timer that models emulated compute.
+  A store is therefore submitted up to one step earlier than a real run would
+  submit it. Fine for hit rate, transfer volume and throughput; wrong for tight
+  per-step store-latency attribution.
+- **GPU-side copy cost.** There is no `hipMemcpy`, no P2PDMA, no GPUDirect. What
+  is measured is the host-side and storage-side cost of the same transfer.
+
+`VLLM_EMULATOR_TRACE_STEP_CYCLE=1` on both a connector-free and an `emulate-mp`
+run of the same benchmark point, diffed, isolates the LMCache/NIXL cost: the
+step counts should match, and the wall-clock difference is what the connector
+added.
+
+---
+
 ## Troubleshooting
 
 | Symptom | Cause |
@@ -324,3 +441,7 @@ outputs, so a pack is safe to share when the traffic is not.
 | Completion content is `""` | expected — filler token, see above |
 | `Failed to import from vllm._C` warning | expected in the `empty` build; harmless because no kernel ever runs |
 | Emulated TTFT far off, TPOT fine | pack under-samples prefill; widen `AIC_CAPTURE_SWEEP` |
+| `ModuleNotFoundError: lmcache` under `emulate-mp` | you are on `:7.14-emulate`; that stage stops before LMCache — use the production image (§6) |
+| `emulate-mp` hangs with requests in `WAITING_FOR_REMOTE_KVS` | the connector's worker side is not reporting completions; check for `[EmulatorKVBuffers] registered` in the log |
+| `Creating transfer context (device_type=cuda, ...)` on a CPU node | `DEVICE_TYPE=cpu` was not honoured — LMCache patch 10 missing, or the var is empty rather than `cpu` (§6.1) |
+| Emulator RSS climbing to tens of GiB under `emulate-mp` | expected — the fake KV pool is really allocated; cap it with `VLLM_EMULATOR_MEMORY` (§6.2) |

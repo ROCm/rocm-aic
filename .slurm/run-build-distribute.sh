@@ -61,6 +61,13 @@
 #           End-to-end serve check of that image on a CPU-ONLY node: brings up
 #           the compose `emulate` profile, asserts a non-empty completion, and
 #           asserts the llm-emu hook (not a real forward pass) produced it
+#   emulate-mp-test
+#           The same, plus the full LMCache MP recipe: the compose `emulate-mp`
+#           profile (standalone lmcache server + vLLM LMCacheMPConnector) on a
+#           CPU-only node, with the KV tensors the connector registers
+#           synthesized in host memory.  Needs an image with LMCache in it, so
+#           it defaults to the PRODUCTION tarball, not the emulate one -- set
+#           AIC_EMULATE_MP_IMAGE / AIC_ROCM_ARCH accordingly.
 #   profile-capture
 #           Capture an AMD profile pack: runs the FULL image on a GPU node with
 #           VLLM_EMULATOR_TRACE_STEP_CYCLE=1 (a REAL serve, real weights, real
@@ -211,6 +218,25 @@ AIC_EMULATE_READY_TIMEOUT="${AIC_EMULATE_READY_TIMEOUT:-96}"   # x5s = up to 8 m
 # captured on real hardware (see profile-capture).  Unset = the image's
 # example pack only.
 AIC_EMULATE_PACK_HOST="${AIC_EMULATE_PACK_HOST:-}"
+
+# --- emulate-mp-test defaults (emulation + the full LMCache MP recipe) -------
+# Unlike emulate-test this needs LMCache in the image, and the `emulate`
+# Dockerfile stage stops before LMCache -- so it defaults to the PRODUCTION
+# image/tarball.  That image also ships the llm-emu plugin, and the plugin is
+# inert unless VLLM_EMULATOR_ENABLE_ORACLE=1, so one image covers both.
+AIC_EMULATE_MP_IMAGE="${AIC_EMULATE_MP_IMAGE:-${IMAGE_NAME:-rocm-aic}:${IMAGE_TAG:-7.14-latest}}"
+# The emulated KV pool is really allocated here (host memory, lazily paged),
+# because the connector needs real buffers to register.  Default well under
+# AIC_EMULATE_MP_MEM rather than inheriting the pack's ~100+ GiB MI300X value.
+AIC_EMULATE_MP_KV_BYTES="${AIC_EMULATE_MP_KV_BYTES:-8589934592}"   # 8 GiB
+AIC_EMULATE_MP_MEM="${AIC_EMULATE_MP_MEM:-64G}"
+AIC_EMULATE_MP_CPUS="${AIC_EMULATE_MP_CPUS:-16}"
+AIC_EMULATE_MP_TIME="${AIC_EMULATE_MP_TIME:-00:40:00}"
+AIC_EMULATE_MP_L1_GB="${AIC_EMULATE_MP_L1_GB:-4}"
+# local_disk keeps a real L2 in the path without GPUDirect (AIS_MT needs
+# /dev/kfd); nixl_posix swaps in the NIXL POSIX plugin instead.
+AIC_EMULATE_MP_L2_BACKEND="${AIC_EMULATE_MP_L2_BACKEND:-local_disk}"
+AIC_EMULATE_MP_DATA="${AIC_EMULATE_MP_DATA:-/tmp/aic-emulate-mp}"
 
 # --- profile-capture defaults (real GPU -> profile pack) ---------------------
 # A REAL serve on a REAL GPU with VLLM_EMULATOR_TRACE_STEP_CYCLE=1, driven by a
@@ -1475,6 +1501,273 @@ REMOTE
     log "emulate-test complete"
 }
 
+# --- emulate-mp-test: emulation WITH the full LMCache MP recipe, no GPU -------
+# emulate-test proves the forward pass is faked.  This proves the rest of the
+# shipped stack still runs around it: a standalone lmcache server, vLLM talking
+# to it over ZMQ with LMCacheMPConnector, KV bytes actually moving into L1/L2
+# and back out again -- all on a node with no /dev/kfd.
+#
+# The thing that cannot exist on such a node is the VRAM the connector
+# registers, so vllm_emulator synthesizes those buffers in host memory
+# (patches/llm-emu/04-kv-connector-emulation.patch).  Their contents are zeros;
+# their shape, dtype and byte count are the ones vLLM computed, so the transfer
+# volumes -- and the LMCache/NIXL cost measured on top of the profile-pack
+# compute cost -- are real.
+#
+# The assertions below are deliberately about the PATH, not the HTTP status: a
+# connector that silently failed to register would still serve 200s, just with
+# no cache in the loop, which is the failure this test exists to catch.
+cmd_emulate_mp_test() {
+    AIC_IMAGE="${AIC_EMULATE_MP_IMAGE}"
+    _pick_compress
+    local tarball; tarball="$(_tarball_path)"
+    command -v sbatch >/dev/null 2>&1 || die "sbatch not found; cannot run the emulate-mp-test job"
+    [[ -r "${tarball}" ]] || die "tarball not found: ${tarball} (run 'build' first -- emulate-mp needs the PRODUCTION image, which is the only one with LMCache in it)"
+
+    local _constraint="${AIC_EMULATE_TEST_CONSTRAINT-${AIC_BUILD_CONSTRAINT}}"
+    local -a _sel=()
+    if [[ -n "${AIC_EMULATE_TEST_NODE:-}" ]]; then
+        _sel=(--nodelist="${AIC_EMULATE_TEST_NODE}")
+        log "emulate-mp-test on ${AIC_EMULATE_TEST_NODE} via sbatch (partition ${AIC_BUILD_PARTITION})"
+    else
+        [[ -n "${_constraint}" ]] && _sel=(--constraint="${_constraint}")
+        log "emulate-mp-test via sbatch (partition ${AIC_BUILD_PARTITION}, constraint ${_constraint:-<none>})"
+    fi
+    log "image: ${AIC_IMAGE}  model: ${AIC_EMULATE_MODEL}  pack: ${AIC_EMULATE_PROFILE_PACK}"
+    log "l2=${AIC_EMULATE_MP_L2_BACKEND}  emulated KV pool=$((AIC_EMULATE_MP_KV_BYTES / 1024 / 1024 / 1024)) GiB  node mem=${AIC_EMULATE_MP_MEM}"
+
+    local remote_script
+    remote_script="$(cat <<REMOTE
+set -uo pipefail
+command -v docker >/dev/null 2>&1 || { echo "\$(hostname): docker not found" >&2; exit 1; }
+echo "[emulate-mp-test] host=\$(hostname) docker=\$(docker --version)"
+echo "[emulate-mp-test] GPU devices present: \$(ls /dev/kfd /dev/dri 2>/dev/null | tr '\n' ' ' || echo none)"
+
+_marker="/var/tmp/aic-loaded-\$(id -u)-\$(echo '${AIC_IMAGE}' | tr '/:' '__').mtime"
+_tar_mtime="\$(stat -c %Y '${tarball}' 2>/dev/null || echo 0)"
+_have_img="\$(docker images -q '${AIC_IMAGE}')"
+_loaded_mtime="\$(cat "\${_marker}" 2>/dev/null || echo 0)"
+if [ "${AIC_FORCE_LOAD:-0}" = "1" ] || [ -z "\${_have_img}" ] || [ "\${_tar_mtime}" -gt "\${_loaded_mtime}" ]; then
+    echo "[emulate-mp-test] loading ${AIC_IMAGE} from ${tarball}"
+    ${DECOMPRESS_CMD} '${tarball}' | docker load >/dev/null
+    echo "\${_tar_mtime}" > "\${_marker}" 2>/dev/null || true
+else
+    echo "[emulate-mp-test] image up to date on \$(hostname) (id \${_have_img})"
+fi
+
+cd '${AIC_DAY_DIR}'
+# shellcheck source=/dev/null
+source '${AIC_DAY_DIR}/monitoring/monitoring-lib.sh'
+ensure_compose || { echo "[emulate-mp-test] docker compose unavailable and could not be installed" >&2; exit 1; }
+
+export IMAGE_NAME='${AIC_IMAGE}'
+export VLLM_MODEL='${AIC_EMULATE_MODEL}'
+export VLLM_EMULATOR_PROFILE_PACK='${AIC_EMULATE_PROFILE_PACK}'
+[ -n '${AIC_EMULATE_PACK_HOST}' ] && export EMU_PROFILE_PACK_HOST='${AIC_EMULATE_PACK_HOST}'
+export HF_HOME='${AIC_TINY_HF_HOME}'
+export HF_TOKEN='${HF_TOKEN:-}'
+export HF_HUB_OFFLINE=0 TRANSFORMERS_OFFLINE=0
+export LOG="\${_logdir}"
+# Cap the emulated KV pool: unlike the plain emulate profile these buffers are
+# really allocated, so the pack's MI300X value would ask for ~100+ GiB of host
+# memory.  This also moves the emulated cliff, which is the point of the knob.
+export VLLM_EMULATOR_MEMORY='${AIC_EMULATE_MP_KV_BYTES}'
+export DEVICE_TYPE=cpu
+export LMCACHE_PORT='${LMCACHE_PORT:-6555}'
+export LMCACHE_L1_SIZE_GB='${AIC_EMULATE_MP_L1_GB}'
+export AIC_L2_BACKEND='${AIC_EMULATE_MP_L2_BACKEND}'
+export NVME_DATA='${AIC_EMULATE_MP_DATA}/nvme'
+export NFS_DATA='${AIC_EMULATE_MP_DATA}/nfs'
+mkdir -p "\${HF_HOME}" "\${_logdir}/vllm-emulator" "\${_logdir}/lmcache-emulator" \
+    '${AIC_EMULATE_MP_DATA}/nvme' '${AIC_EMULATE_MP_DATA}/nfs'
+
+# local_disk needs a native LocalDiskBackend config mounted at
+# /config/lmcache.yml; the compose service reads it only when
+# LMCACHE_CONFIG_FILE points there.  Same file the cliff nvme/local_disk arm
+# writes (see .slurm/run-cliff.sbatch:write_lmcache_localdisk_config).
+if [ '${AIC_EMULATE_MP_L2_BACKEND}' = 'local_disk' ]; then
+    cat > "\${_logdir}/lmcache-localdisk.yml" <<'YML'
+# Generated by run-build-distribute.sh (emulate-mp-test) -- native LocalDiskBackend (POSIX).
+chunk_size: 256
+local_disk: "file:///data/nvme/lmcache-disk"
+max_local_disk_size: 32
+save_decode_cache: true
+pre_caching_hash_algorithm: sha256_cbor
+extra_config:
+  use_odirect: false
+YML
+    export LMCACHE_CONFIG_FILE_HOST="\${_logdir}/lmcache-localdisk.yml"
+    export LMCACHE_CONFIG_FILE=/config/lmcache.yml
+fi
+
+# The same connector JSON \`make up\` and the cliff kvd arm use, plus
+# mp_transfer_mode: left on auto, create_transfer_context() dispatches on
+# tensor.device.type and host-memory KV falls to engine_driven, which moves the
+# copy into the vLLM worker.  lmcache_driven keeps the shipped topology (the
+# SERVER pulls from the registered buffers, here POSIX SHM instead of HIP IPC).
+export KV_TRANSFER_ARG="--kv-transfer-config '{\"kv_connector\":\"LMCacheMPConnector\",\"kv_role\":\"kv_both\",\"kv_connector_extra_config\":{\"lmcache.mp.host\":\"tcp://localhost\",\"lmcache.mp.port\":\${LMCACHE_PORT},\"lmcache.mp.mp_transfer_mode\":\"lmcache_driven\"}}'"
+export VLLM_EXTRA_ARGS="--enable-prefix-caching"
+
+compose() { docker compose -f '${AIC_DAY_DIR}/docker/docker-compose.yml' "\$@"; }
+cleanup() {
+    for _svc in vllm-emulator lmcache-emulator; do
+        timeout 60 docker compose -f '${AIC_DAY_DIR}/docker/docker-compose.yml' \
+            --profile emulate-mp logs --no-color --no-log-prefix "\${_svc}" \
+            > "\${_logdir}/emulate-mp-\${_svc}.log" 2>&1 || true
+    done
+    timeout 90 docker compose -f '${AIC_DAY_DIR}/docker/docker-compose.yml' \
+        --profile emulate-mp down --remove-orphans --timeout 10 >/dev/null 2>&1 || true
+    timeout 30 docker rm -f aic-vllm-emulator aic-lmcache-emulator >/dev/null 2>&1 || true
+}
+trap cleanup EXIT
+
+echo "[emulate-mp-test] bringing up the emulate-mp compose profile ..."
+if ! compose --profile emulate-mp up -d; then
+    echo "[emulate-mp-test] FAIL: compose up failed" >&2
+    compose --profile emulate-mp logs --tail 80 --no-color 2>&1 | sed 's/^/  [mp] /'
+    exit 1
+fi
+
+ready=0
+for _i in \$(seq 1 ${AIC_EMULATE_READY_TIMEOUT}); do
+    if curl -fsS http://localhost:8000/v1/models >/dev/null 2>&1; then ready=1; break; fi
+    if [ -z "\$(docker ps -q -f name=aic-vllm-emulator)" ]; then
+        echo "[emulate-mp-test] FAIL: the emulator container exited during startup" >&2
+        compose --profile emulate-mp logs --tail 150 --no-color 2>&1 | sed 's/^/  [mp] /'
+        exit 1
+    fi
+    sleep 5
+done
+if [ "\${ready}" != "1" ]; then
+    echo "[emulate-mp-test] FAIL: the emulator endpoint never became ready" >&2
+    compose --profile emulate-mp logs --tail 150 --no-color 2>&1 | sed 's/^/  [mp] /'
+    exit 1
+fi
+
+rc=0
+if docker exec aic-vllm-emulator test -e /dev/kfd 2>/dev/null; then
+    echo "[emulate-mp-test] FAIL: /dev/kfd is visible inside the emulator container" >&2; rc=1
+else
+    echo "[emulate-mp-test] OK: the emulator container has no GPU device at all"
+fi
+
+# A prompt long enough to cross LMCache's chunk boundary (chunk_size 256), sent
+# TWICE.  The second send is the actual test: a store must have completed on
+# the first for a retrieve to happen on the second.  Distinct enough not to
+# collide with anything else in the cache.
+_prompt="\$(python3 -c "print('The quick brown fox jumps over the lazy dog. ' * 96)")"
+_ask() {
+    curl -fsS http://localhost:8000/v1/chat/completions \
+        -H 'Content-Type: application/json' \
+        -d "\$(python3 -c "
+import json,sys
+print(json.dumps({'model': '${AIC_EMULATE_MODEL}',
+                  'messages': [{'role': 'user', 'content': sys.argv[1]}],
+                  'max_tokens': 8, 'temperature': 0}))
+" "\${_prompt}")"
+}
+
+echo "[emulate-mp-test] first request (cold -- populates LMCache) ..."
+resp1="\$(_ask)" || { echo "[emulate-mp-test] FAIL: first request failed: \${resp1}" >&2; exit 1; }
+sleep 5   # let the async store land in L1/L2 before asking again
+echo "[emulate-mp-test] second request (warm -- must hit) ..."
+resp2="\$(_ask)" || { echo "[emulate-mp-test] FAIL: second request failed: \${resp2}" >&2; exit 1; }
+
+# Assert on TOKENS, not text: the emulator emits a fixed filler token id, so
+# the decoded string is legitimately empty (see emulate-test).
+_check_tokens() {  # \$1=label \$2=response json
+    _ct="\$(printf '%s' "\$2" | grep -oE '"completion_tokens"[[:space:]]*:[[:space:]]*[0-9]+' | grep -oE '[0-9]+\$')"
+    if [ -n "\${_ct}" ] && [ "\${_ct}" -gt 0 ]; then
+        echo "[emulate-mp-test] OK: \$1 request generated \${_ct} tokens"
+    else
+        echo "[emulate-mp-test] FAIL: \$1 request generated no tokens" >&2; rc=1
+    fi
+}
+_check_tokens cold "\${resp1}"
+_check_tokens warm "\${resp2}"
+
+vlog="\${_logdir}/emulate-mp-checks-vllm.log"
+llog="\${_logdir}/emulate-mp-checks-lmcache.log"
+compose --profile emulate-mp logs --no-color --no-log-prefix vllm-emulator > "\${vlog}" 2>&1 || true
+compose --profile emulate-mp logs --no-color --no-log-prefix lmcache-emulator > "\${llog}" 2>&1 || true
+
+_want() {  # \$1=file \$2=pattern \$3=description
+    if grep -qE "\$2" "\$1"; then
+        echo "[emulate-mp-test] OK: \$3 -> \$(grep -m1 -E "\$2" "\$1" | cut -c1-160)"
+    else
+        echo "[emulate-mp-test] FAIL: \$3 (no match for /\$2/ in \$(basename "\$1"))" >&2
+        rc=1
+    fi
+}
+
+# 1-2. Still emulating: the hook engaged and no weights were materialized.
+_want "\${vlog}" '\[ExecutorEmulatorHook\] Enabled' "executor hook active"
+_want "\${vlog}" 'load_model SKIPPED'               "model weights never loaded"
+# 3. The fake VRAM buffers were built and handed to the connector.  Without
+#    this the connector exists but has nothing registered, and every
+#    store/retrieve silently no-ops.
+_want "\${vlog}" 'EmulatorKVBuffers.*synthesized'   "fake KV buffers synthesized"
+_want "\${vlog}" 'EmulatorKVBuffers.*registered'    "fake KV buffers registered with the connector"
+_want "\${vlog}" 'Registering kv caches'            "connector register_kv_caches ran"
+# 4. The single line that proves BOTH that DEVICE_TYPE=cpu was honoured (so
+#    LMCache did not believe cuda_mock's shimmed torch.cuda.is_available())
+#    and that the server-pull SHM path -- not the engine-driven copy path --
+#    is in use.
+_want "\${vlog}" 'Creating transfer context.*device_type=cpu.*lmcache_driven' \
+    "LMCache on the CPU SHM lmcache-driven path"
+# 5. The server end of that handshake.  Soft: the server's log wording is not
+#    part of any contract, and check 6 measures the same thing in counters.
+if grep -qiE 'register.*kv|kv.*register' "\${llog}"; then
+    echo "[emulate-mp-test] OK: lmcache server logged the KV-cache registration"
+else
+    echo "[emulate-mp-test] WARN: no registration line in the lmcache server log"
+fi
+
+# 6. Data actually moved.  The MP server's Prometheus endpoint is the least
+#    log-format-dependent evidence; fall back to the connector's own counters.
+if curl -fsS http://localhost:9091/metrics -o "\${_logdir}/emulate-mp-lmcache-metrics.txt" 2>/dev/null; then
+    _stored="\$(grep -E '^lmcache_.*(store|save).*_(total|bytes)' "\${_logdir}/emulate-mp-lmcache-metrics.txt" | awk '{s+=\$2} END {print s+0}')"
+    _hit="\$(grep -E '^lmcache_.*(hit|retrieve).*_(total|bytes)' "\${_logdir}/emulate-mp-lmcache-metrics.txt" | awk '{s+=\$2} END {print s+0}')"
+    echo "[emulate-mp-test] lmcache counters: stored=\${_stored} retrieved/hit=\${_hit}"
+    if [ "\${_stored:-0}" != "0" ]; then
+        echo "[emulate-mp-test] OK: KV bytes were stored into LMCache"
+    else
+        echo "[emulate-mp-test] FAIL: LMCache stored nothing -- the connector is in the loop but moving no data" >&2; rc=1
+    fi
+    if [ "\${_hit:-0}" != "0" ]; then
+        echo "[emulate-mp-test] OK: the warm request was served with an LMCache hit"
+    else
+        echo "[emulate-mp-test] WARN: no retrieve/hit counter moved; the warm request may have been served from vLLM's own prefix cache"
+    fi
+else
+    echo "[emulate-mp-test] WARN: lmcache /metrics unreachable on :9091; skipping the data-movement check"
+fi
+
+# 7. Nothing stranded.  A request parked in WAITING_FOR_REMOTE_KVS that never
+#    leaves is the exact symptom of the connector output never reaching the
+#    scheduler -- the failure mode the executor hook's connector cycle exists
+#    to prevent -- and both requests above have already returned by now.
+_waiting="\$(curl -fsS http://localhost:8000/metrics 2>/dev/null \
+    | awk '/^vllm:num_requests_waiting/ {s+=\$NF} END {printf "%d", s+0}')"
+if [ "\${_waiting:-0}" -eq 0 ]; then
+    echo "[emulate-mp-test] OK: no request left waiting on a remote KV load"
+else
+    echo "[emulate-mp-test] FAIL: \${_waiting} request(s) still waiting after both completions returned" >&2; rc=1
+fi
+
+[ "\${rc}" -eq 0 ] && echo "[emulate-mp-test] ALL CHECKS PASSED" || echo "[emulate-mp-test] SOME CHECKS FAILED"
+exit \${rc}
+REMOTE
+)"
+
+    _sbatch_run aic-emulate-mp-test emulate-mp-test "${remote_script}" \
+        "${_sel[@]}" \
+        --nodes=1 --ntasks=1 \
+        --cpus-per-task="${AIC_EMULATE_MP_CPUS}" --mem="${AIC_EMULATE_MP_MEM}" \
+        --time="${AIC_EMULATE_MP_TIME}"
+    log "emulate-mp-test complete"
+}
+
 # --- emulate-validate: replay a captured pack and diff against real hardware --
 # The only question that matters about a profile pack is "does the emulator
 # reproduce the machine it was captured from?".  This runs the SAME
@@ -1893,13 +2186,14 @@ main() {
         test)            cmd_test ;;
         tiny-test)       cmd_tiny_test ;;
         emulate-test)    cmd_emulate_test ;;
+        emulate-mp-test) cmd_emulate_mp_test ;;
         emulate-validate) cmd_emulate_validate ;;
         profile-capture) cmd_profile_capture ;;
         all)             cmd_build; cmd_build_exporters; cmd_load ;;
         -h|--help|help)
             sed -n '2,70p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
             ;;
-        *) die "unknown command '${sub}' (use: build | build-emulate | build-exporters | load | push | test | tiny-test | emulate-test | emulate-validate | profile-capture | all | help)" ;;
+        *) die "unknown command '${sub}' (use: build | build-emulate | build-exporters | load | push | test | tiny-test | emulate-test | emulate-mp-test | emulate-validate | profile-capture | all | help)" ;;
     esac
 }
 

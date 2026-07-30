@@ -10,6 +10,7 @@ Backticks
 Benchmarking
 BuildKit
 CPUs
+CUDA
 CUs
 Config
 Dockerfile
@@ -19,6 +20,7 @@ GDS
 GFX
 GPT
 GPU
+GPUDirect
 GPUs
 Gb
 GiB
@@ -27,6 +29,7 @@ HSA
 HTTPS
 HuggingFace
 Huggingface
+IPC
 ITL
 InfiniBand
 JSON
@@ -48,6 +51,7 @@ OSS
 Observability
 OpenAI
 P2PDMA
+PDMA
 PID
 POSIX
 PRs
@@ -58,6 +62,8 @@ RDNA
 README
 ROCR
 ROCm
+RSS
+SHM
 SVG
 ShareGPT
 Slurm
@@ -86,6 +92,7 @@ config
 cpp
 cpu
 debian
+dedup
 detokenizer
 detokenizing
 dev
@@ -94,6 +101,7 @@ directionally
 disaggregated
 diskstats
 dispatch
+dtype
 env
 filesystem
 fp
@@ -161,6 +169,7 @@ sublicense
 subpackage
 subpackages
 sudo
+tensor's
 tm
 tmp
 tok
