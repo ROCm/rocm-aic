@@ -25,12 +25,17 @@ LOG           ?= $(CURDIR)/logs
 HF_HOME       ?= $(HOME)/.cache/huggingface
 HF_TOKEN_FILE ?=
 
-# ---- LMCache server --------------------------------------------------------
-LMCACHE_PORT           ?= 6555
-LMCACHE_L1_SIZE_GB     ?= 20
-LMCACHE_NVME_POOL      ?= 4096
-LMCACHE_NVME_SLOT_SIZE ?= 268435456
-LMCACHE_NFS_POOL       ?= 1024
+# ---- LMCache server + coordinator ------------------------------------------
+LMCACHE_PORT                             ?= 6555
+LMCACHE_L1_SIZE_GB                       ?= 20
+LMCACHE_CHUNK_SIZE                       ?= 256
+LMCACHE_COORDINATOR_PORT                 ?= 9300
+LMCACHE_COORDINATOR_URL                  ?= http://127.0.0.1:$(LMCACHE_COORDINATOR_PORT)
+LMCACHE_COORDINATOR_EVENT_FLUSH_INTERVAL ?= 1.0
+LMCACHE_NVME_POOL                        ?= 4096
+LMCACHE_NVME_SLOT_SIZE                   ?= 268435456
+LMCACHE_NFS_POOL                         ?= 1024
+LMCACHE_NFS_SLOT_SIZE                    ?= $(LMCACHE_NVME_SLOT_SIZE)
 
 # ---- vLLM knobs ------------------------------------------------------------
 VLLM_MODEL                  ?=
@@ -61,7 +66,9 @@ ROCM_ARCH := $(if $(strip $(ROCM_ARCH)),$(strip $(ROCM_ARCH)),$(_ROCM_ARCH_DETEC
 BUILD_JOBS ?=
 
 export ROCM_ARCH GPU GDS_SLAB_DATA LOG HF_HOME HF_TOKEN IMAGE_NAME BUILD_JOBS
-export LMCACHE_PORT LMCACHE_L1_SIZE_GB LMCACHE_NVME_POOL LMCACHE_NVME_SLOT_SIZE LMCACHE_NFS_POOL
+export LMCACHE_PORT LMCACHE_L1_SIZE_GB LMCACHE_CHUNK_SIZE
+export LMCACHE_COORDINATOR_PORT LMCACHE_COORDINATOR_URL LMCACHE_COORDINATOR_EVENT_FLUSH_INTERVAL
+export LMCACHE_NVME_POOL LMCACHE_NVME_SLOT_SIZE LMCACHE_NFS_POOL LMCACHE_NFS_SLOT_SIZE
 export NVME_DATA NFS_DATA
 export VLLM_MODEL TENSOR_PARALLEL_SIZE
 export VLM_GPU_MEMORY_UTILIZATION VLM_MAX_MODEL_LEN VLM_MAX_NUM_BATCHED_TOKENS
@@ -186,8 +193,8 @@ _GIT_DIRTY     := $(if $(shell git -C "$(CURDIR)" status --porcelain -- . 2>/dev
 _GEN_DATE      := $(shell date +%Y%m%d)
 EXPORT_TARBALL ?= $(CURDIR)/$(EXPORT_PREFIX)-$(_GEN_DATE)-$(_GIT_SHORT_REV)$(_GIT_DIRTY).tar.gz
 
-.PHONY: help ensure-compose build up up-batch up-gds-l1 up-gds-l1-batch down logs logs-lmcache logs-vllm \
-        ps shell-lmcache shell-vllm restart-vllm restart-lmcache cliff plot venv \
+.PHONY: help ensure-compose build up up-batch up-gds-l1 up-gds-l1-batch down logs logs-coordinator logs-lmcache logs-vllm \
+        ps shell-lmcache shell-vllm restart-vllm restart-lmcache restart-coordinator cliff plot venv \
         monitoring-up monitoring-down monitoring-logs monitoring-build-exporters \
         dist-build dist-build-fast dist-build-exporters dist-push smoke-test smoke-test-fast \
         tiny-test tiny-test-fast install-ci-scripts cliff-submit cliff-short \
@@ -202,12 +209,13 @@ help:
 	@echo "Stack targets:"
 	@echo "  make ensure-compose    Install the docker compose v2 plugin if missing (user-local)"
 	@echo "  make build             Build the shared image ($(IMAGE_NAME))"
-	@echo "  make up                Start lmcache + vllm (foreground, DRAM L1 + AIS_MT/NFS L2)"
-	@echo "  make up-batch          Start lmcache + vllm (background)"
+	@echo "  make up                Start coordinator + lmcache + vllm (foreground)"
+	@echo "  make up-batch          Start coordinator + lmcache + vllm (background)"
 	@echo "  make up-gds-l1         Start with hipFile GDS NVMe slab as L1 (foreground)"
 	@echo "  make up-gds-l1-batch   Start with hipFile GDS NVMe slab as L1 (background)"
-	@echo "  make down              Stop and remove both containers"
-	@echo "  make logs              Follow logs from both containers"
+	@echo "  make down              Stop and remove all stack containers"
+	@echo "  make logs              Follow logs from all stack containers"
+	@echo "  make logs-coordinator  coordinator container logs only"
 	@echo "  make logs-lmcache      lmcache container logs only"
 	@echo "  make logs-vllm         vllm container logs only"
 	@echo "  make ps                Container status"
@@ -215,6 +223,7 @@ help:
 	@echo "  make shell-vllm        Exec bash into vllm container"
 	@echo "  make restart-vllm      Restart vllm only (lmcache + warm KV preserved)"
 	@echo "  make restart-lmcache   Restart lmcache only"
+	@echo "  make restart-coordinator  Restart coordinator only"
 	@echo ""
 	@echo "Benchmark targets:"
 	@echo "  make venv              Create/update repo-root .venv with bench+plot deps"
@@ -273,8 +282,10 @@ help:
 	@echo "  NVME_DATA=$(NVME_DATA)  NFS_DATA=$(NFS_DATA)  GDS_SLAB_DATA=$(GDS_SLAB_DATA)"
 	@echo ""
 	@echo "Key LMCache vars (current):"
-	@echo "  LMCACHE_PORT=$(LMCACHE_PORT)  LMCACHE_L1_SIZE_GB=$(LMCACHE_L1_SIZE_GB) GiB"
+	@echo "  LMCACHE_PORT=$(LMCACHE_PORT)  LMCACHE_L1_SIZE_GB=$(LMCACHE_L1_SIZE_GB) GiB  LMCACHE_CHUNK_SIZE=$(LMCACHE_CHUNK_SIZE)"
+	@echo "  LMCACHE_COORDINATOR_URL=$(LMCACHE_COORDINATOR_URL)"
 	@echo "  LMCACHE_NVME_POOL=$(LMCACHE_NVME_POOL)  LMCACHE_NFS_POOL=$(LMCACHE_NFS_POOL)"
+	@echo "  LMCACHE_NVME_SLOT_SIZE=$(LMCACHE_NVME_SLOT_SIZE)  LMCACHE_NFS_SLOT_SIZE=$(LMCACHE_NFS_SLOT_SIZE)"
 	@echo ""
 	@echo "Examples:"
 	@echo "  make build"
@@ -350,6 +361,9 @@ down:
 logs:
 	$(COMPOSE_CACHE) logs -f
 
+logs-coordinator:
+	$(COMPOSE_CACHE) logs -f coordinator
+
 logs-lmcache:
 	$(COMPOSE_CACHE) logs -f lmcache
 
@@ -370,6 +384,9 @@ restart-vllm:
 
 restart-lmcache:
 	$(COMPOSE_CACHE) restart lmcache
+
+restart-coordinator:
+	$(COMPOSE_CACHE) restart coordinator
 
 venv:
 	@if [ ! -d "$(REPO_ROOT)/.venv" ]; then \
