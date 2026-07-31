@@ -1,0 +1,1466 @@
+commit 3b7fbfb8416f61cfcbecdb8d57aedb415f614bca
+Author: Rui Zhang <51696593+ruizhang0101@users.noreply.github.com>
+Date:   Tue Jul 28 15:22:03 2026 -0700
+
+    [MP][Coordinator] Fleet-wide key directory built from cache events (#4275)
+    
+    * feat: add key directory
+    
+    Signed-off-by: Rui Zhang <zrfishnoodles@gmail.com>
+    
+    (cherry picked from commit 0fc6cd8bfd24a5f2096e5df429d2b5373689d7a3)
+
+diff --git a/docs/design/v1/mp_coordinator/key_directory.md b/docs/design/v1/mp_coordinator/key_directory.md
+new file mode 100644
+index 00000000..f0d9b3b3
+--- /dev/null
++++ b/docs/design/v1/mp_coordinator/key_directory.md
+@@ -0,0 +1,117 @@
++# Key directory
++
++Module: `lmcache/v1/mp_coordinator/key_directory.py`
++Contract vocabulary: `lmcache/v1/mp_coordinator/api.py`
++HTTP surface: `lmcache/v1/mp_coordinator/http_apis/directory_api.py` (`/directory/*`)
++
++This is the first milestone (M1) of the control-plane RFC
++([issue #4226](https://github.com/LMCache/LMCache/issues/4226)): a fleet-wide
++directory mapping each `ObjectKey` to its known placements — which instance
++holds it, on which tier (`l1`/`l2`) and backend (`dram`, `cxl`, `fs`, ...), at
++what size.
++
++## Contract
++
++The directory is **eventually consistent, soft state, and never on the
++serving hot path**:
++
++- It is built purely from `CacheEvent` batches emitted by MP servers. It
++never mutates memory and never grants access to bytes.
++- Every answer is a **hint**. Consumers (P2P discovery, cache control, prefetch planning) must validate at the owning MP server before touching bytes (validate-on-use). Stale state costs a wasted probe or a missed reuse.
++- All state is reconstructible from event replay plus per-instance resync; nothing is persisted at the moment.
++
++## Event application semantics
++
++One batch = `(instance_id, incarnation, seq, event_type, tier, backend, entries[], ts)`. `apply_batch` enforces, in order:
++
++
++| mechanism           | rule                                                                                                                                                                   | why                                                                                                                                         |
++| ------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
++| Incarnation fencing | `incarnation <` current → drop batch (`STALE_INCARNATION`). `incarnation >` current → drop **all** placements the old incarnation reported, then start a fresh cursor. | An MP-server restart empties its pools; no placement may survive the pool it lived in.                                                      |
++| Seq dedup           | `seq <=` last applied (same incarnation) → drop batch (`DUPLICATE`).                                                                                                   | Replays (retry, event-bus redelivery) must be idempotent.                                                                                   |
++| Gap detection       | `seq >` last applied `+ 1` → set the instance's `gap_detected` flag (visible in stats), apply anyway.                                                                  | Events may be lost; the flag marks the instance's slice as needing resync. Entry application is idempotent, so applying past a gap is safe. |
++
++
++Per-instance FIFO by `seq` is the **only** ordering the design needs: each
++instance is the sole writer of its own facts, so there is no global order
++and no cross-instance arbitration.
++
++Entry semantics by event type:
++
++- `STORE` — upsert the placement at identity `(instance_id, tier, backend)`; re-store replaces the size. Records the entry's
++`content_hash` (when present) as the back-pointer that will keep content
++index (I2) deletes O(1) once I2 lands (M2).
++- `DELETE` — remove that placement identity (owners report evictions as
++deletes too). Removing an absent placement/key is a no-op. A key with no
++remaining placements is dropped from the directory.
++- `ACCESS` — refresh the key's `last_access` recency (max of batch `ts`);
++never creates records. `ts` is emitter wall-clock and is never compared
++across instances.
++
++## Structures
++
++```
++ObjectKey → _KeyRecord {
++    placements: list[Placement],   # ≤1 per (instance_id, tier, backend)
++    content_hash_hex, last_access
++}
++instance_id → _InstanceState { incarnation, last_seq, gap_detected, keys }
++```
++
++`_InstanceState.keys` is the reverse index that makes incarnation fencing
++and `drop_instance` (deregistration cleanup) proportional to the
++instance's own keys instead of a full directory scan.
++
++The Python-phase directory is keyed by `ObjectKey` directly (hashable
++frozen dataclass, same as the L2 usage manager). The RFC's 16-byte
++`key_hash` with interned `model_id`/`salt_id` is a memory/native-port
++optimization (M6), not a semantic change.
++
++## HTTP surface
++
++- `POST /directory/events` — apply `CacheEventBatch` batches (list
++order; per-instance emission order required). Duplicates and stale
++batches are counted in the response, not errors.
++- `POST /directory/lookup` — resolve keys to placements (POST because the
++key list rides in the body). One result per key, request order, empty
++for unknown keys.
++- `POST /directory/lookup_tokens` — resolve a token sequence to keys
++(prefix-exact: the fleet `TokenHasher` + per-rank fan-out, as the pin
++APIs do; requires `model_name` / `world_size` / `cache_salt` since key
++identity includes them) and return each key's placements.
++Position-independent token matching arrives with the content index (M2).
++- `GET /directory/stats` — key/placement counts plus per-instance stream
++state (`incarnation`, `last_seq`, `gap_detected`) for observability and
++the future resync trigger.
++
++Type placement:
++
++- **`api.py`** — the cache-event vocabulary (`CacheEventType`,
++`CacheEventEntry`, `CacheEventBatch`): the contract between the
++MP-server emitter and the directory. Plain dataclasses with intrinsic
++invariants in `__post_init__` (the `ObjectKey` pattern: `seq >= 1`,
++concrete tier, non-empty ids are unconstructible anywhere).
++- **`key_directory.py`** — the engine plus everything the directory
++itself produces (`Placement`, `ApplyResult`, stats) and its private
++records.
++- **`schemas.py`** — HTTP models only. 
++
++## Deliberately out of scope (follow-ups)
++
++- **MP-server emission** of the generalized `CacheEvent` stream (extending
++today's `L2EventListener`, which still feeds `/quota/events` with the
++legacy schema) — including where `incarnation` comes from (server start
++time) and L1 store/evict hooks.
++- **Resync integration**: acting on `gap_detected` (digest/resync
++backstop, `UNCONFIRMED` placement decay) — extends today's
++`L2ResyncManager` pattern to L1.
++- **Registry integration**: calling `drop_instance` from deregistration /
++heartbeat-timeout eviction (the method exists and is tested).
++- **Content index (I2)**, blend rewiring, checkpointing, and the
++`DELETE_PENDING`/pin placement states used by tier-aware cache-control
++directives (M2–M4 of the RFC).
++- **Token store (I3)**: the opt-in `content_hash → token_ids` store for
++`key → tokens` introspection, fed by `TOKENS` events and refcounted from
++key records via the `content_hash` back-pointer. Nothing
++correctness-bearing reads it, so it ships with its first real consumer.
++
+diff --git a/lmcache/v1/mp_coordinator/api.py b/lmcache/v1/mp_coordinator/api.py
+new file mode 100644
+index 00000000..8f511f62
+--- /dev/null
++++ b/lmcache/v1/mp_coordinator/api.py
+@@ -0,0 +1,111 @@
++# SPDX-License-Identifier: Apache-2.0
++"""Cross-module contract vocabulary for the MP coordinator.
++
++The cache-event types both sides of the event stream speak: emitted by
++MP servers, consumed by the coordinator's key directory.
++Encoding-level checks (key convertibility,
++hex validity) belong to the HTTP envelopes in :mod:`schemas`.
++"""
++
++# Future
++from __future__ import annotations
++
++# Standard
++from dataclasses import dataclass, field
++from enum import Enum
++
++# First Party
++from lmcache.v1.distributed.api import EncodedObjectKey
++from lmcache.v1.distributed.tiers import Tier
++
++
++class CacheEventType(str, Enum):
++    """The kind of cache-state change a :class:`CacheEventBatch` reports.
++
++    ``STORE`` commits placements; ``DELETE`` removes them (owners report
++    evictions as deletes); ``ACCESS`` refreshes recency without changing
++    placement state.
++    """
++
++    STORE = "store"
++    DELETE = "delete"
++    ACCESS = "access"
++
++
++@dataclass(frozen=True)
++class CacheEventEntry:
++    """One key's worth of change inside a :class:`CacheEventBatch`.
++
++    Attributes:
++        key: The object key the change applies to.
++        size_bytes: Bytes committed for the key (``store`` only; ``0``
++            otherwise).
++        content_hash_hex: Hex of the chunk's position-independent content
++            hash; empty when the emitter does not compute it.
++    """
++
++    key: EncodedObjectKey
++    size_bytes: int = 0
++    content_hash_hex: str = ""
++
++    def __post_init__(self) -> None:
++        """Enforce intrinsic invariants.
++
++        Raises:
++            ValueError: If ``size_bytes`` is negative.
++        """
++        if self.size_bytes < 0:
++            raise ValueError(f"size_bytes must be >= 0 (got {self.size_bytes})")
++
++
++@dataclass(frozen=True)
++class CacheEventBatch:
++    """A batch of same-typed cache events from one MP server.
++
++    Attributes:
++        instance_id: The emitting MP server (non-empty).
++        incarnation: The emitter's restart counter (non-negative). A
++            higher value fences off all placements reported by lower
++            values of the same ``instance_id``.
++        seq: Per-``(instance_id, incarnation)`` monotonic batch counter,
++            starting at 1.
++        event_type: What happened to every entry in the batch.
++        tier: The cache tier the events apply to (``l1`` or ``l2``;
++            never ``all``).
++        backend: The storage backend within the tier (``"dram"``,
++            ``"cxl"``, ``"fs"``, ``"valkey"``, ...; non-empty).
++        entries: The affected keys.
++        ts: Emitter wall-clock seconds for the batch (``0.0`` if unknown).
++    """
++
++    instance_id: str
++    incarnation: int
++    seq: int
++    event_type: CacheEventType
++    tier: Tier
++    backend: str
++    entries: list[CacheEventEntry] = field(default_factory=list)
++    ts: float = 0.0
++
++    def __post_init__(self) -> None:
++        """Enforce intrinsic invariants.
++
++        Raises:
++            ValueError: If ``instance_id`` or ``backend`` is empty,
++                ``incarnation`` or ``ts`` is negative, ``seq`` < 1, or
++                ``tier`` is not a concrete tier (``l1``/``l2``).
++        """
++        if not self.instance_id:
++            raise ValueError("instance_id must be non-empty")
++        if not self.backend:
++            raise ValueError("backend must be non-empty")
++        if self.incarnation < 0:
++            raise ValueError(f"incarnation must be >= 0 (got {self.incarnation})")
++        if self.seq < 1:
++            raise ValueError(f"seq must be >= 1 (got {self.seq})")
++        if self.tier not in (Tier.L1, Tier.L2):
++            raise ValueError(
++                f"cache events must target a concrete tier (got {self.tier.value!r})"
++            )
++        if self.ts < 0.0:
++            raise ValueError(f"ts must be >= 0 (got {self.ts})")
+diff --git a/lmcache/v1/mp_coordinator/app.py b/lmcache/v1/mp_coordinator/app.py
+index 878cd918..0838f87d 100644
+--- a/lmcache/v1/mp_coordinator/app.py
++++ b/lmcache/v1/mp_coordinator/app.py
+@@ -39,6 +39,7 @@ from lmcache.v1.mp_coordinator.cache_control.resync_manager import L2ResyncManag
+ from lmcache.v1.mp_coordinator.cache_control.usage_manager import L2UsageManager
+ from lmcache.v1.mp_coordinator.config import MPCoordinatorConfig
+ from lmcache.v1.mp_coordinator.http_apis.dependencies import CoordinatorContext
++from lmcache.v1.mp_coordinator.key_directory import KeyDirectory
+ from lmcache.v1.mp_coordinator.registry import InstanceRegistry
+ from lmcache.v1.multiprocess.token_hasher import TokenHasher
+ from lmcache.v1.utils.router_discovery import discover_api_routers
+@@ -73,8 +74,8 @@ def create_app(config: MPCoordinatorConfig) -> FastAPI:
+     Returns:
+         A configured FastAPI application. ``app.state`` carries the shared
+         collaborators (``config``, ``registry``, ``quota_manager``,
+-        ``usage_manager``, ``blend_directory``); all ``http_apis`` routers are
+-        registered.
++        ``usage_manager``, ``key_directory``, ``blend_directory``); all
++        ``http_apis`` routers are registered.
+     """
+     registry = InstanceRegistry()
+     quota_manager = QuotaManager()
+@@ -99,6 +100,7 @@ def create_app(config: MPCoordinatorConfig) -> FastAPI:
+     blend_directory = GlobalBlendMatcher(
+         chunk_size=config.chunk_size, probe_stride=config.blend_probe_stride
+     )
++    key_directory = KeyDirectory()
+     # Typed context the cache handlers resolve via ``get_context``;
+     # ``outbound_client`` is filled in by the lifespan (bound to the loop).
+     ctx = CoordinatorContext(
+@@ -108,6 +110,7 @@ def create_app(config: MPCoordinatorConfig) -> FastAPI:
+         eviction_manager=eviction_manager,
+         prefetch_manager=prefetch_manager,
+         token_hasher=token_hasher,
++        key_directory=key_directory,
+     )
+ 
+     async def _health_loop() -> None:
+diff --git a/lmcache/v1/mp_coordinator/http_apis/dependencies.py b/lmcache/v1/mp_coordinator/http_apis/dependencies.py
+index 56044b92..b3265f12 100644
+--- a/lmcache/v1/mp_coordinator/http_apis/dependencies.py
++++ b/lmcache/v1/mp_coordinator/http_apis/dependencies.py
+@@ -20,6 +20,7 @@ from lmcache.v1.distributed.quota_manager import QuotaManager
+ from lmcache.v1.mp_coordinator.cache_control.eviction_manager import L2EvictionManager
+ from lmcache.v1.mp_coordinator.cache_control.prefetch_manager import PrefetchManager
+ from lmcache.v1.mp_coordinator.cache_control.usage_manager import L2UsageManager
++from lmcache.v1.mp_coordinator.key_directory import KeyDirectory
+ from lmcache.v1.mp_coordinator.registry import InstanceRegistry
+ from lmcache.v1.multiprocess.token_hasher import TokenHasher
+ 
+@@ -37,6 +38,8 @@ class CoordinatorContext:
+         prefetch_manager: Warm-prefetch proxy to MP servers.
+         token_hasher: Resolves a pin request's ``token_ids`` to object keys
+             (configured to match the fleet's ``chunk_size`` / ``hash_algorithm``).
++        key_directory: Fleet-wide key → placements directory built from
++            MP-server cache events (eventually consistent).
+         outbound_client: Shared async client for coordinator -> MP calls. Set by
+             the lifespan (bound to the running loop); ``None`` until then.
+     """
+@@ -47,6 +50,7 @@ class CoordinatorContext:
+     eviction_manager: L2EvictionManager
+     prefetch_manager: PrefetchManager
+     token_hasher: TokenHasher
++    key_directory: KeyDirectory
+     outbound_client: httpx.AsyncClient | None = None
+ 
+ 
+diff --git a/lmcache/v1/mp_coordinator/http_apis/directory_api.py b/lmcache/v1/mp_coordinator/http_apis/directory_api.py
+new file mode 100644
+index 00000000..399c1278
+--- /dev/null
++++ b/lmcache/v1/mp_coordinator/http_apis/directory_api.py
+@@ -0,0 +1,137 @@
++# SPDX-License-Identifier: Apache-2.0
++"""Key-directory endpoints on the coordinator (fleet-level).
++
++The ``/directory`` surface, thin over the :class:`KeyDirectory` carried on
++the typed :class:`CoordinatorContext`: cache-event ingestion from MP
++servers, placement lookup, and stats. See
++``docs/design/v1/mp_coordinator/key_directory.md``.
++"""
++
++# Third Party
++from fastapi import APIRouter, HTTPException, Request
++
++# First Party
++from lmcache.v1.mp_coordinator.http_apis.dependencies import get_context
++from lmcache.v1.mp_coordinator.key_directory import ApplyResult, DirectoryStats
++from lmcache.v1.mp_coordinator.schemas import (
++    DirectoryEventsRequest,
++    DirectoryEventsResponse,
++    DirectoryKeyPlacements,
++    DirectoryLookupRequest,
++    DirectoryLookupResponse,
++    TokenPlacementLookupRequest,
++    TokenPlacementLookupResponse,
++)
++from lmcache.v1.multiprocess.cache_control.key_resolver import resolve_object_keys
++
++router = APIRouter()
++
++
++@router.post("/directory/events")
++async def report_cache_events(
++    body: DirectoryEventsRequest, request: Request
++) -> DirectoryEventsResponse:
++    """Apply a batch of cache-event batches to the key directory.
++
++    Batches are applied in list order; per instance they must be sent in
++    emission order. Duplicate and stale-incarnation batches are dropped
++    and counted, not errors.
++
++    Args:
++        body: The event batches to apply.
++
++    Returns:
++        Counts of applied and dropped batches.
++    """
++    directory = get_context(request).key_directory
++    response = DirectoryEventsResponse()
++    for batch in body.batches:
++        result = directory.apply_batch(batch)
++        if result == ApplyResult.APPLIED:
++            response.applied += 1
++        elif result == ApplyResult.DUPLICATE:
++            response.duplicates += 1
++        else:
++            response.stale += 1
++    return response
++
++
++@router.post("/directory/lookup")
++async def lookup_placements(
++    body: DirectoryLookupRequest, request: Request
++) -> DirectoryLookupResponse:
++    """Resolve keys to their known placements across the fleet.
++
++    Args:
++        body: The keys to resolve.
++
++    Returns:
++        One result per requested key, in request order; placements are
++        empty for unknown keys.
++    """
++    directory = get_context(request).key_directory
++    keys = [encoded.to_object_key() for encoded in body.keys]
++    return DirectoryLookupResponse(
++        results=[
++            DirectoryKeyPlacements(key=encoded, placements=placements)
++            for encoded, placements in zip(
++                body.keys, directory.lookup(keys), strict=True
++            )
++        ]
++    )
++
++
++@router.post("/directory/lookup_tokens")
++async def lookup_placements_by_tokens(
++    body: TokenPlacementLookupRequest, request: Request
++) -> TokenPlacementLookupResponse:
++    """Resolve a token sequence to keys and return their placements.
++
++    Hashes ``token_ids`` with the fleet's token hasher, expands each
++    complete chunk into its per-rank object keys, and looks each key up
++    in the directory.
++
++    Args:
++        body: The token sequence and the key-resolution parameters.
++
++    Returns:
++        Chunk count plus one result per resolved key; empty when the
++        sequence is shorter than one chunk.
++
++    Raises:
++        HTTPException: 400 when the token sequence exceeds the
++            per-request cap or a key field is invalid.
++    """
++    ctx = get_context(request)
++    try:
++        obj_keys, chunks = resolve_object_keys(
++            token_hasher=ctx.token_hasher,
++            model_name=body.model_name,
++            world_size=body.world_size,
++            token_ids=body.token_ids,
++            cache_salt=body.cache_salt,
++        )
++    except ValueError as exc:
++        raise HTTPException(status_code=400, detail=str(exc)) from exc
++    return TokenPlacementLookupResponse(
++        chunks=chunks,
++        results=[
++            DirectoryKeyPlacements(
++                key=key.to_encoded_object_key(), placements=placements
++            )
++            for key, placements in zip(
++                obj_keys, ctx.key_directory.lookup(obj_keys), strict=True
++            )
++        ],
++    )
++
++
++@router.get("/directory/stats")
++async def directory_stats(request: Request) -> DirectoryStats:
++    """Return a point-in-time summary of directory contents.
++
++    Returns:
++        Key/placement counts plus per-instance stream state (incarnation,
++        last applied seq, gap flag), keyed by ``instance_id``.
++    """
++    return get_context(request).key_directory.stats()
+diff --git a/lmcache/v1/mp_coordinator/key_directory.py b/lmcache/v1/mp_coordinator/key_directory.py
+new file mode 100644
+index 00000000..16821bd7
+--- /dev/null
++++ b/lmcache/v1/mp_coordinator/key_directory.py
+@@ -0,0 +1,329 @@
++# SPDX-License-Identifier: Apache-2.0
++"""Fleet-wide key directory for the MP coordinator.
++
++Maps each :class:`ObjectKey` to its known placements across the fleet
++(instance, tier, backend, size), built from :class:`CacheEventBatch`
++streams emitted by MP servers. The directory is eventually consistent:
++lookup answers are hints that consumers validate at the owning MP server
++before use.
++
++Event streams are ordered per instance by ``seq`` (duplicates dropped,
++gaps flagged for resync) and fenced by ``incarnation`` (a newer
++incarnation drops all placements reported by older ones).
++
++See ``docs/design/v1/mp_coordinator/key_directory.md``.
++"""
++
++# Future
++from __future__ import annotations
++
++# Standard
++from dataclasses import dataclass, field
++from enum import Enum
++import threading
++
++# First Party
++from lmcache.logging import init_logger
++from lmcache.v1.distributed.api import ObjectKey
++from lmcache.v1.distributed.tiers import Tier
++from lmcache.v1.mp_coordinator.api import (
++    CacheEventBatch,
++    CacheEventEntry,
++    CacheEventType,
++)
++
++logger = init_logger(__name__)
++
++
++@dataclass(frozen=True)
++class Placement:
++    """One live placement of a key, as returned by directory lookups.
++
++    Attributes:
++        instance_id: The MP server holding the bytes.
++        incarnation: That instance's current incarnation.
++        tier: Tier the bytes live on (``l1`` or ``l2``).
++        backend: Backend within the tier.
++        size_bytes: Size the owner reported at store time.
++    """
++
++    instance_id: str
++    incarnation: int
++    tier: Tier
++    backend: str
++    size_bytes: int
++
++
++class ApplyResult(str, Enum):
++    """Result of applying one :class:`CacheEventBatch` to the directory.
++
++    ``APPLIED`` — the batch was applied.
++    ``DUPLICATE`` — the batch's ``seq`` was already applied for the
++    instance's current incarnation; the batch was dropped.
++    ``STALE_INCARNATION`` — the batch carries an incarnation older than the
++    instance's current one; the batch was dropped.
++    """
++
++    APPLIED = "applied"
++    DUPLICATE = "duplicate"
++    STALE_INCARNATION = "stale_incarnation"
++
++
++@dataclass(frozen=True)
++class InstanceDirectoryStats:
++    """Directory-side bookkeeping for one reporting instance.
++
++    Attributes:
++        incarnation: The instance's current incarnation.
++        last_seq: Highest batch ``seq`` applied for that incarnation.
++        gap_detected: ``True`` if a ``seq`` gap was observed for the
++            instance's stream.
++        num_keys: Number of keys with at least one placement on the
++            instance.
++    """
++
++    incarnation: int
++    last_seq: int
++    gap_detected: bool
++    num_keys: int
++
++
++@dataclass(frozen=True)
++class DirectoryStats:
++    """A point-in-time summary of directory contents.
++
++    Attributes:
++        num_keys: Keys with at least one placement.
++        num_placements: Total placements across all keys.
++        instances: Per-instance bookkeeping, keyed by ``instance_id``.
++    """
++
++    num_keys: int
++    num_placements: int
++    instances: dict[str, InstanceDirectoryStats]
++
++
++@dataclass
++class _KeyRecord:
++    """Directory value for one key: its placements plus recency."""
++
++    placements: list[Placement] = field(default_factory=list)
++    content_hash_hex: str = ""
++    last_access: float = 0.0
++
++
++@dataclass
++class _InstanceState:
++    """Per-instance event-stream cursor and reverse index."""
++
++    incarnation: int
++    last_seq: int = 0
++    gap_detected: bool = False
++    keys: set[ObjectKey] = field(default_factory=set)
++
++
++class KeyDirectory:
++    """Thread-safe in-memory key directory built from cache events.
++
++    Mutations arrive through :meth:`apply_batch` and :meth:`drop_instance`;
++    reads through :meth:`lookup` and :meth:`stats`. Nothing is persisted.
++    """
++
++    def __init__(self) -> None:
++        self._lock = threading.Lock()
++        self._records: dict[ObjectKey, _KeyRecord] = {}
++        self._instances: dict[str, _InstanceState] = {}
++
++    def apply_batch(self, batch: CacheEventBatch) -> ApplyResult:
++        """Apply one event batch to the directory.
++
++        Applies incarnation fencing, seq dedup, and gap detection, then
++        the entries. Entry application is idempotent: re-storing upserts
++        the placement, deleting an absent placement is a no-op.
++
++        Args:
++            batch: The event batch to apply.
++
++        Returns:
++            Whether the batch was applied, or why it was dropped.
++        """
++        with self._lock:
++            state = self._instances.get(batch.instance_id)
++            if state is None:
++                state = _InstanceState(incarnation=batch.incarnation)
++                self._instances[batch.instance_id] = state
++            elif batch.incarnation < state.incarnation:
++                return ApplyResult.STALE_INCARNATION
++            elif batch.incarnation > state.incarnation:
++                # Restart: fence out the previous incarnation's placements.
++                self._drop_instance_locked(batch.instance_id)
++                state = _InstanceState(incarnation=batch.incarnation)
++                self._instances[batch.instance_id] = state
++            elif batch.seq <= state.last_seq:
++                return ApplyResult.DUPLICATE
++
++            if batch.seq > state.last_seq + 1 and not state.gap_detected:
++                state.gap_detected = True
++                logger.warning(
++                    "Event gap for instance %s (incarnation %d): "
++                    "seq jumped %d -> %d; slice needs resync",
++                    batch.instance_id,
++                    batch.incarnation,
++                    state.last_seq,
++                    batch.seq,
++                )
++            state.last_seq = batch.seq
++
++            for entry in batch.entries:
++                self._apply_entry_locked(state, batch, entry)
++            return ApplyResult.APPLIED
++
++    def lookup(self, keys: list[ObjectKey]) -> list[list[Placement]]:
++        """Return the known placements for each requested key.
++
++        Args:
++            keys: The keys to look up.
++
++        Returns:
++            One placement list per requested key, in request order —
++            empty for unknown keys. Each list is sorted by
++            ``(instance_id, tier, backend)``.
++        """
++        with self._lock:
++            results: list[list[Placement]] = []
++            for key in keys:
++                record = self._records.get(key)
++                if record is None:
++                    results.append([])
++                    continue
++                results.append(
++                    sorted(
++                        record.placements,
++                        key=lambda p: (p.instance_id, p.tier.value, p.backend),
++                    )
++                )
++            return results
++
++    def drop_instance(self, instance_id: str) -> int:
++        """Remove every placement reported by ``instance_id``.
++
++        The instance's stream cursor is removed too, so a later reconnect
++        starts fresh with any incarnation.
++
++        Args:
++            instance_id: The instance whose placements to drop.
++
++        Returns:
++            The number of placements removed.
++        """
++        with self._lock:
++            removed = self._drop_instance_locked(instance_id)
++            self._instances.pop(instance_id, None)
++            return removed
++
++    def stats(self) -> DirectoryStats:
++        """Return a point-in-time summary of directory contents.
++
++        Returns:
++            Key/placement counts plus per-instance stream state, keyed by
++            ``instance_id``.
++        """
++        with self._lock:
++            num_placements = sum(
++                len(record.placements) for record in self._records.values()
++            )
++            instances = {
++                instance_id: InstanceDirectoryStats(
++                    incarnation=state.incarnation,
++                    last_seq=state.last_seq,
++                    gap_detected=state.gap_detected,
++                    num_keys=len(state.keys),
++                )
++                for instance_id, state in self._instances.items()
++            }
++            return DirectoryStats(
++                num_keys=len(self._records),
++                num_placements=num_placements,
++                instances=instances,
++            )
++
++    # -- Internals (call with self._lock held) --------------------------------
++
++    def _apply_entry_locked(
++        self,
++        state: _InstanceState,
++        batch: CacheEventBatch,
++        entry: CacheEventEntry,
++    ) -> None:
++        """Apply one entry of ``batch`` under the directory lock."""
++        key = entry.key.to_object_key()
++        if batch.event_type == CacheEventType.STORE:
++            record = self._records.get(key)
++            if record is None:
++                record = _KeyRecord()
++                self._records[key] = record
++            placement = Placement(
++                instance_id=batch.instance_id,
++                incarnation=batch.incarnation,
++                tier=batch.tier,
++                backend=batch.backend,
++                size_bytes=entry.size_bytes,
++            )
++            index = self._find_placement(record.placements, batch)
++            if index is None:
++                record.placements.append(placement)
++            else:
++                record.placements[index] = placement
++            if entry.content_hash_hex:
++                record.content_hash_hex = entry.content_hash_hex
++            record.last_access = max(record.last_access, batch.ts)
++            state.keys.add(key)
++        elif batch.event_type == CacheEventType.DELETE:
++            record = self._records.get(key)
++            if record is None:
++                return
++            index = self._find_placement(record.placements, batch)
++            if index is not None:
++                record.placements.pop(index)
++            if not record.placements:
++                del self._records[key]
++            if not any(p.instance_id == batch.instance_id for p in record.placements):
++                state.keys.discard(key)
++        elif batch.event_type == CacheEventType.ACCESS:
++            record = self._records.get(key)
++            if record is not None:
++                record.last_access = max(record.last_access, batch.ts)
++
++    @staticmethod
++    def _find_placement(
++        placements: list[Placement], batch: CacheEventBatch
++    ) -> int | None:
++        """Return the index of the placement whose ``(instance_id, tier,
++        backend)`` identity matches ``batch``, or ``None`` if absent."""
++        for index, placement in enumerate(placements):
++            if (
++                placement.instance_id == batch.instance_id
++                and placement.tier == batch.tier
++                and placement.backend == batch.backend
++            ):
++                return index
++        return None
++
++    def _drop_instance_locked(self, instance_id: str) -> int:
++        """Remove all placements from ``instance_id``; return the count."""
++        state = self._instances.get(instance_id)
++        if state is None:
++            return 0
++        removed = 0
++        for key in state.keys:
++            record = self._records.get(key)
++            if record is None:
++                continue
++            kept = [p for p in record.placements if p.instance_id != instance_id]
++            removed += len(record.placements) - len(kept)
++            if kept:
++                record.placements = kept
++            else:
++                del self._records[key]
++        state.keys.clear()
++        return removed
+diff --git a/lmcache/v1/mp_coordinator/schemas.py b/lmcache/v1/mp_coordinator/schemas.py
+index 88be8d32..c1396ec8 100644
+--- a/lmcache/v1/mp_coordinator/schemas.py
++++ b/lmcache/v1/mp_coordinator/schemas.py
+@@ -5,6 +5,8 @@ These Pydantic models are the wire contract between the coordinator and mp
+ servers. The coordinator uses them to validate requests and shape responses; an
+ mp server (when it registers) imports the same models to build its request
+ bodies and parse replies, so both sides agree on the schema in one place.
++
++This module holds HTTP models only.
+ """
+ 
+ # Standard
+@@ -19,6 +21,8 @@ import numpy as np
+ # First Party
+ from lmcache.v1.distributed.api import EncodedObjectKey  # noqa: F401  re-exported
+ from lmcache.v1.distributed.tiers import Tier
++from lmcache.v1.mp_coordinator.api import CacheEventBatch
++from lmcache.v1.mp_coordinator.key_directory import Placement
+ 
+ 
+ def encode_tokens(tokens: "list[int] | np.ndarray") -> str:
+@@ -247,6 +251,120 @@ class StatusListResponse(BaseModel):
+     by_cache_salt: list[StatusResponse]
+ 
+ 
++# -- Key directory -----------------------------------------------------------
++
++
++class DirectoryEventsRequest(BaseModel):
++    """Body of ``POST /directory/events``.
++
++    Attributes:
++        batches: Event batches to apply, in emission order per instance.
++    """
++
++    batches: list[CacheEventBatch] = Field(default_factory=list)
++
++    @field_validator("batches")
++    @classmethod
++    def _validate_batches(cls, value: list[CacheEventBatch]) -> list[CacheEventBatch]:
++        """Enforce encoding-level constraints on every entry.
++
++        Args:
++            value: The hydrated batches.
++
++        Returns:
++            The unchanged batches once every constraint holds.
++
++        Raises:
++            ValueError: If an entry's key cannot convert into an
++                ``ObjectKey`` or its ``content_hash_hex`` is not valid
++                hex (surfaced as 422).
++        """
++        for batch in value:
++            for entry in batch.entries:
++                entry.key.to_object_key()
++                bytes.fromhex(entry.content_hash_hex)
++        return value
++
++
++class DirectoryEventsResponse(BaseModel):
++    """Reply to ``POST /directory/events``.
++
++    Attributes:
++        applied: Batches applied to the directory.
++        duplicates: Batches dropped as already-applied replays.
++        stale: Batches dropped for carrying an outdated incarnation.
++    """
++
++    applied: int = 0
++    duplicates: int = 0
++    stale: int = 0
++
++
++class DirectoryLookupRequest(BaseModel):
++    """Body of ``POST /directory/lookup``.
++
++    Attributes:
++        keys: The keys to resolve to placements.
++    """
++
++    keys: list[EncodedObjectKey] = Field(default_factory=list)
++
++
++class DirectoryKeyPlacements(BaseModel):
++    """Placements for one requested key.
++
++    Attributes:
++        key: The requested key, echoed back.
++        placements: Known placements; empty when the directory knows
++            nothing about the key.
++    """
++
++    key: EncodedObjectKey
++    placements: list[Placement] = Field(default_factory=list)
++
++
++class DirectoryLookupResponse(BaseModel):
++    """Reply to ``POST /directory/lookup``.
++
++    Attributes:
++        results: One entry per requested key, in request order.
++    """
++
++    results: list[DirectoryKeyPlacements] = Field(default_factory=list)
++
++
++class TokenPlacementLookupRequest(BaseModel):
++    """Body of ``POST /directory/lookup_tokens``.
++
++    Resolves ``token_ids`` to the object keys of their complete chunks
++    (the same fan-out the pin APIs use) and returns each key's placements.
++
++    Attributes:
++        model_name: Model whose rank fan-out to use when resolving keys.
++        world_size: World size selecting the per-rank fan-out.
++        token_ids: The token sequence to resolve.
++        cache_salt: Per-tenant isolation salt applied to the produced keys.
++    """
++
++    model_name: str
++    world_size: int = Field(ge=1)
++    token_ids: list[int] = Field(default_factory=list)
++    cache_salt: str = ""
++
++
++class TokenPlacementLookupResponse(BaseModel):
++    """Reply to ``POST /directory/lookup_tokens``.
++
++    Attributes:
++        chunks: Number of complete chunks the token sequence resolved to.
++        results: One entry per resolved key (``chunks`` x per-rank
++            fan-out), each echoing the key with its known placements.
++    """
++
++    chunks: int = 0
++    results: list[DirectoryKeyPlacements] = Field(default_factory=list)
++
++
+ # -- Global CacheBlend fingerprint directory ------------------------------
+ 
+ 
+diff --git a/tests/v1/mp_coordinator/test_directory_api.py b/tests/v1/mp_coordinator/test_directory_api.py
+new file mode 100644
+index 00000000..66162abb
+--- /dev/null
++++ b/tests/v1/mp_coordinator/test_directory_api.py
+@@ -0,0 +1,213 @@
++# SPDX-License-Identifier: Apache-2.0
++"""Tests for the coordinator ``/directory`` REST API (cache-event
++ingestion, placement lookup, and stats)."""
++
++# Third Party
++from fastapi.testclient import TestClient
++
++# First Party
++from lmcache.v1.mp_coordinator.app import create_app
++from lmcache.v1.mp_coordinator.config import MPCoordinatorConfig
++
++
++def _client() -> TestClient:
++    config = MPCoordinatorConfig(health_check_interval=0.0, eviction_check_interval=0.0)
++    return TestClient(create_app(config))
++
++
++def _key(h: str = "aa", model: str = "m", rank: int = 0, salt: str = "") -> dict:
++    return {
++        "chunk_hash_hex": h,
++        "model_name": model,
++        "kv_rank": rank,
++        "cache_salt": salt,
++    }
++
++
++def _batch(
++    instance_id: str = "node-a",
++    incarnation: int = 1,
++    seq: int = 1,
++    event_type: str = "store",
++    tier: str = "l1",
++    backend: str = "dram",
++    entries: list[dict] | None = None,
++) -> dict:
++    if entries is None:
++        entries = [{"key": _key(), "size_bytes": 1024}]
++    return {
++        "instance_id": instance_id,
++        "incarnation": incarnation,
++        "seq": seq,
++        "event_type": event_type,
++        "tier": tier,
++        "backend": backend,
++        "entries": entries,
++    }
++
++
++def _post_events(client: TestClient, batches: list[dict]) -> dict:
++    resp = client.post("/directory/events", json={"batches": batches})
++    assert resp.status_code == 200
++    return resp.json()
++
++
++def _lookup(client: TestClient, keys: list[dict]) -> dict:
++    resp = client.post("/directory/lookup", json={"keys": keys})
++    assert resp.status_code == 200
++    return resp.json()
++
++
++# -- Events + lookup ---------------------------------------------------------
++
++
++def test_store_events_then_lookup():
++    with _client() as client:
++        data = _post_events(client, [_batch()])
++        assert data == {"applied": 1, "duplicates": 0, "stale": 0}
++
++        result = _lookup(client, [_key()])["results"]
++        assert len(result) == 1
++        assert result[0]["key"]["chunk_hash_hex"] == "aa"
++        [placement] = result[0]["placements"]
++        assert placement["instance_id"] == "node-a"
++        assert placement["incarnation"] == 1
++        assert placement["tier"] == "l1"
++        assert placement["backend"] == "dram"
++        assert placement["size_bytes"] == 1024
++
++
++def test_lookup_unknown_key_returns_empty_placements():
++    with _client() as client:
++        result = _lookup(client, [_key(h="ff")])["results"]
++        assert result[0]["key"]["chunk_hash_hex"] == "ff"
++        assert result[0]["placements"] == []
++
++
++def test_delete_event_removes_placement():
++    with _client() as client:
++        _post_events(client, [_batch(seq=1)])
++        _post_events(
++            client,
++            [_batch(seq=2, event_type="delete", entries=[{"key": _key()}])],
++        )
++        result = _lookup(client, [_key()])["results"]
++        assert result[0]["placements"] == []
++
++
++def test_duplicate_and_stale_batches_are_counted():
++    with _client() as client:
++        _post_events(client, [_batch(incarnation=2, seq=1)])
++        data = _post_events(
++            client,
++            [
++                _batch(incarnation=2, seq=1),  # replay -> duplicate
++                _batch(incarnation=1, seq=9),  # pre-restart -> stale
++                _batch(incarnation=2, seq=2),  # fresh -> applied
++            ],
++        )
++        assert data == {"applied": 1, "duplicates": 1, "stale": 1}
++
++
++# -- Token -> placement lookup -------------------------------------------------
++
++
++def _lookup_tokens_body(n_tokens: int, model: str = "m") -> dict:
++    return {
++        "model_name": model,
++        "world_size": 1,
++        "token_ids": list(range(n_tokens)),
++        "cache_salt": "",
++    }
++
++
++def test_lookup_tokens_short_sequence_resolves_no_chunks():
++    with _client() as client:
++        resp = client.post("/directory/lookup_tokens", json=_lookup_tokens_body(10))
++        assert resp.status_code == 200
++        assert resp.json() == {"chunks": 0, "results": []}
++
++
++def test_lookup_tokens_roundtrip():
++    with _client() as client:
++        # Resolve one full chunk; nothing stored yet -> empty placements.
++        first = client.post(
++            "/directory/lookup_tokens", json=_lookup_tokens_body(256)
++        ).json()
++        assert first["chunks"] == 1
++        assert len(first["results"]) == 1
++        assert first["results"][0]["placements"] == []
++
++        # Store the exact key the resolution produced, then look up again.
++        key = first["results"][0]["key"]
++        _post_events(client, [_batch(entries=[{"key": key, "size_bytes": 64}])])
++
++        second = client.post(
++            "/directory/lookup_tokens", json=_lookup_tokens_body(256)
++        ).json()
++        [placement] = second["results"][0]["placements"]
++        assert placement["instance_id"] == "node-a"
++        assert placement["size_bytes"] == 64
++
++
++def test_lookup_tokens_invalid_model_name_is_400():
++    with _client() as client:
++        resp = client.post(
++            "/directory/lookup_tokens", json=_lookup_tokens_body(256, model="a@b")
++        )
++        assert resp.status_code == 400
++
++
++# -- Stats -------------------------------------------------------------------
++
++
++def test_stats_reports_counts_and_gap_flag():
++    with _client() as client:
++        _post_events(client, [_batch(seq=1)])
++        _post_events(client, [_batch(seq=5, entries=[{"key": _key(h="bb")}])])
++
++        data = client.get("/directory/stats").json()
++        assert data["num_keys"] == 2
++        assert data["num_placements"] == 2
++        instance = data["instances"]["node-a"]
++        assert instance["incarnation"] == 1
++        assert instance["last_seq"] == 5
++        assert instance["gap_detected"] is True
++        assert instance["num_keys"] == 2
++
++
++# -- Request validation ------------------------------------------------------
++
++
++def test_tier_all_is_rejected():
++    with _client() as client:
++        resp = client.post("/directory/events", json={"batches": [_batch(tier="all")]})
++        assert resp.status_code == 422
++
++
++def test_seq_zero_is_rejected():
++    with _client() as client:
++        resp = client.post("/directory/events", json={"batches": [_batch(seq=0)]})
++        assert resp.status_code == 422
++
++
++def test_malformed_key_hex_is_rejected():
++    with _client() as client:
++        resp = client.post(
++            "/directory/events",
++            json={"batches": [_batch(entries=[{"key": _key(h="zz")}])]},
++        )
++        assert resp.status_code == 422
++
++
++def test_malformed_content_hash_is_rejected():
++    with _client() as client:
++        resp = client.post(
++            "/directory/events",
++            json={
++                "batches": [
++                    _batch(entries=[{"key": _key(), "content_hash_hex": "xyz"}])
++                ]
++            },
++        )
++        assert resp.status_code == 422
+diff --git a/tests/v1/mp_coordinator/test_key_directory.py b/tests/v1/mp_coordinator/test_key_directory.py
+new file mode 100644
+index 00000000..f226722a
+--- /dev/null
++++ b/tests/v1/mp_coordinator/test_key_directory.py
+@@ -0,0 +1,300 @@
++# SPDX-License-Identifier: Apache-2.0
++"""Tests for the coordinator key directory (I1): event application
++semantics (seq dedup, gap detection, incarnation fencing), lookup, and
++instance cleanup."""
++
++# Third Party
++import pytest
++
++# First Party
++from lmcache.v1.distributed.api import ObjectKey
++from lmcache.v1.distributed.tiers import Tier
++from lmcache.v1.mp_coordinator.api import (
++    CacheEventBatch,
++    CacheEventEntry,
++    CacheEventType,
++)
++from lmcache.v1.mp_coordinator.key_directory import ApplyResult, KeyDirectory
++
++
++def _key(hash_byte: int) -> ObjectKey:
++    return ObjectKey(chunk_hash=bytes([hash_byte]) * 4, model_name="m", kv_rank=0)
++
++
++def _batch(
++    instance_id: str = "node-a",
++    incarnation: int = 1,
++    seq: int = 1,
++    event_type: CacheEventType = CacheEventType.STORE,
++    tier: Tier = Tier.L1,
++    backend: str = "dram",
++    keys: list[ObjectKey] | None = None,
++    size_bytes: int = 1024,
++    ts: float = 0.0,
++) -> CacheEventBatch:
++    entries = [
++        CacheEventEntry(key=k.to_encoded_object_key(), size_bytes=size_bytes)
++        for k in (keys or [_key(0xAA)])
++    ]
++    return CacheEventBatch(
++        instance_id=instance_id,
++        incarnation=incarnation,
++        seq=seq,
++        event_type=event_type,
++        tier=tier,
++        backend=backend,
++        entries=entries,
++        ts=ts,
++    )
++
++
++# -- Store / lookup ----------------------------------------------------------
++
++
++def test_store_then_lookup():
++    directory = KeyDirectory()
++    assert directory.apply_batch(_batch(keys=[_key(1)])) == ApplyResult.APPLIED
++
++    [placements] = directory.lookup([_key(1)])
++    assert len(placements) == 1
++    p = placements[0]
++    assert p.instance_id == "node-a"
++    assert p.incarnation == 1
++    assert p.tier == Tier.L1
++    assert p.backend == "dram"
++    assert p.size_bytes == 1024
++
++
++def test_lookup_unknown_key_is_empty():
++    directory = KeyDirectory()
++    assert directory.lookup([_key(9)]) == [[]]
++
++
++def test_lookup_preserves_request_order():
++    directory = KeyDirectory()
++    directory.apply_batch(_batch(keys=[_key(2)]))
++    results = directory.lookup([_key(1), _key(2)])
++    assert results[0] == []
++    assert len(results[1]) == 1
++
++
++def test_restore_updates_size_without_duplicating_placement():
++    directory = KeyDirectory()
++    directory.apply_batch(_batch(seq=1, keys=[_key(1)], size_bytes=100))
++    directory.apply_batch(_batch(seq=2, keys=[_key(1)], size_bytes=200))
++
++    [placements] = directory.lookup([_key(1)])
++    assert len(placements) == 1
++    assert placements[0].size_bytes == 200
++
++
++def test_same_key_on_two_instances():
++    directory = KeyDirectory()
++    directory.apply_batch(_batch(instance_id="node-b", keys=[_key(1)]))
++    directory.apply_batch(_batch(instance_id="node-a", keys=[_key(1)]))
++
++    [placements] = directory.lookup([_key(1)])
++    assert [p.instance_id for p in placements] == ["node-a", "node-b"]
++
++
++def test_same_key_on_two_tiers_of_one_instance():
++    directory = KeyDirectory()
++    directory.apply_batch(_batch(seq=1, tier=Tier.L1, backend="dram", keys=[_key(1)]))
++    directory.apply_batch(_batch(seq=2, tier=Tier.L2, backend="fs", keys=[_key(1)]))
++
++    [placements] = directory.lookup([_key(1)])
++    assert [(p.tier, p.backend) for p in placements] == [
++        (Tier.L1, "dram"),
++        (Tier.L2, "fs"),
++    ]
++
++
++# -- Delete ------------------------------------------------------------------
++
++
++def test_delete_drops_placement_and_empty_record():
++    directory = KeyDirectory()
++    directory.apply_batch(_batch(seq=1, keys=[_key(1)]))
++    outcome = directory.apply_batch(
++        _batch(seq=2, event_type=CacheEventType.DELETE, keys=[_key(1)])
++    )
++
++    assert outcome == ApplyResult.APPLIED
++    assert directory.lookup([_key(1)]) == [[]]
++    stats = directory.stats()
++    assert stats.num_keys == 0
++    assert stats.num_placements == 0
++    assert stats.instances["node-a"].num_keys == 0
++
++
++def test_removal_of_one_tier_keeps_the_other():
++    directory = KeyDirectory()
++    directory.apply_batch(_batch(seq=1, tier=Tier.L1, keys=[_key(1)]))
++    directory.apply_batch(_batch(seq=2, tier=Tier.L2, backend="fs", keys=[_key(1)]))
++    directory.apply_batch(
++        _batch(seq=3, event_type=CacheEventType.DELETE, tier=Tier.L1, keys=[_key(1)])
++    )
++
++    [placements] = directory.lookup([_key(1)])
++    assert [(p.tier, p.backend) for p in placements] == [(Tier.L2, "fs")]
++    # The instance still holds the key on L2, so its key count is intact.
++    assert directory.stats().instances["node-a"].num_keys == 1
++
++
++def test_removal_of_unknown_key_is_noop():
++    directory = KeyDirectory()
++    outcome = directory.apply_batch(
++        _batch(event_type=CacheEventType.DELETE, keys=[_key(7)])
++    )
++    assert outcome == ApplyResult.APPLIED
++    assert directory.stats().num_keys == 0
++
++
++# -- Access ------------------------------------------------------------------
++
++
++def test_access_does_not_create_records():
++    directory = KeyDirectory()
++    outcome = directory.apply_batch(
++        _batch(event_type=CacheEventType.ACCESS, keys=[_key(1)])
++    )
++    assert outcome == ApplyResult.APPLIED
++    assert directory.stats().num_keys == 0
++
++
++# -- Seq handling ------------------------------------------------------------
++
++
++def test_duplicate_seq_is_dropped():
++    directory = KeyDirectory()
++    directory.apply_batch(_batch(seq=1, keys=[_key(1)], size_bytes=100))
++    outcome = directory.apply_batch(_batch(seq=1, keys=[_key(1)], size_bytes=999))
++
++    assert outcome == ApplyResult.DUPLICATE
++    [placements] = directory.lookup([_key(1)])
++    assert placements[0].size_bytes == 100
++
++
++def test_replayed_older_seq_is_dropped():
++    directory = KeyDirectory()
++    directory.apply_batch(_batch(seq=1, keys=[_key(1)]))
++    directory.apply_batch(
++        _batch(seq=2, event_type=CacheEventType.DELETE, keys=[_key(1)])
++    )
++    outcome = directory.apply_batch(_batch(seq=1, keys=[_key(1)]))
++
++    assert outcome == ApplyResult.DUPLICATE
++    assert directory.lookup([_key(1)]) == [[]]
++
++
++def test_seq_gap_sets_resync_flag_but_applies():
++    directory = KeyDirectory()
++    directory.apply_batch(_batch(seq=1, keys=[_key(1)]))
++    outcome = directory.apply_batch(_batch(seq=5, keys=[_key(2)]))
++
++    assert outcome == ApplyResult.APPLIED
++    info = directory.stats().instances["node-a"]
++    assert info.gap_detected is True
++    assert info.last_seq == 5
++    assert len(directory.lookup([_key(2)])[0]) == 1
++
++
++def test_contiguous_seqs_do_not_flag_gap():
++    directory = KeyDirectory()
++    directory.apply_batch(_batch(seq=1, keys=[_key(1)]))
++    directory.apply_batch(_batch(seq=2, keys=[_key(2)]))
++    assert directory.stats().instances["node-a"].gap_detected is False
++
++
++# -- Incarnation fencing -----------------------------------------------------
++
++
++def test_new_incarnation_fences_old_placements():
++    directory = KeyDirectory()
++    directory.apply_batch(_batch(incarnation=1, seq=1, keys=[_key(1), _key(2)]))
++    outcome = directory.apply_batch(_batch(incarnation=2, seq=1, keys=[_key(3)]))
++
++    assert outcome == ApplyResult.APPLIED
++    assert directory.lookup([_key(1)]) == [[]]
++    assert directory.lookup([_key(2)]) == [[]]
++    [placements] = directory.lookup([_key(3)])
++    assert placements[0].incarnation == 2
++    info = directory.stats().instances["node-a"]
++    assert info.incarnation == 2
++    assert info.last_seq == 1
++
++
++def test_fence_spares_other_instances_placements():
++    directory = KeyDirectory()
++    directory.apply_batch(_batch(instance_id="node-a", keys=[_key(1)]))
++    directory.apply_batch(_batch(instance_id="node-b", keys=[_key(1)]))
++    directory.apply_batch(_batch(instance_id="node-a", incarnation=2, keys=[_key(9)]))
++
++    [placements] = directory.lookup([_key(1)])
++    assert [p.instance_id for p in placements] == ["node-b"]
++
++
++def test_stale_incarnation_batch_is_dropped():
++    directory = KeyDirectory()
++    directory.apply_batch(_batch(incarnation=2, seq=1, keys=[_key(1)]))
++    outcome = directory.apply_batch(_batch(incarnation=1, seq=99, keys=[_key(2)]))
++
++    assert outcome == ApplyResult.STALE_INCARNATION
++    assert directory.lookup([_key(2)]) == [[]]
++
++
++# -- drop_instance -----------------------------------------------------------
++
++
++def test_drop_instance_removes_all_its_placements():
++    directory = KeyDirectory()
++    directory.apply_batch(_batch(instance_id="node-a", keys=[_key(1), _key(2)]))
++    directory.apply_batch(_batch(instance_id="node-b", keys=[_key(1)]))
++
++    removed = directory.drop_instance("node-a")
++
++    assert removed == 2
++    [placements] = directory.lookup([_key(1)])
++    assert [p.instance_id for p in placements] == ["node-b"]
++    assert directory.lookup([_key(2)]) == [[]]
++    assert "node-a" not in directory.stats().instances
++
++
++def test_drop_unknown_instance_returns_zero():
++    directory = KeyDirectory()
++    assert directory.drop_instance("ghost") == 0
++
++
++# -- Intrinsic invariants ------------------------------------------------------
++
++
++def test_tier_all_is_unconstructible():
++    with pytest.raises(ValueError, match="concrete tier"):
++        _batch(tier=Tier.ALL)
++
++
++def test_seq_below_one_is_unconstructible():
++    with pytest.raises(ValueError, match="seq"):
++        _batch(seq=0)
++
++
++def test_negative_size_is_unconstructible():
++    with pytest.raises(ValueError, match="size_bytes"):
++        CacheEventEntry(key=_key(1).to_encoded_object_key(), size_bytes=-1)
++
++
++# -- Stats -------------------------------------------------------------------
++
++
++def test_stats_counts_keys_and_placements():
++    directory = KeyDirectory()
++    directory.apply_batch(_batch(instance_id="node-a", seq=1, keys=[_key(1), _key(2)]))
++    directory.apply_batch(
++        _batch(instance_id="node-b", seq=1, tier=Tier.L2, backend="fs", keys=[_key(1)])
++    )
++
++    stats = directory.stats()
++    assert stats.num_keys == 2
++    assert stats.num_placements == 3
++    assert stats.instances["node-a"].num_keys == 2
++    assert stats.instances["node-b"].num_keys == 1

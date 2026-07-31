@@ -2,7 +2,10 @@
 #
 # SPDX-License-Identifier: MIT
 #
-# : two-container inference stack (single compose file).
+# Three-container inference stack (single compose file).
+#
+#   coordinator — LMCache MP coordinator and fleet-wide key directory (:9300)
+#                 Receives registration, heartbeats, and cache placement events.
 #
 #   lmcache — standalone lmcache-server (MP mode)
 #               Standard mode (GDS_MODE unset):
@@ -49,9 +52,14 @@
 #   VLLM_MODEL             — model to serve
 #   LMCACHE_PORT           — lmcache ZMQ listen port (default: 6555)
 #   LMCACHE_L1_SIZE_GB     — L1 cap in GiB (DRAM mode) or slab size (GDS mode, default: 20)
+#   LMCACHE_CHUNK_SIZE     — LMCache/coordinator token chunk size (default: 256)
+#   LMCACHE_COORDINATOR_PORT — coordinator HTTP port (default: 9300)
+#   LMCACHE_COORDINATOR_URL  — URL used by the MP server (default: http://127.0.0.1:9300)
+#   LMCACHE_COORDINATOR_EVENT_FLUSH_INTERVAL — cache event flush interval (default: 1.0s)
 #   LMCACHE_NVME_POOL      — nixl pool slots for NVMe adapter (default: 4096)
 #   LMCACHE_NVME_SLOT_SIZE — nixl file size per slot in bytes (default: 256 MiB)
 #   LMCACHE_NFS_POOL       — nixl pool slots for NFS adapter (default: 1024)
+#   LMCACHE_NFS_SLOT_SIZE  — nixl file size per NFS slot in bytes (default: NVMe slot size)
 #   AIC_NIXL_USE_DIRECT_IO — O_DIRECT for the AIS_MT NVMe L2 (default: true)
 #   VLM_GPU_MEMORY_UTILIZATION — vllm --gpu-memory-utilization (default: 0.90)
 #   VLM_MAX_MODEL_LEN          — vllm --max-model-len (default: 32768)
@@ -62,6 +70,40 @@
 #   TENSOR_PARALLEL_SIZE       — vllm --tensor-parallel-size (default: 1)
 
 services:
+
+  # ---------------------------------------------------------------------------
+  # coordinator: LMCache MP control plane and fleet-wide key directory.
+  # Runs without GPU access. Host networking lets colocated MP servers use
+  # 127.0.0.1 while preserving the existing host-networked stack.
+  # ---------------------------------------------------------------------------
+  coordinator:
+    profiles:
+      - cache
+    image: ${IMAGE_NAME:-rocm-aic}
+    container_name: aic-lmcache-coordinator
+    network_mode: host
+    environment:
+      - LMCACHE_COORDINATOR_PORT=${LMCACHE_COORDINATOR_PORT:-9300}
+      - LMCACHE_CHUNK_SIZE=${LMCACHE_CHUNK_SIZE:-256}
+      - TZ=${TZ:-America/Edmonton}
+    entrypoint: ["/usr/local/bin/lmcache", "coordinator"]
+    command:
+      - --host
+      - 0.0.0.0
+      - --port
+      - "${LMCACHE_COORDINATOR_PORT:-9300}"
+      - --chunk-size
+      - "${LMCACHE_CHUNK_SIZE:-256}"
+    healthcheck:
+      test:
+        - CMD
+        - python3
+        - -c
+        - "import os, urllib.request; urllib.request.urlopen('http://127.0.0.1:%s/healthz' % os.getenv('LMCACHE_COORDINATOR_PORT', '9300'), timeout=2).read()"
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 5s
 
   # ---------------------------------------------------------------------------
   # lmcache: standalone LMCache server in MP mode
@@ -84,6 +126,9 @@ services:
         AIC_UCX_FAST: ${AIC_UCX_FAST:-}
     image: ${IMAGE_NAME:-rocm-aic}
     container_name: aic-lmcache
+    depends_on:
+      coordinator:
+        condition: service_healthy
     # Cross-container HIP IPC (LMCacheMPConnector registering vLLM's KV tensors) on
     # ROCm requires the two containers to share host networking + host IPC + a PID
     # namespace.  lmcache owns its (default) PID namespace here; the vllm service
@@ -131,12 +176,16 @@ services:
     environment:
       - LMCACHE_PORT=${LMCACHE_PORT:-6555}
       - LMCACHE_L1_SIZE_GB=${LMCACHE_L1_SIZE_GB:-20}
+      - LMCACHE_CHUNK_SIZE=${LMCACHE_CHUNK_SIZE:-256}
+      - LMCACHE_COORDINATOR_URL=${LMCACHE_COORDINATOR_URL:-http://127.0.0.1:9300}
+      - LMCACHE_COORDINATOR_EVENT_FLUSH_INTERVAL=${LMCACHE_COORDINATOR_EVENT_FLUSH_INTERVAL:-1.0}
       - GDS_MODE=${GDS_MODE:-}
       - GDS_SLAB_DATA=${GDS_SLAB_DATA:-}
       - AIC_L2_BACKEND=${AIC_L2_BACKEND:-nixl}
       - LMCACHE_NVME_POOL=${LMCACHE_NVME_POOL:-4096}
       - LMCACHE_NVME_SLOT_SIZE=${LMCACHE_NVME_SLOT_SIZE:-268435456}
       - LMCACHE_NFS_POOL=${LMCACHE_NFS_POOL:-1024}
+      - LMCACHE_NFS_SLOT_SIZE=${LMCACHE_NFS_SLOT_SIZE:-268435456}
       - AIC_NIXL_USE_DIRECT_IO=${AIC_NIXL_USE_DIRECT_IO:-true}
       # Only set when a real config file is mounted (local_disk / advanced tuning).
       - LMCACHE_CONFIG_FILE=${LMCACHE_CONFIG_FILE:-}
@@ -153,7 +202,6 @@ services:
       # lmcache lands on a different device.  Mirror vllm's ROCR_VISIBLE_DEVICES.
       - ROCR_VISIBLE_DEVICES=${GPU:-0}
       - PYTHONHASHSEED=0
-      - TZ=${TZ:-America/Edmonton}
     # The entrypoint script selects the L1/L2 topology from GDS_MODE +
     # AIC_L2_BACKEND.  local_disk relies on LMCACHE_CONFIG_FILE (mounted above).
     entrypoint: ["/bin/bash", "-o", "pipefail", "-c"]
@@ -164,8 +212,12 @@ services:
             --no-separate-object-groups \
             --host 0.0.0.0 \
             --port "$$LMCACHE_PORT" \
+            --chunk-size "$$LMCACHE_CHUNK_SIZE" \
             --l1-size-gb "$$LMCACHE_L1_SIZE_GB" \
             --eviction-policy LRU \
+            --coordinator-url "$$LMCACHE_COORDINATOR_URL" \
+            --coordinator-event-reporting \
+            --coordinator-event-flush-interval "$$LMCACHE_COORDINATOR_EVENT_FLUSH_INTERVAL" \
             --gds-l1-path /data/slab
         elif [ "$$AIC_L2_BACKEND" = "local_disk" ] || [ "$$AIC_L2_BACKEND" = "none" ]; then
           # DRAM L1 only on the CLI.  local_disk adds a native LocalDiskBackend L2
@@ -175,8 +227,12 @@ services:
             --no-separate-object-groups \
             --host 0.0.0.0 \
             --port "$$LMCACHE_PORT" \
+            --chunk-size "$$LMCACHE_CHUNK_SIZE" \
             --l1-size-gb "$$LMCACHE_L1_SIZE_GB" \
-            --eviction-policy LRU
+            --eviction-policy LRU \
+            --coordinator-url "$$LMCACHE_COORDINATOR_URL" \
+            --coordinator-event-reporting \
+            --coordinator-event-flush-interval "$$LMCACHE_COORDINATOR_EVENT_FLUSH_INTERVAL"
         else
           # nixl AIS_MT NVMe L2a + POSIX NFS L2b.  Both are file-based nixl_store
           # backends, so both backend_params MUST include use_direct_io (LMCache
@@ -185,10 +241,14 @@ services:
             --no-separate-object-groups \
             --host 0.0.0.0 \
             --port "$$LMCACHE_PORT" \
+            --chunk-size "$$LMCACHE_CHUNK_SIZE" \
             --l1-size-gb "$$LMCACHE_L1_SIZE_GB" \
             --eviction-policy LRU \
+            --coordinator-url "$$LMCACHE_COORDINATOR_URL" \
+            --coordinator-event-reporting \
+            --coordinator-event-flush-interval "$$LMCACHE_COORDINATOR_EVENT_FLUSH_INTERVAL" \
             --l2-adapter "{\"type\":\"nixl_store\",\"backend\":\"AIS_MT\",\"backend_params\":{\"file_path\":\"/data/nvme/lmcache\",\"use_direct_io\":\"$$AIC_NIXL_USE_DIRECT_IO\",\"file_size\":\"$$LMCACHE_NVME_SLOT_SIZE\"},\"pool_size\":$$LMCACHE_NVME_POOL}" \
-            --l2-adapter "{\"type\":\"nixl_store\",\"backend\":\"POSIX\",\"backend_params\":{\"file_path\":\"/data/nfs/lmcache\",\"use_direct_io\":\"false\"},\"pool_size\":$$LMCACHE_NFS_POOL}"
+            --l2-adapter "{\"type\":\"nixl_store\",\"backend\":\"POSIX\",\"backend_params\":{\"file_path\":\"/data/nfs/lmcache\",\"use_direct_io\":\"false\",\"file_size\":\"$$LMCACHE_NFS_SLOT_SIZE\"},\"pool_size\":$$LMCACHE_NFS_POOL}"
         fi
     healthcheck:
       test:
@@ -251,7 +311,6 @@ services:
       # "invalid device pointer" (hipErrorInvalidDevicePointer) and the engine hangs.
       - PYTORCH_HIP_ALLOC_CONF=${PYTORCH_HIP_ALLOC_CONF:-expandable_segments:False}
       - PYTHONHASHSEED=0
-      - TZ=${TZ:-America/Edmonton}
     command: >
       --model ${VLLM_MODEL:-openai/gpt-oss-120b}
         --host 0.0.0.0

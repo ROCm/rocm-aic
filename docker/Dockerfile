@@ -79,7 +79,7 @@ ARG HSA_SNOOP_GIT_URL=https://github.com/sbates130272/hsa-snoop.git
 ARG HSA_SNOOP_REF=v1.0.0
 
 # LMCache: upstream repo, pinned to the v0.5.2 release tag.
-# All 8 AMD patches in patches/lmcache/ apply cleanly against this tag.
+# All 11 AMD patches in patches/lmcache/ apply cleanly against this tag.
 # Note: LMCache v0.5.2+ is required for vLLM >= 0.26.0.
 ARG LMCACHE_GIT_URL=https://github.com/LMCache/LMCache.git
 ARG LMCACHE_REF=v0.5.2

@@ -12,9 +12,14 @@
 | `AIC_L2_BACKEND` | `nixl` | LMCache L2 backend: `nixl` (AIS_MT NVMe + POSIX NFS) or `local_disk` (native LocalDiskBackend via a mounted config) |
 | `KV_TRANSFER_ARG` | LMCacheMPConnector JSON | vLLM `--kv-transfer-config` arg; empty = plain vLLM (the cliff `vram` baseline). Wrap the JSON in single quotes |
 | `LMCACHE_L1_SIZE_GB` | `20` | MP server L1 cap in GiB (DRAM L1 in nvme mode, hipFile slab size in GDS mode) |
+| `LMCACHE_CHUNK_SIZE` | `256` | Shared MP-server/coordinator token chunk size |
+| `LMCACHE_COORDINATOR_PORT` | `9300` | Coordinator HTTP listen port |
+| `LMCACHE_COORDINATOR_URL` | `http://127.0.0.1:9300` | Coordinator URL used by the host-networked MP server |
+| `LMCACHE_COORDINATOR_EVENT_FLUSH_INTERVAL` | `1.0` | Seconds between MP-server cache-event flush attempts |
 | `LMCACHE_NVME_POOL` | `4096` | NIXL pool slots for NVMe adapter |
 | `LMCACHE_NVME_SLOT_SIZE` | `268435456` | NIXL file size per NVMe pool slot, bytes (256 MiB) |
 | `LMCACHE_NFS_POOL` | `1024` | NIXL pool slots for NFS adapter |
+| `LMCACHE_NFS_SLOT_SIZE` | same as `LMCACHE_NVME_SLOT_SIZE` | NIXL file size per NFS/POSIX pool slot; must fit at least one full KV chunk |
 | `VLM_ATTENTION_BACKEND` | `TRITON_ATTN` | vLLM `--attention-backend` (TRITON_ATTN supports KV connectors) |
 | `VLM_KV_CACHE_DTYPE` | `fp8` | vLLM `--kv-cache-dtype` (`auto` for non-fp8 arches) |
 | `VLLM_EXTRA_ARGS` | — | Extra vLLM args appended verbatim (e.g. `--hf-overrides '{...}'`; single-quote embedded JSON) |
