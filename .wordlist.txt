@@ -5,6 +5,7 @@ AMD
 AQL
 ARGs
 Ansible
+Async
 BPE
 Backticks
 Benchmarking
@@ -40,10 +41,12 @@ LMCache's
 LMCacheMPConnector
 LocalDiskBackend
 MERCHANTABILITY
+Makefile
 MiB
 Mountpoint
 NFS
 NIXL
+NIXL's
 NONINFRINGEMENT
 NVMe
 NamedTuple
@@ -147,6 +150,7 @@ osl
 oss
 pagemap
 passwordless
+pid
 png
 posix
 pre

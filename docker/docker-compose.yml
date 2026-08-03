@@ -72,7 +72,8 @@
 #
 # Emulation + the full LMCache MP recipe (still no GPU, but needs an image with
 # LMCache in it, i.e. the production one — the `emulate` stage stops before it):
-#   IMAGE_NAME=rocm-aic:7.14-latest docker compose --profile emulate-mp up
+#   IMAGE_NAME=rocm-aic:7.14-latest docker compose --profile emulate-mp \
+#     up lmcache-emulator vllm-emulator
 # The KV tensors the connector registers are synthesized in HOST memory by
 # vllm_emulator (patches/llm-emu/04-kv-connector-emulation.patch): zeros, but
 # the shape, dtype and byte count vLLM computed, so LMCache moves real volumes.
@@ -91,8 +92,13 @@
 #                                because the connector needs real buffers, so cap
 #                                it to fit the node
 #   VLLM_EMULATOR_KV_BUFFERS   — 0 skips the fake KV buffers (connector goes inert)
-#   AIC_L2_BACKEND             — `emulate-mp` defaults to local_disk; AIS_MT needs
-#                                /dev/kfd, use nixl_posix to keep NIXL in the path
+#   EMU_KV_TRANSFER_ARG        — vLLM --kv-transfer-config for the EMULATOR.
+#                                Deliberately not KV_TRANSFER_ARG: the Makefile
+#                                exports that one globally, which would attach
+#                                the MP connector to the plain `emulate` profile
+#   AIC_L2_BACKEND             — `emulate-mp` defaults to nixl_posix (NIXL stays in
+#                                the path, no GPUDirect needed); AIS_MT needs
+#                                /dev/kfd, local_disk is the NIXL-free fallback
 
 # ---------------------------------------------------------------------------
 # Shared fragments.  The lmcache server is launched by two services -- `lmcache`
@@ -377,10 +383,12 @@ services:
   #     KV tensors that live in host memory.  Honouring this env var needs
   #     patches/lmcache/10-lmcache-cpu-device-type-optin.patch.
   #
-  # L2 defaults to local_disk here (see AIC_L2_BACKEND below): the AIS_MT NVMe
-  # adapter is hipFile P2PDMA and cannot initialise without /dev/kfd.  Set
-  # AIC_L2_BACKEND=nixl_posix to keep NIXL in the path via its POSIX plugin,
-  # which needs no GPUDirect.
+  # L2 defaults to nixl_posix here (see AIC_L2_BACKEND below).  AIS_MT, the
+  # normal default, is hipFile P2PDMA and cannot initialise without /dev/kfd;
+  # the NIXL POSIX plugin uses a CPU staging buffer and needs no GPUDirect, so
+  # NIXL itself -- and its Prometheus telemetry exporter on :19090 -- stay in
+  # the picture.  AIC_L2_BACKEND=local_disk is the NIXL-free fallback (LMCache's
+  # native LocalDiskBackend), and `none` gives a DRAM-only L1.
   # ---------------------------------------------------------------------------
   lmcache-emulator:
     profiles:
@@ -413,7 +421,7 @@ services:
     environment:
       <<: *lmcache-env
       # No GPUDirect on a CPU node — see the block comment above.
-      AIC_L2_BACKEND: "${AIC_L2_BACKEND:-local_disk}"
+      AIC_L2_BACKEND: "${AIC_L2_BACKEND:-nixl_posix}"
       DEVICE_TYPE: "cpu"
     entrypoint: ["/bin/bash", "-o", "pipefail", "-c"]
     command: *lmcache-command
@@ -441,8 +449,11 @@ services:
   # emulate-mp-test`.  That profile needs an image with LMCache in it, i.e. the
   # production image, NOT :7.14-emulate (whose build stops before LMCache):
   #
-  #   IMAGE_NAME=rocm-aic:7.14-latest \
-  #     docker compose --profile emulate-mp up
+  #   IMAGE_NAME=rocm-aic:7.14-latest docker compose --profile emulate-mp \
+  #     up lmcache-emulator vllm-emulator
+  # Name both services: the GPU `vllm` service has no profile (so the vram
+  # baseline can run it alone), and compose starts every profile-less service on
+  # any `up` -- a bare `--profile emulate-mp up` also launches it.
   #
   # Optional env:
   #   VLLM_EMULATOR_PROFILE_PACK — container path to the profile pack JSON.
@@ -523,10 +534,14 @@ services:
       - TZ=${TZ:-America/Edmonton}
     # Standard vLLM OpenAI API entrypoint — the emulator wires itself in via the
     # vllm.platform_plugins entry point and the env vars above.
-    # KV_TRANSFER_ARG is the same knob the GPU `vllm` service uses, so the
-    # emulated arm takes the identical LMCacheMPConnector JSON.  Empty by
-    # default = the historical `emulate` behaviour.  Two additions the MP
-    # profile makes on top of the `make up` JSON:
+    # EMU_KV_TRANSFER_ARG, not KV_TRANSFER_ARG.  The value is the identical
+    # LMCacheMPConnector JSON the GPU `vllm` service takes -- this really is the
+    # same recipe -- but it must be opted into explicitly: the Makefile does
+    # `export KV_TRANSFER_ARG` at file scope (Makefile:90), so reusing that name
+    # here silently attached the MP connector to the PLAIN `emulate` profile
+    # too, and `make emulate-test` died waiting 300s for an lmcache server that
+    # profile never starts.  Empty by default = the historical behaviour.
+    # Two additions the MP profile makes on top of the `make up` JSON:
     #   lmcache.mp.mp_transfer_mode=lmcache_driven — pin the production
     #     topology (the SERVER pulls from registered buffers).  Left on `auto`,
     #     create_transfer_context() dispatches on tensor.device.type and CPU
@@ -545,7 +560,7 @@ services:
         --max-num-batched-tokens ${VLM_MAX_NUM_BATCHED_TOKENS:-4096}
         --gpu-memory-utilization ${VLM_GPU_MEMORY_UTILIZATION:-0.85}
         --disable-access-log-for-endpoints "/health,/metrics,/v1/models"
-        ${KV_TRANSFER_ARG:-}
+        ${EMU_KV_TRANSFER_ARG:-}
         ${VLLM_EXTRA_ARGS:-}
     healthcheck:
       test: ["CMD", "curl", "-sf", "http://localhost:8000/health"]

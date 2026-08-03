@@ -48,10 +48,18 @@
 # 2. executor_hook._kv_connector_step
 #    Reproduces the mixin's lifecycle around the emulated forward, and
 #    attaches the resulting KVConnectorOutput to the fake ModelRunnerOutput.
-#    should_use_oracle() now also fires on a zero-token batch that has
-#    connector metadata -- vLLM's kv_connector_no_forward() case, where every
-#    request is parked on an async load and only a connector poll can un-park
-#    them.  Skipping it is a deadlock, not an optimisation.
+#    should_use_oracle() now claims EVERY step, and _create_fake_output()
+#    returns EMPTY_MODEL_RUNNER_OUTPUT rather than None for a batch with no
+#    scheduled tokens -- mirroring GPUModelRunner.execute_model, which returns
+#    EMPTY_MODEL_RUNNER_OUTPUT / kv_connector_no_forward() and never None.
+#    Two reasons.  A zero-token batch is not a no-op with a connector: every
+#    request can be parked in WAITING_FOR_REMOTE_KVS on an async load and only
+#    a connector poll un-parks them.  And returning None made
+#    `execute_model() -> None` mean both "ask sample_tokens()" and "nothing
+#    happened", which the async-scheduling batch queue cannot tell apart --
+#    it pops steps long after they were scheduled, so hook state read at pop
+#    time belongs to some later step.  That killed the engine with
+#    "RuntimeError: unexpected error" on the first zero-token step.
 #
 #    Known fidelity gap, documented in the code: the cycle runs synchronously
 #    on the engine thread (where vLLM runs it) rather than inside the
@@ -271,7 +279,7 @@ index 05505e4..1c80c23 100644
  
      def _stub_get_supported_tasks(self):
 diff --git a/vllm_emulator/hooks/executor_hook.py b/vllm_emulator/hooks/executor_hook.py
-index 0601bb0..c936b47 100644
+index 0601bb0..be52fb0 100644
 --- a/vllm_emulator/hooks/executor_hook.py
 +++ b/vllm_emulator/hooks/executor_hook.py
 @@ -8,6 +8,7 @@ the output directly (sync engine).
@@ -311,26 +319,31 @@ index 0601bb0..c936b47 100644
  
          # Fake-output sampling. _filler_token_id is a fixed non-stop id;
          # _eos_token_ids are populated from the profile pack so we never
-@@ -105,7 +111,17 @@ class ExecutorEmulatorHook:
+@@ -105,7 +111,22 @@ class ExecutorEmulatorHook:
          return self._enabled
  
      def should_use_oracle(self, scheduler_output: "SchedulerOutput") -> bool:
 -        return self._enabled and scheduler_output.total_num_scheduled_tokens > 0
-+        if not self._enabled:
-+            return False
-+        if scheduler_output.total_num_scheduled_tokens > 0:
-+            return True
-+        # A batch with no scheduled tokens is not necessarily a no-op: with a
-+        # KV connector, every request may be parked in WAITING_FOR_REMOTE_KVS
-+        # waiting on an async load, and the only thing that can un-park them is
-+        # a step that polls the connector.  vLLM handles this with
-+        # GPUModelRunner.kv_connector_no_forward(); skipping it here is a
-+        # deadlock, not an optimisation.
-+        return self._kv_connector_active(scheduler_output)
++        # Claim EVERY step, including a batch with no scheduled tokens.
++        #
++        # There is never a reason to defer to the worker -- it has no model to
++        # run -- and a zero-token batch is not a no-op either: with a KV
++        # connector, every request may be parked in WAITING_FOR_REMOTE_KVS on an
++        # async load, and only a step that polls the connector un-parks them.
++        # That is exactly what GPUModelRunner.execute_model does for the same
++        # batch (`if not has_kv_transfer_group(): return
++        # EMPTY_MODEL_RUNNER_OUTPUT; return self.kv_connector_no_forward(...)`).
++        #
++        # Claiming unconditionally also keeps `execute_model() -> None` meaning
++        # exactly one thing -- "ask sample_tokens()" -- rather than doubling as
++        # "nothing happened", which the batch queue cannot tell apart: it pops
++        # steps long after they were scheduled, so any state read at pop time
++        # belongs to a different step.
++        return self._enabled
  
      def has_pending_future(self) -> bool:
          return self._sample_future is not None
-@@ -115,6 +131,81 @@ class ExecutorEmulatorHook:
+@@ -115,6 +136,81 @@ class ExecutorEmulatorHook:
          self._sample_future = None
          return fut
  
@@ -412,7 +425,7 @@ index 0601bb0..c936b47 100644
      def create_delayed_future(
          self,
          scheduler_output: "SchedulerOutput",
-@@ -140,22 +231,42 @@ class ExecutorEmulatorHook:
+@@ -140,22 +236,42 @@ class ExecutorEmulatorHook:
          cached = scheduler_output.scheduled_cached_reqs
          sum_kv = sum(cached.num_computed_tokens) if cached.num_reqs > 0 else 0
  
@@ -447,25 +460,28 @@ index 0601bb0..c936b47 100644
 +
          if fake_output is None:
 -            if non_block:
-+            if kv_output is not None and not kv_output.is_empty():
-+                # vLLM's kv_connector_no_forward() equivalent: no tokens, but
-+                # transfers completed that the scheduler has to hear about.
-+                from vllm.v1.outputs import ModelRunnerOutput
-+                fake_output = ModelRunnerOutput.with_kv_conn_output_only(
-+                    kv_output)
-+            elif non_block:
-                 fut: Future = Future()
-                 fut.set_result(None)
-                 return fut
+-                fut: Future = Future()
+-                fut.set_result(None)
+-                return fut
 -            return None
-+            else:
-+                return None
++            # No tokens this step.  Mirror GPUModelRunner.execute_model exactly:
++            # kv_connector_no_forward() when a connector is attached (which
++            # collapses to EMPTY_MODEL_RUNNER_OUTPUT when nothing finished),
++            # EMPTY_MODEL_RUNNER_OUTPUT otherwise.  Never None -- upstream never
++            # returns None here, and a None output means "call sample_tokens()"
++            # to the engine.
++            from vllm.v1.outputs import EMPTY_MODEL_RUNNER_OUTPUT, ModelRunnerOutput
++            fake_output = (
++                ModelRunnerOutput.with_kv_conn_output_only(kv_output)
++                if kv_output is not None
++                else EMPTY_MODEL_RUNNER_OUTPUT
++            )
 +        elif kv_output is not None:
 +            fake_output.kv_connector_output = kv_output
  
          if not non_block:
              return self._handle_sync(latency_s, fake_output)
-@@ -268,8 +379,15 @@ class ExecutorEmulatorHook:
+@@ -268,8 +384,15 @@ class ExecutorEmulatorHook:
          pass
  
  

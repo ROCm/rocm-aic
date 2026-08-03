@@ -32,11 +32,25 @@ connector registers synthesized in host memory. See [§6](#6-emulating-the-full-
   enable async scheduling, or switch attention backend and the pack is stale.
 - **Anything with `tensor-parallel-size > 1`** — only `UniProcExecutor` is
   hooked today.
-- **`--async-scheduling`.** v0.26.0's `step_with_batch_queue()` only sets
-  `model_executed` for EC-consumer engines, so it takes `exec_future` and never
-  calls `sample_tokens()` — and the hook splits its work across exactly those
-  two calls. Emulation is sync-scheduling only. The GPU compose service does use
-  `--async-scheduling`; the emulated services deliberately do not.
+- **Structured output under async scheduling** — `pending_structured_output_tokens`
+  defers sampling to the next step, which the hook's single pending future does
+  not model. Everything else about async scheduling works; see the note below.
+
+> [!NOTE]
+> Async scheduling **is on by default** in v0.26.0
+> (`SchedulerConfig.async_scheduling` defaults to `None` → auto → `True`), so the
+> emulator runs the `step_with_batch_queue()` path unless you pass
+> `--no-async-scheduling`. There, `model_executed` decides whether
+> `sample_tokens()` is called, and upstream answers it with
+> `total_num_scheduled_tokens > 0` — which is wrong for a **zero-token** step.
+> The emulator still claims those: with a KV connector it has to poll for
+> finished transfers, exactly as `GPUModelRunner.execute_model` calls
+> `kv_connector_no_forward()` for the same batch. Marked not-executed, the step
+> never reaches `sample_tokens()`, the hook's parked future is stranded, and the
+> engine dies with `RuntimeError: unexpected error` on the first idle step after
+> a request completes. `patches/vllm/03-llm-emu-emulator-hooks.patch` answers
+> from the hook's own state instead, so the emulated services match the GPU one
+> rather than having to opt out of async scheduling.
 
 | Layer | Real serve | Emulation |
 | --- | --- | --- |
@@ -348,10 +362,20 @@ make emulate-mp-test
 By hand:
 
 ```bash
-IMAGE_NAME=rocm-aic:7.14-latest AIC_L2_BACKEND=local_disk \
+IMAGE_NAME=rocm-aic:7.14-latest DEVICE_TYPE=cpu \
   VLLM_EMULATOR_MEMORY=$((8 * 1024**3)) \
-  docker compose -f docker/docker-compose.yml --profile emulate-mp up
+  EMU_KV_TRANSFER_ARG="--kv-transfer-config '{\"kv_connector\":\"LMCacheMPConnector\",\"kv_role\":\"kv_both\",\"kv_connector_extra_config\":{\"lmcache.mp.host\":\"tcp://localhost\",\"lmcache.mp.port\":6555,\"lmcache.mp.mp_transfer_mode\":\"lmcache_driven\"}}'" \
+  docker compose -f docker/docker-compose.yml --profile emulate-mp \
+  up lmcache-emulator vllm-emulator
 ```
+
+> [!IMPORTANT]
+> The connector arg is `EMU_KV_TRANSFER_ARG`, not `KV_TRANSFER_ARG`. The value is
+> the identical JSON the GPU stack uses — this really is the same recipe — but
+> the Makefile `export`s `KV_TRANSFER_ARG` at file scope (`Makefile:90`), so
+> reusing that name attaches the MP connector to the **plain** `emulate` profile
+> as well, and `make emulate-test` then hangs for 300 s waiting on an lmcache
+> server that profile never starts.
 
 > [!IMPORTANT]
 > `emulate-mp` runs on the **production** image, not `:7.14-emulate`. The
@@ -402,12 +426,32 @@ MI300X pack records ~100+ GiB of `available_kv_cache_bytes`. **Set
 emulated admission cliff, which is usually what you want to control anyway.
 `make emulate-mp-test` defaults to 8 GiB (`AIC_EMULATE_MP_KV_BYTES`).
 
-`AIC_L2_BACKEND` defaults to `local_disk` for this profile: the AIS_MT NVMe
-adapter is hipFile P2PDMA and cannot initialise without `/dev/kfd`. Use
-`nixl_posix` to keep NIXL in the path via its POSIX plugin, which needs no
-GPUDirect.
+`AIC_L2_BACKEND` defaults to **`nixl_posix`** for this profile. The usual AIS_MT
+NVMe adapter is hipFile P2PDMA and cannot initialise without `/dev/kfd`, but
+NIXL's POSIX plugin uses a CPU staging buffer and needs no GPUDirect — so NIXL
+itself stays in the path, and with it the telemetry exporter on `:19090`.
+`local_disk` (LMCache's native `LocalDiskBackend`) is the NIXL-free fallback and
+`none` gives a DRAM-only L1.
 
-### 6.3 What this does and does not model
+### 6.3 Metrics
+
+`make emulate-mp-test` brings up the Prometheus sidecar
+(`monitoring/docker-compose.monitoring.yml`, exporters off — a CPU node has no
+GPU/HSA/NVMe telemetry worth collecting) and asserts that the `lmcache`,
+`nixl` and `vllm` scrape jobs are not just **up** but actually **serving
+series**. A target that answers on its port while exporting nothing is the
+failure this checks for; both facts land in the job log, and the TSDB is kept
+under `logs/<job-id>/prometheus/`.
+
+| Job | Port | Present when |
+| --- | --- | --- |
+| `vllm` | 8000 | always |
+| `lmcache` | 8080 | always — the MP server's own HTTP API. **Not** `--prometheus-port` (9091): v0.5.2 logs `standalone metrics HTTP server disabled; /metrics must be exposed by the caller` and opens no listener there, so the old 9091-only scrape config collected nothing. Both are listed now. |
+| `nixl` | 19090 | only with a `nixl_store` L2 — i.e. `AIC_L2_BACKEND=nixl_posix`. With `local_disk` no NIXL agent is created, so the target is legitimately down and the check reports SKIP. |
+
+Set `AIC_EMULATE_MP_MONITORING=0` to skip the sidecar entirely.
+
+### 6.4 What this does and does not model
 
 Real: batch composition, admission, prefix-cache and LMCache hit accounting, the
 number and size of chunks crossing ZMQ/SHM, L1 eviction, L2 writes and reads,
@@ -445,3 +489,5 @@ added.
 | `emulate-mp` hangs with requests in `WAITING_FOR_REMOTE_KVS` | the connector's worker side is not reporting completions; check for `[EmulatorKVBuffers] registered` in the log |
 | `Creating transfer context (device_type=cuda, ...)` on a CPU node | `DEVICE_TYPE=cpu` was not honoured — LMCache patch 10 missing, or the var is empty rather than `cpu` (§6.1) |
 | Emulator RSS climbing to tens of GiB under `emulate-mp` | expected — the fake KV pool is really allocated; cap it with `VLLM_EMULATOR_MEMORY` (§6.2) |
+| `FileExistsError: [Errno 17] File exists: '/lmcache_kv_<pid>_0'` | stale POSIX SHM segments from a killed previous run. `ipc: host` puts them in the **host's** `/dev/shm` and LMCache names them after the containerised engine pid, which repeats. `rm -f /dev/shm/lmcache_kv_*` with no emulator container running; `emulate-mp-test` does this at both ends. |
+| `ConnectionError: Cannot reach the LMCache MP server` from the **plain** `emulate` profile | something exported `KV_TRANSFER_ARG` (the Makefile does, globally). The emulator reads `EMU_KV_TRANSFER_ARG` instead precisely so this cannot happen — check you are not on an older compose file. |

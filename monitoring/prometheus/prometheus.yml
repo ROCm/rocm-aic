@@ -44,13 +44,22 @@ scrape_configs:
     static_configs:
       - targets: ["localhost:8000", "localhost:8001"]
 
-  # LMCache Prometheus /metrics exporter.  lmcache server binds its Prometheus
-  # exporter on --prometheus-port (default 9090, conflicts with Prometheus itself).
-  # We override to 9091 in docker-compose.yml so both can coexist.
+  # LMCache /metrics.
+  #
+  # :8080 is the real one for the MP server we run.  It initialises OTel with a
+  # "Prometheus fallback" and logs "standalone metrics HTTP server disabled;
+  # /metrics must be exposed by the caller" -- i.e. --prometheus-port opens NO
+  # listener, and the metrics are served by the server's own HTTP API instead
+  # (lmcache/v1/internal_api_server/common/metrics_api.py mounts GET /metrics on
+  # the :8080 app).  Scraping only 9091 silently collected nothing.
+  #
+  # :9091 is kept for deployments where the standalone exporter IS active
+  # (--prometheus-port; 9091 rather than its 9090 default so it cannot collide
+  # with Prometheus itself).  Whichever is absent simply shows as `down`.
   - job_name: lmcache
     metrics_path: /metrics
     static_configs:
-      - targets: ["localhost:9091"]
+      - targets: ["localhost:8080", "localhost:9091"]
 
   # NIXL native telemetry exporter (agent_tx_bytes_total, agent_errors_total,
   # ...). Present only when the prometheus-cpp plugin is built into the image and
