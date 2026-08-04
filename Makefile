@@ -151,6 +151,11 @@ override export HF_HOME       := $(AIC_SHARED_NFS)/$(USER)/hf
 # register_memory because GPUDirect storage is not available on this filesystem.
 # Default the nvme arm to the NIXL first-class POSIX plugin (cpu staging buffer),
 # which avoids hipFileBufRegister entirely.  A user override still takes precedence.
+# SPUR nodes are MI355X (gfx950); pin the image tag and arch so cliff loads the
+# correct gfx950 tarball (rocm-aic-7.14-latest-gfx950.tar.zst) instead of the
+# unpatched multi-arch latest.
+export AIC_IMAGE              ?= rocm-aic:7.14-latest
+override export ROCM_ARCH     := gfx950
 export AIC_L2_BACKEND         ?= nixl_posix
 # Right-size the POSIX slot file: must be >= KV chunk size for the target model.
 #   gpt-oss-120b fp8: 256 tok × 8 KV heads × 64 dim × 2 × 36 layers × 1B = 9 MiB
@@ -221,8 +226,8 @@ EXPORT_TARBALL ?= $(CURDIR)/$(EXPORT_PREFIX)-$(_GEN_DATE)-$(_GIT_SHORT_REV)$(_GI
 .PHONY: help ensure-compose build up up-batch up-gds-l1 up-gds-l1-batch down logs logs-lmcache logs-vllm \
         ps shell-lmcache shell-vllm restart-vllm restart-lmcache cliff plot venv \
         monitoring-up monitoring-down monitoring-logs monitoring-build-exporters \
-        dist-build dist-build-exporters dist-push smoke-test tiny-test install-ci-scripts cliff-submit cliff-short \
-        cliff-kvd cliff-spur-l2 cliff-long-64k cliff-long-128k \
+        dist-build dist-build-exporters dist-build-monitoring dist-push smoke-test tiny-test install-ci-scripts cliff-submit cliff-short \
+        cliff-kvd cliff-spur-l2 cliff-spur-l2-debug cliff-long-64k cliff-long-128k \
         export _check_hf_token _prep_dirs _check_gds_slab
 
 .DEFAULT_GOAL := help
@@ -256,6 +261,7 @@ help:
 	@echo "  (dist-build/dist-build-exporters/smoke-test submit via sbatch and log to logs/<job-id>/)"
 	@echo "  make dist-build        Build image (+ fabric exporters) on a Slurm build node, save tarballs"
 	@echo "  make dist-build-exporters  Build ONLY the nvme/rdma exporter images (no main rebuild)"
+	@echo "  make dist-build-monitoring Pull + save Prometheus/amdgpu-exporter to AIC_IMAGE_DIR"
 	@echo "  make dist-push         Tag + push the built image (needs AIC_PUSH_REF)"
 	@echo "  make smoke-test        Load + smoke-test the image on a GPU+NVMe node"
 	@echo "                         (also sanity-checks exporters + writes a Prometheus TSDB"
@@ -265,6 +271,7 @@ help:
 	@echo "  make cliff-submit      sbatch the full 3-arm cliff sweep -> logs/<job-id>/"
 	@echo "  make cliff-kvd         sbatch focused KVD cliff: shared prefix, sparse c ladder (1,8,32,64,128,250)"
 	@echo "  make cliff-spur-l2     sbatch SPUR-tuned L2 cliff: per_client prefix, util=0.40, 8GB DRAM L1, c=1/8/32 (vram+nvme)"
+	@echo "  make cliff-spur-l2-debug  Like cliff-spur-l2 but c=1 only, tiny L1=0.1GB, DEBUG logging (diagnose ext_hit=0)"
 	@echo "  make cliff-short       sbatch a 1-point cliff (concur=1, 1 iter) to smoke-test the flow"
 	@echo "  make cliff-long-64k    sbatch a 64k-ISL YaRN(x2) 3-arm sweep (pools sized for the working set)"
 	@echo "  make cliff-long-128k   sbatch a 128k-ISL YaRN(x4) 3-arm sweep (extreme; big DRAM/slab pools)"
@@ -480,6 +487,27 @@ dist-build-exporters:          # Build ONLY the fabric exporters (no main-image 
 	@# on the current host with AIC_BUILD_LOCAL=1.
 	"$(DIST)" build-exporters
 
+dist-build-monitoring:         # Pull + save monitoring sidecar images to AIC_IMAGE_DIR
+	@# Saves prom/prometheus and rocm/device-metrics-exporter to the shared NFS image
+	@# dir so cliff nodes can load them without Docker Hub egress.  Run once; the
+	@# load_image_if_needed call in run-cliff.sbatch picks them up automatically.
+	@set -e; \
+	for img in \
+	    "prom/prometheus:v2.55.1" \
+	    "rocm/device-metrics-exporter:v1.5.1" \
+	; do \
+	    tag="$$(printf '%s' "$$img" | tr '/:' '--').tar.zst"; \
+	    dest="$(AIC_IMAGE_DIR)/$$tag"; \
+	    if [ ! -f "$$dest" ]; then \
+	        echo "Pulling $$img and saving to $$dest ..."; \
+	        docker pull "$$img"; \
+	        docker save "$$img" | zstd -T0 -q > "$$dest"; \
+	        echo "  saved $$(du -h "$$dest" | cut -f1) -> $$dest"; \
+	    else \
+	        echo "  $$dest already present (use AIC_FORCE_LOAD=1 to refresh)"; \
+	    fi; \
+	done
+
 dist-push:                     # Tag + push the built image to a registry (needs AIC_PUSH_REF)
 	"$(DIST)" push
 
@@ -546,7 +574,7 @@ endif
 endif
 ifeq ($(AIC_SPUR_CLUSTER),1)
 _CLIFF_SPUR_CTL  := SPUR_CONTROLLER_ADDR=$(AIC_SPUR_CONTROLLER)
-_CLIFF_SBATCH_ARGS := --partition=amd-spur --constraint= \
+_CLIFF_SBATCH_ARGS := --partition=amd-spur --constraint= --gres= \
     $(if $(AIC_CLIFF_NODE),--nodelist=$(AIC_CLIFF_NODE),)
 # SPUR sbatch does not support --parsable or --no-requeue; parse job id from "Submitted batch job N"
 _CLIFF_SUBMIT     = $(_CLIFF_SPUR_CTL) $(_CLIFF_STRIP) sbatch \
@@ -620,6 +648,28 @@ cliff-spur-l2:
 	    echo "submitted cliff-spur-l2 job $$jobid" && \
 	    echo "  util=0.40, DRAM L1=8GB, POSIX NVMe L2, per_client, Qwen2.5-3B, c=32, 2 iters, nvme only" && \
 	    echo "log: $(CURDIR)/logs/$$jobid/cliff.out"
+
+cliff-spur-l2-debug:         # Tiny L1 (0.1GB) + DEBUG vLLM logging to diagnose ext_hit=0
+	@# c=1, 1 timed iter, 0.1GB DRAM L1 so a single client's ~630MiB prefix
+	@# immediately overflows into L2.  VLLM_LOGGING_LEVEL=DEBUG enables the
+	@# "vLLM hit is: N" log line in lmcache_mp_connector.py; search
+	@# container-aic-vllm.log for "vLLM hit is" to confirm ext_hit fires.
+	@cd "$(CURDIR)" && jobid=$$( \
+	    BENCH_PREFIX_MODE=per_client \
+	    BENCH_CONCUR="$${BENCH_CONCUR:-1}" \
+	    BENCH_ITERS="$${BENCH_ITERS:-1}" \
+	    VLLM_MODEL="$${VLLM_MODEL:-Qwen/Qwen2.5-3B-Instruct}" \
+	    VLM_GPU_MEMORY_UTILIZATION="$(if $(filter command line environment override,$(origin VLM_GPU_MEMORY_UTILIZATION)),$(VLM_GPU_MEMORY_UTILIZATION),0.40)" \
+	    AIC_LOCAL_CPU=true \
+	    LMCACHE_MAX_LOCAL_CPU_SIZE="$(if $(filter command line environment override,$(origin LMCACHE_MAX_LOCAL_CPU_SIZE)),$(LMCACHE_MAX_LOCAL_CPU_SIZE),0.1)" \
+	    AIC_CLIFF_ARMS="$${AIC_CLIFF_ARMS:-nvme}" \
+	    VLLM_LOGGING_LEVEL=DEBUG \
+	    $(call _CLIFF_SUBMIT,--job-name=aic-cliff-l2-debug \
+	    --time=$(if $(AIC_CLIFF_TIME),$(AIC_CLIFF_TIME),01:00:00))) && \
+	    echo "submitted cliff-spur-l2-debug job $$jobid" && \
+	    echo "  util=0.40, DRAM L1=0.1GB (forces L2 hits at c=1), per_client, c=1, 1 iter, DEBUG logging" && \
+	    echo "log: $(CURDIR)/logs/$$jobid/cliff.out" && \
+	    echo "  check container-aic-vllm.log for 'vLLM hit is' to confirm ext_hit"
 
 # Fast setup check: a single concurrency point, one timed iteration, all 3 arms.
 # Respects user overrides of BENCH_CONCUR / BENCH_ITERS.

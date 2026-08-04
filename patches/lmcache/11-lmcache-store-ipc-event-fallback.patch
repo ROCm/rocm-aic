@@ -1,0 +1,69 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Stephen Bates <stephen.bates@amd.com>
+Date: 2026-07-30
+Subject: [PATCH 11] fix: fallback when store() Event.from_ipc_handle fails (ROCm)
+
+LMCacheDrivenTransferModule.store() reconstructs a CUDA Event from
+the IPC handle bytes sent by vLLM alongside each STORE request, then
+calls vllm_event.wait(stream) to ensure vLLM has finished writing the
+KV blocks before the server copies them.
+
+On ROCm 7.14 / gfx950 (MI355X), Event.from_ipc_handle() raises
+hipErrorInvalidValue immediately (the same platform bug addressed by
+patch 10 in futures.py).  The exception propagates out of the affinity
+pool worker thread, is caught by mq._notify_response(), and logged as:
+
+  LMCache ERROR: Error in blocking handler
+    torch.AcceleratorError: CUDA error: invalid argument (hipErrorInvalidValue)
+
+The store uses all-or-nothing semantics: if the worker raises, the ZMQ
+response signals an error and the entire store request is dropped.
+Those chunks are therefore never committed to L1 or L2, so subsequent
+prefetch lookups for them produce:
+
+  lmcache_mp_l2_prefetch_failure_chunks_total = 191  (in job 15939)
+
+despite 2,332 chunks being written to the NVMe pool.  This is the
+primary cause of the low L2 hit rate.
+
+Fix: catch any exception from from_ipc_handle and fall back to
+torch.cuda.synchronize(device) — a full device sync that guarantees
+the vLLM write has completed before we copy.  Slower (blocks the
+entire GPU vs. one stream) but correct; the fallback only fires on
+ROCm platforms where IPC events are broken.
+
+Observed: SPUR MI355X gfx950, ROCm 7.14, LMCache v0.5.2, cliff job
+15939 — l2_prefetch_failure_chunks_total=191, l2_prefetch_hit=54.
+
+Applies after patches 01-10.
+---
+--- a/lmcache/v1/multiprocess/modules/lmcache_driven_transfer.py
++++ b/lmcache/v1/multiprocess/modules/lmcache_driven_transfer.py
+@@ -1030,10 +1030,23 @@
+                     "handles (Event.from_ipc_handle not available). "
+                     "Multiprocess IPC requires CUDA."
+                 )
+-            vllm_event = torch_dev.Event.from_ipc_handle(
+-                cache_context.device, event_ipc_handle
+-            )
+-            vllm_event.wait(stream=cache_context.stream)
++            try:
++                vllm_event = torch_dev.Event.from_ipc_handle(
++                    cache_context.device, event_ipc_handle
++                )
++                vllm_event.wait(stream=cache_context.stream)
++            except Exception:
++                # HIP IPC events are broken on some ROCm platforms (e.g. gfx950/ROCm 7.14):
++                # from_ipc_handle raises hipErrorInvalidValue immediately after export.
++                # Fall back to a full device synchronise so the vLLM KV write
++                # completes before we copy.  Slower but correct; without this the
++                # store is silently dropped (all-or-nothing semantics), leaving
++                # chunks absent from L2 and producing spurious prefetch failures.
++                logger.warning(
++                    "Event.from_ipc_handle failed (hipErrorInvalidValue on ROCm?); "
++                    "falling back to torch.cuda.synchronize() for store ordering."
++                )
++                torch_dev.synchronize(cache_context.device)
+ 
+             # CPU-synchronous sentinel: a GPU store is about to be enqueued.
+             # Must be published via publish() (not publish_on_stream) so the

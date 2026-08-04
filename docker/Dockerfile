@@ -169,31 +169,22 @@ RUN curl -fsSL https://astral.sh/uv/install.sh | sh && \
     ln -s /root/.local/bin/uvx /usr/local/bin/uvx
 
 # ----- 3. vLLM (built from source at pinned tag) ---------------------------------
-# Install torch 2.12.0+rocm7.14.0 from AMD's multi-arch wheel index.  This is a
-# native ROCm 7.14 build (torch.version.hip is set), so cmake can configure the
-# HIP extensions without any _is_hip() patching tricks.  The device-gfx* extras
-# pull in the pre-compiled GPU kernels for the target arch; the ROCm 7.14 HIP
-# toolchain in the base image handles compilation of any remaining host-side code.
+# Install torch 2.13.0+rocm7.2 from the upstream pytorch.org wheel index.
 #
-# Version alignment (AMD repo.amd.com/rocm/whl-multi-arch availability):
-#   torch 2.12.0  →  torchvision 0.27.0  →  torchaudio 2.11.0
-#   (torchaudio 2.12.0+rocm7.14.0 does not exist in the AMD index; 2.11.0 is the latest)
+# UNBLOCK (2026-08-03): torch 2.12.0+rocm7.14.0 from repo.amd.com ships
+# Triton 3.7.1 which triggers hipErrorInvalidImage on SPUR gfx950 nodes
+# (amdgpu/KFD 6.14.14 host driver).  The pytorch.org rocm7.2 wheel ships
+# a Triton version compatible with vLLM 0.26.0 and the current SPUR KFD.
+# Revert to repo.amd.com once the SPUR nodes are upgraded to a KFD that
+# supports ROCm 7.14 compiled kernels.
 #
-# setup.py's _is_hip() is still patched to short-circuit on VLLM_TARGET_DEVICE=rocm
-# as a belt-and-suspenders guard in case torch.version.hip is probed before install.
-# VLLM_VERSION_OVERRIDE sets the wheel version, bypassing SCM git detection.
-#
-# ROCM_ARCH is a semicolon-separated list (e.g. "gfx942;gfx950"); the AMD wheel
-# index uses the first arch only for the device extra (multiple extras would require
-# separate installs).  For multi-arch builds the compiled kernels come from the
-# vLLM source build below, so torch's device extra just needs one valid arch.
+# Version alignment (download.pytorch.org/whl/rocm7.2):
+#   torch 2.13.0+rocm7.2  ->  torchvision 0.21.0+rocm7.2
 RUN --mount=type=cache,target=/root/.cache/pip \
-    FIRST_ARCH="${ROCM_ARCH%%;*}" && \
     pip3 install --no-cache-dir \
-        "torch[device-${FIRST_ARCH}]==2.12.0+rocm7.14.0" \
-        "torchvision[device-${FIRST_ARCH}]==0.27.0+rocm7.14.0" \
-        "torchaudio==2.11.0+rocm7.14.0" \
-        --index-url https://repo.amd.com/rocm/whl-multi-arch/
+        "torch==2.13.0+rocm7.2" \
+        "torchvision==0.28.0+rocm7.2" \
+        --index-url https://download.pytorch.org/whl/rocm7.2
 
 RUN git clone --depth 1 --branch "${VLLM_REF}" "${VLLM_GIT_URL}" /app/vllm
 

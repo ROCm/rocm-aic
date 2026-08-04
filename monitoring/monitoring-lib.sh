@@ -79,12 +79,15 @@ mon_profile() {  # echo the compose --profile args for the exporter fleet
             && printf -- '--profile\nexporters-fabric\n'
         ;;
     safe)
-        # Safe subset: amdgpu-exporter + rdma-exporter only.  These do NOT use
-        # pid:host so they work on SPUR nodes where spur-authz blocks host-namespace
-        # containers.  Provides GPU metrics (amd_*) and RDMA port counters.
+        # Safe subset: amdgpu-exporter + hsa-snoop (container PID).  These do NOT
+        # use pid:host and work on SPUR nodes where spur-authz blocks host-namespace
+        # containers.  Provides GPU metrics (amd_*) and HSA/AIS telemetry.
         printf -- '--profile\nexporters-safe\n'
-        # rdma-exporter image only loaded when AIC_RDMA_EXPORTER_IMAGE is set
-        # (built by run-build-distribute.sh build-exporters).
+        # Also enable rdma-exporter (from exporters-fabric) when its pre-built image
+        # is already on the node.  Skip if absent — it needs internet egress to build.
+        [[ -n "${AIC_RDMA_EXPORTER_IMAGE:-}" ]] \
+            && docker image inspect "${AIC_RDMA_EXPORTER_IMAGE}" >/dev/null 2>&1 \
+            && printf -- '--profile\nexporters-fabric\n'
         ;;
     esac
     # 0 or unset: no exporters

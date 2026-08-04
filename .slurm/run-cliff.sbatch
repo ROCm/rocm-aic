@@ -169,13 +169,19 @@ LMCACHE_NIXL_POSIX_SLOT_SIZE="${LMCACHE_NIXL_POSIX_SLOT_SIZE:-16777216}"
 # before starting timed iters.  Must be long enough for async POSIX writes to
 # land on disk so iter 0 sees a warm, unsaturated cache.  Default 300 s is sized
 # for c=32 per-client with workers=1; reduce for shared prefix or more workers.
-POST_WARMUP_SLEEP_S="${POST_WARMUP_SLEEP_S:-300}"
+# Post-warmup drain: time (s) for async POSIX writes to land on disk before
+# measuring.  The XFS LVM uses buffered I/O (page cache) so dirty pages flush
+# in seconds.  10s is ample; 300s was a conservative over-estimate.
+POST_WARMUP_SLEEP_S="${POST_WARMUP_SLEEP_S:-10}"
 LMCACHE_NIXL_POSIX_POOL="${LMCACHE_NIXL_POSIX_POOL:-32768}"
 LMCACHE_MAX_GPU_WORKERS="${LMCACHE_MAX_GPU_WORKERS:-1}"
 # Cap concurrent NIXL POSIX load tasks.  At high concurrency the NIXL descriptor pool
 # exhausts and makeXferReq throws NIXL_ERR_INVALID_PARAM; limiting in-flight prefetches
 # to 4 keeps the pool from saturating while still overlapping L2 reads.
-LMCACHE_L2_PREFETCH_MAX_IN_FLIGHT="${LMCACHE_L2_PREFETCH_MAX_IN_FLIGHT:-4}"
+# Raise prefetch in-flight: with _xfer_handle_lock (patch 09) the NIXL descriptor
+# pool is protected, so more concurrent reads are safe.  At 4 in-flight and c=32
+# it takes ~200s to prefetch all chunks; at 32 in-flight it should take ~25s.
+LMCACHE_L2_PREFETCH_MAX_IN_FLIGHT="${LMCACHE_L2_PREFETCH_MAX_IN_FLIGHT:-32}"
 # CPU DRAM (L1) tier for the nvme arm.  Default 'false' = KV flows GPU VRAM
 # staging -> NVMe (no host DRAM tier).  Set AIC_LOCAL_CPU=true to add an LMCache
 # DRAM L1 in front of the NIXL NVMe L2 (a proper DRAM->NVMe tiered cache);
@@ -441,7 +447,20 @@ _mkdir_shared() {
     done
 }
 mkdir -p "${RESULTS}" "${PLOTS}" "${LOGDIR}/lmcache" "${LOGDIR}/vllm"
-_mkdir_shared "${NVME_DATA}" "${NFS_DATA}" "${GDS_SLAB_DATA}"
+_mkdir_shared "${NVME_DATA}" "${NVME_DATA}/lmcache" "${NFS_DATA}" "${GDS_SLAB_DATA}"
+# Clean up leftover NIXL POSIX slot files from previous runs.  The NIXL POSIX
+# backend scans the directory on create_backend(); with tens of thousands of
+# stale .bin files from prior jobs the backend enters a bad state and
+# prep_xfer_dlist fails with NIXL_ERR_NOT_FOUND even though the directory exists.
+if [[ -d "${NVME_DATA}/lmcache" ]]; then
+    _slot_count=$(ls "${NVME_DATA}/lmcache" 2>/dev/null | wc -l)
+    if [[ "${_slot_count}" -gt 0 ]]; then
+        log "cleaning ${_slot_count} leftover NIXL slot files from ${NVME_DATA}/lmcache"
+        sudo -n find "${NVME_DATA}/lmcache" -maxdepth 1 -name "*.bin" -delete 2>/dev/null \
+            || find "${NVME_DATA}/lmcache" -maxdepth 1 -name "*.bin" -delete 2>/dev/null \
+            || log "WARN: could not clean slot files (no write permission?)"
+    fi
+fi
 [[ -d "${HF_HOME}/hub" ]] || die "HF cache not found at ${HF_HOME}/hub"
 
 # --- Load images from shared tarballs when needed ----------------------------
@@ -486,20 +505,35 @@ load_image_if_needed() {
 _img_base="$(printf '%s' "${AIC_IMAGE}" | tr '/:' '--')"
 load_image_if_needed "${AIC_IMAGE}" "${AIC_IMAGE_DIR}/${_img_base}-*.tar.*" required
 
-# Fabric exporter images (optional).  When metrics exporters are on and the user
-# has not pinned an explicit image, try the distributed tarball (built by
-# run-build-distribute.sh build-exporters) and point the monitoring sidecar at it
-# ONLY when the image is actually present.  On a node with the batesste host
-# service the container is port-skipped anyway; with neither, node-exporter's
-# nvme/infiniband collectors still cover it -- see _monitoring_run_up.
-if [[ "${AIC_EXPORTERS}" == "1" ]]; then
+# Monitoring sidecar images.  Load from the shared NFS tarball when present so
+# compose never needs Docker Hub egress on a cold node.  Applies for all non-zero
+# AIC_EXPORTERS modes (safe and 1).  Images are named by their Docker Hub tag
+# with '/:' → '--' so they match the tarball filenames saved by dist-build.
+if [[ "${AIC_EXPORTERS}" != "0" ]]; then
+    # nvme/rdma fabric exporters (built by run-build-distribute.sh build-exporters)
     if [[ -z "${AIC_NVME_EXPORTER_IMAGE:-}" ]]; then
         _t="aic-nvme-exporter:latest"; _b="$(printf '%s' "${_t}" | tr '/:' '--')"
-        load_image_if_needed "${_t}" "${AIC_IMAGE_DIR}/${_b}.tar.*" && export AIC_NVME_EXPORTER_IMAGE="${_t}"
+        load_image_if_needed "${_t}" "${AIC_IMAGE_DIR}/${_b}.tar.*" \
+            && export AIC_NVME_EXPORTER_IMAGE="${_t}"
     fi
     if [[ -z "${AIC_RDMA_EXPORTER_IMAGE:-}" ]]; then
         _t="aic-rdma-exporter:latest"; _b="$(printf '%s' "${_t}" | tr '/:' '--')"
-        load_image_if_needed "${_t}" "${AIC_IMAGE_DIR}/${_b}.tar.*" && export AIC_RDMA_EXPORTER_IMAGE="${_t}"
+        load_image_if_needed "${_t}" "${AIC_IMAGE_DIR}/${_b}.tar.*" \
+            && export AIC_RDMA_EXPORTER_IMAGE="${_t}"
+    fi
+    # AMD GPU device-metrics-exporter (rocm/device-metrics-exporter:v1.5.1).
+    # Tarball saved to AIC_IMAGE_DIR by dist-build-exporters or manually.
+    if [[ -z "${AIC_AMDGPU_EXPORTER_IMAGE:-}" ]]; then
+        _t="${AIC_AMDGPU_EXPORTER_IMAGE_DEFAULT:-rocm/device-metrics-exporter:v1.5.1}"
+        _b="$(printf '%s' "${_t}" | tr '/:' '--')"
+        load_image_if_needed "${_t}" "${AIC_IMAGE_DIR}/${_b}.tar.*" \
+            && export AIC_AMDGPU_EXPORTER_IMAGE="${_t}"
+    fi
+    # Prometheus (prom/prometheus:v2.55.1).  Pre-pull avoids 10+ min Docker Hub
+    # download on fresh nodes; load_image_if_needed is a no-op when already present.
+    if [[ -z "${AIC_PROM_IMAGE:-}" ]]; then
+        _t="prom/prometheus:v2.55.1"; _b="$(printf '%s' "${_t}" | tr '/:' '--')"
+        load_image_if_needed "${_t}" "${AIC_IMAGE_DIR}/${_b}.tar.*" || true
     fi
 fi
 
@@ -557,6 +591,7 @@ export AIC_HSA_SNOOP_PID_MODE
 VLLM_EXTRA_ARGS=""
 [[ -n "${VLM_ROPE_SCALING}" ]] && VLLM_EXTRA_ARGS="--hf-overrides '{\"rope_scaling\": ${VLM_ROPE_SCALING}}'"
 export VLLM_EXTRA_ARGS
+export VLLM_LOGGING_LEVEL="${VLLM_LOGGING_LEVEL:-WARNING}"
 # The MP server's --l1-size-gb is the DRAM L1 (nvme arm) OR the hipFile slab size
 # (gds arm).  The cliff sizes these from two different knobs, so preserve the
 # original LMCACHE_L1_SIZE_GB (the gds slab) here and derive the nvme DRAM L1 from

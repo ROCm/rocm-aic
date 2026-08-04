@@ -126,10 +126,12 @@ services:
     # image is only built/pulled when `exporters-fabric` is actually selected.
     image: ${AIC_NVME_EXPORTER_IMAGE:-aic-nvme-exporter:local}
     container_name: aic-nvme-exporter
-    profiles: ["exporters-fabric"]
+    profiles: ["exporters-fabric", "exporters-safe"]
     network_mode: host
-    pid: host
-    privileged: true
+    # nvme-exporter shells out to nvme-cli which uses ioctl on /dev/nvme* and
+    # reads /sys/class/nvme.  Does NOT need --pid=host; CAP_SYS_ADMIN suffices.
+    cap_add:
+      - SYS_ADMIN
     restart: unless-stopped
     volumes:
       - /dev:/dev
@@ -169,8 +171,12 @@ services:
   hsa-snoop:
     image: ${AIC_HSA_SNOOP_IMAGE:-${IMAGE_NAME:-rocm-aic}}
     container_name: aic-hsa-snoop
-    profiles: ["exporters", "exporters-safe"]
+    profiles: ["exporters"]
     network_mode: host
+    # Note: hsa-snoop is NOT in exporters-safe because it needs the application
+    # containers (aic-lmcache) to be running to join their PID namespace, but
+    # monitoring starts before the cliff application stack.  On SPUR, pid:host is
+    # blocked by spur-authz anyway; use the NIXL telemetry (:19090) for AIS metrics.
     # SPUR authz blocks --pid=host ("host-namespace escape").  vLLM and lmcache share
     # a PID namespace (vllm uses pid:service:lmcache), so hsa-snoop joining that same
     # namespace via pid:container gives it visibility into both processes without needing
