@@ -194,6 +194,7 @@ services:
           exec lmcache server \
             --no-separate-object-groups \
             --host 0.0.0.0 \
+            --http-port 8080 \
             --port "$$LMCACHE_PORT" \
             --l1-size-gb "$$LMCACHE_L1_SIZE_GB" \
             --eviction-policy LRU \
@@ -207,11 +208,12 @@ services:
           exec lmcache server \
             --no-separate-object-groups \
             --host 0.0.0.0 \
+            --http-port 8080 \
             --port "$$LMCACHE_PORT" \
             --l1-size-gb "$$LMCACHE_L1_SIZE_GB" \
             --eviction-policy LRU \
             --max-gpu-workers "$${LMCACHE_MAX_GPU_WORKERS:-1}" \
-            --worker-reap-timeout-seconds "$${LMCACHE_WORKER_REAP_TIMEOUT:-3600}" \
+            --worker-reap-timeout-seconds "$${LMCACHE_WORKER_REAP_TIMEOUT:-3600}"
         elif [ "$${AIC_NIXL_BACKEND:-AIS_MT}" = "POSIX" ] || [ "$$AIC_L2_BACKEND" = "nixl_posix" ]; then
           # NIXL first-class POSIX plugin (cpu staging buffer, no hipFileBufRegister).
           # Use for nodes where GPUDirect P2PDMA is unavailable (e.g. XFS LVM).
@@ -220,13 +222,14 @@ services:
           # AIS_MT 256 MiB staging-buffer size: POSIX writes actual KV bytes per slot.
           exec lmcache server \
             --host 0.0.0.0 \
+            --http-port 8080 \
             --port "$$LMCACHE_PORT" \
             --l1-size-gb "$$LMCACHE_L1_SIZE_GB" \
             --eviction-policy LRU \
             --max-gpu-workers "$${LMCACHE_MAX_GPU_WORKERS:-1}" \
             --l2-prefetch-max-in-flight "$${LMCACHE_L2_PREFETCH_MAX_IN_FLIGHT:-4}" \
             --worker-reap-timeout-seconds "$${LMCACHE_WORKER_REAP_TIMEOUT:-3600}" \
-            --l2-adapter "{\"type\":\"nixl_store\",\"backend\":\"POSIX\",\"backend_params\":{\"file_path\":\"/data/nvme/lmcache\",\"use_direct_io\":\"false\",\"file_size\":\"$$LMCACHE_NIXL_POSIX_SLOT_SIZE\"},\"pool_size\":$$LMCACHE_NIXL_POSIX_POOL}"
+            --l2-adapter "{\"type\":\"nixl_store\",\"backend\":\"POSIX\",\"backend_params\":{\"file_path\":\"/data/nvme/lmcache\",\"use_direct_io\":\"$$AIC_NIXL_USE_DIRECT_IO\",\"file_size\":\"$$LMCACHE_NIXL_POSIX_SLOT_SIZE\"},\"pool_size\":$$LMCACHE_NIXL_POSIX_POOL}"
         else
           # nixl AIS_MT NVMe L2a + POSIX NFS L2b.  Both are file-based nixl_store
           # backends, so both backend_params MUST include use_direct_io (LMCache
@@ -234,6 +237,7 @@ services:
           exec lmcache server \
             --no-separate-object-groups \
             --host 0.0.0.0 \
+            --http-port 8080 \
             --port "$$LMCACHE_PORT" \
             --l1-size-gb "$$LMCACHE_L1_SIZE_GB" \
             --eviction-policy LRU \
@@ -308,6 +312,9 @@ services:
       - PYTORCH_HIP_ALLOC_CONF=${PYTORCH_HIP_ALLOC_CONF:-expandable_segments:False}
       - PYTHONHASHSEED=0
       - TZ=${TZ:-America/Edmonton}
+      # Set to DEBUG to enable "vLLM hit is: N" log lines in the connector
+      # (lmcache_mp_connector.py:798) — useful for diagnosing ext_hit=0.
+      - VLLM_LOGGING_LEVEL=${VLLM_LOGGING_LEVEL:-WARNING}
     command: >
       --model ${VLLM_MODEL:-openai/gpt-oss-120b}
         --host 0.0.0.0

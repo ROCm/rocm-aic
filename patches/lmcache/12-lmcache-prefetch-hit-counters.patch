@@ -1,0 +1,156 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Stephen Bates <stephen.bates@amd.com>
+Date: 2026-08-03
+Subject: [PATCH 12] feat: add Prometheus prefetch hit counters (L1/L2)
+
+LMCache's Prometheus endpoint at :8080/metrics only exposed memory-usage
+gauges.  The only cache-hit signal was the log line:
+
+  "Prefetch request completed (L1+L2): N/M retained keys (X L1, Y L2)"
+
+This patch adds four OTel counters available via Prometheus:
+
+  lmcache_mp_prefetch_hit_chunks_total{tier="l1"}  -- DRAM L1 hits
+  lmcache_mp_prefetch_hit_chunks_total{tier="l2"}  -- NVMe L2 hits
+  lmcache_mp_prefetch_miss_chunks_total             -- chunks not found
+  lmcache_mp_prefetch_requests_total                -- completed lookups
+
+Grafana hit-rate formula (chunks, not tokens; multiply by chunk_size=256):
+  rate(lmcache_mp_prefetch_hit_chunks_total[1m])
+  / rate(lmcache_mp_prefetch_requests_total[1m])
+
+  # L1-only hit rate:
+  rate(lmcache_mp_prefetch_hit_chunks_total{tier="l1"}[1m])
+  / rate(lmcache_mp_prefetch_requests_total[1m])
+
+A new register_counter() helper is added to otel_init.py (synchronous OTel
+counter, parallel to the existing register_gauge() for observable gauges).
+Counters are incremented in StorageManager.query_prefetch_status() — the
+single exit point for all completed prefetch tasks, where l1_hits and
+l2_hits are already computed for the existing log line.
+
+Observed on SPUR MI355X gfx950, LMCache v0.5.2, after patches 09-11.
+
+Applies after patches 01-11.
+---
+diff --git a/lmcache/v1/distributed/storage_manager.py b/lmcache/v1/distributed/storage_manager.py
+index 3054e24..e414870 100644
+--- a/lmcache/v1/distributed/storage_manager.py
++++ b/lmcache/v1/distributed/storage_manager.py
+@@ -53,7 +53,7 @@ from lmcache.v1.memory_management import MemoryObj
+ from lmcache.v1.mp_observability.errors import LMCacheTimeoutError
+ from lmcache.v1.mp_observability.event import Event, EventType
+ from lmcache.v1.mp_observability.event_bus import get_event_bus
+-from lmcache.v1.mp_observability.otel_init import register_gauge
++from lmcache.v1.mp_observability.otel_init import register_counter, register_gauge
+ from lmcache.v1.mp_observability.trace.decorator import (
+     enable_tracing,
+     is_tracing_enabled,
+@@ -166,6 +166,27 @@ class StorageManager:
+             self.get_l2_usages,
+         )
+ 
++        # Prefetch hit/miss counters — incremented in query_prefetch_status().
++        # lmcache_mp_prefetch_hit_chunks_total{tier="l1"|"l2"}: chunks loaded
++        #   from L1 DRAM or L2 NVMe into the KV-transfer path.
++        # lmcache_mp_prefetch_miss_chunks_total: requested chunks not found.
++        # lmcache_mp_prefetch_requests_total: completed prefetch lookups.
++        self._ctr_hit = register_counter(
++            "lmcache.prefetch",
++            "lmcache_mp.prefetch_hit_chunks",
++            "Chunks served from cache by tier (l1=DRAM, l2=NVMe).",
++        )
++        self._ctr_miss = register_counter(
++            "lmcache.prefetch",
++            "lmcache_mp.prefetch_miss_chunks",
++            "Chunks requested but not found in any cache tier.",
++        )
++        self._ctr_requests = register_counter(
++            "lmcache.prefetch",
++            "lmcache_mp.prefetch_requests",
++            "Total completed prefetch lookup requests.",
++        )
++
+     # External APIs for serving engine integration code to call
+     @enable_tracing()
+     def reserve_write(
+@@ -701,11 +722,19 @@ class StorageManager:
+         # non-contiguous policies (SEGMENTED_PREFIX / SPARSE) too.
+         total_hits = found.popcount()
+         elapsed_ms = (time.monotonic() - handle.submit_time) * 1000
++        total_requested = handle.total_requested_keys
++        self._ctr_requests.add(1)
+ 
+         if total_hits > 0:
+             # L1 and L2 sets are disjoint (only L1-misses go to L2).
+             l1_hits = len(handle.l1_found_indices)
+             l2_hits = l2_r.popcount() if l2_r is not None else 0
++            self._ctr_hit.add(l1_hits, {"tier": "l1"})
++            if l2_hits > 0:
++                self._ctr_hit.add(l2_hits, {"tier": "l2"})
++            misses = total_requested - total_hits
++            if misses > 0:
++                self._ctr_miss.add(misses)
+             logger.info(
+                 "Prefetch request completed (L1+L2): "
+                 "%d/%d retained keys (%d L1, %d L2) in %.1f ms "
+@@ -718,6 +747,9 @@ class StorageManager:
+                 handle.external_request_id,
+                 handle.prefetch_request_id,
+             )
++        else:
++            self._ctr_miss.add(total_requested)
++
+         return found
+ 
+     def touch_l1_keys(self, keys: list[ObjectKey]):
+diff --git a/lmcache/v1/mp_observability/otel_init.py b/lmcache/v1/mp_observability/otel_init.py
+index 28f49fc..5d851e7 100644
+--- a/lmcache/v1/mp_observability/otel_init.py
++++ b/lmcache/v1/mp_observability/otel_init.py
+@@ -217,3 +217,45 @@ def register_gauge(
+             "opentelemetry package not found, skipping gauge %s",
+             gauge_name,
+         )
++
++
++def register_counter(
++    meter_name: str,
++    counter_name: str,
++    description: str,
++    unit: str = "1",
++):
++    """Register an OTel synchronous counter and return it.
++
++    Returns an object with an ``.add(value, attributes)`` method.
++    When OTel is unavailable, returns a no-op stub so callers never
++    need to guard the call site.
++
++    Args:
++        meter_name: OTel meter name (e.g. ``lmcache.prefetch``).
++        counter_name: Metric name (e.g.
++            ``lmcache_mp.prefetch_hit_chunks``).
++        description: Human-readable description.
++        unit: OTel unit string (default ``"1"``).
++
++    Returns:
++        An OTel ``Counter`` instrument, or a no-op stub.
++    """
++    class _NoOpCounter:
++        def add(self, amount, attributes=None):
++            pass
++
++    try:
++        from opentelemetry import metrics as otel_metrics
++        meter = otel_metrics.get_meter(meter_name)
++        return meter.create_counter(
++            counter_name,
++            description=description,
++            unit=unit,
++        )
++    except Exception:
++        logger.debug(
++            "opentelemetry not available, skipping counter %s",
++            counter_name,
++        )
++        return _NoOpCounter()

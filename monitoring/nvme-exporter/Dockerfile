@@ -23,8 +23,10 @@
 #       -t aic-nvme-exporter:3.0.0 ./nvme-exporter
 #
 # Run (host networking; needs the NVMe devices + sysfs):
-#   docker run -d --name aic-nvme-exporter --network host --pid host \
-#       --privileged -v /dev:/dev -v /sys:/sys:ro aic-nvme-exporter:local
+#   docker run -d --name aic-nvme-exporter --network host \
+#       --cap-add SYS_ADMIN -v /dev:/dev -v /sys:/sys:ro aic-nvme-exporter:local
+#   Note: --pid=host is NOT needed. nvme-cli only needs ioctl on /dev/nvme* and
+#   /sys/class/nvme reads; CAP_SYS_ADMIN suffices. Works on spur-authz clusters.
 
 FROM debian:12-slim AS fetch
 
