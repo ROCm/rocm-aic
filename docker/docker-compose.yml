@@ -2,12 +2,17 @@
 #
 # SPDX-License-Identifier: MIT
 #
-# Three-container inference stack (single compose file).
+# Five-container inference stack (single compose file).
 #
 #   coordinator — LMCache MP coordinator and fleet-wide key directory (:9300)
 #                 Receives registration, heartbeats, and cache placement events.
 #
-#   lmcache — standalone lmcache-server (MP mode)
+#   lmcache / lmcache2 — two standalone lmcache-server instances (MP mode)
+#               Each owns a distinct GPU, ZMQ/HTTP/telemetry port set, stable
+#               coordinator instance ID, and storage namespace.  Both register
+#               with the coordinator above and report cache placement events to
+#               its fleet-wide key directory.
+#
 #               Standard mode (GDS_MODE unset):
 #                 L1:  GPU/CPU DRAM (--l1-size-gb)
 #                 L2a: nixl_store AIS_MT → local NVMe at NVME_DATA (hipFile P2PDMA)
@@ -17,10 +22,10 @@
 #               local_disk L2 (AIC_L2_BACKEND=local_disk):
 #                 L1:  DRAM (--l1-size-gb) + native LocalDiskBackend L2 via LMCACHE_CONFIG_FILE
 #
-#   vllm    — vllm serve, optionally with LMCacheMPConnector
-#               KV_TRANSFER_ARG selects the connector.  Set it to the
+#   vllm / vllm2 — two vllm serve instances, one paired with each LMCache server
+#               KV_TRANSFER_ARG / KV_TRANSFER_ARG_2 select the connectors. Set them to the
 #               LMCacheMPConnector JSON (default via `make up`) to connect to the
-#               lmcache service over ZMQ, or leave it EMPTY for a plain
+#               corresponding lmcache service over ZMQ, or leave it EMPTY for a plain
 #               VRAM-prefix-cache-only vLLM (the cliff `vram` baseline arm).
 #
 # This one compose file is the single source of truth for every launch path:
@@ -39,18 +44,21 @@
 #   NFS_DATA       — host path to NFS-over-RDMA mount (L2b; e.g. /mnt/lmcache-nfs)
 #
 # Optional:
-#   GPU                    — ROCR_VISIBLE_DEVICES for vllm and lmcache (default: 0)
+#   GPU / GPU2             — ROCR_VISIBLE_DEVICES for each vllm/lmcache pair (defaults: 0 / 1)
 #   GDS_MODE               — set to 1 to enable hipFile NVMe slab as L1 (requires GDS_SLAB_DATA)
-#   GDS_SLAB_DATA          — host path for the hipFile slab file (required when GDS_MODE=1)
+#   GDS_SLAB_DATA / GDS_SLAB_DATA_2 — separate hipFile slab paths (required when GDS_MODE=1)
 #   AIC_L2_BACKEND         — nixl (default AIS_MT + POSIX L2), local_disk (native
 #                            LocalDiskBackend via LMCACHE_CONFIG_FILE), or none (DRAM-only L1)
-#   LMCACHE_CONFIG_FILE_HOST — host path to an LMCache YAML config to mount (advanced; local_disk)
-#   KV_TRANSFER_ARG        — vLLM --kv-transfer-config arg (empty = plain vLLM baseline)
+#   LMCACHE_CONFIG_FILE_HOST / LMCACHE_CONFIG_FILE_HOST_2 — per-server LMCache YAML configs
+#   KV_TRANSFER_ARG / KV_TRANSFER_ARG_2 — per-vLLM --kv-transfer-config args
 #   HF_HOME                — host HF cache dir (default: ~/.cache/huggingface)
 #   LOG                    — host log dir (default: ../logs, i.e. /logs)
 #   IMAGE_NAME             — Docker image tag (default: rocm-aic)
 #   VLLM_MODEL             — model to serve
-#   LMCACHE_PORT           — lmcache ZMQ listen port (default: 6555)
+#   LMCACHE_PORT / LMCACHE_PORT_2 — lmcache ZMQ listen ports (defaults: 6555 / 6556)
+#   LMCACHE_HTTP_PORT / LMCACHE_HTTP_PORT_2 — lmcache HTTP ports (defaults: 8080 / 8081)
+#   LMCACHE_INSTANCE_ID / LMCACHE_INSTANCE_ID_2 — coordinator identities (lmcache-1 / lmcache-2)
+#   LMCACHE_STORAGE_NAMESPACE / LMCACHE_STORAGE_NAMESPACE_2 — L2 file prefixes
 #   LMCACHE_L1_SIZE_GB     — L1 cap in GiB (DRAM mode) or slab size (GDS mode, default: 20)
 #   LMCACHE_CHUNK_SIZE     — LMCache/coordinator token chunk size (default: 256)
 #   LMCACHE_COORDINATOR_PORT — coordinator HTTP port (default: 9300)
@@ -61,6 +69,8 @@
 #   LMCACHE_NFS_POOL       — nixl pool slots for NFS adapter (default: 1024)
 #   LMCACHE_NFS_SLOT_SIZE  — nixl file size per NFS slot in bytes (default: NVMe slot size)
 #   AIC_NIXL_USE_DIRECT_IO — O_DIRECT for the AIS_MT NVMe L2 (default: true)
+#   NIXL_METRICS_PORT / NIXL_METRICS_PORT_2 — NIXL telemetry ports (19090 / 19091)
+#   VLLM_PORT / VLLM_PORT_2 — OpenAI API ports (8000 / 8001)
 #   VLM_GPU_MEMORY_UTILIZATION — vllm --gpu-memory-utilization (default: 0.90)
 #   VLM_MAX_MODEL_LEN          — vllm --max-model-len (default: 32768)
 #   VLM_MAX_NUM_BATCHED_TOKENS — vllm --max-num-batched-tokens (default: 4096)
@@ -135,7 +145,8 @@ services:
     # JOINS it via `pid: service:lmcache` (see below) rather than both using host
     # PID -- host PID makes `docker rm` hang on teardown, container-shared does not.
     # A bridge network fails IPC (hipErrorInvalidContext); host net is required.
-    # Ports exposed on the host: lmcache 8080, NIXL telemetry ${NIXL_METRICS_PORT:-19090}.
+    # Ports exposed on the host: ZMQ ${LMCACHE_PORT:-6555}, HTTP
+    # ${LMCACHE_HTTP_PORT:-8080}, NIXL telemetry ${NIXL_METRICS_PORT:-19090}.
     network_mode: host
     ipc: host
     cap_add:
@@ -175,6 +186,9 @@ services:
       - ${LOG:-../logs}/lmcache:/var/log/aic-lmcache
     environment:
       - LMCACHE_PORT=${LMCACHE_PORT:-6555}
+      - LMCACHE_HTTP_PORT=${LMCACHE_HTTP_PORT:-8080}
+      - LMCACHE_INSTANCE_ID=${LMCACHE_INSTANCE_ID:-lmcache-1}
+      - LMCACHE_STORAGE_NAMESPACE=${LMCACHE_STORAGE_NAMESPACE:-lmcache-1}
       - LMCACHE_L1_SIZE_GB=${LMCACHE_L1_SIZE_GB:-20}
       - LMCACHE_CHUNK_SIZE=${LMCACHE_CHUNK_SIZE:-256}
       - LMCACHE_COORDINATOR_URL=${LMCACHE_COORDINATOR_URL:-http://127.0.0.1:9300}
@@ -212,6 +226,8 @@ services:
             --no-separate-object-groups \
             --host 0.0.0.0 \
             --port "$$LMCACHE_PORT" \
+            --http-port "$$LMCACHE_HTTP_PORT" \
+            --instance-id "$$LMCACHE_INSTANCE_ID" \
             --chunk-size "$$LMCACHE_CHUNK_SIZE" \
             --l1-size-gb "$$LMCACHE_L1_SIZE_GB" \
             --eviction-policy LRU \
@@ -227,6 +243,8 @@ services:
             --no-separate-object-groups \
             --host 0.0.0.0 \
             --port "$$LMCACHE_PORT" \
+            --http-port "$$LMCACHE_HTTP_PORT" \
+            --instance-id "$$LMCACHE_INSTANCE_ID" \
             --chunk-size "$$LMCACHE_CHUNK_SIZE" \
             --l1-size-gb "$$LMCACHE_L1_SIZE_GB" \
             --eviction-policy LRU \
@@ -241,14 +259,16 @@ services:
             --no-separate-object-groups \
             --host 0.0.0.0 \
             --port "$$LMCACHE_PORT" \
+            --http-port "$$LMCACHE_HTTP_PORT" \
+            --instance-id "$$LMCACHE_INSTANCE_ID" \
             --chunk-size "$$LMCACHE_CHUNK_SIZE" \
             --l1-size-gb "$$LMCACHE_L1_SIZE_GB" \
             --eviction-policy LRU \
             --coordinator-url "$$LMCACHE_COORDINATOR_URL" \
             --coordinator-event-reporting \
             --coordinator-event-flush-interval "$$LMCACHE_COORDINATOR_EVENT_FLUSH_INTERVAL" \
-            --l2-adapter "{\"type\":\"nixl_store\",\"backend\":\"AIS_MT\",\"backend_params\":{\"file_path\":\"/data/nvme/lmcache\",\"use_direct_io\":\"$$AIC_NIXL_USE_DIRECT_IO\",\"file_size\":\"$$LMCACHE_NVME_SLOT_SIZE\"},\"pool_size\":$$LMCACHE_NVME_POOL}" \
-            --l2-adapter "{\"type\":\"nixl_store\",\"backend\":\"POSIX\",\"backend_params\":{\"file_path\":\"/data/nfs/lmcache\",\"use_direct_io\":\"false\",\"file_size\":\"$$LMCACHE_NFS_SLOT_SIZE\"},\"pool_size\":$$LMCACHE_NFS_POOL}"
+            --l2-adapter "{\"type\":\"nixl_store\",\"backend\":\"AIS_MT\",\"backend_params\":{\"file_path\":\"/data/nvme/$$LMCACHE_STORAGE_NAMESPACE\",\"use_direct_io\":\"$$AIC_NIXL_USE_DIRECT_IO\",\"file_size\":\"$$LMCACHE_NVME_SLOT_SIZE\"},\"pool_size\":$$LMCACHE_NVME_POOL}" \
+            --l2-adapter "{\"type\":\"nixl_store\",\"backend\":\"POSIX\",\"backend_params\":{\"file_path\":\"/data/nfs/$$LMCACHE_STORAGE_NAMESPACE\",\"use_direct_io\":\"false\",\"file_size\":\"$$LMCACHE_NFS_SLOT_SIZE\"},\"pool_size\":$$LMCACHE_NFS_POOL}"
         fi
     healthcheck:
       test:
@@ -262,6 +282,30 @@ services:
       start_period: 30s
 
   # ---------------------------------------------------------------------------
+  # lmcache2: second MP server. `extends` keeps the server topology identical
+  # while overriding every host-global resource that must be unique. The two
+  # servers intentionally share the coordinator and storage mounts, but use
+  # distinct coordinator identities and L2 file prefixes.
+  # ---------------------------------------------------------------------------
+  lmcache2:
+    extends:
+      service: lmcache
+    container_name: aic-lmcache2
+    volumes:
+      - ${GDS_SLAB_DATA_2:-/tmp/gds-slab-unused-2}:/data/slab
+      - ${LMCACHE_CONFIG_FILE_HOST_2:-/dev/null}:/config/lmcache.yml:ro
+      - ${LOG:-../logs}/lmcache2:/var/log/aic-lmcache
+    environment:
+      - LMCACHE_PORT=${LMCACHE_PORT_2:-6556}
+      - LMCACHE_HTTP_PORT=${LMCACHE_HTTP_PORT_2:-8081}
+      - LMCACHE_INSTANCE_ID=${LMCACHE_INSTANCE_ID_2:-lmcache-2}
+      - LMCACHE_STORAGE_NAMESPACE=${LMCACHE_STORAGE_NAMESPACE_2:-lmcache-2}
+      - GDS_SLAB_DATA=${GDS_SLAB_DATA_2:-}
+      - LMCACHE_CONFIG_FILE=${LMCACHE_CONFIG_FILE_2:-}
+      - NIXL_TELEMETRY_PROMETHEUS_PORT=${NIXL_METRICS_PORT_2:-19091}
+      - ROCR_VISIBLE_DEVICES=${GPU2:-1}
+
+  # ---------------------------------------------------------------------------
   # vllm: vLLM serve, optionally with LMCacheMPConnector (via KV_TRANSFER_ARG)
   # ---------------------------------------------------------------------------
   vllm:
@@ -271,7 +315,7 @@ services:
     # HIP IPC KV registration (see the lmcache service).  kvd arms set
     # VLLM_PID_MODE=service:lmcache so vllm joins lmcache's PID namespace; the plain
     # vram baseline leaves it empty (vllm runs alone, no lmcache to join).
-    # vLLM OpenAI API + /metrics on host :8000.
+    # vLLM OpenAI API + /metrics on host ${VLLM_PORT:-8000}.
     network_mode: host
     ipc: host
     pid: "${VLLM_PID_MODE:-}"
@@ -314,7 +358,7 @@ services:
     command: >
       --model ${VLLM_MODEL:-openai/gpt-oss-120b}
         --host 0.0.0.0
-        --port 8000
+        --port ${VLLM_PORT:-8000}
         --tensor-parallel-size ${TENSOR_PARALLEL_SIZE:-1}
         --gpu-memory-utilization ${VLM_GPU_MEMORY_UTILIZATION:-0.90}
         --max-model-len ${VLM_MAX_MODEL_LEN:-32768}
@@ -336,3 +380,68 @@ services:
         # required:false lets the plain baseline run `vllm` alone (lmcache not in
         # the active profile) without a dependency error (needs Compose v2.20+).
         required: false
+
+  # ---------------------------------------------------------------------------
+  # vllm2: second OpenAI endpoint, paired exclusively with lmcache2 over ZMQ
+  # and sharing lmcache2's PID namespace for cross-container HIP IPC.
+  # ---------------------------------------------------------------------------
+  vllm2:
+    profiles:
+      - cache
+    image: ${IMAGE_NAME:-rocm-aic}
+    container_name: aic-vllm2-gpu${GPU2:-1}
+    network_mode: host
+    ipc: host
+    pid: "${VLLM_PID_MODE_2:-service:lmcache2}"
+    cap_add:
+      - CAP_SYS_ADMIN
+      - SYS_PTRACE
+    security_opt:
+      - seccomp:unconfined
+    devices:
+      - /dev/kfd
+      - /dev/dri
+    volumes:
+      - ${HF_HOME:-~/.cache/huggingface}:/hf
+      - ${LOG:-../logs}/vllm2:/var/log/aic-vllm
+    environment:
+      - HF_TOKEN=${HF_TOKEN:-}
+      - HF_HOME=/hf
+      - HF_HUB_CACHE=/hf/hub
+      - HF_DATASETS_CACHE=/hf/datasets
+      - HF_HUB_OFFLINE=${HF_HUB_OFFLINE:-0}
+      - TRANSFORMERS_OFFLINE=${TRANSFORMERS_OFFLINE:-0}
+      - VLLM_CACHE_ROOT=/hf/vllm2
+      - VLLM_CONFIG_ROOT=/hf/vllm_config2
+      - TORCH_HOME=/hf/torch
+      - TORCHINDUCTOR_CACHE_DIR=/hf/torch_inductor2
+      - ROCR_VISIBLE_DEVICES=${GPU2:-1}
+      - AMDGCN_USE_BUFFER_OPS=0
+      - MIOPEN_FIND_MODE=FAST
+      - MIOPEN_USER_DB_PATH=/app/miopen
+      - VLLM_ROCM_USE_AITER=${AIC_ROCM_USE_AITER:-1}
+      - PYTORCH_ALLOC_CONF=${PYTORCH_ALLOC_CONF:-expandable_segments:False}
+      - PYTORCH_HIP_ALLOC_CONF=${PYTORCH_HIP_ALLOC_CONF:-expandable_segments:False}
+      - PYTHONHASHSEED=0
+    command: >
+      --model ${VLLM_MODEL:-openai/gpt-oss-120b}
+        --host 0.0.0.0
+        --port ${VLLM_PORT_2:-8001}
+        --tensor-parallel-size ${TENSOR_PARALLEL_SIZE:-1}
+        --gpu-memory-utilization ${VLM_GPU_MEMORY_UTILIZATION:-0.90}
+        --max-model-len ${VLM_MAX_MODEL_LEN:-32768}
+        --max-num-batched-tokens ${VLM_MAX_NUM_BATCHED_TOKENS:-4096}
+        --load-format ${VLM_LOAD_FORMAT:-fastsafetensors}
+        --block-size 64
+        --enable-prefix-caching
+        --kv-cache-dtype ${VLM_KV_CACHE_DTYPE:-fp8}
+        --attention-backend ${VLM_ATTENTION_BACKEND:-TRITON_ATTN}
+        --stream-interval 20
+        --async-scheduling
+        --disable-access-log-for-endpoints "/health,/metrics,/v1/models"
+        --enable-mfu-metrics
+        ${KV_TRANSFER_ARG_2:-}
+        ${VLLM_EXTRA_ARGS:-}
+    depends_on:
+      lmcache2:
+        condition: service_healthy

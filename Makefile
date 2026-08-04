@@ -14,11 +14,13 @@ IMAGE_NAME ?= rocm-aic
 
 # ---- GPU -------------------------------------------------------------------
 GPU ?= 0
+GPU2 ?= 1
 
 # ---- Host storage paths ----------------------------------------------------
 NVME_DATA     ?= /mnt/lmcache-nvme
 NFS_DATA      ?= /mnt/lmcache-nfs
 GDS_SLAB_DATA ?=
+GDS_SLAB_DATA_2 ?= $(if $(strip $(GDS_SLAB_DATA)),$(GDS_SLAB_DATA)-2,)
 
 # ---- Log / HuggingFace -----------------------------------------------------
 LOG           ?= $(CURDIR)/logs
@@ -27,6 +29,13 @@ HF_TOKEN_FILE ?=
 
 # ---- LMCache server + coordinator ------------------------------------------
 LMCACHE_PORT                             ?= 6555
+LMCACHE_PORT_2                           ?= 6556
+LMCACHE_HTTP_PORT                        ?= 8080
+LMCACHE_HTTP_PORT_2                      ?= 8081
+LMCACHE_INSTANCE_ID                      ?= lmcache-1
+LMCACHE_INSTANCE_ID_2                    ?= lmcache-2
+LMCACHE_STORAGE_NAMESPACE                ?= lmcache-1
+LMCACHE_STORAGE_NAMESPACE_2              ?= lmcache-2
 LMCACHE_L1_SIZE_GB                       ?= 20
 LMCACHE_CHUNK_SIZE                       ?= 256
 LMCACHE_COORDINATOR_PORT                 ?= 9300
@@ -36,9 +45,15 @@ LMCACHE_NVME_POOL                        ?= 4096
 LMCACHE_NVME_SLOT_SIZE                   ?= 268435456
 LMCACHE_NFS_POOL                         ?= 1024
 LMCACHE_NFS_SLOT_SIZE                    ?= $(LMCACHE_NVME_SLOT_SIZE)
+NIXL_METRICS_PORT                        ?= 19090
+NIXL_METRICS_PORT_2                      ?= 19091
 
 # ---- vLLM knobs ------------------------------------------------------------
 VLLM_MODEL                  ?=
+VLLM_PORT                   ?= 8000
+VLLM_PORT_2                 ?= 8001
+VLLM_PID_MODE               ?= service:lmcache
+VLLM_PID_MODE_2             ?= service:lmcache2
 TENSOR_PARALLEL_SIZE        ?= 1
 VLM_GPU_MEMORY_UTILIZATION  ?=
 VLM_MAX_MODEL_LEN           ?=
@@ -65,12 +80,16 @@ ROCM_ARCH := $(if $(strip $(ROCM_ARCH)),$(strip $(ROCM_ARCH)),$(_ROCM_ARCH_DETEC
 # Caps parallel compile jobs in the image build, Empty = use all cores ($(nproc)).
 BUILD_JOBS ?=
 
-export ROCM_ARCH GPU GDS_SLAB_DATA LOG HF_HOME HF_TOKEN IMAGE_NAME BUILD_JOBS
-export LMCACHE_PORT LMCACHE_L1_SIZE_GB LMCACHE_CHUNK_SIZE
+export ROCM_ARCH GPU GPU2 GDS_SLAB_DATA GDS_SLAB_DATA_2 LOG HF_HOME HF_TOKEN IMAGE_NAME BUILD_JOBS
+export LMCACHE_PORT LMCACHE_PORT_2 LMCACHE_HTTP_PORT LMCACHE_HTTP_PORT_2
+export LMCACHE_INSTANCE_ID LMCACHE_INSTANCE_ID_2
+export LMCACHE_STORAGE_NAMESPACE LMCACHE_STORAGE_NAMESPACE_2
+export LMCACHE_L1_SIZE_GB LMCACHE_CHUNK_SIZE
 export LMCACHE_COORDINATOR_PORT LMCACHE_COORDINATOR_URL LMCACHE_COORDINATOR_EVENT_FLUSH_INTERVAL
 export LMCACHE_NVME_POOL LMCACHE_NVME_SLOT_SIZE LMCACHE_NFS_POOL LMCACHE_NFS_SLOT_SIZE
+export NIXL_METRICS_PORT NIXL_METRICS_PORT_2
 export NVME_DATA NFS_DATA
-export VLLM_MODEL TENSOR_PARALLEL_SIZE
+export VLLM_MODEL VLLM_PORT VLLM_PORT_2 VLLM_PID_MODE VLLM_PID_MODE_2 TENSOR_PARALLEL_SIZE
 export VLM_GPU_MEMORY_UTILIZATION VLM_MAX_MODEL_LEN VLM_MAX_NUM_BATCHED_TOKENS
 export NIXL_GIT_URL NIXL_SHA
 
@@ -93,7 +112,9 @@ COMPOSE_PLUGIN_VERSION ?= v2.40.0
 # double quotes; leave KV_TRANSFER_ARG empty for a plain (baseline) vLLM.
 _MP_CONNECTOR_JSON := {"kv_connector":"LMCacheMPConnector","kv_role":"kv_both","kv_connector_extra_config":{"lmcache.mp.host":"tcp://localhost","lmcache.mp.port":$(LMCACHE_PORT)}}
 KV_TRANSFER_ARG    ?= --kv-transfer-config '$(_MP_CONNECTOR_JSON)'
-export KV_TRANSFER_ARG
+_MP_CONNECTOR_JSON_2 := {"kv_connector":"LMCacheMPConnector","kv_role":"kv_both","kv_connector_extra_config":{"lmcache.mp.host":"tcp://localhost","lmcache.mp.port":$(LMCACHE_PORT_2)}}
+KV_TRANSFER_ARG_2    ?= --kv-transfer-config '$(_MP_CONNECTOR_JSON_2)'
+export KV_TRANSFER_ARG KV_TRANSFER_ARG_2
 
 # ---- Metrics capture (Prometheus sidecar) ----------------------------------
 # AIC_METRICS_DIR: Prometheus TSDB dir (bind-mount an NFS path here to explore
@@ -193,8 +214,10 @@ _GIT_DIRTY     := $(if $(shell git -C "$(CURDIR)" status --porcelain -- . 2>/dev
 _GEN_DATE      := $(shell date +%Y%m%d)
 EXPORT_TARBALL ?= $(CURDIR)/$(EXPORT_PREFIX)-$(_GEN_DATE)-$(_GIT_SHORT_REV)$(_GIT_DIRTY).tar.gz
 
-.PHONY: help ensure-compose build up up-batch up-gds-l1 up-gds-l1-batch down logs logs-coordinator logs-lmcache logs-vllm \
-        ps shell-lmcache shell-vllm restart-vllm restart-lmcache restart-coordinator cliff plot venv \
+.PHONY: help ensure-compose build up up-batch up-gds-l1 up-gds-l1-batch down logs logs-coordinator \
+        logs-lmcache logs-lmcache2 logs-vllm logs-vllm2 ps \
+        shell-lmcache shell-lmcache2 shell-vllm shell-vllm2 \
+        restart-vllm restart-vllm2 restart-lmcache restart-lmcache2 restart-coordinator cliff plot venv \
         monitoring-up monitoring-down monitoring-logs monitoring-build-exporters \
         dist-build dist-build-fast dist-build-exporters dist-push smoke-test smoke-test-fast \
         tiny-test tiny-test-fast install-ci-scripts cliff-submit cliff-short \
@@ -209,20 +232,26 @@ help:
 	@echo "Stack targets:"
 	@echo "  make ensure-compose    Install the docker compose v2 plugin if missing (user-local)"
 	@echo "  make build             Build the shared image ($(IMAGE_NAME))"
-	@echo "  make up                Start coordinator + lmcache + vllm (foreground)"
-	@echo "  make up-batch          Start coordinator + lmcache + vllm (background)"
+	@echo "  make up                Start coordinator + 2x (lmcache + vllm) (foreground)"
+	@echo "  make up-batch          Start coordinator + 2x (lmcache + vllm) (background)"
 	@echo "  make up-gds-l1         Start with hipFile GDS NVMe slab as L1 (foreground)"
 	@echo "  make up-gds-l1-batch   Start with hipFile GDS NVMe slab as L1 (background)"
 	@echo "  make down              Stop and remove all stack containers"
 	@echo "  make logs              Follow logs from all stack containers"
 	@echo "  make logs-coordinator  coordinator container logs only"
 	@echo "  make logs-lmcache      lmcache container logs only"
+	@echo "  make logs-lmcache2     lmcache2 container logs only"
 	@echo "  make logs-vllm         vllm container logs only"
+	@echo "  make logs-vllm2        vllm2 container logs only"
 	@echo "  make ps                Container status"
 	@echo "  make shell-lmcache     Exec bash into lmcache container"
+	@echo "  make shell-lmcache2    Exec bash into lmcache2 container"
 	@echo "  make shell-vllm        Exec bash into vllm container"
+	@echo "  make shell-vllm2       Exec bash into vllm2 container"
 	@echo "  make restart-vllm      Restart vllm only (lmcache + warm KV preserved)"
+	@echo "  make restart-vllm2     Restart vllm2 only (lmcache2 + warm KV preserved)"
 	@echo "  make restart-lmcache   Restart lmcache only"
+	@echo "  make restart-lmcache2  Restart lmcache2 only"
 	@echo "  make restart-coordinator  Restart coordinator only"
 	@echo ""
 	@echo "Benchmark targets:"
@@ -282,7 +311,8 @@ help:
 	@echo "  NVME_DATA=$(NVME_DATA)  NFS_DATA=$(NFS_DATA)  GDS_SLAB_DATA=$(GDS_SLAB_DATA)"
 	@echo ""
 	@echo "Key LMCache vars (current):"
-	@echo "  LMCACHE_PORT=$(LMCACHE_PORT)  LMCACHE_L1_SIZE_GB=$(LMCACHE_L1_SIZE_GB) GiB  LMCACHE_CHUNK_SIZE=$(LMCACHE_CHUNK_SIZE)"
+	@echo "  LMCACHE_PORT=$(LMCACHE_PORT)  LMCACHE_PORT_2=$(LMCACHE_PORT_2)  LMCACHE_L1_SIZE_GB=$(LMCACHE_L1_SIZE_GB) GiB"
+	@echo "  VLLM_PORT=$(VLLM_PORT)  VLLM_PORT_2=$(VLLM_PORT_2)  LMCACHE_CHUNK_SIZE=$(LMCACHE_CHUNK_SIZE)"
 	@echo "  LMCACHE_COORDINATOR_URL=$(LMCACHE_COORDINATOR_URL)"
 	@echo "  LMCACHE_NVME_POOL=$(LMCACHE_NVME_POOL)  LMCACHE_NFS_POOL=$(LMCACHE_NFS_POOL)"
 	@echo "  LMCACHE_NVME_SLOT_SIZE=$(LMCACHE_NVME_SLOT_SIZE)  LMCACHE_NFS_SLOT_SIZE=$(LMCACHE_NFS_SLOT_SIZE)"
@@ -305,15 +335,16 @@ _check_hf_token:
 	fi
 
 _check_gds_slab:
-	@if [ -z "$(GDS_SLAB_DATA)" ]; then \
-		echo "ERROR: GDS_SLAB_DATA must be set for GDS L1 mode" >&2; exit 1; \
+	@if [ -z "$(GDS_SLAB_DATA)" ] || [ -z "$(GDS_SLAB_DATA_2)" ]; then \
+		echo "ERROR: GDS_SLAB_DATA and GDS_SLAB_DATA_2 must be set for GDS L1 mode" >&2; exit 1; \
 	fi
 
 _prep_dirs:
 	@mkdir -p "$(NVME_DATA)" "$(NFS_DATA)" \
-		"$(LOG)/lmcache" "$(LOG)/vllm" \
-		"$(HF_HOME)/hub" "$(HF_HOME)/datasets" "$(HF_HOME)/vllm" \
-		"$(HF_HOME)/vllm_config" "$(HF_HOME)/torch" "$(HF_HOME)/torch_inductor" \
+		"$(LOG)/lmcache" "$(LOG)/lmcache2" "$(LOG)/vllm" "$(LOG)/vllm2" \
+		"$(HF_HOME)/hub" "$(HF_HOME)/datasets" "$(HF_HOME)/vllm" "$(HF_HOME)/vllm2" \
+		"$(HF_HOME)/vllm_config" "$(HF_HOME)/vllm_config2" "$(HF_HOME)/torch" \
+		"$(HF_HOME)/torch_inductor" "$(HF_HOME)/torch_inductor2" \
 		"$(BENCH_LOGDIR)/results" "$(BENCH_LOGDIR)/plots"
 
 # Ensure the `docker compose` (v2) plugin is available.  Docker checks
@@ -367,8 +398,14 @@ logs-coordinator:
 logs-lmcache:
 	$(COMPOSE_CACHE) logs -f lmcache
 
+logs-lmcache2:
+	$(COMPOSE_CACHE) logs -f lmcache2
+
 logs-vllm:
 	$(COMPOSE_CACHE) logs -f vllm
+
+logs-vllm2:
+	$(COMPOSE_CACHE) logs -f vllm2
 
 ps:
 	$(COMPOSE_CACHE) ps
@@ -376,14 +413,26 @@ ps:
 shell-lmcache:
 	docker exec -it aic-lmcache bash -l
 
+shell-lmcache2:
+	docker exec -it aic-lmcache2 bash -l
+
 shell-vllm:
 	docker exec -it aic-vllm-gpu$(GPU) bash -l
+
+shell-vllm2:
+	docker exec -it aic-vllm2-gpu$(GPU2) bash -l
 
 restart-vllm:
 	$(COMPOSE_CACHE) restart vllm
 
+restart-vllm2:
+	$(COMPOSE_CACHE) restart vllm2
+
 restart-lmcache:
 	$(COMPOSE_CACHE) restart lmcache
+
+restart-lmcache2:
+	$(COMPOSE_CACHE) restart lmcache2
 
 restart-coordinator:
 	$(COMPOSE_CACHE) restart coordinator
