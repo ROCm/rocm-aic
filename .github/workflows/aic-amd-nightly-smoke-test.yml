@@ -5,6 +5,9 @@ on:
     workflows: ["AIC Hardware Test - Nightly Dist Build"]
     types: [completed]
 
+permissions:
+  contents: read
+
 jobs:
   smoke-test:
     if: github.event.workflow_run.conclusion == 'success'
@@ -18,3 +21,15 @@ jobs:
     steps:
       - name: Run smoke test on the SPUR head node
         run: bash /usr/local/lib/aic-ci/spur-smoke-test.sh "${{ github.event.workflow_run.head_sha }}"
+
+  coordinator-smoke:
+    name: LMCache coordinator HTTP smoke test
+    needs: smoke-test
+    if: needs.smoke-test.result == 'success'
+    uses: ./.github/workflows/aic-lmcache-coordinator-cpu-smoke.yml
+    with:
+      sha: ${{ github.event.workflow_run.head_sha }}
+      # Retain the current SHA for debugging. Each nightly prunes artifacts and
+      # abandoned checkouts from older runs after a seven-day grace period.
+      artifact_retention_days: 7
+    secrets: inherit

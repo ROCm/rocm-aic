@@ -3,11 +3,11 @@ Author: Rui Zhang <51696593+ruizhang0101@users.noreply.github.com>
 Date:   Tue Jul 28 15:22:03 2026 -0700
 
     [MP][Coordinator] Fleet-wide key directory built from cache events (#4275)
-    
+
     * feat: add key directory
-    
+
     Signed-off-by: Rui Zhang <zrfishnoodles@gmail.com>
-    
+
     (cherry picked from commit 0fc6cd8bfd24a5f2096e5df429d2b5373689d7a3)
 
 diff --git a/docs/design/v1/mp_coordinator/key_directory.md b/docs/design/v1/mp_coordinator/key_directory.md
@@ -15,7 +15,7 @@ new file mode 100644
 index 00000000..f0d9b3b3
 --- /dev/null
 +++ b/docs/design/v1/mp_coordinator/key_directory.md
-@@ -0,0 +1,117 @@
+@@ -0,0 +1,116 @@
 +# Key directory
 +
 +Module: `lmcache/v1/mp_coordinator/key_directory.py`
@@ -112,7 +112,7 @@ index 00000000..f0d9b3b3
 +- **`key_directory.py`** — the engine plus everything the directory
 +itself produces (`Placement`, `ApplyResult`, stats) and its private
 +records.
-+- **`schemas.py`** — HTTP models only. 
++- **`schemas.py`** — HTTP models only.
 +
 +## Deliberately out of scope (follow-ups)
 +
@@ -132,7 +132,6 @@ index 00000000..f0d9b3b3
 +`key → tokens` introspection, fed by `TOKENS` events and refcounted from
 +key records via the `content_hash` back-pointer. Nothing
 +correctness-bearing reads it, so it ships with its first real consumer.
-+
 diff --git a/lmcache/v1/mp_coordinator/api.py b/lmcache/v1/mp_coordinator/api.py
 new file mode 100644
 index 00000000..8f511f62
@@ -287,7 +286,7 @@ index 878cd918..0838f87d 100644
          token_hasher=token_hasher,
 +        key_directory=key_directory,
      )
- 
+
      async def _health_loop() -> None:
 diff --git a/lmcache/v1/mp_coordinator/http_apis/dependencies.py b/lmcache/v1/mp_coordinator/http_apis/dependencies.py
 index 56044b92..b3265f12 100644
@@ -300,7 +299,7 @@ index 56044b92..b3265f12 100644
 +from lmcache.v1.mp_coordinator.key_directory import KeyDirectory
  from lmcache.v1.mp_coordinator.registry import InstanceRegistry
  from lmcache.v1.multiprocess.token_hasher import TokenHasher
- 
+
 @@ -37,6 +38,8 @@ class CoordinatorContext:
          prefetch_manager: Warm-prefetch proxy to MP servers.
          token_hasher: Resolves a pin request's ``token_ids`` to object keys
@@ -316,8 +315,8 @@ index 56044b92..b3265f12 100644
      token_hasher: TokenHasher
 +    key_directory: KeyDirectory
      outbound_client: httpx.AsyncClient | None = None
- 
- 
+
+
 diff --git a/lmcache/v1/mp_coordinator/http_apis/directory_api.py b/lmcache/v1/mp_coordinator/http_apis/directory_api.py
 new file mode 100644
 index 00000000..399c1278
@@ -807,7 +806,7 @@ index 88be8d32..c1396ec8 100644
 +
 +This module holds HTTP models only.
  """
- 
+
  # Standard
 @@ -19,6 +21,8 @@ import numpy as np
  # First Party
@@ -815,13 +814,13 @@ index 88be8d32..c1396ec8 100644
  from lmcache.v1.distributed.tiers import Tier
 +from lmcache.v1.mp_coordinator.api import CacheEventBatch
 +from lmcache.v1.mp_coordinator.key_directory import Placement
- 
- 
+
+
  def encode_tokens(tokens: "list[int] | np.ndarray") -> str:
 @@ -247,6 +251,120 @@ class StatusListResponse(BaseModel):
      by_cache_salt: list[StatusResponse]
- 
- 
+
+
 +# -- Key directory -----------------------------------------------------------
 +
 +
@@ -937,8 +936,8 @@ index 88be8d32..c1396ec8 100644
 +
 +
  # -- Global CacheBlend fingerprint directory ------------------------------
- 
- 
+
+
 diff --git a/tests/v1/mp_coordinator/test_directory_api.py b/tests/v1/mp_coordinator/test_directory_api.py
 new file mode 100644
 index 00000000..66162abb

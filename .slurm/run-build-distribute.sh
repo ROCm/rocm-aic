@@ -64,9 +64,10 @@
 #           (HIP+amdgpu AIS support), and the NIXL AIS_MT plugin (hard fail if
 #           AIS_MT or ais-check fail)
 #   tiny-test  End-to-end serve check on a GPU node: brings up the compose MP
-#           stack (standalone lmcache server + vLLM LMCacheMPConnector) with a tiny
-#           model (Qwen/Qwen2.5-0.5B-Instruct) and asserts one non-empty chat
-#           completion.  Exercises the full connector path a smoke-test cannot.
+#           stack (coordinator + standalone lmcache server + vLLM
+#           LMCacheMPConnector) with a tiny model (Qwen/Qwen2.5-0.5B-Instruct)
+#           and asserts one non-empty chat completion. Exercises the full
+#           connector path a smoke-test cannot.
 #   all     build, build-exporters, then load   (default)
 #
 # Key environment:
@@ -198,10 +199,11 @@ AIC_TEST_CPUS="${AIC_TEST_CPUS:-8}"
 AIC_TEST_MEM="${AIC_TEST_MEM:-32G}"
 
 # --- tiny-test: end-to-end serve check with a tiny model ---------------------
-# Brings up the compose MP stack (standalone lmcache + vLLM LMCacheMPConnector)
-# with a small model and asserts one non-empty chat completion.  A fast functional
-# gate that exercises the connector path a smoke-test cannot.  The model is
-# downloaded once into HF_HOME (a persistent shared HF cache) and reused.
+# Brings up the compose MP stack (coordinator + standalone lmcache + vLLM
+# LMCacheMPConnector) with a small model and asserts one non-empty chat
+# completion. A fast functional gate that exercises the connector path a smoke
+# test cannot. The model is downloaded once into HF_HOME (a persistent shared
+# HF cache) and reused.
 AIC_TINY_MODEL="${AIC_TINY_MODEL:-Qwen/Qwen2.5-0.5B-Instruct}"
 HF_HOME="${HF_HOME:-${AIC_IMAGE_DIR}/tiny-hf}"
 AIC_TINY_TIME="${AIC_TINY_TIME:-00:25:00}"
@@ -1025,10 +1027,11 @@ REMOTE
 
 # --- tiny-test: end-to-end serve check (compose MP stack + a tiny model) ------
 # Loads the image on a GPU node if needed, brings up the SAME compose stack the
-# cliff/`make up` use (standalone lmcache server + vLLM LMCacheMPConnector), waits
-# for the endpoint, and asserts one non-empty chat completion.  Unlike smoke-test
-# (which validates the image in isolation) this exercises the full MP connector
-# path end-to-end -- the functional gate wired into CI after smoke-test.
+# cliff/`make up` use (coordinator + standalone lmcache server + vLLM
+# LMCacheMPConnector), waits for the endpoint, and asserts one non-empty chat
+# completion. Unlike smoke-test (which validates the image in isolation) this
+# exercises the full MP connector path end-to-end -- the functional gate wired
+# into CI after smoke-test.
 cmd_tiny_test() {
     _pick_compress
     local tarball; tarball="$(_tarball_path)"
@@ -1099,7 +1102,7 @@ mkdir -p "\${HF_HOME}" /tmp/aic-tiny-nvme /tmp/aic-tiny-nfs
 compose() { docker compose -f '${AIC_DAY_DIR}/docker/docker-compose.yml' "\$@"; }
 cleanup() {
     local svc c
-    for svc in vllm lmcache; do
+    for svc in coordinator lmcache vllm; do
         timeout 30 compose logs --no-color --no-log-prefix "\$svc" > "\${_logdir}/tiny-\${svc}.log" 2>&1 || true
     done
     # vLLM shares lmcache's PID ns (for cross-container HIP IPC), which blocks docker
@@ -1110,7 +1113,9 @@ cleanup() {
     pkill -9 -f 'lmcache server'          2>/dev/null || true
     sleep 2
     timeout 60 compose --profile cache down --remove-orphans --timeout 5 >/dev/null 2>&1 || true
-    for c in aic-vllm-gpu0 aic-lmcache; do timeout 30 docker rm -f "\$c" >/dev/null 2>&1 || true; done
+    for c in aic-vllm-gpu0 aic-lmcache aic-lmcache-coordinator; do
+        timeout 30 docker rm -f "\$c" >/dev/null 2>&1 || true
+    done
     rm -rf /tmp/aic-tiny-nvme /tmp/aic-tiny-nfs 2>/dev/null || true
 }
 trap cleanup EXIT
@@ -1118,6 +1123,7 @@ trap cleanup EXIT
 echo "[tiny-test] bringing up compose MP stack (model=${AIC_TINY_MODEL}) ..."
 if ! compose --profile cache up -d; then
     echo "[tiny-test] FAIL: compose up failed" >&2
+    compose logs --tail 60 --no-color coordinator 2>&1 | sed 's/^/  [coordinator] /'
     compose logs --tail 60 --no-color lmcache 2>&1 | sed 's/^/  [lmcache] /'
     compose logs --tail 60 --no-color vllm    2>&1 | sed 's/^/  [vllm]    /'
     exit 1

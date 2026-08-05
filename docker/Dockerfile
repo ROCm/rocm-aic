@@ -6,11 +6,12 @@
 #
 #   Base image: rocm/dev-ubuntu-24.04:7.2.4-complete  (Ubuntu 24.04, ROCm 7.2.4, Python 3.12)
 #   vLLM:       installed from pre-built ROCm wheel (bundles its own torch/triton/flash-attn)
-#   LMCache:    LMCache/LMCache v0.5.2 release + 8 AMD patches
+#   LMCache:    LMCache/LMCache v0.5.2 release + 11 AMD patches
 #   hipFile:    ROCm/rocm-systems (GDS/P2PDMA NVMe transfers)
 #   NIXL:       ai-dynamo/nixl v1.3.2 release + nixl-rocm-ais-mt.patch (ROCm/HIP + AIS_MT)
 #
-# Two compose services share this single image:
+# Three compose services share this single image:
+#   coordinator — LMCache MP coordinator and fleet-wide key directory
 #   lmcache — standalone lmcache-server (MP mode)
 #               L1:  GPU/CPU DRAM (--l1-size-gb)  OR  hipFile NVMe slab (GDS L1 mode)
 #               L2a: nixl_store AIS_MT → local NVMe (hipFile P2PDMA)

@@ -3,14 +3,14 @@ Author: Rui Zhang <51696593+ruizhang0101@users.noreply.github.com>
 Date:   Thu Jul 30 15:28:34 2026 -0700
 
     [MP][Coordinator] Emit cache events from MP server to the key directory (#4292)
-    
+
     * [MP][Coordinator] Emit cache events from MP server to the key directory
-    
+
     MP servers now stream STORE/ACCESS/DELETE cache events for both tiers
     to the coordinator's key directory:
-    
+
     Signed-off-by: Rui Zhang <zrfishnoodles@gmail.com>
-    
+
     (cherry picked from commit 468edf51fce909c2ab0ccde24b7bcad826d3414f)
 
 diff --git a/docs/design/v1/mp_coordinator/cache_events.md b/docs/design/v1/mp_coordinator/cache_events.md
@@ -182,19 +182,19 @@ index f0d9b3b3..20e882d3 100644
 +never creates records, and carries no placement identity — its
 +`backend` may be empty (`tier`/`backend` are ignored on apply). `ts` is
 +emitter wall-clock and is never compared across instances.
- 
+
  ## Structures
- 
+
 @@ -96,12 +97,12 @@ itself produces (`Placement`, `ApplyResult`, stats) and its private
  records.
- - **`schemas.py`** — HTTP models only. 
- 
+ - **`schemas.py`** — HTTP models only.
+
 -## Deliberately out of scope (follow-ups)
 +MP-server emission of the `CacheEvent` stream (L1 + L2, `incarnation` =
 +server start time) is implemented — see
 +[cache_events.md](cache_events.md). Re-basing the legacy
 +`/quota/events` stream on the same emitter is still open.
- 
+
 -- **MP-server emission** of the generalized `CacheEvent` stream (extending
 -today's `L2EventListener`, which still feeds `/quota/events` with the
 -legacy schema) — including where `incarnation` comes from (server start
@@ -214,7 +214,7 @@ index 59648706..7bda56cd 100644
 -``l2_event_reporting`` in ``CoordinatorConfig``) and **additive** (the existing
 +``event_reporting`` in ``CoordinatorConfig``, shared with the key-directory stream) and **additive** (the existing
  per-server eviction is unchanged).
- 
+
  Code: `lmcache/v1/mp_coordinator/cache_control/` (coordinator side),
 @@ -31,7 +31,7 @@ MP server (store/lookup)
          ▼
@@ -232,30 +232,30 @@ index 59648706..7bda56cd 100644
 -   (``l2_event_flush_interval``, default 1s). Failures are logged and the
 +   (``event_flush_interval``, default 1s). Failures are logged and the
     batch is dropped to prevent unbounded growth.
- 
+
  ``on_l2_keys_deleted`` buffers a ``DELETE`` event so the coordinator can drop
 @@ -185,11 +185,11 @@ the key from its usage accounting and LRU tracking.
- 
+
  | Field | Default | Env var | Description |
  | --- | --- | --- | --- |
 -| ``l2_event_reporting`` | ``False`` | ``LMCACHE_COORDINATOR_L2_EVENT_REPORTING`` | Enable event reporting |
 -| ``l2_event_flush_interval`` | ``1.0`` | ``LMCACHE_COORDINATOR_L2_EVENT_FLUSH_INTERVAL`` | Seconds between flushes |
 +| ``event_reporting`` | ``False`` | ``LMCACHE_COORDINATOR_EVENT_REPORTING`` | Enable event reporting (also gates the key-directory stream) |
 +| ``event_flush_interval`` | ``1.0`` | ``LMCACHE_COORDINATOR_EVENT_FLUSH_INTERVAL`` | Seconds between flushes |
- 
+
 -Both also accept CLI flags (``--coordinator-l2-event-reporting``,
 -``--coordinator-l2-event-flush-interval``).
 +Both also accept CLI flags (``--coordinator-event-reporting``,
 +``--coordinator-event-flush-interval``).
- 
+
  ## Failure modes
- 
+
 diff --git a/docs/design/v1/mp_observability/event-bus.md b/docs/design/v1/mp_observability/event-bus.md
 index ac594606..a7b2ed3b 100644
 --- a/docs/design/v1/mp_observability/event-bus.md
 +++ b/docs/design/v1/mp_observability/event-bus.md
 @@ -182,7 +182,22 @@ init is skipped and spans are silently dropped.
- 
+
  `L1Manager` still uses its `L1ManagerListener` ABC for **business-logic
  consumers** (`StoreController`, `EvictionPolicy`).  These are not observability
 -— they drive store scheduling and LRU eviction.
@@ -275,7 +275,7 @@ index ac594606..a7b2ed3b 100644
 +subscriber batches inside its event callbacks on the drain thread and
 +self-paces flushing by its flush interval, plus a final flush from its
 +shutdown hook.
- 
+
  For observability, L1Manager publishes events **directly** to the EventBus
  alongside its existing listener iteration:
 diff --git a/docs/source/cli/server.rst b/docs/source/cli/server.rst
@@ -324,28 +324,28 @@ index f3c42c44..29c7956a 100644
 +     - ``LMCACHE_COORDINATOR_EVENT_FLUSH_INTERVAL``
 +     - Seconds between cache-event batch flushes (must be ``> 0``, default
 +       ``1``).
- 
+
  The server registers under its stable identity (``--instance-id`` / OTel
  ``service.instance.id``); if the flag is not passed, the server mints a
 @@ -397,7 +399,7 @@ cycle):
          -H 'Content-Type: application/json' -d '{"default_limit_gb": 0}'
      # -> {"default_limit_gb": 0.0}
- 
+
 -When MP servers enable ``--coordinator-l2-event-reporting``, they stream L2
 +When MP servers enable ``--coordinator-event-reporting``, they stream L2
  ``store``, ``lookup``, and ``delete`` events to the coordinator, which aggregates
  per-``cache_salt`` usage, enforces quotas, and selects LRU keys to evict. Each
  batch carries the server's ``instance_id`` and a monotonically increasing
 @@ -896,9 +898,9 @@ of L2 keys pinned (chunks times the per-rank fan-out).
- 
+
  .. note::
- 
+
 -   **Requires L2 event reporting.** The coordinator can only exclude keys from
 +   **Requires event reporting.** The coordinator can only exclude keys from
     eviction for a salt it is tracking, which requires the MP servers started with
 -   ``--coordinator-l2-event-reporting`` (see `Connecting MP servers`_).
 +   ``--coordinator-event-reporting`` (see `Connecting MP servers`_).
- 
+
  ``DELETE /cache/pins``
  ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 diff --git a/docs/source/mp/http_api.rst b/docs/source/mp/http_api.rst
@@ -353,7 +353,7 @@ index fbb02a34..d2f42000 100644
 --- a/docs/source/mp/http_api.rst
 +++ b/docs/source/mp/http_api.rst
 @@ -706,7 +706,7 @@ adapter must be configured, else ``503``; a pure ``l1`` delete needs no adapter.
- 
+
  Per-key successful L2 deletions fire ``on_l2_keys_deleted`` on the
  adapter's listeners — when the coordinator is wired (see
 -``--coordinator-l2-event-reporting``), the deletions show up at the
@@ -367,8 +367,8 @@ index f1952c83..d74c907c 100644
 +++ b/lmcache/v1/distributed/api.py
 @@ -24,6 +24,32 @@ if TYPE_CHECKING:
  logger = init_logger(__name__)
- 
- 
+
+
 +class Tier(str, enum.Enum):
 +    """A cache tier.
 +
@@ -397,24 +397,24 @@ index f1952c83..d74c907c 100644
 +
  class TrimPolicy(enum.Enum):
      """How to pick the retained subset of found keys for a prefetch.
- 
+
 diff --git a/lmcache/v1/distributed/internal_api.py b/lmcache/v1/distributed/internal_api.py
 index 025274aa..fb8c7009 100644
 --- a/lmcache/v1/distributed/internal_api.py
 +++ b/lmcache/v1/distributed/internal_api.py
 @@ -9,7 +9,7 @@ from dataclasses import dataclass, field
  import enum
- 
+
  # First Party
 -from lmcache.v1.distributed.api import ObjectKey
 +from lmcache.v1.distributed.api import L1BackendType, ObjectKey
- 
- 
+
+
  @dataclass(frozen=True)
 @@ -23,6 +23,19 @@ class L1MemoryDesc:
      align_bytes: int
- 
- 
+
+
 +@dataclass(frozen=True)
 +class L1ObjectMeta:
 +    """Per-object metadata published alongside keys in L1 cache events.
@@ -430,7 +430,7 @@ index 025274aa..fb8c7009 100644
 +
  class EventListener(ABC):  # noqa: B024
      pass
- 
+
 diff --git a/lmcache/v1/distributed/l1_manager.py b/lmcache/v1/distributed/l1_manager.py
 index 44cf55f6..98859fd4 100644
 --- a/lmcache/v1/distributed/l1_manager.py
@@ -447,10 +447,10 @@ index 44cf55f6..98859fd4 100644
 @@ -414,6 +414,7 @@ class L1Manager:
              ret[key] = L1Error.SUCCESS
              successful_keys.append(key)
- 
+
 +        freed_meta = [self._object_meta(obj) for obj in need_to_free]
          self._memory_manager.free(need_to_free)
- 
+
          for listener in self._registered_listeners:
 @@ -428,7 +429,7 @@ class L1Manager:
          self._event_bus.publish(
@@ -460,13 +460,13 @@ index 44cf55f6..98859fd4 100644
 +                metadata={"keys": need_to_free_keys, "meta": freed_meta},
              )
          )
- 
+
 @@ -551,6 +552,7 @@ class L1Manager:
          """
          ret: dict[ObjectKey, L1Error] = {}
          successful_keys: list[ObjectKey] = []
 +        successful_keys_meta: list[L1ObjectMeta] = []
- 
+
          for key in keys:
              entry = self._objects.get(key, None)
 @@ -579,13 +581,14 @@ class L1Manager:
@@ -474,7 +474,7 @@ index 44cf55f6..98859fd4 100644
              ret[key] = L1Error.SUCCESS
              successful_keys.append(key)
 +            successful_keys_meta.append(self._object_meta(entry.memory_obj))
- 
+
          for listener in self._registered_listeners:
              listener.on_l1_keys_write_finished(successful_keys)
          self._event_bus.publish(
@@ -490,7 +490,7 @@ index 44cf55f6..98859fd4 100644
          ret: dict[ObjectKey, L1OperationResult] = {}
          successful_keys: list[ObjectKey] = []
 +        successful_keys_meta: list[L1ObjectMeta] = []
- 
+
          for key in keys:
              entry = self._objects.get(key, None)
 @@ -652,13 +656,14 @@ class L1Manager:
@@ -498,7 +498,7 @@ index 44cf55f6..98859fd4 100644
              ret[key] = (L1Error.SUCCESS, entry.memory_obj)
              successful_keys.append(key)
 +            successful_keys_meta.append(self._object_meta(entry.memory_obj))
- 
+
          for listener in self._registered_listeners:
              listener.on_l1_keys_finish_write_and_reserve_read(successful_keys)
          self._event_bus.publish(
@@ -512,10 +512,10 @@ index 44cf55f6..98859fd4 100644
 @@ -705,6 +710,7 @@ class L1Manager:
              ret[key] = L1Error.SUCCESS
              successful_keys.append(key)
- 
+
 +        freed_meta = [self._object_meta(obj) for obj in need_to_free]
          self._memory_manager.free(need_to_free)
- 
+
          for listener in self._registered_listeners:
 @@ -712,7 +718,7 @@ class L1Manager:
          self._event_bus.publish(
@@ -537,7 +537,7 @@ index 44cf55f6..98859fd4 100644
 +                    metadata={"keys": keys},
 +                )
 +            )
- 
+
      @l1_mgr_synchronized
      def clear(self, force: bool = False) -> None:
 @@ -745,6 +758,7 @@ class L1Manager:
@@ -560,10 +560,10 @@ index 44cf55f6..98859fd4 100644
 @@ -775,6 +789,7 @@ class L1Manager:
          for key in keys_to_clear:
              del self._objects[key]
- 
+
 +        cleared_meta = [self._object_meta(obj) for obj in objs_to_free]
          self._memory_manager.free(objs_to_free)
- 
+
          if keys_to_clear:
 @@ -783,7 +798,7 @@ class L1Manager:
              self._event_bus.publish(
@@ -573,7 +573,7 @@ index 44cf55f6..98859fd4 100644
 +                    metadata={"keys": keys_to_clear, "meta": cleared_meta},
                  )
              )
- 
+
 @@ -900,3 +915,10 @@ class L1Manager:
              num_read_locked,
          )
@@ -590,27 +590,27 @@ index 1838553e..b4693dac 100644
 --- a/lmcache/v1/distributed/l2_adapters/base.py
 +++ b/lmcache/v1/distributed/l2_adapters/base.py
 @@ -22,6 +22,8 @@ if TYPE_CHECKING:
- 
+
  # First Party
  from lmcache.logging import init_logger
 +from lmcache.v1.mp_observability.event import Event, EventType
 +from lmcache.v1.mp_observability.event_bus import get_event_bus
- 
+
  logger = init_logger(__name__)
- 
+
 @@ -128,6 +130,8 @@ class L2AdapterInterface(ABC):
                  per-bucket byte counts regardless of this value.
          """
          self._listeners: list[L2AdapterListener] = []
 +        self._backend_name: str = ""
 +        self._event_bus = get_event_bus()
- 
+
          # Centralized byte accounting. Subclasses pass ``sizes`` to
          # ``_notify_keys_stored`` / ``_notify_keys_deleted`` and the base
 @@ -354,6 +358,23 @@ class L2AdapterInterface(ABC):
          """Register a listener to receive L2 adapter events."""
          self._listeners.append(listener)
- 
+
 +    def set_backend_name(self, name: str) -> None:
 +        """Set the registered adapter type name used to tag cache events.
 +
@@ -645,7 +645,7 @@ index 1838553e..b4693dac 100644
 +                },
 +            )
 +        )
- 
+
      def _notify_keys_accessed(self, keys: list[ObjectKey]) -> None:
          # ``_notify_keys_accessed`` carries no byte impact — only LRU
          # bookkeeping cares about it, so no accounting is needed here.
@@ -657,7 +657,7 @@ index 1838553e..b4693dac 100644
 +                metadata={"keys": keys, "backend": self._backend_name},
 +            )
 +        )
- 
+
      def _notify_keys_deleted(self, keys: list[ObjectKey], sizes: list[int]) -> None:
          """Update byte accounting and notify listeners that ``keys`` were
 @@ -431,6 +468,12 @@ class L2AdapterInterface(ABC):
@@ -670,7 +670,7 @@ index 1838553e..b4693dac 100644
 +                metadata={"keys": keys, "backend": self._backend_name},
 +            )
 +        )
- 
+
      #####################
      # Eviction Interface
 diff --git a/lmcache/v1/distributed/l2_adapters/fault_inject_l2_adapter.py b/lmcache/v1/distributed/l2_adapters/fault_inject_l2_adapter.py
@@ -680,7 +680,7 @@ index f1067181..3da35531 100644
 @@ -384,6 +384,11 @@ class FaultInjectL2Adapter(L2AdapterInterface):
          """Forward the listener registration to the inner adapter."""
          self._inner.register_listener(listener)
- 
+
 +    def set_backend_name(self, name: str) -> None:
 +        """Forward the backend name to the inner adapter (which owns the
 +        listener-notify funnel that tags cache events)."""
@@ -696,7 +696,7 @@ index 5ccd2348..79222b8e 100644
 @@ -328,6 +328,11 @@ class SerdeL2AdapterWrapper(L2AdapterInterface):
          # Listeners track what's actually stored — which is inner's job.
          self._inner.register_listener(listener)
- 
+
 +    def set_backend_name(self, name: str) -> None:
 +        """Forward the backend name to the inner adapter (which owns the
 +        listener-notify funnel that tags cache events)."""
@@ -710,7 +710,7 @@ index 5cf25549..e912ee3e 100644
 --- a/lmcache/v1/distributed/memory_manager/devdax_l1_memory_manager.py
 +++ b/lmcache/v1/distributed/memory_manager/devdax_l1_memory_manager.py
 @@ -6,6 +6,7 @@ from typing import cast
- 
+
  # First Party
  from lmcache.logging import init_logger
 +from lmcache.v1.distributed.api import L1BackendType
@@ -722,13 +722,13 @@ index 5cf25549..e912ee3e 100644
      DevDaxRemoveMode,
  )
 +from lmcache.v1.memory_management import MemoryObj
- 
+
  logger = init_logger(__name__)
- 
+
 @@ -64,6 +66,22 @@ class DevDaxL1MemoryManager(L1MemoryManager):
          self._size_in_bytes = config.size_in_bytes
          self._align_bytes = config.align_bytes
- 
+
 +    def get_backend_type(self, memory_obj: MemoryObj) -> L1BackendType:
 +        """Return the storage medium backing ``memory_obj``.
 +
@@ -747,7 +747,7 @@ index 5cf25549..e912ee3e 100644
 +
      def get_l1_memory_desc(self) -> L1MemoryDesc:
          """Return a descriptor for the primary L1 buffer.
- 
+
 diff --git a/lmcache/v1/distributed/memory_manager/gds_l1_memory_manager.py b/lmcache/v1/distributed/memory_manager/gds_l1_memory_manager.py
 index e1275f35..81967315 100644
 --- a/lmcache/v1/distributed/memory_manager/gds_l1_memory_manager.py
@@ -764,7 +764,7 @@ index e1275f35..81967315 100644
 @@ -105,6 +105,17 @@ class GDSL1MemoryManager:
              self._address_manager.free(mo.metadata.address, mo.get_physical_size())
          return L1Error.SUCCESS
- 
+
 +    def get_backend_type(self, memory_obj: MemoryObj) -> L1BackendType:
 +        """Return the storage medium backing ``memory_obj``.
 +
@@ -785,7 +785,7 @@ index d4560050..0cd18dd3 100644
 +++ b/lmcache/v1/distributed/memory_manager/l1_manager_protocol.py
 @@ -5,7 +5,7 @@
  from typing import Optional, Protocol, runtime_checkable
- 
+
  # First Party
 -from lmcache.v1.distributed.api import MemoryLayoutDesc
 +from lmcache.v1.distributed.api import L1BackendType, MemoryLayoutDesc
@@ -795,20 +795,20 @@ index d4560050..0cd18dd3 100644
 @@ -34,6 +34,10 @@ class L1ManagerProtocol(Protocol):
          """Return ``(used_bytes, total_bytes)``."""
          ...
- 
+
 +    def get_backend_type(self, memory_obj: MemoryObj) -> L1BackendType:
 +        """Return the storage medium backing ``memory_obj``."""
 +        ...
 +
      def get_l1_memory_desc(self) -> Optional[L1MemoryDesc]:
          """Describe the underlying L1 buffer for L2-adapter registration.
- 
+
 diff --git a/lmcache/v1/distributed/memory_manager/l1_memory_manager.py b/lmcache/v1/distributed/memory_manager/l1_memory_manager.py
 index 9705fbe4..9be8137a 100644
 --- a/lmcache/v1/distributed/memory_manager/l1_memory_manager.py
 +++ b/lmcache/v1/distributed/memory_manager/l1_memory_manager.py
 @@ -6,7 +6,7 @@ from multiprocessing import shared_memory
- 
+
  # First Party
  from lmcache.logging import init_logger
 -from lmcache.v1.distributed.api import MemoryLayoutDesc
@@ -819,7 +819,7 @@ index 9705fbe4..9be8137a 100644
 @@ -145,6 +145,17 @@ class L1MemoryManager:
          self._allocator.batched_free(mem_objs)
          return L1Error.SUCCESS
- 
+
 +    def get_backend_type(self, memory_obj: MemoryObj) -> L1BackendType:
 +        """Return the storage medium backing ``memory_obj``.
 +
@@ -846,7 +846,7 @@ index 3054e244..25576eee 100644
 +        # the observability bus carry their backend identity.
 +        adapter.set_backend_name(descriptor.type_name)
          return adapter_id, adapter, descriptor
- 
+
      def _should_enable_l2_eviction(
 diff --git a/lmcache/v1/distributed/tiers.py b/lmcache/v1/distributed/tiers.py
 deleted file mode 100644
@@ -884,7 +884,7 @@ index f9a1a3d6..52ecdff0 100644
 @@ -424,7 +424,18 @@ class DevDaxMemoryAllocator(MemoryAllocatorInterface):
              and memory_obj.parent() is self.local_allocator
          )
- 
+
 -    def _is_devdax_obj(self, memory_obj: MemoryObj) -> bool:
 +    def is_devdax_obj(self, memory_obj: MemoryObj) -> bool:
 +        """Return whether ``memory_obj`` lives in the Device-DAX arena.
@@ -899,7 +899,7 @@ index f9a1a3d6..52ecdff0 100644
 +            ``True`` for the Device-DAX arena, ``False`` for local DRAM.
 +        """
          return memory_obj.parent() is self
- 
+
      def _available_count(
 @@ -646,7 +657,7 @@ class DevDaxMemoryAllocator(MemoryAllocatorInterface):
                  assert self.local_allocator is not None
@@ -925,13 +925,13 @@ index 8f511f62..0b915785 100644
 +++ b/lmcache/v1/mp_coordinator/api.py
 @@ -15,8 +15,7 @@ from dataclasses import dataclass, field
  from enum import Enum
- 
+
  # First Party
 -from lmcache.v1.distributed.api import EncodedObjectKey
 -from lmcache.v1.distributed.tiers import Tier
 +from lmcache.v1.distributed.api import EncodedObjectKey, Tier
- 
- 
+
+
  class CacheEventType(str, Enum):
 @@ -73,7 +72,10 @@ class CacheEventBatch:
          tier: The cache tier the events apply to (``l1`` or ``l2``;
@@ -947,7 +947,7 @@ index 8f511f62..0b915785 100644
      """
 @@ -91,14 +93,17 @@ class CacheEventBatch:
          """Enforce intrinsic invariants.
- 
+
          Raises:
 -            ValueError: If ``instance_id`` or ``backend`` is empty,
 +            ValueError: If ``instance_id`` is empty, ``backend`` is empty
@@ -1302,7 +1302,7 @@ index 80019bd6..4d113fa0 100644
 +++ b/lmcache/v1/mp_coordinator/http_apis/cache_api.py
 @@ -20,7 +20,7 @@ from fastapi.responses import JSONResponse
  import httpx
- 
+
  # First Party
 -from lmcache.v1.distributed.tiers import Tier
 +from lmcache.v1.distributed.api import Tier
@@ -1315,7 +1315,7 @@ index 99470c9d..d9c5f2bb 100644
 +++ b/lmcache/v1/mp_coordinator/http_apis/quota_api.py
 @@ -13,7 +13,7 @@ from fastapi import APIRouter, HTTPException, Request
  from fastapi.responses import JSONResponse
- 
+
  # First Party
 -from lmcache.v1.distributed.tiers import Tier
 +from lmcache.v1.distributed.api import Tier
@@ -1327,7 +1327,7 @@ index 16821bd7..40a5d6b2 100644
 --- a/lmcache/v1/mp_coordinator/key_directory.py
 +++ b/lmcache/v1/mp_coordinator/key_directory.py
 @@ -24,8 +24,7 @@ import threading
- 
+
  # First Party
  from lmcache.logging import init_logger
 -from lmcache.v1.distributed.api import ObjectKey
@@ -1341,14 +1341,14 @@ index c1396ec8..11b0f867 100644
 --- a/lmcache/v1/mp_coordinator/schemas.py
 +++ b/lmcache/v1/mp_coordinator/schemas.py
 @@ -20,7 +20,7 @@ import numpy as np
- 
+
  # First Party
  from lmcache.v1.distributed.api import EncodedObjectKey  # noqa: F401  re-exported
 -from lmcache.v1.distributed.tiers import Tier
 +from lmcache.v1.distributed.api import Tier
  from lmcache.v1.mp_coordinator.api import CacheEventBatch
  from lmcache.v1.mp_coordinator.key_directory import Placement
- 
+
 diff --git a/lmcache/v1/mp_observability/event.py b/lmcache/v1/mp_observability/event.py
 index 18b3bdba..99535e41 100644
 --- a/lmcache/v1/mp_observability/event.py
@@ -1359,12 +1359,12 @@ index 18b3bdba..99535e41 100644
      L1_KEYS_EVICTED = "l1.keys.evicted"
 +    L1_KEYS_ACCESSED = "l1.keys.accessed"
      L1_EVICTION_LOOP_TICK = "l1.eviction.loop_tick"
- 
+
      # L1 failure events (LM-291 health monitoring)
 @@ -55,6 +56,11 @@ class EventType(Enum):
      # L2 Eviction Controller events
      L2_KEYS_EVICTED = "l2.keys.evicted"
- 
+
 +    # L2 adapter key-level events.
 +    L2_KEYS_STORED = "l2.keys.stored"
 +    L2_KEYS_ACCESSED = "l2.keys.accessed"
@@ -1372,14 +1372,14 @@ index 18b3bdba..99535e41 100644
 +
      # L2 failure events (LM-291 health monitoring)
      L2_PREFETCH_FAILED = "l2.prefetch.failed"
- 
+
 diff --git a/lmcache/v1/multiprocess/cache_control/object_service.py b/lmcache/v1/multiprocess/cache_control/object_service.py
 index 0db23d34..dc40c4cf 100644
 --- a/lmcache/v1/multiprocess/cache_control/object_service.py
 +++ b/lmcache/v1/multiprocess/cache_control/object_service.py
 @@ -13,8 +13,7 @@ from typing import Any
  import asyncio
- 
+
  # First Party
 -from lmcache.v1.distributed.api import EncodedObjectKey
 -from lmcache.v1.distributed.tiers import Tier
@@ -1393,7 +1393,7 @@ index fd705812..692922da 100644
 +++ b/lmcache/v1/multiprocess/cache_control/prefetch_service.py
 @@ -12,7 +12,7 @@ status codes. It owns the node's :class:`WarmPrefetchJobs` table.
  from typing import Any
- 
+
  # First Party
 -from lmcache.v1.distributed.tiers import Tier
 +from lmcache.v1.distributed.api import Tier
@@ -1407,7 +1407,7 @@ index aab4e4f7..9faad03f 100644
 @@ -209,12 +209,13 @@ class CoordinatorConfig:
      """Seconds between heartbeats. Must be strictly positive and kept well below
      the coordinator's ``INSTANCE_TIMEOUT``."""
- 
+
 -    l2_event_reporting: bool = False
 -    """When ``True``, report L2 store/lookup events to the coordinator for
 -    fleet-wide usage tracking and eviction."""
@@ -1415,13 +1415,13 @@ index aab4e4f7..9faad03f 100644
 +    """When ``True``, report cache events to the coordinator: the key
 +    directory's store/access/delete stream (fleet-wide placement tracking)
 +    and the L2 usage stream (quota tracking and eviction)."""
- 
+
 -    l2_event_flush_interval: float = 1.0
 -    """Seconds between L2 event flush attempts to the coordinator."""
 +    event_flush_interval: float = 1.0
 +    """Seconds between cache-event flush attempts to the coordinator."""
- 
- 
+
+
  DEFAULT_COORDINATOR_CONFIG = CoordinatorConfig()
 @@ -579,19 +580,20 @@ def add_coordinator_args(
          "LMCACHE_COORDINATOR_HEARTBEAT_INTERVAL, then 5.0.",
@@ -1450,10 +1450,10 @@ index aab4e4f7..9faad03f 100644
 +        "Defaults to LMCACHE_COORDINATOR_EVENT_FLUSH_INTERVAL, then 1.0.",
      )
      return parser
- 
+
 @@ -612,7 +614,8 @@ def parse_args_to_coordinator_config(
          The configuration object.
- 
+
      Raises:
 -        ValueError: If the heartbeat interval is not a positive number.
 +        ValueError: If the heartbeat interval or the event flush interval
@@ -1475,7 +1475,7 @@ index aab4e4f7..9faad03f 100644
 +        event_reporting = os.getenv(
 +            "LMCACHE_COORDINATOR_EVENT_REPORTING", ""
          ).lower() in ("1", "true", "yes")
- 
+
 -    if args.coordinator_l2_event_flush_interval is not None:
 -        l2_event_flush_interval = args.coordinator_l2_event_flush_interval
 +    if args.coordinator_event_flush_interval is not None:
@@ -1504,7 +1504,7 @@ index aab4e4f7..9faad03f 100644
 +            "coordinator event flush interval must be a finite number > 0, "
 +            "got %s" % event_flush_interval
          )
- 
+
      return CoordinatorConfig(
          url=url,
          advertise_ip=advertise_ip,
@@ -1533,13 +1533,13 @@ index 0596d369..4595884c 100644
 +++ b/lmcache/v1/multiprocess/http_apis/schemas.py
 @@ -11,8 +11,7 @@ belong to the ``cache_control`` services. ``Tier`` is imported from the domain
  from dataclasses import dataclass, field
- 
+
  # First Party
 -from lmcache.v1.distributed.api import EncodedObjectKey
 -from lmcache.v1.distributed.tiers import Tier
 +from lmcache.v1.distributed.api import EncodedObjectKey, Tier
- 
- 
+
+
  @dataclass(frozen=True)
 diff --git a/lmcache/v1/multiprocess/http_server.py b/lmcache/v1/multiprocess/http_server.py
 index 43a382d5..d8d6db68 100644
@@ -1550,7 +1550,7 @@ index 43a382d5..d8d6db68 100644
  import asyncio
  import contextlib
 +import time
- 
+
  # Third Party
  from fastapi import FastAPI
 @@ -20,6 +21,10 @@ from lmcache.v1.distributed.config import (
@@ -1596,7 +1596,7 @@ index 43a382d5..d8d6db68 100644
 @@ -159,6 +165,23 @@ async def lifespan(app: FastAPI):
              coordinator_l2_event_client.run()
          )
- 
+
 +    # Coordinator event stream
 +    if (
 +        coordinator_client is not None
@@ -1618,7 +1618,7 @@ index 43a382d5..d8d6db68 100644
      app.state.coordinator_registration_task = coordinator_registration_task
      app.state.coordinator_l2_event_task = coordinator_l2_event_task
 @@ -224,7 +247,9 @@ def run_http_server(
- 
+
      Raises:
          ValueError: If P2P is enabled without a coordinator URL, or with an L1
 -            tier that is not a single registerable memory region.
@@ -1646,7 +1646,7 @@ index 8553be64..6cafa90e 100644
 +++ b/tests/v1/distributed/test_devdax_l1_allocator.py
 @@ -18,7 +18,7 @@ import pytest
  import torch
- 
+
  # First Party
 -from lmcache.v1.distributed.api import MemoryLayoutDesc, ObjectKey
 +from lmcache.v1.distributed.api import L1BackendType, MemoryLayoutDesc, ObjectKey
@@ -1714,7 +1714,7 @@ index 0b90c34a..08a2ca2f 100644
 --- a/tests/v1/distributed/test_store_controller.py
 +++ b/tests/v1/distributed/test_store_controller.py
 @@ -343,13 +343,15 @@ class TestStoreControllerSingleAdapter:
- 
+
          # Verify read lock is released: the key should be updatable
          ok = wait_for_condition(
 -            lambda: l1_manager.reserve_write(
@@ -1738,7 +1738,7 @@ index 0b90c34a..08a2ca2f 100644
          assert ok, "Key should be updatable after store controller releases read lock"
 @@ -467,13 +469,15 @@ class TestStoreControllerMultipleAdapters:
          assert ok
- 
+
          ok = wait_for_condition(
 -            lambda: l1_manager.reserve_write(
 -                keys=keys,
@@ -1760,7 +1760,7 @@ index 0b90c34a..08a2ca2f 100644
          )
          assert ok, "Key should be updatable after all adapter stores complete"
 @@ -587,13 +591,15 @@ class TestStoreControllerCustomPolicy:
- 
+
          # After deletion, reserve_write with mode="new" should succeed
          ok = wait_for_condition(
 -            lambda: l1_manager.reserve_write(
@@ -2320,7 +2320,7 @@ index f226722a..0a19d47a 100644
 +++ b/tests/v1/mp_coordinator/test_key_directory.py
 @@ -7,8 +7,7 @@ instance cleanup."""
  import pytest
- 
+
  # First Party
 -from lmcache.v1.distributed.api import ObjectKey
 -from lmcache.v1.distributed.tiers import Tier
@@ -2330,8 +2330,8 @@ index f226722a..0a19d47a 100644
      CacheEventEntry,
 @@ -162,6 +161,26 @@ def test_access_does_not_create_records():
      assert directory.stats().num_keys == 0
- 
- 
+
+
 +def test_access_batch_allows_empty_backend():
 +    """ACCESS carries no placement identity, so ``backend`` may be empty;
 +    applying it refreshes recency without touching placements."""
@@ -2353,8 +2353,8 @@ index f226722a..0a19d47a 100644
 +
 +
  # -- Seq handling ------------------------------------------------------------
- 
- 
+
+
 diff --git a/tests/v1/multiprocess/test_config.py b/tests/v1/multiprocess/test_config.py
 index b3c98a6e..e20701ca 100644
 --- a/tests/v1/multiprocess/test_config.py
@@ -2366,8 +2366,8 @@ index b3c98a6e..e20701ca 100644
 +    "LMCACHE_COORDINATOR_EVENT_REPORTING",
 +    "LMCACHE_COORDINATOR_EVENT_FLUSH_INTERVAL",
  )
- 
- 
+
+
 @@ -127,3 +129,37 @@ def test_instance_id_defaults_are_distinct():
  def test_instance_id_dataclass_default_is_distinct():
      # Direct construction (no CLI) also mints a fresh id per instance.

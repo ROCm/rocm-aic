@@ -1,0 +1,65 @@
+# Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+#
+# CPU-only LMCache coordinator key-directory smoke test.
+#
+# Reuses the image produced by the nightly distributed build, launches only the
+# LMCache coordinator on a SPUR allocation with no GPU resource, and exercises
+# the public /directory HTTP API. No LMCache MP server or vLLM process is used.
+
+name: AIC Hardware Test - LMCache Coordinator CPU Smoke Test
+
+on:
+  workflow_call:
+    inputs:
+      sha:
+        description: Exact commit whose dist-build image should be tested
+        required: true
+        type: string
+      artifact_retention_days:
+        description: Prune stale CI artifacts older than this many days (0 disables pruning)
+        required: false
+        default: 0
+        type: number
+  workflow_dispatch:
+    inputs:
+      sha:
+        description: Exact commit whose dist-build image should be tested (defaults to the selected ref)
+        required: false
+        type: string
+      artifact_retention_days:
+        description: Prune stale CI artifacts older than this many days (0 disables pruning)
+        required: false
+        default: 0
+        type: number
+
+permissions:
+  contents: read
+
+jobs:
+  lmcache-coordinator-cpu-smoke:
+    name: Coordinator key-directory HTTP smoke test
+    runs-on: [self-hosted, rocm-aic-cicd]
+    timeout-minutes: 45
+    env:
+      AIC_SPUR_HOST:       ${{ secrets.AIC_SPUR_HOST }}
+      AIC_SHARED_NFS:      ${{ secrets.AIC_SHARED_NFS }}
+      AIC_SPUR_CONTROLLER: ${{ secrets.AIC_SPUR_CONTROLLER }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run LMCache coordinator CPU smoke test on SPUR
+        run: |
+          SHA="${{ inputs.sha || github.sha }}"
+          bash .github/scripts/spur-lmcache-coordinator-cpu-smoke.sh "${SHA}"
+
+      - name: Prune expired SPUR CI artifacts
+        if: ${{ always() && inputs.artifact_retention_days > 0 }}
+        continue-on-error: true
+        run: |
+          SHA="${{ inputs.sha || github.sha }}"
+          bash .github/scripts/spur-ci-artifact-janitor.sh \
+            "${SHA}" \
+            "${{ inputs.artifact_retention_days }}"

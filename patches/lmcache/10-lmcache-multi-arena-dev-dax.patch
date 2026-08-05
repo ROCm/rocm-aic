@@ -3,7 +3,7 @@ Author: weishu <838677410@qq.com>
 Date:   Tue Jul 28 17:41:03 2026 -0700
 
     [feat] Support runtime add/remove of Device-DAX L1 devices (#3972)
-    
+
     Signed-off-by: deng451e <838677410@qq.com>
     (cherry picked from commit bc724eef3788017a7e556dc15592c8870d1fa0fc)
 
@@ -269,9 +269,9 @@ index bf2ab97f..5cf25549 100644
 +    DevDaxMemoryAllocator,
 +    DevDaxRemoveMode,
 +)
- 
+
  logger = init_logger(__name__)
- 
+
 @@ -54,6 +58,9 @@ class DevDaxL1MemoryManager(L1MemoryManager):
              shm_name=config.shm_name or None,
              align_bytes=config.align_bytes,
@@ -281,7 +281,7 @@ index bf2ab97f..5cf25549 100644
 +        self._config = config
          self._size_in_bytes = config.size_in_bytes
          self._align_bytes = config.align_bytes
- 
+
 @@ -74,3 +81,65 @@ class DevDaxL1MemoryManager(L1MemoryManager):
              size=self._size_in_bytes,
              align_bytes=self._align_bytes,
@@ -354,7 +354,7 @@ index d4551106..f9a1a3d6 100644
 +++ b/lmcache/v1/memory_allocators/devdax_memory_allocator.py
 @@ -1,6 +1,8 @@
  # SPDX-License-Identifier: Apache-2.0
- 
+
  # Standard
 +from dataclasses import dataclass
 +from enum import Enum
@@ -363,8 +363,8 @@ index d4551106..f9a1a3d6 100644
  import mmap
 @@ -27,14 +29,128 @@ from lmcache.v1.memory_management import (
  import lmcache.v1.memory_management as memory_management
- 
- 
+
+
 -class DevDaxMemoryAllocator(MemoryAllocatorInterface):
 -    """Allocates L1 objects from DRAM and/or an mmap-backed Device-DAX arena.
 +class DevDaxArenaState(Enum):
@@ -465,7 +465,7 @@ index d4551106..f9a1a3d6 100644
 +            state=self.state,
 +            is_primary=self.is_primary,
 +        )
- 
+
 -    The mapped bytes are exposed as a flat CPU ``torch.uint8`` tensor so the
 -    existing L1 state machine and tensor slicing logic can run unchanged while
 -    the overflow backing storage is the configured Device-DAX device. When a
@@ -495,12 +495,12 @@ index d4551106..f9a1a3d6 100644
 +        DRAM local allocator provides its own synchronization and is used outside
 +        this lock.
      """
- 
+
      def __init__(
 @@ -58,6 +174,8 @@ class DevDaxMemoryAllocator(MemoryAllocatorInterface):
          if align_bytes <= 0 or align_bytes & (align_bytes - 1) != 0:
              raise ValueError("align_bytes must be a positive power of two")
- 
+
 +        # ``size``/``device_path`` describe the initial arena (kept for
 +        # backwards compatibility); the live pool is ``self._arenas``.
          self.size = size
@@ -517,7 +517,7 @@ index d4551106..f9a1a3d6 100644
 +        self._arenas: list[_DevDaxArena] = []
          self._unregistered = False
 -        self._host_memory_pinned_ptr: int | None = None
- 
+
 -        self.devdax_buffer = self._map_devdax()
 -        self.devdax_allocator = TensorMemoryAllocator(
 -            self.devdax_buffer, align_bytes=self.align_bytes
@@ -528,7 +528,7 @@ index d4551106..f9a1a3d6 100644
          )
 -        self.address_manager = self.devdax_allocator.address_manager
 -        self._register_cuda_host_memory()
- 
+
      @property
      def buffer(self) -> torch.Tensor:
 -        """Return the primary L1 buffer exposed by this allocator."""
@@ -565,13 +565,13 @@ index d4551106..f9a1a3d6 100644
 +        if self._arenas:
 +            return self._arenas[0].allocator.address_manager
 +        return None
- 
+
      def _open_devdax_mapping(
          self,
 @@ -124,47 +265,158 @@ class DevDaxMemoryAllocator(MemoryAllocatorInterface):
                  os.close(fd)
              raise
- 
+
 -    def _map_devdax(self) -> torch.Tensor:
 -        fd, mmap_obj, mmap_buffer, buffer = self._open_devdax_mapping(
 -            self.device_path,
@@ -706,7 +706,7 @@ index d4551106..f9a1a3d6 100644
 +            if arena.device_path == device_path:
 +                return arena
 +        raise ValueError(f"no Device-DAX arena mapped at {device_path}")
- 
+
 -    def _unregister_cuda_host_memory(self) -> None:
 -        if self._host_memory_pinned_ptr is None:
 +    def _arena_for_obj_locked(self, memory_obj: MemoryObj) -> _DevDaxArena:
@@ -756,13 +756,13 @@ index d4551106..f9a1a3d6 100644
 +        """Retry reaping every draining arena. Caller holds ``host_mem_lock``."""
 +        for arena in list(self._arenas):
 +            self._maybe_reap_arena_locked(arena)
- 
+
      def _is_local_obj(self, memory_obj: MemoryObj) -> bool:
          return (
 @@ -175,6 +427,20 @@ class DevDaxMemoryAllocator(MemoryAllocatorInterface):
      def _is_devdax_obj(self, memory_obj: MemoryObj) -> bool:
          return memory_obj.parent() is self
- 
+
 +    def _available_count(
 +        self,
 +        address_manager: AddressManager,
@@ -792,13 +792,13 @@ index d4551106..f9a1a3d6 100644
 +            local_pin_allocator.address_manager, shapes, dtypes
          )
 -        return local_pin_allocator.address_manager.get_free_size() // unit_aligned_size
- 
+
      def _local_memory_usage(self) -> tuple[int, int]:
          if self.local_allocator is None:
 @@ -200,43 +463,81 @@ class DevDaxMemoryAllocator(MemoryAllocatorInterface):
          local_used = local_total - local_pin_allocator.address_manager.get_free_size()
          return local_used, local_total
- 
+
 -    def _allocate_from_devdax(
 +    def _allocate_from_arenas(
          self,
@@ -829,7 +829,7 @@ index d4551106..f9a1a3d6 100644
 +                        obj.parent_allocator = self
 +                    return obj
 +            return None
- 
+
 -    def _batched_allocate_from_devdax(
 +    def _batched_allocate_from_arenas(
          self,
@@ -880,7 +880,7 @@ index d4551106..f9a1a3d6 100644
 +            for _, objs in allocated:
 +                result.extend(objs)
 +            return result
- 
+
      def _free_devdax_obj(self, memory_obj: MemoryObj) -> None:
          with self.host_mem_lock:
 -            assert self.devdax_allocator is not None
@@ -890,7 +890,7 @@ index d4551106..f9a1a3d6 100644
              if isinstance(memory_obj, TensorMemoryObj):
                  memory_obj.raw_data = torch.empty(0, dtype=torch.uint8)
 +            self._reap_draining_arenas_locked()
- 
+
      def _batched_free_devdax_objs(
          self,
 @@ -244,11 +545,17 @@ class DevDaxMemoryAllocator(MemoryAllocatorInterface):
@@ -912,7 +912,7 @@ index d4551106..f9a1a3d6 100644
 +                    if isinstance(memory_obj, TensorMemoryObj):
 +                        memory_obj.raw_data = torch.empty(0, dtype=torch.uint8)
 +            self._reap_draining_arenas_locked()
- 
+
      @_lmcache_nvtx_annotate
      def allocate(
 @@ -258,20 +565,6 @@ class DevDaxMemoryAllocator(MemoryAllocatorInterface):
@@ -946,7 +946,7 @@ index d4551106..f9a1a3d6 100644
 +            return self._allocate_from_arenas(shapes, dtypes, fmt)
          else:
              raise ValueError(f"Unsupported memory format: {fmt}")
- 
+
 @@ -300,21 +591,6 @@ class DevDaxMemoryAllocator(MemoryAllocatorInterface):
          fmt: MemoryFormat = MemoryFormat.KV_2LTD,
          allocator_type: Optional[str] = None,
@@ -972,7 +972,7 @@ index d4551106..f9a1a3d6 100644
 @@ -343,12 +619,7 @@ class DevDaxMemoryAllocator(MemoryAllocatorInterface):
              if remaining == 0:
                  return local_objs
- 
+
 -            if self.devdax_allocator is None:
 -                if local_objs and self.local_allocator is not None:
 -                    self.local_allocator.batched_free(local_objs, update_stats=False)
@@ -984,7 +984,7 @@ index d4551106..f9a1a3d6 100644
              )
              if dax_objs is None:
 @@ -361,16 +632,6 @@ class DevDaxMemoryAllocator(MemoryAllocatorInterface):
- 
+
      @_lmcache_nvtx_annotate
      def free(self, memory_obj: MemoryObj, allocator_type: Optional[str] = None) -> None:
 -        """Free one Device-DAX allocator memory object.
@@ -1017,11 +1017,11 @@ index d4551106..f9a1a3d6 100644
 -        """
          if not memory_objs:
              return
- 
+
 @@ -445,46 +695,124 @@ class DevDaxMemoryAllocator(MemoryAllocatorInterface):
          else:
              raise ValueError(f"Unsupported memory format: {fmt}")
- 
+
 +    def add_device(self, device_path: str, size_in_bytes: int) -> DevDaxArenaStatus:
 +        """Map an additional Device-DAX device and add it to the pool.
 +
@@ -1114,7 +1114,7 @@ index d4551106..f9a1a3d6 100644
 -            return local_ok and self.devdax_allocator.memcheck()
 +            dax_ok = all(arena.allocator.memcheck() for arena in self._arenas)
 +        return local_ok and dax_ok
- 
+
      def get_memory_usage(self) -> tuple[int, int]:
 -        """Return used and total bytes across local and Device-DAX tiers."""
          local_used, local_total = self._local_memory_usage()
@@ -1133,7 +1133,7 @@ index d4551106..f9a1a3d6 100644
 +                if arena.state == DevDaxArenaState.ACTIVE:
 +                    dax_total += arena_total
          return local_used + dax_used, local_total + dax_total
- 
+
      def close(self) -> None:
 -        """Release mapped Device-DAX and optional local DRAM resources.
 -
@@ -1144,7 +1144,7 @@ index d4551106..f9a1a3d6 100644
              return
          if memory_management.torch_dev.is_available():
              memory_management.torch_dev.synchronize()
- 
+
          with self.host_mem_lock:
 -            if (
 -                self.devdax_allocator is not None
@@ -1159,7 +1159,7 @@ index d4551106..f9a1a3d6 100644
 +            for arena in self._arenas:
 +                self._close_arena_locked(arena)
 +            self._arenas = []
- 
+
          if self.local_allocator is not None:
              self.local_allocator.close()
 diff --git a/tests/v1/distributed/test_devdax_l1_allocator.py b/tests/v1/distributed/test_devdax_l1_allocator.py
