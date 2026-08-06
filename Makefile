@@ -166,10 +166,11 @@ override export HF_HOME       := $(AIC_SHARED_NFS)/huggingface
 # register_memory because GPUDirect storage is not available on this filesystem.
 # Default the nvme arm to the NIXL first-class POSIX plugin (cpu staging buffer),
 # which avoids hipFileBufRegister entirely.  A user override still takes precedence.
-# SPUR nodes are MI355X (gfx950); pin the image tag and arch so cliff loads the
-# correct gfx950 tarball (rocm-aic-7.14-latest-gfx950.tar.zst) instead of the
-# unpatched multi-arch latest.
-export AIC_IMAGE              ?= rocm-aic:7.14-latest
+# SPUR nodes are MI355X (gfx950); pin the arch for the compose build args.  The image
+# ref itself is left to the version-derived tag (docker/scripts/aic-image-tag.sh) so a
+# caller-supplied AIC_IMAGE_NAME -- notably CI's per-SHA rocm-aic-ci-<short> -- is
+# honoured.  Arch selection is carried by the tarball's _arch_tag suffix, not the image
+# tag, so cliff still resolves the gfx950 tarball via its glob.
 override export ROCM_ARCH     := gfx950
 export AIC_L2_BACKEND         ?= nixl_posix
 # Right-size the POSIX slot file: must be >= KV chunk size for the target model.
