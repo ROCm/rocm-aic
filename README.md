@@ -2,7 +2,7 @@
 
 [![MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://github.com/ROCm/rocm-aic/blob/main/LICENSE.md)
 [![Platform](https://img.shields.io/badge/platform-linux-lightgrey.svg)](README.md)
-[![ROCm](https://img.shields.io/badge/ROCm-7.2.4-green.svg)](https://rocm.docs.amd.com)
+[![ROCm](https://img.shields.io/badge/ROCm--green.svg)](https://rocm.docs.amd.com)
 [![vLLM](https://img.shields.io/badge/vLLM-0.25.0+rocm723-blue.svg)](https://github.com/vllm-project/vllm)
 [![LMCache](https://img.shields.io/badge/LMCache-v0.5.2-blue.svg)](https://github.com/LMCache/LMCache)
 [![NIXL](https://img.shields.io/badge/NIXL-v1.3.2-blue.svg)](https://github.com/ai-dynamo/nixl)
@@ -40,7 +40,7 @@ platform.
 ## Stack overview
 
 ```text
-Ubuntu 24.04  (rocm/dev-ubuntu-24.04:7.2.4-complete, ROCm 7.2.4, Python 3.12)
+Ubuntu 24.04  (rocm/dev-ubuntu-24.04:-complete, ROCm , Python 3.12)
   └── vLLM v0.25.0+rocm723  (pre-built wheel — bundles torch/triton/flash-attn)
         └── LMCacheMPConnector (ZMQ)
               └── LMCache server (standalone MP mode)  [v0.5.2 + 8 AMD patches]
@@ -55,7 +55,7 @@ each release):
 
 | Component | Source | Ref |
 | --- | --- | --- |
-| Base OS | `rocm/dev-ubuntu-24.04:7.2.4-complete` | Ubuntu 24.04, ROCm 7.2.4, Python 3.12 |
+| Base OS | `rocm/dev-ubuntu-24.04:-complete` | Ubuntu 24.04, ROCm , Python 3.12 |
 | vLLM | `wheels.vllm.ai/rocm/0.25.0/rocm723` | v0.25.0+rocm723 (pre-built wheel, bundles torch) |
 | LMCache | `LMCache/LMCache` (upstream) | `v0.5.2` + 8 AMD patches |
 | NIXL | `ai-dynamo/nixl` (upstream) | `v1.3.2` + `nixl-rocm-ais-mt.patch` |
