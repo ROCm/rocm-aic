@@ -346,6 +346,13 @@ AIC_TEST_MEM="${AIC_TEST_MEM:-32G}"
 # downloaded once into HF_HOME (a persistent shared HF cache) and reused.
 AIC_TINY_MODEL="${AIC_TINY_MODEL:-Qwen/Qwen2.5-0.5B-Instruct}"
 HF_HOME="${HF_HOME:-${AIC_IMAGE_DIR}/tiny-hf}"
+# Both emulate heredocs below do `export HF_HOME='${AIC_TINY_HF_HOME}'`, but
+# nothing ever set it: it expanded to the empty string on the submit host, and
+# compose's ${HF_HOME:-~/.cache/huggingface} then treated empty as unset and
+# silently fell back to the node's own home -- so every emulate run re-downloaded
+# the tokenizer instead of reading the shared cache.  spur-emulate-test.sh passes
+# it explicitly; give the make path the same default as everything else.
+AIC_TINY_HF_HOME="${AIC_TINY_HF_HOME:-${HF_HOME}}"
 AIC_TINY_TIME="${AIC_TINY_TIME:-00:25:00}"
 AIC_TINY_CPUS="${AIC_TINY_CPUS:-8}"
 AIC_TINY_MEM="${AIC_TINY_MEM:-32G}"
@@ -1417,6 +1424,13 @@ export VLLM_EMULATOR_PROFILE_PACK='${AIC_EMULATE_PROFILE_PACK}'
 # service.  Set AIC_EMULATE_PACK_HOST + point AIC_EMULATE_PROFILE_PACK at
 # /profiles/<pack>.json to replay an MI300X/MI355X capture.
 [ -n '${AIC_EMULATE_PACK_HOST}' ] && export EMU_PROFILE_PACK_HOST='${AIC_EMULATE_PACK_HOST}'
+# Containers default to root, and HF_HOME is very often a SHARED cluster cache
+# (Alola's /scratch/models).  Root-owned entries there cannot be refreshed or
+# deleted by anyone else, so run the emulator as the submitting user instead.
+# Resolved on the COMPUTE node -- id is what matters where the bind mount lives.
+export AIC_CONTAINER_USER="\$(id -u):\$(id -g)"
+export AIC_CONTAINER_USERNAME="\$(id -un)"
+export AIC_CONTAINER_HOME=/tmp
 export HF_HOME='${AIC_TINY_HF_HOME}'
 export HF_TOKEN='${HF_TOKEN:-}'
 export HF_HUB_OFFLINE=0 TRANSFORMERS_OFFLINE=0
@@ -1596,6 +1610,13 @@ export IMAGE_NAME='${AIC_IMAGE}'
 export VLLM_MODEL='${AIC_EMULATE_MODEL}'
 export VLLM_EMULATOR_PROFILE_PACK='${AIC_EMULATE_PROFILE_PACK}'
 [ -n '${AIC_EMULATE_PACK_HOST}' ] && export EMU_PROFILE_PACK_HOST='${AIC_EMULATE_PACK_HOST}'
+# Containers default to root, and HF_HOME is very often a SHARED cluster cache
+# (Alola's /scratch/models).  Root-owned entries there cannot be refreshed or
+# deleted by anyone else, so run the emulator as the submitting user instead.
+# Resolved on the COMPUTE node -- id is what matters where the bind mount lives.
+export AIC_CONTAINER_USER="\$(id -u):\$(id -g)"
+export AIC_CONTAINER_USERNAME="\$(id -un)"
+export AIC_CONTAINER_HOME=/tmp
 export HF_HOME='${AIC_TINY_HF_HOME}'
 export HF_TOKEN='${HF_TOKEN:-}'
 export HF_HUB_OFFLINE=0 TRANSFORMERS_OFFLINE=0

@@ -486,18 +486,41 @@ services:
     # POSIX SHM segments for the server to map, and Docker gives each container
     # its own /dev/shm otherwise.  Harmless for the plain `emulate` profile.
     ipc: host
+    # Run as the invoking user rather than root.  /hf below is a bind mount, and
+    # on a cluster it is a SHARED cache: a root-owned entry there is one that
+    # nobody but root can refresh or delete, because removing it needs write
+    # access on root-owned parent directories.  Every other entry in Alola's
+    # /scratch/models is owned by a real user; ours must be too.
+    # "uid:gid", set by the runner from `id -u`/`id -g` on the compute node.
+    # Defaults to 0:0 so a local `docker compose up` behaves exactly as before.
+    user: "${AIC_CONTAINER_USER:-0:0}"
     volumes:
       - ${HF_HOME:-~/.cache/huggingface}:/hf
       - ${EMU_PROFILE_PACK_HOST:-/tmp}:/profiles:ro
       - ${LOG:-../logs}/vllm-emulator:/var/log/aic-vllm-emulator
     environment:
       - HF_TOKEN=${HF_TOKEN:-}
+      # An unmapped uid has no passwd entry, so getpwuid()/expanduser("~") would
+      # fail or point at an unwritable /.  Everything cache-like is redirected
+      # under /hf below, but HOME must still resolve somewhere writable.
+      - HOME=${AIC_CONTAINER_HOME:-/root}
+      # getpass.getuser() tries LOGNAME/USER/LNAME/USERNAME and only THEN
+      # pwd.getpwuid().  torch's _inductor.default_cache_dir() calls it during
+      # import, so with an unmapped uid and none of these set the engine dies at
+      # startup with "KeyError: getpwuid(): uid not found".  A name is all it
+      # wants -- nothing resolves it any further.
+      - USER=${AIC_CONTAINER_USERNAME:-root}
+      - LOGNAME=${AIC_CONTAINER_USERNAME:-root}
       - HF_HOME=/hf
       - HF_HUB_CACHE=/hf/hub
       - HF_HUB_OFFLINE=${HF_HUB_OFFLINE:-0}
       - TRANSFORMERS_OFFLINE=${TRANSFORMERS_OFFLINE:-0}
       - VLLM_CACHE_ROOT=/hf/vllm
       - VLLM_CONFIG_ROOT=/hf/vllm_config
+      # The GPU vllm service has always set these; the emulator never did, so its
+      # inductor cache went to a container-local /tmp and died with the run.
+      - TORCH_HOME=/hf/torch
+      - TORCHINDUCTOR_CACHE_DIR=/hf/torch_inductor
       - PYTHONHASHSEED=0
       # llm-emu activation.  ENABLE_ORACLE switches on the platform plugin +
       # torch.cuda shims + model-load stubs; EXECUTOR_HOOK swaps the forward

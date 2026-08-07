@@ -178,7 +178,25 @@ export AIC_EXPORTERS                ?= 0
 export LMCACHE_MAX_GPU_WORKERS      ?= 1
 else
 export AIC_CACHE_DIR        ?= /scratch/$(USER)/images/buildcache
+# Alola mounts /scratch from BeeGFS, so unlike SPUR it IS shared across compute
+# nodes -- and /scratch/models is the cluster-wide HuggingFace cache everyone
+# already populates (its hub/ holds the weights).  /home is the wrong home for
+# multi-GB checkpoints there: 87% full at 100T, and NFS rather than parallel.
+# Keyed on the hub layout so no extra flag is needed, and applied only while
+# HF_HOME still holds the file-scope default above -- an environment variable or
+# `make HF_HOME=...` keeps winning.
+ifneq ($(wildcard /scratch/models/hub),)
+ifeq ($(origin HF_HOME),file)
+override export HF_HOME     := /scratch/models
+# The override changes $(origin HF_HOME) from "file" to "override", which would
+# stop _CLIFF_STRIP below from unsetting it -- silently pushing the shared cache
+# into cliff jobs that have their own node-appropriate staging.  Remember that
+# this value is still just a Makefile default so the strip keeps applying.
+_HF_HOME_IS_DEFAULT := 1
 endif
+endif
+endif
+_HF_HOME_IS_DEFAULT ?= $(if $(filter file,$(origin HF_HOME)),1,)
 
 # The cliff sbatch has its own node-appropriate defaults for the HuggingFace
 # cache (staged on /scratch), the LMCache storage tiers (node-local /tmp), and
@@ -191,7 +209,7 @@ endif
 # Makefile's own defaults ($(origin ...) = "file"); a value the user set on the
 # command line or in their environment is kept and still flows through.
 _CLIFF_STRIP := env \
-    $(if $(filter 0,$(AIC_SPUR_CLUSTER)),$(if $(filter file,$(origin HF_HOME)),-u HF_HOME)) \
+    $(if $(filter 0,$(AIC_SPUR_CLUSTER)),$(if $(_HF_HOME_IS_DEFAULT),-u HF_HOME)) \
     $(if $(filter 0,$(AIC_SPUR_CLUSTER)),$(if $(filter file,$(origin NVME_DATA)),-u NVME_DATA)) \
     $(if $(filter file,$(origin NFS_DATA)),-u NFS_DATA) \
     $(if $(filter 0,$(AIC_SPUR_CLUSTER)),$(if $(filter file,$(origin GDS_SLAB_DATA)),-u GDS_SLAB_DATA)) \
