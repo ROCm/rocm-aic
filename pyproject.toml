@@ -32,6 +32,7 @@ bench = [
     "huggingface-hub>=0.23",
     "prometheus-client>=0.20",
     "aiohttp>=3.9",
+    "aiperf>=0.12",
 ]
 plot = [
     "matplotlib>=3.8,<4",

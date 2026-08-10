@@ -53,6 +53,25 @@ BENCH_MODEL       ?= $(VLLM_MODEL)
 BENCH_LOGDIR      := logs/manual
 BENCH_OUT         := $(BENCH_LOGDIR)/results/cliff-$(BENCH_ARM)-$(shell date +%Y%m%d-%H%M%S).csv
 
+# ---- aiperf benchmark knobs ------------------------------------------------
+# aiperf drives generative-AI serving metrics (TTFT, ITL, throughput) via the
+# OpenAI-compatible chat endpoint — a complement to the prefill-focused cliff bench.
+# AIPERF_CONCUR: sparser than BENCH_CONCUR; each point takes ~request_count requests.
+AIPERF_ARM           ?= vram_only
+AIPERF_CONCUR        ?= 1,2,4,8,16,32
+AIPERF_REQUEST_COUNT ?= 200
+# AIPERF_DATASET: 'synthetic' (no HF download needed) or 'sharegpt'.
+AIPERF_DATASET       ?= synthetic
+# Synthetic ISL/OSL when AIPERF_DATASET=synthetic.
+AIPERF_ISL           ?= 550
+AIPERF_OSL           ?= 200
+# AIPERF_TOKENIZER: HF tokenizer ID. Empty = --use-server-token-count (no download).
+AIPERF_TOKENIZER     ?=
+AIPERF_ENDPOINT      ?= $(BENCH_ENDPOINT)
+AIPERF_MODEL         ?= $(BENCH_MODEL)
+AIPERF_LOGDIR        := $(BENCH_LOGDIR)
+AIPERF_OUT           := $(AIPERF_LOGDIR)/results/aiperf-$(AIPERF_ARM)-$(shell date +%Y%m%d-%H%M%S).csv
+
 # ---- ROCm arch (auto-detected if not set) ----------------------------------
 _ROCM_ARCH_DETECTED := $(shell rocm_agent_enumerator 2>/dev/null | grep -E '^gfx' | head -1)
 ROCM_ARCH := $(if $(strip $(ROCM_ARCH)),$(strip $(ROCM_ARCH)),$(_ROCM_ARCH_DETECTED))
@@ -225,6 +244,7 @@ EXPORT_TARBALL ?= $(CURDIR)/$(EXPORT_PREFIX)-$(_GEN_DATE)-$(_GIT_SHORT_REV)$(_GI
 
 .PHONY: help ensure-compose build up up-batch up-gds-l1 up-gds-l1-batch down logs logs-lmcache logs-vllm \
         ps shell-lmcache shell-vllm restart-vllm restart-lmcache cliff plot venv \
+        aiperf plot-aiperf aiperf-submit \
         monitoring-up monitoring-down monitoring-logs monitoring-build-exporters \
         dist-build dist-build-exporters dist-build-monitoring dist-push smoke-test tiny-test install-ci-scripts cliff-submit cliff-short \
         cliff-kvd cliff-spur-l2 cliff-spur-l2-debug cliff-long-64k cliff-long-128k \
@@ -256,6 +276,16 @@ help:
 	@echo "  make venv              Create/update repo-root .venv with bench+plot deps"
 	@echo "  make cliff             Run KV-cache cliff benchmark, write CSV to $(BENCH_LOGDIR)/results/"
 	@echo "  make plot              Generate cliff PNG charts from $(BENCH_LOGDIR)/results/ CSVs"
+	@echo "  make aiperf            Run aiperf serving benchmark (TTFT/ITL/throughput), write CSV"
+	@echo "                         (requires vLLM running at AIPERF_ENDPOINT; needs aiperf in .venv)"
+	@echo "  make plot-aiperf       Generate aiperf PNG charts from $(AIPERF_LOGDIR)/results/ CSVs"
+	@echo ""
+	@echo "aiperf knobs (current):"
+	@echo "  AIPERF_ARM=$(AIPERF_ARM)  AIPERF_CONCUR=$(AIPERF_CONCUR)"
+	@echo "  AIPERF_REQUEST_COUNT=$(AIPERF_REQUEST_COUNT)  AIPERF_DATASET=$(AIPERF_DATASET)"
+	@echo "  AIPERF_ISL=$(AIPERF_ISL)  AIPERF_OSL=$(AIPERF_OSL)"
+	@echo "  AIPERF_TOKENIZER=$(if $(AIPERF_TOKENIZER),$(AIPERF_TOKENIZER),(server token count))"
+	@echo "  AIPERF_ENDPOINT=$(AIPERF_ENDPOINT)  AIPERF_MODEL=$(AIPERF_MODEL)"
 	@echo ""
 	@echo "Distribute / cliff targets (Slurm; wrap .slurm/ scripts + sbatch):"
 	@echo "  (dist-build/dist-build-exporters/smoke-test submit via sbatch and log to logs/<job-id>/)"
@@ -275,6 +305,7 @@ help:
 	@echo "  make cliff-short       sbatch a 1-point cliff (concur=1, 1 iter) to smoke-test the flow"
 	@echo "  make cliff-long-64k    sbatch a 64k-ISL YaRN(x2) 3-arm sweep (pools sized for the working set)"
 	@echo "  make cliff-long-128k   sbatch a 128k-ISL YaRN(x4) 3-arm sweep (extreme; big DRAM/slab pools)"
+	@echo "  make aiperf-submit     sbatch the 2-arm aiperf sweep (vram+nvme) -> logs/<job-id>/"
 	@echo "    Chain like the old run-this.sh:  make dist-build dist-push smoke-test"
 	@echo "    Pin a node: AIC_CLIFF_NODE=<node>   Narrow arms: AIC_CLIFF_ARMS=nvme (vram,nvme,gds)"
 	@echo "    Target another GFX: AIC_CLIFF_GFX=gfx950 (or AIC_CLIFF_CONSTRAINT=<site>&GFX90A)"
@@ -439,6 +470,49 @@ plot: _prep_dirs
 		--input "$(BENCH_LOGDIR)/results/" \
 		--output-dir "$(BENCH_LOGDIR)/plots/"
 	@echo "Charts written to $(BENCH_LOGDIR)/plots/"
+
+# aiperf benchmark: drives the OpenAI chat endpoint with realistic ISL/OSL traffic,
+# measuring TTFT, ITL, and throughput across the AIPERF_CONCUR concurrency ladder.
+# The endpoint must already be running (e.g. via `make up` or `make up-batch`).
+# aiperf must be installed: `make venv` picks it up via pyproject.toml[bench].
+aiperf: _prep_dirs
+	@test -n "$(AIPERF_MODEL)" || { \
+		echo "ERROR: set AIPERF_MODEL or VLLM_MODEL to the served model name" >&2; exit 1; }
+	$(PYTHON) "$(CURDIR)/benchmarks/run_aiperf.py" \
+		--endpoint "$(AIPERF_ENDPOINT)" \
+		--model "$(AIPERF_MODEL)" \
+		--arm "$(AIPERF_ARM)" \
+		--concurrencies "$(AIPERF_CONCUR)" \
+		--request-count "$(AIPERF_REQUEST_COUNT)" \
+		--dataset "$(AIPERF_DATASET)" \
+		--isl "$(AIPERF_ISL)" \
+		--osl "$(AIPERF_OSL)" \
+		$(if $(AIPERF_TOKENIZER),--tokenizer "$(AIPERF_TOKENIZER)",) \
+		--out "$(AIPERF_OUT)"
+	@echo "aiperf results written to $(AIPERF_OUT)"
+
+plot-aiperf: _prep_dirs
+	$(PYTHON) "$(CURDIR)/benchmarks/plot_aiperf.py" \
+		--input "$(AIPERF_LOGDIR)/results/" \
+		--output-dir "$(AIPERF_LOGDIR)/plots/aiperf/"
+	@echo "aiperf charts written to $(AIPERF_LOGDIR)/plots/aiperf/"
+
+# Submit the 2-arm aiperf sweep (vram_only + kvd_v2 nvme) via sbatch.
+# Mirrors cliff-submit: reads AIC_CLIFF_NODE / AIC_CLIFF_GFX / AIC_CLIFF_TIME.
+# The job uses the same compose stack and image as cliff, so the same build
+# artefacts apply; no separate image build is needed.
+aiperf-submit:
+	@cd "$(CURDIR)" && jobid=$$( \
+	    $(_CLIFF_STRIP) sbatch \
+	    $(if $(filter 1,$(AIC_SPUR_CLUSTER)),--partition=amd-spur --constraint= --gres=, \
+	        --constraint='$(AIC_CLIFF_CONSTRAINT)') \
+	    $(if $(AIC_CLIFF_NODE),--nodelist=$(AIC_CLIFF_NODE),) \
+	    $(if $(AIC_CLIFF_TIME),--time=$(AIC_CLIFF_TIME),) \
+	    .slurm/run-aiperf.sbatch \
+	    $(if $(filter 1,$(AIC_SPUR_CLUSTER)),2>&1 | tee /dev/stderr | grep -oE '[0-9]+$$' | tail -1, \
+	        2>&1 | tee /dev/stderr | awk '{print $$NF}')) && \
+	    echo "submitted aiperf job $$jobid" && \
+	    echo "log: $(CURDIR)/logs/$$jobid/aiperf.out"
 
 monitoring-up: ensure-compose
 	@mkdir -p "$(AIC_METRICS_DIR)"
