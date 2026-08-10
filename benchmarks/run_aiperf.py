@@ -285,7 +285,7 @@ def main(argv: list[str] | None = None) -> int:
     artifact_base.mkdir(parents=True, exist_ok=True)
 
     tokenizer = args.tokenizer.strip() or None
-    extra = args.rest if args.rest and args.rest[0] == "--" else args.rest  # strip leading '--' if present
+    extra = args.rest[1:] if args.rest and args.rest[0] == "--" else args.rest  # strip leading '--' if present
 
     _ckpt(f"arm={args.arm}  endpoint={args.endpoint}  model={args.model}")
     _ckpt(f"concurrencies={concurrencies}  request_count={args.request_count}  dataset={args.dataset}")
