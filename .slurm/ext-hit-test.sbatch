@@ -43,6 +43,7 @@ docker rm -f aic-lmcache aic-vllm-gpu0 2>/dev/null || true
 echo "--- Starting lmcache (L1=1GB, pool=4096, POSIX) ---"
 docker run -d --name aic-lmcache \
     --network host \
+    --ipc shareable \
     --device /dev/kfd --device /dev/dri \
     --ulimit nofile=1048576:1048576 \
     -v "${NVME_DATA}:/data/nvme" \
@@ -81,9 +82,16 @@ done
 echo "--- Starting vLLM (VLLM_LOGGING_LEVEL=DEBUG) ---"
 KV_TRANSFER="{\"kv_connector\":\"LMCacheMPConnector\",\"kv_role\":\"kv_both\",\"kv_connector_extra_config\":{\"lmcache.mp.server_urls\":[\"tcp://localhost:${LMCACHE_PORT}\"]}}"
 
+# --ipc: join lmcache's IPC ns (mirrors compose's ipc: service:lmcache).  torch's
+# _share_cuda_ creates a /dev/shm/torch_* refcounter alongside each HIP IPC handle;
+# with split IPC namespaces the consumer cannot see it, so those files and their
+# ref counts leak for the life of the run.  Registration still succeeds either way
+# (the refcounter is mapped only at teardown), so this is a leak fix, not a
+# functional one -- but it restores parity with the compose stack.
 docker run -d --name aic-vllm-gpu0 \
     --network host \
     --pid "container:aic-lmcache" \
+    --ipc "container:aic-lmcache" \
     --device /dev/kfd --device /dev/dri \
     -v "${HF_HOME}:/hf" \
     -e ROCR_VISIBLE_DEVICES=0 \
