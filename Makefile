@@ -200,7 +200,7 @@ EXPORT_TARBALL ?= $(CURDIR)/$(EXPORT_PREFIX)-$(_GEN_DATE)-$(_GIT_SHORT_REV)$(_GI
         ps shell-lmcache shell-vllm restart-vllm restart-lmcache cliff plot venv \
         monitoring-up monitoring-down monitoring-logs monitoring-build-exporters \
         dist-build dist-build-fast dist-build-exporters dist-push smoke-test smoke-test-fast \
-        tiny-test tiny-test-fast install-ci-scripts cliff-submit cliff-short \
+        tiny-test tiny-test-fast accuracy-test accuracy-test-fast install-ci-scripts cliff-submit cliff-short \
         cliff-long-64k cliff-long-128k \
         export _check_hf_token _prep_dirs _check_gds_slab
 
@@ -243,6 +243,11 @@ help:
 	@echo "  make smoke-test-fast   Smoke-test the single-arch dev image (AIC_FAST_ARCH=$(AIC_FAST_ARCH))"
 	@echo "  make tiny-test         End-to-end serve check (MP stack + tiny model, one completion)"
 	@echo "  make tiny-test-fast    Fast variant of tiny-test"
+	@echo "  make accuracy-test     Determinism + KV-tier correctness: phase A (responses match reference),"
+	@echo "                         phase B (NVMe KV block checksums match), phase C (cold restart, retrieve from NVMe)"
+	@echo "                         AIC_ACCURACY_BOOTSTRAP=1 generates reference.json + nvme-checksums.md5"
+	@echo "  make accuracy-test-fast  Fast variant of accuracy-test (single-arch dev image)"
+	@echo "    AIC_LOCAL=1  run tiny-test or accuracy-test directly on this machine (no Slurm)"
 	@echo "  make install-ci-scripts  Deploy .github/scripts/spur-*.sh to $(AIC_CI_LIB_DIR) (sudo if needed)"
 	@echo "  make cliff-submit      sbatch the full 3-arm cliff sweep -> logs/<job-id>/"
 	@echo "  make cliff-short       sbatch a 1-point cliff (concur=1, 1 iter) to smoke-test the flow"
@@ -337,8 +342,7 @@ ensure-compose:
 build: ensure-compose
 	@test -n "$(ROCM_ARCH)" || { \
 		echo "ERROR: ROCM_ARCH empty (install ROCm or set ROCM_ARCH=gfxNNNN)" >&2; exit 1; }
-	cd "$(REPO_ROOT)" && $(COMPOSE_CACHE) build \
-		$(if $(TLS_CERT),--secret id=tls_cert$(comma)src=$(TLS_CERT),)
+	cd "$(REPO_ROOT)" && TLS_CERT='$(TLS_CERT)' $(COMPOSE_CACHE) build
 	@docker tag "$(IMAGE_REF)" "$(IMAGE_NAME):latest"
 	@echo "Built $(IMAGE_REF) (also tagged $(IMAGE_NAME):latest)"
 
@@ -481,11 +485,28 @@ tiny-test:                     # End-to-end serve check: MP stack + a tiny model
 	@# Stages Qwen/Qwen2.5-0.5B-Instruct, brings up the compose MP stack (nvme arm),
 	@# waits for the endpoint, and asserts one non-empty chat completion.  Fast
 	@# functional gate that exercises the connector path a smoke-test cannot.
-	"$(DIST)" tiny-test
+	@# AIC_LOCAL=1 runs directly on this machine without submitting to Slurm.
+	AIC_LOCAL='$(AIC_LOCAL)' "$(DIST)" tiny-test
 
 tiny-test-fast:
 	@# Must pin the SAME AIC_ROCM_ARCH as dist-build-fast and smoke-test-fast.
 	@$(MAKE) --no-print-directory tiny-test \
+	    AIC_ROCM_ARCH='$(AIC_FAST_ARCH)'
+
+accuracy-test: _check_hf_token        # Determinism + KV-tier correctness (3-phase: responses + NVMe checksums + cold restart)
+	@# Phase A: serve with constrained VRAM + NIXL POSIX NVMe L2, assert responses match reference.json.
+	@# Phase B: md5sum LMCache NVMe pool files, compare against nvme-checksums.md5.
+	@# Phase C: restart vLLM (flush GPU KV cache), re-assert responses retrieved from NVMe/DRAM.
+	@# Bootstrap: AIC_ACCURACY_BOOTSTRAP=1 writes reference.json + nvme-checksums.md5 instead of checking.
+	@# Local:    AIC_LOCAL=1 runs directly on this machine without submitting to Slurm.
+	AIC_SPUR_CLUSTER='$(AIC_SPUR_CLUSTER)' \
+	    AIC_ACCURACY_BOOTSTRAP='$(AIC_ACCURACY_BOOTSTRAP)' \
+	    AIC_LOCAL='$(AIC_LOCAL)' \
+	    "$(DIST)" accuracy-test
+
+accuracy-test-fast: _check_hf_token
+	@# Must pin the SAME AIC_ROCM_ARCH as dist-build-fast and smoke-test-fast.
+	@$(MAKE) --no-print-directory accuracy-test \
 	    AIC_ROCM_ARCH='$(AIC_FAST_ARCH)'
 
 install-ci-scripts:            # Deploy .github/scripts/spur-*.sh to the runner's AIC_CI_LIB_DIR

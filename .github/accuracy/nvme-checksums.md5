@@ -1,0 +1,17 @@
+# Known-good md5sums of LMCache POSIX pool files written to $NVME_DATA after
+# accuracy-test phase A (first run with VRAM pressure forcing KV eviction).
+#
+# Format: standard md5sum(1) output — "HASH  relative/path" — suitable for
+#   cd $NVME_DATA && md5sum -c <this-file>
+#
+# Generated via: make accuracy-test AIC_ACCURACY_BOOTSTRAP=1
+# Model: Qwen/Qwen2.5-0.5B-Instruct
+# Regenerate when model, block-size, chunk-size, or prompt set changes.
+#
+# NOTE: entirely-zero slot files (never written by LMCache) are excluded.
+# NOTE: if slot file layout contains non-deterministic metadata (e.g. timestamps),
+#       the bootstrap run will detect this and this file will be left empty with a
+#       TODO warning; the phase B check then falls back to presence-only.
+#
+# PLACEHOLDER — run bootstrap to populate:
+#   make accuracy-test AIC_ACCURACY_BOOTSTRAP=1

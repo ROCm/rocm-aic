@@ -1,0 +1,22 @@
+name: AIC Hardware Test - Nightly Accuracy Test
+
+on:
+  workflow_run:
+    workflows: ["AIC Hardware Test - Nightly Tiny Test"]
+    types: [completed]
+
+jobs:
+  accuracy-test:
+    if: github.event.workflow_run.conclusion == 'success'
+    runs-on: [self-hosted, rocm-aic-cicd]
+    timeout-minutes: 60
+    env:
+      AIC_SPUR_HOST:       ${{ secrets.AIC_SPUR_HOST }}
+      AIC_SHARED_NFS:      ${{ secrets.AIC_SHARED_NFS }}
+      AIC_SPUR_CONTROLLER: ${{ secrets.AIC_SPUR_CONTROLLER }}
+      HF_TOKEN:            ${{ secrets.AIC_HF_TOKEN }}
+
+    steps:
+      - name: Run accuracy-test on SPUR head node
+        # Keep artifacts so the following nightly cliff stage can reuse the clone + tarball.
+        run: KEEP_ARTIFACTS=1 bash /usr/local/lib/aic-ci/spur-accuracy-test.sh "${{ github.event.workflow_run.head_sha }}"

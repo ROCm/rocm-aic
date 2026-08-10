@@ -1,0 +1,45 @@
+{
+  "_comment": "Known-good prompt/response pairs for accuracy-test. Generated via: make accuracy-test AIC_ACCURACY_BOOTSTRAP=1. Regenerate when model, chat template, or prompt set changes.",
+  "model": "Qwen/Qwen2.5-0.5B-Instruct",
+  "max_tokens": 32,
+  "temperature": 0,
+  "top_p": 1,
+  "prompts": [
+    {
+      "id": "p1",
+      "system": "You are a helpful assistant. Answer concisely.",
+      "user": "What is 2 + 2?",
+      "expected": ""
+    },
+    {
+      "id": "p2",
+      "system": "You are a helpful assistant. Answer concisely.",
+      "user": "Name the capital city of France.",
+      "expected": ""
+    },
+    {
+      "id": "p3",
+      "system": "You are a helpful assistant. Answer concisely.",
+      "user": "What color is the sky on a clear day?",
+      "expected": ""
+    },
+    {
+      "id": "p4",
+      "system": "You are a helpful assistant. Answer concisely.",
+      "user": "How many sides does a triangle have?",
+      "expected": ""
+    },
+    {
+      "id": "p5",
+      "system": "You are a helpful assistant. Answer concisely.",
+      "user": "What is the chemical symbol for water?",
+      "expected": ""
+    },
+    {
+      "id": "p6",
+      "system": "You are a helpful assistant. Answer concisely.",
+      "user": "Complete this sequence: 1, 2, 4, 8, 16,",
+      "expected": ""
+    }
+  ]
+}

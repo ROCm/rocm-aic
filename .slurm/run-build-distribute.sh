@@ -184,7 +184,12 @@ _aic_tag="$(bash "${AIC_DAY_DIR}/docker/scripts/aic-image-tag.sh" 2>/dev/null ||
 AIC_IMAGE="${AIC_IMAGE:-${AIC_IMAGE_NAME:-rocm-aic}:${_aic_tag:-latest}}"
 AIC_IMAGE_DIR="${AIC_IMAGE_DIR:-/scratch/${USER}/images}"
 AIC_SPUR_CLUSTER="${AIC_SPUR_CLUSTER:-0}"
-AIC_SPUR_CONTROLLER="${AIC_SPUR_CONTROLLER:-${SPUR_CONTROLLER_ADDR:?set SPUR_CONTROLLER_ADDR or AIC_SPUR_CONTROLLER before using AIC_SPUR_CLUSTER=1}}"
+# Only require a controller address when AIC_SPUR_CLUSTER=1; non-SPUR runs don't use it.
+if [[ "${AIC_SPUR_CLUSTER}" == "1" ]]; then
+    AIC_SPUR_CONTROLLER="${AIC_SPUR_CONTROLLER:-${SPUR_CONTROLLER_ADDR:?set SPUR_CONTROLLER_ADDR or AIC_SPUR_CONTROLLER before using AIC_SPUR_CLUSTER=1}}"
+else
+    AIC_SPUR_CONTROLLER="${AIC_SPUR_CONTROLLER:-}"
+fi
 
 # When running on SPUR, default the partition to amd-spur (the only partition)
 # and clear the build/test constraints (SPUR nodes have no MARKHAM/CPUONLY/GFX942
@@ -466,6 +471,31 @@ PROLOGUE
     fi
 
     return "${rc}"
+}
+
+# --- _run_or_submit: local fallback for tiny-test / accuracy-test ------------
+# When AIC_LOCAL=1, run the script body directly in a subshell on this machine
+# instead of submitting to Slurm.  Useful for local development and testing.
+# Usage mirrors _sbatch_run: first 3 args are jobname, logname, body; remaining
+# args are Slurm flags (ignored in local mode).
+_run_or_submit() {
+    local jobname="$1" logname="$2" body="$3"; shift 3
+    if [[ "${AIC_LOCAL:-0}" == "1" ]]; then
+        log "AIC_LOCAL=1: running ${jobname} directly (Slurm args ignored)"
+        local _logdir="${AIC_DAY_DIR}/logs/local-${logname}"
+        mkdir -p "${_logdir}"
+        local _logfile="${_logdir}/${logname}.out"
+        log "log: ${_logfile}"
+        # Run the body in a subshell; tee to both the log file and stdout so the
+        # caller sees output in real time.
+        ( eval "${body}" ) 2>&1 | tee "${_logfile}"
+        local _rc="${PIPESTATUS[0]}"
+        return "${_rc}"
+    else
+        command -v sbatch >/dev/null 2>&1 || \
+            die "sbatch not found; set AIC_LOCAL=1 to run ${jobname} on this machine"
+        _sbatch_run "${jobname}" "${logname}" "${body}" "$@"
+    fi
 }
 
 # --- build: build the image on a compile node, save tarball to shared scratch -
@@ -1084,10 +1114,12 @@ REMOTE
 # (which validates the image in isolation) this exercises the full MP connector
 # path end-to-end -- the functional gate wired into CI after smoke-test.
 cmd_tiny_test() {
+    # In local mode use the image already in the local Docker daemon.
+    # AIC_IMAGE_LOCAL defaults to rocm-aic:latest; override if you tagged differently.
+    [[ "${AIC_LOCAL:-0}" == "1" ]] && AIC_IMAGE="${AIC_IMAGE_LOCAL:-rocm-aic:latest}"
     _pick_compress
     local tarball; tarball="$(_tarball_path)"
-    command -v sbatch >/dev/null 2>&1 || die "sbatch not found; cannot run the GPU tiny-test job"
-    [[ -r "${tarball}" ]] || die "tarball not found: ${tarball} (run 'build' first)"
+    [[ "${AIC_LOCAL:-0}" == "1" ]] || [[ -r "${tarball}" ]] || die "tarball not found: ${tarball} (run 'build' first)"
 
     local -a _sel
     if [[ -n "${AIC_TEST_NODE:-}" ]]; then
@@ -1209,13 +1241,343 @@ REMOTE
 )"
 
     local -a _gres_arg=(); [[ "${AIC_SPUR_CLUSTER}" != "1" ]] && _gres_arg=(--gres=gpu:1)
-    _sbatch_run aic-tiny-test tiny-test "${remote_script}" \
+    _run_or_submit aic-tiny-test tiny-test "${remote_script}" \
         "${_sel[@]}" \
         "${_gres_arg[@]}" \
         --nodes=1 --ntasks=1 \
         --cpus-per-task="${AIC_TINY_CPUS}" --mem="${AIC_TINY_MEM}" \
         --time="${AIC_TINY_TIME}"
     log "tiny-test complete"
+}
+
+# --- accuracy-test: determinism + KV-tier correctness check -------------------
+# Three-phase test:
+#   Phase A  Bring up the compose MP stack with constrained VRAM and a small
+#            DRAM L1 cap + NIXL POSIX NVMe L2 so LRU eviction pushes KV blocks
+#            from GPU VRAM -> DRAM -> NVMe.  Issue all reference prompts at
+#            temperature=0 and assert each response matches reference.json.
+#   Phase B  After phase A, md5sum the LMCache POSIX pool files on NVMe and
+#            compare against the committed nvme-checksums.md5.  Fails if no
+#            files were written (eviction did not occur) or any checksum differs.
+#            In bootstrap mode this step *writes* nvme-checksums.md5 instead.
+#   Phase C  Restart vLLM only (flushes GPU KV cache; LMCache NVMe/DRAM state
+#            preserved).  Re-issue the same prompts and assert they still match
+#            reference.json, proving KV blocks are retrieved from storage.
+#
+#   Bootstrap mode (AIC_ACCURACY_BOOTSTRAP=1):
+#            Skips all comparison assertions; instead writes reference.json and
+#            nvme-checksums.md5 to AIC_DAY_DIR/.github/accuracy/ on the compute
+#            node so they can be scp'd back and committed.
+#
+# Key knobs:
+#   AIC_ACCURACY_MODEL       model to serve              (default: Qwen/Qwen2.5-0.5B-Instruct)
+#   AIC_ACCURACY_BOOTSTRAP   1 = write reference files   (default: 0)
+#   AIC_ACCURACY_TIME        Slurm wall-time             (default: 00:35:00)
+#   AIC_ACCURACY_CPUS        --cpus-per-task             (default: 8)
+#   AIC_ACCURACY_MEM         --mem                       (default: 32G)
+#   AIC_ACCURACY_READY_TIMEOUT  x5s wait for endpoint    (default: 120)
+AIC_ACCURACY_MODEL="${AIC_ACCURACY_MODEL:-${AIC_TINY_MODEL}}"
+AIC_ACCURACY_BOOTSTRAP="${AIC_ACCURACY_BOOTSTRAP:-0}"
+AIC_ACCURACY_TIME="${AIC_ACCURACY_TIME:-00:35:00}"
+AIC_ACCURACY_CPUS="${AIC_ACCURACY_CPUS:-8}"
+AIC_ACCURACY_MEM="${AIC_ACCURACY_MEM:-32G}"
+AIC_ACCURACY_READY_TIMEOUT="${AIC_ACCURACY_READY_TIMEOUT:-120}"   # x5s = up to 10 min
+
+cmd_accuracy_test() {
+    # In local mode use the image already in the local Docker daemon.
+    # AIC_IMAGE_LOCAL defaults to rocm-aic:latest; override if you tagged differently.
+    [[ "${AIC_LOCAL:-0}" == "1" ]] && AIC_IMAGE="${AIC_IMAGE_LOCAL:-rocm-aic:latest}"
+    _pick_compress
+    local tarball; tarball="$(_tarball_path)"
+    [[ "${AIC_LOCAL:-0}" == "1" ]] || [[ -r "${tarball}" ]] || die "tarball not found: ${tarball} (run 'build' first)"
+
+    local -a _sel
+    if [[ -n "${AIC_TEST_NODE:-}" ]]; then
+        _sel=(--nodelist="${AIC_TEST_NODE}")
+        log "accuracy-test on ${AIC_TEST_NODE} via sbatch (partition ${AIC_BUILD_PARTITION})"
+    else
+        _sel=(--constraint="${AIC_TEST_CONSTRAINT}")
+        log "accuracy-test via sbatch (partition ${AIC_BUILD_PARTITION}, constraint ${AIC_TEST_CONSTRAINT})"
+    fi
+    log "image: ${AIC_IMAGE}  model: ${AIC_ACCURACY_MODEL}  bootstrap: ${AIC_ACCURACY_BOOTSTRAP}"
+
+    local remote_script
+    remote_script="$(cat <<REMOTE
+set -uo pipefail
+command -v docker >/dev/null 2>&1 || { echo "\$(hostname): docker not found" >&2; exit 1; }
+echo "[accuracy-test] host=\$(hostname) docker=\$(docker --version) bootstrap=${AIC_ACCURACY_BOOTSTRAP}"
+
+# Load image (same mtime-marker logic as tiny-test).
+_marker="/var/tmp/aic-loaded-\$(id -u)-\$(echo '${AIC_IMAGE}' | tr '/:' '__').mtime"
+_tar_mtime="\$(stat -c %Y '${tarball}' 2>/dev/null || echo 0)"
+_have_img="\$(docker images -q '${AIC_IMAGE}')"
+_loaded_mtime="\$(cat "\${_marker}" 2>/dev/null || echo 0)"
+if [ "${AIC_FORCE_LOAD:-0}" = "1" ] || [ -z "\${_have_img}" ] || [ "\${_tar_mtime}" -gt "\${_loaded_mtime}" ]; then
+    echo "[accuracy-test] loading ${AIC_IMAGE} from ${tarball}"
+    ${DECOMPRESS_CMD} '${tarball}' | docker load >/dev/null
+    echo "\${_tar_mtime}" > "\${_marker}" 2>/dev/null || true
+else
+    echo "[accuracy-test] image up to date on \$(hostname) (id \${_have_img})"
+fi
+
+cd '${AIC_DAY_DIR}'
+# shellcheck source=/dev/null
+source '${AIC_DAY_DIR}/monitoring/monitoring-lib.sh'
+ensure_compose || { echo "[accuracy-test] docker compose unavailable" >&2; exit 1; }
+
+# --- env: constrained VRAM + NIXL POSIX NVMe L2 (no GPUDirect needed) --------
+export IMAGE_REF='${AIC_IMAGE}'
+export IMAGE_NAME='${AIC_IMAGE%:*}'
+export ROCM_ARCH='${AIC_ROCM_ARCH}'
+export GPU=0
+export VLLM_MODEL='${AIC_ACCURACY_MODEL}'
+export HF_HOME='${HF_HOME}'
+export HF_TOKEN='${HF_TOKEN:-}'
+export HF_HUB_OFFLINE=0 TRANSFORMERS_OFFLINE=0
+_logdir="\$(mktemp -d /tmp/aic-accuracy-logs-XXXXXX)"
+export LOG="\${_logdir}"
+export NVME_DATA=/tmp/aic-accuracy-nvme
+export NFS_DATA=/tmp/aic-accuracy-nfs
+# Low VRAM budget: forces LRU eviction of KV blocks from GPU -> DRAM L1 -> NVMe L2.
+export VLM_GPU_MEMORY_UTILIZATION=0.15
+export VLM_MAX_MODEL_LEN=2048
+export VLM_MAX_NUM_BATCHED_TOKENS=2048
+export VLM_ATTENTION_BACKEND=TRITON_ATTN
+export VLM_KV_CACHE_DTYPE=auto
+# Small DRAM L1 cap: encourages eviction to NVMe within a few prompts.
+export LMCACHE_L1_SIZE_GB=1
+# NIXL POSIX NVMe L2: no GPUDirect/hipFile requirement; runs on any node.
+export AIC_L2_BACKEND=nixl_posix
+export AIC_NIXL_BACKEND=POSIX
+export VLLM_PID_MODE=service:lmcache
+export KV_TRANSFER_ARG="--kv-transfer-config '{\"kv_connector\":\"LMCacheMPConnector\",\"kv_role\":\"kv_both\",\"kv_connector_extra_config\":{\"lmcache.mp.host\":\"tcp://localhost\",\"lmcache.mp.port\":6555}}'"
+mkdir -p "\${NVME_DATA}" "\${NFS_DATA}" "\${HF_HOME}"
+
+REFERENCE_DIR='${AIC_DAY_DIR}/.github/accuracy'
+REFERENCE_JSON="\${REFERENCE_DIR}/reference.json"
+CHECKSUMS_FILE="\${REFERENCE_DIR}/nvme-checksums.md5"
+BOOTSTRAP='${AIC_ACCURACY_BOOTSTRAP}'
+MODEL='${AIC_ACCURACY_MODEL}'
+
+compose() { docker compose -f '${AIC_DAY_DIR}/docker/docker-compose.yml' "\$@"; }
+
+cleanup() {
+    local svc c
+    for svc in vllm lmcache; do
+        timeout 30 docker compose -f '${AIC_DAY_DIR}/docker/docker-compose.yml' \
+            logs --no-color --no-log-prefix "\$svc" > "\${_logdir}/accuracy-\${svc}.log" 2>&1 || true
+    done
+    pkill -9 -f 'vllm.entrypoints.openai' 2>/dev/null || true
+    pkill -9 -f 'EngineCore'              2>/dev/null || true
+    pkill -9 -f 'lmcache server'          2>/dev/null || true
+    sleep 2
+    timeout 60 compose --profile cache down --remove-orphans --timeout 5 >/dev/null 2>&1 || true
+    for c in aic-vllm-gpu0 aic-lmcache; do timeout 30 docker rm -f "\$c" >/dev/null 2>&1 || true; done
+    rm -rf /tmp/aic-accuracy-nvme /tmp/aic-accuracy-nfs 2>/dev/null || true
+}
+trap cleanup EXIT
+
+# --- helper: send one chat completion, return content string ------------------
+do_completion() {
+    local system_msg="\$1" user_msg="\$2"
+    local payload
+    payload="\$(printf '{"model":"%s","messages":[{"role":"system","content":"%s"},{"role":"user","content":"%s"}],"max_tokens":32,"temperature":0,"top_p":1}' \
+        "\${MODEL}" "\${system_msg}" "\${user_msg}")"
+    local resp
+    resp="\$(curl -fsS http://localhost:8000/v1/chat/completions \
+        -H 'Content-Type: application/json' \
+        -d "\${payload}" 2>&1)" || { echo "CURL_FAIL: \${resp}"; return 1; }
+    # Extract content field value (strip surrounding quotes + unescape basic sequences)
+    printf '%s' "\${resp}" \
+        | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['choices'][0]['message']['content'].strip())" \
+        2>/dev/null || { echo "PARSE_FAIL: \${resp}"; return 1; }
+}
+
+# --- helper: check a file is not entirely zero bytes -------------------------
+file_has_nonzero_content() {
+    local f="\$1"
+    python3 -c "
+import sys
+with open('\${f}', 'rb') as fh:
+    buf = fh.read(65536)
+    sys.exit(0 if any(b != 0 for b in buf) else 1)
+" 2>/dev/null
+}
+
+# ===========================================================================
+# Phase A: bring up stack and verify prompt responses
+# ===========================================================================
+echo "[accuracy-test] === Phase A: bring up compose stack ==="
+if ! compose --profile cache up -d; then
+    echo "[accuracy-test] FAIL: compose up failed" >&2
+    compose logs --tail 60 --no-color lmcache 2>&1 | sed 's/^/  [lmcache] /'
+    compose logs --tail 60 --no-color vllm    2>&1 | sed 's/^/  [vllm]    /'
+    exit 1
+fi
+
+ready=0
+for _i in \$(seq 1 ${AIC_ACCURACY_READY_TIMEOUT}); do
+    if curl -fsS http://localhost:8000/v1/models >/dev/null 2>&1; then ready=1; break; fi
+    sleep 5
+done
+if [ "\${ready}" != "1" ]; then
+    echo "[accuracy-test] FAIL: vLLM never became ready" >&2
+    compose logs --tail 80 --no-color vllm 2>&1 | sed 's/^/  [vllm] /'
+    exit 1
+fi
+echo "[accuracy-test] endpoint ready"
+
+# Read prompts from reference.json (requires python3, available in-image)
+PROMPT_COUNT="\$(python3 -c "import json; d=json.load(open('\${REFERENCE_JSON}')); print(len(d['prompts']))" 2>/dev/null)" || {
+    echo "[accuracy-test] FAIL: cannot read \${REFERENCE_JSON}" >&2; exit 1; }
+echo "[accuracy-test] running \${PROMPT_COUNT} prompts (model=\${MODEL})"
+
+phase_a_pass=1
+declare -A RESPONSES
+for _idx in \$(seq 0 \$(( PROMPT_COUNT - 1 )) ); do
+    _id="\$(python3 -c "import json; d=json.load(open('\${REFERENCE_JSON}')); print(d['prompts'][\${_idx}]['id'])")"
+    _sys="\$(python3 -c "import json; d=json.load(open('\${REFERENCE_JSON}')); print(d['prompts'][\${_idx}]['system'])")"
+    _usr="\$(python3 -c "import json; d=json.load(open('\${REFERENCE_JSON}')); print(d['prompts'][\${_idx}]['user'])")"
+    _exp="\$(python3 -c "import json; d=json.load(open('\${REFERENCE_JSON}')); print(d['prompts'][\${_idx}]['expected'].strip())")"
+    _got="\$(do_completion "\${_sys}" "\${_usr}")" || { echo "[accuracy-test] FAIL: completion error on \${_id}" >&2; phase_a_pass=0; continue; }
+    RESPONSES["\${_id}"]="\${_got}"
+    if [ "\${BOOTSTRAP}" = "1" ]; then
+        echo "[accuracy-test] bootstrap \${_id}: '\${_got}'"
+    elif [ "\${_got}" = "\${_exp}" ]; then
+        echo "[accuracy-test] OK   \${_id}: '\${_got}'"
+    else
+        echo "[accuracy-test] FAIL \${_id}: expected '\${_exp}' got '\${_got}'" >&2
+        phase_a_pass=0
+    fi
+done
+
+if [ "\${BOOTSTRAP}" != "1" ] && [ "\${phase_a_pass}" != "1" ]; then
+    echo "[accuracy-test] FAIL: one or more Phase A responses did not match reference" >&2
+    exit 1
+fi
+echo "[accuracy-test] Phase A complete"
+
+# ===========================================================================
+# Phase B: verify (or record) NVMe KV block checksums
+# ===========================================================================
+echo "[accuracy-test] === Phase B: NVMe KV block checksum check ==="
+
+# Collect non-zero pool files written by LMCache POSIX backend
+WRITTEN_FILES="\$(find "\${NVME_DATA}" -type f -size +0c 2>/dev/null | sort || true)"
+NONZERO_FILES=""
+for _f in \${WRITTEN_FILES}; do
+    file_has_nonzero_content "\${_f}" && NONZERO_FILES="\${NONZERO_FILES}\${_f}\n"
+done
+NONZERO_FILES="\$(printf '%s' "\${NONZERO_FILES}" | grep . || true)"
+
+if [ -z "\${NONZERO_FILES}" ]; then
+    if [ "\${BOOTSTRAP}" = "1" ]; then
+        echo "[accuracy-test] bootstrap WARNING: no non-zero LMCache files found under \${NVME_DATA}."
+        echo "[accuracy-test] bootstrap WARNING: VRAM pressure may not have triggered eviction."
+        echo "[accuracy-test] bootstrap WARNING: nvme-checksums.md5 will remain a placeholder."
+        # Write an empty placeholder so the file is obviously a placeholder.
+        printf '# No files were evicted to NVMe during bootstrap run.\n' > "\${CHECKSUMS_FILE}"
+    else
+        echo "[accuracy-test] FAIL: no LMCache KV block files found under \${NVME_DATA}" >&2
+        echo "[accuracy-test] FAIL: VRAM eviction did not occur — check VLM_GPU_MEMORY_UTILIZATION" >&2
+        exit 1
+    fi
+elif [ "\${BOOTSTRAP}" = "1" ]; then
+    echo "[accuracy-test] bootstrap: computing md5sums of \$(echo "\${NONZERO_FILES}" | wc -l) non-zero pool files"
+    # Compute checksums with paths relative to NVME_DATA for portability
+    (
+        cd "\${NVME_DATA}"
+        echo "\${NONZERO_FILES}" | xargs -I{} bash -c 'rel="\${1#'"'"'\${NVME_DATA}/'"'"'}"; md5sum "\${1}" | sed "s|.\${1}|\${rel}|"' _ {} \
+        | sort -k2
+    ) > "\${CHECKSUMS_FILE}"
+    echo "[accuracy-test] bootstrap: wrote \$(wc -l < "\${CHECKSUMS_FILE}") checksums to \${CHECKSUMS_FILE}"
+    echo "[accuracy-test] bootstrap: copy \${REFERENCE_DIR} back and commit both files to .github/accuracy/"
+else
+    # Check whether nvme-checksums.md5 is still a placeholder
+    if grep -q '^# PLACEHOLDER\|^# No files were evicted' "\${CHECKSUMS_FILE}" 2>/dev/null; then
+        echo "[accuracy-test] SKIP Phase B: nvme-checksums.md5 is a placeholder — run bootstrap first" >&2
+        echo "[accuracy-test] SKIP (presence check only: \$(echo "\${NONZERO_FILES}" | wc -l) files found)"
+    else
+        echo "[accuracy-test] verifying \$(wc -l < "\${CHECKSUMS_FILE}") checksums against \${CHECKSUMS_FILE}"
+        (
+            cd "\${NVME_DATA}"
+            if md5sum -c "\${CHECKSUMS_FILE}" --quiet 2>&1; then
+                echo "[accuracy-test] OK Phase B: all NVMe KV block checksums match"
+            else
+                echo "[accuracy-test] FAIL Phase B: NVMe KV block checksum mismatch" >&2
+                exit 1
+            fi
+        )
+    fi
+fi
+
+# ===========================================================================
+# Phase C: restart vLLM to flush GPU KV cache, re-check responses from NVMe
+# ===========================================================================
+echo "[accuracy-test] === Phase C: restart vLLM (cold GPU KV cache), retrieve from NVMe ==="
+echo "[accuracy-test] restarting vllm service ..."
+pkill -9 -f 'vllm.entrypoints.openai' 2>/dev/null || true
+pkill -9 -f 'EngineCore'              2>/dev/null || true
+sleep 3
+if ! compose restart vllm; then
+    echo "[accuracy-test] FAIL: compose restart vllm failed" >&2; exit 1
+fi
+
+ready=0
+for _i in \$(seq 1 ${AIC_ACCURACY_READY_TIMEOUT}); do
+    if curl -fsS http://localhost:8000/v1/models >/dev/null 2>&1; then ready=1; break; fi
+    sleep 5
+done
+if [ "\${ready}" != "1" ]; then
+    echo "[accuracy-test] FAIL: vLLM did not come back after restart" >&2
+    compose logs --tail 80 --no-color vllm 2>&1 | sed 's/^/  [vllm] /'
+    exit 1
+fi
+echo "[accuracy-test] endpoint ready after restart"
+
+phase_c_pass=1
+for _idx in \$(seq 0 \$(( PROMPT_COUNT - 1 )) ); do
+    _id="\$(python3 -c "import json; d=json.load(open('\${REFERENCE_JSON}')); print(d['prompts'][\${_idx}]['id'])")"
+    _sys="\$(python3 -c "import json; d=json.load(open('\${REFERENCE_JSON}')); print(d['prompts'][\${_idx}]['system'])")"
+    _usr="\$(python3 -c "import json; d=json.load(open('\${REFERENCE_JSON}')); print(d['prompts'][\${_idx}]['user'])")"
+    _exp="\$(python3 -c "import json; d=json.load(open('\${REFERENCE_JSON}')); print(d['prompts'][\${_idx}]['expected'].strip())")"
+    _got="\$(do_completion "\${_sys}" "\${_usr}")" || { echo "[accuracy-test] FAIL: completion error on \${_id} (phase C)" >&2; phase_c_pass=0; continue; }
+    if [ "\${BOOTSTRAP}" = "1" ]; then
+        echo "[accuracy-test] bootstrap phase C \${_id}: '\${_got}'"
+    elif [ "\${_got}" = "\${_exp}" ]; then
+        echo "[accuracy-test] OK   \${_id} (from NVMe/DRAM): '\${_got}'"
+    else
+        echo "[accuracy-test] FAIL \${_id}: expected '\${_exp}' got '\${_got}' (cold KV cache)" >&2
+        phase_c_pass=0
+    fi
+done
+
+if [ "\${BOOTSTRAP}" = "1" ]; then
+    echo "[accuracy-test] bootstrap complete"
+    echo "[accuracy-test] scp the following files back to your workstation and commit them:"
+    echo "[accuracy-test]   \${REFERENCE_JSON}"
+    echo "[accuracy-test]   \${CHECKSUMS_FILE}"
+    exit 0
+fi
+
+if [ "\${phase_c_pass}" != "1" ]; then
+    echo "[accuracy-test] FAIL: Phase C — one or more responses differ after vLLM restart" >&2
+    exit 1
+fi
+
+echo "[accuracy-test] ALL PHASES PASSED"
+exit 0
+REMOTE
+)"
+
+    local -a _gres_arg=(); [[ "${AIC_SPUR_CLUSTER}" != "1" ]] && _gres_arg=(--gres=gpu:1)
+    _run_or_submit aic-accuracy-test accuracy-test "${remote_script}" \
+        "${_sel[@]}" \
+        "${_gres_arg[@]}" \
+        --nodes=1 --ntasks=1 \
+        --cpus-per-task="${AIC_ACCURACY_CPUS}" --mem="${AIC_ACCURACY_MEM}" \
+        --time="${AIC_ACCURACY_TIME}"
+    log "accuracy-test complete"
 }
 
 # --- main --------------------------------------------------------------------
@@ -1228,11 +1590,12 @@ main() {
         push)            cmd_push ;;
         test)            cmd_test ;;
         tiny-test)       cmd_tiny_test ;;
+        accuracy-test)   cmd_accuracy_test ;;
         all)             cmd_build; cmd_build_exporters; cmd_load ;;
         -h|--help|help)
             sed -n '2,70p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
             ;;
-        *) die "unknown command '${sub}' (use: build | build-exporters | load | push | test | tiny-test | all | help)" ;;
+        *) die "unknown command '${sub}' (use: build | build-exporters | load | push | test | tiny-test | accuracy-test | all | help)" ;;
     esac
 }
 

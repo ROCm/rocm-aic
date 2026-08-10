@@ -100,6 +100,8 @@ services:
         NIXL_REF:
         HIPFILE_SHA:
         HSA_SNOOP_REF:
+      secrets:
+        - tls_cert
     image: ${IMAGE_REF:-${IMAGE_NAME:-rocm-aic}:latest}
     container_name: aic-lmcache
     # Cross-container HIP IPC (LMCacheMPConnector registering vLLM's KV tensors) on
@@ -300,3 +302,12 @@ services:
         # required:false lets the plain baseline run `vllm` alone (lmcache not in
         # the active profile) without a dependency error (needs Compose v2.20+).
         required: false
+
+secrets:
+  tls_cert:
+    # Corporate CA certificate (e.g. ZScaler). Set TLS_CERT=/path/to/cert.crt
+    # in the environment before running `make build`; the Makefile exports it as
+    # DOCKER_BUILDKIT_SECRETS for compose v5 compatibility.  When TLS_CERT is
+    # unset the file defaults to /dev/null (empty) and the Dockerfile's
+    # required=false mount silently skips the cert installation.
+    file: ${TLS_CERT:-/dev/null}
