@@ -164,6 +164,10 @@ AIC_TEST_ARCH = $(eval AIC_TEST_ARCH := $(shell \
 # the arch-tagged tarball written by one is invisible to the others.
 AIC_FAST_ARCH ?= $(AIC_TEST_ARCH)
 
+# vllm-reset-test: 1 = also bring up Prometheus + exporters (default), 0 = skip.
+AIC_RESET_MONITORING ?= 1
+_RESET_MON_PROFILE := $(if $(filter 0,$(AIC_RESET_MONITORING)),,--profile monitoring)
+
 # ---- SPUR cluster overrides ------------------------------------------------
 # When AIC_SPUR_CLUSTER=1, default storage paths to AIC_SHARED_NFS (the NFS
 # volume shared across all SPUR compute nodes) instead of /scratch (not present
@@ -265,7 +269,8 @@ EXPORT_TARBALL ?= $(CURDIR)/$(EXPORT_PREFIX)-$(_GEN_DATE)-$(_GIT_SHORT_REV)$(_GI
         ps shell-lmcache shell-vllm restart-vllm restart-lmcache cliff plot venv vllm-reset-test stress-grafana \
         monitoring-up monitoring-down monitoring-logs monitoring-build-exporters \
         dist-build dist-build-fast dist-build-exporters dist-build-monitoring dist-push \
-        smoke-test smoke-test-fast tiny-test tiny-test-fast install-ci-scripts \
+        smoke-test smoke-test-fast tiny-test tiny-test-fast reset-test reset-test-fast \
+        install-ci-scripts \
         cliff-submit cliff-short \
         cliff-kvd cliff-spur-l2 cliff-spur-l2-debug cliff-long-64k cliff-long-128k \
         export _check_hf_token _prep_dirs _check_gds_slab
@@ -317,8 +322,12 @@ help:
 	@echo "                          to logs/<job-id>/prometheus; AIC_SMOKE_EXPORTERS=0 skips)"
 	@echo "  make smoke-test-fast   Smoke-test the single-arch dev image (AIC_FAST_ARCH=$(AIC_FAST_ARCH))"
 	@echo "  make tiny-test         End-to-end serve check (MP stack + tiny model, one completion)"
-	@echo "  make tiny-test-fast    Fast variant of tiny-test (AIC_FAST_ARCH=$(AIC_FAST_ARCH))"
-	@echo "                         Arch: gfx950 on SPUR, else detected from the test node;"
+	@echo "  make tiny-test-fast    Fast variant of tiny-test"
+	@echo "  make reset-test        L1+L2 retrieval check on a GPU node via sbatch"
+	@echo "                         (sbatch form of vllm-reset-test; needs HF_TOKEN)"
+	@echo "  make reset-test-fast   Fast variant of reset-test"
+	@echo "                         All -fast targets use AIC_FAST_ARCH=$(AIC_FAST_ARCH):"
+	@echo "                         gfx950 on SPUR, else detected from the test node;"
 	@echo "                         override with AIC_TEST_ARCH=<gfx...>"
 	@echo "  make install-ci-scripts  Deploy .github/scripts/spur-*.sh to $(AIC_CI_LIB_DIR) (sudo if needed)"
 	@echo "  make cliff-submit      sbatch the full 3-arm cliff sweep -> logs/<job-id>/"
@@ -494,11 +503,18 @@ venv:
 vllm-reset-test: _check_hf_token _prep_dirs
 	@echo "Starting LMCache L1+L2 retrieval test (L1=$(LMCACHE_L1_SIZE_GB)GiB) + NIXL POSIX L2..."
 	@mkdir -p "$(AIC_METRICS_DIR)"
+	@# AIC_RESET_MONITORING=0 drops the monitoring profile.  That profile needs
+	@# aic-{nvme,rdma}-exporter:local, which are built by dist-build-exporters and
+	@# never pushed to any registry -- so on a node that has not loaded them, compose
+	@# tries to PULL them and fails with "repository does not exist" (nothing to do
+	@# with registry connectivity; there is no such repo).  Build + load the exporter
+	@# tarballs to use monitoring; the test itself only scrapes lmcache's own /metrics
+	@# on :8080, so Prometheus is not needed for pass/fail.
 	PROM_UID="$$(id -u)" PROM_GID="$$(id -g)" \
 	    LMCACHE_L1_SIZE_GB=$(LMCACHE_L1_SIZE_GB) \
 	    VLLM_EXTRA_ARGS="--enforce-eager $${VLLM_EXTRA_ARGS}" \
 	    AIC_L2_BACKEND=$(AIC_L2_BACKEND) \
-	    $(COMPOSE_CACHE) --profile monitoring up -d
+	    $(COMPOSE_CACHE) $(_RESET_MON_PROFILE) up -d
 	@echo "Waiting for vLLM to be healthy..."
 	@for i in $$(seq 1 60); do \
 	    r=$$(docker exec aic-client curl -s -o /dev/null -w '%{http_code}' \
@@ -671,6 +687,17 @@ tiny-test:                     # End-to-end serve check: MP stack + a tiny model
 tiny-test-fast:
 	@# Must pin the SAME AIC_ROCM_ARCH as dist-build-fast and smoke-test-fast.
 	@$(MAKE) --no-print-directory tiny-test \
+	    AIC_ROCM_ARCH='$(AIC_FAST_ARCH)'
+
+reset-test:                    # L1+L2 retrieval check on a GPU node via sbatch
+	@# sbatch wrapper around vllm-reset-test (which is local-only): loads the image
+	@# on the test node, picks a writable NVMe mount for the NIXL POSIX L2 pool, runs
+	@# the target, then tears the stack down.  Needs HF_TOKEN or HF_TOKEN_FILE.
+	"$(DIST)" reset-test
+
+reset-test-fast:
+	@# Must pin the SAME AIC_ROCM_ARCH as dist-build-fast.
+	@$(MAKE) --no-print-directory reset-test \
 	    AIC_ROCM_ARCH='$(AIC_FAST_ARCH)'
 
 install-ci-scripts:            # Deploy .github/scripts/spur-*.sh to the runner's AIC_CI_LIB_DIR

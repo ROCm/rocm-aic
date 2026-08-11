@@ -40,5 +40,5 @@ dictionary.dic
 # for upload-artifact / gh-pages deploy; never committed)
 metrics-page/
 
-# Personal overrides for the sourceable Slurm env (.env.slurm is tracked).
-.env.slurm.local
+# Personal overrides for the sourceable cluster env (.env.aic is tracked).
+.env.aic.local

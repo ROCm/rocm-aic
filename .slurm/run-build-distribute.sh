@@ -67,6 +67,9 @@
 #           stack (standalone lmcache server + vLLM LMCacheMPConnector) with a tiny
 #           model (Qwen/Qwen2.5-0.5B-Instruct) and asserts one non-empty chat
 #           completion.  Exercises the full connector path a smoke-test cannot.
+#   reset-test  L1+L2 retrieval check on a GPU node: submits `make vllm-reset-test`
+#           via sbatch (1 GiB L1 + NIXL POSIX L2 on local NVMe), floods the cache,
+#           POSTs /reset_prefix_cache, and asserts both L1 and L2 hits.
 #   all     build, build-exporters, then load   (default)
 #
 # Key environment:
@@ -130,6 +133,8 @@
 #                        (default: <site>&GFX942&NVME -- MI300X + local NVMe).
 #                        Used only when AIC_TEST_NODE is unset.
 #   AIC_TEST_NODE        pin an exact test node via --nodelist  (default: unset)
+#   AIC_RESET_FLOOD      flood prompts for reset-test; must overflow the 1 GiB L1
+#                        or no chunks reach L2            (default: 400)
 #   AIC_TEST_ARCH        gfx arch of the test node, used as ROCM_ARCH for the
 #                        tiny-test compose stack.  Auto-detected by
 #                        .slurm/aic-test-arch.sh when unset (gfx950 on SPUR,
@@ -216,7 +221,7 @@ AIC_SPUR_CONTROLLER="${AIC_SPUR_CONTROLLER:-${SPUR_CONTROLLER_ADDR:-}}"
 # and clear the build/test constraints (SPUR nodes have no MARKHAM/CPUONLY/GFX942
 # feature labels; node selection is done by partition or explicit --nodelist).
 if [[ "${AIC_SPUR_CLUSTER}" == "1" ]]; then
-    : "${AIC_SPUR_CONTROLLER:?set SPUR_CONTROLLER_ADDR or AIC_SPUR_CONTROLLER before using AIC_SPUR_CLUSTER=1 (\`source .env.slurm\`)}"
+    : "${AIC_SPUR_CONTROLLER:?set SPUR_CONTROLLER_ADDR or AIC_SPUR_CONTROLLER before using AIC_SPUR_CLUSTER=1 (\`source .env.aic\`)}"
     AIC_BUILD_PARTITION="${AIC_BUILD_PARTITION:-amd-spur}"
     AIC_IMAGE_DIR="${AIC_IMAGE_DIR:-${AIC_SHARED_NFS:-/shared_nfs}/${USER}/images}"
     # Use ${VAR-default} (not ${VAR:-default}) so an explicitly set empty string
@@ -256,6 +261,34 @@ AIC_TINY_TIME="${AIC_TINY_TIME:-00:25:00}"
 AIC_TINY_CPUS="${AIC_TINY_CPUS:-8}"
 AIC_TINY_MEM="${AIC_TINY_MEM:-32G}"
 AIC_TINY_READY_TIMEOUT="${AIC_TINY_READY_TIMEOUT:-120}"   # x5s = up to 10 min for weights + download
+
+# reset-test: sbatch wrapper around `make vllm-reset-test` (L1+L2 retrieval).
+AIC_RESET_MODEL="${AIC_RESET_MODEL:-Qwen/Qwen2.5-3B-Instruct}"
+AIC_RESET_TIME="${AIC_RESET_TIME:-01:00:00}"
+AIC_RESET_CPUS="${AIC_RESET_CPUS:-16}"
+AIC_RESET_MEM="${AIC_RESET_MEM:-64G}"
+# Cap the GPU KV cache so vLLM spills into LMCache sooner.  The test also POSTs
+# /reset_prefix_cache to flush the GPU prefix cache outright, so this is belt-and-
+# braces rather than load-bearing.
+AIC_RESET_GPU_UTIL="${AIC_RESET_GPU_UTIL:-0.20}"
+AIC_RESET_MAX_LEN="${AIC_RESET_MAX_LEN:-8192}"
+# POSIX slot file must be >= the model KV chunk size or every L2 write fails and
+# the test reports "no L2 hits".  Compose defaults to 16 MiB, which is too small
+# for Qwen2.5-3B at bf16 (~36 MiB/chunk).  Slots are sparse, so oversizing is cheap.
+AIC_RESET_SLOT_SIZE="${AIC_RESET_SLOT_SIZE:-67108864}"
+# Host dir for the NIXL POSIX L2 pool.  Empty = pick a writable NVMe mount on the
+# node (the compose default /mnt/lmcache-nvme does not exist on every GPU node,
+# and _prep_dirs cannot mkdir under /mnt without root).
+AIC_RESET_NVME_DATA="${AIC_RESET_NVME_DATA:-}"
+# 1 = also stand up Prometheus + the exporter fleet and keep the TSDB under
+# logs/<job-id>/prometheus.  The two aic-*-exporter:local images are unpushed local
+# build artifacts, so they are loaded from their tarballs onto the test node below;
+# set 0 to skip monitoring entirely (the test itself only scrapes lmcache's :8080).
+AIC_RESET_MONITORING="${AIC_RESET_MONITORING:-1}"
+# vllm_reset_test.py defaults AIC_TEST_FLOOD to 50, which only reaches ~33% of the
+# 1 GiB L1 for a 3B model -- L1 never overflows, nothing reaches L2, and the test
+# always reports "no L2 hits".  400 gives ~14 chunks x 400 >> the ~222-chunk cap.
+AIC_RESET_FLOOD="${AIC_RESET_FLOOD:-400}"
 
 # --- Fabric exporter images (nvme_exporter / rdma_exporter) -------------------
 # Built from monitoring/*/Dockerfile and distributed alongside the main image so
@@ -1361,6 +1394,201 @@ REMOTE
     log "tiny-test complete"
 }
 
+# --- reset-test: L1+L2 retrieval check on a GPU node -------------------------
+# A thin sbatch wrapper around the local `make vllm-reset-test` target: loads the
+# image if needed, picks a writable NVMe mount, then delegates.  Deliberately does
+# NOT re-implement the compose bring-up or the pass/fail logic, so the batch path
+# and the interactive path cannot drift apart.
+cmd_reset_test() {
+    _pick_compress
+    local tarball; tarball="$(_tarball_path)"
+    command -v sbatch >/dev/null 2>&1 || die "sbatch not found; cannot run the GPU reset-test job"
+    [[ -r "${tarball}" ]] || die "tarball not found: ${tarball} (run 'build' first)"
+    [[ -n "${HF_TOKEN:-}" || -r "${HF_TOKEN_FILE:-/nonexistent}" ]] ||
+        die "reset-test needs HF_TOKEN (or HF_TOKEN_FILE); make vllm-reset-test gates on it"
+
+    local _SBATCH_PARTITION="${AIC_TEST_PARTITION}"
+    local _SBATCH_ACCOUNT="${AIC_TEST_ACCOUNT}"
+
+    local _test_arch="${AIC_TEST_ARCH:-}"
+    if [[ -z "${_test_arch}" ]]; then
+        if [[ "${AIC_ROCM_ARCH}" != *";"* ]]; then
+            _test_arch="${AIC_ROCM_ARCH}"
+        else
+            _test_arch="$(bash "${SCRIPT_DIR}/aic-test-arch.sh" 2>/dev/null || true)"
+            [[ -n "${_test_arch}" ]] || _test_arch="${AIC_ROCM_ARCH}"
+        fi
+    fi
+
+    # Monitoring needs the two locally-built exporter images.  They are never
+    # pushed, so compose would try to pull them and fail; load them from their
+    # tarballs on the node instead.  Missing tarballs are a hard error here rather
+    # than a compose pull failure ten minutes in.
+    local _nvme_tar="" _rdma_tar=""
+    if [[ "${AIC_RESET_MONITORING}" == "1" ]]; then
+        _nvme_tar="$(_exporter_tarball_path "${AIC_NVME_EXPORTER_IMAGE}")"
+        _rdma_tar="$(_exporter_tarball_path "${AIC_RDMA_EXPORTER_IMAGE}")"
+        log "monitoring: on  (Prometheus + exporters; TSDB kept under logs/<job-id>/prometheus)"
+        for _t in "${_nvme_tar}" "${_rdma_tar}"; do
+            [[ -r "${_t}" ]] || die "monitoring needs ${_t} (run 'make dist-build-exporters', or set AIC_RESET_MONITORING=0)"
+        done
+    else
+        log "monitoring: off (AIC_RESET_MONITORING=0)"
+    fi
+
+    local -a _sel
+    if [[ -n "${AIC_TEST_NODE:-}" ]]; then
+        _sel=(--nodelist="${AIC_TEST_NODE}")
+        log "reset-test on ${AIC_TEST_NODE} via sbatch (partition ${AIC_TEST_PARTITION})"
+    else
+        _sel=(--constraint="${AIC_TEST_CONSTRAINT}")
+        log "reset-test via sbatch (partition ${AIC_TEST_PARTITION}, constraint ${AIC_TEST_CONSTRAINT})"
+    fi
+    log "image: ${AIC_IMAGE}  model: ${AIC_RESET_MODEL}  arch: ${_test_arch}"
+    log "l1: 1GiB (forced by the make target)  l2: nixl_posix  slot: ${AIC_RESET_SLOT_SIZE}B  gpu-util: ${AIC_RESET_GPU_UTIL}"
+
+    local remote_script
+    remote_script="$(cat <<REMOTE
+set -uo pipefail
+command -v docker >/dev/null 2>&1 || { echo "\$(hostname): docker not found" >&2; exit 1; }
+echo "[reset-test] host=\$(hostname) docker=\$(docker --version)"
+
+_marker="/var/tmp/aic-loaded-\$(id -u)-\$(echo '${AIC_IMAGE}' | tr '/:' '__').mtime"
+_tar_mtime="\$(stat -c %Y '${tarball}' 2>/dev/null || echo 0)"
+_have_img="\$(docker images -q '${AIC_IMAGE}')"
+_loaded_mtime="\$(cat "\${_marker}" 2>/dev/null || echo 0)"
+if [ "${AIC_FORCE_LOAD:-0}" = "1" ] || [ -z "\${_have_img}" ] || [ "\${_tar_mtime}" -gt "\${_loaded_mtime}" ]; then
+    echo "[reset-test] loading ${AIC_IMAGE} from ${tarball}"
+    ${DECOMPRESS_CMD} '${tarball}' | docker load >/dev/null
+    echo "\${_tar_mtime}" > "\${_marker}" 2>/dev/null || true
+else
+    echo "[reset-test] image up to date on \$(hostname) (id \${_have_img})"
+fi
+
+if [ '${AIC_RESET_MONITORING}' = "1" ]; then
+    for _pair in '${AIC_NVME_EXPORTER_IMAGE}|${_nvme_tar}' '${AIC_RDMA_EXPORTER_IMAGE}|${_rdma_tar}'; do
+        _img="\${_pair%%|*}"; _tar="\${_pair##*|}"
+        if [ -n "\$(docker images -q "\${_img}")" ]; then
+            echo "[reset-test] \${_img} already present"
+        else
+            echo "[reset-test] loading \${_img} from \${_tar}"
+            ${DECOMPRESS_CMD} "\${_tar}" | docker load >/dev/null ||
+                { echo "[reset-test] FAIL: could not load \${_img}" >&2; exit 1; }
+        fi
+    done
+fi
+
+cd '${AIC_DAY_DIR}'
+# shellcheck source=/dev/null
+source '${AIC_DAY_DIR}/monitoring/monitoring-lib.sh'
+ensure_compose || { echo "[reset-test] docker compose unavailable and could not be installed" >&2; exit 1; }
+
+# Pick the L2 pool directory.  Prefer an explicit override, else the first
+# writable NVMe mount on this node.
+_nvme='${AIC_RESET_NVME_DATA}'
+if [ -z "\${_nvme}" ]; then
+    for _d in /mnt/nixl-nvme-0 /mnt/nixl-nvme-* /mnt/lmcache-nvme /mnt/nvme*; do
+        if [ -d "\${_d}" ] && [ -w "\${_d}" ]; then _nvme="\${_d}/aic-reset-test"; break; fi
+    done
+fi
+if [ -z "\${_nvme}" ]; then
+    echo "[reset-test] FAIL: no writable NVMe mount found; set AIC_RESET_NVME_DATA" >&2
+    exit 1
+fi
+_nfs="\${_nvme%/*}/aic-reset-nfs"
+# NFS_DATA is unused with the POSIX L2 backend, but _prep_dirs mkdir -p's it
+# unconditionally and its /mnt/lmcache-nfs default needs root.
+mkdir -p "\${_nvme}" "\${_nfs}" || { echo "[reset-test] FAIL: cannot create \${_nvme} / \${_nfs}" >&2; exit 1; }
+echo "[reset-test] L2 pool dir: \${_nvme} (\$(df -h --output=avail "\${_nvme}" | tail -1 | tr -d ' ') avail)"
+
+export HF_TOKEN='${HF_TOKEN:-}'
+export HF_TOKEN_FILE='${HF_TOKEN_FILE:-}'
+# Cache-backed launch: vLLM joins lmcache's PID ns so cross-container HIP IPC works.
+export VLLM_PID_MODE="\${VLLM_PID_MODE:-service:lmcache}"
+# The test script asks for AIC_TEST_MODEL; vLLM serves VLLM_MODEL.  Keep them equal.
+export AIC_TEST_MODEL='${AIC_RESET_MODEL}'
+export AIC_TEST_FLOOD='${AIC_RESET_FLOOD}'
+# compose defaults these to :local while this script builds/saves them as :latest
+# (see AIC_NVME_EXPORTER_IMAGE above) -- pass the tags we actually loaded, or
+# compose looks for an image that is not here and tries to pull it.
+export AIC_NVME_EXPORTER_IMAGE='${AIC_NVME_EXPORTER_IMAGE}'
+export AIC_RDMA_EXPORTER_IMAGE='${AIC_RDMA_EXPORTER_IMAGE}'
+
+compose() { docker compose -f '${AIC_DAY_DIR}/docker/docker-compose.yml' "\$@"; }
+cleanup() {
+    local svc c
+    for svc in vllm lmcache; do
+        timeout 30 compose logs --no-color --no-log-prefix "\$svc" > "\${_logdir}/reset-\${svc}.log" 2>&1 || true
+    done
+    pkill -9 -f 'vllm.entrypoints.openai' 2>/dev/null || true
+    pkill -9 -f 'EngineCore'              2>/dev/null || true
+    pkill -9 -f 'lmcache server'          2>/dev/null || true
+    sleep 2
+    timeout 60 compose --profile cache --profile monitoring down --remove-orphans --timeout 5 >/dev/null 2>&1 || true
+    for c in aic-vllm-gpu0 aic-lmcache aic-client aic-prometheus; do
+        timeout 30 docker rm -f "\$c" >/dev/null 2>&1 || true
+    done
+    rm -rf "\${_nvme}" "\${_nfs}" 2>/dev/null || true
+}
+trap cleanup EXIT
+
+if [ '${AIC_RESET_MONITORING}' = "1" ]; then
+    mkdir -p "\${_logdir}/prometheus"
+    echo "[reset-test] Prometheus TSDB -> \${_logdir}/prometheus"
+fi
+echo "[reset-test] running make vllm-reset-test ..."
+_out="\${_logdir}/reset-make.out"
+set -o pipefail
+make -C '${AIC_DAY_DIR}' vllm-reset-test \
+    IMAGE_REF='${AIC_IMAGE}' \
+    ROCM_ARCH='${_test_arch}' \
+    VLLM_MODEL='${AIC_RESET_MODEL}' \
+    NVME_DATA="\${_nvme}" \
+    NFS_DATA="\${_nfs}" \
+    HF_HOME='${HF_HOME}' \
+    LOG="\${_logdir}" \
+    AIC_METRICS_DIR="\${_logdir}/prometheus" \
+    VLM_GPU_MEMORY_UTILIZATION='${AIC_RESET_GPU_UTIL}' \
+    VLM_MAX_MODEL_LEN='${AIC_RESET_MAX_LEN}' \
+    LMCACHE_NIXL_POSIX_SLOT_SIZE='${AIC_RESET_SLOT_SIZE}' \
+    AIC_RESET_MONITORING='${AIC_RESET_MONITORING}' 2>&1 | tee "\${_out}"
+_rc=\${PIPESTATUS[0]}
+if [ "\${_rc}" -eq 0 ]; then
+    echo "[reset-test] PASS: L1 and L2 retrieval both verified"
+else
+    # 2/3/4 are vllm_reset_test.py verdicts -- but make itself also exits 2 on any
+    # recipe failure (a mkdir in _prep_dirs, compose up, the health wait).  Only read
+    # them as cache verdicts once the python test has actually produced output,
+    # otherwise a setup failure gets reported as "no L1 hits".
+    # Read the verdict off the test's OWN output lines.  vllm_reset_test.py exits
+    # 2/3/4 to mean no-L1 / no-L2 / neither, but make collapses every recipe failure
+    # to its own exit 2, so \${_rc} cannot distinguish them -- mapping it reported
+    # "no L1 hits" for a run where L1 passed and L2 failed.
+    if grep -qE "(L1|L2) retrieval (PASS|FAIL)" "\${_out}" 2>/dev/null; then
+        grep -E "(L1|L2) retrieval (PASS|FAIL)" "\${_out}" | sed 's/^/[reset-test]   /' >&2
+        grep -q "L2 retrieval FAIL" "\${_out}" &&
+            echo "[reset-test] hint: no L2 hits -- flood may be too small to overflow L1 (raise AIC_RESET_FLOOD), or the KV chunk exceeds LMCACHE_NIXL_POSIX_SLOT_SIZE" >&2
+        echo "[reset-test] FAIL: see the verdict lines above" >&2
+    else
+        echo "[reset-test] FAIL: setup failed before the cache test ran (make exited \${_rc})" >&2
+        echo "[reset-test] last 20 lines of \${_out}:" >&2
+        tail -20 "\${_out}" >&2 2>/dev/null || true
+    fi
+fi
+exit "\${_rc}"
+REMOTE
+)"
+
+    local -a _gres_arg=(); [[ "${AIC_SPUR_CLUSTER}" != "1" ]] && _gres_arg=(--gres=gpu:1)
+    _sbatch_run aic-reset-test reset-test "${remote_script}" \
+        "${_sel[@]}" \
+        "${_gres_arg[@]}" \
+        --nodes=1 --ntasks=1 \
+        --cpus-per-task="${AIC_RESET_CPUS}" --mem="${AIC_RESET_MEM}" \
+        --time="${AIC_RESET_TIME}"
+    log "reset-test complete"
+}
+
 # --- main --------------------------------------------------------------------
 main() {
     local sub="${1:-all}"
@@ -1371,6 +1599,7 @@ main() {
         push)            cmd_push ;;
         test)            cmd_test ;;
         tiny-test)       cmd_tiny_test ;;
+        reset-test)      cmd_reset_test ;;
         all)             cmd_build; cmd_build_exporters; cmd_load ;;
         -h|--help|help)
             sed -n '2,70p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'

@@ -1,19 +1,19 @@
 # CLAUDE.md — AMD Infinity Context (AIC)
 
-## Slurm environment: `source .env.slurm` first
+## Slurm environment: `source .env.aic` first
 
 The `dist-*` / `cliff-*` targets read their cluster settings from the
 environment, and those are **not** set in a non-login shell (editor terminal,
 Claude Code). Source the tracked env file before submitting anything:
 
 ```bash
-source .env.slurm     # auto-detects alola vs spur from the hostname
+source .env.aic     # auto-detects alola vs spur from the hostname
 make dist-build
 ```
 
 It sets `AIC_SPUR_CLUSTER`, the controller address (SPUR only), the partitions
-and the build/test constraints. Personal overrides go in `.env.slurm.local`
-(git-ignored). Force a cluster with `AIC_CLUSTER=spur source .env.slurm`.
+and the build/test constraints. Personal overrides go in `.env.aic.local`
+(git-ignored). Force a cluster with `AIC_CLUSTER=spur source .env.aic`.
 
 **Build and test partitions differ on the internal cluster.** Builds go to
 `defq` + `CPUONLY`; `test` / `tiny-test` go to `AIC_TEST_PARTITION=storage` —
