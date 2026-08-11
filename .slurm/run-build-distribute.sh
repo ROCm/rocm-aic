@@ -1525,7 +1525,7 @@ cleanup() {
     pkill -9 -f 'lmcache server'          2>/dev/null || true
     sleep 2
     timeout 60 compose --profile cache --profile monitoring down --remove-orphans --timeout 5 >/dev/null 2>&1 || true
-    for c in aic-vllm-gpu0 aic-lmcache aic-client aic-prometheus; do
+    for c in aic-vllm-gpu0 aic-lmcache aic-client aic-prometheus aic-grafana; do
         timeout 30 docker rm -f "\$c" >/dev/null 2>&1 || true
     done
     rm -rf "\${_nvme}" "\${_nfs}" 2>/dev/null || true
