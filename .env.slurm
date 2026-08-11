@@ -67,6 +67,9 @@ alola)
     # constraint is kept as a guard in case more nodes are added later.
     # Test jobs need their own partition because `storage` is disjoint from defq.
     export AIC_TEST_PARTITION="${AIC_TEST_PARTITION:-storage}"
+    # `storage` sets AllowAccounts=gds,auto; the default association (ais) is
+    # rejected with "Invalid account or account/partition combination".
+    export AIC_TEST_ACCOUNT="${AIC_TEST_ACCOUNT:-gds}"
     export AIC_TEST_CONSTRAINT="${AIC_TEST_CONSTRAINT:-GFX942&NVME}"
     # /scratch is node-local on this fleet: fine for the BuildKit cache and the
     # saved image tarballs, which are written and read on the same node.
@@ -85,7 +88,8 @@ if [ -f "$(dirname -- "${BASH_SOURCE[0]:-.env.slurm}")/.env.slurm.local" ]; then
     . "$(dirname -- "${BASH_SOURCE[0]:-.env.slurm}")/.env.slurm.local"
 fi
 
-printf '[.env.slurm] cluster=%s spur=%s build=%s/%s test=%s/%s\n' \
+printf '[.env.slurm] cluster=%s spur=%s build=%s/%s test=%s/%s account=%s\n' \
     "${AIC_CLUSTER}" "${AIC_SPUR_CLUSTER}" \
     "${AIC_BUILD_PARTITION}" "${AIC_BUILD_CONSTRAINT:-<none>}" \
-    "${AIC_TEST_PARTITION:-${AIC_BUILD_PARTITION}}" "${AIC_TEST_CONSTRAINT:-<none>}"
+    "${AIC_TEST_PARTITION:-${AIC_BUILD_PARTITION}}" "${AIC_TEST_CONSTRAINT:-<none>}" \
+    "${AIC_TEST_ACCOUNT:-<default>}"

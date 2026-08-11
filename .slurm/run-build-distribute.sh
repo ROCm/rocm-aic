@@ -134,6 +134,9 @@
 #                        tiny-test compose stack.  Auto-detected by
 #                        .slurm/aic-test-arch.sh when unset (gfx950 on SPUR,
 #                        otherwise from the Slurm node/constraint/partition)
+#   AIC_SLURM_ACCOUNT    --account for every submission (default: unset = Slurm default)
+#   AIC_TEST_ACCOUNT     --account for test + tiny-test only, when the test partition
+#                        restricts AllowAccounts   (default: $AIC_SLURM_ACCOUNT)
 #   AIC_TEST_PARTITION   Slurm partition for test + tiny-test, when the GPU nodes
 #                        live outside the build partition (e.g. the MI300X storage
 #                        node in `storage`)   (default: $AIC_BUILD_PARTITION)
@@ -199,6 +202,11 @@ AIC_IMAGE="${AIC_IMAGE:-${AIC_IMAGE_NAME:-rocm-aic}:${_aic_tag:-latest}}"
 AIC_IMAGE_DIR="${AIC_IMAGE_DIR:-/scratch/${USER}/images}"
 AIC_PIP_WHEELS_DIR="${AIC_PIP_WHEELS_DIR:-/opt/pip-cache/wheels}"
 AIC_BUILD_MIN_DISK_GB="${AIC_BUILD_MIN_DISK_GB:-150}"
+# Slurm account.  Empty = let Slurm pick the default association.  Needed when a
+# partition sets AllowAccounts (e.g. `storage` is gds,auto -- the default `ais`
+# association is rejected with "Invalid account or account/partition combination").
+AIC_SLURM_ACCOUNT="${AIC_SLURM_ACCOUNT:-}"
+AIC_TEST_ACCOUNT="${AIC_TEST_ACCOUNT:-${AIC_SLURM_ACCOUNT}}"
 AIC_SPUR_CLUSTER="${AIC_SPUR_CLUSTER:-0}"
 # Only *required* when AIC_SPUR_CLUSTER=1 -- the check lives in the branch below
 # so a plain (non-SPUR) run doesn't need SPUR_CONTROLLER_ADDR in the environment.
@@ -220,7 +228,6 @@ else
     AIC_BUILD_CONSTRAINT="${AIC_BUILD_CONSTRAINT:-CPUONLY}"
     AIC_TEST_CONSTRAINT="${AIC_TEST_CONSTRAINT:-GFX942&NVME}"
 fi
-AIC_SLURM_ACCOUNT="${AIC_SLURM_ACCOUNT:-}"
 AIC_PIP_WHEELS_DIR="${AIC_PIP_WHEELS_DIR:-}"
 # Test jobs land in the build partition unless the GPU nodes live elsewhere.
 AIC_TEST_PARTITION="${AIC_TEST_PARTITION:-${AIC_BUILD_PARTITION}}"
@@ -329,6 +336,8 @@ _sbatch_run() {
     # build partition (cmd_test / cmd_tiny_test -> AIC_TEST_PARTITION) declare
     # `local _SBATCH_PARTITION=...`, which dynamic scoping makes visible here.
     local _part="${_SBATCH_PARTITION:-${AIC_BUILD_PARTITION}}"
+    local _acct="${_SBATCH_ACCOUNT:-${AIC_SLURM_ACCOUNT}}"
+    local -a _acct_arg=(); [[ -n "${_acct}" ]] && _acct_arg=(--account="${_acct}")
 
     # Batch script = shebang + a prologue that creates the per-job log dir and
     # redirects everything into <logname>.out, then the caller's body.
@@ -367,7 +376,7 @@ PROLOGUE
             --controller="${AIC_SPUR_CONTROLLER}" \
             --job-name="${jobname}" \
             --partition="${_part}" \
-            ${AIC_SLURM_ACCOUNT:+--account="${AIC_SLURM_ACCOUNT}"} \
+            "${_acct_arg[@]}" \
             --output=/dev/null \
             "$@" \
             "${tmpscript}" 2>&1)" || { rm -f "${tmpscript}"; die "sbatch submission failed: ${submit_out}"; }
@@ -460,7 +469,7 @@ PROLOGUE
         "${_stdbuf[@]}" sbatch --parsable --wait \
             --job-name="${jobname}" \
             --partition="${_part}" \
-            ${AIC_SLURM_ACCOUNT:+--account="${AIC_SLURM_ACCOUNT}"} \
+            "${_acct_arg[@]}" \
             --output=/dev/null \
             "$@" \
             <<<"${script}" >"${idfile}" &
@@ -1078,6 +1087,7 @@ SMOKE
     # Seen by _sbatch_run via dynamic scoping; the GPU test nodes may sit in a
     # different partition than the CPU-only build nodes.
     local _SBATCH_PARTITION="${AIC_TEST_PARTITION}"
+    local _SBATCH_ACCOUNT="${AIC_TEST_ACCOUNT}"
     local -a _sel
     if [[ -n "${AIC_TEST_NODE:-}" ]]; then
         _sel=(--nodelist="${AIC_TEST_NODE}")
@@ -1194,6 +1204,7 @@ cmd_tiny_test() {
     [[ -r "${tarball}" ]] || die "tarball not found: ${tarball} (run 'build' first)"
 
     local _SBATCH_PARTITION="${AIC_TEST_PARTITION}"
+    local _SBATCH_ACCOUNT="${AIC_TEST_ACCOUNT}"
 
     # ROCM_ARCH for the compose stack must be the arch of the node we land on --
     # NOT AIC_ROCM_ARCH, which for a release build is the whole ';'-separated
@@ -1307,11 +1318,14 @@ if ! compose --profile cache up -d; then
 fi
 
 # Wait for the vLLM endpoint (weights load + one-time model download).
-# vLLM is intentionally reachable only on the Compose network, so probe from
-# inside its container instead of the Slurm host's loopback interface.
+# The API is published on the 'aic' compose network ONLY -- docker-compose.yml has
+# no ports: mapping -- so a host-side curl can never connect and just burns the
+# full timeout.  Probe from inside the vllm container on its own loopback: that
+# needs no second container to be healthy first.
+_vllm="aic-vllm-gpu\${GPU:-0}"
 ready=0
 for _i in \$(seq 1 ${AIC_TINY_READY_TIMEOUT}); do
-    if docker exec aic-vllm-gpu0 curl -fsS http://127.0.0.1:8000/v1/models >/dev/null 2>&1; then ready=1; break; fi
+    if docker exec "\${_vllm}" curl -fsS http://127.0.0.1:8000/v1/models >/dev/null 2>&1; then ready=1; break; fi
     sleep 5
 done
 if [ "\${ready}" != "1" ]; then
@@ -1323,7 +1337,7 @@ echo "[tiny-test] endpoint ready; sending one chat completion ..."
 
 # One real completion; assert a NON-EMPTY assistant content came back through the
 # LMCacheMPConnector path.
-resp="\$(docker exec aic-vllm-gpu0 curl -fsS http://127.0.0.1:8000/v1/chat/completions \
+resp="\$(docker exec "\${_vllm}" curl -fsS http://127.0.0.1:8000/v1/chat/completions \
     -H 'Content-Type: application/json' \
     -d '{"model":"${AIC_TINY_MODEL}","messages":[{"role":"user","content":"Reply with the single word: pong"}],"max_tokens":16,"temperature":0}' 2>&1)" || {
     echo "[tiny-test] FAIL: completion request failed: \${resp}" >&2; exit 1; }
