@@ -198,9 +198,13 @@ RUN curl -fsSL "https://astral.sh/uv/${UV_VERSION}/install.sh" | sh && \
 # Wheels are pre-downloaded to /opt/pip-cache/wheels on the build host and
 # passed in via --build-context pip-wheels=<dir> to avoid the 6 GB download.
 # The context is mounted read-only and never baked into the image layer.
-# If the build-context is not provided, falls back to the index URL.
+# The context MUST always be supplied: BuildKit resolves an unprovided named
+# context as an image ref (docker.io/library/pip-wheels:latest) and fails the
+# pull.  Callers that have no wheel cache pass an EMPTY dir -- the probe below
+# then misses and torch is fetched from the index URL.  docker-compose.yml uses
+# additional_contexts; .slurm/run-build-distribute.sh uses --build-context.
 RUN --mount=type=cache,target=/root/.cache/pip \
-    --mount=from=pip-wheels,source=.,target=/opt/pip-cache/wheels,ro \
+    --mount=from=pip-wheels,source=.,target=/opt/pip-cache/wheels,type=bind,rw=false \
     if [ -f /opt/pip-cache/wheels/torch-2.13.0+rocm7.2-cp312-cp312-manylinux_2_28_x86_64.whl ]; then \
         pip3 install \
             --find-links /opt/pip-cache/wheels \

@@ -97,6 +97,13 @@
 #                        AIC_BUILD_CONSTRAINT)             (default: unset)
 #   AIC_BUILD_LOCAL      set to 1 to build on THIS host, no Slurm  (default: unset)
 #   AIC_BUILD_PARTITION  Slurm partition for build + load  (default: defq)
+#   AIC_PIP_WHEELS_DIR   dir of pre-downloaded torch wheels on the build node,
+#                        passed as the `pip-wheels` build context.  An empty dir is
+#                        used when it is absent, so torch falls back to the index
+#                        URL          (default: /opt/pip-cache/wheels)
+#   AIC_BUILD_MIN_DISK_GB  minimum free space on the build node's / before the
+#                        build starts; below this it fails immediately rather
+#                        than dying later on truncated apt metadata (default: 150)
 #   AIC_BUILD_CPUS       --cpus-per-task for the build job (default: 32)
 #   AIC_BUILD_TIME       build job time limit              (default: 02:00:00)
 #   AIC_LOAD_TIME        per-node load job time limit      (default: 00:30:00)
@@ -123,6 +130,13 @@
 #                        (default: <site>&GFX942&NVME -- MI300X + local NVMe).
 #                        Used only when AIC_TEST_NODE is unset.
 #   AIC_TEST_NODE        pin an exact test node via --nodelist  (default: unset)
+#   AIC_TEST_ARCH        gfx arch of the test node, used as ROCM_ARCH for the
+#                        tiny-test compose stack.  Auto-detected by
+#                        .slurm/aic-test-arch.sh when unset (gfx950 on SPUR,
+#                        otherwise from the Slurm node/constraint/partition)
+#   AIC_TEST_PARTITION   Slurm partition for test + tiny-test, when the GPU nodes
+#                        live outside the build partition (e.g. the MI300X storage
+#                        node in `storage`)   (default: $AIC_BUILD_PARTITION)
 #   AIC_TEST_TIME        test job time limit               (default: 00:20:00)
 #   AIC_TEST_CPUS        --cpus-per-task for the test job  (default: 8)
 #   AIC_TEST_MEM         --mem for the test job            (default: 32G)
@@ -183,13 +197,18 @@ AIC_UCX_FAST="${AIC_UCX_FAST:-}"
 _aic_tag="$(bash "${AIC_DAY_DIR}/docker/scripts/aic-image-tag.sh" 2>/dev/null || true)"
 AIC_IMAGE="${AIC_IMAGE:-${AIC_IMAGE_NAME:-rocm-aic}:${_aic_tag:-latest}}"
 AIC_IMAGE_DIR="${AIC_IMAGE_DIR:-/scratch/${USER}/images}"
+AIC_PIP_WHEELS_DIR="${AIC_PIP_WHEELS_DIR:-/opt/pip-cache/wheels}"
+AIC_BUILD_MIN_DISK_GB="${AIC_BUILD_MIN_DISK_GB:-150}"
 AIC_SPUR_CLUSTER="${AIC_SPUR_CLUSTER:-0}"
-AIC_SPUR_CONTROLLER="${AIC_SPUR_CONTROLLER:-${SPUR_CONTROLLER_ADDR:?set SPUR_CONTROLLER_ADDR or AIC_SPUR_CONTROLLER before using AIC_SPUR_CLUSTER=1}}"
+# Only *required* when AIC_SPUR_CLUSTER=1 -- the check lives in the branch below
+# so a plain (non-SPUR) run doesn't need SPUR_CONTROLLER_ADDR in the environment.
+AIC_SPUR_CONTROLLER="${AIC_SPUR_CONTROLLER:-${SPUR_CONTROLLER_ADDR:-}}"
 
 # When running on SPUR, default the partition to amd-spur (the only partition)
 # and clear the build/test constraints (SPUR nodes have no MARKHAM/CPUONLY/GFX942
 # feature labels; node selection is done by partition or explicit --nodelist).
 if [[ "${AIC_SPUR_CLUSTER}" == "1" ]]; then
+    : "${AIC_SPUR_CONTROLLER:?set SPUR_CONTROLLER_ADDR or AIC_SPUR_CONTROLLER before using AIC_SPUR_CLUSTER=1 (\`source .env.slurm\`)}"
     AIC_BUILD_PARTITION="${AIC_BUILD_PARTITION:-amd-spur}"
     AIC_IMAGE_DIR="${AIC_IMAGE_DIR:-${AIC_SHARED_NFS:-/shared_nfs}/${USER}/images}"
     # Use ${VAR-default} (not ${VAR:-default}) so an explicitly set empty string
@@ -203,6 +222,8 @@ else
 fi
 AIC_SLURM_ACCOUNT="${AIC_SLURM_ACCOUNT:-}"
 AIC_PIP_WHEELS_DIR="${AIC_PIP_WHEELS_DIR:-}"
+# Test jobs land in the build partition unless the GPU nodes live elsewhere.
+AIC_TEST_PARTITION="${AIC_TEST_PARTITION:-${AIC_BUILD_PARTITION}}"
 AIC_BUILD_CPUS="${AIC_BUILD_CPUS:-32}"
 AIC_BUILD_TIME="${AIC_BUILD_TIME:-02:00:00}"
 AIC_LOAD_TIME="${AIC_LOAD_TIME:-00:30:00}"
@@ -304,6 +325,11 @@ _sbatch_run() {
     local jobname="$1" logname="$2" body="$3"; shift 3
     command -v sbatch >/dev/null 2>&1 || die "sbatch not found; set AIC_BUILD_LOCAL=1 to build here"
 
+    # Partition for this submission.  Callers that need a different one than the
+    # build partition (cmd_test / cmd_tiny_test -> AIC_TEST_PARTITION) declare
+    # `local _SBATCH_PARTITION=...`, which dynamic scoping makes visible here.
+    local _part="${_SBATCH_PARTITION:-${AIC_BUILD_PARTITION}}"
+
     # Batch script = shebang + a prologue that creates the per-job log dir and
     # redirects everything into <logname>.out, then the caller's body.
     # AIC_DAY_DIR is absolute and on shared storage, so it resolves on the
@@ -340,7 +366,7 @@ PROLOGUE
         submit_out="$(sbatch \
             --controller="${AIC_SPUR_CONTROLLER}" \
             --job-name="${jobname}" \
-            --partition="${AIC_BUILD_PARTITION}" \
+            --partition="${_part}" \
             ${AIC_SLURM_ACCOUNT:+--account="${AIC_SLURM_ACCOUNT}"} \
             --output=/dev/null \
             "$@" \
@@ -350,7 +376,7 @@ PROLOGUE
         jobid="$(printf '%s\n' "${submit_out}" | grep -oE '[0-9]+$' | tail -1)"
         [[ -n "${jobid}" ]] || die "could not parse job id from sbatch output: ${submit_out}"
         logfile="${AIC_DAY_DIR}/logs/${jobid}/${logname}.out"
-        log "submitted ${jobname} as job ${jobid} (partition ${AIC_BUILD_PARTITION})"
+        log "submitted ${jobname} as job ${jobid} (partition ${_part})"
         log "log: ${logfile}"
 
         # Poll squeue until the job leaves the queue, printing new log lines each
@@ -433,7 +459,7 @@ PROLOGUE
         local -a _stdbuf=(); command -v stdbuf >/dev/null 2>&1 && _stdbuf=(stdbuf -oL)
         "${_stdbuf[@]}" sbatch --parsable --wait \
             --job-name="${jobname}" \
-            --partition="${AIC_BUILD_PARTITION}" \
+            --partition="${_part}" \
             ${AIC_SLURM_ACCOUNT:+--account="${AIC_SLURM_ACCOUNT}"} \
             --output=/dev/null \
             "$@" \
@@ -449,10 +475,10 @@ PROLOGUE
 
         logfile="${AIC_DAY_DIR}/logs/${jobid:-unknown}/${logname}.out"
         if [[ -n "${jobid}" ]]; then
-            log "submitted ${jobname} as job ${jobid} (partition ${AIC_BUILD_PARTITION})"
+            log "submitted ${jobname} as job ${jobid} (partition ${_part})"
             log "log: ${logfile}"
         else
-            log "submitted ${jobname} (job id not yet available; partition ${AIC_BUILD_PARTITION})"
+            log "submitted ${jobname} (job id not yet available; partition ${_part})"
         fi
 
         local tail_pid=""
@@ -598,9 +624,33 @@ mkdir -p "${AIC_IMAGE_DIR}"
 # volume from filling the node's disk and silently killing the export.
 echo "[build] pruning BuildKit cache on \$(hostname) before build ..."
 docker buildx prune --builder ${AIC_BUILDX_BUILDER} --force 2>/dev/null || true
-echo "[build] disk after prune: \$(df -h / | awk 'NR==2{print \$3\" free / \"\$2\" total (\"\$5\" used)\"}')"
+echo "[build] disk after prune: \$(df -h / | awk 'NR==2{print \$4" avail / "\$2" total ("\$5" used)"}')"
+# Fail fast on a full disk.  A node whose / is full does not error cleanly: apt
+# writes truncated InRelease files and the build dies ~15 min in with a baffling
+# "GPG error: At least one invalid signature was encountered" on every repo.
+_avail_g="\$(df -BG --output=avail / 2>/dev/null | tail -1 | tr -dc '0-9')"
+if [ "\${_avail_g:-0}" -lt "${AIC_BUILD_MIN_DISK_GB}" ]; then
+    echo "[build] ERROR: only \${_avail_g}G free on / at \$(hostname); need >= ${AIC_BUILD_MIN_DISK_GB}G" >&2
+    echo "[build] Pin a node with room via AIC_BUILD_NODE=<node>, or lower AIC_BUILD_MIN_DISK_GB." >&2
+    exit 1
+fi
+# The Dockerfile mounts a named build context 'pip-wheels' (pre-downloaded torch
+# wheels, ~6 GB).  A named context that is NOT supplied is resolved by BuildKit as
+# an IMAGE ref -- docker.io/library/pip-wheels:latest -- which fails the pull, so
+# it must always be passed.  Point it at an empty dir when the wheel cache is
+# absent on this node: the Dockerfile probes for the wheel and falls back to the
+# pytorch.org index URL when it is not there.
+_wheels_dir="${AIC_PIP_WHEELS_DIR}"
+if [ ! -d "\${_wheels_dir}" ]; then
+    _wheels_dir="\${TMPDIR:-/tmp}/aic-empty-wheels"
+    mkdir -p "\${_wheels_dir}"
+    echo "[build] no wheel cache at ${AIC_PIP_WHEELS_DIR}; using empty pip-wheels context (torch comes from the index URL)"
+else
+    echo "[build] pip-wheels build context: \${_wheels_dir}"
+fi
 tmp="${tarball}.partial.\$\$"
 docker buildx build --builder ${AIC_BUILDX_BUILDER} --progress=plain --output type=docker,dest=- \
+    --build-context pip-wheels="\${_wheels_dir}" \
     --build-arg ROCM_ARCH="${AIC_ROCM_ARCH}" \
     --build-arg AIC_UCX_FAST="${AIC_UCX_FAST}" \
     ${_version_build_args} \
@@ -635,7 +685,31 @@ command -v docker >/dev/null 2>&1 || { echo 'docker not found on build node' >&2
 echo "[build] host=\$(hostname) docker=\$(docker --version)"
 cd "${AIC_DAY_DIR}"
 ${_builder_setup}
+# Fail fast on a full disk.  A node whose / is full does not error cleanly: apt
+# writes truncated InRelease files and the build dies ~15 min in with a baffling
+# "GPG error: At least one invalid signature was encountered" on every repo.
+_avail_g="\$(df -BG --output=avail / 2>/dev/null | tail -1 | tr -dc '0-9')"
+if [ "\${_avail_g:-0}" -lt "${AIC_BUILD_MIN_DISK_GB}" ]; then
+    echo "[build] ERROR: only \${_avail_g}G free on / at \$(hostname); need >= ${AIC_BUILD_MIN_DISK_GB}G" >&2
+    echo "[build] Pin a node with room via AIC_BUILD_NODE=<node>, or lower AIC_BUILD_MIN_DISK_GB." >&2
+    exit 1
+fi
+# The Dockerfile mounts a named build context 'pip-wheels' (pre-downloaded torch
+# wheels, ~6 GB).  A named context that is NOT supplied is resolved by BuildKit as
+# an IMAGE ref -- docker.io/library/pip-wheels:latest -- which fails the pull, so
+# it must always be passed.  Point it at an empty dir when the wheel cache is
+# absent on this node: the Dockerfile probes for the wheel and falls back to the
+# pytorch.org index URL when it is not there.
+_wheels_dir="${AIC_PIP_WHEELS_DIR}"
+if [ ! -d "\${_wheels_dir}" ]; then
+    _wheels_dir="\${TMPDIR:-/tmp}/aic-empty-wheels"
+    mkdir -p "\${_wheels_dir}"
+    echo "[build] no wheel cache at ${AIC_PIP_WHEELS_DIR}; using empty pip-wheels context (torch comes from the index URL)"
+else
+    echo "[build] pip-wheels build context: \${_wheels_dir}"
+fi
 ${_build_program} \
+    --build-context pip-wheels="\${_wheels_dir}" \
     --build-arg ROCM_ARCH="${AIC_ROCM_ARCH}" \
     --build-arg AIC_UCX_FAST="${AIC_UCX_FAST}" \
     ${_version_build_args} \
@@ -1001,13 +1075,16 @@ exit "${fail}"
 SMOKE
     chmod +x "${smoketest}"
 
+    # Seen by _sbatch_run via dynamic scoping; the GPU test nodes may sit in a
+    # different partition than the CPU-only build nodes.
+    local _SBATCH_PARTITION="${AIC_TEST_PARTITION}"
     local -a _sel
     if [[ -n "${AIC_TEST_NODE:-}" ]]; then
         _sel=(--nodelist="${AIC_TEST_NODE}")
-        log "testing on ${AIC_TEST_NODE} via sbatch (partition ${AIC_BUILD_PARTITION})"
+        log "testing on ${AIC_TEST_NODE} via sbatch (partition ${AIC_TEST_PARTITION})"
     else
         _sel=(--constraint="${AIC_TEST_CONSTRAINT}")
-        log "testing via sbatch (partition ${AIC_BUILD_PARTITION}, constraint ${AIC_TEST_CONSTRAINT})"
+        log "testing via sbatch (partition ${AIC_TEST_PARTITION}, constraint ${AIC_TEST_CONSTRAINT})"
     fi
     log "image: ${AIC_IMAGE}  smoketest: ${smoketest}"
 
@@ -1116,13 +1193,31 @@ cmd_tiny_test() {
     command -v sbatch >/dev/null 2>&1 || die "sbatch not found; cannot run the GPU tiny-test job"
     [[ -r "${tarball}" ]] || die "tarball not found: ${tarball} (run 'build' first)"
 
+    local _SBATCH_PARTITION="${AIC_TEST_PARTITION}"
+
+    # ROCM_ARCH for the compose stack must be the arch of the node we land on --
+    # NOT AIC_ROCM_ARCH, which for a release build is the whole ';'-separated
+    # list of archs baked into the image.  Resolved here (lazily: the detection
+    # costs an sinfo call) so plain tiny-test on the multi-arch tarball still
+    # hands the node a single, correct arch.
+    local _test_arch="${AIC_TEST_ARCH:-}"
+    if [[ -z "${_test_arch}" ]]; then
+        if [[ "${AIC_ROCM_ARCH}" != *";"* ]]; then
+            _test_arch="${AIC_ROCM_ARCH}"   # single-arch build: already exact
+        else
+            _test_arch="$(bash "${SCRIPT_DIR}/aic-test-arch.sh" 2>/dev/null || true)"
+            [[ -n "${_test_arch}" ]] || _test_arch="${AIC_ROCM_ARCH}"
+        fi
+    fi
+    log "test-node arch: ${_test_arch}  (image built for ${AIC_ROCM_ARCH})"
+
     local -a _sel
     if [[ -n "${AIC_TEST_NODE:-}" ]]; then
         _sel=(--nodelist="${AIC_TEST_NODE}")
-        log "tiny-test on ${AIC_TEST_NODE} via sbatch (partition ${AIC_BUILD_PARTITION})"
+        log "tiny-test on ${AIC_TEST_NODE} via sbatch (partition ${AIC_TEST_PARTITION})"
     else
         _sel=(--constraint="${AIC_TEST_CONSTRAINT}")
-        log "tiny-test via sbatch (partition ${AIC_BUILD_PARTITION}, constraint ${AIC_TEST_CONSTRAINT})"
+        log "tiny-test via sbatch (partition ${AIC_TEST_PARTITION}, constraint ${AIC_TEST_CONSTRAINT})"
     fi
     log "image: ${AIC_IMAGE}  model: ${AIC_TINY_MODEL}  hf: ${HF_HOME}"
 
@@ -1156,7 +1251,7 @@ ensure_compose || { echo "[tiny-test] docker compose unavailable and could not b
 # into the persistent HF_HOME forwarded by the Makefile.
 export IMAGE_REF='${AIC_IMAGE}'
 export IMAGE_NAME='${AIC_IMAGE%:*}'
-export ROCM_ARCH='${AIC_ROCM_ARCH}'
+export ROCM_ARCH='${_test_arch}'
 export GPU=0
 export VLLM_MODEL='${AIC_TINY_MODEL}'
 export HF_HOME='${HF_HOME}'
@@ -1176,10 +1271,12 @@ export LMCACHE_L1_SIZE_GB=4
 export AIC_L2_BACKEND=none
 export VLLM_IPC_MODE=service:lmcache
 export VLLM_PID_MODE=service:lmcache
-# PID/IPC namespace sharing is required for HIP IPC, but networking remains
-# isolated per Compose service.  Reach LMCache through Compose DNS rather than
-# vLLM's own loopback interface.
-export KV_TRANSFER_ARG="--kv-transfer-config '{\"kv_connector\":\"LMCacheMPConnector\",\"kv_role\":\"kv_both\",\"kv_connector_extra_config\":{\"lmcache.mp.host\":\"tcp://aic-lmcache\",\"lmcache.mp.port\":6555}}'"
+# Host MUST be the lmcache container, not localhost: the vllm service shares only
+# lmcache's PID/IPC namespaces, not its network namespace, so both sit on the aic
+# bridge with their own loopback.  'tcp://localhost' makes vLLM dial itself and the
+# engine core dies after the 300s MP connect timeout.  Keep this in step with the
+# Makefile's _MP_CONNECTOR_JSON.
+export KV_TRANSFER_ARG="--kv-transfer-config '{\"kv_connector\":\"LMCacheMPConnector\",\"kv_role\":\"kv_both\",\"kv_connector_extra_config\":{\"lmcache.mp.host\":\"tcp://aic-lmcache\",\"lmcache.mp.port\":${LMCACHE_PORT:-6555}}}'"
 mkdir -p "\${HF_HOME}" /tmp/aic-tiny-nvme /tmp/aic-tiny-nfs
 
 compose() { docker compose -f '${AIC_DAY_DIR}/docker/docker-compose.yml' "\$@"; }

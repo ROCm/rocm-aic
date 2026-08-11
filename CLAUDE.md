@@ -1,5 +1,27 @@
 # CLAUDE.md — AMD Infinity Context (AIC)
 
+## Slurm environment: `source .env.slurm` first
+
+The `dist-*` / `cliff-*` targets read their cluster settings from the
+environment, and those are **not** set in a non-login shell (editor terminal,
+Claude Code). Source the tracked env file before submitting anything:
+
+```bash
+source .env.slurm     # auto-detects alola vs spur from the hostname
+make dist-build
+```
+
+It sets `AIC_SPUR_CLUSTER`, the controller address (SPUR only), the partitions
+and the build/test constraints. Personal overrides go in `.env.slurm.local`
+(git-ignored). Force a cluster with `AIC_CLUSTER=spur source .env.slurm`.
+
+**Build and test partitions differ on the internal cluster.** Builds go to
+`defq` + `CPUONLY`; `test` / `tiny-test` go to `AIC_TEST_PARTITION=storage` —
+the MI300X storage node `ctr-smc-mi300x-cx68-25` (GFX942, 8x MI300X, NVME:8,
+ConnectX-7, ROCm 7.14.0, 384 CPUs, 1.5 TB RAM). It is currently the only node
+in that partition. `/scratch` is BeeGFS and shared between the two partitions,
+so the image tarball a `defq` build writes is readable from the test job.
+
 ## SPUR Cluster Access
 
 SPUR commands (`srun`, `sinfo`, `squeue`) require the controller address

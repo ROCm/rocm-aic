@@ -1,0 +1,91 @@
+# Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+#
+# Per-cluster Slurm environment for the dist-*/cliff-* targets.
+#
+#   source .env.slurm
+#   make dist-build
+#
+# The .slurm scripts and the Makefile read their cluster settings from the
+# environment (AIC_SPUR_CLUSTER, SPUR_CONTROLLER_ADDR, AIC_SHARED_NFS, the
+# partition/constraint knobs).  Those differ per cluster and are NOT set in a
+# non-login shell -- e.g. an editor terminal or an agent session -- which is
+# what makes `make dist-build` fail there but work in a login shell.  Sourcing
+# this file makes the settings explicit and reproducible.
+#
+# Cluster is auto-detected from the hostname; override by exporting
+# AIC_CLUSTER=alola|spur before sourcing.  Personal overrides go in
+# .env.slurm.local (git-ignored), sourced at the end if present.
+#
+# This file only ever sets a variable that is not already set, so anything
+# already in your environment (or on the make command line) still wins.
+
+# --- Detect the cluster -------------------------------------------------------
+if [ -z "${AIC_CLUSTER:-}" ]; then
+    case "$(hostname -f 2>/dev/null || hostname)" in
+        *spur*|crs-m2m-*|crsuse2-m2m-*) AIC_CLUSTER=spur ;;
+        *)                              AIC_CLUSTER=alola ;;
+    esac
+fi
+export AIC_CLUSTER
+
+case "${AIC_CLUSTER}" in
+
+# --- SPUR (Crusoe) cluster: MI355X / gfx950, single amd-spur partition --------
+spur)
+    export AIC_SPUR_CLUSTER=1
+    # Every sbatch/srun/squeue/sacct call is passed --controller=<this>.
+    # Not discoverable from the node; it must come from the environment.
+    export SPUR_CONTROLLER_ADDR="${SPUR_CONTROLLER_ADDR:-http://crs-m2m-cpu-spur-005.crusoe.amd.com:6817}"
+    export AIC_SPUR_CONTROLLER="${AIC_SPUR_CONTROLLER:-${SPUR_CONTROLLER_ADDR}}"
+    # /scratch does not exist here; images, HF cache and the BuildKit cache all
+    # live on the NFS volume shared by every compute node.
+    export AIC_SHARED_NFS="${AIC_SHARED_NFS:-/shared_nfs}"
+    # amd-spur is the only partition.
+    export AIC_BUILD_PARTITION="${AIC_BUILD_PARTITION:-amd-spur}"
+    # SPUR nodes carry no MARKHAM/CPUONLY/GFX942 feature labels -- selection is by
+    # partition or explicit --nodelist.  Empty (not unset) = "no constraint".
+    export AIC_BUILD_CONSTRAINT="${AIC_BUILD_CONSTRAINT-}"
+    export AIC_TEST_CONSTRAINT="${AIC_TEST_CONSTRAINT-}"
+    # All SPUR nodes are MI355X.
+    export AIC_ROCM_ARCH="${AIC_ROCM_ARCH:-gfx950}"
+    ;;
+
+# --- AMD internal cluster (ctr2-alola-login-*): mixed defq/aioss fleet ---------
+alola)
+    export AIC_SPUR_CLUSTER=0
+    # No --controller here: plain slurmctld reached the normal way.  Unset any
+    # stale SPUR address so the SPUR code paths stay off.
+    unset SPUR_CONTROLLER_ADDR AIC_SPUR_CONTROLLER
+    # Build on a CPU-only node in the general queue.
+    export AIC_BUILD_PARTITION="${AIC_BUILD_PARTITION:-defq}"
+    export AIC_BUILD_CONSTRAINT="${AIC_BUILD_CONSTRAINT:-CPUONLY}"
+    # Test on the MI300X storage node: partition `storage`, one node
+    # ctr-smc-mi300x-cx68-25 -- GFX942, NVME:8, ConnectX-7, ROCm 7.14.0.  It is
+    # the only node in that partition, so the partition alone selects it; the
+    # constraint is kept as a guard in case more nodes are added later.
+    # Test jobs need their own partition because `storage` is disjoint from defq.
+    export AIC_TEST_PARTITION="${AIC_TEST_PARTITION:-storage}"
+    export AIC_TEST_CONSTRAINT="${AIC_TEST_CONSTRAINT:-GFX942&NVME}"
+    # /scratch is node-local on this fleet: fine for the BuildKit cache and the
+    # saved image tarballs, which are written and read on the same node.
+    export AIC_IMAGE_DIR="${AIC_IMAGE_DIR:-/scratch/${USER}/images}"
+    ;;
+
+*)
+    printf '[.env.slurm] unknown AIC_CLUSTER=%s (expected alola or spur)\n' \
+        "${AIC_CLUSTER}" >&2
+    ;;
+esac
+
+# --- Personal / node-specific overrides ---------------------------------------
+if [ -f "$(dirname -- "${BASH_SOURCE[0]:-.env.slurm}")/.env.slurm.local" ]; then
+    # shellcheck disable=SC1091  # optional, git-ignored
+    . "$(dirname -- "${BASH_SOURCE[0]:-.env.slurm}")/.env.slurm.local"
+fi
+
+printf '[.env.slurm] cluster=%s spur=%s build=%s/%s test=%s/%s\n' \
+    "${AIC_CLUSTER}" "${AIC_SPUR_CLUSTER}" \
+    "${AIC_BUILD_PARTITION}" "${AIC_BUILD_CONSTRAINT:-<none>}" \
+    "${AIC_TEST_PARTITION:-${AIC_BUILD_PARTITION}}" "${AIC_TEST_CONSTRAINT:-<none>}"

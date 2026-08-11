@@ -143,7 +143,26 @@ DIST := $(CURDIR)/.slurm/run-build-distribute.sh
 AIC_CI_LIB_DIR    ?= /usr/local/lib/aic-ci
 AIC_CI_SCRIPT_DIR := $(CURDIR)/.github/scripts
 
-AIC_FAST_ARCH ?= gfx950
+# ---- Test-node arch --------------------------------------------------------
+# The -fast targets build and test a SINGLE-arch image whose tarball name is
+# derived from the arch, so it must be resolved on THIS host before submitting.
+# gfx950 on SPUR (homogeneous MI355X); everywhere else detected from the node
+# test/tiny-test will land on -- see .slurm/aic-test-arch.sh for the order.
+#
+# Assigned recursively and self-memoised via eval: the sinfo query (~2s) is paid
+# at most once per make run, and only if something actually expands the value.
+# AIC_TEST_ARCH=gfx942 on the command line skips detection entirely.
+AIC_TEST_ARCH = $(eval AIC_TEST_ARCH := $(shell \
+    AIC_SPUR_CLUSTER='$(AIC_SPUR_CLUSTER)' \
+    AIC_TEST_NODE='$(AIC_TEST_NODE)' \
+    AIC_TEST_CONSTRAINT='$(AIC_TEST_CONSTRAINT)' \
+    AIC_TEST_PARTITION='$(AIC_TEST_PARTITION)' \
+    AIC_BUILD_PARTITION='$(AIC_BUILD_PARTITION)' \
+    $(CURDIR)/.slurm/aic-test-arch.sh))$(AIC_TEST_ARCH)
+
+# dist-build-fast / smoke-test-fast / tiny-test-fast must all agree on this or
+# the arch-tagged tarball written by one is invisible to the others.
+AIC_FAST_ARCH ?= $(AIC_TEST_ARCH)
 
 # ---- SPUR cluster overrides ------------------------------------------------
 # When AIC_SPUR_CLUSTER=1, default storage paths to AIC_SHARED_NFS (the NFS
@@ -288,7 +307,8 @@ help:
 	@echo "Distribute / cliff targets (Slurm; wrap .slurm/ scripts + sbatch):"
 	@echo "  (dist-build/dist-build-exporters/smoke-test submit via sbatch and log to logs/<job-id>/)"
 	@echo "  make dist-build        Build image (+ fabric exporters) on a Slurm build node, save tarballs"
-	@echo "  make dist-build-fast   Single-arch dev build (AIC_FAST_ARCH=$(AIC_FAST_ARCH), no exporters) -- faster iteration"
+	@echo "  make dist-build-fast   Single-arch dev build (AIC_FAST_ARCH=$(AIC_FAST_ARCH), auto-detected"
+	@echo "                         from the test node; no exporters) -- faster iteration"
 	@echo "  make dist-build-exporters  Build ONLY the nvme/rdma exporter images (no main rebuild)"
 	@echo "  make dist-build-monitoring Pull + save Prometheus/amdgpu-exporter to AIC_IMAGE_DIR"
 	@echo "  make dist-push         Tag + push the built image (needs AIC_PUSH_REF)"
@@ -297,7 +317,9 @@ help:
 	@echo "                          to logs/<job-id>/prometheus; AIC_SMOKE_EXPORTERS=0 skips)"
 	@echo "  make smoke-test-fast   Smoke-test the single-arch dev image (AIC_FAST_ARCH=$(AIC_FAST_ARCH))"
 	@echo "  make tiny-test         End-to-end serve check (MP stack + tiny model, one completion)"
-	@echo "  make tiny-test-fast    Fast variant of tiny-test"
+	@echo "  make tiny-test-fast    Fast variant of tiny-test (AIC_FAST_ARCH=$(AIC_FAST_ARCH))"
+	@echo "                         Arch: gfx950 on SPUR, else detected from the test node;"
+	@echo "                         override with AIC_TEST_ARCH=<gfx...>"
 	@echo "  make install-ci-scripts  Deploy .github/scripts/spur-*.sh to $(AIC_CI_LIB_DIR) (sudo if needed)"
 	@echo "  make cliff-submit      sbatch the full 3-arm cliff sweep -> logs/<job-id>/"
 	@echo "  make cliff-kvd         sbatch focused KVD cliff: shared prefix, sparse c ladder (1,8,32,64,128,250)"

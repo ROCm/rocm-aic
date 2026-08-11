@@ -39,3 +39,6 @@ dictionary.dic
 # CI artifact staging dir (spur-monitoring-cpu-smoke.sh copies index.html here
 # for upload-artifact / gh-pages deploy; never committed)
 metrics-page/
+
+# Personal overrides for the sourceable Slurm env (.env.slurm is tracked).
+.env.slurm.local
