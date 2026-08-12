@@ -38,7 +38,14 @@ plot = [
     "pandas>=2.0",
     "numpy>=1.26",
 ]
-dev = ["rocm-aic[bench,plot]"]
+accuracy = [
+    # lm_eval and the gsm8k dataset stay host-side; deliberately not in the
+    # container image, which keeps the image lean and keeps a dataset download
+    # off the compute node.
+    "lm-eval>=0.4.9",
+    "pytest>=8",
+]
+dev = ["rocm-aic[bench,plot,accuracy]"]
 
 [tool.setuptools.packages.find]
 where = ["."]
