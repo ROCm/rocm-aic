@@ -10,9 +10,11 @@
     "guess a value: leave the model out until it has been measured."
   ],
   "models": {
+    "Qwen/Qwen2.5-0.5B-Instruct": 0.2022,
     "Qwen/Qwen3-0.6B": 0.41
   },
   "sources": {
+    "Qwen/Qwen2.5-0.5B-Instruct": "measured: mean of 3 full-split runs on SPUR job 6223 (crsuse2-m2m-216, 2026-08-12); scores 0.19864/0.20470/0.20318, sigma 0.0032",
     "Qwen/Qwen3-0.6B": "vllm tests/v1/kv_connector/nixl_integration/test_accuracy.py"
   }
 }
