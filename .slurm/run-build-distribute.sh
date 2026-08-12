@@ -1311,6 +1311,329 @@ REMOTE
     log "tiny-test complete"
 }
 
+# --- accuracy-test: differential KV-integrity gate ----------------------------
+# Answers "does routing KV through DRAM/NVMe change the model's answers?", which
+# neither tiny-test (serves one completion) nor cliff (measures throughput) can.
+#
+# Four phases.  The two arms share a container name, a port and the GPU, so they
+# cannot coexist -- the baseline is scored, torn down, and its number carried
+# forward to the tiered arm's pytest run via AIC_ACCURACY_BASELINE_SCORE.
+#
+#   Phase 1  vram_only arm: plain vLLM, no LMCache, KV never leaves VRAM.
+#            Score gsm8k, record the number, tear down.
+#   Phase 2  kvd arm: LMCache + NIXL POSIX NVMe L2, constrained VRAM so blocks
+#            actually evict.  Score gsm8k, run both assertions.
+#   Phase 3  Liveness: assert the NVMe pool grew during phase 2.  Without this a
+#            tiered arm that never tiered would pass the differential trivially
+#            -- the run would be vacuous rather than green.
+#   Phase 4  Restart vLLM only (LMCache keeps its DRAM/NVMe state), re-score at
+#            AIC_ACCURACY_LIMIT, and assert within DELTA of the phase-2 score.
+#            The prompts are guaranteed cache hits, so this isolates
+#            retrieval-from-NVMe.
+#
+# There is deliberately no committed golden: no reference.json, no md5 manifest
+# of pool files.  Which pool slot a block lands in depends on allocation order,
+# so a checksum would be a flake generator; see tests/accuracy/README.md.
+#
+# pytest runs host-side (it needs .venv and lm_eval; the image stays lean and the
+# gsm8k download stays off the compute node), reaching vLLM on its `aic` bridge
+# IP.  vLLM publishes no ports, so a bridge IP -- not localhost -- is the only
+# host-side route; readiness probes use the `docker exec ... 127.0.0.1` form that
+# the rest of the repo uses.
+#
+#   AIC_ACCURACY_MODEL          model to serve            (default: AIC_TINY_MODEL)
+#   AIC_ACCURACY_LIMIT          cap gsm8k items           (default: 0 = full split)
+#   AIC_ACCURACY_DELTA          allowed tiered-vs-baseline gap (default: 0.02)
+#   AIC_ACCURACY_SKIP_BASELINE  1 = skip phase 1          (default: 0)
+#   AIC_ACCURACY_TIME/CPUS/MEM  Slurm sizing
+#   AIC_ACCURACY_READY_TIMEOUT  x5s waits for the endpoint (default: 120)
+AIC_ACCURACY_MODEL="${AIC_ACCURACY_MODEL:-${AIC_TINY_MODEL}}"
+AIC_ACCURACY_LIMIT="${AIC_ACCURACY_LIMIT:-0}"
+AIC_ACCURACY_DELTA="${AIC_ACCURACY_DELTA:-0.02}"
+AIC_ACCURACY_RESTART_LIMIT="${AIC_ACCURACY_RESTART_LIMIT:-200}"
+AIC_ACCURACY_SKIP_BASELINE="${AIC_ACCURACY_SKIP_BASELINE:-0}"
+AIC_ACCURACY_TIME="${AIC_ACCURACY_TIME:-01:30:00}"
+AIC_ACCURACY_CPUS="${AIC_ACCURACY_CPUS:-8}"
+AIC_ACCURACY_MEM="${AIC_ACCURACY_MEM:-32G}"
+AIC_ACCURACY_READY_TIMEOUT="${AIC_ACCURACY_READY_TIMEOUT:-120}"   # x5s = up to 10 min
+
+cmd_accuracy_test() {
+    _pick_compress
+    local tarball; tarball="$(_tarball_path)"
+    [[ -r "${tarball}" ]] || die "tarball not found: ${tarball} (run 'build' first)"
+
+    local -a _sel
+    if [[ -n "${AIC_TEST_NODE:-}" ]]; then
+        _sel=(--nodelist="${AIC_TEST_NODE}")
+        log "accuracy-test on ${AIC_TEST_NODE} via sbatch (partition ${AIC_BUILD_PARTITION})"
+    else
+        _sel=(--constraint="${AIC_TEST_CONSTRAINT}")
+        log "accuracy-test via sbatch (partition ${AIC_BUILD_PARTITION}, constraint ${AIC_TEST_CONSTRAINT})"
+    fi
+    log "image: ${AIC_IMAGE}  model: ${AIC_ACCURACY_MODEL}  limit: ${AIC_ACCURACY_LIMIT:-full}"
+
+    local remote_script
+    remote_script="$(cat <<REMOTE
+set -uo pipefail
+command -v docker >/dev/null 2>&1 || { echo "\$(hostname): docker not found" >&2; exit 1; }
+echo "[accuracy-test] host=\$(hostname) docker=\$(docker --version)"
+
+# Load the image from the shared tarball only when needed (same marker logic as
+# tiny-test): reload when forced, absent, or the tarball is newer.
+_marker="/var/tmp/aic-loaded-\$(id -u)-\$(echo '${AIC_IMAGE}' | tr '/:' '__').mtime"
+_tar_mtime="\$(stat -c %Y '${tarball}' 2>/dev/null || echo 0)"
+_have_img="\$(docker images -q '${AIC_IMAGE}')"
+_loaded_mtime="\$(cat "\${_marker}" 2>/dev/null || echo 0)"
+if [ "${AIC_FORCE_LOAD:-0}" = "1" ] || [ -z "\${_have_img}" ] || [ "\${_tar_mtime}" -gt "\${_loaded_mtime}" ]; then
+    echo "[accuracy-test] loading ${AIC_IMAGE} from ${tarball}"
+    ${DECOMPRESS_CMD} '${tarball}' | docker load >/dev/null
+    echo "\${_tar_mtime}" > "\${_marker}" 2>/dev/null || true
+else
+    echo "[accuracy-test] image up to date on \$(hostname) (id \${_have_img})"
+fi
+
+cd '${AIC_DAY_DIR}'
+# shellcheck source=/dev/null
+source '${AIC_DAY_DIR}/monitoring/monitoring-lib.sh'
+ensure_compose || { echo "[accuracy-test] docker compose unavailable" >&2; exit 1; }
+
+# --- host-side pytest venv ---------------------------------------------------
+# lm_eval is deliberately NOT in the image: the gsm8k download does not belong
+# on a compute node's container and the image stays lean.  PYTHONNOUSERSITE=1
+# because ~/.local shadows venv site-packages on these boxes.
+export PYTHONNOUSERSITE=1
+VENV='${AIC_DAY_DIR}/.venv'
+if [ ! -x "\${VENV}/bin/pytest" ]; then
+    echo "[accuracy-test] creating host venv at \${VENV}"
+    python3 -m venv "\${VENV}" || { echo "[accuracy-test] FAIL: venv creation failed" >&2; exit 1; }
+    "\${VENV}/bin/pip" -q install --upgrade pip
+    "\${VENV}/bin/pip" -q install -e '${AIC_DAY_DIR}[accuracy]' || {
+        echo "[accuracy-test] FAIL: could not install the accuracy extra" >&2; exit 1; }
+fi
+PYTEST="\${VENV}/bin/pytest"
+PYBIN="\${VENV}/bin/python"
+
+export AIC_ACCURACY_MODEL='${AIC_ACCURACY_MODEL}'
+export AIC_ACCURACY_LIMIT='${AIC_ACCURACY_LIMIT}'
+export AIC_ACCURACY_DELTA='${AIC_ACCURACY_DELTA}'
+
+# --- shared compose env ------------------------------------------------------
+export IMAGE_REF='${AIC_IMAGE}'
+export IMAGE_NAME='${AIC_IMAGE%:*}'
+export ROCM_ARCH='${AIC_ROCM_ARCH}'
+export GPU=0
+export VLLM_MODEL='${AIC_ACCURACY_MODEL}'
+export HF_HOME='${HF_HOME}'
+export HF_TOKEN='${HF_TOKEN:-}'
+export HF_HUB_OFFLINE=0 TRANSFORMERS_OFFLINE=0
+export LOG="\${_logdir}"
+export NVME_DATA=/tmp/aic-accuracy-nvme
+export NFS_DATA=/tmp/aic-accuracy-nfs
+# 5-shot gsm8k prompts land around 900-1300 tokens plus generation; 4096 leaves
+# headroom without inflating the KV footprint.  Watch the vLLM log for
+# truncation warnings if the model or shot count changes.
+export VLM_MAX_MODEL_LEN=4096
+export VLM_MAX_NUM_BATCHED_TOKENS=4096
+export VLM_ATTENTION_BACKEND=TRITON_ATTN
+export VLM_KV_CACHE_DTYPE=auto
+mkdir -p "\${NVME_DATA}" "\${NFS_DATA}" "\${HF_HOME}"
+
+compose() { docker compose -f '${AIC_DAY_DIR}/docker/docker-compose.yml' "\$@"; }
+
+# --- teardown ----------------------------------------------------------------
+# vLLM shares lmcache's PID ns (for cross-container HIP IPC), which blocks docker
+# from reaping vLLM's EngineCore children -> compose down/docker rm hang.  Force-
+# kill the stack first, then tear down.  Load-bearing; see cmd_tiny_test.
+_teardown() {
+    local tag="\$1" svc c
+    for svc in vllm lmcache; do
+        timeout 30 compose logs --no-color --no-log-prefix "\$svc" \
+            > "\${_logdir}/accuracy-\${tag}-\${svc}.log" 2>&1 || true
+    done
+    pkill -9 -f 'vllm.entrypoints.openai' 2>/dev/null || true
+    pkill -9 -f 'EngineCore'              2>/dev/null || true
+    pkill -9 -f 'lmcache server'          2>/dev/null || true
+    sleep 2
+    timeout 60 compose --profile cache down --remove-orphans --timeout 5 >/dev/null 2>&1 || true
+    for c in aic-vllm-gpu0 aic-lmcache; do timeout 30 docker rm -f "\$c" >/dev/null 2>&1 || true; done
+}
+cleanup() {
+    _teardown final
+    rm -rf /tmp/aic-accuracy-nvme /tmp/aic-accuracy-nfs 2>/dev/null || true
+}
+trap cleanup EXIT
+
+# --- helpers -----------------------------------------------------------------
+# Readiness is probed from inside the container: vLLM publishes no ports, so the
+# Slurm host's loopback cannot reach it (the convention used across the repo).
+_wait_ready() {
+    local tag="\$1" i
+    for i in \$(seq 1 ${AIC_ACCURACY_READY_TIMEOUT}); do
+        if docker exec aic-vllm-gpu0 curl -fsS http://127.0.0.1:8000/v1/models >/dev/null 2>&1; then
+            echo "[accuracy-test] \${tag}: endpoint ready"
+            return 0
+        fi
+        sleep 5
+    done
+    echo "[accuracy-test] FAIL: \${tag}: vLLM never became ready" >&2
+    compose logs --tail 80 --no-color vllm 2>&1 | sed 's/^/  [vllm] /'
+    return 1
+}
+
+# pytest is host-side but vLLM lives on the aic bridge, so hand pytest the
+# container's bridge IP.  Verified host-routable before this was relied on; if a
+# node ever fails this check the fallback is to run pytest inside the client
+# container (already on aic, repo mounted), at the cost of a gsm8k download on
+# the compute node.
+_endpoint_url() {
+    local ip
+    ip="\$(docker inspect -f '{{(index .NetworkSettings.Networks "aic").IPAddress}}' aic-vllm-gpu0 2>/dev/null)"
+    [ -n "\${ip}" ] || { echo "[accuracy-test] FAIL: no aic bridge IP for aic-vllm-gpu0" >&2; return 1; }
+    curl -fsS --max-time 10 "http://\${ip}:8000/v1/models" >/dev/null 2>&1 || {
+        echo "[accuracy-test] FAIL: host cannot reach \${ip}:8000 on the aic bridge" >&2
+        echo "[accuracy-test]       (fallback: run pytest inside the client container)" >&2
+        return 1; }
+    echo "http://\${ip}:8000/v1"
+}
+
+_pool_bytes() { du -sb "\${NVME_DATA}" 2>/dev/null | cut -f1 || echo 0; }
+
+# ===========================================================================
+# Phase 1: vram_only arm -- plain vLLM, KV never leaves VRAM
+# ===========================================================================
+BASELINE_SCORE=""
+if [ '${AIC_ACCURACY_SKIP_BASELINE}' = "1" ]; then
+    echo "[accuracy-test] === Phase 1 SKIPPED (AIC_ACCURACY_SKIP_BASELINE=1) ==="
+    echo "[accuracy-test] no differential this run; the absolute floor still applies"
+else
+    echo "[accuracy-test] === Phase 1: vram_only arm ==="
+    # No LMCache: vllm owns its IPC ns, no KV_TRANSFER_ARG, no --profile cache.
+    export VLLM_IPC_MODE=shareable
+    export VLLM_PID_MODE=
+    export KV_TRANSFER_ARG=
+    export AIC_L2_BACKEND=none
+    export VLM_GPU_MEMORY_UTILIZATION=0.90
+    if ! compose up -d vllm; then
+        echo "[accuracy-test] FAIL: baseline compose up failed" >&2
+        compose logs --tail 60 --no-color vllm 2>&1 | sed 's/^/  [vllm] /'
+        exit 1
+    fi
+    _wait_ready vram_only || exit 1
+    BASE_URL="\$(_endpoint_url)" || exit 1
+    echo "[accuracy-test] scoring baseline at \${BASE_URL}"
+    "\${PYBIN}" '${AIC_DAY_DIR}/tests/accuracy/score_endpoint.py' "\${BASE_URL}" \
+        --out "\${_logdir}/baseline-score.json" || {
+        echo "[accuracy-test] FAIL: baseline scoring failed" >&2; exit 1; }
+    BASELINE_SCORE="\$("\${PYBIN}" -c "import json;print(json.load(open('\${_logdir}/baseline-score.json'))['score'])")"
+    echo "[accuracy-test] baseline score: \${BASELINE_SCORE}"
+    _teardown vram_only
+    sleep 5
+fi
+
+# ===========================================================================
+# Phase 2: kvd arm -- LMCache + NIXL POSIX NVMe L2
+# ===========================================================================
+echo "[accuracy-test] === Phase 2: kvd arm (LMCache + NIXL POSIX L2) ==="
+# A constrained VRAM budget is what makes this test non-vacuous: without eviction
+# pressure the KV never reaches L2 and the differential compares two VRAM runs.
+# Phase 3 asserts the eviction actually happened.
+export VLM_GPU_MEMORY_UTILIZATION=0.15
+export LMCACHE_L1_SIZE_GB=1
+# NIXL POSIX: no GPUDirect/hipFile requirement, so this runs on any node.
+export AIC_L2_BACKEND=nixl_posix
+export AIC_NIXL_BACKEND=POSIX
+export VLLM_IPC_MODE=service:lmcache
+export VLLM_PID_MODE=service:lmcache
+# Sharing lmcache's PID/IPC namespaces does not share its network namespace;
+# resolve the peer over the compose network rather than vLLM's own loopback.
+export KV_TRANSFER_ARG="--kv-transfer-config '{\"kv_connector\":\"LMCacheMPConnector\",\"kv_role\":\"kv_both\",\"kv_connector_extra_config\":{\"lmcache.mp.host\":\"tcp://aic-lmcache\",\"lmcache.mp.port\":6555}}'"
+
+POOL_BEFORE="\$(_pool_bytes)"
+if ! compose --profile cache up -d; then
+    echo "[accuracy-test] FAIL: tiered compose up failed" >&2
+    compose logs --tail 60 --no-color lmcache 2>&1 | sed 's/^/  [lmcache] /'
+    compose logs --tail 60 --no-color vllm    2>&1 | sed 's/^/  [vllm]    /'
+    exit 1
+fi
+_wait_ready kvd || exit 1
+TIERED_URL="\$(_endpoint_url)" || exit 1
+echo "[accuracy-test] tiered endpoint: \${TIERED_URL}"
+
+export AIC_ACCURACY_TIERED_URL="\${TIERED_URL}"
+export AIC_ACCURACY_SCORE_OUT="\${_logdir}/tiered-score.json"
+[ -n "\${BASELINE_SCORE}" ] && export AIC_ACCURACY_BASELINE_SCORE="\${BASELINE_SCORE}"
+
+rc=0
+"\${PYTEST}" '${AIC_DAY_DIR}/tests/accuracy' -v -rs --no-header || rc=\$?
+
+# ===========================================================================
+# Phase 3: liveness -- prove the tiered arm actually tiered
+# ===========================================================================
+echo "[accuracy-test] === Phase 3: NVMe pool liveness ==="
+POOL_AFTER="\$(_pool_bytes)"
+POOL_FILES="\$(find "\${NVME_DATA}" -type f -size +0c 2>/dev/null | wc -l)"
+POOL_GROWTH=\$(( POOL_AFTER - POOL_BEFORE ))
+echo "[accuracy-test] pool bytes before=\${POOL_BEFORE} after=\${POOL_AFTER} growth=\${POOL_GROWTH} non-empty-files=\${POOL_FILES}"
+if [ "\${POOL_FILES}" -eq 0 ] || [ "\${POOL_GROWTH}" -le 0 ]; then
+    echo "[accuracy-test] FAIL Phase 3: the NVMe pool did not grow -- KV never reached L2." >&2
+    echo "[accuracy-test]   before=\${POOL_BEFORE} after=\${POOL_AFTER} growth=\${POOL_GROWTH} files=\${POOL_FILES}" >&2
+    echo "[accuracy-test]   The differential compared two VRAM-only runs, so a pass here" >&2
+    echo "[accuracy-test]   would be vacuous.  Lower VLM_GPU_MEMORY_UTILIZATION or" >&2
+    echo "[accuracy-test]   LMCACHE_L1_SIZE_GB to force eviction." >&2
+    rc=1
+else
+    echo "[accuracy-test] OK Phase 3: pool grew by \${POOL_GROWTH} bytes across \${POOL_FILES} files"
+fi
+
+if [ "\${rc}" != "0" ]; then
+    echo "[accuracy-test] FAIL: phases 1-3 did not pass; skipping the restart phase" >&2
+    exit "\${rc}"
+fi
+
+# ===========================================================================
+# Phase 4: restart vLLM only -- LMCache keeps DRAM/NVMe state
+# ===========================================================================
+echo "[accuracy-test] === Phase 4: restart vLLM, re-score from the tier ==="
+TIERED_SCORE="\$("\${PYBIN}" -c "import json;print(json.load(open('\${_logdir}/tiered-score.json'))['score'])" 2>/dev/null)" || {
+    echo "[accuracy-test] FAIL: no tiered score recorded in phase 2" >&2; exit 1; }
+
+pkill -9 -f 'vllm.entrypoints.openai' 2>/dev/null || true
+pkill -9 -f 'EngineCore'              2>/dev/null || true
+sleep 3
+if ! compose restart vllm; then
+    echo "[accuracy-test] FAIL: compose restart vllm failed" >&2; exit 1
+fi
+_wait_ready kvd-restarted || exit 1
+TIERED_URL="\$(_endpoint_url)" || exit 1
+
+# Same prompts against a warm tier => guaranteed cache hits, so every block is
+# served from DRAM/NVMe rather than recomputed.  A drop here is retrieval
+# corruption specifically.  Capped at AIC_ACCURACY_RESTART_LIMIT: this phase
+# tests retrieval, not statistical quality, and a full re-score doubles the job.
+export AIC_ACCURACY_TIERED_URL="\${TIERED_URL}"
+export AIC_ACCURACY_LIMIT='${AIC_ACCURACY_RESTART_LIMIT}'
+export AIC_ACCURACY_REFERENCE_SCORE="\${TIERED_SCORE}"
+unset AIC_ACCURACY_BASELINE_SCORE AIC_ACCURACY_SCORE_OUT
+"\${PYTEST}" '${AIC_DAY_DIR}/tests/accuracy' -v -rs --no-header \
+    -k 'restart' || {
+    echo "[accuracy-test] FAIL: phase 4 -- score regressed after restart" >&2
+    exit 1; }
+
+echo "[accuracy-test] ALL PHASES PASSED"
+exit 0
+REMOTE
+)"
+
+    local -a _gres_arg=(); [[ "${AIC_SPUR_CLUSTER}" != "1" ]] && _gres_arg=(--gres=gpu:1)
+    _sbatch_run aic-accuracy-test accuracy-test "${remote_script}" \
+        "${_sel[@]}" \
+        "${_gres_arg[@]}" \
+        --nodes=1 --ntasks=1 \
+        --cpus-per-task="${AIC_ACCURACY_CPUS}" --mem="${AIC_ACCURACY_MEM}" \
+        --time="${AIC_ACCURACY_TIME}"
+    log "accuracy-test complete"
+}
+
 # --- main --------------------------------------------------------------------
 main() {
     local sub="${1:-all}"
@@ -1321,11 +1644,12 @@ main() {
         push)            cmd_push ;;
         test)            cmd_test ;;
         tiny-test)       cmd_tiny_test ;;
+        accuracy-test)   cmd_accuracy_test ;;
         all)             cmd_build; cmd_build_exporters; cmd_load ;;
         -h|--help|help)
             sed -n '2,70p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
             ;;
-        *) die "unknown command '${sub}' (use: build | build-exporters | load | push | test | tiny-test | all | help)" ;;
+        *) die "unknown command '${sub}' (use: build | build-exporters | load | push | test | tiny-test | accuracy-test | all | help)" ;;
     esac
 }
 
