@@ -98,18 +98,53 @@ make accuracy-test-fast                                # SPUR, PR path
 
 ## Choosing DELTA
 
-<!-- TASK-3-PLACEHOLDER: replace with the measured spread. -->
+`DELTA = 0.02` is **~6σ** of measured baseline noise. Derived, not guessed.
 
-**Not yet measured.** `DELTA=0.02` is a placeholder pending the baseline
-variance measurement. The procedure: run the VRAM-only arm three times with the
-same model and seed, take the standard deviation of the three strict-match
-scores, and set `DELTA` to roughly `3σ`. If σ turns out comparable to 0.02 on
-`Qwen2.5-0.5B-Instruct` — plausible, since it scores only ~0.3 on gsm8k, where
-run-to-run noise is a larger fraction of the score — move to `Qwen3-0.6B`
-instead of widening the gate into uselessness.
+Three consecutive full-split gsm8k runs against one VRAM-only arm, same model,
+same node, same weight load — SPUR job 6223 on `crsuse2-m2m-216`, 2026-08-12,
+`Qwen/Qwen2.5-0.5B-Instruct`, 5-shot, `exact_match,strict-match`, all 1319 test
+items:
 
-Record the measured numbers here when they exist. The next person to touch
-`DELTA` needs to see what it was derived from.
+| Run | Score |
+|---|---|
+| 1 | 0.19864 |
+| 2 | 0.20470 |
+| 3 | 0.20318 |
+
+```
+mean   0.2022
+range  0.0061
+sigma  0.00316   (sample stdev, n=3)
+3-sigma 0.0095
+```
+
+So the scorer's run-to-run spread is about a third of `DELTA`. A tiered arm
+would have to fall roughly six standard deviations below the baseline to trip
+the gate, which is the margin we want: the assertion should fire on corruption,
+not on noise.
+
+Two notes for whoever revisits this:
+
+- **The measured σ is much tighter than the binomial floor.** A mean of 0.2022
+  over n=1319 has a sampling standard error of 0.0111 — 3.5× the observed σ.
+  That is expected and not a contradiction: all three runs score the *same* 1319
+  items, so the binomial term is common-mode and cancels. It would dominate if
+  you ever compared across different item subsets, which is exactly what
+  `AIC_ACCURACY_LIMIT` does — so **do not reuse this DELTA for a
+  limit-restricted differential** without re-measuring. The restart phase is
+  safe because it re-scores the same capped prefix.
+- **The model scores ~0.20, lower than upstream's ~0.41 for `Qwen3-0.6B`.**
+  That was the concern that motivated measuring: at a low score, run-to-run
+  noise could have been a large fraction of DELTA. It is not. If a future change
+  makes the spread comparable to DELTA, prefer moving to `Qwen3-0.6B` over
+  widening DELTA — a gate that tolerates 0.05 of drift is barely a gate.
+
+`VLM_MAX_MODEL_LEN=4096` was confirmed adequate in the same run: zero truncation
+warnings in the vLLM log across all three passes.
+
+Wall clock: three full-split scoring passes plus one bringup took 3m10s total on
+a SPUR GPU node, so a single full-split pass is well under a minute once the
+endpoint is up. Bringup and weight load, not scoring, dominate the job.
 
 ## Adding a model to `expected.json`
 

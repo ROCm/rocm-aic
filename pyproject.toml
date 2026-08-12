@@ -46,6 +46,11 @@ accuracy = [
     # `local-completions` API model, which imports tenacity lazily and raises
     # ModuleNotFoundError at evaluate time without it.
     "lm-eval[api]>=0.4.9",
+    # lm_eval imports transformers for tokenization even against a remote
+    # endpoint. It is not pulled in by lm-eval[api], and the `dev` extra only
+    # provides it transitively via `bench` -- so installing `accuracy` alone
+    # (which is what the compute node does) fails at evaluate time without it.
+    "transformers>=4.40",
     "pytest>=8",
 ]
 dev = ["rocm-aic[bench,plot,accuracy]"]
