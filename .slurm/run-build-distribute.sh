@@ -1447,7 +1447,13 @@ compose() { docker compose -f '${AIC_DAY_DIR}/docker/docker-compose.yml' "\$@"; 
 _teardown() {
     local tag="\$1" svc c
     for svc in vllm lmcache; do
-        timeout 30 compose logs --no-color --no-log-prefix "\$svc" \
+        # 'timeout' needs a real executable, and compose() is a shell function --
+        # 'timeout 30 compose ...' fails with "No such file or directory" and
+        # captures nothing.  Invoke docker compose directly instead: these logs
+        # are the only post-mortem for a failed arm, so silently empty files are
+        # worse than useless.
+        timeout 30 docker compose -f '${AIC_DAY_DIR}/docker/docker-compose.yml' \
+            logs --no-color --no-log-prefix "\$svc" \
             > "\${_logdir}/accuracy-\${tag}-\${svc}.log" 2>&1 || true
     done
     pkill -9 -f 'vllm.entrypoints.openai' 2>/dev/null || true
