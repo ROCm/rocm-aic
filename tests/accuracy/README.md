@@ -143,8 +143,37 @@ Two notes for whoever revisits this:
 warnings in the vLLM log across all three passes.
 
 Wall clock: three full-split scoring passes plus one bringup took 3m10s total on
-a SPUR GPU node, so a single full-split pass is well under a minute once the
-endpoint is up. Bringup and weight load, not scoring, dominate the job.
+a SPUR GPU node, so a single full-split VRAM-only pass is well under a minute
+once the endpoint is up.
+
+## What a full two-arm run looks like
+
+SPUR job 6235, `crsuse2-m2m-006`, 2026-08-12 — the first end-to-end run of the
+real driver. All four phases passed.
+
+| Phase | Result | Wall clock |
+|---|---|---|
+| 1 — `vram_only` score | 0.20394 | ~40 s scoring |
+| 2 — `kvd` score + assertions | 0.19257, 3 passed | 48 m 55 s |
+| 3 — NVMe pool liveness | grew 15,489,564,672 B across 924 files | instant |
+| 4 — restart + re-score | 2 passed | 1 m 07 s |
+
+**The tiered arm scores 0.0114 below the baseline** — a pass, but it uses 57% of
+the `DELTA=0.02` allowance and is 3.6σ of same-arm noise, so it is more than
+sampling scatter. The most likely cause is benign and structural rather than
+corruption: the tiered arm runs at `VLM_GPU_MEMORY_UTILIZATION=0.15` against the
+baseline's 0.90, deliberately, to force eviction. That changes batching and
+block reuse, and chunked prefill over reassembled KV is not bit-identical to a
+single fresh prefill. What argues against corruption specifically: phase 4
+re-scored within DELTA after a restart, when every block came back from NVMe.
+
+Worth keeping an eye on. If that gap widens toward DELTA, the diagnosis to run
+first is a tiered arm at the *baseline's* memory utilisation — if the gap
+disappears, it is the eviction pressure, not the tier.
+
+**The tiered arm is ~70× slower to score** (48m55s vs ~40s). That is the number
+the CI `timeout-minutes` is set from, and the reason the PR path caps items
+rather than running the full split.
 
 ## Why the floor widens when you cap the item count
 
