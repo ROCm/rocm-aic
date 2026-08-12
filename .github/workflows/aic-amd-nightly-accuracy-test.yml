@@ -31,8 +31,11 @@ jobs:
   accuracy-test:
     if: github.event.workflow_run.conclusion == 'success'
     runs-on: [self-hosted, rocm-aic-cicd]
-    # TASK-3-PLACEHOLDER: set from the measured two-arm wall clock plus headroom.
-    timeout-minutes: 120
+    # A measured two-arm full-split run took ~58 min (SPUR job 6235): two
+    # bringups ~6, baseline scoring ~1, tiered scoring ~49, restart ~2. The
+    # tiered pass dominates -- scoring through LMCache is ~70x slower than
+    # VRAM-only. 150 leaves ~2.6x headroom for a slower node or a cold HF cache.
+    timeout-minutes: 150
     env:
       AIC_SPUR_HOST:       ${{ secrets.AIC_SPUR_HOST }}
       AIC_SHARED_NFS:      ${{ secrets.AIC_SHARED_NFS }}
