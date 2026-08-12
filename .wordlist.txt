@@ -202,3 +202,7 @@ sysfs
 templated
 tracefs
 xGMI
+eval
+gsm
+liveness
+lm
