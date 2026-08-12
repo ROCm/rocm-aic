@@ -68,6 +68,13 @@ FLOOR_RTOL = 0.05
 
 NUM_CONCURRENT = int(os.getenv("AIC_ACCURACY_CONCURRENT", "32"))
 
+# The two arms cannot be up at once: they share a container name, a port, and a
+# GPU. So the driver runs them sequentially and hands the first arm's score to
+# the second arm's pytest invocation through this variable. When it is set, the
+# baseline is not re-measured (and no baseline endpoint is needed).
+_BASELINE_SCORE = os.getenv("AIC_ACCURACY_BASELINE_SCORE")
+BASELINE_SCORE = float(_BASELINE_SCORE) if _BASELINE_SCORE else None
+
 # Set by the restart phase of the Slurm driver: the tiered score measured
 # before vLLM was restarted. When set, `test_score_survives_restart` compares
 # the current tiered score against it.
@@ -134,8 +141,20 @@ def tiered_score(tiered_url: str) -> float:
 
 
 @pytest.fixture(scope="session")
-def baseline_score(baseline_url: str) -> float:
-    score = _score(baseline_url)
+def baseline_score(request: pytest.FixtureRequest) -> float:
+    """Baseline score, either handed in by the driver or measured here.
+
+    Prefer the handed-in value: the driver scores the VRAM-only arm first, tears
+    it down (the arms share a container name, a port, and the GPU, so they
+    cannot coexist), then brings up the tiered arm. Requesting `baseline_url`
+    only in the measure-it-here path keeps the sequential driver from needing a
+    live baseline endpoint it has already torn down.
+    """
+    if BASELINE_SCORE is not None:
+        print(f"\n[accuracy] baseline {TASK} {FILTER} = {BASELINE_SCORE:.4f}  (supplied)")
+        return BASELINE_SCORE
+    url = request.getfixturevalue("baseline_url")
+    score = _score(url)
     print(f"\n[accuracy] baseline {TASK} {FILTER} = {score:.4f}  (limit={LIMIT})")
     return score
 
