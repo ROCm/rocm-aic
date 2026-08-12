@@ -12,7 +12,7 @@ tier that returns subtly wrong KV blocks which still decode to plausible text.
 | Test | Catches |
 |---|---|
 | `test_tiered_matches_baseline` | KV corruption. Scores a VRAM-only arm and a tiered arm in the same job and asserts `tiered >= baseline - DELTA`. |
-| `test_tiered_above_floor` | Both arms breaking identically — which the differential cannot see, because the difference stays zero. Asserts `tiered >= expected.json[MODEL] - 0.05`. |
+| `test_tiered_above_floor` | Both arms breaking identically — which the differential cannot see, because the difference stays zero. Asserts `tiered >= expected.json[MODEL] - slack`. |
 
 `test_score_survives_restart` runs only in the Slurm driver's restart phase,
 where vLLM is restarted but LMCache keeps its DRAM/NVMe state. Every prompt is
@@ -145,6 +145,31 @@ warnings in the vLLM log across all three passes.
 Wall clock: three full-split scoring passes plus one bringup took 3m10s total on
 a SPUR GPU node, so a single full-split pass is well under a minute once the
 endpoint is up. Bringup and weight load, not scoring, dominate the job.
+
+## Why the floor widens when you cap the item count
+
+The floor's slack is `max(0.05, 3 * SE(limit))`, not a flat 0.05.
+
+`FLOOR_RTOL = 0.05` is calibrated for the full 1319-item split, where the
+binomial standard error is 0.011 — three sigma is 0.033, comfortably inside it.
+Capping the item count inflates that error as `1/sqrt(n)`:
+
+| Items | SE | 3×SE | Flat 0.05 floor |
+|---|---|---|---|
+| 1319 (full) | 0.011 | 0.033 | fine |
+| 500 | 0.018 | 0.054 | marginal |
+| 200 (fast path) | 0.028 | 0.085 | **flakes** |
+| 100 | 0.040 | 0.121 | **flakes badly** |
+
+At the fast path's `LIMIT=200`, a flat 0.05 floor would fail a perfectly healthy
+run a large fraction of the time — sampling noise alone exceeds the threshold.
+Scaling the slack makes a capped run a *weaker* gate rather than a *flaky* one,
+which is the right trade for a PR-path check. The nightly runs the full split,
+where the floor stays tight.
+
+This is the same reason `DELTA` must not be reused for a limit-restricted
+differential: there the two arms score the *same* capped subset, so the sampling
+term cancels — but only if both arms use the identical prefix.
 
 ## Adding a model to `expected.json`
 

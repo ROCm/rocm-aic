@@ -42,6 +42,7 @@ same code; see ``README.md`` in this directory.
 from __future__ import annotations
 
 import json
+import math
 import os
 import pathlib
 
@@ -63,7 +64,8 @@ LIMIT = int(os.getenv("AIC_ACCURACY_LIMIT", "0")) or None
 # see README.md.
 DELTA = float(os.getenv("AIC_ACCURACY_DELTA", "0.02"))
 
-# Absolute-floor slack, matching upstream's RTOL.
+# Absolute-floor slack, matching upstream's RTOL. Applies as-is to a full-split
+# run; `_floor_slack` widens it when LIMIT makes sampling noise the larger term.
 FLOOR_RTOL = 0.05
 
 NUM_CONCURRENT = int(os.getenv("AIC_ACCURACY_CONCURRENT", "32"))
@@ -100,6 +102,25 @@ def _expected_values() -> dict[str, float]:
 def _meets_accuracy_threshold(measured: float, expected: float, rtol: float) -> bool:
     """One-sided: overshooting the expected value is never a failure."""
     return measured >= expected - rtol
+
+
+def _floor_slack(expected: float, limit: int | None) -> float:
+    """Floor tolerance, widened for the sampling noise a small LIMIT introduces.
+
+    FLOOR_RTOL=0.05 is calibrated for the full 1319-item split, where the
+    binomial standard error is 0.011 and three sigma (0.033) still fits inside
+    it. Capping the item count inflates that error as 1/sqrt(n): at LIMIT=200 it
+    is 0.028, so three sigma is 0.085 -- and a fixed 0.05 floor would fail a
+    perfectly healthy run about a third of the time.
+
+    So the slack is max(FLOOR_RTOL, 3 * SE(limit)). This deliberately makes a
+    capped run a weaker gate rather than a flaky one; the nightly runs the full
+    split, where the floor stays tight.
+    """
+    if not limit:
+        return FLOOR_RTOL
+    se = math.sqrt(max(expected * (1.0 - expected), 0.0) / limit)
+    return max(FLOOR_RTOL, 3.0 * se)
 
 
 def _score(base_url: str) -> float:
@@ -193,11 +214,13 @@ def test_tiered_above_floor(tiered_score: float) -> None:
             "add one to enable this assertion (see README.md). "
             "An unknown model is a config gap, not a regression."
         )
-    assert _meets_accuracy_threshold(tiered_score, expected, FLOOR_RTOL), (
+    slack = _floor_slack(expected, LIMIT)
+    assert _meets_accuracy_threshold(tiered_score, expected, slack), (
         f"tiered arm fell below the absolute floor\n"
         f"  model:    {MODEL}\n"
         f"  task:     {TASK} {FILTER} (limit={LIMIT}, {NUM_FEWSHOT}-shot)\n"
-        f"  expected: {expected:.4f} (floor {expected - FLOOR_RTOL:.4f})\n"
+        f"  expected: {expected:.4f} (floor {expected - slack:.4f}, "
+        f"slack {slack:.4f}{'' if slack == FLOOR_RTOL else ' widened for LIMIT'})\n"
         f"  measured: {tiered_score:.4f}"
     )
 
