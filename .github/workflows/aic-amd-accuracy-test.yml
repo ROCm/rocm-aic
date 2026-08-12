@@ -94,8 +94,11 @@ jobs:
     needs: authorize
     if: needs.authorize.outputs.should_run == 'true'
     runs-on: [self-hosted, rocm-aic-cicd]
-    # TASK-3-PLACEHOLDER: set from the measured fast-path wall clock plus headroom.
-    timeout-minutes: 60
+    # The fast path skips the baseline arm and caps gsm8k at 200 of 1319 items.
+    # Scaling the measured 49-min full-split tiered pass (SPUR job 6235) gives
+    # ~7 min of scoring, so ~13 min end to end including bringup and restart.
+    # 45 leaves ~3.4x headroom.
+    timeout-minutes: 45
     permissions:
       pull-requests: write
       statuses: write
