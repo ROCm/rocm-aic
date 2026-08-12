@@ -145,6 +145,17 @@ AIC_CI_SCRIPT_DIR := $(CURDIR)/.github/scripts
 
 AIC_FAST_ARCH ?= gfx950
 
+# ---- accuracy-test ---------------------------------------------------------
+# Knobs for the KV-integrity gate; see tests/accuracy/README.md.  Exported so
+# they reach run-build-distribute.sh, which reads them from the environment.
+# AIC_ACCURACY_FAST_LIMIT caps gsm8k on the PR path only -- the nightly runs
+# the full split so the score keeps its resolution.
+AIC_ACCURACY_FAST_LIMIT ?= 200
+export AIC_ACCURACY_MODEL AIC_ACCURACY_LIMIT AIC_ACCURACY_DELTA
+export AIC_ACCURACY_SKIP_BASELINE AIC_ACCURACY_RESTART_LIMIT
+export AIC_ACCURACY_TIME AIC_ACCURACY_CPUS AIC_ACCURACY_MEM
+export AIC_ACCURACY_READY_TIMEOUT
+
 # ---- SPUR cluster overrides ------------------------------------------------
 # When AIC_SPUR_CLUSTER=1, default storage paths to AIC_SHARED_NFS (the NFS
 # volume shared across all SPUR compute nodes) instead of /scratch (not present
@@ -246,7 +257,8 @@ EXPORT_TARBALL ?= $(CURDIR)/$(EXPORT_PREFIX)-$(_GEN_DATE)-$(_GIT_SHORT_REV)$(_GI
         ps shell-lmcache shell-vllm restart-vllm restart-lmcache cliff plot venv vllm-reset-test stress-grafana \
         monitoring-up monitoring-down monitoring-logs monitoring-build-exporters \
         dist-build dist-build-fast dist-build-exporters dist-build-monitoring dist-push \
-        smoke-test smoke-test-fast tiny-test tiny-test-fast install-ci-scripts \
+        smoke-test smoke-test-fast tiny-test tiny-test-fast \
+        accuracy-test accuracy-test-fast install-ci-scripts \
         cliff-submit cliff-short \
         cliff-kvd cliff-spur-l2 cliff-spur-l2-debug cliff-long-64k cliff-long-128k \
         export _check_hf_token _prep_dirs _check_gds_slab
@@ -298,6 +310,8 @@ help:
 	@echo "  make smoke-test-fast   Smoke-test the single-arch dev image (AIC_FAST_ARCH=$(AIC_FAST_ARCH))"
 	@echo "  make tiny-test         End-to-end serve check (MP stack + tiny model, one completion)"
 	@echo "  make tiny-test-fast    Fast variant of tiny-test"
+	@echo "  make accuracy-test     KV-integrity gate: differential lm_eval, two arms"
+	@echo "  make accuracy-test-fast  PR-path accuracy-test (tiered arm only, capped)"
 	@echo "  make install-ci-scripts  Deploy .github/scripts/spur-*.sh to $(AIC_CI_LIB_DIR) (sudo if needed)"
 	@echo "  make cliff-submit      sbatch the full 3-arm cliff sweep -> logs/<job-id>/"
 	@echo "  make cliff-kvd         sbatch focused KVD cliff: shared prefix, sparse c ladder (1,8,32,64,128,250)"
@@ -650,6 +664,21 @@ tiny-test-fast:
 	@# Must pin the SAME AIC_ROCM_ARCH as dist-build-fast and smoke-test-fast.
 	@$(MAKE) --no-print-directory tiny-test \
 	    AIC_ROCM_ARCH='$(AIC_FAST_ARCH)'
+
+accuracy-test: _check_hf_token   # KV-integrity gate: differential lm_eval over two arms
+	@# Scores a VRAM-only arm and a tiered (LMCache+NIXL) arm in one job and
+	@# asserts tiering KV did not change the answers.  See tests/accuracy/README.md.
+	"$(DIST)" accuracy-test
+
+accuracy-test-fast:            # PR-path accuracy-test: tiered arm only, capped items
+	@# Drops the baseline arm (halving the bringups) and caps gsm8k, so the
+	@# differential is lost but the absolute floor, liveness and restart
+	@# assertions all still run.  The nightly keeps both arms.
+	@# Must pin the SAME AIC_ROCM_ARCH as dist-build-fast.
+	@$(MAKE) --no-print-directory accuracy-test \
+	    AIC_ROCM_ARCH='$(AIC_FAST_ARCH)' \
+	    AIC_ACCURACY_SKIP_BASELINE=1 \
+	    AIC_ACCURACY_LIMIT='$(AIC_ACCURACY_FAST_LIMIT)'
 
 install-ci-scripts:            # Deploy .github/scripts/spur-*.sh to the runner's AIC_CI_LIB_DIR
 	@set -e; \
