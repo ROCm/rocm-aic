@@ -201,6 +201,8 @@ else
     AIC_BUILD_CONSTRAINT="${AIC_BUILD_CONSTRAINT:-CPUONLY}"
     AIC_TEST_CONSTRAINT="${AIC_TEST_CONSTRAINT:-GFX942&NVME}"
 fi
+AIC_SLURM_ACCOUNT="${AIC_SLURM_ACCOUNT:-}"
+AIC_PIP_WHEELS_DIR="${AIC_PIP_WHEELS_DIR:-}"
 AIC_BUILD_CPUS="${AIC_BUILD_CPUS:-32}"
 AIC_BUILD_TIME="${AIC_BUILD_TIME:-02:00:00}"
 AIC_LOAD_TIME="${AIC_LOAD_TIME:-00:30:00}"
@@ -339,6 +341,7 @@ PROLOGUE
             --controller="${AIC_SPUR_CONTROLLER}" \
             --job-name="${jobname}" \
             --partition="${AIC_BUILD_PARTITION}" \
+            ${AIC_SLURM_ACCOUNT:+--account="${AIC_SLURM_ACCOUNT}"} \
             --output=/dev/null \
             "$@" \
             "${tmpscript}" 2>&1)" || { rm -f "${tmpscript}"; die "sbatch submission failed: ${submit_out}"; }
@@ -431,6 +434,7 @@ PROLOGUE
         "${_stdbuf[@]}" sbatch --parsable --wait \
             --job-name="${jobname}" \
             --partition="${AIC_BUILD_PARTITION}" \
+            ${AIC_SLURM_ACCOUNT:+--account="${AIC_SLURM_ACCOUNT}"} \
             --output=/dev/null \
             "$@" \
             <<<"${script}" >"${idfile}" &
@@ -551,6 +555,18 @@ cmd_build() {
         _builder_setup="${_pre}${_mkdir}if ! docker buildx inspect ${AIC_BUILDX_BUILDER} >/dev/null 2>&1; then echo '[build] creating buildx builder ${AIC_BUILDX_BUILDER} (docker-container)'; docker buildx create --name ${AIC_BUILDX_BUILDER} --driver docker-container${_cfg_arg} >/dev/null; fi; docker buildx inspect --bootstrap ${AIC_BUILDX_BUILDER} >/dev/null"
     fi
 
+    # pip-wheels build context: supply a local wheel cache dir to skip the 6 GB
+    # torch download.  If AIC_PIP_WHEELS_DIR is unset, fall back to an empty
+    # sentinel dir on shared storage so BuildKit does not try to pull the
+    # non-existent docker.io/library/pip-wheels image.
+    local _pip_wheels_dir="${AIC_PIP_WHEELS_DIR}"
+    if [[ -z "${_pip_wheels_dir}" ]]; then
+        _pip_wheels_dir="${AIC_DAY_DIR}/.empty-pip-wheels"
+    fi
+    mkdir -p "${_pip_wheels_dir}"
+    local _pip_wheels_arg="--build-context pip-wheels=${_pip_wheels_dir}"
+    log "pip-wheels context: ${_pip_wheels_dir}"
+
     # The build + save block runs on ONE node so the saved tarball comes from the
     # image that was just built.  Values are baked in here (not passed via env)
     # to keep it robust regardless of sbatch environment propagation.
@@ -590,6 +606,7 @@ docker buildx build --builder ${AIC_BUILDX_BUILDER} --progress=plain --output ty
     ${_version_build_args} \
     ${_secret_arg} \
     ${_cache_args} \
+    ${_pip_wheels_arg} \
     -f "${AIC_DAY_DIR}/docker/Dockerfile" \
     -t "${AIC_IMAGE}" \
     -t "${latest_ref}" \
