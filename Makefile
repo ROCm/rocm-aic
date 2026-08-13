@@ -285,7 +285,7 @@ help:
 	@echo "  make build             Build the shared image ($(IMAGE_REF))"
 	@echo "  make up                Start lmcache + vllm (foreground, DRAM L1 + AIS_MT/NFS L2)"
 	@echo "  make up-batch          Start lmcache + vllm (background)"
-	@echo "  make up-dev            Start in dev mode: --enforce-eager skips CUDA graph capture (~60s faster, ~10% slower inference)"
+	@echo "  make up-dev            Start in dev mode: --enforce-eager skips HIP graph capture (~25s faster start, 3-5x slower inference -- dev only)"
 	@echo "  make up-monitoring     Start lmcache + vllm + prometheus + exporters (background)"
 	@echo "  make down-monitoring   Stop full stack including monitoring profile"
 	@echo "  make up-gds-l1         Start with hipFile GDS NVMe slab as L1 (foreground)"
@@ -444,7 +444,11 @@ up-batch: ensure-compose _check_hf_token _prep_dirs
 	    $(COMPOSE_CACHE) --profile monitoring up -d
 	@echo "Started. Use 'make logs' to follow or 'make down' to stop."
 
-up-dev: ensure-compose _check_hf_token _prep_dirs  # Fast startup: --enforce-eager skips CUDA graph capture (~60s faster)
+# --enforce-eager is a DEVELOPMENT convenience, not a tuning knob.  Measured on
+# MI300X / Qwen2.5-3B (2048 in / 512 out, .slurm/bench-serve.sh): it saves 25 s of
+# start-up and costs 4.8x in serving throughput at c=1, 3.3x at c=32 and 1.6x at
+# c=128, with TPOT p50 rising 3.5 ms -> 17.5 ms.  Never benchmark with it on.
+up-dev: ensure-compose _check_hf_token _prep_dirs  # Fast startup: --enforce-eager skips HIP graph capture (~25s faster)
 	@mkdir -p "$(AIC_METRICS_DIR)"
 	PROM_UID="$$(id -u)" PROM_GID="$$(id -g)" \
 	    VLLM_EXTRA_ARGS="--enforce-eager $${VLLM_EXTRA_ARGS}" \

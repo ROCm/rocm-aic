@@ -14,11 +14,14 @@ Pass/fail criteria
 
 Exit codes
 ----------
-  0  both L1 and L2 verified
+  0  L2 retrieval verified (L1 hits are informational -- with a flood large
+     enough to overflow L1, every anchor evicts and L1 hits are legitimately 0)
   1  test logic error / unexpected failure
-  2  L1 hits not observed
-  3  L2 hits not observed
-  4  both L1 and L2 hits missing
+  4  no L2 hits
+
+Note when running this under `make vllm-reset-test`: make normalises any recipe
+failure to exit 2, so the 4 never reaches the caller.  Parse the verdict lines
+("L2 retrieval PASS" / "FAIL") rather than the exit code -- see .slurm/l2-gate.sh.
 
 Usage (via make)
 ----------------
@@ -31,7 +34,8 @@ Env overrides (all optional)
   AIC_TEST_LMCACHE_URL  LMCache metrics URL       (default: http://aic-lmcache:8080)
   AIC_TEST_MODEL        Model name served by vLLM  (default: Qwen/Qwen2.5-3B-Instruct)
   AIC_TEST_ANCHORS      Number of anchor prompts   (default: 10)
-  AIC_TEST_FLOOD        Number of flood prompts    (default: 300)
+  AIC_TEST_FLOOD        Number of flood prompts    (default: 50; must exceed the
+                        L1 capacity in chunks or L2 is never exercised)
   AIC_TEST_TIMEOUT      Per-request timeout (s)    (default: 120)
   AIC_TEST_SEED         RNG seed for prompt generation (default: 42)
 """

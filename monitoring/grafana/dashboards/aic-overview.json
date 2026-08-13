@@ -5544,14 +5544,14 @@
           "type": "prometheus",
           "uid": "prometheus"
         },
-        "definition": "label_values(gpu_average_package_power, gpu_id)",
+        "definition": "label_values({__name__=~\"gpu_average_package_power|gpu_package_power\"}, gpu_id)",
         "hide": 0,
         "includeAll": true,
         "multi": true,
         "name": "gpu_id",
         "options": [],
         "query": {
-          "query": "label_values(gpu_average_package_power, gpu_id)",
+          "query": "label_values({__name__=~\"gpu_average_package_power|gpu_package_power\"}, gpu_id)",
           "refId": "A"
         },
         "refresh": 2,

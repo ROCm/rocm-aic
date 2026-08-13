@@ -198,10 +198,18 @@ services:
       - LMCACHE_COORDINATOR_URL=${LMCACHE_COORDINATOR_URL:-http://aic-lmcache-coordinator:9300}
       # Only set when a real config file is mounted (local_disk / advanced tuning).
       - LMCACHE_CONFIG_FILE=${LMCACHE_CONFIG_FILE:-}
-      - HIPFILE_ALLOW_COMPAT_MODE=false
+      # Overridable, but still false by default.  On the MI300X storage node
+      # (ext4 on /mnt/nixl-nvme-*) the AIS_MT backend cannot start at all with
+      # compat mode off: hipFileBufRegister returns err=5013 and lmcache exits 3,
+      # which takes vllm down with it ("can't join IPC of container ... not
+      # running").  Setting HIPFILE_ALLOW_COMPAT_MODE=true lets hipFile fall back
+      # to a buffered path, so the arm runs -- at the cost of the P2PDMA fastpath
+      # that is the whole point of AIS_MT.  Treat it as a diagnostic, not a
+      # deployment setting.
+      - HIPFILE_ALLOW_COMPAT_MODE=${HIPFILE_ALLOW_COMPAT_MODE:-false}
       # Keep hipFile's storage validation enabled. Bypassing it can issue direct
       # I/O against unsupported layouts and risks data corruption.
-      - HIPFILE_UNSUPPORTED_FILE_SYSTEMS=false
+      - HIPFILE_UNSUPPORTED_FILE_SYSTEMS=${HIPFILE_UNSUPPORTED_FILE_SYSTEMS:-false}
 
       # NIXL native Prometheus telemetry exporter (serves /metrics on :19090).
       # Requires the prometheus-cpp plugin compiled into the image (build-nixl.sh);
