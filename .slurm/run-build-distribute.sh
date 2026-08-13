@@ -1327,7 +1327,11 @@ compose() { docker compose -f '${AIC_DAY_DIR}/docker/docker-compose.yml' "\$@"; 
 cleanup() {
     local svc c
     for svc in vllm lmcache; do
-        timeout 30 compose logs --no-color --no-log-prefix "\$svc" > "\${_logdir}/tiny-\${svc}.log" 2>&1 || true
+        # NOT "timeout 30 compose ...": timeout execs a binary and cannot run a
+        # shell function, so it picked up /usr/bin/compose (mailcap) and every
+        # captured service log was 4 lines of "no compose mailcap rules found".
+        timeout 30 docker compose -f '${AIC_DAY_DIR}/docker/docker-compose.yml' \
+            logs --no-color --no-log-prefix "\$svc" > "\${_logdir}/tiny-\${svc}.log" 2>&1 || true
     done
     # vLLM shares lmcache's PID ns (for cross-container HIP IPC), which blocks docker
     # from reaping vLLM's EngineCore children -> compose down/docker rm hang.  Force-
@@ -1518,7 +1522,11 @@ compose() { docker compose -f '${AIC_DAY_DIR}/docker/docker-compose.yml' "\$@"; 
 cleanup() {
     local svc c
     for svc in vllm lmcache; do
-        timeout 30 compose logs --no-color --no-log-prefix "\$svc" > "\${_logdir}/reset-\${svc}.log" 2>&1 || true
+        # NOT "timeout 30 compose ...": timeout execs a binary and cannot run a
+        # shell function, so it picked up /usr/bin/compose (mailcap) and every
+        # captured service log was 4 lines of "no compose mailcap rules found".
+        timeout 30 docker compose -f '${AIC_DAY_DIR}/docker/docker-compose.yml' \
+            logs --no-color --no-log-prefix "\$svc" > "\${_logdir}/reset-\${svc}.log" 2>&1 || true
     done
     pkill -9 -f 'vllm.entrypoints.openai' 2>/dev/null || true
     pkill -9 -f 'EngineCore'              2>/dev/null || true

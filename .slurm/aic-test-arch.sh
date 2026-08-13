@@ -47,7 +47,8 @@ _normalize() {
 # Pull the first GFX* token out of a comma/&/|-separated feature string.
 _arch_from_features() {
     local feats="${1}" tok
-    for tok in $(printf '%s' "${feats}" | tr ',&|()!' '\n\n\n\n\n\n\n'); do
+    # tr pads set2 with its last character, so one '\n' maps every separator.
+    for tok in $(printf '%s' "${feats}" | tr ',&|()!' '\n'); do
         [[ "${tok}" == GFX* || "${tok}" == gfx* ]] || continue
         _normalize "${tok}" && return 0
     done

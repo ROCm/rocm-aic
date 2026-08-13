@@ -800,7 +800,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "avg by (gpu_id) (gpu_average_package_power{gpu_id=~\"$gpu_id\"})",
+          "expr": "avg by (gpu_id) (gpu_average_package_power{gpu_id=~\"$gpu_id\"} or gpu_package_power{gpu_id=~\"$gpu_id\"})",
           "legendFormat": "GPU {{gpu_id}}"
         }
       ],
