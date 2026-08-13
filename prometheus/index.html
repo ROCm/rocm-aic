@@ -1,0 +1,273 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AIC Prometheus Metrics Reference</title>
+<style>
+  :root {
+    --bg: #ffffff; --fg: #1a1a1a; --border: #d0d0d0;
+    --accent: #e05d00; --code-bg: #f5f5f5; --section-bg: #f0f4ff;
+    --hover: #fafafa;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #1e1e1e; --fg: #e0e0e0; --border: #444; --accent: #ff8c42;
+      --code-bg: #2a2a2a; --section-bg: #252535; --hover: #2e2e2e;
+    }
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: system-ui, sans-serif; background: var(--bg); color: var(--fg);
+          font-size: 14px; padding: 1.5rem; }
+  h1 { font-size: 1.4rem; margin-bottom: 0.25rem; color: var(--accent); }
+  .meta { color: #888; font-size: 0.8rem; margin-bottom: 1rem; }
+  .search-bar { width: 100%; max-width: 480px; padding: 0.45rem 0.75rem;
+                 border: 1px solid var(--border); border-radius: 4px;
+                 background: var(--bg); color: var(--fg); font-size: 0.9rem;
+                 margin-bottom: 1rem; }
+  .stats { font-size: 0.8rem; color: #888; margin-bottom: 0.75rem; }
+  table { width: 100%; border-collapse: collapse; table-layout: fixed; }
+  thead th { background: var(--section-bg); font-weight: 600; text-align: left;
+              padding: 0.5rem 0.75rem; border-bottom: 2px solid var(--border);
+              position: sticky; top: 0; z-index: 1; }
+  th:nth-child(1) { width: 32%; }
+  th:nth-child(2) { width: 9%; }
+  th:nth-child(3) { width: 48%; }
+  th:nth-child(4) { width: 11%; }
+  td { padding: 0.35rem 0.75rem; border-bottom: 1px solid var(--border);
+        vertical-align: top; word-break: break-word; }
+  tr:hover td { background: var(--hover); }
+  tr.section-header td { background: var(--section-bg); font-weight: 600;
+                          padding: 0.4rem 0.75rem; border-top: 2px solid var(--border); }
+  tr.section-header details summary { cursor: pointer; list-style: none; }
+  tr.section-header details summary::-webkit-details-marker { display: none; }
+  .count { font-weight: normal; color: #888; font-size: 0.85em; }
+  code { font-family: monospace; background: var(--code-bg); padding: 0 3px;
+          border-radius: 3px; font-size: 0.92em; }
+  .metric-type { font-family: monospace; font-size: 0.85em; color: var(--accent); }
+  .metric-source { font-size: 0.8em; color: #888; }
+  tr[hidden] { display: none; }
+</style>
+</head>
+<body>
+<h1>AIC Prometheus Metrics Reference</h1>
+<p class="meta">
+  Generated 2026-08-13 04:14 UTC
+  &nbsp;·&nbsp; commit <code>d5143e8</code>
+</p>
+<input class="search-bar" type="search" id="search"
+       placeholder="Filter metrics (name, description, or source)&hellip;"
+       aria-label="Filter metrics">
+<p class="stats" id="stats">160 metrics from 2 sources</p>
+<table>
+  <thead>
+    <tr>
+      <th>Metric Name</th>
+      <th>Type</th>
+      <th>Description</th>
+      <th>Source</th>
+    </tr>
+  </thead>
+  <tbody id="tbody">
+<tr class="section-header"><td colspan="4"><details open><summary>vllm <span class="count">(16 metrics)</span></summary></details></td></tr>
+<tr data-source="vllm"><td class="metric-name"><code>process_cpu_seconds_total</code></td><td class="metric-type">counter</td><td class="metric-help">Total user and system CPU time spent in seconds.</td><td class="metric-source">vllm</td></tr>
+<tr data-source="vllm"><td class="metric-name"><code>process_max_fds</code></td><td class="metric-type">gauge</td><td class="metric-help">Maximum number of open file descriptors.</td><td class="metric-source">vllm</td></tr>
+<tr data-source="vllm"><td class="metric-name"><code>process_open_fds</code></td><td class="metric-type">gauge</td><td class="metric-help">Number of open file descriptors.</td><td class="metric-source">vllm</td></tr>
+<tr data-source="vllm"><td class="metric-name"><code>process_resident_memory_bytes</code></td><td class="metric-type">gauge</td><td class="metric-help">Resident memory size in bytes.</td><td class="metric-source">vllm</td></tr>
+<tr data-source="vllm"><td class="metric-name"><code>process_start_time_seconds</code></td><td class="metric-type">gauge</td><td class="metric-help">Start time of the process since unix epoch in seconds.</td><td class="metric-source">vllm</td></tr>
+<tr data-source="vllm"><td class="metric-name"><code>process_virtual_memory_bytes</code></td><td class="metric-type">gauge</td><td class="metric-help">Virtual memory size in bytes.</td><td class="metric-source">vllm</td></tr>
+<tr data-source="vllm"><td class="metric-name"><code>python_gc_collections_total</code></td><td class="metric-type">counter</td><td class="metric-help">Number of times this generation was collected</td><td class="metric-source">vllm</td></tr>
+<tr data-source="vllm"><td class="metric-name"><code>python_gc_objects_collected_total</code></td><td class="metric-type">counter</td><td class="metric-help">Objects collected during gc</td><td class="metric-source">vllm</td></tr>
+<tr data-source="vllm"><td class="metric-name"><code>python_gc_objects_uncollectable_total</code></td><td class="metric-type">counter</td><td class="metric-help">Uncollectable objects found during GC</td><td class="metric-source">vllm</td></tr>
+<tr data-source="vllm"><td class="metric-name"><code>python_info</code></td><td class="metric-type">gauge</td><td class="metric-help">Python platform information</td><td class="metric-source">vllm</td></tr>
+<tr data-source="vllm"><td class="metric-name"><code>vllm_generation_tokens_created</code></td><td class="metric-type">gauge</td><td class="metric-help">Total number of generation tokens produced</td><td class="metric-source">vllm</td></tr>
+<tr data-source="vllm"><td class="metric-name"><code>vllm_generation_tokens_total</code></td><td class="metric-type">counter</td><td class="metric-help">Total number of generation tokens produced</td><td class="metric-source">vllm</td></tr>
+<tr data-source="vllm"><td class="metric-name"><code>vllm_request_duration_seconds</code></td><td class="metric-type">histogram</td><td class="metric-help">Completion request latency in seconds</td><td class="metric-source">vllm</td></tr>
+<tr data-source="vllm"><td class="metric-name"><code>vllm_request_duration_seconds_created</code></td><td class="metric-type">gauge</td><td class="metric-help">Completion request latency in seconds</td><td class="metric-source">vllm</td></tr>
+<tr data-source="vllm"><td class="metric-name"><code>vllm_requests_created</code></td><td class="metric-type">gauge</td><td class="metric-help">Total number of completions requests</td><td class="metric-source">vllm</td></tr>
+<tr data-source="vllm"><td class="metric-name"><code>vllm_requests_total</code></td><td class="metric-type">counter</td><td class="metric-help">Total number of completions requests</td><td class="metric-source">vllm</td></tr>
+<tr class="section-header"><td colspan="4"><details open><summary>node_exporter <span class="count">(144 metrics)</span></summary></details></td></tr>
+<tr data-source="node_exporter"><td class="metric-name"><code>go_gc_duration_seconds</code></td><td class="metric-type">summary</td><td class="metric-help">A summary of the pause duration of garbage collection cycles.</td><td class="metric-source">node_exporter</td></tr>
+<tr data-source="node_exporter"><td class="metric-name"><code>go_goroutines</code></td><td class="metric-type">gauge</td><td class="metric-help">Number of goroutines that currently exist.</td><td class="metric-source">node_exporter</td></tr>
+<tr data-source="node_exporter"><td class="metric-name"><code>go_info</code></td><td class="metric-type">gauge</td><td class="metric-help">Information about the Go environment.</td><td class="metric-source">node_exporter</td></tr>
+<tr data-source="node_exporter"><td class="metric-name"><code>go_memstats_alloc_bytes</code></td><td class="metric-type">gauge</td><td class="metric-help">Number of bytes allocated and still in use.</td><td class="metric-source">node_exporter</td></tr>
+<tr data-source="node_exporter"><td class="metric-name"><code>go_memstats_alloc_bytes_total</code></td><td class="metric-type">counter</td><td class="metric-help">Total number of bytes allocated, even if freed.</td><td class="metric-source">node_exporter</td></tr>
+<tr data-source="node_exporter"><td class="metric-name"><code>go_memstats_buck_hash_sys_bytes</code></td><td class="metric-type">gauge</td><td class="metric-help">Number of bytes used by the profiling bucket hash table.</td><td class="metric-source">node_exporter</td></tr>
+<tr data-source="node_exporter"><td class="metric-name"><code>go_memstats_frees_total</code></td><td class="metric-type">counter</td><td class="metric-help">Total number of frees.</td><td class="metric-source">node_exporter</td></tr>
+<tr data-source="node_exporter"><td class="metric-name"><code>go_memstats_gc_sys_bytes</code></td><td class="metric-type">gauge</td><td class="metric-help">Number of bytes used for garbage collection system metadata.</td><td class="metric-source">node_exporter</td></tr>
+<tr data-source="node_exporter"><td class="metric-name"><code>go_memstats_heap_alloc_bytes</code></td><td class="metric-type">gauge</td><td class="metric-help">Number of heap bytes allocated and still in use.</td><td class="metric-source">node_exporter</td></tr>
+<tr data-source="node_exporter"><td class="metric-name"><code>go_memstats_heap_idle_bytes</code></td><td class="metric-type">gauge</td><td class="metric-help">Number of heap bytes waiting to be used.</td><td class="metric-source">node_exporter</td></tr>
+<tr data-source="node_exporter"><td class="metric-name"><code>go_memstats_heap_inuse_bytes</code></td><td class="metric-type">gauge</td><td class="metric-help">Number of heap bytes that are in use.</td><td class="metric-source">node_exporter</td></tr>
+<tr data-source="node_exporter"><td class="metric-name"><code>go_memstats_heap_objects</code></td><td class="metric-type">gauge</td><td class="metric-help">Number of allocated objects.</td><td class="metric-source">node_exporter</td></tr>
+<tr data-source="node_exporter"><td class="metric-name"><code>go_memstats_heap_released_bytes</code></td><td class="metric-type">gauge</td><td class="metric-help">Number of heap bytes released to OS.</td><td class="metric-source">node_exporter</td></tr>
+<tr data-source="node_exporter"><td class="metric-name"><code>go_memstats_heap_sys_bytes</code></td><td class="metric-type">gauge</td><td class="metric-help">Number of heap bytes obtained from system.</td><td class="metric-source">node_exporter</td></tr>
+<tr data-source="node_exporter"><td class="metric-name"><code>go_memstats_last_gc_time_seconds</code></td><td class="metric-type">gauge</td><td class="metric-help">Number of seconds since 1970 of last garbage collection.</td><td class="metric-source">node_exporter</td></tr>
+<tr data-source="node_exporter"><td class="metric-name"><code>go_memstats_lookups_total</code></td><td class="metric-type">counter</td><td class="metric-help">Total number of pointer lookups.</td><td class="metric-source">node_exporter</td></tr>
+<tr data-source="node_exporter"><td class="metric-name"><code>go_memstats_mallocs_total</code></td><td class="metric-type">counter</td><td class="metric-help">Total number of mallocs.</td><td class="metric-source">node_exporter</td></tr>
+<tr data-source="node_exporter"><td class="metric-name"><code>go_memstats_mcache_inuse_bytes</code></td><td class="metric-type">gauge</td><td class="metric-help">Number of bytes in use by mcache structures.</td><td class="metric-source">node_exporter</td></tr>
+<tr data-source="node_exporter"><td class="metric-name"><code>go_memstats_mcache_sys_bytes</code></td><td class="metric-type">gauge</td><td class="metric-help">Number of bytes used for mcache structures obtained from system.</td><td class="metric-source">node_exporter</td></tr>
+<tr data-source="node_exporter"><td class="metric-name"><code>go_memstats_mspan_inuse_bytes</code></td><td class="metric-type">gauge</td><td class="metric-help">Number of bytes in use by mspan structures.</td><td class="metric-source">node_exporter</td></tr>
+<tr data-source="node_exporter"><td class="metric-name"><code>go_memstats_mspan_sys_bytes</code></td><td class="metric-type">gauge</td><td class="metric-help">Number of bytes used for mspan structures obtained from system.</td><td class="metric-source">node_exporter</td></tr>
+<tr data-source="node_exporter"><td class="metric-name"><code>go_memstats_next_gc_bytes</code></td><td class="metric-type">gauge</td><td class="metric-help">Number of heap bytes when next garbage collection will take place.</td><td class="metric-source">node_exporter</td></tr>
+<tr data-source="node_exporter"><td class="metric-name"><code>go_memstats_other_sys_bytes</code></td><td class="metric-type">gauge</td><td class="metric-help">Number of bytes used for other system allocations.</td><td class="metric-source">node_exporter</td></tr>
+<tr data-source="node_exporter"><td class="metric-name"><code>go_memstats_stack_inuse_bytes</code></td><td class="metric-type">gauge</td><td class="metric-help">Number of bytes in use by the stack allocator.</td><td class="metric-source">node_exporter</td></tr>
+<tr data-source="node_exporter"><td class="metric-name"><code>go_memstats_stack_sys_bytes</code></td><td class="metric-type">gauge</td><td class="metric-help">Number of bytes obtained from system for stack allocator.</td><td class="metric-source">node_exporter</td></tr>
+<tr data-source="node_exporter"><td class="metric-name"><code>go_memstats_sys_bytes</code></td><td class="metric-type">gauge</td><td class="metric-help">Number of bytes obtained from system.</td><td class="metric-source">node_exporter</td></tr>
+<tr data-source="node_exporter"><td class="metric-name"><code>go_threads</code></td><td class="metric-type">gauge</td><td class="metric-help">Number of OS threads created.</td><td class="metric-source">node_exporter</td></tr>
+<tr data-source="node_exporter"><td class="metric-name"><code>node_cpu_guest_seconds_total</code></td><td class="metric-type">counter</td><td class="metric-help">Seconds the CPUs spent in guests (VMs) for each mode.</td><td class="metric-source">node_exporter</td></tr>
+<tr data-source="node_exporter"><td class="metric-name"><code>node_cpu_seconds_total</code></td><td class="metric-type">counter</td><td class="metric-help">Seconds the CPUs spent in each mode.</td><td class="metric-source">node_exporter</td></tr>
+<tr data-source="node_exporter"><td class="metric-name"><code>node_disk_device_mapper_info</code></td><td class="metric-type">gauge</td><td class="metric-help">Info about disk device mapper.</td><td class="metric-source">node_exporter</td></tr>
+<tr data-source="node_exporter"><td class="metric-name"><code>node_disk_discard_time_seconds_total</code></td><td class="metric-type">counter</td><td class="metric-help">This is the total number of seconds spent by all discards.</td><td class="metric-source">node_exporter</td></tr>
+<tr data-source="node_exporter"><td class="metric-name"><code>node_disk_discarded_sectors_total</code></td><td class="metric-type">counter</td><td class="metric-help">The total number of sectors discarded successfully.</td><td class="metric-source">node_exporter</td></tr>
+<tr data-source="node_exporter"><td class="metric-name"><code>node_disk_discards_completed_total</code></td><td class="metric-type">counter</td><td class="metric-help">The total number of discards completed successfully.</td><td class="metric-source">node_exporter</td></tr>
+<tr data-source="node_exporter"><td class="metric-name"><code>node_disk_discards_merged_total</code></td><td class="metric-type">counter</td><td class="metric-help">The total number of discards merged.</td><td class="metric-source">node_exporter</td></tr>
+<tr data-source="node_exporter"><td class="metric-name"><code>node_disk_filesystem_info</code></td><td class="metric-type">gauge</td><td class="metric-help">Info about disk filesystem.</td><td class="metric-source">node_exporter</td></tr>
+<tr data-source="node_exporter"><td class="metric-name"><code>node_disk_flush_requests_time_seconds_total</code></td><td class="metric-type">counter</td><td class="metric-help">This is the total number of seconds spent by all flush requests.</td><td class="metric-source">node_exporter</td></tr>
+<tr data-source="node_exporter"><td class="metric-name"><code>node_disk_flush_requests_total</code></td><td class="metric-type">counter</td><td class="metric-help">The total number of flush requests completed successfully</td><td class="metric-source">node_exporter</td></tr>
+<tr data-source="node_exporter"><td class="metric-name"><code>node_disk_info</code></td><td class="metric-type">gauge</td><td class="metric-help">Info of /sys/block/&lt;block_device&gt;.</td><td class="metric-source">node_exporter</td></tr>
+<tr data-source="node_exporter"><td class="metric-name"><code>node_disk_io_now</code></td><td class="metric-type">gauge</td><td class="metric-help">The number of I/Os currently in progress.</td><td class="metric-source">node_exporter</td></tr>
+<tr data-source="node_exporter"><td class="metric-name"><code>node_disk_io_time_seconds_total</code></td><td class="metric-type">counter</td><td class="metric-help">Total seconds spent doing I/Os.</td><td class="metric-source">node_exporter</td></tr>
+<tr data-source="node_exporter"><td class="metric-name"><code>node_disk_io_time_weighted_seconds_total</code></td><td class="metric-type">counter</td><td class="metric-help">The weighted # of seconds spent doing I/Os.</td><td class="metric-source">node_exporter</td></tr>
+<tr data-source="node_exporter"><td class="metric-name"><code>node_disk_read_bytes_total</code></td><td class="metric-type">counter</td><td class="metric-help">The total number of bytes read successfully.</td><td class="metric-source">node_exporter</td></tr>
+<tr data-source="node_exporter"><td class="metric-name"><code>node_disk_read_time_seconds_total</code></td><td class="metric-type">counter</td><td class="metric-help">The total number of seconds spent by all reads.</td><td class="metric-source">node_exporter</td></tr>
+<tr data-source="node_exporter"><td class="metric-name"><code>node_disk_reads_completed_total</code></td><td class="metric-type">counter</td><td class="metric-help">The total number of reads completed successfully.</td><td class="metric-source">node_exporter</td></tr>
+<tr data-source="node_exporter"><td class="metric-name"><code>node_disk_reads_merged_total</code></td><td class="metric-type">counter</td><td class="metric-help">The total number of reads merged.</td><td class="metric-source">node_exporter</td></tr>
+<tr data-source="node_exporter"><td class="metric-name"><code>node_disk_write_time_seconds_total</code></td><td class="metric-type">counter</td><td class="metric-help">This is the total number of seconds spent by all writes.</td><td class="metric-source">node_exporter</td></tr>
+<tr data-source="node_exporter"><td class="metric-name"><code>node_disk_writes_completed_total</code></td><td class="metric-type">counter</td><td class="metric-help">The total number of writes completed successfully.</td><td class="metric-source">node_exporter</td></tr>
+<tr data-source="node_exporter"><td class="metric-name"><code>node_disk_writes_merged_total</code></td><td class="metric-type">counter</td><td class="metric-help">The number of writes merged.</td><td class="metric-source">node_exporter</td></tr>
+<tr data-source="node_exporter"><td class="metric-name"><code>node_disk_written_bytes_total</code></td><td class="metric-type">counter</td><td class="metric-help">The total number of bytes written successfully.</td><td class="metric-source">node_exporter</td></tr>
+<tr data-source="node_exporter"><td class="metric-name"><code>node_exporter_build_info</code></td><td class="metric-type">gauge</td><td class="metric-help">A metric with a constant &#x27;1&#x27; value labeled by version, revision, branch, goversion from which node_exporter was built, and the goos and goarch for the build.</td><td class="metric-source">node_exporter</td></tr>
+<tr data-source="node_exporter"><td class="metric-name"><code>node_filesystem_avail_bytes</code></td><td class="metric-type">gauge</td><td class="metric-help">Filesystem space available to non-root users in bytes.</td><td class="metric-source">node_exporter</td></tr>
+<tr data-source="node_exporter"><td class="metric-name"><code>node_filesystem_device_error</code></td><td class="metric-type">gauge</td><td class="metric-help">Whether an error occurred while getting statistics for the given device.</td><td class="metric-source">node_exporter</td></tr>
+<tr data-source="node_exporter"><td class="metric-name"><code>node_filesystem_files</code></td><td class="metric-type">gauge</td><td class="metric-help">Filesystem total file nodes.</td><td class="metric-source">node_exporter</td></tr>
+<tr data-source="node_exporter"><td class="metric-name"><code>node_filesystem_files_free</code></td><td class="metric-type">gauge</td><td class="metric-help">Filesystem total free file nodes.</td><td class="metric-source">node_exporter</td></tr>
+<tr data-source="node_exporter"><td class="metric-name"><code>node_filesystem_free_bytes</code></td><td class="metric-type">gauge</td><td class="metric-help">Filesystem free space in bytes.</td><td class="metric-source">node_exporter</td></tr>
+<tr data-source="node_exporter"><td class="metric-name"><code>node_filesystem_readonly</code></td><td class="metric-type">gauge</td><td class="metric-help">Filesystem read-only status.</td><td class="metric-source">node_exporter</td></tr>
+<tr data-source="node_exporter"><td class="metric-name"><code>node_filesystem_size_bytes</code></td><td class="metric-type">gauge</td><td class="metric-help">Filesystem size in bytes.</td><td class="metric-source">node_exporter</td></tr>
+<tr data-source="node_exporter"><td class="metric-name"><code>node_load1</code></td><td class="metric-type">gauge</td><td class="metric-help">1m load average.</td><td class="metric-source">node_exporter</td></tr>
+<tr data-source="node_exporter"><td class="metric-name"><code>node_load15</code></td><td class="metric-type">gauge</td><td class="metric-help">15m load average.</td><td class="metric-source">node_exporter</td></tr>
+<tr data-source="node_exporter"><td class="metric-name"><code>node_load5</code></td><td class="metric-type">gauge</td><td class="metric-help">5m load average.</td><td class="metric-source">node_exporter</td></tr>
+<tr data-source="node_exporter"><td class="metric-name"><code>node_memory_Active_anon_bytes</code></td><td class="metric-type">gauge</td><td class="metric-help">Memory information field Active_anon_bytes.</td><td class="metric-source">node_exporter</td></tr>
+<tr data-source="node_exporter"><td class="metric-name"><code>node_memory_Active_bytes</code></td><td class="metric-type">gauge</td><td class="metric-help">Memory information field Active_bytes.</td><td class="metric-source">node_exporter</td></tr>
+<tr data-source="node_exporter"><td class="metric-name"><code>node_memory_Active_file_bytes</code></td><td class="metric-type">gauge</td><td class="metric-help">Memory information field Active_file_bytes.</td><td class="metric-source">node_exporter</td></tr>
+<tr data-source="node_exporter"><td class="metric-name"><code>node_memory_AnonHugePages_bytes</code></td><td class="metric-type">gauge</td><td class="metric-help">Memory information field AnonHugePages_bytes.</td><td class="metric-source">node_exporter</td></tr>
+<tr data-source="node_exporter"><td class="metric-name"><code>node_memory_AnonPages_bytes</code></td><td class="metric-type">gauge</td><td class="metric-help">Memory information field AnonPages_bytes.</td><td class="metric-source">node_exporter</td></tr>
+<tr data-source="node_exporter"><td class="metric-name"><code>node_memory_Bounce_bytes</code></td><td class="metric-type">gauge</td><td class="metric-help">Memory information field Bounce_bytes.</td><td class="metric-source">node_exporter</td></tr>
+<tr data-source="node_exporter"><td class="metric-name"><code>node_memory_Buffers_bytes</code></td><td class="metric-type">gauge</td><td class="metric-help">Memory information field Buffers_bytes.</td><td class="metric-source">node_exporter</td></tr>
+<tr data-source="node_exporter"><td class="metric-name"><code>node_memory_Cached_bytes</code></td><td class="metric-type">gauge</td><td class="metric-help">Memory information field Cached_bytes.</td><td class="metric-source">node_exporter</td></tr>
+<tr data-source="node_exporter"><td class="metric-name"><code>node_memory_CommitLimit_bytes</code></td><td class="metric-type">gauge</td><td class="metric-help">Memory information field CommitLimit_bytes.</td><td class="metric-source">node_exporter</td></tr>
+<tr data-source="node_exporter"><td class="metric-name"><code>node_memory_Committed_AS_bytes</code></td><td class="metric-type">gauge</td><td class="metric-help">Memory information field Committed_AS_bytes.</td><td class="metric-source">node_exporter</td></tr>
+<tr data-source="node_exporter"><td class="metric-name"><code>node_memory_DirectMap1G_bytes</code></td><td class="metric-type">gauge</td><td class="metric-help">Memory information field DirectMap1G_bytes.</td><td class="metric-source">node_exporter</td></tr>
+<tr data-source="node_exporter"><td class="metric-name"><code>node_memory_DirectMap2M_bytes</code></td><td class="metric-type">gauge</td><td class="metric-help">Memory information field DirectMap2M_bytes.</td><td class="metric-source">node_exporter</td></tr>
+<tr data-source="node_exporter"><td class="metric-name"><code>node_memory_DirectMap4k_bytes</code></td><td class="metric-type">gauge</td><td class="metric-help">Memory information field DirectMap4k_bytes.</td><td class="metric-source">node_exporter</td></tr>
+<tr data-source="node_exporter"><td class="metric-name"><code>node_memory_Dirty_bytes</code></td><td class="metric-type">gauge</td><td class="metric-help">Memory information field Dirty_bytes.</td><td class="metric-source">node_exporter</td></tr>
+<tr data-source="node_exporter"><td class="metric-name"><code>node_memory_FileHugePages_bytes</code></td><td class="metric-type">gauge</td><td class="metric-help">Memory information field FileHugePages_bytes.</td><td class="metric-source">node_exporter</td></tr>
+<tr data-source="node_exporter"><td class="metric-name"><code>node_memory_FilePmdMapped_bytes</code></td><td class="metric-type">gauge</td><td class="metric-help">Memory information field FilePmdMapped_bytes.</td><td class="metric-source">node_exporter</td></tr>
+<tr data-source="node_exporter"><td class="metric-name"><code>node_memory_HardwareCorrupted_bytes</code></td><td class="metric-type">gauge</td><td class="metric-help">Memory information field HardwareCorrupted_bytes.</td><td class="metric-source">node_exporter</td></tr>
+<tr data-source="node_exporter"><td class="metric-name"><code>node_memory_HugePages_Free</code></td><td class="metric-type">gauge</td><td class="metric-help">Memory information field HugePages_Free.</td><td class="metric-source">node_exporter</td></tr>
+<tr data-source="node_exporter"><td class="metric-name"><code>node_memory_HugePages_Rsvd</code></td><td class="metric-type">gauge</td><td class="metric-help">Memory information field HugePages_Rsvd.</td><td class="metric-source">node_exporter</td></tr>
+<tr data-source="node_exporter"><td class="metric-name"><code>node_memory_HugePages_Surp</code></td><td class="metric-type">gauge</td><td class="metric-help">Memory information field HugePages_Surp.</td><td class="metric-source">node_exporter</td></tr>
+<tr data-source="node_exporter"><td class="metric-name"><code>node_memory_HugePages_Total</code></td><td class="metric-type">gauge</td><td class="metric-help">Memory information field HugePages_Total.</td><td class="metric-source">node_exporter</td></tr>
+<tr data-source="node_exporter"><td class="metric-name"><code>node_memory_Hugepagesize_bytes</code></td><td class="metric-type">gauge</td><td class="metric-help">Memory information field Hugepagesize_bytes.</td><td class="metric-source">node_exporter</td></tr>
+<tr data-source="node_exporter"><td class="metric-name"><code>node_memory_Hugetlb_bytes</code></td><td class="metric-type">gauge</td><td class="metric-help">Memory information field Hugetlb_bytes.</td><td class="metric-source">node_exporter</td></tr>
+<tr data-source="node_exporter"><td class="metric-name"><code>node_memory_Inactive_anon_bytes</code></td><td class="metric-type">gauge</td><td class="metric-help">Memory information field Inactive_anon_bytes.</td><td class="metric-source">node_exporter</td></tr>
+<tr data-source="node_exporter"><td class="metric-name"><code>node_memory_Inactive_bytes</code></td><td class="metric-type">gauge</td><td class="metric-help">Memory information field Inactive_bytes.</td><td class="metric-source">node_exporter</td></tr>
+<tr data-source="node_exporter"><td class="metric-name"><code>node_memory_Inactive_file_bytes</code></td><td class="metric-type">gauge</td><td class="metric-help">Memory information field Inactive_file_bytes.</td><td class="metric-source">node_exporter</td></tr>
+<tr data-source="node_exporter"><td class="metric-name"><code>node_memory_KReclaimable_bytes</code></td><td class="metric-type">gauge</td><td class="metric-help">Memory information field KReclaimable_bytes.</td><td class="metric-source">node_exporter</td></tr>
+<tr data-source="node_exporter"><td class="metric-name"><code>node_memory_KernelStack_bytes</code></td><td class="metric-type">gauge</td><td class="metric-help">Memory information field KernelStack_bytes.</td><td class="metric-source">node_exporter</td></tr>
+<tr data-source="node_exporter"><td class="metric-name"><code>node_memory_Mapped_bytes</code></td><td class="metric-type">gauge</td><td class="metric-help">Memory information field Mapped_bytes.</td><td class="metric-source">node_exporter</td></tr>
+<tr data-source="node_exporter"><td class="metric-name"><code>node_memory_MemAvailable_bytes</code></td><td class="metric-type">gauge</td><td class="metric-help">Memory information field MemAvailable_bytes.</td><td class="metric-source">node_exporter</td></tr>
+<tr data-source="node_exporter"><td class="metric-name"><code>node_memory_MemFree_bytes</code></td><td class="metric-type">gauge</td><td class="metric-help">Memory information field MemFree_bytes.</td><td class="metric-source">node_exporter</td></tr>
+<tr data-source="node_exporter"><td class="metric-name"><code>node_memory_MemTotal_bytes</code></td><td class="metric-type">gauge</td><td class="metric-help">Memory information field MemTotal_bytes.</td><td class="metric-source">node_exporter</td></tr>
+<tr data-source="node_exporter"><td class="metric-name"><code>node_memory_Mlocked_bytes</code></td><td class="metric-type">gauge</td><td class="metric-help">Memory information field Mlocked_bytes.</td><td class="metric-source">node_exporter</td></tr>
+<tr data-source="node_exporter"><td class="metric-name"><code>node_memory_NFS_Unstable_bytes</code></td><td class="metric-type">gauge</td><td class="metric-help">Memory information field NFS_Unstable_bytes.</td><td class="metric-source">node_exporter</td></tr>
+<tr data-source="node_exporter"><td class="metric-name"><code>node_memory_PageTables_bytes</code></td><td class="metric-type">gauge</td><td class="metric-help">Memory information field PageTables_bytes.</td><td class="metric-source">node_exporter</td></tr>
+<tr data-source="node_exporter"><td class="metric-name"><code>node_memory_Percpu_bytes</code></td><td class="metric-type">gauge</td><td class="metric-help">Memory information field Percpu_bytes.</td><td class="metric-source">node_exporter</td></tr>
+<tr data-source="node_exporter"><td class="metric-name"><code>node_memory_SReclaimable_bytes</code></td><td class="metric-type">gauge</td><td class="metric-help">Memory information field SReclaimable_bytes.</td><td class="metric-source">node_exporter</td></tr>
+<tr data-source="node_exporter"><td class="metric-name"><code>node_memory_SUnreclaim_bytes</code></td><td class="metric-type">gauge</td><td class="metric-help">Memory information field SUnreclaim_bytes.</td><td class="metric-source">node_exporter</td></tr>
+<tr data-source="node_exporter"><td class="metric-name"><code>node_memory_SecPageTables_bytes</code></td><td class="metric-type">gauge</td><td class="metric-help">Memory information field SecPageTables_bytes.</td><td class="metric-source">node_exporter</td></tr>
+<tr data-source="node_exporter"><td class="metric-name"><code>node_memory_ShmemHugePages_bytes</code></td><td class="metric-type">gauge</td><td class="metric-help">Memory information field ShmemHugePages_bytes.</td><td class="metric-source">node_exporter</td></tr>
+<tr data-source="node_exporter"><td class="metric-name"><code>node_memory_ShmemPmdMapped_bytes</code></td><td class="metric-type">gauge</td><td class="metric-help">Memory information field ShmemPmdMapped_bytes.</td><td class="metric-source">node_exporter</td></tr>
+<tr data-source="node_exporter"><td class="metric-name"><code>node_memory_Shmem_bytes</code></td><td class="metric-type">gauge</td><td class="metric-help">Memory information field Shmem_bytes.</td><td class="metric-source">node_exporter</td></tr>
+<tr data-source="node_exporter"><td class="metric-name"><code>node_memory_Slab_bytes</code></td><td class="metric-type">gauge</td><td class="metric-help">Memory information field Slab_bytes.</td><td class="metric-source">node_exporter</td></tr>
+<tr data-source="node_exporter"><td class="metric-name"><code>node_memory_SwapCached_bytes</code></td><td class="metric-type">gauge</td><td class="metric-help">Memory information field SwapCached_bytes.</td><td class="metric-source">node_exporter</td></tr>
+<tr data-source="node_exporter"><td class="metric-name"><code>node_memory_SwapFree_bytes</code></td><td class="metric-type">gauge</td><td class="metric-help">Memory information field SwapFree_bytes.</td><td class="metric-source">node_exporter</td></tr>
+<tr data-source="node_exporter"><td class="metric-name"><code>node_memory_SwapTotal_bytes</code></td><td class="metric-type">gauge</td><td class="metric-help">Memory information field SwapTotal_bytes.</td><td class="metric-source">node_exporter</td></tr>
+<tr data-source="node_exporter"><td class="metric-name"><code>node_memory_Unaccepted_bytes</code></td><td class="metric-type">gauge</td><td class="metric-help">Memory information field Unaccepted_bytes.</td><td class="metric-source">node_exporter</td></tr>
+<tr data-source="node_exporter"><td class="metric-name"><code>node_memory_Unevictable_bytes</code></td><td class="metric-type">gauge</td><td class="metric-help">Memory information field Unevictable_bytes.</td><td class="metric-source">node_exporter</td></tr>
+<tr data-source="node_exporter"><td class="metric-name"><code>node_memory_VmallocChunk_bytes</code></td><td class="metric-type">gauge</td><td class="metric-help">Memory information field VmallocChunk_bytes.</td><td class="metric-source">node_exporter</td></tr>
+<tr data-source="node_exporter"><td class="metric-name"><code>node_memory_VmallocTotal_bytes</code></td><td class="metric-type">gauge</td><td class="metric-help">Memory information field VmallocTotal_bytes.</td><td class="metric-source">node_exporter</td></tr>
+<tr data-source="node_exporter"><td class="metric-name"><code>node_memory_VmallocUsed_bytes</code></td><td class="metric-type">gauge</td><td class="metric-help">Memory information field VmallocUsed_bytes.</td><td class="metric-source">node_exporter</td></tr>
+<tr data-source="node_exporter"><td class="metric-name"><code>node_memory_WritebackTmp_bytes</code></td><td class="metric-type">gauge</td><td class="metric-help">Memory information field WritebackTmp_bytes.</td><td class="metric-source">node_exporter</td></tr>
+<tr data-source="node_exporter"><td class="metric-name"><code>node_memory_Writeback_bytes</code></td><td class="metric-type">gauge</td><td class="metric-help">Memory information field Writeback_bytes.</td><td class="metric-source">node_exporter</td></tr>
+<tr data-source="node_exporter"><td class="metric-name"><code>node_memory_Zswap_bytes</code></td><td class="metric-type">gauge</td><td class="metric-help">Memory information field Zswap_bytes.</td><td class="metric-source">node_exporter</td></tr>
+<tr data-source="node_exporter"><td class="metric-name"><code>node_memory_Zswapped_bytes</code></td><td class="metric-type">gauge</td><td class="metric-help">Memory information field Zswapped_bytes.</td><td class="metric-source">node_exporter</td></tr>
+<tr data-source="node_exporter"><td class="metric-name"><code>node_network_receive_bytes_total</code></td><td class="metric-type">counter</td><td class="metric-help">Network device statistic receive_bytes.</td><td class="metric-source">node_exporter</td></tr>
+<tr data-source="node_exporter"><td class="metric-name"><code>node_network_receive_compressed_total</code></td><td class="metric-type">counter</td><td class="metric-help">Network device statistic receive_compressed.</td><td class="metric-source">node_exporter</td></tr>
+<tr data-source="node_exporter"><td class="metric-name"><code>node_network_receive_drop_total</code></td><td class="metric-type">counter</td><td class="metric-help">Network device statistic receive_drop.</td><td class="metric-source">node_exporter</td></tr>
+<tr data-source="node_exporter"><td class="metric-name"><code>node_network_receive_errs_total</code></td><td class="metric-type">counter</td><td class="metric-help">Network device statistic receive_errs.</td><td class="metric-source">node_exporter</td></tr>
+<tr data-source="node_exporter"><td class="metric-name"><code>node_network_receive_fifo_total</code></td><td class="metric-type">counter</td><td class="metric-help">Network device statistic receive_fifo.</td><td class="metric-source">node_exporter</td></tr>
+<tr data-source="node_exporter"><td class="metric-name"><code>node_network_receive_frame_total</code></td><td class="metric-type">counter</td><td class="metric-help">Network device statistic receive_frame.</td><td class="metric-source">node_exporter</td></tr>
+<tr data-source="node_exporter"><td class="metric-name"><code>node_network_receive_multicast_total</code></td><td class="metric-type">counter</td><td class="metric-help">Network device statistic receive_multicast.</td><td class="metric-source">node_exporter</td></tr>
+<tr data-source="node_exporter"><td class="metric-name"><code>node_network_receive_nohandler_total</code></td><td class="metric-type">counter</td><td class="metric-help">Network device statistic receive_nohandler.</td><td class="metric-source">node_exporter</td></tr>
+<tr data-source="node_exporter"><td class="metric-name"><code>node_network_receive_packets_total</code></td><td class="metric-type">counter</td><td class="metric-help">Network device statistic receive_packets.</td><td class="metric-source">node_exporter</td></tr>
+<tr data-source="node_exporter"><td class="metric-name"><code>node_network_transmit_bytes_total</code></td><td class="metric-type">counter</td><td class="metric-help">Network device statistic transmit_bytes.</td><td class="metric-source">node_exporter</td></tr>
+<tr data-source="node_exporter"><td class="metric-name"><code>node_network_transmit_carrier_total</code></td><td class="metric-type">counter</td><td class="metric-help">Network device statistic transmit_carrier.</td><td class="metric-source">node_exporter</td></tr>
+<tr data-source="node_exporter"><td class="metric-name"><code>node_network_transmit_colls_total</code></td><td class="metric-type">counter</td><td class="metric-help">Network device statistic transmit_colls.</td><td class="metric-source">node_exporter</td></tr>
+<tr data-source="node_exporter"><td class="metric-name"><code>node_network_transmit_compressed_total</code></td><td class="metric-type">counter</td><td class="metric-help">Network device statistic transmit_compressed.</td><td class="metric-source">node_exporter</td></tr>
+<tr data-source="node_exporter"><td class="metric-name"><code>node_network_transmit_drop_total</code></td><td class="metric-type">counter</td><td class="metric-help">Network device statistic transmit_drop.</td><td class="metric-source">node_exporter</td></tr>
+<tr data-source="node_exporter"><td class="metric-name"><code>node_network_transmit_errs_total</code></td><td class="metric-type">counter</td><td class="metric-help">Network device statistic transmit_errs.</td><td class="metric-source">node_exporter</td></tr>
+<tr data-source="node_exporter"><td class="metric-name"><code>node_network_transmit_fifo_total</code></td><td class="metric-type">counter</td><td class="metric-help">Network device statistic transmit_fifo.</td><td class="metric-source">node_exporter</td></tr>
+<tr data-source="node_exporter"><td class="metric-name"><code>node_network_transmit_packets_total</code></td><td class="metric-type">counter</td><td class="metric-help">Network device statistic transmit_packets.</td><td class="metric-source">node_exporter</td></tr>
+<tr data-source="node_exporter"><td class="metric-name"><code>node_scrape_collector_duration_seconds</code></td><td class="metric-type">gauge</td><td class="metric-help">node_exporter: Duration of a collector scrape.</td><td class="metric-source">node_exporter</td></tr>
+<tr data-source="node_exporter"><td class="metric-name"><code>node_scrape_collector_success</code></td><td class="metric-type">gauge</td><td class="metric-help">node_exporter: Whether a collector succeeded.</td><td class="metric-source">node_exporter</td></tr>
+<tr data-source="node_exporter"><td class="metric-name"><code>process_cpu_seconds_total</code></td><td class="metric-type">counter</td><td class="metric-help">Total user and system CPU time spent in seconds.</td><td class="metric-source">node_exporter</td></tr>
+<tr data-source="node_exporter"><td class="metric-name"><code>process_max_fds</code></td><td class="metric-type">gauge</td><td class="metric-help">Maximum number of open file descriptors.</td><td class="metric-source">node_exporter</td></tr>
+<tr data-source="node_exporter"><td class="metric-name"><code>process_open_fds</code></td><td class="metric-type">gauge</td><td class="metric-help">Number of open file descriptors.</td><td class="metric-source">node_exporter</td></tr>
+<tr data-source="node_exporter"><td class="metric-name"><code>process_resident_memory_bytes</code></td><td class="metric-type">gauge</td><td class="metric-help">Resident memory size in bytes.</td><td class="metric-source">node_exporter</td></tr>
+<tr data-source="node_exporter"><td class="metric-name"><code>process_start_time_seconds</code></td><td class="metric-type">gauge</td><td class="metric-help">Start time of the process since unix epoch in seconds.</td><td class="metric-source">node_exporter</td></tr>
+<tr data-source="node_exporter"><td class="metric-name"><code>process_virtual_memory_bytes</code></td><td class="metric-type">gauge</td><td class="metric-help">Virtual memory size in bytes.</td><td class="metric-source">node_exporter</td></tr>
+<tr data-source="node_exporter"><td class="metric-name"><code>process_virtual_memory_max_bytes</code></td><td class="metric-type">gauge</td><td class="metric-help">Maximum amount of virtual memory available in bytes.</td><td class="metric-source">node_exporter</td></tr>
+<tr data-source="node_exporter"><td class="metric-name"><code>promhttp_metric_handler_errors_total</code></td><td class="metric-type">counter</td><td class="metric-help">Total number of internal errors encountered by the promhttp metric handler.</td><td class="metric-source">node_exporter</td></tr>
+<tr data-source="node_exporter"><td class="metric-name"><code>promhttp_metric_handler_requests_in_flight</code></td><td class="metric-type">gauge</td><td class="metric-help">Current number of scrapes being served.</td><td class="metric-source">node_exporter</td></tr>
+<tr data-source="node_exporter"><td class="metric-name"><code>promhttp_metric_handler_requests_total</code></td><td class="metric-type">counter</td><td class="metric-help">Total number of scrapes by HTTP status code.</td><td class="metric-source">node_exporter</td></tr>
+  </tbody>
+</table>
+<script>
+(function () {
+  var input = document.getElementById('search');
+  var stats = document.getElementById('stats');
+  var rows  = Array.from(document.querySelectorAll('#tbody tr:not(.section-header)'));
+  var sections = Array.from(document.querySelectorAll('#tbody tr.section-header'));
+
+  function filter() {
+    var q = input.value.trim().toLowerCase();
+    var visible = 0;
+    rows.forEach(function (r) {
+      var match = !q || r.textContent.toLowerCase().includes(q);
+      r.hidden = !match;
+      if (match) visible++;
+    });
+    // Hide section headers when all their rows are hidden
+    sections.forEach(function (sec) {
+      var src = sec.querySelector('[data-source]') ||
+                sec.nextElementSibling;
+      // find next section boundary
+      var anyVisible = false;
+      var el = sec.nextElementSibling;
+      while (el && !el.classList.contains('section-header')) {
+        if (!el.hidden) { anyVisible = true; break; }
+        el = el.nextElementSibling;
+      }
+      sec.hidden = !anyVisible && !!q;
+    });
+    stats.textContent = q
+      ? (visible + ' of 160 metrics match')
+      : ('160 metrics from 2 sources');
+  }
+  input.addEventListener('input', filter);
+})();
+</script>
+</body>
+</html>
+
