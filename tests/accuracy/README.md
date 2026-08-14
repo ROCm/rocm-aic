@@ -78,9 +78,8 @@ so the package can be collected on a laptop with no GPU.
 ### Under the driver
 
 ```bash
-AIC_LOCAL=1 AIC_ACCURACY_LIMIT=20 make accuracy-test   # local, no Slurm
-make accuracy-test                                     # SPUR, both arms
-make accuracy-test-fast                                # SPUR, PR path
+make accuracy-test        # SPUR, both arms
+make accuracy-test-fast   # SPUR, PR path
 ```
 
 ## Configuration
