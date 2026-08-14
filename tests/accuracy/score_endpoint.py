@@ -4,16 +4,8 @@
 
 """Score one endpoint and print the result as JSON.
 
-The two serving arms share a container name, a port, and the GPU, so they
-cannot be up at the same time. The driver therefore scores the VRAM-only arm
-with this helper, tears it down, brings up the tiered arm, and hands the
-recorded number to pytest via ``AIC_ACCURACY_BASELINE_SCORE``.
-
-Uses exactly the same ``_score`` path as the test module, so the two arms are
-scored identically — a separate implementation here would be a way for the
-differential to drift.
-
-    python -m score_endpoint http://172.18.0.4:8000/v1 --out baseline.json
+The driver runs the baseline and the AIC-equipped test sequentially, logging
+``AIC_ACCURACY_BASELINE_SCORE`` with pytest between runs.
 """
 
 from __future__ import annotations

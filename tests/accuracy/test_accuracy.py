@@ -9,34 +9,15 @@
 
 Adapted from vLLM's NIXL integration accuracy test:
 https://github.com/vllm-project/vllm/blob/main/tests/v1/kv_connector/nixl_integration/test_accuracy.py
-which is Apache-2.0 licensed. That file's structure (lm_eval `simple_evaluate`
-against a `local-completions` endpoint, gsm8k / strict-match, a per-model
-expected-value table with a one-sided tolerance) is retained; the oracle is not.
-The rest of this repository is MIT. Both headers are kept above, deliberately.
+@ 1ab2801ddebe31b75dd6022c69113b610bbdc950.
 
-What this catches that upstream's version does not
---------------------------------------------------
-Upstream asserts a single served endpoint clears a hardcoded per-model score.
-That answers "is this model still good?", which drifts with every model, vLLM,
-and attention-backend bump. It does not answer the question AIC actually risks
-getting wrong: *does routing KV through DRAM/NVMe change the answers?*
-
-So the primary assertion here is a same-run A/B. Two arms are brought up from
-the same image, same weights, same seed, in the same job:
-
+We assert that an A/B accuracy test of a given model produces similar results
+when using the following modes:
     baseline  — plain vLLM, KV stays in VRAM
-    tiered    — LMCache + NIXL, KV spills to DRAM/NVMe
+    tiered    — the AIC stack
 
-``tiered >= baseline - DELTA`` catches KV corruption, and is immune to version
-drift because both numbers move together.
-
-That single assertion has one blind spot: if both arms break in the same way,
-the difference stays zero. So a second, independent assertion keeps upstream's
-idea — ``tiered >= expected.json[MODEL] - FLOOR_RTOL`` — as an absolute floor.
-Two failure modes, two assertions.
-
-Configuration is entirely environment-driven so that CI and a laptop run the
-same code; see ``README.md`` in this directory.
+We additionally track a `FLOOR_RTOL` in `expected.json` to catch regressions
+that would impact both paths.
 """
 
 from __future__ import annotations
@@ -54,32 +35,19 @@ import pytest
 
 MODEL = os.getenv("AIC_ACCURACY_MODEL", "Qwen/Qwen2.5-0.5B-Instruct")
 
-# None => full gsm8k test split. A small integer makes a PR-path run tractable
-# at the cost of resolution: the strict-match score is a mean over LIMIT items,
-# so its standard error grows as 1/sqrt(LIMIT).
+# Number of input questions.
 LIMIT = int(os.getenv("AIC_ACCURACY_LIMIT", "0")) or None
 
-# How far the tiered arm may fall below the baseline arm before we call it
-# corruption. Derived from measured run-to-run variance, not chosen a priori —
-# see README.md.
+# If accuracy[baseline] - accuracy[tiered] > AIC_ACCURACY_DELTA, fail.
 DELTA = float(os.getenv("AIC_ACCURACY_DELTA", "0.02"))
 
-# Absolute-floor slack, matching upstream's RTOL. Applies as-is to a full-split
-# run; `_floor_slack` widens it when LIMIT makes sampling noise the larger term.
+# RTOL, later scaled by the number of input questions.
 FLOOR_RTOL = 0.05
 
 NUM_CONCURRENT = int(os.getenv("AIC_ACCURACY_CONCURRENT", "32"))
 
-# The two arms cannot be up at once: they share a container name, a port, and a
-# GPU. So the driver runs them sequentially and hands the first arm's score to
-# the second arm's pytest invocation through this variable. When it is set, the
-# baseline is not re-measured (and no baseline endpoint is needed).
 _BASELINE_SCORE = os.getenv("AIC_ACCURACY_BASELINE_SCORE")
 BASELINE_SCORE = float(_BASELINE_SCORE) if _BASELINE_SCORE else None
-
-# Set by the restart phase of the Slurm driver: the tiered score measured
-# before vLLM was restarted. When set, `test_score_survives_restart` compares
-# the current tiered score against it.
 _REFERENCE_SCORE = os.getenv("AIC_ACCURACY_REFERENCE_SCORE")
 REFERENCE_SCORE = float(_REFERENCE_SCORE) if _REFERENCE_SCORE else None
 
@@ -105,17 +73,9 @@ def _meets_accuracy_threshold(measured: float, expected: float, rtol: float) -> 
 
 
 def _floor_slack(expected: float, limit: int | None) -> float:
-    """Floor tolerance, widened for the sampling noise a small LIMIT introduces.
+    """Floor tolerance, scaled by number of questions asked.
 
-    FLOOR_RTOL=0.05 is calibrated for the full 1319-item split, where the
-    binomial standard error is 0.011 and three sigma (0.033) still fits inside
-    it. Capping the item count inflates that error as 1/sqrt(n): at LIMIT=200 it
-    is 0.028, so three sigma is 0.085 -- and a fixed 0.05 floor would fail a
-    perfectly healthy run about a third of the time.
-
-    So the slack is max(FLOOR_RTOL, 3 * SE(limit)). This deliberately makes a
-    capped run a weaker gate rather than a flaky one; the nightly runs the full
-    split, where the floor stays tight.
+    FLOOR_RTOL=0.05 is calibrated for the full 1319-item split.
     """
     if not limit:
         return FLOOR_RTOL
@@ -163,16 +123,11 @@ def tiered_score(tiered_url: str) -> float:
 
 @pytest.fixture(scope="session")
 def baseline_score(request: pytest.FixtureRequest) -> float:
-    """Baseline score, either handed in by the driver or measured here.
-
-    Prefer the handed-in value: the driver scores the VRAM-only arm first, tears
-    it down (the arms share a container name, a port, and the GPU, so they
-    cannot coexist), then brings up the tiered arm. Requesting `baseline_url`
-    only in the measure-it-here path keeps the sequential driver from needing a
-    live baseline endpoint it has already torn down.
-    """
+    """Baseline score, either measured by this run, or requested from results from previous run."""
     if BASELINE_SCORE is not None:
-        print(f"\n[accuracy] baseline {TASK} {FILTER} = {BASELINE_SCORE:.4f}  (supplied)")
+        print(
+            f"\n[accuracy] baseline {TASK} {FILTER} = {BASELINE_SCORE:.4f}  (supplied)"
+        )
         return BASELINE_SCORE
     url = request.getfixturevalue("baseline_url")
     score = _score(url)

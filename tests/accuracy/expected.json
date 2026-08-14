@@ -1,13 +1,7 @@
 {
   "_comment": [
-    "Absolute gsm8k floors (exact_match,strict-match, 5-shot, full test split)",
-    "for the accuracy gate's second assertion. A model listed here is asserted",
-    "to score at least (value - 0.05); a model absent here skips that assertion",
-    "rather than failing, because an unmeasured model is a config gap and not a",
-    "regression. See README.md for how to add one.",
-    "",
-    "Values taken from vLLM's EXPECTED_VALUES table are marked as such. Do not",
-    "guess a value: leave the model out until it has been measured."
+    "Accuracy from the gsm8k test suite for various models.",
+    "A model listed here is asserted to score at least (value - 0.05) during our accuracy tests."
   ],
   "models": {
     "Qwen/Qwen2.5-0.5B-Instruct": 0.2022,
