@@ -1343,7 +1343,7 @@ REMOTE
 #
 #   AIC_ACCURACY_MODEL          model to serve            (default: AIC_TINY_MODEL)
 #   AIC_ACCURACY_LIMIT          cap gsm8k items           (default: 0 = full split)
-#   AIC_ACCURACY_DELTA          allowed tiered-vs-baseline gap (default: 0.02)
+#   AIC_ACCURACY_DELTA          allowed tiered-vs-baseline gap, two-sided (default: 0.02)
 #   AIC_ACCURACY_SKIP_BASELINE  1 = skip phase 1          (default: 0)
 #   AIC_ACCURACY_TIME/CPUS/MEM  Slurm sizing
 #   AIC_ACCURACY_READY_TIMEOUT  x5s waits for the endpoint (default: 120)

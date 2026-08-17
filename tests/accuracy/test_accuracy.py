@@ -38,7 +38,9 @@ MODEL = os.getenv("AIC_ACCURACY_MODEL", "Qwen/Qwen2.5-0.5B-Instruct")
 # Number of input questions.
 LIMIT = int(os.getenv("AIC_ACCURACY_LIMIT", "0")) or None
 
-# If accuracy[baseline] - accuracy[tiered] > AIC_ACCURACY_DELTA, fail.
+# If |accuracy[tiered] - accuracy[baseline]| > AIC_ACCURACY_DELTA, fail.  Two-
+# sided: the arms answer identical prompts, so an unexplained gain is the same
+# evidence of divergence as a loss.
 DELTA = float(os.getenv("AIC_ACCURACY_DELTA", "0.02"))
 
 # RTOL, later scaled by the number of input questions.
@@ -68,8 +70,18 @@ def _expected_values() -> dict[str, float]:
 
 
 def _meets_accuracy_threshold(measured: float, expected: float, rtol: float) -> bool:
-    """One-sided: overshooting the expected value is never a failure."""
+    """One-sided: overshooting the expected value is never a failure.
+
+    Used only for the absolute floor, where `expected` is a coarse published
+    number rather than a same-run measurement, so an overshoot carries no
+    information. Same-run comparisons use `_within_delta` instead.
+    """
     return measured >= expected - rtol
+
+
+def _within_delta(measured: float, reference: float, delta: float) -> bool:
+    """Two-sided: the reference is a same-run score over identical prompts."""
+    return abs(measured - reference) <= delta
 
 
 def _floor_slack(expected: float, limit: int | None) -> float:
@@ -81,6 +93,20 @@ def _floor_slack(expected: float, limit: int | None) -> float:
         return FLOOR_RTOL
     se = math.sqrt(max(expected * (1.0 - expected), 0.0) / limit)
     return max(FLOOR_RTOL, 3.0 * se)
+
+
+def _restart_delta(reference: float, limit: int | None) -> float:
+    """Tolerance for the restart re-score, widened when it subsamples.
+
+    The restart phase scores the first `limit` items while the reference was
+    taken over a larger set, so the two disagree by roughly the binomial spread
+    of the smaller sample even under bit-exact retrieval. Treat that spread as
+    a floor on the tolerance and never go below DELTA.
+    """
+    if not limit:
+        return DELTA
+    se = math.sqrt(max(reference * (1.0 - reference), 0.0) / limit)
+    return max(DELTA, 3.0 * se)
 
 
 def _score(base_url: str) -> float:
@@ -140,23 +166,47 @@ def baseline_score(request: pytest.FixtureRequest) -> float:
 # --------------------------------------------------------------------------
 
 
-def test_threshold_is_one_sided() -> None:
-    """Guard the comparison helper itself. Runs anywhere, needs no endpoint."""
+def test_floor_threshold_is_one_sided() -> None:
+    """Guard the floor helper. Runs anywhere, needs no endpoint."""
     assert _meets_accuracy_threshold(0.72, 0.77, 0.05)
     assert _meets_accuracy_threshold(0.83, 0.77, 0.05)
     assert not _meets_accuracy_threshold(0.71, 0.77, 0.05)
 
 
+def test_differential_threshold_is_two_sided() -> None:
+    """An unexplained gain fails the differential just as a loss does."""
+    assert _within_delta(0.77, 0.77, 0.02)
+    assert _within_delta(0.76, 0.77, 0.02)
+    assert _within_delta(0.78, 0.77, 0.02)
+    assert not _within_delta(0.74, 0.77, 0.02)
+    assert not _within_delta(0.80, 0.77, 0.02)
+
+
+def test_restart_delta_widens_for_subsamples() -> None:
+    """A capped restart re-score gets binomial slack; a full one gets DELTA."""
+    assert _restart_delta(0.5, None) == DELTA
+    assert _restart_delta(0.5, 200) > DELTA
+    assert _restart_delta(0.5, 200) > _restart_delta(0.5, 1319)
+
+
 def test_tiered_matches_baseline(tiered_score: float, baseline_score: float) -> None:
-    """The differential assertion: tiering KV must not change the answers."""
-    assert tiered_score >= baseline_score - DELTA, (
-        f"tiered arm regressed against baseline by more than DELTA={DELTA}\n"
+    """The differential assertion: tiering KV must not change the answers.
+
+    Two-sided. Both arms answer the same questions with the same weights, so
+    the only honest outcome is "the same score, modulo batching nondeterminism".
+    A tiered arm that beats the baseline by more than DELTA has not got smarter;
+    something about the comparison has changed — different item count, a
+    silently-skipped arm, a stale supplied baseline, a config drift between the
+    phases — and that is a broken gate, not a win.
+    """
+    assert _within_delta(tiered_score, baseline_score, DELTA), (
+        f"tiered arm diverged from baseline by more than DELTA={DELTA}\n"
         f"  model:    {MODEL}\n"
         f"  task:     {TASK} {FILTER} (limit={LIMIT}, {NUM_FEWSHOT}-shot)\n"
         f"  baseline: {baseline_score:.4f}\n"
         f"  tiered:   {tiered_score:.4f}\n"
         f"  delta:    {tiered_score - baseline_score:+.4f} "
-        f"(allowed: >= -{DELTA})"
+        f"(allowed: +/-{DELTA})"
     )
 
 
@@ -183,18 +233,29 @@ def test_tiered_above_floor(tiered_score: float) -> None:
 def test_score_survives_restart(tiered_score: float) -> None:
     """Re-scoring after a vLLM restart must match the pre-restart score.
 
-    Only runs when the driver supplies AIC_ACCURACY_REFERENCE_SCORE. LMCache
-    keeps its DRAM/NVMe state across a vLLM restart, so the prompts are
-    guaranteed cache hits and every block is served from the tier rather than
-    recomputed. A drop here means retrieval from NVMe is corrupting blocks.
+    LMCache should preserve it's cached state in DRAM/NVMe across a restart,
+    so the repeated prompts will be cache hits and fetched from the cache tier
+    rather than being recomputed.
+
+    Two-sided, for the same reason as the baseline differential: the post-restart
+    run replays the same prompts against the same weights, so a score that moves
+    in either direction means the answers changed.
+
+    The comparison is subsample-aware. The restart phase re-scores a capped
+    prefix of the split (AIC_ACCURACY_RESTART_LIMIT) against a reference taken
+    over the full split, so the two numbers differ by sampling noise even when
+    every block was retrieved bit-exact. DELTA alone is far too tight for that;
+    `_restart_delta` widens it to cover the subsampling.
     """
     if REFERENCE_SCORE is None:
         pytest.skip("AIC_ACCURACY_REFERENCE_SCORE unset; not a restart-phase run")
-    assert tiered_score >= REFERENCE_SCORE - DELTA, (
-        f"score dropped after vLLM restart — suspect NVMe retrieval\n"
+    allowed = _restart_delta(REFERENCE_SCORE, LIMIT)
+    assert _within_delta(tiered_score, REFERENCE_SCORE, allowed), (
+        f"score changed after vLLM restart — suspect NVMe retrieval\n"
         f"  model:         {MODEL}\n"
         f"  pre-restart:   {REFERENCE_SCORE:.4f}\n"
-        f"  post-restart:  {tiered_score:.4f}\n"
+        f"  post-restart:  {tiered_score:.4f}  (limit={LIMIT})\n"
         f"  delta:         {tiered_score - REFERENCE_SCORE:+.4f} "
-        f"(allowed: >= -{DELTA})"
+        f"(allowed: +/-{allowed:.4f}"
+        f"{'' if allowed == DELTA else ' — widened for the restart subsample'})"
     )

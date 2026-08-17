@@ -11,13 +11,27 @@ tier that returns subtly wrong KV blocks which still decode to plausible text.
 
 | Test | Catches |
 |---|---|
-| `test_tiered_matches_baseline` | KV corruption. Scores a VRAM-only arm and a tiered arm in the same job and asserts `tiered >= baseline - DELTA`. |
+| `test_tiered_matches_baseline` | KV corruption. Scores a VRAM-only arm and a tiered arm in the same job and asserts `|tiered - baseline| <= DELTA`. |
 | `test_tiered_above_floor` | Both arms breaking identically — which the differential cannot see, because the difference stays zero. Asserts `tiered >= expected.json[MODEL] - slack`. |
 
 `test_score_survives_restart` runs only in the Slurm driver's restart phase,
 where vLLM is restarted but LMCache keeps its DRAM/NVMe state. Every prompt is
 then a guaranteed cache hit, so the whole score is served from the tier; a drop
 means retrieval from NVMe is corrupting blocks.
+
+### Why the differentials are two-sided
+
+Both same-run comparisons (`test_tiered_matches_baseline`,
+`test_score_survives_restart`) fail on an unexplained *gain* as well as a loss.
+The arms answer identical questions with identical weights, so the only honest
+outcome is the same score modulo batching nondeterminism. A tiered arm that
+beats its baseline by more than `DELTA` has not got smarter — something about
+the comparison changed (a different item count, a silently-skipped arm, a stale
+supplied baseline, config drift between phases), and that is a broken gate
+rather than a win.
+
+The absolute floor stays one-sided. There `expected` is a coarse published
+number, not a same-run measurement, so an overshoot carries no information.
 
 ### Why differential rather than a committed golden
 
@@ -88,7 +102,7 @@ make accuracy-test-fast   # SPUR, PR path
 |---|---|---|
 | `AIC_ACCURACY_MODEL` | `Qwen/Qwen2.5-0.5B-Instruct` | Model to score. Must match what the arms are serving. |
 | `AIC_ACCURACY_LIMIT` | unset (full split) | Cap gsm8k items. Lowers wall clock and resolution together — the score's standard error grows as `1/sqrt(LIMIT)`. |
-| `AIC_ACCURACY_DELTA` | `0.02` | Allowed tiered-below-baseline gap. |
+| `AIC_ACCURACY_DELTA` | `0.02` | Allowed tiered-vs-baseline gap, **two-sided**. |
 | `AIC_ACCURACY_CONCURRENT` | `32` | `lm_eval` request concurrency. |
 | `AIC_ACCURACY_BASELINE_URL` | unset | VRAM-only arm, e.g. `http://172.18.0.4:8000/v1`. |
 | `AIC_ACCURACY_TIERED_URL` | unset | LMCache/NIXL arm. |
