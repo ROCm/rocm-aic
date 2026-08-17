@@ -1511,6 +1511,30 @@ _endpoint_url() {
 
 _pool_bytes() { du -sb "\${NVME_DATA}" 2>/dev/null | cut -f1 || echo 0; }
 
+# Sum one Prometheus counter across all its label sets, from a container-local
+# scrape.  Neither endpoint is published to the host, so scrape via docker exec.
+# Prints 0 when the metric or the endpoint is absent -- callers distinguish
+# "counter absent" from "counter zero" by checking the scrape succeeded first.
+_metric_sum() {
+    local container="\$1" url="\$2" metric="\$3"
+    docker exec "\${container}" curl -fsS --max-time 15 "\${url}" 2>/dev/null \
+        | awk -v m="\${metric}" '
+            /^#/ { next }
+            {
+                name = \$1; sub(/\{.*/, "", name)
+                if (name == m) { s += \$NF }
+            }
+            END { printf "%.0f", s + 0 }' \
+        || echo 0
+}
+
+# vLLM's own view of the connector: how many blocks it asked the external tier
+# for, and how many it got.  These are the numbers that decide whether a
+# re-score was actually served from the tier or silently recomputed.
+_vllm_ext() { _metric_sum aic-vllm-gpu0 http://127.0.0.1:8000/metrics "\$1"; }
+# LMCache's own view, one tier down: which level answered.
+_lmc() { _metric_sum aic-lmcache http://127.0.0.1:8080/metrics "\$1"; }
+
 # ===========================================================================
 # Phase 1: vram_only arm -- plain vLLM, KV never leaves VRAM
 # ===========================================================================
@@ -1619,9 +1643,21 @@ fi
 _wait_ready kvd-restarted || exit 1
 TIERED_URL="\$(_endpoint_url)" || exit 1
 
-# Same prompts against a warm tier => guaranteed cache hits, so every block is
-# served from DRAM/NVMe rather than recomputed.  A drop here is retrieval
-# corruption specifically.  Capped at AIC_ACCURACY_RESTART_LIMIT: this phase
+# Counters are read AFTER the restart: vLLM's process is new, so its
+# vllm:external_prefix_cache_* counters start at zero and everything they
+# accumulate from here belongs to the re-score.  LMCache was NOT restarted, so
+# its counters carry phase-2 history and must be differenced.
+EXT_Q_BEFORE="\$(_vllm_ext vllm:external_prefix_cache_queries_total)"
+EXT_H_BEFORE="\$(_vllm_ext vllm:external_prefix_cache_hits_total)"
+L1_READ_BEFORE="\$(_lmc lmcache_mp_l1_read_chunks_total)"
+L2_HIT_BEFORE="\$(_lmc lmcache_mp_l2_prefetch_hit_chunks_total)"
+L2_LOAD_BEFORE="\$(_lmc lmcache_mp_l2_prefetch_load_completed_chunks_total)"
+echo "[accuracy-test] pre-rescore counters: ext_q=\${EXT_Q_BEFORE} ext_h=\${EXT_H_BEFORE} l1_read=\${L1_READ_BEFORE} l2_hit=\${L2_HIT_BEFORE} l2_load=\${L2_LOAD_BEFORE}"
+
+# Same prompts against a warm tier, so the blocks SHOULD come back from
+# DRAM/NVMe rather than being recomputed.  Phase 5 checks whether they actually
+# did -- the score alone cannot tell the two apart, since a full recompute
+# produces the same answers.  Capped at AIC_ACCURACY_RESTART_LIMIT: this phase
 # tests retrieval, not statistical quality, and a full re-score doubles the job.
 export AIC_ACCURACY_TIERED_URL="\${TIERED_URL}"
 export AIC_ACCURACY_LIMIT='${AIC_ACCURACY_RESTART_LIMIT}'
@@ -1631,6 +1667,70 @@ unset AIC_ACCURACY_BASELINE_SCORE AIC_ACCURACY_SCORE_OUT
     -k 'restart' || {
     echo "[accuracy-test] FAIL: phase 4 -- score regressed after restart" >&2
     exit 1; }
+
+# ===========================================================================
+# Phase 5: prove the re-score was SERVED, not recomputed
+# ===========================================================================
+# Without this, phase 4 is nearly vacuous.  If the restart lost the cache
+# entirely, vLLM would recompute every prompt from scratch and produce the very
+# same answers -- phase 4 passes, and the "survives restart" claim is untested.
+# Phase 3 does not cover it either: that shows KV was WRITTEN to the pool during
+# phase 2, not that anything was READ BACK afterwards.
+#
+# Two independent views must agree, since either alone has a failure mode:
+#   * vLLM's connector counters say the engine asked the tier and got blocks
+#     back -- but not which tier answered.
+#   * LMCache's counters say which level served them -- but are cumulative
+#     across phase 2, hence the differencing.
+echo "[accuracy-test] === Phase 5: verify the re-score hit the cache ==="
+EXT_Q_AFTER="\$(_vllm_ext vllm:external_prefix_cache_queries_total)"
+EXT_H_AFTER="\$(_vllm_ext vllm:external_prefix_cache_hits_total)"
+L1_READ_AFTER="\$(_lmc lmcache_mp_l1_read_chunks_total)"
+L2_HIT_AFTER="\$(_lmc lmcache_mp_l2_prefetch_hit_chunks_total)"
+L2_LOAD_AFTER="\$(_lmc lmcache_mp_l2_prefetch_load_completed_chunks_total)"
+
+EXT_Q=\$(( EXT_Q_AFTER - EXT_Q_BEFORE ))
+EXT_H=\$(( EXT_H_AFTER - EXT_H_BEFORE ))
+L1_READ=\$(( L1_READ_AFTER - L1_READ_BEFORE ))
+L2_HIT=\$(( L2_HIT_AFTER - L2_HIT_BEFORE ))
+L2_LOAD=\$(( L2_LOAD_AFTER - L2_LOAD_BEFORE ))
+echo "[accuracy-test] re-score deltas: ext_q=\${EXT_Q} ext_h=\${EXT_H}"
+echo "[accuracy-test]   lmcache: l1_read_chunks=\${L1_READ} l2_hit_chunks=\${L2_HIT} l2_load_chunks=\${L2_LOAD}"
+
+hit_rc=0
+if [ "\${EXT_Q}" -le 0 ]; then
+    echo "[accuracy-test] FAIL Phase 5: vLLM never queried the external tier." >&2
+    echo "[accuracy-test]   The connector is not wired up post-restart; the re-score" >&2
+    echo "[accuracy-test]   recomputed everything and phase 4 proved nothing." >&2
+    hit_rc=1
+elif [ "\${EXT_H}" -le 0 ]; then
+    echo "[accuracy-test] FAIL Phase 5: \${EXT_Q} external queries, zero hits." >&2
+    echo "[accuracy-test]   LMCache did not survive the restart with usable state," >&2
+    echo "[accuracy-test]   so phase 4's matching score is a recompute, not retrieval." >&2
+    hit_rc=1
+else
+    echo "[accuracy-test] OK Phase 5: \${EXT_H}/\${EXT_Q} external prefix-cache hits"
+fi
+
+# Which tier answered.  L1 (DRAM) survives a vLLM restart on its own, so DRAM
+# hits alone would leave NVMe retrieval -- the thing this gate exists to check
+# -- still untested.  Treated as a warning, not a failure: with
+# LMCACHE_L1_SIZE_GB=1 against a pool that grew to many GB the working set
+# cannot fit in DRAM, but the split depends on the model and the item cap, and
+# failing CI on a tier split that is legitimately DRAM-heavy would be wrong.
+# The counters are logged either way, so a drift shows up in the job output.
+if [ "\${hit_rc}" = "0" ] && [ "\${L2_HIT}" -le 0 ] && [ "\${L2_LOAD}" -le 0 ]; then
+    echo "[accuracy-test] WARN Phase 5: every hit came from L1 (DRAM); no L2/NVMe reads." >&2
+    echo "[accuracy-test]   NVMe retrieval is therefore NOT exercised by this run." >&2
+    echo "[accuracy-test]   Shrink LMCACHE_L1_SIZE_GB or raise the item count to push" >&2
+    echo "[accuracy-test]   the working set past DRAM." >&2
+elif [ "\${hit_rc}" = "0" ]; then
+    echo "[accuracy-test] OK Phase 5: L2/NVMe served \${L2_HIT} hit chunks (\${L2_LOAD} loads completed)"
+fi
+
+if [ "\${hit_rc}" != "0" ]; then
+    exit "\${hit_rc}"
+fi
 
 echo "[accuracy-test] ALL PHASES PASSED"
 exit 0
