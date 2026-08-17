@@ -15,9 +15,12 @@ tier that returns subtly wrong KV blocks which still decode to plausible text.
 | `test_tiered_above_floor` | Both arms breaking identically — which the differential cannot see, because the difference stays zero. Asserts `tiered >= expected.json[MODEL] - slack`. |
 
 `test_score_survives_restart` runs only in the Slurm driver's restart phase,
-where vLLM is restarted but LMCache keeps its DRAM/NVMe state. Every prompt is
-then a guaranteed cache hit, so the whole score is served from the tier; a drop
-means retrieval from NVMe is corrupting blocks.
+where vLLM is restarted but LMCache keeps its DRAM/NVMe state. The prompts are
+replayed against a warm tier, so the blocks should be served from DRAM/NVMe
+rather than recomputed; a score change means retrieval is corrupting blocks.
+**The score alone cannot tell retrieval from recompute** — a restart that lost
+the cache entirely would recompute the same answers and pass. Driver phase 5
+closes that hole by asserting on the cache counters; see below.
 
 ### Why the differentials are two-sided
 
@@ -96,6 +99,10 @@ make accuracy-test        # SPUR, both arms
 make accuracy-test-fast   # SPUR, PR path
 ```
 
+The driver runs five phases: score the VRAM-only arm, score the tiered arm and
+run the pytest assertions, check the NVMe pool grew, restart vLLM and re-score,
+then verify that re-score was served from the cache rather than recomputed.
+
 ## Skipping is a laptop default, not a CI one
 
 The fixtures in `conftest.py` skip when an endpoint is missing. That is what
@@ -116,6 +123,45 @@ report a config gap as a regression:
   purpose to halve the bringups.
 - a model with no entry in `expected.json` — no floor to compare against.
 - `AIC_ACCURACY_REFERENCE_SCORE` unset — not a restart-phase run.
+
+## Proving the restart re-score came from cache
+
+Phase 4 asserts the post-restart score matches. On its own that is nearly
+vacuous: **if the restart lost the cache entirely, vLLM would recompute every
+prompt and produce the very same answers.** Phase 3 does not cover it either —
+it shows KV was *written* to the pool during phase 2, not that anything was
+*read back* afterwards.
+
+Phase 5 reads two independent counter sources, because each alone has a blind
+spot:
+
+| Source | Counter | Answers |
+|---|---|---|
+| vLLM | `vllm:external_prefix_cache_queries_total` / `_hits_total` | Did the engine ask the tier, and get blocks back? (Not *which* tier.) |
+| LMCache | `lmcache_mp_l1_read_chunks_total` | Served from DRAM. |
+| LMCache | `lmcache_mp_l2_prefetch_hit_chunks_total` / `_load_completed_chunks_total` | Served from NVMe. |
+
+vLLM's counters are read after the restart, so its process is new and they start
+at zero. LMCache is *not* restarted, so its counters carry phase-2 history and
+are differenced across the re-score.
+
+Failure conditions:
+
+- **zero external queries** — the connector is not wired up post-restart; the
+  re-score recomputed everything and phase 4 proved nothing.
+- **queries but zero hits** — LMCache did not survive with usable state; the
+  matching score is a recompute.
+
+**Hits entirely from L1 (DRAM) is a warning, not a failure.** DRAM survives a
+vLLM restart on its own, so a DRAM-only run leaves NVMe retrieval — the thing
+this gate exists to check — untested. It is not fatal because the tier split
+depends on the model and item cap, and failing CI on a legitimately DRAM-heavy
+split would be wrong. With `LMCACHE_L1_SIZE_GB=1` against a pool that grew to
+many GB the working set cannot fit in DRAM, so the warning firing is itself a
+signal worth chasing. The counters are logged either way.
+
+Both endpoints are scraped via `docker exec`; neither publishes a port to the
+host (the convention across this repo).
 
 ## Configuration
 
@@ -167,8 +213,12 @@ Two notes for whoever revisits this:
   items, so the binomial term is common-mode and cancels. It would dominate if
   you ever compared across different item subsets, which is exactly what
   `AIC_ACCURACY_LIMIT` does — so **do not reuse this DELTA for a
-  limit-restricted differential** without re-measuring. The restart phase is
-  safe because it re-scores the same capped prefix.
+  limit-restricted differential** without re-measuring. The restart phase hits
+  exactly this case on the nightly path: it re-scores a 200-item prefix against
+  a reference taken over the full 1319, so the binomial term does *not* cancel
+  and a bare `DELTA` would flake. `_restart_delta()` widens the tolerance to
+  `max(DELTA, 3 * binomial SE of the smaller sample)` for that comparison. On
+  the fast path both numbers come from the same cap and the widening is inert.
 - **The model scores ~0.20, lower than upstream's ~0.41 for `Qwen3-0.6B`.**
   That was the concern that motivated measuring: at a low score, run-to-run
   noise could have been a large fraction of DELTA. It is not. If a future change
@@ -201,7 +251,12 @@ corruption: the tiered arm runs at `VLM_GPU_MEMORY_UTILIZATION=0.15` against the
 baseline's 0.90, deliberately, to force eviction. That changes batching and
 block reuse, and chunked prefill over reassembled KV is not bit-identical to a
 single fresh prefill. What argues against corruption specifically: phase 4
-re-scored within DELTA after a restart, when every block came back from NVMe.
+re-scored within DELTA after a restart.
+
+Note that this run predates phase 5, so **it did not verify that the
+post-restart re-score was actually served from the tier** — a full recompute
+would have produced the same result. Treat the phase 4 evidence above as weaker
+than it reads until a run with phase 5 counters confirms it.
 
 Worth keeping an eye on. If that gap widens toward DELTA, the diagnosis to run
 first is a tiered arm at the *baseline's* memory utilisation — if the gap
