@@ -96,6 +96,27 @@ make accuracy-test        # SPUR, both arms
 make accuracy-test-fast   # SPUR, PR path
 ```
 
+## Skipping is a laptop default, not a CI one
+
+The fixtures in `conftest.py` skip when an endpoint is missing. That is what
+lets the package be collected on a machine with no GPU, and lets a developer run
+only the tiered-arm assertions against a local stack.
+
+Under CI it is the wrong default: a dead endpoint would report green and the
+gate would pass having scored nothing. The driver therefore sets
+`AIC_ACCURACY_REQUIRED=1`, which turns every unreachability skip into a failure.
+It is opt-in rather than auto-detected from `$CI` so the behaviour is
+reproducible by hand off a runner.
+
+The switch governs *reachability only*. Skips that encode a genuine "this
+assertion does not apply to this run" stay skips, because failing them would
+report a config gap as a regression:
+
+- `AIC_ACCURACY_SKIP_BASELINE=1` — the fast path drops the baseline arm on
+  purpose to halve the bringups.
+- a model with no entry in `expected.json` — no floor to compare against.
+- `AIC_ACCURACY_REFERENCE_SCORE` unset — not a restart-phase run.
+
 ## Configuration
 
 | Variable | Default | Meaning |
@@ -103,6 +124,8 @@ make accuracy-test-fast   # SPUR, PR path
 | `AIC_ACCURACY_MODEL` | `Qwen/Qwen2.5-0.5B-Instruct` | Model to score. Must match what the arms are serving. |
 | `AIC_ACCURACY_LIMIT` | unset (full split) | Cap gsm8k items. Lowers wall clock and resolution together — the score's standard error grows as `1/sqrt(LIMIT)`. |
 | `AIC_ACCURACY_DELTA` | `0.02` | Allowed tiered-vs-baseline gap, **two-sided**. |
+| `AIC_ACCURACY_REQUIRED` | unset | `1` = an unreachable endpoint fails instead of skipping. Set by the CI driver. |
+| `AIC_ACCURACY_SKIP_BASELINE` | unset | `1` = this run has no baseline arm; the differential skips even under `AIC_ACCURACY_REQUIRED`. |
 | `AIC_ACCURACY_CONCURRENT` | `32` | `lm_eval` request concurrency. |
 | `AIC_ACCURACY_BASELINE_URL` | unset | VRAM-only arm, e.g. `http://172.18.0.4:8000/v1`. |
 | `AIC_ACCURACY_TIERED_URL` | unset | LMCache/NIXL arm. |
