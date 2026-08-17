@@ -1,3 +1,30 @@
+# Single-arch (AIC_FAST_ARCH=gfx950) developer gate, driven by two PR slash
+# commands:
+#
+#   /run-ci-fast       dist-build-fast -> smoke-test-fast -> tiny-test-fast
+#   /run-ci-accuracy   the above, plus accuracy-test-fast chained on the end
+#
+# The accuracy stage reuses the image tarball and clone the earlier stages
+# already produced on the SPUR head node — nothing is rebuilt.  Because
+# accuracy-test-fast pins the same AIC_ROCM_ARCH as dist-build-fast (both use
+# AIC_FAST_ARCH), the tarball name matches and the chain is arch-consistent.
+#
+# accuracy-test-fast is the FULL gate — both arms, full gsm8k split — pinned to
+# one arch, exactly as tiny-test-fast is tiny-test on one arch.  It is ~65 min.
+# There is no cheaper variant: the capped, baseline-less one that used to live
+# here skipped the differential and so could only fail on catastrophe.
+#
+# Cleanup ownership follows whichever stage is terminal: with /run-ci-fast that
+# is tiny-test, which cleans up on exit by default; with /run-ci-accuracy the
+# tiny-test step sets KEEP_ARTIFACTS=1 so the artifacts survive for
+# accuracy-test, which then owns the final cleanup.
+#
+# Requires (all already in use by sibling hardware-CI workflows):
+#   secrets.AIC_SPUR_HOST        — SSH target for the SPUR head node
+#   secrets.AIC_SHARED_NFS       — shared NFS path for image tarballs + scratch
+#   secrets.AIC_SPUR_CONTROLLER  — SPUR controller address
+#   secrets.AIC_HF_TOKEN         — HF token for the accuracy model download
+
 name: AIC Hardware Test - AMD Dist Build (fast)
 
 on:
@@ -57,13 +84,20 @@ jobs:
           exit 1
           REMOTE
 
-  # Validate /run-ci-fast slash command on PRs; skipped for manual triggers.
+  # Validate the slash command on PRs; skipped for manual triggers.  Both
+  # commands land here — /run-ci-accuracy is a superset of the plain chain —
+  # and are distinguished by the run_accuracy output below, not a second gate.
+  #
+  # aic-amd-dist-build.yml matches '/run-ci' by substring and must exclude both
+  # of these, or a fast-path comment also fires the full multi-arch gate.
   authorize:
     if: >-
       (github.event_name != 'workflow_dispatch' || inputs.cancel_slurm_job == '') &&
       (github.event_name != 'issue_comment' || (
-        github.event.issue.pull_request != null &&
-        contains(github.event.comment.body, '/run-ci-fast')
+        github.event.issue.pull_request != null && (
+          contains(github.event.comment.body, '/run-ci-fast') ||
+          contains(github.event.comment.body, '/run-ci-accuracy')
+        )
       ))
     runs-on: ubuntu-latest
     permissions:
@@ -71,6 +105,10 @@ jobs:
     outputs:
       sha: ${{ steps.resolve.outputs.sha }}
       pr_number: ${{ steps.resolve.outputs.pr_number }}
+      # 'true' only for /run-ci-accuracy.  Consumed by both the accuracy job's
+      # `if:` and tiny-test's KEEP_ARTIFACTS, so the two can never disagree
+      # about whether a stage follows tiny-test.
+      run_accuracy: ${{ steps.resolve.outputs.run_accuracy }}
 
     steps:
       - name: Check commenter is a maintainer or admin
@@ -88,11 +126,12 @@ jobs:
               core.setFailed(`@${context.actor} does not have write/maintain/admin permission (got: ${level})`);
             }
 
-      - name: Resolve SHA and PR number
+      - name: Resolve SHA, PR number, and accuracy opt-in
         id: resolve
         uses: actions/github-script@v9
         with:
           script: |
+            let runAccuracy = false;
             if (context.eventName === 'issue_comment') {
               const { data: pr } = await github.rest.pulls.get({
                 owner: context.repo.owner,
@@ -101,10 +140,14 @@ jobs:
               });
               core.setOutput('sha', pr.head.sha);
               core.setOutput('pr_number', String(context.issue.number));
+              runAccuracy = context.payload.comment.body.includes('/run-ci-accuracy');
             } else {
+              // workflow_dispatch: plain three-stage chain.  Manual accuracy
+              // runs go through aic-amd-accuracy-test.yml instead.
               core.setOutput('sha', context.sha);
               core.setOutput('pr_number', '');
             }
+            core.setOutput('run_accuracy', runAccuracy ? 'true' : 'false');
 
       - name: React to comment with eyes
         if: github.event_name == 'issue_comment'
@@ -295,8 +338,11 @@ jobs:
               description: 'Running tiny-model end-to-end serve on SPUR head node...',
             });
 
+      # KEEP_ARTIFACTS=1 only when accuracy-test follows and needs the clone +
+      # tarball; otherwise tiny-test is terminal and must clean up, or the
+      # artifacts leak on shared NFS with no owner.
       - name: Run fast tiny-test on SPUR head node
-        run: bash /usr/local/lib/aic-ci/spur-tiny-test.sh "${{ needs.authorize.outputs.sha }}" tiny-test-fast
+        run: KEEP_ARTIFACTS=${{ needs.authorize.outputs.run_accuracy == 'true' && '1' || '0' }} bash /usr/local/lib/aic-ci/spur-tiny-test.sh "${{ needs.authorize.outputs.sha }}" tiny-test-fast
 
       - name: Set commit status on success
         if: success() && needs.authorize.outputs.pr_number != ''
@@ -328,6 +374,98 @@ jobs:
               description: 'Tiny-test failed — check the run logs',
             });
 
+      # On the accuracy variant tiny-test is no longer the last word, so only
+      # announce the overall pass when nothing follows.
+      - name: Post result comment on PR
+        if: always() && needs.authorize.outputs.pr_number != ''
+        uses: actions/github-script@v9
+        with:
+          script: |
+            const success = '${{ job.status }}' === 'success';
+            const runAccuracy = '${{ needs.authorize.outputs.run_accuracy }}' === 'true';
+            const passBody = runAccuracy
+              ? `✅ Tiny-test (fast) passed for ${{ needs.authorize.outputs.sha }}. Chaining the full accuracy gate (~65 min) onto the same artifacts...`
+              : `✅ Fast hardware CI passed for ${{ needs.authorize.outputs.sha }} (dist-build-fast + smoke-test-fast + tiny-test). This is a single-arch dev check — run \`/run-ci\` for the full gate.`;
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: ${{ needs.authorize.outputs.pr_number || 0 }},
+              body: success
+                ? passBody
+                : `❌ Tiny-test (fast) failed for ${{ needs.authorize.outputs.sha }}. [View logs](https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}).`,
+            });
+
+  # Fourth stage, only for /run-ci-accuracy.  Reuses the clone + image tarball
+  # that dist-build/smoke/tiny already staged on the head node (tiny-test kept
+  # them alive via KEEP_ARTIFACTS=1); nothing is rebuilt here.  Terminal stage,
+  # so it leaves KEEP_ARTIFACTS unset and the script owns the cleanup.
+  accuracy-test:
+    needs: [authorize, dist-build, smoke-test, tiny-test]
+    if: needs.authorize.outputs.run_accuracy == 'true'
+    runs-on: [self-hosted, rocm-aic-cicd]
+    # Both arms over the full 1319-item split: 58 min measured (SPUR job 6235)
+    # plus ~7 min now that the restart phase is full-split too, so ~65 min.
+    # 120 leaves ~1.8x headroom, and the sbatch job has its own 2h wall clock.
+    timeout-minutes: 120
+    permissions:
+      pull-requests: write
+      statuses: write
+    env:
+      AIC_SPUR_HOST:       ${{ secrets.AIC_SPUR_HOST }}
+      AIC_SHARED_NFS:      ${{ secrets.AIC_SHARED_NFS }}
+      AIC_CI_STORAGE_ROOT: ${{ secrets.AIC_SHARED_NFS }}/rocm-aic
+      AIC_SPUR_CONTROLLER: ${{ secrets.AIC_SPUR_CONTROLLER }}
+      HF_TOKEN:            ${{ secrets.AIC_HF_TOKEN }}
+
+    steps:
+      - name: Set commit status to pending
+        if: needs.authorize.outputs.pr_number != ''
+        uses: actions/github-script@v9
+        with:
+          script: |
+            await github.rest.repos.createCommitStatus({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              sha: '${{ needs.authorize.outputs.sha }}',
+              state: 'pending',
+              target_url: `https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`,
+              context: 'hardware-ci / accuracy-test-fast',
+              description: 'Running accuracy-test on the SPUR head node...',
+            });
+
+      - name: Run accuracy-test on the SPUR head node
+        run: bash /usr/local/lib/aic-ci/spur-accuracy-test.sh "${{ needs.authorize.outputs.sha }}" accuracy-test-fast
+
+      - name: Set commit status on success
+        if: success() && needs.authorize.outputs.pr_number != ''
+        uses: actions/github-script@v9
+        with:
+          script: |
+            await github.rest.repos.createCommitStatus({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              sha: '${{ needs.authorize.outputs.sha }}',
+              state: 'success',
+              target_url: `https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`,
+              context: 'hardware-ci / accuracy-test-fast',
+              description: 'Accuracy test passed',
+            });
+
+      - name: Set commit status on failure
+        if: failure() && needs.authorize.outputs.pr_number != ''
+        uses: actions/github-script@v9
+        with:
+          script: |
+            await github.rest.repos.createCommitStatus({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              sha: '${{ needs.authorize.outputs.sha }}',
+              state: 'failure',
+              target_url: `https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`,
+              context: 'hardware-ci / accuracy-test-fast',
+              description: 'Accuracy test failed — check the run logs',
+            });
+
       - name: Post result comment on PR
         if: always() && needs.authorize.outputs.pr_number != ''
         uses: actions/github-script@v9
@@ -339,6 +477,6 @@ jobs:
               repo: context.repo.repo,
               issue_number: ${{ needs.authorize.outputs.pr_number || 0 }},
               body: success
-                ? `✅ Fast hardware CI passed for ${{ needs.authorize.outputs.sha }} (dist-build-fast + smoke-test-fast + tiny-test). This is a single-arch dev check — run \`/run-ci\` for the full gate.`
-                : `❌ Tiny-test (fast) failed for ${{ needs.authorize.outputs.sha }}. [View logs](https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}).`,
+                ? `✅ Fast hardware CI + accuracy passed for ${{ needs.authorize.outputs.sha }} (dist-build-fast + smoke-test-fast + tiny-test-fast + accuracy-test-fast). This is a single-arch dev check — run \`/run-ci\` for the full gate.`
+                : `❌ Accuracy test failed for ${{ needs.authorize.outputs.sha }}. [View logs](https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}).`,
             });
