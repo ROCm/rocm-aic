@@ -6,6 +6,15 @@
 # arms (vram_only, kvd_v2/nvme, kvd_v2/gds), generates a self-contained HTML
 # performance-tracking page, and deploys it to GitHub Pages.
 #
+# This stage chains off Tiny Test, as does the Nightly Accuracy Test, so the two
+# run CONCURRENTLY and share the SPUR clone + image tarball for the same SHA.
+# spur-cliff.sh traps EXIT unconditionally and rm -rf's both, so if this job
+# finishes first it can delete artifacts out from under a still-running
+# accuracy job.  Chaining this off the Accuracy Test would serialize them but
+# is NOT viable: GitHub caps workflow_run chains at three levels beyond the
+# initiating workflow, and Dist Build -> Smoke -> Tiny -> Accuracy already uses
+# all three.  See the header of aic-amd-nightly-accuracy-test.yml.
+#
 # Requires (all already in use by sibling nightly workflows):
 #   secrets.AIC_SPUR_HOST        — SSH target for the SPUR head node
 #   secrets.AIC_SHARED_NFS       — shared NFS path for image tarballs + scratch
