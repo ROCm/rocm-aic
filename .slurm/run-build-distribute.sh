@@ -1416,6 +1416,13 @@ PYBIN="\${VENV}/bin/python"
 export AIC_ACCURACY_MODEL='${AIC_ACCURACY_MODEL}'
 export AIC_ACCURACY_LIMIT='${AIC_ACCURACY_LIMIT}'
 export AIC_ACCURACY_DELTA='${AIC_ACCURACY_DELTA}'
+export AIC_ACCURACY_SKIP_BASELINE='${AIC_ACCURACY_SKIP_BASELINE}'
+# This is CI: an endpoint the fixtures cannot reach must fail the job, not skip
+# it green.  The fixtures default to skipping so the package stays runnable on a
+# laptop with no GPU; here we have brought the arms up ourselves and every skip
+# for unreachability means the gate scored nothing.  Deliberate absences
+# (SKIP_BASELINE above, an unknown model's floor) remain skips.
+export AIC_ACCURACY_REQUIRED=1
 
 # --- shared compose env ------------------------------------------------------
 export IMAGE_REF='${AIC_IMAGE}'
