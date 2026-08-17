@@ -1509,7 +1509,15 @@ _endpoint_url() {
     echo "http://\${ip}:8000/v1"
 }
 
+# Apparent size: the sum of file LENGTHS.  The NIXL POSIX adapter carves the
+# pool into fixed LMCACHE_NIXL_POSIX_SLOT_SIZE slots, so a slot's length is that
+# size no matter how much KV it holds -- this number measures slot allocation,
+# not KV volume.  Keep it for liveness; use the L2 counters below for volume.
 _pool_bytes() { du -sb "\${NVME_DATA}" 2>/dev/null | cut -f1 || echo 0; }
+# Allocated size: blocks actually on disk.  Differs from the apparent size when
+# slots are preallocated sparse (seek+truncate), which would let a pool that was
+# never written to look like it grew.
+_pool_alloc_bytes() { du -s --block-size=1 "\${NVME_DATA}" 2>/dev/null | cut -f1 || echo 0; }
 
 # Sum one Prometheus counter across all its label sets, from a container-local
 # scrape.  Neither endpoint is published to the host, so scrape via docker exec.
@@ -1586,6 +1594,7 @@ export VLLM_PID_MODE=service:lmcache
 export KV_TRANSFER_ARG="--kv-transfer-config '{\"kv_connector\":\"LMCacheMPConnector\",\"kv_role\":\"kv_both\",\"kv_connector_extra_config\":{\"lmcache.mp.host\":\"tcp://aic-lmcache\",\"lmcache.mp.port\":6555}}'"
 
 POOL_BEFORE="\$(_pool_bytes)"
+POOL_ALLOC_BEFORE="\$(_pool_alloc_bytes)"
 if ! compose --profile cache up -d; then
     echo "[accuracy-test] FAIL: tiered compose up failed" >&2
     compose logs --tail 60 --no-color lmcache 2>&1 | sed 's/^/  [lmcache] /'
@@ -1595,6 +1604,14 @@ fi
 _wait_ready kvd || exit 1
 TIERED_URL="\$(_endpoint_url)" || exit 1
 echo "[accuracy-test] tiered endpoint: \${TIERED_URL}"
+
+# Phase 3 baseline for the L2 counters.  This container is fresh, so these
+# should all read zero -- sample anyway and difference, so a reused container
+# (or a scrape that picks up a warm-up store) cannot inflate the phase-3 deltas.
+L2_STORE_SUB_REQ_BEFORE="\$(_lmc lmcache_mp_l2_store_submitted_requests_total)"
+L2_STORE_DONE_REQ_BEFORE="\$(_lmc lmcache_mp_l2_store_completed_requests_total)"
+L2_STORE_DONE_CHUNKS_BEFORE="\$(_lmc lmcache_mp_l2_store_completed_objects_chunks_total)"
+echo "[accuracy-test] pre-score L2 counters: store_sub_req=\${L2_STORE_SUB_REQ_BEFORE} store_done_req=\${L2_STORE_DONE_REQ_BEFORE} store_done_chunks=\${L2_STORE_DONE_CHUNKS_BEFORE}"
 
 export AIC_ACCURACY_TIERED_URL="\${TIERED_URL}"
 export AIC_ACCURACY_SCORE_OUT="\${_logdir}/tiered-score.json"
@@ -1606,11 +1623,39 @@ rc=0
 # ===========================================================================
 # Phase 3: liveness -- prove the tiered arm actually tiered
 # ===========================================================================
+# Two independent views, for the same reason phase 5 uses two:
+#
+#   * The filesystem says slots were allocated under the pool.  It cannot say
+#     how much KV is in them -- the NIXL POSIX adapter allocates fixed
+#     LMCACHE_NIXL_POSIX_SLOT_SIZE slots, so file length tracks slot count, not
+#     bytes stored.  (Job 6235's "15,489,564,672 B of growth" is ~923 x 16 MiB
+#     slots; the KV in them is bounded by 923 x LMCACHE_CHUNK_SIZE x per-token
+#     KV bytes, which for a 0.5B model at bf16 is several times smaller.)
+#   * LMCache's L2 counters say how many chunks it actually wrote through.
+#     They cannot say the bytes reached this filesystem.
+#
+# The counters also close a hole the filesystem view cannot see: a pool where
+# every store was submitted and then FAILED still has its slots allocated, so
+# the old growth-only assertion would pass it.
 echo "[accuracy-test] === Phase 3: NVMe pool liveness ==="
 POOL_AFTER="\$(_pool_bytes)"
+POOL_ALLOC_AFTER="\$(_pool_alloc_bytes)"
 POOL_FILES="\$(find "\${NVME_DATA}" -type f -size +0c 2>/dev/null | wc -l)"
 POOL_GROWTH=\$(( POOL_AFTER - POOL_BEFORE ))
-echo "[accuracy-test] pool bytes before=\${POOL_BEFORE} after=\${POOL_AFTER} growth=\${POOL_GROWTH} non-empty-files=\${POOL_FILES}"
+POOL_ALLOC_GROWTH=\$(( POOL_ALLOC_AFTER - POOL_ALLOC_BEFORE ))
+
+L2_STORE_SUB_REQ=\$(( \$(_lmc lmcache_mp_l2_store_submitted_requests_total) - L2_STORE_SUB_REQ_BEFORE ))
+L2_STORE_DONE_REQ=\$(( \$(_lmc lmcache_mp_l2_store_completed_requests_total) - L2_STORE_DONE_REQ_BEFORE ))
+L2_STORE_DONE_CHUNKS=\$(( \$(_lmc lmcache_mp_l2_store_completed_objects_chunks_total) - L2_STORE_DONE_CHUNKS_BEFORE ))
+# Gauge, not a counter: LMCache's own view of L2 occupancy right now.  Read
+# absolute, not differenced.
+L2_USAGE_BYTES="\$(_lmc lmcache_mp_l2_usage_bytes)"
+
+echo "[accuracy-test] pool apparent: before=\${POOL_BEFORE} after=\${POOL_AFTER} growth=\${POOL_GROWTH}"
+echo "[accuracy-test] pool allocated: before=\${POOL_ALLOC_BEFORE} after=\${POOL_ALLOC_AFTER} growth=\${POOL_ALLOC_GROWTH}"
+echo "[accuracy-test] pool non-empty-files=\${POOL_FILES}"
+echo "[accuracy-test] lmcache L2: store_req submitted=\${L2_STORE_SUB_REQ} completed=\${L2_STORE_DONE_REQ} chunks=\${L2_STORE_DONE_CHUNKS} usage_bytes=\${L2_USAGE_BYTES}"
+
 if [ "\${POOL_FILES}" -eq 0 ] || [ "\${POOL_GROWTH}" -le 0 ]; then
     echo "[accuracy-test] FAIL Phase 3: the NVMe pool did not grow -- KV never reached L2." >&2
     echo "[accuracy-test]   before=\${POOL_BEFORE} after=\${POOL_AFTER} growth=\${POOL_GROWTH} files=\${POOL_FILES}" >&2
@@ -1618,8 +1663,31 @@ if [ "\${POOL_FILES}" -eq 0 ] || [ "\${POOL_GROWTH}" -le 0 ]; then
     echo "[accuracy-test]   would be vacuous.  Lower VLM_GPU_MEMORY_UTILIZATION or" >&2
     echo "[accuracy-test]   LMCACHE_L1_SIZE_GB to force eviction." >&2
     rc=1
+elif [ "\${L2_STORE_DONE_CHUNKS}" -le 0 ]; then
+    echo "[accuracy-test] FAIL Phase 3: slots were allocated but LMCache completed zero L2 chunk stores." >&2
+    echo "[accuracy-test]   submitted_requests=\${L2_STORE_SUB_REQ} completed_requests=\${L2_STORE_DONE_REQ}" >&2
+    echo "[accuracy-test]   The \${POOL_GROWTH} bytes of pool growth are slot-file allocation," >&2
+    echo "[accuracy-test]   not stored KV.  Either every store failed, or the adapter does not" >&2
+    echo "[accuracy-test]   report this counter -- check the lmcache log before adjusting." >&2
+    rc=1
+elif [ "\${L2_STORE_SUB_REQ}" -gt 0 ] && [ "\${L2_STORE_DONE_REQ}" -le 0 ]; then
+    echo "[accuracy-test] FAIL Phase 3: \${L2_STORE_SUB_REQ} L2 store requests submitted, zero completed." >&2
+    echo "[accuracy-test]   Writes are being issued and dropped on the floor." >&2
+    rc=1
 else
-    echo "[accuracy-test] OK Phase 3: pool grew by \${POOL_GROWTH} bytes across \${POOL_FILES} files"
+    echo "[accuracy-test] OK Phase 3: \${L2_STORE_DONE_CHUNKS} chunks stored to L2 across \${POOL_FILES} slot files"
+    echo "[accuracy-test]   (usage_bytes=\${L2_USAGE_BYTES}, slot growth=\${POOL_GROWTH} B)"
+fi
+
+# Sparse-slot warning.  du -sb reports file LENGTH; if the adapter preallocates
+# slots with seek+truncate, an unwritten pool still shows growth.  A large gap
+# between apparent and allocated means the growth number above is mostly holes.
+# Not fatal: filesystems differ, and the completed-chunks assertion above is the
+# real gate.  Threshold is a tenth -- deliberately loose, since slot padding
+# alone puts the honest ratio well under 1.
+if [ "\${POOL_GROWTH}" -gt 0 ] && [ "\${POOL_ALLOC_GROWTH}" -lt \$(( POOL_GROWTH / 10 )) ]; then
+    echo "[accuracy-test] WARN Phase 3: pool slots look sparse -- allocated \${POOL_ALLOC_GROWTH} B vs apparent \${POOL_GROWTH} B."
+    echo "[accuracy-test]   Treat the apparent-growth figure as slot reservation, not stored bytes."
 fi
 
 if [ "\${rc}" != "0" ]; then
