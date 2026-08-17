@@ -11,8 +11,18 @@
 # enough resolution for DELTA to mean something. See tests/accuracy/README.md.
 #
 # The nightly cliff stage also chains off Tiny Test, so this workflow runs
-# alongside it rather than before it — hence KEEP_ARTIFACTS=1, which leaves the
-# clone and tarball in place (spur-cliff.sh owns the final cleanup).
+# CONCURRENTLY with it, not before it.  KEEP_ARTIFACTS=1 leaves the clone and
+# tarball in place because spur-cliff.sh owns the terminal cleanup.
+#
+# KNOWN HAZARD (unfixed): because the two stages are concurrent rather than
+# serialized, spur-cliff.sh's unconditional EXIT trap can rm -rf the shared
+# clone and tarball while this job is still using them, if cliff finishes
+# first.  The obvious fix — chaining cliff off this workflow instead of off
+# Tiny Test — is NOT viable: GitHub caps workflow_run chains at three levels
+# beyond the initiating workflow.  This nightly chain already spends all three
+# (Dist Build -> Smoke -> Tiny -> Accuracy), so a cliff chained off Accuracy
+# would be a fourth level and would silently never run.  Serializing the two
+# requires collapsing them into one workflow with a `needs:` edge instead.
 #
 # Requires (all already in use by sibling nightly workflows):
 #   secrets.AIC_SPUR_HOST        — SSH target for the SPUR head node
