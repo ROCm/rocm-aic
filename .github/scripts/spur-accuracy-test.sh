@@ -87,6 +87,11 @@ if [[ ! -d "${WORKDIR}" || "${ACTUAL_SHA}" != "${SHA}" ]]; then
     git -C "${WORKDIR}" checkout "${SHA}"
 fi
 
+if [[ ! -d "${TARBALL_DIR}" ]]; then
+    echo "ERROR: ${TARBALL_DIR} not found — did dist-build run first?" >&2
+    exit 1
+fi
+
 echo "=== Running ${AIC_ACCURACY_TEST_TARGET} (AIC_IMAGE_NAME=${AIC_IMAGE_NAME}) ==="
 AIC_SPUR_CLUSTER=1 \
     AIC_IMAGE_NAME="${AIC_IMAGE_NAME}" \
