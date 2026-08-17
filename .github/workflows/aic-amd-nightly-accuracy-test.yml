@@ -39,6 +39,7 @@ jobs:
     env:
       AIC_SPUR_HOST:       ${{ secrets.AIC_SPUR_HOST }}
       AIC_SHARED_NFS:      ${{ secrets.AIC_SHARED_NFS }}
+      AIC_CI_STORAGE_ROOT: ${{ secrets.AIC_SHARED_NFS }}/rocm-aic
       AIC_SPUR_CONTROLLER: ${{ secrets.AIC_SPUR_CONTROLLER }}
       HF_TOKEN:            ${{ secrets.AIC_HF_TOKEN }}
 
