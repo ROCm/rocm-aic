@@ -4,7 +4,11 @@ set -euo pipefail
 # Runs on the self-hosted runner; SSHes to the SPUR head node (AIC_SPUR_HOST) and
 # runs accuracy-test against the tarball produced by spur-dist-build.sh for the
 # same SHA (the stage after spur-tiny-test.sh in the nightly chain, or triggered
-# on demand via /run-accuracy).
+# on demand via /run-ci-accuracy or a manual workflow_dispatch).
+#
+# The two accepted targets are the same gate: accuracy-test-fast is
+# accuracy-test with AIC_ROCM_ARCH pinned to AIC_FAST_ARCH, so it matches the
+# tarball a dist-build-fast produced.  Neither is cheaper than the other.
 #
 # accuracy-test is the KV-integrity gate: it scores gsm8k against a VRAM-only arm
 # and a tiered (LMCache + NIXL POSIX NVMe) arm in the same job and asserts that
