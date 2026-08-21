@@ -203,3 +203,6 @@ sysfs
 templated
 tracefs
 xGMI
+CUDA
+Mooncake
+PyPI's

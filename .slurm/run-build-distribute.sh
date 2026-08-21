@@ -505,7 +505,8 @@ cmd_build() {
     _version_build_args+=" --build-arg AIC_VERSION=${_version_value}"
     for _version_arg in \
         ROCM_VERSION VLLM_VERSION VLLM_ROCM_VARIANT \
-        LMCACHE_REF NIXL_REF HIPFILE_SHA HSA_SNOOP_REF; do
+        LMCACHE_REF MOONCAKE_REF MOONCAKE_FETCH_REF \
+        NIXL_REF HIPFILE_SHA HSA_SNOOP_REF; do
         if [[ -v "${_version_arg}" ]]; then
             printf -v _version_value '%q' "${!_version_arg}"
             _version_build_args+=" --build-arg ${_version_arg}=${_version_value}"

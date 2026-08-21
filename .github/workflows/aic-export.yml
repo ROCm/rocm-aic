@@ -65,12 +65,13 @@ jobs:
             VLLM_VERSION=1.2.3 \
             VLLM_ROCM_VARIANT=rocm876 \
             LMCACHE_REF=v2.3.4 \
+            MOONCAKE_REF=0123456789abcdef0123456789abcdef01234567 \
             NIXL_REF=v3.4.5 \
             HIPFILE_SHA=abcdef1234567890 \
             HSA_SNOOP_REF=v4.5.6 \
               bash docker/scripts/aic-image-tag.sh
           )"
-          expected_override="${aic_version}-rocm8.7.6-vllm1.2.3-rocm876-lmcache2.3.4-nixl3.4.5-hipfileabcdef1-hsasnoop4.5.6"
+          expected_override="${aic_version}-rocm8.7.6-vllm1.2.3-rocm876-lmcache2.3.4-mooncake0123456-nixl3.4.5-hipfileabcdef1-hsasnoop4.5.6"
           [[ "${override_tag}" == "${expected_override}" ]] \
             || {
               echo "ERROR: expected ${expected_override}, got ${override_tag}" >&2
@@ -90,22 +91,33 @@ jobs:
           dollar='$'
 
           current="$(bash "${renderer}" "${args[@]}")"
+          printf '%s\n' "${current}" | grep -F -- '  "torch==2.13.0+rocm7.2" \'
+          printf '%s\n' "${current}" | grep -F -- '  "torchvision==0.28.0+rocm7.2" \'
+          printf '%s\n' "${current}" | grep -F -- '  --index-url https://download.pytorch.org/whl/rocm7.2'
           printf '%s\n' "${current}" | grep -Eq "^- \*\*Base:\*\* [^${dollar}]+ \(ROCm [^,]+, Python 3\.12, x86_64\)$"
+          printf '%s\n' "${current}" | grep -Eq "^- \*\*vLLM:\*\* .+ @ ${markdown_tick}[^${markdown_tick}]+${markdown_tick} \(source build\)$"
           printf '%s\n' "${current}" | grep -Eq "^- \*\*LMCache:\*\* .+ @ ${markdown_tick}[^${markdown_tick}]+${markdown_tick} \+ AIC patches$"
+          printf '%s\n' "${current}" | grep -Eq "^- \*\*Mooncake:\*\* .+ @ ${markdown_tick}[^${markdown_tick}]+${markdown_tick} \(ROCm source build\)$"
           printf '%s\n' "${current}" | grep -Eq "^- \*\*NIXL:\*\* .+ @ ${markdown_tick}[^${markdown_tick}]+${markdown_tick} \+ nixl-rocm-ais-mt patch$"
 
           cat > "${fixtures}/Dockerfile.full" <<'EOF'
           ARG ROCM_VERSION=7.14.0
           ARG ROCM_BASE_IMAGE=rocm/dev-ubuntu-24.04:${ROCM_VERSION}-full
+          ARG VLLM_GIT_URL=https://github.com/vllm-project/vllm.git
+          ARG VLLM_REF=v0.26.0
           ARG LMCACHE_GIT_URL=https://github.com/LMCache/LMCache.git
           ARG LMCACHE_REF=v0.5.3
+          ARG MOONCAKE_GIT_URL=https://github.com/kvcache-ai/Mooncake.git
+          ARG MOONCAKE_REF=0123456789abcdef
           ARG NIXL_GIT_URL=https://github.com/ai-dynamo/nixl.git
           ARG NIXL_REF=v1.3.2
           EOF
           full_args=("${fixtures}/Dockerfile.full" "${args[@]:1}")
           full="$(bash "${renderer}" "${full_args[@]}")"
           printf '%s\n' "${full}" | grep -F -- '- **Base:** rocm/dev-ubuntu-24.04:7.14.0-full (ROCm 7.14.0, Python 3.12, x86_64)'
+          printf '%s\n' "${full}" | grep -F -- "- **vLLM:** https://github.com/vllm-project/vllm.git @ ${markdown_tick}v0.26.0${markdown_tick} (source build)"
           printf '%s\n' "${full}" | grep -F -- "- **LMCache:** https://github.com/LMCache/LMCache.git @ ${markdown_tick}v0.5.3${markdown_tick} + AIC patches"
+          printf '%s\n' "${full}" | grep -F -- "- **Mooncake:** https://github.com/kvcache-ai/Mooncake.git @ ${markdown_tick}0123456789abcdef${markdown_tick} (ROCm source build)"
 
           grep -v '^ARG NIXL_REF=' "${fixtures}/Dockerfile.full" > "${fixtures}/Dockerfile.missing-ref"
           missing_args=("${fixtures}/Dockerfile.missing-ref" "${args[@]:1}")

@@ -15,7 +15,9 @@ override AIC_VERSION := $(strip $(file <$(REPO_ROOT)/VERSION))
 
 # vLLM is source-built from VLLM_REF, so there is no VLLM_VERSION/VLLM_ROCM_VARIANT
 # wheel pin, and hipFile now ships in the ROCm base image (pinned by ROCM_VERSION).
-_FRAMEWORK_VERSION_ARGS := AIC_VERSION ROCM_VERSION VLLM_REF LMCACHE_REF NIXL_REF HSA_SNOOP_REF
+# Mooncake is pinned by commit, so MOONCAKE_FETCH_REF travels with MOONCAKE_REF:
+# overriding the commit alone would fetch the old ref and fail the SHA check.
+_FRAMEWORK_VERSION_ARGS := AIC_VERSION ROCM_VERSION VLLM_REF LMCACHE_REF MOONCAKE_REF MOONCAKE_FETCH_REF NIXL_REF HSA_SNOOP_REF
 _single_quote := '
 _shell_quote = '$(subst $(_single_quote),'"'"',$(1))'
 _FRAMEWORK_VERSION_ENV := $(foreach _arg,$(_FRAMEWORK_VERSION_ARGS),$(if $(filter undefined,$(origin $(_arg))),,$(_arg)=$(call _shell_quote,$(value $(_arg)))))

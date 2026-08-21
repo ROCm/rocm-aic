@@ -43,7 +43,7 @@ platform.
 | --- | --- | --- |
 | Base OS | `rocm/dev-ubuntu-24.04:7.14.0-full` | Ubuntu 24.04, ROCm 7.14, Python 3.12 |
 | vLLM | `github.com/vllm-project/vllm` (source build) | `v0.26.0` + 3 AMD patches |
-| LMCache | `LMCache/LMCache` (upstream) | `v0.5.3` + 14 AMD patches |
+| LMCache | `LMCache/LMCache` (upstream) | `v0.5.3` + 16 AMD patches |
 | NIXL | `ai-dynamo/nixl` (upstream) | `v1.3.2` + `nixl-rocm-ais-mt.patch` |
 | hsa-snoop | `sbates130272/hsa-snoop` (source build) | `v1.0.0` |
 | hipFile | ROCm 7.14 base image | GA in ROCm 7.14 — no separate source build |
