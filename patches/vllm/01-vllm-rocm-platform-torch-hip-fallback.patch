@@ -1,4 +1,4 @@
-# vLLM v0.27.1: ROCm platform detection falls back to torch.version.hip
+# vLLM v0.28.0: ROCm platform detection falls back to torch.version.hip
 #
 # amdsmi_get_processor_handles() returns 0 devices when torch has already
 # initialised the HIP runtime (which it does during import).  vLLM imports

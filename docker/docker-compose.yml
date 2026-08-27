@@ -58,7 +58,8 @@
 #   IMAGE_NAME             — image name when IMAGE_REF is unset (default: rocm-aic)
 #   AIC_VERSION            — AIC release from the root VERSION file
 #   ROCM_VERSION           — ROCm release used by the default base image
-#   VLLM_VERSION, VLLM_ROCM_VARIANT, LMCACHE_REF, NIXL_REF, HIPFILE_SHA, HSA_SNOOP_REF
+#   VLLM_VERSION, VLLM_ROCM_VARIANT, AITER_REF, FLASH_ATTN_REF, LMCACHE_REF, NIXL_REF,
+#   HIPFILE_SHA, HSA_SNOOP_REF
 #                          — optional framework version build-arg overrides
 #   VLLM_MODEL             — model to serve
 #   LMCACHE_PORT           — lmcache ZMQ listen port (default: 6555)
@@ -124,6 +125,8 @@ services:
         AIC_UCX_FAST: ${AIC_UCX_FAST:-}
         VLLM_VERSION:
         VLLM_ROCM_VARIANT:
+        AITER_REF:
+        FLASH_ATTN_REF:
         LMCACHE_REF:
         NIXL_REF:
         HIPFILE_SHA:

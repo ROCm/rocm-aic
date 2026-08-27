@@ -1,6 +1,6 @@
 # Add vllm:model_weights_memory_bytes Prometheus gauge.
 #
-# Rebased for vLLM v0.27.1. Exposes the static GPU memory consumed by model
+# Rebased for vLLM v0.28.0. Exposes the static GPU memory consumed by model
 # weights so operators can distinguish it from KV-cache memory.
 diff --git a/vllm/v1/engine/core.py b/vllm/v1/engine/core.py
 index 11c78c7e74..a2f34398f4 100644

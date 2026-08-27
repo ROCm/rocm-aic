@@ -70,7 +70,7 @@ jobs:
             HSA_SNOOP_REF=v4.5.6 \
               bash docker/scripts/aic-image-tag.sh
           )"
-          expected_override="${aic_version}-rocm8.7.6-vllm1.2.3-rocm876-lmcache2.3.4-nixl3.4.5-hipfileabcdef1-hsasnoop4.5.6"
+          expected_override="${aic_version}-rocm8.7.6-vllm1.2.3-rocm876-aiter0.1.19-fa0e60e394-lmcache2.3.4-nixl3.4.5-hipfileabcdef1-hsasnoop4.5.6"
           [[ "${override_tag}" == "${expected_override}" ]] \
             || {
               echo "ERROR: expected ${expected_override}, got ${override_tag}" >&2

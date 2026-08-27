@@ -5,7 +5,9 @@
 # AIC: Ubuntu 24.04 + ROCm 7.14 inference stack.
 #
 #   Base image: rocm/dev-ubuntu-24.04:${ROCM_VERSION}-full  (Ubuntu 24.04, Python 3.12)
-#   vLLM:       built from source at ${VLLM_REF} (torch 2.13.0+rocm7.2 from pytorch.org)
+#   vLLM:       built from source at ${VLLM_REF} (torch 2.12.0+git6bbd260 from wheels.vllm.ai)
+#   AITER:      ROCm/aiter ${AITER_REF}, installed from its matching ROCm wheel
+#   FlashAttn:  Dao-AILab/flash-attention ${FLASH_ATTN_REF}, built for ROCm
 #   LMCache:    LMCache/LMCache ${LMCACHE_REF} + AMD patches from patches/lmcache/
 #   hipFile:    included in the ROCm 7.14 base image (GA since 7.14) — no source build needed
 #   NIXL:       ai-dynamo/nixl ${NIXL_REF} + nixl-rocm-ais-mt.patch (ROCm/HIP + AIS_MT)
@@ -41,10 +43,11 @@
 # the NN- prefixes.  Drop a new NN-*.patch into the directory to include it.
 #
 # Wheels: the build also produces pip-installable wheels for vLLM (source-built),
-# the patched LMCache, and ROCm NIXL under /wheels.  Extract them with the `wheels` stage:
+# AITER (upstream prebuilt), FlashAttention, the patched LMCache, and ROCm NIXL under /wheels.  Extract
+# them with the `wheels` stage:
 #   docker build --build-arg AIC_VERSION="$(<VERSION)" \
 #     --target wheels --output type=local,dest=./wheels .
-# (the default target remains the full runtime image -- see stages 8/9 below).
+# (the default target remains the full runtime image -- see stages 9/10 below).
 
 # The main build stage is named `build`; two trailing stages at the end of this
 # file expose the pip wheels (`wheels`) and the final runtime image (`runtime`,
@@ -71,7 +74,16 @@ ARG BUILD_JOBS=
 # vLLM: built from source at this tag.  Check https://github.com/vllm-project/vllm/tags
 # for the latest release; bump VLLM_REF and rebuild when updating.
 ARG VLLM_GIT_URL=https://github.com/vllm-project/vllm.git
-ARG VLLM_REF=v0.27.1
+ARG VLLM_REF=v0.28.0
+
+# ROCm attention backends.  These revisions are the pair validated in vLLM's
+# ROCm base image; keep them pinned and update together after revalidation.
+ARG AITER_REF=v0.1.19
+# The official AITER v0.1.19 release publishes CPython 3.12 wheels for ROCm
+# 7.2 and gfx942/gfx950.  Keep this aligned with the ROCm torch runtime above.
+ARG AITER_WHEEL_ROCM=7.2
+ARG FLASH_ATTN_GIT_URL=https://github.com/Dao-AILab/flash-attention.git
+ARG FLASH_ATTN_REF=0e60e394
 
 # Pinned component revisions — bump together when validating a new combo.
 # ai-dynamo/nixl release tag + nixl-rocm-ais-mt.patch (ROCm/HIP + AIS_MT).
@@ -184,41 +196,35 @@ RUN curl -fsSL "https://astral.sh/uv/${UV_VERSION}/install.sh" | sh && \
     ln -s /root/.local/bin/uvx /usr/local/bin/uvx
 
 # ----- 3. vLLM (built from source at pinned tag) ---------------------------------
-# Install torch 2.13.0+rocm7.2 from the upstream pytorch.org wheel index.
+# Install the vLLM ROCm 7.2.3 wheel set.  Keep TorchVision paired with the
+# PyTorch build; its Triton dependency is resolved from the same wheel index.
 #
-# UNBLOCK (2026-08-03): torch 2.12.0+rocm7.14.0 from repo.amd.com ships
-# Triton 3.7.1 which triggers hipErrorInvalidImage on SPUR gfx950 nodes
-# (amdgpu/KFD 6.14.14 host driver).  The pytorch.org rocm7.2 wheel ships
-# a Triton version compatible with vLLM 0.27.1 and the current SPUR KFD.
-# Revert to repo.amd.com once the SPUR nodes are upgraded to a KFD that
-# supports ROCm 7.14 compiled kernels.
-#
-# Version alignment (download.pytorch.org/whl/rocm7.2):
-#   torch 2.13.0+rocm7.2  ->  torchvision 0.28.0+rocm7.2
+# Version alignment (wheels.vllm.ai/rocm):
+#   torch 2.12.0+git6bbd260  ->  torchvision 0.27.1+df56172
 # Wheels are pre-downloaded to /opt/pip-cache/wheels on the build host and
-# passed in via --build-context pip-wheels=<dir> to avoid the 6 GB download.
+# passed in via --build-context pip-wheels=<dir> to avoid the 1.35 GB download.
 # The context is mounted read-only and never baked into the image layer.
 # If the build-context is not provided, falls back to the index URL.
 RUN --mount=type=cache,target=/root/.cache/pip \
     --mount=from=pip-wheels,source=.,target=/opt/pip-cache/wheels,ro \
-    if [ -f /opt/pip-cache/wheels/torch-2.13.0+rocm7.2-cp312-cp312-manylinux_2_28_x86_64.whl ]; then \
+    if [ -f /opt/pip-cache/wheels/torch-2.12.0+git6bbd260-cp312-cp312-manylinux_2_39_x86_64.whl ]; then \
         pip3 install \
             --find-links /opt/pip-cache/wheels \
             --prefer-binary \
-            --index-url https://download.pytorch.org/whl/rocm7.2 \
-            "torch==2.13.0+rocm7.2" \
-            "torchvision==0.28.0+rocm7.2"; \
+            --extra-index-url https://wheels.vllm.ai/rocm/ \
+            "torch==2.12.0+git6bbd260" \
+            "torchvision==0.27.1+df56172"; \
     else \
         pip3 install \
             --timeout 300 \
             --retries 5 \
-            "torch==2.13.0+rocm7.2" \
-            "torchvision==0.28.0+rocm7.2" \
-            --index-url https://download.pytorch.org/whl/rocm7.2; \
+            "torch==2.12.0+git6bbd260" \
+            "torchvision==0.27.1+df56172" \
+            --extra-index-url https://wheels.vllm.ai/rocm/; \
     fi
 
 # Validate ROCM_ARCH here — after the torch download so a per-arch build
-# doesn't bust the 6 GB wheel cache.  First use of ROCM_ARCH is in the vLLM
+# doesn't bust the 1.35 GB wheel cache.  First use of ROCM_ARCH is in the vLLM
 # build step below.
 RUN test -n "$ROCM_ARCH" || { echo "ERROR: ROCM_ARCH is not set"; exit 1; }
 
@@ -255,7 +261,7 @@ RUN --mount=type=cache,target=/root/.cache/pip \
     --mount=type=cache,target=/root/.cache/ccache \
     mkdir -p /wheels && \
     cd /app/vllm && \
-    printf 'torch==2.13.0+rocm7.2\ntorchvision==0.28.0+rocm7.2\n' > /tmp/torch-constraints.txt && \
+    printf 'torch==2.12.0+git6bbd260\ntorchvision==0.27.1+df56172\n' > /tmp/torch-constraints.txt && \
     pip3 install -r requirements/rocm.txt \
         --constraint /tmp/torch-constraints.txt && \
     VLLM_TARGET_DEVICE=rocm \
@@ -268,7 +274,63 @@ RUN --mount=type=cache,target=/root/.cache/pip \
     pip3 install --no-cache-dir --no-deps /wheels/vllm-*.whl && \
     python3 -c 'import torch; assert torch.version.hip, "Expected a ROCm torch build"'
 
-# ----- 4. LMCache (upstream release + AMD patches) ---------------------------
+# ----- 4. ROCm attention backends (AITer + FlashAttention) ------------------
+# Install these for every image, rather than enabling an attention backend for a
+# specific model.  vLLM can then select ROCM_AITER_FA or FLASH_ATTN whenever a
+# loaded model and its runtime configuration support it.
+#
+# AITER's source wheel does not include its required `module_aiter_core` unless
+# every JIT kernel is eagerly prebuilt.  That takes more than an hour and is
+# incompatible with this image's MI355-stable Torch runtime.  Use AITER's
+# matching upstream binary release instead.  The release artifact contains the
+# gfx942 and gfx950 kernels and leaves only model-specific work for runtime.
+# AITER imports rocminfo to detect the installed GPU, so its actual import is
+# checked in the GPU-enabled smoke test after the image build rather than here.
+#
+# AITER_REF must name a release that publishes this CPython/ROCm wheel format.
+# It is generated from the ref so a deliberate, validated override cannot
+# silently install a different AITER revision.
+RUN --mount=type=cache,target=/root/.cache/pip \
+    mkdir -p /wheels && \
+    aiter_version="${AITER_REF#v}" && \
+    aiter_wheel="/wheels/amd_aiter-${aiter_version}+rocm${AITER_WHEEL_ROCM}.manylinux.2.28-cp312-cp312-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl" && \
+    curl --fail --location --retry 5 --retry-all-errors \
+        "https://github.com/ROCm/aiter/releases/download/${AITER_REF}/amd_aiter-${aiter_version}%2Brocm${AITER_WHEEL_ROCM}.manylinux.2.28-cp312-cp312-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl" \
+        --output "${aiter_wheel}" && \
+    pip3 install --no-cache-dir \
+        "pandas==3.0.3" \
+        "psutil==7.2.2" \
+        "pyyaml==6.0.3" \
+        "einops==0.8.2" \
+        "pybind11==3.0.4" \
+        "ninja==1.13.0" \
+        "flydsl==0.2.4" && \
+    pip3 install --no-cache-dir --no-deps "${aiter_wheel}" && \
+    python3 -c 'import importlib.util, pathlib; spec = importlib.util.find_spec("aiter"); assert spec and spec.submodule_search_locations; package_dir = pathlib.Path(next(iter(spec.submodule_search_locations))); assert any(package_dir.glob("jit/module_aiter_core*.so")), "AITer core module is missing"; print("AITer installed:", package_dir)'
+
+# FlashAttention has no ROCm wheel matching this image's pinned torch runtime,
+# so build the vLLM-validated revision from source for the selected architecture.
+RUN --mount=type=cache,target=/root/.cache/pip \
+    --mount=type=cache,target=/root/.cache/ccache \
+    git clone --recurse-submodules "${FLASH_ATTN_GIT_URL}" /app/flash-attention && \
+    cd /app/flash-attention && \
+    git checkout "${FLASH_ATTN_REF}" && \
+    git submodule update --init --recursive && \
+    GPU_ARCHS="${ROCM_ARCH}" \
+        PYTORCH_ROCM_ARCH="${ROCM_ARCH}" \
+        MAX_JOBS="${BUILD_JOBS:-$(nproc)}" \
+        CCACHE_DIR=/root/.cache/ccache \
+        python3 setup.py bdist_wheel --dist-dir=/wheels && \
+    pip3 install --no-cache-dir --no-deps /wheels/flash_attn-*.whl && \
+    python3 -c 'import flash_attn; print("FlashAttention installed:", flash_attn.__file__)' && \
+    { \
+        echo "AITER_REF=${AITER_REF}"; \
+        echo "FLASH_ATTN_REF=${FLASH_ATTN_REF}"; \
+        python3 -c 'import importlib.util; spec = importlib.util.find_spec("aiter"); assert spec and spec.submodule_search_locations; print("AITER_PACKAGE=" + next(iter(spec.submodule_search_locations)))'; \
+        python3 -c 'import flash_attn; print("FLASH_ATTN_PACKAGE=" + flash_attn.__file__)'; \
+    } > /etc/rocm-aic-attention-backends.env
+
+# ----- 5. LMCache (upstream release + AMD patches) ---------------------------
 # Shallow-clone the pinned release tag directly (no history/other branches).
 RUN git clone --depth 1 --branch "${LMCACHE_REF}" "${LMCACHE_GIT_URL}" /app/LMCache
 
@@ -331,11 +393,11 @@ RUN uv pip uninstall --system \
         nixl nixl-cu12 nixl-cu13 \
         cupy-cuda12x cufile-python cuda-pathfinder 2>/dev/null || true
 
-# ----- 5. hipFile — provided by the ROCm 7.14 base image (GA since 7.14) ------
+# ----- 6. hipFile — provided by the ROCm 7.14 base image (GA since 7.14) ------
 # No source build needed.  hipFile headers, libraries, Python bindings, ais-stats,
 # and ais-check are all pre-installed in rocm/dev-ubuntu-24.04:${ROCM_VERSION}-full.
 
-# ----- 6. NIXL (ai-dynamo/nixl upstream + nixl-rocm-ais-mt.patch) ------------
+# ----- 7. NIXL (ai-dynamo/nixl upstream + nixl-rocm-ais-mt.patch) ------------
 # Clone upstream ai-dynamo/nixl, then apply nixl-rocm-ais-mt.patch to add ROCm/HIP
 # detection and the AIS_MT plugin tree.
 COPY docker/scripts /tmp/nixl-scripts
@@ -366,7 +428,7 @@ RUN --mount=type=cache,target=/root/.cache/uv \
         UV_SYSTEM_CERTS=1 \
         /tmp/nixl-scripts/build-nixl.sh
 
-# ----- 6b. hsa-snoop (HSA AQL queue snooper + Prometheus exporter) -----------
+# ----- 7b. hsa-snoop (HSA AQL queue snooper + Prometheus exporter) -----------
 # GPU dispatch/queue telemetry on :9488 (/metrics), including AIS (AMD Infinity
 # Storage) P2P metrics (ais_rx_ops_total, ais_tx_bytes_total, etc.) added in
 # v1.0.0.  The snooper binary is host-only C++ (x86-64) and ARCH-INDEPENDENT --
@@ -392,7 +454,7 @@ RUN git clone --depth 1 --branch "${HSA_SNOOP_REF}" "${HSA_SNOOP_GIT_URL}" /app/
         || { echo "ERROR: hsa-snoop built without Prometheus mode (--prometheus absent)" >&2; exit 1; } && \
     echo "PASS: hsa-snoop v${HSA_SNOOP_REF} with Prometheus exporter (incl. AIS metrics) installed"
 
-# ----- 7. Runtime environment ------------------------------------------------
+# ----- 8. Runtime environment ------------------------------------------------
 # Vars from upstream vLLM Dockerfile.rocm added here:
 #   HSA_ENABLE_IPC_MODE_LEGACY=1  — legacy HIP IPC for cross-container KV registration (LMCache MP)
 #   SAFETENSORS_FAST_GPU=1        — GPU-accelerated weight loading, faster model startup
@@ -418,6 +480,8 @@ LABEL org.opencontainers.image.title="rocm-aic" \
       ai.amd.aic.version="${AIC_VERSION}" \
       ai.amd.aic.rocm="${ROCM_VERSION}" \
       ai.amd.aic.vllm="${VLLM_REF}" \
+      ai.amd.aic.aiter="${AITER_REF}" \
+      ai.amd.aic.flash-attention="${FLASH_ATTN_REF}" \
       ai.amd.aic.lmcache="${LMCACHE_REF}" \
       ai.amd.aic.nixl="${NIXL_REF}" \
       ai.amd.aic.hipfile="rocm-${ROCM_VERSION}" \
@@ -426,17 +490,17 @@ LABEL org.opencontainers.image.title="rocm-aic" \
 # vLLM OpenAI-compatible server is the default entrypoint.
 ENTRYPOINT ["python3", "-m", "vllm.entrypoints.openai.api_server"]
 
-# ----- 8. Wheel export stage -------------------------------------------------
+# ----- 9. Wheel export stage -------------------------------------------------
 # A scratch image whose only content is the pip wheels built above (source-built
-# vLLM + patched LMCache + ROCm NIXL).  Extract them WITHOUT building/loading
-# the full image:
+# vLLM, AITER (prebuilt), FlashAttention, patched LMCache, and ROCm NIXL).  Extract them
+# WITHOUT building/loading the full image:
 #   docker build --build-arg AIC_VERSION="$(<VERSION)" \
 #     --target wheels --output type=local,dest=./wheels .
 # The nightly-wheels GitHub workflow uses exactly this to publish the wheels.
 FROM scratch AS wheels
 COPY --from=build /wheels /
 
-# ----- 9. Runtime image (default target) -------------------------------------
+# ----- 10. Runtime image (default target) ------------------------------------
 # Aliases the `build` stage so the DEFAULT build target (no --target) is the full
 # runtime image, exactly as before -- Makefile/compose/run-build-distribute.sh
 # and the existing Docker CI all keep getting the runtime image unchanged.  Must
