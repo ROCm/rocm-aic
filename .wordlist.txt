@@ -3,6 +3,9 @@ AIC
 ais
 AIS
 AIS_MT
+AITER
+CPython
+FlashAttention
 amd
 AMD
 amdgpu

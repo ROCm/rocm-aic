@@ -15,7 +15,7 @@ override AIC_VERSION := $(strip $(file <$(REPO_ROOT)/VERSION))
 
 # PyTorch, vLLM, and all deps are source-built; PYTORCH_BRANCH, VLLM_REF, and
 # LLM_EMU_REF are the key version knobs.  hipFile ships in the ROCm base image.
-_FRAMEWORK_VERSION_ARGS := AIC_VERSION ROCM_VERSION PYTORCH_BRANCH VLLM_REF LLM_EMU_REF LMCACHE_REF NIXL_REF HSA_SNOOP_REF
+_FRAMEWORK_VERSION_ARGS := AIC_VERSION ROCM_VERSION PYTORCH_BRANCH VLLM_REF LLM_EMU_REF AITER_REF FLASH_ATTN_REF LMCACHE_REF NIXL_REF HSA_SNOOP_REF
 _single_quote := '
 _shell_quote = '$(subst $(_single_quote),'"'"',$(1))'
 _FRAMEWORK_VERSION_ENV := $(foreach _arg,$(_FRAMEWORK_VERSION_ARGS),$(if $(filter undefined,$(origin $(_arg))),,$(_arg)=$(call _shell_quote,$(value $(_arg)))))
@@ -87,6 +87,18 @@ export NVME_DATA NFS_DATA
 export VLLM_MODEL TENSOR_PARALLEL_SIZE
 export VLM_GPU_MEMORY_UTILIZATION VLM_MAX_MODEL_LEN VLM_MAX_NUM_BATCHED_TOKENS VLM_BLOCK_SIZE
 export NIXL_GIT_URL NIXL_SHA
+
+# Compose passes a declared build argument through only when it is present in
+# its environment. Do not export empty attention-backend overrides: an empty
+# value would override the pinned Dockerfile default and produce an invalid
+# AITER release URL. A non-empty command-line or environment override remains
+# available for validated version-pair updates.
+ifneq ($(strip $(AITER_REF)),)
+export AITER_REF
+endif
+ifneq ($(strip $(FLASH_ATTN_REF)),)
+export FLASH_ATTN_REF
+endif
 
 comma := ,
 # The whole stack is `docker compose` (v2) only -- the docker-compose v1 standalone

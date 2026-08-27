@@ -3,6 +3,8 @@
 | Variable | Default | Description |
 | --- | --- | --- |
 | `ROCM_ARCH` | auto-detected | GPU arch, e.g. `gfx942` |
+| `AITER_REF` | `v0.1.19` | Pinned ROCm AITER release installed into every image from its matching ROCm 7.2 CPython 3.12 wheel; override only with a validated release wheel and FlashAttention pair |
+| `FLASH_ATTN_REF` | `0e60e394` | Pinned ROCm FlashAttention revision installed into every image; override only when validating a new pair with AITER |
 | `HF_TOKEN` | — | HuggingFace access token (required) |
 | `VLLM_MODEL` | `openai/gpt-oss-120b` | Model to serve |
 | `NVME_DATA` | `/mnt/lmcache-nvme` | Host path for NVMe L2a pool |
