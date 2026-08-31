@@ -13,7 +13,7 @@
 [![Nightly Dist Build](https://github.com/ROCm/rocm-aic/actions/workflows/aic-amd-nightly-dist-build.yml/badge.svg)](https://github.com/ROCm/rocm-aic/actions/workflows/aic-amd-nightly-dist-build.yml)
 [![Nightly Smoke Test](https://github.com/ROCm/rocm-aic/actions/workflows/aic-amd-nightly-smoke-test.yml/badge.svg)](https://github.com/ROCm/rocm-aic/actions/workflows/aic-amd-nightly-smoke-test.yml)
 [![Nightly Tiny Test](https://github.com/ROCm/rocm-aic/actions/workflows/aic-amd-nightly-tiny-test.yml/badge.svg)](https://github.com/ROCm/rocm-aic/actions/workflows/aic-amd-nightly-tiny-test.yml)
-[![Nightly Cliff](https://github.com/ROCm/rocm-aic/actions/workflows/aic-amd-nightly-cliff.yml/badge.svg)](https://github.com/ROCm/rocm-aic/actions/workflows/aic-amd-nightly-cliff.yml)
+[![Nightly Accuracy + Cliff](https://github.com/ROCm/rocm-aic/actions/workflows/aic-amd-nightly-accuracy-cliff.yml/badge.svg)](https://github.com/ROCm/rocm-aic/actions/workflows/aic-amd-nightly-accuracy-cliff.yml)
 [![Nightly Wheels](https://github.com/ROCm/rocm-aic/actions/workflows/aic-nightly-wheels.yml/badge.svg)](https://github.com/ROCm/rocm-aic/actions/workflows/aic-nightly-wheels.yml)
 [![Nightly Patch Validation](https://github.com/ROCm/rocm-aic/actions/workflows/aic-patches.yml/badge.svg)](https://github.com/ROCm/rocm-aic/actions/workflows/aic-patches.yml)
 [![Monitoring CPU Smoke](https://github.com/ROCm/rocm-aic/actions/workflows/aic-monitoring-cpu-smoke.yml/badge.svg)](https://github.com/ROCm/rocm-aic/actions/workflows/aic-monitoring-cpu-smoke.yml)
