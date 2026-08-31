@@ -149,11 +149,8 @@ AIC_FAST_ARCH ?= gfx950
 # ---- accuracy-test ---------------------------------------------------------
 # Knobs for the KV-integrity gate; see tests/accuracy/README.md.  Exported so
 # they reach run-build-distribute.sh, which reads them from the environment.
-# AIC_ACCURACY_FAST_LIMIT caps gsm8k on the PR path only -- the nightly runs
-# the full split so the score keeps its resolution.
-AIC_ACCURACY_FAST_LIMIT ?= 200
-export AIC_ACCURACY_MODEL AIC_ACCURACY_LIMIT AIC_ACCURACY_DELTA
-export AIC_ACCURACY_SKIP_BASELINE
+# There is no item cap: every scoring pass asks the full gsm8k split.
+export AIC_ACCURACY_MODEL AIC_ACCURACY_DELTA
 export AIC_ACCURACY_TIME AIC_ACCURACY_CPUS AIC_ACCURACY_MEM
 export AIC_ACCURACY_READY_TIMEOUT
 
@@ -314,7 +311,7 @@ help:
 	@echo "  make tiny-test         End-to-end serve check (MP stack + tiny model, one completion)"
 	@echo "  make tiny-test-fast    Fast variant of tiny-test"
 	@echo "  make accuracy-test     KV-integrity gate: differential lm_eval, two arms"
-	@echo "  make accuracy-test-fast  PR-path accuracy-test (tiered arm only, capped)"
+	@echo "  make accuracy-test-fast  accuracy-test pinned to the single fast arch"
 	@echo "  make install-ci-scripts  Deploy .github/scripts/runners/*.sh to $(AIC_CI_LIB_DIR) (sudo if needed)"
 	@echo "  make cliff-submit      sbatch the full 3-arm cliff sweep -> logs/<job-id>/"
 	@echo "  make cliff-kvd         sbatch focused KVD cliff: shared prefix, sparse c ladder (1,8,32,64,128,250)"
@@ -673,15 +670,14 @@ accuracy-test: _check_hf_token   # KV-integrity gate: differential lm_eval over 
 	@# asserts tiering KV did not change the answers.  See tests/accuracy/README.md.
 	"$(DIST)" accuracy-test
 
-accuracy-test-fast:            # PR-path accuracy-test: tiered arm only, capped items
-	@# Drops the baseline arm (halving the bringups) and caps gsm8k, so the
-	@# differential is lost but the absolute floor, liveness and restart
-	@# assertions all still run.  The nightly keeps both arms.
+accuracy-test-fast:            # accuracy-test pinned to the single fast arch
+	@# Same gate as accuracy-test -- both arms, full split -- differing only in
+	@# the arch pin, exactly as tiny-test-fast differs from tiny-test.  There is
+	@# no cheaper accuracy variant: dropping the baseline arm skipped the
+	@# differential, which is the whole point of the gate.
 	@# Must pin the SAME AIC_ROCM_ARCH as dist-build-fast.
 	@$(MAKE) --no-print-directory accuracy-test \
-	    AIC_ROCM_ARCH='$(AIC_FAST_ARCH)' \
-	    AIC_ACCURACY_SKIP_BASELINE=1 \
-	    AIC_ACCURACY_LIMIT='$(AIC_ACCURACY_FAST_LIMIT)'
+	    AIC_ROCM_ARCH='$(AIC_FAST_ARCH)'
 
 install-ci-scripts:            # Deploy .github/scripts/runners/*.sh to the runner's AIC_CI_LIB_DIR
 	@set -e; \

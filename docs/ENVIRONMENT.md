@@ -43,13 +43,14 @@ one job and asserts that routing KV through DRAM/NVMe did not change the
 answers. See [`tests/accuracy/README.md`](../tests/accuracy/README.md) for what
 each assertion catches and how to add a model.
 
+Every scoring pass asks the full gsm8k split; there is no item cap to set and
+no way to drop the baseline arm. Both knobs existed to make a cheap PR variant,
+and that variant skipped the differential — the one assertion the gate is for.
+
 | Variable | Default | Description |
 | --- | --- | --- |
 | `AIC_ACCURACY_MODEL` | `$AIC_TINY_MODEL` | Model to score. Must match what the arms serve |
-| `AIC_ACCURACY_LIMIT` | `0` (full split) | Cap on gsm8k items. Lowers wall clock and resolution together — the score's standard error grows as `1/sqrt(LIMIT)` |
 | `AIC_ACCURACY_DELTA` | `0.02` | How far the tiered arm may fall below the baseline arm before it counts as corruption |
-| `AIC_ACCURACY_SKIP_BASELINE` | `0` | `1` drops the VRAM-only arm (what `accuracy-test-fast` does): no differential, but the floor, liveness and restart assertions still run |
-| `AIC_ACCURACY_FAST_LIMIT` | `200` | `AIC_ACCURACY_LIMIT` used by `make accuracy-test-fast` |
 | `AIC_ACCURACY_CONCURRENT` | `32` | `lm_eval` request concurrency |
 | `AIC_ACCURACY_BASELINE_URL` | — | Baseline arm base URL, e.g. `http://172.18.0.4:8000/v1`. Only needed when running pytest by hand; the driver supplies it |
 | `AIC_ACCURACY_TIERED_URL` | — | Tiered arm base URL. Unset or unreachable endpoints skip cleanly rather than failing |

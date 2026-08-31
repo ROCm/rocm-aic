@@ -1341,16 +1341,14 @@ REMOTE
 # host-side route; readiness probes use the `docker exec ... 127.0.0.1` form that
 # the rest of the repo uses.
 #
+# Every scoring pass asks the full gsm8k split; there is no item cap to set.
+#
 #   AIC_ACCURACY_MODEL          model to serve            (default: AIC_TINY_MODEL)
-#   AIC_ACCURACY_LIMIT          cap gsm8k items           (default: 0 = full split)
 #   AIC_ACCURACY_DELTA          allowed tiered-vs-baseline gap, two-sided (default: 0.02)
-#   AIC_ACCURACY_SKIP_BASELINE  1 = skip phase 1          (default: 0)
 #   AIC_ACCURACY_TIME/CPUS/MEM  Slurm sizing
 #   AIC_ACCURACY_READY_TIMEOUT  x5s waits for the endpoint (default: 120)
 AIC_ACCURACY_MODEL="${AIC_ACCURACY_MODEL:-${AIC_TINY_MODEL}}"
-AIC_ACCURACY_LIMIT="${AIC_ACCURACY_LIMIT:-0}"
 AIC_ACCURACY_DELTA="${AIC_ACCURACY_DELTA:-0.02}"
-AIC_ACCURACY_SKIP_BASELINE="${AIC_ACCURACY_SKIP_BASELINE:-0}"
 # 58 min measured for the two-arm full-split run (SPUR job 6235), plus ~7 min
 # now that phase 4 re-scores the full split too -- ~65 min, so 2h is ~1.8x.
 AIC_ACCURACY_TIME="${AIC_ACCURACY_TIME:-02:00:00}"
@@ -1371,7 +1369,7 @@ cmd_accuracy_test() {
         _sel=(--constraint="${AIC_TEST_CONSTRAINT}")
         log "accuracy-test via sbatch (partition ${AIC_BUILD_PARTITION}, constraint ${AIC_TEST_CONSTRAINT})"
     fi
-    log "image: ${AIC_IMAGE}  model: ${AIC_ACCURACY_MODEL}  limit: ${AIC_ACCURACY_LIMIT:-full}"
+    log "image: ${AIC_IMAGE}  model: ${AIC_ACCURACY_MODEL}  gsm8k: full split"
 
     local remote_script
     remote_script="$(cat <<REMOTE
@@ -1415,14 +1413,12 @@ PYTEST="\${VENV}/bin/pytest"
 PYBIN="\${VENV}/bin/python"
 
 export AIC_ACCURACY_MODEL='${AIC_ACCURACY_MODEL}'
-export AIC_ACCURACY_LIMIT='${AIC_ACCURACY_LIMIT}'
 export AIC_ACCURACY_DELTA='${AIC_ACCURACY_DELTA}'
-export AIC_ACCURACY_SKIP_BASELINE='${AIC_ACCURACY_SKIP_BASELINE}'
 # This is CI: an endpoint the fixtures cannot reach must fail the job, not skip
 # it green.  The fixtures default to skipping so the package stays runnable on a
 # laptop with no GPU; here we have brought the arms up ourselves and every skip
-# for unreachability means the gate scored nothing.  Deliberate absences
-# (SKIP_BASELINE above, an unknown model's floor) remain skips.
+# for unreachability means the gate scored nothing.  A deliberate absence (an
+# unknown model's floor) remains a skip.
 export AIC_ACCURACY_REQUIRED=1
 
 # --- shared compose env ------------------------------------------------------
@@ -1547,34 +1543,32 @@ _lmc() { _metric_sum aic-lmcache http://127.0.0.1:8080/metrics "\$1"; }
 # ===========================================================================
 # Phase 1: vram_only arm -- plain vLLM, KV never leaves VRAM
 # ===========================================================================
-BASELINE_SCORE=""
-if [ '${AIC_ACCURACY_SKIP_BASELINE}' = "1" ]; then
-    echo "[accuracy-test] === Phase 1 SKIPPED (AIC_ACCURACY_SKIP_BASELINE=1) ==="
-    echo "[accuracy-test] no differential this run; the absolute floor still applies"
-else
-    echo "[accuracy-test] === Phase 1: vram_only arm ==="
-    # No LMCache: vllm owns its IPC ns, no KV_TRANSFER_ARG, no --profile cache.
-    export VLLM_IPC_MODE=shareable
-    export VLLM_PID_MODE=
-    export KV_TRANSFER_ARG=
-    export AIC_L2_BACKEND=none
-    export VLM_GPU_MEMORY_UTILIZATION=0.90
-    if ! compose up -d vllm; then
-        echo "[accuracy-test] FAIL: baseline compose up failed" >&2
-        compose logs --tail 60 --no-color vllm 2>&1 | sed 's/^/  [vllm] /'
-        exit 1
-    fi
-    _wait_ready vram_only || exit 1
-    BASE_URL="\$(_endpoint_url)" || exit 1
-    echo "[accuracy-test] scoring baseline at \${BASE_URL}"
-    "\${PYBIN}" '${AIC_DAY_DIR}/tests/accuracy/score_endpoint.py' "\${BASE_URL}" \
-        --out "\${_logdir}/baseline-score.json" || {
-        echo "[accuracy-test] FAIL: baseline scoring failed" >&2; exit 1; }
-    BASELINE_SCORE="\$("\${PYBIN}" -c "import json;print(json.load(open('\${_logdir}/baseline-score.json'))['score'])")"
-    echo "[accuracy-test] baseline score: \${BASELINE_SCORE}"
-    _teardown vram_only
-    sleep 5
+# This arm is not optional.  It used to be skippable to halve the bringups on a
+# PR path, but skipping it skipped test_tiered_matches_baseline -- the
+# differential the whole gate exists to run -- and left a run that could only
+# fail on catastrophe.
+echo "[accuracy-test] === Phase 1: vram_only arm ==="
+# No LMCache: vllm owns its IPC ns, no KV_TRANSFER_ARG, no --profile cache.
+export VLLM_IPC_MODE=shareable
+export VLLM_PID_MODE=
+export KV_TRANSFER_ARG=
+export AIC_L2_BACKEND=none
+export VLM_GPU_MEMORY_UTILIZATION=0.90
+if ! compose up -d vllm; then
+    echo "[accuracy-test] FAIL: baseline compose up failed" >&2
+    compose logs --tail 60 --no-color vllm 2>&1 | sed 's/^/  [vllm] /'
+    exit 1
 fi
+_wait_ready vram_only || exit 1
+BASE_URL="\$(_endpoint_url)" || exit 1
+echo "[accuracy-test] scoring baseline at \${BASE_URL}"
+"\${PYBIN}" '${AIC_DAY_DIR}/tests/accuracy/score_endpoint.py' "\${BASE_URL}" \
+    --out "\${_logdir}/baseline-score.json" || {
+    echo "[accuracy-test] FAIL: baseline scoring failed" >&2; exit 1; }
+BASELINE_SCORE="\$("\${PYBIN}" -c "import json;print(json.load(open('\${_logdir}/baseline-score.json'))['score'])")"
+echo "[accuracy-test] baseline score: \${BASELINE_SCORE}"
+_teardown vram_only
+sleep 5
 
 # ===========================================================================
 # Phase 2: kvd arm -- LMCache + NIXL POSIX NVMe L2
@@ -1616,7 +1610,7 @@ echo "[accuracy-test] pre-score L2 counters: store_sub_req=\${L2_STORE_SUB_REQ_B
 
 export AIC_ACCURACY_TIERED_URL="\${TIERED_URL}"
 export AIC_ACCURACY_SCORE_OUT="\${_logdir}/tiered-score.json"
-[ -n "\${BASELINE_SCORE}" ] && export AIC_ACCURACY_BASELINE_SCORE="\${BASELINE_SCORE}"
+export AIC_ACCURACY_BASELINE_SCORE="\${BASELINE_SCORE}"
 
 rc=0
 "\${PYTEST}" '${AIC_DAY_DIR}/tests/accuracy' -v -rs --no-header || rc=\$?
