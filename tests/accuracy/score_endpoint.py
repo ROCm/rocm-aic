@@ -17,7 +17,7 @@ import sys
 
 sys.path.insert(0, str(pathlib.Path(__file__).parent))
 
-from test_accuracy import LIMIT, MODEL, _score  # noqa: E402
+from test_accuracy import MODEL, _score  # noqa: E402
 
 
 def main() -> int:
@@ -27,7 +27,7 @@ def main() -> int:
     args = parser.parse_args()
 
     score = _score(args.url.rstrip("/"))
-    payload = {"url": args.url, "model": MODEL, "limit": LIMIT, "score": score}
+    payload = {"url": args.url, "model": MODEL, "score": score}
     text = json.dumps(payload)
     if args.out:
         pathlib.Path(args.out).write_text(text + "\n", encoding="utf-8")

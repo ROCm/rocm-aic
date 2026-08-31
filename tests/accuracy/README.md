@@ -95,13 +95,22 @@ so the package can be collected on a laptop with no GPU.
 ### Under the driver
 
 ```bash
-make accuracy-test        # SPUR, both arms
-make accuracy-test-fast   # SPUR, PR path
+make accuracy-test        # SPUR, both arms, full split (~65 min)
+make accuracy-test-fast   # the same, AIC_ROCM_ARCH pinned to AIC_FAST_ARCH
 ```
 
 The driver runs five phases: score the VRAM-only arm, score the tiered arm and
 run the pytest assertions, check the NVMe pool grew, restart vLLM and re-score,
 then verify that re-score was served from the cache rather than recomputed.
+
+There is one gate, not a fast one and a thorough one. `accuracy-test-fast`
+differs from `accuracy-test` only in the arch pin, exactly as `tiny-test-fast`
+differs from `tiny-test`; every phase asks the full gsm8k split in both. The
+cheap variant that used to exist dropped the baseline arm and capped items to
+200, which skipped `test_tiered_matches_baseline` and widened the surviving
+floor to 0.117 against an expected 0.2022 — a 13-minute job that could only
+fail on catastrophe. The cap also bought ~85% of the saving on its own, so the
+baseline arm was being sacrificed for about four minutes.
 
 ## Skipping is a laptop default, not a CI one
 
@@ -119,8 +128,6 @@ The switch governs *reachability only*. Skips that encode a genuine "this
 assertion does not apply to this run" stay skips, because failing them would
 report a config gap as a regression:
 
-- `AIC_ACCURACY_SKIP_BASELINE=1` — the fast path drops the baseline arm on
-  purpose to halve the bringups.
 - a model with no entry in `expected.json` — no floor to compare against.
 - `AIC_ACCURACY_REFERENCE_SCORE` unset — not a restart-phase run.
 
@@ -168,15 +175,21 @@ host (the convention across this repo).
 | Variable | Default | Meaning |
 |---|---|---|
 | `AIC_ACCURACY_MODEL` | `Qwen/Qwen2.5-0.5B-Instruct` | Model to score. Must match what the arms are serving. |
-| `AIC_ACCURACY_LIMIT` | unset (full split) | Cap gsm8k items. Lowers wall clock and resolution together — the score's standard error grows as `1/sqrt(LIMIT)`. |
 | `AIC_ACCURACY_DELTA` | `0.02` | Allowed tiered-vs-baseline gap, **two-sided**. |
 | `AIC_ACCURACY_REQUIRED` | unset | `1` = an unreachable endpoint fails instead of skipping. Set by the CI driver. |
-| `AIC_ACCURACY_SKIP_BASELINE` | unset | `1` = this run has no baseline arm; the differential skips even under `AIC_ACCURACY_REQUIRED`. |
 | `AIC_ACCURACY_CONCURRENT` | `32` | `lm_eval` request concurrency. |
 | `AIC_ACCURACY_BASELINE_URL` | unset | VRAM-only arm, e.g. `http://172.18.0.4:8000/v1`. |
 | `AIC_ACCURACY_TIERED_URL` | unset | LMCache/NIXL arm. |
 | `AIC_ACCURACY_REFERENCE_SCORE` | unset | Pre-restart score; enables the restart assertion. |
 | `AIC_ACCURACY_SCORE_OUT` | unset | Write the measured tiered score here as JSON. |
+
+There is deliberately no item-cap knob. Capping a pass forces every tolerance
+that compares against it to widen by the binomial spread of the smaller sample
+(see below), and each widening moves the gate closer to unfailable. If you need
+a short local run while iterating, pass `--limit` to `lm_eval` in `_score()` on
+a scratch commit rather than reintroducing the knob — a capped run is a smoke
+test of the plumbing, not an accuracy result, and should not be able to
+masquerade as one in CI.
 
 ## Choosing DELTA
 
@@ -210,15 +223,15 @@ Two notes for whoever revisits this:
 - **The measured σ is much tighter than the binomial floor.** A mean of 0.2022
   over n=1319 has a sampling standard error of 0.0111 — 3.5× the observed σ.
   That is expected and not a contradiction: all three runs score the *same* 1319
-  items, so the binomial term is common-mode and cancels. It would dominate if
-  you ever compared across different item subsets, which is exactly what
-  `AIC_ACCURACY_LIMIT` does — so **do not reuse this DELTA for a
-  limit-restricted differential** without re-measuring. The restart phase used
-  to hit exactly this case: it re-scored a 200-item prefix against a reference
-  taken over the full 1319, the binomial term did *not* cancel, and the
-  tolerance had to widen to ±0.085 to avoid flaking — four times looser than
-  the gate it replaced. It now re-scores the full split, so `DELTA` applies
-  unmodified and the widening helper is gone.
+  items, so the binomial term is common-mode and cancels. It would dominate the
+  moment you compared across different item subsets — so **do not reuse this
+  DELTA for a subsampled differential** without re-measuring. This is why the
+  item cap is gone rather than merely unused by default: the restart phase used
+  to re-score a 200-item prefix against a full-split reference, the binomial
+  term did *not* cancel, and the tolerance had to widen to ±0.085 to avoid
+  flaking — four times looser than the gate it replaced. Every phase now scores
+  the same 1319 items, so `DELTA` applies unmodified everywhere and there are no
+  tolerance-scaling helpers left to reason about.
 - **The model scores ~0.20, lower than upstream's ~0.41 for `Qwen3-0.6B`.**
   That was the concern that motivated measuring: at a low score, run-to-run
   noise could have been a large fraction of DELTA. It is not. If a future change
@@ -263,12 +276,15 @@ first is a tiered arm at the *baseline's* memory utilisation — if the gap
 disappears, it is the eviction pressure, not the tier.
 
 **The tiered arm is ~70× slower to score** (48m55s vs ~40s). That is the number
-the CI `timeout-minutes` is set from, and the reason the PR path caps items
-rather than running the full split.
+the CI `timeout-minutes` is set from, and it is the single thing standing
+between this gate and a runtime short enough to gate every PR on. If that
+2.2 s/item comes down, everything below stops being a trade-off.
 
-## Why the floor widens when you cap the item count
+## Why there is no item cap
 
-The floor's slack is `max(0.05, 3 * SE(limit))`, not a flat 0.05.
+Capping the split is the obvious way to make this gate cheap, and it does not
+work: the tolerances have to widen faster than the runtime falls, so what you
+buy in minutes you pay for in a gate that cannot fail.
 
 `FLOOR_RTOL = 0.05` is calibrated for the full 1319-item split, where the
 binomial standard error is 0.011 — three sigma is 0.033, comfortably inside it.
@@ -278,18 +294,20 @@ Capping the item count inflates that error as `1/sqrt(n)`:
 |---|---|---|---|
 | 1319 (full) | 0.011 | 0.033 | fine |
 | 500 | 0.018 | 0.054 | marginal |
-| 200 (fast path) | 0.028 | 0.085 | **flakes** |
+| 200 | 0.028 | 0.085 | **flakes** |
 | 100 | 0.040 | 0.121 | **flakes badly** |
 
-At the fast path's `LIMIT=200`, a flat 0.05 floor would fail a perfectly healthy
-run a large fraction of the time — sampling noise alone exceeds the threshold.
-Scaling the slack makes a capped run a *weaker* gate rather than a *flaky* one,
-which is the right trade for a PR-path check. The nightly runs the full split,
-where the floor stays tight.
+At the 200 items the old fast path used, a flat 0.05 floor would fail a
+perfectly healthy run a large fraction of the time — sampling noise alone
+exceeds the threshold. The fix at the time was to scale the slack, which turned
+a *flaky* gate into a *weak* one: the floor landed at 0.117 against an expected
+0.2022, so only catastrophe could trip it. Both options are bad; asking all
+1319 questions is what makes the tight thresholds honest.
 
-This is the same reason `DELTA` must not be reused for a limit-restricted
-differential: there the two arms score the *same* capped subset, so the sampling
-term cancels — but only if both arms use the identical prefix.
+The same arithmetic governs the restart phase, which is why it is no longer
+capped either. `DELTA` survives subsampling only when both numbers score the
+*identical* items — a 200-item prefix compared against a full-split reference
+does not cancel the binomial term, and needed ±0.085 to stay green.
 
 ## Adding a model to `expected.json`
 

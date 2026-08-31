@@ -79,16 +79,9 @@ def tiered_url() -> str:
 def baseline_url() -> str:
     """Base URL of the VRAM-only baseline arm, or skip.
 
-    An operator can declare the baseline arm absent for this run
-    (AIC_ACCURACY_SKIP_BASELINE=1, what `make accuracy-test-fast` does to halve
-    the bringups). That is a deliberate loss of the differential, not a broken
-    endpoint, so it stays a skip even under AIC_ACCURACY_REQUIRED.
+    There is no way to declare this arm absent: the differential it feeds is
+    the gate's reason to exist, and a run without it is not an accuracy test.
     """
-    if os.getenv("AIC_ACCURACY_SKIP_BASELINE", "").strip() not in ("", "0", "false"):
-        pytest.skip(
-            "AIC_ACCURACY_SKIP_BASELINE=1; this run has no baseline arm, so the "
-            "differential does not apply (the floor and restart gates still do)"
-        )
     url = os.getenv("AIC_ACCURACY_BASELINE_URL")
     reason = _probe(url)
     if reason is not None:

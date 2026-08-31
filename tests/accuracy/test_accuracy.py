@@ -23,7 +23,6 @@ that would impact both paths.
 from __future__ import annotations
 
 import json
-import math
 import os
 import pathlib
 
@@ -35,15 +34,16 @@ import pytest
 
 MODEL = os.getenv("AIC_ACCURACY_MODEL", "Qwen/Qwen2.5-0.5B-Instruct")
 
-# Number of input questions.
-LIMIT = int(os.getenv("AIC_ACCURACY_LIMIT", "0")) or None
+# Every scoring pass asks the full split.  There is deliberately no item cap:
+# a capped pass has to widen every tolerance to cover its own binomial spread,
+# which is how you get a gate that cannot fail.  See tests/accuracy/README.md.
 
 # If |accuracy[tiered] - accuracy[baseline]| > AIC_ACCURACY_DELTA, fail.  Two-
 # sided: the arms answer identical prompts, so an unexplained gain is the same
 # evidence of divergence as a loss.
 DELTA = float(os.getenv("AIC_ACCURACY_DELTA", "0.02"))
 
-# RTOL, later scaled by the number of input questions.
+# Slack on the absolute floor, calibrated for the full 1319-item split.
 FLOOR_RTOL = 0.05
 
 NUM_CONCURRENT = int(os.getenv("AIC_ACCURACY_CONCURRENT", "32"))
@@ -84,17 +84,6 @@ def _within_delta(measured: float, reference: float, delta: float) -> bool:
     return abs(measured - reference) <= delta
 
 
-def _floor_slack(expected: float, limit: int | None) -> float:
-    """Floor tolerance, scaled by number of questions asked.
-
-    FLOOR_RTOL=0.05 is calibrated for the full 1319-item split.
-    """
-    if not limit:
-        return FLOOR_RTOL
-    se = math.sqrt(max(expected * (1.0 - expected), 0.0) / limit)
-    return max(FLOOR_RTOL, 3.0 * se)
-
-
 def _score(base_url: str) -> float:
     """Run gsm8k against one endpoint and return its strict-match score."""
     import lm_eval
@@ -111,7 +100,6 @@ def _score(base_url: str) -> float:
         model_args=model_args,
         tasks=TASK,
         num_fewshot=NUM_FEWSHOT,
-        limit=LIMIT,
     )
     return float(results["results"][TASK][FILTER])
 
@@ -124,10 +112,10 @@ def _score(base_url: str) -> float:
 @pytest.fixture(scope="session")
 def tiered_score(tiered_url: str) -> float:
     score = _score(tiered_url)
-    print(f"\n[accuracy] tiered   {TASK} {FILTER} = {score:.4f}  (limit={LIMIT})")
+    print(f"\n[accuracy] tiered   {TASK} {FILTER} = {score:.4f}")
     if SCORE_OUT:
         pathlib.Path(SCORE_OUT).write_text(
-            json.dumps({"model": MODEL, "limit": LIMIT, "score": score}) + "\n",
+            json.dumps({"model": MODEL, "score": score}) + "\n",
             encoding="utf-8",
         )
     return score
@@ -143,7 +131,7 @@ def baseline_score(request: pytest.FixtureRequest) -> float:
         return BASELINE_SCORE
     url = request.getfixturevalue("baseline_url")
     score = _score(url)
-    print(f"\n[accuracy] baseline {TASK} {FILTER} = {score:.4f}  (limit={LIMIT})")
+    print(f"\n[accuracy] baseline {TASK} {FILTER} = {score:.4f}")
     return score
 
 
@@ -174,14 +162,13 @@ def test_tiered_matches_baseline(tiered_score: float, baseline_score: float) -> 
     Two-sided. Both arms answer the same questions with the same weights, so
     the only honest outcome is "the same score, modulo batching nondeterminism".
     A tiered arm that beats the baseline by more than DELTA has not got smarter;
-    something about the comparison has changed — different item count, a
-    silently-skipped arm, a stale supplied baseline, a config drift between the
-    phases — and that is a broken gate, not a win.
+    something about the comparison has changed — a stale supplied baseline, a
+    config drift between the phases — and that is a broken gate, not a win.
     """
     assert _within_delta(tiered_score, baseline_score, DELTA), (
         f"tiered arm diverged from baseline by more than DELTA={DELTA}\n"
         f"  model:    {MODEL}\n"
-        f"  task:     {TASK} {FILTER} (limit={LIMIT}, {NUM_FEWSHOT}-shot)\n"
+        f"  task:     {TASK} {FILTER} ({NUM_FEWSHOT}-shot)\n"
         f"  baseline: {baseline_score:.4f}\n"
         f"  tiered:   {tiered_score:.4f}\n"
         f"  delta:    {tiered_score - baseline_score:+.4f} "
@@ -198,13 +185,12 @@ def test_tiered_above_floor(tiered_score: float) -> None:
             "add one to enable this assertion (see README.md). "
             "An unknown model is a config gap, not a regression."
         )
-    slack = _floor_slack(expected, LIMIT)
-    assert _meets_accuracy_threshold(tiered_score, expected, slack), (
+    assert _meets_accuracy_threshold(tiered_score, expected, FLOOR_RTOL), (
         f"tiered arm fell below the absolute floor\n"
         f"  model:    {MODEL}\n"
-        f"  task:     {TASK} {FILTER} (limit={LIMIT}, {NUM_FEWSHOT}-shot)\n"
-        f"  expected: {expected:.4f} (floor {expected - slack:.4f}, "
-        f"slack {slack:.4f}{'' if slack == FLOOR_RTOL else ' widened for LIMIT'})\n"
+        f"  task:     {TASK} {FILTER} ({NUM_FEWSHOT}-shot)\n"
+        f"  expected: {expected:.4f} (floor {expected - FLOOR_RTOL:.4f}, "
+        f"slack {FLOOR_RTOL:.4f})\n"
         f"  measured: {tiered_score:.4f}"
     )
 
@@ -220,9 +206,8 @@ def test_score_survives_restart(tiered_score: float) -> None:
     run replays the same prompts against the same weights, so a score that moves
     in either direction means the answers changed.
 
-    The restart phase re-scores the same full split the reference was taken
-    over, so DELTA applies unmodified — both numbers answer identical questions
-    and the binomial term cancels.
+    Both numbers come from the full split, so DELTA applies unmodified — the
+    re-score and the reference asked exactly the same questions.
     """
     if REFERENCE_SCORE is None:
         pytest.skip("AIC_ACCURACY_REFERENCE_SCORE unset; not a restart-phase run")
