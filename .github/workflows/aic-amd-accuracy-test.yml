@@ -9,7 +9,7 @@
 # There is no PR slash command here.  The PR path is the fourth stage of
 # aic-amd-dist-build-fast.yml (`/run-ci-accuracy`), which chains the same gate
 # onto the artifacts dist-build/smoke/tiny already produced instead of building
-# its own.  The nightly is aic-amd-nightly-accuracy-test.yml.
+# its own.  The nightly is the first job of aic-amd-nightly-accuracy-cliff.yml.
 #
 # There is only one accuracy gate: both arms, full gsm8k split, ~65 min.  The
 # capped baseline-less variant that used to run here skipped the differential —

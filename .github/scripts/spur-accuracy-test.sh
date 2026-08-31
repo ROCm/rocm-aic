@@ -20,9 +20,10 @@ set -euo pipefail
 # Cleanup ownership depends on whether another stage follows:
 #   * On-demand flow: accuracy-test is terminal, so it owns the final cleanup
 #     (removes the clone + tarball on exit).
-#   * Nightly chain: a cliff stage follows and needs the artifacts, so the
-#     nightly step sets KEEP_ARTIFACTS=1 and this script only cleans up on
-#     failure (spur-cliff.sh does the final cleanup).
+#   * Nightly chain: the cliff job needs the artifacts and runs next whatever
+#     this gate concludes, so the nightly step sets KEEP_ARTIFACTS=1 and this
+#     script leaves them alone even on failure (spur-cliff-harvest.sh does the
+#     final cleanup).
 # The model uses the cluster-wide HF cache so it is downloaded once and reused
 # across CI workflows and SPUR accounts.
 
@@ -69,9 +70,9 @@ _cleanup() {
     rm -rf "${WORKDIR}" "${TARBALL_DIR}"
 }
 if [[ "${KEEP_ARTIFACTS}" == "1" ]]; then
-    # A downstream stage follows and reuses the artifacts; only clean up on failure.
-    cleanup_on_fail() { echo "=== Accuracy test failed — cleaning up ==="; _cleanup; }
-    trap cleanup_on_fail ERR
+    # The downstream stage runs regardless of how this one ends and reuses the
+    # artifacts, so removing them here — even on failure — would break it.
+    echo "=== KEEP_ARTIFACTS=1: downstream stage owns cleanup ==="
 else
     # Terminal stage: always clean up.
     trap _cleanup EXIT
