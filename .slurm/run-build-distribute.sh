@@ -1326,9 +1326,9 @@ REMOTE
 #   Phase 3  Liveness: assert the NVMe pool grew during phase 2.  Without this a
 #            tiered arm that never tiered would pass the differential trivially
 #            -- the run would be vacuous rather than green.
-#   Phase 4  Restart vLLM only (LMCache keeps its DRAM/NVMe state), re-score at
-#            AIC_ACCURACY_LIMIT, and assert within DELTA of the phase-2 score.
-#            The prompts are guaranteed cache hits, so this isolates
+#   Phase 4  Restart vLLM only (LMCache keeps its DRAM/NVMe state), re-score the
+#            full split, and assert within DELTA of the phase-2 score.  The
+#            prompts are guaranteed cache hits, so this isolates
 #            retrieval-from-NVMe.
 #
 # There is deliberately no committed golden: no reference.json, no md5 manifest
@@ -1350,9 +1350,10 @@ REMOTE
 AIC_ACCURACY_MODEL="${AIC_ACCURACY_MODEL:-${AIC_TINY_MODEL}}"
 AIC_ACCURACY_LIMIT="${AIC_ACCURACY_LIMIT:-0}"
 AIC_ACCURACY_DELTA="${AIC_ACCURACY_DELTA:-0.02}"
-AIC_ACCURACY_RESTART_LIMIT="${AIC_ACCURACY_RESTART_LIMIT:-200}"
 AIC_ACCURACY_SKIP_BASELINE="${AIC_ACCURACY_SKIP_BASELINE:-0}"
-AIC_ACCURACY_TIME="${AIC_ACCURACY_TIME:-01:30:00}"
+# 58 min measured for the two-arm full-split run (SPUR job 6235), plus ~7 min
+# now that phase 4 re-scores the full split too -- ~65 min, so 2h is ~1.8x.
+AIC_ACCURACY_TIME="${AIC_ACCURACY_TIME:-02:00:00}"
 AIC_ACCURACY_CPUS="${AIC_ACCURACY_CPUS:-8}"
 AIC_ACCURACY_MEM="${AIC_ACCURACY_MEM:-32G}"
 AIC_ACCURACY_READY_TIMEOUT="${AIC_ACCURACY_READY_TIMEOUT:-120}"   # x5s = up to 10 min
@@ -1725,10 +1726,14 @@ echo "[accuracy-test] pre-rescore counters: ext_q=\${EXT_Q_BEFORE} ext_h=\${EXT_
 # Same prompts against a warm tier, so the blocks SHOULD come back from
 # DRAM/NVMe rather than being recomputed.  Phase 5 checks whether they actually
 # did -- the score alone cannot tell the two apart, since a full recompute
-# produces the same answers.  Capped at AIC_ACCURACY_RESTART_LIMIT: this phase
-# tests retrieval, not statistical quality, and a full re-score doubles the job.
+# produces the same answers.
+#
+# Full split, matching phase 2.  This used to re-score a 200-item prefix, which
+# meant comparing a 200-item number against a 1319-item reference: the tolerance
+# had to widen to +/-0.085 to cover the sampling noise, four times looser than
+# the gate it was meant to be.  Re-scoring everything costs ~7 min against a
+# warm cache and buys back the +/-0.02 comparison.
 export AIC_ACCURACY_TIERED_URL="\${TIERED_URL}"
-export AIC_ACCURACY_LIMIT='${AIC_ACCURACY_RESTART_LIMIT}'
 export AIC_ACCURACY_REFERENCE_SCORE="\${TIERED_SCORE}"
 unset AIC_ACCURACY_BASELINE_SCORE AIC_ACCURACY_SCORE_OUT
 "\${PYTEST}" '${AIC_DAY_DIR}/tests/accuracy' -v -rs --no-header \

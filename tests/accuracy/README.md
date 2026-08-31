@@ -213,12 +213,12 @@ Two notes for whoever revisits this:
   items, so the binomial term is common-mode and cancels. It would dominate if
   you ever compared across different item subsets, which is exactly what
   `AIC_ACCURACY_LIMIT` does — so **do not reuse this DELTA for a
-  limit-restricted differential** without re-measuring. The restart phase hits
-  exactly this case on the nightly path: it re-scores a 200-item prefix against
-  a reference taken over the full 1319, so the binomial term does *not* cancel
-  and a bare `DELTA` would flake. `_restart_delta()` widens the tolerance to
-  `max(DELTA, 3 * binomial SE of the smaller sample)` for that comparison. On
-  the fast path both numbers come from the same cap and the widening is inert.
+  limit-restricted differential** without re-measuring. The restart phase used
+  to hit exactly this case: it re-scored a 200-item prefix against a reference
+  taken over the full 1319, the binomial term did *not* cancel, and the
+  tolerance had to widen to ±0.085 to avoid flaking — four times looser than
+  the gate it replaced. It now re-scores the full split, so `DELTA` applies
+  unmodified and the widening helper is gone.
 - **The model scores ~0.20, lower than upstream's ~0.41 for `Qwen3-0.6B`.**
   That was the concern that motivated measuring: at a low score, run-to-run
   noise could have been a large fraction of DELTA. It is not. If a future change

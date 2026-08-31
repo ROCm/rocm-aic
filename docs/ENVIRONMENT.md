@@ -49,7 +49,6 @@ each assertion catches and how to add a model.
 | `AIC_ACCURACY_LIMIT` | `0` (full split) | Cap on gsm8k items. Lowers wall clock and resolution together — the score's standard error grows as `1/sqrt(LIMIT)` |
 | `AIC_ACCURACY_DELTA` | `0.02` | How far the tiered arm may fall below the baseline arm before it counts as corruption |
 | `AIC_ACCURACY_SKIP_BASELINE` | `0` | `1` drops the VRAM-only arm (what `accuracy-test-fast` does): no differential, but the floor, liveness and restart assertions still run |
-| `AIC_ACCURACY_RESTART_LIMIT` | `200` | Item cap for the post-restart re-score, which tests retrieval rather than statistical quality |
 | `AIC_ACCURACY_FAST_LIMIT` | `200` | `AIC_ACCURACY_LIMIT` used by `make accuracy-test-fast` |
 | `AIC_ACCURACY_CONCURRENT` | `32` | `lm_eval` request concurrency |
 | `AIC_ACCURACY_BASELINE_URL` | — | Baseline arm base URL, e.g. `http://172.18.0.4:8000/v1`. Only needed when running pytest by hand; the driver supplies it |
@@ -57,7 +56,7 @@ each assertion catches and how to add a model.
 | `AIC_ACCURACY_BASELINE_SCORE` | — | Pre-measured baseline score. The arms share a container name, a port and the GPU, so the driver scores them sequentially and passes the first arm's number forward |
 | `AIC_ACCURACY_REFERENCE_SCORE` | — | Pre-restart tiered score; enables the restart assertion |
 | `AIC_ACCURACY_SCORE_OUT` | — | Write the measured tiered score here as JSON |
-| `AIC_ACCURACY_TIME` | `01:30:00` | Slurm wall-time for the accuracy job |
+| `AIC_ACCURACY_TIME` | `02:00:00` | Slurm wall-time for the accuracy job |
 | `AIC_ACCURACY_CPUS` | `8` | Slurm `--cpus-per-task` |
 | `AIC_ACCURACY_MEM` | `32G` | Slurm `--mem` |
 | `AIC_ACCURACY_READY_TIMEOUT` | `120` | Endpoint readiness attempts, 5s apart (so up to 10 min per arm) |

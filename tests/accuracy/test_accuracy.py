@@ -95,20 +95,6 @@ def _floor_slack(expected: float, limit: int | None) -> float:
     return max(FLOOR_RTOL, 3.0 * se)
 
 
-def _restart_delta(reference: float, limit: int | None) -> float:
-    """Tolerance for the restart re-score, widened when it subsamples.
-
-    The restart phase scores the first `limit` items while the reference was
-    taken over a larger set, so the two disagree by roughly the binomial spread
-    of the smaller sample even under bit-exact retrieval. Treat that spread as
-    a floor on the tolerance and never go below DELTA.
-    """
-    if not limit:
-        return DELTA
-    se = math.sqrt(max(reference * (1.0 - reference), 0.0) / limit)
-    return max(DELTA, 3.0 * se)
-
-
 def _score(base_url: str) -> float:
     """Run gsm8k against one endpoint and return its strict-match score."""
     import lm_eval
@@ -182,13 +168,6 @@ def test_differential_threshold_is_two_sided() -> None:
     assert not _within_delta(0.80, 0.77, 0.02)
 
 
-def test_restart_delta_widens_for_subsamples() -> None:
-    """A capped restart re-score gets binomial slack; a full one gets DELTA."""
-    assert _restart_delta(0.5, None) == DELTA
-    assert _restart_delta(0.5, 200) > DELTA
-    assert _restart_delta(0.5, 200) > _restart_delta(0.5, 1319)
-
-
 def test_tiered_matches_baseline(tiered_score: float, baseline_score: float) -> None:
     """The differential assertion: tiering KV must not change the answers.
 
@@ -241,21 +220,17 @@ def test_score_survives_restart(tiered_score: float) -> None:
     run replays the same prompts against the same weights, so a score that moves
     in either direction means the answers changed.
 
-    The comparison is subsample-aware. The restart phase re-scores a capped
-    prefix of the split (AIC_ACCURACY_RESTART_LIMIT) against a reference taken
-    over the full split, so the two numbers differ by sampling noise even when
-    every block was retrieved bit-exact. DELTA alone is far too tight for that;
-    `_restart_delta` widens it to cover the subsampling.
+    The restart phase re-scores the same full split the reference was taken
+    over, so DELTA applies unmodified — both numbers answer identical questions
+    and the binomial term cancels.
     """
     if REFERENCE_SCORE is None:
         pytest.skip("AIC_ACCURACY_REFERENCE_SCORE unset; not a restart-phase run")
-    allowed = _restart_delta(REFERENCE_SCORE, LIMIT)
-    assert _within_delta(tiered_score, REFERENCE_SCORE, allowed), (
+    assert _within_delta(tiered_score, REFERENCE_SCORE, DELTA), (
         f"score changed after vLLM restart — suspect NVMe retrieval\n"
         f"  model:         {MODEL}\n"
         f"  pre-restart:   {REFERENCE_SCORE:.4f}\n"
-        f"  post-restart:  {tiered_score:.4f}  (limit={LIMIT})\n"
+        f"  post-restart:  {tiered_score:.4f}\n"
         f"  delta:         {tiered_score - REFERENCE_SCORE:+.4f} "
-        f"(allowed: +/-{allowed:.4f}"
-        f"{'' if allowed == DELTA else ' — widened for the restart subsample'})"
+        f"(allowed: +/-{DELTA})"
     )
