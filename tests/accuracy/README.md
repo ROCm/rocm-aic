@@ -99,8 +99,9 @@ make accuracy-test        # SPUR, both arms, full split (~65 min)
 make accuracy-test-fast   # the same, AIC_ROCM_ARCH pinned to AIC_FAST_ARCH
 ```
 
-The driver runs five phases: score the VRAM-only arm, score the tiered arm and
-run the pytest assertions, check the NVMe pool grew, restart vLLM and re-score,
+The driver runs five phases: score the VRAM-only arm and confirm it never
+tiered, score the tiered arm and run the pytest assertions, check the NVMe pool
+grew and the scored pass read back through the tier, restart vLLM and re-score,
 then verify that re-score was served from the cache rather than recomputed.
 
 There is one gate, not a fast one and a thorough one. `accuracy-test-fast`
@@ -131,6 +132,58 @@ report a config gap as a regression:
 - a model with no entry in `expected.json` — no floor to compare against.
 - `AIC_ACCURACY_REFERENCE_SCORE` unset — not a restart-phase run.
 
+## Proving each arm is what it claims
+
+The differential is only meaningful if the two arms differ in the way the names
+say. Both directions are asserted from Prometheus counters, scraped
+container-locally via `docker exec` — neither endpoint publishes a port.
+
+**Phase 1, the negative control.** The baseline arm is *configured* to be
+AIC-free (`AIC_L2_BACKEND=none`, no `--profile cache`, empty `KV_TRANSFER_ARG`).
+Nothing used to assert it, and a compose or env regression that left the
+connector wired would make the gate compare AIC against AIC — invisible in the
+scores, because both arms would still agree. After scoring, the driver requires
+that no `aic-lmcache` container is running, and that
+`vllm:external_prefix_cache_queries_total` is either absent or zero.
+
+Absent *or* zero, rather than absent: the family is registered lazily and it is
+not pinned down whether a connector-less engine omits it outright. The
+regression this guards against necessarily produces nonzero queries — the full
+split has already been scored by the time the sample is taken. The scrape itself
+must succeed; a failed scrape reads as zero and would satisfy the assertion
+without proving anything.
+
+**Phase 3, the read path during the scored pass.** The pool-growth and
+`l2_store_*` gates prove KV went *out* to L2. Phase 5 proves blocks came *back*,
+but only for the post-restart re-score — so the pass whose number
+`test_tiered_matches_baseline` actually compares had its read path unchecked, and
+an arm that stored diligently and served nothing satisfied every assertion.
+`lmcache_mp_lookup_requested_tokens_total` and `..._hit_tokens_total` are
+differenced across the scored pass; both must be nonzero. 5-shot gsm8k puts one
+prefix in front of all 1319 items, so zero of either is a finding rather than a
+plausible configuration.
+
+`AIC_ACCURACY_MIN_HIT_PCT` adds a floor on the *fraction* of looked-up tokens the
+tier served, turning "the tier was exercised" into "the tier carried the run".
+It is **unset by default and no value is hardcoded**: none has been measured for
+this model at `LMCACHE_L1_SIZE_GB=1`, and the rule for `expected.json` below
+applies unchanged — a guessed threshold either never fires or fires spuriously.
+Every run logs the percentage, so set it once a few green runs agree.
+
+**Degradation counters** are reported and warned on, not gated:
+`lmcache_mp_l1_allocation_failure_chunks_total` (chunks dropped because L1 was
+full with no L2 to take them) and `lmcache_mp_event_bus_dropped_events_total`
+(telemetry lost from a full queue, which makes every other counter here an
+undercount). Neither changes an answer, so nothing else in the gate would
+notice; both mean the run was not the run it reports being. They stay warnings
+for the same reason the hit-rate floor is unset — their normal value under this
+gate's deliberately starved L1 has not been measured.
+
+Both scrapes are dumped to `${AIC_LOG_DIR}/{lmcache,vllm}-metrics-phase3.prom`.
+These are LMCache-internal metric names and an upgrade is free to rename them;
+when a counter reads zero the dump is the only way to tell "it did not happen"
+from "it is called something else now".
+
 ## Proving the restart re-score came from cache
 
 Phase 4 asserts the post-restart score matches. On its own that is nearly
@@ -159,13 +212,16 @@ Failure conditions:
 - **queries but zero hits** — LMCache did not survive with usable state; the
   matching score is a recompute.
 
-**Hits entirely from L1 (DRAM) is a warning, not a failure.** DRAM survives a
-vLLM restart on its own, so a DRAM-only run leaves NVMe retrieval — the thing
-this gate exists to check — untested. It is not fatal because the tier split
-depends on the model and item cap, and failing CI on a legitimately DRAM-heavy
-split would be wrong. With `LMCACHE_L1_SIZE_GB=1` against a pool that grew to
-many GB the working set cannot fit in DRAM, so the warning firing is itself a
-signal worth chasing. The counters are logged either way.
+**Hits entirely from L1 (DRAM) is a failure.** DRAM survives a vLLM restart on
+its own, so a DRAM-only run leaves NVMe retrieval — the thing this gate exists to
+check — untested, as vacuous as the cases phases 3 and 5 already fail on. It was
+once only a warning, on the grounds that the tier split depended on the model and
+the item cap; there is no item cap any more, so the only remaining variable is
+the model/L1 pairing, which CI pins. With `LMCACHE_L1_SIZE_GB=1` against a pool
+that grew to many GB the working set cannot fit in DRAM, so this firing is a
+signal worth chasing rather than a tolerance to widen.
+`AIC_ACCURACY_ALLOW_L1_ONLY=1` downgrades it to a warning for a configuration
+that is legitimately DRAM-heavy. The counters are logged either way.
 
 Both endpoints are scraped via `docker exec`; neither publishes a port to the
 host (the convention across this repo).

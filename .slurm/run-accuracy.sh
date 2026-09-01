@@ -14,12 +14,16 @@
 # forward to the tiered arm's pytest run via AIC_ACCURACY_BASELINE_SCORE.
 #
 #   Phase 1  vram_only arm: plain vLLM, no LMCache, KV never leaves VRAM.
-#            Score gsm8k, record the number, tear down.
+#            Score gsm8k, record the number, assert this arm did NOT tier, tear
+#            down.  The negative control matters as much as phase 3's positive
+#            one: a baseline that quietly tiered makes the differential compare
+#            AIC against AIC, and the scores would still agree.
 #   Phase 2  kvd arm: LMCache + NIXL POSIX NVMe L2, constrained VRAM so blocks
 #            actually evict.  Score gsm8k, run both assertions.
-#   Phase 3  Liveness: assert the NVMe pool grew during phase 2.  Without this a
-#            tiered arm that never tiered would pass the differential trivially
-#            -- the run would be vacuous rather than green.
+#   Phase 3  Liveness: assert the NVMe pool grew during phase 2, that LMCache
+#            completed chunk stores, and that the scored pass read back through
+#            the tier.  Without this a tiered arm that never tiered would pass
+#            the differential trivially -- vacuous rather than green.
 #   Phase 4  Restart vLLM only (LMCache keeps its DRAM/NVMe state), re-score the
 #            full split, and assert within DELTA of the phase-2 score.  The
 #            prompts are guaranteed cache hits, so this isolates
@@ -77,6 +81,9 @@
 #   AIC_FORCE_LOAD              1 forces an image reload (default: 0)
 #   AIC_ACCURACY_POOL_ROOT      L2 pool root (default: /tmp/aic-accuracy.$SLURM_JOB_ID)
 #   AIC_ACCURACY_ALLOW_L1_ONLY  1 downgrades phase 5's L2-read gate to a warning
+#   AIC_ACCURACY_MIN_HIT_PCT    floor on the % of looked-up tokens the tier
+#                               served during phase 2 (default: unset, report
+#                               only -- the number has not been measured)
 
 set -uo pipefail
 
@@ -276,6 +283,30 @@ _metric_sum() {
         || echo 0
 }
 
+# Is a metric family present in a container-local scrape?  _metric_sum folds
+# "absent", "scrape failed" and "genuinely zero" all into 0, which is harmless
+# for the >0 liveness gates but useless for asserting something did NOT happen:
+# a broken scrape would satisfy "== 0" just as well as a healthy arm.
+#   0  scrape succeeded, family present
+#   1  scrape succeeded, family absent
+#   2  scrape itself failed
+_metric_present() {
+    local container="$1" url="$2" metric="$3" body
+    body="$(docker exec "${container}" curl -fsS --max-time 15 "${url}" 2>/dev/null)" || return 2
+    printf '%s\n' "${body}" | grep -qE "^${metric}([{ ]|\$)" && return 0
+    return 1
+}
+
+# Save a raw scrape next to the job's logs.  The counter gates below name
+# specific LMCache-internal metrics, which an upgrade is free to rename; when
+# one reads zero the dump is the only way to tell "it did not happen" from
+# "it is called something else now".
+_dump_metrics() {
+    local container="$1" url="$2" out="$3"
+    docker exec "${container}" curl -fsS --max-time 15 "${url}" > "${out}" 2>/dev/null \
+        || echo "[accuracy-test] WARN: could not dump ${container} metrics to ${out}"
+}
+
 # vLLM's own view of the connector: how many blocks it asked the external tier
 # for, and how many it got.  These are the numbers that decide whether a
 # re-score was actually served from the tier or silently recomputed.
@@ -310,6 +341,55 @@ echo "[accuracy-test] scoring baseline at ${BASE_URL}"
     echo "[accuracy-test] FAIL: baseline scoring failed" >&2; exit 1; }
 BASELINE_SCORE="$("${PYBIN}" -c "import json;print(json.load(open('${AIC_LOG_DIR}/baseline-score.json'))['score'])")"
 echo "[accuracy-test] baseline score: ${BASELINE_SCORE}"
+
+# --- negative control: this arm must not have tiered -------------------------
+# Everything above only CONFIGURES the arm to be AIC-free (AIC_L2_BACKEND=none,
+# no --profile cache, empty KV_TRANSFER_ARG).  Nothing asserted it.  A compose
+# or env regression that left the connector wired would make the differential
+# compare AIC against AIC -- the same vacuity phase 3 exists to fail on, one arm
+# over, and invisible in the scores precisely because both arms would agree.
+#
+# Two independent views, for the reasons phases 3 and 5 use two:
+#   * no lmcache container is running -- the compose-level statement, which
+#     holds even if vLLM's metrics were unavailable.
+#   * vLLM's external-connector counters are absent, or present and zero.
+#
+# "Absent or zero" rather than "absent": these families are registered lazily
+# and it is not pinned down whether a connector-less engine omits them outright.
+# The regression being guarded against necessarily produces NONZERO queries --
+# the full split has already been scored by the time this samples.
+echo "[accuracy-test] --- Phase 1 control: confirm the baseline arm never tiered ---"
+if docker ps --format '{{.Names}}' | grep -qx aic-lmcache; then
+    echo "[accuracy-test] FAIL Phase 1: aic-lmcache is running during the baseline arm." >&2
+    echo "[accuracy-test]   The baseline is meant to be plain vLLM with KV in VRAM, so the" >&2
+    echo "[accuracy-test]   tiered-vs-baseline differential would be comparing the tiered" >&2
+    echo "[accuracy-test]   stack against itself and could not fail." >&2
+    exit 1
+fi
+BASELINE_EXT_Q="$(_vllm_ext vllm:external_prefix_cache_queries_total)"
+_metric_present aic-vllm-gpu0 http://127.0.0.1:8000/metrics \
+    vllm:external_prefix_cache_queries_total
+case "$?" in
+    2)
+        echo "[accuracy-test] FAIL Phase 1: could not scrape the baseline arm's /metrics." >&2
+        echo "[accuracy-test]   A failed scrape reads as zero, so the control below would" >&2
+        echo "[accuracy-test]   pass without proving anything." >&2
+        exit 1
+        ;;
+    1)
+        echo "[accuracy-test] OK Phase 1 control: no external-connector counters on the baseline arm"
+        ;;
+    *)
+        if [ "${BASELINE_EXT_Q}" -gt 0 ]; then
+            echo "[accuracy-test] FAIL Phase 1: the baseline arm made ${BASELINE_EXT_Q} external KV queries." >&2
+            echo "[accuracy-test]   It is supposed to keep KV in VRAM.  A connector is wired up," >&2
+            echo "[accuracy-test]   so the differential is AIC-against-AIC and cannot fail." >&2
+            exit 1
+        fi
+        echo "[accuracy-test] OK Phase 1 control: external-connector counters present but zero"
+        ;;
+esac
+
 _teardown vram_only
 sleep 5
 
@@ -349,7 +429,14 @@ echo "[accuracy-test] tiered endpoint: ${TIERED_URL}"
 L2_STORE_SUB_REQ_BEFORE="$(_lmc lmcache_mp_l2_store_submitted_requests_total)"
 L2_STORE_DONE_REQ_BEFORE="$(_lmc lmcache_mp_l2_store_completed_requests_total)"
 L2_STORE_DONE_CHUNKS_BEFORE="$(_lmc lmcache_mp_l2_store_completed_objects_chunks_total)"
+# Token-level lookup, for the read path during the scored pass itself, and the
+# two degradation counters -- all differenced for the same reason.
+LOOKUP_REQ_BEFORE="$(_lmc lmcache_mp_lookup_requested_tokens_total)"
+LOOKUP_HIT_BEFORE="$(_lmc lmcache_mp_lookup_hit_tokens_total)"
+L1_ALLOC_FAIL_BEFORE="$(_lmc lmcache_mp_l1_allocation_failure_chunks_total)"
+EVENT_DROPS_BEFORE="$(_lmc lmcache_mp_event_bus_dropped_events_total)"
 echo "[accuracy-test] pre-score L2 counters: store_sub_req=${L2_STORE_SUB_REQ_BEFORE} store_done_req=${L2_STORE_DONE_REQ_BEFORE} store_done_chunks=${L2_STORE_DONE_CHUNKS_BEFORE}"
+echo "[accuracy-test] pre-score lookup: req_tokens=${LOOKUP_REQ_BEFORE} hit_tokens=${LOOKUP_HIT_BEFORE} l1_alloc_fail=${L1_ALLOC_FAIL_BEFORE} event_drops=${EVENT_DROPS_BEFORE}"
 
 export AIC_ACCURACY_TIERED_URL="${TIERED_URL}"
 export AIC_ACCURACY_SCORE_OUT="${AIC_LOG_DIR}/tiered-score.json"
@@ -376,6 +463,8 @@ rc=0
 # every store was submitted and then FAILED still has its slots allocated, so
 # the old growth-only assertion would pass it.
 echo "[accuracy-test] === Phase 3: NVMe pool liveness ==="
+_dump_metrics aic-lmcache    http://127.0.0.1:8080/metrics "${AIC_LOG_DIR}/lmcache-metrics-phase3.prom"
+_dump_metrics aic-vllm-gpu0  http://127.0.0.1:8000/metrics "${AIC_LOG_DIR}/vllm-metrics-phase3.prom"
 POOL_AFTER="$(_pool_bytes)"
 POOL_ALLOC_AFTER="$(_pool_alloc_bytes)"
 POOL_FILES="$(find "${NVME_DATA}" -type f -size +0c 2>/dev/null | wc -l)"
@@ -426,6 +515,74 @@ fi
 if [ "${POOL_GROWTH}" -gt 0 ] && [ "${POOL_ALLOC_GROWTH}" -lt $(( POOL_GROWTH / 10 )) ]; then
     echo "[accuracy-test] WARN Phase 3: pool slots look sparse -- allocated ${POOL_ALLOC_GROWTH} B vs apparent ${POOL_GROWTH} B."
     echo "[accuracy-test]   Treat the apparent-growth figure as slot reservation, not stored bytes."
+fi
+
+# --- read path during the scored pass ----------------------------------------
+# The gate above proves KV went OUT to L2.  Nothing proved anything came BACK
+# until phase 5, and phase 5 only covers the post-restart re-score -- so the
+# scored pass whose number test_tiered_matches_baseline actually compares had
+# its read path entirely unchecked.  A tiered arm that stored diligently and
+# served nothing would satisfy every existing assertion.
+#
+# 5-shot gsm8k puts the same prefix in front of all 1319 items, so a tier that
+# was never consulted, or was consulted and answered nothing, is a real finding
+# rather than a plausible configuration.
+LOOKUP_REQ=$(( $(_lmc lmcache_mp_lookup_requested_tokens_total) - LOOKUP_REQ_BEFORE ))
+LOOKUP_HIT=$(( $(_lmc lmcache_mp_lookup_hit_tokens_total) - LOOKUP_HIT_BEFORE ))
+HIT_PCT=0
+[ "${LOOKUP_REQ}" -gt 0 ] && HIT_PCT=$(( 100 * LOOKUP_HIT / LOOKUP_REQ ))
+echo "[accuracy-test] scored-pass lookup: requested_tokens=${LOOKUP_REQ} hit_tokens=${LOOKUP_HIT} (${HIT_PCT}%)"
+
+if [ "${rc}" = "0" ] && [ "${LOOKUP_REQ}" -le 0 ]; then
+    echo "[accuracy-test] FAIL Phase 3: LMCache was never asked for a token during the scored pass." >&2
+    echo "[accuracy-test]   The score the differential compares was produced without the tier" >&2
+    echo "[accuracy-test]   on its read path, so it cannot have detected a retrieval fault." >&2
+    echo "[accuracy-test]   If the tier plainly is working, check whether" >&2
+    echo "[accuracy-test]   lmcache_mp_lookup_requested_tokens_total was renamed:" >&2
+    echo "[accuracy-test]   see ${AIC_LOG_DIR}/lmcache-metrics-phase3.prom" >&2
+    rc=1
+elif [ "${rc}" = "0" ] && [ "${LOOKUP_HIT}" -le 0 ]; then
+    echo "[accuracy-test] FAIL Phase 3: ${LOOKUP_REQ} tokens looked up, zero served." >&2
+    echo "[accuracy-test]   Every prompt was recomputed, so the scored pass exercised the" >&2
+    echo "[accuracy-test]   store path only." >&2
+    rc=1
+fi
+
+# Coverage floor, off by default.  The gates above are liveness -- one served
+# token passes them -- and the honest fix is a floor on the fraction of the
+# scored pass the tier actually carried.  No number is hardcoded because none
+# has been measured on this model and L1 size, and README.md's rule for
+# expected.json applies just as well here: a guessed threshold either never
+# fires or fires spuriously, and both are worse than none.  Set this once a few
+# green runs have reported a stable HIT_PCT.
+if [ -n "${AIC_ACCURACY_MIN_HIT_PCT:-}" ] && [ "${rc}" = "0" ]; then
+    if [ "${HIT_PCT}" -lt "${AIC_ACCURACY_MIN_HIT_PCT}" ]; then
+        echo "[accuracy-test] FAIL Phase 3: tier served ${HIT_PCT}% of looked-up tokens, floor is ${AIC_ACCURACY_MIN_HIT_PCT}%." >&2
+        echo "[accuracy-test]   The tier was exercised but did not carry the run." >&2
+        rc=1
+    else
+        echo "[accuracy-test] OK Phase 3: hit rate ${HIT_PCT}% >= floor ${AIC_ACCURACY_MIN_HIT_PCT}%"
+    fi
+fi
+
+# --- silent degradation ------------------------------------------------------
+# Neither of these changes an answer, so no assertion in this gate would notice
+# them; both mean the run was not the run it reports being.  Warnings rather
+# than failures: their normal value under the deliberately starved L1 this gate
+# runs with (LMCACHE_L1_SIZE_GB=1) has not been measured, and a threshold picked
+# without that is the guess the block above declines to make.  Promote either to
+# a failure once runs show what healthy looks like.
+L1_ALLOC_FAIL=$(( $(_lmc lmcache_mp_l1_allocation_failure_chunks_total) - L1_ALLOC_FAIL_BEFORE ))
+EVENT_DROPS=$(( $(_lmc lmcache_mp_event_bus_dropped_events_total) - EVENT_DROPS_BEFORE ))
+echo "[accuracy-test] degradation counters: l1_alloc_fail_chunks=${L1_ALLOC_FAIL} event_bus_drops=${EVENT_DROPS}"
+if [ "${L1_ALLOC_FAIL}" -gt 0 ]; then
+    echo "[accuracy-test] WARN Phase 3: ${L1_ALLOC_FAIL} chunks dropped -- L1 full with no L2 to take them."
+    echo "[accuracy-test]   That KV never reached any tier, so the run tested less than it looks."
+fi
+if [ "${EVENT_DROPS}" -gt 0 ]; then
+    echo "[accuracy-test] WARN Phase 3: LMCache dropped ${EVENT_DROPS} events from a full queue."
+    echo "[accuracy-test]   Every counter this gate reads is fed by that bus, so the numbers"
+    echo "[accuracy-test]   above are undercounts of unknown size."
 fi
 
 if [ "${rc}" != "0" ]; then
