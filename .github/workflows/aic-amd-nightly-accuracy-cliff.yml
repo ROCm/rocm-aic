@@ -72,6 +72,19 @@ jobs:
         # this gate fails, reuses the clone + tarball, and owns the cleanup.
         run: KEEP_ARTIFACTS=1 bash /usr/local/lib/aic-ci/spur-accuracy-test.sh "${{ github.event.workflow_run.head_sha }}"
 
+      # if: always() — this is the unattended path, so a nightly KV regression
+      # is found hours later with only the stdout tail unless the per-phase
+      # scores and per-arm container logs are kept.  The driver archives them on
+      # the head node before cliff's harvest removes the clone.
+      - name: Upload accuracy logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: accuracy-logs-${{ github.event.workflow_run.head_sha }}
+          path: ${{ runner.temp }}/accuracy-logs/
+          if-no-files-found: warn
+          retention-days: 14
+
   cliff:
     needs: accuracy-test
     # Runs even when the accuracy gate fails -- the two measure different
