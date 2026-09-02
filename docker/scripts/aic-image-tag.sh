@@ -7,7 +7,7 @@
 # the versions pinned in the Dockerfile.
 #
 # Emits just the tag component (no image name) in the following format:
-#   0.1.0-rocm7.14.0-vllm0.27.1-lmcache0.5.4-nixl1.3.2-hsasnoop1.0.0
+#   0.1.0-rocm7.14.0-vllm0.27.1-aiter0.1.19-fa0e60e394-lmcache0.5.4-nixl1.3.2-hsasnoop1.0.0
 # Where 0.1.0 represents the AIC version.
 #
 # Optional segments: VLLM_ROCM_VARIANT appended to the vllm component,
@@ -54,10 +54,12 @@ fi
 vllm_variant="${VLLM_ROCM_VARIANT:-}"
 lmcache="$(_arg LMCACHE_REF | sed 's/^v//')"
 nixl="$(_arg NIXL_REF | sed 's/^v//')"
+aiter="$(_arg AITER_REF | sed 's/^v//')"
+flash_attn="$(_arg FLASH_ATTN_REF)"
 hipfile_sha="${HIPFILE_SHA:-}"
 hsasnoop="$(_arg HSA_SNOOP_REF | sed 's/^v//')"
 
-for _v in aic rocm vllm lmcache nixl hsasnoop; do
+for _v in aic rocm vllm aiter flash_attn lmcache nixl hsasnoop; do
   [[ -n "${!_v}" ]] || {
     echo "aic-image-tag: could not resolve ${_v}" >&2
     exit 1
@@ -66,7 +68,7 @@ done
 
 tag="${aic}-rocm${rocm}-vllm${vllm}"
 [[ -n "${vllm_variant}" ]] && tag="${tag}-${vllm_variant}"
-tag="${tag}-lmcache${lmcache}-nixl${nixl}"
+tag="${tag}-aiter${aiter}-fa${flash_attn}-lmcache${lmcache}-nixl${nixl}"
 [[ -n "${hipfile_sha}" ]] && tag="${tag}-hipfile${hipfile_sha:0:7}"
 tag="${tag}-hsasnoop${hsasnoop}"
 printf '%s\n' "${tag}"

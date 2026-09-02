@@ -1,6 +1,7 @@
 AIC
 AIS
 AIS_MT
+AITER
 AMD
 AQL
 ARGs
@@ -8,8 +9,10 @@ Ansible
 Benchmarking
 BuildKit
 Config
+CPython
 Dockerfile
 Dockerfiles
+FlashAttention
 GDS
 GPT
 GPU

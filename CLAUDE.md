@@ -28,11 +28,12 @@ vLLM's engine core fails to start on gfx950 nodes — Triton kernel calls
 failed because Triton was disabled at startup due to circular import side-effects
 in vLLM's platform detection code.
 
-The current Dockerfile intentionally uses `torch 2.13.0+rocm7.2` with vLLM
-`v0.27.1`; validate changes to either pin on an MI355X before changing this
-historical workaround.
+The current Dockerfile uses vLLM `v0.28.0` with the matching vLLM ROCm wheel
+set: `torch 2.12.0+git6bbd260` and `torchvision 0.27.1+df56172` from
+`wheels.vllm.ai/rocm`. Validate changes to either pin on an MI355X before
+changing this historical workaround.
 
-vLLM v0.27.1 no longer calls `logger.warning_once()` from
+vLLM v0.28.0 no longer calls `logger.warning_once()` from
 `vllm.platforms.rocm._get_gcn_arch()` when the amdsmi probe fails, so the old
 ROCm-AIC circular-import patch was retired. The SPUR validation must confirm
 that the vLLM ROCm-platform import and engine startup remain healthy.
@@ -43,11 +44,12 @@ that the vLLM ROCm-platform import and engine startup remain healthy.
    (MI355X) specifically; gfx942 nodes have not been fully tested but the
    hipErrorInvalidImage issue is resolved with `AIC_ROCM_ARCH=gfx942`.
 
-2. **Use the current pytorch.org pin** — the Dockerfile already installs
-   `torch 2.13.0+rocm7.2` from `download.pytorch.org/whl/rocm7.2`; retain it
-   unless SPUR validation proves a different compatible pair is needed.
+2. **Use the current vLLM ROCm pin** — the Dockerfile already installs
+   `torch 2.12.0+git6bbd260` from `wheels.vllm.ai/rocm`; retain the matching
+   wheel set unless SPUR validation proves a different compatible pair is
+   needed.
 
-3. **Upgrade vLLM further** — only after validating the current `v0.27.1`
+3. **Upgrade vLLM further** — only after validating the current `v0.28.0`
    stack; newer vLLM versions may support the ROCm 7.14 Triton combination.
 
 ### SPUR cluster cliff submission quirks
