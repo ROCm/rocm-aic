@@ -1468,6 +1468,81 @@ REMOTE
     log "tiny-test complete"
 }
 
+# --- accuracy-test: differential KV-integrity gate ----------------------------
+# Answers "does routing KV through DRAM/NVMe change the model's answers?", which
+# neither tiny-test (serves one completion) nor cliff (measures throughput) can.
+#
+# The five phases run on the compute node and live in .slurm/run-accuracy.sh --
+# read that file for what the gate actually asserts and why.  This function is
+# only the submitter: it sizes the Slurm job, picks the node, and hands
+# run-accuracy.sh its configuration as environment.
+#
+# run-accuracy.sh is a plain .sh with no #SBATCH header on purpose: it is exec'd
+# by the shim below rather than submitted directly, so directives in it would be
+# inert.  Job sizing therefore lives here, on the _sbatch_run call.
+#
+#   AIC_ACCURACY_MODEL          model to serve            (default: AIC_TINY_MODEL)
+#   AIC_ACCURACY_DELTA          allowed tiered-vs-baseline gap, two-sided (default: 0.02)
+#   AIC_ACCURACY_TIME/CPUS/MEM  Slurm sizing
+#   AIC_ACCURACY_READY_TIMEOUT  x5s waits for the endpoint (default: 120)
+AIC_ACCURACY_MODEL="${AIC_ACCURACY_MODEL:-${AIC_TINY_MODEL}}"
+AIC_ACCURACY_DELTA="${AIC_ACCURACY_DELTA:-0.02}"
+# 58 min measured for the two-arm full-split run (SPUR job 6235), plus ~7 min
+# now that phase 4 re-scores the full split too -- ~65 min, so 2h is ~1.8x.
+AIC_ACCURACY_TIME="${AIC_ACCURACY_TIME:-02:00:00}"
+AIC_ACCURACY_CPUS="${AIC_ACCURACY_CPUS:-8}"
+AIC_ACCURACY_MEM="${AIC_ACCURACY_MEM:-32G}"
+AIC_ACCURACY_READY_TIMEOUT="${AIC_ACCURACY_READY_TIMEOUT:-120}"   # x5s = up to 10 min
+
+cmd_accuracy_test() {
+    _pick_compress
+    local tarball; tarball="$(_tarball_path)"
+    [[ -r "${tarball}" ]] || die "tarball not found: ${tarball} (run 'build' first)"
+
+    local -a _sel
+    if [[ -n "${AIC_TEST_NODE:-}" ]]; then
+        _sel=(--nodelist="${AIC_TEST_NODE}")
+        log "accuracy-test on ${AIC_TEST_NODE} via sbatch (partition ${AIC_BUILD_PARTITION})"
+    else
+        _sel=(--constraint="${AIC_TEST_CONSTRAINT}")
+        log "accuracy-test via sbatch (partition ${AIC_BUILD_PARTITION}, constraint ${AIC_TEST_CONSTRAINT})"
+    fi
+    log "image: ${AIC_IMAGE}  model: ${AIC_ACCURACY_MODEL}  gsm8k: full split"
+
+    # The node-side half is .slurm/run-accuracy.sh.  Everything it needs arrives
+    # as environment: the values are interpolated here, at submit time, exactly
+    # as they were when this body was an inline heredoc -- so the semantics are
+    # unchanged and nothing depends on how a given sbatch treats --export.
+    # AIC_LOG_DIR is _sbatch_run's per-job log dir, exported so the script (a
+    # separate process) can see it.
+    local remote_script
+    remote_script="$(cat <<REMOTE
+export AIC_LOG_DIR="\${_logdir}"
+export AIC_DAY_DIR='${AIC_DAY_DIR}'
+export AIC_IMAGE='${AIC_IMAGE}'
+export AIC_ROCM_ARCH='${AIC_ROCM_ARCH}'
+export AIC_TARBALL='${tarball}'
+export AIC_DECOMPRESS_CMD='${DECOMPRESS_CMD}'
+export AIC_FORCE_LOAD='${AIC_FORCE_LOAD:-0}'
+export HF_HOME='${HF_HOME}'
+export HF_TOKEN='${HF_TOKEN:-}'
+export AIC_ACCURACY_MODEL='${AIC_ACCURACY_MODEL}'
+export AIC_ACCURACY_DELTA='${AIC_ACCURACY_DELTA}'
+export AIC_ACCURACY_READY_TIMEOUT='${AIC_ACCURACY_READY_TIMEOUT}'
+exec '${AIC_DAY_DIR}/.slurm/run-accuracy.sh'
+REMOTE
+)"
+
+    local -a _gres_arg=(); [[ "${AIC_SPUR_CLUSTER}" != "1" ]] && _gres_arg=(--gres=gpu:1)
+    _sbatch_run aic-accuracy-test accuracy-test "${remote_script}" \
+        "${_sel[@]}" \
+        "${_gres_arg[@]}" \
+        --nodes=1 --ntasks=1 \
+        --cpus-per-task="${AIC_ACCURACY_CPUS}" --mem="${AIC_ACCURACY_MEM}" \
+        --time="${AIC_ACCURACY_TIME}"
+    log "accuracy-test complete"
+}
+
 # --- main --------------------------------------------------------------------
 main() {
     local sub="${1:-all}"
@@ -1478,11 +1553,12 @@ main() {
         push)            cmd_push ;;
         test)            cmd_test ;;
         tiny-test)       cmd_tiny_test ;;
+        accuracy-test)   cmd_accuracy_test ;;
         all)             cmd_build; cmd_build_exporters; cmd_load ;;
         -h|--help|help)
             sed -n '2,70p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
             ;;
-        *) die "unknown command '${sub}' (use: build | build-exporters | load | push | test | tiny-test | all | help)" ;;
+        *) die "unknown command '${sub}' (use: build | build-exporters | load | push | test | tiny-test | accuracy-test | all | help)" ;;
     esac
 }
 

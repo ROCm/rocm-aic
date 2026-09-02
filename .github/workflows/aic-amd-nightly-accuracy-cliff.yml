@@ -1,0 +1,129 @@
+# Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+#
+# Nightly terminal stage — runs after the Tiny Test and holds both remaining
+# nightly jobs, in order:
+#
+#   1. accuracy-test — the KV-integrity gate.  Scores gsm8k against both a
+#      VRAM-only arm and a tiered (LMCache + NIXL POSIX NVMe) arm, asserting
+#      that routing KV through DRAM/NVMe did not change the answers.  Unlike
+#      the PR path this keeps both arms and the full gsm8k split: the nightly
+#      is where the differential is worth its wall clock, and where the score
+#      keeps enough resolution for DELTA to mean something.  See
+#      tests/accuracy/README.md.
+#   2. cliff — the KV cache cliff benchmark.  Sweeps all three arms (vram_only,
+#      kvd_v2/nvme, kvd_v2/gds), generates a self-contained HTML
+#      performance-tracking page, and deploys it to GitHub Pages.
+#
+# The two live in ONE workflow so that `needs:` can serialize them.  They used
+# to be separate workflows both chained off Tiny Test, which made them
+# concurrent: they share the SPUR clone and image tarball for the SHA, and
+# spur-cliff-harvest.sh traps EXIT unconditionally and rm -rf's both, so cliff
+# finishing first could delete artifacts out from under a still-running
+# accuracy job.  Chaining cliff off a separate accuracy workflow does not fix
+# it: GitHub caps workflow_run chains at three levels beyond the initiating
+# workflow, and Dist Build -> Smoke -> Tiny -> Accuracy already spends all
+# three, so a fourth-level cliff would silently never run.
+#
+# Cleanup ownership follows from that order: accuracy-test runs with
+# KEEP_ARTIFACTS=1 and never removes the clone or tarball, and cliff — which
+# runs even when the accuracy gate fails, so a KV regression does not also
+# blank the perf page — owns the terminal cleanup via its EXIT trap.
+#
+# Requires (all already in use by sibling nightly workflows):
+#   secrets.AIC_SPUR_HOST        — SSH target for the SPUR head node
+#   secrets.AIC_SHARED_NFS       — shared NFS path for image tarballs + scratch
+#   secrets.AIC_SPUR_CONTROLLER  — SPUR controller address
+#   secrets.AIC_HF_TOKEN         — HF token for the model download
+#
+# GitHub Pages setup (one-time): Settings → Pages → Source: gh-pages branch, / (root).
+# The page will be served at https://rocm.github.io/rocm-aic/cliff/.
+
+name: AIC Hardware Test - Nightly Accuracy + Cliff
+
+on:
+  workflow_run:
+    workflows: ["AIC Hardware Test - Nightly Tiny Test"]
+    types: [completed]
+
+permissions:
+  contents: write   # required to push the gh-pages branch
+
+jobs:
+  accuracy-test:
+    if: github.event.workflow_run.conclusion == 'success'
+    runs-on: [self-hosted, rocm-aic-cicd]
+    # A measured two-arm full-split run took ~58 min (SPUR job 6235): two
+    # bringups ~6, baseline scoring ~1, tiered scoring ~49, restart ~2. The
+    # tiered pass dominates -- scoring through LMCache is ~70x slower than
+    # VRAM-only. 150 leaves ~2.6x headroom for a slower node or a cold HF cache.
+    timeout-minutes: 150
+    env:
+      AIC_SPUR_HOST:       ${{ secrets.AIC_SPUR_HOST }}
+      AIC_SHARED_NFS:      ${{ secrets.AIC_SHARED_NFS }}
+      AIC_CI_STORAGE_ROOT: ${{ secrets.AIC_SHARED_NFS }}/rocm-aic
+      AIC_SPUR_CONTROLLER: ${{ secrets.AIC_SPUR_CONTROLLER }}
+      HF_TOKEN:            ${{ secrets.AIC_HF_TOKEN }}
+
+    steps:
+      - name: Run accuracy-test on SPUR head node
+        # Keep artifacts unconditionally: the cliff job below runs next even if
+        # this gate fails, reuses the clone + tarball, and owns the cleanup.
+        run: KEEP_ARTIFACTS=1 bash /usr/local/lib/aic-ci/spur-accuracy-test.sh "${{ github.event.workflow_run.head_sha }}"
+
+      # if: always() — this is the unattended path, so a nightly KV regression
+      # is found hours later with only the stdout tail unless the per-phase
+      # scores and per-arm container logs are kept.  The driver archives them on
+      # the head node before cliff's harvest removes the clone.
+      - name: Upload accuracy logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: accuracy-logs-${{ github.event.workflow_run.head_sha }}
+          path: ${{ runner.temp }}/accuracy-logs/
+          if-no-files-found: warn
+          retention-days: 14
+
+  cliff:
+    needs: accuracy-test
+    # Runs even when the accuracy gate fails -- the two measure different
+    # things, and cliff owns the cleanup of the shared clone + tarball, so
+    # skipping it on a red night would leak both on /shared_nfs. Cancellation
+    # still skips it; the Tiny Test guard is repeated because a skipped
+    # accuracy-test would otherwise satisfy !cancelled().
+    if: ${{ !cancelled() && github.event.workflow_run.conclusion == 'success' }}
+    runs-on: [self-hosted, rocm-aic-cicd]
+    timeout-minutes: 240
+    env:
+      AIC_SPUR_HOST:       ${{ secrets.AIC_SPUR_HOST }}
+      AIC_SHARED_NFS:      ${{ secrets.AIC_SHARED_NFS }}
+      AIC_CI_STORAGE_ROOT: ${{ secrets.AIC_SHARED_NFS }}/rocm-aic
+      AIC_SPUR_CONTROLLER: ${{ secrets.AIC_SPUR_CONTROLLER }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run cliff benchmark + harvest results from SPUR
+        run: |
+          bash .github/scripts/workflows/spur-cliff-harvest.sh \
+            "${{ github.event.workflow_run.head_sha }}" \
+            "$(date -u +%Y-%m-%d)"
+
+      - name: Upload cliff performance page artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: cliff-perf-page-${{ github.event.workflow_run.head_sha }}
+          path: cliff-page/
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: Deploy cliff performance page to GitHub Pages
+        uses: peaceiris/actions-gh-pages@v4
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: ./cliff-page
+          destination_dir: cliff
+          publish_branch: gh-pages
+          force_orphan: false
+          keep_files: true

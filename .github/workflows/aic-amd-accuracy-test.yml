@@ -1,0 +1,75 @@
+# Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+#
+# Manual KV-integrity gate — dispatch this workflow to score gsm8k against the
+# tiered arm and assert that routing KV through DRAM/NVMe did not change the
+# answers.
+#
+# There is no PR slash command here.  The PR path is the fourth stage of
+# aic-amd-dist-build-fast.yml (`/run-ci-accuracy`), which chains the same gate
+# onto the artifacts dist-build/smoke/tiny already produced instead of building
+# its own.  The nightly is the first job of aic-amd-nightly-accuracy-cliff.yml.
+#
+# There is only one accuracy gate: both arms, full gsm8k split, ~65 min.  The
+# capped baseline-less variant that used to run here skipped the differential —
+# the one assertion the gate exists for — so it has been removed rather than
+# kept as a cheap option.  See tests/accuracy/README.md.
+#
+# The dispatched SHA must already have an image tarball staged under
+# AIC_CI_STORAGE_ROOT/images/aic-ci-<short-sha> (i.e. a dist-build for the same
+# commit ran and kept its artifacts) — this workflow does not build one.
+#
+# Requires (all already in use by sibling hardware-CI workflows):
+#   secrets.AIC_SPUR_HOST        — SSH target for the SPUR head node
+#   secrets.AIC_SHARED_NFS       — shared NFS path for image tarballs + scratch
+#   secrets.AIC_SPUR_CONTROLLER  — SPUR controller address
+#   secrets.AIC_HF_TOKEN         — HF token for the model download
+
+name: AIC Hardware Test - AMD Accuracy Test
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: hardware-ci-spur-${{ github.sha }}
+  cancel-in-progress: false
+
+jobs:
+  accuracy-test:
+    runs-on: [self-hosted, rocm-aic-cicd]
+    # Both arms over the full 1319-item split: 58 min measured (SPUR job 6235)
+    # plus ~7 min now that the restart phase is full-split too, so ~65 min.
+    # 120 leaves ~1.8x headroom, and the sbatch job has its own 2h wall clock.
+    timeout-minutes: 120
+    env:
+      AIC_SPUR_HOST:       ${{ secrets.AIC_SPUR_HOST }}
+      AIC_SHARED_NFS:      ${{ secrets.AIC_SHARED_NFS }}
+      # Without this the script falls back to $HOME/Projects/rocm-aic-ci and
+      # looks for the tarball in the wrong place.
+      AIC_CI_STORAGE_ROOT: ${{ secrets.AIC_SHARED_NFS }}/rocm-aic
+      AIC_SPUR_CONTROLLER: ${{ secrets.AIC_SPUR_CONTROLLER }}
+      HF_TOKEN:            ${{ secrets.AIC_HF_TOKEN }}
+
+    steps:
+      - name: Run accuracy-test on the SPUR head node
+        run: |
+          bash /usr/local/lib/aic-ci/spur-accuracy-test.sh \
+            "${{ github.sha }}" \
+            accuracy-test
+
+      # if: always() — a failed gate is exactly when the per-phase scores and
+      # per-arm container logs are worth having.  The driver fetches them from
+      # the head node whatever the gate concluded; without this step the only
+      # post-mortem is the stdout tail above.
+      - name: Upload accuracy logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: accuracy-logs-${{ github.sha }}
+          path: ${{ runner.temp }}/accuracy-logs/
+          if-no-files-found: warn
+          retention-days: 14

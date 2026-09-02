@@ -38,7 +38,12 @@ plot = [
     "pandas>=2.0",
     "numpy>=1.26",
 ]
-dev = ["rocm-aic[bench,plot]"]
+accuracy = [
+    "lm-eval[api]>=0.4.9",
+    "transformers>=4.40",
+    "pytest>=8",
+]
+dev = ["rocm-aic[bench,plot,accuracy]"]
 
 [tool.setuptools.packages.find]
 where = ["."]

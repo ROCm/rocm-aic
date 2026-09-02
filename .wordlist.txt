@@ -204,3 +204,11 @@ sysfs
 templated
 tracefs
 xGMI
+eval
+gsm
+liveness
+lm
+Bringup
+bringup
+pytest
+upstream's

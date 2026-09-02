@@ -9,10 +9,11 @@ set -euo pipefail
 #
 # Tarball cleanup ownership depends on whether a cliff stage follows:
 #   * PR flow (dist-build -> smoke-test -> tiny-test): tiny-test is terminal, so
-#     it removes the tarball on exit.
-#   * Nightly (dist-build -> smoke -> tiny -> cliff): cliff runs next and needs
-#     the tarball, so the nightly tiny-test step sets KEEP_ARTIFACTS=1.
-# The run-attempt-scoped clone is always removed best-effort.
+#     it owns the final cleanup (removes the clone + tarball on exit).
+#   * Nightly (dist-build -> smoke -> tiny -> accuracy -> cliff): the stages
+#     after this one need the artifacts, so the nightly tiny-test step sets
+#     KEEP_ARTIFACTS=1 and this script only cleans up on failure
+#     (spur-cliff-harvest.sh does the final cleanup).
 # The tiny model uses the cluster-wide HF cache so it is downloaded once and
 # reused across CI workflows and SPUR accounts.
 
