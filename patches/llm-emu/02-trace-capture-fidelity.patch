@@ -1,0 +1,189 @@
+# Capture what the emulator needs to reproduce the machine, and stop losing or
+# poisoning samples.
+#
+# 1. StepCycleTracer.write_header() now records
+#      available_kv_cache_bytes (via **extra from the call site), num_gpu_blocks,
+#      gpu_memory_utilization, max_num_batched_tokens, max_num_seqs,
+#      enable_prefix_caching, enable_chunked_prefill, kv_cache_dtype,
+#      async_scheduling, eos_token_id, vllm_version
+#    cuda_mock already PREFERS model_config.gpu.available_kv_cache_bytes over
+#    its "total x util - guessed weights" estimate, and that value is what puts
+#    the emulated KV-admission point where the real one was -- the whole reason
+#    to emulate a cache cliff.  The rest makes a pack self-describing: it is
+#    only valid for the serving configuration it was captured under, so that
+#    configuration belongs IN the pack, not in a sidecar README.
+#
+# 2. The tracer keeps ONE append handle open instead of open()/close()-ing every
+#    200 records.  On a shared filesystem that syscall pair stalls the engine
+#    loop and the stall lands in the NEXT step's measurement -- we saw isolated
+#    128ms "decode" steps and one 1.2s "prefill" in a 113-token cell, which the
+#    oracle then samples uniformly.
+#
+# 3. close() is registered with atexit, so the tail of the trace (up to 199
+#    records) is no longer dropped when the server shuts down.
+#
+# 4. The profile builder propagates the new header fields into the pack.
+#
+diff --git a/vllm_emulator/profile/build_serving_profile_filtered.py b/vllm_emulator/profile/build_serving_profile_filtered.py
+index 23861b4..9d6e6c6 100644
+--- a/vllm_emulator/profile/build_serving_profile_filtered.py
++++ b/vllm_emulator/profile/build_serving_profile_filtered.py
+@@ -75,10 +75,20 @@ def extract_metadata(trace_header, cli_model_name, cli_gpu_model):
+         _MC_KEYS = ("num_hidden_layers", "hidden_size", "num_attention_heads",
+                      "num_key_value_heads", "vocab_size", "intermediate_size",
+                      "head_dim", "max_model_len", "block_size",
+-                     "eos_token_id")
++                     "eos_token_id",
++                     # Serving configuration the pack is only valid for.
++                     "max_num_batched_tokens", "max_num_seqs",
++                     "enable_chunked_prefill", "enable_prefix_caching",
++                     "kv_cache_dtype", "async_scheduling",
++                     "gpu_memory_utilization", "num_gpu_blocks",
++                     "vllm_version")
+         model_config = {k: trace_header[k] for k in _MC_KEYS if k in trace_header}
++        # available_kv_cache_bytes is the KV pool vLLM measured on the real
++        # GPU; cuda_mock prefers it over its estimate, which is what makes the
++        # emulated KV-admission point match the captured machine.
+         _GPU_KEYS = ("gpu_name", "gpu_memory_bytes", "gpu_sm_count",
+-                      "gpu_compute_capability", "gpu_count")
++                      "gpu_compute_capability", "gpu_count",
++                      "available_kv_cache_bytes")
+         gpu_config = {k: trace_header[k] for k in _GPU_KEYS if k in trace_header}
+         if gpu_config:
+             model_config["gpu"] = gpu_config
+diff --git a/vllm_emulator/profiler/trace_profiler.py b/vllm_emulator/profiler/trace_profiler.py
+index e742e1a..bad19cb 100644
+--- a/vllm_emulator/profiler/trace_profiler.py
++++ b/vllm_emulator/profiler/trace_profiler.py
+@@ -10,6 +10,7 @@ profile pack.
+ 
+ from __future__ import annotations
+ 
++import atexit
+ import json
+ import os
+ from pathlib import Path
+@@ -37,8 +38,17 @@ class StepCycleTracer:
+         self._header_written = False
+         # Stash scheduler output info set before step_fn()
+         self._pending_batch_info: dict[str, Any] | None = None
+-
+-    def write_header(self, vllm_config: Any) -> None:
++        # One open append handle for the whole run.  flush() used to open and
++        # close the file every 200 steps; on a shared filesystem that syscall
++        # pair stalls the engine loop, and the stall lands in the NEXT step's
++        # measurement -- visible as isolated 100ms+ "decode" samples that then
++        # poison a bucket the oracle samples uniformly from.
++        self._fh = None
++        # Nothing flushes the tail otherwise: a run that ends with fewer than
++        # 200 buffered records silently loses them.
++        atexit.register(self.close)
++
++    def write_header(self, vllm_config: Any, **extra: Any) -> None:
+         """Write a _header record with GPU and model metadata.
+ 
+         Called once at startup from EngineCore after the tracer is created.
+@@ -46,6 +56,12 @@ class StepCycleTracer:
+         (via HuggingFace config), making the trace file self-describing.
+         The profile builder reads this header to produce a self-contained
+         profile pack — no manual GPU/model configuration needed.
++
++        `extra` carries anything only the call site knows, notably
++        available_kv_cache_bytes: the KV pool vLLM actually measured on this
++        GPU.  Without it the emulator falls back to estimating the pool from
++        total memory minus guessed weights, and the KV-admission point -- the
++        whole reason to emulate a cache cliff -- moves.
+         """
+         if self._header_written:
+             return
+@@ -90,15 +106,47 @@ class StepCycleTracer:
+             print(f"[StepCycleTracer] Model metadata collection failed: {e}")
+ 
+         # --- Scheduler/cache config ---
++        # A pack is only valid for the serving configuration it was captured
++        # under, so record that configuration IN the pack rather than trusting
++        # whoever replays it to remember.
+         try:
+             header["block_size"] = vllm_config.cache_config.block_size
+             header["enable_chunked_prefill"] = (
+                 vllm_config.scheduler_config.enable_chunked_prefill)
+             header["max_num_seqs"] = (
+                 vllm_config.scheduler_config.max_num_seqs)
++            header["max_num_batched_tokens"] = (
++                vllm_config.scheduler_config.max_num_batched_tokens)
++            header["enable_prefix_caching"] = bool(
++                vllm_config.cache_config.enable_prefix_caching)
++            header["kv_cache_dtype"] = str(vllm_config.cache_config.cache_dtype)
++            header["num_gpu_blocks"] = vllm_config.cache_config.num_gpu_blocks
++            header["gpu_memory_utilization"] = (
++                vllm_config.cache_config.gpu_memory_utilization)
++            header["async_scheduling"] = bool(
++                getattr(vllm_config.scheduler_config, "async_scheduling", False))
++        except Exception as e:
++            print(f"[StepCycleTracer] Scheduler/cache metadata failed: {e}")
++
++        # --- eos ids: the emulator picks a filler token that must not be one
++        # of them, and without this it falls back to a hard-coded {2}. ---
++        try:
++            eos = getattr(vllm_config.model_config.hf_config, "eos_token_id", None)
++            if eos is not None:
++                header["eos_token_id"] = eos
++        except Exception:
++            pass
++
++        try:
++            from vllm.version import __version__ as _vllm_version
++            header["vllm_version"] = _vllm_version
+         except Exception:
+             pass
+ 
++        # Call-site extras (e.g. available_kv_cache_bytes) win over anything
++        # inferred above.
++        header.update({k: v for k, v in extra.items() if v is not None})
++
+         # Write header as first line of trace file
+         from pathlib import Path
+         path = Path(self._output_path)
+@@ -149,18 +197,35 @@ class StepCycleTracer:
+         if len(self._records) >= 200:
+             self.flush()
+ 
++    def _handle(self):
++        if self._fh is None:
++            path = Path(self._output_path)
++            path.parent.mkdir(parents=True, exist_ok=True)
++            self._fh = path.open("a", encoding="utf-8")
++        return self._fh
++
+     def flush(self) -> None:
+         if not self._records:
+             return
+-        from pathlib import Path
+-        path = Path(self._output_path)
+-        path.parent.mkdir(parents=True, exist_ok=True)
+-        with path.open("a", encoding="utf-8") as f:
+-            for rec in self._records:
+-                f.write(json.dumps(rec) + "\n")
++        f = self._handle()
++        for rec in self._records:
++            f.write(json.dumps(rec) + "\n")
++        f.flush()
+         count = len(self._records)
+         self._records.clear()
+-        print(f"[StepCycleTracer] Flushed {count} step records to {path}")
++        print(f"[StepCycleTracer] Flushed {count} step records "
++              f"({self._step_count} total) to {self._output_path}")
++
++    def close(self) -> None:
++        """Flush the tail and drop the handle.  Registered with atexit."""
++        try:
++            self.flush()
++        finally:
++            if self._fh is not None:
++                try:
++                    self._fh.close()
++                finally:
++                    self._fh = None
+ 
+     def get_stats(self) -> dict:
+         """Return statistics for calibration."""

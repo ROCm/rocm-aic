@@ -92,6 +92,167 @@
 #   VLM_KV_CACHE_METRICS_SAMPLE — fraction of KV blocks sampled for residency histograms (default: 0.05)
 #   VLLM_EXTRA_ARGS            — extra vllm args appended verbatim (e.g. --hf-overrides ...)
 #   TENSOR_PARALLEL_SIZE       — vllm --tensor-parallel-size (default: 1)
+#
+# Emulation mode (profile-driven, no GPU required — needs the `emulate` image):
+#   IMAGE_NAME=rocm-aic:7.14-emulate docker compose --profile emulate up vllm-emulator
+#
+# Emulation + the full LMCache MP recipe (still no GPU, but needs an image with
+# LMCache in it, i.e. the production one — the `emulate` stage stops before it):
+#   IMAGE_NAME=rocm-aic:7.14-latest docker compose --profile emulate-mp \
+#     up lmcache-emulator vllm-emulator
+# The KV tensors the connector registers are synthesized in HOST memory by
+# vllm_emulator (patches/llm-emu/04-kv-connector-emulation.patch): zeros, but
+# the shape, dtype and byte count vLLM computed, so LMCache moves real volumes.
+#
+# Optional env (emulation mode):
+#   VLLM_MODEL                 — model to serve; should match the profile pack
+#                                (default: Qwen/Qwen3-8B, matching the baked-in pack)
+#   VLLM_EMULATOR_PROFILE_PACK — container path to the profile pack JSON
+#                                (default: the A40/Qwen3-8B example baked into the image)
+#   VLLM_EMULATOR_MODE         — realtime (default, wall-clock sleep) or accelerated (instant)
+#   VLLM_EMULATOR_ORACLE_K     — kNN neighbour count or "auto" (default: 1)
+#   EMU_PROFILE_PACK_HOST      — host path to profile pack dir (mounted at /profiles)
+#   HF_HOME                    — host HF cache dir (default: ~/.cache/huggingface)
+#   VLLM_EMULATOR_MEMORY       — emulated KV pool, bytes.  Under `emulate-mp` this
+#                                is actually allocated (host memory, lazily paged)
+#                                because the connector needs real buffers, so cap
+#                                it to fit the node
+#   VLLM_EMULATOR_KV_BUFFERS   — 0 skips the fake KV buffers (connector goes inert)
+#   EMU_KV_TRANSFER_ARG        — vLLM --kv-transfer-config for the EMULATOR.
+#                                Deliberately not KV_TRANSFER_ARG: the Makefile
+#                                exports that one globally, which would attach
+#                                the MP connector to the plain `emulate` profile
+#   AIC_L2_BACKEND             — `emulate-mp` defaults to nixl_posix (NIXL stays in
+#                                the path, no GPUDirect needed); AIS_MT needs
+#                                /dev/kfd, local_disk is the NIXL-free fallback
+
+# ---------------------------------------------------------------------------
+# Shared fragments.  The lmcache server is launched by two services -- `lmcache`
+# (real GPU) and `lmcache-emulator` (CPU-only, `emulate-mp` profile) -- and they
+# MUST run the same server for the emulated arm to be worth anything.  The
+# topology-selecting command block and the environment live here so there is
+# exactly one copy of each; the services differ only in the GPU-specific bits
+# (devices, ROCR_VISIBLE_DEVICES, DEVICE_TYPE).
+# ---------------------------------------------------------------------------
+
+# Mapping form, not the `- KEY=value` list form the services used to carry:
+# YAML merge keys (`<<:`) only merge mappings, and each service needs to add its
+# own device-specific entries on top of this shared set.  Values are quoted
+# because compose rejects a YAML boolean/int where an env value is expected.
+x-lmcache-env: &lmcache-env
+  LMCACHE_PORT: "${LMCACHE_PORT:-6555}"
+  LMCACHE_L1_SIZE_GB: "${LMCACHE_L1_SIZE_GB:-20}"
+  GDS_MODE: "${GDS_MODE:-}"
+  GDS_SLAB_DATA: "${GDS_SLAB_DATA:-}"
+  AIC_L2_BACKEND: "${AIC_L2_BACKEND:-nixl}"
+  LMCACHE_NVME_POOL: "${LMCACHE_NVME_POOL:-4096}"
+  LMCACHE_NVME_SLOT_SIZE: "${LMCACHE_NVME_SLOT_SIZE:-268435456}"
+  LMCACHE_NFS_POOL: "${LMCACHE_NFS_POOL:-1024}"
+  AIC_NIXL_USE_DIRECT_IO: "${AIC_NIXL_USE_DIRECT_IO:-true}"
+  AIC_NIXL_BACKEND: "${AIC_NIXL_BACKEND:-AIS_MT}"
+  LMCACHE_NIXL_POSIX_SLOT_SIZE: "${LMCACHE_NIXL_POSIX_SLOT_SIZE:-16777216}"
+  LMCACHE_NIXL_POSIX_POOL: "${LMCACHE_NIXL_POSIX_POOL:-32768}"
+  LMCACHE_MAX_GPU_WORKERS: "${LMCACHE_MAX_GPU_WORKERS:-1}"
+  LMCACHE_L2_PREFETCH_MAX_IN_FLIGHT: "${LMCACHE_L2_PREFETCH_MAX_IN_FLIGHT:-4}"
+  # Only set when a real config file is mounted (local_disk / advanced tuning).
+  LMCACHE_CONFIG_FILE: "${LMCACHE_CONFIG_FILE:-}"
+  HIPFILE_ALLOW_COMPAT_MODE: "false"
+  HIPFILE_UNSUPPORTED_FILE_SYSTEMS: "true"
+  # NIXL native Prometheus telemetry exporter (serves /metrics on :19090).
+  # Requires the prometheus-cpp plugin compiled into the image (build-nixl.sh);
+  # a no-op fallback if absent.  Set NIXL_TELEMETRY_ENABLE= to disable.
+  NIXL_TELEMETRY_ENABLE: "${NIXL_TELEMETRY_ENABLE-y}"
+  NIXL_TELEMETRY_EXPORTER: "${NIXL_TELEMETRY_EXPORTER:-prometheus}"
+  NIXL_TELEMETRY_PROMETHEUS_PORT: "${NIXL_METRICS_PORT:-19090}"
+  PYTHONHASHSEED: "0"
+  TZ: "${TZ:-America/Edmonton}"
+
+# The entrypoint script selects the L1/L2 topology from GDS_MODE +
+# AIC_L2_BACKEND.  local_disk relies on LMCACHE_CONFIG_FILE (mounted by the
+# service).
+x-lmcache-command: &lmcache-command
+  - |
+    # Build coordinator flags once; empty when LMCACHE_COORDINATOR_URL is unset.
+    _COORD_FLAGS=""
+    if [ -n "$${LMCACHE_COORDINATOR_URL:-}" ]; then
+      _COORD_FLAGS="--coordinator-url $$LMCACHE_COORDINATOR_URL --coordinator-event-reporting"
+    fi
+    if [ "${GDS_MODE:-0}" = "1" ]; then
+      exec lmcache server \
+        --no-separate-object-groups \
+        --host 0.0.0.0 \
+        --http-port 8080 \
+        --port "$$LMCACHE_PORT" \
+        --l1-size-gb "$$LMCACHE_L1_SIZE_GB" \
+        --eviction-policy LRU \
+        --max-gpu-workers "$${LMCACHE_MAX_GPU_WORKERS:-1}" \
+        --worker-reap-timeout-seconds "$${LMCACHE_WORKER_REAP_TIMEOUT:-3600}" \
+        --prometheus-port 9091 \
+        --gds-l1-path /data/slab \
+        $$_COORD_FLAGS
+    elif [ "$$AIC_L2_BACKEND" = "local_disk" ] || [ "$$AIC_L2_BACKEND" = "none" ]; then
+      # DRAM L1 only on the CLI.  local_disk adds a native LocalDiskBackend L2
+      # via the mounted LMCACHE_CONFIG_FILE; none = pure DRAM (the minimal MP
+      # config -- used by tiny-test and DRAM-only deployments).
+      exec lmcache server \
+        --no-separate-object-groups \
+        --host 0.0.0.0 \
+        --http-port 8080 \
+        --port "$$LMCACHE_PORT" \
+        --l1-size-gb "$$LMCACHE_L1_SIZE_GB" \
+        --eviction-policy LRU \
+        --max-gpu-workers "$${LMCACHE_MAX_GPU_WORKERS:-1}" \
+        --worker-reap-timeout-seconds "$${LMCACHE_WORKER_REAP_TIMEOUT:-3600}" \
+        --prometheus-port 9091 \
+        $$_COORD_FLAGS
+    elif [ "$${AIC_NIXL_BACKEND:-AIS_MT}" = "POSIX" ] || [ "$$AIC_L2_BACKEND" = "nixl_posix" ]; then
+      # NIXL first-class POSIX plugin (cpu staging buffer, no hipFileBufRegister).
+      # Use for nodes where GPUDirect P2PDMA is unavailable (e.g. XFS LVM, or a
+      # CPU-only emulation node with no /dev/kfd at all).
+      # No NFS L2b — single POSIX NVMe L2 with buffered I/O.
+      # Uses LMCACHE_NIXL_POSIX_SLOT_SIZE (32 MiB default) rather than the
+      # AIS_MT 256 MiB staging-buffer size: POSIX writes actual KV bytes per slot.
+      exec lmcache server \
+        --host 0.0.0.0 \
+        --http-port 8080 \
+        --port "$$LMCACHE_PORT" \
+        --l1-size-gb "$$LMCACHE_L1_SIZE_GB" \
+        --eviction-policy LRU \
+        --max-gpu-workers "$${LMCACHE_MAX_GPU_WORKERS:-1}" \
+        --l2-prefetch-max-in-flight "$${LMCACHE_L2_PREFETCH_MAX_IN_FLIGHT:-4}" \
+        --worker-reap-timeout-seconds "$${LMCACHE_WORKER_REAP_TIMEOUT:-3600}" \
+        --prometheus-port 9091 \
+        --l2-adapter "{\"type\":\"nixl_store\",\"backend\":\"POSIX\",\"backend_params\":{\"file_path\":\"/data/nvme/lmcache\",\"use_direct_io\":\"false\",\"file_size\":\"$$LMCACHE_NIXL_POSIX_SLOT_SIZE\"},\"pool_size\":$$LMCACHE_NIXL_POSIX_POOL}" \
+        $$_COORD_FLAGS
+    else
+      # nixl AIS_MT NVMe L2a + POSIX NFS L2b.  Both are file-based nixl_store
+      # backends, so both backend_params MUST include use_direct_io (LMCache
+      # rejects the adapter otherwise); POSIX/NFS uses buffered I/O (false).
+      exec lmcache server \
+        --no-separate-object-groups \
+        --host 0.0.0.0 \
+        --http-port 8080 \
+        --port "$$LMCACHE_PORT" \
+        --l1-size-gb "$$LMCACHE_L1_SIZE_GB" \
+        --eviction-policy LRU \
+        --max-gpu-workers "$${LMCACHE_MAX_GPU_WORKERS:-1}" \
+        --worker-reap-timeout-seconds "$${LMCACHE_WORKER_REAP_TIMEOUT:-3600}" \
+        --prometheus-port 9091 \
+        --l2-adapter "{\"type\":\"nixl_store\",\"backend\":\"AIS_MT\",\"backend_params\":{\"file_path\":\"/data/nvme/lmcache\",\"use_direct_io\":\"$$AIC_NIXL_USE_DIRECT_IO\",\"file_size\":\"$$LMCACHE_NVME_SLOT_SIZE\"},\"pool_size\":$$LMCACHE_NVME_POOL}" \
+        --l2-adapter "{\"type\":\"nixl_store\",\"backend\":\"POSIX\",\"backend_params\":{\"file_path\":\"/data/nfs/lmcache\",\"use_direct_io\":\"false\"},\"pool_size\":$$LMCACHE_NFS_POOL}" \
+        $$_COORD_FLAGS
+    fi
+
+x-lmcache-healthcheck: &lmcache-healthcheck
+  test:
+    - CMD
+    - python3
+    - -c
+    - "import os, socket; port=int(os.getenv('LMCACHE_PORT','6555')); s=socket.create_connection(('127.0.0.1', port), 2); s.close()"
+  interval: 10s
+  timeout: 5s
+  retries: 18
+  start_period: 30s
 
 networks:
   aic:
@@ -177,132 +338,28 @@ services:
       - /boot:/boot:ro
       - ${LOG:-../logs}/lmcache:/var/log/aic-lmcache
     environment:
-      - LMCACHE_PORT=${LMCACHE_PORT:-6555}
-      - LMCACHE_L1_SIZE_GB=${LMCACHE_L1_SIZE_GB:-20}
-      - GDS_MODE=${GDS_MODE:-}
-      - GDS_SLAB_DATA=${GDS_SLAB_DATA:-}
-      - AIC_L2_BACKEND=${AIC_L2_BACKEND:-nixl}
-      - LMCACHE_NVME_POOL=${LMCACHE_NVME_POOL:-4096}
-      - LMCACHE_NVME_SLOT_SIZE=${LMCACHE_NVME_SLOT_SIZE:-268435456}
-      - LMCACHE_NFS_POOL=${LMCACHE_NFS_POOL:-1024}
-      - AIC_NIXL_USE_DIRECT_IO=${AIC_NIXL_USE_DIRECT_IO:-true}
-      - AIC_NIXL_BACKEND=${AIC_NIXL_BACKEND:-AIS_MT}
-      - LMCACHE_NIXL_POSIX_SLOT_SIZE=${LMCACHE_NIXL_POSIX_SLOT_SIZE:-16777216}
-      - LMCACHE_NIXL_POSIX_POOL=${LMCACHE_NIXL_POSIX_POOL:-32768}
-      - LMCACHE_MAX_GPU_WORKERS=${LMCACHE_MAX_GPU_WORKERS:-1}
-      - LMCACHE_L2_PREFETCH_MAX_IN_FLIGHT=${LMCACHE_L2_PREFETCH_MAX_IN_FLIGHT:-4}
-      # Coordinator registration: the MP server registers, heartbeats, and
-      # deregisters against the coordinator so it can track which blocks are held.
-      # Unset LMCACHE_COORDINATOR_URL to run without coordinator (standalone mode).
-      - LMCACHE_COORDINATOR_URL=${LMCACHE_COORDINATOR_URL:-http://aic-lmcache-coordinator:9300}
-      # Only set when a real config file is mounted (local_disk / advanced tuning).
-      - LMCACHE_CONFIG_FILE=${LMCACHE_CONFIG_FILE:-}
-      - HIPFILE_ALLOW_COMPAT_MODE=false
-      # Keep hipFile's storage validation enabled. Bypassing it can issue direct
-      # I/O against unsupported layouts and risks data corruption.
-      - HIPFILE_UNSUPPORTED_FILE_SYSTEMS=false
-
-      # NIXL native Prometheus telemetry exporter (serves /metrics on :19090).
-      # Requires the prometheus-cpp plugin compiled into the image (build-nixl.sh);
-      # a no-op fallback if absent.  Set NIXL_TELEMETRY_ENABLE= to disable.
-      - NIXL_TELEMETRY_ENABLE=${NIXL_TELEMETRY_ENABLE-y}
-      - NIXL_TELEMETRY_EXPORTER=${NIXL_TELEMETRY_EXPORTER:-prometheus}
-      - NIXL_TELEMETRY_PROMETHEUS_PORT=${NIXL_METRICS_PORT:-19090}
+      <<: *lmcache-env
       # Must share the SAME GPU as the vllm service: LMCacheMPConnector registers
       # vLLM's KV tensors via CUDA IPC, which fails ("invalid device pointer") if
       # lmcache lands on a different device.  Mirror vllm's ROCR_VISIBLE_DEVICES.
-      #
-      - ROCR_VISIBLE_DEVICES=${AIC_ROCR_VISIBLE:-${GPU:-0}}
-      - HIP_VISIBLE_DEVICES=${AIC_HIP_VISIBLE:-0}
-      - CUDA_VISIBLE_DEVICES=${AIC_HIP_VISIBLE:-0}
-      - PYTHONHASHSEED=0
-      - TZ=${TZ:-America/Edmonton}
-    # The entrypoint script selects the L1/L2 topology from GDS_MODE +
-    # AIC_L2_BACKEND.  local_disk relies on LMCACHE_CONFIG_FILE (mounted above).
+      ROCR_VISIBLE_DEVICES: "${AIC_ROCR_VISIBLE:-${GPU:-0}}"
+      HIP_VISIBLE_DEVICES: "${AIC_HIP_VISIBLE:-0}"
+      CUDA_VISIBLE_DEVICES: "${AIC_HIP_VISIBLE:-0}"
+      PYTHONHASHSEED: "0"
+      TZ: "${TZ:-America/Edmonton}"
+      # Coordinator registration: the MP server registers, heartbeats, and
+      # deregisters against the coordinator so it can track which blocks are held.
+      # Unset LMCACHE_COORDINATOR_URL to run without coordinator (standalone mode).
+      LMCACHE_COORDINATOR_URL: "${LMCACHE_COORDINATOR_URL:-http://aic-lmcache-coordinator:9300}"
     entrypoint: ["/bin/bash", "-o", "pipefail", "-c"]
-    command:
-      - |
-        # Build coordinator flags once; empty when LMCACHE_COORDINATOR_URL is unset.
-        _COORD_FLAGS=""
-        if [ -n "$${LMCACHE_COORDINATOR_URL:-}" ]; then
-          _COORD_FLAGS="--coordinator-url $$LMCACHE_COORDINATOR_URL --coordinator-event-reporting"
-        fi
-        if [ "${GDS_MODE:-0}" = "1" ]; then
-          exec lmcache server \
-            --no-separate-object-groups \
-            --host 0.0.0.0 \
-            --http-port 8080 \
-            --port "$$LMCACHE_PORT" \
-            --l1-size-gb "$$LMCACHE_L1_SIZE_GB" \
-            --eviction-policy LRU \
-            --max-gpu-workers "$${LMCACHE_MAX_GPU_WORKERS:-1}" \
-            --worker-reap-timeout-seconds "$${LMCACHE_WORKER_REAP_TIMEOUT:-3600}" \
-            --gds-l1-path /data/slab \
-            $$_COORD_FLAGS
-        elif [ "$$AIC_L2_BACKEND" = "local_disk" ] || [ "$$AIC_L2_BACKEND" = "none" ]; then
-          # DRAM L1 only on the CLI.  local_disk adds a native LocalDiskBackend L2
-          # via the mounted LMCACHE_CONFIG_FILE; none = pure DRAM (the minimal MP
-          # config -- used by tiny-test and DRAM-only deployments).
-          exec lmcache server \
-            --no-separate-object-groups \
-            --host 0.0.0.0 \
-            --http-port 8080 \
-            --port "$$LMCACHE_PORT" \
-            --l1-size-gb "$$LMCACHE_L1_SIZE_GB" \
-            --eviction-policy LRU \
-            --max-gpu-workers "$${LMCACHE_MAX_GPU_WORKERS:-1}" \
-            --worker-reap-timeout-seconds "$${LMCACHE_WORKER_REAP_TIMEOUT:-3600}" \
-            $$_COORD_FLAGS
-        elif [ "$${AIC_NIXL_BACKEND:-AIS_MT}" = "POSIX" ] || [ "$$AIC_L2_BACKEND" = "nixl_posix" ]; then
-          # NIXL first-class POSIX plugin (cpu staging buffer, no hipFileBufRegister).
-          # Use for nodes where GPUDirect P2PDMA is unavailable (e.g. XFS LVM).
-          # No NFS L2b — single POSIX NVMe L2 with buffered I/O.
-          # Uses LMCACHE_NIXL_POSIX_SLOT_SIZE (16 MiB default) rather than the
-          # AIS_MT 256 MiB staging-buffer size: POSIX writes actual KV bytes per slot.
-          exec lmcache server \
-            --host 0.0.0.0 \
-            --http-port 8080 \
-            --port "$$LMCACHE_PORT" \
-            --l1-size-gb "$$LMCACHE_L1_SIZE_GB" \
-            --eviction-policy LRU \
-            --max-gpu-workers "$${LMCACHE_MAX_GPU_WORKERS:-1}" \
-            --l2-prefetch-max-in-flight "$${LMCACHE_L2_PREFETCH_MAX_IN_FLIGHT:-4}" \
-            --worker-reap-timeout-seconds "$${LMCACHE_WORKER_REAP_TIMEOUT:-3600}" \
-            --l2-adapter "{\"type\":\"nixl_store\",\"backend\":\"POSIX\",\"backend_params\":{\"file_path\":\"/data/nvme/lmcache\",\"use_direct_io\":\"false\",\"file_size\":\"$$LMCACHE_NIXL_POSIX_SLOT_SIZE\"},\"pool_size\":$$LMCACHE_NIXL_POSIX_POOL}" \
-            $$_COORD_FLAGS
-        else
-          # nixl AIS_MT NVMe L2a + POSIX NFS L2b.  Both are file-based nixl_store
-          # backends, so both backend_params MUST include use_direct_io (LMCache
-          # rejects the adapter otherwise); POSIX/NFS uses buffered I/O (false).
-          exec lmcache server \
-            --no-separate-object-groups \
-            --host 0.0.0.0 \
-            --http-port 8080 \
-            --port "$$LMCACHE_PORT" \
-            --l1-size-gb "$$LMCACHE_L1_SIZE_GB" \
-            --eviction-policy LRU \
-            --max-gpu-workers "$${LMCACHE_MAX_GPU_WORKERS:-1}" \
-            --worker-reap-timeout-seconds "$${LMCACHE_WORKER_REAP_TIMEOUT:-3600}" \
-            --l2-adapter "{\"type\":\"nixl_store\",\"backend\":\"AIS_MT\",\"backend_params\":{\"file_path\":\"/data/nvme/lmcache\",\"use_direct_io\":\"$$AIC_NIXL_USE_DIRECT_IO\",\"file_size\":\"$$LMCACHE_NVME_SLOT_SIZE\"},\"pool_size\":$$LMCACHE_NVME_POOL}" \
-            --l2-adapter "{\"type\":\"nixl_store\",\"backend\":\"POSIX\",\"backend_params\":{\"file_path\":\"/data/nfs/lmcache\",\"use_direct_io\":\"false\"},\"pool_size\":$$LMCACHE_NFS_POOL}" \
-            $$_COORD_FLAGS
-        fi
+    command: *lmcache-command
     depends_on:
       lmcache-coordinator:
         condition: service_healthy
         # required:false so standalone runs (LMCACHE_COORDINATOR_URL unset) don't
         # block if the coordinator is somehow skipped from the active profile.
         required: false
-    healthcheck:
-      test:
-        - CMD
-        - python3
-        - -c
-        - "import os, socket; port=int(os.getenv('LMCACHE_PORT','6555')); s=socket.create_connection(('127.0.0.1', port), 2); s.close()"
-      interval: 10s
-      timeout: 5s
-      retries: 18
-      start_period: 30s
+    healthcheck: *lmcache-healthcheck
 
   # ---------------------------------------------------------------------------
   # lmcache-coordinator: LMCache MP coordinator + Prometheus exporter in one
@@ -589,6 +646,238 @@ services:
       - ../monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
       - ../monitoring/grafana/dashboards:/etc/grafana/dashboards:ro
       - grafana-data:/var/lib/grafana
+
+  # lmcache-emulator: the SAME lmcache server, on a node with no GPU
+  #
+  # Same image, same anchored command and environment as `lmcache` above — the
+  # emulated arm is only worth running if it runs the real server. What differs
+  # is everything GPU-specific:
+  #
+  #   - no `devices:` — there is no /dev/kfd or /dev/dri on a CPU node;
+  #   - no ROCR_VISIBLE_DEVICES — nothing to select;
+  #   - DEVICE_TYPE=cpu — forces LMCache's device detection onto StubCPUDevice.
+  #     Required, not cosmetic: vllm_emulator's cuda_mock shims
+  #     torch.cuda.is_available() to True so vLLM's GPU code paths run, and
+  #     LMCache's CudaDeviceSpec.is_available() is that same call, so
+  #     auto-detection would pick CUDA and then try to export device handles for
+  #     KV tensors that live in host memory.  Honouring this env var needs
+  #     patches/lmcache/10-lmcache-cpu-device-type-optin.patch.
+  #
+  # L2 defaults to nixl_posix here (see AIC_L2_BACKEND below).  AIS_MT, the
+  # normal default, is hipFile P2PDMA and cannot initialise without /dev/kfd;
+  # the NIXL POSIX plugin uses a CPU staging buffer and needs no GPUDirect, so
+  # NIXL itself -- and its Prometheus telemetry exporter on :19090 -- stay in
+  # the picture.  AIC_L2_BACKEND=local_disk is the NIXL-free fallback (LMCache's
+  # native LocalDiskBackend), and `none` gives a DRAM-only L1.
+  # ---------------------------------------------------------------------------
+  lmcache-emulator:
+    profiles:
+      - emulate-mp
+    image: ${IMAGE_REF:-${IMAGE_NAME:-rocm-aic}:latest}
+    container_name: aic-lmcache-emulator
+    # host net for ZMQ on :${LMCACHE_PORT}; host IPC so the POSIX SHM segments
+    # LMCache migrates the emulator's KV buffers into are visible here (Docker
+    # gives each container its own /dev/shm otherwise).
+    network_mode: host
+    ipc: host
+    cap_add:
+      - SYS_PTRACE
+      - IPC_LOCK
+    security_opt:
+      - seccomp:unconfined
+    ulimits:
+      nofile:
+        soft: 1048576
+        hard: 1048576
+      memlock:
+        soft: -1
+        hard: -1
+    volumes:
+      - ${NVME_DATA:-/tmp/lmcache-emulate-nvme}:/data/nvme
+      - ${NFS_DATA:-/tmp/lmcache-emulate-nfs}:/data/nfs
+      - ${GDS_SLAB_DATA:-/tmp/gds-slab-unused}:/data/slab
+      - ${LMCACHE_CONFIG_FILE_HOST:-/dev/null}:/config/lmcache.yml:ro
+      - ${LOG:-../logs}/lmcache-emulator:/var/log/aic-lmcache
+    environment:
+      <<: *lmcache-env
+      # No GPUDirect on a CPU node — see the block comment above.
+      AIC_L2_BACKEND: "${AIC_L2_BACKEND:-nixl_posix}"
+      DEVICE_TYPE: "cpu"
+    entrypoint: ["/bin/bash", "-o", "pipefail", "-c"]
+    command: *lmcache-command
+    healthcheck: *lmcache-healthcheck
+
+  # ---------------------------------------------------------------------------
+  # vllm-emulator: profile-driven emulation mode (no GPU required)
+  #
+  # Runs the standard vLLM OpenAI API server with the llm-emu executor hook
+  # (VLLM_EMULATOR_EXECUTOR_HOOK=1 + VLLM_EMULATOR_ENABLE_ORACLE=1). The hook
+  # intercepts execute_model() and returns timer-resolved Futures sampled from
+  # the offline profile pack instead of running real GPU kernels, so the full
+  # scheduling / KV-cache / HTTP stack runs unmodified.
+  #
+  # No /dev/kfd or /dev/dri devices needed — CPU-only nodes work fine.  Model
+  # WEIGHTS are never loaded either (vllm_emulator stubs load_model/profile_run),
+  # so only the HF config + tokenizer are fetched: an 8B model costs a few MB of
+  # download and no VRAM/RAM for parameters.
+  #
+  # Usage (image built with `--target emulate`, see docker/Dockerfile):
+  #   docker compose --profile emulate up vllm-emulator
+  #
+  # The `emulate-mp` profile runs the SAME service with the full LMCache MP
+  # recipe attached — see the KV_TRANSFER_ARG block below and `make
+  # emulate-mp-test`.  That profile needs an image with LMCache in it, i.e. the
+  # production image, NOT :7.14-emulate (whose build stops before LMCache):
+  #
+  #   IMAGE_NAME=rocm-aic:7.14-latest docker compose --profile emulate-mp \
+  #     up lmcache-emulator vllm-emulator
+  # Name both services: the GPU `vllm` service has no profile (so the vram
+  # baseline can run it alone), and compose starts every profile-less service on
+  # any `up` -- a bare `--profile emulate-mp up` also launches it.
+  #
+  # Optional env:
+  #   VLLM_EMULATOR_PROFILE_PACK — container path to the profile pack JSON.
+  #                                Defaults to the MI300X/Qwen3-8B pack from
+  #                                profiles/, baked into the image.  The upstream
+  #                                NVIDIA A40 example is also present at
+  #                                /opt/llm-emu/profiles/A40-Q8-Qwen3-8B.json.
+  #                                For a pack that is not in the image, set
+  #                                EMU_PROFILE_PACK_HOST to its host dir and
+  #                                point this at /profiles/<pack>.json.
+  #   VLLM_MODEL                 — model to serve; should match the profile pack
+  #   VLLM_EMULATOR_MEMORY       — emulated KV pool in bytes.  Matters more under
+  #                                `emulate-mp`: the connector needs real buffers,
+  #                                so the pool is actually allocated (host memory,
+  #                                lazily paged).  Cap it to fit the node.
+  #   VLLM_EMULATOR_KV_BUFFERS   — 0 to skip the fake KV buffers entirely, which
+  #                                also makes --kv-transfer-config inert.
+  # ---------------------------------------------------------------------------
+  vllm-emulator:
+    profiles:
+      - emulate
+      - emulate-mp
+    image: ${IMAGE_REF:-${IMAGE_NAME:-rocm-aic}:latest}
+    container_name: aic-vllm-emulator
+    # host net (like the vllm/lmcache services above) — vLLM's OpenAI API and
+    # /metrics land on host :8000 with no bridge/NAT in the way.
+    network_mode: host
+    # No devices/cap_add block: the emulator touches no GPU.  ipc: host IS
+    # needed under `emulate-mp` — LMCache migrates the fake KV buffers into
+    # POSIX SHM segments for the server to map, and Docker gives each container
+    # its own /dev/shm otherwise.  Harmless for the plain `emulate` profile.
+    ipc: host
+    # Run as the invoking user rather than root.  /hf below is a bind mount, and
+    # on a cluster it is a SHARED cache: a root-owned entry there is one that
+    # nobody but root can refresh or delete, because removing it needs write
+    # access on root-owned parent directories.  Every other entry in Alola's
+    # /scratch/models is owned by a real user; ours must be too.
+    # "uid:gid", set by the runner from `id -u`/`id -g` on the compute node.
+    # Defaults to 0:0 so a local `docker compose up` behaves exactly as before.
+    user: "${AIC_CONTAINER_USER:-0:0}"
+    volumes:
+      - ${HF_HOME:-~/.cache/huggingface}:/hf
+      - ${EMU_PROFILE_PACK_HOST:-/tmp}:/profiles:ro
+      - ${LOG:-../logs}/vllm-emulator:/var/log/aic-vllm-emulator
+    environment:
+      - HF_TOKEN=${HF_TOKEN:-}
+      # An unmapped uid has no passwd entry, so getpwuid()/expanduser("~") would
+      # fail or point at an unwritable /.  Everything cache-like is redirected
+      # under /hf below, but HOME must still resolve somewhere writable.
+      - HOME=${AIC_CONTAINER_HOME:-/root}
+      # getpass.getuser() tries LOGNAME/USER/LNAME/USERNAME and only THEN
+      # pwd.getpwuid().  torch's _inductor.default_cache_dir() calls it during
+      # import, so with an unmapped uid and none of these set the engine dies at
+      # startup with "KeyError: getpwuid(): uid not found".  A name is all it
+      # wants -- nothing resolves it any further.
+      - USER=${AIC_CONTAINER_USERNAME:-root}
+      - LOGNAME=${AIC_CONTAINER_USERNAME:-root}
+      - HF_HOME=/hf
+      - HF_HUB_CACHE=/hf/hub
+      - HF_HUB_OFFLINE=${HF_HUB_OFFLINE:-0}
+      - TRANSFORMERS_OFFLINE=${TRANSFORMERS_OFFLINE:-0}
+      - VLLM_CACHE_ROOT=/hf/vllm
+      - VLLM_CONFIG_ROOT=/hf/vllm_config
+      # The GPU vllm service has always set these; the emulator never did, so its
+      # inductor cache went to a container-local /tmp and died with the run.
+      - TORCH_HOME=/hf/torch
+      - TORCHINDUCTOR_CACHE_DIR=/hf/torch_inductor
+      - PYTHONHASHSEED=0
+      # llm-emu activation.  ENABLE_ORACLE switches on the platform plugin +
+      # torch.cuda shims + model-load stubs; EXECUTOR_HOOK swaps the forward
+      # pass for the profile-pack latency draw (patches/vllm/03-*.patch).
+      - VLLM_EMULATOR_ENABLE_ORACLE=1
+      - VLLM_EMULATOR_EXECUTOR_HOOK=1
+      - VLLM_EMULATOR_PROFILE_PACK=${VLLM_EMULATOR_PROFILE_PACK:-/opt/llm-emu/profiles/MI300X-Qwen3-8B.json}
+      - VLLM_EMULATOR_MODE=${VLLM_EMULATOR_MODE:-realtime}
+      - VLLM_EMULATOR_ORACLE_K=${VLLM_EMULATOR_ORACLE_K:-1}
+      # Pass-through form (no `=`): these reach the container only when set in
+      # the caller's environment.  Do NOT rewrite them as `VAR=${VAR:-}` -- an
+      # empty VLLM_EMULATOR_MEMORY used to abort the cuda_mock import, which
+      # vllm_emulator swallows, leaving the emulator half-installed (see
+      # patches/llm-emu/01-vllm-026-compat.patch).
+      - VLLM_EMULATOR_DEBUG
+      - VLLM_EMULATOR_MEMORY
+      - VLLM_EMULATOR_KV_BUFFERS
+      # Trace the EMULATED run's own steps, so its batch composition can be
+      # diffed against the real capture's (that is how you find out whether a
+      # replay mismatch is the cost model or the scheduling).  Writes into the
+      # mounted log dir; unset = no tracing, no overhead.
+      - VLLM_EMULATOR_TRACE_STEP_CYCLE
+      - VLLM_EMULATOR_STEP_TRACE_OUTPUT
+      # Read only by LMCache, and only under `emulate-mp` -- but defaulted to
+      # cpu on both profiles because this service never has a GPU, and an
+      # EMPTY value would be worse than either (see the NOTE above: LMCache
+      # would log "DEVICE_TYPE='' not registered" and fall back to
+      # auto-detection).  cpu is what stops LMCache believing cuda_mock's
+      # shimmed torch.cuda.is_available() and trying to export device handles
+      # for KV buffers that live in host memory.  Needs
+      # patches/lmcache/10-lmcache-cpu-device-type-optin.patch to be honoured.
+      - DEVICE_TYPE=${DEVICE_TYPE:-cpu}
+      - PYTHONUNBUFFERED=1
+      - TZ=${TZ:-America/Edmonton}
+    # Standard vLLM OpenAI API entrypoint — the emulator wires itself in via the
+    # vllm.platform_plugins entry point and the env vars above.
+    # EMU_KV_TRANSFER_ARG, not KV_TRANSFER_ARG.  The value is the identical
+    # LMCacheMPConnector JSON the GPU `vllm` service takes -- this really is the
+    # same recipe -- but it must be opted into explicitly: the Makefile does
+    # `export KV_TRANSFER_ARG` at file scope (Makefile:90), so reusing that name
+    # here silently attached the MP connector to the PLAIN `emulate` profile
+    # too, and `make emulate-test` died waiting 300s for an lmcache server that
+    # profile never starts.  Empty by default = the historical behaviour.
+    # Two additions the MP profile makes on top of the `make up` JSON:
+    #   lmcache.mp.mp_transfer_mode=lmcache_driven — pin the production
+    #     topology (the SERVER pulls from registered buffers).  Left on `auto`,
+    #     create_transfer_context() dispatches on tensor.device.type and CPU
+    #     tensors fall to engine_driven, which moves the copy into the vLLM
+    #     worker and exercises less of the shipped stack.
+    #   --enable-prefix-caching — matches the GPU service; the connector's
+    #     hit accounting is defined against vLLM's APC.
+    # Deliberately NOT --async-scheduling: v0.26.0's step_with_batch_queue()
+    # never calls sample_tokens() for a non-EC engine, so the hook's split
+    # exec/sample futures never resolve.  Emulation is sync-scheduling only.
+    command: >
+      --model ${VLLM_MODEL:-Qwen/Qwen3-8B}
+        --served-model-name ${VLLM_MODEL:-Qwen/Qwen3-8B}
+        --host 0.0.0.0
+        --port 8000
+        --max-model-len ${VLM_MAX_MODEL_LEN:-4096}
+        --max-num-batched-tokens ${VLM_MAX_NUM_BATCHED_TOKENS:-4096}
+        --gpu-memory-utilization ${VLM_GPU_MEMORY_UTILIZATION:-0.85}
+        --disable-access-log-for-endpoints "/health,/metrics,/v1/models"
+        ${EMU_KV_TRANSFER_ARG:-}
+        ${VLLM_EXTRA_ARGS:-}
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:8000/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 20
+      start_period: 60s
+    depends_on:
+      lmcache-emulator:
+        condition: service_healthy
+        # required:false keeps the plain `emulate` profile (no lmcache-emulator
+        # in it) startable on its own.  Needs Compose v2.20+.
+        required: false
 
 volumes:
   grafana-data:

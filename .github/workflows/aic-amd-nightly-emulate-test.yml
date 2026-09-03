@@ -1,0 +1,35 @@
+# Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+#
+# Nightly serve check of the emulation image.  This is the only hardware-CI
+# stage that needs NO GPU: the image is built with --target emulate and
+# VLLM_TARGET_DEVICE=empty (no GPU kernels compiled), and the emulator serves on
+# a CPU-only node with no /dev/kfd mapped in.  It therefore runs on its own
+# schedule rather than chained behind the dist-build -> smoke -> tiny -> cliff
+# sequence, and does not compete with those stages for GPUs.
+#
+# See docs/EMULATE.md.  Needs .github/scripts/spur-emulate-test.sh deployed to
+# the runner (`make install-ci-scripts`).
+name: AIC Nightly Emulate Test
+
+on:
+  schedule:
+    # 03:00 PST = 11:00 UTC — after the nightly dist-build has claimed its node,
+    # and harmless if it has not, since this stage builds its own image.
+    - cron: '0 11 * * *'
+  workflow_dispatch:
+
+jobs:
+  emulate-test:
+    runs-on: [self-hosted, rocm-aic-cicd]
+    timeout-minutes: 90
+    env:
+      AIC_SPUR_HOST:       ${{ secrets.AIC_SPUR_HOST }}
+      AIC_SHARED_NFS:      ${{ secrets.AIC_SHARED_NFS }}
+      AIC_SPUR_CONTROLLER: ${{ secrets.AIC_SPUR_CONTROLLER }}
+      HF_TOKEN:            ${{ secrets.AIC_HF_TOKEN }}
+
+    steps:
+      - name: Build and serve-test the emulation image on the SPUR head node
+        run: bash /usr/local/lib/aic-ci/spur-emulate-test.sh "${{ github.sha }}"

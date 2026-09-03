@@ -68,3 +68,33 @@ that the vLLM ROCm-platform import and engine startup remain healthy.
 See `.docs-remove/rocm-7.14-torch-wheel-integration.md` for the complete
 11-bug chain discovered during SPUR testing, including root causes and fix
 status for each.
+
+## gfx1201 (RDNA4 / RX 9070 XT) local development notes (2026-09-03)
+
+The RX 9070 XT (Navi 48, gfx1201, 16 GB) is supported in the default multi-arch
+build (`AIC_ROCM_ARCH` default includes `gfx1201`). Key differences from CDNA:
+
+- **Triton**: `torch 2.13.0+rocm7.2` from pytorch.org works on gfx1201 without
+  the Triton 3.7.1 incompatibility that affects gfx950 on older KFD. The current
+  Dockerfile pin is correct; do not switch back to `repo.amd.com` for gfx1201.
+- **NIXL AIS_MT**: hipFile P2PDMA is CDNA-only; use `AIC_L2_BACKEND=nixl_posix`
+  on gfx1201 nodes (the SPUR default already does this).
+- **VFIO**: the GPU is typically VFIO-passed to a VM on workstations. Rebind to
+  `amdgpu` before running Docker containers:
+
+  ```bash
+  echo "0000:10:00.0" | sudo tee /sys/bus/pci/devices/0000:10:00.0/driver/unbind
+  echo "0000:10:00.0" | sudo tee /sys/bus/pci/drivers/amdgpu/bind
+  ```
+
+- **Profile capture** on a local gfx1201 node (no cluster required):
+
+  ```bash
+  make capture-profile-local \
+    IMAGE_REF=<image> ROCM_ARCH=gfx1201 \
+    AIC_CAPTURE_MODEL=Qwen/Qwen2.5-3B-Instruct \
+    HF_TOKEN_FILE=~/.cache/huggingface/token
+  ```
+  Output lands in `profiles/captures/`. The captured gfx1201 pack
+  (`Qwen-Qwen2.5-3B-Instruct-20260902-182346.json`) is the first RDNA4 pack
+  in the repo; see `prometheus-dump.md` for emulated-vs-real latency numbers.

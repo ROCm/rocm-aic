@@ -39,3 +39,9 @@ dictionary.dic
 # CI artifact staging dir (spur-monitoring-cpu-smoke.sh copies index.html here
 # for upload-artifact / gh-pages deploy; never committed)
 metrics-page/
+
+# Profile capture working directory (raw traces, bench results)
+profiles/captures/
+
+# Prometheus raw metrics dump
+prometheus-dump.md
