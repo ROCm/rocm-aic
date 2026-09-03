@@ -266,8 +266,74 @@ jobs:
               body: `❌ Fast smoke test failed for ${{ needs.authorize.outputs.sha }}. [View logs](https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}).`,
             });
 
+  # Emulate smoke: runs in parallel with smoke-test on a CPU-only SPUR node.
+  # No GPU needed — loads the built image tarball, starts the compose emulate
+  # profile, and asserts: endpoint answers, executor hook active, steps from pack.
+  # Catches emulator breakage before it reaches the nightly gate.
+  emulate-smoke:
+    needs: [authorize, dist-build]
+    runs-on: [self-hosted, rocm-aic-cicd]
+    timeout-minutes: 30
+    permissions:
+      pull-requests: write
+      statuses: write
+    env:
+      AIC_SPUR_HOST:       ${{ secrets.AIC_SPUR_HOST }}
+      AIC_SHARED_NFS:      ${{ secrets.AIC_SHARED_NFS }}
+      AIC_CI_STORAGE_ROOT: ${{ secrets.AIC_SHARED_NFS }}/rocm-aic
+      AIC_SPUR_CONTROLLER: ${{ secrets.AIC_SPUR_CONTROLLER }}
+
+    steps:
+      - name: Set commit status to pending
+        if: needs.authorize.outputs.pr_number != ''
+        uses: actions/github-script@v9
+        with:
+          script: |
+            await github.rest.repos.createCommitStatus({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              sha: '${{ needs.authorize.outputs.sha }}',
+              state: 'pending',
+              target_url: `https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`,
+              context: 'hardware-ci / emulate-smoke-fast',
+              description: 'Running CPU-only emulate smoke on SPUR...',
+            });
+
+      - name: Run emulate smoke test on SPUR CPU node
+        run: bash /usr/local/lib/aic-ci/spur-emulate-test.sh "${{ needs.authorize.outputs.sha }}"
+
+      - name: Set commit status on success
+        if: success() && needs.authorize.outputs.pr_number != ''
+        uses: actions/github-script@v9
+        with:
+          script: |
+            await github.rest.repos.createCommitStatus({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              sha: '${{ needs.authorize.outputs.sha }}',
+              state: 'success',
+              target_url: `https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`,
+              context: 'hardware-ci / emulate-smoke-fast',
+              description: 'Emulate smoke passed (CPU-only, no GPU consumed)',
+            });
+
+      - name: Set commit status on failure
+        if: failure() && needs.authorize.outputs.pr_number != ''
+        uses: actions/github-script@v9
+        with:
+          script: |
+            await github.rest.repos.createCommitStatus({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              sha: '${{ needs.authorize.outputs.sha }}',
+              state: 'failure',
+              target_url: `https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`,
+              context: 'hardware-ci / emulate-smoke-fast',
+              description: 'Emulate smoke failed — executor hook or completions broken',
+            });
+
   tiny-test:
-    needs: [authorize, dist-build, smoke-test]
+    needs: [authorize, dist-build, smoke-test, emulate-smoke]
     runs-on: [self-hosted, rocm-aic-cicd]
     timeout-minutes: 60
     permissions:
@@ -339,6 +405,6 @@ jobs:
               repo: context.repo.repo,
               issue_number: ${{ needs.authorize.outputs.pr_number || 0 }},
               body: success
-                ? `✅ Fast hardware CI passed for ${{ needs.authorize.outputs.sha }} (dist-build-fast + smoke-test-fast + tiny-test). This is a single-arch dev check — run \`/run-ci\` for the full gate.`
+                ? `✅ Fast hardware CI passed for ${{ needs.authorize.outputs.sha }} (dist-build-fast + smoke-test-fast + tiny-test + emulate-smoke). This is a single-arch dev check — run \`/run-ci\` for the full gate.`
                 : `❌ Tiny-test (fast) failed for ${{ needs.authorize.outputs.sha }}. [View logs](https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}).`,
             });

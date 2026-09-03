@@ -137,7 +137,8 @@ DIST := $(CURDIR)/.slurm/run-build-distribute.sh
 # ---- Self-hosted CI runner scripts -----------------------------------------
 # The hardware-CI workflows call helper scripts from AIC_CI_LIB_DIR on the
 # self-hosted runner (spur-dist-build.sh / spur-smoke-test.sh / spur-tiny-test.sh
-# / spur-cliff.sh).  `make install-ci-scripts` deploys the source copies from
+# / spur-cliff.sh / spur-emulate-test.sh -- the last of which needs no GPU at
+# either end).  `make install-ci-scripts` deploys the source copies from
 # .github/scripts/runners there.  Scripts invoked directly from checked-out
 # workflows live separately under .github/scripts/workflows.  Writing under
 # /usr/local usually needs root, so the target uses sudo when needed.
@@ -187,8 +188,6 @@ export AIC_L2_BACKEND         ?= nixl_posix
 #    28× too large for POSIX where only actual KV bytes are written per slot).
 # Also enlarge the pool: 18K-tok prefix = 71 chunks/client; at c=250 need ~18K slots;
 #   32K at 32 MiB = 1 TiB on disk (lazy, fine for the 30 TB XFS LVM).
-# Parallel POSIX workers: lmcache server default is 1 GPU worker — bump to 4 so
-#   concurrent client writes overlap instead of serializing on the ZMQ channel.
 # Slot size: must be >= the KV chunk size for the target model.
 #   gpt-oss-120b fp8: 256 tok × 8 heads × 64 dim × 2 × 36 layers × 1B = 9 MiB → 16 MiB OK
 #   Qwen2.5-3B fp8:  256 tok × 8 heads × 128 dim × 2 × 36 layers × 1B = 18 MiB → 32 MiB needed
@@ -211,7 +210,25 @@ override export AIC_HSA_SNOOP_PID_MODE  := container:aic-lmcache
 export LMCACHE_MAX_GPU_WORKERS      ?= 1
 else
 export AIC_CACHE_DIR        ?= /scratch/$(USER)/images/buildcache
+# Alola mounts /scratch from BeeGFS, so unlike SPUR it IS shared across compute
+# nodes -- and /scratch/models is the cluster-wide HuggingFace cache everyone
+# already populates (its hub/ holds the weights).  /home is the wrong home for
+# multi-GB checkpoints there: 87% full at 100T, and NFS rather than parallel.
+# Keyed on the hub layout so no extra flag is needed, and applied only while
+# HF_HOME still holds the file-scope default above -- an environment variable or
+# `make HF_HOME=...` keeps winning.
+ifneq ($(wildcard /scratch/models/hub),)
+ifeq ($(origin HF_HOME),file)
+override export HF_HOME     := /scratch/models
+# The override changes $(origin HF_HOME) from "file" to "override", which would
+# stop _CLIFF_STRIP below from unsetting it -- silently pushing the shared cache
+# into cliff jobs that have their own node-appropriate staging.  Remember that
+# this value is still just a Makefile default so the strip keeps applying.
+_HF_HOME_IS_DEFAULT := 1
 endif
+endif
+endif
+_HF_HOME_IS_DEFAULT ?= $(if $(filter file,$(origin HF_HOME)),1,)
 
 # The cliff sbatch has its own node-appropriate defaults for the HuggingFace
 # cache (staged on /scratch), the LMCache storage tiers (node-local /tmp), and
@@ -224,7 +241,7 @@ endif
 # Makefile's own defaults ($(origin ...) = "file"); a value the user set on the
 # command line or in their environment is kept and still flows through.
 _CLIFF_STRIP := env \
-    $(if $(filter 0,$(AIC_SPUR_CLUSTER)),$(if $(filter file,$(origin HF_HOME)),-u HF_HOME)) \
+    $(if $(filter 0,$(AIC_SPUR_CLUSTER)),$(if $(_HF_HOME_IS_DEFAULT),-u HF_HOME)) \
     $(if $(filter 0,$(AIC_SPUR_CLUSTER)),$(if $(filter file,$(origin NVME_DATA)),-u NVME_DATA)) \
     $(if $(filter file,$(origin NFS_DATA)),-u NFS_DATA) \
     $(if $(filter 0,$(AIC_SPUR_CLUSTER)),$(if $(filter file,$(origin GDS_SLAB_DATA)),-u GDS_SLAB_DATA)) \
@@ -248,9 +265,10 @@ EXPORT_TARBALL ?= $(CURDIR)/$(EXPORT_PREFIX)-$(_GEN_DATE)-$(_GIT_SHORT_REV)$(_GI
 .PHONY: help ensure-compose build up up-batch up-dev up-monitoring down-monitoring up-gds-l1 up-gds-l1-batch down logs logs-lmcache logs-vllm \
         ps shell-lmcache shell-vllm restart-vllm restart-lmcache cliff plot venv vllm-reset-test stress-grafana \
         monitoring-up monitoring-down monitoring-logs monitoring-build-exporters \
-        dist-build dist-build-fast dist-build-exporters dist-build-monitoring dist-push \
-        smoke-test smoke-test-fast tiny-test tiny-test-fast install-ci-scripts \
-        cliff-submit cliff-short \
+        dist-build dist-build-fast dist-build-emulate dist-build-exporters dist-build-monitoring dist-push \
+        smoke-test smoke-test-fast tiny-test tiny-test-fast \
+        emulate-test emulate-mp-test emulate-validate test-emulate-local stress-emulate-local capture-profile-local profile-capture \
+        install-ci-scripts cliff-submit cliff-short \
         cliff-kvd cliff-spur-l2 cliff-spur-l2-debug cliff-long-64k cliff-long-128k \
         export _check_hf_token _prep_dirs _check_gds_slab
 
@@ -292,6 +310,7 @@ help:
 	@echo "  (dist-build/dist-build-exporters/smoke-test submit via sbatch and log to logs/<job-id>/)"
 	@echo "  make dist-build        Build image (+ fabric exporters) on a Slurm build node, save tarballs"
 	@echo "  make dist-build-fast   Single-arch dev build (AIC_FAST_ARCH=$(AIC_FAST_ARCH), no exporters) -- faster iteration"
+	@echo "  make dist-build-emulate  Build the CPU-only emulation image (no GPU kernels compiled)"
 	@echo "  make dist-build-exporters  Build ONLY the nvme/rdma exporter images (no main rebuild)"
 	@echo "  make dist-build-monitoring Pull + save Prometheus/amdgpu-exporter to AIC_IMAGE_DIR"
 	@echo "  make dist-push         Tag + push the built image (needs AIC_PUSH_REF)"
@@ -301,6 +320,13 @@ help:
 	@echo "  make smoke-test-fast   Smoke-test the single-arch dev image (AIC_FAST_ARCH=$(AIC_FAST_ARCH))"
 	@echo "  make tiny-test         End-to-end serve check (MP stack + tiny model, one completion)"
 	@echo "  make tiny-test-fast    Fast variant of tiny-test"
+	@echo "  make test-emulate-local  Local emulate test (no SLURM): bring up vllm-emulator, assert completion + hook"
+	@echo "  make stress-emulate-local  Start emulator + Prometheus, run sustained sweep, print /metrics"
+	@echo "  make capture-profile-local  Local profile capture (requires /dev/kfd): real GPU serve + sweep -> pack"
+	@echo "  make emulate-test      Serve check of the emulation image on a CPU-only node (no GPU)"
+	@echo "  make emulate-mp-test   Emulation + the full LMCache MP recipe on a CPU-only node"
+	@echo "  make profile-capture   Capture an AMD profile pack from a REAL GPU serve (gfx942/gfx950)"
+	@echo "  make emulate-validate  Replay a captured pack on CPU and diff vs the real-hardware run"
 	@echo "  make install-ci-scripts  Deploy .github/scripts/runners/*.sh to $(AIC_CI_LIB_DIR) (sudo if needed)"
 	@echo "  make cliff-submit      sbatch the full 3-arm cliff sweep -> logs/<job-id>/"
 	@echo "  make cliff-kvd         sbatch focused KVD cliff: shared prefix, sparse c ladder (1,8,32,64,128,250)"
@@ -602,6 +628,13 @@ dist-build-fast:               # Single-arch (AIC_FAST_ARCH) dev build -- fast e
 	@# A cut-down version of dist-build.
 	@$(MAKE) --no-print-directory dist-build \
 	    AIC_ROCM_ARCH='$(AIC_FAST_ARCH)' AIC_BUILD_EXPORTERS=0 AIC_UCX_FAST=1
+dist-build-emulate:            # Build the CPU-only emulation image on a Slurm build node
+	@# Dockerfile `emulate` stage + VLLM_TARGET_DEVICE=empty: vLLM + the llm-emu
+	@# plugin with NO GPU kernels compiled (no HIP kernels, no LMCache HIP ext, no
+	@# NIXL, no hsa-snoop).  Tagged separately (AIC_EMULATE_IMAGE, default
+	@# $(IMAGE_NAME):7.14-emulate) with its own tarball, so `make dist-build`'s
+	@# GPU image is untouched.  Pair with `make emulate-test`.
+	"$(DIST)" build-emulate
 
 dist-build-exporters:          # Build ONLY the fabric exporters (no main-image rebuild)
 	@# Rebuild just the nvme/rdma exporter images -- e.g. after `make dist-build`
@@ -653,6 +686,234 @@ tiny-test-fast:
 	@# Must pin the SAME AIC_ROCM_ARCH as dist-build-fast and smoke-test-fast.
 	@$(MAKE) --no-print-directory tiny-test \
 	    AIC_ROCM_ARCH='$(AIC_FAST_ARCH)'
+
+# Local emulate test — no SLURM required.  Works with the full production image
+# (build + runtime target) or the CPU-only emulate target; both have the llm-emu
+# plugin installed.  Uses whatever IMAGE_REF resolves to.
+AIC_EMULATE_MODEL     ?= Qwen/Qwen3-8B
+AIC_EMULATE_READY_S   ?= 120
+
+test-emulate-local: ensure-compose _prep_dirs  ## Spin up emulate profile, assert completion + hook active, tear down
+	@echo "=== test-emulate-local: IMAGE_REF=$(IMAGE_REF) model=$(AIC_EMULATE_MODEL) ==="
+	@VLLM_MODEL="$(AIC_EMULATE_MODEL)" IMAGE_REF="$(IMAGE_REF)" $(COMPOSE) --profile emulate up -d vllm-emulator
+	@echo "Waiting up to $(AIC_EMULATE_READY_S)s for /health (engine fully ready) ..."
+	@_ready=0; \
+	for _i in $$(seq 1 $$(($(AIC_EMULATE_READY_S)/5))); do \
+	    if curl -fsS http://localhost:8000/health >/dev/null 2>&1; then _ready=1; break; fi; \
+	    if [ -z "$$(docker ps -q -f name=aic-vllm-emulator)" ]; then \
+	        echo "FAIL: emulator container exited during startup" >&2; \
+	        $(COMPOSE) --profile emulate logs --tail 60 vllm-emulator; \
+	        $(COMPOSE) --profile emulate down --remove-orphans >/dev/null 2>&1; \
+	        exit 1; \
+	    fi; \
+	    sleep 5; \
+	done; \
+	if [ "$$_ready" != "1" ]; then \
+	    echo "FAIL: endpoint not ready after $(AIC_EMULATE_READY_S)s" >&2; \
+	    $(COMPOSE) --profile emulate logs --tail 80 vllm-emulator; \
+	    $(COMPOSE) --profile emulate down --remove-orphans >/dev/null 2>&1; \
+	    exit 1; \
+	fi; \
+	sleep 5; \
+	echo "Endpoint ready — sending completion ..."; \
+	resp=$$(curl -sS http://localhost:8000/v1/completions \
+	    -H 'Content-Type: application/json' \
+	    -d '{"model":"$(AIC_EMULATE_MODEL)","prompt":"Hello","max_tokens":16,"temperature":0}' 2>&1); \
+	echo "Response: $$resp"; \
+	rc=0; \
+	tokens=$$(printf '%s' "$$resp" | grep -oE '"completion_tokens"[[:space:]]*:[[:space:]]*[0-9]+' | grep -oE '[0-9]+$$'); \
+	if [ -n "$$tokens" ] && [ "$$tokens" -gt 0 ]; then \
+	    echo "OK: emulated engine generated $$tokens tokens"; \
+	else \
+	    echo "FAIL: no tokens generated" >&2; rc=1; \
+	fi; \
+	logfile=$(LOG)/emulate-check.log; \
+	mkdir -p "$(LOG)"; \
+	$(COMPOSE) --profile emulate logs --no-color --no-log-prefix vllm-emulator > "$$logfile" 2>&1 || true; \
+	if grep -q '\[ExecutorEmulatorHook\] Enabled' "$$logfile"; then \
+	    echo "OK: executor hook active"; \
+	else \
+	    echo "FAIL: executor hook never activated (is VLLM_EMULATOR_ENABLE_ORACLE=1?)" >&2; rc=1; \
+	fi; \
+	if grep -q '\[ExecutorHook\] step=' "$$logfile"; then \
+	    echo "OK: steps served from the profile pack"; \
+	else \
+	    echo "FAIL: no emulated steps recorded in logs" >&2; rc=1; \
+	fi; \
+	$(COMPOSE) --profile emulate down --remove-orphans >/dev/null 2>&1; \
+	[ "$$rc" -eq 0 ] && echo "=== test-emulate-local PASSED ===" || { echo "=== test-emulate-local FAILED ===" >&2; exit 1; }
+
+# Local profile capture — no SLURM.  Requires /dev/kfd and /dev/dri on the host.
+# Runs a real GPU serve with VLLM_EMULATOR_TRACE_STEP_CYCLE=1, drives a sweep,
+# then builds + validates the pack.  The pack lands in AIC_CAPTURE_DIR.
+#
+# gfx1201 (RDNA4, ~16GB VRAM) defaults: Qwen2.5-3B-Instruct, small sweep.
+# For a larger GPU (gfx942/gfx950) override AIC_CAPTURE_MODEL and AIC_CAPTURE_SWEEP.
+AIC_CAPTURE_MODEL     ?= Qwen/Qwen2.5-3B-Instruct
+AIC_CAPTURE_HF_HOME   ?= $(HF_HOME)
+AIC_CAPTURE_DIR       ?= $(CURDIR)/profiles/captures
+AIC_CAPTURE_GPU       ?= $(GPU)
+AIC_CAPTURE_GPU_UTIL  ?= 0.85
+AIC_CAPTURE_MAX_MODEL_LEN     ?= 4096
+AIC_CAPTURE_MAX_BATCHED_TOKENS ?= 2048
+# Shorter sweep than the MI300X one: gfx1201 is slower so high-concurrency
+# points take much longer.  Covers the token-count and concurrency axes the
+# oracle buckets on without running for hours.
+AIC_CAPTURE_SWEEP ?= 128,16,1,12 128,16,8,64 512,64,1,8 512,64,4,32 \
+                     1024,64,1,8 1024,64,4,32 1024,64,16,64 \
+                     2048,64,1,6 2048,64,4,24 4096,64,1,4 4096,64,4,16
+AIC_CAPTURE_WARMUP_SKIP ?= 5
+
+AIC_EMULATE_STRESS_CONCUR ?= 1,4,8,16
+AIC_EMULATE_STRESS_ISL    ?= 512
+AIC_EMULATE_STRESS_OSL    ?= 128
+AIC_EMULATE_STRESS_ITERS  ?= 5
+
+stress-emulate-local: ensure-compose _prep_dirs  ## Start emulator + Prometheus, run a sustained cliff sweep, show /metrics
+	@echo "=== stress-emulate-local: $(IMAGE_REF) model=$(AIC_EMULATE_MODEL) ==="
+	@mkdir -p "$(AIC_METRICS_DIR)"
+	IMAGE_REF="$(IMAGE_REF)" VLLM_MODEL="$(AIC_EMULATE_MODEL)" \
+	    PROM_UID="$$(id -u)" PROM_GID="$$(id -g)" \
+	    $(COMPOSE) --profile emulate --profile monitoring up -d vllm-emulator prometheus
+	@echo "Waiting for emulator endpoint ..."
+	@for _i in $$(seq 1 24); do \
+	    curl -fsS http://localhost:8000/health >/dev/null 2>&1 && break; \
+	    sleep 5; \
+	done
+	@echo "Running sweep: ISL=$(AIC_EMULATE_STRESS_ISL) OSL=$(AIC_EMULATE_STRESS_OSL) c=$(AIC_EMULATE_STRESS_CONCUR) x$(AIC_EMULATE_STRESS_ITERS)"
+	docker exec aic-vllm-emulator vllm bench serve \
+	    --host localhost --port 8000 \
+	    --model "$(AIC_EMULATE_MODEL)" \
+	    --dataset-name random \
+	    --random-input-len "$(AIC_EMULATE_STRESS_ISL)" \
+	    --random-output-len "$(AIC_EMULATE_STRESS_OSL)" \
+	    --num-prompts $$(($(AIC_EMULATE_STRESS_ITERS) * 64)) \
+	    --max-concurrency "$$(echo $(AIC_EMULATE_STRESS_CONCUR) | tr ',' '\n' | sort -rn | head -1)" \
+	    --percentile-metrics ttft,tpot,itl,e2el \
+	    --ignore-eos 2>&1 | tail -30
+	@echo ""
+	@echo "=== Key vLLM /metrics ==="
+	@curl -s http://localhost:8000/metrics | \
+	    grep -E "^vllm:(num_requests|e2e_request_latency|request_prompt_tokens|request_generation_tokens|gpu_cache_usage|request_success|request_failure)" | \
+	    grep -v "^#" | sort | head -30
+	@echo ""
+	@echo "Prometheus at http://localhost:9090 — stack left running. Use 'make down' to stop."
+
+capture-profile-local: _prep_dirs  ## Capture a gfx1201 profile pack locally (requires /dev/kfd)
+	@test -e /dev/kfd || { echo "ERROR: /dev/kfd not found — GPU not accessible here"; exit 1; }
+	@test -n "$(ROCM_ARCH)" || { echo "ERROR: ROCM_ARCH empty" >&2; exit 1; }
+	@mkdir -p "$(AIC_CAPTURE_DIR)/bench"
+	@stamp=$$(date +%Y%m%d-%H%M%S); \
+	model_tag=$$(echo '$(AIC_CAPTURE_MODEL)' | tr '/' '-'); \
+	trace_file="step-trace-$${model_tag}-$${stamp}.jsonl"; \
+	pack_name="$${model_tag}-$${stamp}.json"; \
+	echo "=== capture-profile-local: IMAGE_REF=$(IMAGE_REF) model=$(AIC_CAPTURE_MODEL) arch=$(ROCM_ARCH) ==="; \
+	echo "Trace -> $(AIC_CAPTURE_DIR)/$${trace_file}"; \
+	docker run -d --name aic-vllm-capture \
+	    --device /dev/kfd --device /dev/dri \
+	    --network host --ipc host \
+	    --cap-add CAP_SYS_ADMIN --cap-add SYS_PTRACE \
+	    --security-opt seccomp=unconfined \
+	    -v "$(AIC_CAPTURE_HF_HOME):/hf" \
+	    -v "$(AIC_CAPTURE_DIR):/trace" \
+	    -e HF_HOME=/hf -e HF_HUB_CACHE=/hf/hub \
+	    -e HF_TOKEN="$${HF_TOKEN:-}" -e HF_HUB_OFFLINE=0 \
+	    -e ROCR_VISIBLE_DEVICES="$(AIC_CAPTURE_GPU)" \
+	    -e VLLM_ROCM_USE_AITER=1 \
+	    -e PYTORCH_HIP_ALLOC_CONF=expandable_segments:False \
+	    -e PYTHONUNBUFFERED=1 \
+	    -e VLLM_EMULATOR_TRACE_STEP_CYCLE=1 \
+	    -e "VLLM_EMULATOR_STEP_TRACE_OUTPUT=/trace/$${trace_file}" \
+	    "$(IMAGE_REF)" \
+	    --model "$(AIC_CAPTURE_MODEL)" \
+	    --host 0.0.0.0 --port 8000 \
+	    --max-model-len "$(AIC_CAPTURE_MAX_MODEL_LEN)" \
+	    --max-num-batched-tokens "$(AIC_CAPTURE_MAX_BATCHED_TOKENS)" \
+	    --gpu-memory-utilization "$(AIC_CAPTURE_GPU_UTIL)" \
+	    --no-enable-prefix-caching \
+	    --attention-backend TRITON_ATTN \
+	    --disable-access-log-for-endpoints "/health,/metrics,/v1/models" \
+	    >/dev/null || { echo "FAIL: docker run failed" >&2; exit 1; }; \
+	echo "Waiting for endpoint (weights download may take a few minutes) ..."; \
+	_ready=0; for _i in $$(seq 1 60); do \
+	    curl -fsS http://localhost:8000/v1/models >/dev/null 2>&1 && { _ready=1; break; }; \
+	    [ -z "$$(docker ps -q -f name=aic-vllm-capture)" ] && \
+	        { docker logs --tail 40 aic-vllm-capture >&2; docker rm -f aic-vllm-capture >/dev/null 2>&1; exit 1; }; \
+	    sleep 10; \
+	done; \
+	[ "$$_ready" != "1" ] && { echo "FAIL: endpoint never ready" >&2; docker rm -f aic-vllm-capture >/dev/null 2>&1; exit 1; }; \
+	echo "Endpoint ready — running sweep ..."; \
+	rc=0; _seed=0; \
+	for point in $(AIC_CAPTURE_SWEEP); do \
+	    _seed=$$((_seed+1)); \
+	    isl=$$(echo "$$point" | cut -d, -f1); \
+	    osl=$$(echo "$$point" | cut -d, -f2); \
+	    conc=$$(echo "$$point" | cut -d, -f3); \
+	    np=$$(echo "$$point" | cut -d, -f4); \
+	    echo "--- isl=$$isl osl=$$osl c=$$conc n=$$np ---"; \
+	    docker exec aic-vllm-capture vllm bench serve \
+	        --host localhost --port 8000 \
+	        --model "$(AIC_CAPTURE_MODEL)" \
+	        --dataset-name random \
+	        --random-input-len "$$isl" --random-output-len "$$osl" \
+	        --num-prompts "$$np" --max-concurrency "$$conc" \
+	        --ignore-eos --seed "$$_seed" \
+	        --percentile-metrics ttft,tpot,itl,e2el \
+	        --save-result --result-dir /trace/bench \
+	        --result-filename "real-$${model_tag}-isl$${isl}-osl$${osl}-c$${conc}.json" \
+	        2>&1 | sed 's/^/  [bench] /' || rc=1; \
+	done; \
+	echo "Sweep done (rc=$$rc); stopping server ..."; \
+	docker stop -t 60 aic-vllm-capture >/dev/null 2>&1 || true; \
+	sleep 3; \
+	docker rm -f aic-vllm-capture >/dev/null 2>&1 || true; \
+	[ -s "$(AIC_CAPTURE_DIR)/$$trace_file" ] || { echo "FAIL: trace not written" >&2; exit 1; }; \
+	echo "Building profile pack ..."; \
+	docker run --rm \
+	    -v "$(AIC_CAPTURE_DIR):/trace" \
+	    --entrypoint python3 "$(IMAGE_REF)" \
+	    -m vllm_emulator.profile.build_serving_profile_filtered \
+	    "/trace/$$trace_file" "/trace/$$pack_name" \
+	    --warmup-skip "$(AIC_CAPTURE_WARMUP_SKIP)" \
+	    2>&1 | sed 's/^/  [pack] /'; \
+	echo "Pack: $(AIC_CAPTURE_DIR)/$$pack_name"; \
+	echo "Copy it to profiles/ and add a .capture.txt sibling to use it in CI."
+
+profile-capture:               # Capture an AMD profile pack from a REAL GPU serve
+	@# Runs the full image on a GPU node with VLLM_EMULATOR_TRACE_STEP_CYCLE=1 (real
+	@# weights, real kernels), drives a vllm bench serve sweep over input-length x
+	@# concurrency, and turns the step trace into a profile pack the emulator can
+	@# replay.  The pack, the raw trace and the real-hardware benchmark JSONs land in
+	@# AIC_CAPTURE_DIR.  AIC_ROCM_ARCH must match the built image tarball, e.g.
+	@#   AIC_ROCM_ARCH=gfx942 AIC_CAPTURE_NODE=<mi300x-node> make profile-capture
+	"$(DIST)" profile-capture
+
+emulate-validate:              # Replay a captured pack and diff against real hardware
+	@# Runs the capture's benchmark points against the emulator on a CPU node and
+	@# prints real-vs-emulated TTFT / TPOT / throughput deltas.  Needs the pack from
+	@# `make profile-capture`:
+	@#   AIC_VALIDATE_PACK=/scratch/$(USER)/images/profiles/<pack>.json make emulate-validate
+	"$(DIST)" emulate-validate
+
+emulate-test:                  # Serve check of the emulation image on a CPU-ONLY node
+	@# Brings up the compose `emulate` profile (no GPU, no weights loaded), asserts
+	@# a non-empty completion, and asserts the llm-emu executor hook -- not a real
+	@# forward pass -- produced it.  Needs `make dist-build-emulate` first.
+	"$(DIST)" emulate-test
+
+emulate-mp-test:               # Emulation + the FULL LMCache MP recipe, still no GPU
+	@# The compose `emulate-mp` profile: standalone lmcache server + vLLM with
+	@# LMCacheMPConnector, on a CPU-only node.  The KV tensors the connector
+	@# registers are synthesized in host memory (zeros, but vLLM's own shape and
+	@# byte count), so LMCache/NIXL transfer cost is measured on top of the
+	@# profile-pack compute cost.  Asserts the PATH, not just a 200: buffers
+	@# registered, LMCache on the CPU SHM lmcache-driven route, bytes stored,
+	@# nothing left waiting on a remote KV load.
+	@#
+	@# Uses the PRODUCTION image -- the `emulate` stage stops before LMCache --
+	@# so run `make dist-build` first, not `dist-build-emulate`:
+	@#   AIC_ROCM_ARCH=gfx942 make dist-build emulate-mp-test
+	"$(DIST)" emulate-mp-test
 
 install-ci-scripts:            # Deploy .github/scripts/runners/*.sh to the runner's AIC_CI_LIB_DIR
 	@set -e; \
@@ -807,6 +1068,7 @@ cliff-spur-l2-debug:         # Tiny L1 (0.1GB) + DEBUG vLLM logging to diagnose 
 	    echo "  util=0.40, DRAM L1=0.1GB (forces L2 hits at c=1), per_client, c=1, 1 iter, DEBUG logging" && \
 	    echo "log: $(CURDIR)/logs/$$jobid/cliff.out" && \
 	    echo "  check container-aic-vllm.log for 'vLLM hit is' to confirm ext_hit"
+
 
 # Fast setup check: a single concurrency point, one timed iteration, all 3 arms.
 # Respects user overrides of BENCH_CONCUR / BENCH_ITERS.

@@ -1,0 +1,5 @@
+model                 : Qwen/Qwen2.5-3B-Instruct
+image                 : rocm-aic:0.1.0-rocm7.14.0-vllm0.27.1-lmcache0.5.4-nixl1.3.2-hsasnoop1.0.0
+node                  : snoc-thinkstation
+serve flags           : --max-model-len 4096 --max-num-batched-tokens 2048 --gpu-memory-utilization 0.85 --no-enable-prefix-caching --attention-backend TRITON_ATTN
+env                   : VLLM_ROCM_USE_AITER=1
