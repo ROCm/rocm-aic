@@ -209,7 +209,7 @@ ENV PIP_ROOT_USER_ACTION=ignore \
 # ----- 2. uv (fast Python package manager) + pip bootstrap ------------------
 # Pin UV_VERSION so the install URL is deterministic and the layer caches
 # across builds.  Bump when upgrading uv.
-ARG UV_VERSION=0.7.20
+ARG UV_VERSION=0.12.9
 RUN curl -fsSL "https://astral.sh/uv/${UV_VERSION}/install.sh" | sh && \
     ln -s /root/.local/bin/uv /usr/local/bin/uv && \
     ln -s /root/.local/bin/uvx /usr/local/bin/uvx
@@ -226,7 +226,7 @@ ARG ROCM_ARCH
 # vLLM: built from source at this tag.  Check https://github.com/vllm-project/vllm/tags
 # for the latest release; bump VLLM_REF and rebuild when updating.
 ARG VLLM_GIT_URL=https://github.com/vllm-project/vllm.git
-ARG VLLM_REF=v0.27.1
+ARG VLLM_REF=v0.28.0
 
 # vLLM build target.  `rocm` (default) compiles the HIP kernels for ROCM_ARCH --
 # the dominant cost of this whole Dockerfile.  `empty` is upstream vLLM's
@@ -242,7 +242,7 @@ ARG VLLM_TARGET_DEVICE=rocm
 # NOTE: torch 2.12.0+rocm7.14.0 from repo.amd.com ships Triton 3.7.1 which
 # triggers hipErrorInvalidImage on SPUR gfx950 nodes (amdgpu/KFD 6.14.14 host
 # driver).  The pytorch.org rocm7.2 wheel ships a Triton version compatible with
-# vLLM 0.27.1 and the current SPUR KFD.  Revert to repo.amd.com once the SPUR
+# vLLM 0.28.0 and the current SPUR KFD.  Revert to repo.amd.com once the SPUR
 # nodes are upgraded to a KFD that supports ROCm 7.14 compiled kernels.
 #
 # Version alignment (download.pytorch.org/whl/rocm7.2):
@@ -334,7 +334,7 @@ RUN --mount=type=cache,target=/root/.cache/pip \
 # latency model.  Capture a real one with VLLM_EMULATOR_TRACE_STEP_CYCLE=1 on
 # an MI300X/MI355X (see patches/vllm/04-llm-emu-emulator-hooks.patch).
 ARG LLM_EMU_GIT_URL=https://github.com/AKafakA/llm-emu.git
-ARG LLM_EMU_REF=3e87da6
+ARG LLM_EMU_REF=b71c602
 # The upstream example pack (NVIDIA A40) and the AIC default (AMD MI300X, from
 # profiles/ -- see the COPY in the emulate/build stages below).  Both are in the
 # image; the compose `emulate` profile defaults to the AMD one.
@@ -395,13 +395,13 @@ ARG BUILD_JOBS=
 # Pinned component revisions — bump together when validating a new combo.
 # ai-dynamo/nixl release tag + nixl-rocm-ais-mt.patch (ROCm/HIP + AIS_MT).
 # The patch is AIS_MT-only (it no longer relocates upstream GDS_MT), so it applies
-# cleanly on both v1.3.0 and v1.3.1 -- bump NIXL_REF and re-run the patch --check.
+# cleanly on both v1.4.0 and v1.4.1 -- bump NIXL_REF and re-run the patch --check.
 ARG NIXL_GIT_URL=https://github.com/ai-dynamo/nixl.git
-ARG NIXL_REF=v1.3.2
+ARG NIXL_REF=v1.4.1
 
 # hsa-snoop: HSA AQL queue/dispatch snooper + Prometheus exporter (includes AIS metrics).
 ARG HSA_SNOOP_GIT_URL=https://github.com/sbates130272/hsa-snoop.git
-ARG HSA_SNOOP_REF=v1.0.0
+ARG HSA_SNOOP_REF=v1.1.0
 
 # LMCache: upstream repo, pinned to the v0.5.4 release tag.
 # All 14 AMD patches in patches/lmcache/ apply cleanly against this tag.

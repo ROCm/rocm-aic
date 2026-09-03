@@ -106,7 +106,7 @@ have_compose() { docker compose version >/dev/null 2>&1; }
 # Slurm/SPUR nodes, so a user-local install fixes every node without root.  No-op
 # when compose is already present.  Returns non-zero if it still cannot be made
 # available (callers treat that as "skip metrics", never fatal).
-: "${COMPOSE_PLUGIN_VERSION:=v2.40.0}"
+: "${COMPOSE_PLUGIN_VERSION:=v5.5.1}"
 ensure_compose() {
     have_compose && return 0
     log "docker compose plugin missing; installing ${COMPOSE_PLUGIN_VERSION} -> ~/.docker/cli-plugins"

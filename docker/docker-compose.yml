@@ -527,7 +527,7 @@ services:
   # ---------------------------------------------------------------------------
   prometheus:
     profiles: [monitoring]
-    image: ${AIC_PROM_IMAGE:-prom/prometheus:v3.13.2}
+    image: ${AIC_PROM_IMAGE:-prom/prometheus:v3.14.0}
     container_name: aic-prometheus
     networks: [aic]
     extra_hosts:
@@ -631,7 +631,7 @@ services:
   # ---------------------------------------------------------------------------
   grafana:
     profiles: [monitoring]
-    image: ${AIC_GRAFANA_IMAGE:-grafana/grafana:13.1.3}
+    image: ${AIC_GRAFANA_IMAGE:-grafana/grafana:13.2.1}
     container_name: aic-grafana
     networks: [aic]
     ports:

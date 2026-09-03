@@ -6,9 +6,9 @@
 # "repo root" is this directory (no dependency on any parent checkout).
 REPO_ROOT := $(CURDIR)
 
-# ai-dynamo/nixl v1.3.2 release; AIS_MT added via patches/nixl/.
+# ai-dynamo/nixl v1.4.1 release; AIS_MT added via patches/nixl/.
 NIXL_GIT_URL := https://github.com/ai-dynamo/nixl.git
-NIXL_SHA     := v1.3.2
+NIXL_SHA     := v1.4.1
 
 IMAGE_NAME ?= rocm-aic
 override AIC_VERSION := $(strip $(file <$(REPO_ROOT)/VERSION))
@@ -92,7 +92,7 @@ COMPOSE_CACHE := $(COMPOSE) --profile cache
 
 # docker compose v2 plugin (installed by `ensure-compose` when missing).  Override
 # the version to bump.  Downloaded from the docker/compose GitHub releases.
-COMPOSE_PLUGIN_VERSION ?= v2.40.0
+COMPOSE_PLUGIN_VERSION ?= v5.5.1
 
 # vLLM --kv-transfer-config for the MP connector (interactive `make up`).  The JSON
 # is wrapped in single quotes so compose's shlex splitting preserves the inner
@@ -108,7 +108,7 @@ export KV_TRANSFER_ARG
 AIC_METRICS_DIR  ?= $(CURDIR)/logs/prometheus
 AIC_EXPORTERS    ?= 0
 AIC_GRAFANA_PORT ?= 3000
-AIC_GRAFANA_IMAGE ?= grafana/grafana:13.1.3
+AIC_GRAFANA_IMAGE ?= grafana/grafana:13.2.1
 MON_COMPOSE     := $(_COMPOSE_BIN) -f "$(CURDIR)/monitoring/docker-compose.monitoring.yml"
 _MON_PROFILE    := $(if $(filter 1,$(AIC_EXPORTERS)),--profile exporters,)
 export AIC_METRICS_DIR AIC_GRAFANA_PORT AIC_GRAFANA_IMAGE
@@ -649,7 +649,7 @@ dist-build-monitoring:         # Pull + save monitoring sidecar images to AIC_IM
 	@# load_image_if_needed call in run-cliff.sbatch picks them up automatically.
 	@set -e; \
 	for img in \
-	    "prom/prometheus:v3.13.2" \
+	    "prom/prometheus:v3.14.0" \
 	    "rocm/device-metrics-exporter:v1.5.1" \
 	; do \
 	    tag="$$(printf '%s' "$$img" | tr '/:' '--').tar.zst"; \
