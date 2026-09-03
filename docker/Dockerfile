@@ -262,6 +262,7 @@ RUN cd /app/vllm && \
         done; \
     fi
 
+# hadolint ignore=SC2098
 RUN --mount=type=cache,target=/root/.cache/pip \
     --mount=type=cache,target=/root/.cache/ccache \
     mkdir -p /wheels && \
