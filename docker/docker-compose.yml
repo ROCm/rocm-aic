@@ -58,7 +58,7 @@
 #   IMAGE_NAME             — image name when IMAGE_REF is unset (default: rocm-aic)
 #   AIC_VERSION            — AIC release from the root VERSION file
 #   ROCM_VERSION           — ROCm release used by the default base image
-#   VLLM_VERSION, VLLM_ROCM_VARIANT, LMCACHE_REF, NIXL_REF, HIPFILE_SHA, HSA_SNOOP_REF
+#   PYTORCH_BRANCH, VLLM_REF, LLM_EMU_REF, LMCACHE_REF, NIXL_REF, HSA_SNOOP_REF
 #                          — optional framework version build-arg overrides
 #   VLLM_MODEL             — model to serve
 #   LMCACHE_PORT           — lmcache ZMQ listen port (default: 6555)
@@ -275,19 +275,17 @@ services:
       # monitoring/ paths still resolve.
       context: ..
       dockerfile: docker/Dockerfile
-      additional_contexts:
-        pip-wheels: ${AIC_PIP_WHEELS_DIR:-/opt/pip-cache/wheels}
       args:
         AIC_VERSION:
         ROCM_VERSION:
         ROCM_ARCH: ${ROCM_ARCH}
         BUILD_JOBS: ${BUILD_JOBS:-}
         AIC_UCX_FAST: ${AIC_UCX_FAST:-}
-        VLLM_VERSION:
-        VLLM_ROCM_VARIANT:
+        PYTORCH_BRANCH:
+        VLLM_REF:
+        LLM_EMU_REF:
         LMCACHE_REF:
         NIXL_REF:
-        HIPFILE_SHA:
         HSA_SNOOP_REF:
     image: ${IMAGE_REF:-${IMAGE_NAME:-rocm-aic}:latest}
     container_name: aic-lmcache

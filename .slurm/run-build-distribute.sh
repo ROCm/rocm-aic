@@ -101,8 +101,8 @@
 #   AIC_IMAGE_DIR        shared dir for the tarball        (default: /scratch/$USER/images)
 #   HF_HOME              persistent Hugging Face cache used by tiny-test
 #                        (default: <AIC_IMAGE_DIR>/tiny-hf)
-#   ROCM_VERSION, VLLM_VERSION, VLLM_ROCM_VARIANT, LMCACHE_REF,
-#   NIXL_REF, HIPFILE_SHA, HSA_SNOOP_REF
+#   ROCM_VERSION, PYTORCH_BRANCH, VLLM_REF, LLM_EMU_REF, LMCACHE_REF,
+#   NIXL_REF, HSA_SNOOP_REF
 #                        optional Docker build-arg overrides.
 #   AIC_FORCE_LOAD       test/push: force a reload from the tarball even when the
 #                        node's image is already current (default: 0).  By default
@@ -353,7 +353,6 @@ else
     AIC_TEST_CONSTRAINT="${AIC_TEST_CONSTRAINT:-GFX942&NVME}"
 fi
 AIC_SLURM_ACCOUNT="${AIC_SLURM_ACCOUNT:-}"
-AIC_PIP_WHEELS_DIR="${AIC_PIP_WHEELS_DIR:-}"
 AIC_BUILD_CPUS="${AIC_BUILD_CPUS:-32}"
 AIC_BUILD_TIME="${AIC_BUILD_TIME:-02:00:00}"
 AIC_LOAD_TIME="${AIC_LOAD_TIME:-00:30:00}"
@@ -804,8 +803,8 @@ cmd_build() {
     printf -v _version_value '%q' "${AIC_VERSION}"
     _version_build_args+=" --build-arg AIC_VERSION=${_version_value}"
     for _version_arg in \
-        ROCM_VERSION VLLM_VERSION VLLM_ROCM_VARIANT \
-        LMCACHE_REF NIXL_REF HIPFILE_SHA HSA_SNOOP_REF; do
+        ROCM_VERSION PYTORCH_BRANCH VLLM_REF LLM_EMU_REF \
+        LMCACHE_REF NIXL_REF HSA_SNOOP_REF; do
         if [[ -v "${_version_arg}" ]]; then
             printf -v _version_value '%q' "${!_version_arg}"
             _version_build_args+=" --build-arg ${_version_arg}=${_version_value}"
@@ -888,18 +887,6 @@ cmd_build() {
         _builder_setup="${_pre}${_mkdir}if ! docker buildx inspect ${AIC_BUILDX_BUILDER} >/dev/null 2>&1; then echo '[build] creating buildx builder ${AIC_BUILDX_BUILDER} (docker-container)'; docker buildx create --name ${AIC_BUILDX_BUILDER} --driver docker-container${_cfg_arg} >/dev/null; fi; docker buildx inspect --bootstrap ${AIC_BUILDX_BUILDER} >/dev/null"
     fi
 
-    # pip-wheels build context: supply a local wheel cache dir to skip the 6 GB
-    # torch download.  If AIC_PIP_WHEELS_DIR is unset, fall back to an empty
-    # sentinel dir on shared storage so BuildKit does not try to pull the
-    # non-existent docker.io/library/pip-wheels image.
-    local _pip_wheels_dir="${AIC_PIP_WHEELS_DIR}"
-    if [[ -z "${_pip_wheels_dir}" ]]; then
-        _pip_wheels_dir="${AIC_DAY_DIR}/.empty-pip-wheels"
-        mkdir -p "${_pip_wheels_dir}"
-    fi
-    local _pip_wheels_arg="--build-context pip-wheels=${_pip_wheels_dir}"
-    log "pip-wheels context: ${_pip_wheels_dir}"
-
     # The build + save block runs on ONE node so the saved tarball comes from the
     # image that was just built.  Values are baked in here (not passed via env)
     # to keep it robust regardless of sbatch environment propagation.
@@ -941,7 +928,6 @@ docker buildx build --builder ${AIC_BUILDX_BUILDER} --progress=plain --output ty
     ${_target_arg} \
     ${_secret_arg} \
     ${_cache_args} \
-    ${_pip_wheels_arg} \
     -f "${AIC_DAY_DIR}/docker/Dockerfile" \
     -t "${AIC_IMAGE}" \
     -t "${latest_ref}" \

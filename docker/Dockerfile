@@ -2,14 +2,17 @@
 #
 # SPDX-License-Identifier: MIT
 #
-# AIC: Ubuntu 24.04 + ROCm 7.14 inference stack.
+# AIC: Ubuntu 24.04 + ROCm 7.14.1 inference stack.
 #
-#   Base image: rocm/dev-ubuntu-24.04:${ROCM_VERSION}-full  (Ubuntu 24.04, Python 3.12)
-#   vLLM:       built from source at ${VLLM_REF} (torch 2.13.0+rocm7.2 from pytorch.org)
-#   LMCache:    LMCache/LMCache ${LMCACHE_REF} + AMD patches from patches/lmcache/
-#   hipFile:    included in the ROCm 7.14 base image (GA since 7.14) — no source build needed
-#   NIXL:       ai-dynamo/nixl ${NIXL_REF} + nixl-rocm-ais-mt.patch (ROCm/HIP + AIS_MT)
-#   llm-emu:    profile-driven emulation plugin (inert unless VLLM_EMULATOR_ENABLE_ORACLE=1)
+#   Base image:  rocm/dev-ubuntu-24.04:${ROCM_VERSION}-full  (Ubuntu 24.04, Python 3.12)
+#   PyTorch:     built from source at ROCm/pytorch@${PYTORCH_BRANCH} against the ROCm 7.14.1
+#                base image (avoids ROCm 7.2 dep contamination from pytorch.org wheels)
+#   vLLM:        built from source at ${VLLM_REF}
+#   LMCache:     LMCache/LMCache ${LMCACHE_REF} + AMD patches from patches/lmcache/
+#   hipFile:     included in the ROCm 7.14 base image (GA since 7.14) — no source build needed
+#   NIXL:        ai-dynamo/nixl ${NIXL_REF} + nixl-rocm-ais-mt.patch (ROCm/HIP + AIS_MT)
+#   hsa-snoop:   ${HSA_SNOOP_REF} — HSA AQL dispatch + AIS P2P Prometheus exporter (:9488)
+#   llm-emu:     profile-driven emulation plugin (inert unless VLLM_EMULATOR_ENABLE_ORACLE=1)
 #
 # Two compose services share this single image:
 #   lmcache — standalone lmcache-server (MP mode)
@@ -58,21 +61,26 @@
 #     --target wheels --output type=local,dest=./wheels .
 # (the default target remains the full runtime image -- see stages 8/9 below).
 
-# Stages (all strictly linear, so layer caching is unaffected by the split):
+# Stages:
 #
-#   base      ROCm base image + system deps + uv                (sections 0-2)
-#   vllm      torch + source-built vLLM + llm-emu plugin        (sections 3, 3b)
-#   emulate   emulation-only runtime image  (--target emulate)  (section 3c)
-#   build     + LMCache, NIXL, hsa-snoop, runtime env           (sections 4-7)
-#   wheels    scratch image holding just /wheels                (section 8)
-#   runtime   default target, aliases `build`                   (section 9)
+#   base            ROCm base image + system deps + uv           (sections 0-2)
+#   build_pytorch   PyTorch 2.13 built from source (parallel)   (section 2b)
+#   vllm            torch (from build_pytorch) + vLLM + llm-emu (sections 3, 3b)
+#   emulate         emulation-only runtime (--target emulate)    (section 3c)
+#   build           + LMCache, NIXL, hsa-snoop, runtime env     (sections 4-7)
+#   wheels          scratch image holding just /wheels           (section 8)
+#   runtime         default target, aliases `build`              (section 9)
+#
+# `build_pytorch` runs in parallel with nothing — it is the first non-base stage.
+# `vllm`, `emulate`, and `build` all depend on it transitively (vllm mounts the
+# built wheel; emulate and build are FROM vllm).
 #
 # `emulate` is the CPU-only image: it stops after vLLM + the llm-emu plugin, so
 # nothing GPU-specific (LMCache's HIP extension, NIXL AIS_MT, hsa-snoop) is
 # compiled.  Combined with --build-arg VLLM_TARGET_DEVICE=empty it compiles no
 # GPU kernels at all -- see section 3.
 
-ARG ROCM_VERSION=7.14.0
+ARG ROCM_VERSION=7.14.1
 # ROCm 7.14 publishes the hipFile-bearing variant as `-full` (not `-complete`).
 ARG ROCM_BASE_IMAGE=rocm/dev-ubuntu-24.04:${ROCM_VERSION}-full
 
@@ -215,13 +223,78 @@ RUN curl -fsSL "https://astral.sh/uv/${UV_VERSION}/install.sh" | sh && \
     ln -s /root/.local/bin/uvx /usr/local/bin/uvx
 
 # =============================================================================
-# vLLM stage — torch + source-built vLLM + the llm-emu emulation plugin.
+# PyTorch source build — avoids ROCm 7.2 wheel artifacts on a ROCm 7.14 host.
+#
+# Pre-built pytorch.org wheels (torch 2.13.0+rocm7.2) carry ROCm 7.2 runtime
+# deps (notably rocprofiler-sdk) as transitive installs that conflict with the
+# ROCm 7.14 libs already in the base image.  Building from ROCm/pytorch @
+# release/2.13 compiles against /opt/rocm (the 7.14.1 tree in the base image),
+# so the installed wheel is fully self-consistent.
+#
+# Triton is NOT built here as a separate stage: vLLM installs it via
+# requirements/rocm.txt, and a from-source PyTorch wheel no longer drags in
+# the repo.amd.com Triton 3.7.1 that caused hipErrorInvalidImage on gfx950.
+#
+# PYTORCH_BRANCH defaults to the tip of release/2.13 in ROCm/pytorch; pin to
+# a specific commit hash for reproducible builds.
+# =============================================================================
+FROM base AS build_pytorch
+
+ARG ROCM_ARCH
+ARG PYTORCH_REPO=https://github.com/ROCm/pytorch.git
+ARG PYTORCH_BRANCH=release/2.13
+
+# torch 2.13 emits float->__bf16 libcalls (__truncsfbf2) absent from gcc-11
+# libgcc; build with gcc-13 to avoid link errors on Ubuntu 24.04.
+# hadolint ignore=DL3008
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
+    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+        gcc-13 g++-13 pkg-config liblzma-dev libnuma-dev python3.12-venv && \
+    update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-13 130 \
+        --slave /usr/bin/g++ g++ /usr/bin/g++-13
+
+RUN git clone --branch "${PYTORCH_BRANCH}" "${PYTORCH_REPO}" /app/pytorch
+
+RUN --mount=type=cache,target=/root/.cache/uv \
+    cd /app/pytorch && \
+    uv pip install --system -r requirements.txt && \
+    git submodule update --init --recursive
+
+ENV PYTORCH_ROCM_ARCH=${ROCM_ARCH}
+
+# hadolint ignore=SC2086
+RUN --mount=type=cache,target=/root/.cache/ccache \
+    cd /app/pytorch && \
+    python3 tools/amd_build/build_amd.py && \
+    CCACHE_DIR=/root/.cache/ccache \
+    CMAKE_C_COMPILER_LAUNCHER=ccache \
+    CMAKE_CXX_COMPILER_LAUNCHER=ccache \
+    CMAKE_PREFIX_PATH=$(python3 -c 'import sys; print(sys.prefix)') \
+        python3 setup.py bdist_wheel --dist-dir=/app/pytorch/dist
+
+# =============================================================================
+# vLLM stage — torch (from build_pytorch) + source-built vLLM + llm-emu plugin.
 # Everything an emulation-only image needs; the full stack continues from here.
 # ARGs do not cross stage boundaries, so the ones used below are re-declared.
 # =============================================================================
 FROM base AS vllm
 
 ARG ROCM_ARCH
+
+# Install the source-built PyTorch wheel.  gcc-13 is needed at runtime for the
+# ABI of symbols emitted by the torch 2.13 build (same reason as build_pytorch).
+# hadolint ignore=DL3008
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
+    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+        gcc-13 g++-13 && \
+    update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-13 130 \
+        --slave /usr/bin/g++ g++ /usr/bin/g++-13
+
+RUN --mount=type=bind,from=build_pytorch,source=/app/pytorch/dist,target=/opt/pytorch-dist,ro \
+    --mount=type=cache,target=/root/.cache/pip \
+    pip3 install /opt/pytorch-dist/*.whl
 
 # vLLM: built from source at this tag.  Check https://github.com/vllm-project/vllm/tags
 # for the latest release; bump VLLM_REF and rebuild when updating.
@@ -237,42 +310,8 @@ ARG VLLM_REF=v0.28.0
 ARG VLLM_TARGET_DEVICE=rocm
 
 # ----- 3. vLLM (built from source at pinned tag) ---------------------------------
-# Install torch 2.13.0+rocm7.2 from the upstream pytorch.org wheel index.
-#
-# NOTE: torch 2.12.0+rocm7.14.0 from repo.amd.com ships Triton 3.7.1 which
-# triggers hipErrorInvalidImage on SPUR gfx950 nodes (amdgpu/KFD 6.14.14 host
-# driver).  The pytorch.org rocm7.2 wheel ships a Triton version compatible with
-# vLLM 0.28.0 and the current SPUR KFD.  Revert to repo.amd.com once the SPUR
-# nodes are upgraded to a KFD that supports ROCm 7.14 compiled kernels.
-#
-# Version alignment (download.pytorch.org/whl/rocm7.2):
-#   torch 2.13.0+rocm7.2  ->  torchvision 0.28.0+rocm7.2
-# Wheels are pre-downloaded to /opt/pip-cache/wheels on the build host and
-# passed in via --build-context pip-wheels=<dir> to avoid the 6 GB download.
-# The context is mounted read-only and never baked into the image layer.
-# If the build-context is not provided, falls back to the index URL.
-# hadolint ignore=SC2098
-RUN --mount=type=cache,target=/root/.cache/pip \
-    --mount=from=pip-wheels,source=.,target=/opt/pip-cache/wheels,ro \
-    if [ -f /opt/pip-cache/wheels/torch-2.13.0+rocm7.2-cp312-cp312-manylinux_2_28_x86_64.whl ]; then \
-        pip3 install \
-            --find-links /opt/pip-cache/wheels \
-            --prefer-binary \
-            --index-url https://download.pytorch.org/whl/rocm7.2 \
-            "torch==2.13.0+rocm7.2" \
-            "torchvision==0.28.0+rocm7.2"; \
-    else \
-        pip3 install \
-            --timeout 300 \
-            --retries 5 \
-            "torch==2.13.0+rocm7.2" \
-            "torchvision==0.28.0+rocm7.2" \
-            --index-url https://download.pytorch.org/whl/rocm7.2; \
-    fi
-
-# Validate ROCM_ARCH here — after the torch download so a per-arch build
-# doesn't bust the 6 GB wheel cache.  First use of ROCM_ARCH is in the vLLM
-# build step below.
+# torch is already installed (from build_pytorch above); validate ROCM_ARCH before
+# the expensive HIP kernel compile.
 RUN test -n "$ROCM_ARCH" || { echo "ERROR: ROCM_ARCH is not set"; exit 1; }
 
 RUN git clone --depth 1 --branch "${VLLM_REF}" "${VLLM_GIT_URL}" /app/vllm
@@ -307,7 +346,7 @@ RUN --mount=type=cache,target=/root/.cache/pip \
     --mount=type=cache,target=/root/.cache/ccache \
     mkdir -p /wheels && \
     cd /app/vllm && \
-    printf 'torch==2.13.0+rocm7.2\ntorchvision==0.28.0+rocm7.2\n' > /tmp/torch-constraints.txt && \
+    printf 'torch>=2.13,<2.14\n' > /tmp/torch-constraints.txt && \
     pip3 install -r requirements/rocm.txt \
         --constraint /tmp/torch-constraints.txt && \
     VLLM_TARGET_DEVICE="${VLLM_TARGET_DEVICE}" \

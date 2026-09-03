@@ -13,9 +13,9 @@ NIXL_SHA     := v1.4.1
 IMAGE_NAME ?= rocm-aic
 override AIC_VERSION := $(strip $(file <$(REPO_ROOT)/VERSION))
 
-# vLLM is source-built from VLLM_REF, so there is no VLLM_VERSION/VLLM_ROCM_VARIANT
-# wheel pin, and hipFile now ships in the ROCm base image (pinned by ROCM_VERSION).
-_FRAMEWORK_VERSION_ARGS := AIC_VERSION ROCM_VERSION VLLM_REF LMCACHE_REF NIXL_REF HSA_SNOOP_REF
+# PyTorch, vLLM, and all deps are source-built; PYTORCH_BRANCH, VLLM_REF, and
+# LLM_EMU_REF are the key version knobs.  hipFile ships in the ROCm base image.
+_FRAMEWORK_VERSION_ARGS := AIC_VERSION ROCM_VERSION PYTORCH_BRANCH VLLM_REF LLM_EMU_REF LMCACHE_REF NIXL_REF HSA_SNOOP_REF
 _single_quote := '
 _shell_quote = '$(subst $(_single_quote),'"'"',$(1))'
 _FRAMEWORK_VERSION_ENV := $(foreach _arg,$(_FRAMEWORK_VERSION_ARGS),$(if $(filter undefined,$(origin $(_arg))),,$(_arg)=$(call _shell_quote,$(value $(_arg)))))
