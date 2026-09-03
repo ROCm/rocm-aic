@@ -45,6 +45,10 @@ scrape_configs:
     metrics_path: /metrics
     static_configs:
       - targets: ["aic-vllm-gpu0:8000", "aic-vllm-gpu0:8001"]
+      # Emulator (host-network): reachable via host-gateway from the aic bridge.
+      - targets: ["host-gateway:8000"]
+        labels:
+          instance: vllm-emulator
 
   # LMCache /metrics.  LMCache v0.5.x uses OpenTelemetry with a Prometheus fallback
   # served by the FastAPI HTTP frontend on --http-port (default 8080).  The
@@ -55,6 +59,10 @@ scrape_configs:
     metrics_path: /metrics
     static_configs:
       - targets: ["aic-lmcache:8080"]
+      # :9091 is the standalone Prometheus exporter port (--prometheus-port 9091).
+      # Used when lmcache runs in host-network mode (emulate-mp profile) or when
+      # the bridge-network :8080 target is absent.  Silent down otherwise.
+      - targets: ["localhost:9091"]
 
   # LMCache coordinator exporter — polls the coordinator REST API (/instances,
   # /directory/stats, /quota) and emits Prometheus text format on :9301.

@@ -74,13 +74,15 @@ diff --git a/vllm/v1/worker/gpu_worker.py b/vllm/v1/worker/gpu_worker.py
 index bbab98dbd7..6f72b41484 100644
 --- a/vllm/v1/worker/gpu_worker.py
 +++ b/vllm/v1/worker/gpu_worker.py
-@@ -610,6 +610,10 @@ class Worker(WorkerBase):
+@@ -610,6 +610,12 @@ class Worker(WorkerBase):
              getattr(self.parallel_config, "_api_process_count", 1),
          )
 
 +    def get_model_weights_memory_bytes(self) -> int:
 +        """Return bytes of GPU memory consumed by model weights."""
-+        return int(self.model_runner.model_memory_usage)
++        # model_memory_usage is set during load_model; default to 0 when the
++        # emulator stubs load_model (VLLM_EMULATOR_ENABLE_ORACLE=1 path).
++        return int(getattr(self.model_runner, "model_memory_usage", 0))
 +
      def get_kv_connector_handshake_metadata(
          self,
