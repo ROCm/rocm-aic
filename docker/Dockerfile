@@ -245,6 +245,7 @@ RUN sed -i 's/def _is_hip() -> bool:/def _is_hip() -> bool:\n    if VLLM_TARGET_
         grep -Fxq '    if VLLM_TARGET_DEVICE == "rocm":'
 
 # Apply every patch under patches/vllm/ in lexical order.
+# hadolint ignore=SC3054,SC3044,SC2098
 RUN cd /app/vllm && \
     shopt -s nullglob && \
     patches=(/app/patches/vllm/*.patch) && \
@@ -297,6 +298,7 @@ ARG LLM_EMU_REF=3e87da6
 # image; the compose `emulate` profile defaults to the AMD one.
 ENV AIC_EMULATOR_EXAMPLE_PACK=/opt/llm-emu/profiles/A40-Q8-Qwen3-8B.json \
     AIC_EMULATOR_DEFAULT_PACK=/opt/llm-emu/profiles/MI300X-Qwen3-8B.json
+# hadolint ignore=SC3044
 RUN git clone "${LLM_EMU_GIT_URL}" /app/llm-emu && \
     git -C /app/llm-emu checkout "${LLM_EMU_REF}" && \
     shopt -s nullglob && \
@@ -374,6 +376,7 @@ RUN git clone --depth 1 --branch "${LMCACHE_REF}" "${LMCACHE_GIT_URL}" /app/LMCa
 
 # Apply every patch under patches/lmcache/ in lexical (filename) order -- the
 # NN- prefixes fix the sequence.  Drop a new NN-*.patch in to include it.
+# hadolint ignore=SC3054,SC3044
 RUN cd /app/LMCache && \
     shopt -s nullglob && \
     patches=(/app/patches/lmcache/*.patch) && \
@@ -437,6 +440,7 @@ RUN uv pip uninstall --system \
 COPY docker/scripts /tmp/nixl-scripts
 COPY patches/nixl/ /tmp/nixl-patches/
 # Apply every patch under patches/nixl/ (lexical order) to the fresh checkout.
+# hadolint ignore=SC3054,SC3044
 RUN --mount=type=cache,target=/root/.cache/uv \
     chmod +x /tmp/nixl-scripts/*.sh && \
     NIXL_GIT_URL="${NIXL_GIT_URL}" NIXL_REF="${NIXL_REF}" NIXL_REQUIRE_ROCM=1 \

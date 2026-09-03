@@ -27,6 +27,7 @@ bitmask
 BPE
 BuildKit
 CacheConfig
+CDNA
 conc
 concurrencies
 config
@@ -112,6 +113,7 @@ isl
 ITL
 json
 JSON
+KFD
 KiB
 kprobe
 kprobes
@@ -147,6 +149,7 @@ Mountpoint
 mV
 NamedTuple
 namespace
+Navi
 nfs
 NFS
 nixl
@@ -189,12 +192,14 @@ PRs
 pytorch
 quartile
 Qwen
+Radeon
 rdma
 RDMA
 RDNA
 README
 rebase
 rebasing
+recompositions
 recomputation
 reframes
 repo
@@ -212,6 +217,7 @@ ShareGPT
 SHM
 slurm
 Slurm
+snoc
 SoC
 SPUR's
 sublicense
@@ -224,6 +230,7 @@ TCP
 teardown
 templated
 tensor's
+thinkstation
 tm
 tmp
 tok
@@ -245,12 +252,15 @@ userspace
 UUID
 VCN
 venv
+VFIO
 vllm
 vLLM
 vLLM's
+VM
 vram
 VRAM
 workflow
 xGMI
+XT
 yml
 ZMQ

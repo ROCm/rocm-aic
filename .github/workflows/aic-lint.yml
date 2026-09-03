@@ -44,6 +44,20 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Resolve LLM-Emu ref from Dockerfile
+        id: meta
+        run: |
+          ref="$(grep -E '^ARG LLM_EMU_REF=' docker/Dockerfile | head -1 | cut -d= -f2-)"
+          url="$(grep -E '^ARG LLM_EMU_GIT_URL=' docker/Dockerfile | head -1 | cut -d= -f2-)"
+          echo "ref=${ref}" >> "${GITHUB_OUTPUT}"
+          echo "url=${url}" >> "${GITHUB_OUTPUT}"
+      - name: Install vllm_emulator plugin (no deps — no torch needed)
+        run: |
+          set -euo pipefail
+          git clone "${{ steps.meta.outputs.url }}" /tmp/llm-emu
+          git -C /tmp/llm-emu checkout "${{ steps.meta.outputs.ref }}"
+          for p in patches/llm-emu/*.patch; do git -C /tmp/llm-emu apply "$p"; done
+          pip install --quiet --no-deps /tmp/llm-emu
       - name: Run profile pack validator
         run: |
           set -euo pipefail
