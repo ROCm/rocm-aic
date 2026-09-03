@@ -56,7 +56,9 @@ jobs:
           set -euo pipefail
           git clone "${{ steps.meta.outputs.url }}" /tmp/llm-emu
           git -C /tmp/llm-emu checkout "${{ steps.meta.outputs.ref }}"
-          for p in patches/llm-emu/*.patch; do git -C /tmp/llm-emu apply "$p"; done
+          for p in "${GITHUB_WORKSPACE}/patches/llm-emu/"*.patch; do
+            git -C /tmp/llm-emu apply "$p"
+          done
           pip install --quiet --no-deps /tmp/llm-emu
       - name: Run profile pack validator
         run: |

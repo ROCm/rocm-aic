@@ -211,6 +211,7 @@ ARG VLLM_TARGET_DEVICE=rocm
 # passed in via --build-context pip-wheels=<dir> to avoid the 6 GB download.
 # The context is mounted read-only and never baked into the image layer.
 # If the build-context is not provided, falls back to the index URL.
+# hadolint ignore=SC2098
 RUN --mount=type=cache,target=/root/.cache/pip \
     --mount=from=pip-wheels,source=.,target=/opt/pip-cache/wheels,ro \
     if [ -f /opt/pip-cache/wheels/torch-2.13.0+rocm7.2-cp312-cp312-manylinux_2_28_x86_64.whl ]; then \
