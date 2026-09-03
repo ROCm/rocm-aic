@@ -73,6 +73,14 @@ ROCM_ARCH := $(if $(strip $(ROCM_ARCH)),$(strip $(ROCM_ARCH)),$(_ROCM_ARCH_DETEC
 # Caps parallel compile jobs in the image build, Empty = use all cores ($(nproc)).
 BUILD_JOBS ?=
 
+# ---- Local buildx cache -----------------------------------------------------
+# build-cached uses a docker-container buildx builder with a type=local cache
+# so the expensive build_pytorch layer survives docker system prune.
+# Override AIC_LOCAL_CACHE_DIR to store the cache elsewhere (e.g. on a large
+# NVMe mount).
+AIC_LOCAL_BUILDER  ?= aic-local
+AIC_LOCAL_CACHE_DIR ?= $(HOME)/.cache/rocm-aic-buildx
+
 export AIC_VERSION ROCM_ARCH GPU GDS_SLAB_DATA LOG HF_HOME HF_TOKEN IMAGE_NAME IMAGE_REF IMAGE_TAG BUILD_JOBS
 export LMCACHE_PORT LMCACHE_L1_SIZE_GB LMCACHE_NVME_POOL LMCACHE_NVME_SLOT_SIZE LMCACHE_NFS_POOL
 export NVME_DATA NFS_DATA
@@ -280,6 +288,9 @@ help:
 	@echo "Stack targets:"
 	@echo "  make ensure-compose    Install the docker compose v2 plugin if missing (user-local)"
 	@echo "  make build             Build the shared image ($(IMAGE_REF))"
+	@echo "  make build-cached      Like build but uses buildx with a local layer cache"
+	@echo "                         (build_pytorch survives docker system prune)"
+	@echo "                         AIC_LOCAL_CACHE_DIR=$(AIC_LOCAL_CACHE_DIR)"
 	@echo "  make up                Start lmcache + vllm (foreground, DRAM L1 + AIS_MT/NFS L2)"
 	@echo "  make up-batch          Start lmcache + vllm (background)"
 	@echo "  make up-dev            Start in dev mode: --enforce-eager skips CUDA graph capture (~60s faster, ~10% slower inference)"
@@ -377,6 +388,7 @@ help:
 	@echo ""
 	@echo "Examples:"
 	@echo "  make build"
+	@echo "  make build-cached ROCM_ARCH=gfx1201  # persistent buildx cache"
 	@echo "  make build BUILD_JOBS=3          # cap parallelism on low-RAM hosts"
 	@echo "  make up HF_TOKEN=hf_... NVME_DATA=/mnt/nvme NFS_DATA=/mnt/nfs"
 	@echo "  make up-gds-l1 GDS_SLAB_DATA=/mnt/nvme HF_TOKEN=hf_..."
@@ -430,6 +442,37 @@ build: ensure-compose monitoring-build-exporters
 		$(if $(TLS_CERT),--secret id=tls_cert$(comma)src=$(TLS_CERT),)
 	@docker tag "$(IMAGE_REF)" "$(IMAGE_NAME):latest"
 	@echo "Built $(IMAGE_REF) (also tagged $(IMAGE_NAME):latest)"
+
+build-cached: monitoring-build-exporters  ## Like `build` but uses buildx with a local layer cache.
+	@# The docker-container buildx driver (unlike the default docker driver) supports
+	@# --cache-to type=local, so the build_pytorch stage survives docker system prune.
+	@# Cache mode=max preserves intermediate layers (build_triton, build_pytorch, etc.)
+	@# not just the final image layers.
+	@test -n "$(ROCM_ARCH)" || { \
+		echo "ERROR: ROCM_ARCH empty (install ROCm or set ROCM_ARCH=gfxNNNN)" >&2; exit 1; }
+	@if ! docker buildx inspect $(AIC_LOCAL_BUILDER) >/dev/null 2>&1; then \
+		echo "Creating buildx builder $(AIC_LOCAL_BUILDER) (docker-container driver)..."; \
+		docker buildx create --name $(AIC_LOCAL_BUILDER) --driver docker-container --bootstrap; \
+	fi
+	@mkdir -p "$(AIC_LOCAL_CACHE_DIR)"
+	@echo "Cache dir: $(AIC_LOCAL_CACHE_DIR)"
+	$(_FRAMEWORK_VERSION_ENV) DOCKER_BUILDKIT=1 \
+	docker buildx build \
+		--builder $(AIC_LOCAL_BUILDER) \
+		--progress=plain \
+		--load \
+		--build-arg ROCM_ARCH="$(ROCM_ARCH)" \
+		--build-arg BUILD_JOBS="$(BUILD_JOBS)" \
+		--build-arg AIC_UCX_FAST="$(AIC_UCX_FAST)" \
+		$(if $(TLS_CERT),--secret id=tls_cert$(comma)src=$(TLS_CERT),) \
+		--cache-from type=local,src="$(AIC_LOCAL_CACHE_DIR)" \
+		--cache-to   type=local,dest="$(AIC_LOCAL_CACHE_DIR)",mode=max \
+		-f "$(REPO_ROOT)/docker/Dockerfile" \
+		-t "$(IMAGE_REF)" \
+		-t "$(IMAGE_NAME):latest" \
+		"$(REPO_ROOT)"
+	@echo "Built $(IMAGE_REF) (also tagged $(IMAGE_NAME):latest)"
+	@echo "Cache stored in $(AIC_LOCAL_CACHE_DIR)"
 
 up: ensure-compose _check_hf_token _prep_dirs
 	@mkdir -p "$(AIC_METRICS_DIR)"
