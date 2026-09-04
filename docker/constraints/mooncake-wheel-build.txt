@@ -1,0 +1,21 @@
+# Build frontend pins for the Mooncake ROCm wheel build.
+#
+# Upstream's scripts/build_wheel.sh upgrades pip, build, setuptools, wheel and
+# auditwheel, then builds in an isolated environment that installs its own copy
+# of the backend.  Exported as PIP_CONSTRAINT, this file pins both, so the
+# frontend that produces the wheel is a property of this repository rather than
+# of whatever PyPI serves on the day of the build.
+#
+# Not a lock file: these are constraints without hashes, and dependencies of
+# these packages still resolve at build time.  Bump deliberately.
+pip==26.2.1
+build==1.5.0
+setuptools==84.0.0
+wheel==0.48.0
+auditwheel==6.8.0
+packaging==26.3
+pyproject-hooks==1.2.0
+pyelftools==0.33
+# build_wheel.sh installs patchelf from PyPI next to auditwheel: auditwheel
+# >= 6.8 needs patchelf >= 0.14.5, newer than the distro package it replaces.
+patchelf==0.19.1.0

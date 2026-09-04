@@ -1,0 +1,592 @@
+# Build lmcache.cuda_ops with hipcc without forcing hipcc on every extension
+#
+# LMCache collects the common C++ extensions, the ROCm cuda_ops extension, and
+# the optional host-only storage backends into a single build_ext command, so
+# the whole wheel is built by one process-global compiler.  A ROCm build
+# therefore had to run with CXX=hipcc, which also handed hipcc the host-only
+# sources of the optional Mooncake L2 backend (ASIO plus coroutine headers) and
+# of the common C++ extensions, which do not compile that way.
+#
+# This patch makes the compiler a per-extension property instead:
+#
+#   setup_extensions/build_ext.py  new module.  An extension carrying the
+#       private _lmcache_cxx attribute is built with that program.  Around it,
+#       both the CXX environment variable (read by torch when it writes the
+#       ninja build file) and the command head of every compiler/linker
+#       executable array present on the distutils compiler object (used by the
+#       non-ninja compile path and by the link step) are switched, then
+#       restored in a finally block, including on failure.  Because both are
+#       process global, a parallel build_ext is rejected while any extension
+#       carries the attribute; MAX_JOBS and ninja parallelism inside a single
+#       extension are unaffected.
+#
+#   setup_extensions/build_profiles/rocm.py  tags only lmcache.cuda_ops (its
+#       host .cpp sources include HIP headers) with the resolved hipcc,
+#       overridable through LMCACHE_ROCM_CXX, and returns the new command
+#       class.  Common C++ and any storage backend extension keep the base
+#       compiler, so a ROCm build can now run with CXX set to the ordinary
+#       host compiler.  Rebased on LMCache v0.5.4, which renamed the GPU
+#       extension from lmcache.c_ops to lmcache.cuda_ops and moved its sources
+#       under csrc/cuda.
+#
+# tests/setup_extensions/test_build_ext.py covers the switch, restoration after
+# an exception, absent executable arrays on older setuptools, and the parallel
+# rejection.
+#
+diff --git a/setup_extensions/build_ext.py b/setup_extensions/build_ext.py
+new file mode 100644
+index 00000000..6c693cfe
+--- /dev/null
++++ b/setup_extensions/build_ext.py
+@@ -0,0 +1,178 @@
++# SPDX-License-Identifier: Apache-2.0
++"""Per-extension C++ compiler selection for ``build_ext``.
++
++Every LMCache extension is collected into a single ``build_ext`` command, so
++one process-global compiler otherwise has to serve extensions with
++incompatible toolchain requirements.  On ROCm the host ``.cpp`` sources of
++``lmcache.cuda_ops`` include HIP headers and need ``hipcc``, while the common C++
++extensions and the optional host-only storage backends (Mooncake, for example,
++pulls in ASIO and coroutine headers) must be built by the ordinary host
++compiler.
++
++An extension opts into its own compiler by carrying the private
++:data:`CXX_ATTR` attribute.  While that one extension is built, two things are
++switched together and restored afterwards:
++
++* the ``CXX`` environment variable, which is what torch reads when it writes
++  the ninja build file (``torch.utils.cpp_extension.get_cxx_compiler``);
++* the command head of every compiler and linker executable array on the
++  distutils compiler object, which is what the non-ninja compile path and the
++  link step use.
++
++Both are process global, so a parallel ``build_ext`` is rejected while any
++extension carries the attribute.  Parallelism *inside* one extension
++(``MAX_JOBS`` and ninja) is unaffected.
++"""
++
++# Standard
++from contextlib import contextmanager
++from typing import Any, Iterator, Optional, Sequence, Union
++import os
++import shlex
++
++#: Private attribute an ``Extension`` carries to request its own C++ compiler.
++CXX_ATTR = "_lmcache_cxx"
++
++#: Environment variable torch reads to pick the C++ compiler for ninja.
++CXX_ENV = "CXX"
++
++#: Executable arrays whose command head follows the selected compiler.  Which
++#: ones exist depends on the setuptools version (the ``*_cxx`` variants are
++#: newer), so every name is treated as optional.
++EXECUTABLE_ATTRS = (
++    "compiler",
++    "compiler_so",
++    "compiler_cxx",
++    "compiler_so_cxx",
++    "linker_so",
++    "linker_so_cxx",
++    "linker_exe",
++    "linker_exe_cxx",
++)
++
++
++def _program_index(argv: Sequence[str]) -> int:
++    """Index of the program inside *argv*.
++
++    Mirrors distutils: a command may be wrapped as ``env VAR=value program``,
++    in which case the program follows the assignments.
++    """
++    if not argv:
++        raise ValueError("empty compiler command")
++    if os.path.basename(argv[0]) != "env":
++        return 0
++    index = 1
++    while index < len(argv) and "=" in argv[index]:
++        index += 1
++    if index >= len(argv):
++        raise ValueError("no program found in compiler command: %r" % (list(argv),))
++    return index
++
++
++def replace_program(command: Union[str, Sequence[str]], program: str) -> list[str]:
++    """Return *command* with its program replaced by *program*.
++
++    Flags are preserved: only the program itself changes.
++    """
++    argv = shlex.split(command) if isinstance(command, str) else list(command)
++    argv[_program_index(argv)] = program
++    return argv
++
++
++def rejects_parallel(parallel: Any) -> bool:
++    """Return True when *parallel* would build extensions concurrently."""
++    if parallel is None or parallel is False:
++        return False
++    if parallel is True:
++        return True
++    try:
++        return int(parallel) > 1
++    except (TypeError, ValueError):
++        # An unparsable value is treated as parallel: fail closed.
++        return True
++
++
++@contextmanager
++def compiler_override(compiler: Any, program: str) -> Iterator[None]:
++    """Point *compiler* and ``CXX`` at *program* for the duration of the block.
++
++    Every value that is changed is restored in ``finally``, including when the
++    body raises, so a failed extension cannot leak the compiler switch into the
++    extensions built after it.
++    """
++    saved_env: Optional[str] = os.environ.get(CXX_ENV)
++    saved_executables = {
++        name: getattr(compiler, name)
++        for name in EXECUTABLE_ATTRS
++        if getattr(compiler, name, None)
++    }
++    try:
++        os.environ[CXX_ENV] = program
++        for name, command in saved_executables.items():
++            setattr(compiler, name, replace_program(command, program))
++        yield
++    finally:
++        for name, command in saved_executables.items():
++            setattr(compiler, name, command)
++        if saved_env is None:
++            os.environ.pop(CXX_ENV, None)
++        else:
++            os.environ[CXX_ENV] = saved_env
++
++
++class PerExtensionCompilerMixin:
++    """``build_ext`` mixin that honors :data:`CXX_ATTR` on an extension."""
++
++    def _tagged_extensions(self) -> list:
++        return [
++            ext
++            for ext in (getattr(self, "extensions", None) or [])
++            if getattr(ext, CXX_ATTR, None)
++        ]
++
++    def build_extensions(self) -> None:
++        """Reject concurrent extension builds while a compiler switch is live."""
++        tagged = self._tagged_extensions()
++        if tagged and rejects_parallel(getattr(self, "parallel", None)):
++            raise RuntimeError(
++                "build_ext --parallel cannot be combined with a per-extension "
++                "compiler (%s). The switch changes the CXX environment "
++                "variable and the shared compiler object, which are process "
++                "global. Build serially; MAX_JOBS still parallelizes the "
++                "compilation inside each extension."
++                % ", ".join(ext.name for ext in tagged)
++            )
++        super().build_extensions()  # type: ignore[misc]
++
++    def build_extension(self, ext: Any) -> None:
++        """Build *ext*, switching compilers when it asked for its own."""
++        program = getattr(ext, CXX_ATTR, None)
++        if not program:
++            super().build_extension(ext)  # type: ignore[misc]
++            return
++        print("Building %s with %s" % (ext.name, program))
++        with compiler_override(self.compiler, program):  # type: ignore[attr-defined]
++            super().build_extension(ext)  # type: ignore[misc]
++
++
++_BUILD_EXTENSION: Optional[type] = None
++
++
++def lmcache_build_extension() -> type:
++    """Return the ``build_ext`` command class used by LMCache.
++
++    torch is imported lazily, matching the rest of ``setup_extensions``: the
++    module must stay importable before the build requirements are installed.
++    """
++    global _BUILD_EXTENSION
++    if _BUILD_EXTENSION is None:
++        # Third Party
++        from torch.utils import cpp_extension
++
++        class LMCacheBuildExtension(  # type: ignore[misc]
++            PerExtensionCompilerMixin, cpp_extension.BuildExtension
++        ):
++            """torch's ``BuildExtension`` with per-extension compiler choice."""
++
++        _BUILD_EXTENSION = LMCacheBuildExtension
++    return _BUILD_EXTENSION
+diff --git a/setup_extensions/build_profiles/rocm.py b/setup_extensions/build_profiles/rocm.py
+index 6355eb0d..0a16f78c 100644
+--- a/setup_extensions/build_profiles/rocm.py
++++ b/setup_extensions/build_profiles/rocm.py
+@@ -2,7 +2,9 @@
+ """ROCm/HIP GPU backend profile.
+
+ Hipifies CUDA sources via ``torch.utils.hipify``, then builds
+-``lmcache.cuda_ops`` with hipcc as the C++ compiler.
++``lmcache.cuda_ops`` with hipcc as the C++ compiler.  hipcc is selected for
++that one extension only (see ``setup_extensions/build_ext.py``); the common C++
++extensions and the optional host-only storage backends keep the base compiler.
+ """
+
+ # Standard
+@@ -16,6 +18,7 @@ if TYPE_CHECKING:
+     from setuptools.extension import Extension
+
+ # First Party
++from setup_extensions.build_ext import CXX_ATTR, lmcache_build_extension
+ from setup_extensions.build_profiles import BuildProfile
+
+ ROOT_DIR = Path(__file__).parent.parent.parent
+@@ -23,6 +26,24 @@ CSRC_DIR = os.path.join(ROOT_DIR, "csrc")
+ HIPIFY_DIR = os.path.join(CSRC_DIR, "cuda")
+ HIPIFY_OUT_DIR = os.path.join(ROOT_DIR, "csrc_hip", "cuda")
+
++#: Environment override for the compiler that builds ``lmcache.cuda_ops``.
++ROCM_CXX_ENV = "LMCACHE_ROCM_CXX"
++
++
++def _rocm_cxx() -> str:
++    """Resolve the compiler that must build the HIP extension.
++
++    ``LMCACHE_ROCM_CXX`` wins so a packager can pin an absolute path; otherwise
++    hipcc is taken from ``PATH`` and finally from ``ROCM_PATH``.
++    """
++    explicit = os.environ.get(ROCM_CXX_ENV, "").strip()
++    if explicit:
++        return explicit
++    found = shutil.which("hipcc")
++    if found:
++        return found
++    return os.path.join(os.environ.get("ROCM_PATH", "/opt/rocm"), "bin", "hipcc")
++
+
+ def _hipify_wrapper(source_names: list[str]) -> list[str]:
+     """Hipify ``csrc/cuda`` and return paths for the requested source files.
+@@ -118,27 +139,30 @@ class RocmProfile(BuildProfile):
+             ]
+         )
+         define_macros = [("__HIP_PLATFORM_HCC__", "1"), ("USE_ROCM", "1")]
+-        ext_modules = [
+-            cpp_extension.CppExtension(
+-                "lmcache.cuda_ops",
+-                sources=hip_sources,
+-                extra_compile_args={
+-                    "cxx": [
+-                        "-O3",
+-                        "-std=c++17",
+-                    ],
+-                },
+-                include_dirs=[
+-                    CSRC_DIR,
+-                    os.path.join(os.environ.get("ROCM_PATH", "/opt/rocm"), "include"),
+-                ],
+-                library_dirs=[
+-                    os.path.join(os.environ.get("ROCM_PATH", "/opt/rocm"), "lib")
++        cuda_ops = cpp_extension.CppExtension(
++            "lmcache.cuda_ops",
++            sources=hip_sources,
++            extra_compile_args={
++                "cxx": [
++                    "-O3",
++                    "-std=c++17",
+                 ],
+-                define_macros=define_macros,
+-            ),
+-        ]
+-        cmdclass = {"build_ext": cpp_extension.BuildExtension}
++            },
++            include_dirs=[
++                CSRC_DIR,
++                os.path.join(os.environ.get("ROCM_PATH", "/opt/rocm"), "include"),
++            ],
++            library_dirs=[
++                os.path.join(os.environ.get("ROCM_PATH", "/opt/rocm"), "lib")
++            ],
++            define_macros=define_macros,
++        )
++        # Only this extension gets hipcc: its host .cpp sources include HIP
++        # headers, and its device objects are linked by the same driver.  Any
++        # other extension in the same build keeps the base compiler.
++        setattr(cuda_ops, CXX_ATTR, _rocm_cxx())
++        ext_modules = [cuda_ops]
++        cmdclass = {"build_ext": lmcache_build_extension()}
+         return ext_modules, cmdclass
+
+     def requirements_file(self) -> Optional[str]:
+diff --git a/tests/setup_extensions/test_build_ext.py b/tests/setup_extensions/test_build_ext.py
+new file mode 100644
+index 00000000..3aa24691
+--- /dev/null
++++ b/tests/setup_extensions/test_build_ext.py
+@@ -0,0 +1,268 @@
++# SPDX-License-Identifier: Apache-2.0
++"""Tests for the per-extension C++ compiler switch used by ``build_ext``."""
++
++# Standard
++from pathlib import Path
++import os
++import sys
++
++# Third Party
++import pytest
++
++ROOT_DIR = Path(__file__).resolve().parents[2]
++if str(ROOT_DIR) not in sys.path:
++    sys.path.insert(0, str(ROOT_DIR))
++
++# First Party
++from setup_extensions.build_ext import (  # noqa: E402
++    CXX_ATTR,
++    CXX_ENV,
++    EXECUTABLE_ATTRS,
++    PerExtensionCompilerMixin,
++    compiler_override,
++    rejects_parallel,
++    replace_program,
++)
++
++
++class FakeCompiler:
++    """Stand-in for a distutils ``UnixCCompiler``.
++
++    Only a subset of the executable arrays is defined, which is what an older
++    setuptools looks like.
++    """
++
++    def __init__(self):
++        self.compiler = ["gcc", "-O2"]
++        self.compiler_so = ["gcc", "-O2", "-fPIC"]
++        self.compiler_cxx = ["g++", "-O2"]
++        self.linker_so = ["gcc", "-shared"]
++        self.linker_exe = ["gcc"]
++
++
++class FakeExtension:
++    def __init__(self, name, cxx=None):
++        self.name = name
++        if cxx is not None:
++            setattr(self, CXX_ATTR, cxx)
++
++
++class RecordingBuildExt:
++    """Minimal ``build_ext`` stand-in recording what the mixin delegates."""
++
++    def __init__(self, extensions, parallel=None, fail_on=None):
++        self.extensions = extensions
++        self.parallel = parallel
++        self.compiler = FakeCompiler()
++        self.built = []
++        self.seen = []
++        self._fail_on = fail_on
++
++    def build_extensions(self):
++        for ext in self.extensions:
++            self.build_extension(ext)
++
++    def build_extension(self, ext):
++        self.built.append(ext.name)
++        self.seen.append(
++            (
++                os.environ.get(CXX_ENV),
++                list(self.compiler.compiler_cxx),
++                list(self.compiler.linker_so),
++            )
++        )
++        if self._fail_on == ext.name:
++            raise RuntimeError("compile failed for %s" % ext.name)
++
++
++class Command(PerExtensionCompilerMixin, RecordingBuildExt):
++    pass
++
++
++@pytest.fixture
++def clean_cxx(monkeypatch):
++    monkeypatch.delenv(CXX_ENV, raising=False)
++    return monkeypatch
++
++
++# ---------------------------------------------------------------------------
++# replace_program
++# ---------------------------------------------------------------------------
++
++
++def test_replace_program_keeps_flags():
++    assert replace_program(["gcc", "-O2", "-fPIC"], "hipcc") == [
++        "hipcc",
++        "-O2",
++        "-fPIC",
++    ]
++
++
++def test_replace_program_accepts_a_string():
++    assert replace_program("gcc -O2", "/opt/rocm/bin/hipcc") == [
++        "/opt/rocm/bin/hipcc",
++        "-O2",
++    ]
++
++
++def test_replace_program_skips_env_prefix():
++    command = ["/usr/bin/env", "LC_ALL=C", "gcc", "-O2"]
++    assert replace_program(command, "hipcc") == [
++        "/usr/bin/env",
++        "LC_ALL=C",
++        "hipcc",
++        "-O2",
++    ]
++
++
++def test_replace_program_rejects_an_empty_command():
++    with pytest.raises(ValueError):
++        replace_program([], "hipcc")
++
++
++# ---------------------------------------------------------------------------
++# compiler_override
++# ---------------------------------------------------------------------------
++
++
++def test_override_switches_env_and_executables(clean_cxx):
++    compiler = FakeCompiler()
++    with compiler_override(compiler, "hipcc"):
++        assert os.environ[CXX_ENV] == "hipcc"
++        assert compiler.compiler_so == ["hipcc", "-O2", "-fPIC"]
++        assert compiler.compiler_cxx == ["hipcc", "-O2"]
++        assert compiler.linker_so == ["hipcc", "-shared"]
++        assert compiler.linker_exe == ["hipcc"]
++
++
++def test_override_restores_every_value(clean_cxx):
++    clean_cxx.setenv(CXX_ENV, "/usr/bin/g++")
++    compiler = FakeCompiler()
++    before = {name: getattr(compiler, name) for name in EXECUTABLE_ATTRS if hasattr(compiler, name)}
++    with compiler_override(compiler, "hipcc"):
++        pass
++    assert os.environ[CXX_ENV] == "/usr/bin/g++"
++    for name, value in before.items():
++        assert getattr(compiler, name) == value
++
++
++def test_override_restores_after_an_exception(clean_cxx):
++    clean_cxx.setenv(CXX_ENV, "/usr/bin/g++")
++    compiler = FakeCompiler()
++    before = {name: getattr(compiler, name) for name in EXECUTABLE_ATTRS if hasattr(compiler, name)}
++    with pytest.raises(RuntimeError):
++        with compiler_override(compiler, "hipcc"):
++            raise RuntimeError("compile failed")
++    assert os.environ[CXX_ENV] == "/usr/bin/g++"
++    for name, value in before.items():
++        assert getattr(compiler, name) == value
++
++
++def test_override_unsets_cxx_when_it_was_unset(clean_cxx):
++    with compiler_override(FakeCompiler(), "hipcc"):
++        assert os.environ[CXX_ENV] == "hipcc"
++    assert CXX_ENV not in os.environ
++
++
++def test_override_ignores_absent_executables(clean_cxx):
++    compiler = FakeCompiler()
++    assert not hasattr(compiler, "compiler_so_cxx")
++    with compiler_override(compiler, "hipcc"):
++        assert not hasattr(compiler, "compiler_so_cxx")
++
++
++def test_override_switches_every_present_executable(clean_cxx):
++    compiler = FakeCompiler()
++    compiler.compiler_so_cxx = ["g++", "-O2", "-fPIC"]
++    compiler.linker_so_cxx = ["g++", "-shared"]
++    compiler.linker_exe_cxx = ["g++"]
++    with compiler_override(compiler, "hipcc"):
++        for name in EXECUTABLE_ATTRS:
++            assert getattr(compiler, name)[0] == "hipcc", name
++
++
++# ---------------------------------------------------------------------------
++# parallel rejection
++# ---------------------------------------------------------------------------
++
++
++@pytest.mark.parametrize("value", [None, False, 0, 1, "1"])
++def test_serial_values_are_accepted(value):
++    assert rejects_parallel(value) is False
++
++
++@pytest.mark.parametrize("value", [True, 2, "8", "yes"])
++def test_parallel_values_are_rejected(value):
++    assert rejects_parallel(value) is True
++
++
++def test_build_extensions_rejects_parallel_with_a_tagged_extension(clean_cxx):
++    command = Command([FakeExtension("lmcache.cuda_ops", cxx="hipcc")], parallel=4)
++    with pytest.raises(RuntimeError, match="parallel"):
++        command.build_extensions()
++    assert command.built == []
++
++
++def test_build_extensions_allows_parallel_without_a_tagged_extension(clean_cxx):
++    command = Command([FakeExtension("lmcache.lmcache_fs")], parallel=4)
++    command.build_extensions()
++    assert command.built == ["lmcache.lmcache_fs"]
++
++
++# ---------------------------------------------------------------------------
++# build_extension
++# ---------------------------------------------------------------------------
++
++
++def test_only_the_tagged_extension_sees_the_switch(clean_cxx):
++    clean_cxx.setenv(CXX_ENV, "/usr/bin/g++")
++    command = Command(
++        [
++            FakeExtension("lmcache.cuda_ops", cxx="/opt/rocm/bin/hipcc"),
++            FakeExtension("lmcache.lmcache_mooncake"),
++        ]
++    )
++    command.build_extensions()
++    assert command.built == ["lmcache.cuda_ops", "lmcache.lmcache_mooncake"]
++    hip_env, hip_cxx, hip_link = command.seen[0]
++    host_env, host_cxx, host_link = command.seen[1]
++    assert hip_env == "/opt/rocm/bin/hipcc"
++    assert hip_cxx[0] == "/opt/rocm/bin/hipcc"
++    assert hip_link[0] == "/opt/rocm/bin/hipcc"
++    assert host_env == "/usr/bin/g++"
++    assert host_cxx == ["g++", "-O2"]
++    assert host_link == ["gcc", "-shared"]
++    assert os.environ[CXX_ENV] == "/usr/bin/g++"
++
++
++def test_a_failed_tagged_extension_restores_the_toolchain(clean_cxx):
++    clean_cxx.setenv(CXX_ENV, "/usr/bin/g++")
++    command = Command(
++        [FakeExtension("lmcache.cuda_ops", cxx="hipcc")], fail_on="lmcache.cuda_ops"
++    )
++    with pytest.raises(RuntimeError, match="compile failed"):
++        command.build_extensions()
++    assert os.environ[CXX_ENV] == "/usr/bin/g++"
++    assert command.compiler.compiler_cxx == ["g++", "-O2"]
++    assert command.compiler.compiler_so == ["gcc", "-O2", "-fPIC"]
++    assert command.compiler.linker_so == ["gcc", "-shared"]
++
++
++# ---------------------------------------------------------------------------
++# wiring
++# ---------------------------------------------------------------------------
++
++
++def test_rocm_profile_tags_only_cuda_ops(monkeypatch):
++    pytest.importorskip("torch")
++    monkeypatch.setenv("LMCACHE_ROCM_CXX", "/opt/rocm/bin/hipcc")
++    # First Party
++    from setup_extensions.build_ext import lmcache_build_extension
++    from setup_extensions.build_profiles import rocm
++
++    monkeypatch.setattr(rocm, "_hipify_wrapper", lambda source_names: [])
++    ext_modules, cmdclass = rocm.RocmProfile().build()
++    assert [ext.name for ext in ext_modules] == ["lmcache.cuda_ops"]
++    assert getattr(ext_modules[0], CXX_ATTR) == "/opt/rocm/bin/hipcc"
++    assert cmdclass["build_ext"] is lmcache_build_extension()
++    assert issubclass(cmdclass["build_ext"], PerExtensionCompilerMixin)

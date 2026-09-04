@@ -7,8 +7,9 @@
 # the versions pinned in the Dockerfile.
 #
 # Emits just the tag component (no image name) in the following format:
-#   0.1.0-rocm7.14.0-vllm0.27.1-lmcache0.5.4-nixl1.3.2-hsasnoop1.0.0
-# Where 0.1.0 represents the AIC version.
+#   0.1.0-rocm7.14.0-vllm0.27.1-lmcache0.5.4-mooncake7197358-nixl1.3.2-hsasnoop1.0.0
+# Where 0.1.0 represents the AIC version.  Mooncake is pinned by commit, so it
+# contributes the first 7 characters of MOONCAKE_REF.
 #
 # Optional segments: VLLM_ROCM_VARIANT appended to the vllm component,
 # and a hipfile{SHA7} segment when HIPFILE_SHA is set.
@@ -53,11 +54,12 @@ else
 fi
 vllm_variant="${VLLM_ROCM_VARIANT:-}"
 lmcache="$(_arg LMCACHE_REF | sed 's/^v//')"
+mooncake="$(_arg MOONCAKE_REF)"
 nixl="$(_arg NIXL_REF | sed 's/^v//')"
 hipfile_sha="${HIPFILE_SHA:-}"
 hsasnoop="$(_arg HSA_SNOOP_REF | sed 's/^v//')"
 
-for _v in aic rocm vllm lmcache nixl hsasnoop; do
+for _v in aic rocm vllm lmcache mooncake nixl hsasnoop; do
   [[ -n "${!_v}" ]] || {
     echo "aic-image-tag: could not resolve ${_v}" >&2
     exit 1
@@ -66,7 +68,7 @@ done
 
 tag="${aic}-rocm${rocm}-vllm${vllm}"
 [[ -n "${vllm_variant}" ]] && tag="${tag}-${vllm_variant}"
-tag="${tag}-lmcache${lmcache}-nixl${nixl}"
+tag="${tag}-lmcache${lmcache}-mooncake${mooncake:0:7}-nixl${nixl}"
 [[ -n "${hipfile_sha}" ]] && tag="${tag}-hipfile${hipfile_sha:0:7}"
 tag="${tag}-hsasnoop${hsasnoop}"
 printf '%s\n' "${tag}"
