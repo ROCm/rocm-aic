@@ -54,6 +54,16 @@
 ARG ROCM_VERSION=7.14.0
 # ROCm 7.14 publishes the hipFile-bearing variant as `-full` (not `-complete`).
 ARG ROCM_BASE_IMAGE=rocm/dev-ubuntu-24.04:${ROCM_VERSION}-full
+
+# Empty default for the `pip-wheels` build context.  The torch install step
+# mounts that context (--mount=from=pip-wheels) to reuse a host wheel cache and
+# already falls back to the index when the wheel is absent, but BuildKit
+# resolves the name against a named context first and a stage second; with
+# neither it tries to pull docker.io/library/pip-wheels and the build fails
+# before the fallback can run.  A caller that passes
+# --build-context pip-wheels=<dir> overrides this stage exactly as before.
+FROM scratch AS pip-wheels
+
 # ROCM_BASE_IMAGE has a tagged default but remains overridable by callers.
 # hadolint ignore=DL3006
 FROM ${ROCM_BASE_IMAGE} AS build
