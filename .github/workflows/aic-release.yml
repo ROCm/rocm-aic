@@ -148,7 +148,7 @@ jobs:
       - name: Compose release notes
         run: |
           set -euo pipefail
-          bash .github/scripts/render-release-notes.sh \
+          bash .github/scripts/workflows/render-release-notes.sh \
             docker/Dockerfile \
             "${{ github.ref_name }}" \
             "${{ github.sha }}" \

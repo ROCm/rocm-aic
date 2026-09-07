@@ -7,7 +7,7 @@
 # the versions pinned in the Dockerfile.
 #
 # Emits just the tag component (no image name) in the following format:
-#   0.1.0-rocm7.14.0-vllm0.26.0-lmcache0.5.2-nixl1.3.2-hsasnoop1.0.0
+#   0.1.0-rocm7.14.0-vllm0.27.1-lmcache0.5.4-nixl1.3.2-hsasnoop1.0.0
 # Where 0.1.0 represents the AIC version.
 #
 # Optional segments: VLLM_ROCM_VARIANT appended to the vllm component,

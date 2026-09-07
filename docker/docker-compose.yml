@@ -37,7 +37,11 @@
 #   NFS_DATA       — host path to NFS-over-RDMA mount (L2b; e.g. /mnt/lmcache-nfs)
 #
 # Optional:
-#   GPU                    — ROCR_VISIBLE_DEVICES for vllm and lmcache (default: 0)
+#   GPU                    — fallback GPU when no SPUR allocation is resolved (default: 0).
+#   AIC_ROCR_VISIBLE       — ROCR_VISIBLE_DEVICES for every service to isolate used GPUs
+#                            to the ones allocated to use by SPUR.
+#   AIC_HIP_VISIBLE        — HIP_VISIBLE_DEVICES + CUDA_VISIBLE_DEVICES.  RELATIVE
+#                            indices ( e.g., 0..n-1).
 #   GDS_MODE               — set to 1 to enable hipFile NVMe slab as L1 (requires GDS_SLAB_DATA)
 #   GDS_SLAB_DATA          — host path for the hipFile slab file (required when GDS_MODE=1)
 #   AIC_L2_BACKEND         — nixl (default AIS_MT + POSIX L2), local_disk (native
@@ -207,7 +211,10 @@ services:
       # Must share the SAME GPU as the vllm service: LMCacheMPConnector registers
       # vLLM's KV tensors via CUDA IPC, which fails ("invalid device pointer") if
       # lmcache lands on a different device.  Mirror vllm's ROCR_VISIBLE_DEVICES.
-      - ROCR_VISIBLE_DEVICES=${GPU:-0}
+      #
+      - ROCR_VISIBLE_DEVICES=${AIC_ROCR_VISIBLE:-${GPU:-0}}
+      - HIP_VISIBLE_DEVICES=${AIC_HIP_VISIBLE:-0}
+      - CUDA_VISIBLE_DEVICES=${AIC_HIP_VISIBLE:-0}
       - PYTHONHASHSEED=0
       - TZ=${TZ:-America/Edmonton}
     # The entrypoint script selects the L1/L2 topology from GDS_MODE +
@@ -374,7 +381,9 @@ services:
       - TORCH_HOME=/hf/torch
       - TORCHINDUCTOR_CACHE_DIR=/hf/torch_inductor
       - VLLM_TARGET_DEVICE=rocm
-      - ROCR_VISIBLE_DEVICES=${GPU:-0}
+      - ROCR_VISIBLE_DEVICES=${AIC_ROCR_VISIBLE:-${GPU:-0}}
+      - HIP_VISIBLE_DEVICES=${AIC_HIP_VISIBLE:-0}
+      - CUDA_VISIBLE_DEVICES=${AIC_HIP_VISIBLE:-0}
       - AMDGCN_USE_BUFFER_OPS=0
       - MIOPEN_FIND_MODE=FAST
       - MIOPEN_USER_DB_PATH=/app/miopen
@@ -510,6 +519,10 @@ services:
     container_name: aic-amdgpu-exporter
     networks: [aic]
     restart: unless-stopped
+    environment:
+      - ROCR_VISIBLE_DEVICES=${AIC_ROCR_VISIBLE:-${GPU:-0}}
+      - HIP_VISIBLE_DEVICES=${AIC_HIP_VISIBLE:-0}
+      - CUDA_VISIBLE_DEVICES=${AIC_HIP_VISIBLE:-0}
     devices:
       - /dev/kfd
       - /dev/dri

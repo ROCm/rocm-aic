@@ -40,7 +40,7 @@ jobs:
 
       - name: Run cliff benchmark + harvest results from SPUR
         run: |
-          bash .github/scripts/spur-cliff-harvest.sh \
+          bash .github/scripts/workflows/spur-cliff-harvest.sh \
             "${{ github.event.workflow_run.head_sha }}" \
             "$(date -u +%Y-%m-%d)"
 

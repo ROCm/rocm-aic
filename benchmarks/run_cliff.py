@@ -504,7 +504,7 @@ async def _run_one_concurrency(
 # ---------------------------------------------------------------------
 
 
-async def amain(args: argparse.Namespace) -> None:
+async def amain(args: argparse.Namespace) -> int:
     try:
         import httpx
     except ImportError:
@@ -543,6 +543,7 @@ async def amain(args: argparse.Namespace) -> None:
     # Append-mode if user passes --append; default truncate.
     mode = "a" if args.append else "w"
     write_header = not (args.append and out_path.exists())
+    request_error_count = 0
 
     async with httpx.AsyncClient(timeout=args.request_timeout) as http_client:
         # Ping the endpoint so we fail fast if it's not up.
@@ -579,6 +580,7 @@ async def amain(args: argparse.Namespace) -> None:
                     prefix_mode=args.prefix_mode,
                 )
                 errs = [r for r in results if r.error]
+                request_error_count += len(errs)
                 _ckpt(f"  warmup {w}: wall={wall:.2f}s  errors={len(errs)}")
                 if errs:
                     _ckpt(f"  first error: {errs[0].error}")
@@ -616,10 +618,13 @@ async def amain(args: argparse.Namespace) -> None:
                         prefix_mode=args.prefix_mode,
                     )
                     errs = [r for r in results if r.error]
+                    request_error_count += len(errs)
                     _ckpt(
                         f"  c={c} per-c warmup: wall={wall:.2f}s "
                         f"errors={len(errs)}"
                     )
+                    if errs:
+                        _ckpt(f"  c={c} per-c warmup first error: {errs[0].error}")
                     # Async-save connectors (kvd v2 chunked-fusion)
                     # return from wait_for_save before chunks land on
                     # disk; back-pressure from the warmup's tail of
@@ -663,6 +668,7 @@ async def amain(args: argparse.Namespace) -> None:
                     exq, exh, exr = _window_rate(snap0, snap1, "ext_q", "ext_h")
                     ok = [r for r in results if r.error is None]
                     errs = [r for r in results if r.error is not None]
+                    request_error_count += len(errs)
                     total_pt = sum(r.prompt_tokens_reported for r in ok)
                     total_ot = sum(r.output_tokens for r in ok)
                     if total_pt == 0:
@@ -698,12 +704,20 @@ async def amain(args: argparse.Namespace) -> None:
                         f"BW={throughput_total:7.0f} tok/s  p50={p50*1000:.0f}ms  p95={p95*1000:.0f}ms"
                         f"{hit_str}"
                     )
-                    if errs and it == 0:
+                    if errs:
                         _ckpt(f"    first err: {errs[0].error}")
                 med = statistics.median(point_throughputs)
                 _ckpt(f"  median throughput at c={c}: {med:.0f} tok/s")
 
+    if request_error_count:
+        message = f"{request_error_count} completion request(s) failed"
+        if args.allow_request_errors:
+            _ckpt(f"WARN: {message}; allowed by --allow-request-errors")
+        else:
+            _ckpt(f"FAIL: {message}; diagnostic results at {out_path}")
+            return 1
     _ckpt(f"done; results at {out_path}")
+    return 0
 
 
 def main() -> None:
@@ -750,6 +764,9 @@ def main() -> None:
                              "stable prefix (mirrors LMCache multi-tenant cliff)")
     parser.add_argument("--request-timeout", type=float, default=600.0,
                         help="per-request timeout in seconds")
+    parser.add_argument("--allow-request-errors", action="store_true",
+                        help="return success when completion requests fail; "
+                             "failed requests remain recorded in the CSV")
     parser.add_argument("--metrics-endpoint", default=None,
                         help="endpoint to scrape Prometheus /metrics from "
                              "(default: --endpoint). Captures L1 (GPU) + "
@@ -772,7 +789,7 @@ def main() -> None:
     parser.add_argument("--append", action="store_true",
                         help="append to existing CSV instead of truncate")
     args = parser.parse_args()
-    asyncio.run(amain(args))
+    raise SystemExit(asyncio.run(amain(args)))
 
 
 if __name__ == "__main__":

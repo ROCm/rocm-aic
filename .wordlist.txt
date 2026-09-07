@@ -59,6 +59,7 @@ ZMQ
 aic
 ais
 amd
+amdsmi
 ansible
 arg
 args
@@ -161,6 +162,7 @@ sublicense
 sudo
 tm
 tmp
+unresolvable
 userspace
 vLLM
 vLLM's

@@ -5,7 +5,7 @@ set -euo pipefail
 #
 # SPDX-License-Identifier: MIT
 #
-# Runs on the self-hosted runner; SSHes to the SPUR head node (AIC_SPUR_HOST),
+# Runs from a workflow checkout on the self-hosted runner; SSHes to the SPUR head node (AIC_SPUR_HOST),
 # submits the full cliff-submit job via `make cliff-submit`, waits for it to
 # finish, then:
 #   1. Copies CSVs + plots to a stable NFS staging dir (survives workdir cleanup)
@@ -21,7 +21,7 @@ set -euo pipefail
 #   secrets.AIC_SPUR_CONTROLLER  — SPUR controller address
 #
 # Usage:
-#   bash .github/scripts/spur-cliff-harvest.sh <full-sha> <run-date-ISO>
+#   bash .github/scripts/workflows/spur-cliff-harvest.sh <full-sha> <run-date-ISO>
 #   # run-date-ISO defaults to $(date +%Y-%m-%d) if omitted
 
 SHA="${1:?usage: $0 <full-sha> [run-date]}"
@@ -46,6 +46,7 @@ ssh -o ServerAliveInterval=30 -o ServerAliveCountMax=4 "${AIC_SPUR_HOST}" env \
     SPUR_CONTROLLER_ADDR="${AIC_SPUR_CONTROLLER}" \
     bash << 'REMOTE'
 set -euo pipefail
+export PATH="/usr/local/bin:${PATH}"
 
 SHORT="${SHA:0:7}"
 WORKDIR="$HOME/Projects/rocm-aic.${SHORT}"

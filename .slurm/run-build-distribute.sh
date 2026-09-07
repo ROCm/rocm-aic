@@ -123,8 +123,9 @@
 #                        (default: <site>&GFX942&NVME -- MI300X + local NVMe).
 #                        Used only when AIC_TEST_NODE is unset.
 #   AIC_TEST_NODE        pin an exact test node via --nodelist  (default: unset)
-#   AIC_TEST_GRES        Slurm GPU resource request for smoke/tiny tests
+#   AIC_TEST_GRES        Standard-Slurm GPU GRES request for smoke/tiny tests
 #                        (default: gpu:1)
+#   AIC_TEST_GPUS        SPUR GPU request for smoke/tiny tests (default: 1)
 #   AIC_TEST_TIME        test job time limit               (default: 00:20:00)
 #   AIC_TEST_CPUS        --cpus-per-task for the test job  (default: 8)
 #   AIC_TEST_MEM         --mem for the test job            (default: 32G)
@@ -147,6 +148,11 @@
 #   AIC_SPUR_CONTROLLER  SPUR controller address passed as --controller to every
 #                        sbatch/srun/squeue call when AIC_SPUR_CLUSTER=1.
 #                        (default: $SPUR_CONTROLLER_ADDR)
+#   AIC_SPUR_RPC_RETRIES consecutive squeue RPC failures tolerated while watching
+#                        a job before _sbatch_run gives up.  At the 10s poll
+#                        interval the default is ~5min of controller
+#                        unreachability.  A failed RPC is never treated as "the
+#                        job finished".                      (default: 30)
 #
 #   AIC_TLS_CERT         corporate CA cert (BuildKit secret, never baked into image)
 #                        (default: $HOME/certs/zscaler-ca.crt if it exists; else none)
@@ -154,6 +160,7 @@
 #                                                            else gzip)
 #
 set -euo pipefail
+export PATH="/usr/local/bin:${PATH}"
 
 # --- Resolve paths (script lives at aic-release/.slurm/) ------------------
 # The tree is self-contained: the Docker build context IS aic-release/.
@@ -219,6 +226,7 @@ AIC_TEST_TIME="${AIC_TEST_TIME:-00:45:00}"
 AIC_TEST_CPUS="${AIC_TEST_CPUS:-8}"
 AIC_TEST_MEM="${AIC_TEST_MEM:-32G}"
 AIC_TEST_GRES="${AIC_TEST_GRES:-gpu:1}"
+AIC_TEST_GPUS="${AIC_TEST_GPUS:-1}"
 
 # --- tiny-test: end-to-end serve check with a tiny model ---------------------
 # Brings up the compose MP stack (standalone lmcache + vLLM LMCacheMPConnector)
@@ -290,6 +298,39 @@ _exporter_tarball_path() {
     printf '%s/%s.%s' "${AIC_IMAGE_DIR}" "${base}" "${COMPRESS_EXT}"
 }
 
+# --- Identity stamp for a tarball, empty when it does not exist --------------
+_tarball_stamp() {
+    stat -c '%i:%Y:%s' "$1" 2>/dev/null || true
+}
+
+# --- Verify a tarball THIS build produced ------------------------------------
+# ($1=path $2=what $3=stamp from before submit $4=min bytes)
+# The build runs on a remote node and writes over NFS, so a job that reports
+# success can still leave nothing behind -- and a job whose state was misread
+# (see _sbatch_run) reports success without having finished at all.
+#
+# A re-run of a workflow could see a tarball made from an old run, so we use
+# the `stat` data to verify existence.
+_verify_tarball() {
+    local path="$1" what="${2:-image}" before="${3:-}" min_bytes="${4:-1024}"
+    # NFS close-to-open consistency: the writing node's `mv` can take a moment
+    # to become visible here even though the job has already exited.
+    local tries=0 now
+    now="$(_tarball_stamp "${path}")"
+    until [[ -n "${now}" && "${now}" != "${before}" ]] || (( tries >= 15 )); do
+        sleep 2; tries=$((tries + 1))
+        now="$(_tarball_stamp "${path}")"
+    done
+    [[ -n "${now}" ]] ||
+        die "${what} build reported success but produced no tarball: ${path}"
+    [[ "${now}" != "${before}" ]] ||
+        die "${what} build reported success but did not rewrite its tarball; this is an earlier run's artifact (unchanged at ${before}): ${path}"
+    local size="${now##*:}"
+    (( size >= min_bytes )) ||
+        die "${what} tarball is implausibly small (${size} bytes, expected >= ${min_bytes}): ${path}"
+    log "verified ${what} tarball: ${path} ($(du -h "${path}" | cut -f1))"
+}
+
 # --- sbatch dispatch (mirrors run-cliff.sbatch's per-job logging) -------------
 # Submit BODY as an sbatch batch job whose output streams into
 # logs/<job-id>/<logname>.out under the tree -- the SAME per-job structure
@@ -311,7 +352,8 @@ _sbatch_run() {
     # redirects everything into <logname>.out, then the caller's body.
     # AIC_DAY_DIR is absolute and on shared storage, so it resolves on the
     # compute node without relying on SLURM_SUBMIT_DIR.  --output=/dev/null
-    # discards any pre-redirect output (there is none here).
+    # discards any pre-redirect output, so anything printed before the `exec`
+    # below survives only on stderr -- see _dump_spur_stderr.
     local script
     # The body runs in a subshell so its own `trap EXIT` cannot clobber the
     # outer exit-file write.  The outer EXIT trap always fires last and records
@@ -320,7 +362,14 @@ _sbatch_run() {
 #!/bin/bash
 _logdir="${AIC_DAY_DIR}/logs/\${SLURM_JOB_ID:-manual}"
 _exitfile="${AIC_DAY_DIR}/logs/\${SLURM_JOB_ID:-manual}/${logname}.exit"
-mkdir -p "\${_logdir}" 2>/dev/null && exec >>"\${_logdir}/${logname}.out" 2>&1
+if ! mkdir -p "\${_logdir}"; then
+    echo "FATAL: \$(hostname): cannot create log dir \${_logdir} (job \${SLURM_JOB_ID:-manual})" >&2
+    exit 99
+fi
+if ! exec >>"\${_logdir}/${logname}.out" 2>&1; then
+    echo "FATAL: \$(hostname): cannot open \${_logdir}/${logname}.out for append" >&2
+    exit 99
+fi
 ( ${body} )
 _body_rc=\$?
 echo "\${_body_rc}" > "\${_exitfile}" 2>/dev/null || true
@@ -329,6 +378,19 @@ PROLOGUE
 )"
 
     local jobid="" logfile="" rc=0
+    local active_job_file="${AIC_CI_ACTIVE_JOB_FILE:-}"
+
+    _record_active_job() {
+        [[ -n "${active_job_file}" ]] || return 0
+        mkdir -p "$(dirname "${active_job_file}")"
+        printf '%s\n' "${jobid}" > "${active_job_file}.tmp.${BASHPID}"
+        mv -f "${active_job_file}.tmp.${BASHPID}" "${active_job_file}"
+    }
+
+    _clear_active_job() {
+        [[ -n "${active_job_file}" ]] || return 0
+        rm -f "${active_job_file}" 2>/dev/null || true
+    }
 
     if [[ "${AIC_SPUR_CLUSTER}" == "1" ]]; then
         # SPUR sbatch does not support --parsable, --wait, or reading the script
@@ -352,6 +414,7 @@ PROLOGUE
 
         jobid="$(printf '%s\n' "${submit_out}" | grep -oE '[0-9]+$' | tail -1)"
         [[ -n "${jobid}" ]] || die "could not parse job id from sbatch output: ${submit_out}"
+        _record_active_job
         logfile="${AIC_DAY_DIR}/logs/${jobid}/${logname}.out"
         log "submitted ${jobname} as job ${jobid} (partition ${AIC_BUILD_PARTITION})"
         log "log: ${logfile}"
@@ -372,33 +435,104 @@ PROLOGUE
             fi
         }
 
-        # SPUR ignores -j and may return a large queue.  Consume all of squeue's
-        # output before deciding whether the job is present: an early-exiting
-        # grep -q closes the pipe and makes squeue fail with SIGPIPE under
-        # pipefail, which looks like the job disappeared.
+        # Job-state probe.  Returns THREE outcomes, because "the controller says
+        # the job is gone" and "the controller did not answer" must not be the
+        # same event:
+        #     0 = controller answered, job is in the queue
+        #     1 = controller answered, job is not in the queue
+        #     2 = the squeue RPC itself failed
+        # Collapsing 2 into 1 silently truncates the watch loop and reports a
+        # still-running job as finished.  The SPUR head node shares CPU with
+        # interactive sessions and its control-plane RTT is bursty (measured:
+        # 0.12ms min / 243ms max, with NIC RX drops under load), so transient
+        # RPC failures are expected rather than exceptional.
+        #
+        # SPUR does not always honour -j and may return the whole queue, so the
+        # row is still selected by exact job id.  Consume all of squeue's output
+        # before deciding -- an early-exiting `grep -q` closes the pipe and makes
+        # squeue fail with SIGPIPE under pipefail, which also looks like the job
+        # disappeared.
+        local squeue_err; squeue_err="$(mktemp)"
         _spur_job_is_queued() {
-            squeue --controller="${AIC_SPUR_CONTROLLER}" -j "${jobid}" -h 2>/dev/null |
-                awk -v id="${jobid}" '
-                    $1 == id { found = 1 }
-                    END { exit found ? 0 : 1 }
-                '
+            local out rc=0
+            out="$(squeue --controller="${AIC_SPUR_CONTROLLER}" -j "${jobid}" -h \
+                    2>"${squeue_err}")" || rc=$?
+            (( rc == 0 )) || return 2
+            awk -v id="${jobid}" '
+                $1 == id { found = 1 }
+                END { exit found ? 0 : 1 }
+            ' <<<"${out}"
+        }
+        _squeue_err_text() { tr '\n' ' ' < "${squeue_err}" 2>/dev/null | head -c 300; }
+
+        # SPUR does NOT fold the job's stderr into --output the way Slurm does.
+        # It writes stderr to <submit-cwd>/spur-<jobid>.out and nothing reads
+        # that file.
+        _dump_spur_stderr() {
+            local f
+            local -a candidates=()
+            for f in "${PWD}/spur-${jobid}.out" "${AIC_DAY_DIR}/spur-${jobid}.out"; do
+                [[ " ${candidates[*]-} " == *" ${f} "* ]] || candidates+=("${f}")
+            done
+            for f in "${candidates[@]}"; do
+                [[ -s "${f}" ]] || continue
+                log "--- stderr from SPUR job ${jobid} (${f}) ---"
+                cat "${f}"
+                log "--- end stderr from SPUR job ${jobid} ---"
+                return 0
+            done
+            log "no stderr file for SPUR job ${jobid}; looked in: ${candidates[*]}"
+            return 0
         }
 
-        # Wait up to 60s for the job to appear.
-        local appear_tries=0
-        until _spur_job_is_queued || (( appear_tries >= 60 )); do
+        # Wait up to 60s for the job to appear.  A very short job can finish
+        # before the first poll, so not appearing is a warning, not an error.
+        local appear_tries=0 appeared=0 probe=0
+        while (( appear_tries < 60 )); do
+            probe=0; _spur_job_is_queued || probe=$?
+            (( probe == 0 )) && { appeared=1; break; }
             sleep 1; appear_tries=$((appear_tries + 1))
         done
+        (( appeared == 1 )) ||
+            log "WARNING: job ${jobid} did not appear in squeue within 60s"
 
-        # Poll until the job leaves the queue, streaming new log lines.
-        while _spur_job_is_queued; do
+        # Poll until the job leaves the queue, streaming new log lines.  A
+        # transient RPC failure is retried rather than treated as completion,
+        # but a sustained one aborts loudly instead of guessing the job's state.
+        # The active-job file is deliberately left in place on that abort so the
+        # CI wrapper can cancel the orphaned Slurm job.
+        #
+        # 30 retries at the 10s poll interval tolerates ~5min of controller
+        # unreachability.
+        local rpc_fail=0 rpc_max="${AIC_SPUR_RPC_RETRIES:-30}"
+        while :; do
+            probe=0; _spur_job_is_queued || probe=$?
+            case "${probe}" in
+                0) rpc_fail=0 ;;
+                1) break ;;
+                *)
+                    rpc_fail=$((rpc_fail + 1))
+                    if (( rpc_fail >= rpc_max )); then
+                        # The only abort that reaches a known job id ahead of
+                        # the post-loop dump, and the one where the job's own
+                        # stderr matters most: the controller is unreachable,
+                        # so nothing downstream will report why.
+                        _dump_spur_stderr
+                        die "squeue RPC to ${AIC_SPUR_CONTROLLER} failed ${rpc_fail} consecutive times while watching job ${jobid}; refusing to assume it finished. Last error: $(_squeue_err_text)"
+                    fi
+                    log "squeue RPC failed (${rpc_fail}/${rpc_max}) while watching job ${jobid}, retrying: $(_squeue_err_text)"
+                    ;;
+            esac
             _print_new_lines
             sleep 10
         done
+        rm -f "${squeue_err}" 2>/dev/null || true
 
-        # Flush any remaining lines after job completes.
+        # Flush any remaining lines after job completes, then surface anything
+        # SPUR captured on the side channel.
         sleep 2
         _print_new_lines
+        _dump_spur_stderr
 
         # Read the real exit code from sacct ("<code>:<signal>" format).
         # SPUR sacct ignores -j and returns all jobs; grep for the exact job ID
@@ -414,19 +548,50 @@ PROLOGUE
         done
         if [[ -f "${exit_file}" ]]; then
             acct_exit="$(tr -d '[:space:]' < "${exit_file}" 2>/dev/null)"
+            [[ "${acct_exit}" =~ ^[0-9]+$ ]] ||
+                die "exit file ${exit_file} for job ${jobid} is not a number: '${acct_exit}'"
             log "exit code from file: ${acct_exit} (${exit_file})"
         else
-            acct_exit="$(sacct --controller="${AIC_SPUR_CONTROLLER}" -j "${jobid}" \
-                --format=JobID,ExitCode --noheader 2>/dev/null \
-                | awk -v id="${jobid}" '
-                    $1 == id && !found {
-                        split($2, fields, ":")
-                        code = fields[1]
-                        found = 1
-                    }
-                    END { if (found) print code }
-                ')"
-            log "exit code from sacct: ${acct_exit:-<empty>} (job ${jobid})"
+            # sacct fallback.  Two SPUR behaviours make the naive read unsafe:
+            #   * a job that has NOT finished reports ExitCode "0:0" -- verified
+            #     across all 159 RUNNING jobs on the cluster -- so the state must
+            #     be checked before the code, or a live job reads as success;
+            #   * -j is not always honoured and the whole table can come back,
+            #     so the row is selected by exact job id.
+            # Requesting JobID,State,ExitCode (no JobName) keeps the columns
+            # stable: SPUR emits an empty JobName for many rows, which shifts
+            # every subsequent field left by one.
+            log "WARNING: falling back to using sacct instead of reading expected exit file ${exit_file}."
+            local _terminal='COMPLETED|FAILED|CANCELLED|TIMEOUT|NODE_FAIL|OUT_OF_MEMORY|PREEMPTED|DEADLINE|BOOT_FAIL'
+            _spur_sacct_row() {
+                sacct --controller="${AIC_SPUR_CONTROLLER}" -j "${jobid}" \
+                    --format=JobID,State,ExitCode --noheader 2>/dev/null \
+                    | awk -v id="${jobid}" '$1 == id && !found { print $2, $3; found = 1 }'
+            }
+            # The job left the queue, so accounting should settle shortly; give
+            # it up to 60s to reach a terminal state before giving up.
+            local sacct_row="" state="" code="" st_tries=0
+            while (( st_tries < 30 )); do
+                sacct_row="$(_spur_sacct_row)"
+                state="${sacct_row%% *}"; code="${sacct_row##* }"
+                [[ -n "${state}" && "${state}" =~ ^(${_terminal})$ ]] && break
+                sleep 2; st_tries=$((st_tries + 1))
+            done
+            [[ -n "${state}" ]] ||
+                die "job ${jobid} left the queue but has no sacct record; cannot determine its exit status"
+            [[ "${state}" =~ ^(${_terminal})$ ]] ||
+                die "job ${jobid} left the queue but sacct still reports state ${state} after 60s; refusing to guess its exit status"
+            acct_exit="${code%%:*}"
+            if [[ "${state}" == "COMPLETED" ]]; then
+                [[ "${acct_exit}" =~ ^[0-9]+$ ]] || acct_exit=0
+            else
+                # Non-COMPLETED must never yield 0.  SPUR reports "0:0" for some
+                # cancelled jobs and "-1:0" for others; neither is a success and
+                # neither is a valid shell exit status.
+                [[ "${acct_exit}" =~ ^[1-9][0-9]*$ ]] || acct_exit=1
+            fi
+            (( acct_exit > 255 )) && acct_exit=1   # `return 256` would wrap to 0
+            log "exit code from sacct: ${acct_exit} (job ${jobid}, state ${state})"
         fi
         rc="${acct_exit:-1}"
     else
@@ -449,6 +614,7 @@ PROLOGUE
             sleep 0.2; tries=$((tries + 1))
         done
         jobid="$(head -n1 "${idfile}" 2>/dev/null | tr -d '[:space:]' | cut -d';' -f1)"
+        [[ -z "${jobid}" ]] || _record_active_job
 
         logfile="${AIC_DAY_DIR}/logs/${jobid:-unknown}/${logname}.out"
         if [[ -n "${jobid}" ]]; then
@@ -472,6 +638,7 @@ PROLOGUE
         rm -f "${idfile}" 2>/dev/null || true
     fi
 
+    _clear_active_job
     return "${rc}"
 }
 
@@ -479,6 +646,8 @@ PROLOGUE
 cmd_build() {
     _pick_compress
     local tarball; tarball="$(_tarball_path)"
+    # Taken before anything is submitted; see _verify_tarball.
+    local tarball_before; tarball_before="$(_tarball_stamp "${tarball}")"
     # Alias ref (name:latest) built + saved alongside the versioned ref.
     local latest_ref="${AIC_IMAGE%:*}:latest"
     # Forward every version override for Docker tag naming.
@@ -680,6 +849,7 @@ REMOTE
             --cpus-per-task="${AIC_BUILD_CPUS}" \
             --time="${AIC_BUILD_TIME}"
     fi
+    _verify_tarball "${tarball}" "image" "${tarball_before}"
     log "build complete: ${tarball}"
 }
 
@@ -699,6 +869,10 @@ cmd_build_exporters() {
     local nvme_tar rdma_tar
     nvme_tar="$(_exporter_tarball_path "${AIC_NVME_EXPORTER_IMAGE}")"
     rdma_tar="$(_exporter_tarball_path "${AIC_RDMA_EXPORTER_IMAGE}")"
+    # Taken before anything is submitted; see _verify_tarball.
+    local nvme_before rdma_before
+    nvme_before="$(_tarball_stamp "${nvme_tar}")"
+    rdma_before="$(_tarball_stamp "${rdma_tar}")"
 
     log "exporter images : ${AIC_NVME_EXPORTER_IMAGE} (nvme v${AIC_NVME_EXPORTER_VERSION}), ${AIC_RDMA_EXPORTER_IMAGE} (rdma v${AIC_RDMA_EXPORTER_VERSION})"
     log "tarballs   : ${nvme_tar}, ${rdma_tar}  (compress: ${AIC_COMPRESS})"
@@ -772,6 +946,8 @@ REMOTE
             --cpus-per-task=2 --mem=8G "${_exp_overcommit[@]}" \
             --time="${AIC_LOAD_TIME}"
     fi
+    _verify_tarball "${nvme_tar}" "nvme-exporter" "${nvme_before}"
+    _verify_tarball "${rdma_tar}" "rdma-exporter" "${rdma_before}"
     log "exporter build complete: ${nvme_tar}, ${rdma_tar}"
 }
 
@@ -1021,12 +1197,13 @@ SMOKE
 set -euo pipefail
 command -v docker >/dev/null 2>&1 || { echo "\$(hostname): docker not found" >&2; exit 1; }
 echo "[test] host=\$(hostname) docker=\$(docker --version)"
-# Preserve Slurm's single-GPU allocation inside Docker.  SPUR sets
-# ROCR_VISIBLE_DEVICES for --gres=gpu:1; CUDA_VISIBLE_DEVICES is the fallback
-# used by some standard Slurm installations.
-_gpu_visible="\${ROCR_VISIBLE_DEVICES:-\${CUDA_VISIBLE_DEVICES:-0}}"
-_gpu_visible="\${_gpu_visible%%,*}"
-echo "[test] allocated gpu=\${_gpu_visible}"
+# Preserve Slurm's GPU allocation inside Docker.
+export AIC_SPUR_CLUSTER='${AIC_SPUR_CLUSTER}'
+# shellcheck source=/dev/null
+source '${AIC_DAY_DIR}/monitoring/monitoring-lib.sh'
+aic_resolve_gpu_visibility \
+    || { echo "[test] could not resolve the GPU allocation (refusing to default to GPU 0)" >&2; exit 1; }
+echo "[test] allocated gpu: ROCR=\${AIC_ROCR_VISIBLE} HIP=\${AIC_HIP_VISIBLE}"
 # Load the image from the shared tarball only when needed.  A node-local marker
 # records the tarball mtime that was last loaded here; we reload when the tarball
 # is newer (a rebuild happened), when the image is absent, or when forced.  We
@@ -1058,7 +1235,9 @@ docker run --rm \
     --cap-add SYS_PTRACE --cap-add SYS_ADMIN \
     --security-opt seccomp=unconfined \
     \${kmounts} \
-    -e ROCR_VISIBLE_DEVICES="\${_gpu_visible}" \
+    -e ROCR_VISIBLE_DEVICES="\${AIC_ROCR_VISIBLE}" \
+    -e HIP_VISIBLE_DEVICES="\${AIC_HIP_VISIBLE}" \
+    -e CUDA_VISIBLE_DEVICES="\${AIC_HIP_VISIBLE}" \
     -e EXPECT_ARCH='${AIC_ROCM_ARCH}' \
     -v '${smoketest}':/tmp/aic-smoketest.sh:ro \
     --entrypoint /bin/bash \
@@ -1104,12 +1283,17 @@ exit \${img_rc}
 REMOTE
 )"
 
-    # Always reserve a GPU.  Omitting GRES on SPUR lets Slurm co-locate this job
-    # with an existing GPU workload, even though the test launches ROCm code.
-    local -a _gres_arg=(--gres="${AIC_TEST_GRES}")
+    # Always reserve a GPU. SPUR requires --gpus; standard Slurm deployments
+    # retain the configurable GRES request.
+    local -a _gpu_request
+    if [[ "${AIC_SPUR_CLUSTER}" == "1" ]]; then
+        _gpu_request=(--gpus="${AIC_TEST_GPUS}")
+    else
+        _gpu_request=(--gres="${AIC_TEST_GRES}")
+    fi
     _sbatch_run aic-test smoke-test "${remote_script}" \
         "${_sel[@]}" \
-        "${_gres_arg[@]}" \
+        "${_gpu_request[@]}" \
         --nodes=1 --ntasks=1 \
         --cpus-per-task="${AIC_TEST_CPUS}" --mem="${AIC_TEST_MEM}" \
         --time="${AIC_TEST_TIME}"
@@ -1144,13 +1328,15 @@ set -uo pipefail
 command -v docker >/dev/null 2>&1 || { echo "\$(hostname): docker not found" >&2; exit 1; }
 echo "[tiny-test] host=\$(hostname) docker=\$(docker --version)"
 # Preserve the GPU selected by Slurm instead of unconditionally exposing host
-# GPU 0 to both vLLM and LMCache.  A single-GPU GRES normally maps this to 0,
-# while the fallback keeps non-Slurm/manual execution working.
-_gpu_visible="\${ROCR_VISIBLE_DEVICES:-\${CUDA_VISIBLE_DEVICES:-0}}"
-_gpu_visible="\${_gpu_visible%%,*}"
-export GPU="\${_gpu_visible}"
+# GPU 0 to both vLLM and LMCache.
+export AIC_SPUR_CLUSTER='${AIC_SPUR_CLUSTER}'
+# shellcheck source=/dev/null
+source '${AIC_DAY_DIR}/monitoring/monitoring-lib.sh'
+aic_resolve_gpu_visibility \
+    || { echo "[tiny-test] could not resolve the GPU allocation (refusing to default to GPU 0)" >&2; exit 1; }
+export GPU="\${AIC_ROCR_VISIBLE%%,*}"
 VLLM_CONTAINER="aic-vllm-gpu\${GPU}"
-echo "[tiny-test] allocated gpu=\${GPU} container=\${VLLM_CONTAINER}"
+echo "[tiny-test] allocated gpu: ROCR=\${AIC_ROCR_VISIBLE} HIP=\${AIC_HIP_VISIBLE} container=\${VLLM_CONTAINER}"
 
 # Load the image from the shared tarball only when needed (same marker logic as
 # smoke-test): reload when forced, absent, or the tarball is newer.
@@ -1266,11 +1452,16 @@ exit 1
 REMOTE
 )"
 
-    # Always reserve a GPU; see cmd_test for why SPUR must not omit GRES.
-    local -a _gres_arg=(--gres="${AIC_TEST_GRES}")
+    # Always reserve a GPU; see cmd_test for the SPUR-specific request form.
+    local -a _gpu_request
+    if [[ "${AIC_SPUR_CLUSTER}" == "1" ]]; then
+        _gpu_request=(--gpus="${AIC_TEST_GPUS}")
+    else
+        _gpu_request=(--gres="${AIC_TEST_GRES}")
+    fi
     _sbatch_run aic-tiny-test tiny-test "${remote_script}" \
         "${_sel[@]}" \
-        "${_gres_arg[@]}" \
+        "${_gpu_request[@]}" \
         --nodes=1 --ntasks=1 \
         --cpus-per-task="${AIC_TINY_CPUS}" --mem="${AIC_TINY_MEM}" \
         --time="${AIC_TINY_TIME}"

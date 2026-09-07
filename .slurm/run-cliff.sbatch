@@ -72,6 +72,7 @@
 # A provisioned mount is left mounted for reuse by later jobs on the same node.
 #
 set -uo pipefail
+export PATH="/usr/local/bin:${PATH}"
 
 # --- Config (all overridable via environment) --------------------------------
 # Under sbatch, Slurm copies this script to the node's spool dir and runs it from
@@ -612,7 +613,11 @@ compose() { docker compose -f "${COMPOSE_FILE}" "$@"; }
 export IMAGE_REF="${AIC_IMAGE}"
 export IMAGE_NAME="${AIC_IMAGE%:*}"
 export ROCM_ARCH="${ROCM_ARCH:-$(detect_gpu_arch)}"
-export GPU=0
+# Resolve the GPU allocation instead of hardcoding host GPU 0.
+source "${REPO}/monitoring/monitoring-lib.sh"
+aic_resolve_gpu_visibility \
+  || die "could not resolve the SPUR GPU allocation (refusing to default to GPU 0)"
+export GPU="${AIC_ROCR_VISIBLE%%,*}"
 export HF_HOME NVME_DATA NFS_DATA GDS_SLAB_DATA
 export LOG="${LOGDIR}" # lmcache/vllm container logs land under the job dir
 export HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1

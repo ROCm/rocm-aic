@@ -36,7 +36,7 @@
 #   make build                                  # no proxy
 #   make build TLS_CERT=/path/to/corp-ca.crt   # behind proxy
 #
-# Patches: every *.patch under patches/lmcache/ and patches/nixl/ is applied to
+# Patches: every *.patch under patches/vllm/, patches/lmcache/, and patches/nixl/ is applied to
 # its upstream checkout during the build, in lexical (filename) order -- hence
 # the NN- prefixes.  Drop a new NN-*.patch into the directory to include it.
 #
@@ -54,6 +54,16 @@
 ARG ROCM_VERSION=7.14.0
 # ROCm 7.14 publishes the hipFile-bearing variant as `-full` (not `-complete`).
 ARG ROCM_BASE_IMAGE=rocm/dev-ubuntu-24.04:${ROCM_VERSION}-full
+
+# Empty default for the `pip-wheels` build context.  The torch install step
+# mounts that context (--mount=from=pip-wheels) to reuse a host wheel cache and
+# already falls back to the index when the wheel is absent, but BuildKit
+# resolves the name against a named context first and a stage second; with
+# neither it tries to pull docker.io/library/pip-wheels and the build fails
+# before the fallback can run.  A caller that passes
+# --build-context pip-wheels=<dir> overrides this stage exactly as before.
+FROM scratch AS pip-wheels
+
 # ROCM_BASE_IMAGE has a tagged default but remains overridable by callers.
 # hadolint ignore=DL3006
 FROM ${ROCM_BASE_IMAGE} AS build
@@ -85,7 +95,7 @@ ARG TORCHAUDIO_REF=v2.11.0
 # vLLM: built from source at this tag.  Check https://github.com/vllm-project/vllm/tags
 # for the latest release; bump VLLM_REF and rebuild when updating.
 ARG VLLM_GIT_URL=https://github.com/vllm-project/vllm.git
-ARG VLLM_REF=v0.26.0
+ARG VLLM_REF=v0.27.1
 
 # Pinned component revisions — bump together when validating a new combo.
 # ai-dynamo/nixl release tag + nixl-rocm-ais-mt.patch (ROCm/HIP + AIS_MT).
@@ -98,11 +108,11 @@ ARG NIXL_REF=v1.3.2
 ARG HSA_SNOOP_GIT_URL=https://github.com/sbates130272/hsa-snoop.git
 ARG HSA_SNOOP_REF=v1.0.0
 
-# LMCache: upstream repo, pinned to the v0.5.3 release tag.
-# All 12 AMD patches in patches/lmcache/ apply cleanly against this tag.
+# LMCache: upstream repo, pinned to the v0.5.4 release tag.
+# All 14 AMD patches in patches/lmcache/ apply cleanly against this tag.
 # Note: LMCache v0.5.2+ is required for vLLM >= 0.26.0.
 ARG LMCACHE_GIT_URL=https://github.com/LMCache/LMCache.git
-ARG LMCACHE_REF=v0.5.3
+ARG LMCACHE_REF=v0.5.4
 
 # Optional: enable UCX fast-path for NIXL (default off).
 ARG AIC_UCX_FAST=
@@ -325,7 +335,9 @@ COPY patches/vllm/ /app/patches/vllm/
 
 # Patch setup.py so _is_hip() short-circuits on VLLM_TARGET_DEVICE=rocm at
 # build time, without probing torch.version.hip before it is installed.
-RUN sed -i 's/def _is_hip() -> bool:/def _is_hip() -> bool:\n    if VLLM_TARGET_DEVICE == "rocm":\n        return True/' /app/vllm/setup.py
+RUN sed -i 's/def _is_hip() -> bool:/def _is_hip() -> bool:\n    if VLLM_TARGET_DEVICE == "rocm":\n        return True/' /app/vllm/setup.py && \
+    grep -A2 '^def _is_hip() -> bool:$' /app/vllm/setup.py | \
+        grep -Fxq '    if VLLM_TARGET_DEVICE == "rocm":'
 
 # Apply every patch under patches/vllm/ in lexical order.
 RUN cd /app/vllm && \
@@ -357,7 +369,8 @@ RUN --mount=type=cache,target=/root/.cache/pip \
         CCACHE_DIR=/root/.cache/ccache \
         VLLM_VERSION_OVERRIDE="${VLLM_REF#v}+rocm" \
         pip3 wheel --no-build-isolation --no-deps --no-cache-dir -w /wheels . && \
-    pip3 install --no-cache-dir /wheels/vllm-*.whl
+    pip3 install --no-cache-dir --no-deps /wheels/vllm-*.whl && \
+    python3 -c 'import torch; assert torch.version.hip, "Expected a ROCm torch build"'
 
 # ----- 4. LMCache (upstream release + AMD patches) ---------------------------
 # Shallow-clone the pinned release tag directly (no history/other branches).

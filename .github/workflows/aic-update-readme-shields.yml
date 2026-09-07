@@ -2,95 +2,39 @@
 #
 # SPDX-License-Identifier: MIT
 #
-# Automatically opens a PR to sync README.md version shields whenever
-# docker/Dockerfile component ARGs are updated on main.
+# Prevent component metadata in README.md from drifting from the source-built
+# stack declared in docker/Dockerfile.
 
-name: AIC Update README Shields
+name: AIC README Version Check
 
 on:
-  push:
+  pull_request:
     branches: [main]
-    paths: [docker/Dockerfile]
+    paths:
+      - README.md
+      - docker/Dockerfile
+      - patches/**
+      - .github/scripts/workflows/sync-readme-versions.py
+      - .github/scripts/workflows/test_sync_readme_versions.py
+      - .github/workflows/aic-update-readme-shields.yml
+    types: [opened, synchronize, reopened]
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
-  update-shields:
-    name: Sync README version shields
+  check-readme-versions:
+    name: README version metadata
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
-      pull-requests: write
 
     steps:
       - uses: actions/checkout@v4
-
-      - name: Extract versions from Dockerfile
-        id: vers
-        run: |
-          ROCM=$(grep '^FROM' docker/Dockerfile | grep -oP '\d+\.\d+\.\d+' | head -1)
-          VLLM_VER=$(grep 'ARG VLLM_VERSION=' docker/Dockerfile | grep -oP '[\d.]+')
-          VLLM_ROC=$(grep 'ARG VLLM_ROCM_VARIANT=' docker/Dockerfile | grep -oP 'rocm\w+')
-          LMCACHE=$(grep 'ARG LMCACHE_REF=' docker/Dockerfile | grep -oP 'v[\d.]+')
-          NIXL=$(grep 'ARG NIXL_REF=' docker/Dockerfile | grep -oP 'v[\d.]+')
-          HSA=$(grep 'ARG HSA_SNOOP_REF=' docker/Dockerfile | grep -oP 'v[\d.]+')
-          echo "rocm=$ROCM"                    >> "$GITHUB_OUTPUT"
-          echo "vllm=${VLLM_VER}+${VLLM_ROC}" >> "$GITHUB_OUTPUT"
-          echo "vllm_ver=$VLLM_VER"            >> "$GITHUB_OUTPUT"
-          echo "vllm_roc=$VLLM_ROC"            >> "$GITHUB_OUTPUT"
-          echo "lmcache=$LMCACHE"              >> "$GITHUB_OUTPUT"
-          echo "nixl=$NIXL"                    >> "$GITHUB_OUTPUT"
-          echo "hsa=$HSA"                      >> "$GITHUB_OUTPUT"
-
-      - name: Update README shields and prose
-        env:
-          ROCM:     ${{ steps.vers.outputs.rocm }}
-          VLLM:     ${{ steps.vers.outputs.vllm }}
-          VLLM_VER: ${{ steps.vers.outputs.vllm_ver }}
-          VLLM_ROC: ${{ steps.vers.outputs.vllm_roc }}
-          LMCACHE:  ${{ steps.vers.outputs.lmcache }}
-          NIXL:     ${{ steps.vers.outputs.nixl }}
-          HSA:      ${{ steps.vers.outputs.hsa }}
-        run: |
-          # Badge URLs
-          sed -i "s|ROCm-[0-9.]*-green|ROCm-${ROCM}-green|g" README.md
-          sed -i "s|vLLM-[^-]*-blue\.svg|vLLM-${VLLM}-blue.svg|" README.md
-          sed -i "s|LMCache-v[0-9.]*-blue\.svg|LMCache-${LMCACHE}-blue.svg|" README.md
-          sed -i "s|NIXL-v[0-9.]*-blue\.svg|NIXL-${NIXL}-blue.svg|" README.md
-          sed -i "s|hsa--snoop-v[0-9.]*-blue\.svg|hsa--snoop-${HSA}-blue.svg|" README.md
-
-          # Stack overview diagram (line starting with "rocm/dev-ubuntu-24.04:")
-          sed -i "s|rocm/dev-ubuntu-24.04:[0-9.]*-complete|rocm/dev-ubuntu-24.04:${ROCM}-complete|g" README.md
-          sed -i "s|ROCm [0-9.]*\(, Python\)|ROCm ${ROCM}\1|g" README.md
-          # vLLM in diagram/table (e.g. "v0.25.0+rocm723" or "0.25.0+rocm723")
-          sed -i "s|vLLM v[0-9.+a-z]*  (pre-built|vLLM v${VLLM}  (pre-built|" README.md
-          sed -i "s|v[0-9.]*+rocm[0-9]* (pre-built wheel, bundles torch)|v${VLLM} (pre-built wheel, bundles torch)|" README.md
-          # vLLM source URL in component table
-          sed -i "s|wheels\.vllm\.ai/rocm/[0-9.]*/rocm[0-9]*|wheels.vllm.ai/rocm/${VLLM_VER}/${VLLM_ROC}|" README.md
-          # LMCache version in prose (table row)
-          PATCH_COUNT=$(ls patches/lmcache/*.patch 2>/dev/null | wc -l)
-          sed -i "s|\`v[0-9.]*\` + [0-9]* AMD patches|\`${LMCACHE}\` + ${PATCH_COUNT} AMD patches|" README.md
-          # NIXL version in table row
-          sed -i "s|\`v[0-9.]*\` + \`nixl-rocm|\`${NIXL}\` + \`nixl-rocm|" README.md
-
-      - name: Open PR if README changed
-        uses: peter-evans/create-pull-request@v7
         with:
-          token: ${{ secrets.GITHUB_TOKEN }}
-          commit-message: "docs: sync README shields with Dockerfile versions"
-          title: "docs: sync README version shields with Dockerfile"
-          body: |
-            Automated update: README.md version shields and Stack overview prose
-            synced from `docker/Dockerfile` ARGs.
+          persist-credentials: false
 
-            | Component | Version |
-            | --- | --- |
-            | ROCm | `${{ steps.vers.outputs.rocm }}` |
-            | vLLM | `${{ steps.vers.outputs.vllm }}` |
-            | LMCache | `${{ steps.vers.outputs.lmcache }}` |
-            | NIXL | `${{ steps.vers.outputs.nixl }}` |
-            | hsa-snoop | `${{ steps.vers.outputs.hsa }}` |
+      - name: Check README component metadata
+        run: python3 .github/scripts/workflows/sync-readme-versions.py --check
 
-            Generated by the [AIC Update README Shields](${{ github.server_url }}/${{ github.repository }}/actions/workflows/aic-update-readme-shields.yml) workflow.
-          branch: auto/readme-shields
-          labels: documentation
-          delete-branch: true
+      - name: Test README metadata sync
+        run: python3 .github/scripts/workflows/test_sync_readme_versions.py

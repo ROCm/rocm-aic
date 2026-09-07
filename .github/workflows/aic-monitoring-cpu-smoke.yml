@@ -54,7 +54,7 @@ jobs:
       - name: Run CPU monitoring smoke test on SPUR
         run: |
           SHA="${{ github.event.workflow_run.head_sha || github.sha }}"
-          bash .github/scripts/spur-monitoring-cpu-smoke.sh "${SHA}"
+          bash .github/scripts/workflows/spur-monitoring-cpu-smoke.sh "${SHA}"
 
       - name: Upload metrics reference page artifact
         uses: actions/upload-artifact@v4

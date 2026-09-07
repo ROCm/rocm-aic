@@ -25,7 +25,11 @@
 | `AIC_TINY_MODEL` | `Qwen/Qwen2.5-0.5B-Instruct` | Model served by `make tiny-test` (end-to-end serve check) |
 | `HF_HOME` | `~/.cache/huggingface` (`/shared_nfs/huggingface` on SPUR) | Persistent Hugging Face cache used by normal, cliff, monitoring, and tiny-model paths |
 | `TENSOR_PARALLEL_SIZE` | `1` | vLLM tensor parallel degree |
-| `GPU` | `0` | ROCR_VISIBLE_DEVICES for the vllm container |
+| `GPU` | `0` | Local fallback GPU when no scheduler visibility variable is set. |
+| `AIC_ROCR_VISIBLE` | resolved GPU set | `ROCR_VISIBLE_DEVICES` for every container with `/dev/kfd`. **Absolute** host GPU IDs (e.g. `3` or `2,5`). On standard Slurm, preserves `ROCR_VISIBLE_DEVICES`, then `HIP_VISIBLE_DEVICES`, then `CUDA_VISIBLE_DEVICES`; on SPUR it comes from the controller allocation and an unresolvable allocation fails the job. |
+| `AIC_HIP_VISIBLE` | relative to `AIC_ROCR_VISIBLE` | `HIP_VISIBLE_DEVICES` and `CUDA_VISIBLE_DEVICES`. **Relative** indices `0..n-1` (e.g. `0` or `0,1`) — HIP filters the set ROCR already filtered. Set together with `AIC_ROCR_VISIBLE`. |
+| `AIC_CLIFF_GPUS` | `1` | GPUs reserved by a SPUR `make cliff-submit` (`--gpus=N`). Raise only alongside a matching `TENSOR_PARALLEL_SIZE` |
+| `AIC_TEST_GPUS` | `1` | GPUs reserved by SPUR `smoke-test` and `tiny-test` jobs (`--gpus=N`). Standard Slurm continues to use `AIC_TEST_GRES`. |
 | `AIC_NVME_AUTO` | `1` (cliff) | Auto-detect a dedicated local NVMe for the LMCache tiers: reuse a mounted `aic-lmcache` volume, else format+mount a raw non-root spare, else use a non-root mounted NVMe, else node-local `/tmp`. `0` forces `/tmp`; needs passwordless `sudo` to format/mount |
 | `AIC_NVME_MOUNT` | `/mnt/aic-lmcache` | Mountpoint used when auto-provisioning a spare NVMe (left mounted for reuse) |
 | `AIC_MONITORING` | `1` | Auto-start the Prometheus sidecar in cliff sbatch runs (`0` to skip) |

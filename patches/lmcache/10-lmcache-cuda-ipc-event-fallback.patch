@@ -19,20 +19,20 @@ _on_raw_future_complete().  Three fixes in DeviceMessagingFuture:
    leave self.event_ = None (fallback mode) instead of propagating.
 
 2. wait(): replace `assert self.event_ is not None` with a None check;
-   when event_ is None, return True — this is safe because the response
-   message is only sent by LMCache after event_backend.record_event() in
-   its finally block, so raw_future completion implies the GPU transfer has
-   been enqueued and the event recorded on LMCache's side.
+   when event_ is None, return True. The raw response is sent only after
+   LMCache reaches a terminal state and records its response event: either a
+   transfer was enqueued or patch 11 failed it closed. `wait()`/`query()`
+   therefore report completion only; callers that need operation success must
+   inspect `result()`, which carries the response boolean.
 
 3. query(): same reasoning — raw_future done is sufficient when event_ is None.
 
-Note: the raw-future fallback is correct only because patch 11 makes store()
-fail-closed when import_event fails on the LMCache side.  If LMCache cannot
-import the producer event it skips the store entirely; the response message
-is never sent.  Therefore a raw response message reaching vLLM's future
-implies the store completed successfully with a valid event — the event import
-failure here is on the vLLM consumer side, which is a separate HIP IPC handle
-created after the store succeeded.
+Note: patch 11 makes server-side producer-event import failures fail closed.
+That path records and returns a response event with `False`, so the raw-future
+fallback here is safe for completion ordering but does not imply a successful
+store. The event import failure handled here is on the vLLM consumer side,
+which is a separate HIP IPC handle created after LMCache reached its terminal
+state.
 
 Observed: SPUR MI355X gfx950, ROCm 7.14, LMCache v0.5.2, cliff jobs
 11872 through 12056.
@@ -61,9 +61,9 @@ Applies after patches 01-09.
 
 -        assert self.event_ is not None
 +        if self.event_ is None:
-+            # import_event failed on this (vLLM consumer) side; the raw response
-+            # message only arrives after LMCache recorded its event post-transfer,
-+            # so raw_future completion implies the GPU transfer completed.
++            # import_event failed on this (vLLM consumer) side. The raw response
++            # arrives only after LMCache reached a terminal state and recorded
++            # an event; inspect result() for the operation-success boolean.
 +            return True
          self._event_backend.synchronize_event(self.event_, self.device_)
 
@@ -74,7 +74,7 @@ Applies after patches 01-09.
              self._on_raw_future_complete()
 -            assert self.event_ is not None
 +            if self.event_ is None:
-+                return True  # Same reasoning as wait(): raw response implies transfer done.
++                return True  # Completion only; result() carries operation success.
              return self._event_backend.query_event(self.event_)
 
          return False

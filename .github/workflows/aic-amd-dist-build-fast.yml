@@ -2,6 +2,11 @@ name: AIC Hardware Test - AMD Dist Build (fast)
 
 on:
   workflow_dispatch:
+    inputs:
+      cancel_slurm_job:
+        description: "Cancel one orphaned SPUR Slurm job instead of running CI"
+        required: false
+        type: string
   issue_comment:
     types: [created]
 
@@ -14,13 +19,52 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  cleanup-orphan:
+    if: github.event_name == 'workflow_dispatch' && inputs.cancel_slurm_job != ''
+    runs-on: [self-hosted, rocm-aic-cicd]
+    timeout-minutes: 5
+    env:
+      AIC_SPUR_HOST: ${{ secrets.AIC_SPUR_HOST }}
+      AIC_SPUR_CONTROLLER: ${{ secrets.AIC_SPUR_CONTROLLER }}
+      JOB_ID: ${{ inputs.cancel_slurm_job }}
+
+    steps:
+      - name: Cancel orphaned SPUR job
+        shell: bash
+        run: |
+          set -euo pipefail
+          export PATH="/usr/local/bin:${PATH}"
+          [[ "${JOB_ID}" =~ ^[0-9]+$ ]] || {
+            echo "ERROR: Slurm job ID must be numeric" >&2
+            exit 2
+          }
+          ssh -o ServerAliveInterval=30 -o ServerAliveCountMax=4 "${AIC_SPUR_HOST}" env \
+            JOB_ID="${JOB_ID}" \
+            AIC_SPUR_CONTROLLER="${AIC_SPUR_CONTROLLER}" \
+            bash <<'REMOTE'
+          set -euo pipefail
+          export PATH="/usr/local/bin:${PATH}"
+          scancel --controller="${AIC_SPUR_CONTROLLER}" "${JOB_ID}"
+          for _ in 1 2 3 4 5 6 7 8 9 10; do
+              if ! squeue --controller="${AIC_SPUR_CONTROLLER}" -h 2>/dev/null |
+                  awk -v id="${JOB_ID}" '$1 == id { found = 1 } END { exit found ? 0 : 1 }'; then
+                  echo "Slurm job ${JOB_ID} is no longer queued"
+                  exit 0
+              fi
+              sleep 1
+          done
+          echo "ERROR: Slurm job ${JOB_ID} is still queued after scancel" >&2
+          exit 1
+          REMOTE
+
   # Validate /run-ci-fast slash command on PRs; skipped for manual triggers.
   authorize:
-    if: >
-      github.event_name != 'issue_comment' || (
+    if: >-
+      (github.event_name != 'workflow_dispatch' || inputs.cancel_slurm_job == '') &&
+      (github.event_name != 'issue_comment' || (
         github.event.issue.pull_request != null &&
         contains(github.event.comment.body, '/run-ci-fast')
-      )
+      ))
     runs-on: ubuntu-latest
     permissions:
       pull-requests: write

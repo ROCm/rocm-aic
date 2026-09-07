@@ -1,69 +1,27 @@
-# Add vllm:model_weights_memory_bytes Prometheus gauge
+# Add vllm:model_weights_memory_bytes Prometheus gauge.
 #
-# Exposes the GPU memory consumed by model weights as a static gauge so
-# operators can distinguish weight VRAM from KV-cache VRAM without relying
-# on the AMD device-metrics-exporter alone.
-#
-# Four files are touched:
-#
-#   vllm/v1/metrics/stats.py     — add model_weights_memory_bytes: int = 0
-#                                  field to SchedulerStats
-#   vllm/v1/worker/gpu_worker.py — add get_model_weights_memory_bytes() so
-#                                  EngineCore can retrieve the value via RPC
-#   vllm/v1/engine/core.py       — call get_model_weights_memory_bytes() once
-#                                  after determine_available_memory() and stamp
-#                                  the result into every SchedulerStats via
-#                                  _make_iteration_details_stats()
-#   vllm/v1/metrics/loggers.py   — register gauge + call .set() in record()
-#
-# The weight memory value is static after model load (set by
-# DeviceMemoryProfiler in GPUModelRunner.load_model()).  The guard `> 0` in
-# record() prevents overwriting a valid reading with the dataclass default.
---- a/vllm/v1/metrics/stats.py
-+++ b/vllm/v1/metrics/stats.py
-@@ -198,6 +198,8 @@
-     kv_cache_usage: float = 0.0
-     iteration_details: SchedulerIterationDetails | None = None
-
-+    model_weights_memory_bytes: int = 0
-+
-     prefix_cache_stats: PrefixCacheStats = field(default_factory=PrefixCacheStats)
-     connector_prefix_cache_stats: PrefixCacheStats | None = None
-
---- a/vllm/v1/worker/gpu_worker.py
-+++ b/vllm/v1/worker/gpu_worker.py
-@@ -605,6 +605,14 @@
-             int(self.available_kv_cache_memory_bytes)
-         )
-
-+    def get_model_weights_memory_bytes(self) -> int:
-+        """Return bytes of GPU memory consumed by model weights.
-+
-+        Set by GPUModelRunner.load_model() via DeviceMemoryProfiler and
-+        is static for the lifetime of the engine.
-+        """
-+        return int(self.model_runner.model_memory_usage)
-+
-     @staticmethod
-     def _uses_gpu_video_backend(mm_config) -> bool:
-         video_kwargs = mm_config.media_io_kwargs.get("video", {})
+# Rebased for vLLM v0.27.1. Exposes the static GPU memory consumed by model
+# weights so operators can distinguish it from KV-cache memory.
+diff --git a/vllm/v1/engine/core.py b/vllm/v1/engine/core.py
+index 11c78c7e74..a2f34398f4 100644
 --- a/vllm/v1/engine/core.py
 +++ b/vllm/v1/engine/core.py
-@@ -289,6 +289,13 @@
+@@ -296,6 +296,14 @@ class EngineCore:
              # Attention free models don't need memory for kv cache
              available_gpu_memory = [0] * len(kv_cache_specs)
 
-+        # Capture weight memory once after profiling (static for engine lifetime).
-+        # Falls back to 0 for attention-free models that skip memory profiling.
++        # Model weights are static after model load, so retrieve this once
++        # after profiling and stamp it into each scheduler statistics update.
 +        self._model_weights_memory_bytes: int = (
 +            self.collective_rpc("get_model_weights_memory_bytes")[0]
-+            if has_kv_cache else 0
++            if has_kv_cache
++            else 0
 +        )
 +
          assert len(kv_cache_specs) == len(available_gpu_memory)
 
          # Track max_model_len before KV cache config to detect auto-fit changes
-@@ -551,6 +558,7 @@
+@@ -559,6 +567,7 @@ class EngineCore:
      ) -> SchedulerStats:
          stats = self.scheduler.make_stats() or SchedulerStats()
          stats.iteration_details = iteration_details
@@ -71,17 +29,17 @@
          return stats
 
      def _attach_iteration_details(
+diff --git a/vllm/v1/metrics/loggers.py b/vllm/v1/metrics/loggers.py
+index 692106cf39..7e22a8067d 100644
 --- a/vllm/v1/metrics/loggers.py
 +++ b/vllm/v1/metrics/loggers.py
-@@ -568,6 +568,18 @@
+@@ -568,6 +568,16 @@ class PrometheusStatLogger(AggregateStatLoggerBase):
              gauge_kv_cache_usage, per_engine_labelvalues
          )
 
 +        gauge_model_weights_memory = self._gauge_cls(
 +            name="vllm:model_weights_memory_bytes",
-+            documentation=(
-+                "GPU memory used by model weights in bytes (static after load)."
-+            ),
++            documentation="GPU memory used by model weights in bytes (static after load).",
 +            multiprocess_mode="mostrecent",
 +            labelnames=labelnames,
 +        )
@@ -92,7 +50,7 @@
          if envs.VLLM_COMPUTE_NANS_IN_LOGITS:
              counter_corrupted_requests = self._counter_cls(
                  name="vllm:corrupted_requests",
-@@ -1122,6 +1134,11 @@
+@@ -1122,6 +1132,11 @@ class PrometheusStatLogger(AggregateStatLoggerBase):
              )
              self.gauge_kv_cache_usage[engine_idx].set(scheduler_stats.kv_cache_usage)
 
@@ -104,3 +62,26 @@
              self.counter_prefix_cache_queries[engine_idx].inc(
                  scheduler_stats.prefix_cache_stats.queries
              )
+diff --git a/vllm/v1/metrics/stats.py b/vllm/v1/metrics/stats.py
+index 3956f7e441..ee79f34a07 100644
+--- a/vllm/v1/metrics/stats.py
++++ b/vllm/v1/metrics/stats.py
+@@ -201,1 +201,3 @@ class SchedulerStats:
++    model_weights_memory_bytes: int = 0
++
+     prefix_cache_stats: PrefixCacheStats = field(default_factory=PrefixCacheStats)
+diff --git a/vllm/v1/worker/gpu_worker.py b/vllm/v1/worker/gpu_worker.py
+index bbab98dbd7..6f72b41484 100644
+--- a/vllm/v1/worker/gpu_worker.py
++++ b/vllm/v1/worker/gpu_worker.py
+@@ -610,6 +610,10 @@ class Worker(WorkerBase):
+             getattr(self.parallel_config, "_api_process_count", 1),
+         )
+
++    def get_model_weights_memory_bytes(self) -> int:
++        """Return bytes of GPU memory consumed by model weights."""
++        return int(self.model_runner.model_memory_usage)
++
+     def get_kv_connector_handshake_metadata(
+         self,
+     ) -> dict[tuple[int, int], KVConnectorHandshakeMetadata] | None:

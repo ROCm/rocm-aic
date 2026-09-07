@@ -47,7 +47,7 @@ Applies after patches 01-10.
 ---
 --- a/lmcache/v1/multiprocess/modules/lmcache_driven_transfer.py
 +++ b/lmcache/v1/multiprocess/modules/lmcache_driven_transfer.py
-@@ -1045,10 +1045,23 @@ class LMCacheDrivenTransferModule(InstanceLivenessTarget):
+@@ -1099,10 +1099,20 @@ class LMCacheDrivenTransferModule(InstanceLivenessTarget):
                  cache_context, gpu_block_ids
              )
 
@@ -61,21 +61,18 @@ Applies after patches 01-10.
 +                )
 +                event_backend.wait_event(producer_event, cache_context.stream)
 +            except Exception:
-+                # HIP IPC events are broken on some ROCm platforms (e.g. gfx950/ROCm 7.14):
-+                # from_ipc_handle raises hipErrorInvalidValue immediately after export.
-+                # Fail closed: there is no safe alternative synchronisation — synchronizing
-+                # LMCache's device context does not establish ordering on vLLM's producer
-+                # stream.  Return a failed store response; the caller retries or discards.
++                # HIP IPC events can fail on some ROCm platforms. There is no
++                # safe cross-process synchronization fallback, so fail closed.
 +                logger.warning(
-+                    "Event.from_ipc_handle failed (hipErrorInvalidValue on ROCm?); "
-+                    "skipping store — cannot establish cross-process ordering without IPC event."
++                    "Event.from_ipc_handle failed; skipping store because cross-process "
++                    "ordering cannot be established without an IPC event."
 +                )
 +                event_backend.record_event(event, cache_context.stream)
 +                return event_backend.export_event(event, cache_context.device), False
 
              # CPU-synchronous sentinel: a GPU store is about to be enqueued.
              # Must be published via publish() (not publish_on_stream) so the
-@@ -1278,10 +1291,20 @@ class LMCacheDrivenTransferModule(InstanceLivenessTarget):
+@@ -1337,10 +1347,20 @@ class LMCacheDrivenTransferModule(InstanceLivenessTarget):
              block_ids_per_group_gpu = downsample_and_stage_block_ids(
                  cache_context, gpu_block_ids
              )
@@ -89,14 +86,14 @@ Applies after patches 01-10.
 +                )
 +                event_backend.wait_event(producer_event, cache_context.stream)
 +            except Exception:
-+                # Same fail-closed path as store(): there is no safe alternative
-+                # synchronisation across processes.  Return a failed retrieve response.
++                # See store(): do not run an H2D transfer without producer
++                # ordering, because that could consume incomplete KV blocks.
 +                logger.warning(
-+                    "Event.from_ipc_handle failed (hipErrorInvalidValue on ROCm?); "
-+                    "skipping retrieve — cannot establish cross-process ordering without IPC event."
++                    "Event.from_ipc_handle failed; skipping retrieve because cross-process "
++                    "ordering cannot be established without an IPC event."
 +                )
 +                event_backend.record_event(event, cache_context.stream)
 +                return event_backend.export_event(event, cache_context.device), False
 
-             prefetched_keys: list[ObjectKey] = []
-             total_bytes = 0
+             # Per object group, the prefetch only locked the in-window suffix
+             # (the last ``num_chunks_in_sw`` chunks; the whole prefix for full

@@ -1,0 +1,120 @@
+#!/usr/bin/env python3
+"""Print the comma-separated GPU device IDs allocated to a Spur job."""
+
+import os
+import subprocess
+import sys
+
+DEFAULT_CONTROLLER = "http://crs-m2m-cpu-spur-005.crusoe.amd.com:6817"
+
+
+def encode_varint(value: int) -> bytes:
+    output = bytearray()
+    while value > 0x7F:
+        output.append((value & 0x7F) | 0x80)
+        value >>= 7
+    output.append(value)
+    return bytes(output)
+
+
+def protobuf_fields(data: bytes):
+    index = 0
+    while index < len(data):
+        tag = shift = 0
+        while True:
+            byte = data[index]
+            index += 1
+            tag |= (byte & 0x7F) << shift
+            if not byte & 0x80:
+                break
+            shift += 7
+        field, wire_type = tag >> 3, tag & 7
+
+        if wire_type == 0:
+            value = shift = 0
+            while True:
+                byte = data[index]
+                index += 1
+                value |= (byte & 0x7F) << shift
+                if not byte & 0x80:
+                    break
+                shift += 7
+        elif wire_type == 2:
+            size = shift = 0
+            while True:
+                byte = data[index]
+                index += 1
+                size |= (byte & 0x7F) << shift
+                if not byte & 0x80:
+                    break
+                shift += 7
+            value = data[index : index + size]
+            index += size
+        else:
+            raise RuntimeError(f"unsupported protobuf wire type {wire_type}")
+        yield field, value
+
+
+def first(entries, field, default=None):
+    return next((value for number, value in entries if number == field), default)
+
+
+def get_job(job_id: int):
+    controller_config = os.getenv("SPUR_CONTROLLER_ADDR", DEFAULT_CONTROLLER)
+    controllers = [endpoint.strip().rstrip("/") for endpoint in controller_config.split(",") if endpoint.strip()]
+    if not controllers:
+        raise RuntimeError("SPUR_CONTROLLER_ADDR contains no controller endpoints")
+
+    request = b"\x08" + encode_varint(job_id)
+    frame = b"\x00" + len(request).to_bytes(4, "big") + request
+    curl_args = [
+        "curl",
+        "--http2-prior-knowledge",
+        "-fsS",
+        "-H",
+        "Content-Type: application/grpc",
+        "-H",
+        "TE: trailers",
+        "--data-binary",
+        "@-",
+    ]
+    errors = []
+    for controller in controllers:
+        result = subprocess.run(
+            [*curl_args, f"{controller}/slurm.SlurmController/GetJob"],
+            input=frame,
+            capture_output=True,
+        )
+        if result.returncode == 0:
+            return result.stdout
+        detail = result.stderr.decode(errors="replace").strip()
+        errors.append(f"{controller}: {detail or f'curl exited {result.returncode}'}")
+    raise RuntimeError("all controller queries failed: " + "; ".join(errors))
+
+
+def main() -> None:
+    if len(sys.argv) != 2 or not sys.argv[1].isdigit():
+        raise SystemExit(f"usage: {sys.argv[0]} JOB_ID")
+
+    body = get_job(int(sys.argv[1]))
+    if len(body) < 5 or body[0] != 0:
+        raise RuntimeError("unexpected gRPC response")
+    message_size = int.from_bytes(body[1:5], "big")
+    job = list(protobuf_fields(body[5 : 5 + message_size]))
+    resources = list(protobuf_fields(first(job, 40, b"")))
+
+    gpu_ids = []
+    for _, allocation_map in (item for item in resources if item[0] == 3):
+        allocation_map = list(protobuf_fields(allocation_map))
+        resource = first(allocation_map, 1).decode()
+        if not resource.startswith("gpu"):
+            continue
+        allocations = list(protobuf_fields(first(allocation_map, 2)))
+        for _, device in (item for item in allocations if item[0] == 1):
+            gpu_ids.append(str(first(list(protobuf_fields(device)), 1, 0)))
+
+    print(",".join(gpu_ids))
+
+
+if __name__ == "__main__":
+    main()

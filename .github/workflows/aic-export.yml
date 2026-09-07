@@ -82,7 +82,7 @@ jobs:
       - name: Validate release notes renderer
         run: |
           set -euo pipefail
-          renderer=.github/scripts/render-release-notes.sh
+          renderer=.github/scripts/workflows/render-release-notes.sh
           args=(docker/Dockerfile v-test deadbeef gfx942 rocm-aic ROCm/rocm-aic)
           fixtures="$(mktemp -d)"
           trap 'rm -rf "${fixtures}"' EXIT
@@ -98,14 +98,14 @@ jobs:
           ARG ROCM_VERSION=7.14.0
           ARG ROCM_BASE_IMAGE=rocm/dev-ubuntu-24.04:${ROCM_VERSION}-full
           ARG LMCACHE_GIT_URL=https://github.com/LMCache/LMCache.git
-          ARG LMCACHE_REF=v0.5.3
+          ARG LMCACHE_REF=v0.5.4
           ARG NIXL_GIT_URL=https://github.com/ai-dynamo/nixl.git
           ARG NIXL_REF=v1.3.2
           EOF
           full_args=("${fixtures}/Dockerfile.full" "${args[@]:1}")
           full="$(bash "${renderer}" "${full_args[@]}")"
           printf '%s\n' "${full}" | grep -F -- '- **Base:** rocm/dev-ubuntu-24.04:7.14.0-full (ROCm 7.14.0, Python 3.12, x86_64)'
-          printf '%s\n' "${full}" | grep -F -- "- **LMCache:** https://github.com/LMCache/LMCache.git @ ${markdown_tick}v0.5.3${markdown_tick} + AIC patches"
+          printf '%s\n' "${full}" | grep -F -- "- **LMCache:** https://github.com/LMCache/LMCache.git @ ${markdown_tick}v0.5.4${markdown_tick} + AIC patches"
 
           grep -v '^ARG NIXL_REF=' "${fixtures}/Dockerfile.full" > "${fixtures}/Dockerfile.missing-ref"
           missing_args=("${fixtures}/Dockerfile.missing-ref" "${args[@]:1}")

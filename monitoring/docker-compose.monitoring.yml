@@ -99,6 +99,10 @@ services:
     profiles: ["exporters", "exporters-safe"]
     network_mode: host
     restart: unless-stopped
+    environment:
+      - ROCR_VISIBLE_DEVICES=${AIC_ROCR_VISIBLE:-${GPU:-0}}
+      - HIP_VISIBLE_DEVICES=${AIC_HIP_VISIBLE:-0}
+      - CUDA_VISIBLE_DEVICES=${AIC_HIP_VISIBLE:-0}
     devices:
       - /dev/kfd
       - /dev/dri
@@ -183,6 +187,10 @@ services:
     pid: "${AIC_HSA_SNOOP_PID_MODE:-container:aic-lmcache}"
     privileged: true
     restart: unless-stopped
+    environment:
+      - ROCR_VISIBLE_DEVICES=${AIC_ROCR_VISIBLE:-${GPU:-0}}
+      - HIP_VISIBLE_DEVICES=${AIC_HIP_VISIBLE:-0}
+      - CUDA_VISIBLE_DEVICES=${AIC_HIP_VISIBLE:-0}
     devices:
       - /dev/kfd
       - /dev/dri

@@ -17,28 +17,38 @@ Add this before any `srun` invocation, or it will fail with
 - **No `--account` flag needed** for `srun`
 - Node naming convention: `crsuse2-m2m-NNN`
 
-## ROCm 7.14 torch wheel integration — known issues (2026-07-20)
+## Historical ROCm 7.14 torch wheel integration issue (2026-07-20)
 
-The Dockerfile was updated to use AMD's native ROCm 7.14 wheel index
+The Dockerfile was temporarily updated to use AMD's native ROCm 7.14 wheel index
 (`repo.amd.com/rocm/whl-multi-arch/`) for PyTorch. Testing on the SPUR
 cluster (MI355X / gfx950) revealed a **blocking incompatibility**:
 
-**`torch 2.12.0+rocm7.14.0` ships Triton 3.7.1, which breaks vLLM 0.25.1.**
+**`torch 2.12.0+rocm7.14.0` ships Triton 3.7.1, which breaks older vLLM 0.25.1.**
 vLLM's engine core fails to start on gfx950 nodes — Triton kernel calls
-fail because Triton is disabled at startup due to circular import side-effects
+failed because Triton was disabled at startup due to circular import side-effects
 in vLLM's platform detection code.
 
-### Quick unblock options
+The current Dockerfile intentionally uses `torch 2.13.0+rocm7.2` with vLLM
+`v0.27.1`; validate changes to either pin on an MI355X before changing this
+historical workaround.
+
+vLLM v0.27.1 no longer calls `logger.warning_once()` from
+`vllm.platforms.rocm._get_gcn_arch()` when the amdsmi probe fails, so the old
+ROCm-AIC circular-import patch was retired. The SPUR validation must confirm
+that the vLLM ROCm-platform import and engine startup remain healthy.
+
+### Historical unblock options
 
 1. **Use gfx942 (MI300X) nodes** — the Triton issue manifests on gfx950
    (MI355X) specifically; gfx942 nodes have not been fully tested but the
    hipErrorInvalidImage issue is resolved with `AIC_ROCM_ARCH=gfx942`.
 
-2. **Revert torch to pytorch.org** — change the Dockerfile torch install back
-   to `torch 2.13.0+rocm7.2` from `download.pytorch.org/whl/rocm7.2`.
-   That wheel ships a Triton version compatible with vLLM 0.25.1.
+2. **Use the current pytorch.org pin** — the Dockerfile already installs
+   `torch 2.13.0+rocm7.2` from `download.pytorch.org/whl/rocm7.2`; retain it
+   unless SPUR validation proves a different compatible pair is needed.
 
-3. **Upgrade vLLM** — newer vLLM versions (0.28+) may support Triton 3.7.
+3. **Upgrade vLLM further** — only after validating the current `v0.27.1`
+   stack; newer vLLM versions may support the ROCm 7.14 Triton combination.
 
 ### SPUR cluster cliff submission quirks
 

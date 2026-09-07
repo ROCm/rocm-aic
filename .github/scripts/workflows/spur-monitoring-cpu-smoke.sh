@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Runs on the self-hosted runner; SSHes to the SPUR head node (AIC_SPUR_HOST),
+# Runs from a workflow checkout on the self-hosted runner; SSHes to the SPUR head node (AIC_SPUR_HOST),
 # submits a CPU-only srun job (no --gres=gpu), and:
 #   1. Launches node-exporter, nvme-exporter, rdma-exporter, and Prometheus
 #   2. Runs the vLLM emulator (backed by the existing rocm-aic image)
@@ -39,6 +39,7 @@ ssh -o ServerAliveInterval=30 -o ServerAliveCountMax=4 "${AIC_SPUR_HOST}" env \
     AIC_SMOKE_USE_REGISTRY="${AIC_SMOKE_USE_REGISTRY}" \
     bash << 'REMOTE'
 set -euo pipefail
+export PATH="/usr/local/bin:${PATH}"
 
 SHORT="${SHA:0:7}"
 WORKDIR="$HOME/Projects/rocm-aic.${SHORT}"

@@ -5,6 +5,7 @@ set -euo pipefail
 #
 # SPDX-License-Identifier: MIT
 
+# This script runs directly from a workflow checkout; it is not installed on a runner.
 if [[ $# -ne 6 ]]; then
     echo "usage: $0 <Dockerfile> <tag> <source-sha> <gpu-arch> <image-name> <repository>" >&2
     exit 2
