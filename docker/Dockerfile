@@ -217,8 +217,8 @@ ARG TRITON_REF
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv pip install --system pybind11
 
-RUN git clone ${TRITON_GIT_URL} triton \
-    && git -C triton/ checkout ${TRITON_REF}
+RUN git clone "${TRITON_GIT_URL}" triton \
+    && git -C triton/ checkout "${TRITON_REF}"
 
 RUN cd triton \
     && if [ ! -f setup.py ]; then cd python; fi \
@@ -238,8 +238,8 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
 
 # torch 2.12 emits float->__bf16 libcalls (__truncsfbf2) absent from gcc-11 libgcc; build with gcc-13.
 RUN update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-13 130 --slave /usr/bin/g++ g++ /usr/bin/g++-13
-RUN git clone ${PYTORCH_GIT_URL} pytorch \
-    && git -C pytorch checkout ${PYTORCH_REF}
+RUN git clone "${PYTORCH_GIT_URL}" pytorch \
+    && git -C pytorch checkout "${PYTORCH_REF}"
 
 RUN --mount=type=cache,target=/root/.cache/uv \
     cd pytorch \
@@ -273,8 +273,8 @@ FROM build_pytorch_runtime AS build_torchvision
 ARG TORCHVISION_GIT_URL
 ARG TORCHVISION_REF
 
-RUN git clone ${TORCHVISION_GIT_URL} vision \
-    && git -C vision checkout ${TORCHVISION_REF}
+RUN git clone "${TORCHVISION_GIT_URL}" vision \
+    && git -C vision checkout "${TORCHVISION_REF}"
 
 RUN --mount=type=cache,target=/root/.cache/ccache \
     cd vision \
@@ -282,7 +282,7 @@ RUN --mount=type=cache,target=/root/.cache/ccache \
     && export CMAKE_CXX_COMPILER_LAUNCHER=ccache \
     && export USE_ROCM=1 \
     && export USE_CUDA=0 \
-    && export PYTORCH_ROCM_ARCH=${ROCM_ARCH} \
+    && export PYTORCH_ROCM_ARCH="${ROCM_ARCH}" \
     && python3 setup.py bdist_wheel --dist-dir=dist \
     && mkdir -p /wheels && find vision/dist -type f -name "*.whl" -exec cp {} /wheels/ \;
 
@@ -296,8 +296,8 @@ ARG TORCHAUDIO_GIT_URL
 ARG TORCHAUDIO_REF
 ARG ROCM_ARCH
 
-RUN git clone ${TORCHAUDIO_GIT_URL} audio \
-    && git -C audio checkout ${TORCHAUDIO_REF} \
+RUN git clone "${TORCHAUDIO_GIT_URL}" audio \
+    && git -C audio checkout "${TORCHAUDIO_REF}" \
     && git -C audio submodule update --init --recursive
 
 RUN --mount=type=cache,target=/root/.cache/pip \
