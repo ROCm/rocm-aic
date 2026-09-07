@@ -379,6 +379,10 @@ PROLOGUE
 
     local jobid="" logfile="" rc=0
     local active_job_file="${AIC_CI_ACTIVE_JOB_FILE:-}"
+    # Published for callers that need to inspect what the job left behind: the
+    # per-job log dir is named after the job id and is otherwise only known in
+    # here.  Cleared per call so a caller cannot read a previous job's id.
+    AIC_LAST_JOB_ID=""
 
     _record_active_job() {
         [[ -n "${active_job_file}" ]] || return 0
@@ -414,6 +418,7 @@ PROLOGUE
 
         jobid="$(printf '%s\n' "${submit_out}" | grep -oE '[0-9]+$' | tail -1)"
         [[ -n "${jobid}" ]] || die "could not parse job id from sbatch output: ${submit_out}"
+        AIC_LAST_JOB_ID="${jobid}"
         _record_active_job
         logfile="${AIC_DAY_DIR}/logs/${jobid}/${logname}.out"
         log "submitted ${jobname} as job ${jobid} (partition ${AIC_BUILD_PARTITION})"
@@ -614,6 +619,7 @@ PROLOGUE
             sleep 0.2; tries=$((tries + 1))
         done
         jobid="$(head -n1 "${idfile}" 2>/dev/null | tr -d '[:space:]' | cut -d';' -f1)"
+        AIC_LAST_JOB_ID="${jobid}"
         [[ -z "${jobid}" ]] || _record_active_job
 
         logfile="${AIC_DAY_DIR}/logs/${jobid:-unknown}/${logname}.out"
@@ -1540,7 +1546,34 @@ REMOTE
         --nodes=1 --ntasks=1 \
         --cpus-per-task="${AIC_ACCURACY_CPUS}" --mem="${AIC_ACCURACY_MEM}" \
         --time="${AIC_ACCURACY_TIME}"
+    _verify_accuracy_scores "${AIC_LAST_JOB_ID}"
     log "accuracy-test complete"
+}
+
+# --- Verify the gate actually scored both arms -------------------------------
+# Same reasoning as _verify_tarball: the job runs on a remote node and a success
+# exit is not proof it did the work.  A gate is worse than a build here -- a
+# build that produces nothing fails later at load, whereas an accuracy gate that
+# ran nothing is indistinguishable from one that passed.  The two score files
+# are what every assertion in run-accuracy.sh is computed from, so if they are
+# not both present the "pass" means nothing.
+_verify_accuracy_scores() {
+    local jobid="${1:-}"
+    [[ -n "${jobid}" ]] ||
+        die "accuracy-test reported success but no job id was recorded; cannot verify it scored anything"
+    local logdir="${AIC_DAY_DIR}/logs/${jobid}"
+    local f
+    for f in baseline-score.json tiered-score.json; do
+        # NFS close-to-open consistency: the compute node's write can take a
+        # moment to become visible here even though the job has already exited.
+        local tries=0
+        until [[ -s "${logdir}/${f}" ]] || (( tries >= 15 )); do
+            sleep 2; tries=$((tries + 1))
+        done
+        [[ -s "${logdir}/${f}" ]] ||
+            die "accuracy-test reported success but produced no ${f}: ${logdir}/${f}"
+    done
+    log "verified accuracy scores: ${logdir}/{baseline,tiered}-score.json"
 }
 
 # --- main --------------------------------------------------------------------
