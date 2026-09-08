@@ -58,6 +58,12 @@ There is one gate, not a fast one and a thorough one — `accuracy-test-fast`
 differs only in the arch pin, exactly as `tiny-test-fast` differs from
 `tiny-test`.
 
+Each scored phase writes its number to `${AIC_LOG_DIR}` as
+`baseline-score.json`, `tiered-score.json` and `restart-score.json`. CI lifts
+all three out of the harvested log archive and reports them in the job summary,
+and on the `/run-ci-accuracy` path in the PR comment. Nothing is compared across
+runs — with no golden file, a run's own numbers are the only record it leaves.
+
 ## Skipping is a laptop default, not a CI one
 
 The fixtures in `conftest.py` skip when an endpoint is missing, so the package

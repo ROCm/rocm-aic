@@ -36,6 +36,11 @@ set -euo pipefail
 # which one side or the other always deletes, so they are archived off it and
 # scp'd back here for the workflow to upload.  A red gate is exactly when they
 # matter, so neither the archive nor the fetch is conditional on success.
+#
+# The scores themselves are then lifted out of the archive and reported to the
+# step summary (and as step outputs, which the PR chain puts in its comment).
+# The gate has no committed golden, so a run's own numbers are the only record
+# it produces, and an artifact nobody downloads is not a record.
 # The model uses the cluster-wide HF cache so it is downloaded once and reused
 # across CI workflows and SPUR accounts.
 
@@ -72,6 +77,101 @@ aic_ci_session_init "${SHORT}" "accuracy-test"
 ACCURACY_LOG_ARCHIVE_DIR="${AIC_CI_STORAGE_ROOT:+${AIC_CI_STORAGE_ROOT}/}accuracy-logs"
 ACCURACY_LOG_ARCHIVE="${ACCURACY_LOG_ARCHIVE_DIR}/accuracy-${SHORT}.${AIC_CI_RUN_KEY}.tar.gz"
 AIC_ACCURACY_LOG_DEST="${AIC_ACCURACY_LOG_DEST:-${RUNNER_TEMP:-/tmp}/accuracy-logs}"
+
+# Read one field out of a JSON object the gate itself wrote (one line, no
+# nesting), so a regex is sufficient and python3 need not exist on the runner.
+# Prints nothing when the file or the field is absent.
+_json_field() {
+    local file="$1" key="$2"
+    [[ -r "${file}" ]] || return 0
+    awk -v key="${key}" '
+        match($0, "\"" key "\"[[:space:]]*:[[:space:]]*(\"[^\"]*\"|[-+0-9.eE]+)") {
+            field = substr($0, RSTART, RLENGTH)
+            sub(/^[^:]*:[[:space:]]*/, "", field)
+            gsub(/"/, "", field)
+            print field
+            exit
+        }' "${file}"
+}
+
+# 4 dp, matching what the tests print and still far finer than the tolerances
+# they gate on.  Empty in, empty out, so an absent score stays absent.
+_fmt_score() {
+    awk 'NF { printf "%.4f", $1 }'
+}
+
+# Report the scores the gate measured.  Best-effort from end to end: a missing
+# or unreadable score thins the report, it never reddens a gate that passed and
+# never hides one that failed -- the verdict is the exit code below, not this.
+_report_scores() {
+    local archive tmp arm file model delta
+    archive="${AIC_ACCURACY_LOG_DEST}/${ACCURACY_LOG_ARCHIVE##*/}"
+    [[ -r "${archive}" ]] || return 0
+    tmp="$(mktemp -d)" || return 0
+    if ! tar -xzf "${archive}" -C "${tmp}"; then
+        echo "WARNING: could not unpack ${archive} to read the measured scores" >&2
+        rm -rf "${tmp}"
+        return 0
+    fi
+
+    # baseline-score.json is written by phase 1, tiered-score.json by phase 2 and
+    # restart-score.json by phase 4, all under logs/<slurm-job-id>/.  A gate that
+    # died early leaves the later ones absent, which is reported as absent.
+    local -A scores=()
+    local found=0
+    shopt -s nullglob
+    for arm in baseline tiered restart; do
+        for file in "${tmp}"/logs/*/"${arm}"-score.json; do
+            scores["${arm}"]="$(_json_field "${file}" score | _fmt_score)"
+            [[ -z "${model:-}" ]] && model="$(_json_field "${file}" model)"
+        done
+        [[ -n "${scores[${arm}]:-}" ]] && found=1
+    done
+    shopt -u nullglob
+
+    if (( found == 0 )); then
+        echo "WARNING: ${archive} recorded no scores" >&2
+        rm -rf "${tmp}"
+        return 0
+    fi
+
+    # Printed, not asserted on: the tolerance lives in tests/accuracy and is
+    # already enforced there, and duplicating it here would let the two drift.
+    delta=""
+    if [[ -n "${scores[baseline]:-}" && -n "${scores[tiered]:-}" ]]; then
+        delta="$(awk -v t="${scores[tiered]}" -v b="${scores[baseline]}" \
+            'BEGIN { printf "%+.4f", t - b }')"
+    fi
+
+    {
+        echo "### Accuracy gate — measured gsm8k scores"
+        echo
+        echo "\`${model:-unknown model}\`, exact_match strict-match, 5-shot, full 1319-item split."
+        echo
+        echo "| arm | score |"
+        echo "|---|---|"
+        [[ -n "${scores[baseline]:-}" ]] && echo "| baseline (VRAM-only) | ${scores[baseline]} |"
+        [[ -n "${scores[tiered]:-}" ]] && echo "| tiered (DRAM/NVMe) | ${scores[tiered]} |"
+        [[ -n "${scores[restart]:-}" ]] && echo "| tiered, after vLLM restart | ${scores[restart]} |"
+        [[ -n "${delta}" ]] && echo "| Δ tiered − baseline | ${delta} |"
+        echo
+    } | tee -a "${GITHUB_STEP_SUMMARY:-/dev/null}" || true
+
+    # Consumed by the PR comment in aic-amd-dist-build-fast.yml.  The runner
+    # collects this file whether or not the step succeeded, so the comment on a
+    # failed gate still carries whichever numbers were reached.
+    if [[ -n "${GITHUB_OUTPUT:-}" ]]; then
+        {
+            echo "model=${model:-}"
+            echo "baseline=${scores[baseline]:-}"
+            echo "tiered=${scores[tiered]:-}"
+            echo "restart=${scores[restart]:-}"
+            echo "delta=${delta}"
+        } >> "${GITHUB_OUTPUT}" || echo "WARNING: could not write step outputs" >&2
+    fi
+
+    rm -rf "${tmp}"
+}
 
 rc=0
 aic_ci_ssh_bash \
@@ -213,6 +313,8 @@ if scp -q "${AIC_SPUR_HOST}:${ACCURACY_LOG_ARCHIVE}" "${AIC_ACCURACY_LOG_DEST}/"
 else
     echo "WARNING: could not retrieve accuracy logs for ${SHORT}" >&2
 fi
+
+_report_scores
 
 if [[ "${rc}" -ne 0 ]]; then
     echo "Accuracy test FAILED for ${SHORT} (exit ${rc})" >&2
