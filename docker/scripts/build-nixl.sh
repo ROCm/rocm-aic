@@ -50,7 +50,7 @@ apt-get install -y --no-install-recommends \
 	rdma-core
 rm -rf /var/lib/apt/lists/*
 
-python3 -m pip install --no-cache-dir meson ninja pybind11 tomlkit
+python3 -m pip install --no-cache-dir meson ninja pybind11 tomlkit numpy
 
 mkdir -p /tmp/ucx-rocm
 cd /tmp/ucx-rocm
