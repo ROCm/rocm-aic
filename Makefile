@@ -1015,7 +1015,12 @@ endif
 endif
 ifeq ($(AIC_SPUR_CLUSTER),1)
 _CLIFF_SPUR_CTL  := SPUR_CONTROLLER_ADDR=$(AIC_SPUR_CONTROLLER)
-_CLIFF_SBATCH_ARGS := --partition=amd-spur --constraint= --gpus=$(AIC_CLIFF_GPUS) \
+# --gres= (empty) is required *in addition to* --gpus: it clears the
+# `#SBATCH --gres=gpu:1` baked into run-cliff.sbatch for standard Slurm.  SPUR
+# rejects a submission carrying both GPU request forms with
+#   "only one GPU request form (gpus, gpus_per_node, gpus_per_task, or a gpu
+#    gres entry) may be set"
+_CLIFF_SBATCH_ARGS := --partition=amd-spur --constraint= --gres= --gpus=$(AIC_CLIFF_GPUS) \
     $(if $(AIC_CLIFF_NODE),--nodelist=$(AIC_CLIFF_NODE),)
 # SPUR sbatch does not support --parsable or --no-requeue; parse job id from "Submitted batch job N"
 _CLIFF_SUBMIT     = $(_CLIFF_SPUR_CTL) $(_CLIFF_STRIP) sbatch \
