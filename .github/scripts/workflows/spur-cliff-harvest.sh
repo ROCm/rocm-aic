@@ -84,13 +84,33 @@ fi
 # Submit the cliff job and poll for completion
 # ---------------------------------------------------------------------------
 echo "=== Submitting cliff-submit job (AIC_IMAGE_NAME=${AIC_IMAGE_NAME}) ==="
-JOB_ID=$(SPUR_CONTROLLER_ADDR="${AIC_SPUR_CONTROLLER}" \
+# Capture the submit output to a file and echo it before parsing.  Piping `make`
+# straight into grep discarded sbatch's error text, and under `set -o pipefail` a
+# non-matching grep failed the assignment so `set -e` killed the script before the
+# "could not determine job ID" branch below could ever run -- a rejected submit
+# showed up in CI as a bare `exit 1` with no diagnostics.
+SUBMIT_LOG="$(mktemp)"
+set +e
+SPUR_CONTROLLER_ADDR="${AIC_SPUR_CONTROLLER}" \
     AIC_SPUR_CLUSTER=1 \
     AIC_IMAGE_NAME="${AIC_IMAGE_NAME}" \
     AIC_IMAGE_DIR="${TARBALL_DIR}" \
-    make cliff-submit 2>&1 \
-  | grep -oE '(submitted (cliff-short|aic-cliff) job |Submitted batch job )[0-9]+' \
-  | grep -oE '[0-9]+$' | tail -1)
+    make cliff-submit > "${SUBMIT_LOG}" 2>&1
+SUBMIT_RC=$?
+set -e
+
+echo "--- make cliff-submit output (rc=${SUBMIT_RC}) ---"
+cat "${SUBMIT_LOG}"
+echo "--- end make cliff-submit output ---"
+
+JOB_ID="$(grep -oE '(submitted [a-z0-9-]+ job |Submitted batch job )[0-9]+' "${SUBMIT_LOG}" \
+    | grep -oE '[0-9]+$' | tail -1 || true)"
+rm -f "${SUBMIT_LOG}"
+
+if [[ "${SUBMIT_RC}" -ne 0 ]]; then
+    echo "ERROR: make cliff-submit failed with exit code ${SUBMIT_RC} (see output above)" >&2
+    exit 1
+fi
 
 if [[ -z "${JOB_ID}" ]]; then
     echo "ERROR: could not determine Slurm job ID from make cliff-submit output" >&2
