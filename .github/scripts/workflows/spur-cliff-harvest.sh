@@ -124,8 +124,15 @@ while squeue -j "${JOB_ID}" -h 2>/dev/null |
     sleep 30
 done
 
-STATE=$(sacct -j "${JOB_ID}" --format=State --noheader 2>/dev/null | head -1 | tr -d ' ')
-echo "=== Job ${JOB_ID} finished with state: ${STATE} ==="
+# SPUR's sacct ignores -j and returns every job it knows about, so `head -1`
+# both (a) truncated the stream and left sacct writing into a closed pipe --
+# SIGPIPE, which under `set -o pipefail` exited the script with 141 before the
+# line below could print -- and (b) read an unrelated job's State when it did
+# survive.  Match the job ID in awk and consume sacct's full output.
+STATE=$(sacct -j "${JOB_ID}" --format=JobID,State --noheader 2>/dev/null |
+    awk -v id="${JOB_ID}" '$1 == id && !found { state = $2; found = 1 }
+                           END { if (found) print state }' | tr -d ' ')
+echo "=== Job ${JOB_ID} finished with state: ${STATE:-<unknown>} ==="
 
 LOG="logs/${JOB_ID}/cliff.out"
 if [[ -f "${LOG}" ]]; then
