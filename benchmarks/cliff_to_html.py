@@ -316,7 +316,7 @@ def _build_html(
   <p class="meta">
     Last updated: {page_date} &nbsp;·&nbsp;
     Commit: {commit_link} &nbsp;·&nbsp;
-    <a href="{repo_url}/actions/workflows/aic-amd-nightly-cliff.yml">Nightly Cliff workflow</a>
+    <a href="{repo_url}/actions/workflows/aic-amd-nightly-accuracy-cliff.yml">Nightly Cliff workflow</a>
   </p>
 
   <h2>Latest Run — Key Metrics</h2>

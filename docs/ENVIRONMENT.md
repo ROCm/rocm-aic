@@ -35,3 +35,29 @@
 | `AIC_MONITORING` | `1` | Auto-start the Prometheus sidecar in cliff sbatch runs (`0` to skip) |
 | `AIC_METRICS_DIR` | `logs/<job-id>/prometheus` (cliff) | Prometheus TSDB dir — bind-mount an NFS path here |
 | `AIC_EXPORTERS` | `1` (cliff) / `0` (make) | Also launch containerized node + AMD GPU exporters |
+
+## Accuracy test (`make accuracy-test`)
+
+The KV-integrity gate: scores gsm8k against a VRAM-only arm and a tiered arm in
+one job and asserts that routing KV through DRAM/NVMe did not change the
+answers. See [`tests/accuracy/README.md`](../tests/accuracy/README.md) for what
+each assertion catches and how to add a model.
+
+Every scoring pass asks the full gsm8k split; there is no item cap to set and
+no way to drop the baseline arm. Both knobs existed to make a cheap PR variant,
+and that variant skipped the differential — the one assertion the gate is for.
+
+| Variable | Default | Description |
+| --- | --- | --- |
+| `AIC_ACCURACY_MODEL` | `$AIC_TINY_MODEL` | Model to score. Must match what the arms serve |
+| `AIC_ACCURACY_DELTA` | `0.02` | How far the tiered arm may fall below the baseline arm before it counts as corruption |
+| `AIC_ACCURACY_CONCURRENT` | `32` | `lm_eval` request concurrency |
+| `AIC_ACCURACY_BASELINE_URL` | — | Baseline arm base URL, e.g. `http://172.18.0.4:8000/v1`. Only needed when running pytest by hand; the driver supplies it |
+| `AIC_ACCURACY_TIERED_URL` | — | Tiered arm base URL. Unset or unreachable endpoints skip cleanly rather than failing |
+| `AIC_ACCURACY_BASELINE_SCORE` | — | Pre-measured baseline score. The arms share a container name, a port and the GPU, so the driver scores them sequentially and passes the first arm's number forward |
+| `AIC_ACCURACY_REFERENCE_SCORE` | — | Pre-restart tiered score; enables the restart assertion |
+| `AIC_ACCURACY_SCORE_OUT` | — | Write the measured tiered score here as JSON |
+| `AIC_ACCURACY_TIME` | `02:00:00` | Slurm wall-time for the accuracy job |
+| `AIC_ACCURACY_CPUS` | `8` | Slurm `--cpus-per-task` |
+| `AIC_ACCURACY_MEM` | `32G` | Slurm `--mem` |
+| `AIC_ACCURACY_READY_TIMEOUT` | `120` | Endpoint readiness attempts, 5s apart (so up to 10 min per arm) |

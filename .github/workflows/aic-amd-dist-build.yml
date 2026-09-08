@@ -15,12 +15,18 @@ concurrency:
 
 jobs:
   # Validate /run-ci slash command on PRs; skipped for manual triggers.
+  #
+  # The match is a substring test, so every longer command starting '/run-ci'
+  # has to be excluded by hand or it fires this multi-arch gate as well.  Both
+  # of the exclusions below belong to aic-amd-dist-build-fast.yml; add any new
+  # '/run-ci-*' command here at the same time you add it there.
   authorize:
     if: >
       github.event_name != 'issue_comment' || (
         github.event.issue.pull_request != null &&
         contains(github.event.comment.body, '/run-ci') &&
-        !contains(github.event.comment.body, '/run-ci-fast')
+        !contains(github.event.comment.body, '/run-ci-fast') &&
+        !contains(github.event.comment.body, '/run-ci-accuracy')
       )
     runs-on: ubuntu-latest
     permissions:
