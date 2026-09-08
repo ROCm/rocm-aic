@@ -697,7 +697,11 @@ echo "[accuracy-test] pre-rescore counters: ext_q=${EXT_Q_BEFORE} ext_h=${EXT_H_
 # warm cache and buys back the +/-0.02 comparison.
 export AIC_ACCURACY_TIERED_URL="${TIERED_URL}"
 export AIC_ACCURACY_REFERENCE_SCORE="${TIERED_SCORE}"
-unset AIC_ACCURACY_BASELINE_SCORE AIC_ACCURACY_SCORE_OUT
+# Its own file rather than unset: the CI report wants all three numbers, and
+# tiered-score.json is the reference this phase is compared against -- reusing
+# it would overwrite the comparand mid-comparison.
+export AIC_ACCURACY_SCORE_OUT="${AIC_LOG_DIR}/restart-score.json"
+unset AIC_ACCURACY_BASELINE_SCORE
 "${PYTEST}" "${AIC_DAY_DIR}/tests/accuracy" -v -rs --no-header \
     -k 'restart' || {
     echo "[accuracy-test] FAIL: phase 4 -- score regressed after restart" >&2
