@@ -296,6 +296,8 @@ ARG TORCHAUDIO_GIT_URL
 ARG TORCHAUDIO_REF
 ARG ROCM_ARCH
 
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
+
 RUN git clone "${TORCHAUDIO_GIT_URL}" audio \
     && git -C audio checkout "${TORCHAUDIO_REF}" \
     && git -C audio submodule update --init --recursive
@@ -314,11 +316,13 @@ RUN --mount=type=cache,target=/root/.cache/ccache \
     && mkdir -p /wheels && find audio/dist -type f -name "*.whl" -exec cp {} /wheels/ \;
 
 # ----- 3. vLLM (built from source at pinned tag) ---------------------------------
-FROM build AS build_vllm
+FROM build_pytorch_runtime AS build_vllm
 
 ARG ROCM_ARCH
 ARG VLLM_GIT_URL
 ARG VLLM_REF
+
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 
 # Validate ROCM_ARCH here — after the torch download so a per-arch build
 # doesn't bust the 6 GB wheel cache.  First use of ROCM_ARCH is in the vLLM
@@ -374,11 +378,13 @@ RUN --mount=type=cache,target=/root/.cache/pip \
 
 # ----- 4. LMCache (upstream release + AMD patches) ---------------------------
 # Shallow-clone the pinned release tag directly (no history/other branches).
-FROM build AS build_lmcache
+FROM build_pytorch_runtime AS build_lmcache
 
 ARG LMCACHE_GIT_URL
 ARG LMCACHE_REF
 ARG ROCM_ARCH
+
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 
 RUN git clone --depth 1 --branch "${LMCACHE_REF}" "${LMCACHE_GIT_URL}" /app/LMCache
 
@@ -435,6 +441,9 @@ RUN --mount=type=cache,target=/root/.cache/uv \
     uv pip install --system "matplotlib>=3.8,<4"
 
 FROM build AS build_nixl_deps
+
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
+
 # Remove any NIXL wheels that upstream packages may have pulled — we build from source below.
 # Also purge stray CUDA-only deps (cupy-cuda12x, cufile-python, cuda-pathfinder): if they
 # remain, vLLM/LMCache can try to import non-existent CUDA .so files at runtime on ROCm.
@@ -478,8 +487,14 @@ RUN --mount=type=cache,target=/root/.cache/uv \
 
 FROM build_nixl_deps AS build_nixl
 
+ARG BUILD_JOBS
+ARG AIC_UCX_FAST
+
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
+
 COPY docker/scripts /tmp/nixl-scripts
 COPY patches/nixl/ /tmp/nixl-patches/
+
 # Apply every patch under patches/nixl/ (lexical order) to the fresh checkout.
 RUN --mount=type=cache,target=/root/.cache/uv \
     chmod +x /tmp/nixl-scripts/*.sh && \
@@ -530,6 +545,8 @@ ARG HSA_SNOOP_GIT_URL
 ARG HSA_SNOOP_REF
 ARG BUILD_JOBS
 
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
+
 RUN git clone --depth 1 --branch "${HSA_SNOOP_REF}" "${HSA_SNOOP_GIT_URL}" /app/hsa-snoop && \
     cmake -S /app/hsa-snoop -B /app/hsa-snoop/build -G Ninja \
         -DCMAKE_BUILD_TYPE=Release -DHSA_SNOOP_PROMETHEUS=ON \
@@ -541,13 +558,15 @@ RUN git clone --depth 1 --branch "${HSA_SNOOP_REF}" "${HSA_SNOOP_GIT_URL}" /app/
         || { echo "ERROR: hsa-snoop built without Prometheus mode (--prometheus absent)" >&2; exit 1; } && \
     echo "PASS: hsa-snoop v${HSA_SNOOP_REF} with Prometheus exporter (incl. AIS metrics) installed"
 
-FROM build AS environment
-
 # ----- 7. Runtime environment ------------------------------------------------
 # Vars from upstream vLLM Dockerfile.rocm added here:
 #   HSA_ENABLE_IPC_MODE_LEGACY=1  — legacy HIP IPC for cross-container KV registration (LMCache MP)
 #   SAFETENSORS_FAST_GPU=1        — GPU-accelerated weight loading, faster model startup
 #   HIP_FORCE_DEV_KERNARG=1       — kernel arg handling fix on MI300+/gfx942/gfx950
+FROM build AS environment
+
+ARG AIC_VERSION
+
 ENV PYTHONUNBUFFERED=1 \
     PYTHONHASHSEED=0 \
     NIXL_PLUGIN_DIR=/opt/nixl/lib/x86_64-linux-gnu/plugins \
@@ -560,7 +579,6 @@ ENV PYTHONUNBUFFERED=1 \
 # Provide image metadata. AIC_VERSION is declared and used here — after all
 # expensive build steps — so version bumps only invalidate this single cheap
 # layer rather than busting the torch/vLLM/LMCache/NIXL compilation cache.
-ARG AIC_VERSION
 RUN test -n "$AIC_VERSION" || { echo "ERROR: AIC_VERSION is not set (read it from VERSION)"; exit 1; }
 LABEL org.opencontainers.image.title="rocm-aic" \
       org.opencontainers.image.description="AMD Infinity Context: ROCm vLLM + LMCache tiered-cache inference stack" \
@@ -572,7 +590,10 @@ LABEL org.opencontainers.image.title="rocm-aic" \
       ai.amd.aic.lmcache="${LMCACHE_REF}" \
       ai.amd.aic.nixl="${NIXL_REF}" \
       ai.amd.aic.hipfile="rocm-${ROCM_VERSION}" \
-      ai.amd.aic.hsa-snoop="${HSA_SNOOP_REF}"
+      ai.amd.aic.hsa-snoop="${HSA_SNOOP_REF}" \
+      ai.amd.aic.pytorch="${PYTORCH_REF}" \
+      ai.amd.aic.torchaudio="${TORCHAUDIO_REF}" \
+      ai.amd.aic.torchvision="${TORCHVISION_REF}"
 
 # vLLM OpenAI-compatible server is the default entrypoint.
 ENTRYPOINT ["python3", "-m", "vllm.entrypoints.openai.api_server"]
