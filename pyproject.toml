@@ -39,9 +39,9 @@ plot = [
     "numpy>=1.26",
 ]
 accuracy = [
-    "lm-eval[api]>=0.4.9",
-    "transformers>=4.40",
-    "pytest>=8",
+    "lm-eval[api]>=0.4.13",
+    "transformers>=5.16",
+    "pytest>=9",
 ]
 dev = ["rocm-aic[bench,plot,accuracy]"]
 
