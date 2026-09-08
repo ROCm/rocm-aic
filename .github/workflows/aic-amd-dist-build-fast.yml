@@ -433,7 +433,11 @@ jobs:
               description: 'Running accuracy-test on the SPUR head node...',
             });
 
+      # The step outputs are the measured scores, lifted out of the log archive
+      # by the runner script; see its _report_scores.  They are collected even
+      # when the gate fails, which is when the numbers are most worth reading.
       - name: Run accuracy-test on the SPUR head node
+        id: accuracy
         run: bash /usr/local/lib/aic-ci/spur-accuracy-test.sh "${{ needs.authorize.outputs.sha }}" accuracy-test-fast
 
       - name: Set commit status on success
@@ -472,11 +476,36 @@ jobs:
         with:
           script: |
             const success = '${{ job.status }}' === 'success';
+            const model    = '${{ steps.accuracy.outputs.model }}';
+            const delta    = '${{ steps.accuracy.outputs.delta }}';
+            // The gate keeps no golden file, so the comment is where this run's
+            // numbers are recorded.  Rows are dropped rather than blanked when a
+            // phase never ran: an empty cell reads as "scored zero".  No
+            // tolerance is quoted — DELTA lives in tests/accuracy and asserting
+            // it here twice would let the two drift.
+            const rows = [
+              ['baseline (VRAM-only)', '${{ steps.accuracy.outputs.baseline }}'],
+              ['tiered (DRAM/NVMe)', '${{ steps.accuracy.outputs.tiered }}'],
+              ['tiered, after vLLM restart', '${{ steps.accuracy.outputs.restart }}'],
+              ['Δ tiered − baseline', delta],
+            ].filter(([, value]) => value);
+            const scores = rows.length
+              ? [
+                  '',
+                  '',
+                  `gsm8k exact_match (strict-match, 5-shot, 1319 items)${model ? ` — \`${model}\`` : ''}:`,
+                  '',
+                  '| arm | score |',
+                  '|---|---|',
+                  ...rows.map(([arm, value]) => `| ${arm} | \`${value}\` |`),
+                ].join('\n')
+              : '';
+            const verdict = success
+              ? `✅ Fast hardware CI + accuracy passed for ${{ needs.authorize.outputs.sha }} (dist-build-fast + smoke-test-fast + tiny-test-fast + accuracy-test-fast). This is a single-arch dev check — run \`/run-ci\` for the full gate.`
+              : `❌ Accuracy test failed for ${{ needs.authorize.outputs.sha }}. [View logs](https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}).`;
             await github.rest.issues.createComment({
               owner: context.repo.owner,
               repo: context.repo.repo,
               issue_number: ${{ needs.authorize.outputs.pr_number || 0 }},
-              body: success
-                ? `✅ Fast hardware CI + accuracy passed for ${{ needs.authorize.outputs.sha }} (dist-build-fast + smoke-test-fast + tiny-test-fast + accuracy-test-fast). This is a single-arch dev check — run \`/run-ci\` for the full gate.`
-                : `❌ Accuracy test failed for ${{ needs.authorize.outputs.sha }}. [View logs](https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}).`,
+              body: verdict + scores,
             });
