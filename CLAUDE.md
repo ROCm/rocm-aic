@@ -87,6 +87,47 @@ build (`AIC_ROCM_ARCH` default includes `gfx1201`). Key differences from CDNA:
   echo "0000:10:00.0" | sudo tee /sys/bus/pci/drivers/amdgpu/bind
   ```
 
+- **LMCache MP connector — host kernel + IPC requirements (2026-09-08, updated)**:
+  Cross-container HIP IPC requires **amdgpu-dkms 7.1.3** (from
+  `amdgpu-install 31.50` / therock-10.0) for `kfd_ioctl_ipc_import_handle`.
+  The in-tree `amdgpu.ko` (kernel `7.0.0-28-generic`) is missing these ioctls.
+  Install once per node:
+
+  ```bash
+  # Add the AMD amdgpu-install 31.50 repo and install the DKMS module
+  # (the 31.50 deb configures https://repo.radeon.com/amdgpu/31.50/ubuntu)
+  sudo apt-get install -y amdgpu-dkms   # after adding the 31.50 source
+  sudo modprobe -r amdgpu && sudo modprobe amdgpu
+  echo "0000:10:00.0" | sudo tee /sys/bus/pci/drivers/amdgpu/bind
+  ```
+
+  With amdgpu-dkms 7.1.3, GPU IPC requires `HSA_ENABLE_IPC_MODE_LEGACY=1`
+  (now baked into the image ENV) plus container-scoped IPC+PID namespace
+  sharing (`ipc: shareable` / `pid: service:lmcache` in compose — these are
+  now the compose defaults; no make override needed).
+
+  The standard vllm-reset-test command on gfx1201 (no extra overrides):
+
+  ```bash
+  make vllm-reset-test \
+    ROCM_ARCH=gfx1201 \
+    VLLM_MODEL=Qwen/Qwen2.5-3B-Instruct \
+    AIC_L2_BACKEND=nixl_posix \
+    NVME_DATA=/mnt/nvme2/aic-nvme \
+    VLM_LOAD_FORMAT=auto \
+    HF_TOKEN_FILE=~/.cache/huggingface/token \
+    LMCACHE_L1_SIZE_GB=2
+  ```
+
+  Additional gfx1201 requirements:
+  - `VLM_LOAD_FORMAT=auto` — fastsafetensors GDS is CDNA-only.
+  - `LMCACHE_L1_SIZE_GB=2` for this 16 GB node — default 20 GiB L1 prevents
+    eviction to L2 in the reset test.
+  - Mount the 1.8 TB WD Black NVMe (`/dev/nvme1n1`) before running:
+    `sudo mount /dev/nvme1n1 /mnt/nvme2`
+  - NVMe device names may shift after `modprobe -r/modprobe amdgpu` cycles;
+    verify with `lsblk` before mounting.
+
 - **Profile capture** on a local gfx1201 node (no cluster required):
 
   ```bash

@@ -290,10 +290,9 @@ services:
     image: ${IMAGE_REF:-${IMAGE_NAME:-rocm-aic}:latest}
     container_name: aic-lmcache
     # Cross-container HIP IPC (LMCacheMPConnector registering vLLM's KV tensors) on
-    # ROCm requires the two containers to share IPC + a PID namespace.  lmcache owns
-    # shareable IPC and its default PID namespace here; the vllm service JOINS both
-    # via `ipc: service:lmcache` and `pid: service:lmcache` (see below).
-    # Host PID makes `docker rm` hang on teardown; container-shared does not.
+    # ROCm with amdgpu-dkms 7.1.3 requires HSA_ENABLE_IPC_MODE_LEGACY=1 (set in image
+    # ENV) plus container-scoped shared IPC+PID namespaces.  lmcache owns the shareable
+    # namespace; vllm joins it via ipc/pid: service:lmcache (see vllm service below).
     # IPC namespace sharing is independent of network_mode — the aic bridge network
     # provides DNS-based service discovery for prometheus without affecting IPC.
     # Ports reachable within the aic network: lmcache HTTP API 8080, NIXL telemetry 19090.
@@ -404,15 +403,15 @@ services:
     container_name: aic-vllm-gpu${GPU:-0}
     # Shared IPC/PID namespaces with lmcache: required for cross-container HIP IPC
     # KV registration (see the lmcache service).  vllm joins lmcache's shareable IPC
-    # namespace by default; cache-backed launch paths also set VLLM_PID_MODE=service:lmcache
-    # so it joins lmcache's PID namespace.  Set VLLM_IPC_MODE=shareable when starting
-    # vllm alone for the plain baseline.
+    # Cross-container HIP IPC (LMCacheMPConnector) requires HSA_ENABLE_IPC_MODE_LEGACY=1
+    # (set in image ENV) plus shared IPC+PID namespaces.  Container-scoped sharing
+    # (ipc: service:lmcache, pid: service:lmcache) is sufficient and safer than
+    # ipc: host / pid: host.  Override via VLLM_IPC_MODE / VLLM_PID_MODE if needed.
     # vLLM OpenAI API + /metrics reachable within the aic network on port 8000.
     networks: [aic]
     ipc: "${VLLM_IPC_MODE:-service:lmcache}"
-    # Applied when vllm owns its IPC namespace; ignored when it joins lmcache.
     shm_size: "${AIC_SHM_SIZE:-64gb}"
-    pid: "${VLLM_PID_MODE:-}"
+    pid: "${VLLM_PID_MODE:-service:lmcache}"
     cap_add:
       - CAP_SYS_ADMIN
       - SYS_PTRACE

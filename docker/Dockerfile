@@ -7,6 +7,8 @@
 #   Base image:  rocm/dev-ubuntu-24.04:${ROCM_VERSION}-full  (Ubuntu 24.04, Python 3.12)
 #   PyTorch:     built from source at ROCm/pytorch@${PYTORCH_BRANCH} against the ROCm 7.14.1
 #                base image (avoids ROCm 7.2 dep contamination from pytorch.org wheels)
+#   torchvision: built from source at pytorch/vision@${TORCHVISION_BRANCH} against the
+#                source-built torch (pre-built wheel ABI-incompatible with custom torch)
 #   vLLM:        built from source at ${VLLM_REF}
 #   LMCache:     LMCache/LMCache ${LMCACHE_REF} + AMD patches from patches/lmcache/
 #   hipFile:     included in the ROCm 7.14 base image (GA since 7.14) — no source build needed
@@ -63,9 +65,10 @@
 
 # Stages:
 #
-#   base            ROCm base image + system deps + uv           (sections 0-2)
-#   build_pytorch   PyTorch 2.13 built from source (parallel)   (section 2b)
-#   vllm            torch (from build_pytorch) + vLLM + llm-emu (sections 3, 3b)
+#   base              ROCm base image + system deps + uv           (sections 0-2)
+#   build_pytorch     PyTorch 2.13 built from source (parallel)   (section 2b)
+#   build_torchvision torchvision built from source (parallel)    (section 2c)
+#   vllm              torch + torchvision + vLLM + llm-emu        (sections 3, 3b)
 #   emulate         emulation-only runtime (--target emulate)    (section 3c)
 #   build           + LMCache, NIXL, hsa-snoop, runtime env     (sections 4-7)
 #   wheels          scratch image holding just /wheels           (section 8)
@@ -191,7 +194,14 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
         pkg-config \
         python3-dev \
         bpftrace \
-    && update-ca-certificates
+    && update-ca-certificates && \
+    # libdrm-dev pulls in the Ubuntu system libhsa-runtime64-1 and libhsakmt1
+    # packages (ROCm 5.7 era).  These old shared libraries get loaded at runtime
+    # instead of the statically-linked versions inside the ROCm 7.14 runtime,
+    # breaking hipIpcGetMemHandle (returns hipErrorInvalidValue).  Remove them
+    # so the ROCm 7.14 base image's HSA runtime is the only one present.
+    DEBIAN_FRONTEND=noninteractive apt-get remove -y --purge \
+        libhsa-runtime64-1 libhsakmt1 2>/dev/null || true
 
 # Silence git's detached-HEAD advisory.  Every source below is cloned then
 # checked out at a pinned SHA (detached HEAD by design), which otherwise prints a
@@ -212,7 +222,9 @@ RUN rm -f /usr/lib/python3.*/EXTERNALLY-MANAGED
 # separate filesystem from /usr), so uv cannot hardlink installs across it and
 # would otherwise warn "Failed to hardlink files; falling back to full copy".
 ENV PIP_ROOT_USER_ACTION=ignore \
-    UV_LINK_MODE=copy
+    UV_LINK_MODE=copy \
+    UV_BREAK_SYSTEM_PACKAGES=1 \
+    PIP_BREAK_SYSTEM_PACKAGES=1
 
 # ----- 2. uv (fast Python package manager) + pip bootstrap ------------------
 # Pin UV_VERSION so the install URL is deterministic and the layer caches
@@ -228,7 +240,7 @@ RUN curl -fsSL "https://astral.sh/uv/${UV_VERSION}/install.sh" | sh && \
 # Pre-built pytorch.org wheels (torch 2.13.0+rocm7.2) carry ROCm 7.2 runtime
 # deps (notably rocprofiler-sdk) as transitive installs that conflict with the
 # ROCm 7.14 libs already in the base image.  Building from ROCm/pytorch @
-# release/2.13 compiles against /opt/rocm (the 7.14.1 tree in the base image),
+# release/2.13 compiles against /opt/rocm (the 7.14.0 tree in the base image),
 # so the installed wheel is fully self-consistent.
 #
 # Triton is NOT built here as a separate stage: vLLM installs it via
@@ -249,7 +261,8 @@ ARG PYTORCH_BRANCH=release/2.13
 # hadolint ignore=DL3008
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
-    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+    DEBIAN_FRONTEND=noninteractive apt-get update && \
+    apt-get install -y --no-install-recommends \
         gcc-13 g++-13 pkg-config liblzma-dev libnuma-dev python3.12-venv && \
     update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-13 130 \
         --slave /usr/bin/g++ g++ /usr/bin/g++-13
@@ -274,7 +287,38 @@ RUN --mount=type=cache,target=/root/.cache/ccache \
         python3 setup.py bdist_wheel --dist-dir=/app/pytorch/dist
 
 # =============================================================================
-# vLLM stage — torch (from build_pytorch) + source-built vLLM + llm-emu plugin.
+# torchvision source build — must be compiled against our source-built PyTorch.
+# The pre-built pytorch.org wheel links against a different libtorch ABI and
+# causes "operator torchvision::nms does not exist" at import time.
+# transformers 5.15.0 (required by vLLM 0.28.0) hard-imports torchvision.io
+# at module level, so this is required even for text-only serving.
+# Pin TORCHVISION_BRANCH to the release matching PyTorch 2.13 (v0.28.x series).
+# =============================================================================
+FROM build_pytorch AS build_torchvision
+
+ARG ROCM_ARCH
+ARG TORCHVISION_REPO=https://github.com/pytorch/vision.git
+ARG TORCHVISION_BRANCH=v0.28.0
+
+RUN git clone --depth 1 --branch "${TORCHVISION_BRANCH}" "${TORCHVISION_REPO}" /app/vision
+
+# hadolint ignore=SC2086,DL3008
+RUN --mount=type=cache,target=/root/.cache/pip \
+    --mount=type=cache,target=/root/.cache/ccache \
+    --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
+    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends libnuma-dev && \
+    pip3 install setuptools wheel packaging /app/pytorch/dist/*.whl && \
+    cd /app/vision && \
+    USE_ROCM=1 USE_CUDA=0 \
+    PYTORCH_ROCM_ARCH="${ROCM_ARCH}" \
+    CCACHE_DIR=/root/.cache/ccache \
+    CMAKE_C_COMPILER_LAUNCHER=ccache \
+    CMAKE_CXX_COMPILER_LAUNCHER=ccache \
+        python3 setup.py bdist_wheel --dist-dir=/app/vision/dist
+
+# =============================================================================
+# vLLM stage — torch + torchvision (from source builds) + vLLM + llm-emu plugin.
 # Everything an emulation-only image needs; the full stack continues from here.
 # ARGs do not cross stage boundaries, so the ones used below are re-declared.
 # =============================================================================
@@ -293,8 +337,9 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
         --slave /usr/bin/g++ g++ /usr/bin/g++-13
 
 RUN --mount=type=bind,from=build_pytorch,source=/app/pytorch/dist,target=/opt/pytorch-dist,ro \
+    --mount=type=bind,from=build_torchvision,source=/app/vision/dist,target=/opt/torchvision-dist,ro \
     --mount=type=cache,target=/root/.cache/pip \
-    pip3 install /opt/pytorch-dist/*.whl
+    pip3 install /opt/pytorch-dist/*.whl /opt/torchvision-dist/*.whl
 
 # vLLM: built from source at this tag.  Check https://github.com/vllm-project/vllm/tags
 # for the latest release; bump VLLM_REF and rebuild when updating.
@@ -576,9 +621,13 @@ RUN git clone --depth 1 --branch "${HSA_SNOOP_REF}" "${HSA_SNOOP_GIT_URL}" /app/
 
 # ----- 7. Runtime environment ------------------------------------------------
 # Vars from upstream vLLM Dockerfile.rocm added here:
-#   HSA_ENABLE_IPC_MODE_LEGACY=1  — legacy HIP IPC for cross-container KV registration (LMCache MP)
 #   SAFETENSORS_FAST_GPU=1        — GPU-accelerated weight loading, faster model startup
 #   HIP_FORCE_DEV_KERNARG=1       — kernel arg handling fix on MI300+/gfx942/gfx950
+#
+# HSA_ENABLE_IPC_MODE_LEGACY=1 — required for cross-container hipIpcOpenMemHandle
+# on amdgpu-dkms 7.1.3 (therock-10.0 kernel base) with gfx1201.  On the old
+# in-tree amdgpu.ko (6.19), this broke hipIpcGetMemHandle; the new DKMS module
+# handles both the legacy IPC path and hipIpcGetMemHandle correctly.
 ENV PYTHONUNBUFFERED=1 \
     PYTHONHASHSEED=0 \
     NIXL_PLUGIN_DIR=/opt/nixl/lib/x86_64-linux-gnu/plugins \
