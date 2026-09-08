@@ -269,18 +269,41 @@ _pool_alloc_bytes() { du -s --block-size=1 "${NVME_DATA}" 2>/dev/null | cut -f1 
 # Sum one Prometheus counter across all its label sets, from a container-local
 # scrape.  Neither endpoint is published to the host, so scrape via docker exec.
 # Prints 0 when the metric or the endpoint is absent -- callers distinguish
-# "counter absent" from "counter zero" by checking the scrape succeeded first.
+# "counter absent" from "counter zero" by checking the scrape succeeded first,
+# with _metrics_reachable below.
+#
+# The scrape is captured into a variable rather than piped: under `pipefail` a
+# failed docker exec poisoned the pipeline status AFTER awk had already printed
+# its 0, so the `|| echo 0` fallback appended a second one and the caller got the
+# string "00".  Harmless in arithmetic, but it is what an unreadable endpoint
+# looked like in job 6235's log -- `usage_bytes=00` -- and nothing acted on it.
+# Returns non-zero when the scrape failed, while still printing a 0 so the
+# `$(( $(_lmc ...) - BEFORE ))` callers below never see an empty operand.
 _metric_sum() {
-    local container="$1" url="$2" metric="$3"
-    docker exec "${container}" curl -fsS --max-time 15 "${url}" 2>/dev/null \
+    local container="$1" url="$2" metric="$3" body
+    body="$(docker exec "${container}" curl -fsS --max-time 15 "${url}" 2>/dev/null)" || {
+        echo 0; return 1; }
+    printf '%s\n' "${body}" \
         | awk -v m="${metric}" '
             /^#/ { next }
             {
                 name = $1; sub(/\{.*/, "", name)
                 if (name == m) { s += $NF }
             }
-            END { printf "%.0f", s + 0 }' \
-        || echo 0
+            END { printf "%.0f", s + 0 }'
+}
+
+# Can this container's /metrics be scraped at all?  Every gate below that reads
+# a zero counter as evidence ABOUT THE PRODUCT has to establish this first: a
+# failed scrape and a counter that never moved are the same 0, so without it the
+# gate reports a missing measurement as a product fault.  That is exactly what
+# job 6235 did -- it printed two "could not dump metrics" warnings and then
+# concluded "LMCache completed zero L2 chunk stores" from the resulting zeros.
+_metrics_reachable() {
+    local container="$1" url="$2"
+    docker exec "${container}" curl -fsS --max-time 15 "${url}" >/dev/null 2>&1 && return 0
+    echo "[accuracy-test] WARN: cannot scrape ${container} at ${url}" >&2
+    return 1
 }
 
 # Is a metric family present in a container-local scrape?  _metric_sum folds
@@ -301,10 +324,15 @@ _metric_present() {
 # specific LMCache-internal metrics, which an upgrade is free to rename; when
 # one reads zero the dump is the only way to tell "it did not happen" from
 # "it is called something else now".
+#
+# Returns the scrape status so a caller can gate on it.  It used to only print a
+# warning, which meant phase 3 could announce that the dump had failed and then
+# render a verdict from the zeros that failure produced.
 _dump_metrics() {
     local container="$1" url="$2" out="$3"
-    docker exec "${container}" curl -fsS --max-time 15 "${url}" > "${out}" 2>/dev/null \
-        || echo "[accuracy-test] WARN: could not dump ${container} metrics to ${out}"
+    docker exec "${container}" curl -fsS --max-time 15 "${url}" > "${out}" 2>/dev/null && return 0
+    echo "[accuracy-test] WARN: could not dump ${container} metrics to ${out}" >&2
+    return 1
 }
 
 # vLLM's own view of the connector: how many blocks it asked the external tier
@@ -426,6 +454,14 @@ echo "[accuracy-test] tiered endpoint: ${TIERED_URL}"
 # Phase 3 baseline for the L2 counters.  This container is fresh, so these
 # should all read zero -- sample anyway and difference, so a reused container
 # (or a scrape that picks up a warm-up store) cannot inflate the phase-3 deltas.
+#
+# That differencing is only protective if the sample was really taken: an
+# unreadable endpoint here yields the same zeros as a fresh container, which is
+# precisely the inflation the differencing exists to prevent.  Record it and let
+# phase 3 decide -- do not fail now, because pytest has yet to run and the
+# differential is the most valuable thing this job produces.
+L2_METRICS_OK=1
+_metrics_reachable aic-lmcache http://127.0.0.1:8080/metrics || L2_METRICS_OK=0
 L2_STORE_SUB_REQ_BEFORE="$(_lmc lmcache_mp_l2_store_submitted_requests_total)"
 L2_STORE_DONE_REQ_BEFORE="$(_lmc lmcache_mp_l2_store_completed_requests_total)"
 L2_STORE_DONE_CHUNKS_BEFORE="$(_lmc lmcache_mp_l2_store_completed_objects_chunks_total)"
@@ -463,8 +499,12 @@ rc=0
 # every store was submitted and then FAILED still has its slots allocated, so
 # the old growth-only assertion would pass it.
 echo "[accuracy-test] === Phase 3: NVMe pool liveness ==="
-_dump_metrics aic-lmcache    http://127.0.0.1:8080/metrics "${AIC_LOG_DIR}/lmcache-metrics-phase3.prom"
-_dump_metrics aic-vllm-gpu0  http://127.0.0.1:8000/metrics "${AIC_LOG_DIR}/vllm-metrics-phase3.prom"
+# The dump doubles as this phase's scrape-health probe: every counter gate below
+# reads the same endpoint, so if the dump could not reach it, none of them are
+# measuring anything.
+_dump_metrics aic-lmcache    http://127.0.0.1:8080/metrics "${AIC_LOG_DIR}/lmcache-metrics-phase3.prom" \
+    || L2_METRICS_OK=0
+_dump_metrics aic-vllm-gpu0  http://127.0.0.1:8000/metrics "${AIC_LOG_DIR}/vllm-metrics-phase3.prom" || true
 POOL_AFTER="$(_pool_bytes)"
 POOL_ALLOC_AFTER="$(_pool_alloc_bytes)"
 POOL_FILES="$(find "${NVME_DATA}" -type f -size +0c 2>/dev/null | wc -l)"
@@ -483,7 +523,28 @@ echo "[accuracy-test] pool allocated: before=${POOL_ALLOC_BEFORE} after=${POOL_A
 echo "[accuracy-test] pool non-empty-files=${POOL_FILES}"
 echo "[accuracy-test] lmcache L2: store_req submitted=${L2_STORE_SUB_REQ} completed=${L2_STORE_DONE_REQ} chunks=${L2_STORE_DONE_CHUNKS} usage_bytes=${L2_USAGE_BYTES}"
 
-if [ "${POOL_FILES}" -eq 0 ] || [ "${POOL_GROWTH}" -le 0 ]; then
+if [ "${L2_METRICS_OK}" != "1" ]; then
+    echo "[accuracy-test] FAIL Phase 3: LMCache metrics unavailable -- cannot evaluate L2 liveness." >&2
+    echo "[accuracy-test]   The counters above read zero because the scrape failed, not because" >&2
+    echo "[accuracy-test]   LMCache did nothing.  This is a fault in the gate's instrumentation" >&2
+    echo "[accuracy-test]   or in the container, not evidence about the store path -- do not go" >&2
+    echo "[accuracy-test]   looking for an LMCache bug on the strength of it.  Check that" >&2
+    echo "[accuracy-test]   aic-lmcache is up and serving :8080/metrics." >&2
+    rc=1
+elif [ ! -d "${NVME_DATA}" ]; then
+    # du reports 0 for a directory it cannot stat, which would read as "the pool
+    # never grew".  The pool root is ours and created above, so its absence is a
+    # broken run, not a product finding.
+    echo "[accuracy-test] FAIL Phase 3: the pool root ${NVME_DATA} is gone -- pool size is unmeasurable." >&2
+    rc=1
+elif [ "${rc}" != "0" ]; then
+    # pytest already failed, so the scored pass was cut short and these counters
+    # describe a truncated run.  They are printed above as diagnostics; asserting
+    # on them here would stack a confident product verdict on top of an aborted
+    # measurement.  This is the guard the lookup gates below already carried.
+    echo "[accuracy-test] Phase 3: pytest failed, so the counters above are diagnostic only --"
+    echo "[accuracy-test]   no liveness verdict is rendered from a truncated scored pass."
+elif [ "${POOL_FILES}" -eq 0 ] || [ "${POOL_GROWTH}" -le 0 ]; then
     echo "[accuracy-test] FAIL Phase 3: the NVMe pool did not grow -- KV never reached L2." >&2
     echo "[accuracy-test]   before=${POOL_BEFORE} after=${POOL_AFTER} growth=${POOL_GROWTH} files=${POOL_FILES}" >&2
     echo "[accuracy-test]   The differential compared two VRAM-only runs, so a pass here" >&2
@@ -610,6 +671,13 @@ TIERED_URL="$(_endpoint_url)" || exit 1
 # vllm:external_prefix_cache_* counters start at zero and everything they
 # accumulate from here belongs to the re-score.  LMCache was NOT restarted, so
 # its counters carry phase-2 history and must be differenced.
+#
+# vLLM is a brand-new process here, so confirm its metrics endpoint answers
+# before sampling: phase 5 fails hard on `ext_q <= 0`, and an unreadable
+# endpoint produces exactly that number while proving nothing.
+RESCORE_METRICS_OK=1
+_metrics_reachable aic-vllm-gpu0 http://127.0.0.1:8000/metrics || RESCORE_METRICS_OK=0
+_metrics_reachable aic-lmcache   http://127.0.0.1:8080/metrics || RESCORE_METRICS_OK=0
 EXT_Q_BEFORE="$(_vllm_ext vllm:external_prefix_cache_queries_total)"
 EXT_H_BEFORE="$(_vllm_ext vllm:external_prefix_cache_hits_total)"
 L1_READ_BEFORE="$(_lmc lmcache_mp_l1_read_chunks_total)"
@@ -650,6 +718,8 @@ unset AIC_ACCURACY_BASELINE_SCORE AIC_ACCURACY_SCORE_OUT
 #   * LMCache's counters say which level served them -- but are cumulative
 #     across phase 2, hence the differencing.
 echo "[accuracy-test] === Phase 5: verify the re-score hit the cache ==="
+_metrics_reachable aic-vllm-gpu0 http://127.0.0.1:8000/metrics || RESCORE_METRICS_OK=0
+_metrics_reachable aic-lmcache   http://127.0.0.1:8080/metrics || RESCORE_METRICS_OK=0
 EXT_Q_AFTER="$(_vllm_ext vllm:external_prefix_cache_queries_total)"
 EXT_H_AFTER="$(_vllm_ext vllm:external_prefix_cache_hits_total)"
 L1_READ_AFTER="$(_lmc lmcache_mp_l1_read_chunks_total)"
@@ -665,7 +735,13 @@ echo "[accuracy-test] re-score deltas: ext_q=${EXT_Q} ext_h=${EXT_H}"
 echo "[accuracy-test]   lmcache: l1_read_chunks=${L1_READ} l2_hit_chunks=${L2_HIT} l2_load_chunks=${L2_LOAD}"
 
 hit_rc=0
-if [ "${EXT_Q}" -le 0 ]; then
+if [ "${RESCORE_METRICS_OK}" != "1" ]; then
+    echo "[accuracy-test] FAIL Phase 5: connector metrics unavailable -- cannot verify the re-score." >&2
+    echo "[accuracy-test]   The deltas above are differences between unreadable scrapes, so they" >&2
+    echo "[accuracy-test]   say nothing about whether the tier served the re-score.  Treat this as" >&2
+    echo "[accuracy-test]   a broken measurement, not a retrieval fault." >&2
+    hit_rc=1
+elif [ "${EXT_Q}" -le 0 ]; then
     echo "[accuracy-test] FAIL Phase 5: vLLM never queried the external tier." >&2
     echo "[accuracy-test]   The connector is not wired up post-restart; the re-score" >&2
     echo "[accuracy-test]   recomputed everything and phase 4 proved nothing." >&2

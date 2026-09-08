@@ -184,6 +184,21 @@ These are LMCache-internal metric names and an upgrade is free to rename them;
 when a counter reads zero the dump is the only way to tell "it did not happen"
 from "it is called something else now".
 
+**A failed scrape is not a zero counter.** `_metric_sum` cannot distinguish
+"the endpoint did not answer" from "the counter never moved" — both are `0` —
+so every gate that reads a zero as evidence *about the product* first checks
+that the endpoint answered at all, with `_metrics_reachable`. Job 6235 is why
+this is written down: it logged two "could not dump metrics" warnings, then
+concluded from the resulting zeros that "LMCache completed zero L2 chunk
+stores" and told a reader to go hunting an LMCache bug that the evidence did
+not support. When the scrape fails, phases 3 and 5 now fail with *metrics
+unavailable* instead, which names the gate's own instrumentation as the fault.
+
+The phase-3 counter gates are additionally skipped when pytest has already
+failed. The scored pass was then cut short, so the counters describe a
+truncated run; they are still printed as diagnostics, but no liveness verdict is
+rendered from them.
+
 ## Proving the restart re-score came from cache
 
 Phase 4 asserts the post-restart score matches. On its own that is nearly
