@@ -215,6 +215,8 @@ sbatch
 sbates
 SDMA
 ShareGPT
+shepard
+Shepard
 SHM
 slurm
 Slurm
@@ -260,6 +262,7 @@ vLLM's
 VM
 vram
 VRAM
+wither
 workflow
 xGMI
 XT
