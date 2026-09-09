@@ -52,6 +52,8 @@ directionally
 disaggregated
 diskstats
 dispatch
+dkms
+DKMS
 DMA
 Dockerfile
 Dockerfile's
@@ -64,6 +66,7 @@ env
 EventBus
 FastAPI
 FastAPI's
+fastsafetensors
 filesystem
 FLOPs
 fp
@@ -107,6 +110,7 @@ InfiniBand
 init
 inlined
 io
+ioctls
 IOPS
 IPC
 isl
@@ -233,6 +237,7 @@ TCP
 teardown
 templated
 tensor's
+therock
 thinkstation
 tm
 tmp
@@ -262,6 +267,7 @@ vLLM's
 VM
 vram
 VRAM
+WD
 wither
 workflow
 xGMI

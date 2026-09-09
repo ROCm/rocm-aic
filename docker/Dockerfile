@@ -106,34 +106,18 @@ ARG ROCM_VERSION
 ARG ROCM_BASE_IMAGE
 ARG ROCM_ARCH
 
-# Parallel compile jobs for the C++/HIP source builds below (LMCache, hsa-snoop).
-# Defaults to $(nproc).
-ARG BUILD_JOBS=
-
-# vLLM: built from source at this tag.  Check https://github.com/vllm-project/vllm/tags
-# for the latest release; bump VLLM_REF and rebuild when updating.
-ARG VLLM_GIT_URL=https://github.com/vllm-project/vllm.git
+# Forward-declare build-arg names used in later stages so Docker resolves them
+# across the stage boundary.  Defaults are set in the stage that consumes them.
+ARG BUILD_JOBS
+ARG VLLM_GIT_URL
 ARG VLLM_REF
-
-# Pinned component revisions — bump together when validating a new combo.
-# ai-dynamo/nixl release tag + nixl-rocm-ais-mt.patch (ROCm/HIP + AIS_MT).
-# The patch is AIS_MT-only (it no longer relocates upstream GDS_MT), so it applies
-# cleanly on both v1.3.0 and v1.3.1 -- bump NIXL_REF and re-run the patch --check.
-ARG NIXL_GIT_URL=https://github.com/ai-dynamo/nixl.git
-ARG NIXL_REF=v1.3.2
-
-# hsa-snoop: HSA AQL queue/dispatch snooper + Prometheus exporter (includes AIS metrics).
-ARG HSA_SNOOP_GIT_URL=https://github.com/sbates130272/hsa-snoop.git
-ARG HSA_SNOOP_REF=v1.1.0
-
-# LMCache: upstream repo, pinned to the v0.5.4 release tag.
-# All 14 AMD patches in patches/lmcache/ apply cleanly against this tag.
-# Note: LMCache v0.5.2+ is required for vLLM >= 0.26.0.
-ARG LMCACHE_GIT_URL=https://github.com/LMCache/LMCache.git
-ARG LMCACHE_REF=v0.5.4
-
-# Optional: enable UCX fast-path for NIXL (default off).
-ARG AIC_UCX_FAST=
+ARG NIXL_GIT_URL
+ARG NIXL_REF
+ARG HSA_SNOOP_GIT_URL
+ARG HSA_SNOOP_REF
+ARG LMCACHE_GIT_URL
+ARG LMCACHE_REF
+ARG AIC_UCX_FAST
 
 # ----- 0. Corporate CA (optional, Zscaler/AMD) --------------------------------
 # Pass a CA cert at build time via BuildKit secret to reach HTTPS through a
@@ -170,6 +154,7 @@ RUN --mount=type=secret,id=tls_cert,required=false \
 #
 # ccache is used to accelerate repeated vLLM HIP/C++ compilations across rebuilds.
 # libsqlite3-dev, libfmt-dev, libmsgpack-dev are required by vLLM's C++ extensions.
+# hadolint ignore=SC2015
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
     rm -f /etc/apt/apt.conf.d/docker-clean && \
