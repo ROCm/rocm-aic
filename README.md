@@ -2,10 +2,10 @@
 
 [![MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://github.com/ROCm/rocm-aic/blob/main/LICENSE.md)
 [![Platform](https://img.shields.io/badge/platform-linux-lightgrey.svg)](README.md)
-[![ROCm](https://img.shields.io/badge/ROCm-7.14.0-green.svg)](https://rocm.docs.amd.com)
-[![vLLM](https://img.shields.io/badge/vLLM-v0.27.1-blue.svg)](https://github.com/vllm-project/vllm)
+[![ROCm](https://img.shields.io/badge/ROCm-7.14.1-green.svg)](https://rocm.docs.amd.com)
+[![vLLM](https://img.shields.io/badge/vLLM-v0.28.0-blue.svg)](https://github.com/vllm-project/vllm)
 [![LMCache](https://img.shields.io/badge/LMCache-v0.5.4-blue.svg)](https://github.com/LMCache/LMCache)
-[![NIXL](https://img.shields.io/badge/NIXL-v1.3.2-blue.svg)](https://github.com/ai-dynamo/nixl)
+[![NIXL](https://img.shields.io/badge/NIXL-v1.4.1-blue.svg)](https://github.com/ai-dynamo/nixl)
 [![hsa-snoop](https://img.shields.io/badge/hsa--snoop-v1.1.0-blue.svg)](https://github.com/sbates130272/hsa-snoop)
 [![Spelling](https://github.com/ROCm/rocm-aic/actions/workflows/aic-spellcheck.yml/badge.svg)](https://github.com/ROCm/rocm-aic/actions/workflows/aic-spellcheck.yml)
 [![Lint](https://github.com/ROCm/rocm-aic/actions/workflows/aic-lint.yml/badge.svg)](https://github.com/ROCm/rocm-aic/actions/workflows/aic-lint.yml)
@@ -41,10 +41,10 @@ platform.
 
 | Component | Source | Ref |
 | --- | --- | --- |
-| Base OS | `rocm/dev-ubuntu-24.04:7.14.0-full` | Ubuntu 24.04, ROCm 7.14, Python 3.12 |
-| vLLM | `github.com/vllm-project/vllm` (source build) | `v0.27.1` + 3 AMD patches |
+| Base OS | `rocm/dev-ubuntu-24.04:7.14.1-full` | Ubuntu 24.04, ROCm 7.14.1, Python 3.12 |
+| vLLM | `github.com/vllm-project/vllm` (source build) | `v0.28.0` + AMD patches |
 | LMCache | `LMCache/LMCache` (upstream) | `v0.5.4` + 15 AMD patches |
-| NIXL | `ai-dynamo/nixl` (upstream) | `v1.3.2` + `nixl-rocm-ais-mt.patch` |
+| NIXL | `ai-dynamo/nixl` (upstream) | `v1.4.1` + `nixl-rocm-ais-mt.patch` |
 | hsa-snoop | `sbates130272/hsa-snoop` (source build) | `v1.1.0` |
 | hipFile | ROCm 7.14 base image | GA in ROCm 7.14 — no separate source build |
 
