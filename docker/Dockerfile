@@ -2,13 +2,19 @@
 #
 # SPDX-License-Identifier: MIT
 #
-# AIC: Ubuntu 24.04 + ROCm 7.14 inference stack.
+# AIC: Ubuntu 24.04 + ROCm 7.14.1 inference stack.
 #
-#   Base image: rocm/dev-ubuntu-24.04:${ROCM_VERSION}-full  (Ubuntu 24.04, Python 3.12)
-#   vLLM:       built from source at ${VLLM_REF} (torch 2.13.0+rocm7.2 from pytorch.org)
-#   LMCache:    LMCache/LMCache ${LMCACHE_REF} + AMD patches from patches/lmcache/
-#   hipFile:    included in the ROCm 7.14 base image (GA since 7.14) — no source build needed
-#   NIXL:       ai-dynamo/nixl ${NIXL_REF} + nixl-rocm-ais-mt.patch (ROCm/HIP + AIS_MT)
+#   Base image:  rocm/dev-ubuntu-24.04:${ROCM_VERSION}-full  (Ubuntu 24.04, Python 3.12)
+#   PyTorch:     built from source at ROCm/pytorch@${PYTORCH_BRANCH} against the ROCm 7.14.1
+#                base image (avoids ROCm 7.2 dep contamination from pytorch.org wheels)
+#   torchvision: built from source at pytorch/vision@${TORCHVISION_BRANCH} against the
+#                source-built torch (pre-built wheel ABI-incompatible with custom torch)
+#   vLLM:        built from source at ${VLLM_REF}
+#   LMCache:     LMCache/LMCache ${LMCACHE_REF} + AMD patches from patches/lmcache/
+#   hipFile:     included in the ROCm 7.14 base image (GA since 7.14) — no source build needed
+#   NIXL:        ai-dynamo/nixl ${NIXL_REF} + nixl-rocm-ais-mt.patch (ROCm/HIP + AIS_MT)
+#   hsa-snoop:   ${HSA_SNOOP_REF} — HSA AQL dispatch + AIS P2P Prometheus exporter (:9488)
+#   llm-emu:     profile-driven emulation plugin (inert unless VLLM_EMULATOR_ENABLE_ORACLE=1)
 #
 # Two compose services share this single image:
 #   lmcache — standalone lmcache-server (MP mode)
@@ -32,13 +38,24 @@
 #     -f Dockerfile \
 #     -t rocm-aic .
 #
-# Orchestration: make up
+#   # Emulation-only image (CPU nodes; no GPU kernels compiled at all):
+#   DOCKER_BUILDKIT=1 docker build \
+#     --target emulate \
+#     --build-arg ROCM_ARCH=gfx942 \
+#     --build-arg VLLM_TARGET_DEVICE=empty \
+#     -f Dockerfile \
+#     -t rocm-aic:emulate .
+#
+# Orchestration:
 #   make build                                  # no proxy
 #   make build TLS_CERT=/path/to/corp-ca.crt   # behind proxy
+#   make dist-build-emulate                     # emulation-only image on a Slurm CPU node
+#   make emulate-test                           # serve + assert a completion on a CPU node
 #
-# Patches: every *.patch under patches/vllm/, patches/lmcache/, and patches/nixl/ is applied to
-# its upstream checkout during the build, in lexical (filename) order -- hence
-# the NN- prefixes.  Drop a new NN-*.patch into the directory to include it.
+# Patches: every *.patch under patches/vllm/, patches/lmcache/, patches/nixl/
+# and patches/llm-emu/ is applied to its upstream checkout during the build, in
+# lexical (filename) order -- hence the NN- prefixes.  Drop a new NN-*.patch
+# into the directory to include it.
 #
 # Wheels: the build also produces pip-installable wheels for vLLM (source-built),
 # the patched LMCache, and ROCm NIXL under /wheels.  Extract them with the `wheels` stage:
@@ -46,12 +63,27 @@
 #     --target wheels --output type=local,dest=./wheels .
 # (the default target remains the full runtime image -- see stages 8/9 below).
 
-# The main build stage is named `build`; two trailing stages at the end of this
-# file expose the pip wheels (`wheels`) and the final runtime image (`runtime`,
-# the default target -- identical to `build`, so existing `docker build` callers
-# are unaffected).  Publishing wheels: `docker build --target wheels
-# --output type=local,dest=<dir>` extracts /wheels without loading the image.
-ARG ROCM_VERSION=7.14.0
+# Stages:
+#
+#   base              ROCm base image + system deps + uv           (sections 0-2)
+#   build_pytorch     PyTorch 2.13 built from source (parallel)   (section 2b)
+#   build_torchvision torchvision built from source (parallel)    (section 2c)
+#   vllm              torch + torchvision + vLLM + llm-emu        (sections 3, 3b)
+#   emulate         emulation-only runtime (--target emulate)    (section 3c)
+#   build           + LMCache, NIXL, hsa-snoop, runtime env     (sections 4-7)
+#   wheels          scratch image holding just /wheels           (section 8)
+#   runtime         default target, aliases `build`              (section 9)
+#
+# `build_pytorch` runs in parallel with nothing — it is the first non-base stage.
+# `vllm`, `emulate`, and `build` all depend on it transitively (vllm mounts the
+# built wheel; emulate and build are FROM vllm).
+#
+# `emulate` is the CPU-only image: it stops after vLLM + the llm-emu plugin, so
+# nothing GPU-specific (LMCache's HIP extension, NIXL AIS_MT, hsa-snoop) is
+# compiled.  Combined with --build-arg VLLM_TARGET_DEVICE=empty it compiles no
+# GPU kernels at all -- see section 3.
+
+ARG ROCM_VERSION=7.14.1
 # ROCm 7.14 publishes the hipFile-bearing variant as `-full` (not `-complete`).
 ARG ROCM_BASE_IMAGE=rocm/dev-ubuntu-24.04:${ROCM_VERSION}-full
 
@@ -66,7 +98,7 @@ FROM scratch AS pip-wheels
 
 # ROCM_BASE_IMAGE has a tagged default but remains overridable by callers.
 # hadolint ignore=DL3006
-FROM ${ROCM_BASE_IMAGE} AS build
+FROM ${ROCM_BASE_IMAGE} AS base
 
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 
@@ -74,34 +106,18 @@ ARG ROCM_VERSION
 ARG ROCM_BASE_IMAGE
 ARG ROCM_ARCH
 
-# Parallel compile jobs for the C++/HIP source builds below (LMCache, hsa-snoop).
-# Defaults to $(nproc).
-ARG BUILD_JOBS=
-
-# vLLM: built from source at this tag.  Check https://github.com/vllm-project/vllm/tags
-# for the latest release; bump VLLM_REF and rebuild when updating.
-ARG VLLM_GIT_URL=https://github.com/vllm-project/vllm.git
-ARG VLLM_REF=v0.27.1
-
-# Pinned component revisions — bump together when validating a new combo.
-# ai-dynamo/nixl release tag + nixl-rocm-ais-mt.patch (ROCm/HIP + AIS_MT).
-# The patch is AIS_MT-only (it no longer relocates upstream GDS_MT), so it applies
-# cleanly on both v1.3.0 and v1.3.1 -- bump NIXL_REF and re-run the patch --check.
-ARG NIXL_GIT_URL=https://github.com/ai-dynamo/nixl.git
-ARG NIXL_REF=v1.3.2
-
-# hsa-snoop: HSA AQL queue/dispatch snooper + Prometheus exporter (includes AIS metrics).
-ARG HSA_SNOOP_GIT_URL=https://github.com/sbates130272/hsa-snoop.git
-ARG HSA_SNOOP_REF=v1.1.0
-
-# LMCache: upstream repo, pinned to the v0.5.4 release tag.
-# All 14 AMD patches in patches/lmcache/ apply cleanly against this tag.
-# Note: LMCache v0.5.2+ is required for vLLM >= 0.26.0.
-ARG LMCACHE_GIT_URL=https://github.com/LMCache/LMCache.git
-ARG LMCACHE_REF=v0.5.4
-
-# Optional: enable UCX fast-path for NIXL (default off).
-ARG AIC_UCX_FAST=
+# Forward-declare build-arg names used in later stages so Docker resolves them
+# across the stage boundary.  Defaults are set in the stage that consumes them.
+ARG BUILD_JOBS
+ARG VLLM_GIT_URL
+ARG VLLM_REF
+ARG NIXL_GIT_URL
+ARG NIXL_REF
+ARG HSA_SNOOP_GIT_URL
+ARG HSA_SNOOP_REF
+ARG LMCACHE_GIT_URL
+ARG LMCACHE_REF
+ARG AIC_UCX_FAST
 
 # ----- 0. Corporate CA (optional, Zscaler/AMD) --------------------------------
 # Pass a CA cert at build time via BuildKit secret to reach HTTPS through a
@@ -138,6 +154,7 @@ RUN --mount=type=secret,id=tls_cert,required=false \
 #
 # ccache is used to accelerate repeated vLLM HIP/C++ compilations across rebuilds.
 # libsqlite3-dev, libfmt-dev, libmsgpack-dev are required by vLLM's C++ extensions.
+# hadolint ignore=SC2015
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
     rm -f /etc/apt/apt.conf.d/docker-clean && \
@@ -162,7 +179,14 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
         pkg-config \
         python3-dev \
         bpftrace \
-    && update-ca-certificates
+    && update-ca-certificates && \
+    # libdrm-dev pulls in the Ubuntu system libhsa-runtime64-1 and libhsakmt1
+    # packages (ROCm 5.7 era).  These old shared libraries get loaded at runtime
+    # instead of the statically-linked versions inside the ROCm 7.14 runtime,
+    # breaking hipIpcGetMemHandle (returns hipErrorInvalidValue).  Remove them
+    # so the ROCm 7.14 base image's HSA runtime is the only one present.
+    DEBIAN_FRONTEND=noninteractive apt-get remove -y --purge \
+        libhsa-runtime64-1 libhsakmt1 2>/dev/null || true
 
 # Silence git's detached-HEAD advisory.  Every source below is cloned then
 # checked out at a pinned SHA (detached HEAD by design), which otherwise prints a
@@ -183,61 +207,146 @@ RUN rm -f /usr/lib/python3.*/EXTERNALLY-MANAGED
 # separate filesystem from /usr), so uv cannot hardlink installs across it and
 # would otherwise warn "Failed to hardlink files; falling back to full copy".
 ENV PIP_ROOT_USER_ACTION=ignore \
-    UV_LINK_MODE=copy
+    UV_LINK_MODE=copy \
+    UV_BREAK_SYSTEM_PACKAGES=1 \
+    PIP_BREAK_SYSTEM_PACKAGES=1
 
 # ----- 2. uv (fast Python package manager) + pip bootstrap ------------------
 # Pin UV_VERSION so the install URL is deterministic and the layer caches
 # across builds.  Bump when upgrading uv.
-ARG UV_VERSION=0.7.20
+ARG UV_VERSION=0.12.9
 RUN curl -fsSL "https://astral.sh/uv/${UV_VERSION}/install.sh" | sh && \
     ln -s /root/.local/bin/uv /usr/local/bin/uv && \
     ln -s /root/.local/bin/uvx /usr/local/bin/uvx
 
-# ----- 3. vLLM (built from source at pinned tag) ---------------------------------
-# Install torch 2.13.0+rocm7.2 from the upstream pytorch.org wheel index.
+# =============================================================================
+# PyTorch source build — avoids ROCm 7.2 wheel artifacts on a ROCm 7.14 host.
 #
-# UNBLOCK (2026-08-03): torch 2.12.0+rocm7.14.0 from repo.amd.com ships
-# Triton 3.7.1 which triggers hipErrorInvalidImage on SPUR gfx950 nodes
-# (amdgpu/KFD 6.14.14 host driver).  The pytorch.org rocm7.2 wheel ships
-# a Triton version compatible with vLLM 0.27.1 and the current SPUR KFD.
-# Revert to repo.amd.com once the SPUR nodes are upgraded to a KFD that
-# supports ROCm 7.14 compiled kernels.
+# Pre-built pytorch.org wheels (torch 2.13.0+rocm7.2) carry ROCm 7.2 runtime
+# deps (notably rocprofiler-sdk) as transitive installs that conflict with the
+# ROCm 7.14 libs already in the base image.  Building from ROCm/pytorch @
+# release/2.13 compiles against /opt/rocm (the 7.14.0 tree in the base image),
+# so the installed wheel is fully self-consistent.
 #
-# Version alignment (download.pytorch.org/whl/rocm7.2):
-#   torch 2.13.0+rocm7.2  ->  torchvision 0.28.0+rocm7.2
-# Wheels are pre-downloaded to /opt/pip-cache/wheels on the build host and
-# passed in via --build-context pip-wheels=<dir> to avoid the 6 GB download.
-# The context is mounted read-only and never baked into the image layer.
-# If the build-context is not provided, falls back to the index URL.
-RUN --mount=type=cache,target=/root/.cache/pip \
-    --mount=from=pip-wheels,source=.,target=/opt/pip-cache/wheels,ro \
-    if [ -f /opt/pip-cache/wheels/torch-2.13.0+rocm7.2-cp312-cp312-manylinux_2_28_x86_64.whl ]; then \
-        pip3 install \
-            --find-links /opt/pip-cache/wheels \
-            --prefer-binary \
-            --index-url https://download.pytorch.org/whl/rocm7.2 \
-            "torch==2.13.0+rocm7.2" \
-            "torchvision==0.28.0+rocm7.2"; \
-    else \
-        pip3 install \
-            --timeout 300 \
-            --retries 5 \
-            "torch==2.13.0+rocm7.2" \
-            "torchvision==0.28.0+rocm7.2" \
-            --index-url https://download.pytorch.org/whl/rocm7.2; \
-    fi
+# Triton is NOT built here as a separate stage: vLLM installs it via
+# requirements/rocm.txt, and a from-source PyTorch wheel no longer drags in
+# the repo.amd.com Triton 3.7.1 that caused hipErrorInvalidImage on gfx950.
+#
+# PYTORCH_BRANCH defaults to the tip of release/2.13 in ROCm/pytorch; pin to
+# a specific commit hash for reproducible builds.
+# =============================================================================
+FROM base AS build_pytorch
 
-# Validate ROCM_ARCH here — after the torch download so a per-arch build
-# doesn't bust the 6 GB wheel cache.  First use of ROCM_ARCH is in the vLLM
-# build step below.
+ARG ROCM_ARCH
+ARG PYTORCH_REPO=https://github.com/ROCm/pytorch.git
+ARG PYTORCH_BRANCH=release/2.13
+
+# torch 2.13 emits float->__bf16 libcalls (__truncsfbf2) absent from gcc-11
+# libgcc; build with gcc-13 to avoid link errors on Ubuntu 24.04.
+# hadolint ignore=DL3008
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
+    DEBIAN_FRONTEND=noninteractive apt-get update && \
+    apt-get install -y --no-install-recommends \
+        gcc-13 g++-13 pkg-config liblzma-dev libnuma-dev python3.12-venv && \
+    update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-13 130 \
+        --slave /usr/bin/g++ g++ /usr/bin/g++-13
+
+RUN git clone --branch "${PYTORCH_BRANCH}" "${PYTORCH_REPO}" /app/pytorch
+
+RUN --mount=type=cache,target=/root/.cache/uv \
+    cd /app/pytorch && \
+    uv pip install --system -r requirements.txt && \
+    git submodule update --init --recursive
+
+ENV PYTORCH_ROCM_ARCH=${ROCM_ARCH}
+
+# hadolint ignore=SC2086
+RUN --mount=type=cache,target=/root/.cache/ccache \
+    cd /app/pytorch && \
+    python3 tools/amd_build/build_amd.py && \
+    CCACHE_DIR=/root/.cache/ccache \
+    CMAKE_C_COMPILER_LAUNCHER=ccache \
+    CMAKE_CXX_COMPILER_LAUNCHER=ccache \
+    CMAKE_PREFIX_PATH=$(python3 -c 'import sys; print(sys.prefix)') \
+        python3 setup.py bdist_wheel --dist-dir=/app/pytorch/dist
+
+# =============================================================================
+# torchvision source build — must be compiled against our source-built PyTorch.
+# The pre-built pytorch.org wheel links against a different libtorch ABI and
+# causes "operator torchvision::nms does not exist" at import time.
+# transformers 5.15.0 (required by vLLM 0.28.0) hard-imports torchvision.io
+# at module level, so this is required even for text-only serving.
+# Pin TORCHVISION_BRANCH to the release matching PyTorch 2.13 (v0.28.x series).
+# =============================================================================
+FROM build_pytorch AS build_torchvision
+
+ARG ROCM_ARCH
+ARG TORCHVISION_REPO=https://github.com/pytorch/vision.git
+ARG TORCHVISION_BRANCH=v0.28.0
+
+RUN git clone --depth 1 --branch "${TORCHVISION_BRANCH}" "${TORCHVISION_REPO}" /app/vision
+
+# hadolint ignore=SC2086,DL3008
+RUN --mount=type=cache,target=/root/.cache/pip \
+    --mount=type=cache,target=/root/.cache/ccache \
+    --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
+    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends libnuma-dev && \
+    pip3 install setuptools wheel packaging /app/pytorch/dist/*.whl && \
+    cd /app/vision && \
+    USE_ROCM=1 USE_CUDA=0 \
+    PYTORCH_ROCM_ARCH="${ROCM_ARCH}" \
+    CCACHE_DIR=/root/.cache/ccache \
+    CMAKE_C_COMPILER_LAUNCHER=ccache \
+    CMAKE_CXX_COMPILER_LAUNCHER=ccache \
+        python3 setup.py bdist_wheel --dist-dir=/app/vision/dist
+
+# =============================================================================
+# vLLM stage — torch + torchvision (from source builds) + vLLM + llm-emu plugin.
+# Everything an emulation-only image needs; the full stack continues from here.
+# ARGs do not cross stage boundaries, so the ones used below are re-declared.
+# =============================================================================
+FROM base AS vllm
+
+ARG ROCM_ARCH
+
+# Install the source-built PyTorch wheel.  gcc-13 is needed at runtime for the
+# ABI of symbols emitted by the torch 2.13 build (same reason as build_pytorch).
+# hadolint ignore=DL3008
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
+    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+        gcc-13 g++-13 && \
+    update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-13 130 \
+        --slave /usr/bin/g++ g++ /usr/bin/g++-13
+
+RUN --mount=type=bind,from=build_pytorch,source=/app/pytorch/dist,target=/opt/pytorch-dist,ro \
+    --mount=type=bind,from=build_torchvision,source=/app/vision/dist,target=/opt/torchvision-dist,ro \
+    --mount=type=cache,target=/root/.cache/pip \
+    pip3 install /opt/pytorch-dist/*.whl /opt/torchvision-dist/*.whl
+
+# vLLM: built from source at this tag.  Check https://github.com/vllm-project/vllm/tags
+# for the latest release; bump VLLM_REF and rebuild when updating.
+ARG VLLM_GIT_URL=https://github.com/vllm-project/vllm.git
+ARG VLLM_REF=v0.28.0
+
+# vLLM build target.  `rocm` (default) compiles the HIP kernels for ROCM_ARCH --
+# the dominant cost of this whole Dockerfile.  `empty` is upstream vLLM's
+# no-extension build (setup.py: `if _no_device(): ext_modules = []`): the Python
+# stack is installed with zero kernels compiled.  That is only usable for
+# emulation (`--target emulate`), where vllm_emulator intercepts execute_model()
+# before any kernel would run -- do NOT ship an `empty` image to a GPU node.
+ARG VLLM_TARGET_DEVICE=rocm
+
+# ----- 3. vLLM (built from source at pinned tag) ---------------------------------
+# torch is already installed (from build_pytorch above); validate ROCM_ARCH before
+# the expensive HIP kernel compile.
 RUN test -n "$ROCM_ARCH" || { echo "ERROR: ROCM_ARCH is not set"; exit 1; }
 
 RUN git clone --depth 1 --branch "${VLLM_REF}" "${VLLM_GIT_URL}" /app/vllm
 
-# Copy only vLLM patches here — adding a LMCache or NIXL patch won't bust
-# the vLLM build cache.  Each patch directory is copied immediately before
-# its own build step for the same reason.
-COPY patches/vllm/ /app/patches/vllm/
+COPY patches/ /app/patches/
 
 # Patch setup.py so _is_hip() short-circuits on VLLM_TARGET_DEVICE=rocm at
 # build time, without probing torch.version.hip before it is installed.
@@ -246,6 +355,7 @@ RUN sed -i 's/def _is_hip() -> bool:/def _is_hip() -> bool:\n    if VLLM_TARGET_
         grep -Fxq '    if VLLM_TARGET_DEVICE == "rocm":'
 
 # Apply every patch under patches/vllm/ in lexical order.
+# hadolint ignore=SC3054,SC3044,SC2098
 RUN cd /app/vllm && \
     shopt -s nullglob && \
     patches=(/app/patches/vllm/*.patch) && \
@@ -261,33 +371,123 @@ RUN cd /app/vllm && \
         done; \
     fi
 
+# hadolint ignore=SC2098
 RUN --mount=type=cache,target=/root/.cache/pip \
     --mount=type=cache,target=/root/.cache/ccache \
     mkdir -p /wheels && \
     cd /app/vllm && \
-    printf 'torch==2.13.0+rocm7.2\ntorchvision==0.28.0+rocm7.2\n' > /tmp/torch-constraints.txt && \
+    printf 'torch>=2.13,<2.14\n' > /tmp/torch-constraints.txt && \
     pip3 install -r requirements/rocm.txt \
         --constraint /tmp/torch-constraints.txt && \
-    VLLM_TARGET_DEVICE=rocm \
+    VLLM_TARGET_DEVICE="${VLLM_TARGET_DEVICE}" \
         PYTORCH_ROCM_ARCH="${ROCM_ARCH}" \
         TORCH_DONT_CHECK_COMPILER_ABI=1 \
         MAX_JOBS="$(nproc)" \
         CCACHE_DIR=/root/.cache/ccache \
-        VLLM_VERSION_OVERRIDE="${VLLM_REF#v}+rocm" \
+        VLLM_VERSION_OVERRIDE="${VLLM_REF#v}+${VLLM_TARGET_DEVICE}" \
         pip3 wheel --no-build-isolation --no-deps --no-cache-dir -w /wheels . && \
-    pip3 install --no-cache-dir --no-deps /wheels/vllm-*.whl && \
-    python3 -c 'import torch; assert torch.version.hip, "Expected a ROCm torch build"'
+    pip3 install --no-cache-dir /wheels/vllm-*.whl
+
+# ----- 3b. vllm_emulator (llm-emu profile-driven emulation plugin) -----------
+# Clone llm-emu at the pinned commit and install vllm_emulator as a
+# vllm.platform_plugins entry point.  --no-deps skips the pinned vllm==0.18.1
+# dependency from the upstream pyproject.toml; we already have the version above.
+#
+# The plugin is inert unless VLLM_EMULATOR_ENABLE_ORACLE=1 is set at runtime
+# (its platform_plugins entry point returns None), so it is installed in BOTH
+# the emulation image and the full GPU image -- a GPU serve is unaffected.
+#
+# The upstream repo's example profile pack is copied to a stable path so
+# `--profile emulate` works with no external file; it is an NVIDIA A40 /
+# Qwen3-8B capture, i.e. good enough to prove the plumbing but NOT an AMD
+# latency model.  Capture a real one with VLLM_EMULATOR_TRACE_STEP_CYCLE=1 on
+# an MI300X/MI355X (see patches/vllm/04-llm-emu-emulator-hooks.patch).
+ARG LLM_EMU_GIT_URL=https://github.com/AKafakA/llm-emu.git
+ARG LLM_EMU_REF=b71c602
+# The upstream example pack (NVIDIA A40) and the AIC default (AMD MI300X, from
+# profiles/ -- see the COPY in the emulate/build stages below).  Both are in the
+# image; the compose `emulate` profile defaults to the AMD one.
+ENV AIC_EMULATOR_EXAMPLE_PACK=/opt/llm-emu/profiles/A40-Q8-Qwen3-8B.json \
+    AIC_EMULATOR_DEFAULT_PACK=/opt/llm-emu/profiles/MI300X-Qwen3-8B.json
+# hadolint ignore=SC3044
+RUN git clone "${LLM_EMU_GIT_URL}" /app/llm-emu && \
+    git -C /app/llm-emu checkout "${LLM_EMU_REF}" && \
+    shopt -s nullglob && \
+    for patch in /app/patches/llm-emu/*.patch; do \
+        if git -C /app/llm-emu apply "$patch"; then \
+            echo "Applied: $patch"; \
+        else \
+            echo "ERROR: llm-emu patch does not apply cleanly: $patch" >&2; \
+            echo "The llm-emu pin (${LLM_EMU_REF}) likely drifted; rebase this patch against it." >&2; \
+            exit 1; \
+        fi; \
+    done && \
+    pip3 install --no-cache-dir --no-build-isolation --no-deps /app/llm-emu/ && \
+    python3 -c "import vllm_emulator.hooks.executor_hook, vllm_emulator.oracle, \
+vllm_emulator.profile.loader, vllm_emulator.profiler.trace_profiler; \
+print('vllm_emulator subpackages import OK')" && \
+    mkdir -p /opt/llm-emu/profiles && \
+    cp /app/llm-emu/example_profiling_data/*.json /opt/llm-emu/profiles/ && \
+    test -r "${AIC_EMULATOR_EXAMPLE_PACK}"
+
+# =============================================================================
+# ----- 3c. emulate — emulation-only runtime image (--target emulate) ---------
+# CPU-only: no LMCache HIP extension, no NIXL, no hsa-snoop, and (with
+# --build-arg VLLM_TARGET_DEVICE=empty) no compiled GPU kernels at all.  Runs
+# the stock vLLM OpenAI server; vllm_emulator replaces the forward pass with a
+# profile-pack latency draw.  Brought up by the `emulate` compose profile.
+# =============================================================================
+FROM vllm AS emulate
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONHASHSEED=0 \
+    PYTHONPATH=/opt/rocm/share/amd_smi
+# AMD profile packs captured with `make profile-capture` (see profiles/README.md).
+# This COPY is deliberately repeated at the end of the `build` stage rather than
+# shared in `vllm`: a new pack is a frequent, cheap change, and putting it in the
+# shared stage would invalidate the LMCache/NIXL/hsa-snoop layers every time.
+COPY profiles/*.json /opt/llm-emu/profiles/
+RUN test -r "${AIC_EMULATOR_DEFAULT_PACK}" || \
+    { echo "ERROR: default profile pack missing: ${AIC_EMULATOR_DEFAULT_PACK}" >&2; exit 1; }
+ENTRYPOINT ["python3", "-m", "vllm.entrypoints.openai.api_server"]
+
+# =============================================================================
+# Full stack — LMCache, NIXL, hsa-snoop on top of the vLLM stage.
+# =============================================================================
+FROM vllm AS build
+
+ARG ROCM_ARCH
+
+# Parallel compile jobs for the C++/HIP source builds below (LMCache, hsa-snoop).
+# Defaults to $(nproc).
+ARG BUILD_JOBS=
+
+# Pinned component revisions — bump together when validating a new combo.
+# ai-dynamo/nixl release tag + nixl-rocm-ais-mt.patch (ROCm/HIP + AIS_MT).
+# The patch is AIS_MT-only (it no longer relocates upstream GDS_MT), so it applies
+# cleanly on both v1.4.0 and v1.4.1 -- bump NIXL_REF and re-run the patch --check.
+ARG NIXL_GIT_URL=https://github.com/ai-dynamo/nixl.git
+ARG NIXL_REF=v1.4.1
+
+# hsa-snoop: HSA AQL queue/dispatch snooper + Prometheus exporter (includes AIS metrics).
+ARG HSA_SNOOP_GIT_URL=https://github.com/sbates130272/hsa-snoop.git
+ARG HSA_SNOOP_REF=v1.1.0
+
+# LMCache: upstream repo, pinned to the v0.5.4 release tag.
+# All 14 AMD patches in patches/lmcache/ apply cleanly against this tag.
+# Note: LMCache v0.5.2+ is required for vLLM >= 0.26.0.
+ARG LMCACHE_GIT_URL=https://github.com/LMCache/LMCache.git
+ARG LMCACHE_REF=v0.5.4
+
+# Optional: enable UCX fast-path for NIXL (default off).
+ARG AIC_UCX_FAST=
 
 # ----- 4. LMCache (upstream release + AMD patches) ---------------------------
 # Shallow-clone the pinned release tag directly (no history/other branches).
 RUN git clone --depth 1 --branch "${LMCACHE_REF}" "${LMCACHE_GIT_URL}" /app/LMCache
 
-# Copy LMCache patches just before use — isolated from vLLM and NIXL patches
-# so adding/changing a LMCache patch only invalidates the LMCache build steps.
-COPY patches/lmcache/ /app/patches/lmcache/
-
 # Apply every patch under patches/lmcache/ in lexical (filename) order -- the
 # NN- prefixes fix the sequence.  Drop a new NN-*.patch in to include it.
+# hadolint ignore=SC3054,SC3044
 RUN cd /app/LMCache && \
     shopt -s nullglob && \
     patches=(/app/patches/lmcache/*.patch) && \
@@ -351,6 +551,7 @@ RUN uv pip uninstall --system \
 COPY docker/scripts /tmp/nixl-scripts
 COPY patches/nixl/ /tmp/nixl-patches/
 # Apply every patch under patches/nixl/ (lexical order) to the fresh checkout.
+# hadolint ignore=SC3054,SC3044
 RUN --mount=type=cache,target=/root/.cache/uv \
     chmod +x /tmp/nixl-scripts/*.sh && \
     NIXL_GIT_URL="${NIXL_GIT_URL}" NIXL_REF="${NIXL_REF}" NIXL_REQUIRE_ROCM=1 \
@@ -399,15 +600,20 @@ RUN git clone --depth 1 --branch "${HSA_SNOOP_REF}" "${HSA_SNOOP_GIT_URL}" /app/
     cmake --build /app/hsa-snoop/build --parallel "${BUILD_JOBS:-$(nproc)}" && \
     cmake --install /app/hsa-snoop/build --prefix /usr/local && \
     test -x /usr/local/bin/hsa-snoop && \
+    # hadolint ignore=SC2015
     { /usr/local/bin/hsa-snoop --help 2>&1 || true; } | grep -q -- '--prometheus' \
         || { echo "ERROR: hsa-snoop built without Prometheus mode (--prometheus absent)" >&2; exit 1; } && \
     echo "PASS: hsa-snoop v${HSA_SNOOP_REF} with Prometheus exporter (incl. AIS metrics) installed"
 
 # ----- 7. Runtime environment ------------------------------------------------
 # Vars from upstream vLLM Dockerfile.rocm added here:
-#   HSA_ENABLE_IPC_MODE_LEGACY=1  — legacy HIP IPC for cross-container KV registration (LMCache MP)
 #   SAFETENSORS_FAST_GPU=1        — GPU-accelerated weight loading, faster model startup
 #   HIP_FORCE_DEV_KERNARG=1       — kernel arg handling fix on MI300+/gfx942/gfx950
+#
+# HSA_ENABLE_IPC_MODE_LEGACY=1 — required for cross-container hipIpcOpenMemHandle
+# on amdgpu-dkms 7.1.3 (therock-10.0 kernel base) with gfx1201.  On the old
+# in-tree amdgpu.ko (6.19), this broke hipIpcGetMemHandle; the new DKMS module
+# handles both the legacy IPC path and hipIpcGetMemHandle correctly.
 ENV PYTHONUNBUFFERED=1 \
     PYTHONHASHSEED=0 \
     NIXL_PLUGIN_DIR=/opt/nixl/lib/x86_64-linux-gnu/plugins \
@@ -417,10 +623,18 @@ ENV PYTHONUNBUFFERED=1 \
     SAFETENSORS_FAST_GPU=1 \
     HIP_FORCE_DEV_KERNARG=1
 
+# AMD profile packs (see the identical COPY in the `emulate` stage for why this
+# is repeated rather than shared).  The GPU image can serve in emulation mode
+# too -- useful for reproducing a scheduling issue without occupying a GPU.
+COPY profiles/*.json /opt/llm-emu/profiles/
+RUN test -r "${AIC_EMULATOR_DEFAULT_PACK}" || \
+    { echo "ERROR: default profile pack missing: ${AIC_EMULATOR_DEFAULT_PACK}" >&2; exit 1; }
+
 # Provide image metadata. AIC_VERSION is declared and used here — after all
 # expensive build steps — so version bumps only invalidate this single cheap
 # layer rather than busting the torch/vLLM/LMCache/NIXL compilation cache.
 ARG AIC_VERSION
+ARG ROCM_BASE_IMAGE
 RUN test -n "$AIC_VERSION" || { echo "ERROR: AIC_VERSION is not set (read it from VERSION)"; exit 1; }
 LABEL org.opencontainers.image.title="rocm-aic" \
       org.opencontainers.image.description="AMD Infinity Context: ROCm vLLM + LMCache tiered-cache inference stack" \
@@ -429,6 +643,7 @@ LABEL org.opencontainers.image.title="rocm-aic" \
       ai.amd.aic.version="${AIC_VERSION}" \
       ai.amd.aic.rocm="${ROCM_VERSION}" \
       ai.amd.aic.vllm="${VLLM_REF}" \
+      ai.amd.aic.llm-emu="${LLM_EMU_REF}" \
       ai.amd.aic.lmcache="${LMCACHE_REF}" \
       ai.amd.aic.nixl="${NIXL_REF}" \
       ai.amd.aic.hipfile="rocm-${ROCM_VERSION}" \

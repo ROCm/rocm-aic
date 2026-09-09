@@ -1,0 +1,65 @@
+# Make llm-emu's CPU/GPU mocks compatible with vLLM v0.26.0.
+#
+# 1. gpu_worker.Worker.compile_or_warm_up_model
+#    v0.26.0's Executor.initialize_from_config reads `t.language_model` and
+#    `t.encoder` off every worker's return value (vllm/v1/executor/abstract.py:
+#    `max(t.language_model for t in compilation_times)`).  The upstream stub
+#    returns a bare float -- correct for vllm 0.18.x, an AttributeError here:
+#      AttributeError: 'float' object has no attribute 'language_model'
+#    Return a CompilationTimes NamedTuple when that type exists, else the old
+#    float, so the stub works on both.
+#
+# 2. _FAKE_GPU_MEMORY = int(os.environ["VLLM_EMULATOR_MEMORY"])
+#    An empty or non-numeric value raises ValueError at module import, and
+#    vllm_emulator/__init__.py catches it with a bare `except Exception: pass`.
+#    The plugin then stays active with NO torch.cuda shims and NO model stubs,
+#    surfacing far away as "DP adjusted local rank 0 is out of bounds for 0
+#    devices" in gpu_worker.init_device.  Ignore a bad value instead.
+#
+diff --git a/vllm_emulator/cuda_mock.py b/vllm_emulator/cuda_mock.py
+index 9754898..05505e4 100644
+--- a/vllm_emulator/cuda_mock.py
++++ b/vllm_emulator/cuda_mock.py
+@@ -17,9 +17,22 @@ import os
+ import sys
+ from unittest.mock import MagicMock
+ 
+-# Default fake GPU memory (12GB, configurable)
+-_FAKE_GPU_MEMORY = int(os.environ.get("VLLM_EMULATOR_MEMORY",
+-                                        12 * 1024**3))
++# Default fake GPU memory (12GB, configurable).  Tolerate an empty/garbage
++# VLLM_EMULATOR_MEMORY: an int() ValueError here aborts the import of this
++# module, and vllm_emulator/__init__.py swallows that exception -- leaving the
++# platform plugin active with NO torch.cuda shims and no model stubs, which
++# fails much later and much more confusingly (e.g. "0 devices" in init_device).
++# Passing an empty string is easy to do from a compose `- VAR=${VAR:-}` line.
++def _env_int(name: str, default: int) -> int:
++    raw = os.environ.get(name, "")
++    try:
++        return int(raw) if raw.strip() else default
++    except ValueError:
++        print(f"[EmulatorCudaMock] ignoring invalid {name}={raw!r}")
++        return default
++
++
++_FAKE_GPU_MEMORY = _env_int("VLLM_EMULATOR_MEMORY", 12 * 1024**3)
+ 
+ 
+ def _load_gpu_config():
+@@ -316,7 +329,15 @@ def _patch_gpu_worker(module):
+     cls.get_kv_cache_spec = _stub_get_kv_cache_spec
+ 
+     def _noop_compile_or_warmup(self, *a, **kw):
+-        return 0.0
++        # vLLM >= 0.26 expects a CompilationTimes NamedTuple here: the executor
++        # reads t.language_model / t.encoder off every worker's return value.
++        # Older releases (<= 0.18, which this plugin targets upstream) returned
++        # a bare float, so fall back to that when the type is absent.
++        try:
++            from vllm.v1.worker.worker_base import CompilationTimes
++        except ImportError:
++            return 0.0
++        return CompilationTimes(language_model=0.0, encoder=0.0)
+     cls.compile_or_warm_up_model = _noop_compile_or_warmup
+ 
+     def _stub_initialize_from_config(self, kv_cache_config=None, *a, **kw):

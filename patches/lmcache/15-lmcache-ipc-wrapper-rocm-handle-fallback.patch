@@ -1,0 +1,133 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Stephen Bates <stephen.bates@amd.com>
+Date: 2026-09-04
+Subject: [PATCH 15] fix: CudaIPCWrapper to_tensor fallback for source-built ROCm PyTorch
+
+Source-built PyTorch 2.13 from ROCm/pytorch@release/2.13 returns a 66-byte
+IPC memory handle from UntypedStorage._share_cuda_() rather than the 64-byte
+hipIpcMemHandle_t that hipIpcOpenMemHandle expects.  When _new_shared_cuda()
+passes the full 66-byte blob to hipIpcOpenMemHandle, HIP returns
+hipErrorInvalidDevicePointer and the LMCache KV registration fails.
+
+Add _to_storage_fallback() with three escalating stages:
+
+  Stage 1: retry _new_shared_cuda without ref-counter/event handles (pass b""
+           for both) to rule out auxiliary handle corruption.
+
+  Stage 2: strip the 2-byte prefix from handle[1] to recover the raw 64-byte
+           hipIpcMemHandle_t, then retry _new_shared_cuda with empty auxiliaries.
+
+  Stage 3: open the stripped handle via ctypes hipIpcOpenMemHandle, then feed
+           the confirmed-valid 64-byte bytes back to _new_shared_cuda.
+
+Applies cleanly against LMCache v0.5.4.
+---
+diff --git a/lmcache/v1/platform/cuda/ipc_wrapper.py b/lmcache/v1/platform/cuda/ipc_wrapper.py
+index c3d8ed6..cc04c36 100644
+--- a/lmcache/v1/platform/cuda/ipc_wrapper.py
++++ b/lmcache/v1/platform/cuda/ipc_wrapper.py
+@@ -78,9 +78,12 @@ class CudaIPCWrapper(DeviceIPCWrapper):
+         """
+         device_index = self._get_device_index_from_uuid(self.device_uuid)
+ 
+-        storage = torch.UntypedStorage._new_shared_cuda(  # noqa: SLF001
+-            device_index, *self.handle[1:]
+-        )
++        try:
++            storage = torch.UntypedStorage._new_shared_cuda(  # noqa: SLF001
++                device_index, *self.handle[1:]
++            )
++        except (RuntimeError, Exception):
++            storage = self._to_storage_fallback(device_index)
+ 
+         t = torch.empty(
+             (), device=f"{torch_device_type}:{device_index}", dtype=self.dtype
+@@ -88,6 +91,88 @@ class CudaIPCWrapper(DeviceIPCWrapper):
+         t.set_(storage, self.storage_offset, self.shape, self.stride)
+         return t
+ 
++    def _to_storage_fallback(self, device_index: int):
++        """Fallback for source-built ROCm PyTorch where handle[1] is >64 bytes.
++
++        Source-built PyTorch 2.13 (ROCm/pytorch@release/2.13) prepends a
++        2-byte header to hipIpcMemHandle_t inside _share_cuda_(), so handle[1]
++        is 66 bytes.  hipIpcOpenMemHandle expects exactly 64 bytes, causing
++        _new_shared_cuda to raise hipErrorInvalidDevicePointer.
++
++        Stage 1: retry without ref-counter/event handles.
++        Stage 2: strip the prefix to 64 bytes and retry.
++        Stage 3: open via ctypes hipIpcOpenMemHandle with the stripped handle.
++        """
++        import ctypes as _ctypes  # noqa: PLC0415
++
++        _HIP_IPC_HANDLE_SIZE = 64
++        handle = self.handle
++
++        # Stage 1: retry without ref-counter / event handles.
++        try:
++            return torch.UntypedStorage._new_shared_cuda(  # noqa: SLF001
++                device_index,
++                handle[1],
++                handle[2],
++                handle[3],
++                b"",
++                0,
++                b"",
++                False,
++            )
++        except (RuntimeError, Exception):
++            pass
++
++        # Stage 2: strip the 2-byte PyTorch header prepended in ROCm builds.
++        raw = handle[1]
++        if len(raw) > _HIP_IPC_HANDLE_SIZE:
++            raw = raw[len(raw) - _HIP_IPC_HANDLE_SIZE:]
++
++        try:
++            return torch.UntypedStorage._new_shared_cuda(  # noqa: SLF001
++                device_index,
++                raw,
++                handle[2],
++                handle[3],
++                b"",
++                0,
++                b"",
++                False,
++            )
++        except (RuntimeError, Exception):
++            pass
++
++        # Stage 3: open the stripped handle directly via ctypes.
++        class _H(_ctypes.Structure):
++            _fields_ = [("r", _ctypes.c_byte * _HIP_IPC_HANDLE_SIZE)]
++
++        _lib = _ctypes.CDLL("libamdhip64.so")
++        ipc_h = _H()
++        ipc_h.r = (_ctypes.c_byte * _HIP_IPC_HANDLE_SIZE)(*raw)
++        ptr = _ctypes.c_void_p()
++        ret = _lib.hipIpcOpenMemHandle(
++            _ctypes.byref(ptr), ipc_h, _ctypes.c_uint(1)
++        )
++        if ret != 0:
++            raise RuntimeError(
++                f"hipIpcOpenMemHandle failed: error {ret} "
++                f"(original handle len={len(handle[1])}, "
++                f"stripped to {_HIP_IPC_HANDLE_SIZE})"
++            )
++        try:
++            return torch.UntypedStorage._new_shared_cuda(  # noqa: SLF001
++                device_index,
++                bytes(ipc_h.r),
++                handle[2],
++                handle[3],
++                b"",
++                0,
++                b"",
++                False,
++            )
++        finally:
++            _lib.hipIpcCloseMemHandle(ptr)
++
+ 
+ class RawCudaIPCWrapper(DeviceIPCWrapper):
+     """IPC wrapper for CUDA tensors allocated outside PyTorch's caching

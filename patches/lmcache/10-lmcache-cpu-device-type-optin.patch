@@ -1,0 +1,26 @@
+diff --git a/lmcache/v1/platform/_device_detect.py b/lmcache/v1/platform/_device_detect.py
+index df7eadc..b3085a6 100644
+--- a/lmcache/v1/platform/_device_detect.py
++++ b/lmcache/v1/platform/_device_detect.py
+@@ -248,6 +248,21 @@ def _detect_device() -> "tuple[Any, str, str | None]":
+ 
+     env_device_type = _get_env_choice("DEVICE_TYPE")
+     if env_device_type is not None:
++        if env_device_type == "cpu":
++            # Explicit CPU opt-in: honour without the availability probe.
++            # CpuDeviceSpec.is_available() deliberately returns False, so
++            # _resolve_device_type_candidates() always returns None for "cpu",
++            # causing fall-through to auto-detection.  On a host where
++            # torch.cuda.is_available() lies (e.g. vllm_emulator's cuda_mock)
++            # that auto-detection picks CUDA and every later dispatch assumes
++            # device handles the CPU tensors cannot produce.  Short-circuit
++            # here instead.  StubCPUDevice -- not torch.cpu -- is the module
++            # that implements the stream/event surface callers use.
++            # First Party
++            from lmcache.v1.platform.cpu.stub_cpu_device import StubCPUDevice
++
++            logger.info("DEVICE_TYPE=cpu: forcing the CPU device (StubCPUDevice)")
++            return StubCPUDevice("cpu"), "cpu", None
+         resolved = _resolve_device_type_candidates(torch, env_device_type)
+         if resolved is not None:
+             torch_module, spec = resolved

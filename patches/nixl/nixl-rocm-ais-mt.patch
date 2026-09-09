@@ -7,7 +7,7 @@
 # reduced to the AIS_MT-only footprint: upstream's CUDA GDS_MT plugin is left
 # untouched where upstream keeps it (src/plugins/gds_mt) rather than relocated
 # under src/plugins/mt/gds. Decoupling from GDS_MT keeps this patch stable across
-# upstream churn -- it applies cleanly on both NIXL v1.3.1 and v1.3.2.
+# upstream churn -- it applies cleanly on both NIXL v1.4.0 and v1.4.1.
 #
 # Scope: meson HIP detection + AIS_MT registration + the new
 # src/plugins/mt/{ais,common} tree only. The GDS_MT relocation, and the
@@ -32,8 +32,8 @@ index 0b9c7d0..10ba75f 100644
      error('Cannot specify both enable_plugins and disable_plugins options')
  endif
  
--all_plugins = ['UCX', 'LIBFABRIC', 'POSIX', 'OBJ', 'GDS', 'GDS_MT', 'MOONCAKE', 'HF3FS', 'GUSLI', 'GPUNETIO', 'UCCL', 'AZURE_BLOB', 'INFINIA']
-+all_plugins = ['UCX', 'LIBFABRIC', 'POSIX', 'OBJ', 'GDS', 'GDS_MT', 'AIS_MT', 'MOONCAKE', 'HF3FS', 'GUSLI', 'GPUNETIO', 'UCCL', 'AZURE_BLOB', 'INFINIA']
+-all_plugins = ['UCX', 'LIBFABRIC', 'POSIX', 'OBJ', 'GDS', 'GDS_MT', 'MOONCAKE', 'HF3FS', 'GUSLI', 'GPUNETIO', 'UCCL', 'AZURE_BLOB', 'INFINIA', 'TELEMETRY_DOCA']
++all_plugins = ['UCX', 'LIBFABRIC', 'POSIX', 'OBJ', 'GDS', 'GDS_MT', 'AIS_MT', 'MOONCAKE', 'HF3FS', 'GUSLI', 'GPUNETIO', 'UCCL', 'AZURE_BLOB', 'INFINIA', 'TELEMETRY_DOCA']
  
  enabled_plugins = {}
  

@@ -10,9 +10,6 @@
 #   0.1.0-rocm7.14.0-vllm0.27.1-lmcache0.5.4-nixl1.3.2-hsasnoop1.1.0
 # Where 0.1.0 represents the AIC version.
 #
-# Optional segments: VLLM_ROCM_VARIANT appended to the vllm component,
-# and a hipfile{SHA7} segment when HIPFILE_SHA is set.
-#
 # Usage:  aic-image-tag.sh [path/to/Dockerfile]
 set -euo pipefail
 
@@ -44,29 +41,28 @@ _arg() {
 
 rocm="$(_arg ROCM_VERSION)"
 
-# Refs are git tags like v0.5.1 so we drop the leading v.
-# VLLM_VERSION env overrides VLLM_REF for pre-built wheel variants.
-if [[ -v VLLM_VERSION ]]; then
-  vllm="${VLLM_VERSION#v}"
+# PYTORCH_BRANCH is a branch name (e.g. release/2.13) or a commit hash.
+# Extract just the version number for the tag (release/2.13 -> 2.13; a 7-char
+# hash is used verbatim when no version is found).
+pytorch_raw="$(_arg PYTORCH_BRANCH)"
+if [[ "${pytorch_raw}" =~ release/([0-9]+\.[0-9]+) ]]; then
+  pytorch="${BASH_REMATCH[1]}"
 else
-  vllm="$(_arg VLLM_REF | sed 's/^v//')"
+  pytorch="${pytorch_raw:0:7}"
 fi
-vllm_variant="${VLLM_ROCM_VARIANT:-}"
+
+# Refs are git tags like v0.28.0 so we drop the leading v.
+vllm="$(_arg VLLM_REF | sed 's/^v//')"
 lmcache="$(_arg LMCACHE_REF | sed 's/^v//')"
 nixl="$(_arg NIXL_REF | sed 's/^v//')"
-hipfile_sha="${HIPFILE_SHA:-}"
 hsasnoop="$(_arg HSA_SNOOP_REF | sed 's/^v//')"
 
-for _v in aic rocm vllm lmcache nixl hsasnoop; do
+for _v in aic rocm pytorch vllm lmcache nixl hsasnoop; do
   [[ -n "${!_v}" ]] || {
     echo "aic-image-tag: could not resolve ${_v}" >&2
     exit 1
   }
 done
 
-tag="${aic}-rocm${rocm}-vllm${vllm}"
-[[ -n "${vllm_variant}" ]] && tag="${tag}-${vllm_variant}"
-tag="${tag}-lmcache${lmcache}-nixl${nixl}"
-[[ -n "${hipfile_sha}" ]] && tag="${tag}-hipfile${hipfile_sha:0:7}"
-tag="${tag}-hsasnoop${hsasnoop}"
+tag="${aic}-rocm${rocm}-pytorch${pytorch}-vllm${vllm}-lmcache${lmcache}-nixl${nixl}-hsasnoop${hsasnoop}"
 printf '%s\n' "${tag}"

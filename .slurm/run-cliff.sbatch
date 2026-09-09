@@ -570,10 +570,10 @@ if [[ "${AIC_EXPORTERS}" != "0" ]]; then
     _b="$(printf '%s' "${_t}" | tr '/:' '--')"
     load_image_if_needed "${_t}" "${AIC_IMAGE_DIR}/${_b}.tar.*" && export AIC_AMDGPU_EXPORTER_IMAGE="${_t}"
   fi
-  # Prometheus (prom/prometheus:v3.13.2).  Pre-pull avoids 10+ min Docker Hub
+  # Prometheus (prom/prometheus:v3.14.0).  Pre-pull avoids 10+ min Docker Hub
   # download on fresh nodes; load_image_if_needed is a no-op when already present.
   if [[ -z "${AIC_PROM_IMAGE:-}" ]]; then
-    _t="prom/prometheus:v3.13.2"
+    _t="prom/prometheus:v3.14.0"
     _b="$(printf '%s' "${_t}" | tr '/:' '--')"
     load_image_if_needed "${_t}" "${AIC_IMAGE_DIR}/${_b}.tar.*" || true
   fi
@@ -891,7 +891,7 @@ declare -A STATUS
 # Pre-pull the Prometheus image so start_monitoring doesn't block on a Docker Hub
 # download (prom/prometheus is ~75 MB; on a cold node this adds 10+ minutes before
 # the first arm starts).  docker pull is a no-op when the image is already present.
-_prom_img="${AIC_PROM_IMAGE:-prom/prometheus:v3.13.2}"
+_prom_img="${AIC_PROM_IMAGE:-prom/prometheus:v3.14.0}"
 log "pre-pulling ${_prom_img} (no-op if cached)..."
 docker pull "${_prom_img}" >/dev/null 2>&1 && log "  ${_prom_img}: ready" \
     || log "  WARN: pull failed for ${_prom_img} (will try again at compose up)"
