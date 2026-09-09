@@ -970,7 +970,19 @@ mkdir -p "${AIC_IMAGE_DIR}"
 # volume from filling the node's disk and silently killing the export.
 echo "[build] pruning BuildKit cache on \$(hostname) before build ..."
 docker buildx prune --builder ${AIC_BUILDX_BUILDER} --force 2>/dev/null || true
-echo "[build] disk after prune: \$(df -h / | awk 'NR==2{print \$3\" free / \"\$2\" total (\"\$5\" used)\"}')"
+# Report free space on the filesystem that actually backs BuildKit's cache -- the
+# docker data root, which is NOT necessarily /.  This is the number that explains
+# a "no space left on device" during the build, so it must never come back empty:
+# ask docker where its root is, fall back to /, and report the df row on one line
+# rather than through an awk program.
+#
+# The awk program that used to live here printed nothing on every build ever run.
+# Its double quotes were backslash-escaped, and an unquoted heredoc passes \"
+# through verbatim, so awk got a stray backslash and died.  It also printed field
+# 3 (Used) under the label "free"; Avail is field 4.
+_droot="\$(docker info --format '{{.DockerRootDir}}' 2>/dev/null)"
+[ -d "\${_droot:-}" ] || _droot=/
+echo "[build] disk after prune (\${_droot}): \$(df -h "\${_droot}" | tail -1)"
 tmp="${tarball}.partial.\$\$"
 docker buildx build --builder ${AIC_BUILDX_BUILDER} --progress=plain --output type=docker,dest=- \
     --build-arg ROCM_ARCH="${AIC_ROCM_ARCH}" \
