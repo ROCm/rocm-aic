@@ -957,7 +957,7 @@ cmd_build() {
         # the whole pipeline instead of writing a truncated tarball.
         remote_script="$(cat <<REMOTE
 set -euo pipefail
-command -v docker >/dev/null 2>&1 || { echo 'docker not found on build node' >&2; exit 1; }
+command -v docker >/dev/null 2>&1 || { echo "docker not found on build node \$(hostname) (PATH=\${PATH})" >&2; exit 1; }
 echo "[build] host=\$(hostname) docker=\$(docker --version)"
 # BuildKit writes a temp dir for config injection into TMPDIR (defaults to /tmp).
 # On SPUR compute nodes /tmp may not be writable for this user; use $HOME/tmp instead.
@@ -1004,7 +1004,7 @@ REMOTE
         # `docker save` the result.  Fine for smaller/simpler builds.
         remote_script="$(cat <<REMOTE
 set -euo pipefail
-command -v docker >/dev/null 2>&1 || { echo 'docker not found on build node' >&2; exit 1; }
+command -v docker >/dev/null 2>&1 || { echo "docker not found on build node \$(hostname) (PATH=\${PATH})" >&2; exit 1; }
 echo "[build] host=\$(hostname) docker=\$(docker --version)"
 cd "${AIC_DAY_DIR}"
 ${_builder_setup}
@@ -1104,7 +1104,7 @@ cmd_build_exporters() {
     local remote_script
     remote_script="$(cat <<REMOTE
 set -euo pipefail
-command -v docker >/dev/null 2>&1 || { echo 'docker not found on build node' >&2; exit 1; }
+command -v docker >/dev/null 2>&1 || { echo "docker not found on build node \$(hostname) (PATH=\${PATH})" >&2; exit 1; }
 echo "[build-exporters] host=\$(hostname) docker=\$(docker --version)"
 mkdir -p "${AIC_IMAGE_DIR}"
 # A docker-container builder is required to stream a docker-format tar from
