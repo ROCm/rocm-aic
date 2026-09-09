@@ -1,0 +1,101 @@
+# Nightly terminal stage — runs after Accuracy completes:
+#   Dist Build -> Smoke + Tiny -> Accuracy -> Cliff
+# Merging Smoke and Tiny keeps this within the three workflow_run levels.
+# workflow_run matches display names, not filenames; keep workflows: in sync.
+#
+# The KV cache cliff benchmark sweeps all three arms (vram_only, kvd_v2/nvme,
+# kvd_v2/gds), generates a self-contained HTML performance-tracking page, and
+# deploys it to GitHub Pages.
+#
+# Accuracy and Cliff share $HOME/Projects/rocm-aic.<short> and
+# <CI_STORAGE_ROOT>/images/aic-ci-<short>, both keyed on the short SHA alone.
+# Accuracy keeps both with KEEP_ARTIFACTS=1; spur-cliff-harvest.sh owns terminal
+# cleanup via an unconditional EXIT trap that rm -rf's both.  Cliff must wait
+# for Accuracy, never run concurrently and delete a live accuracy job's files.
+#
+# Use Accuracy's recorded input SHA, not the extra workflow_run hop's head_sha,
+# which can follow a newer default-branch commit.  The triggering run ID and
+# attempt identify the artifact; missing or invalid metadata must fail closed.
+#
+# Run even when the accuracy gate fails: the two measure different things,
+# and a KV regression must not blank the perf page or leak artifacts on
+# /shared_nfs.  Exclude skipped and cancelled upstream Accuracy runs explicitly:
+# failed Tiny skips Accuracy, so its clone was never made.  The old job-level
+# !cancelled() check alone cannot detect a skipped or cancelled upstream workflow.
+#
+# Requires (all already in use by sibling nightly workflows):
+#   secrets.AIC_SPUR_HOST        — SSH target for the SPUR head node
+#   secrets.AIC_SHARED_NFS       — shared NFS path for image tarballs + scratch
+#   secrets.AIC_SPUR_CONTROLLER  — SPUR controller address
+#
+# GitHub Pages setup (one-time): Settings → Pages → Source: gh-pages branch, / (root).
+# The page will be served at https://rocm.github.io/rocm-aic/cliff/.
+
+name: AIC Hardware Test - Nightly Cliff
+
+on:
+  workflow_run:
+    workflows: ["AIC Hardware Test - Nightly Accuracy Test"]
+    types: [completed]
+
+permissions:
+  actions: read    # required to download the triggering Accuracy run's SHA
+  contents: write   # required to push the gh-pages branch
+
+jobs:
+  cliff:
+    if: >-
+      github.event.workflow_run.conclusion != 'skipped' &&
+      github.event.workflow_run.conclusion != 'cancelled'
+    runs-on: [self-hosted, rocm-aic-cicd]
+    timeout-minutes: 240
+    env:
+      AIC_SPUR_HOST:       ${{ secrets.AIC_SPUR_HOST }}
+      AIC_SHARED_NFS:      ${{ secrets.AIC_SHARED_NFS }}
+      AIC_CI_STORAGE_ROOT: ${{ secrets.AIC_SHARED_NFS }}/rocm-aic
+      AIC_SPUR_CONTROLLER: ${{ secrets.AIC_SPUR_CONTROLLER }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download accuracy input SHA
+        uses: actions/download-artifact@v4
+        with:
+          name: nightly-accuracy-sha-${{ github.event.workflow_run.run_attempt }}
+          path: ${{ runner.temp }}/nightly-accuracy-context
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          run-id: ${{ github.event.workflow_run.id }}
+
+      - name: Validate accuracy input SHA
+        id: accuracy-sha
+        run: |
+          sha="$(cat "${{ runner.temp }}/nightly-accuracy-context/nightly-accuracy-sha.txt")"
+          if [[ ! "${sha}" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "Invalid accuracy input SHA" >&2
+            exit 1
+          fi
+          echo "sha=${sha}" >> "${GITHUB_OUTPUT}"
+
+      - name: Run cliff benchmark + harvest results from SPUR
+        run: |
+          bash .github/scripts/workflows/spur-cliff-harvest.sh \
+            "${{ steps.accuracy-sha.outputs.sha }}" \
+            "$(date -u +%Y-%m-%d)"
+
+      - name: Upload cliff performance page artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: cliff-perf-page-${{ steps.accuracy-sha.outputs.sha }}
+          path: cliff-page/
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: Deploy cliff performance page to GitHub Pages
+        uses: peaceiris/actions-gh-pages@v4
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: ./cliff-page
+          destination_dir: cliff
+          publish_branch: gh-pages
+          force_orphan: false
+          keep_files: true

@@ -1,0 +1,97 @@
+# Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+#
+# Nightly KV-integrity gate — runs after Smoke + Tiny, before Cliff:
+#   Dist Build -> Smoke + Tiny -> Accuracy -> Cliff
+#
+# Scores gsm8k against both a VRAM-only arm and a tiered (LMCache + NIXL POSIX
+# NVMe) arm, asserting that routing KV through DRAM/NVMe did not change the
+# answers.  Unlike the PR path this keeps both arms and the full gsm8k split:
+# the nightly is where the differential is worth its wall clock, and where
+# the score keeps enough resolution for DELTA to mean something.  See
+# tests/accuracy/README.md.
+#
+# GitHub caps workflow_run chains at three levels beyond the initiating
+# workflow.  Merging Smoke and Tiny into one workflow frees a level so
+# Accuracy and Cliff can have separate workflows and badges without a
+# fourth-level Cliff silently never running.  workflow_run matches display
+# names, not filenames; keep the downstream workflows: entries in sync.
+#
+# Accuracy and Cliff must remain serialized, not sibling consumers of
+# Smoke + Tiny: they share $HOME/Projects/rocm-aic.<short> and
+# <CI_STORAGE_ROOT>/images/aic-ci-<short>, both keyed on the short SHA alone.
+# spur-cliff-harvest.sh traps EXIT unconditionally and rm -rf's both, so
+# concurrent Cliff could delete artifacts from a still-running accuracy job.
+#
+# Publish the gate's input SHA before running it: an extra workflow_run hop
+# can report a newer default-branch head_sha instead of the SHA tested here.
+# Cliff consumes this run-attempt-specific artifact to target the same files.
+#
+# Cleanup ownership follows from that order: accuracy-test runs with
+# KEEP_ARTIFACTS=1 and never removes the clone or tarball, and cliff — which
+# runs even when the accuracy gate fails, so a KV regression does not also
+# blank the perf page — owns the terminal cleanup via its EXIT trap.  Cliff
+# excludes skipped or cancelled Accuracy runs, which must not start cleanup.
+#
+# Requires (all already in use by sibling nightly workflows):
+#   secrets.AIC_SPUR_HOST        — SSH target for the SPUR head node
+#   secrets.AIC_SHARED_NFS       — shared NFS path for image tarballs + scratch
+#   secrets.AIC_SPUR_CONTROLLER  — SPUR controller address
+#   secrets.AIC_HF_TOKEN         — HF token for the model download
+#
+name: AIC Hardware Test - Nightly Accuracy Test
+
+on:
+  workflow_run:
+    workflows: ["AIC Hardware Test - Nightly Smoke + Tiny Test"]
+    types: [completed]
+
+permissions:
+  contents: read
+
+jobs:
+  accuracy-test:
+    if: github.event.workflow_run.conclusion == 'success'
+    runs-on: [self-hosted, rocm-aic-cicd]
+    # A measured two-arm full-split run took ~58 min (SPUR job 6235): two
+    # bringups ~6, baseline scoring ~1, tiered scoring ~49, restart ~2. The
+    # tiered pass dominates -- scoring through LMCache is ~70x slower than
+    # VRAM-only. 150 leaves ~2.6x headroom for a slower node or a cold HF cache.
+    timeout-minutes: 150
+    env:
+      AIC_SPUR_HOST:       ${{ secrets.AIC_SPUR_HOST }}
+      AIC_SHARED_NFS:      ${{ secrets.AIC_SHARED_NFS }}
+      AIC_CI_STORAGE_ROOT: ${{ secrets.AIC_SHARED_NFS }}/rocm-aic
+      AIC_SPUR_CONTROLLER: ${{ secrets.AIC_SPUR_CONTROLLER }}
+      HF_TOKEN:            ${{ secrets.AIC_HF_TOKEN }}
+
+    steps:
+      - name: Record accuracy input SHA
+        run: printf '%s\n' "${{ github.event.workflow_run.head_sha }}" > "${{ runner.temp }}/nightly-accuracy-sha.txt"
+
+      - name: Share accuracy input SHA with Cliff
+        uses: actions/upload-artifact@v4
+        with:
+          name: nightly-accuracy-sha-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/nightly-accuracy-sha.txt
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Run accuracy-test on SPUR head node
+        # Keep artifacts unconditionally: the Cliff workflow runs next even if
+        # this gate fails, reuses the clone + tarball, and owns the cleanup.
+        run: KEEP_ARTIFACTS=1 bash /usr/local/lib/aic-ci/spur-accuracy-test.sh "${{ github.event.workflow_run.head_sha }}"
+
+      # if: always() — this is the unattended path, so a nightly KV regression
+      # is found hours later with only the stdout tail unless the per-phase
+      # scores and per-arm container logs are kept.  The driver archives them on
+      # the head node before cliff's harvest removes the clone.
+      - name: Upload accuracy logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: accuracy-logs-${{ github.event.workflow_run.head_sha }}
+          path: ${{ runner.temp }}/accuracy-logs/
+          if-no-files-found: warn
+          retention-days: 14
