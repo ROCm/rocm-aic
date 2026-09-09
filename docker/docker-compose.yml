@@ -40,7 +40,7 @@
 #   GPU                    — fallback GPU when no SPUR allocation is resolved (default: 0).
 #   AIC_ROCR_VISIBLE       — ROCR_VISIBLE_DEVICES for every service to isolate used GPUs
 #                            to the ones allocated to use by SPUR.
-#   AIC_HIP_VISIBLE        — HIP_VISIBLE_DEVICES + CUDA_VISIBLE_DEVICES.  RELATIVE
+#   AIC_HIP_VISIBLE        — HIP_VISIBLE_DEVICES.  RELATIVE
 #                            indices ( e.g., 0..n-1).
 #   GDS_MODE               — set to 1 to enable hipFile NVMe slab as L1 (requires GDS_SLAB_DATA)
 #   GDS_SLAB_DATA          — host path for the hipFile slab file (required when GDS_MODE=1)
@@ -140,6 +140,7 @@
 # own device-specific entries on top of this shared set.  Values are quoted
 # because compose rejects a YAML boolean/int where an env value is expected.
 x-lmcache-env: &lmcache-env
+  PYTHONWARNINGS: "ignore::FutureWarning:google.auth.transport.grpc"
   LMCACHE_PORT: "${LMCACHE_PORT:-6555}"
   LMCACHE_L1_SIZE_GB: "${LMCACHE_L1_SIZE_GB:-20}"
   GDS_MODE: "${GDS_MODE:-}"
@@ -255,7 +256,7 @@ x-lmcache-healthcheck: &lmcache-healthcheck
   start_period: 30s
 
 networks:
-  aic:
+  aic-network:
     name: aic
 
 services:
@@ -298,7 +299,7 @@ services:
     # IPC namespace sharing is independent of network_mode — the aic bridge network
     # provides DNS-based service discovery for prometheus without affecting IPC.
     # Ports reachable within the aic network: lmcache HTTP API 8080, NIXL telemetry 19090.
-    networks: [aic]
+    networks: [aic-network]
     ipc: shareable
     shm_size: "${AIC_SHM_SIZE:-64gb}"
     cap_add:
@@ -343,7 +344,6 @@ services:
       # lmcache lands on a different device.  Mirror vllm's ROCR_VISIBLE_DEVICES.
       ROCR_VISIBLE_DEVICES: "${AIC_ROCR_VISIBLE:-${GPU:-0}}"
       HIP_VISIBLE_DEVICES: "${AIC_HIP_VISIBLE:-0}"
-      CUDA_VISIBLE_DEVICES: "${AIC_HIP_VISIBLE:-0}"
       PYTHONHASHSEED: "0"
       TZ: "${TZ:-America/Edmonton}"
       # Coordinator registration: the MP server registers, heartbeats, and
@@ -373,7 +373,7 @@ services:
       - cache
     image: ${IMAGE_REF:-${IMAGE_NAME:-rocm-aic}:latest}
     container_name: aic-lmcache-coordinator
-    networks: [aic]
+    networks: [aic-network]
     restart: unless-stopped
     environment:
       - LMCACHE_DISABLE_BANNER=1
@@ -410,7 +410,7 @@ services:
     # (ipc: service:lmcache, pid: service:lmcache) is sufficient and safer than
     # ipc: host / pid: host.  Override via VLLM_IPC_MODE / VLLM_PID_MODE if needed.
     # vLLM OpenAI API + /metrics reachable within the aic network on port 8000.
-    networks: [aic]
+    networks: [aic-network]
     ipc: "${VLLM_IPC_MODE:-service:lmcache}"
     shm_size: "${AIC_SHM_SIZE:-64gb}"
     pid: "${VLLM_PID_MODE:-service:lmcache}"
@@ -439,7 +439,6 @@ services:
       - VLLM_TARGET_DEVICE=rocm
       - ROCR_VISIBLE_DEVICES=${AIC_ROCR_VISIBLE:-${GPU:-0}}
       - HIP_VISIBLE_DEVICES=${AIC_HIP_VISIBLE:-0}
-      - CUDA_VISIBLE_DEVICES=${AIC_HIP_VISIBLE:-0}
       - AMDGCN_USE_BUFFER_OPS=0
       - MIOPEN_FIND_MODE=FAST
       - MIOPEN_USER_DB_PATH=/app/miopen
@@ -500,11 +499,16 @@ services:
   client:
     image: ${AIC_CLIENT_IMAGE:-python:3.12}
     container_name: aic-client
-    networks: [aic]
+    networks: [aic-network]
+    environment:
+      HF_TOKEN: "${HF_TOKEN:-}"
+      HF_HOME: "${HF_HOME:-/root/.cache/huggingface}"
     entrypoint: ["/bin/bash", "-c"]
     command:
       - |
         pip install --quiet \
+          --root-user-action=ignore \
+          --disable-pip-version-check \
           openai httpx pyyaml tqdm \
           transformers huggingface-hub \
           prometheus-client aiohttp \
@@ -528,7 +532,7 @@ services:
     profiles: [monitoring]
     image: ${AIC_PROM_IMAGE:-prom/prometheus:v3.14.0}
     container_name: aic-prometheus
-    networks: [aic]
+    networks: [aic-network]
     extra_hosts:
       - "host-gateway:host-gateway"
     user: "${PROM_UID:-65534}:${PROM_GID:-65534}"
@@ -553,7 +557,7 @@ services:
     profiles: [monitoring]
     image: ${AIC_NODE_EXPORTER_IMAGE:-quay.io/prometheus/node-exporter:v1.12.1}
     container_name: aic-node-exporter
-    networks: [aic]
+    networks: [aic-network]
     pid: host
     restart: unless-stopped
     volumes:
@@ -573,12 +577,11 @@ services:
     profiles: [monitoring]
     image: ${AIC_AMDGPU_EXPORTER_IMAGE:-rocm/device-metrics-exporter:v1.5.1}
     container_name: aic-amdgpu-exporter
-    networks: [aic]
+    networks: [aic-network]
     restart: unless-stopped
     environment:
       - ROCR_VISIBLE_DEVICES=${AIC_ROCR_VISIBLE:-${GPU:-0}}
       - HIP_VISIBLE_DEVICES=${AIC_HIP_VISIBLE:-0}
-      - CUDA_VISIBLE_DEVICES=${AIC_HIP_VISIBLE:-0}
     devices:
       - /dev/kfd
       - /dev/dri
@@ -596,7 +599,7 @@ services:
     profiles: [monitoring]
     image: ${AIC_NVME_EXPORTER_IMAGE:-aic-nvme-exporter:local}
     container_name: aic-nvme-exporter
-    networks: [aic]
+    networks: [aic-network]
     cap_add:
       - SYS_ADMIN
     restart: unless-stopped
@@ -614,7 +617,7 @@ services:
     profiles: [monitoring]
     image: ${AIC_RDMA_EXPORTER_IMAGE:-aic-rdma-exporter:local}
     container_name: aic-rdma-exporter
-    networks: [aic]
+    networks: [aic-network]
     restart: unless-stopped
     volumes:
       - /sys:/sys:ro
@@ -632,7 +635,7 @@ services:
     profiles: [monitoring]
     image: ${AIC_GRAFANA_IMAGE:-grafana/grafana:13.2.1}
     container_name: aic-grafana
-    networks: [aic]
+    networks: [aic-network]
     ports:
       - "${AIC_GRAFANA_PORT:-3000}:3000"
     restart: unless-stopped
@@ -646,6 +649,34 @@ services:
       - ../monitoring/grafana/dashboards:/etc/grafana/dashboards:ro
       - grafana-data:/var/lib/grafana
 
+  # hsa-snoop: HSA AQL queue/dispatch snooper + Prometheus exporter on :9488.
+  # Runs privileged in the lmcache PID namespace so it sees both vLLM and LMCache
+  # GPU processes without needing host PID. Requires tracefs on the host.
+  # ---------------------------------------------------------------------------
+  hsa-snoop:
+    profiles: [monitoring]
+    image: ${IMAGE_REF:-${IMAGE_NAME:-rocm-aic}:latest}
+    container_name: aic-hsa-snoop
+    networks: [aic-network]
+    pid: "service:lmcache"
+    privileged: true
+    restart: unless-stopped
+    environment:
+      - ROCR_VISIBLE_DEVICES=${AIC_ROCR_VISIBLE:-${GPU:-0}}
+      - HIP_VISIBLE_DEVICES=${AIC_HIP_VISIBLE:-0}
+    devices:
+      - /dev/kfd
+      - /dev/dri
+    volumes:
+      - /sys/kernel/debug:/sys/kernel/debug
+      - /sys/kernel/tracing:/sys/kernel/tracing
+    entrypoint: ["/usr/local/bin/hsa-snoop"]
+    command: ["--all", "--prometheus", "--prometheus-port", "${HSA_SNOOP_PORT:-9488}", "--mem-snoop"]
+    depends_on:
+      lmcache:
+        condition: service_healthy
+
+  # ---------------------------------------------------------------------------
   # lmcache-emulator: the SAME lmcache server, on a node with no GPU
   #
   # Same image, same anchored command and environment as `lmcache` above — the
@@ -881,7 +912,3 @@ services:
 volumes:
   grafana-data:
 
-  # hsa-snoop is intentionally omitted here: it requires exclusive access to
-  # /sys/kernel/tracing/trace_pipe and conflicts with any host hsa-snoop service.
-  # If no host hsa-snoop is running, launch it via the monitoring compose:
-  #   docker compose -f monitoring/docker-compose.monitoring.yml --profile exporters up -d hsa-snoop

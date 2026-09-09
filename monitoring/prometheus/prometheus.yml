@@ -38,31 +38,15 @@ scrape_configs:
     static_configs:
       - targets: ["aic-prometheus:9090"]
 
-  # vLLM OpenAI server /metrics. The cliff sweep uses :8000 for the kvd_v2 arms
-  # and :8001 for the vram_only baseline; list both so whichever arm is live is
-  # captured. `make up` publishes :8000.
   - job_name: vllm
     metrics_path: /metrics
     static_configs:
-      - targets: ["aic-vllm-gpu0:8000", "aic-vllm-gpu0:8001"]
-      # Emulator (host-network): reachable via host-gateway from the aic bridge.
-      - targets: ["host-gateway:8000"]
-        labels:
-          instance: vllm-emulator
+      - targets: ["aic-vllm-gpu0:8000"]
 
-  # LMCache /metrics.  LMCache v0.5.x uses OpenTelemetry with a Prometheus fallback
-  # served by the FastAPI HTTP frontend on --http-port (default 8080).  The
-  # --prometheus-port flag configures the port label only; /metrics is always on
-  # the HTTP API port (:8080).  Note: the lmcache_mp_* metrics only appear here
-  # when the OTel Prometheus exporter is initialised; confirm with up{job="lmcache"}.
   - job_name: lmcache
     metrics_path: /metrics
     static_configs:
       - targets: ["aic-lmcache:8080"]
-      # :9091 is the standalone Prometheus exporter port (--prometheus-port 9091).
-      # Used when lmcache runs in host-network mode (emulate-mp profile) or when
-      # the bridge-network :8080 target is absent.  Silent down otherwise.
-      - targets: ["localhost:9091"]
 
   # LMCache coordinator exporter — polls the coordinator REST API (/instances,
   # /directory/stats, /quota) and emits Prometheus text format on :9301.
@@ -99,13 +83,11 @@ scrape_configs:
     static_configs:
       - targets: ["aic-rdma-exporter:9879"]
 
-  # AMD GPU device-metrics-exporter (gpu_* metrics).  :5000 is the default; :5050
-  # is the fallback the sbatch uses when :5000 is occupied by a non-GPU listener
-  # (only one actually serves gpu_* series, so no duplicate metrics).
+  # AMD GPU device-metrics-exporter (gpu_* metrics).  Always on :5000 on aic-network.
   - job_name: amd_metrics_exporter
     metrics_path: /metrics
     static_configs:
-      - targets: ["aic-amdgpu-exporter:5000", "aic-amdgpu-exporter:5050"]
+      - targets: ["aic-amdgpu-exporter:5000"]
 
   # hsa-snoop: HSA AQL queue/dispatch telemetry (hsa_kernel_launches_total,
   # hsa_kernel_duration_seconds, hsa_active_queues, hsa_snoop_up, ...) and AIS
@@ -120,4 +102,6 @@ scrape_configs:
   - job_name: hsa_snoop
     metrics_path: /metrics
     static_configs:
+      - targets: ["aic-hsa-snoop:9488"]
+      # Fallback for host-network or standalone deployments
       - targets: ["host-gateway:9488"]

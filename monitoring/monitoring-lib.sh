@@ -168,6 +168,9 @@ start_monitoring() {
     ensure_compose || { log "monitoring: docker compose unavailable, skipping"; AIC_MONITORING=0; return 0; }
     [[ -f "${MON_COMPOSE}" ]] || { log "monitoring: ${MON_COMPOSE} not found, skipping"; AIC_MONITORING=0; return 0; }
     log "starting metrics capture -> ${AIC_METRICS_DIR} (exporters=${AIC_EXPORTERS})"
+    docker network inspect aic-network >/dev/null 2>&1 \
+        || docker network create aic-network >/dev/null \
+        || log "monitoring: could not create aic-network (continuing)"
     local -a profile; mapfile -t profile < <(mon_profile)
     AIC_METRICS_DIR="${AIC_METRICS_DIR}" PROM_UID="$(id -u)" PROM_GID="$(id -g)" \
         IMAGE_NAME="${AIC_IMAGE}" \
