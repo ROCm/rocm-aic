@@ -3,15 +3,21 @@
 # SPDX-License-Identifier: MIT
 #
 # Nightly pip wheels for the AMD Infinity Context (AIC): source-built vLLM,
-# patched LMCache, and ROCm NIXL.
+# patched LMCache, source-built Mooncake ROCm, and ROCm NIXL.
 #
 # Each night, if main changed since the last nightly, this builds the AIC
 # image's `wheels` stage on a GitHub-hosted runner (no GPU needed -- hipcc
 # host-compiles), extracts the .whl files, and publishes them to a single
 # rolling GitHub Release tagged `nightly`.  People then:
 #
-#   pip install \
+#   python3 -m pip install \
+#     "torch==2.13.0+rocm7.2" \
+#     "torchvision==0.28.0+rocm7.2" \
+#     --index-url https://download.pytorch.org/whl/rocm7.2
+#
+#   python3 -m pip install \
 #     https://github.com/ROCm/rocm-aic/releases/download/nightly/vllm-<ver>-cp312-cp312-linux_x86_64.whl \
+#     https://github.com/ROCm/rocm-aic/releases/download/nightly/mooncake_transfer_engine_rocm-<ver>-cp312-cp312-manylinux_2_39_x86_64.whl \
 #     https://github.com/ROCm/rocm-aic/releases/download/nightly/lmcache-<ver>-cp312-cp312-linux_x86_64.whl \
 #     https://github.com/ROCm/rocm-aic/releases/download/nightly/nixl_rocm-<ver>-cp312-cp312-linux_x86_64.whl
 #
@@ -174,10 +180,11 @@ jobs:
           wheels=(wheels/*.whl)
           echo "Extracted ${#wheels[@]} wheel(s):"
           for w in "${wheels[@]}"; do echo "  - $(basename "$w") ($(du -h "$w" | cut -f1))"; done
-          # Expect vllm, lmcache, and nixl_rocm wheels.
-          ls wheels/vllm-*.whl      >/dev/null || { echo "ERROR: no vllm wheel"      >&2; exit 1; }
-          ls wheels/lmcache-*.whl   >/dev/null || { echo "ERROR: no lmcache wheel"   >&2; exit 1; }
-          ls wheels/nixl*rocm*.whl  >/dev/null || { echo "ERROR: no nixl_rocm wheel" >&2; exit 1; }
+          # Expect all four wheels documented by the release.
+          ls wheels/vllm-*.whl                            >/dev/null || { echo "ERROR: no vllm wheel"       >&2; exit 1; }
+          ls wheels/mooncake_transfer_engine_rocm-*.whl  >/dev/null || { echo "ERROR: no Mooncake wheel"   >&2; exit 1; }
+          ls wheels/lmcache-*.whl                         >/dev/null || { echo "ERROR: no lmcache wheel"     >&2; exit 1; }
+          ls wheels/nixl*rocm*.whl                        >/dev/null || { echo "ERROR: no nixl_rocm wheel"   >&2; exit 1; }
 
       - name: Compose release notes
         id: notes
@@ -186,10 +193,12 @@ jobs:
           df="docker/Dockerfile"
           get() { grep -E "^ARG $1=" "$df" | head -1 | cut -d= -f2-; }
           lmcache_ref="$(get LMCACHE_REF)"
+          mooncake_ref="$(get MOONCAKE_REF)"
           nixl_ref="$(get NIXL_REF)"
           rocm_version="$(get ROCM_VERSION)"
           vllm_ref="$(get VLLM_REF)"
           : "${lmcache_ref:?LMCACHE_REF is not set in ${df}}"
+          : "${mooncake_ref:?MOONCAKE_REF is not set in ${df}}"
           : "${nixl_ref:?NIXL_REF is not set in ${df}}"
           : "${rocm_version:?ROCM_VERSION is not set in ${df}}"
           : "${vllm_ref:?VLLM_REF is not set in ${df}}"
@@ -202,17 +211,28 @@ jobs:
             echo "- **Base:** rocm/dev-ubuntu-24.04:${rocm_version}-full (ROCm ${rocm_version}, Python 3.12, x86_64)"
             echo "- **vLLM:** $(get VLLM_GIT_URL) @ \`${vllm_ref}\` (source build)"
             echo "- **LMCache:** $(get LMCACHE_GIT_URL) @ \`${lmcache_ref}\` + AIC patches"
+            echo "- **Mooncake:** $(get MOONCAKE_GIT_URL) @ \`${mooncake_ref}\` (ROCm source build)"
             echo "- **NIXL:** $(get NIXL_GIT_URL) @ \`${nixl_ref}\` + nixl-rocm-ais-mt patch"
             echo ""
             echo "### Install"
             echo '```bash'
-            echo "pip install \\"
+            echo "python3 -m pip install \\"
+            echo "  \"torch==2.13.0+rocm7.2\" \\"
+            echo "  \"torchvision==0.28.0+rocm7.2\" \\"
+            echo "  --index-url https://download.pytorch.org/whl/rocm7.2"
+            echo ""
+            echo "python3 -m pip install \\"
             echo "  https://github.com/${GITHUB_REPOSITORY}/releases/download/${RELEASE_TAG}/<vllm-wheel> \\"
+            echo "  https://github.com/${GITHUB_REPOSITORY}/releases/download/${RELEASE_TAG}/<mooncake_transfer_engine_rocm-wheel> \\"
             echo "  https://github.com/${GITHUB_REPOSITORY}/releases/download/${RELEASE_TAG}/<lmcache-wheel> \\"
             echo "  https://github.com/${GITHUB_REPOSITORY}/releases/download/${RELEASE_TAG}/<nixl_rocm-wheel>"
             echo '```'
             echo ""
             echo "> These wheels are **not** manylinux: ROCm 7.14 + Python 3.12 + x86_64 only."
+            echo "> Install the pinned ROCm Torch pair first; LMCache's open Torch dependency can"
+            echo "> otherwise select PyPI's CUDA build in a clean environment."
+            echo "> Install the LMCache and Mooncake ROCm wheels together; the LMCache Mooncake"
+            echo "> extension resolves libmooncake_store from the companion wheel."
             echo "> The \`nixl_rocm\` wheel needs the ROCm runtime (libamdhip64) and hipFile"
             echo "> present on the host (hipFile is GA in ROCm 7.14); see README.md."
           } > release-notes.md

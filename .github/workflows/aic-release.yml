@@ -7,7 +7,8 @@
 # Triggered by pushing a v* tag (e.g. git tag v1.0.0 && git push origin v1.0.0).
 # Produces a full (non-prerelease) GitHub Release containing:
 #
-#   - LMCache + NIXL ROCm pip wheels (same `wheels` stage as the nightly)
+#   - vLLM, LMCache, Mooncake ROCm, and NIXL ROCm pip wheels
+#     (same `wheels` stage as the nightly)
 #   - Source tarball from `make export`
 #   - Full Docker image pushed to Docker Hub as rocm-aic:<tag> and rocm-aic:latest
 #
@@ -101,8 +102,10 @@ jobs:
           wheels=(wheels/*.whl)
           echo "Extracted ${#wheels[@]} wheel(s):"
           for w in "${wheels[@]}"; do echo "  - $(basename "$w") ($(du -h "$w" | cut -f1))"; done
-          ls wheels/lmcache-*.whl   >/dev/null || { echo "ERROR: no lmcache wheel"   >&2; exit 1; }
-          ls wheels/nixl*rocm*.whl  >/dev/null || { echo "ERROR: no nixl_rocm wheel" >&2; exit 1; }
+          ls wheels/vllm-*.whl                            >/dev/null || { echo "ERROR: no vllm wheel"       >&2; exit 1; }
+          ls wheels/mooncake_transfer_engine_rocm-*.whl  >/dev/null || { echo "ERROR: no Mooncake wheel"   >&2; exit 1; }
+          ls wheels/lmcache-*.whl                         >/dev/null || { echo "ERROR: no lmcache wheel"     >&2; exit 1; }
+          ls wheels/nixl*rocm*.whl                        >/dev/null || { echo "ERROR: no nixl_rocm wheel"   >&2; exit 1; }
 
       # ---------------------------------------------------------------------------
       # Build source tarball

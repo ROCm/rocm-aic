@@ -1,0 +1,39 @@
+# Separate Mooncake's build-time link directory from its wheel runtime path
+#
+# LMCache v0.5.3 uses MOONCAKE_LIB_DIR for both library_dirs and
+# runtime_library_dirs. A wheel built against an SDK under /opt therefore keeps
+# an absolute RPATH that does not exist when the wheel is installed elsewhere.
+# Allow packagers to provide a separate runtime path while preserving the old
+# behavior when MOONCAKE_RUNTIME_LIB_DIR is unset.
+
+diff --git a/setup_extensions/storage_backend_profiles/mooncake.py b/setup_extensions/storage_backend_profiles/mooncake.py
+--- a/setup_extensions/storage_backend_profiles/mooncake.py
++++ b/setup_extensions/storage_backend_profiles/mooncake.py
+@@ -39,5 +39,6 @@ class MooncakeStorageBackend(StorageBackendProfile):
+         mc_include = os.environ.get("MOONCAKE_INCLUDE_DIR", "")
+         mc_lib = os.environ.get("MOONCAKE_LIB_DIR", "")
++        mc_runtime_lib = os.environ.get("MOONCAKE_RUNTIME_LIB_DIR", mc_lib)
+         mc_include_dirs = [
+             "csrc/storage_backends",
+             "csrc/storage_backends/mooncake",
+@@ -45,8 +46,11 @@ class MooncakeStorageBackend(StorageBackendProfile):
+         if mc_include:
+             mc_include_dirs.extend(mc_include.split(";"))
+         mc_library_dirs: list[str] = []
++        mc_runtime_library_dirs: list[str] = []
+         if mc_lib:
+             mc_library_dirs.extend(mc_lib.split(";"))
++        if mc_runtime_lib:
++            mc_runtime_library_dirs.extend(mc_runtime_lib.split(";"))
+         return [
+             cpp_extension.CppExtension(
+                 "lmcache.lmcache_mooncake",
+@@ -57,7 +61,7 @@ class MooncakeStorageBackend(StorageBackendProfile):
+                 include_dirs=mc_include_dirs,
+                 library_dirs=mc_library_dirs,
+                 libraries=["mooncake_store"],
+-                runtime_library_dirs=mc_library_dirs,
++                runtime_library_dirs=mc_runtime_library_dirs,
+                 extra_compile_args={
+                     "cxx": extra_cxx_flags + ["-O3", "-std=c++20", "-DYLT_ENABLE_IBV"],
+                 },

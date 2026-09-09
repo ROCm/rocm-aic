@@ -115,7 +115,8 @@ services:
       context: ..
       dockerfile: docker/Dockerfile
       additional_contexts:
-        pip-wheels: ${AIC_PIP_WHEELS_DIR:-/opt/pip-cache/wheels}
+        # Use a small tracked directory when no host wheel cache is configured.
+        pip-wheels: ${AIC_PIP_WHEELS_DIR:-./constraints}
       args:
         AIC_VERSION:
         ROCM_VERSION:
@@ -125,6 +126,8 @@ services:
         VLLM_VERSION:
         VLLM_ROCM_VARIANT:
         LMCACHE_REF:
+        MOONCAKE_REF:
+        MOONCAKE_FETCH_REF:
         NIXL_REF:
         HIPFILE_SHA:
         HSA_SNOOP_REF:

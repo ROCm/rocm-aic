@@ -108,7 +108,8 @@ MESON_EXTRA=(
 	"-Ddisable_gds_backend=true"
 	"-Dbuild_tests=false" # disable unused components
 	"-Dbuild_examples=false"
-	"-Ddisable_plugins=OBJ,AZURE_BLOB"
+	"-Ddisable_plugins=OBJ,AZURE_BLOB,MOONCAKE"
+	"-Ddisable_mooncake_backend=true"
 	"--prefix=${NIXL_INSTALL_PREFIX}"
 )
 
