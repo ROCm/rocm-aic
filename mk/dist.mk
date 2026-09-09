@@ -11,7 +11,7 @@ _user_or = $(if $(filter file,$(origin $(1))),$(2),$($(1)))
 # _SPUR_SBATCH(script, extra-args): build the sbatch invocation for a given
 # .slurm script, switching between SPUR and standard Slurm.
 ifeq ($(AIC_SPUR_CLUSTER),1)
-_SPUR_SBATCH = $(_CLIFF_STRIP) SPUR_CONTROLLER_ADDR=$(AIC_SPUR_CONTROLLER) sbatch \
+_SPUR_SBATCH = $(_CLIFF_STRIP) sbatch \
     $(_SPUR_COMMON_ARGS) $(2) $(1) 2>&1 | \
     tee /dev/stderr | grep -oE '[0-9]+$$' | tail -1
 else
@@ -31,17 +31,16 @@ endif
 endif
 
 ifeq ($(AIC_SPUR_CLUSTER),1)
-_CLIFF_SPUR_CTL   := SPUR_CONTROLLER_ADDR=$(AIC_SPUR_CONTROLLER)
 _SPUR_COMMON_ARGS := --partition=amd-spur --constraint= --gres= --gpus=$(AIC_CLIFF_GPUS) \
     $(if $(AIC_CLIFF_NODE),--nodelist=$(AIC_CLIFF_NODE),)
-_CLIFF_SUBMIT     = $(_CLIFF_SPUR_CTL) $(_CLIFF_STRIP) sbatch \
+_CLIFF_SUBMIT     = $(_CLIFF_STRIP) sbatch \
     $(_SPUR_COMMON_ARGS) $(1) .slurm/run-cliff.sbatch 2>&1 | \
     tee /dev/stderr | grep -oE '[0-9]+$$' | tail -1
 # GPUs reserved for a SPUR kvbench submit.  The KVBench cliff drives no GPU,
 # but SPUR refuses any submission that carries no GPU request at all.
 _KVBENCH_SBATCH_ARGS := --partition=amd-spur --constraint= --gpus=1 \
     $(if $(AIC_KVBENCH_NODE),--nodelist=$(AIC_KVBENCH_NODE),)
-_KVBENCH_SUBMIT := SPUR_CONTROLLER_ADDR=$(AIC_SPUR_CONTROLLER) $(_CLIFF_STRIP) sbatch \
+_KVBENCH_SUBMIT := $(_CLIFF_STRIP) sbatch \
     $(_KVBENCH_SBATCH_ARGS) $(1) .slurm/run-kvbench-cliff.sbatch 2>&1 | \
     tee /dev/stderr | grep -oE '[0-9]+$$' | tail -1
 else

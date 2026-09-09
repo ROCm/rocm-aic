@@ -167,7 +167,6 @@ AIC_SPUR_CLUSTER ?= 0
 AIC_SHARED_NFS ?=
 ifeq ($(AIC_SPUR_CLUSTER),1)
 export AIC_SPUR_CLUSTER
-export AIC_SPUR_CONTROLLER  ?= $(SPUR_CONTROLLER_ADDR)
 export AIC_IMAGE_DIR        ?= $(AIC_SHARED_NFS)/rocm-aic/images
 export AIC_CACHE_DIR        ?= $(AIC_SHARED_NFS)/$(USER)/buildcache
 override export NVME_DATA     := /mnt/m2m_nobackup/aic-cliff/nvme

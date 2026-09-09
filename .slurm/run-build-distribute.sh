@@ -180,9 +180,6 @@
 #                        and polls squeue until the job leaves the queue.  cmd_load and
 #                        cmd_push also drop --overcommit from their srun calls.
 #                        (default: 0)
-#   AIC_SPUR_CONTROLLER  SPUR controller address passed as --controller to every
-#                        sbatch/srun/squeue call when AIC_SPUR_CLUSTER=1.
-#                        (default: $SPUR_CONTROLLER_ADDR)
 #   AIC_SPUR_RPC_RETRIES consecutive squeue RPC failures tolerated while watching
 #                        a job before _sbatch_run gives up.  At the 10s poll
 #                        interval the default is ~5min of controller
@@ -346,11 +343,6 @@ AIC_CAPTURE_SWEEP="${AIC_CAPTURE_SWEEP:-256,64,1,16 256,64,8,64 1024,128,1,12 10
 # and clear the build/test constraints (SPUR nodes have no MARKHAM/CPUONLY/GFX942
 # feature labels; node selection is done by partition or explicit --nodelist).
 if [[ "${AIC_SPUR_CLUSTER}" == "1" ]]; then
-    # Only SPUR needs a controller address -- every `--controller=` below is
-    # inside an AIC_SPUR_CLUSTER=1 branch.  Demanding it unconditionally (as
-    # this once did, one line after defaulting AIC_SPUR_CLUSTER to 0) aborted
-    # every ordinary defq build on a host that has no SPUR controller at all.
-    AIC_SPUR_CONTROLLER="${AIC_SPUR_CONTROLLER:-${SPUR_CONTROLLER_ADDR:?set SPUR_CONTROLLER_ADDR or AIC_SPUR_CONTROLLER before using AIC_SPUR_CLUSTER=1}}"
     AIC_BUILD_PARTITION="${AIC_BUILD_PARTITION:-amd-spur}"
     AIC_IMAGE_DIR="${AIC_IMAGE_DIR:-${AIC_SHARED_NFS:-/shared_nfs}/${USER}/images}"
     # Use ${VAR-default} (not ${VAR:-default}) so an explicitly set empty string
@@ -358,8 +350,6 @@ if [[ "${AIC_SPUR_CLUSTER}" == "1" ]]; then
     AIC_BUILD_CONSTRAINT="${AIC_BUILD_CONSTRAINT-}"
     AIC_TEST_CONSTRAINT="${AIC_TEST_CONSTRAINT-}"
 else
-    # Never read on this path; defined only so `set -u` stays satisfied.
-    AIC_SPUR_CONTROLLER=""
     AIC_BUILD_PARTITION="${AIC_BUILD_PARTITION:-defq}"
     AIC_BUILD_CONSTRAINT="${AIC_BUILD_CONSTRAINT:-CPUONLY}"
     AIC_TEST_CONSTRAINT="${AIC_TEST_CONSTRAINT:-GFX942&NVME}"
@@ -467,8 +457,7 @@ _dump_spur_job_state() {
     [[ "${AIC_SPUR_CLUSTER}" == "1" && -n "${_active_job_id}" ]] || return 0
     command -v spur >/dev/null 2>&1 || return 0
     local out rc=0
-    out="$(spur show job "${_active_job_id}" \
-        --controller="${AIC_SPUR_CONTROLLER}" 2>&1)" || rc=$?
+    out="$(spur show job "${_active_job_id}" 2>&1)" || rc=$?
     if (( rc != 0 )); then
         log "WARNING: could not read scheduler state for job ${_active_job_id} (spur show job exited ${rc}): ${out}"
         return 0
@@ -662,7 +651,6 @@ PROLOGUE
 
         local submit_out
         submit_out="$(sbatch \
-            --controller="${AIC_SPUR_CONTROLLER}" \
             --job-name="${jobname}" \
             --partition="${AIC_BUILD_PARTITION}" \
             ${AIC_SLURM_ACCOUNT:+--account="${AIC_SLURM_ACCOUNT}"} \
@@ -717,7 +705,7 @@ PROLOGUE
         local squeue_err; squeue_err="$(mktemp)"
         _spur_job_is_queued() {
             local out rc=0
-            out="$(squeue --controller="${AIC_SPUR_CONTROLLER}" -j "${jobid}" -h \
+            out="$(squeue -j "${jobid}" -h \
                     2>"${squeue_err}")" || rc=$?
             (( rc == 0 )) || return 2
             awk -v id="${jobid}" '
@@ -785,7 +773,7 @@ PROLOGUE
                         # stderr matters most: the controller is unreachable,
                         # so nothing downstream will report why.
                         _dump_spur_stderr
-                        die "squeue RPC to ${AIC_SPUR_CONTROLLER} failed ${rpc_fail} consecutive times while watching job ${jobid}; refusing to assume it finished. Last error: $(_squeue_err_text)"
+                        die "squeue RPC failed ${rpc_fail} consecutive times while watching job ${jobid}; refusing to assume it finished. Last error: $(_squeue_err_text)"
                     fi
                     log "squeue RPC failed (${rpc_fail}/${rpc_max}) while watching job ${jobid}, retrying: $(_squeue_err_text)"
                     ;;
@@ -831,7 +819,7 @@ PROLOGUE
             log "WARNING: falling back to using sacct instead of reading expected exit file ${exit_file}."
             local _terminal='COMPLETED|FAILED|CANCELLED|TIMEOUT|NODE_FAIL|OUT_OF_MEMORY|PREEMPTED|DEADLINE|BOOT_FAIL'
             _spur_sacct_row() {
-                sacct --controller="${AIC_SPUR_CONTROLLER}" -j "${jobid}" \
+                sacct -j "${jobid}" \
                     --format=JobID,State,ExitCode --noheader 2>/dev/null \
                     | awk -v id="${jobid}" '$1 == id && !found { print $2, $3; found = 1 }'
             }
@@ -1473,11 +1461,9 @@ cmd_load() {
     # GPU jobs -- docker load needs no GPU.  --overcommit is dropped on SPUR
     # (unsupported); harmless on standard Slurm.
     local -a _overcommit_arg=(); [[ "${AIC_SPUR_CLUSTER}" != "1" ]] && _overcommit_arg=(--overcommit)
-    local -a _spur_ctl_arg=(); [[ "${AIC_SPUR_CLUSTER}" == "1" ]] && _spur_ctl_arg=(--controller="${AIC_SPUR_CONTROLLER}")
     # Need to provide atleast one GPU due to SPUR scheduling requirements.
     local -a _spur_gpu_arg=(); [[ "${AIC_SPUR_CLUSTER}" == "1" ]] && _spur_gpu_arg=(--gpus-per-node=1)
     srun \
-        "${_spur_ctl_arg[@]}" \
         "${_spur_gpu_arg[@]}" \
         --job-name=aic-load \
         --partition="${AIC_BUILD_PARTITION}" \
@@ -1550,11 +1536,9 @@ REMOTE
         log "pushing via srun (partition ${AIC_BUILD_PARTITION}, constraint ${AIC_BUILD_CONSTRAINT})"
     fi
     local -a _push_overcommit=(); [[ "${AIC_SPUR_CLUSTER}" != "1" ]] && _push_overcommit=(--overcommit)
-    local -a _push_spur_ctl=(); [[ "${AIC_SPUR_CLUSTER}" == "1" ]] && _push_spur_ctl=(--controller="${AIC_SPUR_CONTROLLER}")
     # Need to provide atleast one GPU due to SPUR scheduling requirements.
     local -a _push_spur_gpu=(); [[ "${AIC_SPUR_CLUSTER}" == "1" ]] && _push_spur_gpu=(--gpus=1)
     srun \
-        "${_push_spur_ctl[@]}" \
         "${_push_spur_gpu[@]}" \
         --job-name=aic-push \
         --partition="${AIC_BUILD_PARTITION}" \

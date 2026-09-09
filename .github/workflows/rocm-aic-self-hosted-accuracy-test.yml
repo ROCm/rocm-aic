@@ -26,7 +26,6 @@
 # Requires (all already in use by sibling hardware-CI workflows):
 #   secrets.AIC_SPUR_HOST        — SSH target for the SPUR head node
 #   secrets.AIC_SHARED_NFS       — shared NFS path for image tarballs + scratch
-#   secrets.AIC_SPUR_CONTROLLER  — SPUR controller address
 #   secrets.AIC_HF_TOKEN         — HF token for the model download
 
 name: rocm-aic - Self Hosted - Accuracy Test
@@ -58,7 +57,6 @@ jobs:
       AIC_SPUR_HOST:       ${{ secrets.AIC_SPUR_HOST }}
       AIC_SHARED_NFS:      ${{ secrets.AIC_SHARED_NFS }}
       AIC_CI_STORAGE_ROOT: ${{ secrets.AIC_SHARED_NFS }}/rocm-aic
-      AIC_SPUR_CONTROLLER: ${{ secrets.AIC_SPUR_CONTROLLER }}
       HF_TOKEN:            ${{ secrets.AIC_HF_TOKEN }}
 
     steps:
