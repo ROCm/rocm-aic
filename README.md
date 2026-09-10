@@ -43,6 +43,8 @@ platform.
 | --- | --- | --- |
 | Base OS | `rocm/dev-ubuntu-24.04:7.14.1-full` | Ubuntu 24.04, ROCm 7.14, Python 3.12 |
 | vLLM | `github.com/vllm-project/vllm` (source build) | `v0.28.0` + 3 AMD patches |
+| AITER | `ROCm/aiter` (official ROCm 7.2 wheel) | `v0.1.19` (vLLM ROCm-validated) |
+| FlashAttention | `Dao-AILab/flash-attention` (source build) | `0e60e394` (vLLM ROCm-validated) |
 | LMCache | `LMCache/LMCache` (upstream) | `v0.5.4` + 16 AMD patches |
 | NIXL | `ai-dynamo/nixl` (upstream) | `v1.4.1` + `nixl-rocm-ais-mt.patch` |
 | hsa-snoop | `sbates130272/hsa-snoop` (source build) | `v1.1.0` |

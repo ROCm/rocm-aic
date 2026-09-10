@@ -7,7 +7,10 @@
 # the versions pinned in the Dockerfile.
 #
 # Emits just the tag component (no image name) in the following format:
-#   0.1.0-rocm7.14.0-vllm0.27.1-lmcache0.5.4-nixl1.3.2-hsasnoop1.1.0
+#   CDNA (gfx9xx):  0.1.0-rocm7.14.1-pytorch2.13-vllm0.28.0-aiter0.1.19-fa0e60e394-lmcache0.5.4-nixl1.4.1-hsasnoop1.1.0
+#   RDNA (gfx12xx): 0.1.0-rocm7.14.1-pytorch2.13-vllm0.28.0-aiter0.1.19-lmcache0.5.4-nixl1.4.1-hsasnoop1.1.0
+# FlashAttention is omitted for non-CDNA arches (gfx10xx/gfx11xx/gfx12xx) because
+# the CK backend does not support RDNA Wave32 GPUs.
 # Where 0.1.0 represents the AIC version.
 #
 # Usage:  aic-image-tag.sh [path/to/Dockerfile]
@@ -55,14 +58,37 @@ fi
 vllm="$(_arg VLLM_REF | sed 's/^v//')"
 lmcache="$(_arg LMCACHE_REF | sed 's/^v//')"
 nixl="$(_arg NIXL_REF | sed 's/^v//')"
+aiter="$(_arg AITER_REF | sed 's/^v//')"
+flash_attn="$(_arg FLASH_ATTN_REF)"
 hsasnoop="$(_arg HSA_SNOOP_REF | sed 's/^v//')"
 
-for _v in aic rocm pytorch vllm lmcache nixl hsasnoop; do
+# FlashAttention is CDNA-only (gfx9xx). Detect from ROCM_ARCH env (set by make/caller)
+# or fall back to including fa in the tag when arch is unknown (conservative default).
+_cdna_only() {
+  local a
+  for a in $(echo "$1" | tr ';' '\n'); do
+    [[ "$a" == gfx9* ]] || return 1
+  done
+  return 0
+}
+if [[ -n "${ROCM_ARCH:-}" ]] && ! _cdna_only "${ROCM_ARCH}"; then
+  include_fa=0
+else
+  include_fa=1
+fi
+
+for _v in aic rocm pytorch vllm aiter lmcache nixl hsasnoop; do
   [[ -n "${!_v}" ]] || {
     echo "aic-image-tag: could not resolve ${_v}" >&2
     exit 1
   }
 done
+[[ "${include_fa}" -eq 1 ]] && [[ -z "${flash_attn}" ]] && {
+  echo "aic-image-tag: could not resolve flash_attn" >&2
+  exit 1
+}
 
-tag="${aic}-rocm${rocm}-pytorch${pytorch}-vllm${vllm}-lmcache${lmcache}-nixl${nixl}-hsasnoop${hsasnoop}"
+tag="${aic}-rocm${rocm}-pytorch${pytorch}-vllm${vllm}-aiter${aiter}"
+[[ "${include_fa}" -eq 1 ]] && tag="${tag}-fa${flash_attn}"
+tag="${tag}-lmcache${lmcache}-nixl${nixl}-hsasnoop${hsasnoop}"
 printf '%s\n' "${tag}"
