@@ -68,6 +68,14 @@ def _is_vllm_arm(arm: str) -> bool:
     return arm != "kvbench"
 
 
+def _default_tokenizer_model(args: argparse.Namespace) -> str | None:
+    if args.tokenizer is not None:
+        return args.tokenizer
+    if args.arm == "kvbench":
+        return None
+    return args.model
+
+
 # ---------------------------------------------------------------------
 # Metrics scrape — vLLM Prometheus /metrics for prefix-cache hit rates
 # ---------------------------------------------------------------------
@@ -446,21 +454,33 @@ class ReqResult:
 
 async def _fire_one(http_client, base_url: str, model: str,
                     prompt: str, client_id: int, run_id: int,
-                    max_tokens: int, request_timeout: float) -> ReqResult:
+                    max_tokens: int, request_timeout: float,
+                    arm: str = "vram_only") -> ReqResult:
     issued = time.perf_counter()
     err: str | None = None
     prompt_tokens = 0
     out_tokens = 0
     try:
-        resp = await http_client.post(
-            f"{base_url.rstrip('/')}/v1/completions",
-            json={
+        endpoint = "/v1/completions"
+        payload = {
+            "model": model,
+            "prompt": prompt,
+            "max_tokens": max_tokens,
+            "temperature": 0.0,
+            "stream": False,
+        }
+        if arm == "kvbench":
+            endpoint = "/v1/chat/completions"
+            payload = {
                 "model": model,
-                "prompt": prompt,
+                "messages": [{"role": "user", "content": prompt}],
                 "max_tokens": max_tokens,
                 "temperature": 0.0,
                 "stream": False,
-            },
+            }
+        resp = await http_client.post(
+            f"{base_url.rstrip('/')}{endpoint}",
+            json=payload,
             timeout=request_timeout,
         )
         if resp.status_code != 200:
@@ -486,6 +506,7 @@ async def _run_one_concurrency(
     http_client, base_url: str, model: str,
     concurrency: int, run_id: int, isl: int, shared_prefix_tokens: int,
     max_tokens: int, request_timeout: float, prefix_mode: str = "shared",
+    arm: str = "vram_only",
 ) -> tuple[float, list[ReqResult]]:
     """Fire `concurrency` concurrent requests, wait for all, return
     (wall_seconds, [results])."""
@@ -501,7 +522,8 @@ async def _run_one_concurrency(
     coros = [
         _fire_one(http_client, base_url, model, prompts[i],
                   client_id=i, run_id=run_id,
-                  max_tokens=max_tokens, request_timeout=request_timeout)
+                  max_tokens=max_tokens, request_timeout=request_timeout,
+                  arm=arm)
         for i in range(concurrency)
     ]
     results = await asyncio.gather(*coros)
@@ -527,9 +549,10 @@ async def amain(args: argparse.Namespace) -> int:
         sys.exit(1)
 
     # Load the tokenizer so "N tokens" means exactly N tokens. Default
-    # to the served model path; --tokenizer overrides. Degrades to the
-    # word-ratio approximation if transformers/tokenizer unavailable.
-    set_active_tokenizer(args.tokenizer or args.model)
+    # to the served model path; --tokenizer overrides. For KVBench,
+    # --model is a profile id rather than a tokenizer path/HF id, so
+    # skip the implicit tokenizer probe unless --tokenizer is explicit.
+    set_active_tokenizer(_default_tokenizer_model(args))
 
     _ckpt(f"endpoint: {args.endpoint}")
     _ckpt(f"model: {args.model}")
@@ -591,6 +614,7 @@ async def amain(args: argparse.Namespace) -> int:
                     max_tokens=args.max_tokens,
                     request_timeout=args.request_timeout,
                     prefix_mode=args.prefix_mode,
+                    arm=args.arm,
                 )
                 errs = [r for r in results if r.error]
                 request_error_count += len(errs)
@@ -629,6 +653,7 @@ async def amain(args: argparse.Namespace) -> int:
                         max_tokens=args.max_tokens,
                         request_timeout=args.request_timeout,
                         prefix_mode=args.prefix_mode,
+                        arm=args.arm,
                     )
                     errs = [r for r in results if r.error]
                     request_error_count += len(errs)
@@ -671,6 +696,7 @@ async def amain(args: argparse.Namespace) -> int:
                         max_tokens=args.max_tokens,
                         request_timeout=args.request_timeout,
                         prefix_mode=args.prefix_mode,
+                        arm=args.arm,
                     )
                     snap1 = (await _snap_cache_settled(
                                  http_client, metrics_url,

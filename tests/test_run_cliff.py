@@ -25,6 +25,10 @@ from benchmarks import run_cliff
 
 class _HealthyResponse:
     status_code = 200
+    text = ""
+
+    def json(self):
+        return {}
 
 
 class _AsyncClient:
@@ -39,6 +43,26 @@ class _AsyncClient:
 
     async def get(self, *args, **kwargs) -> _HealthyResponse:
         return _HealthyResponse()
+
+
+class _JsonResponse:
+    def __init__(self, body: dict, status_code: int = 200, text: str = "") -> None:
+        self._body = body
+        self.status_code = status_code
+        self.text = text
+
+    def json(self) -> dict:
+        return self._body
+
+
+class _RecordingAsyncClient:
+    def __init__(self, response: _JsonResponse) -> None:
+        self.response = response
+        self.calls: list[tuple[str, dict, float]] = []
+
+    async def post(self, url: str, *, json: dict, timeout: float) -> _JsonResponse:
+        self.calls.append((url, json, timeout))
+        return self.response
 
 
 async def _no_calibration(*args, **kwargs) -> None:
@@ -166,6 +190,37 @@ class RequestFailureStatusTest(unittest.TestCase):
 
         self.assertEqual(raised.exception.code, 1)
 
+    def test_kvbench_fire_one_uses_chat_completions_api(self) -> None:
+        client = _RecordingAsyncClient(
+            _JsonResponse({
+                "usage": {"prompt_tokens": 12, "completion_tokens": 1},
+            })
+        )
+
+        result = asyncio.run(
+            run_cliff._fire_one(
+                client,
+                "http://test.invalid:8000",
+                "llama-3.1-8b",
+                "prompt text",
+                client_id=0,
+                run_id=0,
+                max_tokens=1,
+                request_timeout=5.0,
+                arm="kvbench",
+            )
+        )
+
+        self.assertIsNone(result.error)
+        self.assertEqual(result.prompt_tokens_reported, 12)
+        self.assertEqual(result.output_tokens, 1)
+        self.assertEqual(client.calls[0][0], "http://test.invalid:8000/v1/chat/completions")
+        self.assertEqual(
+            client.calls[0][1]["messages"],
+            [{"role": "user", "content": "prompt text"}],
+        )
+        self.assertNotIn("prompt", client.calls[0][1])
+
     def test_kvbench_arm_skips_vllm_metrics_scrape(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             output = Path(temp_dir) / "cliff.csv"
@@ -197,7 +252,7 @@ class RequestFailureStatusTest(unittest.TestCase):
             snap = mock.AsyncMock(side_effect=AssertionError("metrics scrape should be skipped"))
             with (
                 mock.patch.dict(sys.modules, {"httpx": fake_httpx}),
-                mock.patch.object(run_cliff, "set_active_tokenizer"),
+                mock.patch.object(run_cliff, "set_active_tokenizer") as set_tokenizer,
                 mock.patch.object(run_cliff, "calibrate_word_ratio", _no_calibration),
                 mock.patch.object(run_cliff, "_run_one_concurrency", wave),
                 mock.patch.object(run_cliff, "_snap_cache_settled", snap),
@@ -211,6 +266,7 @@ class RequestFailureStatusTest(unittest.TestCase):
         self.assertEqual(row["l1_cache_queries"], "")
         self.assertEqual(row["ext_cache_queries"], "")
         snap.assert_not_called()
+        set_tokenizer.assert_called_once_with(None)
 
 
 if __name__ == "__main__":
