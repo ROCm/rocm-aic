@@ -2,6 +2,7 @@
 .venv
 __pycache__/
 *.pyc
+*.egg-info/
 
 # VSCode
 .vscode/
@@ -45,3 +46,7 @@ profiles/captures/
 
 # Prometheus raw metrics dump
 prometheus-dump.md
+
+# Overnight testing files
+overnight*.md
+ 

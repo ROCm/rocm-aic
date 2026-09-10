@@ -13,6 +13,11 @@ NIXL_SHA     := v1.4.1
 IMAGE_NAME ?= rocm-aic
 override AIC_VERSION := $(strip $(file <$(REPO_ROOT)/VERSION))
 
+# Detect ROCM_ARCH early (before _IMAGE_TAG) so the tag script can decide
+# whether to include FlashAttention (CDNA-only).  Command-line overrides win.
+_ROCM_ARCH_DETECTED := $(shell rocm_agent_enumerator 2>/dev/null | grep -E '^gfx' | head -1)
+ROCM_ARCH := $(if $(strip $(ROCM_ARCH)),$(strip $(ROCM_ARCH)),$(_ROCM_ARCH_DETECTED))
+
 # PyTorch, vLLM, and all deps are source-built; PYTORCH_BRANCH, VLLM_REF, and
 # LLM_EMU_REF are the key version knobs.  hipFile ships in the ROCm base image.
 _FRAMEWORK_VERSION_ARGS := AIC_VERSION ROCM_VERSION PYTORCH_BRANCH VLLM_REF LLM_EMU_REF AITER_REF FLASH_ATTN_REF LMCACHE_REF NIXL_REF HSA_SNOOP_REF
@@ -20,7 +25,7 @@ _single_quote := '
 _shell_quote = '$(subst $(_single_quote),'"'"',$(1))'
 _FRAMEWORK_VERSION_ENV := $(foreach _arg,$(_FRAMEWORK_VERSION_ARGS),$(if $(filter undefined,$(origin $(_arg))),,$(_arg)=$(call _shell_quote,$(value $(_arg)))))
 
-_IMAGE_TAG := $(shell $(_FRAMEWORK_VERSION_ENV) $(REPO_ROOT)/docker/scripts/aic-image-tag.sh 2>/dev/null)
+_IMAGE_TAG := $(shell ROCM_ARCH=$(ROCM_ARCH) $(_FRAMEWORK_VERSION_ENV) $(REPO_ROOT)/docker/scripts/aic-image-tag.sh 2>/dev/null)
 IMAGE_TAG  ?= $(if $(_IMAGE_TAG),$(_IMAGE_TAG),latest)
 IMAGE_REF  := $(IMAGE_NAME):$(IMAGE_TAG)
 
@@ -64,10 +69,6 @@ BENCH_MODEL       ?= $(VLLM_MODEL)
 # land under logs/manual/ -- keeping the tree root free of results/ and plots/.
 BENCH_LOGDIR      := logs/manual
 BENCH_OUT         := $(BENCH_LOGDIR)/results/cliff-$(BENCH_ARM)-$(shell date +%Y%m%d-%H%M%S).csv
-
-# ---- ROCm arch (auto-detected if not set) ----------------------------------
-_ROCM_ARCH_DETECTED := $(shell rocm_agent_enumerator 2>/dev/null | grep -E '^gfx' | head -1)
-ROCM_ARCH := $(if $(strip $(ROCM_ARCH)),$(strip $(ROCM_ARCH)),$(_ROCM_ARCH_DETECTED))
 
 # ---- Build parallelism -----------------------------------------------------
 # Caps parallel compile jobs in the image build, Empty = use all cores ($(nproc)).

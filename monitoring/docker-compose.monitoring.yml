@@ -4,13 +4,10 @@
 #
 #  metrics-capture sidecar.
 #
-# A host-network Prometheus that scrapes the running inference stack (vLLM,
-# LMCache/NIXL) plus the host/GPU/NVMe/RDMA exporters, and writes its TSDB to a
-# bind-mounted NFS directory so the run can be explored afterward.
-#
-# Because everything runs with network_mode: host, Prometheus reaches every
-# target at localhost:<port> -- identical for `make up` (published ports) and
-# `--cliff` (`docker run --network host`).  See prometheus/prometheus.yml.
+# Prometheus + exporter sidecar for the AIC inference stack.
+# All services join aic-network (created by the main compose, or by
+# monitoring-lib.sh start_monitoring before this file is brought up).
+# Prometheus reaches inference targets by container name via the shared network.
 #
 # Usage:
 #   # scrape-only (exporters already installed on the host by Ansible):
@@ -53,7 +50,7 @@ services:
   prometheus:
     image: ${AIC_PROM_IMAGE:-prom/prometheus:v3.14.0}
     container_name: aic-prometheus
-    network_mode: host
+    networks: [aic-network]
     user: "${PROM_UID:-65534}:${PROM_GID:-65534}"
     restart: unless-stopped
     volumes:
@@ -77,7 +74,7 @@ services:
     image: ${AIC_NODE_EXPORTER_IMAGE:-quay.io/prometheus/node-exporter:v1.12.1}
     container_name: aic-node-exporter
     profiles: ["exporters", "exporters-cpu"]
-    network_mode: host
+    networks: [aic-network]
     restart: unless-stopped
     volumes:
       - /:/host:ro,rslave
@@ -96,13 +93,11 @@ services:
   amdgpu-exporter:
     image: ${AIC_AMDGPU_EXPORTER_IMAGE:-rocm/device-metrics-exporter:v1.5.1}
     container_name: aic-amdgpu-exporter
-    profiles: ["exporters", "exporters-safe"]
-    network_mode: host
+    networks: [aic-network]
     restart: unless-stopped
     environment:
       - ROCR_VISIBLE_DEVICES=${AIC_ROCR_VISIBLE:-${GPU:-0}}
       - HIP_VISIBLE_DEVICES=${AIC_HIP_VISIBLE:-0}
-      - CUDA_VISIBLE_DEVICES=${AIC_HIP_VISIBLE:-0}
     devices:
       - /dev/kfd
       - /dev/dri
@@ -130,7 +125,7 @@ services:
     image: ${AIC_NVME_EXPORTER_IMAGE:-aic-nvme-exporter:local}
     container_name: aic-nvme-exporter
     profiles: ["exporters-fabric", "exporters-cpu", "exporters-safe"]
-    network_mode: host
+    networks: [aic-network]
     # nvme-exporter shells out to nvme-cli which uses ioctl on /dev/nvme* and
     # reads /sys/class/nvme.  Does NOT need --pid=host; CAP_SYS_ADMIN suffices.
     cap_add:
@@ -157,7 +152,7 @@ services:
     image: ${AIC_RDMA_EXPORTER_IMAGE:-aic-rdma-exporter:local}
     container_name: aic-rdma-exporter
     profiles: ["exporters-fabric", "exporters-cpu", "exporters-safe"]
-    network_mode: host
+    networks: [aic-network]
     restart: unless-stopped
     volumes:
       - /sys:/sys:ro
@@ -175,23 +170,17 @@ services:
   hsa-snoop:
     image: ${AIC_HSA_SNOOP_IMAGE:-${IMAGE_NAME:-rocm-aic}}
     container_name: aic-hsa-snoop
-    profiles: ["exporters"]
-    network_mode: host
-    # Note: hsa-snoop is NOT in exporters-safe because it needs the application
-    # containers (aic-lmcache) to be running to join their PID namespace, but
-    # monitoring starts before the cliff application stack.  On SPUR, pid:host is
-    # blocked by spur-authz anyway; use the NIXL telemetry (:19090) for AIS metrics.
-    # SPUR authz blocks --pid=host ("host-namespace escape").  vLLM and lmcache share
-    # a PID namespace (vllm uses pid:service:lmcache), so hsa-snoop joining that same
-    # namespace via pid:container gives it visibility into both processes without needing
-    # host PID.  Falls back to pid:host (non-SPUR) via AIC_HSA_SNOOP_PID_MODE override.
+    networks: [aic-network]
+    # vLLM and lmcache share a PID namespace (vllm uses pid:service:lmcache), so
+    # hsa-snoop joining that same namespace via pid:container gives it visibility
+    # into both processes.  Falls back to pid:host (non-SPUR) via override.
     pid: "${AIC_HSA_SNOOP_PID_MODE:-container:aic-lmcache}"
     privileged: true
     restart: unless-stopped
     environment:
       - ROCR_VISIBLE_DEVICES=${AIC_ROCR_VISIBLE:-${GPU:-0}}
       - HIP_VISIBLE_DEVICES=${AIC_HIP_VISIBLE:-0}
-      - CUDA_VISIBLE_DEVICES=${AIC_HIP_VISIBLE:-0}
+
     devices:
       - /dev/kfd
       - /dev/dri
@@ -201,18 +190,17 @@ services:
       # debugfs mounted it fails with ENOENT ("failed to install kprobe").
       - /sys/kernel/tracing:/sys/kernel/tracing
     entrypoint: ["/usr/local/bin/hsa-snoop"]
-    command: ["--all", "--prometheus", "--prometheus-port", "${HSA_SNOOP_PORT:-9488}"]
+    command: ["--all", "--prometheus", "--prometheus-port", "${HSA_SNOOP_PORT:-9488}", "--mem-snoop"]
 
   # ---------------------------------------------------------------------------
   # grafana: pre-provisioned AIC dashboard, anonymous access.
   # Open http://localhost:3000 after `make monitoring-up`.
-  # Uses provisioning-host/ datasource (localhost:9090) since this compose
-  # file uses network_mode: host throughout.
+  # Grafana: anonymous access, port 3000, datasource aic-prometheus:9090.
   # ---------------------------------------------------------------------------
   grafana:
     image: ${AIC_GRAFANA_IMAGE:-grafana/grafana:13.2.1}
     container_name: aic-grafana
-    network_mode: host
+    networks: [aic-network]
     restart: unless-stopped
     environment:
       GF_AUTH_ANONYMOUS_ENABLED: "true"
@@ -222,9 +210,13 @@ services:
       GF_SERVER_HTTP_PORT: ${AIC_GRAFANA_PORT:-3000}
       GF_SERVER_HTTP_ADDR: "0.0.0.0"
     volumes:
-      - ./grafana/provisioning-host:/etc/grafana/provisioning:ro
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
       - ./grafana/dashboards:/etc/grafana/dashboards:ro
       - grafana-data:/var/lib/grafana
 
 volumes:
   grafana-data:
+
+networks:
+  aic-network:
+    external: true
