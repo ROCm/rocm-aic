@@ -114,8 +114,8 @@ ARG ROCM_ARCH
 ARG BUILD_JOBS
 ARG VLLM_GIT_URL
 ARG VLLM_REF
+ARG AITER_GIT_URL
 ARG AITER_REF
-ARG AITER_WHEEL_ROCM
 ARG FLASH_ATTN_GIT_URL
 ARG FLASH_ATTN_REF
 ARG NIXL_GIT_URL
@@ -469,8 +469,8 @@ ARG ROCM_ARCH
 ARG BUILD_JOBS=
 
 # ROCm attention backends — validated pair, update together after revalidation.
+ARG AITER_GIT_URL=https://github.com/ROCm/aiter.git
 ARG AITER_REF=v0.1.19
-ARG AITER_WHEEL_ROCM=7.2
 ARG FLASH_ATTN_GIT_URL=https://github.com/Dao-AILab/flash-attention.git
 ARG FLASH_ATTN_REF=0e60e394
 
@@ -499,24 +499,22 @@ ARG AIC_UCX_FAST=
 # specific model.  vLLM can then select ROCM_AITER_FA or FLASH_ATTN whenever a
 # loaded model and its runtime configuration support it.
 #
-# AITER's source wheel does not include its required `module_aiter_core` unless
-# every JIT kernel is eagerly prebuilt.  That takes more than an hour and is
-# incompatible with this image's MI355-stable Torch runtime.  Use AITER's
-# matching upstream binary release instead.  The release artifact contains the
-# gfx942 and gfx950 kernels and leaves only model-specific work for runtime.
-# AITER imports rocminfo to detect the installed GPU, so its actual import is
-# checked in the GPU-enabled smoke test after the image build rather than here.
+# Build AITER from source at the pinned ref, against the source-built torch in
+# this stage.  The pre-built upstream wheels (amd_aiter-*+rocm7.2) are compiled
+# against pytorch.org's ROCm 7.2 torch binary, whose ABI diverges from our
+# source-built torch-2.13: the symbol c10::impl::cow::materialize_cow_storage
+# is present in the wheel's .so files but not exported by our libtorch, causing
+# an ImportError at EngineCore startup.  Building from source guarantees that
+# every compiled .so links against the libtorch and libc10 that are present at
+# runtime.
 #
-# AITER_REF must name a release that publishes this CPython/ROCm wheel format.
-# It is generated from the ref so a deliberate, validated override cannot
-# silently install a different AITER revision.
+# AITER_REF must name a git tag or commit in ROCm/aiter.  Keep it in sync with
+# the FlashAttention ref below — they share the composable_kernel submodule and
+# must be validated together.
+# hadolint ignore=SC2039
 RUN --mount=type=cache,target=/root/.cache/pip \
+    --mount=type=cache,target=/root/.cache/ccache \
     mkdir -p /wheels && \
-    aiter_version="${AITER_REF#v}" && \
-    aiter_wheel="/wheels/amd_aiter-${aiter_version}+rocm${AITER_WHEEL_ROCM}.manylinux.2.28-cp312-cp312-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl" && \
-    curl --fail --location --retry 5 --retry-all-errors \
-        "https://github.com/ROCm/aiter/releases/download/${AITER_REF}/amd_aiter-${aiter_version}%2Brocm${AITER_WHEEL_ROCM}.manylinux.2.28-cp312-cp312-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl" \
-        --output "${aiter_wheel}" && \
     pip3 install --no-cache-dir \
         "pandas==3.0.3" \
         "psutil==7.2.2" \
@@ -525,8 +523,16 @@ RUN --mount=type=cache,target=/root/.cache/pip \
         "pybind11==3.0.4" \
         "ninja==1.13.0" \
         "flydsl==0.2.4" && \
-    pip3 install --no-cache-dir --no-deps "${aiter_wheel}" && \
-    python3 -c 'import importlib.util, pathlib; spec = importlib.util.find_spec("aiter"); assert spec and spec.submodule_search_locations; package_dir = pathlib.Path(next(iter(spec.submodule_search_locations))); assert any(package_dir.glob("jit/module_aiter_core*.so")), "AITer core module is missing"; print("AITer installed:", package_dir)'
+    git clone --depth 1 --branch "${AITER_REF}" "${AITER_GIT_URL}" /app/aiter && \
+    cd /app/aiter && \
+    git submodule update --init --recursive && \
+    PYTORCH_ROCM_ARCH="${ROCM_ARCH}" \
+        TORCH_DONT_CHECK_COMPILER_ABI=1 \
+        MAX_JOBS="${BUILD_JOBS:-$(nproc)}" \
+        CCACHE_DIR=/root/.cache/ccache \
+        python3 setup.py bdist_wheel --dist-dir=/wheels && \
+    pip3 install --no-cache-dir --no-deps /wheels/amd_aiter-*.whl && \
+    python3 -c 'import importlib.util, pathlib; spec = importlib.util.find_spec("aiter"); assert spec and spec.submodule_search_locations; print("AITER installed:", next(iter(spec.submodule_search_locations)))'
 
 # FlashAttention: CDNA-only (gfx9xx — MI100/MI200/MI300/MI355X).
 # The composable_kernel backend does not support RDNA Wave32 (gfx10xx/gfx11xx/gfx12xx),
