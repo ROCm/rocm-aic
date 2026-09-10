@@ -41,6 +41,7 @@ _ARM_STYLE: dict[str, dict] = {
     "vram_only": {"color": "#c0392b", "linestyle": "--", "label": "VRAM only (no AIC)"},
     "vram_dram": {"color": "#e67e22", "linestyle": "-.", "label": "VRAM + DRAM"},
     "kvd_v2":    {"color": "#2980b9", "linestyle": "-",  "label": "AIC (NVMe/NFS via LMCache)"},
+    "kvbench":   {"color": "#16a085", "linestyle": ":",  "label": "KVBench (no vLLM)"},
 }
 
 _FALLBACK_COLORS = ["#8e44ad", "#27ae60", "#16a085", "#d35400"]

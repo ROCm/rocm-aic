@@ -66,6 +66,7 @@ class RequestFailureStatusTest(unittest.TestCase):
         allow_errors: bool,
         warmup_error: str | None = None,
         concurrency: str = "1",
+        arm: str = "vram_only",
     ) -> tuple[int, dict[str, str], list[str]]:
         with tempfile.TemporaryDirectory() as temp_dir:
             output = Path(temp_dir) / "cliff.csv"
@@ -73,7 +74,7 @@ class RequestFailureStatusTest(unittest.TestCase):
                 endpoint="http://test.invalid:8000",
                 model="test-model",
                 tokenizer=None,
-                arm="vram_only",
+                arm=arm,
                 isl=2,
                 shared_prefix_tokens=1,
                 max_tokens=1,
@@ -164,6 +165,52 @@ class RequestFailureStatusTest(unittest.TestCase):
             run_cliff.main()
 
         self.assertEqual(raised.exception.code, 1)
+
+    def test_kvbench_arm_skips_vllm_metrics_scrape(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output = Path(temp_dir) / "cliff.csv"
+            args = argparse.Namespace(
+                endpoint="http://test.invalid:8000",
+                model="test-model",
+                tokenizer=None,
+                arm="kvbench",
+                isl=2,
+                shared_prefix_tokens=1,
+                max_tokens=1,
+                concurrencies="1",
+                iters=1,
+                warmup_iters=0,
+                warmup_at_each_c=False,
+                post_warmup_sleep_s=0.0,
+                prefix_mode="shared",
+                request_timeout=1.0,
+                allow_request_errors=False,
+                metrics_endpoint=None,
+                no_metrics=False,
+                metrics_settle_interval=0.01,
+                metrics_settle_timeout=0.0,
+                out=str(output),
+                append=False,
+            )
+            fake_httpx = types.SimpleNamespace(AsyncClient=_AsyncClient)
+            wave = mock.AsyncMock(return_value=(1.0, [_result(None)]))
+            snap = mock.AsyncMock(side_effect=AssertionError("metrics scrape should be skipped"))
+            with (
+                mock.patch.dict(sys.modules, {"httpx": fake_httpx}),
+                mock.patch.object(run_cliff, "set_active_tokenizer"),
+                mock.patch.object(run_cliff, "calibrate_word_ratio", _no_calibration),
+                mock.patch.object(run_cliff, "_run_one_concurrency", wave),
+                mock.patch.object(run_cliff, "_snap_cache_settled", snap),
+            ):
+                status = asyncio.run(run_cliff.amain(args))
+            with output.open(newline="") as handle:
+                row = next(csv.DictReader(handle))
+
+        self.assertEqual(status, 0)
+        self.assertEqual(row["arm"], "kvbench")
+        self.assertEqual(row["l1_cache_queries"], "")
+        self.assertEqual(row["ext_cache_queries"], "")
+        snap.assert_not_called()
 
 
 if __name__ == "__main__":

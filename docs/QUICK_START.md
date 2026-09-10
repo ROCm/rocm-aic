@@ -56,6 +56,13 @@ make cliff \
     BENCH_ARM=kvd_v2 \
     BENCH_ENDPOINT=http://localhost:8000 \
     BENCH_MODEL=openai/gpt-oss-120b
+
+# Arm C: KVBench — run against a separately launched kvbench endpoint
+# (the cliff harness disables vLLM-only prefix-cache metrics automatically)
+make cliff \
+    BENCH_ARM=kvbench \
+    BENCH_ENDPOINT=http://localhost:8000 \
+    BENCH_MODEL=openai/gpt-oss-120b
 ```
 
 ## 6. Generate cliff charts

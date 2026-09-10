@@ -36,6 +36,12 @@ Usage:
   # Then re-run with the kvd-attached server:
   python -u -m bench.kv_cache_cliff.run_cliff ... --arm kvd_v2 \\
       --out logs/manual/results/cliff-kvd-v2.csv
+
+  # Or point the same harness at a KVBench server (OpenAI-compatible API,
+  # no vLLM metrics scraping):
+  python -u -m bench.kv_cache_cliff.run_cliff ... --arm kvbench \\
+      --endpoint http://localhost:8000 \\
+      --out logs/manual/results/cliff-kvbench.csv
 """
 
 from __future__ import annotations
@@ -56,6 +62,10 @@ from pathlib import Path
 
 def _ckpt(msg: str) -> None:
     print(f"[cliff] {msg}", flush=True)
+
+
+def _is_vllm_arm(arm: str) -> bool:
+    return arm != "kvbench"
 
 
 # ---------------------------------------------------------------------
@@ -529,12 +539,15 @@ async def amain(args: argparse.Namespace) -> int:
     _ckpt(f"concurrencies: {concurrencies}")
     _ckpt(f"iters={args.iters} warmup_iters={args.warmup_iters}")
 
-    scrape_metrics = not args.no_metrics
+    scrape_metrics = (not args.no_metrics) and _is_vllm_arm(args.arm)
     metrics_base = (args.metrics_endpoint or args.endpoint).rstrip("/")
     metrics_url = f"{metrics_base}/metrics"
     if scrape_metrics:
         _ckpt(f"metrics: scraping prefix-cache hit rate from {metrics_url} "
               f"(per timed iter)")
+    elif not args.no_metrics:
+        _ckpt("metrics: disabled for arm=kvbench; vLLM prefix-cache counters "
+              "are not available")
     else:
         _ckpt("metrics: disabled (--no-metrics); hit-rate columns blank")
 
@@ -723,15 +736,15 @@ async def amain(args: argparse.Namespace) -> int:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--endpoint", required=True,
-                        help="vLLM OpenAI-compat endpoint, e.g. http://localhost:8801")
+                        help="OpenAI-compatible endpoint, e.g. http://localhost:8801")
     parser.add_argument("--model", required=True,
-                        help="--model arg vLLM was launched with (path or HF id)")
+                        help="served model id/path expected by the endpoint")
     parser.add_argument("--tokenizer", default=None,
                         help="tokenizer path/HF id for exact token-count "
                              "prompts (default: --model). If it can't load, "
                              "falls back to a word-ratio approximation.")
     parser.add_argument("--arm", required=True,
-                        choices=["vram_only", "vram_dram", "kvd_v2"],
+                        choices=["vram_only", "vram_dram", "kvd_v2", "kvbench"],
                         help="arm label written to the CSV (drives the plot legend)")
     parser.add_argument("--isl", type=int, default=20000,
                         help="total input sequence length per request (default 20000)")
@@ -769,7 +782,7 @@ def main() -> None:
                              "failed requests remain recorded in the CSV")
     parser.add_argument("--metrics-endpoint", default=None,
                         help="endpoint to scrape Prometheus /metrics from "
-                             "(default: --endpoint). Captures L1 (GPU) + "
+                             "(default: --endpoint). For vLLM-backed arms this captures L1 (GPU) + "
                              "external (kvd/L3) prefix-cache hit rate per "
                              "timed iter into the CSV.")
     parser.add_argument("--no-metrics", action="store_true",

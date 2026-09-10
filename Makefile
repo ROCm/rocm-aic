@@ -405,6 +405,7 @@ help:
 	@echo "  make up HF_TOKEN=hf_... NVME_DATA=/mnt/nvme NFS_DATA=/mnt/nfs"
 	@echo "  make up-gds-l1 GDS_SLAB_DATA=/mnt/nvme HF_TOKEN=hf_..."
 	@echo "  make cliff BENCH_ARM=vram_only BENCH_ENDPOINT=http://localhost:8000"
+	@echo "  make cliff BENCH_ARM=kvbench BENCH_ENDPOINT=http://localhost:8000"
 	@echo "  make plot"
 	@echo ""
 
