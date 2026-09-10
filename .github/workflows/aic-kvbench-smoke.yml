@@ -1,0 +1,158 @@
+# Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+#
+# CPU-only validation for the cliff harness's KVBench arm on a GitHub-hosted
+# runner. The mock server speaks the same OpenAI-compatible endpoints the
+# harness uses against KVBench, so this catches regressions without requiring
+# GPUs, Docker, or SPUR capacity.
+
+name: AIC KVBench Arm Smoke
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'Makefile'
+      - 'benchmarks/**'
+      - 'tests/**'
+      - '.github/workflows/aic-kvbench-smoke.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'Makefile'
+      - 'benchmarks/**'
+      - 'tests/**'
+      - '.github/workflows/aic-kvbench-smoke.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  kvbench-arm-smoke:
+    name: KVBench cliff arm smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install benchmark dependencies
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          python -m pip install -e '.[dev]'
+
+      - name: Run targeted cliff unit tests
+        run: |
+          set -euo pipefail
+          python -m unittest tests.test_run_cliff
+
+      - name: Smoke-test the KVBench cliff arm
+        run: |
+          set -euo pipefail
+
+          python - <<'PY' >/tmp/kvbench-smoke.log 2>&1 &
+          import json
+          from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+
+          class Handler(BaseHTTPRequestHandler):
+              server_version = "kvbench-smoke/1.0"
+
+              def log_message(self, *_args):
+                  return
+
+              def _send(self, code, payload):
+                  body = json.dumps(payload).encode("utf-8")
+                  self.send_response(code)
+                  self.send_header("Content-Type", "application/json")
+                  self.send_header("Content-Length", str(len(body)))
+                  self.end_headers()
+                  self.wfile.write(body)
+
+              def do_GET(self):
+                  if self.path == "/v1/models":
+                      self._send(200, {
+                          "object": "list",
+                          "data": [{"id": "test-model", "object": "model"}],
+                      })
+                  else:
+                      self._send(404, {"error": "not found"})
+
+              def do_POST(self):
+                  length = int(self.headers.get("Content-Length", "0"))
+                  raw = self.rfile.read(length) if length else b"{}"
+                  body = json.loads(raw.decode("utf-8"))
+                  if self.path != "/v1/completions":
+                      self._send(404, {"error": "not found"})
+                      return
+                  prompt = body.get("prompt", "")
+                  prompt_tokens = max(1, len(prompt.split()))
+                  max_tokens = int(body.get("max_tokens", 1))
+                  self._send(200, {
+                      "id": "cmpl-kvbench-smoke",
+                      "object": "text_completion",
+                      "model": body.get("model", "test-model"),
+                      "choices": [{"text": "ok", "index": 0, "finish_reason": "stop"}],
+                      "usage": {
+                          "prompt_tokens": prompt_tokens,
+                          "completion_tokens": max_tokens,
+                          "total_tokens": prompt_tokens + max_tokens,
+                      },
+                  })
+
+
+          ThreadingHTTPServer(("127.0.0.1", 18000), Handler).serve_forever()
+          PY
+          srv_pid=$!
+          trap 'kill "${srv_pid}" 2>/dev/null || true; wait "${srv_pid}" 2>/dev/null || true' EXIT
+
+          python - <<'PY'
+          import time
+          import urllib.request
+
+          deadline = time.time() + 10
+          while True:
+              try:
+                  with urllib.request.urlopen("http://127.0.0.1:18000/v1/models", timeout=1) as resp:
+                      if resp.status == 200:
+                          break
+              except Exception:
+                  if time.time() >= deadline:
+                      raise
+                  time.sleep(0.2)
+          PY
+
+          HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 \
+          python /home/runner/work/rocm-aic/rocm-aic/benchmarks/run_cliff.py \
+            --endpoint http://127.0.0.1:18000 \
+            --model test-model \
+            --arm kvbench \
+            --isl 32 \
+            --shared-prefix-tokens 16 \
+            --concurrencies 1,2 \
+            --iters 1 \
+            --warmup-iters 0 \
+            --request-timeout 10 \
+            --out /tmp/kvbench-cliff.csv
+
+          python - <<'PY'
+          import csv
+
+          with open("/tmp/kvbench-cliff.csv", newline="") as handle:
+              rows = list(csv.DictReader(handle))
+
+          assert len(rows) == 2, rows
+          assert {row["arm"] for row in rows} == {"kvbench"}, rows
+          for row in rows:
+              assert row["ok_count"] == row["concurrency"], row
+              assert row["err_count"] == "0", row
+              assert row["l1_cache_queries"] == "", row
+              assert row["ext_cache_queries"] == "", row
+          PY

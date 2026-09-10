@@ -1,0 +1,22 @@
+Metadata-Version: 2.4
+Name: rocm-aic
+Version: 0.1.0
+Summary: AMD Infinity Context (AIC) — KV-cache cliff benchmarks and cliff chart plotter
+Requires-Python: >=3.10
+License-File: LICENSE.md
+Requires-Dist: openai>=1.0
+Requires-Dist: httpx
+Requires-Dist: pyyaml
+Requires-Dist: tqdm
+Provides-Extra: bench
+Requires-Dist: transformers>=4.40; extra == "bench"
+Requires-Dist: huggingface-hub>=0.23; extra == "bench"
+Requires-Dist: prometheus-client>=0.20; extra == "bench"
+Requires-Dist: aiohttp>=3.9; extra == "bench"
+Provides-Extra: plot
+Requires-Dist: matplotlib<4,>=3.8; extra == "plot"
+Requires-Dist: pandas>=2.0; extra == "plot"
+Requires-Dist: numpy>=1.26; extra == "plot"
+Provides-Extra: dev
+Requires-Dist: rocm-aic[bench,plot]; extra == "dev"
+Dynamic: license-file
