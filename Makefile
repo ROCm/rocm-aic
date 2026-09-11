@@ -65,6 +65,19 @@ BENCH_CONCUR      ?= 1,2,4,8,16,32,48,64,80,100,128,160,200,250
 BENCH_ITERS       ?= 3
 BENCH_ENDPOINT    ?= http://localhost:8000
 BENCH_MODEL       ?= $(VLLM_MODEL)
+# ---- KVBench container -----------------------------------------------------
+KVBENCH_GIT_URL           ?= https://github.com/wvaske/llm-kv-passthrough.git
+KVBENCH_REF               ?= 177cf4e7c46ece8e03a701f89b60cd3a329f45fd
+KVBENCH_IMAGE_NAME        ?= aic-kvbench
+KVBENCH_IMAGE_TAG         ?= 177cf4e
+KVBENCH_IMAGE_REF         ?= $(KVBENCH_IMAGE_NAME):$(KVBENCH_IMAGE_TAG)
+KVBENCH_MODEL             ?= llama-3.1-8b
+KVBENCH_GPU_PROFILE       ?= H100_SXM
+KVBENCH_PORT              ?= 8000
+KVBENCH_HOST_PORT         ?= 18000
+KVBENCH_CHUNK_SIZE        ?= 256
+KVBENCH_LOCAL_CPU_SIZE_GB ?= 0.25
+KVBENCH_READY_S           ?= 120
 # Non-Slurm runs have no job id, so they mirror the sbatch "manual" fallback and
 # land under logs/manual/ -- keeping the tree root free of results/ and plots/.
 BENCH_LOGDIR      := logs/manual
@@ -88,6 +101,8 @@ export NVME_DATA NFS_DATA
 export VLLM_MODEL TENSOR_PARALLEL_SIZE
 export VLM_GPU_MEMORY_UTILIZATION VLM_MAX_MODEL_LEN VLM_MAX_NUM_BATCHED_TOKENS VLM_BLOCK_SIZE
 export NIXL_GIT_URL NIXL_SHA
+export KVBENCH_GIT_URL KVBENCH_REF KVBENCH_IMAGE_REF KVBENCH_MODEL KVBENCH_GPU_PROFILE
+export KVBENCH_PORT KVBENCH_HOST_PORT KVBENCH_CHUNK_SIZE KVBENCH_LOCAL_CPU_SIZE_GB
 
 # Compose passes a declared build argument through only when it is present in
 # its environment. Do not export empty attention-backend overrides: an empty
@@ -289,9 +304,9 @@ EXPORT_TARBALL ?= $(CURDIR)/$(EXPORT_PREFIX)-$(_GEN_DATE)-$(_GIT_SHORT_REV)$(_GI
         dist-build dist-build-fast dist-build-emulate dist-build-exporters dist-build-monitoring dist-push \
         smoke-test smoke-test-fast tiny-test tiny-test-fast \
         emulate-test emulate-mp-test emulate-validate test-emulate-local stress-emulate-local capture-profile-local profile-capture \
-        install-ci-scripts cliff-submit cliff-short \
+        install-ci-scripts kvbench-build kvbench-up kvbench-logs kvbench-down cliff-kvbench-local cliff-kvbench-submit cliff-submit cliff-short \
         cliff-kvd cliff-spur-l2 cliff-spur-l2-debug cliff-long-64k cliff-long-128k \
-        export _check_hf_token _prep_dirs _check_gds_slab
+        export _check_hf_token _prep_dirs _prep_kvbench_dirs _check_gds_slab
 
 .DEFAULT_GOAL := help
 
@@ -328,6 +343,11 @@ help:
 	@echo "  make vllm-reset-test   Verify LMCache L1+L2 retrieval: small L1 (1GiB), NIXL POSIX L2,"
 	@echo "                         flood to overflow, POST /reset_prefix_cache, confirm L1+L2 hits"
 	@echo "  make cliff             Run KV-cache cliff benchmark, write CSV to $(BENCH_LOGDIR)/results/"
+	@echo "  make kvbench-build     Build the pinned KVBench image ($(KVBENCH_IMAGE_REF))"
+	@echo "  make kvbench-up        Start KVBench + client on the internal compose network"
+	@echo "  make kvbench-logs      Follow KVBench logs"
+	@echo "  make kvbench-down      Stop the KVBench compose profile"
+	@echo "  make cliff-kvbench-local  Start KVBench + client, wait for readiness, then run the kvbench cliff arm"
 	@echo "  make plot              Generate cliff PNG charts from $(BENCH_LOGDIR)/results/ CSVs"
 	@echo ""
 	@echo "Distribute / cliff targets (Slurm; wrap .slurm/ scripts + sbatch):"
@@ -352,6 +372,7 @@ help:
 	@echo "  make profile-capture   Capture an AMD profile pack from a REAL GPU serve (gfx942/gfx950)"
 	@echo "  make emulate-validate  Replay a captured pack on CPU and diff vs the real-hardware run"
 	@echo "  make install-ci-scripts  Deploy .github/scripts/runners/*.sh to $(AIC_CI_LIB_DIR) (sudo if needed)"
+	@echo "  make cliff-kvbench-submit  sbatch a CPU-only KVBench cliff run (compose kvbench + client)"
 	@echo "  make cliff-submit      sbatch the full 3-arm cliff sweep -> logs/<job-id>/"
 	@echo "  make cliff-kvd         sbatch focused KVD cliff: shared prefix, sparse c ladder (1,8,32,64,128,250)"
 	@echo "  make cliff-spur-l2     sbatch SPUR-tuned L2 cliff: per_client prefix, util=0.40, 8GB DRAM L1, c=1/8/32 (vram+nvme)"
@@ -407,6 +428,7 @@ help:
 	@echo "  make up-gds-l1 GDS_SLAB_DATA=/mnt/nvme HF_TOKEN=hf_..."
 	@echo "  make cliff BENCH_ARM=vram_only BENCH_ENDPOINT=http://localhost:8000"
 	@echo "  make cliff BENCH_ARM=kvbench BENCH_ENDPOINT=http://localhost:8000"
+	@echo "  make cliff-kvbench-local KVBENCH_MODEL=llama-3.1-8b BENCH_CONCUR=1,2"
 	@echo "  make plot"
 	@echo ""
 
@@ -425,9 +447,14 @@ _check_gds_slab:
 
 _prep_dirs:
 	@mkdir -p "$(NVME_DATA)" "$(NFS_DATA)" \
-		"$(LOG)/lmcache" "$(LOG)/vllm" \
+		"$(LOG)/lmcache" "$(LOG)/vllm" "$(LOG)/kvbench" \
 		"$(HF_HOME)/hub" "$(HF_HOME)/datasets" "$(HF_HOME)/vllm" \
 		"$(HF_HOME)/vllm_config" "$(HF_HOME)/torch" "$(HF_HOME)/torch_inductor" \
+		"$(BENCH_LOGDIR)/results" "$(BENCH_LOGDIR)/plots"
+
+_prep_kvbench_dirs:
+	@mkdir -p "$(LOG)/kvbench" \
+		"$(HF_HOME)" \
 		"$(BENCH_LOGDIR)/results" "$(BENCH_LOGDIR)/plots"
 
 # Ensure the `docker compose` (v2) plugin is available.  Docker checks
@@ -587,6 +614,59 @@ vllm-reset-test: _check_hf_token _prep_dirs
 	    http://aic-lmcache:8080/metrics/reset > /dev/null
 	$(PYTHON) "$(CURDIR)/benchmarks/vllm_reset_test.py"
 	@echo "Test complete. Run 'make down' to stop the stack."
+
+kvbench-build: ensure-compose
+	$(COMPOSE) --profile kvbench build kvbench
+
+kvbench-up: ensure-compose _prep_kvbench_dirs
+	KVBENCH_IMAGE_REF="$(KVBENCH_IMAGE_REF)" $(COMPOSE) --profile kvbench up --build -d kvbench client
+	@echo "KVBench is starting on http://localhost:$(KVBENCH_HOST_PORT) and http://aic-kvbench:$(KVBENCH_PORT) inside compose"
+
+kvbench-logs:
+	$(COMPOSE) --profile kvbench logs -f kvbench
+
+kvbench-down:
+	$(COMPOSE) --profile kvbench down --remove-orphans
+
+cliff-kvbench-local: ensure-compose _prep_kvbench_dirs
+	@echo "=== cliff-kvbench-local: $(KVBENCH_IMAGE_REF) model=$${BENCH_MODEL:-$(KVBENCH_MODEL)} ==="
+	@KVBENCH_IMAGE_REF="$(KVBENCH_IMAGE_REF)" $(COMPOSE) --profile kvbench up --build -d kvbench client
+	@echo "Waiting up to $(KVBENCH_READY_S)s for KVBench /v1/models ..."
+	@_ready=0; \
+	for _i in $$(seq 1 $(KVBENCH_READY_S)); do \
+	    if curl -fsS "http://localhost:$(KVBENCH_HOST_PORT)/v1/models" >/dev/null 2>&1; then _ready=1; break; fi; \
+	    sleep 1; \
+	done; \
+	if [ "$$_ready" != "1" ]; then \
+	    echo "FAIL: KVBench endpoint not ready after $(KVBENCH_READY_S)s" >&2; \
+	    $(COMPOSE) --profile kvbench logs --tail 80 kvbench; \
+	    $(COMPOSE) --profile kvbench down --remove-orphans >/dev/null 2>&1; \
+	    exit 1; \
+	fi; \
+	for _i in $$(seq 1 60); do \
+	    if docker exec aic-client python3 -c 'import openai' >/dev/null 2>&1; then break; fi; \
+	    if [ "$$_i" = "60" ]; then \
+	        echo "FAIL: aic-client did not finish installing benchmark deps" >&2; \
+	        $(COMPOSE) logs --tail 80 client; \
+	        $(COMPOSE) --profile kvbench down --remove-orphans >/dev/null 2>&1; \
+	        exit 1; \
+	    fi; \
+	    sleep 1; \
+	done; \
+	out="/logs/manual/results/cliff-kvbench-$$(date +%Y%m%d-%H%M%S).csv"; \
+	echo "Running cliff benchmark through the internal compose network -> $$out"; \
+	docker exec aic-client python3 -u benchmarks/run_cliff.py \
+	    --endpoint "http://aic-kvbench:$(KVBENCH_PORT)" \
+	    --model "$${BENCH_MODEL:-$(KVBENCH_MODEL)}" \
+	    --arm kvbench \
+	    --isl "$(BENCH_ISL)" \
+	    --shared-prefix-tokens "$(BENCH_SHARED_TOK)" \
+	    --concurrencies "$(BENCH_CONCUR)" \
+	    --iters "$(BENCH_ITERS)" \
+	    --warmup-iters 0 \
+	    --request-timeout 10 \
+	    --out "$$out"; \
+	echo "Results written to $${out#/logs/}"
 
 cliff: _prep_dirs
 	@test -n "$(BENCH_MODEL)" || { \
@@ -1043,6 +1123,30 @@ _CLIFF_SBATCH_ARGS := --constraint='$(AIC_CLIFF_CONSTRAINT)' \
 _CLIFF_SUBMIT     = $(_CLIFF_STRIP) sbatch --parsable \
     $(_CLIFF_SBATCH_ARGS) $(1) .slurm/run-cliff.sbatch
 endif
+
+ifeq ($(AIC_SPUR_CLUSTER),1)
+_KVBENCH_SPUR_CTL := SPUR_CONTROLLER_ADDR=$(AIC_SPUR_CONTROLLER)
+_KVBENCH_SBATCH_ARGS := --partition=amd-spur --constraint= \
+    $(if $(AIC_KVBENCH_NODE),--nodelist=$(AIC_KVBENCH_NODE),)
+_KVBENCH_SUBMIT := $(_KVBENCH_SPUR_CTL) $(_CLIFF_STRIP) sbatch \
+    $(_KVBENCH_SBATCH_ARGS) $(1) .slurm/run-kvbench-cliff.sbatch 2>&1 | \
+    tee /dev/stderr | grep -oE '[0-9]+$$' | tail -1
+else
+ifdef AIC_KVBENCH_NODE
+_KVBENCH_NODE_ARG := --nodelist=$(AIC_KVBENCH_NODE)
+endif
+ifdef AIC_KVBENCH_CONSTRAINT
+_KVBENCH_CONSTRAINT_ARG := --constraint='$(AIC_KVBENCH_CONSTRAINT)'
+endif
+_KVBENCH_SUBMIT := $(_CLIFF_STRIP) sbatch --parsable \
+    $(_KVBENCH_NODE_ARG) $(_KVBENCH_CONSTRAINT_ARG) $(1) .slurm/run-kvbench-cliff.sbatch
+endif
+
+cliff-kvbench-submit:
+	@cd "$(CURDIR)" && jobid=$$($(call _KVBENCH_SUBMIT,\
+	    $(if $(AIC_KVBENCH_TIME),--time=$(AIC_KVBENCH_TIME),))) && \
+	    echo "submitted kvbench cliff job $$jobid" && \
+	    echo "log: $(CURDIR)/logs/$$jobid/kvbench-cliff.out"
 
 cliff-submit:
 	@cd "$(CURDIR)" && jobid=$$($(call _CLIFF_SUBMIT,\

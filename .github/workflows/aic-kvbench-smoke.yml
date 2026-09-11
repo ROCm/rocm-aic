@@ -3,9 +3,8 @@
 # SPDX-License-Identifier: MIT
 #
 # CPU-only validation for the cliff harness's KVBench arm on a GitHub-hosted
-# runner. Pulls KVBench from its upstream repository at a pinned commit, starts
-# the real CPU-only server, and drives it through the cliff harness without
-# requiring GPUs, Docker, or SPUR capacity.
+# runner. Builds the repo's KVBench container, starts it on the compose network,
+# and drives it through the cliff harness without requiring GPUs or SPUR capacity.
 
 name: AIC KVBench Arm Smoke
 
@@ -15,6 +14,7 @@ on:
     paths:
       - 'Makefile'
       - 'benchmarks/**'
+      - 'docker/**'
       - 'tests/**'
       - '.github/workflows/aic-kvbench-smoke.yml'
   pull_request:
@@ -22,16 +22,13 @@ on:
     paths:
       - 'Makefile'
       - 'benchmarks/**'
+      - 'docker/**'
       - 'tests/**'
       - '.github/workflows/aic-kvbench-smoke.yml'
   workflow_dispatch:
 
 permissions:
   contents: read
-
-env:
-  KVBENCH_GIT_URL: https://github.com/wvaske/llm-kv-passthrough.git
-  KVBENCH_REF: 177cf4e7c46ece8e03a701f89b60cd3a329f45fd
 
 jobs:
   kvbench-arm-smoke:
@@ -57,40 +54,19 @@ jobs:
           set -euo pipefail
           python -m unittest tests.test_run_cliff
 
-      - name: Install KVBench from upstream
+      - name: Start containerized KVBench
         run: |
           set -euo pipefail
-          git clone --depth 1 "${KVBENCH_GIT_URL}" /tmp/kvbench
-          git -C /tmp/kvbench fetch --depth 1 origin "${KVBENCH_REF}"
-          git -C /tmp/kvbench checkout "${KVBENCH_REF}"
-          python -m pip install '/tmp/kvbench[lmcache]'
+          make kvbench-up KVBENCH_LOCAL_CPU_SIZE_GB=0.25
 
-      - name: Smoke-test the KVBench cliff arm
+      - name: Smoke-test the KVBench compose path
         run: |
           set -euo pipefail
-
-          cat > /tmp/lmcache.yaml <<'YML'
-          chunk_size: 256
-          local_cpu: true
-          max_local_cpu_size: 0.25
-          YML
-
-          kvbench serve \
-            --model llama-3.1-8b \
-            --gpu H100_SXM \
-            --host 127.0.0.1 \
-            --port 18000 \
-            --lmcache-config /tmp/lmcache.yaml \
-            >/tmp/kvbench-smoke.log 2>&1 &
-          srv_pid=$!
-          export SRV_PID="${srv_pid}"
-          trap 'python -c "import os, signal; os.kill(int(os.environ[\"SRV_PID\"]), signal.SIGTERM)"' EXIT
-
           python - <<'PY'
           import time
           import urllib.request
 
-          deadline = time.time() + 10
+          deadline = time.time() + 120
           while True:
               try:
                   with urllib.request.urlopen("http://127.0.0.1:18000/v1/models", timeout=1) as resp:
@@ -102,8 +78,15 @@ jobs:
                   time.sleep(0.2)
           PY
 
-          python /home/runner/work/rocm-aic/rocm-aic/benchmarks/run_cliff.py \
-            --endpoint http://127.0.0.1:18000 \
+          for _ in $(seq 1 60); do
+            if docker exec aic-client python -c 'import openai' >/dev/null 2>&1; then
+              break
+            fi
+            sleep 1
+          done
+
+          docker exec aic-client python3 -u benchmarks/run_cliff.py \
+            --endpoint http://aic-kvbench:8000 \
             --model llama-3.1-8b \
             --arm kvbench \
             --isl 32 \
@@ -112,12 +95,12 @@ jobs:
             --iters 1 \
             --warmup-iters 0 \
             --request-timeout 10 \
-            --out /tmp/kvbench-cliff.csv
+            --out /logs/kvbench-cliff.csv
 
           python - <<'PY'
           import csv
 
-          with open("/tmp/kvbench-cliff.csv", newline="") as handle:
+          with open("/home/runner/work/rocm-aic/rocm-aic/logs/kvbench-cliff.csv", newline="") as handle:
               rows = list(csv.DictReader(handle))
 
           assert len(rows) == 2, rows
@@ -128,3 +111,11 @@ jobs:
               assert row["l1_cache_queries"] == "", row
               assert row["ext_cache_queries"] == "", row
           PY
+
+      - name: Dump compose logs on failure
+        if: failure()
+        run: docker compose -f /home/runner/work/rocm-aic/rocm-aic/docker/docker-compose.yml --profile kvbench logs --no-color kvbench client
+
+      - name: Tear down KVBench compose profile
+        if: always()
+        run: make kvbench-down
