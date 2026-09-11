@@ -271,7 +271,7 @@ services:
       - kvbench
     build:
       context: ..
-      dockerfile: docker/kvbench.Dockerfile
+      dockerfile: docker/kvbench/Dockerfile
       args:
         KVBENCH_GIT_URL: ${KVBENCH_GIT_URL:-https://github.com/wvaske/llm-kv-passthrough.git}
         KVBENCH_REF: ${KVBENCH_REF:-177cf4e7c46ece8e03a701f89b60cd3a329f45fd}

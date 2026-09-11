@@ -54,53 +54,28 @@ jobs:
           set -euo pipefail
           python -m unittest tests.test_run_cliff
 
-      - name: Start containerized KVBench
+      - name: Smoke-test the KVBench compose path via the local Makefile target
         run: |
           set -euo pipefail
-          make kvbench-up KVBENCH_LOCAL_CPU_SIZE_GB=0.25
-
-      - name: Smoke-test the KVBench compose path
-        run: |
-          set -euo pipefail
-          python - <<'PY'
-          import time
-          import urllib.request
-
-          deadline = time.time() + 120
-          while True:
-              try:
-                  with urllib.request.urlopen("http://127.0.0.1:18000/v1/models", timeout=1) as resp:
-                      if resp.status == 200:
-                          break
-              except Exception:
-                  if time.time() >= deadline:
-                      raise
-                  time.sleep(0.2)
-          PY
-
-          for _ in $(seq 1 60); do
-            if docker exec aic-client python -c 'import openai' >/dev/null 2>&1; then
-              break
-            fi
-            sleep 1
-          done
-
-          docker exec aic-client python3 -u benchmarks/run_cliff.py \
-            --endpoint http://aic-kvbench:8000 \
-            --model llama-3.1-8b \
-            --arm kvbench \
-            --isl 32 \
-            --shared-prefix-tokens 16 \
-            --concurrencies 1,2 \
-            --iters 1 \
-            --warmup-iters 0 \
-            --request-timeout 10 \
-            --out /logs/kvbench-cliff.csv
+          make cliff-kvbench-local \
+            KVBENCH_MODEL=llama-3.1-8b \
+            BENCH_MODEL=llama-3.1-8b \
+            BENCH_ISL=32 \
+            BENCH_SHARED_TOK=16 \
+            BENCH_CONCUR=1,2 \
+            BENCH_ITERS=1 \
+            KVBENCH_LOCAL_CPU_SIZE_GB=0.25
 
           python - <<'PY'
           import csv
+          from pathlib import Path
 
-          with open("/home/runner/work/rocm-aic/rocm-aic/logs/kvbench-cliff.csv", newline="") as handle:
+          results = sorted(
+              Path("/home/runner/work/rocm-aic/rocm-aic/logs/manual/results").glob("cliff-kvbench-*.csv"),
+              key=lambda path: path.stat().st_mtime,
+          )
+          assert results, "no KVBench cliff CSV produced"
+          with results[-1].open(newline="") as handle:
               rows = list(csv.DictReader(handle))
 
           assert len(rows) == 2, rows
