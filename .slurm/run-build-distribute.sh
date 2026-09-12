@@ -405,7 +405,43 @@ fi
 AIC_TLS_CERT="${AIC_TLS_CERT:-}"
 
 log()  { printf '[build-distribute] %s\n' "$*" >&2; }
-die()  { printf '[build-distribute] ERROR: %s\n' "$*" >&2; exit 1; }
+die()  { printf '[build-distribute] ERROR: %s\n' "$*" >&2; _dump_job_log_tail; exit 1; }
+
+# Log of the sbatch job currently being watched.  Set by _sbatch_run once the job
+# id resolves, cleared when it returns; empty at every other point, which is what
+# makes the _dump_job_log_tail call in `die` a no-op for the many aborts that
+# happen before a job exists.
+_active_job_logfile=""
+_active_job_desc=""
+
+# Last-resort diagnostics: re-read the job's own log and print its tail.
+#
+# Both wait paths in _sbatch_run stream that log opportunistically -- they print
+# lines past a high-water mark, and only once the file is visible on shared
+# storage.  A job that fails inside a single poll interval leaves no trace in CI
+# at all; observed as a one-line `docker not found on build node` abort whose
+# only symptom in the run log was `exit code from file: 1`.  Reading the file
+# here does not depend on anything the stream did or did not manage to see.
+#
+# Called from `die` as well as on a non-zero job exit, because the aborts that
+# happen *after* a job has run -- an unreachable controller, an unparsable exit
+# file, a job that vanished from accounting -- are exactly the ones where the
+# job's own output is the only evidence of what went wrong.
+#
+# Tail rather than cat: on a long build the stream has already shown the bulk,
+# and the failure is at the end.  AIC_JOB_LOG_TAIL raises the window.
+_dump_job_log_tail() {
+    local f="${_active_job_logfile}" n="${AIC_JOB_LOG_TAIL:-200}"
+    [[ -n "${f}" ]] || return 0
+    if [[ ! -s "${f}" ]]; then
+        log "job log ${f} is missing or empty; ${_active_job_desc} produced no output"
+        return 0
+    fi
+    log "--- last ${n} lines of ${f} (${_active_job_desc}) ---"
+    tail -n "${n}" "${f}" ||
+        log "WARNING: could not read ${f}"
+    log "--- end of ${f} ---"
+}
 
 # --- Compression: pick tool + file extension --------------------------------
 _pick_compress() {
@@ -528,6 +564,14 @@ PROLOGUE
     local jobid="" logfile="" rc=0
     local active_job_file="${AIC_CI_ACTIVE_JOB_FILE:-}"
 
+    # Make the job's log reachable from `die` for as long as this job is the one
+    # being watched.  Cleared unconditionally before returning, so a later abort
+    # cannot print a stale job's output.
+    _track_job_log() {
+        _active_job_logfile="${logfile}"
+        _active_job_desc="${jobname} job ${jobid}"
+    }
+
     _record_active_job() {
         [[ -n "${active_job_file}" ]] || return 0
         mkdir -p "$(dirname "${active_job_file}")"
@@ -564,6 +608,7 @@ PROLOGUE
         [[ -n "${jobid}" ]] || die "could not parse job id from sbatch output: ${submit_out}"
         _record_active_job
         logfile="${AIC_DAY_DIR}/logs/${jobid}/${logname}.out"
+        _track_job_log
         log "submitted ${jobname} as job ${jobid} (partition ${AIC_BUILD_PARTITION})"
         log "log: ${logfile}"
 
@@ -629,7 +674,11 @@ PROLOGUE
                 log "--- end stderr from SPUR job ${jobid} ---"
                 return 0
             done
-            log "no stderr file for SPUR job ${jobid}; looked in: ${candidates[*]}"
+            # Say what this file is, so an empty one does not read as "there are
+            # no diagnostics".  It only ever holds output from before the job
+            # script redirects; the job's own log is the thing worth reading.
+            log "SPUR side-channel stderr for job ${jobid} is absent or empty" \
+                "(looked in: ${candidates[*]}); the job's own log is ${logfile}"
             return 0
         }
 
@@ -766,6 +815,7 @@ PROLOGUE
 
         logfile="${AIC_DAY_DIR}/logs/${jobid:-unknown}/${logname}.out"
         if [[ -n "${jobid}" ]]; then
+            _track_job_log
             log "submitted ${jobname} as job ${jobid} (partition ${AIC_BUILD_PARTITION})"
             log "log: ${logfile}"
         else
@@ -786,6 +836,8 @@ PROLOGUE
         rm -f "${idfile}" 2>/dev/null || true
     fi
 
+    (( rc == 0 )) || _dump_job_log_tail
+    _active_job_logfile=""; _active_job_desc=""
     _clear_active_job
     return "${rc}"
 }
@@ -905,7 +957,7 @@ cmd_build() {
         # the whole pipeline instead of writing a truncated tarball.
         remote_script="$(cat <<REMOTE
 set -euo pipefail
-command -v docker >/dev/null 2>&1 || { echo 'docker not found on build node' >&2; exit 1; }
+command -v docker >/dev/null 2>&1 || { echo "docker not found on build node \$(hostname) (PATH=\${PATH})" >&2; exit 1; }
 echo "[build] host=\$(hostname) docker=\$(docker --version)"
 # BuildKit writes a temp dir for config injection into TMPDIR (defaults to /tmp).
 # On SPUR compute nodes /tmp may not be writable for this user; use $HOME/tmp instead.
@@ -918,7 +970,19 @@ mkdir -p "${AIC_IMAGE_DIR}"
 # volume from filling the node's disk and silently killing the export.
 echo "[build] pruning BuildKit cache on \$(hostname) before build ..."
 docker buildx prune --builder ${AIC_BUILDX_BUILDER} --force 2>/dev/null || true
-echo "[build] disk after prune: \$(df -h / | awk 'NR==2{print \$3\" free / \"\$2\" total (\"\$5\" used)\"}')"
+# Report free space on the filesystem that actually backs BuildKit's cache -- the
+# docker data root, which is NOT necessarily /.  This is the number that explains
+# a "no space left on device" during the build, so it must never come back empty:
+# ask docker where its root is, fall back to /, and report the df row on one line
+# rather than through an awk program.
+#
+# The awk program that used to live here printed nothing on every build ever run.
+# Its double quotes were backslash-escaped, and an unquoted heredoc passes \"
+# through verbatim, so awk got a stray backslash and died.  It also printed field
+# 3 (Used) under the label "free"; Avail is field 4.
+_droot="\$(docker info --format '{{.DockerRootDir}}' 2>/dev/null)"
+[ -d "\${_droot:-}" ] || _droot=/
+echo "[build] disk after prune (\${_droot}): \$(df -h "\${_droot}" | tail -1)"
 tmp="${tarball}.partial.\$\$"
 docker buildx build --builder ${AIC_BUILDX_BUILDER} --progress=plain --output type=docker,dest=- \
     --build-arg ROCM_ARCH="${AIC_ROCM_ARCH}" \
@@ -952,7 +1016,7 @@ REMOTE
         # `docker save` the result.  Fine for smaller/simpler builds.
         remote_script="$(cat <<REMOTE
 set -euo pipefail
-command -v docker >/dev/null 2>&1 || { echo 'docker not found on build node' >&2; exit 1; }
+command -v docker >/dev/null 2>&1 || { echo "docker not found on build node \$(hostname) (PATH=\${PATH})" >&2; exit 1; }
 echo "[build] host=\$(hostname) docker=\$(docker --version)"
 cd "${AIC_DAY_DIR}"
 ${_builder_setup}
@@ -1052,7 +1116,7 @@ cmd_build_exporters() {
     local remote_script
     remote_script="$(cat <<REMOTE
 set -euo pipefail
-command -v docker >/dev/null 2>&1 || { echo 'docker not found on build node' >&2; exit 1; }
+command -v docker >/dev/null 2>&1 || { echo "docker not found on build node \$(hostname) (PATH=\${PATH})" >&2; exit 1; }
 echo "[build-exporters] host=\$(hostname) docker=\$(docker --version)"
 mkdir -p "${AIC_IMAGE_DIR}"
 # A docker-container builder is required to stream a docker-format tar from
