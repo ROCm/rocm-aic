@@ -262,6 +262,61 @@ networks:
 services:
 
   # ---------------------------------------------------------------------------
+  # kvbench: standalone KVBench server (CPU-only smoke / benchmark path).
+  # Runs on the shared internal docker network so the existing `client` service can
+  # hit it by container name without any vLLM-specific assumptions.
+  # ---------------------------------------------------------------------------
+  kvbench:
+    profiles:
+      - kvbench
+    build:
+      context: ..
+      dockerfile: docker/kvbench/Dockerfile
+      args:
+        KVBENCH_GIT_URL: ${KVBENCH_GIT_URL:-https://github.com/wvaske/llm-kv-passthrough.git}
+        KVBENCH_REF: ${KVBENCH_REF:-177cf4e7c46ece8e03a701f89b60cd3a329f45fd}
+    image: ${KVBENCH_IMAGE_REF:-aic-kvbench:177cf4e}
+    container_name: aic-kvbench
+    networks: [aic-network]
+    ports:
+      - "${KVBENCH_HOST_PORT:-18000}:${KVBENCH_PORT:-8000}"
+    environment:
+      HF_TOKEN: "${HF_TOKEN:-}"
+      HF_HOME: /hf
+      KVBENCH_MODEL: "${KVBENCH_MODEL:-llama-3.1-8b}"
+      KVBENCH_GPU_PROFILE: "${KVBENCH_GPU_PROFILE:-H100_SXM}"
+      KVBENCH_PORT: "${KVBENCH_PORT:-8000}"
+      KVBENCH_CHUNK_SIZE: "${KVBENCH_CHUNK_SIZE:-256}"
+      KVBENCH_LOCAL_CPU_SIZE_GB: "${KVBENCH_LOCAL_CPU_SIZE_GB:-0.25}"
+    volumes:
+      - ${HF_HOME:-~/.cache/huggingface}:/hf
+      - ${LOG:-../logs}/kvbench:/var/log/aic-kvbench
+    entrypoint: ["/bin/bash", "-o", "pipefail", "-c"]
+    command:
+      - |
+        cat > /tmp/lmcache.yaml <<YML
+        chunk_size: ${KVBENCH_CHUNK_SIZE:-256}
+        local_cpu: true
+        max_local_cpu_size: ${KVBENCH_LOCAL_CPU_SIZE_GB:-0.25}
+        YML
+        exec kvbench serve \
+          --model "$$KVBENCH_MODEL" \
+          --gpu "$$KVBENCH_GPU_PROFILE" \
+          --host 0.0.0.0 \
+          --port "$$KVBENCH_PORT" \
+          --lmcache-config /tmp/lmcache.yaml
+    healthcheck:
+      test:
+        - CMD
+        - python3
+        - -c
+        - "import os, urllib.request; urllib.request.urlopen(f'http://127.0.0.1:{os.getenv(\"KVBENCH_PORT\", \"8000\")}/v1/models', timeout=2)"
+      interval: 10s
+      timeout: 5s
+      retries: 18
+      start_period: 20s
+
+  # ---------------------------------------------------------------------------
   # lmcache: standalone LMCache server in MP mode
   # Selects between DRAM L1 + AIS_MT/NFS L2 (default), GDS NVMe slab L1
   # (GDS_MODE=1), and native LocalDiskBackend L2 (AIC_L2_BACKEND=local_disk).
@@ -911,4 +966,3 @@ services:
 
 volumes:
   grafana-data:
-

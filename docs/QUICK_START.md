@@ -56,6 +56,13 @@ make cliff \
     BENCH_ARM=kvd_v2 \
     BENCH_ENDPOINT=http://localhost:8000 \
     BENCH_MODEL=openai/gpt-oss-120b
+
+# Arm C: KVBench — build/start the compose KVBench container, then bench it
+# over the internal docker network (the cliff harness automatically skips
+# vLLM-only prefix-cache metrics for this arm)
+make cliff-kvbench-local \
+    KVBENCH_MODEL=llama-3.1-8b \
+    BENCH_CONCUR=1,2
 ```
 
 ## 6. Generate cliff charts

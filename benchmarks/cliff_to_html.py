@@ -90,12 +90,14 @@ _ARM_LABELS = {
     "vram_only": "VRAM only (no AIC)",
     "vram_dram": "VRAM + DRAM",
     "kvd_v2":    "AIC (NVMe/NFS via LMCache)",
+    "kvbench":   "KVBench (no vLLM)",
 }
 
 _ARM_COLORS = {
     "vram_only": "#c0392b",
     "vram_dram": "#e67e22",
     "kvd_v2":    "#2980b9",
+    "kvbench":   "#16a085",
 }
 
 

@@ -36,6 +36,12 @@ Usage:
   # Then re-run with the kvd-attached server:
   python -u -m bench.kv_cache_cliff.run_cliff ... --arm kvd_v2 \\
       --out logs/manual/results/cliff-kvd-v2.csv
+
+  # Or point the same harness at a KVBench server (OpenAI-compatible API,
+  # no vLLM metrics scraping):
+  python -u -m bench.kv_cache_cliff.run_cliff ... --arm kvbench \\
+      --endpoint http://localhost:8000 \\
+      --out logs/manual/results/cliff-kvbench.csv
 """
 
 from __future__ import annotations
@@ -56,6 +62,18 @@ from pathlib import Path
 
 def _ckpt(msg: str) -> None:
     print(f"[cliff] {msg}", flush=True)
+
+
+def _is_vllm_arm(arm: str) -> bool:
+    return arm != "kvbench"
+
+
+def _default_tokenizer_model(args: argparse.Namespace) -> str | None:
+    if args.tokenizer is not None:
+        return args.tokenizer
+    if args.arm == "kvbench":
+        return None
+    return args.model
 
 
 # ---------------------------------------------------------------------
@@ -436,21 +454,33 @@ class ReqResult:
 
 async def _fire_one(http_client, base_url: str, model: str,
                     prompt: str, client_id: int, run_id: int,
-                    max_tokens: int, request_timeout: float) -> ReqResult:
+                    max_tokens: int, request_timeout: float,
+                    arm: str = "vram_only") -> ReqResult:
     issued = time.perf_counter()
     err: str | None = None
     prompt_tokens = 0
     out_tokens = 0
     try:
-        resp = await http_client.post(
-            f"{base_url.rstrip('/')}/v1/completions",
-            json={
+        endpoint = "/v1/completions"
+        payload = {
+            "model": model,
+            "prompt": prompt,
+            "max_tokens": max_tokens,
+            "temperature": 0.0,
+            "stream": False,
+        }
+        if arm == "kvbench":
+            endpoint = "/v1/chat/completions"
+            payload = {
                 "model": model,
-                "prompt": prompt,
+                "messages": [{"role": "user", "content": prompt}],
                 "max_tokens": max_tokens,
                 "temperature": 0.0,
                 "stream": False,
-            },
+            }
+        resp = await http_client.post(
+            f"{base_url.rstrip('/')}{endpoint}",
+            json=payload,
             timeout=request_timeout,
         )
         if resp.status_code != 200:
@@ -476,6 +506,7 @@ async def _run_one_concurrency(
     http_client, base_url: str, model: str,
     concurrency: int, run_id: int, isl: int, shared_prefix_tokens: int,
     max_tokens: int, request_timeout: float, prefix_mode: str = "shared",
+    arm: str = "vram_only",
 ) -> tuple[float, list[ReqResult]]:
     """Fire `concurrency` concurrent requests, wait for all, return
     (wall_seconds, [results])."""
@@ -491,7 +522,8 @@ async def _run_one_concurrency(
     coros = [
         _fire_one(http_client, base_url, model, prompts[i],
                   client_id=i, run_id=run_id,
-                  max_tokens=max_tokens, request_timeout=request_timeout)
+                  max_tokens=max_tokens, request_timeout=request_timeout,
+                  arm=arm)
         for i in range(concurrency)
     ]
     results = await asyncio.gather(*coros)
@@ -517,9 +549,10 @@ async def amain(args: argparse.Namespace) -> int:
         sys.exit(1)
 
     # Load the tokenizer so "N tokens" means exactly N tokens. Default
-    # to the served model path; --tokenizer overrides. Degrades to the
-    # word-ratio approximation if transformers/tokenizer unavailable.
-    set_active_tokenizer(args.tokenizer or args.model)
+    # to the served model path; --tokenizer overrides. For KVBench,
+    # --model is a profile id rather than a tokenizer path/HF id, so
+    # skip the implicit tokenizer probe unless --tokenizer is explicit.
+    set_active_tokenizer(_default_tokenizer_model(args))
 
     _ckpt(f"endpoint: {args.endpoint}")
     _ckpt(f"model: {args.model}")
@@ -529,12 +562,15 @@ async def amain(args: argparse.Namespace) -> int:
     _ckpt(f"concurrencies: {concurrencies}")
     _ckpt(f"iters={args.iters} warmup_iters={args.warmup_iters}")
 
-    scrape_metrics = not args.no_metrics
+    scrape_metrics = (not args.no_metrics) and _is_vllm_arm(args.arm)
     metrics_base = (args.metrics_endpoint or args.endpoint).rstrip("/")
     metrics_url = f"{metrics_base}/metrics"
     if scrape_metrics:
         _ckpt(f"metrics: scraping prefix-cache hit rate from {metrics_url} "
               f"(per timed iter)")
+    elif not args.no_metrics:
+        _ckpt("metrics: disabled for arm=kvbench; vLLM prefix-cache counters "
+              "are not available")
     else:
         _ckpt("metrics: disabled (--no-metrics); hit-rate columns blank")
 
@@ -578,6 +614,7 @@ async def amain(args: argparse.Namespace) -> int:
                     max_tokens=args.max_tokens,
                     request_timeout=args.request_timeout,
                     prefix_mode=args.prefix_mode,
+                    arm=args.arm,
                 )
                 errs = [r for r in results if r.error]
                 request_error_count += len(errs)
@@ -616,6 +653,7 @@ async def amain(args: argparse.Namespace) -> int:
                         max_tokens=args.max_tokens,
                         request_timeout=args.request_timeout,
                         prefix_mode=args.prefix_mode,
+                        arm=args.arm,
                     )
                     errs = [r for r in results if r.error]
                     request_error_count += len(errs)
@@ -658,6 +696,7 @@ async def amain(args: argparse.Namespace) -> int:
                         max_tokens=args.max_tokens,
                         request_timeout=args.request_timeout,
                         prefix_mode=args.prefix_mode,
+                        arm=args.arm,
                     )
                     snap1 = (await _snap_cache_settled(
                                  http_client, metrics_url,
@@ -723,15 +762,15 @@ async def amain(args: argparse.Namespace) -> int:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--endpoint", required=True,
-                        help="vLLM OpenAI-compat endpoint, e.g. http://localhost:8801")
+                        help="OpenAI-compatible endpoint, e.g. http://localhost:8801")
     parser.add_argument("--model", required=True,
-                        help="--model arg vLLM was launched with (path or HF id)")
+                        help="served model id/path expected by the endpoint")
     parser.add_argument("--tokenizer", default=None,
                         help="tokenizer path/HF id for exact token-count "
                              "prompts (default: --model). If it can't load, "
                              "falls back to a word-ratio approximation.")
     parser.add_argument("--arm", required=True,
-                        choices=["vram_only", "vram_dram", "kvd_v2"],
+                        choices=["vram_only", "vram_dram", "kvd_v2", "kvbench"],
                         help="arm label written to the CSV (drives the plot legend)")
     parser.add_argument("--isl", type=int, default=20000,
                         help="total input sequence length per request (default 20000)")
@@ -769,7 +808,7 @@ def main() -> None:
                              "failed requests remain recorded in the CSV")
     parser.add_argument("--metrics-endpoint", default=None,
                         help="endpoint to scrape Prometheus /metrics from "
-                             "(default: --endpoint). Captures L1 (GPU) + "
+                             "(default: --endpoint). For vLLM-backed arms this captures L1 (GPU) + "
                              "external (kvd/L3) prefix-cache hit rate per "
                              "timed iter into the CSV.")
     parser.add_argument("--no-metrics", action="store_true",

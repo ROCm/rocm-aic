@@ -1,0 +1,96 @@
+# Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+#
+# CPU-only validation for the cliff harness's KVBench arm on a GitHub-hosted
+# runner. Builds the repo's KVBench container, starts it on the compose network,
+# and drives it through the cliff harness without requiring GPUs or SPUR capacity.
+
+name: AIC KVBench Arm Smoke
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'Makefile'
+      - 'benchmarks/**'
+      - 'docker/**'
+      - 'tests/**'
+      - '.github/workflows/aic-kvbench-smoke.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'Makefile'
+      - 'benchmarks/**'
+      - 'docker/**'
+      - 'tests/**'
+      - '.github/workflows/aic-kvbench-smoke.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  kvbench-arm-smoke:
+    name: KVBench cliff arm smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install benchmark dependencies
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          python -m pip install '.[dev]'
+
+      - name: Run targeted cliff unit tests
+        run: |
+          set -euo pipefail
+          python -m unittest tests.test_run_cliff
+
+      - name: Smoke-test the KVBench compose path via the local Makefile target
+        run: |
+          set -euo pipefail
+          make cliff-kvbench-local \
+            KVBENCH_MODEL=llama-3.1-8b \
+            BENCH_MODEL=llama-3.1-8b \
+            BENCH_ISL=32 \
+            BENCH_SHARED_TOK=16 \
+            BENCH_CONCUR=1,2 \
+            BENCH_ITERS=1 \
+            KVBENCH_LOCAL_CPU_SIZE_GB=0.25
+
+          python - <<'PY'
+          import csv
+          from pathlib import Path
+
+          results = sorted(
+              Path("/home/runner/work/rocm-aic/rocm-aic/logs/manual/results").glob("cliff-kvbench-*.csv"),
+              key=lambda path: path.stat().st_mtime,
+          )
+          assert results, "no KVBench cliff CSV produced"
+          with results[-1].open(newline="") as handle:
+              rows = list(csv.DictReader(handle))
+
+          assert len(rows) == 2, rows
+          assert {row["arm"] for row in rows} == {"kvbench"}, rows
+          for row in rows:
+              assert row["ok_count"] == row["concurrency"], row
+              assert row["err_count"] == "0", row
+              assert row["l1_cache_queries"] == "", row
+              assert row["ext_cache_queries"] == "", row
+          PY
+
+      - name: Dump compose logs on failure
+        if: failure()
+        run: docker compose -f /home/runner/work/rocm-aic/rocm-aic/docker/docker-compose.yml --profile kvbench logs --no-color kvbench client
+
+      - name: Tear down KVBench compose profile
+        if: always()
+        run: make kvbench-down
