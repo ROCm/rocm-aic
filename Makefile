@@ -1109,12 +1109,20 @@ endif
 endif
 ifeq ($(AIC_SPUR_CLUSTER),1)
 _CLIFF_SPUR_CTL  := SPUR_CONTROLLER_ADDR=$(AIC_SPUR_CONTROLLER)
-_CLIFF_SBATCH_ARGS := --partition=amd-spur --constraint= --gpus=$(AIC_CLIFF_GPUS) \
+# --gres= (empty) is required *in addition to* --gpus: it clears the
+# `#SBATCH --gres=gpu:1` baked into run-cliff.sbatch for standard Slurm.  SPUR
+# rejects a submission carrying both GPU request forms with
+#   "only one GPU request form (gpus, gpus_per_node, gpus_per_task, or a gpu
+#    gres entry) may be set"
+_CLIFF_SBATCH_ARGS := --partition=amd-spur --constraint= --gres= --gpus=$(AIC_CLIFF_GPUS) \
     $(if $(AIC_CLIFF_NODE),--nodelist=$(AIC_CLIFF_NODE),)
-# SPUR sbatch does not support --parsable or --no-requeue; parse job id from "Submitted batch job N"
+# SPUR sbatch does not support --parsable or --no-requeue; parse job id from "Submitted batch job N".
+# The trailing `grep -E '^[0-9]+$$'` is load-bearing: `tail` exits 0 even when the
+# upstream grep matched nothing, so without it a rejected submit yielded an empty
+# jobid while the recipe still reported "submitted cliff job " and exited 0.
 _CLIFF_SUBMIT     = $(_CLIFF_SPUR_CTL) $(_CLIFF_STRIP) sbatch \
     $(_CLIFF_SBATCH_ARGS) $(1) .slurm/run-cliff.sbatch 2>&1 | \
-    tee /dev/stderr | grep -oE '[0-9]+$$' | tail -1
+    tee /dev/stderr | grep -oE '[0-9]+$$' | tail -1 | grep -E '^[0-9]+$$'
 else
 # NB: single-quote the constraint -- it contains '&' (a shell metacharacter) that
 # would otherwise background the sbatch call in the recipe subshell.
