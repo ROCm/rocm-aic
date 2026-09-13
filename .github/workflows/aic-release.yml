@@ -186,8 +186,9 @@ jobs:
           repo="${GITHUB_REPOSITORY}"
           title="AIC ${tag}"
           assets=(wheels/*.whl "${TARBALL}" SHA256SUMS)
-          ref_type="$(gh api "/repos/${repo}/git/ref/tags/${tag}" --jq .object.type)"
-          ref_sha="$(gh api "/repos/${repo}/git/ref/tags/${tag}" --jq .object.sha)"
+          read -r ref_type ref_sha < <(
+            gh api "/repos/${repo}/git/ref/tags/${tag}" --jq '.object | "\(.type) \(.sha)"'
+          )
           if [ "${ref_type}" = "tag" ]; then
             ref_sha="$(gh api "/repos/${repo}/git/tags/${ref_sha}" --jq .object.sha)"
           fi
