@@ -113,12 +113,15 @@ jobs:
 
           current="$(bash "${renderer}" "${args[@]}")"
           printf '%s\n' "${current}" | grep -Eq "^- \*\*Base:\*\* [^${dollar}]+ \(ROCm [^,]+, Python 3\.12, x86_64\)$"
+          printf '%s\n' "${current}" | grep -Eq "^- \*\*vLLM:\*\* .+ @ ${markdown_tick}[^${markdown_tick}]+${markdown_tick} \(source build\)$"
           printf '%s\n' "${current}" | grep -Eq "^- \*\*LMCache:\*\* .+ @ ${markdown_tick}[^${markdown_tick}]+${markdown_tick} \+ AIC patches$"
           printf '%s\n' "${current}" | grep -Eq "^- \*\*NIXL:\*\* .+ @ ${markdown_tick}[^${markdown_tick}]+${markdown_tick} \+ nixl-rocm-ais-mt patch$"
 
           cat > "${fixtures}/Dockerfile.full" <<'EOF'
           ARG ROCM_VERSION=7.14.0
           ARG ROCM_BASE_IMAGE=rocm/dev-ubuntu-24.04:${ROCM_VERSION}-full
+          ARG VLLM_GIT_URL=https://github.com/vllm-project/vllm.git
+          ARG VLLM_REF=v0.28.0
           ARG LMCACHE_GIT_URL=https://github.com/LMCache/LMCache.git
           ARG LMCACHE_REF=v0.5.4
           ARG NIXL_GIT_URL=https://github.com/ai-dynamo/nixl.git
@@ -127,6 +130,7 @@ jobs:
           full_args=("${fixtures}/Dockerfile.full" "${args[@]:1}")
           full="$(bash "${renderer}" "${full_args[@]}")"
           printf '%s\n' "${full}" | grep -F -- '- **Base:** rocm/dev-ubuntu-24.04:7.14.0-full (ROCm 7.14.0, Python 3.12, x86_64)'
+          printf '%s\n' "${full}" | grep -F -- "- **vLLM:** https://github.com/vllm-project/vllm.git @ ${markdown_tick}v0.28.0${markdown_tick} (source build)"
           printf '%s\n' "${full}" | grep -F -- "- **LMCache:** https://github.com/LMCache/LMCache.git @ ${markdown_tick}v0.5.4${markdown_tick} + AIC patches"
 
           grep -v '^ARG NIXL_REF=' "${fixtures}/Dockerfile.full" > "${fixtures}/Dockerfile.missing-ref"

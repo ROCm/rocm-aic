@@ -56,6 +56,9 @@ See [docs/PIP_WHEELS.md](docs/PIP_WHEELS.md) for installation instructions and
 compatibility notes. Wheels are rebuilt nightly from `main` and published to the
 [nightly release](https://github.com/ROCm/rocm-aic/releases/tag/nightly).
 
+For versioned stable releases and the tagging workflow, see
+[docs/RELEASE.md](docs/RELEASE.md).
+
 ## Prerequisites
 
 - ROCm-capable host. Pass `ROCM_ARCH` as a `;`-separated list (e.g. `gfx90a;gfx942;gfx950`)
