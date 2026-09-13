@@ -35,6 +35,7 @@ Each tagged release publishes:
 
 The workflow rejects tags that do not match `VERSION`, so the release tag and
 the version file stay in sync.
+Treat release tags as immutable once pushed.
 
 ## Post-release checks
 
@@ -49,4 +50,5 @@ After the workflow completes, verify:
 ## Reruns and recovery
 
 The workflow is safe to rerun for the same tag. If the GitHub Release already
-exists, the workflow refreshes the notes and replaces assets in place.
+exists, the workflow refreshes the release metadata and replaces assets in
+place.

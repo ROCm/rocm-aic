@@ -188,11 +188,15 @@ jobs:
           assets=(wheels/*.whl "${TARBALL}" SHA256SUMS)
 
           if gh release view "${tag}" --repo "${repo}" >/dev/null 2>&1; then
+            release_id="$(gh release view "${tag}" --repo "${repo}" --json id -q .id)"
+            RELEASE_TAG="${tag}" RELEASE_TITLE="${title}" RELEASE_TARGET="${{ github.sha }}" \
+              python3 -c 'import json, os; from pathlib import Path; print(json.dumps({"tag_name": os.environ["RELEASE_TAG"], "target_commitish": os.environ["RELEASE_TARGET"], "name": os.environ["RELEASE_TITLE"], "body": Path("release-notes.md").read_text(encoding="utf-8"), "draft": False, "prerelease": False}))' \
+              > /tmp/release-payload.json
+            gh api \
+              --method PATCH \
+              "/repos/${repo}/releases/${release_id}" \
+              --input /tmp/release-payload.json >/dev/null
             gh release upload "${tag}" "${assets[@]}" --repo "${repo}" --clobber
-            gh release edit "${tag}" \
-              --repo "${repo}" \
-              --title "${title}" \
-              --notes-file release-notes.md
           else
             gh release create "${tag}" "${assets[@]}" \
               --repo "${repo}" \
