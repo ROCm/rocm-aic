@@ -192,8 +192,7 @@ jobs:
             gh release edit "${tag}" \
               --repo "${repo}" \
               --title "${title}" \
-              --notes-file release-notes.md \
-              --target "${{ github.sha }}"
+              --notes-file release-notes.md
           else
             gh release create "${tag}" "${assets[@]}" \
               --repo "${repo}" \
