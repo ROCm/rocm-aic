@@ -197,9 +197,20 @@ jobs:
             exit 1
           }
 
-          if release_id="$(gh release view "${tag}" --repo "${repo}" --json id --jq .id 2>/dev/null)"; then
-            RELEASE_TAG="${tag}" RELEASE_TITLE="${title}" RELEASE_TARGET="${{ github.sha }}" \
-              python3 -c 'import json, os; from pathlib import Path; print(json.dumps({"tag_name": os.environ["RELEASE_TAG"], "target_commitish": os.environ["RELEASE_TARGET"], "name": os.environ["RELEASE_TITLE"], "body": Path("release-notes.md").read_text(encoding="utf-8"), "draft": False, "prerelease": False}))' \
+          if release_json="$(gh release view "${tag}" --repo "${repo}" --json id,body 2>/dev/null)"; then
+            read -r release_id release_sha < <(
+              printf '%s' "${release_json}" | python3 -c 'import json, re, sys; data = json.load(sys.stdin); match = re.search(r"- \*\*Source SHA:\*\* `([^`]+)`", data.get("body") or ""); print(data["id"], match.group(1) if match else "")'
+            )
+            [ -n "${release_sha}" ] || {
+              echo "ERROR: existing release ${tag} is missing the managed Source SHA metadata" >&2
+              exit 1
+            }
+            [ "${release_sha}" = "${{ github.sha }}" ] || {
+              echo "ERROR: existing release ${tag} was published from ${release_sha}, expected ${{ github.sha }}. Do not rerun after moving the tag." >&2
+              exit 1
+            }
+            RELEASE_TAG="${tag}" RELEASE_TITLE="${title}" \
+              python3 -c 'import json, os; from pathlib import Path; print(json.dumps({"tag_name": os.environ["RELEASE_TAG"], "name": os.environ["RELEASE_TITLE"], "body": Path("release-notes.md").read_text(encoding="utf-8"), "draft": False, "prerelease": False}))' \
               > /tmp/release-payload.json
             gh api \
               --method PATCH \
