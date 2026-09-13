@@ -186,6 +186,15 @@ jobs:
           repo="${GITHUB_REPOSITORY}"
           title="AIC ${tag}"
           assets=(wheels/*.whl "${TARBALL}" SHA256SUMS)
+          ref_type="$(gh api "/repos/${repo}/git/ref/tags/${tag}" --jq .object.type)"
+          ref_sha="$(gh api "/repos/${repo}/git/ref/tags/${tag}" --jq .object.sha)"
+          if [ "${ref_type}" = "tag" ]; then
+            ref_sha="$(gh api "/repos/${repo}/git/tags/${ref_sha}" --jq .object.sha)"
+          fi
+          [ "${ref_sha}" = "${{ github.sha }}" ] || {
+            echo "ERROR: tag ${tag} resolves to ${ref_sha}, expected ${{ github.sha }}" >&2
+            exit 1
+          }
 
           if gh release view "${tag}" --repo "${repo}" >/dev/null 2>&1; then
             release_id="$(gh release view "${tag}" --repo "${repo}" --json id -q .id)"
