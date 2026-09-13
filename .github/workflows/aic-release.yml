@@ -188,11 +188,16 @@ jobs:
           assets=(wheels/*.whl "${TARBALL}" SHA256SUMS)
 
           if gh release view "${tag}" --repo "${repo}" >/dev/null 2>&1; then
-            gh release delete "${tag}" --repo "${repo}" --yes
+            gh release upload "${tag}" "${assets[@]}" --repo "${repo}" --clobber
+            gh release edit "${tag}" \
+              --repo "${repo}" \
+              --title "${title}" \
+              --notes-file release-notes.md
+          else
+            gh release create "${tag}" "${assets[@]}" \
+              --repo "${repo}" \
+              --title "${title}" \
+              --notes-file release-notes.md \
+              --target "${{ github.sha }}"
           fi
-          gh release create "${tag}" "${assets[@]}" \
-            --repo "${repo}" \
-            --title "${title}" \
-            --notes-file release-notes.md \
-            --target "${{ github.sha }}"
           echo "Published release ${tag} at ${{ github.sha }}"

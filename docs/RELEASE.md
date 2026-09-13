@@ -49,5 +49,4 @@ After the workflow completes, verify:
 ## Reruns and recovery
 
 The workflow is safe to rerun for the same tag. If the GitHub Release already
-exists, the workflow deletes and recreates the release while keeping the git
-tag in place, so the notes, assets, and release target are rebuilt together.
+exists, the workflow refreshes the notes and replaces assets in place.
