@@ -188,6 +188,11 @@ jobs:
           assets=(wheels/*.whl "${TARBALL}" SHA256SUMS)
 
           if gh release view "${tag}" --repo "${repo}" >/dev/null 2>&1; then
+            current_target="$(gh release view "${tag}" --repo "${repo}" --json targetCommitish -q .targetCommitish)"
+            [ "${current_target}" = "${{ github.sha }}" ] || {
+              echo "ERROR: existing release ${tag} points at ${current_target}, expected ${{ github.sha }}. Delete and recreate the release if the tag moved." >&2
+              exit 1
+            }
             gh release upload "${tag}" "${assets[@]}" --repo "${repo}" --clobber
             gh release edit "${tag}" \
               --repo "${repo}" \
