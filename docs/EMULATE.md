@@ -454,7 +454,7 @@ itself stays in the path, and with it the telemetry exporter on `:19090`.
 ### 6.3 Metrics
 
 `make emulate-mp-test` brings up the Prometheus sidecar
-(`monitoring/docker-compose.monitoring.yml`, exporters off — a CPU node has no
+(`docker/docker-compose.yml` with `--profile monitoring-base`, exporters off — a CPU node has no
 GPU/HSA/NVMe telemetry worth collecting) and asserts that the `lmcache`,
 `nixl` and `vllm` scrape jobs are not just **up** but actually **serving
 series**. A target that answers on its port while exporting nothing is the

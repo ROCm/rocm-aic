@@ -283,7 +283,7 @@ AIC_EXPORTERS="${AIC_EXPORTERS:-1}"
 # spur-authz on SPUR nodes.  'container:aic-lmcache' shares the lmcache+vLLM PID ns
 # instead -- valid because vllm uses pid:service:lmcache so both processes are visible.
 AIC_HSA_SNOOP_PID_MODE="${AIC_HSA_SNOOP_PID_MODE:-host}"
-MON_COMPOSE="${REPO}/monitoring/docker-compose.monitoring.yml"
+MON_COMPOSE="${REPO}/docker/docker-compose.yml"
 MON_DIR="${REPO}/monitoring"
 
 log() { printf '[cliff-job] %s\n' "$*" >&2; }

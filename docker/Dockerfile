@@ -682,7 +682,7 @@ RUN --mount=type=cache,target=/root/.cache/uv \
 # prometheus-cpp via CMake); the build is rejected if the resulting binary lacks
 # --prometheus.  At runtime it must run as root in the host PID namespace,
 # privileged (tracefs + pagemap + process_vm_readv), to see the vLLM/LMCache GPU
-# processes -- see monitoring/docker-compose.monitoring.yml.
+# processes -- see docker/docker-compose.yml.
 RUN git clone --depth 1 --branch "${HSA_SNOOP_REF}" "${HSA_SNOOP_GIT_URL}" /app/hsa-snoop && \
     cmake -S /app/hsa-snoop -B /app/hsa-snoop/build -G Ninja \
         -DCMAKE_BUILD_TYPE=Release -DHSA_SNOOP_PROMETHEUS=ON \

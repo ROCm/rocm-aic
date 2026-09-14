@@ -121,7 +121,7 @@ mkdir -p "${HF_HOME}"
 source "${MON_DIR}/monitoring-lib.sh"
 
 export AIC_IMAGE AIC_MONITORING=1 AIC_EXPORTERS=1 AIC_CPU_SMOKE=1
-export MON_DIR MON_COMPOSE="${MON_DIR}/docker-compose.monitoring.yml"
+export MON_DIR MON_COMPOSE="${WORKDIR}/docker/docker-compose.yml"
 export AIC_METRICS_DIR="${METRICS_DIR}"
 
 cleanup() {

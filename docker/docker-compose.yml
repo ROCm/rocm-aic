@@ -584,7 +584,7 @@ services:
   # `make up-monitoring` sets them automatically to the current user.
   # ---------------------------------------------------------------------------
   prometheus:
-    profiles: [monitoring]
+    profiles: [monitoring, monitoring-base]
     image: ${AIC_PROM_IMAGE:-prom/prometheus:v3.14.0}
     container_name: aic-prometheus
     networks: [aic-network]
@@ -609,7 +609,7 @@ services:
   # CPU stats; mounts the host rootfs read-only via /host.
   # ---------------------------------------------------------------------------
   node-exporter:
-    profiles: [monitoring]
+    profiles: [monitoring, exporters, exporters-cpu]
     image: ${AIC_NODE_EXPORTER_IMAGE:-quay.io/prometheus/node-exporter:v1.12.1}
     container_name: aic-node-exporter
     networks: [aic-network]
@@ -629,7 +629,7 @@ services:
   # Behind the `monitoring` profile.
   # ---------------------------------------------------------------------------
   amdgpu-exporter:
-    profiles: [monitoring]
+    profiles: [monitoring, exporters, exporters-safe]
     image: ${AIC_AMDGPU_EXPORTER_IMAGE:-rocm/device-metrics-exporter:v1.5.1}
     container_name: aic-amdgpu-exporter
     networks: [aic-network]
@@ -651,7 +651,7 @@ services:
   # CAP_SYS_ADMIN + /dev bind-mount for nvme-cli ioctl; no host networking needed.
   # ---------------------------------------------------------------------------
   nvme-exporter:
-    profiles: [monitoring]
+    profiles: [monitoring, exporters-fabric, exporters-cpu]
     image: ${AIC_NVME_EXPORTER_IMAGE:-aic-nvme-exporter:local}
     container_name: aic-nvme-exporter
     networks: [aic-network]
@@ -669,7 +669,7 @@ services:
   # Reads RDMA stats from sysfs only; no host networking or extra caps needed.
   # ---------------------------------------------------------------------------
   rdma-exporter:
-    profiles: [monitoring]
+    profiles: [monitoring, exporters-fabric, exporters-cpu, exporters-safe]
     image: ${AIC_RDMA_EXPORTER_IMAGE:-aic-rdma-exporter:local}
     container_name: aic-rdma-exporter
     networks: [aic-network]
@@ -687,7 +687,7 @@ services:
   # Open http://localhost:3000 after `make up` (with --profile monitoring).
   # ---------------------------------------------------------------------------
   grafana:
-    profiles: [monitoring]
+    profiles: [monitoring, monitoring-base]
     image: ${AIC_GRAFANA_IMAGE:-grafana/grafana:13.2.1}
     container_name: aic-grafana
     networks: [aic-network]
@@ -709,11 +709,11 @@ services:
   # GPU processes without needing host PID. Requires tracefs on the host.
   # ---------------------------------------------------------------------------
   hsa-snoop:
-    profiles: [monitoring]
+    profiles: [monitoring, exporters, exporters-safe]
     image: ${IMAGE_REF:-${IMAGE_NAME:-rocm-aic}:latest}
     container_name: aic-hsa-snoop
     networks: [aic-network]
-    pid: "service:lmcache"
+    pid: "${AIC_HSA_SNOOP_PID_MODE:-service:lmcache}"
     privileged: true
     restart: unless-stopped
     environment:
@@ -727,9 +727,6 @@ services:
       - /sys/kernel/tracing:/sys/kernel/tracing
     entrypoint: ["/usr/local/bin/hsa-snoop"]
     command: ["--all", "--prometheus", "--prometheus-port", "${HSA_SNOOP_PORT:-9488}", "--mem-snoop"]
-    depends_on:
-      lmcache:
-        condition: service_healthy
 
   # ---------------------------------------------------------------------------
   # lmcache-emulator: the SAME lmcache server, on a node with no GPU

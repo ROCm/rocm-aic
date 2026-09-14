@@ -1131,7 +1131,7 @@ tmp="${nvme_tar}.partial.\$\$"
 set +o pipefail
 docker buildx build --builder ${AIC_BUILDX_BUILDER} --output type=docker,dest=- \
     --build-arg NVME_EXPORTER_VERSION="${AIC_NVME_EXPORTER_VERSION}" \
-    -t "${AIC_NVME_EXPORTER_IMAGE}" "${AIC_DAY_DIR}/monitoring/nvme-exporter" | ${COMPRESS_CMD} > "\${tmp}"
+    -t "${AIC_NVME_EXPORTER_IMAGE}" "${AIC_DAY_DIR}/docker/nvme-exporter" | ${COMPRESS_CMD} > "\${tmp}"
 _rc=("\${PIPESTATUS[@]}")
 set -o pipefail
 if [ "\${_rc[1]}" -ne 0 ]; then
@@ -1145,7 +1145,7 @@ tmp="${rdma_tar}.partial.\$\$"
 set +o pipefail
 docker buildx build --builder ${AIC_BUILDX_BUILDER} --output type=docker,dest=- \
     --build-arg RDMA_EXPORTER_VERSION="${AIC_RDMA_EXPORTER_VERSION}" \
-    -t "${AIC_RDMA_EXPORTER_IMAGE}" "${AIC_DAY_DIR}/monitoring/rdma-exporter" | ${COMPRESS_CMD} > "\${tmp}"
+    -t "${AIC_RDMA_EXPORTER_IMAGE}" "${AIC_DAY_DIR}/docker/rdma-exporter" | ${COMPRESS_CMD} > "\${tmp}"
 _rc=("\${PIPESTATUS[@]}")
 set -o pipefail
 if [ "\${_rc[1]}" -ne 0 ]; then
@@ -1498,7 +1498,7 @@ if [ '${_smoke_exporters}' = "1" ]; then
     MON_DIR='${AIC_DAY_DIR}/monitoring'
     # Compose-only monitoring needs MON_COMPOSE set (the docker-run fallback is
     # gone); without it start_monitoring skips the whole exporter/Prometheus stack.
-    MON_COMPOSE='${AIC_DAY_DIR}/monitoring/docker-compose.monitoring.yml'
+    MON_COMPOSE='${AIC_DAY_DIR}/docker/docker-compose.yml'
     AIC_METRICS_DIR="\${_logdir}/prometheus"
     AIC_EXPORTERS=1
     AIC_MONITORING=1
@@ -2055,7 +2055,7 @@ _clean_kv_shm
 # off: node/GPU/hsa-snoop have nothing to report on a CPU-only emulation node,
 # and hsa-snoop would need a GPU to start at all.
 export MON_DIR='${AIC_DAY_DIR}/monitoring'
-export MON_COMPOSE='${AIC_DAY_DIR}/monitoring/docker-compose.monitoring.yml'
+export MON_COMPOSE='${AIC_DAY_DIR}/docker/docker-compose.yml'
 export AIC_METRICS_DIR="\${_logdir}/prometheus"
 export AIC_MONITORING='${AIC_EMULATE_MP_MONITORING}'
 export AIC_EXPORTERS=0

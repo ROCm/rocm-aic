@@ -145,12 +145,12 @@ AIC_METRICS_DIR  ?= $(CURDIR)/logs/prometheus
 AIC_EXPORTERS    ?= 0
 AIC_GRAFANA_PORT ?= 3000
 AIC_GRAFANA_IMAGE ?= grafana/grafana:13.2.1
-MON_COMPOSE     := $(_COMPOSE_BIN) -f "$(CURDIR)/monitoring/docker-compose.monitoring.yml"
-_MON_PROFILE    := $(if $(filter 1,$(AIC_EXPORTERS)),--profile exporters,)
+MON_COMPOSE     := $(_COMPOSE_BIN) -f "$(CURDIR)/docker/docker-compose.yml"
+_MON_PROFILE    := --profile monitoring-base $(if $(filter 1,$(AIC_EXPORTERS)),--profile exporters,)
 export AIC_METRICS_DIR AIC_GRAFANA_PORT AIC_GRAFANA_IMAGE
 
 # ---- Fabric exporters (nvme_exporter / rdma_exporter) ----------------------
-# No published upstream images; we build them from monitoring/*/Dockerfile so the
+# No published upstream images; we build them from docker/*/Dockerfile so the
 # `exporters-fabric` compose profile and the .slurm docker-run fallback (nodes
 # without the compose plugin) can containerize them.  Versions match the batesste
 # host services for Grafana parity; override to bump.
@@ -722,12 +722,12 @@ plot: _prep_dirs
 
 monitoring-up: ensure-compose
 	@mkdir -p "$(AIC_METRICS_DIR)"
-	PROM_UID="$$(id -u)" PROM_GID="$$(id -g)" \
+	PROM_UID="$$(id -u)" PROM_GID="$$(id -g)" AIC_HSA_SNOOP_PID_MODE="$${AIC_HSA_SNOOP_PID_MODE:-host}" \
 		$(MON_COMPOSE) $(_MON_PROFILE) up -d
 	@echo "Prometheus up on :9090  (TSDB -> $(AIC_METRICS_DIR))"
 
 monitoring-down:
-	$(MON_COMPOSE) $(_MON_PROFILE) down
+	AIC_HSA_SNOOP_PID_MODE="$${AIC_HSA_SNOOP_PID_MODE:-host}" $(MON_COMPOSE) $(_MON_PROFILE) down
 
 monitoring-logs:
 	$(MON_COMPOSE) logs -f prometheus
@@ -737,10 +737,10 @@ monitoring-logs:
 monitoring-build-exporters:
 	DOCKER_BUILDKIT=1 docker build \
 		--build-arg NVME_EXPORTER_VERSION=$(NVME_EXPORTER_VERSION) \
-		-t "$(NVME_EXPORTER_IMAGE)" "$(CURDIR)/monitoring/nvme-exporter"
+		-t "$(NVME_EXPORTER_IMAGE)" "$(CURDIR)/docker/nvme-exporter"
 	DOCKER_BUILDKIT=1 docker build \
 		--build-arg RDMA_EXPORTER_VERSION=$(RDMA_EXPORTER_VERSION) \
-		-t "$(RDMA_EXPORTER_IMAGE)" "$(CURDIR)/monitoring/rdma-exporter"
+		-t "$(RDMA_EXPORTER_IMAGE)" "$(CURDIR)/docker/rdma-exporter"
 	@echo "Built $(NVME_EXPORTER_IMAGE) and $(RDMA_EXPORTER_IMAGE)."
 	@echo "Run them via:  AIC_EXPORTERS=1 with --profile exporters-fabric, or set"
 	@echo "AIC_NVME_EXPORTER_IMAGE / AIC_RDMA_EXPORTER_IMAGE for the .slurm docker-run path."
