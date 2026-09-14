@@ -3,6 +3,7 @@
 [![MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://github.com/ROCm/rocm-aic/blob/main/LICENSE.md)
 [![Platform](https://img.shields.io/badge/platform-linux-lightgrey.svg)](README.md)
 [![ROCm](https://img.shields.io/badge/ROCm-7.14.1-green.svg)](https://rocm.docs.amd.com)
+[![Latest Release](https://img.shields.io/github/v/release/ROCm/rocm-aic?display_name=tag)](https://github.com/ROCm/rocm-aic/releases/latest)
 [![vLLM](https://img.shields.io/badge/vLLM-v0.28.0-blue.svg)](https://github.com/vllm-project/vllm)
 [![LMCache](https://img.shields.io/badge/LMCache-v0.5.4-blue.svg)](https://github.com/LMCache/LMCache)
 [![NIXL](https://img.shields.io/badge/NIXL-v1.4.1-blue.svg)](https://github.com/ai-dynamo/nixl)
@@ -58,6 +59,9 @@ compatibility notes. Wheels are rebuilt nightly from `main` and published to the
 
 For versioned stable releases and the tagging workflow, see
 [docs/RELEASE.md](docs/RELEASE.md).
+
+The current stable build is always available from the
+[latest GitHub Release](https://github.com/ROCm/rocm-aic/releases/latest).
 
 ## Prerequisites
 
