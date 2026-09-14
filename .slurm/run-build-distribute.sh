@@ -134,6 +134,18 @@
 #   AIC_CACHE_REF        registry ref for a shared BuildKit cache instead of a dir;
 #                        takes precedence over AIC_CACHE_DIR.  Uses --cache-to/
 #                        --cache-from type=registry.  Requires `docker login` first.
+#   AIC_CACHE_PRUNE      after a successful build, drop the blobs in the
+#                        AIC_CACHE_DIR layout that the new index.json no longer
+#                        references (default: 1; 0 disables).  The type=local
+#                        exporter never removes them itself, so the cache
+#                        otherwise grows by ~one image per build -- 233 GB on
+#                        SPUR of which 188 GB was unreachable.  Reachable blobs
+#                        are kept regardless of age, so this costs no cache hits.
+#   AIC_CACHE_PRUNE_GRACE_MIN
+#                        spare unreachable blobs younger than this many minutes
+#                        (default: 1440).  A concurrent build writes blobs before
+#                        it rewrites index.json, so this must stay comfortably
+#                        above AIC_BUILD_TIME.
 #                        (e.g. <your-registry>/<project>/rocm-aic:buildcache)
 #                        (default: unset)
 #   AIC_CACHE_MODE       cache mode: min | max              (default: max)
@@ -361,6 +373,13 @@ AIC_PUSH_REF="${AIC_PUSH_REF:-}"
 AIC_CACHE_DIR="${AIC_CACHE_DIR:-}"
 AIC_CACHE_REF="${AIC_CACHE_REF:-}"
 AIC_CACHE_MODE="${AIC_CACHE_MODE:-max}"
+# The type=local cache exporter never deletes the blobs of the manifest it
+# supersedes, so AIC_CACHE_DIR grows by roughly one image per build forever.
+# Collect the unreachable ones after each successful build; see
+# .slurm/prune-local-buildcache.sh for why the grace window has to outlast
+# AIC_BUILD_TIME.
+AIC_CACHE_PRUNE="${AIC_CACHE_PRUNE:-1}"
+AIC_CACHE_PRUNE_GRACE_MIN="${AIC_CACHE_PRUNE_GRACE_MIN:-1440}"
 AIC_BUILDX_BUILDER="${AIC_BUILDX_BUILDER:-aic-cache}"
 AIC_CACHE_INSECURE="${AIC_CACHE_INSECURE:-}"
 AIC_TEST_TIME="${AIC_TEST_TIME:-00:45:00}"
@@ -464,6 +483,15 @@ _pick_compress() {
 # and the per-arch cache dir (e.g. "gfx90a;gfx942" -> "gfx90a-gfx942").
 _arch_tag() {
     printf '%s' "${AIC_ROCM_ARCH}" | tr ';,: ' '----' | tr -s '-' | sed 's/^-//;s/-$//'
+}
+
+# --- Per-arch local BuildKit cache dir (empty when the file backend is off) ---
+# The registry backend takes precedence over AIC_CACHE_DIR, so it suppresses
+# this just as it suppresses the --cache-to type=local flags.
+_local_cache_dir() {
+    [[ -n "${AIC_CACHE_DIR}" && -z "${AIC_CACHE_REF}" ]] || return 0
+    printf '%s/%s%s' "${AIC_CACHE_DIR%/}" "$(_arch_tag)" \
+        "${AIC_BUILD_TARGET:+-${AIC_BUILD_TARGET}}"
 }
 
 # --- Tarball path (name:tag + arch, sanitized for a filename) ----------------
@@ -929,7 +957,7 @@ cmd_build() {
             # no post-torch layers with a full build, and keeping their caches
             # apart stops one from evicting/locking the other's entries.
             local _cdir
-            _cdir="${AIC_CACHE_DIR%/}/$(_arch_tag)${AIC_BUILD_TARGET:+-${AIC_BUILD_TARGET}}"
+            _cdir="$(_local_cache_dir)"
             log "build cache: local dir ${_cdir} (mode ${AIC_CACHE_MODE}, builder ${AIC_BUILDX_BUILDER})"
             _cache_args="--cache-from type=local,src=${_cdir} --cache-to type=local,dest=${_cdir},mode=${AIC_CACHE_MODE},ignore-error=true"
             _mkdir="mkdir -p '${_cdir}'; "
@@ -1066,6 +1094,25 @@ REMOTE
     fi
     _verify_tarball "${tarball}" "image" "${tarball_before}"
     log "build complete: ${tarball}"
+    _prune_local_cache
+}
+
+# --- Collect superseded blobs from the file-based BuildKit cache -------------
+# Runs after a successful build, on the submitting host: the cache lives on
+# shared NFS, so the head node can reach it without going through the compute
+# node.  Only blobs unreachable from the freshly written index.json are removed,
+# so this can never cost a cache hit.  Best-effort -- a build that produced a
+# good tarball must not be reported as failed because the collector could not
+# reclaim space.
+_prune_local_cache() {
+    [[ "${AIC_CACHE_PRUNE}" == "1" ]] || return 0
+    local _cdir; _cdir="$(_local_cache_dir)"
+    [[ -n "${_cdir}" && -d "${_cdir}" ]] || return 0
+    local _pruner="${SCRIPT_DIR}/prune-local-buildcache.sh"
+    [[ -x "${_pruner}" ]] || { log "WARNING: ${_pruner} missing; skipping cache prune"; return 0; }
+    log "pruning superseded blobs in ${_cdir} (grace ${AIC_CACHE_PRUNE_GRACE_MIN}m)"
+    "${_pruner}" --grace-minutes "${AIC_CACHE_PRUNE_GRACE_MIN}" "${_cdir}" ||
+        log "WARNING: build cache prune failed (exit $?); cache left as-is"
 }
 
 # --- build-emulate: CPU-only emulation image (no GPU kernels compiled) --------
