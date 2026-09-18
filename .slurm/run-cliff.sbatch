@@ -691,6 +691,25 @@ export AIC_HSA_SNOOP_PID_MODE
 VLLM_EXTRA_ARGS="${VLLM_EXTRA_ARGS:-}"
 [[ -n "${VLM_ROPE_SCALING}" ]] &&
   VLLM_EXTRA_ARGS="${VLLM_EXTRA_ARGS} --hf-overrides '{\"rope_scaling\": ${VLM_ROPE_SCALING}}'"
+# gpt-oss-120b's MXFP4 MoE kernels abort EngineCore during CUDA-graph capture on
+# gfx950, on an LLVM assertion inside the Triton that ships in the ROCm 7.14.1
+# base image (ROCm/triton#965 fixes a shared-memory bug in that same CDNA4
+# F16xMXFP4 MoE path).  Eager mode skips graph capture and the model serves:
+# job 154508 failed all three arms on engine init, job 154548 passed all three
+# with this flag and nothing else changed.  It costs decode performance, so drop
+# it as soon as a Triton carrying the fix lands.  AIC_CLIFF_ENFORCE_EAGER=0 opts
+# out; =1 forces it on for any model.
+_cliff_wants_eager() {
+  case "${AIC_CLIFF_ENFORCE_EAGER:-auto}" in
+  1) return 0 ;;
+  auto) [[ "${VLLM_MODEL}" == *gpt-oss* && "$(detect_gpu_arch)" == "gfx950" ]] ;;
+  *) return 1 ;;
+  esac
+}
+if [[ "${VLLM_EXTRA_ARGS}" != *--enforce-eager* ]] && _cliff_wants_eager; then
+  VLLM_EXTRA_ARGS="${VLLM_EXTRA_ARGS} --enforce-eager"
+  log "vLLM        : --enforce-eager (gpt-oss MXFP4 graph capture aborts on gfx950; AIC_CLIFF_ENFORCE_EAGER=0 to opt out)"
+fi
 export VLLM_EXTRA_ARGS
 export VLLM_LOGGING_LEVEL="${VLLM_LOGGING_LEVEL:-WARNING}"
 # The MP server's --l1-size-gb is the DRAM L1 (nvme arm) OR the hipFile slab size
