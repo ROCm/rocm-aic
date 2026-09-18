@@ -52,11 +52,12 @@ that the vLLM ROCm-platform import and engine startup remain healthy.
 3. **Upgrade vLLM further** — only after validating the current `v0.29.0`
    stack; newer vLLM versions may require additional patch rework.
 
-### SPUR cluster cliff submission quirks
+### SPUR cluster submission quirks
 
-- Pass `--gres=` (empty) to override the embedded `#SBATCH --gres=gpu:1` —
-  SPUR's scheduler has no GPU GRES configured, so the directive causes
-  immediate job cancellation.
+- The SPUR scheduler **requires** a GPU request (`--gpus=N`) for every job,
+  including CPU-only build jobs. `run-build-distribute.sh` sets `--gpus=1`
+  automatically when `AIC_SPUR_CLUSTER=1`. Override with `AIC_BUILD_GPUS=N`
+  if you need a different count.
 - Do NOT use `--no-requeue` — SPUR sbatch doesn't support it.
 - Submit with `--chdir=/shared_nfs/$USER` when `/home` is at quota.
 - Use `SLURM_SUBMIT_DIR=/path/to/repo` to tell the cliff script where the repo is.
