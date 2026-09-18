@@ -126,10 +126,23 @@ done
 # SIGPIPE, which under `set -o pipefail` exited the script with 141 before the
 # line below could print -- and (b) read an unrelated job's State when it did
 # survive.  Match the job ID in awk and consume sacct's full output.
-SACCT_ROW="$(sacct -j "${JOB_ID}" --format=JobID,State,ExitCode --noheader 2>/dev/null |
-    awk -v id="${JOB_ID}" '$1 == id && !found { print $2, $3; found = 1 }')"
-STATE="${SACCT_ROW%% *}"
-CODE="${SACCT_ROW##* }"
+# Accounting also settles late -- and sometimes never: sacct returned no row at
+# all for job 150703 minutes after it left the queue.  Give a terminal state a
+# bounded chance to appear rather than reading a transient blank as a failure.
+_TERMINAL='COMPLETED|FAILED|CANCELLED|TIMEOUT|NODE_FAIL|OUT_OF_MEMORY|PREEMPTED|DEADLINE|BOOT_FAIL'
+SACCT_ROW=""
+STATE=""
+CODE=""
+_tries=0
+while (( _tries < 15 )); do
+    SACCT_ROW="$(sacct -j "${JOB_ID}" --format=JobID,State,ExitCode --noheader 2>/dev/null |
+        awk -v id="${JOB_ID}" '$1 == id && !found { print $2, $3; found = 1 }')"
+    STATE="${SACCT_ROW%% *}"
+    CODE="${SACCT_ROW##* }"
+    [[ "${STATE}" =~ ^(${_TERMINAL})$ ]] && break
+    sleep 2
+    _tries=$((_tries + 1))
+done
 echo "=== Job ${JOB_ID} finished: state=${STATE:-<unknown>} sacct-exit=${CODE:-<unknown>} ==="
 
 JOB_RC=""
