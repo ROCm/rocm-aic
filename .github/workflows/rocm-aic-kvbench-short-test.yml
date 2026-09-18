@@ -16,7 +16,7 @@ on:
       - 'benchmarks/**'
       - 'docker/**'
       - 'tests/**'
-      - '.github/workflows/aic-kvbench-smoke.yml'
+      - '.github/workflows/rocm-aic-kvbench-short-test.yml'
   pull_request:
     branches: [main]
   workflow_dispatch:

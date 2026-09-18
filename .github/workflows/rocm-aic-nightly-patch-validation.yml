@@ -16,7 +16,7 @@ on:
       - 'docker/vllm/Dockerfile'
       - 'docker/lmcache/Dockerfile'
       - 'patches/**'
-      - '.github/workflows/aic-patches.yml'
+      - '.github/workflows/rocm-aic-nightly-patch-validation.yml'
   pull_request:
     branches: [main]
     paths:
@@ -24,7 +24,7 @@ on:
       - 'docker/vllm/Dockerfile'
       - 'docker/lmcache/Dockerfile'
       - 'patches/**'
-      - '.github/workflows/aic-patches.yml'
+      - '.github/workflows/rocm-aic-nightly-patch-validation.yml'
   workflow_dispatch:
 
 permissions:

@@ -14,12 +14,12 @@ on:
     branches: [main]
     paths:
       - '**'
-      - '.github/workflows/aic-export.yml'
+      - '.github/workflows/rocm-aic-export-tarball.yml'
   pull_request:
     branches: [main]
     paths:
       - '**'
-      - '.github/workflows/aic-export.yml'
+      - '.github/workflows/rocm-aic-export-tarball.yml'
   workflow_dispatch:
 
 permissions:

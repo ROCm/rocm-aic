@@ -18,7 +18,7 @@ on:
       - patches/**
       - .github/scripts/workflows/sync-readme-versions.py
       - .github/scripts/workflows/test_sync_readme_versions.py
-      - .github/workflows/aic-update-readme-shields.yml
+      - .github/workflows/rocm-aic-readme-version-check.yml
     types: [opened, synchronize, reopened]
   workflow_dispatch:
 

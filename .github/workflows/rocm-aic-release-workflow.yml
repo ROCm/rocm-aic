@@ -54,7 +54,7 @@ jobs:
       - uses: docker/setup-buildx-action@v3
 
       # AIC_VERSION is a required build-arg (the Dockerfile fails the build when
-      # it is empty) and feeds the OCI version labels.  Same step as aic-docker.yml.
+      # it is empty) and feeds the OCI version labels.  Same step as rocm-aic-docker-build.yml.
       - name: Read AIC version
         id: imgtag
         run: |
@@ -64,7 +64,7 @@ jobs:
           echo "aic_version=${aic_version}" >> "${GITHUB_OUTPUT}"
 
       # Corp CA cert (AMD Zscaler) as a BuildKit secret, only if set.
-      # Never written into any image layer.  Same pattern as aic-docker.yml.
+      # Never written into any image layer.  Same pattern as rocm-aic-docker-build.yml.
       - name: Write corp CA cert secret
         id: cert
         run: |
