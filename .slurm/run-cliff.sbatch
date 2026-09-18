@@ -114,14 +114,30 @@ fi
 # subsumes the later `trap stop_monitoring EXIT`: a second `trap ... EXIT` would
 # silently replace this one.  The exit code is written before teardown so a
 # hung stop_monitoring cannot lose it.
+#
+# Only the explicit `exit` at the end of this script may record success.  A job
+# killed by Slurm -- scancel, time limit, node failure -- runs this trap with
+# $? == 0: job 154408 was cancelled while wedged in `docker images`, wrote
+# cliff.exit 0 having benchmarked nothing, and the CI gate called it a pass.
+_CLIFF_COMPLETED=0
 _on_exit() {
   local rc=$?
+  if (( rc == 0 )) && (( _CLIFF_COMPLETED == 0 )); then
+    rc=143
+    echo "[cliff-job] ERROR: job ended before the benchmark completed" \
+      "(killed or interrupted); recording exit ${rc}"
+  fi
   [[ -d "${LOGDIR}" ]] && { echo "${rc}" >"${LOGDIR}/cliff.exit" 2>/dev/null || true; }
   # stop_monitoring is only defined once monitoring-lib.sh has been sourced.
   declare -F stop_monitoring >/dev/null && { stop_monitoring || true; }
   return "${rc}"
 }
 trap _on_exit EXIT
+# Give Slurm's SIGTERM (and a manual interrupt) a defined exit status instead of
+# whatever $? happened to hold when the signal arrived.
+trap 'exit 143' TERM
+trap 'exit 130' INT
+trap 'exit 129' HUP
 
 _aic_tag="$(bash "${REPO}/docker/scripts/aic-image-tag.sh" 2>/dev/null || true)"
 AIC_IMAGE="${AIC_IMAGE:-${AIC_IMAGE_NAME:-rocm-aic}:${_aic_tag:-latest}}"
@@ -1035,4 +1051,5 @@ log "==================================================="
 # Fail the job if any arm that actually ran failed; skipped arms don't count.
 rc=0
 for k in vram_only kvd_nvme kvd_gds; do [[ "${STATUS[$k]:-skip}" == FAIL ]] && rc=1; done
+_CLIFF_COMPLETED=1
 exit "${rc}"
