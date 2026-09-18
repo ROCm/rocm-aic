@@ -30,7 +30,8 @@
 #   AIC_EXPORTERS     -- 1 to also launch the exporter fleet (0 = Prometheus only).
 #   AIC_MONITORING    -- 1 to enable start_monitoring/stop_monitoring at all.
 #   Optional: AIC_PROM_IMAGE/PORT/RETENTION, AIC_{NODE,AMDGPU,NVME,RDMA}_EXPORTER_IMAGE,
-#             AIC_{NVME,RDMA}_EXPORTER_ARGS, {NVME,RDMA}_EXPORTER_PORT, HSA_SNOOP_PORT.
+#             AIC_{NVME,RDMA}_EXPORTER_ARGS, {NVME,RDMA}_EXPORTER_PORT, HSA_SNOOP_PORT,
+#             AIC_HSA_SNOOP_PID_MODE.
 
 export PATH="/usr/local/bin:${PATH}"
 
@@ -41,6 +42,7 @@ export PATH="/usr/local/bin:${PATH}"
 : "${AIC_METRICS_DIR:=}"
 : "${MON_DIR:=}"
 : "${MON_COMPOSE:=}"
+: "${AIC_HSA_SNOOP_PID_MODE:=host}"
 # Provide a fallback logger only if the caller has not defined one (run-cliff.sbatch
 # and run-build-distribute.sh each define their own prefixed log()).
 declare -F log >/dev/null 2>&1 || log() { printf '[monitoring] %s\n' "$*" >&2; }
@@ -173,8 +175,8 @@ start_monitoring() {
         || log "monitoring: could not create aic-network (continuing)"
     local -a profile; mapfile -t profile < <(mon_profile)
     AIC_METRICS_DIR="${AIC_METRICS_DIR}" PROM_UID="$(id -u)" PROM_GID="$(id -g)" \
-        IMAGE_NAME="${AIC_IMAGE}" \
-        docker compose -f "${MON_COMPOSE}" "${profile[@]}" up -d \
+        IMAGE_NAME="${AIC_IMAGE}" AIC_HSA_SNOOP_PID_MODE="${AIC_HSA_SNOOP_PID_MODE}" \
+        docker compose -f "${MON_COMPOSE}" --profile monitoring-base "${profile[@]}" up -d \
         || log "monitoring: compose up failed (continuing without metrics)"
 }
 
@@ -183,8 +185,8 @@ stop_monitoring() {
     log "stopping metrics capture (TSDB retained at ${AIC_METRICS_DIR})"
     if have_compose && [[ -f "${MON_COMPOSE}" ]]; then
         local -a profile; mapfile -t profile < <(mon_profile)
-        AIC_METRICS_DIR="${AIC_METRICS_DIR}" IMAGE_NAME="${AIC_IMAGE}" \
-            docker compose -f "${MON_COMPOSE}" "${profile[@]}" down >/dev/null 2>&1 || true
+        AIC_METRICS_DIR="${AIC_METRICS_DIR}" IMAGE_NAME="${AIC_IMAGE}" AIC_HSA_SNOOP_PID_MODE="${AIC_HSA_SNOOP_PID_MODE}" \
+            docker compose -f "${MON_COMPOSE}" --profile monitoring-base "${profile[@]}" down >/dev/null 2>&1 || true
     fi
     docker rm -f "${MON_CONTAINERS[@]}" >/dev/null 2>&1 || true
 }

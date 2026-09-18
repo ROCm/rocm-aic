@@ -7,12 +7,11 @@
 # Prometheus runs on the `aic` Docker bridge network (see docker-compose.yml),
 # so inference stack targets are reached by container name. This works for:
 #   - `make up-monitoring`: all services on the aic network, names resolve via DNS
-#   - `make monitoring-up` (legacy cliff sbatch path): prometheus runs on host
-#     network; container-name targets won't resolve but localhost fallbacks below
-#     handle that case via the monitoring/docker-compose.monitoring.yml config.
+#   - `make monitoring-up` (legacy cliff sbatch path): prometheus runs in the
+#     main compose file's monitoring-base profile on the same aic network.
 #
 # nvme_exporter and rdma_exporter remain host-side services (or launched via
-# the monitoring compose exporters-fabric profile); prometheus reaches them via
+# the main compose exporters-fabric profile); prometheus reaches them via
 # host-gateway which resolves to the Docker host IP from within the aic network.
 #
 # Job names and ports mirror the batesste Ansible monitoring roles so the

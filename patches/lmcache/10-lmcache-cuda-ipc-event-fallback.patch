@@ -1,80 +1,21 @@
-From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
-From: Stephen Bates <stephen.bates@amd.com>
-Date: 2026-07-29
-Subject: [PATCH 10] fix: survive HIP IPC event from_ipc_handle failure in DeviceMessagingFuture
-
-On ROCm 7.14 with gfx950 (MI355X), torch.cuda.Event.from_ipc_handle()
-raises hipErrorInvalidValue for cross-process CUDA/HIP event handles
-within seconds of handle export.  DeviceMessagingFuture crashes the vLLM
-EngineCore on every store future completion:
-
-  torch.AcceleratorError: CUDA error: invalid argument (hipErrorInvalidValue)
-  AssertionError: assert self.event_ is not None
-
-v0.5.3 introduced EventIPCBackend abstraction; the from_ipc_handle call
-is now routed through _event_backend.import_event() in
-_on_raw_future_complete().  Three fixes in DeviceMessagingFuture:
-
-1. _on_raw_future_complete(): catch Exception from import_event and
-   leave self.event_ = None (fallback mode) instead of propagating.
-
-2. wait(): replace `assert self.event_ is not None` with a None check;
-   when event_ is None, return True. The raw response is sent only after
-   LMCache reaches a terminal state and records its response event: either a
-   transfer was enqueued or patch 11 failed it closed. `wait()`/`query()`
-   therefore report completion only; callers that need operation success must
-   inspect `result()`, which carries the response boolean.
-
-3. query(): same reasoning — raw_future done is sufficient when event_ is None.
-
-Note: patch 11 makes server-side producer-event import failures fail closed.
-That path records and returns a response event with `False`, so the raw-future
-fallback here is safe for completion ordering but does not imply a successful
-store. The event import failure handled here is on the vLLM consumer side,
-which is a separate HIP IPC handle created after LMCache reached its terminal
-state.
-
-Observed: SPUR MI355X gfx950, ROCm 7.14, LMCache v0.5.2, cliff jobs
-11872 through 12056.
-
-Applies after patches 01-09.
----
+# Re-ported for LMCache v0.5.5 (05a013b). v0.5.5 restructured DeviceMessagingFuture;
+# the fix is now only wrapping import_event since wait/query already handle event_=None.
+#
+diff --git a/lmcache/v1/multiprocess/futures.py b/lmcache/v1/multiprocess/futures.py
+index bb77f4b..9dd2564 100644
 --- a/lmcache/v1/multiprocess/futures.py
 +++ b/lmcache/v1/multiprocess/futures.py
-@@ -131,7 +131,12 @@ class DeviceMessagingFuture(MessagingFuture[T]):
+@@ -188,7 +188,12 @@ class DeviceMessagingFuture(MessagingFuture[T]):
          event_bytes, result = self.raw_future_.result()
+         event = None
+         if event_bytes:
+-            event = self._event_backend.import_event(event_bytes, self.device_)
++            try:
++                event = self._event_backend.import_event(event_bytes, self.device_)
++            except Exception:
++                # HIP IPC events unreliable on some ROCm platforms (e.g. gfx950/ROCm 7.14).
++                # Leave event = None; wait()/query() fall back to raw-future polling.
++                event = None
+ 
          self.result_ = result
-
--        self.event_ = self._event_backend.import_event(event_bytes, self.device_)
-+        try:
-+            self.event_ = self._event_backend.import_event(event_bytes, self.device_)
-+        except Exception:
-+            # HIP IPC events unreliable on some ROCm platforms (e.g. gfx950/ROCm 7.14).
-+            # Leave event_ = None; wait()/query() fall back to raw-future polling.
-+            self.event_ = None
-
-     def wait(self, timeout: Optional[float] = None) -> bool:
-         """
-@@ -159,7 +164,11 @@ class DeviceMessagingFuture(MessagingFuture[T]):
-
-         self._on_raw_future_complete()
-
--        assert self.event_ is not None
-+        if self.event_ is None:
-+            # import_event failed on this (vLLM consumer) side. The raw response
-+            # arrives only after LMCache reached a terminal state and recorded
-+            # an event; inspect result() for the operation-success boolean.
-+            return True
-         self._event_backend.synchronize_event(self.event_, self.device_)
-
-         return True
-@@ -201,7 +210,8 @@ class DeviceMessagingFuture(MessagingFuture[T]):
-
-         if self.raw_future_.query():
-             self._on_raw_future_complete()
--            assert self.event_ is not None
-+            if self.event_ is None:
-+                return True  # Completion only; result() carries operation success.
-             return self._event_backend.query_event(self.event_)
-
-         return False
+         self.event_ = event

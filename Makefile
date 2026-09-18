@@ -144,20 +144,20 @@ export KV_TRANSFER_ARG
 AIC_METRICS_DIR  ?= $(CURDIR)/logs/prometheus
 AIC_EXPORTERS    ?= 0
 AIC_GRAFANA_PORT ?= 3000
-AIC_GRAFANA_IMAGE ?= grafana/grafana:13.2.1
-MON_COMPOSE     := $(_COMPOSE_BIN) -f "$(CURDIR)/monitoring/docker-compose.monitoring.yml"
-_MON_PROFILE    := $(if $(filter 1,$(AIC_EXPORTERS)),--profile exporters,)
+AIC_GRAFANA_IMAGE ?= grafana/grafana:13.2.2
+MON_COMPOSE     := $(_COMPOSE_BIN) -f "$(CURDIR)/docker/docker-compose.yml"
+_MON_PROFILE    := --profile monitoring-base $(if $(filter 1,$(AIC_EXPORTERS)),--profile exporters,)
 export AIC_METRICS_DIR AIC_GRAFANA_PORT AIC_GRAFANA_IMAGE
 
 # ---- Fabric exporters (nvme_exporter / rdma_exporter) ----------------------
-# No published upstream images; we build them from monitoring/*/Dockerfile so the
+# No published upstream images; we build them from docker/*/Dockerfile so the
 # `exporters-fabric` compose profile and the .slurm docker-run fallback (nodes
 # without the compose plugin) can containerize them.  Versions match the batesste
 # host services for Grafana parity; override to bump.
 NVME_EXPORTER_IMAGE   ?= aic-nvme-exporter:local
 RDMA_EXPORTER_IMAGE   ?= aic-rdma-exporter:local
 NVME_EXPORTER_VERSION ?= 3.0.0
-RDMA_EXPORTER_VERSION ?= 0.3.0
+RDMA_EXPORTER_VERSION ?= 0.7.3
 
 PYTHON := $(if $(wildcard $(REPO_ROOT)/.venv/bin/python3),$(REPO_ROOT)/.venv/bin/python3,python3)
 
@@ -182,6 +182,17 @@ AIC_CI_LIB_DIR    ?= /usr/local/lib/aic-ci
 AIC_CI_SCRIPT_DIR := $(CURDIR)/.github/scripts/runners
 
 AIC_FAST_ARCH ?= gfx950
+
+# ---- accuracy-test ---------------------------------------------------------
+# Knobs for the KV-integrity gate; see tests/accuracy/README.md.  Exported so
+# they reach run-build-distribute.sh, which reads them from the environment.
+export AIC_ACCURACY_MODEL AIC_ACCURACY_DELTA
+export AIC_ACCURACY_TIME AIC_ACCURACY_CPUS AIC_ACCURACY_MEM
+export AIC_ACCURACY_READY_TIMEOUT
+# AIC_ACCURACY_LIMIT: optional item cap passed to lm_eval (unset = full split).
+# The floor tolerance is widened by 3x binomial SE when this is set; the
+# differential (DELTA) is unchanged because both arms sample identical items.
+export AIC_ACCURACY_LIMIT
 
 # ---- SPUR cluster overrides ------------------------------------------------
 # When AIC_SPUR_CLUSTER=1, default storage paths to AIC_SHARED_NFS (the NFS
@@ -300,10 +311,11 @@ EXPORT_TARBALL ?= $(CURDIR)/$(EXPORT_PREFIX)-$(_GEN_DATE)-$(_GIT_SHORT_REV)$(_GI
 
 .PHONY: help ensure-compose build up up-batch up-dev up-monitoring down-monitoring up-gds-l1 up-gds-l1-batch down logs logs-lmcache logs-vllm \
         ps shell-lmcache shell-vllm restart-vllm restart-lmcache cliff plot venv vllm-reset-test stress-grafana \
-        monitoring-up monitoring-down monitoring-logs monitoring-build-exporters \
+        monitoring-up monitoring-down monitoring-logs monitoring-build-exporters prometheus-dump \
         dist-build dist-build-fast dist-build-emulate dist-build-exporters dist-build-monitoring dist-push \
         smoke-test smoke-test-fast tiny-test tiny-test-fast \
         emulate-test emulate-mp-test emulate-validate test-emulate-local stress-emulate-local capture-profile-local profile-capture \
+        accuracy-test accuracy-test-fast accuracy-test-very-fast \
         install-ci-scripts kvbench-build kvbench-up kvbench-logs kvbench-down cliff-kvbench-local cliff-kvbench-submit cliff-submit cliff-short \
         cliff-kvd cliff-spur-l2 cliff-spur-l2-debug cliff-long-64k cliff-long-128k \
         export _check_hf_token _prep_dirs _prep_kvbench_dirs _check_gds_slab
@@ -371,6 +383,11 @@ help:
 	@echo "  make emulate-mp-test   Emulation + the full LMCache MP recipe on a CPU-only node"
 	@echo "  make profile-capture   Capture an AMD profile pack from a REAL GPU serve (gfx942/gfx950)"
 	@echo "  make emulate-validate  Replay a captured pack on CPU and diff vs the real-hardware run"
+	@echo "  make accuracy-test     KV-integrity gate: differential lm_eval, two arms"
+	@echo "  make accuracy-test-fast"
+	@echo "                         The same gate, AIC_ROCM_ARCH pinned to AIC_FAST_ARCH"
+	@echo "  make accuracy-test-very-fast"
+	@echo "                         100-item cap per arm (~25 min); floor widened by 3x SE"
 	@echo "  make install-ci-scripts  Deploy .github/scripts/runners/*.sh to $(AIC_CI_LIB_DIR) (sudo if needed)"
 	@echo "  make cliff-kvbench-submit  sbatch a CPU-only KVBench cliff run (compose kvbench + client)"
 	@echo "  make cliff-submit      sbatch the full 3-arm cliff sweep -> logs/<job-id>/"
@@ -398,6 +415,9 @@ help:
 	@echo "  make monitoring-down   Stop the metrics sidecar (TSDB retained)"
 	@echo "  make monitoring-logs   Follow Prometheus logs"
 	@echo "  make monitoring-build-exporters  Build nvme_exporter + rdma_exporter images"
+	@echo "  make prometheus-dump   Submit SPUR job: full GPU stack → scrape all /metrics →"
+	@echo "                         Markdown reference doc on shared NFS (requires built image)"
+	@echo "    PROM_DUMP_OUT=$(if $(PROM_DUMP_OUT),$(PROM_DUMP_OUT),<AIC_IMAGE_DIR>/../prometheus-dump.md)"
 	@echo "    AIC_METRICS_DIR=$(AIC_METRICS_DIR)"
 	@echo "    AIC_EXPORTERS=$(AIC_EXPORTERS)  (1 = also launch node + AMD GPU exporters)"
 	@echo "    AIC_GRAFANA_PORT=$(AIC_GRAFANA_PORT)   Grafana host port (default: 3000)"
@@ -508,7 +528,7 @@ build-cached: monitoring-build-exporters  ## Like `build` but uses buildx with a
 		$(if $(TLS_CERT),--secret id=tls_cert$(comma)src=$(TLS_CERT),) \
 		--cache-from type=local,src="$(AIC_LOCAL_CACHE_DIR)" \
 		--cache-to   type=local,dest="$(AIC_LOCAL_CACHE_DIR)",mode=max \
-		-f "$(REPO_ROOT)/docker/Dockerfile" \
+		-f "$(REPO_ROOT)/docker/lmcache/Dockerfile" \
 		-t "$(IMAGE_REF)" \
 		-t "$(IMAGE_NAME):latest" \
 		"$(REPO_ROOT)"
@@ -722,12 +742,12 @@ plot: _prep_dirs
 
 monitoring-up: ensure-compose
 	@mkdir -p "$(AIC_METRICS_DIR)"
-	PROM_UID="$$(id -u)" PROM_GID="$$(id -g)" \
+	PROM_UID="$$(id -u)" PROM_GID="$$(id -g)" AIC_HSA_SNOOP_PID_MODE="$${AIC_HSA_SNOOP_PID_MODE:-host}" \
 		$(MON_COMPOSE) $(_MON_PROFILE) up -d
 	@echo "Prometheus up on :9090  (TSDB -> $(AIC_METRICS_DIR))"
 
 monitoring-down:
-	$(MON_COMPOSE) $(_MON_PROFILE) down
+	AIC_HSA_SNOOP_PID_MODE="$${AIC_HSA_SNOOP_PID_MODE:-host}" $(MON_COMPOSE) $(_MON_PROFILE) down
 
 monitoring-logs:
 	$(MON_COMPOSE) logs -f prometheus
@@ -737,13 +757,33 @@ monitoring-logs:
 monitoring-build-exporters:
 	DOCKER_BUILDKIT=1 docker build \
 		--build-arg NVME_EXPORTER_VERSION=$(NVME_EXPORTER_VERSION) \
-		-t "$(NVME_EXPORTER_IMAGE)" "$(CURDIR)/monitoring/nvme-exporter"
+		-t "$(NVME_EXPORTER_IMAGE)" "$(CURDIR)/docker/nvme-exporter"
 	DOCKER_BUILDKIT=1 docker build \
 		--build-arg RDMA_EXPORTER_VERSION=$(RDMA_EXPORTER_VERSION) \
-		-t "$(RDMA_EXPORTER_IMAGE)" "$(CURDIR)/monitoring/rdma-exporter"
+		-t "$(RDMA_EXPORTER_IMAGE)" "$(CURDIR)/docker/rdma-exporter"
 	@echo "Built $(NVME_EXPORTER_IMAGE) and $(RDMA_EXPORTER_IMAGE)."
 	@echo "Run them via:  AIC_EXPORTERS=1 with --profile exporters-fabric, or set"
 	@echo "AIC_NVME_EXPORTER_IMAGE / AIC_RDMA_EXPORTER_IMAGE for the .slurm docker-run path."
+
+# Scrape all live /metrics endpoints from a real GPU stack and generate a
+# Markdown reference doc.  Submits a SPUR job that loads the built image,
+# brings up the full compose MP stack (vLLM + LMCache + coordinator), waits
+# for everything to be healthy, scrapes every known /metrics port, then runs
+# monitoring/scripts/metrics_to_md.py to produce the document on shared NFS.
+#
+# Requires a built image tarball (run `make dist-build` first).
+# Optional overrides:
+#   PROM_DUMP_OUT   — output path (default: <AIC_IMAGE_DIR>/../prometheus-dump.md)
+#   PROM_DUMP_WAIT  — seconds to wait after stack is healthy before scraping (default: 15)
+#
+# Example:
+#   make prometheus-dump AIC_SPUR_CLUSTER=1 AIC_SHARED_NFS=/shared_nfs/stebates
+#   make prometheus-dump PROM_DUMP_OUT=/shared_nfs/stebates/prometheus-dump.md
+PROM_DUMP_OUT  ?=
+PROM_DUMP_WAIT ?= 15
+
+prometheus-dump:               # Scrape all /metrics from GPU stack on SPUR → Markdown doc
+	"$(DIST)" prometheus-dump
 
 
 # ---- Distribute / cliff (Slurm) --------------------------------------------
@@ -773,6 +813,26 @@ dist-build-emulate:            # Build the CPU-only emulation image on a Slurm b
 	@# GPU image is untouched.  Pair with `make emulate-test`.
 	"$(DIST)" build-emulate
 
+dist-build-base:               # Build aic-base image (PyTorch + torchvision) — prerequisite for vllm/lmcache
+	@# Builds docker/base/Dockerfile and tags as aic-base:$(IMAGE_TAG).
+	@# Run before dist-build-vllm or dist-build-lmcache.
+	"$(DIST)" build-base
+
+dist-build-vllm:               # Build aic-vllm image (requires aic-base to be built first)
+	@# Builds docker/vllm/Dockerfile with --build-context base=docker-image://aic-base:TAG.
+	@# Can run in parallel with dist-build-lmcache after dist-build-base completes.
+	"$(DIST)" build-vllm
+
+dist-build-lmcache:            # Build aic-lmcache image (requires aic-base to be built first)
+	@# Builds docker/lmcache/Dockerfile with --build-context base=docker-image://aic-base:TAG.
+	@# Can run in parallel with dist-build-vllm after dist-build-base completes.
+	"$(DIST)" build-lmcache
+
+dist-build-parallel:           # Build base, then vllm + lmcache in parallel
+	@# Builds aic-base first, then aic-vllm and aic-lmcache concurrently.
+	@$(MAKE) --no-print-directory dist-build-base
+	@$(MAKE) --no-print-directory -j2 dist-build-vllm dist-build-lmcache
+
 dist-build-exporters:          # Build ONLY the fabric exporters (no main-image rebuild)
 	@# Rebuild just the nvme/rdma exporter images -- e.g. after `make dist-build`
 	@# succeeded for the main image but the exporter step failed for lack of Docker
@@ -787,7 +847,7 @@ dist-build-monitoring:         # Pull + save monitoring sidecar images to AIC_IM
 	@set -e; \
 	for img in \
 	    "prom/prometheus:v3.14.0" \
-	    "rocm/device-metrics-exporter:v1.5.1" \
+	    "rocm/device-metrics-exporter:v1.5.2" \
 	; do \
 	    tag="$$(printf '%s' "$$img" | tr '/:' '--').tar.zst"; \
 	    dest="$(AIC_IMAGE_DIR)/$$tag"; \
@@ -1052,6 +1112,33 @@ emulate-mp-test:               # Emulation + the FULL LMCache MP recipe, still n
 	@#   AIC_ROCM_ARCH=gfx942 make dist-build emulate-mp-test
 	"$(DIST)" emulate-mp-test
 
+accuracy-test: _check_hf_token   # KV-integrity gate: differential lm_eval over two arms
+	@# Scores a VRAM-only arm and a tiered (LMCache+NIXL) arm in one job and
+	@# asserts tiering KV did not change the answers.  See tests/accuracy/README.md.
+	"$(DIST)" accuracy-test
+
+accuracy-test-fast:            # accuracy-test pinned to the single fast arch
+	@# Same gate as accuracy-test -- both arms, full split -- differing only in
+	@# the arch pin, exactly as tiny-test-fast differs from tiny-test.  There is
+	@# no cheaper accuracy variant: dropping the baseline arm skips the
+	@# differential, which is the whole point of the gate.
+	@# Must pin the SAME AIC_ROCM_ARCH as dist-build-fast.
+	@$(MAKE) --no-print-directory accuracy-test \
+	    AIC_ROCM_ARCH='$(AIC_FAST_ARCH)'
+
+accuracy-test-very-fast:       # Two-arm accuracy check with a small item cap (~25 min)
+	@# Same two-arm differential as accuracy-test-fast but capped at 100 gsm8k
+	@# items per arm.  Each arm takes ~4 min rather than ~35 min, cutting total
+	@# runtime to ~25 min including image load and container startup.  The floor
+	@# tolerance is widened by 3x binomial SE automatically (see test_accuracy.py
+	@# _floor_slack); the differential (DELTA) is unchanged.
+	@# Useful for a quick sanity check after a code change; not a substitute for
+	@# the nightly full-split run.
+	@$(MAKE) --no-print-directory accuracy-test \
+	    AIC_ROCM_ARCH='$(AIC_FAST_ARCH)' \
+	    AIC_ACCURACY_LIMIT=100 \
+	    AIC_ACCURACY_TIME=01:00:00
+
 install-ci-scripts:            # Deploy .github/scripts/runners/*.sh to the runner's AIC_CI_LIB_DIR
 	@set -e; \
 	src="$(AIC_CI_SCRIPT_DIR)"; dst="$(AIC_CI_LIB_DIR)"; \
@@ -1109,7 +1196,7 @@ endif
 endif
 ifeq ($(AIC_SPUR_CLUSTER),1)
 _CLIFF_SPUR_CTL  := SPUR_CONTROLLER_ADDR=$(AIC_SPUR_CONTROLLER)
-_CLIFF_SBATCH_ARGS := --partition=amd-spur --constraint= --gpus=$(AIC_CLIFF_GPUS) \
+_CLIFF_SBATCH_ARGS := --partition=amd-spur --constraint= --gres= --gpus=$(AIC_CLIFF_GPUS) \
     $(if $(AIC_CLIFF_NODE),--nodelist=$(AIC_CLIFF_NODE),)
 # SPUR sbatch does not support --parsable or --no-requeue; parse job id from "Submitted batch job N"
 _CLIFF_SUBMIT     = $(_CLIFF_SPUR_CTL) $(_CLIFF_STRIP) sbatch \

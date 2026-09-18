@@ -105,7 +105,7 @@ jobs:
         run: |
           set -euo pipefail
           renderer=.github/scripts/workflows/render-release-notes.sh
-          args=(docker/Dockerfile v-test deadbeef gfx942 rocm-aic ROCm/rocm-aic)
+          args=(docker/lmcache/Dockerfile v-test deadbeef gfx942 rocm-aic ROCm/rocm-aic)
           fixtures="$(mktemp -d)"
           trap 'rm -rf "${fixtures}"' EXIT
           markdown_tick='`'

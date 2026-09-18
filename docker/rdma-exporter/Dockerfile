@@ -17,11 +17,11 @@
 # Multi-arch: TARGETARCH is set automatically by `docker buildx` (amd64/arm64);
 # it maps directly onto the release asset suffix.
 #
-# Build (from monitoring/):
-#   docker build -t aic-rdma-exporter:local ./rdma-exporter
+# Build (from repository root):
+#   docker build -t aic-rdma-exporter:local ./docker/rdma-exporter
 #   # or pin a version:
 #   docker build --build-arg RDMA_EXPORTER_VERSION=0.4.2 \
-#       -t aic-rdma-exporter:0.4.2 ./rdma-exporter
+#       -t aic-rdma-exporter:0.4.2 ./docker/rdma-exporter
 #
 # Run (host networking; needs sysfs):
 #   docker run -d --name aic-rdma-exporter --network host \
@@ -29,8 +29,7 @@
 
 FROM debian:12-slim AS fetch
 
-# Matches the rdma_setup role's pinned default (0.3.0); latest upstream is 0.4.2.
-ARG RDMA_EXPORTER_VERSION=0.3.0
+ARG RDMA_EXPORTER_VERSION=0.7.3
 # Provided by buildx; default keeps a plain `docker build` working on x86_64.
 ARG TARGETARCH=amd64
 

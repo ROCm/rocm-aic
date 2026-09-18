@@ -22,13 +22,34 @@ SCRIPT_NAME = "sync-readme-versions.py"
 
 
 class ReadmeSyncTest(unittest.TestCase):
+    # Maps each ARG name to its owning Dockerfile (relative to docker/).
+    _ARG_DOCKERFILE_REL: dict[str, str] = {
+        "ROCM_VERSION": "base/Dockerfile",
+        "ROCM_BASE_IMAGE": "base/Dockerfile",
+        "PYTORCH_BRANCH": "base/Dockerfile",
+        "VLLM_REF": "vllm/Dockerfile",
+        "AITER_REF": "lmcache/Dockerfile",
+        "LMCACHE_REF": "lmcache/Dockerfile",
+        "NIXL_REF": "lmcache/Dockerfile",
+        "HSA_SNOOP_REF": "lmcache/Dockerfile",
+    }
+
     def setUp(self) -> None:
         self.temp_dir = tempfile.TemporaryDirectory()
         self.root = Path(self.temp_dir.name)
         (self.root / ".github" / "scripts" / "workflows").mkdir(parents=True)
-        (self.root / "docker").mkdir()
+        for subdir in ("base", "vllm", "lmcache"):
+            (self.root / "docker" / subdir).mkdir(parents=True)
         shutil.copy2(Path(__file__).with_name(SCRIPT_NAME), self.script)
-        shutil.copy2(REPO_ROOT / "docker" / "Dockerfile", self.dockerfile)
+        for subdir, src_name in (
+            ("base", "base/Dockerfile"),
+            ("vllm", "vllm/Dockerfile"),
+            ("lmcache", "lmcache/Dockerfile"),
+        ):
+            shutil.copy2(
+                REPO_ROOT / "docker" / src_name,
+                self.root / "docker" / subdir / "Dockerfile",
+            )
         shutil.copy2(REPO_ROOT / "README.md", self.readme)
         shutil.copytree(REPO_ROOT / "patches", self.root / "patches")
 
@@ -39,9 +60,15 @@ class ReadmeSyncTest(unittest.TestCase):
     def script(self) -> Path:
         return self.root / ".github" / "scripts" / "workflows" / SCRIPT_NAME
 
+    def _dockerfile_for_arg(self, name: str) -> Path:
+        rel = self._ARG_DOCKERFILE_REL.get(name, "lmcache/Dockerfile")
+        return self.root / "docker" / rel
+
     @property
     def dockerfile(self) -> Path:
-        return self.root / "docker" / "Dockerfile"
+        # Backward compat: tests that call self.dockerfile directly get lmcache/Dockerfile
+        # (which holds most ARGs).  Tests that need a specific Dockerfile use _dockerfile_for_arg.
+        return self.root / "docker" / "lmcache" / "Dockerfile"
 
     @property
     def readme(self) -> Path:
@@ -56,23 +83,28 @@ class ReadmeSyncTest(unittest.TestCase):
             text=True,
         )
 
-    def replace_dockerfile(self, old: str, new: str) -> None:
-        text = self.dockerfile.read_text(encoding="utf-8")
+    def replace_dockerfile(self, old: str, new: str, name: str = "") -> None:
+        df = self._dockerfile_for_arg(name) if name else self.dockerfile
+        text = df.read_text(encoding="utf-8")
         self.assertIn(old, text)
-        self.dockerfile.write_text(text.replace(old, new, 1), encoding="utf-8")
+        df.write_text(text.replace(old, new, 1), encoding="utf-8")
 
     def docker_arg(self, name: str) -> tuple[str, str]:
+        df = self._dockerfile_for_arg(name)
         pattern = re.compile(
             rf"^[ \t]*(?i:ARG)[ \t]+{re.escape(name)}=(.*)$",
             re.MULTILINE,
         )
-        matches = list(pattern.finditer(self.dockerfile.read_text(encoding="utf-8")))
+        matches = list(pattern.finditer(df.read_text(encoding="utf-8")))
         self.assertEqual(len(matches), 1, f"fixture must have exactly one ARG {name}=")
         return matches[0].group(0), matches[0].group(1).strip()
 
     def set_docker_arg(self, name: str, value: str, *, keyword: str = "ARG") -> None:
         line, _ = self.docker_arg(name)
-        self.replace_dockerfile(line, f"{keyword} {name}={value}")
+        df = self._dockerfile_for_arg(name)
+        text = df.read_text(encoding="utf-8")
+        self.assertIn(line, text)
+        df.write_text(text.replace(line, f"{keyword} {name}={value}", 1), encoding="utf-8")
 
     def replace_readme(self, old: str, new: str) -> None:
         text = self.readme.read_text(encoding="utf-8")
@@ -137,7 +169,9 @@ class ReadmeSyncTest(unittest.TestCase):
     def test_write_repairs_all_versions_and_is_idempotent(self) -> None:
         new_values = {
             "ROCM_VERSION": "98.76.54",
+            "PYTORCH_BRANCH": "release/98.76",
             "VLLM_REF": "v98.76.54-fixture",
+            "AITER_REF": "v98.76.58-fixture",
             "LMCACHE_REF": "v98.76.55-fixture",
             "NIXL_REF": "v98.76.56-fixture",
             "HSA_SNOOP_REF": "v98.76.57-fixture",
@@ -154,10 +188,20 @@ class ReadmeSyncTest(unittest.TestCase):
         rendered = self.readme.read_text(encoding="utf-8")
         self.assertIn(f"ROCm-{new_values['ROCM_VERSION']}-green.svg", rendered)
         self.assertIn(
+            f"[![PyTorch](https://img.shields.io/badge/PyTorch-release%2F98.76-ee4c2c.svg)]"
+            "(https://github.com/ROCm/pytorch/tree/release/98.76)",
+            rendered,
+        )
+        self.assertIn(
             f"`{new_values['VLLM_REF']}` + {len(self.patch_names('vllm'))} AMD patches",
             rendered,
         )
-        for name in ("LMCACHE_REF", "NIXL_REF", "HSA_SNOOP_REF"):
+        self.assertIn(
+            f"[![AITER](https://img.shields.io/badge/AITER-v98.76.58--fixture-blue.svg)]"
+            f"(https://github.com/ROCm/aiter/tree/{new_values['AITER_REF']})",
+            rendered,
+        )
+        for name in ("PYTORCH_BRANCH", "AITER_REF", "LMCACHE_REF", "NIXL_REF", "HSA_SNOOP_REF"):
             self.assertIn(f"`{new_values[name]}`", rendered)
         rocm_short = ".".join(new_values["ROCM_VERSION"].split(".")[:2])
         self.assertIn(f"ROCm {rocm_short} base image | GA in ROCm 7.14", rendered)
@@ -171,6 +215,7 @@ class ReadmeSyncTest(unittest.TestCase):
 
     def test_duplicate_missing_and_empty_args_fail_without_write(self) -> None:
         line, value = self.docker_arg("VLLM_REF")
+        vllm_df = self._dockerfile_for_arg("VLLM_REF")
         cases = (
             (
                 line,
@@ -182,10 +227,10 @@ class ReadmeSyncTest(unittest.TestCase):
         )
         for old, new, expected in cases:
             with self.subTest(expected=expected):
-                original = self.dockerfile.read_text(encoding="utf-8")
-                self.replace_dockerfile(old, new)
+                original = vllm_df.read_text(encoding="utf-8")
+                self.replace_dockerfile(old, new, name="VLLM_REF")
                 self.assert_write_fails_without_change(expected)
-                self.dockerfile.write_text(original, encoding="utf-8")
+                vllm_df.write_text(original, encoding="utf-8")
 
     def test_arg_keyword_is_case_insensitive(self) -> None:
         _, value = self.docker_arg("VLLM_REF")
@@ -195,7 +240,7 @@ class ReadmeSyncTest(unittest.TestCase):
 
     def test_arg_continuation_is_rejected_without_write(self) -> None:
         line, _ = self.docker_arg("VLLM_REF")
-        self.replace_dockerfile(line, "ARG VLLM_REF=fixture.\\\ncontinued")
+        self.replace_dockerfile(line, "ARG VLLM_REF=fixture.\\\ncontinued", name="VLLM_REF")
         self.assert_write_fails_without_change("must use a single-line default")
 
     def test_unresolved_base_image_variable_is_rejected(self) -> None:
@@ -212,19 +257,53 @@ class ReadmeSyncTest(unittest.TestCase):
         )
 
     def test_ref_badge_value_is_escaped(self) -> None:
-        _, current = self.docker_arg("VLLM_REF")
-        candidates = (
-            ("release/rocm-test_branch", "release%2Frocm--test__branch"),
-            ("release/rocm-test_branch-fixture", "release%2Frocm--test__branch--fixture"),
+        cases = (
+            (
+                "PYTORCH_BRANCH",
+                "PyTorch",
+                "ee4c2c",
+                "https://github.com/ROCm/pytorch/tree/",
+                "release/rocm-test_branch",
+                "release%2Frocm--test__branch",
+            ),
+            (
+                "VLLM_REF",
+                "vLLM",
+                "blue",
+                "https://github.com/vllm-project/vllm",
+                "release/rocm-test_branch-fixture",
+                "release%2Frocm--test__branch--fixture",
+            ),
+            (
+                "AITER_REF",
+                "AITER",
+                "blue",
+                "https://github.com/ROCm/aiter/tree/",
+                "release/rocm-test_branch-fixture",
+                "release%2Frocm--test__branch--fixture",
+            ),
         )
-        ref, escaped_ref = next(candidate for candidate in candidates if candidate[0] != current)
-        self.set_docker_arg("VLLM_REF", ref)
-        result = self.run_sync("--write")
-        self.assertEqual(result.returncode, 0, result.stderr)
-        rendered = self.readme.read_text(encoding="utf-8")
-        self.assertIn(f"{escaped_ref}-blue.svg", rendered)
-        self.assertIn(f"`{ref}` + {len(self.patch_names('vllm'))} AMD patches", rendered)
-        self.assertEqual(self.run_sync("--check").returncode, 0)
+        for arg_name, badge_name, color, base_url, ref, escaped_ref in cases:
+            with self.subTest(arg_name=arg_name):
+                _, current = self.docker_arg(arg_name)
+                if current == ref:
+                    ref = f"{ref}-alt"
+                    escaped_ref = f"{escaped_ref}--alt"
+                self.set_docker_arg(arg_name, ref)
+                result = self.run_sync("--write")
+                self.assertEqual(result.returncode, 0, result.stderr)
+                rendered = self.readme.read_text(encoding="utf-8")
+                expected_url = f"{base_url}{ref}" if base_url.endswith("/") else base_url
+                self.assertIn(
+                    f"[![{badge_name}](https://img.shields.io/badge/{badge_name}-{escaped_ref}-{color}.svg)]"
+                    f"({expected_url})",
+                    rendered,
+                )
+                if arg_name == "VLLM_REF":
+                    self.assertIn(f"`{ref}` + {len(self.patch_names('vllm'))} AMD patches", rendered)
+                else:
+                    self.assertIn(f"`{ref}`", rendered)
+                self.assertEqual(self.run_sync("--check").returncode, 0)
 
     def test_patch_metadata_is_derived(self) -> None:
         _, vllm_ref = self.docker_arg("VLLM_REF")

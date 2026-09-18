@@ -12,13 +12,17 @@ on:
   push:
     branches: [main]
     paths:
-      - 'docker/Dockerfile'
+      - 'docker/base/Dockerfile'
+      - 'docker/vllm/Dockerfile'
+      - 'docker/lmcache/Dockerfile'
       - 'patches/**'
       - '.github/workflows/aic-patches.yml'
   pull_request:
     branches: [main]
     paths:
-      - 'docker/Dockerfile'
+      - 'docker/base/Dockerfile'
+      - 'docker/vllm/Dockerfile'
+      - 'docker/lmcache/Dockerfile'
       - 'patches/**'
       - '.github/workflows/aic-patches.yml'
   workflow_dispatch:
@@ -38,8 +42,8 @@ jobs:
         id: meta
         run: |
           set -euo pipefail
-          ref="$(grep -E '^ARG VLLM_REF=' docker/Dockerfile | head -1 | cut -d= -f2-)"
-          url="$(grep -E '^ARG VLLM_GIT_URL=' docker/Dockerfile | head -1 | cut -d= -f2-)"
+          ref="$(grep -E '^ARG VLLM_REF=' docker/vllm/Dockerfile | head -1 | cut -d= -f2-)"
+          url="$(grep -E '^ARG VLLM_GIT_URL=' docker/vllm/Dockerfile | head -1 | cut -d= -f2-)"
           test -n "${ref}" || { echo "VLLM_REF not set in Dockerfile"; exit 1; }
           test -n "${url}" || { echo "VLLM_GIT_URL not set in Dockerfile"; exit 1; }
           echo "ref=${ref}" >> "${GITHUB_OUTPUT}"
@@ -89,8 +93,8 @@ jobs:
         id: meta
         run: |
           set -euo pipefail
-          ref="$(grep -E '^ARG LMCACHE_REF=' docker/Dockerfile | head -1 | cut -d= -f2-)"
-          url="$(grep -E '^ARG LMCACHE_GIT_URL=' docker/Dockerfile | head -1 | cut -d= -f2-)"
+          ref="$(grep -E '^ARG LMCACHE_REF=' docker/lmcache/Dockerfile | head -1 | cut -d= -f2-)"
+          url="$(grep -E '^ARG LMCACHE_GIT_URL=' docker/lmcache/Dockerfile | head -1 | cut -d= -f2-)"
           test -n "${ref}" || { echo "LMCACHE_REF not set in Dockerfile"; exit 1; }
           test -n "${url}" || { echo "LMCACHE_GIT_URL not set in Dockerfile"; exit 1; }
           echo "ref=${ref}" >> "${GITHUB_OUTPUT}"
@@ -140,8 +144,8 @@ jobs:
         id: meta
         run: |
           set -euo pipefail
-          ref="$(grep -E '^ARG NIXL_REF=' docker/Dockerfile | head -1 | cut -d= -f2-)"
-          url="$(grep -E '^ARG NIXL_GIT_URL=' docker/Dockerfile | head -1 | cut -d= -f2-)"
+          ref="$(grep -E '^ARG NIXL_REF=' docker/lmcache/Dockerfile | head -1 | cut -d= -f2-)"
+          url="$(grep -E '^ARG NIXL_GIT_URL=' docker/lmcache/Dockerfile | head -1 | cut -d= -f2-)"
           test -n "${ref}" || { echo "NIXL_REF not set in Dockerfile"; exit 1; }
           test -n "${url}" || { echo "NIXL_GIT_URL not set in Dockerfile"; exit 1; }
           echo "ref=${ref}" >> "${GITHUB_OUTPUT}"
@@ -190,8 +194,8 @@ jobs:
         id: meta
         run: |
           set -euo pipefail
-          ref="$(grep -E '^ARG LLM_EMU_REF=' docker/Dockerfile | head -1 | cut -d= -f2-)"
-          url="$(grep -E '^ARG LLM_EMU_GIT_URL=' docker/Dockerfile | head -1 | cut -d= -f2-)"
+          ref="$(grep -E '^ARG LLM_EMU_REF=' docker/vllm/Dockerfile | head -1 | cut -d= -f2-)"
+          url="$(grep -E '^ARG LLM_EMU_GIT_URL=' docker/vllm/Dockerfile | head -1 | cut -d= -f2-)"
           test -n "${ref}" || { echo "LLM_EMU_REF not set in Dockerfile"; exit 1; }
           test -n "${url}" || { echo "LLM_EMU_GIT_URL not set in Dockerfile"; exit 1; }
           echo "ref=${ref}" >> "${GITHUB_OUTPUT}"
@@ -266,8 +270,8 @@ jobs:
         id: meta
         run: |
           set -euo pipefail
-          ref="$(grep -E '^ARG LMCACHE_REF=' docker/Dockerfile | head -1 | cut -d= -f2-)"
-          url="$(grep -E '^ARG LMCACHE_GIT_URL=' docker/Dockerfile | head -1 | cut -d= -f2-)"
+          ref="$(grep -E '^ARG LMCACHE_REF=' docker/lmcache/Dockerfile | head -1 | cut -d= -f2-)"
+          url="$(grep -E '^ARG LMCACHE_GIT_URL=' docker/lmcache/Dockerfile | head -1 | cut -d= -f2-)"
           test -n "${ref}" || { echo "LMCACHE_REF not set in Dockerfile"; exit 1; }
           test -n "${url}" || { echo "LMCACHE_GIT_URL not set in Dockerfile"; exit 1; }
           echo "ref=${ref}" >> "${GITHUB_OUTPUT}"
@@ -322,8 +326,8 @@ jobs:
         id: meta
         run: |
           set -euo pipefail
-          ref="$(grep -E '^ARG NIXL_REF=' docker/Dockerfile | head -1 | cut -d= -f2-)"
-          url="$(grep -E '^ARG NIXL_GIT_URL=' docker/Dockerfile | head -1 | cut -d= -f2-)"
+          ref="$(grep -E '^ARG NIXL_REF=' docker/lmcache/Dockerfile | head -1 | cut -d= -f2-)"
+          url="$(grep -E '^ARG NIXL_GIT_URL=' docker/lmcache/Dockerfile | head -1 | cut -d= -f2-)"
           test -n "${ref}" || { echo "NIXL_REF not set in Dockerfile"; exit 1; }
           test -n "${url}" || { echo "NIXL_GIT_URL not set in Dockerfile"; exit 1; }
           echo "ref=${ref}" >> "${GITHUB_OUTPUT}"
@@ -377,8 +381,8 @@ jobs:
         id: meta
         run: |
           set -euo pipefail
-          ref="$(grep -E '^ARG LLM_EMU_REF=' docker/Dockerfile | head -1 | cut -d= -f2-)"
-          url="$(grep -E '^ARG LLM_EMU_GIT_URL=' docker/Dockerfile | head -1 | cut -d= -f2-)"
+          ref="$(grep -E '^ARG LLM_EMU_REF=' docker/vllm/Dockerfile | head -1 | cut -d= -f2-)"
+          url="$(grep -E '^ARG LLM_EMU_GIT_URL=' docker/vllm/Dockerfile | head -1 | cut -d= -f2-)"
           echo "ref=${ref}" >> "${GITHUB_OUTPUT}"
           echo "url=${url}" >> "${GITHUB_OUTPUT}"
 

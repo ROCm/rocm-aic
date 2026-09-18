@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: MIT
 #
 # Prevent component metadata in README.md from drifting from the source-built
-# stack declared in docker/Dockerfile.
+# stack declared in docker/base/, docker/vllm/, docker/lmcache/ Dockerfiles.
 
 name: AIC README Version Check
 
@@ -12,7 +12,9 @@ on:
     branches: [main]
     paths:
       - README.md
-      - docker/Dockerfile
+      - docker/base/Dockerfile
+      - docker/vllm/Dockerfile
+      - docker/lmcache/Dockerfile
       - patches/**
       - .github/scripts/workflows/sync-readme-versions.py
       - .github/scripts/workflows/test_sync_readme_versions.py

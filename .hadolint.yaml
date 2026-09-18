@@ -15,12 +15,18 @@
 # DL3042: Pip cache dir -- intentionally using BuildKit
 #         cache mounts for pip; --no-cache-dir would defeat
 #         the purpose
+# DL3006: Always tag FROM -- docker/base is a named BuildKit
+#         build context passed via --build-context, not a
+#         registry image; it has no tag to pin
 # DL3059: Consolidate RUN -- readability over layers
+# DL4004: Multiple ENTRYPOINT -- intentional in multi-stage
+#         Dockerfiles where each stage has its own entrypoint
 # DL4006: pipefail -- added where needed; not all
 #         Dockerfiles use pipes
 # SC2028: echo escape sequences -- intentional
 ignored:
   - DL3003
+  - DL3006
   - DL3007
   - DL3008
   - DL3009
@@ -28,5 +34,6 @@ ignored:
   - DL3015
   - DL3042
   - DL3059
+  - DL4004
   - DL4006
   - SC2028

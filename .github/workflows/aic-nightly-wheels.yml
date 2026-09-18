@@ -155,7 +155,7 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: .
-          file: docker/Dockerfile
+          file: docker/lmcache/Dockerfile
           target: wheels
           outputs: type=local,dest=wheels
           build-args: |
@@ -183,7 +183,7 @@ jobs:
         id: notes
         run: |
           set -euo pipefail
-          df="docker/Dockerfile"
+          df="docker/lmcache/Dockerfile"
           get() { grep -E "^ARG $1=" "$df" | head -1 | cut -d= -f2-; }
           lmcache_ref="$(get LMCACHE_REF)"
           nixl_ref="$(get NIXL_REF)"

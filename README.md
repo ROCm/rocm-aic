@@ -4,16 +4,18 @@
 [![Platform](https://img.shields.io/badge/platform-linux-lightgrey.svg)](README.md)
 [![ROCm](https://img.shields.io/badge/ROCm-7.14.1-green.svg)](https://rocm.docs.amd.com)
 [![Latest Release](https://img.shields.io/github/v/release/ROCm/rocm-aic?display_name=tag)](https://github.com/ROCm/rocm-aic/releases/latest)
-[![vLLM](https://img.shields.io/badge/vLLM-v0.28.0-blue.svg)](https://github.com/vllm-project/vllm)
-[![LMCache](https://img.shields.io/badge/LMCache-v0.5.4-blue.svg)](https://github.com/LMCache/LMCache)
+[![PyTorch](https://img.shields.io/badge/PyTorch-release%2F2.13-ee4c2c.svg)](https://github.com/ROCm/pytorch/tree/release/2.13)
+[![AITER](https://img.shields.io/badge/AITER-v0.1.22.post1-blue.svg)](https://github.com/ROCm/aiter/tree/v0.1.22.post1)
+[![vLLM](https://img.shields.io/badge/vLLM-v0.29.0-blue.svg)](https://github.com/vllm-project/vllm)
+[![LMCache](https://img.shields.io/badge/LMCache-v0.5.5-blue.svg)](https://github.com/LMCache/LMCache)
 [![NIXL](https://img.shields.io/badge/NIXL-v1.4.1-blue.svg)](https://github.com/ai-dynamo/nixl)
-[![hsa-snoop](https://img.shields.io/badge/hsa--snoop-v1.1.0-blue.svg)](https://github.com/sbates130272/hsa-snoop)
+[![hsa-snoop](https://img.shields.io/badge/hsa--snoop-v1.1.1-blue.svg)](https://github.com/sbates130272/hsa-snoop)
 [![Spelling](https://github.com/ROCm/rocm-aic/actions/workflows/aic-spellcheck.yml/badge.svg)](https://github.com/ROCm/rocm-aic/actions/workflows/aic-spellcheck.yml)
 [![Lint](https://github.com/ROCm/rocm-aic/actions/workflows/aic-lint.yml/badge.svg)](https://github.com/ROCm/rocm-aic/actions/workflows/aic-lint.yml)
 [![Export Tarball](https://github.com/ROCm/rocm-aic/actions/workflows/aic-export.yml/badge.svg)](https://github.com/ROCm/rocm-aic/actions/workflows/aic-export.yml)
 [![Nightly Dist Build](https://github.com/ROCm/rocm-aic/actions/workflows/aic-amd-nightly-dist-build.yml/badge.svg)](https://github.com/ROCm/rocm-aic/actions/workflows/aic-amd-nightly-dist-build.yml)
-[![Nightly Smoke Test](https://github.com/ROCm/rocm-aic/actions/workflows/aic-amd-nightly-smoke-test.yml/badge.svg)](https://github.com/ROCm/rocm-aic/actions/workflows/aic-amd-nightly-smoke-test.yml)
-[![Nightly Tiny Test](https://github.com/ROCm/rocm-aic/actions/workflows/aic-amd-nightly-tiny-test.yml/badge.svg)](https://github.com/ROCm/rocm-aic/actions/workflows/aic-amd-nightly-tiny-test.yml)
+[![Nightly Smoke + Tiny Test](https://github.com/ROCm/rocm-aic/actions/workflows/aic-amd-nightly-smoke-tiny-test.yml/badge.svg)](https://github.com/ROCm/rocm-aic/actions/workflows/aic-amd-nightly-smoke-tiny-test.yml)
+[![Nightly Accuracy Test](https://github.com/ROCm/rocm-aic/actions/workflows/aic-amd-nightly-accuracy-test.yml/badge.svg)](https://github.com/ROCm/rocm-aic/actions/workflows/aic-amd-nightly-accuracy-test.yml)
 [![Nightly Cliff](https://github.com/ROCm/rocm-aic/actions/workflows/aic-amd-nightly-cliff.yml/badge.svg)](https://github.com/ROCm/rocm-aic/actions/workflows/aic-amd-nightly-cliff.yml)
 [![Nightly Wheels](https://github.com/ROCm/rocm-aic/actions/workflows/aic-nightly-wheels.yml/badge.svg)](https://github.com/ROCm/rocm-aic/actions/workflows/aic-nightly-wheels.yml)
 [![Nightly Patch Validation](https://github.com/ROCm/rocm-aic/actions/workflows/aic-patches.yml/badge.svg)](https://github.com/ROCm/rocm-aic/actions/workflows/aic-patches.yml)
@@ -43,12 +45,13 @@ platform.
 | Component | Source | Ref |
 | --- | --- | --- |
 | Base OS | `rocm/dev-ubuntu-24.04:7.14.1-full` | Ubuntu 24.04, ROCm 7.14, Python 3.12 |
-| vLLM | `github.com/vllm-project/vllm` (source build) | `v0.28.0` + 3 AMD patches |
-| AITER | `ROCm/aiter` (official ROCm 7.2 wheel) | `v0.1.19` (vLLM ROCm-validated) |
+| PyTorch | `ROCm/pytorch` (source build) | `release/2.13` |
+| vLLM | `github.com/vllm-project/vllm` (source build) | `v0.29.0` + 3 AMD patches |
+| AITER | `ROCm/aiter` (source build) | `v0.1.22.post1` (vLLM ROCm-validated) |
 | FlashAttention | `Dao-AILab/flash-attention` (source build) | `0e60e394` (vLLM ROCm-validated) |
-| LMCache | `LMCache/LMCache` (upstream) | `v0.5.4` + 16 AMD patches |
+| LMCache | `LMCache/LMCache` (upstream) | `v0.5.5` + 16 AMD patches |
 | NIXL | `ai-dynamo/nixl` (upstream) | `v1.4.1` + `nixl-rocm-ais-mt.patch` |
-| hsa-snoop | `sbates130272/hsa-snoop` (source build) | `v1.1.0` |
+| hsa-snoop | `sbates130272/hsa-snoop` (source build) | `v1.1.1` |
 | hipFile | ROCm 7.14 base image | GA in ROCm 7.14 — no separate source build |
 
 ## Pip Nightly Wheels

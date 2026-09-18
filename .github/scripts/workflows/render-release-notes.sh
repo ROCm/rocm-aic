@@ -31,19 +31,31 @@ for input in TAG SOURCE_SHA GPU_ARCH IMAGE_NAME REPOSITORY; do
     }
 done
 
+# Derive the sibling Dockerfile paths for the split-Dockerfile layout.
+# When DOCKERFILE is docker/lmcache/Dockerfile, also probe docker/base/Dockerfile
+# for ROCM_VERSION / ROCM_BASE_IMAGE (which live there after the split).
+_DOCKERFILE_DIR="$(dirname "${DOCKERFILE}")"
+_DOCKERFILES=("${DOCKERFILE}")
+if [[ -r "${_DOCKERFILE_DIR}/../base/Dockerfile" ]]; then
+    _DOCKERFILES+=("${_DOCKERFILE_DIR}/../base/Dockerfile")
+fi
+if [[ -r "${_DOCKERFILE_DIR}/../vllm/Dockerfile" ]]; then
+    _DOCKERFILES+=("${_DOCKERFILE_DIR}/../vllm/Dockerfile")
+fi
+
 _arg() {
-    local name="$1" value
-    value="$(awk -v prefix="ARG ${name}=" '
-        index($0, prefix) == 1 {
-            print substr($0, length(prefix) + 1)
-            exit
-        }
-    ' "${DOCKERFILE}")"
-    [[ -n "${value}" ]] || {
-        echo "release notes: ${name} is not set in ${DOCKERFILE}" >&2
-        return 1
-    }
-    printf '%s\n' "${value}"
+    local name="$1" value df
+    for df in "${_DOCKERFILES[@]}"; do
+        value="$(awk -v prefix="ARG ${name}=" '
+            index($0, prefix) == 1 {
+                print substr($0, length(prefix) + 1)
+                exit
+            }
+        ' "${df}")"
+        [[ -n "${value}" ]] && { printf '%s\n' "${value}"; return 0; }
+    done
+    echo "release notes: ${name} is not set in any Dockerfile (searched: ${_DOCKERFILES[*]})" >&2
+    return 1
 }
 
 _optional_arg() {

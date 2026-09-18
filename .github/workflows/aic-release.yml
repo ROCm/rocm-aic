@@ -95,7 +95,7 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: .
-          file: docker/Dockerfile
+          file: docker/lmcache/Dockerfile
           target: wheels
           outputs: type=local,dest=wheels
           build-args: |
@@ -148,7 +148,7 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: .
-          file: docker/Dockerfile
+          file: docker/lmcache/Dockerfile
           push: true
           tags: |
             ${{ env.IMAGE_NAME }}:${{ github.ref_name }}
@@ -168,7 +168,9 @@ jobs:
         run: |
           set -euo pipefail
           bash .github/scripts/workflows/render-release-notes.sh \
-            docker/Dockerfile \
+            docker/base/Dockerfile \
+            docker/vllm/Dockerfile \
+            docker/lmcache/Dockerfile \
             "${{ github.ref_name }}" \
             "${{ github.sha }}" \
             "${ROCM_ARCH}" \

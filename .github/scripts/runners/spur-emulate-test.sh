@@ -1,19 +1,15 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Runs on the self-hosted runner; SSHes to the SPUR head node (AIC_SPUR_HOST),
-# builds the CPU-only emulation image and serve-tests it.
+# Used by the emulate-smoke job in aic-amd-dist-build-fast.yml, which runs on
+# a self-hosted runner and SSHes to the SPUR head node (AIC_SPUR_HOST) to build
+# and serve-test the emulation image on a CPU-only SPUR node.
 #
-# Unlike spur-smoke-test.sh / spur-tiny-test.sh / spur-cliff.sh, this stage needs
-# NO GPU at either end: the image is built with --target emulate and
-# VLLM_TARGET_DEVICE=empty (no GPU kernels compiled at all), and the test runs
-# the emulator on a CPU-only node with no /dev/kfd mapped into the container.
-# So it can run while every GPU on the cluster is busy, and it is the only CI
-# stage that exercises the serving path without competing for hardware.
-#
-# It is self-contained -- it builds its own image rather than reusing the GPU
-# tarball from spur-dist-build.sh -- so it does not have to be chained behind
-# the dist-build/smoke/tiny/cliff sequence.
+# NOTE: the standalone nightly emulate test (aic-nightly-emulate-test.yml) no
+# longer uses this script — it runs entirely on a GitHub-hosted runner using the
+# GHA BuildKit layer cache, with no SPUR dependency.  This script remains for the
+# fast-dist-build emulate-smoke job, which must reuse the SPUR-built image
+# tarball from the preceding dist-build step on shared NFS.
 #
 # What the test asserts is in .slurm/run-build-distribute.sh (cmd_emulate_test):
 # no GPU device in the container, a completion with completion_tokens > 0, the

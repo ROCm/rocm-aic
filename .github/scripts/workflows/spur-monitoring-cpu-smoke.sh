@@ -92,7 +92,8 @@ HF_HOME="${7}"
 SHORT="${SHA:0:7}"
 
 MON_DIR="${WORKDIR}/monitoring"
-EMULATOR_COMPOSE="${WORKDIR}/docker/docker-compose.emulator.yml"
+EMULATOR_COMPOSE="${WORKDIR}/docker/docker-compose.yml"
+EMULATOR_PROFILE="--profile cpu-smoke"
 METRICS_DIR="${AIC_METRICS_PAGE_DIR}/prom-tsdb"
 mkdir -p "${METRICS_DIR}" "${AIC_METRICS_PAGE_DIR}"
 
@@ -121,13 +122,13 @@ mkdir -p "${HF_HOME}"
 source "${MON_DIR}/monitoring-lib.sh"
 
 export AIC_IMAGE AIC_MONITORING=1 AIC_EXPORTERS=1 AIC_CPU_SMOKE=1
-export MON_DIR MON_COMPOSE="${MON_DIR}/docker-compose.monitoring.yml"
+export MON_DIR MON_COMPOSE="${WORKDIR}/docker/docker-compose.yml"
 export AIC_METRICS_DIR="${METRICS_DIR}"
 
 cleanup() {
     echo "=== Stopping all containers ==="
     IMAGE_NAME="${AIC_IMAGE}" \
-        docker compose -f "${EMULATOR_COMPOSE}" down --remove-orphans 2>/dev/null || true
+        docker compose -f "${EMULATOR_COMPOSE}" ${EMULATOR_PROFILE} down --remove-orphans 2>/dev/null || true
     stop_monitoring
     rm -rf "${METRICS_DIR}"
 }
@@ -156,7 +157,7 @@ start_monitoring
 echo "=== Starting vLLM emulator (8000) ==="
 HF_HOME="${HF_HOME}" IMAGE_NAME="${AIC_IMAGE}" \
     VLLM_CPU_MODEL="${VLLM_CPU_MODEL:-facebook/opt-125m}" \
-    docker compose -f "${EMULATOR_COMPOSE}" up -d
+    docker compose -f "${EMULATOR_COMPOSE}" ${EMULATOR_PROFILE} up -d cpu-smoke-emulator
 
 # ---------------------------------------------------------------------------
 # 4. Wait for vLLM emulator to be healthy (up to 3 min)

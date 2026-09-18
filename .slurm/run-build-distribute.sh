@@ -120,6 +120,8 @@
 #                         Used only when AIC_BUILD_NODE is unset.
 #   AIC_BUILD_NODE       pin an exact build node via --nodelist (overrides
 #                        AIC_BUILD_CONSTRAINT)             (default: unset)
+#   AIC_BUILD_EXCLUDE_NODES  comma-separated nodes to exclude from build
+#                        scheduling via --exclude (default: unset)
 #   AIC_BUILD_LOCAL      set to 1 to build on THIS host, no Slurm  (default: unset)
 #   AIC_BUILD_PARTITION  Slurm partition for build + load  (default: defq)
 #   AIC_BUILD_CPUS       --cpus-per-task for the build job (default: 32)
@@ -495,6 +497,12 @@ _tarball_stamp() {
 #
 # A re-run of a workflow could see a tarball made from an old run, so we use
 # the `stat` data to verify existence.
+#
+# Cache-hit builds (BuildKit fully cached, image unchanged) legitimately do not
+# rewrite the tarball.  When the tarball already exists and passes the size
+# check, an unchanged stamp is treated as a warning rather than a fatal error:
+# the existing artifact is still valid.  Set AIC_REQUIRE_FRESH_TARBALL=1 to
+# restore strict behavior (fail if the tarball was not rewritten this run).
 _verify_tarball() {
     local path="$1" what="${2:-image}" before="${3:-}" min_bytes="${4:-1024}"
     # NFS close-to-open consistency: the writing node's `mv` can take a moment
@@ -507,8 +515,16 @@ _verify_tarball() {
     done
     [[ -n "${now}" ]] ||
         die "${what} build reported success but produced no tarball: ${path}"
-    [[ "${now}" != "${before}" ]] ||
-        die "${what} build reported success but did not rewrite its tarball; this is an earlier run's artifact (unchanged at ${before}): ${path}"
+    if [[ "${now}" == "${before}" ]]; then
+        local size="${now##*:}"
+        (( size >= min_bytes )) ||
+            die "${what} tarball is implausibly small (${size} bytes, expected >= ${min_bytes}): ${path}"
+        if [[ "${AIC_REQUIRE_FRESH_TARBALL:-0}" == "1" ]]; then
+            die "${what} build reported success but did not rewrite its tarball; this is an earlier run's artifact (unchanged at ${before}): ${path}"
+        fi
+        log "WARNING: ${what} tarball unchanged after build (BuildKit cache hit — existing artifact is current): ${path} ($(du -h "${path}" | cut -f1))"
+        return 0
+    fi
     local size="${now##*:}"
     (( size >= min_bytes )) ||
         die "${what} tarball is implausibly small (${size} bytes, expected >= ${min_bytes}): ${path}"
@@ -563,6 +579,10 @@ PROLOGUE
 
     local jobid="" logfile="" rc=0
     local active_job_file="${AIC_CI_ACTIVE_JOB_FILE:-}"
+    # Published for callers that need to inspect what the job left behind: the
+    # per-job log dir is named after the job id and is otherwise only known in
+    # here.  Cleared per call so a caller cannot read a previous job's id.
+    AIC_LAST_JOB_ID=""
 
     # Make the job's log reachable from `die` for as long as this job is the one
     # being watched.  Cleared unconditionally before returning, so a later abort
@@ -606,6 +626,7 @@ PROLOGUE
 
         jobid="$(printf '%s\n' "${submit_out}" | grep -oE '[0-9]+$' | tail -1)"
         [[ -n "${jobid}" ]] || die "could not parse job id from sbatch output: ${submit_out}"
+        AIC_LAST_JOB_ID="${jobid}"
         _record_active_job
         logfile="${AIC_DAY_DIR}/logs/${jobid}/${logname}.out"
         _track_job_log
@@ -749,7 +770,7 @@ PROLOGUE
                 die "exit file ${exit_file} for job ${jobid} is not a number: '${acct_exit}'"
             log "exit code from file: ${acct_exit} (${exit_file})"
         else
-            # sacct fallback.  Two SPUR behaviours make the naive read unsafe:
+            # sacct fallback.  Two SPUR behaviors make the naive read unsafe:
             #   * a job that has NOT finished reports ExitCode "0:0" -- verified
             #     across all 159 RUNNING jobs on the cluster -- so the state must
             #     be checked before the code, or a live job reads as success;
@@ -780,7 +801,9 @@ PROLOGUE
                 die "job ${jobid} left the queue but sacct still reports state ${state} after 60s; refusing to guess its exit status"
             acct_exit="${code%%:*}"
             if [[ "${state}" == "COMPLETED" ]]; then
-                [[ "${acct_exit}" =~ ^[0-9]+$ ]] || acct_exit=0
+                # SPUR may report "-1" (authz kill) even for COMPLETED state;
+                # treat any non-numeric or negative code as failure, not success.
+                [[ "${acct_exit}" =~ ^[0-9]+$ ]] || acct_exit=1
             else
                 # Non-COMPLETED must never yield 0.  SPUR reports "0:0" for some
                 # cancelled jobs and "-1:0" for others; neither is a success and
@@ -811,6 +834,7 @@ PROLOGUE
             sleep 0.2; tries=$((tries + 1))
         done
         jobid="$(head -n1 "${idfile}" 2>/dev/null | tr -d '[:space:]' | cut -d';' -f1)"
+        AIC_LAST_JOB_ID="${jobid}"
         [[ -z "${jobid}" ]] || _record_active_job
 
         logfile="${AIC_DAY_DIR}/logs/${jobid:-unknown}/${logname}.out"
@@ -984,6 +1008,7 @@ _droot="\$(docker info --format '{{.DockerRootDir}}' 2>/dev/null)"
 [ -d "\${_droot:-}" ] || _droot=/
 echo "[build] disk after prune (\${_droot}): \$(df -h "\${_droot}" | tail -1)"
 tmp="${tarball}.partial.\$\$"
+echo "[build] building docker/${AIC_BUILD_DOCKERFILE:-Dockerfile} image: ${AIC_IMAGE}"
 docker buildx build --builder ${AIC_BUILDX_BUILDER} --progress=plain --output type=docker,dest=- \
     --build-arg ROCM_ARCH="${AIC_ROCM_ARCH}" \
     --build-arg AIC_UCX_FAST="${AIC_UCX_FAST}" \
@@ -992,7 +1017,7 @@ docker buildx build --builder ${AIC_BUILDX_BUILDER} --progress=plain --output ty
     ${_target_arg} \
     ${_secret_arg} \
     ${_cache_args} \
-    -f "${AIC_DAY_DIR}/docker/Dockerfile" \
+    -f "${AIC_DAY_DIR}/docker/${AIC_BUILD_DOCKERFILE:-Dockerfile}" \
     -t "${AIC_IMAGE}" \
     -t "${latest_ref}" \
     "${AIC_DAY_DIR}" | ${COMPRESS_CMD} > "\${tmp}"
@@ -1027,8 +1052,7 @@ ${_build_program} \
     ${_vllm_device_arg} \
     ${_target_arg} \
     ${_secret_arg} \
-    ${_cache_args} \
-    -f "${AIC_DAY_DIR}/docker/Dockerfile" \
+    -f "${AIC_DAY_DIR}/docker/${AIC_BUILD_DOCKERFILE:-Dockerfile}" \
     -t "${AIC_IMAGE}" \
     -t "${latest_ref}" \
     "${AIC_DAY_DIR}"
@@ -1056,7 +1080,10 @@ REMOTE
             if [[ -n "${AIC_BUILD_CONSTRAINT:-}" ]]; then
                 _sel=(--constraint="${AIC_BUILD_CONSTRAINT}")
             fi
-            log "building via sbatch (partition ${AIC_BUILD_PARTITION}, constraint ${AIC_BUILD_CONSTRAINT})"
+            if [[ -n "${AIC_BUILD_EXCLUDE_NODES:-}" ]]; then
+                _sel+=(--exclude="${AIC_BUILD_EXCLUDE_NODES}")
+            fi
+            log "building via sbatch (partition ${AIC_BUILD_PARTITION}, constraint ${AIC_BUILD_CONSTRAINT}${AIC_BUILD_EXCLUDE_NODES:+, exclude ${AIC_BUILD_EXCLUDE_NODES}})"
         fi
         _sbatch_run aic-build build "${remote_script}" \
             "${_sel[@]}" \
@@ -1085,6 +1112,8 @@ cmd_build_emulate() {
     _use_emulate_image
     AIC_BUILD_TARGET="emulate"
     AIC_VLLM_TARGET_DEVICE="${AIC_EMULATE_VLLM_DEVICE}"
+    # Emulate stage lives in the combined docker/Dockerfile.
+    AIC_BUILD_DOCKERFILE="Dockerfile"
     log "build-emulate: emulation-only image, no GPU kernels compiled"
     cmd_build
 }
@@ -1131,7 +1160,7 @@ tmp="${nvme_tar}.partial.\$\$"
 set +o pipefail
 docker buildx build --builder ${AIC_BUILDX_BUILDER} --output type=docker,dest=- \
     --build-arg NVME_EXPORTER_VERSION="${AIC_NVME_EXPORTER_VERSION}" \
-    -t "${AIC_NVME_EXPORTER_IMAGE}" "${AIC_DAY_DIR}/monitoring/nvme-exporter" | ${COMPRESS_CMD} > "\${tmp}"
+    -t "${AIC_NVME_EXPORTER_IMAGE}" "${AIC_DAY_DIR}/docker/nvme-exporter" | ${COMPRESS_CMD} > "\${tmp}"
 _rc=("\${PIPESTATUS[@]}")
 set -o pipefail
 if [ "\${_rc[1]}" -ne 0 ]; then
@@ -1145,7 +1174,7 @@ tmp="${rdma_tar}.partial.\$\$"
 set +o pipefail
 docker buildx build --builder ${AIC_BUILDX_BUILDER} --output type=docker,dest=- \
     --build-arg RDMA_EXPORTER_VERSION="${AIC_RDMA_EXPORTER_VERSION}" \
-    -t "${AIC_RDMA_EXPORTER_IMAGE}" "${AIC_DAY_DIR}/monitoring/rdma-exporter" | ${COMPRESS_CMD} > "\${tmp}"
+    -t "${AIC_RDMA_EXPORTER_IMAGE}" "${AIC_DAY_DIR}/docker/rdma-exporter" | ${COMPRESS_CMD} > "\${tmp}"
 _rc=("\${PIPESTATUS[@]}")
 set -o pipefail
 if [ "\${_rc[1]}" -ne 0 ]; then
@@ -1447,7 +1476,7 @@ echo "[test] allocated gpu: ROCR=\${AIC_ROCR_VISIBLE} HIP=\${AIC_HIP_VISIBLE}"
 # mtime -- both are build-side values, so there is no build/test clock skew.
 _marker="/var/tmp/aic-loaded-\$(id -u)-\$(echo '${AIC_IMAGE}' | tr '/:' '__').mtime"
 _tar_mtime="\$(stat -c %Y '${tarball}' 2>/dev/null || echo 0)"
-_have_img="\$(docker images -q '${AIC_IMAGE}')"
+_have_img="\$(docker images -q '${AIC_IMAGE}' 2>&1)" || { echo "[test] FAIL: docker images failed (daemon not accessible?): \${_have_img}" >&2; exit 1; }
 _loaded_mtime="\$(cat "\${_marker}" 2>/dev/null || echo 0)"
 if [ "${AIC_FORCE_LOAD:-0}" = "1" ] || [ -z "\${_have_img}" ] || [ "\${_tar_mtime}" -gt "\${_loaded_mtime}" ]; then
     echo "[test] loading ${AIC_IMAGE} from ${tarball} (tarball=\${_tar_mtime} last-loaded=\${_loaded_mtime} present=\$([ -n "\${_have_img}" ] && echo yes || echo no) force=${AIC_FORCE_LOAD:-0})"
@@ -1465,11 +1494,18 @@ kmounts=""
 # In-image checks govern the exit code; capture it so the exporter phase below
 # (informational) can run regardless and we still exit with the real result.
 img_rc=0
+# SYS_ADMIN (nvme-cli ioctl) and seccomp=unconfined are blocked by the SPUR
+# authz plugin.  The smoke test only needs SYS_PTRACE (rocminfo / HIP).
+# On non-SPUR nodes both flags are still passed for full coverage.
+_extra_caps=""
+if [ "${AIC_SPUR_CLUSTER:-0}" != "1" ]; then
+    _extra_caps="--cap-add SYS_ADMIN --security-opt seccomp=unconfined"
+fi
 docker run --rm \
     --device /dev/kfd --device /dev/dri \
     --ipc host \
-    --cap-add SYS_PTRACE --cap-add SYS_ADMIN \
-    --security-opt seccomp=unconfined \
+    --cap-add SYS_PTRACE \
+    \${_extra_caps} \
     \${kmounts} \
     -e ROCR_VISIBLE_DEVICES="\${AIC_ROCR_VISIBLE}" \
     -e HIP_VISIBLE_DEVICES="\${AIC_HIP_VISIBLE}" \
@@ -1498,7 +1534,7 @@ if [ '${_smoke_exporters}' = "1" ]; then
     MON_DIR='${AIC_DAY_DIR}/monitoring'
     # Compose-only monitoring needs MON_COMPOSE set (the docker-run fallback is
     # gone); without it start_monitoring skips the whole exporter/Prometheus stack.
-    MON_COMPOSE='${AIC_DAY_DIR}/monitoring/docker-compose.monitoring.yml'
+    MON_COMPOSE='${AIC_DAY_DIR}/docker/docker-compose.yml'
     AIC_METRICS_DIR="\${_logdir}/prometheus"
     AIC_EXPORTERS=1
     AIC_MONITORING=1
@@ -1706,6 +1742,228 @@ REMOTE
         --cpus-per-task="${AIC_TINY_CPUS}" --mem="${AIC_TINY_MEM}" \
         --time="${AIC_TINY_TIME}"
     log "tiny-test complete"
+}
+
+# --- prometheus-dump: scrape all /metrics endpoints from a live GPU stack ------
+# Loads the image on a GPU node, brings up the full compose MP stack (same config
+# as tiny-test), waits for everything to be healthy, then curls every known
+# /metrics port and feeds the raw text through monitoring/scripts/metrics_to_md.py
+# to produce a Markdown reference document on shared NFS.
+#
+# Output: ${PROM_DUMP_OUT} (default: ${AIC_IMAGE_DIR}/../prometheus-dump.md)
+cmd_prometheus_dump() {
+    _pick_compress
+    local tarball; tarball="$(_tarball_path)"
+    command -v sbatch >/dev/null 2>&1 || die "sbatch not found; cannot run prometheus-dump job"
+    [[ -r "${tarball}" ]] || die "tarball not found: ${tarball} (run 'build' first)"
+
+    local prom_dump_out="${PROM_DUMP_OUT:-${AIC_IMAGE_DIR%/*}/prometheus-dump.md}"
+    local prom_dump_wait="${PROM_DUMP_WAIT:-15}"
+    local prom_scratch="${AIC_IMAGE_DIR%/*}/prom-dump-scratch"
+
+    local -a _sel
+    if [[ -n "${AIC_TEST_NODE:-}" ]]; then
+        _sel=(--nodelist="${AIC_TEST_NODE}")
+        log "prometheus-dump on ${AIC_TEST_NODE} via sbatch (partition ${AIC_BUILD_PARTITION})"
+    else
+        _sel=(--constraint="${AIC_TEST_CONSTRAINT}")
+        log "prometheus-dump via sbatch (partition ${AIC_BUILD_PARTITION}, constraint ${AIC_TEST_CONSTRAINT})"
+    fi
+    log "image: ${AIC_IMAGE}  model: ${AIC_TINY_MODEL}  out: ${prom_dump_out}"
+
+    local remote_script
+    remote_script="$(cat <<REMOTE
+set -uo pipefail
+command -v docker >/dev/null 2>&1 || { echo "\$(hostname): docker not found" >&2; exit 1; }
+echo "[prom-dump] host=\$(hostname) docker=\$(docker --version)"
+export AIC_SPUR_CLUSTER='${AIC_SPUR_CLUSTER}'
+# shellcheck source=/dev/null
+source '${AIC_DAY_DIR}/monitoring/monitoring-lib.sh'
+aic_resolve_gpu_visibility \
+    || { echo "[prom-dump] could not resolve GPU allocation" >&2; exit 1; }
+export GPU="\${AIC_ROCR_VISIBLE%%,*}"
+VLLM_CONTAINER="aic-vllm-gpu\${GPU}"
+echo "[prom-dump] allocated gpu: ROCR=\${AIC_ROCR_VISIBLE} HIP=\${AIC_HIP_VISIBLE}"
+
+_marker="/var/tmp/aic-loaded-\$(id -u)-\$(echo '${AIC_IMAGE}' | tr '/:' '__').mtime"
+_tar_mtime="\$(stat -c %Y '${tarball}' 2>/dev/null || echo 0)"
+_have_img="\$(docker images -q '${AIC_IMAGE}')"
+_loaded_mtime="\$(cat "\${_marker}" 2>/dev/null || echo 0)"
+if [ "${AIC_FORCE_LOAD:-0}" = "1" ] || [ -z "\${_have_img}" ] || [ "\${_tar_mtime}" -gt "\${_loaded_mtime}" ]; then
+    echo "[prom-dump] loading ${AIC_IMAGE} from ${tarball}"
+    ${DECOMPRESS_CMD} '${tarball}' | docker load >/dev/null
+    echo "\${_tar_mtime}" > "\${_marker}" 2>/dev/null || true
+else
+    echo "[prom-dump] image up to date on \$(hostname) (id \${_have_img})"
+fi
+
+cd '${AIC_DAY_DIR}'
+source '${AIC_DAY_DIR}/monitoring/monitoring-lib.sh'
+ensure_compose || { echo "[prom-dump] docker compose unavailable" >&2; exit 1; }
+
+export IMAGE_REF='${AIC_IMAGE}'
+export IMAGE_NAME='${AIC_IMAGE%:*}'
+export ROCM_ARCH='${AIC_ROCM_ARCH}'
+export VLLM_MODEL='${AIC_TINY_MODEL}'
+export HF_HOME='${HF_HOME}'
+export HF_TOKEN='${HF_TOKEN:-}'
+export HF_HUB_OFFLINE=0 TRANSFORMERS_OFFLINE=0
+export LOG="\${_logdir}"
+export NVME_DATA=/tmp/aic-prom-dump-nvme NFS_DATA=/tmp/aic-prom-dump-nfs
+export VLM_GPU_MEMORY_UTILIZATION=0.30
+export VLM_MAX_MODEL_LEN=4096
+export VLM_MAX_NUM_BATCHED_TOKENS=4096
+export VLM_ATTENTION_BACKEND=TRITON_ATTN
+export VLM_KV_CACHE_DTYPE=auto
+export VLM_LOAD_FORMAT=auto
+export LMCACHE_L1_SIZE_GB=4
+# nixl_posix initialises the NIXL agent (and its :19090 telemetry exporter)
+# without requiring hipFile P2PDMA or bare NVMe — POSIX staging buffer only.
+export AIC_L2_BACKEND=nixl_posix
+export LMCACHE_NIXL_POSIX_POOL=128
+export LMCACHE_NIXL_POSIX_SLOT_SIZE=33554432
+export LMCACHE_MAX_GPU_WORKERS=1
+export VLLM_IPC_MODE=service:lmcache
+export VLLM_PID_MODE=service:lmcache
+export KV_TRANSFER_ARG="--kv-transfer-config '{\"kv_connector\":\"LMCacheMPConnector\",\"kv_role\":\"kv_both\",\"kv_connector_extra_config\":{\"lmcache.mp.host\":\"tcp://aic-lmcache\",\"lmcache.mp.port\":6555}}'"
+# hsa-snoop: use container PID namespace (SPUR authz blocks --pid=host).
+export AIC_HSA_SNOOP_PID_MODE=container:aic-lmcache
+# Monitoring metrics dir for Prometheus TSDB.
+export AIC_METRICS_DIR="\${_logdir}/prometheus"
+export PROM_UID="\$(id -u)" PROM_GID="\$(id -g)"
+mkdir -p "\${HF_HOME}" "\${AIC_METRICS_DIR}" /tmp/aic-prom-dump-nvme /tmp/aic-prom-dump-nfs
+
+compose() { docker compose -f '${AIC_DAY_DIR}/docker/docker-compose.yml' "\$@"; }
+cleanup() {
+    pkill -9 -f 'vllm.entrypoints.openai' 2>/dev/null || true
+    pkill -9 -f 'EngineCore'              2>/dev/null || true
+    pkill -9 -f 'lmcache server'          2>/dev/null || true
+    sleep 2
+    timeout 60 compose \
+        --profile cache --profile monitoring-base --profile exporters-safe \
+        down --remove-orphans --timeout 5 >/dev/null 2>&1 || true
+    rm -rf /tmp/aic-prom-dump-nvme /tmp/aic-prom-dump-nfs 2>/dev/null || true
+}
+trap cleanup EXIT
+
+echo "[prom-dump] bringing up full MP + monitoring stack (model=${AIC_TINY_MODEL}) ..."
+# Profiles used:
+#   cache            — vllm, lmcache, lmcache-coordinator, client
+#   monitoring-base  — prometheus, grafana (all public images)
+# Exporters started individually to avoid locally-built images that aren't
+# pre-loaded on this node:
+#   amdgpu-exporter  — public image, no --pid=host (SPUR-safe)
+#   hsa-snoop        — uses the already-loaded rocm-aic image
+# node-exporter, nvme-exporter require --pid=host (blocked by spur-authz).
+# rdma-exporter uses a locally-built image not guaranteed to be present.
+if ! compose --profile cache --profile monitoring-base up -d; then
+    echo "[prom-dump] FAIL: compose up failed" >&2; exit 1
+fi
+# amdgpu-exporter: public image, safe to start immediately.
+compose up -d amdgpu-exporter 2>/dev/null || echo "[prom-dump] amdgpu-exporter unavailable (skipping)"
+
+# Wait for vLLM to be ready (probe from the client container on the Compose network).
+echo "[prom-dump] waiting for vLLM on :8000 (up to ${AIC_TINY_READY_TIMEOUT}s) ..."
+_ok=0
+for _i in \$(seq 1 \$(( ${AIC_TINY_READY_TIMEOUT:-300} / 5 ))); do
+    r=\$(docker exec aic-client curl -s -o /dev/null -w '%{http_code}' \
+        http://"\${VLLM_CONTAINER}":8000/health 2>/dev/null || true)
+    [ "\$r" = "200" ] && { _ok=1; break; }
+    [ -z "\$(docker ps -q -f name="\${VLLM_CONTAINER}")" ] && break
+    sleep 5
+done
+[ "\$_ok" != "1" ] && { echo "[prom-dump] FAIL: vLLM not healthy" >&2; exit 1; }
+# hsa-snoop: start after lmcache is healthy (uses container:aic-lmcache PID ns).
+compose up -d hsa-snoop 2>/dev/null || echo "[prom-dump] hsa-snoop unavailable (skipping)"
+echo "[prom-dump] stack healthy — waiting ${prom_dump_wait}s for NIXL init + Prometheus scrape..."
+sleep '${prom_dump_wait}'
+
+# Extract component versions from the image LABEL metadata.
+echo "[prom-dump] extracting component versions from image labels..."
+_version_args=""
+_label() {
+    docker inspect --format "{{index .Config.Labels \"ai.amd.aic.\$1\"}}" '${AIC_IMAGE}' 2>/dev/null
+}
+for _comp in version rocm pytorch vllm llm-emu aiter flash-attention lmcache nixl hipfile hsa-snoop; do
+    _val="\$(_label "\${_comp}")"
+    [ -n "\${_val}" ] && _version_args="\${_version_args} --version \${_comp}:\${_val}"
+done
+
+# Scrape every /metrics endpoint that may be present; skip those that are not.
+# Services on the compose bridge network (vllm, lmcache, etc.) are reached via
+# docker exec aic-client curl using compose DNS names.  Host-side exporters
+# (node_exporter, nvme_exporter, rdma_exporter, amdgpu_exporter) listen on the
+# host network and are reached directly via localhost.
+echo "[prom-dump] scraping /metrics endpoints..."
+mkdir -p '${prom_scratch}'
+_args=""
+# Scrape via the client container on the compose network (DNS: service name).
+_scrape_compose() {
+    local name="\$1" host="\$2" port="\$3"
+    local out='${prom_scratch}'/metrics_"\${name}".txt
+    if docker exec aic-client curl -sf "http://\${host}:\${port}/metrics" > "\${out}" 2>/dev/null && [ -s "\${out}" ]; then
+        echo "  \${name} \${host}:\${port} — \$(grep -c '^# HELP' "\${out}") metrics"
+        _args="\${_args} --source \${name}:\${out}"
+    else
+        echo "  \${name} \${host}:\${port} — not reachable (skipped)"
+    fi
+}
+# Scrape directly from the host (host-network services).
+_scrape_host() {
+    local name="\$1" port="\$2"
+    local out='${prom_scratch}'/metrics_"\${name}".txt
+    if curl -sf "http://localhost:\${port}/metrics" > "\${out}" 2>/dev/null && [ -s "\${out}" ]; then
+        echo "  \${name} localhost:\${port} — \$(grep -c '^# HELP' "\${out}") metrics"
+        _args="\${_args} --source \${name}:\${out}"
+    else
+        echo "  \${name} localhost:\${port} — not reachable (skipped)"
+    fi
+}
+_scrape_compose vllm                "\${VLLM_CONTAINER}"         8000
+_scrape_compose lmcache             aic-lmcache                  8080
+_scrape_compose nixl                aic-lmcache                  19090
+_scrape_compose lmcache_coordinator aic-lmcache-coordinator      9301
+_scrape_compose hsa_snoop           aic-hsa-snoop                9488
+_scrape_compose amdgpu_exporter     aic-amdgpu-exporter          5000
+_scrape_compose prometheus          aic-prometheus               9090
+_scrape_host    node_exporter                                     9100
+_scrape_host    nvme_exporter                                     9998
+_scrape_host    rdma_exporter                                     9879
+
+# Collect running container names, images, and status for the report.
+# Write to a TSV file; metrics_to_md.py reads it via --containers-tsv.
+echo "[prom-dump] collecting container inventory..."
+_containers_file='${prom_scratch}'/containers.tsv
+docker ps --format '{{.Names}}\t{{.Image}}\t{{.Status}}' 2>/dev/null > "\${_containers_file}" || true
+_container_args="--containers-tsv \${_containers_file}"
+
+echo "[prom-dump] generating markdown: ${prom_dump_out}"
+mkdir -p "\$(dirname '${prom_dump_out}')"
+python3 '${AIC_DAY_DIR}/monitoring/scripts/metrics_to_md.py' \
+    \${_args} \
+    \${_version_args} \
+    \${_container_args} \
+    --sha "\$(git -C '${AIC_DAY_DIR}' rev-parse --short HEAD 2>/dev/null || echo unknown)" \
+    --title "AIC Prometheus Metrics Reference" \
+    --output '${prom_dump_out}'
+rm -rf '${prom_scratch}'
+echo "[prom-dump] written: ${prom_dump_out}"
+REMOTE
+)"
+
+    local -a _gpu_request
+    if [[ "${AIC_SPUR_CLUSTER}" == "1" ]]; then
+        _gpu_request=(--gpus="${AIC_TEST_GPUS}")
+    else
+        _gpu_request=(--gres="${AIC_TEST_GRES}")
+    fi
+    _sbatch_run aic-prom-dump prometheus-dump "${remote_script}" \
+        "${_sel[@]}" \
+        "${_gpu_request[@]}" \
+        --nodes=1 --ntasks=1 \
+        --cpus-per-task="${AIC_TINY_CPUS}" --mem="${AIC_TINY_MEM}" \
+        --time="${AIC_TINY_TIME}"
+    log "prometheus-dump complete: ${prom_dump_out}"
 }
 
 # --- emulate-test: end-to-end serve check of the emulation image on a CPU node -
@@ -2055,7 +2313,7 @@ _clean_kv_shm
 # off: node/GPU/hsa-snoop have nothing to report on a CPU-only emulation node,
 # and hsa-snoop would need a GPU to start at all.
 export MON_DIR='${AIC_DAY_DIR}/monitoring'
-export MON_COMPOSE='${AIC_DAY_DIR}/monitoring/docker-compose.monitoring.yml'
+export MON_COMPOSE='${AIC_DAY_DIR}/docker/docker-compose.yml'
 export AIC_METRICS_DIR="\${_logdir}/prometheus"
 export AIC_MONITORING='${AIC_EMULATE_MP_MONITORING}'
 export AIC_EXPORTERS=0
@@ -2450,7 +2708,7 @@ cmd_emulate_validate() {
     # only describes the configuration it was captured under, and a warm-vs-cold
     # prefix cache alone changes TTFT by an order of magnitude.
     local extra_args="${AIC_VALIDATE_EXTRA_ARGS---no-enable-prefix-caching}"
-    # Oracle neighbour selection for the replay: 1 = nearest cell, `auto` =
+    # Oracle neighbor selection for the replay: 1 = nearest cell, `auto` =
     # adaptive-K Shepard pooling, which smooths thinly-sampled cells.
     local oracle_k="${AIC_VALIDATE_ORACLE_K:-1}"
 
@@ -2590,6 +2848,85 @@ REMOTE
         --time="${AIC_EMULATE_TIME}"
     log "emulate-validate complete"
 }
+
+
+# --- accuracy-test: differential KV-integrity gate ----------------------------
+# Answers "does routing KV through DRAM/NVMe change the model's answers?", which
+# neither tiny-test (serves one completion) nor cliff (measures throughput) can.
+#
+# The five phases run on the compute node and live in .slurm/run-accuracy.sh --
+# read that file for what the gate actually asserts and why.  This function is
+# only the submitter: it sizes the Slurm job, picks the node, and hands
+# run-accuracy.sh its configuration as environment.
+#
+# run-accuracy.sh is a plain .sh with no #SBATCH header on purpose: it is exec'd
+# by the shim below rather than submitted directly, so directives in it would be
+# inert.  Job sizing therefore lives here, on the _sbatch_run call.
+#
+#   AIC_ACCURACY_MODEL          model to serve            (default: AIC_TINY_MODEL)
+#   AIC_ACCURACY_DELTA          allowed tiered-vs-baseline gap, two-sided (default: 0.02)
+#   AIC_ACCURACY_TIME/CPUS/MEM  Slurm sizing
+#   AIC_ACCURACY_READY_TIMEOUT  x5s waits for the endpoint (default: 120)
+AIC_ACCURACY_MODEL="${AIC_ACCURACY_MODEL:-${AIC_TINY_MODEL}}"
+AIC_ACCURACY_DELTA="${AIC_ACCURACY_DELTA:-0.02}"
+# 58 min measured for the two-arm full-split run (SPUR job 6235), plus ~7 min
+# now that phase 4 re-scores the full split too -- ~65 min, so 2h is ~1.8x.
+AIC_ACCURACY_TIME="${AIC_ACCURACY_TIME:-02:00:00}"
+AIC_ACCURACY_CPUS="${AIC_ACCURACY_CPUS:-8}"
+AIC_ACCURACY_MEM="${AIC_ACCURACY_MEM:-32G}"
+AIC_ACCURACY_READY_TIMEOUT="${AIC_ACCURACY_READY_TIMEOUT:-120}"   # x5s = up to 10 min
+
+cmd_accuracy_test() {
+    _pick_compress
+    local tarball; tarball="$(_tarball_path)"
+    [[ -r "${tarball}" ]] || die "tarball not found: ${tarball} (run 'build' first)"
+
+    local -a _sel
+    if [[ -n "${AIC_TEST_NODE:-}" ]]; then
+        _sel=(--nodelist="${AIC_TEST_NODE}")
+        log "accuracy-test on ${AIC_TEST_NODE} via sbatch (partition ${AIC_BUILD_PARTITION})"
+    else
+        _sel=(--constraint="${AIC_TEST_CONSTRAINT}")
+        log "accuracy-test via sbatch (partition ${AIC_BUILD_PARTITION}, constraint ${AIC_TEST_CONSTRAINT})"
+    fi
+    log "image: ${AIC_IMAGE}  model: ${AIC_ACCURACY_MODEL}  gsm8k: ${AIC_ACCURACY_LIMIT:+${AIC_ACCURACY_LIMIT}-item cap}${AIC_ACCURACY_LIMIT:-full split}"
+
+    # The node-side half is .slurm/run-accuracy.sh.  Everything it needs arrives
+    # as environment: the values are interpolated here, at submit time, exactly
+    # as they were when this body was an inline heredoc -- so the semantics are
+    # unchanged and nothing depends on how a given sbatch treats --export.
+    # AIC_LOG_DIR is _sbatch_run's per-job log dir, exported so the script (a
+    # separate process) can see it.
+    local remote_script
+    remote_script="$(cat <<REMOTE
+export AIC_LOG_DIR="\${_logdir}"
+export AIC_DAY_DIR='${AIC_DAY_DIR}'
+export AIC_IMAGE='${AIC_IMAGE}'
+export AIC_ROCM_ARCH='${AIC_ROCM_ARCH}'
+export AIC_TARBALL='${tarball}'
+export AIC_DECOMPRESS_CMD='${DECOMPRESS_CMD}'
+export AIC_FORCE_LOAD='${AIC_FORCE_LOAD:-0}'
+export HF_HOME='${HF_HOME}'
+export HF_TOKEN='${HF_TOKEN:-}'
+export AIC_ACCURACY_MODEL='${AIC_ACCURACY_MODEL}'
+export AIC_ACCURACY_DELTA='${AIC_ACCURACY_DELTA}'
+export AIC_ACCURACY_READY_TIMEOUT='${AIC_ACCURACY_READY_TIMEOUT}'
+${AIC_ACCURACY_LIMIT:+export AIC_ACCURACY_LIMIT="${AIC_ACCURACY_LIMIT}"}
+exec '${AIC_DAY_DIR}/.slurm/run-accuracy.sh'
+REMOTE
+)"
+
+    local -a _gres_arg=(); [[ "${AIC_SPUR_CLUSTER}" != "1" ]] && _gres_arg=(--gres=gpu:1)
+    _sbatch_run aic-accuracy-test accuracy-test "${remote_script}" \
+        "${_sel[@]}" \
+        "${_gres_arg[@]}" \
+        --nodes=1 --ntasks=1 \
+        --cpus-per-task="${AIC_ACCURACY_CPUS}" --mem="${AIC_ACCURACY_MEM}" \
+        --time="${AIC_ACCURACY_TIME}"
+    _verify_accuracy_scores "${AIC_LAST_JOB_ID}"
+    log "accuracy-test complete"
+}
+
 
 # --- profile-capture: build an AMD profile pack from a real GPU serve ---------
 # Runs the FULL image on a GPU node with VLLM_EMULATOR_TRACE_STEP_CYCLE=1, which
@@ -2830,6 +3167,32 @@ REMOTE
     log "profile-capture complete; packs in ${AIC_CAPTURE_DIR}"
 }
 
+# --- Verify the gate actually scored both arms -------------------------------
+# Same reasoning as _verify_tarball: the job runs on a remote node and a success
+# exit is not proof it did the work.  A gate is worse than a build here -- a
+# build that produces nothing fails later at load, whereas an accuracy gate that
+# ran nothing is indistinguishable from one that passed.  The two score files
+# are what every assertion in run-accuracy.sh is computed from, so if they are
+# not both present the "pass" means nothing.
+_verify_accuracy_scores() {
+    local jobid="${1:-}"
+    [[ -n "${jobid}" ]] ||
+        die "accuracy-test reported success but no job id was recorded; cannot verify it scored anything"
+    local logdir="${AIC_DAY_DIR}/logs/${jobid}"
+    local f
+    for f in baseline-score.json tiered-score.json; do
+        # NFS close-to-open consistency: the compute node's write can take a
+        # moment to become visible here even though the job has already exited.
+        local tries=0
+        until [[ -s "${logdir}/${f}" ]] || (( tries >= 15 )); do
+            sleep 2; tries=$((tries + 1))
+        done
+        [[ -s "${logdir}/${f}" ]] ||
+            die "accuracy-test reported success but produced no ${f}: ${logdir}/${f}"
+    done
+    log "verified accuracy scores: ${logdir}/{baseline,tiered}-score.json"
+}
+
 # --- main --------------------------------------------------------------------
 main() {
     local sub="${1:-all}"
@@ -2841,15 +3204,17 @@ main() {
         push)            cmd_push ;;
         test)            cmd_test ;;
         tiny-test)       cmd_tiny_test ;;
+        prometheus-dump) cmd_prometheus_dump ;;
         emulate-test)    cmd_emulate_test ;;
         emulate-mp-test) cmd_emulate_mp_test ;;
         emulate-validate) cmd_emulate_validate ;;
         profile-capture) cmd_profile_capture ;;
+        accuracy-test)   cmd_accuracy_test ;;
         all)             cmd_build; cmd_build_exporters; cmd_load ;;
         -h|--help|help)
             sed -n '2,70p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
             ;;
-        *) die "unknown command '${sub}' (use: build | build-emulate | build-exporters | load | push | test | tiny-test | emulate-test | emulate-mp-test | emulate-validate | profile-capture | all | help)" ;;
+        *) die "unknown command '${sub}' (use: build | build-emulate | build-exporters | load | push | test | tiny-test | prometheus-dump | emulate-test | emulate-mp-test | emulate-validate | profile-capture | accuracy-test | all | help)" ;;
     esac
 }
 

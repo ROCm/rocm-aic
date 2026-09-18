@@ -519,7 +519,7 @@ make monitoring-build-exporters
 
 # Run via exporters-fabric compose profile
 AIC_METRICS_DIR=/mnt/lmcache-nfs/metrics \
-  docker compose -f monitoring/docker-compose.monitoring.yml \
+  docker compose -f docker/docker-compose.yml \
     --profile exporters --profile exporters-fabric up -d
 ```
 

@@ -4,63 +4,63 @@
 # SPDX-License-Identifier: MIT
 #
 # Derive the AIC image tag from framework version build args, falling back to
-# the versions pinned in the Dockerfile.
+# the versions pinned in the split Dockerfiles.
 #
 # Emits just the tag component (no image name) in the following format:
-#   CDNA (gfx9xx):  0.1.0-rocm7.14.1-pytorch2.13-vllm0.28.0-aiter0.1.19-fa0e60e394-lmcache0.5.4-nixl1.4.1-hsasnoop1.1.0
-#   RDNA (gfx12xx): 0.1.0-rocm7.14.1-pytorch2.13-vllm0.28.0-aiter0.1.19-lmcache0.5.4-nixl1.4.1-hsasnoop1.1.0
+#   CDNA (gfx9xx):  0.1.0-rocm7.14.1-pytorch2.13-vllm0.29.0-aiter0.1.22.post1-fa2.8.3.post1-lmcache0.5.5-nixl1.4.1-hsasnoop1.1.1
+#   RDNA (gfx12xx): 0.1.0-rocm7.14.1-pytorch2.13-vllm0.29.0-aiter0.1.22.post1-lmcache0.5.5-nixl1.4.1-hsasnoop1.1.1
 # FlashAttention is omitted for non-CDNA arches (gfx10xx/gfx11xx/gfx12xx) because
 # the CK backend does not support RDNA Wave32 GPUs.
 # Where 0.1.0 represents the AIC version.
 #
-# Usage:  aic-image-tag.sh [path/to/Dockerfile]
+# Usage:  aic-image-tag.sh
+#         aic-image-tag.sh [path/to/base/Dockerfile] [path/to/vllm/Dockerfile] [path/to/lmcache/Dockerfile]
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
-DOCKERFILE="${1:-${SCRIPT_DIR}/../Dockerfile}"
+
+BASE_DOCKERFILE="${1:-${SCRIPT_DIR}/../base/Dockerfile}"
+VLLM_DOCKERFILE="${2:-${SCRIPT_DIR}/../vllm/Dockerfile}"
+LMCACHE_DOCKERFILE="${3:-${SCRIPT_DIR}/../lmcache/Dockerfile}"
 VERSION_FILE="${REPO_ROOT}/VERSION"
-[[ -r "${DOCKERFILE}" ]] || {
-  echo "aic-image-tag: cannot read ${DOCKERFILE}" >&2
-  exit 1
-}
-[[ -r "${VERSION_FILE}" ]] || {
-  echo "aic-image-tag: cannot read ${VERSION_FILE}" >&2
-  exit 1
-}
+
+for f in "${BASE_DOCKERFILE}" "${VLLM_DOCKERFILE}" "${LMCACHE_DOCKERFILE}" "${VERSION_FILE}"; do
+  [[ -r "${f}" ]] || { echo "aic-image-tag: cannot read ${f}" >&2; exit 1; }
+done
 
 aic="$(<"${VERSION_FILE}")"
 
 # A same-named environment variable represents a user-provided build-arg
-# override. Honour even an explicitly empty override so validation below fails
+# override.  Honour even an explicitly empty override so validation below fails
 # instead of silently producing a tag for the Dockerfile default.
+# Probe the correct Dockerfile for each ARG.
 _arg() {
-  if [[ -v "$1" ]]; then
-    printf '%s\n' "${!1}"
+  local name="$1" dockerfile="$2"
+  if [[ -v "${name}" ]]; then
+    printf '%s\n' "${!name}"
   else
-    grep -E "^ARG $1=" "${DOCKERFILE}" | head -1 | cut -d= -f2-
+    grep -E "^ARG ${name}=" "${dockerfile}" | head -1 | cut -d= -f2-
   fi
 }
 
-rocm="$(_arg ROCM_VERSION)"
+rocm="$(_arg ROCM_VERSION "${BASE_DOCKERFILE}")"
 
 # PYTORCH_BRANCH is a branch name (e.g. release/2.13) or a commit hash.
-# Extract just the version number for the tag (release/2.13 -> 2.13; a 7-char
-# hash is used verbatim when no version is found).
-pytorch_raw="$(_arg PYTORCH_BRANCH)"
+pytorch_raw="$(_arg PYTORCH_BRANCH "${BASE_DOCKERFILE}")"
 if [[ "${pytorch_raw}" =~ release/([0-9]+\.[0-9]+) ]]; then
   pytorch="${BASH_REMATCH[1]}"
 else
   pytorch="${pytorch_raw:0:7}"
 fi
 
-# Refs are git tags like v0.28.0 so we drop the leading v.
-vllm="$(_arg VLLM_REF | sed 's/^v//')"
-lmcache="$(_arg LMCACHE_REF | sed 's/^v//')"
-nixl="$(_arg NIXL_REF | sed 's/^v//')"
-aiter="$(_arg AITER_REF | sed 's/^v//')"
-flash_attn="$(_arg FLASH_ATTN_REF)"
-hsasnoop="$(_arg HSA_SNOOP_REF | sed 's/^v//')"
+# Refs are git tags like v0.29.0 so we drop the leading v.
+vllm="$(_arg VLLM_REF "${VLLM_DOCKERFILE}" | sed 's/^v//')"
+lmcache="$(_arg LMCACHE_REF "${LMCACHE_DOCKERFILE}" | sed 's/^v//')"
+nixl="$(_arg NIXL_REF "${LMCACHE_DOCKERFILE}" | sed 's/^v//')"
+aiter="$(_arg AITER_REF "${LMCACHE_DOCKERFILE}" | sed 's/^v//')"
+flash_attn="$(_arg FLASH_ATTN_REF "${LMCACHE_DOCKERFILE}" | sed 's/^v//')"
+hsasnoop="$(_arg HSA_SNOOP_REF "${LMCACHE_DOCKERFILE}" | sed 's/^v//')"
 
 # FlashAttention is CDNA-only (gfx9xx). Detect from ROCM_ARCH env (set by make/caller)
 # or fall back to including fa in the tag when arch is unknown (conservative default).

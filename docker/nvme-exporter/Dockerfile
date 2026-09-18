@@ -16,11 +16,11 @@
 # Multi-arch: TARGETARCH is set automatically by `docker buildx` (amd64/arm64);
 # it maps directly onto the release asset suffix.
 #
-# Build (from monitoring/):
-#   docker build -t aic-nvme-exporter:local ./nvme-exporter
+# Build (from repository root):
+#   docker build -t aic-nvme-exporter:local ./docker/nvme-exporter
 #   # or pin a version:
 #   docker build --build-arg NVME_EXPORTER_VERSION=3.0.0 \
-#       -t aic-nvme-exporter:3.0.0 ./nvme-exporter
+#       -t aic-nvme-exporter:3.0.0 ./docker/nvme-exporter
 #
 # Run (host networking; needs the NVMe devices + sysfs):
 #   docker run -d --name aic-nvme-exporter --network host \

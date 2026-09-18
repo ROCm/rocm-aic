@@ -1,0 +1,43 @@
+# Smoke and Tiny share one workflow to leave room for separate Accuracy and
+# Cliff workflows within GitHub's three-level workflow_run chaining limit:
+#   Dist Build -> Smoke + Tiny -> Accuracy -> Cliff
+# workflow_run matches display names, so downstream workflows must track name:.
+name: AIC Hardware Test - Nightly Smoke + Tiny Test
+
+on:
+  workflow_run:
+    workflows: ["AIC Hardware Test - Nightly Dist Build"]
+    types: [completed]
+
+jobs:
+  smoke-test:
+    if: github.event.workflow_run.conclusion == 'success'
+    runs-on: [self-hosted, rocm-aic-cicd]
+    timeout-minutes: 60
+    env:
+      AIC_SPUR_HOST: ${{ secrets.AIC_SPUR_HOST }}
+      AIC_SHARED_NFS: ${{ secrets.AIC_SHARED_NFS }}
+      AIC_CI_STORAGE_ROOT: ${{ secrets.AIC_SHARED_NFS }}/rocm-aic
+      AIC_SPUR_CONTROLLER: ${{ secrets.AIC_SPUR_CONTROLLER }}
+
+    steps:
+      - name: Run smoke test on the SPUR head node
+        run: bash /usr/local/lib/aic-ci/spur-smoke-test.sh "${{ github.event.workflow_run.head_sha }}"
+
+  tiny-test:
+    needs: smoke-test
+    if: github.event.workflow_run.conclusion == 'success'
+    runs-on: [self-hosted, rocm-aic-cicd]
+    timeout-minutes: 60
+    env:
+      AIC_SPUR_HOST:       ${{ secrets.AIC_SPUR_HOST }}
+      AIC_SHARED_NFS:      ${{ secrets.AIC_SHARED_NFS }}
+      AIC_CI_STORAGE_ROOT: ${{ secrets.AIC_SHARED_NFS }}/rocm-aic
+      AIC_SPUR_CONTROLLER: ${{ secrets.AIC_SPUR_CONTROLLER }}
+      HF_TOKEN:            ${{ secrets.AIC_HF_TOKEN }}
+
+    steps:
+      - name: Run tiny-test on SPUR head node
+        # Keep the image tarball for the following nightly accuracy and cliff
+        # stages; spur-cliff-harvest.sh owns its final cleanup.
+        run: KEEP_ARTIFACTS=1 bash /usr/local/lib/aic-ci/spur-tiny-test.sh "${{ github.event.workflow_run.head_sha }}"

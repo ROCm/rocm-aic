@@ -1,0 +1,185 @@
+# Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+#
+# Nightly serve check of the emulation image.  This stage needs NO GPU: the
+# image is built with --target emulate and VLLM_TARGET_DEVICE=empty (no GPU
+# kernels compiled), and the emulator serves on a CPU-only GitHub-hosted runner
+# with no /dev/kfd in the container.  It therefore runs on its own schedule
+# rather than chained behind the dist-build -> smoke -> tiny -> cliff sequence,
+# and does not compete with those stages for hardware.
+#
+# See docs/EMULATE.md.
+name: AIC Nightly Emulate Test
+
+on:
+  schedule:
+    # 03:00 PST = 11:00 UTC
+    - cron: '0 11 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  emulate-test:
+    name: Build and serve-test the emulation image
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+
+    env:
+      IMAGE_NAME: rocm-aic:emulate-test
+      VLLM_MODEL: Qwen/Qwen3-8B
+      VLLM_EMULATOR_PROFILE_PACK: /opt/llm-emu/profiles/MI300X-Qwen3-8B.json
+      AIC_EMULATE_READY_TIMEOUT: 96   # x5s = up to 8 min
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Free disk space on runner
+        uses: jlumbroso/free-disk-space@v1.3.1
+        with:
+          tool-cache: true
+          android: true
+          dotnet: true
+          haskell: true
+          large-packages: true
+          docker-images: true
+          swap-storage: true
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Write corp CA cert secret (AMD Zscaler proxy)
+        id: cert
+        run: |
+          if [ -n "${{ secrets.CORP_CA_CERT }}" ]; then
+            echo "${{ secrets.CORP_CA_CERT }}" > /tmp/corp-ca.crt
+            echo "present=true" >> "${GITHUB_OUTPUT}"
+          else
+            echo "present=false" >> "${GITHUB_OUTPUT}"
+          fi
+
+      - name: Build emulation image (no GPU kernels)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/vllm/Dockerfile
+          target: emulate
+          load: true
+          tags: ${{ env.IMAGE_NAME }}
+          build-args: |
+            ROCM_ARCH=gfx942
+            VLLM_TARGET_DEVICE=empty
+          secrets: |
+            ${{ steps.cert.outputs.present == 'true' && format('tls_cert={0}', steps.cert.outputs.path) || '' }}
+          cache-from: type=gha,scope=aic-emulate
+          cache-to: type=gha,mode=max,scope=aic-emulate
+
+      - name: Serve-test the emulation image
+        env:
+          HF_TOKEN: ${{ secrets.AIC_HF_TOKEN }}
+          HF_HOME: ${{ runner.temp }}/hf
+          LOG: ${{ runner.temp }}/logs
+          AIC_CONTAINER_USER: "0:0"
+          AIC_CONTAINER_USERNAME: root
+          AIC_CONTAINER_HOME: /root
+        run: |
+          set -euo pipefail
+          mkdir -p "${HF_HOME}" "${LOG}/vllm-emulator"
+
+          compose() {
+            docker compose -f docker/docker-compose.yml "$@"
+          }
+          cleanup() {
+            compose --profile emulate logs --no-color --no-log-prefix vllm-emulator \
+              > "${LOG}/emulate-vllm.log" 2>&1 || true
+            compose --profile emulate down --remove-orphans --timeout 10 >/dev/null 2>&1 || true
+            docker rm -f aic-vllm-emulator >/dev/null 2>&1 || true
+          }
+          trap cleanup EXIT
+
+          echo "[emulate-test] bringing up compose emulate profile (model=${VLLM_MODEL}) ..."
+          if ! compose --profile emulate up -d vllm-emulator; then
+            echo "[emulate-test] FAIL: compose up failed" >&2
+            compose --profile emulate logs --tail 60 --no-color vllm-emulator 2>&1 | sed 's/^/  [emu] /'
+            exit 1
+          fi
+
+          ready=0
+          for _i in $(seq 1 "${AIC_EMULATE_READY_TIMEOUT}"); do
+            if curl -fsS http://localhost:8000/v1/models >/dev/null 2>&1; then ready=1; break; fi
+            if [ -z "$(docker ps -q -f name=aic-vllm-emulator)" ]; then
+              echo "[emulate-test] FAIL: emulator container exited during startup" >&2
+              compose --profile emulate logs --tail 120 --no-color vllm-emulator 2>&1 | sed 's/^/  [emu] /'
+              exit 1
+            fi
+            sleep 5
+          done
+          if [ "${ready}" != "1" ]; then
+            echo "[emulate-test] FAIL: endpoint never became ready" >&2
+            compose --profile emulate logs --tail 120 --no-color vllm-emulator 2>&1 | sed 's/^/  [emu] /'
+            exit 1
+          fi
+
+          echo "[emulate-test] endpoint ready; sending one chat completion ..."
+          if docker exec aic-vllm-emulator test -e /dev/kfd 2>/dev/null; then
+            kfd_in_container=yes
+          else
+            kfd_in_container=no
+          fi
+          echo "[emulate-test] /dev/kfd inside container: ${kfd_in_container}"
+
+          resp="$(curl -fsS http://localhost:8000/v1/chat/completions \
+            -H 'Content-Type: application/json' \
+            -d "{\"model\":\"${VLLM_MODEL}\",\"messages\":[{\"role\":\"user\",\"content\":\"Reply with the single word: pong\"}],\"max_tokens\":16,\"temperature\":0}" 2>&1)" || {
+            echo "[emulate-test] FAIL: completion request failed: ${resp}" >&2; exit 1; }
+          echo "[emulate-test] response: ${resp}"
+
+          rc=0
+          if [ "${kfd_in_container}" = "no" ]; then
+            echo "[emulate-test] OK: emulator container has no GPU device"
+          else
+            echo "[emulate-test] FAIL: /dev/kfd is visible inside the emulator container" >&2; rc=1
+          fi
+
+          # Assert on tokens, not decoded text — the emulator emits one fixed filler
+          # token per step (meaningless by design); what matters is the tokens flowed.
+          completion_tokens="$(printf '%s' "${resp}" | grep -oE '"completion_tokens"[[:space:]]*:[[:space:]]*[0-9]+' | grep -oE '[0-9]+$')"
+          if [ -n "${completion_tokens}" ] && [ "${completion_tokens}" -gt 0 ]; then
+            echo "[emulate-test] OK: emulated engine generated ${completion_tokens} tokens"
+          else
+            echo "[emulate-test] FAIL: no tokens generated (completion_tokens=${completion_tokens:-<absent>})" >&2; rc=1
+          fi
+
+          # Grep a file, not a pipe: grep -q exits on first match, causing SIGPIPE
+          # to the writer; set -o pipefail then reports a false negative.
+          logfile="${LOG}/emulate-checks.log"
+          compose --profile emulate logs --no-color --no-log-prefix vllm-emulator \
+            > "${logfile}" 2>&1 || true
+
+          if grep -q '\[ExecutorEmulatorHook\] Enabled' "${logfile}"; then
+            echo "[emulate-test] OK: executor hook active"
+          else
+            echo "[emulate-test] FAIL: llm-emu executor hook never activated" >&2; rc=1
+          fi
+          if grep -q 'load_model SKIPPED' "${logfile}"; then
+            echo "[emulate-test] OK: model weights were never loaded (emulator stub)"
+          else
+            echo "[emulate-test] WARN: no 'load_model SKIPPED' line; weights may have been loaded"
+          fi
+          if grep -q '\[ExecutorHook\] step=' "${logfile}"; then
+            echo "[emulate-test] OK: steps served from the profile pack"
+          else
+            echo "[emulate-test] FAIL: no emulated step recorded" >&2; rc=1
+          fi
+
+          [ "${rc}" -eq 0 ] && echo "[emulate-test] ALL CHECKS PASSED" \
+            || { echo "[emulate-test] SOME CHECKS FAILED" >&2; exit 1; }
+
+      - name: Upload emulator log on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: emulate-vllm-log
+          path: ${{ runner.temp }}/logs/
+          retention-days: 3

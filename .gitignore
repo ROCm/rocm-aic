@@ -50,3 +50,4 @@ prometheus-dump.md
 # Overnight testing files
 overnight*.md
  
+.nfs*

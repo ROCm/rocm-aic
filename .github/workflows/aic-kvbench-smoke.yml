@@ -19,12 +19,6 @@ on:
       - '.github/workflows/aic-kvbench-smoke.yml'
   pull_request:
     branches: [main]
-    paths:
-      - 'Makefile'
-      - 'benchmarks/**'
-      - 'docker/**'
-      - 'tests/**'
-      - '.github/workflows/aic-kvbench-smoke.yml'
   workflow_dispatch:
 
 permissions:

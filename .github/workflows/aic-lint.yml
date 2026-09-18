@@ -47,8 +47,8 @@ jobs:
       - name: Resolve LLM-Emu ref from Dockerfile
         id: meta
         run: |
-          ref="$(grep -E '^ARG LLM_EMU_REF=' docker/Dockerfile | head -1 | cut -d= -f2-)"
-          url="$(grep -E '^ARG LLM_EMU_GIT_URL=' docker/Dockerfile | head -1 | cut -d= -f2-)"
+          ref="$(grep -E '^ARG LLM_EMU_REF=' docker/vllm/Dockerfile | head -1 | cut -d= -f2-)"
+          url="$(grep -E '^ARG LLM_EMU_GIT_URL=' docker/vllm/Dockerfile | head -1 | cut -d= -f2-)"
           echo "ref=${ref}" >> "${GITHUB_OUTPUT}"
           echo "url=${url}" >> "${GITHUB_OUTPUT}"
       - name: Install vllm_emulator plugin (no deps — no torch needed)
