@@ -689,6 +689,18 @@ wait_ready() { # $1=port $2=timeout_s
       log "vLLM :${port} is ready (${waited}s)"
       return 0
     fi
+    # Fail fast once the container is gone.  vLLM that died during engine init
+    # is never coming back, and burning the full 1200s per arm buries the real
+    # error 20 minutes deep in the log -- e.g. job 151136, where another tenant
+    # on the node held 213 GiB of the GPU and vLLM exited immediately with
+    # "Free memory on device cuda:0 (74.53/287.98 GiB) ... less than desired
+    # GPU memory utilization (0.9, 259.19 GiB)".
+    local state
+    state="$(docker inspect -f '{{.State.Running}}' "${VLLM_CONTAINER}" 2>/dev/null || echo missing)"
+    if [[ "${state}" != "true" ]]; then
+      log "vLLM container ${VLLM_CONTAINER} is no longer running (state=${state}) after ${waited}s; not waiting out the timeout"
+      return 1
+    fi
     sleep 10
     waited=$((waited + 10))
   done
