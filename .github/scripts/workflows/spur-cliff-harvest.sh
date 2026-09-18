@@ -124,15 +124,38 @@ while squeue -j "${JOB_ID}" -h 2>/dev/null |
     sleep 30
 done
 
+# logs/<id>/cliff.exit is written by run-cliff.sbatch's EXIT trap and is the
+# authoritative result.  SPUR's accounting is not: on a node where it fails to
+# capture the batch script's status it reports State=COMPLETED with
+# ExitCode=-1:0 whatever the job returned (job 150665 died on `docker load` and
+# still accounted as COMPLETED), so gating on State alone silently passes a
+# failed cliff run.  The file lands on NFS as the job ends, which can lag its
+# disappearance from squeue; wait briefly for it.
+EXIT_FILE="logs/${JOB_ID}/cliff.exit"
+_tries=0
+until [[ -f "${EXIT_FILE}" ]] || (( _tries >= 10 )); do
+    sleep 1
+    _tries=$((_tries + 1))
+done
+
 # SPUR's sacct ignores -j and returns every job it knows about, so `head -1`
 # both (a) truncated the stream and left sacct writing into a closed pipe --
 # SIGPIPE, which under `set -o pipefail` exited the script with 141 before the
 # line below could print -- and (b) read an unrelated job's State when it did
 # survive.  Match the job ID in awk and consume sacct's full output.
-STATE=$(sacct -j "${JOB_ID}" --format=JobID,State --noheader 2>/dev/null |
-    awk -v id="${JOB_ID}" '$1 == id && !found { state = $2; found = 1 }
-                           END { if (found) print state }' | tr -d ' ')
-echo "=== Job ${JOB_ID} finished with state: ${STATE:-<unknown>} ==="
+SACCT_ROW="$(sacct -j "${JOB_ID}" --format=JobID,State,ExitCode --noheader 2>/dev/null |
+    awk -v id="${JOB_ID}" '$1 == id && !found { print $2, $3; found = 1 }')"
+STATE="${SACCT_ROW%% *}"
+CODE="${SACCT_ROW##* }"
+echo "=== Job ${JOB_ID} finished: state=${STATE:-<unknown>} sacct-exit=${CODE:-<unknown>} ==="
+
+JOB_RC=""
+if [[ -f "${EXIT_FILE}" ]]; then
+    JOB_RC="$(tr -d '[:space:]' <"${EXIT_FILE}" 2>/dev/null || true)"
+    echo "=== Job ${JOB_ID} exit code ${JOB_RC} (from ${EXIT_FILE}) ==="
+else
+    echo "WARNING: ${EXIT_FILE} missing; falling back to sacct accounting" >&2
+fi
 
 LOG="logs/${JOB_ID}/cliff.out"
 if [[ -f "${LOG}" ]]; then
@@ -140,7 +163,13 @@ if [[ -f "${LOG}" ]]; then
     cat "${LOG}"
 fi
 
-[[ "${STATE}" == "COMPLETED" ]] || { echo "ERROR: job ${JOB_ID} ended in state ${STATE}" >&2; exit 1; }
+if [[ "${JOB_RC}" =~ ^[0-9]+$ ]]; then
+    [[ "${JOB_RC}" -eq 0 ]] ||
+        { echo "ERROR: job ${JOB_ID} exited ${JOB_RC} (state ${STATE:-<unknown>})" >&2; exit 1; }
+else
+    [[ "${STATE}" == "COMPLETED" && "${CODE}" == "0:0" ]] ||
+        { echo "ERROR: job ${JOB_ID} ended in state ${STATE:-<unknown>} (sacct exit ${CODE:-<unknown>})" >&2; exit 1; }
+fi
 
 # ---------------------------------------------------------------------------
 # Copy results to NFS staging BEFORE the EXIT trap deletes WORKDIR
