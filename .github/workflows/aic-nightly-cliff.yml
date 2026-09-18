@@ -3,7 +3,7 @@
 #   Dist Build -> Smoke -> [Tiny | Accuracy | Cliff]  (all parallel)
 #
 # workflow_run matches display names, not filenames; keep the upstream
-# workflows: entry in sync with aic-amd-nightly-smoke-tiny-test.yml's name:.
+# workflows: entry in sync with aic-nightly-smoke-test.yml's name:.
 #
 # The KV cache cliff benchmark sweeps all three arms (vram_only, kvd_v2/nvme,
 # kvd_v2/gds), generates a self-contained HTML performance-tracking page, and

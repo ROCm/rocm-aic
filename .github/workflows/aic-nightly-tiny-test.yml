@@ -3,7 +3,7 @@
 #   Dist Build -> Smoke -> [Tiny | Accuracy | Cliff]  (all parallel)
 #
 # workflow_run matches display names, not filenames; keep the upstream
-# workflows: entry in sync with aic-amd-nightly-smoke-tiny-test.yml's name:.
+# workflows: entry in sync with aic-nightly-smoke-test.yml's name:.
 name: rocm-aic - Self Hosted - Nightly Tiny Test
 
 on:

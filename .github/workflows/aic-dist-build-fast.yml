@@ -5,7 +5,7 @@
 #
 # For the full multi-arch gate with an accuracy stage appended, use:
 #
-#   /run-ci-accuracy   fires aic-amd-dist-build.yml: dist-build -> smoke-test
+#   /run-ci-accuracy   fires aic-dist-build.yml: dist-build -> smoke-test
 #                      -> tiny-test -> accuracy-test (full multi-arch)
 #
 # Cleanup ownership: tiny-test is the terminal stage and cleans up on exit.
@@ -15,7 +15,7 @@
 #   secrets.AIC_SHARED_NFS       — shared NFS path for image tarballs + scratch
 #   secrets.AIC_SPUR_CONTROLLER  — SPUR controller address
 
-name: rocm-aic - Self Hosted - AMD Dist Build Fast
+name: rocm-aic - Self Hosted - Dist Build Fast
 
 on:
   workflow_dispatch:
@@ -76,9 +76,9 @@ jobs:
 
   # Validate the slash command on PRs; skipped for manual triggers.
   # Only /run-ci-fast lands here; /run-ci-accuracy now fires the full multi-arch
-  # gate in aic-amd-dist-build.yml (with accuracy chained after smoke+tiny).
+  # gate in aic-dist-build.yml (with accuracy chained after smoke+tiny).
   #
-  # aic-amd-dist-build.yml matches '/run-ci' by substring and must exclude
+  # aic-dist-build.yml matches '/run-ci' by substring and must exclude
   # /run-ci-fast or a fast-path comment also fires the full multi-arch gate.
   authorize:
     if: >-

@@ -15,7 +15,7 @@
 #                   aic-ci-<short-sha> (i.e. a dist-build ran for the same
 #                   commit and kept its artifacts).
 #
-# There is also a PR path: aic-amd-dist-build.yml's /run-ci-accuracy command
+# There is also a PR path: aic-dist-build.yml's /run-ci-accuracy command
 # chains accuracy-test as a fifth job after dist-build + smoke + tiny.
 #
 # The full gate — both arms, full gsm8k split — runs ~65 min.  There is no
@@ -29,7 +29,7 @@
 #   secrets.AIC_SPUR_CONTROLLER  — SPUR controller address
 #   secrets.AIC_HF_TOKEN         — HF token for the model download
 
-name: rocm-aic - Self Hosted - AMD Accuracy Test
+name: rocm-aic - Self Hosted - Accuracy Test
 
 on:
   workflow_dispatch:
