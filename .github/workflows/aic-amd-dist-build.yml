@@ -1,4 +1,4 @@
-name: AIC Hardware Test - AMD Dist Build
+name: rocm-aic - Hardware Test - AMD Dist Build
 
 on:
   workflow_dispatch:

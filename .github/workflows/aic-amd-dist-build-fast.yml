@@ -25,7 +25,7 @@
 #   secrets.AIC_SPUR_CONTROLLER  — SPUR controller address
 #   secrets.AIC_HF_TOKEN         — HF token for the accuracy model download
 
-name: AIC Hardware Test - AMD Dist Build (fast)
+name: rocm-aic - Hardware Test - AMD Dist Build (fast)
 
 on:
   workflow_dispatch:

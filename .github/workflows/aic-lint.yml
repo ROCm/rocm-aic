@@ -1,4 +1,4 @@
-name: AIC Lint
+name: rocm-aic - Lint
 on:
   push:
     branches: [main]

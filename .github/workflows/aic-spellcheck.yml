@@ -1,4 +1,4 @@
-name: AIC Spellcheck
+name: rocm-aic - Spell Check
 on:
   push:
     branches: [main]

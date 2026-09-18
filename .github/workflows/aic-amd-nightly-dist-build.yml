@@ -1,4 +1,4 @@
-name: AIC Hardware Test - Nightly Dist Build
+name: rocm-aic - Hardware Test - Nightly Dist Build
 
 on:
   schedule:

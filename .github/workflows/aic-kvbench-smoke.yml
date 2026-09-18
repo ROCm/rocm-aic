@@ -6,7 +6,7 @@
 # runner. Builds the repo's KVBench container, starts it on the compose network,
 # and drives it through the cliff harness without requiring GPUs or SPUR capacity.
 
-name: AIC KVBench Arm Smoke
+name: rocm-aic - KVBench Arm Smoke
 
 on:
   push:

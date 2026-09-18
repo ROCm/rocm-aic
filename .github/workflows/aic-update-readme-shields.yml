@@ -5,7 +5,7 @@
 # Prevent component metadata in README.md from drifting from the source-built
 # stack declared in docker/base/, docker/vllm/, docker/lmcache/ Dockerfiles.
 
-name: AIC README Version Check
+name: rocm-aic - README Version Check
 
 on:
   pull_request:

@@ -15,7 +15,7 @@
 #   CORP_CA_CERT      (optional) AMD Zscaler corp CA cert for BuildKit
 #   DOCKERHUB_USERNAME / DOCKERHUB_TOKEN  for Docker Hub push
 #
-name: AIC Release
+name: rocm-aic - Release
 
 on:
   push:

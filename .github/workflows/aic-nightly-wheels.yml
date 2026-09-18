@@ -35,7 +35,7 @@
 # Compatibility: ROCm 7.14 / Python 3.12 / x86_64, non-manylinux.
 # NIXL wheel carries libnixl + plugins/UCX; ROCm runtime is an external dep.
 #
-name: AIC Nightly Wheels
+name: rocm-aic - Nightly Wheels
 
 on:
   schedule:

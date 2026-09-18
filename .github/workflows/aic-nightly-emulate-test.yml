@@ -10,7 +10,7 @@
 # and does not compete with those stages for hardware.
 #
 # See docs/EMULATE.md.
-name: AIC Nightly Emulate Test
+name: rocm-aic - Nightly Emulate Test
 
 on:
   schedule:

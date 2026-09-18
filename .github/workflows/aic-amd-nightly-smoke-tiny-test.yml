@@ -2,11 +2,11 @@
 # Cliff workflows within GitHub's three-level workflow_run chaining limit:
 #   Dist Build -> Smoke + Tiny -> Accuracy -> Cliff
 # workflow_run matches display names, so downstream workflows must track name:.
-name: AIC Hardware Test - Nightly Smoke + Tiny Test
+name: rocm-aic - Hardware Test - Nightly Smoke + Tiny Test
 
 on:
   workflow_run:
-    workflows: ["AIC Hardware Test - Nightly Dist Build"]
+    workflows: ["rocm-aic - Hardware Test - Nightly Dist Build"]
     types: [completed]
 
 jobs:

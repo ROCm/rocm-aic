@@ -40,11 +40,11 @@
 #   secrets.AIC_SPUR_CONTROLLER  — SPUR controller address
 #   secrets.AIC_HF_TOKEN         — HF token for the model download
 #
-name: AIC Hardware Test - Nightly Accuracy Test
+name: rocm-aic - Hardware Test - Nightly Accuracy Test
 
 on:
   workflow_run:
-    workflows: ["AIC Hardware Test - Nightly Smoke + Tiny Test"]
+    workflows: ["rocm-aic - Hardware Test - Nightly Smoke + Tiny Test"]
     types: [completed]
 
 permissions:
