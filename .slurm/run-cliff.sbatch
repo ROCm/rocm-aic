@@ -100,6 +100,29 @@ if mkdir -p "${LOGDIR}" 2>/dev/null; then
   exec >>"${LOGDIR}/cliff.out" 2>&1
 fi
 
+# Record the job's real exit code in logs/<job-id>/cliff.exit.  SPUR's accounting
+# cannot be trusted as the sole success signal: on a node where it fails to
+# capture the script's status, sacct reports `COMPLETED` with ExitCode `-1:0`
+# regardless of what the script actually returned (observed on crsuse2-m2m-267's
+# neighbour crsuse2-m2m-250, job 150665 -- the job died on `docker load` and
+# still accounted as COMPLETED).  A caller gating on State alone therefore passes
+# a failed cliff run.  run-build-distribute.sh already treats a job-written exit
+# file as authoritative and falls back to sacct; do the same here.
+#
+# The trap is installed now, not after monitoring-lib.sh is sourced, so that an
+# early die() (missing HF cache, failed image load) is still recorded.  It
+# subsumes the later `trap stop_monitoring EXIT`: a second `trap ... EXIT` would
+# silently replace this one.  The exit code is written before teardown so a
+# hung stop_monitoring cannot lose it.
+_on_exit() {
+  local rc=$?
+  [[ -d "${LOGDIR}" ]] && { echo "${rc}" >"${LOGDIR}/cliff.exit" 2>/dev/null || true; }
+  # stop_monitoring is only defined once monitoring-lib.sh has been sourced.
+  declare -F stop_monitoring >/dev/null && { stop_monitoring || true; }
+  return "${rc}"
+}
+trap _on_exit EXIT
+
 _aic_tag="$(bash "${REPO}/docker/scripts/aic-image-tag.sh" 2>/dev/null || true)"
 AIC_IMAGE="${AIC_IMAGE:-${AIC_IMAGE_NAME:-rocm-aic}:${_aic_tag:-latest}}"
 AIC_IMAGE_DIR="${AIC_IMAGE_DIR:-/scratch/${USER}/images}"
@@ -580,8 +603,8 @@ if [[ "${AIC_EXPORTERS}" != "0" ]]; then
 fi
 
 # --- Benchmark client env (offline HF cache) ---------------------------------
-# The bench + plot containers run with --network host and reach the vLLM endpoint
-# at localhost:<published port>.  The inference stack itself is launched via
+# The bench container joins the `aic` bridge and reaches vLLM by container name;
+# the vllm service publishes no host ports.  The inference stack itself is launched via
 # docker/docker-compose.yml (see the compose-stack setup block below), not raw
 # docker run -- all container/GPU/cap flags now live in that compose file.
 HF_ENV=(-e HF_HOME=/hf -e HF_HUB_CACHE=/hf/hub -e HF_HUB_OFFLINE=1
@@ -618,6 +641,10 @@ source "${REPO}/monitoring/monitoring-lib.sh"
 aic_resolve_gpu_visibility \
   || die "could not resolve the SPUR GPU allocation (refusing to default to GPU 0)"
 export GPU="${AIC_ROCR_VISIBLE%%,*}"
+# compose names the container aic-vllm-gpu${GPU}, and on SPUR the allocated GPU
+# is rarely 0 (job 150940 got GPU 3).  Derive the name instead of hardcoding
+# aic-vllm-gpu0, which silently addressed a container that does not exist.
+VLLM_CONTAINER="aic-vllm-gpu${GPU}"
 export HF_HOME NVME_DATA NFS_DATA GDS_SLAB_DATA
 export LOG="${LOGDIR}" # lmcache/vllm container logs land under the job dir
 export HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1
@@ -650,9 +677,29 @@ wait_ready() { # $1=port $2=timeout_s
   local port="$1" timeout="${2:-${AIC_VLLM_READY_TIMEOUT:-1200}}" waited=0
   log "waiting for vLLM on :${port} (up to ${timeout}s)"
   while ((waited < timeout)); do
-    if curl -fsS "http://localhost:${port}/v1/models" >/dev/null 2>&1; then
+    # Probe from inside the container, not the host.  The vllm service moved off
+    # `network_mode: host` onto the `aic` bridge (58d3864) and publishes no
+    # ports, so a host-side `curl localhost:8000` can never connect -- every
+    # cliff run failed Arm A with "server never became ready" after the full
+    # 1200s timeout while the container log showed vLLM reaching "Application
+    # startup complete" ~2 min in.  `docker exec` matches the convention the
+    # rest of the repo adopted for this (PR #133).
+    if docker exec "${VLLM_CONTAINER}" \
+      curl -fsS "http://127.0.0.1:${port}/v1/models" >/dev/null 2>&1; then
       log "vLLM :${port} is ready (${waited}s)"
       return 0
+    fi
+    # Fail fast once the container is gone.  vLLM that died during engine init
+    # is never coming back, and burning the full 1200s per arm buries the real
+    # error 20 minutes deep in the log -- e.g. job 151136, where another tenant
+    # on the node held 213 GiB of the GPU and vLLM exited immediately with
+    # "Free memory on device cuda:0 (74.53/287.98 GiB) ... less than desired
+    # GPU memory utilization (0.9, 259.19 GiB)".
+    local state
+    state="$(docker inspect -f '{{.State.Running}}' "${VLLM_CONTAINER}" 2>/dev/null || echo missing)"
+    if [[ "${state}" != "true" ]]; then
+      log "vLLM container ${VLLM_CONTAINER} is no longer running (state=${state}) after ${waited}s; not waiting out the timeout"
+      return 1
     fi
     sleep 10
     waited=$((waited + 10))
@@ -664,12 +711,16 @@ run_bench() { # $1=arm $2=endpoint_port $3=out_csv $4=extra args...
   local arm="$1" port="$2" out="$3"
   shift 3
   log "running sweep: arm=${arm} endpoint=:${port} -> ${out}"
-  docker run --rm --network host \
+  # Join the `aic` bridge and address vLLM by container name: with the vllm
+  # service on that network and publishing no ports, --network host + localhost
+  # cannot reach it.  The network is named `aic` explicitly in the compose file
+  # (networks.aic-network.name), so it is not compose-project prefixed.
+  docker run --rm --network aic \
     -v "${REPO}":/work -w /work \
     -v "${HF_HOME}":/hf "${HF_ENV[@]}" \
     --entrypoint python3 "${AIC_IMAGE}" \
     benchmarks/run_cliff.py \
-    --endpoint "http://localhost:${port}" \
+    --endpoint "http://${VLLM_CONTAINER}:${port}" \
     --model "${VLLM_MODEL}" \
     --arm "${arm}" \
     --isl "${BENCH_ISL}" \
@@ -696,7 +747,12 @@ stop_stack() {
   local svc c
   # Capture each service's logs before teardown (bounded).
   for svc in vllm lmcache; do
-    timeout 30 compose logs --no-color --no-log-prefix "${svc}" >"${LOGDIR}/container-aic-${svc}.log" 2>&1 || true
+    # NB: `compose` is a shell function; `timeout` execs a binary and cannot run
+    # one, so `timeout 30 compose ...` only ever wrote
+    # "timeout: failed to run command 'compose'" into the capture -- silently,
+    # via the `|| true`. Call docker directly so the logs are actually captured.
+    timeout 30 docker compose -f "${COMPOSE_FILE}" logs \
+        --no-color --no-log-prefix "${svc}" >"${LOGDIR}/container-aic-${svc}.log" 2>&1 || true
   done
   # vLLM + lmcache run in a SHARED PID namespace (required for cross-container HIP
   # IPC KV registration).  That prevents docker from reaping vLLM's EngineCore
@@ -707,8 +763,11 @@ stop_stack() {
   pkill -9 -f 'EngineCore' 2>/dev/null || true
   pkill -9 -f 'lmcache server' 2>/dev/null || true
   sleep 2
-  timeout 60 compose --profile cache down --remove-orphans --timeout 5 >/dev/null 2>&1 || true
-  for c in aic-vllm-gpu0 aic-lmcache; do timeout 30 docker rm -f "${c}" >/dev/null 2>&1 || true; done
+  # Same shell-function-under-timeout bug as the log capture above: this teardown
+  # never actually ran, leaving the stack's containers and bridge network behind.
+  timeout 60 docker compose -f "${COMPOSE_FILE}" --profile cache down \
+      --remove-orphans --timeout 5 >/dev/null 2>&1 || true
+  for c in "${VLLM_CONTAINER}" aic-lmcache; do timeout 30 docker rm -f "${c}" >/dev/null 2>&1 || true; done
 }
 
 # --- Metrics-capture sidecar (Prometheus + optional exporters) ---------------
@@ -720,8 +779,10 @@ source "${REPO}/monitoring/monitoring-lib.sh"
 # The whole stack (arms + metrics) is docker compose v2 only -- install the plugin
 # user-locally if the node lacks it (ensure_compose lives in monitoring-lib.sh).
 ensure_compose || die "docker compose unavailable and could not be installed"
-# Guarantee teardown (containers only; the NFS TSDB is retained) on any exit.
-trap stop_monitoring EXIT
+# Teardown (containers only; the NFS TSDB is retained) is guaranteed by the
+# _on_exit trap installed near the top of this script, which calls
+# stop_monitoring once it is defined.  Re-arming `trap stop_monitoring EXIT`
+# here would replace that trap and lose the cliff.exit write.
 
 # =============================================================================
 # Arm A — vram_only : plain vLLM baseline, no LMCache connector
@@ -730,7 +791,7 @@ trap stop_monitoring EXIT
 # behind the `cache` profile (skipped) and vllm's depends_on is required:false.
 VRAM_CSV="${RESULTS}/cliff-vram_only-${STAMP}.csv"
 run_arm_vram() {
-  rm_containers aic-vllm-gpu0 aic-lmcache
+  rm_containers "${VLLM_CONTAINER}" aic-lmcache
   log "=== Arm A (vram_only): plain vLLM (no LMCache) on :${VLLM_ENDPOINT_PORT} ==="
   export KV_TRANSFER_ARG="" # no connector -> plain VRAM-prefix-cache-only vLLM
   export GDS_MODE=""
@@ -785,7 +846,7 @@ YML
 run_arm_kvd() { # $1=mode(nvme|gds) $2=out_csv
   local mode="$1" out="$2"
   log "=== Arm B (kvd_v2, mode=${mode}) — LMCache MP connector ==="
-  rm_containers aic-vllm-gpu0 aic-lmcache
+  rm_containers "${VLLM_CONTAINER}" aic-lmcache
 
   # MP connector arg for vLLM (+ optional kv_load_failure_policy).  Single-quote
   # the JSON so compose's shlex splitting preserves the inner double quotes.
@@ -863,7 +924,7 @@ run_arm_kvd() { # $1=mode(nvme|gds) $2=out_csv
   docker logs -f --timestamps aic-lmcache \
     >>"${LOGDIR}/lmcache/lmcache-stream.log" 2>&1 &
   _lmcache_log_pid=$!
-  docker logs -f --timestamps aic-vllm-gpu0 \
+  docker logs -f --timestamps "${VLLM_CONTAINER}" \
     >>"${LOGDIR}/vllm/vllm-stream.log" 2>&1 &
   _vllm_log_pid=$!
 

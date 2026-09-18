@@ -84,13 +84,33 @@ fi
 # Submit the cliff job and poll for completion
 # ---------------------------------------------------------------------------
 echo "=== Submitting cliff-submit job (AIC_IMAGE_NAME=${AIC_IMAGE_NAME}) ==="
-JOB_ID=$(SPUR_CONTROLLER_ADDR="${AIC_SPUR_CONTROLLER}" \
+# Capture the submit output to a file and echo it before parsing.  Piping `make`
+# straight into grep discarded sbatch's error text, and under `set -o pipefail` a
+# non-matching grep failed the assignment so `set -e` killed the script before the
+# "could not determine job ID" branch below could ever run -- a rejected submit
+# showed up in CI as a bare `exit 1` with no diagnostics.
+SUBMIT_LOG="$(mktemp)"
+set +e
+SPUR_CONTROLLER_ADDR="${AIC_SPUR_CONTROLLER}" \
     AIC_SPUR_CLUSTER=1 \
     AIC_IMAGE_NAME="${AIC_IMAGE_NAME}" \
     AIC_IMAGE_DIR="${TARBALL_DIR}" \
-    make cliff-submit 2>&1 \
-  | grep -oE '(submitted (cliff-short|aic-cliff) job |Submitted batch job )[0-9]+' \
-  | grep -oE '[0-9]+$' | tail -1)
+    make cliff-submit > "${SUBMIT_LOG}" 2>&1
+SUBMIT_RC=$?
+set -e
+
+echo "--- make cliff-submit output (rc=${SUBMIT_RC}) ---"
+cat "${SUBMIT_LOG}"
+echo "--- end make cliff-submit output ---"
+
+JOB_ID="$(grep -oE '(submitted [a-z0-9-]+ job |Submitted batch job )[0-9]+' "${SUBMIT_LOG}" \
+    | grep -oE '[0-9]+$' | tail -1 || true)"
+rm -f "${SUBMIT_LOG}"
+
+if [[ "${SUBMIT_RC}" -ne 0 ]]; then
+    echo "ERROR: make cliff-submit failed with exit code ${SUBMIT_RC} (see output above)" >&2
+    exit 1
+fi
 
 if [[ -z "${JOB_ID}" ]]; then
     echo "ERROR: could not determine Slurm job ID from make cliff-submit output" >&2
@@ -104,8 +124,51 @@ while squeue -j "${JOB_ID}" -h 2>/dev/null |
     sleep 30
 done
 
-STATE=$(sacct -j "${JOB_ID}" --format=State --noheader 2>/dev/null | head -1 | tr -d ' ')
-echo "=== Job ${JOB_ID} finished with state: ${STATE} ==="
+# logs/<id>/cliff.exit is written by run-cliff.sbatch's EXIT trap and is the
+# authoritative result.  SPUR's accounting is not: on a node where it fails to
+# capture the batch script's status it reports State=COMPLETED with
+# ExitCode=-1:0 whatever the job returned (job 150665 died on `docker load` and
+# still accounted as COMPLETED), so gating on State alone silently passes a
+# failed cliff run.  The file lands on NFS as the job ends, which can lag its
+# disappearance from squeue; wait briefly for it.
+EXIT_FILE="logs/${JOB_ID}/cliff.exit"
+_tries=0
+until [[ -f "${EXIT_FILE}" ]] || (( _tries >= 10 )); do
+    sleep 1
+    _tries=$((_tries + 1))
+done
+
+# SPUR's sacct ignores -j and returns every job it knows about, so `head -1`
+# both (a) truncated the stream and left sacct writing into a closed pipe --
+# SIGPIPE, which under `set -o pipefail` exited the script with 141 before the
+# line below could print -- and (b) read an unrelated job's State when it did
+# survive.  Match the job ID in awk and consume sacct's full output.
+# Accounting also settles late -- and sometimes never: sacct returned no row at
+# all for job 150703 minutes after it left the queue.  Give a terminal state a
+# bounded chance to appear rather than reading a transient blank as a failure.
+_TERMINAL='COMPLETED|FAILED|CANCELLED|TIMEOUT|NODE_FAIL|OUT_OF_MEMORY|PREEMPTED|DEADLINE|BOOT_FAIL'
+SACCT_ROW=""
+STATE=""
+CODE=""
+_tries=0
+while (( _tries < 15 )); do
+    SACCT_ROW="$(sacct -j "${JOB_ID}" --format=JobID,State,ExitCode --noheader 2>/dev/null |
+        awk -v id="${JOB_ID}" '$1 == id && !found { print $2, $3; found = 1 }')"
+    STATE="${SACCT_ROW%% *}"
+    CODE="${SACCT_ROW##* }"
+    [[ "${STATE}" =~ ^(${_TERMINAL})$ ]] && break
+    sleep 2
+    _tries=$((_tries + 1))
+done
+echo "=== Job ${JOB_ID} finished: state=${STATE:-<unknown>} sacct-exit=${CODE:-<unknown>} ==="
+
+JOB_RC=""
+if [[ -f "${EXIT_FILE}" ]]; then
+    JOB_RC="$(tr -d '[:space:]' <"${EXIT_FILE}" 2>/dev/null || true)"
+    echo "=== Job ${JOB_ID} exit code ${JOB_RC} (from ${EXIT_FILE}) ==="
+else
+    echo "WARNING: ${EXIT_FILE} missing; falling back to sacct accounting" >&2
+fi
 
 LOG="logs/${JOB_ID}/cliff.out"
 if [[ -f "${LOG}" ]]; then
@@ -113,7 +176,13 @@ if [[ -f "${LOG}" ]]; then
     cat "${LOG}"
 fi
 
-[[ "${STATE}" == "COMPLETED" ]] || { echo "ERROR: job ${JOB_ID} ended in state ${STATE}" >&2; exit 1; }
+if [[ "${JOB_RC}" =~ ^[0-9]+$ ]]; then
+    [[ "${JOB_RC}" -eq 0 ]] ||
+        { echo "ERROR: job ${JOB_ID} exited ${JOB_RC} (state ${STATE:-<unknown>})" >&2; exit 1; }
+else
+    [[ "${STATE}" == "COMPLETED" && "${CODE}" == "0:0" ]] ||
+        { echo "ERROR: job ${JOB_ID} ended in state ${STATE:-<unknown>} (sacct exit ${CODE:-<unknown>})" >&2; exit 1; }
+fi
 
 # ---------------------------------------------------------------------------
 # Copy results to NFS staging BEFORE the EXIT trap deletes WORKDIR
