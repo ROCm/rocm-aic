@@ -500,6 +500,12 @@ provision_storage
 log "local NVMe  : ${NVME_DATA}"
 log "results     : ${RESULTS}"
 command -v docker >/dev/null 2>&1 || die "docker not found on $(hostname)"
+# A wedged dockerd answers nothing at all: job 154408 sat 35 minutes in the
+# `docker images -q` probe below, and would have held the node until the job's
+# time limit -- and CI's 4h timeout -- without logging a single line of cause.
+# Probe once, bounded, so a bad node fails fast and names itself.
+timeout 120 docker info >/dev/null 2>&1 ||
+  die "docker daemon on $(hostname) did not respond within 120s (wedged dockerd); retry on another node"
 # REPO must be the aic-day-release tree (it is bind-mounted at /work so the
 # benchmark can run benchmarks/run_cliff.py); fail early and clearly otherwise.
 [[ -f "${REPO}/benchmarks/run_cliff.py" ]] ||
