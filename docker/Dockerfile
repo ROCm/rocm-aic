@@ -631,6 +631,50 @@ RUN uv pip uninstall --system \
         nixl nixl-cu12 nixl-cu13 \
         cupy-cuda12x cufile-python cuda-pathfinder 2>/dev/null || true
 
+# Remove the standalone `triton_kernels` wheel so vLLM uses the copy it vendors.
+#
+# The ROCm base image ships `triton_kernels 1.0.0+amd.rocm7.2.0`, which is the
+# post-3.8 API generation: it exposes `triton_kernels.matmul`, having renamed
+# away `matmul_ogs`.  vLLM ${VLLM_REF} still imports `triton_kernels.matmul_ogs`
+# (fused_moe/config.py) and vendors a matching legacy copy at
+# vllm/third_party/triton_kernels/ for exactly this reason.  But its probe
+# prefers whatever is installed top-level:
+#
+#   def has_triton_kernels() -> bool:
+#       is_available = _has_module("triton_kernels") or _has_module(
+#           "vllm.third_party.triton_kernels")
+#
+# so the AMD wheel shadows the vendored copy and every MXFP4 model start logs
+# "Failed to import Triton kernels ... No module named
+# 'triton_kernels.matmul_ogs'", leaving vLLM on a fallback MoE path instead of
+# the one it ships and tests against.
+#
+# NOTE: this does NOT fix gpt-oss-120b on gfx950.  That model still aborts
+# EngineCore during CUDA-graph capture with an LLVM assertion inside Triton's
+# JIT (llvm/ADT/Sequence.h:275 `Begin <= End`), with this removal applied and
+# the matmul_ogs import succeeding -- so the assertion is an independent Triton
+# codegen bug, not a consequence of the shadowing.
+#
+# Nothing else imports the top-level package -- verified by grepping every
+# non-vLLM .py under dist-packages in the built image -- so removing it simply
+# lets vLLM's own pairing win.  Regression-checked on gfx950 with Qwen3-8B:
+# all three cliff arms pass.
+RUN uv pip uninstall --system triton_kernels 2>/dev/null || true; \
+    if python3 -c "import importlib.util,sys; \
+sys.exit(0 if importlib.util.find_spec('triton_kernels') is None else 1)"; then \
+        echo "triton_kernels: standalone package removed"; \
+    else \
+        echo "ERROR: standalone triton_kernels still importable after uninstall" >&2; exit 1; \
+    fi; \
+    vendored=/usr/local/lib/python3.12/dist-packages/vllm/third_party/triton_kernels/matmul_ogs.py; \
+    if [ -f "$vendored" ]; then \
+        echo "triton_kernels: vLLM vendored copy provides matmul_ogs"; \
+    else \
+        echo "ERROR: vLLM no longer vendors triton_kernels/matmul_ogs.py ($vendored)." >&2; \
+        echo "       Re-check the triton_kernels API generation this VLLM_REF expects." >&2; \
+        exit 1; \
+    fi
+
 # ----- 6. hipFile — provided by the ROCm 7.14 base image (GA since 7.14) ------
 # No source build needed.  hipFile headers, libraries, Python bindings, ais-stats,
 # and ais-check are all pre-installed in rocm/dev-ubuntu-24.04:${ROCM_VERSION}-full.
