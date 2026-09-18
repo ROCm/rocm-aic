@@ -1,4 +1,4 @@
-name: rocm-aic - Self Hosted - Cliff Benchmark
+name: rocm-aic - Self Hosted - Cliff Test
 
 on:
   workflow_dispatch:
@@ -13,7 +13,7 @@ jobs:
         github.event.issue.pull_request != null &&
         contains(github.event.comment.body, '/run-cliff')
       )
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       pull-requests: write
     outputs:

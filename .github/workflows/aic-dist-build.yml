@@ -28,7 +28,7 @@ jobs:
         contains(github.event.comment.body, '/run-ci') &&
         !contains(github.event.comment.body, '/run-ci-fast')
       )
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       pull-requests: write
     outputs:
@@ -70,6 +70,9 @@ jobs:
             } else {
               core.setOutput('sha', context.sha);
               core.setOutput('pr_number', '');
+              // workflow_dispatch never triggers accuracy; keep the output
+              // explicit so downstream if: conditions never see an empty string.
+              runAccuracy = false;
             }
             core.setOutput('run_accuracy', runAccuracy ? 'true' : 'false');
 
@@ -424,7 +427,7 @@ jobs:
 
       - name: Upload accuracy logs
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: accuracy-logs-${{ needs.authorize.outputs.sha }}
           path: ${{ runner.temp }}/accuracy-logs/

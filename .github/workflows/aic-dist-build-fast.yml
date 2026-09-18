@@ -87,7 +87,7 @@ jobs:
         github.event.issue.pull_request != null &&
         contains(github.event.comment.body, '/run-ci-fast')
       ))
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       pull-requests: write
     outputs:

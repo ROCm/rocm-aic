@@ -33,10 +33,10 @@ permissions:
 jobs:
   vllm-patches:
     name: vLLM patches (git apply --check)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Resolve vLLM ref and URL from Dockerfile
         id: meta
@@ -84,10 +84,10 @@ jobs:
 
   llm-emu-patches:
     name: LLM-Emu patches + profile packs
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Resolve LLM-Emu ref and URL from Dockerfile
         id: meta
@@ -160,10 +160,10 @@ jobs:
 
   lmcache-patches:
     name: LMCache patches (git apply --check)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Resolve LMCache ref and URL from Dockerfile
         id: meta
@@ -216,10 +216,10 @@ jobs:
 
   nixl-patches:
     name: NIXL patches (git apply --check)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Resolve NIXL ref and URL from Dockerfile
         id: meta
@@ -271,10 +271,10 @@ jobs:
 
   emulate-oracle-check:
     name: LLM-Emu oracle in-process validation
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Resolve LLM-Emu ref from Dockerfile
         id: meta

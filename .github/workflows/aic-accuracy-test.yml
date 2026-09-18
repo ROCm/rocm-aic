@@ -72,7 +72,7 @@ jobs:
       # per-arm container logs are worth having.
       - name: Upload accuracy logs
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: accuracy-logs-${{ github.event.workflow_run.head_sha || github.sha }}
           path: ${{ runner.temp }}/accuracy-logs/

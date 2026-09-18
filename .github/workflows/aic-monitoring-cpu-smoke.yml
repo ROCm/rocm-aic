@@ -44,7 +44,7 @@ jobs:
       AIC_SPUR_CONTROLLER: ${{ secrets.AIC_SPUR_CONTROLLER }}
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Run prometheus-dump on SPUR
         run: |
@@ -52,7 +52,7 @@ jobs:
           bash .github/scripts/workflows/spur-prometheus-dump.sh "${SHA}"
 
       - name: Upload prometheus-dump artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: prometheus-dump-${{ github.sha }}
           path: prometheus-page/

@@ -42,11 +42,11 @@ env:
 jobs:
   build:
     name: Build image (BuildKit GHA layer cache)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 360
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Free disk space on runner
         uses: jlumbroso/free-disk-space@v1.3.1

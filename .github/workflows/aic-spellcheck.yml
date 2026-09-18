@@ -8,8 +8,8 @@ on:
 jobs:
   spellcheck:
     name: Spellcheck
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: rojopolis/spellcheck-github-actions@v0
         name: Spellcheck

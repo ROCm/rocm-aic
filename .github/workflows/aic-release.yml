@@ -32,11 +32,11 @@ env:
 jobs:
   release:
     name: Build + publish release ${{ github.ref_name }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 420
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           fetch-depth: 0   # need full history so `make export` can resolve tags
 

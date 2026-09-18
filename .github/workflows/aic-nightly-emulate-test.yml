@@ -24,7 +24,7 @@ permissions:
 jobs:
   emulate-test:
     name: Build and serve-test the emulation image
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 90
 
     env:
@@ -34,7 +34,7 @@ jobs:
       AIC_EMULATE_READY_TIMEOUT: 96   # x5s = up to 8 min
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Free disk space on runner
         uses: jlumbroso/free-disk-space@v1.3.1
@@ -178,7 +178,7 @@ jobs:
 
       - name: Upload emulator log on failure
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: emulate-vllm-log
           path: ${{ runner.temp }}/logs/
