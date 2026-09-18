@@ -603,8 +603,8 @@ if [[ "${AIC_EXPORTERS}" != "0" ]]; then
 fi
 
 # --- Benchmark client env (offline HF cache) ---------------------------------
-# The bench + plot containers run with --network host and reach the vLLM endpoint
-# at localhost:<published port>.  The inference stack itself is launched via
+# The bench container joins the `aic` bridge and reaches vLLM by container name;
+# the vllm service publishes no host ports.  The inference stack itself is launched via
 # docker/docker-compose.yml (see the compose-stack setup block below), not raw
 # docker run -- all container/GPU/cap flags now live in that compose file.
 HF_ENV=(-e HF_HOME=/hf -e HF_HUB_CACHE=/hf/hub -e HF_HUB_OFFLINE=1
@@ -641,6 +641,10 @@ source "${REPO}/monitoring/monitoring-lib.sh"
 aic_resolve_gpu_visibility \
   || die "could not resolve the SPUR GPU allocation (refusing to default to GPU 0)"
 export GPU="${AIC_ROCR_VISIBLE%%,*}"
+# compose names the container aic-vllm-gpu${GPU}, and on SPUR the allocated GPU
+# is rarely 0 (job 150940 got GPU 3).  Derive the name instead of hardcoding
+# aic-vllm-gpu0, which silently addressed a container that does not exist.
+VLLM_CONTAINER="aic-vllm-gpu${GPU}"
 export HF_HOME NVME_DATA NFS_DATA GDS_SLAB_DATA
 export LOG="${LOGDIR}" # lmcache/vllm container logs land under the job dir
 export HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1
@@ -673,7 +677,15 @@ wait_ready() { # $1=port $2=timeout_s
   local port="$1" timeout="${2:-${AIC_VLLM_READY_TIMEOUT:-1200}}" waited=0
   log "waiting for vLLM on :${port} (up to ${timeout}s)"
   while ((waited < timeout)); do
-    if curl -fsS "http://localhost:${port}/v1/models" >/dev/null 2>&1; then
+    # Probe from inside the container, not the host.  The vllm service moved off
+    # `network_mode: host` onto the `aic` bridge (58d3864) and publishes no
+    # ports, so a host-side `curl localhost:8000` can never connect -- every
+    # cliff run failed Arm A with "server never became ready" after the full
+    # 1200s timeout while the container log showed vLLM reaching "Application
+    # startup complete" ~2 min in.  `docker exec` matches the convention the
+    # rest of the repo adopted for this (PR #133).
+    if docker exec "${VLLM_CONTAINER}" \
+      curl -fsS "http://127.0.0.1:${port}/v1/models" >/dev/null 2>&1; then
       log "vLLM :${port} is ready (${waited}s)"
       return 0
     fi
@@ -687,12 +699,16 @@ run_bench() { # $1=arm $2=endpoint_port $3=out_csv $4=extra args...
   local arm="$1" port="$2" out="$3"
   shift 3
   log "running sweep: arm=${arm} endpoint=:${port} -> ${out}"
-  docker run --rm --network host \
+  # Join the `aic` bridge and address vLLM by container name: with the vllm
+  # service on that network and publishing no ports, --network host + localhost
+  # cannot reach it.  The network is named `aic` explicitly in the compose file
+  # (networks.aic-network.name), so it is not compose-project prefixed.
+  docker run --rm --network aic \
     -v "${REPO}":/work -w /work \
     -v "${HF_HOME}":/hf "${HF_ENV[@]}" \
     --entrypoint python3 "${AIC_IMAGE}" \
     benchmarks/run_cliff.py \
-    --endpoint "http://localhost:${port}" \
+    --endpoint "http://${VLLM_CONTAINER}:${port}" \
     --model "${VLLM_MODEL}" \
     --arm "${arm}" \
     --isl "${BENCH_ISL}" \
@@ -739,7 +755,7 @@ stop_stack() {
   # never actually ran, leaving the stack's containers and bridge network behind.
   timeout 60 docker compose -f "${COMPOSE_FILE}" --profile cache down \
       --remove-orphans --timeout 5 >/dev/null 2>&1 || true
-  for c in aic-vllm-gpu0 aic-lmcache; do timeout 30 docker rm -f "${c}" >/dev/null 2>&1 || true; done
+  for c in "${VLLM_CONTAINER}" aic-lmcache; do timeout 30 docker rm -f "${c}" >/dev/null 2>&1 || true; done
 }
 
 # --- Metrics-capture sidecar (Prometheus + optional exporters) ---------------
@@ -763,7 +779,7 @@ ensure_compose || die "docker compose unavailable and could not be installed"
 # behind the `cache` profile (skipped) and vllm's depends_on is required:false.
 VRAM_CSV="${RESULTS}/cliff-vram_only-${STAMP}.csv"
 run_arm_vram() {
-  rm_containers aic-vllm-gpu0 aic-lmcache
+  rm_containers "${VLLM_CONTAINER}" aic-lmcache
   log "=== Arm A (vram_only): plain vLLM (no LMCache) on :${VLLM_ENDPOINT_PORT} ==="
   export KV_TRANSFER_ARG="" # no connector -> plain VRAM-prefix-cache-only vLLM
   export GDS_MODE=""
@@ -818,7 +834,7 @@ YML
 run_arm_kvd() { # $1=mode(nvme|gds) $2=out_csv
   local mode="$1" out="$2"
   log "=== Arm B (kvd_v2, mode=${mode}) — LMCache MP connector ==="
-  rm_containers aic-vllm-gpu0 aic-lmcache
+  rm_containers "${VLLM_CONTAINER}" aic-lmcache
 
   # MP connector arg for vLLM (+ optional kv_load_failure_policy).  Single-quote
   # the JSON so compose's shlex splitting preserves the inner double quotes.
@@ -896,7 +912,7 @@ run_arm_kvd() { # $1=mode(nvme|gds) $2=out_csv
   docker logs -f --timestamps aic-lmcache \
     >>"${LOGDIR}/lmcache/lmcache-stream.log" 2>&1 &
   _lmcache_log_pid=$!
-  docker logs -f --timestamps aic-vllm-gpu0 \
+  docker logs -f --timestamps "${VLLM_CONTAINER}" \
     >>"${LOGDIR}/vllm/vllm-stream.log" 2>&1 &
   _vllm_log_pid=$!
 
