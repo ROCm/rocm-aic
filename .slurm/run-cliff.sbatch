@@ -662,8 +662,13 @@ export NIXL_METRICS_PORT="${NIXL_METRICS_PORT:-19090}"
 export AIC_HSA_SNOOP_PID_MODE
 # RoPE override (YaRN etc.) applied to ALL arms via vLLM --hf-overrides.  Single-
 # quote the JSON so compose's shlex splitting keeps the inner double quotes.
-VLLM_EXTRA_ARGS=""
-[[ -n "${VLM_ROPE_SCALING}" ]] && VLLM_EXTRA_ARGS="--hf-overrides '{\"rope_scaling\": ${VLM_ROPE_SCALING}}'"
+# Keep a caller-supplied value: compose documents VLLM_EXTRA_ARGS as a user knob
+# ("extra vllm args appended verbatim"), and clobbering it here silently dropped
+# anything the caller passed -- there was no way to hand a cliff run a
+# model-specific flag such as --enforce-eager.
+VLLM_EXTRA_ARGS="${VLLM_EXTRA_ARGS:-}"
+[[ -n "${VLM_ROPE_SCALING}" ]] &&
+  VLLM_EXTRA_ARGS="${VLLM_EXTRA_ARGS} --hf-overrides '{\"rope_scaling\": ${VLM_ROPE_SCALING}}'"
 export VLLM_EXTRA_ARGS
 export VLLM_LOGGING_LEVEL="${VLLM_LOGGING_LEVEL:-WARNING}"
 # The MP server's --l1-size-gb is the DRAM L1 (nvme arm) OR the hipFile slab size
