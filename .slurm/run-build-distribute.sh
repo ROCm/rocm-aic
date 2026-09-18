@@ -347,9 +347,17 @@ if [[ "${AIC_SPUR_CLUSTER}" == "1" ]]; then
     # ("AIC_BUILD_CONSTRAINT=") is honoured as "no constraint".
     AIC_BUILD_CONSTRAINT="${AIC_BUILD_CONSTRAINT-}"
     AIC_TEST_CONSTRAINT="${AIC_TEST_CONSTRAINT-}"
+    # SPUR now rejects every submission that carries no GPU request at all:
+    #   "a GPU request is required: resubmit with --gres=gpu:N, --gpus=N, ..."
+    # It used to reject the opposite (no GPU GRES was configured, so an embedded
+    # `#SBATCH --gres=gpu:1` cancelled the job on arrival), which is why the CPU-
+    # only submissions below -- build, image load, push -- carry no GPU request.
+    # `--gpus=N` is accepted under both configurations; `--gres=` alone is not.
+    _SPUR_GPU_ARG=(--gpus="${AIC_SPUR_GPUS:-1}")
 else
     # Never read on this path; defined only so `set -u` stays satisfied.
     AIC_SPUR_CONTROLLER=""
+    _SPUR_GPU_ARG=()
     AIC_BUILD_PARTITION="${AIC_BUILD_PARTITION:-defq}"
     AIC_BUILD_CONSTRAINT="${AIC_BUILD_CONSTRAINT:-CPUONLY}"
     AIC_TEST_CONSTRAINT="${AIC_TEST_CONSTRAINT:-GFX942&NVME}"
@@ -1086,7 +1094,7 @@ REMOTE
             log "building via sbatch (partition ${AIC_BUILD_PARTITION}, constraint ${AIC_BUILD_CONSTRAINT}${AIC_BUILD_EXCLUDE_NODES:+, exclude ${AIC_BUILD_EXCLUDE_NODES}})"
         fi
         _sbatch_run aic-build build "${remote_script}" \
-            "${_sel[@]}" \
+            "${_sel[@]}" "${_SPUR_GPU_ARG[@]}" \
             --nodes=1 --ntasks=1 \
             --cpus-per-task="${AIC_BUILD_CPUS}" \
             --time="${AIC_BUILD_TIME}"
@@ -1204,7 +1212,7 @@ REMOTE
         fi
         local -a _exp_overcommit=(); [[ "${AIC_SPUR_CLUSTER}" != "1" ]] && _exp_overcommit=(--overcommit)
         _sbatch_run aic-build-exporters build-exporters "${remote_script}" \
-            "${_sel[@]}" \
+            "${_sel[@]}" "${_SPUR_GPU_ARG[@]}" \
             --nodes=1 --ntasks=1 \
             --cpus-per-task=2 --mem=8G "${_exp_overcommit[@]}" \
             --time="${AIC_LOAD_TIME}"
@@ -1253,7 +1261,7 @@ cmd_load() {
         --partition="${AIC_BUILD_PARTITION}" \
         --nodelist="${AIC_TARGETS}" \
         --nodes="${n}" --ntasks-per-node=1 \
-        --cpus-per-task=2 --mem=8G "${_overcommit_arg[@]}" \
+        --cpus-per-task=2 --mem=8G "${_overcommit_arg[@]}" "${_SPUR_GPU_ARG[@]}" \
         --time="${AIC_LOAD_TIME}" \
         bash -c "
 set -euo pipefail
@@ -1327,7 +1335,7 @@ REMOTE
         --partition="${AIC_BUILD_PARTITION}" \
         "${_sel[@]}" \
         --nodes=1 --ntasks=1 \
-        --cpus-per-task=2 --mem=8G "${_push_overcommit[@]}" \
+        --cpus-per-task=2 --mem=8G "${_push_overcommit[@]}" "${_SPUR_GPU_ARG[@]}" \
         --time="${AIC_LOAD_TIME}" \
         bash -c "${remote_script}"
     log "push complete: ${AIC_PUSH_REF}"
@@ -1925,7 +1933,7 @@ REMOTE
     _sbatch_run aic-emulate-test emulate-test "${remote_script}" \
         "${_sel[@]}" \
         --nodes=1 --ntasks=1 \
-        --cpus-per-task="${AIC_EMULATE_CPUS}" --mem="${AIC_EMULATE_MEM}" \
+        --cpus-per-task="${AIC_EMULATE_CPUS}" --mem="${AIC_EMULATE_MEM}" "${_SPUR_GPU_ARG[@]}" \
         --time="${AIC_EMULATE_TIME}"
     log "emulate-test complete"
 }
@@ -2456,7 +2464,7 @@ REMOTE
     _sbatch_run aic-emulate-mp-test emulate-mp-test "${remote_script}" \
         "${_sel[@]}" \
         --nodes=1 --ntasks=1 \
-        --cpus-per-task="${AIC_EMULATE_MP_CPUS}" --mem="${AIC_EMULATE_MP_MEM}" \
+        --cpus-per-task="${AIC_EMULATE_MP_CPUS}" --mem="${AIC_EMULATE_MP_MEM}" "${_SPUR_GPU_ARG[@]}" \
         --time="${AIC_EMULATE_MP_TIME}"
     log "emulate-mp-test complete"
 }
@@ -2623,7 +2631,7 @@ REMOTE
     _sbatch_run aic-emulate-validate emulate-validate "${remote_script}" \
         "${_sel[@]}" \
         --nodes=1 --ntasks=1 \
-        --cpus-per-task="${AIC_EMULATE_CPUS}" --mem="${AIC_EMULATE_MEM}" \
+        --cpus-per-task="${AIC_EMULATE_CPUS}" --mem="${AIC_EMULATE_MEM}" "${_SPUR_GPU_ARG[@]}" \
         --time="${AIC_EMULATE_TIME}"
     log "emulate-validate complete"
 }
@@ -2695,7 +2703,7 @@ exec '${AIC_DAY_DIR}/.slurm/run-accuracy.sh'
 REMOTE
 )"
 
-    local -a _gres_arg=(); [[ "${AIC_SPUR_CLUSTER}" != "1" ]] && _gres_arg=(--gres=gpu:1)
+    local -a _gres_arg=("${_SPUR_GPU_ARG[@]}"); [[ "${AIC_SPUR_CLUSTER}" != "1" ]] && _gres_arg=(--gres=gpu:1)
     _sbatch_run aic-accuracy-test accuracy-test "${remote_script}" \
         "${_sel[@]}" \
         "${_gres_arg[@]}" \
@@ -2936,7 +2944,7 @@ exit \${sweep_rc}
 REMOTE
 )"
 
-    local -a _gres_arg=(); [[ "${AIC_SPUR_CLUSTER}" != "1" ]] && _gres_arg=(--gres=gpu:1)
+    local -a _gres_arg=("${_SPUR_GPU_ARG[@]}"); [[ "${AIC_SPUR_CLUSTER}" != "1" ]] && _gres_arg=(--gres=gpu:1)
     _sbatch_run aic-profile-capture profile-capture "${remote_script}" \
         "${_sel[@]}" \
         "${_gres_arg[@]}" \
