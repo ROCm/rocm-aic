@@ -466,6 +466,13 @@ command -v docker >/dev/null 2>&1 || die "docker not found on $(hostname)"
 # benchmark can run benchmarks/run_cliff.py); fail early and clearly otherwise.
 [[ -f "${REPO}/benchmarks/run_cliff.py" ]] ||
   die "benchmarks/run_cliff.py not found under REPO=${REPO}; submit from the aic-day-release/ dir (SLURM_SUBMIT_DIR)"
+# A wedged dockerd answers nothing at all: job 154408 sat 35 minutes in the
+# `docker images -q` probe below, and would have held the node until the job's
+# time limit -- and CI's 4h timeout -- without logging a single line of cause.
+# The shared preflight bounds `docker info` / `docker system df` (default 120s,
+# AIC_DOCKER_PREFLIGHT_TIMEOUT), so a bad node fails fast and names itself.
+source "${REPO}/monitoring/monitoring-lib.sh"
+aic_docker_preflight || die "docker preflight failed on $(hostname); retry on another node"
 
 # Pre-create the compose log-mount dirs too, so docker doesn't auto-create them
 # as root under the per-job logs tree (the lmcache/vllm services bind-mount these).
