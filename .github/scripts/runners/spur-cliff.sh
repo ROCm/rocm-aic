@@ -158,6 +158,15 @@ if [[ -f "${LOG}" ]]; then
     cat "${LOG}"
 fi
 
+# A job Slurm cancelled, timed out or lost a node is never a pass, whatever the
+# exit file holds -- job 154408 was scancelled mid-run and still left cliff.exit
+# 0 behind.  run-cliff.sbatch now records 143 for that case; this is the second
+# line of defence, and also covers a stale file from an earlier job ID reuse.
+if [[ -n "${STATE}" && "${STATE}" =~ ^(${_TERMINAL})$ && "${STATE}" != "COMPLETED" ]]; then
+    echo "ERROR: job ${JOB_ID} ended in state ${STATE} (sacct exit ${CODE:-<unknown>})" >&2
+    exit 1
+fi
+
 if [[ "${JOB_RC}" =~ ^[0-9]+$ ]]; then
     [[ "${JOB_RC}" -eq 0 ]] ||
         { echo "ERROR: job ${JOB_ID} exited ${JOB_RC} (state ${STATE:-<unknown>})" >&2; exit 1; }
