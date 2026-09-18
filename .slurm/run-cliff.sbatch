@@ -100,6 +100,29 @@ if mkdir -p "${LOGDIR}" 2>/dev/null; then
   exec >>"${LOGDIR}/cliff.out" 2>&1
 fi
 
+# Record the job's real exit code in logs/<job-id>/cliff.exit.  SPUR's accounting
+# cannot be trusted as the sole success signal: on a node where it fails to
+# capture the script's status, sacct reports `COMPLETED` with ExitCode `-1:0`
+# regardless of what the script actually returned (observed on crsuse2-m2m-267's
+# neighbour crsuse2-m2m-250, job 150665 -- the job died on `docker load` and
+# still accounted as COMPLETED).  A caller gating on State alone therefore passes
+# a failed cliff run.  run-build-distribute.sh already treats a job-written exit
+# file as authoritative and falls back to sacct; do the same here.
+#
+# The trap is installed now, not after monitoring-lib.sh is sourced, so that an
+# early die() (missing HF cache, failed image load) is still recorded.  It
+# subsumes the later `trap stop_monitoring EXIT`: a second `trap ... EXIT` would
+# silently replace this one.  The exit code is written before teardown so a
+# hung stop_monitoring cannot lose it.
+_on_exit() {
+  local rc=$?
+  [[ -d "${LOGDIR}" ]] && { echo "${rc}" >"${LOGDIR}/cliff.exit" 2>/dev/null || true; }
+  # stop_monitoring is only defined once monitoring-lib.sh has been sourced.
+  declare -F stop_monitoring >/dev/null && { stop_monitoring || true; }
+  return "${rc}"
+}
+trap _on_exit EXIT
+
 _aic_tag="$(bash "${REPO}/docker/scripts/aic-image-tag.sh" 2>/dev/null || true)"
 AIC_IMAGE="${AIC_IMAGE:-${AIC_IMAGE_NAME:-rocm-aic}:${_aic_tag:-latest}}"
 AIC_IMAGE_DIR="${AIC_IMAGE_DIR:-/scratch/${USER}/images}"
@@ -728,8 +751,10 @@ source "${REPO}/monitoring/monitoring-lib.sh"
 # The whole stack (arms + metrics) is docker compose v2 only -- install the plugin
 # user-locally if the node lacks it (ensure_compose lives in monitoring-lib.sh).
 ensure_compose || die "docker compose unavailable and could not be installed"
-# Guarantee teardown (containers only; the NFS TSDB is retained) on any exit.
-trap stop_monitoring EXIT
+# Teardown (containers only; the NFS TSDB is retained) is guaranteed by the
+# _on_exit trap installed near the top of this script, which calls
+# stop_monitoring once it is defined.  Re-arming `trap stop_monitoring EXIT`
+# here would replace that trap and lose the cliff.exit write.
 
 # =============================================================================
 # Arm A — vram_only : plain vLLM baseline, no LMCache connector
