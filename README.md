@@ -3,6 +3,7 @@
 [![MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://github.com/ROCm/rocm-aic/blob/main/LICENSE.md)
 [![Platform](https://img.shields.io/badge/platform-linux-lightgrey.svg)](README.md)
 [![ROCm](https://img.shields.io/badge/ROCm-7.14.1-green.svg)](https://rocm.docs.amd.com)
+[![Latest Release](https://img.shields.io/github/v/release/ROCm/rocm-aic?display_name=tag)](https://github.com/ROCm/rocm-aic/releases/latest)
 [![PyTorch](https://img.shields.io/badge/PyTorch-release%2F2.13-ee4c2c.svg)](https://github.com/ROCm/pytorch/tree/release/2.13)
 [![AITER](https://img.shields.io/badge/AITER-v0.1.22.post1-blue.svg)](https://github.com/ROCm/aiter/tree/v0.1.22.post1)
 [![vLLM](https://img.shields.io/badge/vLLM-v0.29.0-blue.svg)](https://github.com/vllm-project/vllm)
@@ -58,6 +59,12 @@ platform.
 See [docs/PIP_WHEELS.md](docs/PIP_WHEELS.md) for installation instructions and
 compatibility notes. Wheels are rebuilt nightly from `main` and published to the
 [nightly release](https://github.com/ROCm/rocm-aic/releases/tag/nightly).
+
+For versioned stable releases and the tagging workflow, see
+[docs/RELEASE.md](docs/RELEASE.md).
+
+The current stable build is always available from the
+[latest GitHub Release](https://github.com/ROCm/rocm-aic/releases/latest).
 
 ## Prerequisites
 

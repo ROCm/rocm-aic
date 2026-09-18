@@ -7,8 +7,9 @@
 # Triggered by pushing a v* tag (e.g. git tag v1.0.0 && git push origin v1.0.0).
 # Produces a full (non-prerelease) GitHub Release containing:
 #
-#   - LMCache + NIXL ROCm pip wheels (same `wheels` stage as the nightly)
+#   - vLLM + LMCache + NIXL ROCm pip wheels (same `wheels` stage as the nightly)
 #   - Source tarball from `make export`
+#   - SHA256SUMS for the published release assets
 #   - Full Docker image pushed to Docker Hub as rocm-aic:<tag> and rocm-aic:latest
 #
 # Secrets required:
@@ -56,12 +57,23 @@ jobs:
       # AIC_VERSION is a required build-arg (the Dockerfile fails the build when
       # it is empty) and feeds the OCI version labels.  Same step as aic-docker.yml.
       - name: Read AIC version
-        id: imgtag
+        id: version
         run: |
           set -euo pipefail
           aic_version="$(< VERSION)"
           : "${aic_version:?VERSION is missing or empty}"
           echo "aic_version=${aic_version}" >> "${GITHUB_OUTPUT}"
+
+      - name: Verify tag matches VERSION
+        run: |
+          set -euo pipefail
+          version='${{ steps.version.outputs.aic_version }}'
+          tag='${{ github.ref_name }}'
+          expected_tag="v${version}"
+          [ "${tag}" = "${expected_tag}" ] || {
+            echo "ERROR: tag ${tag} does not match VERSION ${version} (expected ${expected_tag})" >&2
+            exit 1
+          }
 
       # Corp CA cert (AMD Zscaler) as a BuildKit secret, only if set.
       # Never written into any image layer.  Same pattern as aic-docker.yml.
@@ -88,7 +100,7 @@ jobs:
           outputs: type=local,dest=wheels
           build-args: |
             ROCM_ARCH=${{ env.ROCM_ARCH }}
-            AIC_VERSION=${{ steps.imgtag.outputs.aic_version }}
+            AIC_VERSION=${{ steps.version.outputs.aic_version }}
           secrets: |
             ${{ steps.cert.outputs.present == 'true' && format('tls_cert={0}', steps.cert.outputs.path) || '' }}
           cache-from: type=gha,scope=aic
@@ -101,6 +113,7 @@ jobs:
           wheels=(wheels/*.whl)
           echo "Extracted ${#wheels[@]} wheel(s):"
           for w in "${wheels[@]}"; do echo "  - $(basename "$w") ($(du -h "$w" | cut -f1))"; done
+          ls wheels/vllm-*.whl      >/dev/null || { echo "ERROR: no vllm wheel"      >&2; exit 1; }
           ls wheels/lmcache-*.whl   >/dev/null || { echo "ERROR: no lmcache wheel"   >&2; exit 1; }
           ls wheels/nixl*rocm*.whl  >/dev/null || { echo "ERROR: no nixl_rocm wheel" >&2; exit 1; }
 
@@ -115,6 +128,12 @@ jobs:
           [ -n "${tarball}" ] || { echo "ERROR: make export produced no tarball" >&2; exit 1; }
           echo "TARBALL=${tarball}" >> "${GITHUB_ENV}"
           echo "Source tarball: ${tarball} ($(du -h "${tarball}" | cut -f1))"
+
+      - name: Create asset checksums
+        run: |
+          set -euo pipefail
+          sha256sum wheels/*.whl "${TARBALL}" > SHA256SUMS
+          cat SHA256SUMS
 
       # ---------------------------------------------------------------------------
       # Build + push full Docker image
@@ -136,7 +155,7 @@ jobs:
             ${{ env.IMAGE_NAME }}:latest
           build-args: |
             ROCM_ARCH=${{ env.ROCM_ARCH }}
-            AIC_VERSION=${{ steps.imgtag.outputs.aic_version }}
+            AIC_VERSION=${{ steps.version.outputs.aic_version }}
           secrets: |
             ${{ steps.cert.outputs.present == 'true' && format('tls_cert={0}', steps.cert.outputs.path) || '' }}
           cache-from: type=gha,scope=aic
@@ -166,9 +185,45 @@ jobs:
         run: |
           set -euo pipefail
           tag="${{ github.ref_name }}"
-          gh release create "${tag}" wheels/*.whl "${TARBALL}" \
-            --repo "${GITHUB_REPOSITORY}" \
-            --title "AIC ${tag}" \
-            --notes-file release-notes.md \
-            --target "${{ github.sha }}"
+          repo="${GITHUB_REPOSITORY}"
+          title="AIC ${tag}"
+          assets=(wheels/*.whl "${TARBALL}" SHA256SUMS)
+          read -r ref_type ref_sha < <(
+            gh api "/repos/${repo}/git/ref/tags/${tag}" --jq '.object | "\(.type) \(.sha)"'
+          )
+          if [ "${ref_type}" = "tag" ]; then
+            ref_sha="$(gh api "/repos/${repo}/git/tags/${ref_sha}" --jq .object.sha)"
+          fi
+          [ "${ref_sha}" = "${{ github.sha }}" ] || {
+            echo "ERROR: tag ${tag} resolves to ${ref_sha}, expected ${{ github.sha }}" >&2
+            exit 1
+          }
+
+          if release_json="$(gh release view "${tag}" --repo "${repo}" --json id,body 2>/dev/null)"; then
+            read -r release_id release_sha < <(
+              printf '%s' "${release_json}" | python3 -c 'import json, re, sys; data = json.load(sys.stdin); match = re.search(r"- \*\*Source SHA:\*\* `([^`]+)`", data.get("body") or ""); print(data["id"], match.group(1) if match else "")'
+            )
+            [ -n "${release_sha}" ] || {
+              echo "ERROR: existing release ${tag} is missing the managed Source SHA metadata" >&2
+              exit 1
+            }
+            [ "${release_sha}" = "${{ github.sha }}" ] || {
+              echo "ERROR: existing release ${tag} was published from ${release_sha}, expected ${{ github.sha }}. Do not rerun after moving the tag." >&2
+              exit 1
+            }
+            RELEASE_TAG="${tag}" RELEASE_TITLE="${title}" \
+              python3 -c 'import json, os; from pathlib import Path; print(json.dumps({"tag_name": os.environ["RELEASE_TAG"], "name": os.environ["RELEASE_TITLE"], "body": Path("release-notes.md").read_text(encoding="utf-8"), "draft": False, "prerelease": False}))' \
+              > /tmp/release-payload.json
+            gh api \
+              --method PATCH \
+              "/repos/${repo}/releases/${release_id}" \
+              --input /tmp/release-payload.json >/dev/null
+            gh release upload "${tag}" "${assets[@]}" --repo "${repo}" --clobber
+          else
+            gh release create "${tag}" "${assets[@]}" \
+              --repo "${repo}" \
+              --title "${title}" \
+              --notes-file release-notes.md \
+              --target "${{ github.sha }}"
+          fi
           echo "Published release ${tag} at ${{ github.sha }}"

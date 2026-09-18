@@ -113,21 +113,46 @@ jobs:
 
           current="$(bash "${renderer}" "${args[@]}")"
           printf '%s\n' "${current}" | grep -Eq "^- \*\*Base:\*\* [^${dollar}]+ \(ROCm [^,]+, Python 3\.12, x86_64\)$"
+          printf '%s\n' "${current}" | grep -Eq "^- \*\*PyTorch:\*\* .+ @ ${markdown_tick}[^${markdown_tick}]+${markdown_tick} \(source build\)$"
+          printf '%s\n' "${current}" | grep -Eq "^- \*\*TorchVision:\*\* .+ @ ${markdown_tick}[^${markdown_tick}]+${markdown_tick} \(source build\)$"
+          printf '%s\n' "${current}" | grep -Eq "^- \*\*vLLM:\*\* .+ @ ${markdown_tick}[^${markdown_tick}]+${markdown_tick} \(source build\)$"
+          printf '%s\n' "${current}" | grep -Eq "^- \*\*AITER:\*\* .+ @ ${markdown_tick}[^${markdown_tick}]+${markdown_tick} \(official ROCm wheel\)$"
+          printf '%s\n' "${current}" | grep -Eq "^- \*\*FlashAttention:\*\* .+ @ ${markdown_tick}[^${markdown_tick}]+${markdown_tick} \(source build, CDNA-only\)$"
           printf '%s\n' "${current}" | grep -Eq "^- \*\*LMCache:\*\* .+ @ ${markdown_tick}[^${markdown_tick}]+${markdown_tick} \+ AIC patches$"
           printf '%s\n' "${current}" | grep -Eq "^- \*\*NIXL:\*\* .+ @ ${markdown_tick}[^${markdown_tick}]+${markdown_tick} \+ nixl-rocm-ais-mt patch$"
+          printf '%s\n' "${current}" | grep -Eq "^- \*\*hsa-snoop:\*\* .+ @ ${markdown_tick}[^${markdown_tick}]+${markdown_tick} \(source build\)$"
+          printf '%s\n' "${current}" | grep -Eq "^- \*\*hipFile:\*\* from [^${dollar}]+ \(GA in ROCm 7\.14\)$"
 
           cat > "${fixtures}/Dockerfile.full" <<'EOF'
           ARG ROCM_VERSION=7.14.0
           ARG ROCM_BASE_IMAGE=rocm/dev-ubuntu-24.04:${ROCM_VERSION}-full
+          ARG PYTORCH_BRANCH=release/2.13
+          ARG TORCHVISION_REPO=https://github.com/pytorch/vision.git
+          ARG TORCHVISION_BRANCH=v0.28.0
+          ARG VLLM_GIT_URL=https://github.com/vllm-project/vllm.git
+          ARG VLLM_REF=v0.28.0
+          ARG AITER_GIT_URL=https://github.com/ROCm/aiter.git
+          ARG AITER_REF=v0.1.19
+          ARG FLASH_ATTN_GIT_URL=https://github.com/Dao-AILab/flash-attention.git
+          ARG FLASH_ATTN_REF=0e60e394
           ARG LMCACHE_GIT_URL=https://github.com/LMCache/LMCache.git
           ARG LMCACHE_REF=v0.5.4
           ARG NIXL_GIT_URL=https://github.com/ai-dynamo/nixl.git
           ARG NIXL_REF=v1.3.2
+          ARG HSA_SNOOP_GIT_URL=https://github.com/sbates130272/hsa-snoop.git
+          ARG HSA_SNOOP_REF=v1.1.0
           EOF
           full_args=("${fixtures}/Dockerfile.full" "${args[@]:1}")
           full="$(bash "${renderer}" "${full_args[@]}")"
           printf '%s\n' "${full}" | grep -F -- '- **Base:** rocm/dev-ubuntu-24.04:7.14.0-full (ROCm 7.14.0, Python 3.12, x86_64)'
+          printf '%s\n' "${full}" | grep -F -- "- **PyTorch:** https://github.com/ROCm/pytorch.git @ ${markdown_tick}release/2.13${markdown_tick} (source build)"
+          printf '%s\n' "${full}" | grep -F -- "- **TorchVision:** https://github.com/pytorch/vision.git @ ${markdown_tick}v0.28.0${markdown_tick} (source build)"
+          printf '%s\n' "${full}" | grep -F -- "- **vLLM:** https://github.com/vllm-project/vllm.git @ ${markdown_tick}v0.28.0${markdown_tick} (source build)"
+          printf '%s\n' "${full}" | grep -F -- "- **AITER:** https://github.com/ROCm/aiter.git @ ${markdown_tick}v0.1.19${markdown_tick} (official ROCm wheel)"
+          printf '%s\n' "${full}" | grep -F -- "- **FlashAttention:** https://github.com/Dao-AILab/flash-attention.git @ ${markdown_tick}0e60e394${markdown_tick} (source build, CDNA-only)"
           printf '%s\n' "${full}" | grep -F -- "- **LMCache:** https://github.com/LMCache/LMCache.git @ ${markdown_tick}v0.5.4${markdown_tick} + AIC patches"
+          printf '%s\n' "${full}" | grep -F -- "- **hsa-snoop:** https://github.com/sbates130272/hsa-snoop.git @ ${markdown_tick}v1.1.0${markdown_tick} (source build)"
+          printf '%s\n' "${full}" | grep -F -- "- **hipFile:** from rocm/dev-ubuntu-24.04:7.14.0-full (GA in ROCm 7.14)"
 
           grep -v '^ARG NIXL_REF=' "${fixtures}/Dockerfile.full" > "${fixtures}/Dockerfile.missing-ref"
           missing_args=("${fixtures}/Dockerfile.missing-ref" "${args[@]:1}")
