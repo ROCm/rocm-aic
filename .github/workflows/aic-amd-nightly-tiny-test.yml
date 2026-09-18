@@ -1,0 +1,27 @@
+# Nightly tiny-model end-to-end serve — runs in parallel with Accuracy and
+# Cliff after Smoke passes:
+#   Dist Build -> Smoke -> [Tiny | Accuracy | Cliff]  (all parallel)
+#
+# workflow_run matches display names, not filenames; keep the upstream
+# workflows: entry in sync with aic-amd-nightly-smoke-tiny-test.yml's name:.
+name: rocm-aic - Self Hosted - Nightly Tiny Test
+
+on:
+  workflow_run:
+    workflows: ["rocm-aic - Self Hosted - Nightly Smoke Test"]
+    types: [completed]
+
+jobs:
+  tiny-test:
+    if: github.event.workflow_run.conclusion == 'success'
+    runs-on: [self-hosted, rocm-aic-cicd]
+    timeout-minutes: 60
+    env:
+      AIC_SPUR_HOST:       ${{ secrets.AIC_SPUR_HOST }}
+      AIC_SHARED_NFS:      ${{ secrets.AIC_SHARED_NFS }}
+      AIC_CI_STORAGE_ROOT: ${{ secrets.AIC_SHARED_NFS }}/rocm-aic
+      AIC_SPUR_CONTROLLER: ${{ secrets.AIC_SPUR_CONTROLLER }}
+
+    steps:
+      - name: Run tiny-test on SPUR head node
+        run: bash /usr/local/lib/aic-ci/spur-tiny-test.sh "${{ github.event.workflow_run.head_sha }}"

@@ -1,4 +1,4 @@
-name: rocm-aic - Hardware Test - AMD Dist Build
+name: rocm-aic - Self Hosted - AMD Dist Build
 
 on:
   workflow_dispatch:
@@ -17,16 +17,16 @@ jobs:
   # Validate /run-ci slash command on PRs; skipped for manual triggers.
   #
   # The match is a substring test, so every longer command starting '/run-ci'
-  # has to be excluded by hand or it fires this multi-arch gate as well.  Both
-  # of the exclusions below belong to aic-amd-dist-build-fast.yml; add any new
-  # '/run-ci-*' command here at the same time you add it there.
+  # has to be excluded by hand or it fires this multi-arch gate as well.
+  # /run-ci-fast belongs to aic-amd-dist-build-fast.yml and is excluded here.
+  # /run-ci-accuracy fires this workflow (full multi-arch) with the accuracy
+  # stage appended; it is NOT excluded, but distinguished via run_accuracy below.
   authorize:
     if: >
       github.event_name != 'issue_comment' || (
         github.event.issue.pull_request != null &&
         contains(github.event.comment.body, '/run-ci') &&
-        !contains(github.event.comment.body, '/run-ci-fast') &&
-        !contains(github.event.comment.body, '/run-ci-accuracy')
+        !contains(github.event.comment.body, '/run-ci-fast')
       )
     runs-on: ubuntu-latest
     permissions:
@@ -34,6 +34,7 @@ jobs:
     outputs:
       sha: ${{ steps.resolve.outputs.sha }}
       pr_number: ${{ steps.resolve.outputs.pr_number }}
+      run_accuracy: ${{ steps.resolve.outputs.run_accuracy }}
 
     steps:
       - name: Check commenter is a maintainer or admin
@@ -56,6 +57,7 @@ jobs:
         uses: actions/github-script@v9
         with:
           script: |
+            let runAccuracy = false;
             if (context.eventName === 'issue_comment') {
               const { data: pr } = await github.rest.pulls.get({
                 owner: context.repo.owner,
@@ -64,10 +66,12 @@ jobs:
               });
               core.setOutput('sha', pr.head.sha);
               core.setOutput('pr_number', String(context.issue.number));
+              runAccuracy = context.payload.comment.body.includes('/run-ci-accuracy');
             } else {
               core.setOutput('sha', context.sha);
               core.setOutput('pr_number', '');
             }
+            core.setOutput('run_accuracy', runAccuracy ? 'true' : 'false');
 
       - name: React to comment with eyes
         if: github.event_name == 'issue_comment'
@@ -259,7 +263,9 @@ jobs:
             });
 
       - name: Run tiny-test on SPUR head node
-        run: bash /usr/local/lib/aic-ci/spur-tiny-test.sh "${{ needs.authorize.outputs.sha }}"
+        # Keep artifacts when accuracy-test follows so it can reuse the clone
+        # and tarball; tiny-test is terminal (and must clean up) otherwise.
+        run: KEEP_ARTIFACTS=${{ needs.authorize.outputs.run_accuracy == 'true' && '1' || '0' }} bash /usr/local/lib/aic-ci/spur-tiny-test.sh "${{ needs.authorize.outputs.sha }}"
 
       - name: Set commit status on success
         if: success() && needs.authorize.outputs.pr_number != ''
@@ -297,11 +303,130 @@ jobs:
         with:
           script: |
             const success = '${{ job.status }}' === 'success';
+            const runAccuracy = '${{ needs.authorize.outputs.run_accuracy }}' === 'true';
+            const passBody = runAccuracy
+              ? `✅ Tiny-test passed for ${{ needs.authorize.outputs.sha }}. Chaining the full accuracy gate (~65 min) onto the same artifacts...`
+              : `✅ Hardware CI passed for ${{ needs.authorize.outputs.sha }} (dist-build + smoke-test + tiny-test).`;
             await github.rest.issues.createComment({
               owner: context.repo.owner,
               repo: context.repo.repo,
               issue_number: ${{ needs.authorize.outputs.pr_number || 0 }},
               body: success
-                ? `✅ Hardware CI passed for ${{ needs.authorize.outputs.sha }} (dist-build + smoke-test + tiny-test).`
+                ? passBody
                 : `❌ Tiny-test failed for ${{ needs.authorize.outputs.sha }}. [View logs](https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}).`,
             });
+
+  # Fifth stage, only for /run-ci-accuracy.  Reuses the clone + image tarball
+  # that dist-build/smoke/tiny already staged on the head node (tiny-test kept
+  # them alive via KEEP_ARTIFACTS=1); nothing is rebuilt here.  Terminal stage,
+  # so it leaves KEEP_ARTIFACTS unset and the script owns the cleanup.
+  accuracy-test:
+    needs: [authorize, dist-build, smoke-test, tiny-test]
+    if: needs.authorize.outputs.run_accuracy == 'true'
+    runs-on: [self-hosted, rocm-aic-cicd]
+    # Both arms over the full 1319-item split: ~65 min measured.
+    # 120 leaves ~1.8x headroom; the sbatch job has its own 2h wall clock.
+    timeout-minutes: 120
+    permissions:
+      pull-requests: write
+      statuses: write
+    env:
+      AIC_SPUR_HOST:       ${{ secrets.AIC_SPUR_HOST }}
+      AIC_SHARED_NFS:      ${{ secrets.AIC_SHARED_NFS }}
+      AIC_CI_STORAGE_ROOT: ${{ secrets.AIC_SHARED_NFS }}/rocm-aic
+      AIC_SPUR_CONTROLLER: ${{ secrets.AIC_SPUR_CONTROLLER }}
+      HF_TOKEN:            ${{ secrets.AIC_HF_TOKEN }}
+
+    steps:
+      - name: Set commit status to pending
+        if: needs.authorize.outputs.pr_number != ''
+        uses: actions/github-script@v9
+        with:
+          script: |
+            await github.rest.repos.createCommitStatus({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              sha: '${{ needs.authorize.outputs.sha }}',
+              state: 'pending',
+              target_url: `https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`,
+              context: 'hardware-ci / accuracy-test',
+              description: 'Running accuracy-test on the SPUR head node...',
+            });
+
+      - name: Run accuracy-test on the SPUR head node
+        id: accuracy
+        run: bash /usr/local/lib/aic-ci/spur-accuracy-test.sh "${{ needs.authorize.outputs.sha }}" accuracy-test
+
+      - name: Set commit status on success
+        if: success() && needs.authorize.outputs.pr_number != ''
+        uses: actions/github-script@v9
+        with:
+          script: |
+            await github.rest.repos.createCommitStatus({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              sha: '${{ needs.authorize.outputs.sha }}',
+              state: 'success',
+              target_url: `https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`,
+              context: 'hardware-ci / accuracy-test',
+              description: 'Accuracy test passed',
+            });
+
+      - name: Set commit status on failure
+        if: failure() && needs.authorize.outputs.pr_number != ''
+        uses: actions/github-script@v9
+        with:
+          script: |
+            await github.rest.repos.createCommitStatus({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              sha: '${{ needs.authorize.outputs.sha }}',
+              state: 'failure',
+              target_url: `https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`,
+              context: 'hardware-ci / accuracy-test',
+              description: 'Accuracy test failed — check the run logs',
+            });
+
+      - name: Post result comment on PR
+        if: always() && needs.authorize.outputs.pr_number != ''
+        uses: actions/github-script@v9
+        with:
+          script: |
+            const success = '${{ job.status }}' === 'success';
+            const model    = '${{ steps.accuracy.outputs.model }}';
+            const delta    = '${{ steps.accuracy.outputs.delta }}';
+            const rows = [
+              ['baseline (VRAM-only)', '${{ steps.accuracy.outputs.baseline }}'],
+              ['tiered (DRAM/NVMe)', '${{ steps.accuracy.outputs.tiered }}'],
+              ['tiered, after vLLM restart', '${{ steps.accuracy.outputs.restart }}'],
+              ['Δ tiered − baseline', delta],
+            ].filter(([, value]) => value);
+            const scores = rows.length
+              ? [
+                  '',
+                  '',
+                  `gsm8k exact_match (strict-match, 5-shot, 1319 items)${model ? ` — \`${model}\`` : ''}:`,
+                  '',
+                  '| arm | score |',
+                  '|---|---|',
+                  ...rows.map(([arm, value]) => `| ${arm} | \`${value}\` |`),
+                ].join('\n')
+              : '';
+            const verdict = success
+              ? `✅ Hardware CI + accuracy passed for ${{ needs.authorize.outputs.sha }} (dist-build + smoke-test + tiny-test + accuracy-test).`
+              : `❌ Accuracy test failed for ${{ needs.authorize.outputs.sha }}. [View logs](https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}).`;
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: ${{ needs.authorize.outputs.pr_number || 0 }},
+              body: verdict + scores,
+            });
+
+      - name: Upload accuracy logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: accuracy-logs-${{ needs.authorize.outputs.sha }}
+          path: ${{ runner.temp }}/accuracy-logs/
+          if-no-files-found: warn
+          retention-days: 14

@@ -1,4 +1,4 @@
-name: rocm-aic - Hardware Test - AMD Cliff Benchmark
+name: rocm-aic - Self Hosted - AMD Cliff Benchmark
 
 on:
   workflow_dispatch:

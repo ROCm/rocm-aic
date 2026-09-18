@@ -2,23 +2,26 @@
 #
 # SPDX-License-Identifier: MIT
 #
-# Manual KV-integrity gate — dispatch this workflow to score gsm8k against the
-# tiered arm and assert that routing KV through DRAM/NVMe did not change the
-# answers.
+# KV-integrity accuracy gate — scores gsm8k against both a VRAM-only arm and
+# a tiered (LMCache + NIXL POSIX NVMe) arm, asserting that routing KV through
+# DRAM/NVMe did not change the answers.
 #
-# There is no PR slash command here.  The PR path is the fourth stage of
-# aic-amd-dist-build-fast.yml (`/run-ci-accuracy`), which chains the same gate
-# onto the artifacts dist-build/smoke/tiny already produced instead of building
-# its own.  The nightly gate lives in aic-amd-nightly-accuracy-test.yml.
+# Two triggers:
+#   workflow_run  — nightly: fires after Smoke Test passes as part of the
+#                   nightly chain:
+#                     Dist Build -> Smoke -> [Tiny | Accuracy | Cliff]
+#   workflow_dispatch — manual: dispatched against a SHA that already has an
+#                   image tarball staged under AIC_CI_STORAGE_ROOT/images/
+#                   aic-ci-<short-sha> (i.e. a dist-build ran for the same
+#                   commit and kept its artifacts).
 #
-# There is only one accuracy gate: both arms, full gsm8k split, ~65 min.  The
-# capped baseline-less variant that used to run here skipped the differential —
-# the one assertion the gate exists for — so it has been removed rather than
-# kept as a cheap option.  See tests/accuracy/README.md.
+# There is also a PR path: aic-amd-dist-build.yml's /run-ci-accuracy command
+# chains accuracy-test as a fifth job after dist-build + smoke + tiny.
 #
-# The dispatched SHA must already have an image tarball staged under
-# AIC_CI_STORAGE_ROOT/images/aic-ci-<short-sha> (i.e. a dist-build for the same
-# commit ran and kept its artifacts) — this workflow does not build one.
+# The full gate — both arms, full gsm8k split — runs ~65 min.  There is no
+# cheaper variant: the capped, baseline-less one that used to exist skipped
+# the differential and so could only fail on catastrophe.  See
+# tests/accuracy/README.md.
 #
 # Requires (all already in use by sibling hardware-CI workflows):
 #   secrets.AIC_SPUR_HOST        — SSH target for the SPUR head node
@@ -26,10 +29,13 @@
 #   secrets.AIC_SPUR_CONTROLLER  — SPUR controller address
 #   secrets.AIC_HF_TOKEN         — HF token for the model download
 
-name: rocm-aic - Hardware Test - AMD Accuracy Test
+name: rocm-aic - Self Hosted - AMD Accuracy Test
 
 on:
   workflow_dispatch:
+  workflow_run:
+    workflows: ["rocm-aic - Self Hosted - Nightly Smoke Test"]
+    types: [completed]
 
 permissions:
   contents: read
@@ -40,6 +46,9 @@ concurrency:
 
 jobs:
   accuracy-test:
+    if: >
+      github.event_name == 'workflow_dispatch' ||
+      github.event.workflow_run.conclusion == 'success'
     runs-on: [self-hosted, rocm-aic-cicd]
     # Both arms over the full 1319-item split: 58 min measured (SPUR job 6235)
     # plus ~7 min now that the restart phase is full-split too, so ~65 min.
@@ -48,8 +57,6 @@ jobs:
     env:
       AIC_SPUR_HOST:       ${{ secrets.AIC_SPUR_HOST }}
       AIC_SHARED_NFS:      ${{ secrets.AIC_SHARED_NFS }}
-      # Without this the script falls back to $HOME/Projects/rocm-aic-ci and
-      # looks for the tarball in the wrong place.
       AIC_CI_STORAGE_ROOT: ${{ secrets.AIC_SHARED_NFS }}/rocm-aic
       AIC_SPUR_CONTROLLER: ${{ secrets.AIC_SPUR_CONTROLLER }}
       HF_TOKEN:            ${{ secrets.AIC_HF_TOKEN }}
@@ -58,18 +65,16 @@ jobs:
       - name: Run accuracy-test on the SPUR head node
         run: |
           bash /usr/local/lib/aic-ci/spur-accuracy-test.sh \
-            "${{ github.sha }}" \
+            "${{ github.event.workflow_run.head_sha || github.sha }}" \
             accuracy-test
 
       # if: always() — a failed gate is exactly when the per-phase scores and
-      # per-arm container logs are worth having.  The driver fetches them from
-      # the head node whatever the gate concluded; without this step the only
-      # post-mortem is the stdout tail above.
+      # per-arm container logs are worth having.
       - name: Upload accuracy logs
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: accuracy-logs-${{ github.sha }}
+          name: accuracy-logs-${{ github.event.workflow_run.head_sha || github.sha }}
           path: ${{ runner.temp }}/accuracy-logs/
           if-no-files-found: warn
           retention-days: 14
