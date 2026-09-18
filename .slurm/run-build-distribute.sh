@@ -125,6 +125,10 @@
 #   AIC_BUILD_LOCAL      set to 1 to build on THIS host, no Slurm  (default: unset)
 #   AIC_BUILD_PARTITION  Slurm partition for build + load  (default: defq)
 #   AIC_BUILD_CPUS       --cpus-per-task for the build job (default: 32)
+#   AIC_BUILD_GPUS       --gpus= for the build job; required on SPUR (AIC_SPUR_CLUSTER=1)
+#                        because the scheduler mandates a GPU request even for CPU-only
+#                        build jobs.  Set to 0 to request a zero-GPU allocation if
+#                        the scheduler ever supports it.  (default: 1 when SPUR, unset otherwise)
 #   AIC_BUILD_TIME       build job time limit              (default: 02:00:00)
 #   AIC_LOAD_TIME        per-node load job time limit      (default: 00:30:00)
 #
@@ -357,6 +361,10 @@ fi
 AIC_SLURM_ACCOUNT="${AIC_SLURM_ACCOUNT:-}"
 AIC_BUILD_CPUS="${AIC_BUILD_CPUS:-32}"
 AIC_BUILD_TIME="${AIC_BUILD_TIME:-02:00:00}"
+# SPUR requires a GPU request even for CPU-only build jobs.
+if [[ "${AIC_SPUR_CLUSTER}" == "1" ]]; then
+    AIC_BUILD_GPUS="${AIC_BUILD_GPUS:-1}"
+fi
 AIC_LOAD_TIME="${AIC_LOAD_TIME:-00:30:00}"
 AIC_TARGETS="${AIC_TARGETS:-}"
 AIC_PUSH_REF="${AIC_PUSH_REF:-}"
@@ -1087,6 +1095,7 @@ REMOTE
         fi
         _sbatch_run aic-build build "${remote_script}" \
             "${_sel[@]}" \
+            ${AIC_BUILD_GPUS:+--gpus="${AIC_BUILD_GPUS}"} \
             --nodes=1 --ntasks=1 \
             --cpus-per-task="${AIC_BUILD_CPUS}" \
             --time="${AIC_BUILD_TIME}"

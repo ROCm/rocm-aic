@@ -1,4 +1,4 @@
-name: AIC Lint
+name: rocm-aic - Lint Check
 on:
   push:
     branches: [main]
@@ -8,9 +8,9 @@ on:
 jobs:
   shellcheck:
     name: ShellCheck
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Install shellcheck
         run: sudo apt-get install -y shellcheck
       - name: Run shellcheck
@@ -22,18 +22,18 @@ jobs:
 
   hadolint:
     name: Hadolint
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: hadolint/hadolint-action@v3.1.0
         with:
           recursive: true
 
   htmlhint:
     name: HTMLHint
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Install htmlhint
         run: npm install -g htmlhint
       - name: Run htmlhint
@@ -41,9 +41,9 @@ jobs:
 
   validate-profile-packs:
     name: Validate LLM-Emu profile packs
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Resolve LLM-Emu ref from Dockerfile
         id: meta
         run: |
@@ -67,9 +67,9 @@ jobs:
 
   grafana-dashboard-lint:
     name: Grafana dashboard lint
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Install dashboard-linter
         run: |
           set -euo pipefail

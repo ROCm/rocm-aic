@@ -5,7 +5,7 @@
 # Prevent component metadata in README.md from drifting from the source-built
 # stack declared in docker/base/, docker/vllm/, docker/lmcache/ Dockerfiles.
 
-name: AIC README Version Check
+name: rocm-aic - README Version Check
 
 on:
   pull_request:
@@ -18,7 +18,7 @@ on:
       - patches/**
       - .github/scripts/workflows/sync-readme-versions.py
       - .github/scripts/workflows/test_sync_readme_versions.py
-      - .github/workflows/aic-update-readme-shields.yml
+      - .github/workflows/rocm-aic-readme-version-check.yml
     types: [opened, synchronize, reopened]
   workflow_dispatch:
 
@@ -28,10 +28,10 @@ permissions:
 jobs:
   check-readme-versions:
     name: README version metadata
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           persist-credentials: false
 
