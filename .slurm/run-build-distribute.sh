@@ -629,6 +629,15 @@ PROLOGUE
         printf '%s\n' "${script}" > "${tmpscript}"
         chmod +x "${tmpscript}"
 
+        # Need to provide atleast one GPU due to SPUR scheduling requirements.
+        local -a _spur_gpu=(--gpus=1)
+        local _opt
+        for _opt in "$@"; do
+            case "${_opt}" in
+                --gpus=*|--gpus-per-node=*|--gpus-per-task=*|--gres=gpu:*) _spur_gpu=() ;;
+            esac
+        done
+
         local submit_out
         submit_out="$(sbatch \
             --controller="${AIC_SPUR_CONTROLLER}" \
@@ -636,6 +645,7 @@ PROLOGUE
             --partition="${AIC_BUILD_PARTITION}" \
             ${AIC_SLURM_ACCOUNT:+--account="${AIC_SLURM_ACCOUNT}"} \
             --output=/dev/null \
+            "${_spur_gpu[@]}" \
             "$@" \
             "${tmpscript}" 2>&1)" || { rm -f "${tmpscript}"; die "sbatch submission failed: ${submit_out}"; }
         rm -f "${tmpscript}"
@@ -1441,8 +1451,11 @@ cmd_load() {
     # (unsupported); harmless on standard Slurm.
     local -a _overcommit_arg=(); [[ "${AIC_SPUR_CLUSTER}" != "1" ]] && _overcommit_arg=(--overcommit)
     local -a _spur_ctl_arg=(); [[ "${AIC_SPUR_CLUSTER}" == "1" ]] && _spur_ctl_arg=(--controller="${AIC_SPUR_CONTROLLER}")
+    # Need to provide atleast one GPU due to SPUR scheduling requirements.
+    local -a _spur_gpu_arg=(); [[ "${AIC_SPUR_CLUSTER}" == "1" ]] && _spur_gpu_arg=(--gpus-per-node=1)
     srun \
         "${_spur_ctl_arg[@]}" \
+        "${_spur_gpu_arg[@]}" \
         --job-name=aic-load \
         --partition="${AIC_BUILD_PARTITION}" \
         --nodelist="${AIC_TARGETS}" \
@@ -1515,8 +1528,11 @@ REMOTE
     fi
     local -a _push_overcommit=(); [[ "${AIC_SPUR_CLUSTER}" != "1" ]] && _push_overcommit=(--overcommit)
     local -a _push_spur_ctl=(); [[ "${AIC_SPUR_CLUSTER}" == "1" ]] && _push_spur_ctl=(--controller="${AIC_SPUR_CONTROLLER}")
+    # Need to provide atleast one GPU due to SPUR scheduling requirements.
+    local -a _push_spur_gpu=(); [[ "${AIC_SPUR_CLUSTER}" == "1" ]] && _push_spur_gpu=(--gpus=1)
     srun \
         "${_push_spur_ctl[@]}" \
+        "${_push_spur_gpu[@]}" \
         --job-name=aic-push \
         --partition="${AIC_BUILD_PARTITION}" \
         "${_sel[@]}" \
@@ -3175,7 +3191,8 @@ exec '${AIC_DAY_DIR}/.slurm/run-accuracy.sh'
 REMOTE
 )"
 
-    local -a _gres_arg=(); [[ "${AIC_SPUR_CLUSTER}" != "1" ]] && _gres_arg=(--gres=gpu:1)
+    local -a _gres_arg=(--gres=gpu:1)
+    [[ "${AIC_SPUR_CLUSTER}" == "1" ]] && _gres_arg=(--gpus=1)
     _sbatch_run aic-accuracy-test accuracy-test "${remote_script}" \
         "${_sel[@]}" \
         "${_gres_arg[@]}" \
@@ -3416,7 +3433,8 @@ exit \${sweep_rc}
 REMOTE
 )"
 
-    local -a _gres_arg=(); [[ "${AIC_SPUR_CLUSTER}" != "1" ]] && _gres_arg=(--gres=gpu:1)
+    local -a _gres_arg=(--gres=gpu:1)
+    [[ "${AIC_SPUR_CLUSTER}" == "1" ]] && _gres_arg=(--gpus=1)
     _sbatch_run aic-profile-capture profile-capture "${remote_script}" \
         "${_sel[@]}" \
         "${_gres_arg[@]}" \
