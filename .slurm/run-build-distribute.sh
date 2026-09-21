@@ -139,6 +139,10 @@
 #                        (e.g. <your-registry>/<project>/rocm-aic:buildcache)
 #                        (default: unset)
 #   AIC_CACHE_MODE       cache mode: min | max              (default: max)
+#   AIC_CACHE_RESET      pass reset=true on the type=local --cache-to so the
+#                        exporter drops blobs the new index.json no longer
+#                        references (default: 1; 0 disables). Requires Docker
+#                        buildx >= 0.35.0.
 #   AIC_BUILDX_BUILDER   docker-container buildx builder name (default: aic-cache)
 #   AIC_CACHE_INSECURE   set to 1 when AIC_CACHE_REF has an untrusted TLS cert
 #                        (self-signed / private-CA HTTPS, e.g. the in-cluster
@@ -363,6 +367,8 @@ AIC_PUSH_REF="${AIC_PUSH_REF:-}"
 AIC_CACHE_DIR="${AIC_CACHE_DIR:-}"
 AIC_CACHE_REF="${AIC_CACHE_REF:-}"
 AIC_CACHE_MODE="${AIC_CACHE_MODE:-max}"
+# Needs buildx >= 0.35.0. Avoids the Docker cache from growing endlessly.
+AIC_CACHE_RESET="${AIC_CACHE_RESET:-1}"
 AIC_BUILDX_BUILDER="${AIC_BUILDX_BUILDER:-aic-cache}"
 AIC_CACHE_INSECURE="${AIC_CACHE_INSECURE:-}"
 AIC_TEST_TIME="${AIC_TEST_TIME:-00:45:00}"
@@ -954,8 +960,10 @@ cmd_build() {
             # apart stops one from evicting/locking the other's entries.
             local _cdir
             _cdir="${AIC_CACHE_DIR%/}/$(_arch_tag)${AIC_BUILD_TARGET:+-${AIC_BUILD_TARGET}}"
-            log "build cache: local dir ${_cdir} (mode ${AIC_CACHE_MODE}, builder ${AIC_BUILDX_BUILDER})"
-            _cache_args="--cache-from type=local,src=${_cdir} --cache-to type=local,dest=${_cdir},mode=${AIC_CACHE_MODE},ignore-error=true"
+            log "build cache: local dir ${_cdir} (mode ${AIC_CACHE_MODE}, reset ${AIC_CACHE_RESET}, builder ${AIC_BUILDX_BUILDER})"
+            local _reset=""
+            [[ "${AIC_CACHE_RESET}" == "1" ]] && _reset=",reset=true"
+            _cache_args="--cache-from type=local,src=${_cdir} --cache-to type=local,dest=${_cdir},mode=${AIC_CACHE_MODE},ignore-error=true${_reset}"
             _mkdir="mkdir -p '${_cdir}'; "
         fi
         # Create the docker-container builder once per node (idempotent), then
