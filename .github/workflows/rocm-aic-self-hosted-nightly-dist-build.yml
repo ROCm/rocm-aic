@@ -1,4 +1,4 @@
-name: AIC Hardware Test - Nightly Dist Build
+name: rocm-aic - Self Hosted - Nightly Dist Build
 
 on:
   schedule:
