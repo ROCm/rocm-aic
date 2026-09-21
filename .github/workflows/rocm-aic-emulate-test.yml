@@ -2,20 +2,26 @@
 #
 # SPDX-License-Identifier: MIT
 #
-# Nightly serve check of the emulation image.  This stage needs NO GPU: the
-# image is built with --target emulate and VLLM_TARGET_DEVICE=empty (no GPU
-# kernels compiled), and the emulator serves on a CPU-only GitHub-hosted runner
-# with no /dev/kfd in the container.  It therefore runs on its own schedule
-# rather than chained behind the dist-build -> smoke -> tiny -> cliff sequence,
-# and does not compete with those stages for hardware.
+# Serve check of the emulation image.  This stage needs NO GPU: the image is
+# built with --target emulate and VLLM_TARGET_DEVICE=empty (no GPU kernels
+# compiled), and the emulator serves on a CPU-only GitHub-hosted runner with
+# no /dev/kfd in the container.  It runs nightly and on pull_request when
+# the emulation Dockerfile or llm-emu patches change (GHA layer cache keeps
+# warm PR runs under 20 minutes).
 #
 # See docs/EMULATE.md.
-name: AIC Nightly Emulate Test
+name: rocm-aic - Emulate Test
 
 on:
   schedule:
     # 03:00 PST = 11:00 UTC
     - cron: '0 11 * * *'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'docker/vllm/Dockerfile'
+      - 'patches/llm-emu/**'
+      - '.github/workflows/rocm-aic-emulate-test.yml'
   workflow_dispatch:
 
 permissions:
@@ -24,17 +30,18 @@ permissions:
 jobs:
   emulate-test:
     name: Build and serve-test the emulation image
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 90
 
     env:
-      IMAGE_NAME: rocm-aic:emulate-test
+      IMAGE_NAME: rocm-aic
+      IMAGE_REF: rocm-aic:emulate-test
       VLLM_MODEL: Qwen/Qwen3-8B
       VLLM_EMULATOR_PROFILE_PACK: /opt/llm-emu/profiles/MI300X-Qwen3-8B.json
       AIC_EMULATE_READY_TIMEOUT: 96   # x5s = up to 8 min
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Free disk space on runner
         uses: jlumbroso/free-disk-space@v1.3.1
@@ -49,6 +56,9 @@ jobs:
 
       - uses: docker/setup-buildx-action@v3
 
+      - name: Read AIC_VERSION from VERSION file
+        run: echo "AIC_VERSION=$(cat VERSION)" >> "$GITHUB_ENV"
+
       - name: Write corp CA cert secret (AMD Zscaler proxy)
         id: cert
         run: |
@@ -59,6 +69,26 @@ jobs:
             echo "present=false" >> "${GITHUB_OUTPUT}"
           fi
 
+      - name: Build minimal CPU base for emulate target
+        # docker/vllm/Dockerfile uses FROM base, which normally points at the
+        # ROCm+PyTorch aic-base image.  For the emulate (CPU-only) target we
+        # build a lightweight substitute (docker/emulate-base.Dockerfile) and
+        # export it as an OCI tar archive; the next step extracts it to a
+        # directory so the docker-container buildx driver can reference it via
+        # oci-layout:// (which requires a directory, not a tar file).
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/emulate-base.Dockerfile
+          outputs: type=oci,dest=/tmp/aic-base-emulate.tar
+          cache-from: type=gha,scope=aic-emulate-base
+          cache-to: type=gha,mode=max,scope=aic-emulate-base
+
+      - name: Extract OCI base image to layout directory
+        run: |
+          mkdir -p /tmp/aic-base-emulate
+          tar -xf /tmp/aic-base-emulate.tar -C /tmp/aic-base-emulate
+
       - name: Build emulation image (no GPU kernels)
         uses: docker/build-push-action@v6
         with:
@@ -66,10 +96,13 @@ jobs:
           file: docker/vllm/Dockerfile
           target: emulate
           load: true
-          tags: ${{ env.IMAGE_NAME }}
+          tags: ${{ env.IMAGE_REF }}
           build-args: |
             ROCM_ARCH=gfx942
             VLLM_TARGET_DEVICE=empty
+            AIC_VERSION=${{ env.AIC_VERSION }}
+          build-contexts: |
+            base=oci-layout:///tmp/aic-base-emulate
           secrets: |
             ${{ steps.cert.outputs.present == 'true' && format('tls_cert={0}', steps.cert.outputs.path) || '' }}
           cache-from: type=gha,scope=aic-emulate
@@ -178,7 +211,7 @@ jobs:
 
       - name: Upload emulator log on failure
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: emulate-vllm-log
           path: ${{ runner.temp }}/logs/

@@ -35,7 +35,7 @@
 # Compatibility: ROCm 7.14 / Python 3.12 / x86_64, non-manylinux.
 # NIXL wheel carries libnixl + plugins/UCX; ROCm runtime is an external dep.
 #
-name: AIC Nightly Wheels
+name: rocm-aic - Nightly Wheels Publication
 
 on:
   schedule:
@@ -70,12 +70,12 @@ jobs:
   # ---------------------------------------------------------------------------
   check:
     name: Check for changes on main
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     outputs:
       should_build: ${{ steps.decide.outputs.should_build }}
       sha: ${{ steps.head.outputs.sha }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           ref: main
           fetch-depth: 1
@@ -121,10 +121,10 @@ jobs:
     name: Warm base cache (cdna)
     needs: check
     if: needs.check.outputs.should_build == 'true'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 360
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           ref: ${{ needs.check.outputs.sha }}
           fetch-depth: 1
@@ -174,10 +174,10 @@ jobs:
       needs.check.outputs.should_build == 'true' &&
       github.event_name != 'schedule' &&
       github.event.inputs.include_rdna == 'true'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 360
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           ref: ${{ needs.check.outputs.sha }}
           fetch-depth: 1
@@ -224,10 +224,10 @@ jobs:
     name: Build wheels (cdna)
     needs: [check, warm-base-cdna]
     if: needs.check.outputs.should_build == 'true'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 360
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           ref: ${{ needs.check.outputs.sha }}
           fetch-depth: 1
@@ -291,7 +291,7 @@ jobs:
           echo "${{ env.CDNA_ARCH }}" > wheels-out/_arch-cdna.txt
 
       - name: Upload wheel artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: wheels-cdna
           path: wheels-out/
@@ -305,10 +305,10 @@ jobs:
       needs.check.outputs.should_build == 'true' &&
       github.event_name != 'schedule' &&
       github.event.inputs.include_rdna == 'true'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 360
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           ref: ${{ needs.check.outputs.sha }}
           fetch-depth: 1
@@ -372,7 +372,7 @@ jobs:
           echo "${{ env.RDNA_ARCH }}" > wheels-out/_arch-rdna.txt
 
       - name: Upload wheel artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: wheels-rdna
           path: wheels-out/
@@ -386,16 +386,16 @@ jobs:
     name: Publish nightly release
     needs: [check, build-wheels-cdna, build-wheels-rdna]
     if: needs.check.outputs.should_build == 'true' && needs.build-wheels-cdna.result == 'success'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           ref: ${{ needs.check.outputs.sha }}
           fetch-depth: 1
 
       - name: Download all wheel artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v7
         with:
           pattern: wheels-*
           path: all-wheels

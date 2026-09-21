@@ -471,9 +471,12 @@ services:
     # (set in image ENV) plus shared IPC+PID namespaces.  Container-scoped sharing
     # (ipc: service:lmcache, pid: service:lmcache) is sufficient and safer than
     # ipc: host / pid: host.  Override via VLLM_IPC_MODE / VLLM_PID_MODE if needed.
-    # vLLM OpenAI API + /metrics reachable within the aic network on port 8000.
+    # vLLM OpenAI API + /metrics reachable on host port 8000 (curl localhost:8000
+    # from the sbatch shell) and within the aic network on port 8000.
     networks: [aic-network]
-    ipc: "${VLLM_IPC_MODE:-service:lmcache}"
+    ports:
+      - "${VLLM_HOST_PORT:-8000}:8000"
+    ipc: "${VLLM_IPC_MODE:-shareable}"
     shm_size: "${AIC_SHM_SIZE:-64gb}"
     pid: "${VLLM_PID_MODE-service:lmcache}"
     cap_add:

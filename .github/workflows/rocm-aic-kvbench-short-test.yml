@@ -6,7 +6,7 @@
 # runner. Builds the repo's KVBench container, starts it on the compose network,
 # and drives it through the cliff harness without requiring GPUs or SPUR capacity.
 
-name: AIC KVBench Arm Smoke
+name: rocm-aic - KVBench Short Test
 
 on:
   push:
@@ -16,7 +16,7 @@ on:
       - 'benchmarks/**'
       - 'docker/**'
       - 'tests/**'
-      - '.github/workflows/aic-kvbench-smoke.yml'
+      - '.github/workflows/rocm-aic-kvbench-short-test.yml'
   pull_request:
     branches: [main]
   workflow_dispatch:
@@ -27,11 +27,11 @@ permissions:
 jobs:
   kvbench-arm-smoke:
     name: KVBench cliff arm smoke
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - uses: actions/setup-python@v5
         with:

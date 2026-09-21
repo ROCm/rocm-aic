@@ -6,7 +6,7 @@
 # https://rocm.github.io/rocm-aic/ shows a landing page linking to the
 # Prometheus metrics reference (/prometheus/) and Cliff dashboard (/cliff/).
 
-name: AIC Pages Root
+name: rocm-aic - Publish Github Pages Site
 
 on:
   push:
@@ -20,9 +20,9 @@ permissions:
 jobs:
   deploy:
     name: Publish root index to GitHub Pages
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Deploy root index to GitHub Pages
         uses: peaceiris/actions-gh-pages@v4

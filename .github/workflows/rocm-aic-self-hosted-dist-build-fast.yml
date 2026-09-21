@@ -1,7 +1,29 @@
-name: AIC Hardware Test - AMD Dist Build
+# Single-arch (AIC_FAST_ARCH=gfx950) developer gate, driven by the PR slash
+# command:
+#
+#   /run-ci-fast       dist-build-fast -> smoke-test-fast -> tiny-test-fast
+#
+# For the full multi-arch gate with an accuracy stage appended, use:
+#
+#   /run-ci-accuracy   fires rocm-aic-self-hosted-dist-build.yml: dist-build -> smoke-test
+#                      -> tiny-test -> accuracy-test (full multi-arch)
+#
+# Cleanup ownership: tiny-test is the terminal stage and cleans up on exit.
+#
+# Requires (all already in use by sibling hardware-CI workflows):
+#   secrets.AIC_SPUR_HOST        — SSH target for the SPUR head node
+#   secrets.AIC_SHARED_NFS       — shared NFS path for image tarballs + scratch
+#   secrets.AIC_SPUR_CONTROLLER  — SPUR controller address
+
+name: rocm-aic - Self Hosted - Dist Build Fast
 
 on:
   workflow_dispatch:
+    inputs:
+      cancel_slurm_job:
+        description: "Cancel one orphaned SPUR Slurm job instead of running CI"
+        required: false
+        type: string
   issue_comment:
     types: [created]
 
@@ -14,21 +36,58 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  # Validate /run-ci slash command on PRs; skipped for manual triggers.
+  cleanup-orphan:
+    if: github.event_name == 'workflow_dispatch' && inputs.cancel_slurm_job != ''
+    runs-on: [self-hosted, rocm-aic-cicd]
+    timeout-minutes: 5
+    env:
+      AIC_SPUR_HOST: ${{ secrets.AIC_SPUR_HOST }}
+      AIC_SPUR_CONTROLLER: ${{ secrets.AIC_SPUR_CONTROLLER }}
+      JOB_ID: ${{ inputs.cancel_slurm_job }}
+
+    steps:
+      - name: Cancel orphaned SPUR job
+        shell: bash
+        run: |
+          set -euo pipefail
+          export PATH="/usr/local/bin:${PATH}"
+          [[ "${JOB_ID}" =~ ^[0-9]+$ ]] || {
+            echo "ERROR: Slurm job ID must be numeric" >&2
+            exit 2
+          }
+          ssh -o ServerAliveInterval=30 -o ServerAliveCountMax=4 "${AIC_SPUR_HOST}" env \
+            JOB_ID="${JOB_ID}" \
+            AIC_SPUR_CONTROLLER="${AIC_SPUR_CONTROLLER}" \
+            bash <<'REMOTE'
+          set -euo pipefail
+          export PATH="/usr/local/bin:${PATH}"
+          scancel --controller="${AIC_SPUR_CONTROLLER}" "${JOB_ID}"
+          for _ in 1 2 3 4 5 6 7 8 9 10; do
+              if ! squeue --controller="${AIC_SPUR_CONTROLLER}" -h 2>/dev/null |
+                  awk -v id="${JOB_ID}" '$1 == id { found = 1 } END { exit found ? 0 : 1 }'; then
+                  echo "Slurm job ${JOB_ID} is no longer queued"
+                  exit 0
+              fi
+              sleep 1
+          done
+          echo "ERROR: Slurm job ${JOB_ID} is still queued after scancel" >&2
+          exit 1
+          REMOTE
+
+  # Validate the slash command on PRs; skipped for manual triggers.
+  # Only /run-ci-fast lands here; /run-ci-accuracy now fires the full multi-arch
+  # gate in rocm-aic-self-hosted-dist-build.yml (with accuracy chained after smoke+tiny).
   #
-  # The match is a substring test, so every longer command starting '/run-ci'
-  # has to be excluded by hand or it fires this multi-arch gate as well.  Both
-  # of the exclusions below belong to aic-amd-dist-build-fast.yml; add any new
-  # '/run-ci-*' command here at the same time you add it there.
+  # rocm-aic-self-hosted-dist-build.yml matches '/run-ci' by substring and must exclude
+  # /run-ci-fast or a fast-path comment also fires the full multi-arch gate.
   authorize:
-    if: >
-      github.event_name != 'issue_comment' || (
+    if: >-
+      (github.event_name != 'workflow_dispatch' || inputs.cancel_slurm_job == '') &&
+      (github.event_name != 'issue_comment' || (
         github.event.issue.pull_request != null &&
-        contains(github.event.comment.body, '/run-ci') &&
-        !contains(github.event.comment.body, '/run-ci-fast') &&
-        !contains(github.event.comment.body, '/run-ci-accuracy')
-      )
-    runs-on: ubuntu-latest
+        contains(github.event.comment.body, '/run-ci-fast')
+      ))
+    runs-on: ubuntu-24.04
     permissions:
       pull-requests: write
     outputs:
@@ -93,6 +152,7 @@ jobs:
       AIC_SHARED_NFS: ${{ secrets.AIC_SHARED_NFS }}
       AIC_CI_STORAGE_ROOT: ${{ secrets.AIC_SHARED_NFS }}/rocm-aic
       AIC_SPUR_CONTROLLER: ${{ secrets.AIC_SPUR_CONTROLLER }}
+      AIC_BUILD_EXCLUDE_NODES: ${{ vars.AIC_BUILD_EXCLUDE_NODES }}
 
     steps:
       - name: Set commit status to pending
@@ -106,12 +166,12 @@ jobs:
               sha: '${{ needs.authorize.outputs.sha }}',
               state: 'pending',
               target_url: `https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`,
-              context: 'hardware-ci / dist-build',
+              context: 'hardware-ci / dist-build-fast',
               description: 'Building image on the SPUR head node...',
             });
 
-      - name: Build image on the SPUR head node
-        run: bash /usr/local/lib/aic-ci/spur-dist-build.sh "${{ needs.authorize.outputs.sha }}"
+      - name: Build fast image on the SPUR head node
+        run: bash /usr/local/lib/aic-ci/spur-dist-build.sh "${{ needs.authorize.outputs.sha }}" dist-build-fast
 
       - name: Set commit status on success
         if: success() && needs.authorize.outputs.pr_number != ''
@@ -124,7 +184,7 @@ jobs:
               sha: '${{ needs.authorize.outputs.sha }}',
               state: 'success',
               target_url: `https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`,
-              context: 'hardware-ci / dist-build',
+              context: 'hardware-ci / dist-build-fast',
               description: 'Image built successfully',
             });
 
@@ -139,7 +199,7 @@ jobs:
               sha: '${{ needs.authorize.outputs.sha }}',
               state: 'failure',
               target_url: `https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`,
-              context: 'hardware-ci / dist-build',
+              context: 'hardware-ci / dist-build-fast',
               description: 'Image build failed — check the run logs',
             });
 
@@ -152,7 +212,7 @@ jobs:
               owner: context.repo.owner,
               repo: context.repo.repo,
               issue_number: ${{ needs.authorize.outputs.pr_number || 0 }},
-              body: `❌ dist-build failed for ${{ needs.authorize.outputs.sha }}. [View logs](https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}).`,
+              body: `❌ dist-build-fast failed for ${{ needs.authorize.outputs.sha }}. [View logs](https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}).`,
             });
 
   smoke-test:
@@ -180,12 +240,12 @@ jobs:
               sha: '${{ needs.authorize.outputs.sha }}',
               state: 'pending',
               target_url: `https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`,
-              context: 'hardware-ci / smoke-test',
+              context: 'hardware-ci / smoke-test-fast',
               description: 'Running smoke test on the SPUR head node...',
             });
 
-      - name: Run smoke test on the SPUR head node
-        run: bash /usr/local/lib/aic-ci/spur-smoke-test.sh "${{ needs.authorize.outputs.sha }}"
+      - name: Run fast smoke test on the SPUR head node
+        run: bash /usr/local/lib/aic-ci/spur-smoke-test.sh "${{ needs.authorize.outputs.sha }}" smoke-test-fast
 
       - name: Set commit status on success
         if: success() && needs.authorize.outputs.pr_number != ''
@@ -198,7 +258,7 @@ jobs:
               sha: '${{ needs.authorize.outputs.sha }}',
               state: 'success',
               target_url: `https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`,
-              context: 'hardware-ci / smoke-test',
+              context: 'hardware-ci / smoke-test-fast',
               description: 'Smoke test passed',
             });
 
@@ -213,7 +273,7 @@ jobs:
               sha: '${{ needs.authorize.outputs.sha }}',
               state: 'failure',
               target_url: `https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`,
-              context: 'hardware-ci / smoke-test',
+              context: 'hardware-ci / smoke-test-fast',
               description: 'Smoke test failed — check the run logs',
             });
 
@@ -226,11 +286,77 @@ jobs:
               owner: context.repo.owner,
               repo: context.repo.repo,
               issue_number: ${{ needs.authorize.outputs.pr_number || 0 }},
-              body: `❌ Smoke test failed for ${{ needs.authorize.outputs.sha }}. [View logs](https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}).`,
+              body: `❌ Fast smoke test failed for ${{ needs.authorize.outputs.sha }}. [View logs](https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}).`,
+            });
+
+  # Emulate smoke: runs in parallel with smoke-test on a CPU-only SPUR node.
+  # No GPU needed — loads the built image tarball, starts the compose emulate
+  # profile, and asserts: endpoint answers, executor hook active, steps from pack.
+  # Catches emulator breakage before it reaches the nightly gate.
+  emulate-smoke:
+    needs: [authorize, dist-build]
+    runs-on: [self-hosted, rocm-aic-cicd]
+    timeout-minutes: 30
+    permissions:
+      pull-requests: write
+      statuses: write
+    env:
+      AIC_SPUR_HOST:       ${{ secrets.AIC_SPUR_HOST }}
+      AIC_SHARED_NFS:      ${{ secrets.AIC_SHARED_NFS }}
+      AIC_CI_STORAGE_ROOT: ${{ secrets.AIC_SHARED_NFS }}/rocm-aic
+      AIC_SPUR_CONTROLLER: ${{ secrets.AIC_SPUR_CONTROLLER }}
+
+    steps:
+      - name: Set commit status to pending
+        if: needs.authorize.outputs.pr_number != ''
+        uses: actions/github-script@v9
+        with:
+          script: |
+            await github.rest.repos.createCommitStatus({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              sha: '${{ needs.authorize.outputs.sha }}',
+              state: 'pending',
+              target_url: `https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`,
+              context: 'hardware-ci / emulate-smoke-fast',
+              description: 'Running CPU-only emulate smoke on SPUR...',
+            });
+
+      - name: Run emulate smoke test on SPUR CPU node
+        run: bash /usr/local/lib/aic-ci/spur-emulate-test.sh "${{ needs.authorize.outputs.sha }}"
+
+      - name: Set commit status on success
+        if: success() && needs.authorize.outputs.pr_number != ''
+        uses: actions/github-script@v9
+        with:
+          script: |
+            await github.rest.repos.createCommitStatus({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              sha: '${{ needs.authorize.outputs.sha }}',
+              state: 'success',
+              target_url: `https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`,
+              context: 'hardware-ci / emulate-smoke-fast',
+              description: 'Emulate smoke passed (CPU-only, no GPU consumed)',
+            });
+
+      - name: Set commit status on failure
+        if: failure() && needs.authorize.outputs.pr_number != ''
+        uses: actions/github-script@v9
+        with:
+          script: |
+            await github.rest.repos.createCommitStatus({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              sha: '${{ needs.authorize.outputs.sha }}',
+              state: 'failure',
+              target_url: `https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`,
+              context: 'hardware-ci / emulate-smoke-fast',
+              description: 'Emulate smoke failed — executor hook or completions broken',
             });
 
   tiny-test:
-    needs: [authorize, dist-build, smoke-test]
+    needs: [authorize, dist-build, smoke-test, emulate-smoke]
     runs-on: [self-hosted, rocm-aic-cicd]
     timeout-minutes: 60
     permissions:
@@ -254,12 +380,12 @@ jobs:
               sha: '${{ needs.authorize.outputs.sha }}',
               state: 'pending',
               target_url: `https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`,
-              context: 'hardware-ci / tiny-test',
+              context: 'hardware-ci / tiny-test-fast',
               description: 'Running tiny-model end-to-end serve on SPUR head node...',
             });
 
-      - name: Run tiny-test on SPUR head node
-        run: bash /usr/local/lib/aic-ci/spur-tiny-test.sh "${{ needs.authorize.outputs.sha }}"
+      - name: Run fast tiny-test on SPUR head node
+        run: bash /usr/local/lib/aic-ci/spur-tiny-test.sh "${{ needs.authorize.outputs.sha }}" tiny-test-fast
 
       - name: Set commit status on success
         if: success() && needs.authorize.outputs.pr_number != ''
@@ -272,7 +398,7 @@ jobs:
               sha: '${{ needs.authorize.outputs.sha }}',
               state: 'success',
               target_url: `https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`,
-              context: 'hardware-ci / tiny-test',
+              context: 'hardware-ci / tiny-test-fast',
               description: 'Tiny-model end-to-end serve passed',
             });
 
@@ -287,7 +413,7 @@ jobs:
               sha: '${{ needs.authorize.outputs.sha }}',
               state: 'failure',
               target_url: `https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`,
-              context: 'hardware-ci / tiny-test',
+              context: 'hardware-ci / tiny-test-fast',
               description: 'Tiny-test failed — check the run logs',
             });
 
@@ -302,6 +428,6 @@ jobs:
               repo: context.repo.repo,
               issue_number: ${{ needs.authorize.outputs.pr_number || 0 }},
               body: success
-                ? `✅ Hardware CI passed for ${{ needs.authorize.outputs.sha }} (dist-build + smoke-test + tiny-test).`
-                : `❌ Tiny-test failed for ${{ needs.authorize.outputs.sha }}. [View logs](https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}).`,
+                ? `✅ Fast hardware CI passed for ${{ needs.authorize.outputs.sha }} (dist-build-fast + smoke-test-fast + tiny-test-fast). This is a single-arch dev check — run \`/run-ci\` for the full gate.`
+                : `❌ Tiny-test (fast) failed for ${{ needs.authorize.outputs.sha }}. [View logs](https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}).`,
             });
