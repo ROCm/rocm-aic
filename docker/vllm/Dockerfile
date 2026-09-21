@@ -84,8 +84,13 @@ RUN --mount=type=cache,target=/root/.cache/pip \
     mkdir -p /wheels && \
     cd /app/vllm && \
     printf 'torch>=2.13,<2.14\n' > /tmp/torch-constraints.txt && \
-    pip3 install -r requirements/rocm.txt \
-        --constraint /tmp/torch-constraints.txt && \
+    if [ "${VLLM_TARGET_DEVICE}" = "empty" ]; then \
+        pip3 install -r requirements/common.txt \
+            --constraint /tmp/torch-constraints.txt; \
+    else \
+        pip3 install -r requirements/rocm.txt \
+            --constraint /tmp/torch-constraints.txt; \
+    fi && \
     VLLM_TARGET_DEVICE="${VLLM_TARGET_DEVICE}" \
         PYTORCH_ROCM_ARCH="${ROCM_ARCH}" \
         TORCH_DONT_CHECK_COMPILER_ABI=1 \
