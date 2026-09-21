@@ -309,16 +309,16 @@ _GIT_DIRTY     := $(if $(shell git -C "$(CURDIR)" status --porcelain -- . 2>/dev
 _GEN_DATE      := $(shell date +%Y%m%d)
 EXPORT_TARBALL ?= $(CURDIR)/$(EXPORT_PREFIX)-$(_GEN_DATE)-$(_GIT_SHORT_REV)$(_GIT_DIRTY).tar.gz
 
-.PHONY: help ensure-compose build up up-batch up-dev up-monitoring down-monitoring up-gds-l1 up-gds-l1-batch down logs logs-lmcache logs-vllm \
+.PHONY: help ensure-compose build up up-batch up-dev up-gds-l1 up-gds-l1-batch down logs logs-lmcache logs-vllm \
         ps shell-lmcache shell-vllm restart-vllm restart-lmcache cliff plot venv vllm-reset-test stress-grafana \
-        monitoring-up monitoring-down monitoring-logs monitoring-build-exporters prometheus-dump \
+        monitoring-up monitoring-down monitoring-logs prometheus-dump \
         dist-build dist-build-fast dist-build-emulate dist-build-exporters dist-build-monitoring dist-push \
         smoke-test smoke-test-fast tiny-test tiny-test-fast \
         emulate-test emulate-mp-test emulate-validate test-emulate-local stress-emulate-local capture-profile-local profile-capture \
         accuracy-test accuracy-test-fast accuracy-test-very-fast \
         install-ci-scripts kvbench-build kvbench-up kvbench-logs kvbench-down cliff-kvbench-local cliff-kvbench-submit cliff-submit cliff-short \
         cliff-kvd cliff-spur-l2 cliff-spur-l2-debug cliff-long-64k cliff-long-128k \
-        export _check_hf_token _prep_dirs _prep_kvbench_dirs _check_gds_slab
+        export check-hf-token prep-dirs prep-kvbench-dirs check-gds-slab
 
 .DEFAULT_GOAL := help
 
@@ -334,8 +334,6 @@ help:
 	@echo "  make up                Start lmcache + vllm (foreground, DRAM L1 + AIS_MT/NFS L2)"
 	@echo "  make up-batch          Start lmcache + vllm (background)"
 	@echo "  make up-dev            Start in dev mode: --enforce-eager skips CUDA graph capture (~60s faster, ~10% slower inference)"
-	@echo "  make up-monitoring     Start lmcache + vllm + prometheus + exporters (background)"
-	@echo "  make down-monitoring   Stop full stack including monitoring profile"
 	@echo "  make up-gds-l1         Start with hipFile GDS NVMe slab as L1 (foreground)"
 	@echo "  make up-gds-l1-batch   Start with hipFile GDS NVMe slab as L1 (background)"
 	@echo "  make down              Stop and remove both containers"
@@ -414,7 +412,6 @@ help:
 	@echo "  make monitoring-up     Start Prometheus, TSDB -> AIC_METRICS_DIR"
 	@echo "  make monitoring-down   Stop the metrics sidecar (TSDB retained)"
 	@echo "  make monitoring-logs   Follow Prometheus logs"
-	@echo "  make monitoring-build-exporters  Build nvme_exporter + rdma_exporter images"
 	@echo "  make prometheus-dump   Submit SPUR job: full GPU stack → scrape all /metrics →"
 	@echo "                         Markdown reference doc on shared NFS (requires built image)"
 	@echo "    PROM_DUMP_OUT=$(if $(PROM_DUMP_OUT),$(PROM_DUMP_OUT),<AIC_IMAGE_DIR>/../prometheus-dump.md)"
@@ -452,7 +449,7 @@ help:
 	@echo "  make plot"
 	@echo ""
 
-_check_hf_token:
+check-hf-token:
 	@if [ -z "$$HF_TOKEN" ] && [ -n "$(HF_TOKEN_FILE)" ] && [ -r "$(HF_TOKEN_FILE)" ]; then \
 		export HF_TOKEN="$$(tr -d '\r\n' < "$(HF_TOKEN_FILE)")"; \
 	fi; \
@@ -460,19 +457,19 @@ _check_hf_token:
 		echo "ERROR: set HF_TOKEN or HF_TOKEN_FILE" >&2; exit 1; \
 	fi
 
-_check_gds_slab:
+check-gds-slab:
 	@if [ -z "$(GDS_SLAB_DATA)" ]; then \
 		echo "ERROR: GDS_SLAB_DATA must be set for GDS L1 mode" >&2; exit 1; \
 	fi
 
-_prep_dirs:
+prep-dirs:
 	@mkdir -p "$(NVME_DATA)" "$(NFS_DATA)" \
 		"$(LOG)/lmcache" "$(LOG)/vllm" "$(LOG)/kvbench" \
 		"$(HF_HOME)/hub" "$(HF_HOME)/datasets" "$(HF_HOME)/vllm" \
 		"$(HF_HOME)/vllm_config" "$(HF_HOME)/torch" "$(HF_HOME)/torch_inductor" \
 		"$(BENCH_LOGDIR)/results" "$(BENCH_LOGDIR)/plots"
 
-_prep_kvbench_dirs:
+prep-kvbench-dirs:
 	@mkdir -p "$(LOG)/kvbench" \
 		"$(HF_HOME)" \
 		"$(BENCH_LOGDIR)/results" "$(BENCH_LOGDIR)/plots"
@@ -496,7 +493,7 @@ ensure-compose:
 		echo "installed: $$(docker compose version --short 2>/dev/null)"; \
 	fi
 
-build: ensure-compose monitoring-build-exporters
+build: ensure-compose
 	@test -n "$(ROCM_ARCH)" || { \
 		echo "ERROR: ROCM_ARCH empty (install ROCm or set ROCM_ARCH=gfxNNNN)" >&2; exit 1; }
 	cd "$(REPO_ROOT)" && $(COMPOSE_CACHE) build \
@@ -504,7 +501,7 @@ build: ensure-compose monitoring-build-exporters
 	@docker tag "$(IMAGE_REF)" "$(IMAGE_NAME):latest"
 	@echo "Built $(IMAGE_REF) (also tagged $(IMAGE_NAME):latest)"
 
-build-cached: monitoring-build-exporters  ## Like `build` but uses buildx with a local layer cache.
+build-cached:  ## Like `build` but uses buildx with a local layer cache.
 	@# The docker-container buildx driver (unlike the default docker driver) supports
 	@# --cache-to type=local, so the build_pytorch stage survives docker system prune.
 	@# Cache mode=max preserves intermediate layers (build_triton, build_pytorch, etc.)
@@ -535,34 +532,28 @@ build-cached: monitoring-build-exporters  ## Like `build` but uses buildx with a
 	@echo "Built $(IMAGE_REF) (also tagged $(IMAGE_NAME):latest)"
 	@echo "Cache stored in $(AIC_LOCAL_CACHE_DIR)"
 
-up: ensure-compose _check_hf_token _prep_dirs
+up: ensure-compose check-hf-token prep-dirs
 	@mkdir -p "$(AIC_METRICS_DIR)"
 	PROM_UID="$$(id -u)" PROM_GID="$$(id -g)" \
 	    $(COMPOSE_CACHE) --profile monitoring up
 
-up-batch: ensure-compose _check_hf_token _prep_dirs
+up-batch: ensure-compose check-hf-token prep-dirs
 	@mkdir -p "$(AIC_METRICS_DIR)"
 	PROM_UID="$$(id -u)" PROM_GID="$$(id -g)" \
 	    $(COMPOSE_CACHE) --profile monitoring up -d
 	@echo "Started. Use 'make logs' to follow or 'make down' to stop."
 
-up-dev: ensure-compose _check_hf_token _prep_dirs  # Fast startup: --enforce-eager skips CUDA graph capture (~60s faster)
+up-dev: ensure-compose check-hf-token prep-dirs  # Fast startup: --enforce-eager skips CUDA graph capture (~60s faster)
 	@mkdir -p "$(AIC_METRICS_DIR)"
 	PROM_UID="$$(id -u)" PROM_GID="$$(id -g)" \
 	    VLLM_EXTRA_ARGS="--enforce-eager $${VLLM_EXTRA_ARGS}" \
 	    $(COMPOSE_CACHE) --profile monitoring up -d
 	@echo "Started in dev mode (enforce-eager, no CUDA graphs). Use 'make logs' to follow."
 
-# up-monitoring kept as an alias for up-batch for backward compatibility.
-up-monitoring: up-batch
-
-down-monitoring:                                           # Stop full stack including monitoring profile
-	$(COMPOSE_CACHE) --profile monitoring down
-
-up-gds-l1: ensure-compose _check_hf_token _check_gds_slab _prep_dirs
+up-gds-l1: ensure-compose check-hf-token check-gds-slab prep-dirs
 	GDS_MODE=1 $(COMPOSE_CACHE) up
 
-up-gds-l1-batch: ensure-compose _check_hf_token _check_gds_slab _prep_dirs
+up-gds-l1-batch: ensure-compose check-hf-token check-gds-slab prep-dirs
 	GDS_MODE=1 $(COMPOSE_CACHE) up -d
 	@echo "Started (GDS L1 mode). Use 'make logs' to follow or 'make down' to stop."
 
@@ -602,7 +593,7 @@ venv:
 	@echo "venv ready at $(REPO_ROOT)/.venv"
 	@echo "Activate: source $(REPO_ROOT)/.venv/bin/activate"
 
-vllm-reset-test: _check_hf_token _prep_dirs
+vllm-reset-test: check-hf-token prep-dirs
 	@echo "Starting LMCache L1+L2 retrieval test (L1=$(LMCACHE_L1_SIZE_GB)GiB) + NIXL POSIX L2..."
 	@mkdir -p "$(AIC_METRICS_DIR)"
 	PROM_UID="$$(id -u)" PROM_GID="$$(id -g)" \
@@ -638,7 +629,7 @@ vllm-reset-test: _check_hf_token _prep_dirs
 kvbench-build: ensure-compose
 	$(COMPOSE) --profile kvbench build kvbench
 
-kvbench-up: ensure-compose _prep_kvbench_dirs
+kvbench-up: ensure-compose prep-kvbench-dirs
 	KVBENCH_IMAGE_REF="$(KVBENCH_IMAGE_REF)" $(COMPOSE) --profile kvbench up --build -d kvbench client
 	@echo "KVBench is starting on http://localhost:$(KVBENCH_HOST_PORT) and http://aic-kvbench:$(KVBENCH_PORT) inside compose"
 
@@ -648,7 +639,7 @@ kvbench-logs:
 kvbench-down:
 	$(COMPOSE) --profile kvbench down --remove-orphans
 
-cliff-kvbench-local: ensure-compose _prep_kvbench_dirs
+cliff-kvbench-local: ensure-compose prep-kvbench-dirs
 	@echo "=== cliff-kvbench-local: $(KVBENCH_IMAGE_REF) model=$${BENCH_MODEL:-$(KVBENCH_MODEL)} ==="
 	@KVBENCH_IMAGE_REF="$(KVBENCH_IMAGE_REF)" $(COMPOSE) --profile kvbench up --build -d kvbench client
 	@echo "Waiting up to $(KVBENCH_READY_S)s for KVBench /v1/models ..."
@@ -688,7 +679,7 @@ cliff-kvbench-local: ensure-compose _prep_kvbench_dirs
 	    --out "$$out"; \
 	echo "Results written to $${out#/logs/}"
 
-cliff: _prep_dirs
+cliff: prep-dirs
 	@test -n "$(BENCH_MODEL)" || { \
 		echo "ERROR: set BENCH_MODEL or VLLM_MODEL to the served model name" >&2; exit 1; }
 	$(PYTHON) "$(CURDIR)/benchmarks/run_cliff.py" \
@@ -710,7 +701,7 @@ cliff: _prep_dirs
 #   Flood mode: 10 iters × c=8 = 80 request-batches per pass, repeated in a
 #   shell loop so the panels never go idle.  Ctrl-C to stop.
 # Watch: L1 usage gauge, NIXL TX/RX, ISL/OSL row, TTFT, kernel launch rate.
-stress-grafana: _prep_dirs
+stress-grafana: prep-dirs
 	@test -n "$(BENCH_MODEL)" || { \
 		echo "ERROR: set BENCH_MODEL or VLLM_MODEL to the served model name" >&2; exit 1; }
 	@docker inspect aic-client > /dev/null 2>&1 || { \
@@ -734,7 +725,7 @@ stress-grafana: _prep_dirs
 		sleep 3; \
 	done
 
-plot: _prep_dirs
+plot: prep-dirs
 	$(PYTHON) "$(CURDIR)/benchmarks/plot_cliff.py" \
 		--input "$(BENCH_LOGDIR)/results/" \
 		--output-dir "$(BENCH_LOGDIR)/plots/"
@@ -751,19 +742,6 @@ monitoring-down:
 
 monitoring-logs:
 	$(MON_COMPOSE) logs -f prometheus
-
-# Build the two fabric-exporter images (plain `docker build`, so it works on
-# nodes without the compose plugin).  Tag/version overridable via the vars above.
-monitoring-build-exporters:
-	DOCKER_BUILDKIT=1 docker build \
-		--build-arg NVME_EXPORTER_VERSION=$(NVME_EXPORTER_VERSION) \
-		-t "$(NVME_EXPORTER_IMAGE)" "$(CURDIR)/docker/nvme-exporter"
-	DOCKER_BUILDKIT=1 docker build \
-		--build-arg RDMA_EXPORTER_VERSION=$(RDMA_EXPORTER_VERSION) \
-		-t "$(RDMA_EXPORTER_IMAGE)" "$(CURDIR)/docker/rdma-exporter"
-	@echo "Built $(NVME_EXPORTER_IMAGE) and $(RDMA_EXPORTER_IMAGE)."
-	@echo "Run them via:  AIC_EXPORTERS=1 with --profile exporters-fabric, or set"
-	@echo "AIC_NVME_EXPORTER_IMAGE / AIC_RDMA_EXPORTER_IMAGE for the .slurm docker-run path."
 
 # Scrape all live /metrics endpoints from a real GPU stack and generate a
 # Markdown reference doc.  Submits a SPUR job that loads the built image,
@@ -890,7 +868,7 @@ tiny-test-fast:
 AIC_EMULATE_MODEL     ?= Qwen/Qwen3-8B
 AIC_EMULATE_READY_S   ?= 120
 
-test-emulate-local: ensure-compose _prep_dirs  ## Spin up emulate profile, assert completion + hook active, tear down
+test-emulate-local: ensure-compose prep-dirs  ## Spin up emulate profile, assert completion + hook active, tear down
 	@echo "=== test-emulate-local: IMAGE_REF=$(IMAGE_REF) model=$(AIC_EMULATE_MODEL) ==="
 	@VLLM_MODEL="$(AIC_EMULATE_MODEL)" IMAGE_REF="$(IMAGE_REF)" $(COMPOSE) --profile emulate up -d vllm-emulator
 	@echo "Waiting up to $(AIC_EMULATE_READY_S)s for /health (engine fully ready) ..."
@@ -966,7 +944,7 @@ AIC_EMULATE_STRESS_ISL    ?= 512
 AIC_EMULATE_STRESS_OSL    ?= 128
 AIC_EMULATE_STRESS_ITERS  ?= 5
 
-stress-emulate-local: ensure-compose _prep_dirs  ## Start emulator + Prometheus, run a sustained cliff sweep, show /metrics
+stress-emulate-local: ensure-compose prep-dirs  ## Start emulator + Prometheus, run a sustained cliff sweep, show /metrics
 	@echo "=== stress-emulate-local: $(IMAGE_REF) model=$(AIC_EMULATE_MODEL) ==="
 	@mkdir -p "$(AIC_METRICS_DIR)"
 	IMAGE_REF="$(IMAGE_REF)" VLLM_MODEL="$(AIC_EMULATE_MODEL)" \
@@ -996,7 +974,7 @@ stress-emulate-local: ensure-compose _prep_dirs  ## Start emulator + Prometheus,
 	@echo ""
 	@echo "Prometheus at http://localhost:9090 — stack left running. Use 'make down' to stop."
 
-capture-profile-local: _prep_dirs  ## Capture a gfx1201 profile pack locally (requires /dev/kfd)
+capture-profile-local: prep-dirs  ## Capture a gfx1201 profile pack locally (requires /dev/kfd)
 	@test -e /dev/kfd || { echo "ERROR: /dev/kfd not found — GPU not accessible here"; exit 1; }
 	@test -n "$(ROCM_ARCH)" || { echo "ERROR: ROCM_ARCH empty" >&2; exit 1; }
 	@mkdir -p "$(AIC_CAPTURE_DIR)/bench"
@@ -1112,7 +1090,7 @@ emulate-mp-test:               # Emulation + the FULL LMCache MP recipe, still n
 	@#   AIC_ROCM_ARCH=gfx942 make dist-build emulate-mp-test
 	"$(DIST)" emulate-mp-test
 
-accuracy-test: _check_hf_token   # KV-integrity gate: differential lm_eval over two arms
+accuracy-test: check-hf-token   # KV-integrity gate: differential lm_eval over two arms
 	@# Scores a VRAM-only arm and a tiered (LMCache+NIXL) arm in one job and
 	@# asserts tiering KV did not change the answers.  See tests/accuracy/README.md.
 	"$(DIST)" accuracy-test

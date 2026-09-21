@@ -125,6 +125,10 @@
 #   AIC_BUILD_LOCAL      set to 1 to build on THIS host, no Slurm  (default: unset)
 #   AIC_BUILD_PARTITION  Slurm partition for build + load  (default: defq)
 #   AIC_BUILD_CPUS       --cpus-per-task for the build job (default: 32)
+#   AIC_BUILD_GPUS       --gpus= for the build job; required on SPUR (AIC_SPUR_CLUSTER=1)
+#                        because the scheduler mandates a GPU request even for CPU-only
+#                        build jobs.  Set to 0 to request a zero-GPU allocation if
+#                        the scheduler ever supports it.  (default: 1 when SPUR, unset otherwise)
 #   AIC_BUILD_TIME       build job time limit              (default: 02:00:00)
 #   AIC_LOAD_TIME        per-node load job time limit      (default: 00:30:00)
 #
@@ -357,6 +361,10 @@ fi
 AIC_SLURM_ACCOUNT="${AIC_SLURM_ACCOUNT:-}"
 AIC_BUILD_CPUS="${AIC_BUILD_CPUS:-32}"
 AIC_BUILD_TIME="${AIC_BUILD_TIME:-02:00:00}"
+# SPUR requires a GPU request even for CPU-only build jobs.
+if [[ "${AIC_SPUR_CLUSTER}" == "1" ]]; then
+    AIC_BUILD_GPUS="${AIC_BUILD_GPUS:-1}"
+fi
 AIC_LOAD_TIME="${AIC_LOAD_TIME:-00:30:00}"
 AIC_TARGETS="${AIC_TARGETS:-}"
 AIC_PUSH_REF="${AIC_PUSH_REF:-}"
@@ -1027,9 +1035,18 @@ if [ "\${_rc[1]}" -ne 0 ]; then
     echo "[build] ERROR: compressor exited \${_rc[1]}; tarball may be corrupt" >&2; exit 1
 fi
 if [ "\${_rc[0]}" -ne 0 ]; then
-    echo "[build] ERROR: docker buildx exited \${_rc[0]}; build failed (patch apply error or Dockerfile issue)" >&2
-    rm -f "\${tmp}"
-    exit 1
+    # The compressor succeeded (rc[1]==0), so the image stream was fully written.
+    # A non-zero docker exit often means the cache-to write failed (e.g. NFS lock
+    # on index.json.lock) even though --cache-to ignore-error=true is set -- some
+    # buildx versions still propagate the lock error as a non-zero exit despite
+    # ignore-error=true.  Keep the tarball and warn; the image itself is intact.
+    if zstd -t -q "\${tmp}" 2>/dev/null; then
+        echo "[build] WARN: docker buildx exited \${_rc[0]} (likely cache-to lock failure; image stream intact)" >&2
+    else
+        echo "[build] ERROR: docker buildx exited \${_rc[0]}; tarball invalid — build failed" >&2
+        rm -f "\${tmp}"
+        exit 1
+    fi
 fi
 mv -f "\${tmp}" "${tarball}"
 echo "[build] saved \$(du -h "${tarball}" | cut -f1) -> ${tarball}"
@@ -1087,6 +1104,7 @@ REMOTE
         fi
         _sbatch_run aic-build build "${remote_script}" \
             "${_sel[@]}" \
+            ${AIC_BUILD_GPUS:+--gpus="${AIC_BUILD_GPUS}"} \
             --nodes=1 --ntasks=1 \
             --cpus-per-task="${AIC_BUILD_CPUS}" \
             --time="${AIC_BUILD_TIME}"
@@ -1209,6 +1227,7 @@ REMOTE
             "${_sel[@]}" \
             --nodes=1 --ntasks=1 \
             --cpus-per-task=2 --mem=8G "${_exp_overcommit[@]}" \
+            ${AIC_BUILD_GPUS:+--gpus="${AIC_BUILD_GPUS}"} \
             --time="${AIC_LOAD_TIME}"
     fi
     _verify_tarball "${nvme_tar}" "nvme-exporter" "${nvme_before}"
@@ -1374,8 +1393,9 @@ check() { local d="$1"; shift; if "$@" >/tmp/_ck 2>&1; then note "OK   ${d}"; \
 note "container: $(uname -srm)"
 
 # GPU visibility + arch match (EXPECT_ARCH may be a ';'-separated arch list)
+# timeout 60: rocminfo can hang indefinitely when another container holds KFD
 if command -v rocminfo >/dev/null 2>&1; then
-    gfx="$(rocminfo 2>/dev/null | grep -om1 'gfx[0-9a-z]*' || true)"
+    gfx="$(timeout 60 rocminfo 2>/dev/null | grep -om1 'gfx[0-9a-z]*' || true)"
     if [ -n "${gfx}" ]; then
         note "OK   GPU visible: ${gfx} (image built for ${EXPECT_ARCH:-?})"
         if [ -n "${EXPECT_ARCH:-}" ]; then
@@ -1391,8 +1411,8 @@ else
     note "FAIL rocminfo not found"; fail=1
 fi
 
-check "import vllm"    python3 -c 'import vllm; print("vllm", vllm.__version__)'
-check "import lmcache" python3 -c 'import lmcache; print("lmcache", getattr(lmcache, "__version__", "?"))'
+check "import vllm"    timeout 120 python3 -c 'import vllm; print("vllm", vllm.__version__)'
+check "import lmcache" timeout 60  python3 -c 'import lmcache; print("lmcache", getattr(lmcache, "__version__", "?"))'
 check "lmcache CLI"    command -v lmcache
 check "ais-stats (hipFile)" command -v ais-stats
 # ais-check reports AIS readiness across 4 components: kernel P2PDMA, HIP runtime,
@@ -1445,13 +1465,17 @@ exit "${fail}"
 SMOKE
     chmod +x "${smoketest}"
 
+    # AIC_TEST_EXCLUDE_NODES: comma-separated nodes to exclude from test scheduling.
+    # Falls back to AIC_BUILD_EXCLUDE_NODES so a single override covers both phases.
+    local _test_exclude="${AIC_TEST_EXCLUDE_NODES:-${AIC_BUILD_EXCLUDE_NODES:-}}"
     local -a _sel
     if [[ -n "${AIC_TEST_NODE:-}" ]]; then
         _sel=(--nodelist="${AIC_TEST_NODE}")
         log "testing on ${AIC_TEST_NODE} via sbatch (partition ${AIC_BUILD_PARTITION})"
     else
         _sel=(--constraint="${AIC_TEST_CONSTRAINT}")
-        log "testing via sbatch (partition ${AIC_BUILD_PARTITION}, constraint ${AIC_TEST_CONSTRAINT})"
+        [[ -n "${_test_exclude}" ]] && _sel+=(--exclude="${_test_exclude}")
+        log "testing via sbatch (partition ${AIC_BUILD_PARTITION}, constraint ${AIC_TEST_CONSTRAINT}${_test_exclude:+, exclude ${_test_exclude}})"
     fi
     log "image: ${AIC_IMAGE}  smoketest: ${smoketest}"
 
