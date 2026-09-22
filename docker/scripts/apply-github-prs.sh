@@ -88,8 +88,9 @@ while IFS= read -r raw_line || [[ -n "${raw_line}" ]]; do
 		exit 1
 	fi
 
-	merge_base="$(git -C "${REPO_DIR}" merge-base "${base_commit}" "${pr_ref}")"
-	if [[ "${merge_base}" != "${base_commit}" ]]; then
+	current_head="$(git -C "${REPO_DIR}" rev-parse HEAD)"
+	merge_base="$(git -C "${REPO_DIR}" merge-base "${current_head}" "${pr_ref}")"
+	if [[ "${merge_base}" != "${base_commit}" && "${merge_base}" != "${current_head}" ]]; then
 		echo "ERROR: PR ${remote_name}#${pr_number} does not descend from ${BASE_REF_NAME}; rebase it or convert it to a patch." >&2
 		exit 1
 	fi

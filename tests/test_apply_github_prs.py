@@ -217,6 +217,48 @@ class ApplyGithubPrsTest(unittest.TestCase):
                 "base\ndep-a\ndep-b\ntop\n",
             )
 
+    def test_stacked_pr_after_dependency_entry_only_applies_missing_commit(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp = Path(temp_dir)
+            upstream, base_ref = self._make_upstream_with_base(temp)
+
+            prwork = temp / "prwork"
+            _git("clone", f"file://{upstream}", str(prwork))
+            _git("config", "user.name", "Test User", cwd=prwork)
+            _git("config", "user.email", "test@example.com", cwd=prwork)
+            _git("checkout", "-b", "pr-42", "origin/main", cwd=prwork)
+            with (prwork / "file.txt").open("a", encoding="utf-8") as handle:
+                handle.write("dep\n")
+            _git("commit", "-am", "dep commit", cwd=prwork)
+            _git("push", "origin", "HEAD:refs/heads/pr-42", cwd=prwork)
+            pr42_head = _git("rev-parse", "HEAD", cwd=prwork)
+            _git("--git-dir", str(upstream), "update-ref", "refs/pull/42/head", pr42_head)
+
+            _git("checkout", "-b", "pr-43", "HEAD", cwd=prwork)
+            with (prwork / "file.txt").open("a", encoding="utf-8") as handle:
+                handle.write("child\n")
+            _git("commit", "-am", "child commit", cwd=prwork)
+            _git("push", "origin", "HEAD:refs/heads/pr-43", cwd=prwork)
+            pr43_head = _git("rev-parse", "HEAD", cwd=prwork)
+            _git("--git-dir", str(upstream), "update-ref", "refs/pull/43/head", pr43_head)
+
+            buildrepo = temp / "buildrepo"
+            _git("clone", "--branch", "v0.5.5", "--depth", "1", f"file://{upstream}", str(buildrepo))
+            manifest = temp / "lmcache.pull-requests"
+            manifest.write_text("42\n43\n", encoding="utf-8")
+
+            subprocess.run(
+                [str(SCRIPT), str(buildrepo), str(manifest), base_ref],
+                check=True,
+                text=True,
+                capture_output=True,
+            )
+
+            self.assertEqual(
+                (buildrepo / "file.txt").read_text(encoding="utf-8"),
+                "base\ndep\nchild\n",
+            )
+
 
 if __name__ == "__main__":
     unittest.main()
