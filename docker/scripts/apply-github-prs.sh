@@ -36,7 +36,7 @@ is_supported_github_remote_url() {
 git -C "${REPO_DIR}" config user.name "AIC Image Build"
 git -C "${REPO_DIR}" config user.email "rocm-aic@noreply.invalid"
 
-base_commit="$(git -C "${REPO_DIR}" rev-parse HEAD)"
+base_commit="$(git -C "${REPO_DIR}" rev-parse "${BASE_REF_NAME}^{commit}")"
 
 while IFS= read -r raw_line || [[ -n "${raw_line}" ]]; do
 	line="$(sed -e 's/#.*//' -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' <<<"${raw_line}")"

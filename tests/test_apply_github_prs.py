@@ -97,7 +97,7 @@ class ApplyGithubPrsTest(unittest.TestCase):
             )
 
             result = subprocess.run(
-                [str(SCRIPT), str(repo), str(manifest), "v0.5.5"],
+                [str(SCRIPT), str(repo), str(manifest), "HEAD"],
                 check=False,
                 text=True,
                 capture_output=True,
@@ -163,7 +163,7 @@ class ApplyGithubPrsTest(unittest.TestCase):
             manifest.write_text("fork=file:///tmp/example.git 42\n", encoding="utf-8")
 
             result = subprocess.run(
-                [str(SCRIPT), str(repo), str(manifest), "v0.5.5"],
+                [str(SCRIPT), str(repo), str(manifest), "HEAD"],
                 check=False,
                 text=True,
                 capture_output=True,
