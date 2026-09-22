@@ -58,7 +58,8 @@ ARG HSA_SNOOP_GIT_URL=https://github.com/sbates130272/hsa-snoop.git
 ARG HSA_SNOOP_REF=v1.1.1
 
 # LMCache: upstream repo, pinned to the v0.5.5 release tag.
-# All AMD patches in patches/lmcache/ apply cleanly against this tag.
+# Optional open-PR heads from patches/lmcache.pull-requests are cherry-picked
+# first; AMD patches in patches/lmcache/ apply on top of that tree.
 ARG LMCACHE_GIT_URL=https://github.com/LMCache/LMCache.git
 ARG LMCACHE_REF=v0.5.5
 
@@ -125,10 +126,25 @@ RUN --mount=type=cache,target=/root/.cache/pip \
 
 # ----- 5. LMCache (upstream release + AMD patches) ---------------------------
 COPY patches/ /app/patches/
+COPY docker/scripts/apply-github-prs.sh /usr/local/bin/apply-github-prs.sh
 
 RUN git clone --depth 1 --branch "${LMCACHE_REF}" "${LMCACHE_GIT_URL}" /app/LMCache
 
-# Apply every patch under patches/lmcache/ in lexical order.
+# Cherry-pick optional LMCache PR heads listed in patches/lmcache.pull-requests.
+# Line format:
+#   <pr-number>
+#   <remote-name> <pr-number>
+#   <remote-name>=<remote-url> <pr-number>
+# Blank lines and # comments are ignored. Inline remote URLs must point at
+# GitHub repositories that expose refs/pull/<pr-number>/head. Stacked PRs are
+# allowed: dependency commits not already present are cherry-picked first.
+RUN chmod +x /usr/local/bin/apply-github-prs.sh && \
+    /usr/local/bin/apply-github-prs.sh \
+        /app/LMCache \
+        /app/patches/lmcache.pull-requests \
+        "${LMCACHE_REF}"
+
+# Apply every patch under patches/lmcache/ in lexical order after optional PRs.
 # hadolint ignore=SC3054,SC3044
 RUN cd /app/LMCache && \
     shopt -s nullglob && \

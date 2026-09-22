@@ -18,7 +18,7 @@
 [![Nightly Accuracy Test](https://github.com/ROCm/rocm-aic/actions/workflows/rocm-aic-self-hosted-accuracy-test.yml/badge.svg)](https://github.com/ROCm/rocm-aic/actions/workflows/rocm-aic-self-hosted-accuracy-test.yml)
 [![Nightly Cliff](https://github.com/ROCm/rocm-aic/actions/workflows/rocm-aic-self-hosted-nightly-cliff-test.yml/badge.svg)](https://github.com/ROCm/rocm-aic/actions/workflows/rocm-aic-self-hosted-nightly-cliff-test.yml)
 [![Nightly Wheels](https://github.com/ROCm/rocm-aic/actions/workflows/rocm-aic-nightly-wheels-publication.yml/badge.svg)](https://github.com/ROCm/rocm-aic/actions/workflows/rocm-aic-nightly-wheels-publication.yml)
-[![Patch Validation](https://github.com/ROCm/rocm-aic/actions/workflows/rocm-aic-patch-validation.yml/badge.svg)](https://github.com/ROCm/rocm-aic/actions/workflows/rocm-aic-patch-validation.yml)
+[![Check PRs + Patches](https://github.com/ROCm/rocm-aic/actions/workflows/rocm-aic-check-prs-and-patches.yml/badge.svg)](https://github.com/ROCm/rocm-aic/actions/workflows/rocm-aic-check-prs-and-patches.yml)
 [![Metrics Reference](https://img.shields.io/badge/Prometheus-Metrics_Reference-E05D00?logo=prometheus&logoColor=white)](https://rocm.github.io/rocm-aic/prometheus/)
 [![Cliff Perf Dashboard](https://img.shields.io/badge/Cliff-Perf_Dashboard-2980b9?logo=github&logoColor=white)](https://rocm.github.io/rocm-aic/cliff/)
 
