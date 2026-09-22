@@ -44,7 +44,7 @@ while IFS= read -r raw_line || [[ -n "${raw_line}" ]]; do
 		continue
 	fi
 
-	parts=(${line})
+	read -r -a parts <<<"${line}"
 	if [[ "${#parts[@]}" -eq 1 ]]; then
 		remote_spec=origin
 		pr_number="${parts[0]}"
