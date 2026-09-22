@@ -58,7 +58,8 @@ ARG HSA_SNOOP_GIT_URL=https://github.com/sbates130272/hsa-snoop.git
 ARG HSA_SNOOP_REF=v1.1.1
 
 # LMCache: upstream repo, pinned to the v0.5.5 release tag.
-# All AMD patches in patches/lmcache/ apply cleanly against this tag.
+# Optional open-PR heads from patches/lmcache.pull-requests are cherry-picked
+# first; AMD patches in patches/lmcache/ apply on top of that tree.
 ARG LMCACHE_GIT_URL=https://github.com/LMCache/LMCache.git
 ARG LMCACHE_REF=v0.5.5
 
@@ -128,7 +129,65 @@ COPY patches/ /app/patches/
 
 RUN git clone --depth 1 --branch "${LMCACHE_REF}" "${LMCACHE_GIT_URL}" /app/LMCache
 
-# Apply every patch under patches/lmcache/ in lexical order.
+# Cherry-pick optional LMCache PR heads listed in patches/lmcache.pull-requests.
+# Line format:
+#   <pr-number>
+#   <remote-name> <pr-number>
+#   <remote-name>=<remote-url> <pr-number>
+# Blank lines and # comments are ignored.
+# hadolint ignore=SC2206,SC3054,SC3044
+RUN cd /app/LMCache && \
+    if [ -f /app/patches/lmcache.pull-requests ]; then \
+        while IFS= read -r raw_line || [ -n "$raw_line" ]; do \
+            line="$(sed -e 's/#.*//' -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$$//' <<<"$raw_line")" && \
+            if [ -z "$line" ]; then \
+                continue; \
+            fi && \
+            parts=($line) && \
+            if [ "${#parts[@]}" -eq 1 ]; then \
+                remote_spec=origin && \
+                pr_number="${parts[0]}"; \
+            elif [ "${#parts[@]}" -eq 2 ]; then \
+                remote_spec="${parts[0]}" && \
+                pr_number="${parts[1]}"; \
+            else \
+                echo "ERROR: invalid LMCache PR entry: $raw_line" >&2; \
+                echo "Expected '<pr-number>', '<remote-name> <pr-number>', or '<remote-name>=<remote-url> <pr-number>'." >&2; \
+                exit 1; \
+            fi && \
+            if [[ ! "$pr_number" =~ ^[0-9]+$ ]]; then \
+                echo "ERROR: invalid LMCache PR number in entry: $raw_line" >&2; exit 1; \
+            fi && \
+            remote_name="${remote_spec%%=*}" && \
+            remote_url="" && \
+            if [ "${remote_spec#*=}" != "$remote_spec" ]; then \
+                remote_url="${remote_spec#*=}"; \
+            fi && \
+            if ! git remote get-url "$remote_name" >/dev/null 2>&1; then \
+                if [ -z "$remote_url" ]; then \
+                    echo "ERROR: LMCache remote '$remote_name' is not configured; use '<remote-name>=<remote-url> <pr-number>'." >&2; \
+                    exit 1; \
+                fi && \
+                git remote add "$remote_name" "$remote_url"; \
+            fi && \
+            git fetch --depth 1 "$remote_name" "pull/${pr_number}/head" && \
+            merge_base="$(git merge-base HEAD FETCH_HEAD)" && \
+            commit_count="$(git rev-list --count "${merge_base}..FETCH_HEAD")" && \
+            if [ "$commit_count" -eq 0 ]; then \
+                echo "Skipped LMCache PR ${remote_name}#${pr_number}: already included"; \
+                continue; \
+            fi && \
+            if git cherry-pick -x "${merge_base}..FETCH_HEAD"; then \
+                echo "Applied LMCache PR ${remote_name}#${pr_number}"; \
+            else \
+                git cherry-pick --abort >/dev/null 2>&1 || true; \
+                echo "ERROR: LMCache PR ${remote_name}#${pr_number} does not cherry-pick cleanly" >&2; \
+                exit 1; \
+            fi; \
+        done < /app/patches/lmcache.pull-requests; \
+    fi
+
+# Apply every patch under patches/lmcache/ in lexical order after optional PRs.
 # hadolint ignore=SC3054,SC3044
 RUN cd /app/LMCache && \
     shopt -s nullglob && \

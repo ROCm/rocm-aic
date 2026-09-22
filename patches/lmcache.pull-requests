@@ -1,0 +1,14 @@
+# Optional LMCache pull requests to cherry-pick before patches/lmcache/*.patch.
+#
+# One PR per line. Blank lines and # comments are ignored.
+#
+# Formats:
+#   3008
+#   origin 3008
+#   upstream=https://github.com/LMCache/LMCache.git 3008
+#
+# For existing remotes, use:
+#   <remote-name> <pr-number>
+#
+# For remotes not already configured in the image build clone, use:
+#   <remote-name>=<remote-url> <pr-number>
