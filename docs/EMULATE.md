@@ -151,12 +151,13 @@ Then use it like any vLLM endpoint on `:8000`. Useful env:
 
 Two GPU-free gates cover this path:
 
-- **AIC Nightly Patch Validation** (`ubuntu-latest`, on every push/PR touching
-  `docker/Dockerfile` or `patches/**`) checks that the vLLM, LMCache, NIXL and
-  LLM-Emu patches all apply against their pinned upstream refs, byte-compiles
-  the patched vLLM files, and validates every pack in `profiles/` through the
-  emulator's own loader and oracle — including that the pack compose defaults to
-  actually exists.
+- **AIC Check PRs and Patches** (`ubuntu-latest`, on every push/PR touching
+  the image Dockerfiles, `docker/scripts/apply-github-prs.sh`, or `patches/**`)
+  checks that the vLLM, LMCache, NIXL and LLM-Emu patches all apply against
+  their pinned upstream refs, that the LMCache PR manifest can be cherry-picked
+  onto its pinned upstream ref, byte-compiles the patched vLLM files, and
+  validates every pack in `profiles/` through the emulator's own loader and
+  oracle — including that the pack compose defaults to actually exists.
 - **AIC Nightly Emulate Test** (self-hosted → cluster) builds the emulation
   image and serve-tests it on a CPU-only node. It is the only hardware-CI stage
   that needs no GPU, so it does not compete with the smoke/tiny/cliff chain.
