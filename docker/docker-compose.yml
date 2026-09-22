@@ -813,7 +813,7 @@ services:
   # so only the HF config + tokenizer are fetched: an 8B model costs a few MB of
   # download and no VRAM/RAM for parameters.
   #
-  # Usage (image built with `--target emulate`, see docker/Dockerfile):
+  # Usage (image built with `--target emulate`, see docker/vllm/Dockerfile):
   #   docker compose --profile emulate up vllm-emulator
   #
   # The `emulate-mp` profile runs the SAME service with the full LMCache MP
