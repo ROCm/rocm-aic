@@ -175,7 +175,7 @@ RUN cd /app/LMCache && \
                 git remote add "$remote_name" "$remote_url"; \
             fi && \
             pr_ref="refs/remotes/${remote_name}/pr/${pr_number}" && \
-            if ! git fetch "$remote_name" "refs/pull/${pr_number}/head:${pr_ref}"; then \
+            if ! git fetch "$remote_name" "+refs/pull/${pr_number}/head:${pr_ref}"; then \
                 echo "ERROR: LMCache PR ${remote_name}#${pr_number} could not be fetched via refs/pull/${pr_number}/head; use a remote that exposes GitHub-style PR refs." >&2; \
                 exit 1; \
             fi && \
