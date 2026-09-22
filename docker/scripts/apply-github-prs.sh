@@ -23,9 +23,9 @@ fi
 
 is_supported_github_remote_url() {
 	local remote_url="${1}"
-	[[ "${remote_url}" =~ ^https://github\.com/[^[:space:]]+(/[^[:space:]]+)?(\.git)?$ ]] \
-		|| [[ "${remote_url}" =~ ^git@github\.com:[^[:space:]]+(/[^[:space:]]+)?(\.git)?$ ]] \
-		|| [[ "${remote_url}" =~ ^ssh://git@github\.com/[^[:space:]]+(/[^[:space:]]+)?(\.git)?$ ]]
+	[[ "${remote_url}" =~ ^https://github\.com/[^/[:space:]]+/[^/[:space:]]+(\.git)?$ ]] \
+		|| [[ "${remote_url}" =~ ^git@github\.com:[^/[:space:]]+/[^/[:space:]]+(\.git)?$ ]] \
+		|| [[ "${remote_url}" =~ ^ssh://git@github\.com/[^/[:space:]]+/[^/[:space:]]+(\.git)?$ ]]
 }
 
 git -C "${REPO_DIR}" config user.name "AIC Image Build"
