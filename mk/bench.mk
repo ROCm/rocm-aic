@@ -297,9 +297,9 @@ capture-profile-local: prep-dirs
 # Requires: /dev/kvm, HF_TOKEN, docker, docker buildx, ~20 GiB free disk.
 # Images are pulled from sbates130272/batesste-ci-images-* on Docker Hub.
 
-RJ_QEMU_IMAGE    ?= sbates130272/batesste-ci-images-ubuntu-qemu-libvfio-user:20260919.g359579e-qemu11.1.1-vfu.8039244
-RJ_ROCJITSU_IMAGE ?= sbates130272/batesste-ci-images-ubuntu-rocm-rocjitsu:20260921.gb3399b3-rocjitsu.8e01a5a
-RJ_QCOW2_IMAGE   ?= sbates130272/batesste-ci-images-ubuntu-qcow2-gen-rocjitsu:20260921.g584b3f9-vm.resolute-rocjitsu-qm.5d68689
+RJ_QEMU_IMAGE    ?= sbates130272/batesste-ci-images-ubuntu-qemu-libvfio-user-sbates-fork:20260919.g359579e-qemu.7794baa-vfu.8039244
+RJ_ROCJITSU_IMAGE ?= sbates130272/batesste-ci-images-ubuntu-rocm-rocjitsu:20260922.g555f601-rocjitsu.8e01a5a
+RJ_QCOW2_IMAGE   ?= sbates130272/batesste-ci-images-ubuntu-qcow2-gen-rocjitsu:20260922.gd2b49c6-vm.resolute-rocjitsu-qm.63cc0bc
 RJ_ROCJITSU_ARCH ?= gfx1250
 RJ_ROCJITSU_CONFIG ?= gfx1250_mi455x.json
 RJ_VM_VCPUS      ?= 4
@@ -324,14 +324,18 @@ test-rocjitsu-local: prep-dirs
 	@echo "[2/6] Building $(RJ_IMAGE_REF) for ROCM_ARCH=$(RJ_ROCJITSU_ARCH) on the host ..."
 	@ROCM_ARCH=$(RJ_ROCJITSU_ARCH) $(MAKE) --no-print-directory build-local IMAGE_TAG="$(_RJ_IMAGE_TAG)"
 	@echo "[3/6] Extracting guest disk and credentials ..."
-	@rm -rf "$(RJ_WORK_DIR)" && mkdir -p "$(RJ_WORK_DIR)/vm" "$(RJ_WORK_DIR)/fw"
-	@_cid=$$(docker create "$(RJ_QCOW2_IMAGE)") && \
+	@mkdir -p "$(RJ_WORK_DIR)/vm" "$(RJ_WORK_DIR)/fw"
+	@if [ -f "$(RJ_WORK_DIR)/vm/vm-info.json" ]; then \
+	    echo "  Guest disk already present — skipping extraction (delete $(RJ_WORK_DIR)/vm to force)"; \
+	else \
+	    echo "  Extracting from $(RJ_QCOW2_IMAGE) ..."; \
+	    _cid=$$(docker create "$(RJ_QCOW2_IMAGE)") && \
 	    docker cp "$$_cid:/output/." "$(RJ_WORK_DIR)/vm" && \
-	    docker rm "$$_cid" >/dev/null
+	    docker rm "$$_cid" >/dev/null; \
+	fi
 	@chmod 600 "$(RJ_WORK_DIR)/vm/id_rsa" 2>/dev/null || true
-	@_vmname=$$(python3 -c "import json,sys; print(json.load(open(sys.argv[1]))['vm_name'])" \
-	    "$(RJ_WORK_DIR)/vm/vm-info.json") && echo "  vm_name=$$_vmname"
 	@echo "[4/6] Generating guest firmware ..."
+	@docker run --rm -v "$(RJ_WORK_DIR)/fw:/out" --entrypoint sh busybox -c "rm -rf /out/*"
 	@docker run --rm -v "$(RJ_WORK_DIR)/fw:/out" "$(RJ_ROCJITSU_IMAGE)" \
 	    python3 /usr/local/bin/vfio_guest_firmware.py --output /out \
 	    2>&1 | sed 's/^/  [fw] /'
@@ -356,57 +360,115 @@ test-rocjitsu-local: prep-dirs
 	    echo "FAIL: rocjitsu socket did not appear" >&2; \
 	    docker logs aic-rj-rocjitsu 2>&1 | tail -20; \
 	    docker rm -f aic-rj-rocjitsu >/dev/null 2>&1; \
-	    rm -rf /tmp/aic-rj-vfu; \
+	    docker run --rm -v /tmp/aic-rj-vfu:/vfu --entrypoint sh busybox -c "rm -rf /vfu/*" 2>/dev/null || true; rmdir /tmp/aic-rj-vfu 2>/dev/null || true; \
 	    exit 1; \
 	}
-	@_vmname=$$(python3 -c "import json,sys; print(json.load(open(sys.argv[1]))['vm_name'])" \
-	    "$(RJ_WORK_DIR)/vm/vm-info.json"); \
+	@_vminfo="$(RJ_WORK_DIR)/vm/vm-info.json"; \
+	_vmname=$$(python3 -c "import json,sys; print(json.load(open(sys.argv[1]))['vm_name'])" "$$_vminfo"); \
+	_vmuser=$$(python3 -c "import json,sys; print(json.load(open(sys.argv[1]))['username'])" "$$_vminfo"); \
+	echo "  vm_name=$$_vmname user=$$_vmuser"; \
 	docker run -d --name aic-rj-qemu \
 	    --network aic-rj-net \
 	    --device /dev/kvm \
 	    --shm-size 12g \
-	    -v "$(RJ_WORK_DIR)/vm:$(RJ_WORK_DIR)/vm" \
-	    -v /tmp/aic-rj-vfu:/run/vfu:ro \
+	    -v "$(RJ_WORK_DIR)/vm:/output" \
+	    -v /tmp/aic-rj-vfu:/tmp/vfio-sockets:ro \
 	    -p "$(RJ_SSH_PORT):2222" \
+	    --entrypoint qemu-tool \
 	    "$(RJ_QEMU_IMAGE)" \
-	    qemu-tool run-vm \
-	        --images "$(RJ_WORK_DIR)/vm" \
+	    run-vm \
+	        --images /output \
 	        --vm-name "$$_vmname" \
 	        --vcpus "$(RJ_VM_VCPUS)" \
 	        --vmem "$(RJ_VM_MEM_MB)" \
 	        --ssh-port 2222 \
 	        --kvm \
-	        --vfio-userdev /run/vfu/rocjitsu.sock \
-	    2>&1 | docker attach --no-stdin aic-rj-qemu & \
-	echo "  QEMU container started"
+	        --vfio-userdev /tmp/vfio-sockets/rocjitsu.sock \
+	    >/dev/null; \
+	echo "  QEMU container started (vm=$$_vmname user=$$_vmuser)"
 	@echo "  Waiting up to $(RJ_READY_S)s for SSH in VM ..."
 	@_key="$(RJ_WORK_DIR)/vm/id_rsa"; \
-	_ssh="ssh -i $$_key -o StrictHostKeyChecking=no -o ConnectTimeout=5 \
-	    -o BatchMode=yes -p $(RJ_SSH_PORT) root@localhost"; \
+	_vmuser=$$(python3 -c "import json,sys; print(json.load(open(sys.argv[1]))['username'])" \
+	    "$(RJ_WORK_DIR)/vm/vm-info.json"); \
+	_ssh_flags="-i $$_key -o StrictHostKeyChecking=no -o ConnectTimeout=5 \
+	    -o BatchMode=yes -p $(RJ_SSH_PORT)"; \
 	_ready=0; \
 	for _i in $$(seq 1 $$(($(RJ_READY_S)/5))); do \
-	    if $$_ssh true 2>/dev/null; then _ready=1; break; fi; \
+	    if ssh $$_ssh_flags "$$_vmuser@localhost" true 2>/dev/null; then _ready=1; break; fi; \
 	    sleep 5; \
 	done; \
 	[ "$$_ready" = "1" ] || { \
 	    echo "FAIL: VM did not become SSH-reachable within $(RJ_READY_S)s" >&2; \
 	    docker logs aic-rj-qemu 2>&1 | tail -30; \
 	    docker rm -f aic-rj-qemu aic-rj-rocjitsu >/dev/null 2>&1; \
-	    rm -rf /tmp/aic-rj-vfu; \
+	    docker run --rm -v /tmp/aic-rj-vfu:/vfu busybox rm -rf /vfu 2>/dev/null || true; \
 	    exit 1; \
 	}
 	@echo "[6/6] Loading image into VM and running test completion ..."
 	@_key="$(RJ_WORK_DIR)/vm/id_rsa"; \
+	_vmuser=$$(python3 -c "import json,sys; print(json.load(open(sys.argv[1]))['username'])" \
+	    "$(RJ_WORK_DIR)/vm/vm-info.json"); \
 	_ssh_flags="-i $$_key -o StrictHostKeyChecking=no -o BatchMode=yes -p $(RJ_SSH_PORT)"; \
-	echo "  Transferring $(RJ_IMAGE_REF) (~may take a few minutes) ..."; \
-	docker save "$(RJ_IMAGE_REF)" | \
-	    ssh $$_ssh_flags root@localhost "docker load" \
-	    2>&1 | sed 's/^/  [load] /'; \
+	echo "  Installing Docker in VM if not present ..."; \
+	ssh $$_ssh_flags "$$_vmuser@localhost" \
+	    "which docker >/dev/null 2>&1 || (curl -fsSL https://get.docker.com | sudo sh && sudo usermod -aG docker $$_vmuser)" \
+	    2>&1 | sed 's/^/  [docker-install] /'; \
+	echo "  Installing generated firmware into VM ..."; \
+	ssh $$_ssh_flags "$$_vmuser@localhost" "sudo mkdir -p /lib/firmware/amdgpu"; \
+	for _fw in "$(RJ_WORK_DIR)/fw"/*; do \
+	    scp -i $$_key -o StrictHostKeyChecking=no -P "$(RJ_SSH_PORT)" \
+	        "$$_fw" "$$_vmuser@localhost:/tmp/" 2>/dev/null; \
+	    ssh $$_ssh_flags "$$_vmuser@localhost" \
+	        "sudo mv /tmp/$$(basename $$_fw) /lib/firmware/amdgpu/" 2>/dev/null; \
+	done; \
+	echo "  Probing amdgpu via amdgpu-probe (emu_mode=1 fw_load_type=0) ..."; \
+	ssh $$_ssh_flags "$$_vmuser@localhost" "amdgpu-probe" \
+	    2>&1 | sed 's/^/  [amdgpu] /'; \
+	echo "  Waiting for /dev/kfd in VM (amdgpu must bind to rocjitsu vfio-user device) ..."; \
+	_kfd_ready=0; \
+	for _i in $$(seq 1 30); do \
+	    if ssh $$_ssh_flags "$$_vmuser@localhost" "test -c /dev/kfd" 2>/dev/null; then \
+	        _kfd_ready=1; break; \
+	    fi; \
+	    sleep 5; \
+	done; \
+	if [ "$$_kfd_ready" != "1" ]; then \
+	    echo "FAIL: /dev/kfd did not appear in VM after 150s — amdgpu did not bind" >&2; \
+	    ssh $$_ssh_flags "$$_vmuser@localhost" "sudo dmesg | grep -i 'amdgpu\|kfd\|vfio' | tail -30" \
+	        2>&1 | sed 's/^/  [dmesg] /'; \
+	    docker logs aic-rj-rocjitsu 2>&1 | tail -20 | sed 's/^/  [rocjitsu] /'; \
+	    ssh $$_ssh_flags "$$_vmuser@localhost" "sudo poweroff" 2>/dev/null || true; sleep 5; \
+	    docker rm -f aic-rj-qemu aic-rj-rocjitsu >/dev/null 2>&1; \
+	    docker run --rm -v /tmp/aic-rj-vfu:/vfu --entrypoint sh busybox -c "rm -rf /vfu/*" 2>/dev/null || true; rmdir /tmp/aic-rj-vfu 2>/dev/null || true; \
+	    exit 1; \
+	fi; \
+	echo "  /dev/kfd present — amdgpu bound to rocjitsu GPU"; \
+	_local_id=$$(docker inspect --format '{{.ID}}' "$(RJ_IMAGE_REF)" 2>/dev/null); \
+	_vm_id=$$(ssh $$_ssh_flags "$$_vmuser@localhost" \
+	    "sudo docker inspect --format '{{.ID}}' '$(RJ_IMAGE_REF)' 2>/dev/null" 2>/dev/null); \
+	if [ -n "$$_local_id" ] && [ "$$_local_id" = "$$_vm_id" ]; then \
+	    echo "  $(RJ_IMAGE_REF) already present in VM (ID $$_local_id) — skipping transfer"; \
+	else \
+	    echo "  Transferring $(RJ_IMAGE_REF) (~may take a few minutes) ..."; \
+	    docker save "$(RJ_IMAGE_REF)" | \
+	        ssh $$_ssh_flags "$$_vmuser@localhost" "sudo docker load" \
+	        2>&1 | sed 's/^/  [load] /'; \
+	fi; \
+	echo "  GPU device layout in VM:"; \
+	ssh $$_ssh_flags "$$_vmuser@localhost" \
+	    "ls -la /dev/kfd /dev/dri/ 2>&1" \
+	    2>&1 | sed 's/^/  [dev] /'; \
+	_kfd_gid=$$(ssh $$_ssh_flags "$$_vmuser@localhost" "stat -c %g /dev/kfd"); \
+	_render=$$(ssh $$_ssh_flags "$$_vmuser@localhost" \
+	    "ls /dev/dri/renderD* 2>/dev/null | grep -m1 ."); \
+	echo "  kfd_gid=$$_kfd_gid render=$$_render"; \
+	ssh $$_ssh_flags "$$_vmuser@localhost" "sudo docker rm -f aic-rj-vllm 2>/dev/null || true"; \
 	echo "  Starting vllm serve inside VM ..."; \
-	ssh $$_ssh_flags root@localhost \
-	    "docker run -d --name aic-rj-vllm \
-	        --device /dev/kfd --device /dev/dri \
-	        --group-add video \
+	ssh $$_ssh_flags "$$_vmuser@localhost" \
+	    "sudo docker run -d --name aic-rj-vllm \
+	        --device /dev/kfd \
+	        $${_render:+--device $$_render} \
+	        --group-add video --group-add $$_kfd_gid \
 	        -e HF_TOKEN=$(HF_TOKEN) \
 	        -p 8000:8000 \
 	        $(RJ_IMAGE_REF) \
@@ -417,16 +479,16 @@ test-rocjitsu-local: prep-dirs
 	echo "  Waiting for /health inside VM ..."; \
 	_vm_ready=0; \
 	for _i in $$(seq 1 $$(($(RJ_READY_S)/5))); do \
-	    if ssh $$_ssh_flags root@localhost \
+	    if ssh $$_ssh_flags "$$_vmuser@localhost" \
 	           "curl -fsS http://localhost:8000/health" >/dev/null 2>&1; then \
 	        _vm_ready=1; break; \
 	    fi; \
-	    if ssh $$_ssh_flags root@localhost \
-	           "docker ps -q -f name=aic-rj-vllm | grep -q ." 2>/dev/null; then \
+	    if ssh $$_ssh_flags "$$_vmuser@localhost" \
+	           "sudo docker ps -q -f name=aic-rj-vllm | grep -q ." 2>/dev/null; then \
 	        true; \
 	    else \
 	        echo "FAIL: vllm container exited inside VM" >&2; \
-	        ssh $$_ssh_flags root@localhost "docker logs aic-rj-vllm 2>&1 | tail -40" \
+	        ssh $$_ssh_flags "$$_vmuser@localhost" "sudo docker logs aic-rj-vllm 2>&1 | tail -40" \
 	            2>&1 | sed 's/^/  [vllm] /'; \
 	        break; \
 	    fi; \
@@ -434,12 +496,13 @@ test-rocjitsu-local: prep-dirs
 	done; \
 	if [ "$$_vm_ready" != "1" ]; then \
 	    echo "FAIL: vllm did not become ready in VM" >&2; \
+	    ssh $$_ssh_flags "$$_vmuser@localhost" "sudo poweroff" 2>/dev/null || true; sleep 5; \
 	    docker rm -f aic-rj-qemu aic-rj-rocjitsu >/dev/null 2>&1; \
-	    rm -rf /tmp/aic-rj-vfu; \
+	    docker run --rm -v /tmp/aic-rj-vfu:/vfu --entrypoint sh busybox -c "rm -rf /vfu/*" 2>/dev/null || true; rmdir /tmp/aic-rj-vfu 2>/dev/null || true; \
 	    exit 1; \
 	fi; \
 	echo "  Sending test completion ..."; \
-	_resp=$$(ssh $$_ssh_flags root@localhost \
+	_resp=$$(ssh $$_ssh_flags "$$_vmuser@localhost" \
 	    "curl -fsS http://localhost:8000/v1/completions \
 	        -H 'Content-Type: application/json' \
 	        -d '{\"model\":\"$(RJ_MODEL)\",\"prompt\":\"Hello\",\"max_tokens\":4}'"); \
@@ -450,10 +513,13 @@ test-rocjitsu-local: prep-dirs
 	echo "  completion_tokens=$$_toks"; \
 	[ "$$_toks" -gt 0 ] || { echo "FAIL: zero completion_tokens in response" >&2; _rc=1; }; \
 	echo "  Stopping vllm inside VM ..."; \
-	ssh $$_ssh_flags root@localhost "docker rm -f aic-rj-vllm" >/dev/null 2>&1 || true; \
+	ssh $$_ssh_flags "$$_vmuser@localhost" "sudo docker rm -f aic-rj-vllm" >/dev/null 2>&1 || true; \
 	echo "  Cleaning up containers ..."; \
+	ssh $$_ssh_flags "$$_vmuser@localhost" "sudo poweroff" 2>/dev/null || true; \
+	sleep 5; \
 	docker rm -f aic-rj-qemu aic-rj-rocjitsu >/dev/null 2>&1 || true; \
 	docker network rm aic-rj-net >/dev/null 2>&1 || true; \
-	rm -rf /tmp/aic-rj-vfu; \
+	docker run --rm -v /tmp/aic-rj-vfu:/vfu --entrypoint sh busybox -c "rm -rf /vfu/*" 2>/dev/null || true; \
+	rmdir /tmp/aic-rj-vfu 2>/dev/null || true; \
 	[ "$${_rc:-0}" = "0" ] && echo "=== PASS: rocjitsu VM test complete ===" || \
 	    { echo "=== FAIL: rocjitsu VM test failed ===" >&2; exit 1; }
