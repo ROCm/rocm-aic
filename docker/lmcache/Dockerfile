@@ -175,12 +175,16 @@ RUN cd /app/LMCache && \
             fi && \
             git fetch "$remote_name" "refs/pull/${pr_number}/head" && \
             merge_base="$(git merge-base HEAD FETCH_HEAD)" && \
-            commit_count="$(git rev-list --count "${merge_base}..FETCH_HEAD")" && \
+            if [ "$merge_base" != "$(git rev-parse HEAD)" ]; then \
+                echo "ERROR: LMCache PR ${remote_name}#${pr_number} is not based on ${LMCACHE_REF}; rebase it or convert it to a patch." >&2; \
+                exit 1; \
+            fi && \
+            commit_count="$(git rev-list --count HEAD..FETCH_HEAD)" && \
             if [ "$commit_count" -eq 0 ]; then \
                 echo "Skipped LMCache PR ${remote_name}#${pr_number}: already included"; \
                 continue; \
             fi && \
-            if git cherry-pick -x "${merge_base}..FETCH_HEAD"; then \
+            if git cherry-pick -x "HEAD..FETCH_HEAD"; then \
                 echo "Applied LMCache PR ${remote_name}#${pr_number}"; \
             else \
                 git cherry-pick --abort >/dev/null 2>&1 || true; \
