@@ -137,7 +137,8 @@ RUN git -C /app/LMCache config user.name "AIC Image Build" && \
 #   <pr-number>
 #   <remote-name> <pr-number>
 #   <remote-name>=<remote-url> <pr-number>
-# Blank lines and # comments are ignored.
+# Blank lines and # comments are ignored. Alternate remotes must expose
+# GitHub-style refs/pull/<pr-number>/head refs.
 # hadolint ignore=SC2206,SC3054,SC3044
 RUN cd /app/LMCache && \
     if [ -f /app/patches/lmcache.pull-requests ]; then \
@@ -173,7 +174,10 @@ RUN cd /app/LMCache && \
                 fi && \
                 git remote add "$remote_name" "$remote_url"; \
             fi && \
-            git fetch "$remote_name" "refs/pull/${pr_number}/head" && \
+            if ! git fetch "$remote_name" "refs/pull/${pr_number}/head"; then \
+                echo "ERROR: LMCache PR ${remote_name}#${pr_number} could not be fetched via refs/pull/${pr_number}/head; use a remote that exposes GitHub-style PR refs." >&2; \
+                exit 1; \
+            fi && \
             merge_base="$(git merge-base HEAD FETCH_HEAD)" && \
             if [ "$merge_base" != "$(git rev-parse HEAD)" ]; then \
                 echo "ERROR: LMCache PR ${remote_name}#${pr_number} is not based on ${LMCACHE_REF}; rebase it or convert it to a patch." >&2; \

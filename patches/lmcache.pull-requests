@@ -12,3 +12,5 @@
 #
 # For remotes not already configured in the image build clone, use:
 #   <remote-name>=<remote-url> <pr-number>
+#
+# Alternate remotes must expose GitHub-style `refs/pull/<pr-number>/head` refs.
