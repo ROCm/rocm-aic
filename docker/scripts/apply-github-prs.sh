@@ -8,6 +8,11 @@
 # cherry-picked before dependent commits in ancestor order.
 set -euo pipefail
 
+if (( BASH_VERSINFO[0] < 4 )); then
+	echo "ERROR: apply-github-prs.sh requires bash 4 or newer" >&2
+	exit 1
+fi
+
 REPO_DIR="${1:?repo dir is required}"
 MANIFEST_PATH="${2:?manifest path is required}"
 BASE_REF_NAME="${3:?base ref name is required}"
