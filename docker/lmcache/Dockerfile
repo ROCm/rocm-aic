@@ -167,7 +167,13 @@ RUN cd /app/LMCache && \
             if [ "${remote_spec#*=}" != "$remote_spec" ]; then \
                 remote_url="${remote_spec#*=}"; \
             fi && \
-            if ! git remote get-url "$remote_name" >/dev/null 2>&1; then \
+            existing_remote_url="" && \
+            if existing_remote_url="$(git remote get-url "$remote_name" 2>/dev/null)"; then \
+                if [ -n "$remote_url" ] && [ "$existing_remote_url" != "$remote_url" ]; then \
+                    echo "ERROR: LMCache remote '$remote_name' already points to '$existing_remote_url', not '$remote_url'." >&2; \
+                    exit 1; \
+                fi; \
+            else \
                 if [ -z "$remote_url" ]; then \
                     echo "ERROR: LMCache remote '$remote_name' is not configured; use '<remote-name>=<remote-url> <pr-number>'." >&2; \
                     exit 1; \
