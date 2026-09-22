@@ -126,97 +126,23 @@ RUN --mount=type=cache,target=/root/.cache/pip \
 
 # ----- 5. LMCache (upstream release + AMD patches) ---------------------------
 COPY patches/ /app/patches/
+COPY docker/scripts/apply-github-prs.sh /usr/local/bin/apply-github-prs.sh
 
 RUN git clone --depth 1 --branch "${LMCACHE_REF}" "${LMCACHE_GIT_URL}" /app/LMCache
-
-RUN git -C /app/LMCache config user.name "AIC Image Build" && \
-    git -C /app/LMCache config user.email "rocm-aic@noreply.invalid"
 
 # Cherry-pick optional LMCache PR heads listed in patches/lmcache.pull-requests.
 # Line format:
 #   <pr-number>
 #   <remote-name> <pr-number>
 #   <remote-name>=<remote-url> <pr-number>
-# Blank lines and # comments are ignored. Alternate remotes must expose
-# GitHub-style refs/pull/<pr-number>/head refs.
-# hadolint ignore=SC2206,SC3054,SC3044
-RUN cd /app/LMCache && \
-    lmcache_base_ref="$(git rev-parse HEAD)" && \
-    if [ -f /app/patches/lmcache.pull-requests ]; then \
-        while IFS= read -r raw_line || [ -n "$raw_line" ]; do \
-            line="$(sed -e 's/#.*//' -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' <<<"$raw_line")" && \
-            if [ -z "$line" ]; then \
-                continue; \
-            fi && \
-            parts=($line) && \
-            if [ "${#parts[@]}" -eq 1 ]; then \
-                remote_spec=origin && \
-                pr_number="${parts[0]}"; \
-            elif [ "${#parts[@]}" -eq 2 ]; then \
-                remote_spec="${parts[0]}" && \
-                pr_number="${parts[1]}"; \
-            else \
-                echo "ERROR: invalid LMCache PR entry: $raw_line" >&2; \
-                echo "Expected '<pr-number>', '<remote-name> <pr-number>', or '<remote-name>=<remote-url> <pr-number>'." >&2; \
-                exit 1; \
-            fi && \
-            if [[ ! "$pr_number" =~ ^[0-9]+$ ]]; then \
-                echo "ERROR: invalid LMCache PR number in entry: $raw_line" >&2; exit 1; \
-            fi && \
-            remote_name="${remote_spec%%=*}" && \
-            remote_url="" && \
-            if [ "${remote_spec#*=}" != "$remote_spec" ]; then \
-                remote_url="${remote_spec#*=}"; \
-            fi && \
-            existing_remote_url="" && \
-            if existing_remote_url="$(git remote get-url "$remote_name" 2>/dev/null)"; then \
-                if [ -n "$remote_url" ] && [ "$existing_remote_url" != "$remote_url" ]; then \
-                    echo "ERROR: LMCache remote '$remote_name' already points to '$existing_remote_url', not '$remote_url'." >&2; \
-                    exit 1; \
-                fi; \
-            else \
-                if [ -z "$remote_url" ]; then \
-                    echo "ERROR: LMCache remote '$remote_name' is not configured; use '<remote-name>=<remote-url> <pr-number>'." >&2; \
-                    exit 1; \
-                fi && \
-                git remote add "$remote_name" "$remote_url"; \
-            fi && \
-            pr_ref="refs/remotes/${remote_name}/pr/${pr_number}" && \
-            if ! git fetch "$remote_name" "+refs/pull/${pr_number}/head:${pr_ref}"; then \
-                echo "ERROR: LMCache PR ${remote_name}#${pr_number} could not be fetched via refs/pull/${pr_number}/head; use a remote that exposes GitHub-style PR refs." >&2; \
-                exit 1; \
-            fi && \
-            merge_base="$(git merge-base "${lmcache_base_ref}" "${pr_ref}")" && \
-            if [ "$merge_base" != "$lmcache_base_ref" ]; then \
-                echo "ERROR: LMCache PR ${remote_name}#${pr_number} is not based on ${LMCACHE_REF}; rebase it or convert it to a patch." >&2; \
-                exit 1; \
-            fi && \
-            declare -A pr_commit_needed=() && \
-            while read -r cherry_status cherry_commit; do \
-                if [ "$cherry_status" = "+" ]; then \
-                    pr_commit_needed["$cherry_commit"]=1; \
-                fi; \
-            done < <(git cherry HEAD "${pr_ref}") && \
-            mapfile -t pr_commit_candidates < <(git rev-list --reverse "${lmcache_base_ref}..${pr_ref}") && \
-            pr_commits=() && \
-            for pr_commit in "${pr_commit_candidates[@]}"; do \
-                if [ -n "${pr_commit_needed["$pr_commit"]:-}" ]; then \
-                    pr_commits+=("$pr_commit"); \
-                fi; \
-            done && \
-            if [ "${#pr_commits[@]}" -eq 0 ]; then \
-                echo "Skipped LMCache PR ${remote_name}#${pr_number}: already included"; \
-                continue; \
-            fi && \
-            if git cherry-pick -x "${pr_commits[@]}"; then \
-                echo "Applied LMCache PR ${remote_name}#${pr_number}"; \
-            else \
-                git cherry-pick --abort >/dev/null 2>&1 || true; \
-                echo "ERROR: LMCache PR ${remote_name}#${pr_number} does not cherry-pick cleanly" >&2; \
-                exit 1; \
-            fi; \
-        done < /app/patches/lmcache.pull-requests; \
-    fi
+# Blank lines and # comments are ignored. Inline remote URLs must point at
+# GitHub repositories that expose refs/pull/<pr-number>/head. Stacked PRs are
+# allowed: dependency commits not already present are cherry-picked first.
+RUN chmod +x /usr/local/bin/apply-github-prs.sh && \
+    /usr/local/bin/apply-github-prs.sh \
+        /app/LMCache \
+        /app/patches/lmcache.pull-requests \
+        "${LMCACHE_REF}"
 
 # Apply every patch under patches/lmcache/ in lexical order after optional PRs.
 # hadolint ignore=SC3054,SC3044
