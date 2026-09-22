@@ -937,6 +937,7 @@ cmd_build() {
     local _build_program="DOCKER_BUILDKIT=1 docker build"
     local _cache_args=""
     local _builder_setup=""
+    local _pre_load_block=""
     if [[ -n "${AIC_CACHE_REF}" || -n "${AIC_CACHE_DIR}" ]]; then
         case "${AIC_CACHE_MODE}" in
             min|max) ;;
@@ -1199,7 +1200,8 @@ cmd_build_split() {
     done
     local _secret_arg=""
     [[ -n "${AIC_TLS_CERT}" ]] && _secret_arg="--secret id=tls_cert,src=${AIC_TLS_CERT}"
-    local _cache_dir="${AIC_CACHE_DIR%/}/$(_arch_tag)"
+    local _cache_dir
+    _cache_dir="${AIC_CACHE_DIR%/}/$(_arch_tag)"
     local _builder="${AIC_BUILDX_BUILDER}"
     local _cache_args=""
     [[ -n "${AIC_CACHE_DIR}" ]] && \
@@ -1222,7 +1224,7 @@ docker buildx prune --builder ${_builder} --force 2>/dev/null || true
 
 # --- Step 1: build aic-base, save docker tarball AND OCI layout ---------------
 # The docker-container buildx driver is isolated from the host daemon, so
-# docker-image:// build-context refs cannot be satisfied from a `docker load`.
+# docker-image:// build-context refs cannot be satisfied from a docker load.
 # Instead we export the base image in OCI layout format to a host directory;
 # the docker CLI reads that directory and transfers it to BuildKit as a named
 # context, which works regardless of daemon isolation.
