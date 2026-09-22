@@ -32,6 +32,15 @@
 #     -f docker/vllm/Dockerfile \
 #     -t aic-vllm:emulate .
 
+# Fallback base stage: used when no --build-context base= is provided (e.g.
+# when building this Dockerfile standalone without a pre-built aic-base image).
+# When --build-context base=docker-image://aic-base:<TAG> IS supplied, BuildKit
+# overrides this stage with the pre-built image and skips this FROM entirely.
+ARG ROCM_VERSION=7.14.1
+ARG ROCM_BASE_IMAGE=rocm/dev-ubuntu-24.04:${ROCM_VERSION}-full
+# hadolint ignore=DL3006
+FROM ${ROCM_BASE_IMAGE} AS base
+
 # =============================================================================
 # vLLM stage — inherits from the final stage of docker/base/ (build_torchvision)
 # which already has pytorch + torchvision installed system-wide.
@@ -84,8 +93,13 @@ RUN --mount=type=cache,target=/root/.cache/pip \
     mkdir -p /wheels && \
     cd /app/vllm && \
     printf 'torch>=2.13,<2.14\n' > /tmp/torch-constraints.txt && \
-    pip3 install -r requirements/rocm.txt \
-        --constraint /tmp/torch-constraints.txt && \
+    if [ "${VLLM_TARGET_DEVICE}" = "empty" ]; then \
+        pip3 install -r requirements/common.txt \
+            --constraint /tmp/torch-constraints.txt; \
+    else \
+        pip3 install -r requirements/rocm.txt \
+            --constraint /tmp/torch-constraints.txt; \
+    fi && \
     VLLM_TARGET_DEVICE="${VLLM_TARGET_DEVICE}" \
         PYTORCH_ROCM_ARCH="${ROCM_ARCH}" \
         TORCH_DONT_CHECK_COMPILER_ABI=1 \

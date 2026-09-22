@@ -3,10 +3,11 @@
 # SPDX-License-Identifier: MIT
 #
 # Lightweight push-triggered CI for the AMD Infinity Context (AIC) stack.
-# Validates that all vLLM, LMCache, and NIXL patches apply cleanly against their
-# pinned upstream SHAs without requiring a full Docker build.
+# Validates that all vLLM, LMCache PR-manifest entries, LMCache patches, and
+# NIXL patches apply cleanly against their pinned upstream SHAs without
+# requiring a full Docker build.
 #
-name: AIC Nightly Patch Validation
+name: rocm-aic - Check PRs and Patches
 
 on:
   push:
@@ -15,16 +16,18 @@ on:
       - 'docker/base/Dockerfile'
       - 'docker/vllm/Dockerfile'
       - 'docker/lmcache/Dockerfile'
+      - 'docker/scripts/apply-github-prs.sh'
       - 'patches/**'
-      - '.github/workflows/aic-patches.yml'
+      - '.github/workflows/rocm-aic-check-prs-and-patches.yml'
   pull_request:
     branches: [main]
     paths:
       - 'docker/base/Dockerfile'
       - 'docker/vllm/Dockerfile'
       - 'docker/lmcache/Dockerfile'
+      - 'docker/scripts/apply-github-prs.sh'
       - 'patches/**'
-      - '.github/workflows/aic-patches.yml'
+      - '.github/workflows/rocm-aic-check-prs-and-patches.yml'
   workflow_dispatch:
 
 permissions:
@@ -33,10 +36,10 @@ permissions:
 jobs:
   vllm-patches:
     name: vLLM patches (git apply --check)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Resolve vLLM ref and URL from Dockerfile
         id: meta
@@ -82,113 +85,12 @@ jobs:
           fi
           echo "All vLLM patches OK"
 
-  lmcache-patches:
-    name: LMCache patches (git apply --check)
-    runs-on: ubuntu-latest
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Resolve LMCache ref and URL from Dockerfile
-        id: meta
-        run: |
-          set -euo pipefail
-          ref="$(grep -E '^ARG LMCACHE_REF=' docker/lmcache/Dockerfile | head -1 | cut -d= -f2-)"
-          url="$(grep -E '^ARG LMCACHE_GIT_URL=' docker/lmcache/Dockerfile | head -1 | cut -d= -f2-)"
-          test -n "${ref}" || { echo "LMCACHE_REF not set in Dockerfile"; exit 1; }
-          test -n "${url}" || { echo "LMCACHE_GIT_URL not set in Dockerfile"; exit 1; }
-          echo "ref=${ref}" >> "${GITHUB_OUTPUT}"
-          echo "url=${url}" >> "${GITHUB_OUTPUT}"
-          echo "LMCache: ${url} @ ${ref}"
-
-      - name: Clone LMCache at pinned ref
-        run: |
-          set -euo pipefail
-          git clone --depth 1 --branch "${{ steps.meta.outputs.ref }}" \
-            --filter=blob:none "${{ steps.meta.outputs.url }}" /tmp/LMCache
-          cd /tmp/LMCache
-          echo "Checked out: $(git log --oneline -1)"
-
-      - name: Verify all LMCache patches apply cleanly
-        run: |
-          set -euo pipefail
-          patch_dir="${GITHUB_WORKSPACE}/patches/lmcache"
-          shopt -s nullglob
-          patches=( "${patch_dir}"/*.patch )
-          if (( ${#patches[@]} == 0 )); then
-            echo "ERROR: no .patch files in ${patch_dir}" >&2
-            exit 1
-          fi
-          cd /tmp/LMCache
-          for patch in "${patches[@]}"; do
-            echo "==> git apply --check $(basename "${patch}")"
-            git apply --check "${patch}"
-            git apply "${patch}"
-          done
-          git diff --check
-          if git diff --diff-filter=D --name-only | grep -q .; then
-            echo "ERROR: an LMCache patch unexpectedly deletes a tracked source file" >&2
-            git diff --diff-filter=D --name-only >&2
-            exit 1
-          fi
-          echo "All LMCache patches OK"
-
-  nixl-patches:
-    name: NIXL patches (git apply --check)
-    runs-on: ubuntu-latest
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Resolve NIXL ref and URL from Dockerfile
-        id: meta
-        run: |
-          set -euo pipefail
-          ref="$(grep -E '^ARG NIXL_REF=' docker/lmcache/Dockerfile | head -1 | cut -d= -f2-)"
-          url="$(grep -E '^ARG NIXL_GIT_URL=' docker/lmcache/Dockerfile | head -1 | cut -d= -f2-)"
-          test -n "${ref}" || { echo "NIXL_REF not set in Dockerfile"; exit 1; }
-          test -n "${url}" || { echo "NIXL_GIT_URL not set in Dockerfile"; exit 1; }
-          echo "ref=${ref}" >> "${GITHUB_OUTPUT}"
-          echo "url=${url}" >> "${GITHUB_OUTPUT}"
-          echo "NIXL: ${url} @ ${ref}"
-
-      - name: Clone NIXL at pinned ref
-        run: |
-          set -euo pipefail
-          git clone --depth 1 --branch "${{ steps.meta.outputs.ref }}" \
-            --filter=blob:none "${{ steps.meta.outputs.url }}" /tmp/nixl
-          cd /tmp/nixl
-          echo "Checked out: $(git log --oneline -1)"
-
-      - name: Verify NIXL patches apply cleanly
-        run: |
-          set -euo pipefail
-          patch_dir="${GITHUB_WORKSPACE}/patches/nixl"
-          shopt -s nullglob
-          patches=( "${patch_dir}"/*.patch )
-          if (( ${#patches[@]} == 0 )); then
-            echo "ERROR: no .patch files in ${patch_dir}" >&2
-            exit 1
-          fi
-          cd /tmp/nixl
-          for patch in "${patches[@]}"; do
-            echo "==> git apply --check $(basename "${patch}")"
-            git apply --check "${patch}"
-            git apply "${patch}"
-          done
-          git diff --check
-          if git diff --diff-filter=D --name-only | grep -q .; then
-            echo "ERROR: a NIXL patch unexpectedly deletes a tracked source file" >&2
-            git diff --diff-filter=D --name-only >&2
-            exit 1
-          fi
-          echo "All NIXL patches OK"
   llm-emu-patches:
     name: LLM-Emu patches + profile packs
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Resolve LLM-Emu ref and URL from Dockerfile
         id: meta
@@ -260,11 +162,11 @@ jobs:
           python3 "${GITHUB_WORKSPACE}/.github/scripts/validate-profile-packs.py"
 
   lmcache-patches:
-    name: LMCache patches (git apply --check)
-    runs-on: ubuntu-latest
+    name: LMCache PRs + patches
+    runs-on: ubuntu-24.04
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Resolve LMCache ref and URL from Dockerfile
         id: meta
@@ -286,7 +188,16 @@ jobs:
           cd /tmp/LMCache
           echo "Checked out: $(git log --oneline -1)"
 
-      - name: Verify all LMCache patches apply cleanly
+      - name: Apply configured LMCache PRs
+        run: |
+          set -euo pipefail
+          chmod +x "${GITHUB_WORKSPACE}/docker/scripts/apply-github-prs.sh"
+          "${GITHUB_WORKSPACE}/docker/scripts/apply-github-prs.sh" \
+            /tmp/LMCache \
+            "${GITHUB_WORKSPACE}/patches/lmcache.pull-requests" \
+            "${{ steps.meta.outputs.ref }}"
+
+      - name: Verify all LMCache patches apply cleanly after configured PRs
         run: |
           set -euo pipefail
           patch_dir="${GITHUB_WORKSPACE}/patches/lmcache"
@@ -317,10 +228,10 @@ jobs:
 
   nixl-patches:
     name: NIXL patches (git apply --check)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Resolve NIXL ref and URL from Dockerfile
         id: meta
@@ -372,10 +283,10 @@ jobs:
 
   emulate-oracle-check:
     name: LLM-Emu oracle in-process validation
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Resolve LLM-Emu ref from Dockerfile
         id: meta
@@ -391,9 +302,9 @@ jobs:
           set -euo pipefail
           git clone "${{ steps.meta.outputs.url }}" /tmp/llm-emu
           git -C /tmp/llm-emu checkout "${{ steps.meta.outputs.ref }}"
-          for patch in patches/llm-emu/*.patch; do
+          for patch in "${GITHUB_WORKSPACE}"/patches/llm-emu/*.patch; do
             git -C /tmp/llm-emu apply "$patch"
-            echo "Applied: $(basename $patch)"
+            echo "Applied: $(basename "$patch")"
           done
 
       - name: Install plugin (no deps — no torch needed for oracle)
@@ -422,11 +333,11 @@ jobs:
               try:
                   pack = load_profile_pack(pack_path)
                   oracle = create_oracle_from_profile_pack(pack)
-                  # Ask for a latency at a representative (tokens=512, concurrency=1, kv_depth=0) point
-                  latency = oracle.get_step_latency(num_tokens=512, concurrency=1, kv_depth=0.0)
-                  assert isinstance(latency, float) and latency > 0, \
-                      f"oracle returned non-positive latency: {latency}"
-                  print(f"  OK: oracle returns {latency*1000:.1f} ms at (512 tok, c=1, kv=0)")
+                  # estimate_step_latency_us returns microseconds; use a representative batch shape.
+                  latency_us = oracle.estimate_step_latency_us(total_tokens=512, num_requests=1)
+                  assert isinstance(latency_us, float) and latency_us >= 0, \
+                      f"oracle returned negative latency: {latency_us}"
+                  print(f"  OK: oracle returns {latency_us/1000:.1f} ms at (512 tok, 1 req)")
               except Exception as exc:
                   failures.append(f"{pack_path.name}: {exc}")
                   print(f"  FAIL: {exc}", file=sys.stderr)

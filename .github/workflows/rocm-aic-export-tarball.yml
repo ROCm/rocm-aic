@@ -7,19 +7,19 @@
 # artifacts leaked in, key sources present), and uploads it as a downloadable
 # workflow artifact.  No Docker build required.
 #
-name: AIC Export Tarball
+name: rocm-aic - Export Tarball
 
 on:
   push:
     branches: [main]
     paths:
       - '**'
-      - '.github/workflows/aic-export.yml'
+      - '.github/workflows/rocm-aic-export-tarball.yml'
   pull_request:
     branches: [main]
     paths:
       - '**'
-      - '.github/workflows/aic-export.yml'
+      - '.github/workflows/rocm-aic-export-tarball.yml'
   workflow_dispatch:
 
 permissions:
@@ -28,12 +28,12 @@ permissions:
 jobs:
   export:
     name: make export (build + validate tarball)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
 
     steps:
       # Full history so `git ls-files` / `git rev-parse --short HEAD` (used by the
       # export target for the filename stamp) resolve against a real commit.
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Build export tarball
         id: export
@@ -190,7 +190,7 @@ jobs:
           echo "All required sources present"
 
       - name: Upload tarball artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: aic-export-${{ github.sha }}
           path: ${{ steps.export.outputs.tarball }}
