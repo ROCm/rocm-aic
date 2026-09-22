@@ -174,21 +174,22 @@ RUN cd /app/LMCache && \
                 fi && \
                 git remote add "$remote_name" "$remote_url"; \
             fi && \
-            if ! git fetch "$remote_name" "refs/pull/${pr_number}/head"; then \
+            pr_ref="refs/remotes/${remote_name}/pr/${pr_number}" && \
+            if ! git fetch "$remote_name" "refs/pull/${pr_number}/head:${pr_ref}"; then \
                 echo "ERROR: LMCache PR ${remote_name}#${pr_number} could not be fetched via refs/pull/${pr_number}/head; use a remote that exposes GitHub-style PR refs." >&2; \
                 exit 1; \
             fi && \
-            merge_base="$(git merge-base HEAD FETCH_HEAD)" && \
+            merge_base="$(git merge-base HEAD "${pr_ref}")" && \
             if [ "$merge_base" != "$(git rev-parse HEAD)" ]; then \
                 echo "ERROR: LMCache PR ${remote_name}#${pr_number} is not based on ${LMCACHE_REF}; rebase it or convert it to a patch." >&2; \
                 exit 1; \
             fi && \
-            commit_count="$(git rev-list --count HEAD..FETCH_HEAD)" && \
+            commit_count="$(git rev-list --count "HEAD..${pr_ref}")" && \
             if [ "$commit_count" -eq 0 ]; then \
                 echo "Skipped LMCache PR ${remote_name}#${pr_number}: already included"; \
                 continue; \
             fi && \
-            if git cherry-pick -x "HEAD..FETCH_HEAD"; then \
+            if git cherry-pick -x "HEAD..${pr_ref}"; then \
                 echo "Applied LMCache PR ${remote_name}#${pr_number}"; \
             else \
                 git cherry-pick --abort >/dev/null 2>&1 || true; \
