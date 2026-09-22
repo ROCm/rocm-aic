@@ -4,7 +4,8 @@
 # Benchmark targets: cliff, kvbench, stress, plot, emulate, profile capture.
 
 .PHONY: cliff plot stress-grafana kvbench-build kvbench-up kvbench-logs kvbench-down \
-        cliff-kvbench-local test-emulate-local stress-emulate-local capture-profile-local
+        cliff-kvbench-local test-emulate-local stress-emulate-local capture-profile-local \
+        test-rocjitsu-local
 
 cliff: prep-dirs
 	@test -n "$(BENCH_MODEL)" || { \
@@ -286,3 +287,173 @@ capture-profile-local: prep-dirs
 	    2>&1 | sed 's/^/  [pack] /'; \
 	echo "Pack: $(AIC_CAPTURE_DIR)/$$pack_name"; \
 	echo "Copy it to profiles/ and add a .capture.txt sibling to use it in CI."
+
+# ---- rocjitsu VM test (local, no GPU hardware required) -------------------------
+#
+# Boots an Ubuntu guest VM under QEMU with an emulated gfx1250 GPU (rocjitsu
+# vfio-user server), builds the aic image for ROCM_ARCH=gfx1250 on the host,
+# loads it into the guest, and runs a single completion to verify the full stack.
+#
+# Requires: /dev/kvm, HF_TOKEN, docker, docker buildx, ~20 GiB free disk.
+# Images are pulled from sbates130272/batesste-ci-images-* on Docker Hub.
+
+RJ_QEMU_IMAGE    ?= sbates130272/batesste-ci-images-ubuntu-qemu-libvfio-user:20260919.g359579e-qemu11.1.1-vfu.8039244
+RJ_ROCJITSU_IMAGE ?= sbates130272/batesste-ci-images-ubuntu-rocm-rocjitsu:20260921.gb3399b3-rocjitsu.8e01a5a
+RJ_QCOW2_IMAGE   ?= sbates130272/batesste-ci-images-ubuntu-qcow2-gen-rocjitsu:20260921.g584b3f9-vm.resolute-rocjitsu-qm.5d68689
+RJ_ROCJITSU_ARCH ?= gfx1250
+RJ_ROCJITSU_CONFIG ?= gfx1250_mi455x.json
+RJ_VM_VCPUS      ?= 4
+RJ_VM_MEM_MB     ?= 8192
+RJ_SSH_PORT      ?= 12222
+RJ_READY_S       ?= 300
+RJ_WORK_DIR      ?= /tmp/aic-rocjitsu-test
+RJ_MODEL         ?= Qwen/Qwen2.5-3B-Instruct
+# The built image tag for gfx1250 (computed at make time).
+_RJ_IMAGE_TAG    := $(shell ROCM_ARCH=$(RJ_ROCJITSU_ARCH) $(_FRAMEWORK_VERSION_ENV) \
+                        $(REPO_ROOT)/docker/scripts/aic-image-tag.sh 2>/dev/null)
+RJ_IMAGE_REF     ?= $(VLLM_IMAGE_NAME):$(_RJ_IMAGE_TAG)
+
+test-rocjitsu-local: prep-dirs
+	@test -c /dev/kvm || { echo "ERROR: /dev/kvm not found — KVM is required" >&2; exit 1; }
+	@test -n "$(HF_TOKEN)" || { echo "ERROR: HF_TOKEN is not set" >&2; exit 1; }
+	@echo "=== test-rocjitsu-local: arch=$(RJ_ROCJITSU_ARCH) image=$(RJ_IMAGE_REF) model=$(RJ_MODEL) ==="
+	@echo "[1/6] Pulling CI images ..."
+	@docker pull -q "$(RJ_QEMU_IMAGE)"
+	@docker pull -q "$(RJ_ROCJITSU_IMAGE)"
+	@docker pull -q "$(RJ_QCOW2_IMAGE)"
+	@echo "[2/6] Building $(RJ_IMAGE_REF) for ROCM_ARCH=$(RJ_ROCJITSU_ARCH) on the host ..."
+	@ROCM_ARCH=$(RJ_ROCJITSU_ARCH) $(MAKE) --no-print-directory build-local IMAGE_TAG="$(_RJ_IMAGE_TAG)"
+	@echo "[3/6] Extracting guest disk and credentials ..."
+	@rm -rf "$(RJ_WORK_DIR)" && mkdir -p "$(RJ_WORK_DIR)/vm" "$(RJ_WORK_DIR)/fw"
+	@_cid=$$(docker create "$(RJ_QCOW2_IMAGE)") && \
+	    docker cp "$$_cid:/output/." "$(RJ_WORK_DIR)/vm" && \
+	    docker rm "$$_cid" >/dev/null
+	@chmod 600 "$(RJ_WORK_DIR)/vm/id_rsa" 2>/dev/null || true
+	@_vmname=$$(python3 -c "import json,sys; print(json.load(open(sys.argv[1]))['vm_name'])" \
+	    "$(RJ_WORK_DIR)/vm/vm-info.json") && echo "  vm_name=$$_vmname"
+	@echo "[4/6] Generating guest firmware ..."
+	@docker run --rm -v "$(RJ_WORK_DIR)/fw:/out" "$(RJ_ROCJITSU_IMAGE)" \
+	    python3 /usr/local/bin/vfio_guest_firmware.py --output /out \
+	    2>&1 | sed 's/^/  [fw] /'
+	@echo "[5/6] Starting rocjitsu + QEMU VM ..."
+	@docker network create aic-rj-net 2>/dev/null || true
+	@docker rm -f aic-rj-rocjitsu aic-rj-qemu 2>/dev/null || true
+	@docker run -d --name aic-rj-rocjitsu \
+	    --network aic-rj-net \
+	    -v "$(RJ_WORK_DIR)/fw:/firmware:ro" \
+	    -v /tmp/aic-rj-vfu:/run/vfu \
+	    "$(RJ_ROCJITSU_IMAGE)" \
+	    rocjitsu \
+	        --config "/usr/local/share/rocjitsu/configs/$(RJ_ROCJITSU_CONFIG)" \
+	        --vfio-socket /run/vfu/rocjitsu.sock \
+	    >/dev/null
+	@echo "  Waiting for rocjitsu socket ..."
+	@for _i in $$(seq 1 30); do \
+	    [ -S /tmp/aic-rj-vfu/rocjitsu.sock ] && break; \
+	    sleep 2; \
+	done; \
+	[ -S /tmp/aic-rj-vfu/rocjitsu.sock ] || { \
+	    echo "FAIL: rocjitsu socket did not appear" >&2; \
+	    docker logs aic-rj-rocjitsu 2>&1 | tail -20; \
+	    docker rm -f aic-rj-rocjitsu >/dev/null 2>&1; \
+	    rm -rf /tmp/aic-rj-vfu; \
+	    exit 1; \
+	}
+	@_vmname=$$(python3 -c "import json,sys; print(json.load(open(sys.argv[1]))['vm_name'])" \
+	    "$(RJ_WORK_DIR)/vm/vm-info.json"); \
+	docker run -d --name aic-rj-qemu \
+	    --network aic-rj-net \
+	    --device /dev/kvm \
+	    --shm-size 12g \
+	    -v "$(RJ_WORK_DIR)/vm:$(RJ_WORK_DIR)/vm" \
+	    -v /tmp/aic-rj-vfu:/run/vfu:ro \
+	    -p "$(RJ_SSH_PORT):2222" \
+	    "$(RJ_QEMU_IMAGE)" \
+	    qemu-tool run-vm \
+	        --images "$(RJ_WORK_DIR)/vm" \
+	        --vm-name "$$_vmname" \
+	        --vcpus "$(RJ_VM_VCPUS)" \
+	        --vmem "$(RJ_VM_MEM_MB)" \
+	        --ssh-port 2222 \
+	        --kvm \
+	        --vfio-userdev /run/vfu/rocjitsu.sock \
+	    2>&1 | docker attach --no-stdin aic-rj-qemu & \
+	echo "  QEMU container started"
+	@echo "  Waiting up to $(RJ_READY_S)s for SSH in VM ..."
+	@_key="$(RJ_WORK_DIR)/vm/id_rsa"; \
+	_ssh="ssh -i $$_key -o StrictHostKeyChecking=no -o ConnectTimeout=5 \
+	    -o BatchMode=yes -p $(RJ_SSH_PORT) root@localhost"; \
+	_ready=0; \
+	for _i in $$(seq 1 $$(($(RJ_READY_S)/5))); do \
+	    if $$_ssh true 2>/dev/null; then _ready=1; break; fi; \
+	    sleep 5; \
+	done; \
+	[ "$$_ready" = "1" ] || { \
+	    echo "FAIL: VM did not become SSH-reachable within $(RJ_READY_S)s" >&2; \
+	    docker logs aic-rj-qemu 2>&1 | tail -30; \
+	    docker rm -f aic-rj-qemu aic-rj-rocjitsu >/dev/null 2>&1; \
+	    rm -rf /tmp/aic-rj-vfu; \
+	    exit 1; \
+	}
+	@echo "[6/6] Loading image into VM and running test completion ..."
+	@_key="$(RJ_WORK_DIR)/vm/id_rsa"; \
+	_ssh_flags="-i $$_key -o StrictHostKeyChecking=no -o BatchMode=yes -p $(RJ_SSH_PORT)"; \
+	echo "  Transferring $(RJ_IMAGE_REF) (~may take a few minutes) ..."; \
+	docker save "$(RJ_IMAGE_REF)" | \
+	    ssh $$_ssh_flags root@localhost "docker load" \
+	    2>&1 | sed 's/^/  [load] /'; \
+	echo "  Starting vllm serve inside VM ..."; \
+	ssh $$_ssh_flags root@localhost \
+	    "docker run -d --name aic-rj-vllm \
+	        --device /dev/kfd --device /dev/dri \
+	        --group-add video \
+	        -e HF_TOKEN=$(HF_TOKEN) \
+	        -p 8000:8000 \
+	        $(RJ_IMAGE_REF) \
+	        python3 -m vllm.entrypoints.openai.api_server \
+	            --model $(RJ_MODEL) --max-model-len 4096 \
+	            --gpu-memory-utilization 0.90" \
+	    2>&1 | sed 's/^/  [vm] /'; \
+	echo "  Waiting for /health inside VM ..."; \
+	_vm_ready=0; \
+	for _i in $$(seq 1 $$(($(RJ_READY_S)/5))); do \
+	    if ssh $$_ssh_flags root@localhost \
+	           "curl -fsS http://localhost:8000/health" >/dev/null 2>&1; then \
+	        _vm_ready=1; break; \
+	    fi; \
+	    if ssh $$_ssh_flags root@localhost \
+	           "docker ps -q -f name=aic-rj-vllm | grep -q ." 2>/dev/null; then \
+	        true; \
+	    else \
+	        echo "FAIL: vllm container exited inside VM" >&2; \
+	        ssh $$_ssh_flags root@localhost "docker logs aic-rj-vllm 2>&1 | tail -40" \
+	            2>&1 | sed 's/^/  [vllm] /'; \
+	        break; \
+	    fi; \
+	    sleep 5; \
+	done; \
+	if [ "$$_vm_ready" != "1" ]; then \
+	    echo "FAIL: vllm did not become ready in VM" >&2; \
+	    docker rm -f aic-rj-qemu aic-rj-rocjitsu >/dev/null 2>&1; \
+	    rm -rf /tmp/aic-rj-vfu; \
+	    exit 1; \
+	fi; \
+	echo "  Sending test completion ..."; \
+	_resp=$$(ssh $$_ssh_flags root@localhost \
+	    "curl -fsS http://localhost:8000/v1/completions \
+	        -H 'Content-Type: application/json' \
+	        -d '{\"model\":\"$(RJ_MODEL)\",\"prompt\":\"Hello\",\"max_tokens\":4}'"); \
+	echo "  Response: $$_resp"; \
+	_toks=$$(echo "$$_resp" | python3 -c \
+	    "import json,sys; d=json.load(sys.stdin); print(d['usage']['completion_tokens'])" \
+	    2>/dev/null || echo "0"); \
+	echo "  completion_tokens=$$_toks"; \
+	[ "$$_toks" -gt 0 ] || { echo "FAIL: zero completion_tokens in response" >&2; _rc=1; }; \
+	echo "  Stopping vllm inside VM ..."; \
+	ssh $$_ssh_flags root@localhost "docker rm -f aic-rj-vllm" >/dev/null 2>&1 || true; \
+	echo "  Cleaning up containers ..."; \
+	docker rm -f aic-rj-qemu aic-rj-rocjitsu >/dev/null 2>&1 || true; \
+	docker network rm aic-rj-net >/dev/null 2>&1 || true; \
+	rm -rf /tmp/aic-rj-vfu; \
+	[ "$${_rc:-0}" = "0" ] && echo "=== PASS: rocjitsu VM test complete ===" || \
+	    { echo "=== FAIL: rocjitsu VM test failed ===" >&2; exit 1; }
