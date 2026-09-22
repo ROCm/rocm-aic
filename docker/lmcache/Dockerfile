@@ -191,7 +191,19 @@ RUN cd /app/LMCache && \
                 echo "ERROR: LMCache PR ${remote_name}#${pr_number} is not based on ${LMCACHE_REF}; rebase it or convert it to a patch." >&2; \
                 exit 1; \
             fi && \
-            mapfile -t pr_commits < <(git cherry HEAD "${pr_ref}" | awk '$1 == "+" { print $2 }') && \
+            declare -A pr_commit_needed=() && \
+            while read -r cherry_status cherry_commit; do \
+                if [ "$cherry_status" = "+" ]; then \
+                    pr_commit_needed["$cherry_commit"]=1; \
+                fi; \
+            done < <(git cherry HEAD "${pr_ref}") && \
+            mapfile -t pr_commit_candidates < <(git rev-list --reverse "${lmcache_base_ref}..${pr_ref}") && \
+            pr_commits=() && \
+            for pr_commit in "${pr_commit_candidates[@]}"; do \
+                if [ -n "${pr_commit_needed["$pr_commit"]:-}" ]; then \
+                    pr_commits+=("$pr_commit"); \
+                fi; \
+            done && \
             if [ "${#pr_commits[@]}" -eq 0 ]; then \
                 echo "Skipped LMCache PR ${remote_name}#${pr_number}: already included"; \
                 continue; \
