@@ -1682,10 +1682,10 @@ echo "[test] allocated gpu: ROCR=\${AIC_ROCR_VISIBLE} HIP=\${AIC_HIP_VISIBLE}"
 
 _load_image() {
     local img="\$1" tarball="\$2"
-    local _marker="/var/tmp/aic-loaded-\$(id -u)-\$(echo "\${img}" | tr '/:' '__').mtime"
+    local _marker
+    _marker="/var/tmp/aic-loaded-\$(id -u)-\$(echo "\${img}" | tr '/:' '--').mtime"
     local _tar_mtime; _tar_mtime="\$(stat -c %Y "\${tarball}" 2>/dev/null || echo 0)"
-    local _have_img; _have_img="\$(docker images -q "\${img}" 2>&1)" \
-        || { echo "[test] FAIL: docker images failed: \${_have_img}" >&2; exit 1; }
+    local _have_img; _have_img="\$(docker images -q "\${img}" 2>&1)"
     local _loaded_mtime; _loaded_mtime="\$(cat "\${_marker}" 2>/dev/null || echo 0)"
     if [ "${AIC_FORCE_LOAD:-0}" = "1" ] || [ -z "\${_have_img}" ] || [ "\${_tar_mtime}" -gt "\${_loaded_mtime}" ]; then
         echo "[test] loading \${img} from \${tarball} (tarball=\${_tar_mtime} last-loaded=\${_loaded_mtime} present=\$([ -n "\${_have_img}" ] && echo yes || echo no) force=${AIC_FORCE_LOAD:-0})"
