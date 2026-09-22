@@ -129,6 +129,9 @@ COPY patches/ /app/patches/
 
 RUN git clone --depth 1 --branch "${LMCACHE_REF}" "${LMCACHE_GIT_URL}" /app/LMCache
 
+RUN git -C /app/LMCache config user.name "AIC Image Build" && \
+    git -C /app/LMCache config user.email "rocm-aic@noreply.invalid"
+
 # Cherry-pick optional LMCache PR heads listed in patches/lmcache.pull-requests.
 # Line format:
 #   <pr-number>
@@ -139,7 +142,7 @@ RUN git clone --depth 1 --branch "${LMCACHE_REF}" "${LMCACHE_GIT_URL}" /app/LMCa
 RUN cd /app/LMCache && \
     if [ -f /app/patches/lmcache.pull-requests ]; then \
         while IFS= read -r raw_line || [ -n "$raw_line" ]; do \
-            line="$(sed -e 's/#.*//' -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$$//' <<<"$raw_line")" && \
+            line="$(sed -e 's/#.*//' -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' <<<"$raw_line")" && \
             if [ -z "$line" ]; then \
                 continue; \
             fi && \
@@ -170,7 +173,7 @@ RUN cd /app/LMCache && \
                 fi && \
                 git remote add "$remote_name" "$remote_url"; \
             fi && \
-            git fetch --depth 1 "$remote_name" "pull/${pr_number}/head" && \
+            git fetch "$remote_name" "refs/pull/${pr_number}/head" && \
             merge_base="$(git merge-base HEAD FETCH_HEAD)" && \
             commit_count="$(git rev-list --count "${merge_base}..FETCH_HEAD")" && \
             if [ "$commit_count" -eq 0 ]; then \
