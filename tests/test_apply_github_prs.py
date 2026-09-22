@@ -26,22 +26,26 @@ def _git(*args: str, cwd: Path | None = None) -> str:
 
 
 class ApplyGithubPrsTest(unittest.TestCase):
+    def _make_upstream_with_base(self, temp: Path) -> tuple[Path, str]:
+        upstream = temp / "upstream.git"
+        _git("init", "--bare", str(upstream))
+
+        seed = temp / "seed"
+        _git("clone", f"file://{upstream}", str(seed))
+        _git("config", "user.name", "Test User", cwd=seed)
+        _git("config", "user.email", "test@example.com", cwd=seed)
+        (seed / "file.txt").write_text("base\n", encoding="utf-8")
+        _git("add", "file.txt", cwd=seed)
+        _git("commit", "-m", "base", cwd=seed)
+        _git("branch", "-M", "main", cwd=seed)
+        _git("tag", "v0.5.5", cwd=seed)
+        _git("push", "origin", "main", "--tags", cwd=seed)
+        return upstream, "v0.5.5"
+
     def test_default_origin_applies_and_duplicate_entry_skips(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             temp = Path(temp_dir)
-            upstream = temp / "upstream.git"
-            _git("init", "--bare", str(upstream))
-
-            seed = temp / "seed"
-            _git("clone", f"file://{upstream}", str(seed))
-            _git("config", "user.name", "Test User", cwd=seed)
-            _git("config", "user.email", "test@example.com", cwd=seed)
-            (seed / "file.txt").write_text("base\n", encoding="utf-8")
-            _git("add", "file.txt", cwd=seed)
-            _git("commit", "-m", "base", cwd=seed)
-            _git("branch", "-M", "main", cwd=seed)
-            _git("tag", "v0.5.5", cwd=seed)
-            _git("push", "origin", "main", "--tags", cwd=seed)
+            upstream, base_ref = self._make_upstream_with_base(temp)
 
             prwork = temp / "prwork"
             _git("clone", f"file://{upstream}", str(prwork))
@@ -64,7 +68,7 @@ class ApplyGithubPrsTest(unittest.TestCase):
             manifest.write_text("42\n\n# duplicate\n42\n", encoding="utf-8")
 
             subprocess.run(
-                [str(SCRIPT), str(buildrepo), str(manifest), "v0.5.5"],
+                [str(SCRIPT), str(buildrepo), str(manifest), base_ref],
                 check=True,
                 text=True,
                 capture_output=True,
@@ -102,6 +106,48 @@ class ApplyGithubPrsTest(unittest.TestCase):
             self.assertNotEqual(result.returncode, 0)
             self.assertIn("already points to", result.stderr)
 
+    def test_inline_github_remote_url_is_added_and_used(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp = Path(temp_dir)
+            upstream, base_ref = self._make_upstream_with_base(temp)
+
+            prwork = temp / "prwork"
+            _git("clone", f"file://{upstream}", str(prwork))
+            _git("config", "user.name", "Test User", cwd=prwork)
+            _git("config", "user.email", "test@example.com", cwd=prwork)
+            _git("checkout", "-b", "feature", "origin/main", cwd=prwork)
+            with (prwork / "file.txt").open("a", encoding="utf-8") as handle:
+                handle.write("inline-remote\n")
+            _git("commit", "-am", "inline remote commit", cwd=prwork)
+            _git("push", "origin", "HEAD:refs/heads/pr-77", cwd=prwork)
+            pr_head = _git("rev-parse", "HEAD", cwd=prwork)
+            _git("--git-dir", str(upstream), "update-ref", "refs/pull/77/head", pr_head)
+
+            buildrepo = temp / "buildrepo"
+            _git("clone", "--branch", "v0.5.5", "--depth", "1", f"file://{upstream}", str(buildrepo))
+            github_url = "https://github.com/example/lmcache-fork.git"
+            _git(
+                "config",
+                f'url.file://{upstream}.insteadOf',
+                github_url,
+                cwd=buildrepo,
+            )
+
+            manifest = temp / "lmcache.pull-requests"
+            manifest.write_text(f"fork={github_url} 77\n", encoding="utf-8")
+
+            subprocess.run(
+                [str(SCRIPT), str(buildrepo), str(manifest), base_ref],
+                check=True,
+                text=True,
+                capture_output=True,
+            )
+
+            self.assertEqual(
+                (buildrepo / "file.txt").read_text(encoding="utf-8"),
+                "base\ninline-remote\n",
+            )
+
     def test_non_github_inline_remote_url_is_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             temp = Path(temp_dir)
@@ -125,6 +171,51 @@ class ApplyGithubPrsTest(unittest.TestCase):
 
             self.assertNotEqual(result.returncode, 0)
             self.assertIn("supported GitHub URL", result.stderr)
+
+    def test_stacked_pr_applies_dependency_commits_in_order(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp = Path(temp_dir)
+            upstream, base_ref = self._make_upstream_with_base(temp)
+
+            prwork = temp / "prwork"
+            _git("clone", f"file://{upstream}", str(prwork))
+            _git("config", "user.name", "Test User", cwd=prwork)
+            _git("config", "user.email", "test@example.com", cwd=prwork)
+            _git("checkout", "-b", "pr-42", "origin/main", cwd=prwork)
+            with (prwork / "file.txt").open("a", encoding="utf-8") as handle:
+                handle.write("dep-a\n")
+            _git("commit", "-am", "dep commit a", cwd=prwork)
+            with (prwork / "file.txt").open("a", encoding="utf-8") as handle:
+                handle.write("dep-b\n")
+            _git("commit", "-am", "dep commit b", cwd=prwork)
+            _git("push", "origin", "HEAD:refs/heads/pr-42", cwd=prwork)
+            pr42_head = _git("rev-parse", "HEAD", cwd=prwork)
+            _git("--git-dir", str(upstream), "update-ref", "refs/pull/42/head", pr42_head)
+
+            _git("checkout", "-b", "pr-43", "HEAD", cwd=prwork)
+            with (prwork / "file.txt").open("a", encoding="utf-8") as handle:
+                handle.write("top\n")
+            _git("commit", "-am", "top commit", cwd=prwork)
+            _git("push", "origin", "HEAD:refs/heads/pr-43", cwd=prwork)
+            pr43_head = _git("rev-parse", "HEAD", cwd=prwork)
+            _git("--git-dir", str(upstream), "update-ref", "refs/pull/43/head", pr43_head)
+
+            buildrepo = temp / "buildrepo"
+            _git("clone", "--branch", "v0.5.5", "--depth", "1", f"file://{upstream}", str(buildrepo))
+            manifest = temp / "lmcache.pull-requests"
+            manifest.write_text("43\n", encoding="utf-8")
+
+            subprocess.run(
+                [str(SCRIPT), str(buildrepo), str(manifest), base_ref],
+                check=True,
+                text=True,
+                capture_output=True,
+            )
+
+            self.assertEqual(
+                (buildrepo / "file.txt").read_text(encoding="utf-8"),
+                "base\ndep-a\ndep-b\ntop\n",
+            )
 
 
 if __name__ == "__main__":
