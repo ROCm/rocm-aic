@@ -32,6 +32,15 @@
 #   make dist-build-lmcache ROCM_ARCH=gfx950
 
 # =============================================================================
+# Fallback base stage: used when no --build-context base= is provided (e.g.
+# when building this Dockerfile standalone without a pre-built aic-base image).
+# When --build-context base=docker-image://aic-base:<TAG> IS supplied, BuildKit
+# overrides this stage with the pre-built image and skips this FROM entirely.
+ARG ROCM_VERSION=7.14.1
+ARG ROCM_BASE_IMAGE=rocm/dev-ubuntu-24.04:${ROCM_VERSION}-full
+# hadolint ignore=DL3006
+FROM ${ROCM_BASE_IMAGE} AS base
+
 # Full LMCache stack — AITER, FlashAttention, LMCache, NIXL, hsa-snoop.
 # Inherits from the final stage of docker/base/ (build_torchvision), which
 # already has pytorch + torchvision installed system-wide.
