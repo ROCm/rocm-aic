@@ -8,22 +8,33 @@ set -euo pipefail
 readonly PYTORCH_REPO_DEFAULT='https://github.com/ROCm/pytorch.git'
 
 # This script runs directly from a workflow checkout; it is not installed on a runner.
-if [[ $# -ne 6 ]]; then
-    echo "usage: $0 <Dockerfile> <tag> <source-sha> <gpu-arch> <image-name> <repository>" >&2
+if [[ $# -ne 6 && $# -ne 8 ]]; then
+    echo "usage: $0 <Dockerfile> [<Dockerfile> <Dockerfile>] <tag> <source-sha> <gpu-arch> <image-name> <repository>" >&2
     exit 2
 fi
 
-DOCKERFILE="$1"
-TAG="$2"
-SOURCE_SHA="$3"
-GPU_ARCH="$4"
-IMAGE_NAME="$5"
-REPOSITORY="$6"
+if [[ $# -eq 6 ]]; then
+    DOCKERFILES=("$1")
+    TAG="$2"
+    SOURCE_SHA="$3"
+    GPU_ARCH="$4"
+    IMAGE_NAME="$5"
+    REPOSITORY="$6"
+else
+    DOCKERFILES=("$1" "$2" "$3")
+    TAG="$4"
+    SOURCE_SHA="$5"
+    GPU_ARCH="$6"
+    IMAGE_NAME="$7"
+    REPOSITORY="$8"
+fi
 
-[[ -r "${DOCKERFILE}" ]] || {
-    echo "release notes: cannot read ${DOCKERFILE}" >&2
-    exit 1
-}
+for df in "${DOCKERFILES[@]}"; do
+    [[ -r "${df}" ]] || {
+        echo "release notes: cannot read ${df}" >&2
+        exit 1
+    }
+done
 for input in TAG SOURCE_SHA GPU_ARCH IMAGE_NAME REPOSITORY; do
     [[ -n "${!input}" ]] || {
         echo "release notes: ${input} must not be empty" >&2
@@ -31,16 +42,20 @@ for input in TAG SOURCE_SHA GPU_ARCH IMAGE_NAME REPOSITORY; do
     }
 done
 
-# Derive the sibling Dockerfile paths for the split-Dockerfile layout.
-# When DOCKERFILE is docker/lmcache/Dockerfile, also probe docker/base/Dockerfile
-# for ROCM_VERSION / ROCM_BASE_IMAGE (which live there after the split).
-_DOCKERFILE_DIR="$(dirname "${DOCKERFILE}")"
-_DOCKERFILES=("${DOCKERFILE}")
-if [[ -r "${_DOCKERFILE_DIR}/../base/Dockerfile" ]]; then
-    _DOCKERFILES+=("${_DOCKERFILE_DIR}/../base/Dockerfile")
-fi
-if [[ -r "${_DOCKERFILE_DIR}/../vllm/Dockerfile" ]]; then
-    _DOCKERFILES+=("${_DOCKERFILE_DIR}/../vllm/Dockerfile")
+_DOCKERFILES=()
+for df in "${DOCKERFILES[@]}"; do
+    _DOCKERFILES+=("${df}")
+done
+if [[ ${#DOCKERFILES[@]} -eq 1 ]]; then
+    # Derive sibling Dockerfile paths for the split-Dockerfile layout when only
+    # one Dockerfile was supplied.
+    _DOCKERFILE_DIR="$(dirname "${DOCKERFILES[0]}")"
+    if [[ -r "${_DOCKERFILE_DIR}/../base/Dockerfile" ]]; then
+        _DOCKERFILES+=("${_DOCKERFILE_DIR}/../base/Dockerfile")
+    fi
+    if [[ -r "${_DOCKERFILE_DIR}/../vllm/Dockerfile" ]]; then
+        _DOCKERFILES+=("${_DOCKERFILE_DIR}/../vllm/Dockerfile")
+    fi
 fi
 
 _arg() {
@@ -59,14 +74,17 @@ _arg() {
 }
 
 _optional_arg() {
-    local name="$1" default="$2" value
-    value="$(awk -v prefix="ARG ${name}=" '
-        index($0, prefix) == 1 {
-            print substr($0, length(prefix) + 1)
-            exit
-        }
-    ' "${DOCKERFILE}")"
-    printf '%s\n' "${value:-$default}"
+    local name="$1" default="$2" value df
+    for df in "${_DOCKERFILES[@]}"; do
+        value="$(awk -v prefix="ARG ${name}=" '
+            index($0, prefix) == 1 {
+                print substr($0, length(prefix) + 1)
+                exit
+            }
+        ' "${df}")"
+        [[ -n "${value}" ]] && { printf '%s\n' "${value}"; return 0; }
+    done
+    printf '%s\n' "${default}"
 }
 
 lmcache_url="$(_arg LMCACHE_GIT_URL)"
