@@ -141,6 +141,7 @@ RUN git -C /app/LMCache config user.name "AIC Image Build" && \
 # GitHub-style refs/pull/<pr-number>/head refs.
 # hadolint ignore=SC2206,SC3054,SC3044
 RUN cd /app/LMCache && \
+    lmcache_base_ref="$(git rev-parse HEAD)" && \
     if [ -f /app/patches/lmcache.pull-requests ]; then \
         while IFS= read -r raw_line || [ -n "$raw_line" ]; do \
             line="$(sed -e 's/#.*//' -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' <<<"$raw_line")" && \
@@ -185,17 +186,17 @@ RUN cd /app/LMCache && \
                 echo "ERROR: LMCache PR ${remote_name}#${pr_number} could not be fetched via refs/pull/${pr_number}/head; use a remote that exposes GitHub-style PR refs." >&2; \
                 exit 1; \
             fi && \
-            merge_base="$(git merge-base HEAD "${pr_ref}")" && \
-            if [ "$merge_base" != "$(git rev-parse HEAD)" ]; then \
+            merge_base="$(git merge-base "${lmcache_base_ref}" "${pr_ref}")" && \
+            if [ "$merge_base" != "$lmcache_base_ref" ]; then \
                 echo "ERROR: LMCache PR ${remote_name}#${pr_number} is not based on ${LMCACHE_REF}; rebase it or convert it to a patch." >&2; \
                 exit 1; \
             fi && \
-            commit_count="$(git rev-list --count "HEAD..${pr_ref}")" && \
-            if [ "$commit_count" -eq 0 ]; then \
+            mapfile -t pr_commits < <(git cherry HEAD "${pr_ref}" | awk '$1 == "+" { print $2 }') && \
+            if [ "${#pr_commits[@]}" -eq 0 ]; then \
                 echo "Skipped LMCache PR ${remote_name}#${pr_number}: already included"; \
                 continue; \
             fi && \
-            if git cherry-pick -x "HEAD..${pr_ref}"; then \
+            if git cherry-pick -x "${pr_commits[@]}"; then \
                 echo "Applied LMCache PR ${remote_name}#${pr_number}"; \
             else \
                 git cherry-pick --abort >/dev/null 2>&1 || true; \
