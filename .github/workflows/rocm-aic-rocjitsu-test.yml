@@ -1,0 +1,143 @@
+# Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+#
+# GPU-stack integration test using rocjitsu vfio-user emulation.
+# Boots an Ubuntu guest VM under QEMU-KVM with an emulated gfx1250 GPU
+# (rocjitsu vfio-user server), builds the aic-vllm image for gfx1250,
+# loads it into the guest, and asserts torch.cuda.is_available()==True
+# with arch=gfx1250.  No physical GPU required; /dev/kvm is available on
+# GitHub-hosted ubuntu-24.04 runners.
+#
+# The aic-base and aic-vllm Docker builds use the GHA layer cache so that
+# warm PR runs skip multi-hour kernel compilations.  Cold runs are slow
+# (~3-4 h for aic-base + aic-vllm) but subsequent runs are fast (~10 min).
+#
+# See mk/bench.mk test-rocjitsu-local.
+name: rocm-aic - Rocjitsu VM Test
+
+on:
+  schedule:
+    # 02:00 PST = 10:00 UTC (off-peak; cold build is expensive)
+    - cron: '0 10 * * *'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'docker/base/Dockerfile'
+      - 'docker/vllm/Dockerfile'
+      - 'patches/vllm/**'
+      - 'patches/llm-emu/**'
+      - 'mk/bench.mk'
+      - 'mk/local.mk'
+      - '.github/workflows/rocm-aic-rocjitsu-test.yml'
+  workflow_dispatch:
+    inputs:
+      rj_image_ref:
+        description: >-
+          Pre-built aic-vllm image ref to use instead of building locally
+          (e.g. registry.example.com/aic-vllm:tag).  Leave blank to build.
+        required: false
+        default: ''
+
+permissions:
+  contents: read
+
+jobs:
+  rocjitsu-test:
+    name: Boot rocjitsu VM and verify gfx1250 GPU visibility
+    runs-on: ubuntu-24.04
+    timeout-minutes: 300
+
+    env:
+      ROCM_ARCH: gfx1250
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Verify KVM is available
+        run: |
+          ls -la /dev/kvm
+          kvm-ok || true   # kvm-ok from cpu-checker; non-fatal if missing
+
+      - name: Install docker compose plugin
+        run: make ensure-compose
+
+      - name: Set up Docker Buildx (for layer-cached local builds)
+        uses: docker/setup-buildx-action@v3
+        with:
+          driver: docker-container
+          install: true
+
+      # Cache aic-base and aic-vllm build layers separately so a change to
+      # the vllm Dockerfile doesn't bust the expensive aic-base cache.
+      - name: Cache aic-base layers
+        uses: actions/cache@v4
+        with:
+          path: /tmp/aic-base-cache
+          key: aic-base-gfx1250-${{ hashFiles('docker/base/Dockerfile') }}-${{ hashFiles('VERSION') }}
+          restore-keys: |
+            aic-base-gfx1250-${{ hashFiles('docker/base/Dockerfile') }}-
+            aic-base-gfx1250-
+
+      - name: Cache aic-vllm layers
+        uses: actions/cache@v4
+        with:
+          path: /tmp/aic-vllm-cache
+          key: aic-vllm-gfx1250-${{ hashFiles('docker/vllm/Dockerfile', 'patches/vllm/**', 'patches/llm-emu/**') }}-${{ hashFiles('VERSION') }}
+          restore-keys: |
+            aic-vllm-gfx1250-${{ hashFiles('docker/vllm/Dockerfile', 'patches/vllm/**', 'patches/llm-emu/**') }}-
+            aic-vllm-gfx1250-
+
+      - name: Build or pull aic-vllm image for gfx1250
+        run: |
+          SUPPLIED="${{ inputs.rj_image_ref }}"
+          if [ -n "$SUPPLIED" ]; then
+            echo "Using supplied image: $SUPPLIED"
+            docker pull "$SUPPLIED"
+            # Tag it so the make target's default RJ_IMAGE_REF resolves
+            TAG=$(ROCM_ARCH=gfx1250 docker/scripts/aic-image-tag.sh 2>/dev/null || true)
+            docker tag "$SUPPLIED" "aic-vllm:${TAG:-gfx1250}"
+          else
+            echo "Building aic-base for gfx1250..."
+            DOCKER_BUILDKIT=1 docker buildx build \
+              --progress=plain \
+              --load \
+              --build-arg ROCM_ARCH=gfx1250 \
+              --build-arg AIC_VERSION="$(cat VERSION)" \
+              --cache-from type=local,src=/tmp/aic-base-cache \
+              --cache-to   type=local,dest=/tmp/aic-base-cache,mode=max \
+              -f docker/base/Dockerfile \
+              -t aic-base:gfx1250 \
+              .
+
+            echo "Building aic-vllm for gfx1250..."
+            DOCKER_BUILDKIT=1 docker buildx build \
+              --progress=plain \
+              --load \
+              --build-arg ROCM_ARCH=gfx1250 \
+              --build-arg AIC_VERSION="$(cat VERSION)" \
+              --build-context base=docker-image://aic-base:gfx1250 \
+              --cache-from type=local,src=/tmp/aic-vllm-cache \
+              --cache-to   type=local,dest=/tmp/aic-vllm-cache,mode=max \
+              -f docker/vllm/Dockerfile \
+              -t "aic-vllm:gfx1250" \
+              .
+          fi
+
+      - name: Run rocjitsu VM test
+        run: |
+          # Pass the pre-tagged image ref; skip internal build step
+          IMAGE_TAG=$(docker inspect aic-vllm:gfx1250 --format '{{index .RepoTags 0}}' 2>/dev/null \
+            || echo aic-vllm:gfx1250)
+          make test-rocjitsu-local \
+            RJ_IMAGE_REF="$IMAGE_TAG" \
+            RJ_READY_S=240
+
+      - name: Upload rocjitsu logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rocjitsu-logs
+          path: /tmp/aic-rocjitsu-test/
+          retention-days: 3
