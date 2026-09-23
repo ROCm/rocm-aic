@@ -63,7 +63,12 @@ def _build_record(args: argparse.Namespace) -> dict[str, Any]:
         (_parse_result(path) for path in results),
         key=lambda point: (point["input_len"], point["output_len"], point["concurrency"]),
     )
-    model_tag = points[0]["model_tag"]
+    model_tags = {point["model_tag"] for point in points}
+    if len(model_tags) != 1:
+        raise ValueError(
+            f"expected exactly one model tag in {args.results_dir}, found: {sorted(model_tags)}"
+        )
+    model_tag = next(iter(model_tags))
     run_at = args.run_at or datetime.now(timezone.utc).replace(microsecond=0).isoformat()
     return {
         "schema_version": 1,

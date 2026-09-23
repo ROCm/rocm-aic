@@ -77,7 +77,8 @@ jobs:
           mkdir -p /tmp/aic-base-emulate
           tar -xf /tmp/aic-base-emulate.tar -C /tmp/aic-base-emulate
 
-      - name: Build emulation image (no GPU kernels)
+      - name: Build emulation image (no GPU kernels, with corp CA)
+        if: steps.cert.outputs.present == 'true'
         uses: docker/build-push-action@v6
         with:
           context: .
@@ -92,7 +93,25 @@ jobs:
           build-contexts: |
             base=oci-layout:///tmp/aic-base-emulate
           secrets: |
-            ${{ steps.cert.outputs.present == 'true' && format('tls_cert={0}', steps.cert.outputs.path) || '' }}
+            tls_cert=${{ steps.cert.outputs.path }}
+          cache-from: type=gha,scope=aic-emulate
+          cache-to: type=gha,mode=max,scope=aic-emulate
+
+      - name: Build emulation image (no GPU kernels)
+        if: steps.cert.outputs.present != 'true'
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/vllm/Dockerfile
+          target: emulate
+          load: true
+          tags: ${{ env.IMAGE_REF }}
+          build-args: |
+            ROCM_ARCH=gfx942
+            VLLM_TARGET_DEVICE=empty
+            AIC_VERSION=${{ env.AIC_VERSION }}
+          build-contexts: |
+            base=oci-layout:///tmp/aic-base-emulate
           cache-from: type=gha,scope=aic-emulate
           cache-to: type=gha,mode=max,scope=aic-emulate
 
