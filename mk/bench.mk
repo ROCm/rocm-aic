@@ -116,7 +116,10 @@ AIC_EMULATE_STRESS_ITERS  ?= 5
 
 test-emulate-local: ensure-compose prep-dirs
 	@echo "=== test-emulate-local: IMAGE_REF=$(IMAGE_REF) model=$(AIC_EMULATE_MODEL) ==="
-	@VLLM_MODEL="$(AIC_EMULATE_MODEL)" IMAGE_REF="$(IMAGE_REF)" $(COMPOSE) --profile emulate up -d vllm-emulator
+	@mkdir -p "$(AIC_METRICS_DIR)"
+	@PROM_UID="$$(id -u)" PROM_GID="$$(id -g)" \
+	    VLLM_MODEL="$(AIC_EMULATE_MODEL)" IMAGE_REF="$(IMAGE_REF)" \
+	    $(COMPOSE) --profile emulate --profile monitoring up -d vllm-emulator prometheus
 	@echo "Waiting up to $(AIC_EMULATE_READY_S)s for /health (engine fully ready) ..."
 	@_ready=0; \
 	for _i in $$(seq 1 $$(($(AIC_EMULATE_READY_S)/5))); do \
@@ -319,6 +322,8 @@ _RJ_IMAGE_TAG    := $(shell ROCM_ARCH=$(RJ_ROCJITSU_ARCH) $(_FRAMEWORK_VERSION_E
                         $(REPO_ROOT)/docker/scripts/aic-image-tag.sh 2>/dev/null)
 RJ_IMAGE_REF     ?= $(VLLM_IMAGE_NAME):$(_RJ_IMAGE_TAG)
 RJ_LMCACHE_IMAGE_REF ?= $(LMCACHE_IMAGE_NAME):$(_RJ_IMAGE_TAG)
+# lmcache pip version (strip leading 'v' from LMCACHE_REF for pip install)
+_LMCACHE_VER := $(patsubst v%,%,$(LMCACHE_REF))
 
 test-rocjitsu-local: prep-dirs
 	@test -c /dev/kvm || { echo "ERROR: /dev/kvm not found — KVM is required" >&2; exit 1; }
@@ -489,7 +494,8 @@ test-rocjitsu-local: prep-dirs
 	    2>&1 | sed 's/^/  [nvme] /'; \
 	echo "  NVMe $$_nvme mounted at $(RJ_NVME_MOUNT)"; \
 	echo "  [6c] Loading images into VM ..."; \
-	for _img in "$(RJ_IMAGE_REF)" "$(RJ_LMCACHE_IMAGE_REF)"; do \
+	for _img in "$(RJ_IMAGE_REF)" "$(RJ_LMCACHE_IMAGE_REF)" \
+	             "aic-nvme-exporter:local" "aic-rdma-exporter:local"; do \
 	    _local_id=$$(docker inspect --format '{{.ID}}' "$$_img" 2>/dev/null); \
 	    _vm_id=$$(ssh $$_ssh_flags "$$_vmuser@localhost" \
 	        "sudo docker inspect --format '{{.ID}}' '$$_img' 2>/dev/null" 2>/dev/null); \
@@ -501,36 +507,74 @@ test-rocjitsu-local: prep-dirs
 	            2>&1 | sed 's/^/  [load] /'; \
 	    fi; \
 	done; \
+	echo "  [6c.4] Patching images with missing deps ..."; \
+	ssh $$_ssh_flags "$$_vmuser@localhost" \
+	    "sudo docker rm -f lmcache-patch vllm-patch 2>/dev/null || true; \
+	     sudo docker run --name lmcache-patch \
+	         --entrypoint pip3 $(RJ_LMCACHE_IMAGE_REF) \
+	         install openai -q 2>&1 && \
+	     sudo docker commit lmcache-patch $(RJ_LMCACHE_IMAGE_REF) >/dev/null && \
+	     sudo docker rm lmcache-patch >/dev/null && \
+	     sudo docker run --name vllm-patch \
+	         --entrypoint pip3 $(RJ_IMAGE_REF) \
+	         install 'lmcache==$(_LMCACHE_VER)' -q 2>&1 && \
+	     sudo docker commit vllm-patch $(RJ_IMAGE_REF) >/dev/null && \
+	     sudo docker rm vllm-patch >/dev/null" \
+	    2>&1 | sed 's/^/  [patch] /'; \
+	echo "  [6c.5] Pulling public monitoring images inside VM ..."; \
+	ssh $$_ssh_flags "$$_vmuser@localhost" \
+	    "for img in prom/prometheus:v3.14.0 grafana/grafana:13.2.2 \
+	                quay.io/prometheus/node-exporter:v1.12.1 \
+	                rocm/device-metrics-exporter:v1.5.2 python:3.12; do \
+	         sudo docker image inspect \$$img >/dev/null 2>&1 \
+	             && echo \"  \$$img already present\" \
+	             || { echo \"  Pulling \$$img ...\"; sudo docker pull -q \$$img; }; \
+	     done" \
+	    2>&1 | sed 's/^/  [pull] /'; \
 	echo "  [6d] Mounting shared dir via 9p and running make vllm-reset-test ..."; \
 	ssh $$_ssh_flags "$$_vmuser@localhost" \
 	    "sudo mkdir -p /rj-share \
 	     && sudo mount -t 9p -o trans=virtio,version=9p2000.L hostfs /rj-share \
 	     && sudo chmod 1777 /rj-share/metrics" \
 	    2>&1 | sed 's/^/  [mount] /'; \
-	ssh $$_ssh_flags "$$_vmuser@localhost" bash -c \
-	    "'make -C /rj-share/repo vllm-reset-test \
-	        IMAGE_NAME=$(VLLM_IMAGE_NAME) \
-	        LMCACHE_IMAGE_NAME=$(LMCACHE_IMAGE_NAME) \
-	        IMAGE_TAG=\"$(_RJ_IMAGE_TAG)\" \
-	        VLLM_MODEL=\"$(RJ_MODEL)\" \
-	        VLM_LOAD_FORMAT=auto \
-	        ROCM_ARCH=$(RJ_ROCJITSU_ARCH) \
-	        LMCACHE_L1_SIZE_GB=$(RJ_LMCACHE_L1_SIZE_GB) \
-	        AIC_L2_BACKEND=nixl_posix \
-	        NVME_DATA=$(RJ_NVME_MOUNT) \
-	        AIC_METRICS_DIR=/rj-share/metrics \
-	        AIC_EXPORTERS=0 \
-	        HF_HOME=/tmp/hf-home \
-	        LOG=/tmp/aic-logs \
-	        HF_TOKEN=$(HF_TOKEN) 2>&1'" \
-	    | sed 's/^/  [make] /'; \
-	_make_rc=$$?; \
-	[ $$_make_rc -eq 0 ] \
-	    || { echo "FAIL: vllm-reset-test failed inside VM (rc=$$_make_rc)" >&2; _rc=1; }; \
+	printf '%s\n' \
+	  'set -e' \
+	  'mkdir -p /tmp/hf-home /tmp/aic-logs/lmcache /tmp/aic-logs/vllm /tmp/aic-logs/kvbench /tmp/aic-logs/manual/results /tmp/aic-logs/manual/plots /tmp/lmcache-nfs' \
+	  'export IMAGE_NAME=$(VLLM_IMAGE_NAME) LMCACHE_IMAGE_NAME=$(LMCACHE_IMAGE_NAME)' \
+	  "export IMAGE_TAG='$(_RJ_IMAGE_TAG)' VLLM_MODEL='$(RJ_MODEL)'" \
+	  'export VLM_LOAD_FORMAT=auto VLM_MAX_MODEL_LEN=4096 VLM_GPU_MEMORY_UTILIZATION=0.85' \
+	  'export _KC='"'"'{\"enable_jit_warmup\":false,\"enable_cutedsl_warmup\":false,\"enable_flashinfer_autotune\":false}'"'"'' \
+	  'export VLLM_EXTRA_ARGS="--num-gpu-blocks-override 50 --kernel-config $_KC"' \
+	  'export ROCM_ARCH=$(RJ_ROCJITSU_ARCH) LMCACHE_L1_SIZE_GB=$(RJ_LMCACHE_L1_SIZE_GB)' \
+	  'export AIC_L2_BACKEND=none NVME_DATA=$(RJ_NVME_MOUNT) NFS_DATA=/tmp/lmcache-nfs' \
+	  'export AIC_METRICS_DIR=/rj-share/metrics AIC_EXPORTERS=0 HF_HOME=/tmp/hf-home' \
+	  'export LOG=/tmp/aic-logs BENCH_LOGDIR=/tmp/aic-logs/manual HF_TOKEN=$(HF_TOKEN)' \
+	  '# vllm-reset-test: real GPU; kernel-config disables JIT warmup; weight loading ~7s/270MB on rocjitsu' \
+	  'make -C /rj-share/repo vllm-reset-test VLM_READY_RETRIES=120' \
+	  'echo vllm_reset_test_rc=$$?' \
+	  > /tmp/aic-rj-inner.sh; \
+	scp -i $$_key -o StrictHostKeyChecking=no -P "$(RJ_SSH_PORT)" \
+	    /tmp/aic-rj-inner.sh "$$_vmuser@localhost:/tmp/aic-rj-inner.sh" 2>/dev/null; \
+	ssh $$_ssh_flags "$$_vmuser@localhost" "bash /tmp/aic-rj-inner.sh 2>&1" \
+	    | tee /tmp/aic-rj-make.log | sed 's/^/  [make] /'; \
+	_make_rc=$$(grep -o 'vllm_reset_test_rc=[0-9]*' /tmp/aic-rj-make.log | cut -d= -f2); \
+	if [ "$${_make_rc:-1}" != "0" ]; then \
+	    echo "FAIL: vllm-reset-test failed inside VM (rc=$${_make_rc:-?})" >&2; \
+	    echo "  --- lmcache logs ---"; \
+	    ssh $$_ssh_flags "$$_vmuser@localhost" \
+	        "sudo docker logs aic-lmcache 2>&1 | tail -30" \
+	        2>&1 | sed 's/^/  [lmcache] /'; \
+	    echo "  --- vllm logs ---"; \
+	    ssh $$_ssh_flags "$$_vmuser@localhost" \
+	        "sudo docker logs aic-vllm-gpu0 2>&1 | tail -20" \
+	        2>&1 | sed 's/^/  [vllm] /'; \
+	    _rc=1; \
+	fi; \
 	echo "  Cleaning up compose stack ...";\
-	ssh $$_ssh_flags "$$_vmuser@localhost" bash -c \
-	    "'make -C /rj-share/repo down IMAGE_NAME=$(VLLM_IMAGE_NAME) \
-	      LMCACHE_IMAGE_NAME=$(LMCACHE_IMAGE_NAME) LOG=/tmp/aic-logs 2>&1'" \
+	ssh $$_ssh_flags "$$_vmuser@localhost" \
+	    "make -C /rj-share/repo down IMAGE_NAME=$(VLLM_IMAGE_NAME) \
+	      LMCACHE_IMAGE_NAME=$(LMCACHE_IMAGE_NAME) LOG=/tmp/aic-logs \
+	      BENCH_LOGDIR=/tmp/aic-logs/manual 2>/dev/null" \
 	    2>/dev/null || true; \
 	echo "  Cleaning up containers ..."; \
 	ssh $$_ssh_flags "$$_vmuser@localhost" "sudo poweroff" 2>/dev/null || true; \

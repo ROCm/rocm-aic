@@ -117,10 +117,13 @@ up-dev: ensure-compose check-hf-token prep-dirs
 	@echo "Started in dev mode (enforce-eager, no CUDA graphs). Use 'make logs' to follow."
 
 up-gds-l1: ensure-compose check-hf-token check-gds-slab prep-dirs
-	GDS_MODE=1 $(COMPOSE_CACHE) up
+	@mkdir -p "$(AIC_METRICS_DIR)"
+	PROM_UID="$$(id -u)" PROM_GID="$$(id -g)" GDS_MODE=1 $(COMPOSE_CACHE) --profile monitoring up
 
 up-gds-l1-batch: ensure-compose check-hf-token check-gds-slab prep-dirs
-	GDS_MODE=1 $(COMPOSE_CACHE) up -d
+	@mkdir -p "$(AIC_METRICS_DIR)"
+	PROM_UID="$$(id -u)" PROM_GID="$$(id -g)" GDS_MODE=1 $(COMPOSE_CACHE) --profile monitoring up -d
+	@echo "Started (GDS L1 mode + monitoring). Use 'make logs' to follow or 'make down' to stop."
 	@echo "Started (GDS L1 mode). Use 'make logs' to follow or 'make down' to stop."
 
 down:
@@ -168,11 +171,11 @@ vllm-reset-test: check-hf-token prep-dirs
 	    AIC_L2_BACKEND=$(AIC_L2_BACKEND) \
 	    $(COMPOSE_CACHE) --profile monitoring up -d
 	@echo "Waiting for vLLM to be healthy..."
-	@for i in $$(seq 1 60); do \
+	@for i in $$(seq 1 $${VLM_READY_RETRIES:-60}); do \
 	    r=$$(docker exec aic-client curl -s -o /dev/null -w '%{http_code}' \
 	        http://aic-vllm-gpu0:8000/health 2>/dev/null); \
 	    [ "$$r" = "200" ] && echo "vLLM healthy after $${i}s" && break; \
-	    [ "$$i" = "60" ] && echo "ERROR: vLLM not healthy after 300s" >&2 && exit 1; \
+	    [ "$$i" = "$${VLM_READY_RETRIES:-60}" ] && echo "ERROR: vLLM not healthy after vllm_reset_test timeout" >&2 && exit 1; \
 	    sleep 5; \
 	done
 	@echo "Clearing vLLM GPU prefix cache..."
