@@ -55,10 +55,16 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Verify KVM is available
+      - name: Verify KVM is available and functional
         run: |
-          ls -la /dev/kvm
-          kvm-ok || true   # kvm-ok from cpu-checker; non-fatal if missing
+          test -c /dev/kvm || { echo "::error::/dev/kvm missing"; exit 1; }
+          test -r /dev/kvm && test -w /dev/kvm \
+            || { echo "::error::/dev/kvm not read-write (check runner permissions)"; exit 1; }
+          # KVM_GET_API_VERSION ioctl — a bind-mounted node can exist and still
+          # be non-functional; this proves the hypervisor is actually present.
+          python3 -c "import os, fcntl; fcntl.ioctl(os.open('/dev/kvm', os.O_RDWR), 0xAE00, 0)" \
+            || { echo "::error::/dev/kvm present but KVM_GET_API_VERSION failed (TCG fallback would make the test useless)"; exit 1; }
+          echo "KVM available: $(ls -l /dev/kvm)"
 
       - name: Install docker compose plugin
         run: make ensure-compose
