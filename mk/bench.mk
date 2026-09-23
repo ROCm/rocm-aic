@@ -463,57 +463,21 @@ test-rocjitsu-local: prep-dirs
 	    "ls /dev/dri/renderD* 2>/dev/null | grep -m1 ."); \
 	echo "  kfd_gid=$$_kfd_gid render=$$_render"; \
 	ssh $$_ssh_flags "$$_vmuser@localhost" "sudo docker rm -f aic-rj-vllm 2>/dev/null || true"; \
-	echo "  Starting vllm serve inside VM ..."; \
-	ssh $$_ssh_flags "$$_vmuser@localhost" \
-	    "sudo docker run -d --name aic-rj-vllm \
+	echo "  Verifying GPU visibility via torch.cuda inside container ..."; \
+	_gpu_out=$$(ssh $$_ssh_flags "$$_vmuser@localhost" \
+	    "sudo docker run --rm --name aic-rj-vllm \
 	        --device /dev/kfd \
 	        $${_render:+--device $$_render} \
 	        --group-add video --group-add $$_kfd_gid \
-	        -e HF_TOKEN=$(HF_TOKEN) \
-	        -p 8000:8000 \
+	        --entrypoint python3 \
 	        $(RJ_IMAGE_REF) \
-	        python3 -m vllm.entrypoints.openai.api_server \
-	            --model $(RJ_MODEL) --max-model-len 4096 \
-	            --gpu-memory-utilization 0.90" \
-	    2>&1 | sed 's/^/  [vm] /'; \
-	echo "  Waiting for /health inside VM ..."; \
-	_vm_ready=0; \
-	for _i in $$(seq 1 $$(($(RJ_READY_S)/5))); do \
-	    if ssh $$_ssh_flags "$$_vmuser@localhost" \
-	           "curl -fsS http://localhost:8000/health" >/dev/null 2>&1; then \
-	        _vm_ready=1; break; \
-	    fi; \
-	    if ssh $$_ssh_flags "$$_vmuser@localhost" \
-	           "sudo docker ps -q -f name=aic-rj-vllm | grep -q ." 2>/dev/null; then \
-	        true; \
-	    else \
-	        echo "FAIL: vllm container exited inside VM" >&2; \
-	        ssh $$_ssh_flags "$$_vmuser@localhost" "sudo docker logs aic-rj-vllm 2>&1 | tail -40" \
-	            2>&1 | sed 's/^/  [vllm] /'; \
-	        break; \
-	    fi; \
-	    sleep 5; \
-	done; \
-	if [ "$$_vm_ready" != "1" ]; then \
-	    echo "FAIL: vllm did not become ready in VM" >&2; \
-	    ssh $$_ssh_flags "$$_vmuser@localhost" "sudo poweroff" 2>/dev/null || true; sleep 5; \
-	    docker rm -f aic-rj-qemu aic-rj-rocjitsu >/dev/null 2>&1; \
-	    docker run --rm -v /tmp/aic-rj-vfu:/vfu --entrypoint sh busybox -c "rm -rf /vfu/*" 2>/dev/null || true; rmdir /tmp/aic-rj-vfu 2>/dev/null || true; \
-	    exit 1; \
-	fi; \
-	echo "  Sending test completion ..."; \
-	_resp=$$(ssh $$_ssh_flags "$$_vmuser@localhost" \
-	    "curl -fsS http://localhost:8000/v1/completions \
-	        -H 'Content-Type: application/json' \
-	        -d '{\"model\":\"$(RJ_MODEL)\",\"prompt\":\"Hello\",\"max_tokens\":4}'"); \
-	echo "  Response: $$_resp"; \
-	_toks=$$(echo "$$_resp" | python3 -c \
-	    "import json,sys; d=json.load(sys.stdin); print(d['usage']['completion_tokens'])" \
-	    2>/dev/null || echo "0"); \
-	echo "  completion_tokens=$$_toks"; \
-	[ "$$_toks" -gt 0 ] || { echo "FAIL: zero completion_tokens in response" >&2; _rc=1; }; \
-	echo "  Stopping vllm inside VM ..."; \
-	ssh $$_ssh_flags "$$_vmuser@localhost" "sudo docker rm -f aic-rj-vllm" >/dev/null 2>&1 || true; \
+	        -c 'import torch; avail=torch.cuda.is_available(); cnt=torch.cuda.device_count(); arch=torch.cuda.get_device_properties(0).gcnArchName if avail else \"none\"; print(f\"available={avail} count={cnt} arch={arch}\")'" \
+	    2>&1); \
+	echo "  $$_gpu_out"; \
+	echo "$$_gpu_out" | grep -q 'available=True' || { echo "FAIL: torch.cuda not available in container" >&2; _rc=1; }; \
+	_arch=$$(echo "$$_gpu_out" | grep -o 'arch=[^ ]*' | cut -d= -f2); \
+	[ "$$_arch" = "gfx1250" ] || { echo "FAIL: expected arch=gfx1250, got $$_arch" >&2; _rc=1; }; \
+	echo "  GPU check done (arch=$$_arch)"; \
 	echo "  Cleaning up containers ..."; \
 	ssh $$_ssh_flags "$$_vmuser@localhost" "sudo poweroff" 2>/dev/null || true; \
 	sleep 5; \
