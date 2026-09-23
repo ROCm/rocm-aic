@@ -137,10 +137,11 @@ jobs:
           for attempt in 1 2 3; do
             rm -rf "${stage}"
             mkdir -p "${stage}/${ROCJITSU_PAGES_DIR}"
+            cp "${pages}/${history_rel}" "${stage}/${history_rel}" 2>/dev/null || true
 
             python3 .github/scripts/publish_rocjitsu_emulated_perf.py \
               --results-dir "${RUNNER_TEMP}/rocjitsu-out/results" \
-              --history "${pages}/${history_rel}" \
+              --history "${stage}/${history_rel}" \
               --output-dir "${stage}/${ROCJITSU_PAGES_DIR}" \
               --sha "${GITHUB_SHA}" \
               --run-id "${GITHUB_RUN_ID}" \
@@ -150,7 +151,6 @@ jobs:
               --model "${ROCJITSU_MODEL}" \
               --profile-pack "${ROCJITSU_PROFILE_PACK}"
 
-            cp "${pages}/${history_rel}" "${stage}/${history_rel}"
             mkdir -p "${pages}/${ROCJITSU_PAGES_DIR}"
             rsync -a --delete --exclude '.git' "${stage}/${ROCJITSU_PAGES_DIR}/" "${pages}/${ROCJITSU_PAGES_DIR}/"
             touch "${pages}/.nojekyll"

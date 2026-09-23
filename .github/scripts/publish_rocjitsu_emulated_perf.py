@@ -210,6 +210,10 @@ def _build_html(history: list[dict[str, Any]]) -> str:
     latest_run_html = f'<a href="{latest_run_url}">workflow run</a>' if latest_run_url else "workflow run"
     model = html.escape(latest.get("model", ""))
     profile_pack = html.escape(latest.get("profile_pack", ""))
+    sweep_points = ", ".join(
+        f"<code>{html.escape(point['name'])}</code>"
+        for point in latest["points"]
+    )
 
     return f"""<!DOCTYPE html>
 <html lang="en">
@@ -274,7 +278,7 @@ def _build_html(history: list[dict[str, Any]]) -> str:
       <ul>
         <li>Model: <code>{model}</code></li>
         <li>Profile pack: <code>{profile_pack}</code></li>
-        <li>Sweep points: <code>isl1024/osl128/c1</code>, <code>isl1024/osl128/c16</code>, <code>isl4096/osl128/c8</code></li>
+        <li>Sweep points: {sweep_points}</li>
       </ul>
     </section>
 
