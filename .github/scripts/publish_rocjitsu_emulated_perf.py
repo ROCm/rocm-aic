@@ -22,6 +22,8 @@ from typing import Any
 
 
 _POINT_RE = re.compile(r"^emu-(?P<model>.+)-isl(?P<isl>\d+)-osl(?P<osl>\d+)-c(?P<conc>\d+)\.json$")
+
+
 def _load_history(path: Path) -> list[dict[str, Any]]:
     if not path.is_file():
         return []
