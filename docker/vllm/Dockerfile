@@ -135,6 +135,14 @@ print('vllm_emulator subpackages import OK')" && \
     cp /app/llm-emu/example_profiling_data/*.json /opt/llm-emu/profiles/ && \
     test -r "${AIC_EMULATOR_EXAMPLE_PACK}"
 
+# ----- LMCache client (KV transfer connector used by vllm service) -----------
+# Install the same pinned version used by aic-lmcache so the connector
+# protocol matches exactly.  No build isolation needed: torch is already here.
+ARG LMCACHE_REF=v0.5.5
+RUN --mount=type=cache,target=/root/.cache/pip \
+    _ver="${LMCACHE_REF#v}" && \
+    pip3 install --no-cache-dir "lmcache==${_ver}"
+
 # ----- Runtime ENV + metadata -------------------------------------------------
 ENV PYTHONUNBUFFERED=1 \
     PYTHONHASHSEED=0 \

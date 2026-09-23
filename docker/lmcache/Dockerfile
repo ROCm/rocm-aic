@@ -189,7 +189,7 @@ RUN --mount=type=cache,target=/root/.cache/pip \
     uv pip install --system --no-cache /wheels/lmcache-*.whl
 
 RUN --mount=type=cache,target=/root/.cache/uv \
-    uv pip install --system "matplotlib>=3.8,<4"
+    uv pip install --system "matplotlib>=3.8,<4" "openai>=1.0,<2"
 
 # Remove any NIXL wheels that upstream packages may have pulled — we build from source below.
 # Also purge stray CUDA-only deps (cupy-cuda12x, cufile-python, cuda-pathfinder).
