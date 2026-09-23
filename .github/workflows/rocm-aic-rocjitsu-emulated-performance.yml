@@ -1,0 +1,190 @@
+# Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+#
+# Daily GitHub Pages publisher for the upcoming RocJITSU emulator lane.
+# Follows the rocm-ernic pattern: keep the durable performance record on
+# gh-pages, regenerate the static page from that published history, and retry
+# pushes if another publisher lands first.
+
+name: rocm-aic - RocJITSU Emulated Performance
+
+on:
+  schedule:
+    - cron: '30 12 * * *'
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    name: Benchmark emulator and publish daily metrics
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    env:
+      IMAGE_REF: rocm-aic:rocjitsu-emulated-pages
+      ROCJITSU_MODEL: Qwen/Qwen3-8B
+      ROCJITSU_PROFILE_PACK: /opt/llm-emu/profiles/MI300X-Qwen3-8B.json
+      ROCJITSU_SWEEP: 1024,128,1,12 1024,128,16,64 4096,128,8,32
+      ROCJITSU_PAGES_DIR: rocjitsu-emulated
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Free disk space on runner
+        uses: jlumbroso/free-disk-space@v1.3.1
+        with:
+          tool-cache: true
+          android: true
+          dotnet: true
+          haskell: true
+          large-packages: true
+          docker-images: true
+          swap-storage: true
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Read AIC_VERSION from VERSION file
+        run: echo "AIC_VERSION=$(cat VERSION)" >> "$GITHUB_ENV"
+
+      - name: Write corp CA cert secret (AMD Zscaler proxy)
+        id: cert
+        run: |
+          if [ -n "${{ secrets.CORP_CA_CERT }}" ]; then
+            echo "${{ secrets.CORP_CA_CERT }}" > /tmp/corp-ca.crt
+            echo "present=true" >> "${GITHUB_OUTPUT}"
+            echo "path=/tmp/corp-ca.crt" >> "${GITHUB_OUTPUT}"
+          else
+            echo "present=false" >> "${GITHUB_OUTPUT}"
+          fi
+
+      - name: Build minimal CPU base for emulate target
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/emulate-base.Dockerfile
+          outputs: type=oci,dest=/tmp/aic-base-emulate.tar
+          cache-from: type=gha,scope=aic-emulate-base
+          cache-to: type=gha,mode=max,scope=aic-emulate-base
+
+      - name: Extract OCI base image to layout directory
+        run: |
+          mkdir -p /tmp/aic-base-emulate
+          tar -xf /tmp/aic-base-emulate.tar -C /tmp/aic-base-emulate
+
+      - name: Build emulation image (no GPU kernels)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/vllm/Dockerfile
+          target: emulate
+          load: true
+          tags: ${{ env.IMAGE_REF }}
+          build-args: |
+            ROCM_ARCH=gfx942
+            VLLM_TARGET_DEVICE=empty
+            AIC_VERSION=${{ env.AIC_VERSION }}
+          build-contexts: |
+            base=oci-layout:///tmp/aic-base-emulate
+          secrets: |
+            ${{ steps.cert.outputs.present == 'true' && format('tls_cert={0}', steps.cert.outputs.path) || '' }}
+          cache-from: type=gha,scope=aic-emulate
+          cache-to: type=gha,mode=max,scope=aic-emulate
+
+      - name: Run emulated performance sweep
+        env:
+          HF_TOKEN: ${{ secrets.AIC_HF_TOKEN }}
+          HF_HOME: ${{ runner.temp }}/hf
+          ROCJITSU_OUT_DIR: ${{ runner.temp }}/rocjitsu-out
+          AIC_CONTAINER_USER: "0:0"
+          AIC_CONTAINER_USERNAME: root
+          AIC_CONTAINER_HOME: /root
+        run: |
+          bash .github/scripts/run-rocjitsu-emulated-perf.sh
+
+      - name: Render page and publish to gh-pages
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO_URL: https://github.com/${{ github.repository }}
+        run: |
+          set -euo pipefail
+
+          remote="https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          pages="$(mktemp -d)"
+          stage="${RUNNER_TEMP}/rocjitsu-page"
+          history_rel="${ROCJITSU_PAGES_DIR}/history.jsonl"
+
+          git config --global --add safe.directory '*' || true
+          git config --global user.name "rocm-aic-ci"
+          git config --global user.email "rocm-aic-ci@users.noreply.github.com"
+          git config --global commit.gpgSign false
+
+          if git clone --quiet --depth 1 --branch gh-pages "${remote}" "${pages}"; then
+            :
+          else
+            rm -rf "${pages}"
+            mkdir -p "${pages}"
+            git -C "${pages}" init -q
+            git -C "${pages}" checkout -q -b gh-pages
+            git -C "${pages}" remote add origin "${remote}"
+          fi
+
+          for attempt in 1 2 3; do
+            rm -rf "${stage}"
+            mkdir -p "${stage}/${ROCJITSU_PAGES_DIR}"
+
+            python3 .github/scripts/publish_rocjitsu_emulated_perf.py \
+              --results-dir "${RUNNER_TEMP}/rocjitsu-out/results" \
+              --history "${pages}/${history_rel}" \
+              --output-dir "${stage}/${ROCJITSU_PAGES_DIR}" \
+              --sha "${GITHUB_SHA}" \
+              --run-id "${GITHUB_RUN_ID}" \
+              --run-at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+              --repo-url "${REPO_URL}" \
+              --workflow-path ".github/workflows/rocm-aic-rocjitsu-emulated-performance.yml" \
+              --model "${ROCJITSU_MODEL}" \
+              --profile-pack "${ROCJITSU_PROFILE_PACK}"
+
+            cp "${pages}/${history_rel}" "${stage}/${history_rel}"
+            mkdir -p "${pages}/${ROCJITSU_PAGES_DIR}"
+            rsync -a --delete --exclude '.git' "${stage}/${ROCJITSU_PAGES_DIR}/" "${pages}/${ROCJITSU_PAGES_DIR}/"
+            touch "${pages}/.nojekyll"
+
+            git -C "${pages}" add "${ROCJITSU_PAGES_DIR}" .nojekyll
+            if git -C "${pages}" diff --cached --quiet; then
+              echo "rocjitsu page unchanged"
+              exit 0
+            fi
+
+            git -C "${pages}" commit \
+              -m "perf: publish RocJITSU emulated metrics from ${GITHUB_SHA}" \
+              -m "Generated by rocm-aic-rocjitsu-emulated-performance.yml. [skip ci]"
+
+            if git -C "${pages}" push origin HEAD:gh-pages; then
+              echo "published"
+              break
+            fi
+
+            echo "push rejected (attempt ${attempt}); refreshing and retrying"
+            sleep $((attempt * 5))
+            git -C "${pages}" reset --hard HEAD~1
+            git -C "${pages}" fetch --quiet --depth 1 origin gh-pages
+            git -C "${pages}" reset --hard FETCH_HEAD
+            if [ "${attempt}" -eq 3 ]; then
+              echo "::error::could not push after 3 attempts"
+              exit 1
+            fi
+          done
+
+      - name: Upload RocJITSU page artifact
+        uses: actions/upload-artifact@v6
+        with:
+          name: rocjitsu-emulated-page-${{ github.run_id }}
+          path: ${{ runner.temp }}/rocjitsu-page/${{ env.ROCJITSU_PAGES_DIR }}
+          if-no-files-found: error
+          retention-days: 30

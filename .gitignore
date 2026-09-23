@@ -44,6 +44,9 @@ metrics-page/
 # Profile capture working directory (raw traces, bench results)
 profiles/captures/
 
+rocjitsu-page/
+rocjitsu-out/
+
 # Prometheus raw metrics dump
 prometheus-dump.md
 
