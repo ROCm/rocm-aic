@@ -115,9 +115,9 @@ def _fmt_delta(metric: str, current: float, previous: float | None) -> str:
         return "—"
     delta = (current - previous) / previous * 100.0
     klass = "flat"
-    if delta > 0.05:
+    if delta > 5.0:
         klass = "up" if metric == "output_throughput" else "down"
-    elif delta < -0.05:
+    elif delta < -5.0:
         klass = "down" if metric == "output_throughput" else "up"
     sign = "+" if delta >= 0 else ""
     return f'<span class="delta {klass}">{sign}{delta:.1f}%</span>'
