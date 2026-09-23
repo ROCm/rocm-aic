@@ -60,6 +60,16 @@ build-local:
 		"$(REPO_ROOT)"
 	@docker tag "$(VLLM_IMAGE_REF)" "$(VLLM_IMAGE_NAME):latest"
 	@echo "Built $(VLLM_IMAGE_REF) (also tagged $(VLLM_IMAGE_NAME):latest)"
+	@echo "--- build-local [3/3]: $(LMCACHE_IMAGE_REF) ---"
+	DOCKER_BUILDKIT=1 docker build \
+		--progress=plain \
+		$(_BUILD_LOCAL_ARGS) \
+		--build-context base="docker-image://aic-base:$(IMAGE_TAG)" \
+		-f "$(REPO_ROOT)/docker/lmcache/Dockerfile" \
+		-t "$(LMCACHE_IMAGE_REF)" \
+		"$(REPO_ROOT)"
+	@docker tag "$(LMCACHE_IMAGE_REF)" "$(LMCACHE_IMAGE_NAME):latest"
+	@echo "Built $(LMCACHE_IMAGE_REF) (also tagged $(LMCACHE_IMAGE_NAME):latest)"
 
 build-cached:
 	@test -n "$(ROCM_ARCH)" || { \

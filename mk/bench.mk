@@ -294,8 +294,9 @@ capture-profile-local: prep-dirs
 # vfio-user server), builds the aic image for ROCM_ARCH=gfx1250 on the host,
 # loads it into the guest, and runs a single completion to verify the full stack.
 #
-# Requires: /dev/kvm, HF_TOKEN, docker, docker buildx, ~20 GiB free disk.
+# Requires: /dev/kvm, HF_TOKEN (for HF model download), docker, docker buildx.
 # Images are pulled from sbates130272/batesste-ci-images-* on Docker Hub.
+# The VM gets an emulated NVMe device (RJ_NVME_COUNT) used as lmcache L2 storage.
 
 RJ_QEMU_IMAGE    ?= sbates130272/batesste-ci-images-ubuntu-qemu-libvfio-user-sbates-fork:20260919.g359579e-qemu.7794baa-vfu.8039244
 RJ_ROCJITSU_IMAGE ?= sbates130272/batesste-ci-images-ubuntu-rocm-rocjitsu:20260922.g555f601-rocjitsu.8e01a5a
@@ -307,16 +308,22 @@ RJ_VM_MEM_MB     ?= 8192
 RJ_SSH_PORT      ?= 12222
 RJ_READY_S       ?= 300
 RJ_WORK_DIR      ?= /tmp/aic-rocjitsu-test
-RJ_MODEL         ?= Qwen/Qwen2.5-3B-Instruct
+# SmolLM2-135M (~270 MB fp16) fits in rocjitsu's 1 GiB VRAM budget.
+RJ_MODEL         ?= HuggingFaceTB/SmolLM2-135M-Instruct
+RJ_LMCACHE_L1_SIZE_GB ?= 0.3
+# Number of emulated NVMe devices to attach via qemu-tool --nvme.
+RJ_NVME_COUNT    ?= 1
+RJ_NVME_MOUNT    ?= /mnt/lmcache-nvme
 # The built image tag for gfx1250 (computed at make time).
 _RJ_IMAGE_TAG    := $(shell ROCM_ARCH=$(RJ_ROCJITSU_ARCH) $(_FRAMEWORK_VERSION_ENV) \
                         $(REPO_ROOT)/docker/scripts/aic-image-tag.sh 2>/dev/null)
 RJ_IMAGE_REF     ?= $(VLLM_IMAGE_NAME):$(_RJ_IMAGE_TAG)
+RJ_LMCACHE_IMAGE_REF ?= $(LMCACHE_IMAGE_NAME):$(_RJ_IMAGE_TAG)
 
 test-rocjitsu-local: prep-dirs
 	@test -c /dev/kvm || { echo "ERROR: /dev/kvm not found — KVM is required" >&2; exit 1; }
-	@test -n "$(HF_TOKEN)" || { echo "ERROR: HF_TOKEN is not set" >&2; exit 1; }
-	@echo "=== test-rocjitsu-local: arch=$(RJ_ROCJITSU_ARCH) image=$(RJ_IMAGE_REF) model=$(RJ_MODEL) ==="
+	@test -n "$(HF_TOKEN)" || { echo "ERROR: HF_TOKEN is not set (needed for model download inside VM)" >&2; exit 1; }
+	@echo "=== test-rocjitsu-local: arch=$(RJ_ROCJITSU_ARCH) model=$(RJ_MODEL) image=$(RJ_IMAGE_REF) ==="
 	@echo "[1/6] Pulling CI images ..."
 	@docker pull -q "$(RJ_QEMU_IMAGE)"
 	@docker pull -q "$(RJ_ROCJITSU_IMAGE)"
@@ -339,8 +346,14 @@ test-rocjitsu-local: prep-dirs
 	@docker run --rm -v "$(RJ_WORK_DIR)/fw:/out" "$(RJ_ROCJITSU_IMAGE)" \
 	    python3 /usr/local/bin/vfio_guest_firmware.py --output /out \
 	    2>&1 | sed 's/^/  [fw] /'
+	@mkdir -p "$(RJ_WORK_DIR)/shared/metrics"
+	@rsync -a --delete --exclude='.git' --exclude='__pycache__' --exclude='*.pyc' \
+	    --exclude='.venv' --exclude='logs/' --exclude='$(notdir $(RJ_WORK_DIR))/' \
+	    "$(REPO_ROOT)/" "$(RJ_WORK_DIR)/shared/repo/"
 	@echo "[5/6] Starting rocjitsu + QEMU VM ..."
 	@docker network create aic-rj-net 2>/dev/null || true
+	@docker run --rm -v /tmp/aic-rj-vfu:/vfu --entrypoint sh busybox -c "rm -rf /vfu" 2>/dev/null || true
+	@mkdir -p /tmp/aic-rj-vfu
 	@docker rm -f aic-rj-rocjitsu aic-rj-qemu 2>/dev/null || true
 	@docker run -d --name aic-rj-rocjitsu \
 	    --network aic-rj-net \
@@ -360,7 +373,7 @@ test-rocjitsu-local: prep-dirs
 	    echo "FAIL: rocjitsu socket did not appear" >&2; \
 	    docker logs aic-rj-rocjitsu 2>&1 | tail -20; \
 	    docker rm -f aic-rj-rocjitsu >/dev/null 2>&1; \
-	    docker run --rm -v /tmp/aic-rj-vfu:/vfu --entrypoint sh busybox -c "rm -rf /vfu/*" 2>/dev/null || true; rmdir /tmp/aic-rj-vfu 2>/dev/null || true; \
+	    docker run --rm -v /tmp/aic-rj-vfu:/vfu --entrypoint sh busybox -c "rm -rf /vfu" 2>/dev/null || true; \
 	    exit 1; \
 	}
 	@_vminfo="$(RJ_WORK_DIR)/vm/vm-info.json"; \
@@ -373,6 +386,7 @@ test-rocjitsu-local: prep-dirs
 	    --shm-size 12g \
 	    -v "$(RJ_WORK_DIR)/vm:/output" \
 	    -v /tmp/aic-rj-vfu:/tmp/vfio-sockets:ro \
+	    -v "$(RJ_WORK_DIR)/shared:$(RJ_WORK_DIR)/shared" \
 	    -p "$(RJ_SSH_PORT):2222" \
 	    --entrypoint qemu-tool \
 	    "$(RJ_QEMU_IMAGE)" \
@@ -383,6 +397,8 @@ test-rocjitsu-local: prep-dirs
 	        --vmem "$(RJ_VM_MEM_MB)" \
 	        --ssh-port 2222 \
 	        --kvm \
+	        --nvme "$(RJ_NVME_COUNT)" \
+	        --filesystem "$(RJ_WORK_DIR)/shared" \
 	        --vfio-userdev /tmp/vfio-sockets/rocjitsu.sock \
 	    >/dev/null; \
 	echo "  QEMU container started (vm=$$_vmname user=$$_vmuser)"
@@ -401,7 +417,7 @@ test-rocjitsu-local: prep-dirs
 	    echo "FAIL: VM did not become SSH-reachable within $(RJ_READY_S)s" >&2; \
 	    docker logs aic-rj-qemu 2>&1 | tail -30; \
 	    docker rm -f aic-rj-qemu aic-rj-rocjitsu >/dev/null 2>&1; \
-	    docker run --rm -v /tmp/aic-rj-vfu:/vfu busybox rm -rf /vfu 2>/dev/null || true; \
+	    docker run --rm -v /tmp/aic-rj-vfu:/vfu --entrypoint sh busybox -c "rm -rf /vfu" 2>/dev/null || true; \
 	    exit 1; \
 	}
 	@echo "[6/6] Loading image into VM and running test completion ..."
@@ -439,45 +455,83 @@ test-rocjitsu-local: prep-dirs
 	    docker logs aic-rj-rocjitsu 2>&1 | tail -20 | sed 's/^/  [rocjitsu] /'; \
 	    ssh $$_ssh_flags "$$_vmuser@localhost" "sudo poweroff" 2>/dev/null || true; sleep 5; \
 	    docker rm -f aic-rj-qemu aic-rj-rocjitsu >/dev/null 2>&1; \
-	    docker run --rm -v /tmp/aic-rj-vfu:/vfu --entrypoint sh busybox -c "rm -rf /vfu/*" 2>/dev/null || true; rmdir /tmp/aic-rj-vfu 2>/dev/null || true; \
+	    docker run --rm -v /tmp/aic-rj-vfu:/vfu --entrypoint sh busybox -c "rm -rf /vfu" 2>/dev/null || true; \
 	    exit 1; \
 	fi; \
 	echo "  /dev/kfd present — amdgpu bound to rocjitsu GPU"; \
-	_local_id=$$(docker inspect --format '{{.ID}}' "$(RJ_IMAGE_REF)" 2>/dev/null); \
-	_vm_id=$$(ssh $$_ssh_flags "$$_vmuser@localhost" \
-	    "sudo docker inspect --format '{{.ID}}' '$(RJ_IMAGE_REF)' 2>/dev/null" 2>/dev/null); \
-	if [ -n "$$_local_id" ] && [ "$$_local_id" = "$$_vm_id" ]; then \
-	    echo "  $(RJ_IMAGE_REF) already present in VM (ID $$_local_id) — skipping transfer"; \
-	else \
-	    echo "  Transferring $(RJ_IMAGE_REF) (~may take a few minutes) ..."; \
-	    docker save "$(RJ_IMAGE_REF)" | \
-	        ssh $$_ssh_flags "$$_vmuser@localhost" "sudo docker load" \
-	        2>&1 | sed 's/^/  [load] /'; \
-	fi; \
-	echo "  GPU device layout in VM:"; \
-	ssh $$_ssh_flags "$$_vmuser@localhost" \
-	    "ls -la /dev/kfd /dev/dri/ 2>&1" \
-	    2>&1 | sed 's/^/  [dev] /'; \
+	echo "  [6a] GPU sanity check via torch.cuda ..."; \
 	_kfd_gid=$$(ssh $$_ssh_flags "$$_vmuser@localhost" "stat -c %g /dev/kfd"); \
 	_render=$$(ssh $$_ssh_flags "$$_vmuser@localhost" \
 	    "ls /dev/dri/renderD* 2>/dev/null | grep -m1 ."); \
 	echo "  kfd_gid=$$_kfd_gid render=$$_render"; \
-	ssh $$_ssh_flags "$$_vmuser@localhost" "sudo docker rm -f aic-rj-vllm 2>/dev/null || true"; \
-	echo "  Verifying GPU visibility via torch.cuda inside container ..."; \
 	_gpu_out=$$(ssh $$_ssh_flags "$$_vmuser@localhost" \
-	    "sudo docker run --rm --name aic-rj-vllm \
-	        --device /dev/kfd \
-	        $${_render:+--device $$_render} \
+	    "sudo docker run --rm \
+	        --device /dev/kfd $${_render:+--device $$_render} \
 	        --group-add video --group-add $$_kfd_gid \
-	        --entrypoint python3 \
-	        $(RJ_IMAGE_REF) \
+	        --entrypoint python3 $(RJ_IMAGE_REF) \
 	        -c 'import torch; avail=torch.cuda.is_available(); cnt=torch.cuda.device_count(); arch=torch.cuda.get_device_properties(0).gcnArchName if avail else \"none\"; print(f\"available={avail} count={cnt} arch={arch}\")'" \
 	    2>&1); \
 	echo "  $$_gpu_out"; \
-	echo "$$_gpu_out" | grep -q 'available=True' || { echo "FAIL: torch.cuda not available in container" >&2; _rc=1; }; \
+	echo "$$_gpu_out" | grep -q 'available=True' \
+	    || { echo "FAIL: torch.cuda not available in container" >&2; _rc=1; }; \
 	_arch=$$(echo "$$_gpu_out" | grep -o 'arch=[^ ]*' | cut -d= -f2); \
-	[ "$$_arch" = "gfx1250" ] || { echo "FAIL: expected arch=gfx1250, got $$_arch" >&2; _rc=1; }; \
+	[ "$$_arch" = "gfx1250" ] \
+	    || { echo "FAIL: expected arch=gfx1250, got $$_arch" >&2; _rc=1; }; \
 	echo "  GPU check done (arch=$$_arch)"; \
+	echo "  [6b] Setting up NVMe L2 storage ..."; \
+	_nvme=$$(ssh $$_ssh_flags "$$_vmuser@localhost" \
+	    "ls /dev/nvme*n1 2>/dev/null | head -1"); \
+	[ -n "$$_nvme" ] || { echo "FAIL: no NVMe device in VM" >&2; _rc=1; }; \
+	ssh $$_ssh_flags "$$_vmuser@localhost" \
+	    "sudo mkfs.ext4 -q $$_nvme && sudo mkdir -p $(RJ_NVME_MOUNT) \
+	     && sudo mount $$_nvme $(RJ_NVME_MOUNT) \
+	     && sudo chmod 1777 $(RJ_NVME_MOUNT)" \
+	    2>&1 | sed 's/^/  [nvme] /'; \
+	echo "  NVMe $$_nvme mounted at $(RJ_NVME_MOUNT)"; \
+	echo "  [6c] Loading images into VM ..."; \
+	for _img in "$(RJ_IMAGE_REF)" "$(RJ_LMCACHE_IMAGE_REF)"; do \
+	    _local_id=$$(docker inspect --format '{{.ID}}' "$$_img" 2>/dev/null); \
+	    _vm_id=$$(ssh $$_ssh_flags "$$_vmuser@localhost" \
+	        "sudo docker inspect --format '{{.ID}}' '$$_img' 2>/dev/null" 2>/dev/null); \
+	    if [ -n "$$_local_id" ] && [ "$$_local_id" = "$$_vm_id" ]; then \
+	        echo "  $$_img already in VM — skipping"; \
+	    else \
+	        echo "  Transferring $$_img ..."; \
+	        docker save "$$_img" | ssh $$_ssh_flags "$$_vmuser@localhost" "sudo docker load" \
+	            2>&1 | sed 's/^/  [load] /'; \
+	    fi; \
+	done; \
+	echo "  [6d] Mounting shared dir via 9p and running make vllm-reset-test ..."; \
+	ssh $$_ssh_flags "$$_vmuser@localhost" \
+	    "sudo mkdir -p /rj-share \
+	     && sudo mount -t 9p -o trans=virtio,version=9p2000.L hostfs /rj-share \
+	     && sudo chmod 1777 /rj-share/metrics" \
+	    2>&1 | sed 's/^/  [mount] /'; \
+	ssh $$_ssh_flags "$$_vmuser@localhost" bash -c \
+	    "'make -C /rj-share/repo vllm-reset-test \
+	        IMAGE_NAME=$(VLLM_IMAGE_NAME) \
+	        LMCACHE_IMAGE_NAME=$(LMCACHE_IMAGE_NAME) \
+	        IMAGE_TAG=\"$(_RJ_IMAGE_TAG)\" \
+	        VLLM_MODEL=\"$(RJ_MODEL)\" \
+	        VLM_LOAD_FORMAT=auto \
+	        ROCM_ARCH=$(RJ_ROCJITSU_ARCH) \
+	        LMCACHE_L1_SIZE_GB=$(RJ_LMCACHE_L1_SIZE_GB) \
+	        AIC_L2_BACKEND=nixl_posix \
+	        NVME_DATA=$(RJ_NVME_MOUNT) \
+	        AIC_METRICS_DIR=/rj-share/metrics \
+	        AIC_EXPORTERS=0 \
+	        HF_HOME=/tmp/hf-home \
+	        LOG=/tmp/aic-logs \
+	        HF_TOKEN=$(HF_TOKEN) 2>&1'" \
+	    | sed 's/^/  [make] /'; \
+	_make_rc=$$?; \
+	[ $$_make_rc -eq 0 ] \
+	    || { echo "FAIL: vllm-reset-test failed inside VM (rc=$$_make_rc)" >&2; _rc=1; }; \
+	echo "  Cleaning up compose stack ...";\
+	ssh $$_ssh_flags "$$_vmuser@localhost" bash -c \
+	    "'make -C /rj-share/repo down IMAGE_NAME=$(VLLM_IMAGE_NAME) \
+	      LMCACHE_IMAGE_NAME=$(LMCACHE_IMAGE_NAME) LOG=/tmp/aic-logs 2>&1'" \
+	    2>/dev/null || true; \
 	echo "  Cleaning up containers ..."; \
 	ssh $$_ssh_flags "$$_vmuser@localhost" "sudo poweroff" 2>/dev/null || true; \
 	sleep 5; \
