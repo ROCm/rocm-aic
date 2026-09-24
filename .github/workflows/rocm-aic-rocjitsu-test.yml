@@ -55,15 +55,25 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Enable KVM access for runner user
+        run: |
+          # GHA ubuntu-24.04 runners have /dev/kvm but the runner user lacks
+          # write access by default.  Open it up for the duration of this job.
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
+            | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+          ls -l /dev/kvm
+
       - name: Verify KVM is available and functional
         run: |
           test -c /dev/kvm || { echo "::error::/dev/kvm missing"; exit 1; }
           test -r /dev/kvm && test -w /dev/kvm \
-            || { echo "::error::/dev/kvm not read-write (check runner permissions)"; exit 1; }
+            || { echo "::error::/dev/kvm not read-write after udev rule"; exit 1; }
           # KVM_GET_API_VERSION ioctl — a bind-mounted node can exist and still
           # be non-functional; this proves the hypervisor is actually present.
           python3 -c "import os, fcntl; fcntl.ioctl(os.open('/dev/kvm', os.O_RDWR), 0xAE00, 0)" \
-            || { echo "::error::/dev/kvm present but KVM_GET_API_VERSION failed (TCG fallback would make the test useless)"; exit 1; }
+            || { echo "::error::/dev/kvm present but KVM_GET_API_VERSION failed"; exit 1; }
           echo "KVM available: $(ls -l /dev/kvm)"
 
       - name: Install docker compose plugin
