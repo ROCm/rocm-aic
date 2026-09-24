@@ -55,6 +55,20 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Free disk space (runner pre-installed software)
+        run: |
+          # GHA ubuntu-24.04 runners ship with ~30 GB of pre-installed software
+          # that the build doesn't need.  Remove it up front so the ROCm-based
+          # Docker build layers have room to land.
+          sudo rm -rf /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL \
+                      /usr/share/dotnet /usr/local/share/powershell \
+                      /usr/share/swift /usr/local/.ghcup
+          sudo apt-get purge -y --auto-remove \
+            google-chrome-stable firefox dotnet-sdk-* \
+            libgl1-mesa-dri mono-runtime* 2>/dev/null || true
+          docker system prune -af --volumes 2>/dev/null || true
+          df -h /
+
       - name: Enable KVM access for runner user
         run: |
           # GHA ubuntu-24.04 runners have /dev/kvm but the runner user lacks
