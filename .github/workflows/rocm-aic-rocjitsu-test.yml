@@ -141,59 +141,53 @@ jobs:
           driver: docker-container
           install: true
 
-      # Cache aic-base and aic-vllm build layers separately so a change to
-      # the vllm Dockerfile doesn't bust the expensive aic-base cache.
-      - name: Cache aic-base layers
-        uses: actions/cache@v4
+      - name: Log in to GHCR (read pre-built image)
+        uses: docker/login-action@v3
         with:
-          path: /tmp/aic-base-cache
-          key: aic-base-gfx1250-${{ hashFiles('docker/base/Dockerfile') }}-${{ hashFiles('VERSION') }}
-          restore-keys: |
-            aic-base-gfx1250-${{ hashFiles('docker/base/Dockerfile') }}-
-            aic-base-gfx1250-
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Cache aic-vllm layers
-        uses: actions/cache@v4
-        with:
-          path: /tmp/aic-vllm-cache
-          key: aic-vllm-gfx1250-${{ hashFiles('docker/vllm/Dockerfile', 'patches/vllm/**', 'patches/llm-emu/**') }}-${{ hashFiles('VERSION') }}
-          restore-keys: |
-            aic-vllm-gfx1250-${{ hashFiles('docker/vllm/Dockerfile', 'patches/vllm/**', 'patches/llm-emu/**') }}-
-            aic-vllm-gfx1250-
-
-      - name: Build or pull aic-vllm image for gfx1250
+      - name: Pull or build aic-vllm:gfx1250
         run: |
           SUPPLIED="${{ inputs.rj_image_ref }}"
+          GHCR="ghcr.io/${{ github.repository }}/aic-vllm:gfx1250"
+
           if [ -n "$SUPPLIED" ]; then
-            echo "Using supplied image: $SUPPLIED"
+            echo "Using workflow_dispatch-supplied image: $SUPPLIED"
             docker pull "$SUPPLIED"
-            # Tag it so the make target's default RJ_IMAGE_REF resolves
-            TAG=$(ROCM_ARCH=gfx1250 docker/scripts/aic-image-tag.sh 2>/dev/null || true)
-            docker tag "$SUPPLIED" "aic-vllm:${TAG:-gfx1250}"
+            docker tag "$SUPPLIED" aic-vllm:gfx1250
+
+          elif docker pull "$GHCR" 2>/dev/null; then
+            # Pre-built by the nightly publish workflow — fast path (~1 min)
+            echo "Pulled pre-built image from GHCR: $GHCR"
+            docker tag "$GHCR" aic-vllm:gfx1250
+
           else
-            echo "Building aic-base for gfx1250..."
+            # Fall back to building from source using GHCR as registry cache.
+            # Cold build takes ~3-4 h; subsequent builds reuse cached layers.
+            echo "GHCR image not available — building from source..."
+            docker buildx create --use --name rj-builder --driver docker-container
+
             DOCKER_BUILDKIT=1 docker buildx build \
-              --progress=plain \
-              --load \
+              --progress=plain --load \
               --build-arg ROCM_ARCH=gfx1250 \
               --build-arg AIC_VERSION="$(cat VERSION)" \
-              --cache-from type=local,src=/tmp/aic-base-cache \
-              --cache-to   type=local,dest=/tmp/aic-base-cache,mode=max \
+              --cache-from "type=registry,ref=ghcr.io/${{ github.repository }}/aic-base-cache:gfx1250" \
+              --cache-to   "type=registry,ref=ghcr.io/${{ github.repository }}/aic-base-cache:gfx1250,mode=max" \
               -f docker/base/Dockerfile \
               -t aic-base:gfx1250 \
               .
 
-            echo "Building aic-vllm for gfx1250..."
             DOCKER_BUILDKIT=1 docker buildx build \
-              --progress=plain \
-              --load \
+              --progress=plain --load \
               --build-arg ROCM_ARCH=gfx1250 \
               --build-arg AIC_VERSION="$(cat VERSION)" \
               --build-context base=docker-image://aic-base:gfx1250 \
-              --cache-from type=local,src=/tmp/aic-vllm-cache \
-              --cache-to   type=local,dest=/tmp/aic-vllm-cache,mode=max \
+              --cache-from "type=registry,ref=ghcr.io/${{ github.repository }}/aic-vllm-cache:gfx1250" \
+              --cache-to   "type=registry,ref=ghcr.io/${{ github.repository }}/aic-vllm-cache:gfx1250,mode=max" \
               -f docker/vllm/Dockerfile \
-              -t "aic-vllm:gfx1250" \
+              -t aic-vllm:gfx1250 \
               .
           fi
 
