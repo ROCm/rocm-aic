@@ -151,7 +151,7 @@ jobs:
       - name: Pull or build aic-vllm:gfx1250
         run: |
           SUPPLIED="${{ inputs.rj_image_ref }}"
-          GHCR="ghcr.io/rocm/rocm-aic/aic-vllm:gfx1250"
+          GHCR="ghcr.io/sbates130272/aic-vllm:gfx1250"
 
           if [ -n "$SUPPLIED" ]; then
             echo "Using workflow_dispatch-supplied image: $SUPPLIED"
@@ -173,8 +173,8 @@ jobs:
               --progress=plain --load \
               --build-arg ROCM_ARCH=gfx1250 \
               --build-arg AIC_VERSION="$(cat VERSION)" \
-              --cache-from "type=registry,ref=ghcr.io/rocm/rocm-aic/aic-base-cache:gfx1250" \
-              --cache-to   "type=registry,ref=ghcr.io/rocm/rocm-aic/aic-base-cache:gfx1250,mode=max" \
+              --cache-from "type=registry,ref=ghcr.io/sbates130272/aic-base-cache:gfx1250" \
+              --cache-to   "type=registry,ref=ghcr.io/sbates130272/aic-base-cache:gfx1250,mode=max" \
               -f docker/base/Dockerfile \
               -t aic-base:gfx1250 \
               .
@@ -184,8 +184,8 @@ jobs:
               --build-arg ROCM_ARCH=gfx1250 \
               --build-arg AIC_VERSION="$(cat VERSION)" \
               --build-context base=docker-image://aic-base:gfx1250 \
-              --cache-from "type=registry,ref=ghcr.io/rocm/rocm-aic/aic-vllm-cache:gfx1250" \
-              --cache-to   "type=registry,ref=ghcr.io/rocm/rocm-aic/aic-vllm-cache:gfx1250,mode=max" \
+              --cache-from "type=registry,ref=ghcr.io/sbates130272/aic-vllm-cache:gfx1250" \
+              --cache-to   "type=registry,ref=ghcr.io/sbates130272/aic-vllm-cache:gfx1250,mode=max" \
               -f docker/vllm/Dockerfile \
               -t aic-vllm:gfx1250 \
               .
