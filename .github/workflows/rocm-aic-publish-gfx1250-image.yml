@@ -18,6 +18,12 @@ on:
   schedule:
     # 03:00 PST = 11:00 UTC — runs after the SPUR nightly dist-build (09:00 UTC)
     - cron: '0 11 * * *'
+  push:
+    branches: [feat/rocjitsu, main]
+    paths:
+      - 'docker/base/Dockerfile'
+      - 'docker/vllm/Dockerfile'
+      - '.github/workflows/rocm-aic-publish-gfx1250-image.yml'
   workflow_dispatch:
 
 permissions:
@@ -26,8 +32,8 @@ permissions:
 
 env:
   REGISTRY: ghcr.io
-  IMAGE_BASE: ghcr.io/${{ github.repository }}/aic-base
-  IMAGE_VLLM: ghcr.io/${{ github.repository }}/aic-vllm
+  IMAGE_BASE: ghcr.io/rocm/rocm-aic/aic-base
+  IMAGE_VLLM: ghcr.io/rocm/rocm-aic/aic-vllm
   ROCM_ARCH: gfx1250
 
 jobs:
