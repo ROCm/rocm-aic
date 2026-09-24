@@ -1071,7 +1071,6 @@ command -v docker >/dev/null 2>&1 || { echo "docker not found on build node \$(h
 echo "[build] host=\$(hostname) docker=\$(docker --version)"
 cd "${AIC_DAY_DIR}"
 ${_builder_setup}
-${_pre_load_block}
 ${_build_program} \
     --build-arg ROCM_ARCH="${AIC_ROCM_ARCH}" \
     --build-arg AIC_UCX_FAST="${AIC_UCX_FAST}" \
@@ -1818,9 +1817,15 @@ REMOTE
 # path end-to-end -- the functional gate wired into CI after smoke-test.
 cmd_tiny_test() {
     _pick_compress
-    local tarball; tarball="$(_tarball_path)"
+    local saved_image="${AIC_IMAGE}"
+    AIC_IMAGE="${AIC_VLLM_IMAGE}"
+    local vllm_tarball; vllm_tarball="$(_tarball_path)"
+    AIC_IMAGE="${AIC_LMCACHE_IMAGE}"
+    local lmcache_tarball; lmcache_tarball="$(_tarball_path)"
+    AIC_IMAGE="${saved_image}"
     command -v sbatch >/dev/null 2>&1 || die "sbatch not found; cannot run the GPU tiny-test job"
-    [[ -r "${tarball}" ]] || die "tarball not found: ${tarball} (run 'build' first)"
+    [[ -r "${vllm_tarball}" ]]    || die "vllm tarball not found: ${vllm_tarball} (run 'build' first)"
+    [[ -r "${lmcache_tarball}" ]] || die "lmcache tarball not found: ${lmcache_tarball} (run 'build' first)"
 
     local -a _sel
     if [[ -n "${AIC_TEST_NODE:-}" ]]; then
@@ -1830,7 +1835,7 @@ cmd_tiny_test() {
         _sel=(--constraint="${AIC_TEST_CONSTRAINT}")
         log "tiny-test via sbatch (partition ${AIC_BUILD_PARTITION}, constraint ${AIC_TEST_CONSTRAINT})"
     fi
-    log "image: ${AIC_IMAGE}  model: ${AIC_TINY_MODEL}  hf: ${HF_HOME}"
+    log "vllm: ${AIC_VLLM_IMAGE}  lmcache: ${AIC_LMCACHE_IMAGE}  model: ${AIC_TINY_MODEL}  hf: ${HF_HOME}"
 
     local remote_script
     remote_script="$(cat <<REMOTE
@@ -1848,19 +1853,25 @@ export GPU="\${AIC_ROCR_VISIBLE%%,*}"
 VLLM_CONTAINER="aic-vllm-gpu\${GPU}"
 echo "[tiny-test] allocated gpu: ROCR=\${AIC_ROCR_VISIBLE} HIP=\${AIC_HIP_VISIBLE} container=\${VLLM_CONTAINER}"
 
-# Load the image from the shared tarball only when needed (same marker logic as
-# smoke-test): reload when forced, absent, or the tarball is newer.
-_marker="/var/tmp/aic-loaded-\$(id -u)-\$(echo '${AIC_IMAGE}' | tr '/:' '__').mtime"
-_tar_mtime="\$(stat -c %Y '${tarball}' 2>/dev/null || echo 0)"
-_have_img="\$(docker images -q '${AIC_IMAGE}')"
-_loaded_mtime="\$(cat "\${_marker}" 2>/dev/null || echo 0)"
-if [ "${AIC_FORCE_LOAD:-0}" = "1" ] || [ -z "\${_have_img}" ] || [ "\${_tar_mtime}" -gt "\${_loaded_mtime}" ]; then
-    echo "[tiny-test] loading ${AIC_IMAGE} from ${tarball}"
-    ${DECOMPRESS_CMD} '${tarball}' | docker load >/dev/null
-    echo "\${_tar_mtime}" > "\${_marker}" 2>/dev/null || true
-else
-    echo "[tiny-test] image up to date on \$(hostname) (id \${_have_img})"
-fi
+# Load vllm + lmcache images only when needed (marker logic: reload when forced,
+# absent, or the tarball is newer than the last recorded load).
+_load_tiny_image() {
+    local _img="\$1" _tb="\$2"
+    local _marker
+    _marker="/var/tmp/aic-loaded-\$(id -u)-\$(echo "\${_img}" | tr '/:' '--').mtime"
+    local _tar_mtime; _tar_mtime="\$(stat -c %Y "\${_tb}" 2>/dev/null || echo 0)"
+    local _have; _have="\$(docker images -q "\${_img}" 2>&1)"
+    local _loaded_mtime; _loaded_mtime="\$(cat "\${_marker}" 2>/dev/null || echo 0)"
+    if [ "${AIC_FORCE_LOAD:-0}" = "1" ] || [ -z "\${_have}" ] || [ "\${_tar_mtime}" -gt "\${_loaded_mtime}" ]; then
+        echo "[tiny-test] loading \${_img} from \${_tb}"
+        ${DECOMPRESS_CMD} "\${_tb}" | docker load >/dev/null
+        echo "\${_tar_mtime}" > "\${_marker}" 2>/dev/null || true
+    else
+        echo "[tiny-test] \${_img} up to date on \$(hostname)"
+    fi
+}
+_load_tiny_image '${AIC_VLLM_IMAGE}'    '${vllm_tarball}'
+_load_tiny_image '${AIC_LMCACHE_IMAGE}' '${lmcache_tarball}'
 
 cd '${AIC_DAY_DIR}'
 # docker compose v2 only -- install user-locally if the node lacks the plugin.
@@ -1870,8 +1881,10 @@ ensure_compose || { echo "[tiny-test] docker compose unavailable and could not b
 
 # Tiny-model MP stack env.  Small footprint; the tiny model is downloaded online
 # into the persistent HF_HOME forwarded by the Makefile.
-export IMAGE_REF='${AIC_IMAGE}'
-export IMAGE_NAME='${AIC_IMAGE%:*}'
+export VLLM_IMAGE_REF='${AIC_VLLM_IMAGE}'
+export LMCACHE_IMAGE_REF='${AIC_LMCACHE_IMAGE}'
+export IMAGE_REF='${AIC_LMCACHE_IMAGE}'
+export IMAGE_NAME='${AIC_LMCACHE_IMAGE%:*}'
 export ROCM_ARCH='${AIC_ROCM_ARCH}'
 export VLLM_MODEL='${AIC_TINY_MODEL}'
 export HF_HOME='${HF_HOME}'
