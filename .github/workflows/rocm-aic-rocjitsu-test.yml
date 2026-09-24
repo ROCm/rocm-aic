@@ -79,6 +79,48 @@ jobs:
       - name: Install docker compose plugin
         run: make ensure-compose
 
+      # Cache the rocjitsu qcow2 guest disk keyed on its image tag.
+      # We pull via ORAS (the -qcow2 tagged zstd artifact) rather than docker
+      # pull (which unpacks a 14 GB FROM-scratch image) because the compressed
+      # artifact fits within the GHA 10 GB cache-entry limit.
+      - name: Resolve qcow2 image tag for cache key
+        id: qcow2-tag
+        run: |
+          TAG=$(grep '^RJ_QCOW2_IMAGE' mk/bench.mk | head -1 | sed 's/.*://;s/ .*//')
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "Qcow2 tag: $TAG"
+
+      - name: Cache rocjitsu guest disk (qcow2)
+        id: qcow2-cache
+        uses: actions/cache@v4
+        with:
+          path: /tmp/aic-rocjitsu-test/vm
+          key: qcow2-${{ steps.qcow2-tag.outputs.tag }}
+
+      - name: Pull rocjitsu guest disk via ORAS (cache miss)
+        if: steps.qcow2-cache.outputs.cache-hit != 'true'
+        run: |
+          # Install ORAS if not present
+          which oras 2>/dev/null || {
+            curl -fsSL https://github.com/oras-project/oras/releases/download/v1.2.0/oras_1.2.0_linux_amd64.tar.gz \
+              | sudo tar -xz -C /usr/local/bin oras
+          }
+          REPO="sbates130272/batesste-ci-images-ubuntu-qcow2-gen-rocjitsu"
+          TAG="${{ steps.qcow2-tag.outputs.tag }}-qcow2"
+          mkdir -p /tmp/aic-rocjitsu-test/vm
+          cd /tmp/aic-rocjitsu-test/vm
+          echo "Pulling $REPO:$TAG via ORAS..."
+          oras pull "docker.io/$REPO:$TAG"
+          # Decompress any .zst files
+          for f in *.qcow2.zst; do
+            [ -f "$f" ] && zstd -d --long=27 --rm "$f" && echo "Decompressed $f"
+          done
+          # Pull vm-info.json and SSH keys from the OCI referrer
+          DIGEST=$(oras discover --format json "docker.io/$REPO:$TAG" \
+            | python3 -c "import json,sys; refs=json.load(sys.stdin).get('referrers',[]); print(refs[0]['digest'] if refs else '')" 2>/dev/null || true)
+          [ -n "$DIGEST" ] && oras pull "docker.io/$REPO@$DIGEST" && chmod 600 id_rsa 2>/dev/null || true
+          ls -lh
+
       - name: Set up Docker Buildx (for layer-cached local builds)
         uses: docker/setup-buildx-action@v3
         with:
@@ -143,7 +185,9 @@ jobs:
 
       - name: Run rocjitsu VM test
         run: |
-          # Pass the pre-tagged image ref; skip internal build step
+          # Pass the pre-tagged image ref; skip internal build step.
+          # The vm/ dir is pre-populated from cache or ORAS pull so the
+          # make target will skip its own extraction step (vm-info.json present).
           IMAGE_TAG=$(docker inspect aic-vllm:gfx1250 --format '{{index .RepoTags 0}}' 2>/dev/null \
             || echo aic-vllm:gfx1250)
           make test-rocjitsu-local \
