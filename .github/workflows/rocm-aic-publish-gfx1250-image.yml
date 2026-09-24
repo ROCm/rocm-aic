@@ -18,12 +18,6 @@ on:
   schedule:
     # 03:00 PST = 11:00 UTC — runs after the SPUR nightly dist-build (09:00 UTC)
     - cron: '0 11 * * *'
-  push:
-    branches: [feat/rocjitsu, main]
-    paths:
-      - 'docker/base/Dockerfile'
-      - 'docker/vllm/Dockerfile'
-      - '.github/workflows/rocm-aic-publish-gfx1250-image.yml'
   workflow_dispatch:
 
 permissions:
@@ -37,10 +31,14 @@ env:
   ROCM_ARCH: gfx1250
 
 jobs:
-  publish-gfx1250:
-    name: Build and push aic-vllm:gfx1250 to GHCR
+  # Job 1: build aic-base for gfx1250 and push to GHCR.
+  # Runs on a fresh ubuntu-24.04 runner (~86 GB disk).  aic-base (PyTorch +
+  # torchvision) is the largest layer set; splitting into its own job keeps
+  # disk usage under the runner limit.
+  publish-base:
+    name: Build and push aic-base:gfx1250
     runs-on: ubuntu-24.04
-    timeout-minutes: 360   # cold build takes ~3-4 h; layer cache makes it ~15 min warm
+    timeout-minutes: 300
 
     steps:
       - name: Checkout
