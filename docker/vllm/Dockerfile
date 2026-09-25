@@ -110,7 +110,7 @@ RUN --mount=type=cache,target=/root/.cache/pip \
     pip3 install --no-cache-dir /wheels/vllm-*.whl && \
     rm -rf /app/vllm /wheels /tmp/torch-constraints.txt && \
     find /usr/lib/python3 /usr/local/lib/python3 -name '__pycache__' -type d \
-         -exec rm -rf {} + 2>/dev/null || true
+         -exec rm -rf {} + 2>/dev/null; true
 
 # ----- 3b. vllm_emulator (llm-emu profile-driven emulation plugin) -----------
 ARG LLM_EMU_GIT_URL=https://github.com/AKafakA/llm-emu.git
