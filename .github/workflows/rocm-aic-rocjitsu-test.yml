@@ -18,18 +18,12 @@ name: rocm-aic - Rocjitsu VM Test
 
 on:
   schedule:
-    # 02:00 PST = 10:00 UTC (off-peak; cold build is expensive)
+    # 02:00 PST = 10:00 UTC (off-peak; runs after nightly dist-build)
     - cron: '0 10 * * *'
-  pull_request:
-    branches: [main]
-    paths:
-      - 'docker/base/Dockerfile'
-      - 'docker/vllm/Dockerfile'
-      - 'patches/vllm/**'
-      - 'patches/llm-emu/**'
-      - 'mk/bench.mk'
-      - 'mk/local.mk'
-      - '.github/workflows/rocm-aic-rocjitsu-test.yml'
+  # NOTE: pull_request trigger removed — the 60 GB image cannot be pulled on
+  # standard ubuntu-24.04 GHA runners (~47 GB free after disk cleanup).
+  # Run manually via workflow_dispatch or wait for the nightly schedule.
+  # TODO: re-enable after multi-stage base Dockerfile reduces image to <40 GB.
   workflow_dispatch:
     inputs:
       rj_image_ref:
