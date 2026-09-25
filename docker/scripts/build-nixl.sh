@@ -245,3 +245,13 @@ if [[ "${NIXL_BUILD_WHEEL:-0}" == "1" ]]; then
 	fi
 	echo "PASS: NIXL wheel built -> ${_nixl_whl}"
 fi
+
+# Purge build-time residue that would otherwise bloat the Docker layer.
+# UCX source + build tree is the largest contributor (~8-12 GB combined).
+rm -rf /tmp/ucx-rocm 2>/dev/null || true
+# NIXL git history and meson build tree are not needed at runtime.
+rm -rf "${NIXL_SRC}/.git" "${NIXL_SRC}/build" 2>/dev/null || true
+# apt package archives (build-nixl installs several -dev packages).
+rm -rf /var/cache/apt/archives /var/lib/apt/lists/* 2>/dev/null || true
+# pip cache (some invocations inside this script bypass the mount).
+python3 -m pip cache purge 2>/dev/null || true
