@@ -245,7 +245,7 @@ RUN git clone --depth 1 --branch "${HSA_SNOOP_REF}" "${HSA_SNOOP_GIT_URL}" /app/
     rm -rf /app/hsa-snoop /app/patches /app/aiter /app/LMCache \
            /app/flash-attention /wheels /tmp/nixl-patches /tmp/nixl-scripts && \
     find /usr/lib/python3 /usr/local/lib/python3 -name '__pycache__' -type d \
-         -exec rm -rf {} + 2>/dev/null || true
+         -exec rm -rf {} + 2>/dev/null; true
 
 # ----- 8. Runtime environment ------------------------------------------------
 ENV PYTHONUNBUFFERED=1 \
