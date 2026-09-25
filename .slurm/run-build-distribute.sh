@@ -423,7 +423,7 @@ fi
 AIC_TLS_CERT="${AIC_TLS_CERT:-}"
 
 log()  { printf '[build-distribute] %s\n' "$*" >&2; }
-die()  { printf '[build-distribute] ERROR: %s\n' "$*" >&2; _dump_job_log_tail; exit 1; }
+die()  { printf '[build-distribute] ERROR: %s\n' "$*" >&2; _dump_spur_job_state; _dump_job_log_tail; exit 1; }
 
 # Log of the sbatch job currently being watched.  Set by _sbatch_run once the job
 # id resolves, cleared when it returns; empty at every other point, which is what
@@ -431,6 +431,7 @@ die()  { printf '[build-distribute] ERROR: %s\n' "$*" >&2; _dump_job_log_tail; e
 # happen before a job exists.
 _active_job_logfile=""
 _active_job_desc=""
+_active_job_id=""
 
 # Last-resort diagnostics: re-read the job's own log and print its tail.
 #
@@ -459,6 +460,26 @@ _dump_job_log_tail() {
     tail -n "${n}" "${f}" ||
         log "WARNING: could not read ${f}"
     log "--- end of ${f} ---"
+}
+
+# SPUR only: print the scheduler's own verdict on the job.
+_dump_spur_job_state() {
+    [[ "${AIC_SPUR_CLUSTER}" == "1" && -n "${_active_job_id}" ]] || return 0
+    command -v spur >/dev/null 2>&1 || return 0
+    local out rc=0
+    out="$(spur show job "${_active_job_id}" \
+        --controller="${AIC_SPUR_CONTROLLER}" 2>&1)" || rc=$?
+    if (( rc != 0 )); then
+        log "WARNING: could not read scheduler state for job ${_active_job_id} (spur show job exited ${rc}): ${out}"
+        return 0
+    fi
+    if [[ -z "${out}" ]]; then
+        log "scheduler has no record of job ${_active_job_id}"
+        return 0
+    fi
+    log "--- scheduler state for job ${_active_job_id} ---"
+    printf '%s\n' "${out}" >&2
+    log "--- end scheduler state for job ${_active_job_id} ---"
 }
 
 # --- Compression: pick tool + file extension --------------------------------
@@ -606,6 +627,7 @@ PROLOGUE
     _track_job_log() {
         _active_job_logfile="${logfile}"
         _active_job_desc="${jobname} job ${jobid}"
+        _active_job_id="${jobid}"
     }
 
     _record_active_job() {
@@ -629,6 +651,15 @@ PROLOGUE
         printf '%s\n' "${script}" > "${tmpscript}"
         chmod +x "${tmpscript}"
 
+        # Need to provide atleast one GPU due to SPUR scheduling requirements.
+        local -a _spur_gpu=(--gpus=1)
+        local _opt
+        for _opt in "$@"; do
+            case "${_opt}" in
+                --gpus=*|--gpus-per-node=*|--gpus-per-task=*|--gres=gpu:*) _spur_gpu=() ;;
+            esac
+        done
+
         local submit_out
         submit_out="$(sbatch \
             --controller="${AIC_SPUR_CONTROLLER}" \
@@ -636,6 +667,7 @@ PROLOGUE
             --partition="${AIC_BUILD_PARTITION}" \
             ${AIC_SLURM_ACCOUNT:+--account="${AIC_SLURM_ACCOUNT}"} \
             --output=/dev/null \
+            "${_spur_gpu[@]}" \
             "$@" \
             "${tmpscript}" 2>&1)" || { rm -f "${tmpscript}"; die "sbatch submission failed: ${submit_out}"; }
         rm -f "${tmpscript}"
@@ -696,12 +728,13 @@ PROLOGUE
         _squeue_err_text() { tr '\n' ' ' < "${squeue_err}" 2>/dev/null | head -c 300; }
 
         # SPUR does NOT fold the job's stderr into --output the way Slurm does.
-        # It writes stderr to <submit-cwd>/spur-<jobid>.out and nothing reads
-        # that file.
+        # It writes stderr to spur-<jobid>.out and nothing reads that file.
+        # Check both <submit-cwd>/spur-<jobid>.out and /tmp/spur-<jobid>.out.
         _dump_spur_stderr() {
             local f
             local -a candidates=()
-            for f in "${PWD}/spur-${jobid}.out" "${AIC_DAY_DIR}/spur-${jobid}.out"; do
+            for f in "${PWD}/spur-${jobid}.out" "${AIC_DAY_DIR}/spur-${jobid}.out" \
+                     "/tmp/spur-${jobid}.out"; do
                 [[ " ${candidates[*]-} " == *" ${f} "* ]] || candidates+=("${f}")
             done
             for f in "${candidates[@]}"; do
@@ -876,8 +909,8 @@ PROLOGUE
         rm -f "${idfile}" 2>/dev/null || true
     fi
 
-    (( rc == 0 )) || _dump_job_log_tail
-    _active_job_logfile=""; _active_job_desc=""
+    (( rc == 0 )) || { _dump_spur_job_state; _dump_job_log_tail; }
+    _active_job_logfile=""; _active_job_desc=""; _active_job_id=""
     _clear_active_job
     return "${rc}"
 }
@@ -1441,8 +1474,11 @@ cmd_load() {
     # (unsupported); harmless on standard Slurm.
     local -a _overcommit_arg=(); [[ "${AIC_SPUR_CLUSTER}" != "1" ]] && _overcommit_arg=(--overcommit)
     local -a _spur_ctl_arg=(); [[ "${AIC_SPUR_CLUSTER}" == "1" ]] && _spur_ctl_arg=(--controller="${AIC_SPUR_CONTROLLER}")
+    # Need to provide atleast one GPU due to SPUR scheduling requirements.
+    local -a _spur_gpu_arg=(); [[ "${AIC_SPUR_CLUSTER}" == "1" ]] && _spur_gpu_arg=(--gpus-per-node=1)
     srun \
         "${_spur_ctl_arg[@]}" \
+        "${_spur_gpu_arg[@]}" \
         --job-name=aic-load \
         --partition="${AIC_BUILD_PARTITION}" \
         --nodelist="${AIC_TARGETS}" \
@@ -1515,8 +1551,11 @@ REMOTE
     fi
     local -a _push_overcommit=(); [[ "${AIC_SPUR_CLUSTER}" != "1" ]] && _push_overcommit=(--overcommit)
     local -a _push_spur_ctl=(); [[ "${AIC_SPUR_CLUSTER}" == "1" ]] && _push_spur_ctl=(--controller="${AIC_SPUR_CONTROLLER}")
+    # Need to provide atleast one GPU due to SPUR scheduling requirements.
+    local -a _push_spur_gpu=(); [[ "${AIC_SPUR_CLUSTER}" == "1" ]] && _push_spur_gpu=(--gpus=1)
     srun \
         "${_push_spur_ctl[@]}" \
+        "${_push_spur_gpu[@]}" \
         --job-name=aic-push \
         --partition="${AIC_BUILD_PARTITION}" \
         "${_sel[@]}" \
@@ -3175,7 +3214,8 @@ exec '${AIC_DAY_DIR}/.slurm/run-accuracy.sh'
 REMOTE
 )"
 
-    local -a _gres_arg=(); [[ "${AIC_SPUR_CLUSTER}" != "1" ]] && _gres_arg=(--gres=gpu:1)
+    local -a _gres_arg=(--gres=gpu:1)
+    [[ "${AIC_SPUR_CLUSTER}" == "1" ]] && _gres_arg=(--gpus=1)
     _sbatch_run aic-accuracy-test accuracy-test "${remote_script}" \
         "${_sel[@]}" \
         "${_gres_arg[@]}" \
@@ -3416,7 +3456,8 @@ exit \${sweep_rc}
 REMOTE
 )"
 
-    local -a _gres_arg=(); [[ "${AIC_SPUR_CLUSTER}" != "1" ]] && _gres_arg=(--gres=gpu:1)
+    local -a _gres_arg=(--gres=gpu:1)
+    [[ "${AIC_SPUR_CLUSTER}" == "1" ]] && _gres_arg=(--gpus=1)
     _sbatch_run aic-profile-capture profile-capture "${remote_script}" \
         "${_sel[@]}" \
         "${_gres_arg[@]}" \

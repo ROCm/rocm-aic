@@ -2,7 +2,8 @@
 set -euo pipefail
 
 # Runs from a workflow checkout on the self-hosted runner; SSHes to the SPUR head node (AIC_SPUR_HOST),
-# submits a CPU-only srun job (no --gres=gpu), and:
+# submits an srun job whose payload uses no GPU (SPUR still requires a GPU
+# request on every submission, so one is reserved and left idle), and:
 #   1. Launches node-exporter, nvme-exporter, rdma-exporter, and Prometheus
 #   2. Runs the vLLM emulator (backed by the existing rocm-aic image)
 #   3. Issues 3 LLM prompts and asserts non-empty completions
@@ -254,6 +255,7 @@ srun \
     --time=00:30:00 \
     --partition=amd-spur \
     --gres= \
+    --gpus=1 \
     bash "${SRUN_SCRIPT}" \
         "${WORKDIR}" \
         "${AIC_IMAGE}" \
