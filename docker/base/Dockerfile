@@ -139,9 +139,9 @@ RUN --mount=type=cache,target=/root/.cache/ccache \
     CMAKE_CXX_COMPILER_LAUNCHER=ccache \
     CMAKE_PREFIX_PATH=$(python3 -c 'import sys; print(sys.prefix)') \
         python3 setup.py bdist_wheel --dist-dir=/app/pytorch/dist && \
-    rm -rf /app/pytorch/build /app/pytorch/.git \
-           $(find /app/pytorch -name '__pycache__' -type d) \
-           $(find /app/pytorch -name '*.o' -maxdepth 8)
+    rm -rf /app/pytorch/build /app/pytorch/.git && \
+    find /app/pytorch -name '__pycache__' -type d -exec rm -rf {} + 2>/dev/null; \
+    find /app/pytorch -name '*.o' -maxdepth 8 -delete 2>/dev/null; true
 
 # =============================================================================
 # torchvision source build — must compile against our source-built PyTorch.
