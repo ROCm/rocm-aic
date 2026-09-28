@@ -1,0 +1,205 @@
+# Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+#
+# GPU-stack integration test using rocjitsu vfio-user emulation.
+# Boots an Ubuntu guest VM under QEMU-KVM with an emulated gfx1250 GPU
+# (rocjitsu vfio-user server), builds the aic-vllm image for gfx1250,
+# loads it into the guest, and asserts torch.cuda.is_available()==True
+# with arch=gfx1250.  No physical GPU required; /dev/kvm is available on
+# GitHub-hosted ubuntu-24.04 runners.
+#
+# The aic-base and aic-vllm Docker builds use the GHA layer cache so that
+# warm PR runs skip multi-hour kernel compilations.  Cold runs are slow
+# (~3-4 h for aic-base + aic-vllm) but subsequent runs are fast (~10 min).
+#
+# See mk/bench.mk test-rocjitsu-local.
+name: rocm-aic - Rocjitsu VM Test
+
+on:
+  schedule:
+    # 02:00 PST = 10:00 UTC (off-peak; runs after nightly dist-build)
+    - cron: '0 10 * * *'
+  # NOTE: pull_request trigger removed — the 60 GB image cannot be pulled on
+  # standard ubuntu-24.04 GHA runners (~47 GB free after disk cleanup).
+  # Run manually via workflow_dispatch or wait for the nightly schedule.
+  # TODO: re-enable after multi-stage base Dockerfile reduces image to <40 GB.
+  workflow_dispatch:
+    inputs:
+      rj_image_ref:
+        description: >-
+          Pre-built aic-vllm image ref to use instead of building locally
+          (e.g. registry.example.com/aic-vllm:tag).  Leave blank to build.
+        required: false
+        default: ''
+
+permissions:
+  contents: read
+
+jobs:
+  rocjitsu-test:
+    name: Boot rocjitsu VM and verify gfx1250 GPU visibility
+    runs-on: ubuntu-24.04
+    timeout-minutes: 300
+
+    env:
+      ROCM_ARCH: gfx1250
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Free disk space (runner pre-installed software)
+        run: |
+          # GHA ubuntu-24.04 runners ship with ~30 GB of pre-installed software
+          # that the build doesn't need.  Remove it up front so the ROCm-based
+          # Docker build layers have room to land.
+          sudo rm -rf /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL \
+                      /usr/share/dotnet /usr/local/share/powershell \
+                      /usr/share/swift /usr/local/.ghcup
+          sudo apt-get purge -y --auto-remove \
+            google-chrome-stable firefox dotnet-sdk-* \
+            libgl1-mesa-dri mono-runtime* 2>/dev/null || true
+          docker system prune -af --volumes 2>/dev/null || true
+          df -h /
+
+      - name: Enable KVM access for runner user
+        run: |
+          # GHA ubuntu-24.04 runners have /dev/kvm but the runner user lacks
+          # write access by default.  Open it up for the duration of this job.
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
+            | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+          ls -l /dev/kvm
+
+      - name: Verify KVM is available and functional
+        run: |
+          test -c /dev/kvm || { echo "::error::/dev/kvm missing"; exit 1; }
+          test -r /dev/kvm && test -w /dev/kvm \
+            || { echo "::error::/dev/kvm not read-write after udev rule"; exit 1; }
+          # KVM_GET_API_VERSION ioctl — a bind-mounted node can exist and still
+          # be non-functional; this proves the hypervisor is actually present.
+          python3 -c "import os, fcntl; fcntl.ioctl(os.open('/dev/kvm', os.O_RDWR), 0xAE00, 0)" \
+            || { echo "::error::/dev/kvm present but KVM_GET_API_VERSION failed"; exit 1; }
+          echo "KVM available: $(ls -l /dev/kvm)"
+
+      - name: Install docker compose plugin
+        run: make ensure-compose
+
+      # Cache the rocjitsu qcow2 guest disk keyed on its image tag.
+      # We pull via ORAS (the -qcow2 tagged zstd artifact) rather than docker
+      # pull (which unpacks a 14 GB FROM-scratch image) because the compressed
+      # artifact fits within the GHA 10 GB cache-entry limit.
+      - name: Resolve qcow2 image tag for cache key
+        id: qcow2-tag
+        run: |
+          TAG=$(grep '^RJ_QCOW2_IMAGE' mk/bench.mk | head -1 | sed 's/.*://;s/ .*//')
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "Qcow2 tag: $TAG"
+
+      - name: Cache rocjitsu guest disk (qcow2)
+        id: qcow2-cache
+        uses: actions/cache@v4
+        with:
+          path: /tmp/aic-rocjitsu-test/vm
+          key: qcow2-${{ steps.qcow2-tag.outputs.tag }}
+
+      - name: Pull rocjitsu guest disk via ORAS (cache miss)
+        if: steps.qcow2-cache.outputs.cache-hit != 'true'
+        run: |
+          # Install ORAS if not present
+          which oras 2>/dev/null || {
+            curl -fsSL https://github.com/oras-project/oras/releases/download/v1.2.0/oras_1.2.0_linux_amd64.tar.gz \
+              | sudo tar -xz -C /usr/local/bin oras
+          }
+          REPO="sbates130272/batesste-ci-images-ubuntu-qcow2-gen-rocjitsu"
+          TAG="${{ steps.qcow2-tag.outputs.tag }}-qcow2"
+          mkdir -p /tmp/aic-rocjitsu-test/vm
+          cd /tmp/aic-rocjitsu-test/vm
+          echo "Pulling $REPO:$TAG via ORAS..."
+          oras pull "docker.io/$REPO:$TAG"
+          # Decompress any .zst files
+          for f in *.qcow2.zst; do
+            [ -f "$f" ] && zstd -d --long=27 --rm "$f" && echo "Decompressed $f"
+          done
+          # Pull vm-info.json and SSH keys from the OCI referrer
+          DIGEST=$(oras discover --format json "docker.io/$REPO:$TAG" \
+            | python3 -c "import json,sys; refs=json.load(sys.stdin).get('referrers',[]); print(refs[0]['digest'] if refs else '')" 2>/dev/null || true)
+          [ -n "$DIGEST" ] && oras pull "docker.io/$REPO@$DIGEST" && chmod 600 id_rsa 2>/dev/null || true
+          ls -lh
+
+      - name: Set up Docker Buildx (for layer-cached local builds)
+        uses: docker/setup-buildx-action@v3
+        with:
+          driver: docker-container
+          install: true
+
+      - name: Log in to GHCR (read pre-built image)
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Pull or build aic-vllm:gfx1250
+        run: |
+          SUPPLIED="${{ inputs.rj_image_ref }}"
+          GHCR="ghcr.io/sbates130272/aic-vllm:gfx1250"
+
+          if [ -n "$SUPPLIED" ]; then
+            echo "Using workflow_dispatch-supplied image: $SUPPLIED"
+            docker pull "$SUPPLIED"
+            docker tag "$SUPPLIED" aic-vllm:gfx1250
+
+          elif docker pull "$GHCR" 2>/dev/null; then
+            # Pre-built by the nightly publish workflow — fast path (~1 min)
+            echo "Pulled pre-built image from GHCR: $GHCR"
+            docker tag "$GHCR" aic-vllm:gfx1250
+
+          else
+            # Fall back to building from source using GHCR as registry cache.
+            # Cold build takes ~3-4 h; subsequent builds reuse cached layers.
+            echo "GHCR image not available — building from source..."
+            docker buildx create --use --name rj-builder --driver docker-container
+
+            DOCKER_BUILDKIT=1 docker buildx build \
+              --progress=plain --load \
+              --build-arg ROCM_ARCH=gfx1250 \
+              --build-arg AIC_VERSION="$(cat VERSION)" \
+              --cache-from "type=registry,ref=ghcr.io/sbates130272/aic-base-cache:gfx1250" \
+              --cache-to   "type=registry,ref=ghcr.io/sbates130272/aic-base-cache:gfx1250,mode=max" \
+              -f docker/base/Dockerfile \
+              -t aic-base:gfx1250 \
+              .
+
+            DOCKER_BUILDKIT=1 docker buildx build \
+              --progress=plain --load \
+              --build-arg ROCM_ARCH=gfx1250 \
+              --build-arg AIC_VERSION="$(cat VERSION)" \
+              --build-context base=docker-image://aic-base:gfx1250 \
+              --cache-from "type=registry,ref=ghcr.io/sbates130272/aic-vllm-cache:gfx1250" \
+              --cache-to   "type=registry,ref=ghcr.io/sbates130272/aic-vllm-cache:gfx1250,mode=max" \
+              -f docker/vllm/Dockerfile \
+              -t aic-vllm:gfx1250 \
+              .
+          fi
+
+      - name: Run rocjitsu VM test
+        run: |
+          # Pass the pre-tagged image ref; skip internal build step.
+          # The vm/ dir is pre-populated from cache or ORAS pull so the
+          # make target will skip its own extraction step (vm-info.json present).
+          IMAGE_TAG=$(docker inspect aic-vllm:gfx1250 --format '{{index .RepoTags 0}}' 2>/dev/null \
+            || echo aic-vllm:gfx1250)
+          make test-rocjitsu-local \
+            RJ_IMAGE_REF="$IMAGE_TAG" \
+            RJ_READY_S=240
+
+      - name: Upload rocjitsu logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rocjitsu-logs
+          path: /tmp/aic-rocjitsu-test/
+          retention-days: 3

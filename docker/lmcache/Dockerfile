@@ -189,7 +189,7 @@ RUN --mount=type=cache,target=/root/.cache/pip \
     uv pip install --system --no-cache /wheels/lmcache-*.whl
 
 RUN --mount=type=cache,target=/root/.cache/uv \
-    uv pip install --system "matplotlib>=3.8,<4"
+    uv pip install --system "matplotlib>=3.8,<4" "openai>=1.0,<2"
 
 # Remove any NIXL wheels that upstream packages may have pulled — we build from source below.
 # Also purge stray CUDA-only deps (cupy-cuda12x, cufile-python, cuda-pathfinder).
@@ -205,6 +205,7 @@ COPY docker/scripts /tmp/nixl-scripts
 COPY patches/nixl/ /tmp/nixl-patches/
 # hadolint ignore=SC3054,SC3044
 RUN --mount=type=cache,target=/root/.cache/uv \
+    --mount=type=cache,target=/root/.cache/pip \
     chmod +x /tmp/nixl-scripts/*.sh && \
     NIXL_GIT_URL="${NIXL_GIT_URL}" NIXL_REF="${NIXL_REF}" NIXL_REQUIRE_ROCM=1 \
         NIXL_DEST=/tmp/nixl /tmp/nixl-scripts/clone-nixl.sh && \
@@ -240,7 +241,11 @@ RUN git clone --depth 1 --branch "${HSA_SNOOP_REF}" "${HSA_SNOOP_GIT_URL}" /app/
     # hadolint ignore=SC2015
     { /usr/local/bin/hsa-snoop --help 2>&1 || true; } | grep -q -- '--prometheus' \
         || { echo "ERROR: hsa-snoop built without Prometheus mode (--prometheus absent)" >&2; exit 1; } && \
-    echo "PASS: hsa-snoop ${HSA_SNOOP_REF} with Prometheus exporter (incl. AIS metrics) installed"
+    echo "PASS: hsa-snoop ${HSA_SNOOP_REF} with Prometheus exporter (incl. AIS metrics) installed" && \
+    rm -rf /app/hsa-snoop /app/patches /app/aiter /app/LMCache \
+           /app/flash-attention /wheels /tmp/nixl-patches /tmp/nixl-scripts && \
+    find /usr/lib/python3 /usr/local/lib/python3 -name '__pycache__' -type d \
+         -exec rm -rf {} + 2>/dev/null; true
 
 # ----- 8. Runtime environment ------------------------------------------------
 ENV PYTHONUNBUFFERED=1 \

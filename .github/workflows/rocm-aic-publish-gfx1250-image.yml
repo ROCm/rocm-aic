@@ -1,0 +1,95 @@
+# Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+#
+# Nightly build of aic-vllm for gfx1250 (rocjitsu / RDNA4-emulated GPU),
+# published to GHCR so the rocjitsu VM test can docker pull instead of
+# recompiling PyTorch + vLLM from source on every CI run.
+#
+# Build layers are cached in GHCR as registry cache entries, so only changed
+# layers are rebuilt on subsequent nightly runs.
+#
+# Published image:
+#   ghcr.io/rocm/rocm-aic/aic-vllm:gfx1250
+#   ghcr.io/rocm/rocm-aic/aic-vllm:gfx1250-<sha7>
+name: rocm-aic - Publish gfx1250 Image
+
+on:
+  schedule:
+    # 03:00 PST = 11:00 UTC — runs after the SPUR nightly dist-build (09:00 UTC)
+    - cron: '0 11 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write   # needed to push to GHCR
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_BASE: ghcr.io/rocm/rocm-aic/aic-base
+  IMAGE_VLLM: ghcr.io/rocm/rocm-aic/aic-vllm
+  ROCM_ARCH: gfx1250
+
+jobs:
+  # Job 1: build aic-base for gfx1250 and push to GHCR.
+  # Runs on a fresh ubuntu-24.04 runner (~86 GB disk).  aic-base (PyTorch +
+  # torchvision) is the largest layer set; splitting into its own job keeps
+  # disk usage under the runner limit.
+  publish-base:
+    name: Build and push aic-base:gfx1250
+    runs-on: ubuntu-24.04
+    timeout-minutes: 300
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Free disk space (ROCm build needs ~60 GB)
+        run: |
+          sudo rm -rf /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL \
+                      /usr/share/dotnet /usr/local/share/powershell \
+                      /usr/share/swift /usr/local/.ghcup
+          sudo apt-get purge -y --auto-remove \
+            google-chrome-stable firefox dotnet-sdk-* \
+            libgl1-mesa-dri mono-runtime* 2>/dev/null || true
+          docker system prune -af --volumes 2>/dev/null || true
+          df -h /
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and push aic-base:gfx1250
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/base/Dockerfile
+          push: true
+          tags: ${{ env.IMAGE_BASE }}:gfx1250
+          build-args: |
+            ROCM_ARCH=gfx1250
+            AIC_VERSION=${{ github.sha }}
+          cache-from: type=registry,ref=${{ env.IMAGE_BASE }}-cache:gfx1250
+          cache-to:   type=registry,ref=${{ env.IMAGE_BASE }}-cache:gfx1250,mode=max
+
+      - name: Build and push aic-vllm:gfx1250
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/vllm/Dockerfile
+          push: true
+          tags: |
+            ${{ env.IMAGE_VLLM }}:gfx1250
+            ${{ env.IMAGE_VLLM }}:gfx1250-${{ github.sha }}
+          build-args: |
+            ROCM_ARCH=gfx1250
+            AIC_VERSION=${{ github.sha }}
+          build-contexts: base=docker-image://${{ env.IMAGE_BASE }}:gfx1250
+          cache-from: type=registry,ref=${{ env.IMAGE_VLLM }}-cache:gfx1250
+          cache-to:   type=registry,ref=${{ env.IMAGE_VLLM }}-cache:gfx1250,mode=max

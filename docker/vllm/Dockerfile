@@ -107,7 +107,10 @@ RUN --mount=type=cache,target=/root/.cache/pip \
         CCACHE_DIR=/root/.cache/ccache \
         VLLM_VERSION_OVERRIDE="${VLLM_REF#v}+${VLLM_TARGET_DEVICE}" \
         pip3 wheel --no-build-isolation --no-deps --no-cache-dir -w /wheels . && \
-    pip3 install --no-cache-dir /wheels/vllm-*.whl
+    pip3 install --no-cache-dir /wheels/vllm-*.whl && \
+    rm -rf /app/vllm /wheels /tmp/torch-constraints.txt && \
+    find /usr/lib/python3 /usr/local/lib/python3 -name '__pycache__' -type d \
+         -exec rm -rf {} + 2>/dev/null; true
 
 # ----- 3b. vllm_emulator (llm-emu profile-driven emulation plugin) -----------
 ARG LLM_EMU_GIT_URL=https://github.com/AKafakA/llm-emu.git
@@ -133,7 +136,16 @@ vllm_emulator.profile.loader, vllm_emulator.profiler.trace_profiler; \
 print('vllm_emulator subpackages import OK')" && \
     mkdir -p /opt/llm-emu/profiles && \
     cp /app/llm-emu/example_profiling_data/*.json /opt/llm-emu/profiles/ && \
-    test -r "${AIC_EMULATOR_EXAMPLE_PACK}"
+    test -r "${AIC_EMULATOR_EXAMPLE_PACK}" && \
+    rm -rf /app/llm-emu /app/patches
+
+# ----- LMCache client (KV transfer connector used by vllm service) -----------
+# Install the same pinned version used by aic-lmcache so the connector
+# protocol matches exactly.  No build isolation needed: torch is already here.
+ARG LMCACHE_REF=v0.5.5
+RUN --mount=type=cache,target=/root/.cache/pip \
+    _ver="${LMCACHE_REF#v}" && \
+    pip3 install --no-cache-dir "lmcache==${_ver}"
 
 # ----- Runtime ENV + metadata -------------------------------------------------
 ENV PYTHONUNBUFFERED=1 \
