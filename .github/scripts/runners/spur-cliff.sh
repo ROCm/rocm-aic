@@ -1,5 +1,9 @@
 #!/usr/bin/env bash
-set -euo pipefail
+# -E inherit ERR trap in functions and subshells,
+# -e exit the script upon commands failing,
+# -u to error if the script ever references a variable that is unset,
+# -o pipefail to error if any stage of a pipeline fails.
+set -Eeuo pipefail
 
 # Installed on the self-hosted runner; SSHes to the SPUR head node (AIC_SPUR_HOST), uses the clone and
 # tarball left by spur-dist-build.sh, and runs a cliff benchmark.
@@ -9,6 +13,18 @@ set -euo pipefail
 #           cliff-submit -- full 3-arm sweep, nightly/post-merge
 #
 # Always cleans up the clone and tarball dir on exit.
+
+# errexit exits without saying where; report it.  Only the line number and
+# function call stack are printed, never the command text, which can carry
+# secret values.
+_on_err() {
+    # set -E carries this trap into $(...), where errexit is off.
+    [[ $- == *e* ]] || return 0
+    # || : so a failed write cannot replace the exit status.
+    printf '%s: command failed (exit %s, pipeline status %s) at line %s%s\n' \
+        "${0##*/}" "$1" "$2" "$3" "${4:+ in ${4// / <- }}" >&2 || :
+}
+trap '_on_err "$?" "${PIPESTATUS[*]}" "$LINENO" "${FUNCNAME[*]-}"' ERR
 
 SHA="${1:?usage: $0 <full-sha> <cliff-short|cliff-submit>}"
 TARGET="${2:?usage: $0 <full-sha> <cliff-short|cliff-submit>}"
@@ -33,7 +49,22 @@ ssh -o ServerAliveInterval=30 -o ServerAliveCountMax=4 "${AIC_SPUR_HOST}" env \
     AIC_SHARED_NFS="${AIC_SHARED_NFS}" \
     AIC_CI_STORAGE_ROOT="${AIC_CI_STORAGE_ROOT}" \
     bash << 'REMOTE'
-set -euo pipefail
+# -E inherit ERR trap in functions and subshells,
+# -e exit the script upon commands failing,
+# -u to error if the script ever references a variable that is unset,
+# -o pipefail to error if any stage of a pipeline fails.
+set -Eeuo pipefail
+# errexit exits without saying where; report it.  Only the line number and
+# function call stack are printed, never the command text, which can carry
+# secret values.
+_on_err() {
+    # set -E carries this trap into $(...), where errexit is off.
+    [[ $- == *e* ]] || return 0
+    # || : so a failed write cannot replace the exit status.
+    printf '%s: command failed (exit %s, pipeline status %s) at line %s%s\n' \
+        'spur-cliff.sh (remote)' "$1" "$2" "$3" "${4:+ in ${4// / <- }}" >&2 || :
+}
+trap '_on_err "$?" "${PIPESTATUS[*]}" "$LINENO" "${FUNCNAME[*]-}"' ERR
 export PATH="/usr/local/bin:${PATH}"
 
 SHORT="${SHA:0:7}"

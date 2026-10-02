@@ -1,5 +1,9 @@
 #!/usr/bin/env bash
-set -euo pipefail
+# -E inherit ERR trap in functions and subshells,
+# -e exit the script upon commands failing,
+# -u to error if the script ever references a variable that is unset,
+# -o pipefail to error if any stage of a pipeline fails.
+set -Eeuo pipefail
 
 # Installed on the self-hosted runner; SSHes to the SPUR head node (AIC_SPUR_HOST) and runs tiny-test
 # against the tarball produced by spur-dist-build.sh for the same SHA (the stage
@@ -16,6 +20,18 @@ set -euo pipefail
 #     (spur-cliff-harvest.sh does the final cleanup).
 # The tiny model uses the cluster-wide HF cache so it is downloaded once and
 # reused across CI workflows and SPUR accounts.
+
+# errexit exits without saying where; report it.  Only the line number and
+# function call stack are printed, never the command text, which can carry
+# secret values.
+_on_err() {
+    # set -E carries this trap into $(...), where errexit is off.
+    [[ $- == *e* ]] || return 0
+    # || : so a failed write cannot replace the exit status.
+    printf '%s: command failed (exit %s, pipeline status %s) at line %s%s\n' \
+        "${0##*/}" "$1" "$2" "$3" "${4:+ in ${4// / <- }}" >&2 || :
+}
+trap '_on_err "$?" "${PIPESTATUS[*]}" "$LINENO" "${FUNCNAME[*]-}"' ERR
 
 SHA="${1:?usage: $0 <full-sha> [tiny-test|tiny-test-fast]}"
 AIC_TINY_TEST_TARGET="${2:-tiny-test}"
@@ -48,7 +64,22 @@ aic_ci_ssh_bash \
     AIC_CI_STORAGE_ROOT="${AIC_CI_STORAGE_ROOT}" \
     KEEP_ARTIFACTS="${KEEP_ARTIFACTS}" \
     HF_TOKEN="${HF_TOKEN:-}" << 'REMOTE'
-set -euo pipefail
+# -E inherit ERR trap in functions and subshells,
+# -e exit the script upon commands failing,
+# -u to error if the script ever references a variable that is unset,
+# -o pipefail to error if any stage of a pipeline fails.
+set -Eeuo pipefail
+# errexit exits without saying where; report it.  Only the line number and
+# function call stack are printed, never the command text, which can carry
+# secret values.
+_on_err() {
+    # set -E carries this trap into $(...), where errexit is off.
+    [[ $- == *e* ]] || return 0
+    # || : so a failed write cannot replace the exit status.
+    printf '%s: command failed (exit %s, pipeline status %s) at line %s%s\n' \
+        'spur-tiny-test.sh (remote)' "$1" "$2" "$3" "${4:+ in ${4// / <- }}" >&2 || :
+}
+trap '_on_err "$?" "${PIPESTATUS[*]}" "$LINENO" "${FUNCNAME[*]-}"' ERR
 
 SHORT="${SHA:0:7}"
 WORKDIR="$HOME/Projects/rocm-aic.${SHORT}.${AIC_CI_RUN_KEY}"

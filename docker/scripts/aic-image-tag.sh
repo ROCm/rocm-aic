@@ -15,7 +15,18 @@
 #
 # Usage:  aic-image-tag.sh
 #         aic-image-tag.sh [path/to/base/Dockerfile] [path/to/vllm/Dockerfile] [path/to/lmcache/Dockerfile]
-set -euo pipefail
+set -Eeuo pipefail
+# errexit exits without saying where; report it.  Only the line number and
+# function call stack are printed, never the command text, which can carry
+# secret values.
+_on_err() {
+  # set -E carries this trap into $(...), where errexit is off.
+  [[ $- == *e* ]] || return 0
+  # || : so a failed write cannot replace the exit status.
+  printf '%s: command failed (exit %s, pipeline status %s) at line %s%s\n' \
+    "${0##*/}" "$1" "$2" "$3" "${4:+ in ${4// / <- }}" >&2 || :
+}
+trap '_on_err "$?" "${PIPESTATUS[*]}" "$LINENO" "${FUNCNAME[*]-}"' ERR
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"

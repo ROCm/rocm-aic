@@ -1,5 +1,9 @@
 #!/usr/bin/env bash
-set -euo pipefail
+# -E inherit ERR trap in functions and subshells,
+# -e exit the script upon commands failing,
+# -u to error if the script ever references a variable that is unset,
+# -o pipefail to error if any stage of a pipeline fails.
+set -Eeuo pipefail
 
 # Runs from a workflow checkout on the self-hosted runner; SSHes to the SPUR head node (AIC_SPUR_HOST),
 # submits an srun job whose payload uses no GPU (SPUR still requires a GPU
@@ -15,6 +19,18 @@ set -euo pipefail
 # Uses the rocm-aic image tarball left by spur-dist-build.sh for the same SHA
 # (same TARBALL_DIR convention).  Set AIC_SMOKE_USE_REGISTRY=1 to pull from
 # a registry instead.
+
+# errexit exits without saying where; report it.  Only the line number and
+# function call stack are printed, never the command text, which can carry
+# secret values.
+_on_err() {
+    # set -E carries this trap into $(...), where errexit is off.
+    [[ $- == *e* ]] || return 0
+    # || : so a failed write cannot replace the exit status.
+    printf '%s: command failed (exit %s, pipeline status %s) at line %s%s\n' \
+        "${0##*/}" "$1" "$2" "$3" "${4:+ in ${4// / <- }}" >&2 || :
+}
+trap '_on_err "$?" "${PIPESTATUS[*]}" "$LINENO" "${FUNCNAME[*]-}"' ERR
 
 SHA="${1:?usage: $0 <full-sha>}"
 SHORT="${SHA:0:7}"
@@ -36,7 +52,22 @@ ssh -o ServerAliveInterval=30 -o ServerAliveCountMax=4 "${AIC_SPUR_HOST}" env \
     AIC_SLURM_ACCOUNT="${AIC_SLURM_ACCOUNT}" \
     AIC_SMOKE_USE_REGISTRY="${AIC_SMOKE_USE_REGISTRY}" \
     bash << 'REMOTE'
-set -euo pipefail
+# -E inherit ERR trap in functions and subshells,
+# -e exit the script upon commands failing,
+# -u to error if the script ever references a variable that is unset,
+# -o pipefail to error if any stage of a pipeline fails.
+set -Eeuo pipefail
+# errexit exits without saying where; report it.  Only the line number and
+# function call stack are printed, never the command text, which can carry
+# secret values.
+_on_err() {
+    # set -E carries this trap into $(...), where errexit is off.
+    [[ $- == *e* ]] || return 0
+    # || : so a failed write cannot replace the exit status.
+    printf '%s: command failed (exit %s, pipeline status %s) at line %s%s\n' \
+        'spur-monitoring-cpu-smoke.sh (remote)' "$1" "$2" "$3" "${4:+ in ${4// / <- }}" >&2 || :
+}
+trap '_on_err "$?" "${PIPESTATUS[*]}" "$LINENO" "${FUNCNAME[*]-}"' ERR
 export PATH="/usr/local/bin:${PATH}"
 
 SHORT="${SHA:0:7}"
@@ -78,7 +109,22 @@ SRUN_SCRIPT="$(mktemp "${WORKDIR}/aic-cpu-smoke-XXXXXX.sh")"
 
 cat > "${SRUN_SCRIPT}" << 'SRUN_BODY'
 #!/usr/bin/env bash
-set -euo pipefail
+# -E inherit ERR trap in functions and subshells,
+# -e exit the script upon commands failing,
+# -u to error if the script ever references a variable that is unset,
+# -o pipefail to error if any stage of a pipeline fails.
+set -Eeuo pipefail
+# errexit exits without saying where; report it.  Only the line number and
+# function call stack are printed, never the command text, which can carry
+# secret values.
+_on_err() {
+    # set -E carries this trap into $(...), where errexit is off.
+    [[ $- == *e* ]] || return 0
+    # || : so a failed write cannot replace the exit status.
+    printf '%s: command failed (exit %s, pipeline status %s) at line %s%s\n' \
+        'spur-monitoring-cpu-smoke.sh (srun body)' "$1" "$2" "$3" "${4:+ in ${4// / <- }}" >&2 || :
+}
+trap '_on_err "$?" "${PIPESTATUS[*]}" "$LINENO" "${FUNCNAME[*]-}"' ERR
 
 WORKDIR="${1}"
 AIC_IMAGE="${2}"

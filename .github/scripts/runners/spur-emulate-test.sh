@@ -1,5 +1,9 @@
 #!/usr/bin/env bash
-set -euo pipefail
+# -E inherit ERR trap in functions and subshells,
+# -e exit the script upon commands failing,
+# -u to error if the script ever references a variable that is unset,
+# -o pipefail to error if any stage of a pipeline fails.
+set -Eeuo pipefail
 
 # Used by the emulate-smoke job in aic-amd-dist-build-fast.yml, which runs on
 # a self-hosted runner and SSHes to the SPUR head node (AIC_SPUR_HOST) to build
@@ -16,6 +20,18 @@ set -euo pipefail
 # LLM-Emu hook active, steps drawn from the profile pack, and no model weights
 # loaded.  Those assertions matter because the dangerous failure mode is a
 # silent fall-through to real execution rather than a crash.
+
+# errexit exits without saying where; report it.  Only the line number and
+# function call stack are printed, never the command text, which can carry
+# secret values.
+_on_err() {
+    # set -E carries this trap into $(...), where errexit is off.
+    [[ $- == *e* ]] || return 0
+    # || : so a failed write cannot replace the exit status.
+    printf '%s: command failed (exit %s, pipeline status %s) at line %s%s\n' \
+        "${0##*/}" "$1" "$2" "$3" "${4:+ in ${4// / <- }}" >&2 || :
+}
+trap '_on_err "$?" "${PIPESTATUS[*]}" "$LINENO" "${FUNCNAME[*]-}"' ERR
 
 SHA="${1:?usage: $0 <full-sha>}"
 SHORT="${SHA:0:7}"
@@ -34,7 +50,22 @@ ssh -o ServerAliveInterval=30 -o ServerAliveCountMax=4 "${AIC_SPUR_HOST}" env \
     KEEP_ARTIFACTS="${KEEP_ARTIFACTS}" \
     HF_TOKEN="${HF_TOKEN:-}" \
     bash << 'REMOTE'
-set -euo pipefail
+# -E inherit ERR trap in functions and subshells,
+# -e exit the script upon commands failing,
+# -u to error if the script ever references a variable that is unset,
+# -o pipefail to error if any stage of a pipeline fails.
+set -Eeuo pipefail
+# errexit exits without saying where; report it.  Only the line number and
+# function call stack are printed, never the command text, which can carry
+# secret values.
+_on_err() {
+    # set -E carries this trap into $(...), where errexit is off.
+    [[ $- == *e* ]] || return 0
+    # || : so a failed write cannot replace the exit status.
+    printf '%s: command failed (exit %s, pipeline status %s) at line %s%s\n' \
+        'spur-emulate-test.sh (remote)' "$1" "$2" "$3" "${4:+ in ${4// / <- }}" >&2 || :
+}
+trap '_on_err "$?" "${PIPESTATUS[*]}" "$LINENO" "${FUNCNAME[*]-}"' ERR
 
 SHORT="${SHA:0:7}"
 WORKDIR="$HOME/Projects/rocm-aic.emu.${SHORT}"
@@ -50,7 +81,7 @@ _cleanup() {
 }
 if [[ "${KEEP_ARTIFACTS}" == "1" ]]; then
     cleanup_on_fail() { echo "=== Emulate test failed — cleaning up ==="; _cleanup; }
-    trap cleanup_on_fail ERR
+    trap '_on_err "$?" "${PIPESTATUS[*]}" "$LINENO" "${FUNCNAME[*]-}"; cleanup_on_fail' ERR
 else
     trap _cleanup EXIT
 fi
