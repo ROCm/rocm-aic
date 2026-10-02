@@ -32,6 +32,8 @@ ensure-compose:
 # docker-image:// build-context cannot see a locally built aic-base.  Export the
 # base in OCI layout and hand it over as oci-layout:// — the same approach
 # .slurm/run-build-distribute.sh uses for the distributed build.
+BUILD_PROGRESS ?= auto
+
 _BUILD_ARGS := \
 	--build-arg ROCM_ARCH="$(ROCM_ARCH)" \
 	--build-arg BUILD_JOBS="$(BUILD_JOBS)" \
@@ -74,7 +76,7 @@ build:
 	@echo "--- build [1/3]: aic-base:$(IMAGE_TAG) (ROCM_ARCH=$(ROCM_ARCH)) ---"
 	$(_NO_PROXY_ENV) docker buildx build \
 		--builder $(AIC_BUILDX_BUILDER) \
-		--progress=plain \
+		--progress=$(BUILD_PROGRESS) \
 		--load \
 		--output type=oci$(comma)dest="$(_OCI_TAR)" \
 		$(_BUILD_ARGS) \
@@ -88,7 +90,7 @@ build:
 	@echo "--- build [2/3]: $(VLLM_IMAGE_REF) ---"
 	$(_NO_PROXY_ENV) docker buildx build \
 		--builder $(AIC_BUILDX_BUILDER) \
-		--progress=plain \
+		--progress=$(BUILD_PROGRESS) \
 		--load \
 		$(_BUILD_ARGS) \
 		$(_CACHE_ARGS) \
@@ -101,7 +103,7 @@ build:
 	@echo "--- build [3/3]: $(LMCACHE_IMAGE_REF) ---"
 	$(_NO_PROXY_ENV) docker buildx build \
 		--builder $(AIC_BUILDX_BUILDER) \
-		--progress=plain \
+		--progress=$(BUILD_PROGRESS) \
 		--load \
 		$(_BUILD_ARGS) \
 		$(_CACHE_ARGS) \
