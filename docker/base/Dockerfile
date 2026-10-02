@@ -109,11 +109,15 @@ FROM base AS build_pytorch
 
 ARG ROCM_ARCH
 ARG PYTORCH_GIT_URL=https://github.com/ROCm/pytorch.git
-# Accepts a branch, tag, or commit SHA (cloned then checked out, so all three
-# work).  NOTE: release/2.13 is a MOVING branch — two builds of the same image
-# tag are not guaranteed to contain the same torch.  Pin to a commit SHA for a
-# reproducible build; every other framework here is pinned to an immutable ref.
-ARG PYTORCH_REF=release/2.13
+# Immutable commit pin.  ROCm/pytorch publishes no tag for the 2.13 series, so
+# a SHA is the only reproducible ref available; it is cloned then checked out,
+# so a branch or tag would work here too.  Head of release/2.13 as of
+# 2026-10-02 — the built wheel self-reports 2.13.0+git8e0af7f.
+ARG PYTORCH_REF=8e0af7fa4388411493540afa152777537bbbfc1c
+# Display only: the human-readable torch series carried in the image tag and
+# the README, since a bare SHA says nothing about which torch this is.  Bump
+# alongside PYTORCH_REF whenever the series changes.
+ARG PYTORCH_SERIES=2.13
 
 # torch 2.13 emits float->__bf16 libcalls absent from gcc-11; build with gcc-13.
 # hadolint ignore=DL3008

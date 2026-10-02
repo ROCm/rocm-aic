@@ -1,3 +1,9 @@
+# check=skip=InvalidDefaultArgInFrom
+# ROCM_VERSION deliberately carries no default here -- docker/base/Dockerfile
+# is its single source of truth and the Makefile forwards it to every build.
+# That leaves the fallback ROCM_BASE_IMAGE default unresolvable at lint time,
+# which is harmless: the `base` stage is always replaced by the base
+# build-context supplied by `make build`.
 # Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
 #
 # SPDX-License-Identifier: MIT
