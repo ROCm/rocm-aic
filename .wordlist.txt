@@ -167,6 +167,7 @@ nvme
 NVMe
 observability
 Observability
+OCI
 oF
 openai
 OpenAI
@@ -244,9 +245,11 @@ therock
 thinkstation
 tm
 tmp
+tmpfs
 tok
 tokenizer
 Tokenizer
+torchvision
 TP
 TPOT
 tracefs

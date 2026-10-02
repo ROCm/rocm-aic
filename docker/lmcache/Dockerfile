@@ -1,9 +1,3 @@
-# check=skip=InvalidDefaultArgInFrom
-# ROCM_VERSION deliberately carries no default here -- docker/base/Dockerfile
-# is its single source of truth and the Makefile forwards it to every build.
-# That leaves the fallback ROCM_BASE_IMAGE default unresolvable at lint time,
-# which is harmless: the `base` stage is always replaced by the base
-# build-context supplied by `make build`.
 # Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
 #
 # SPDX-License-Identifier: MIT
@@ -47,7 +41,15 @@
 # carries no default and must not be given one -- a second literal here is
 # exactly the drift this removes.
 ARG ROCM_VERSION
-ARG ROCM_BASE_IMAGE=rocm/dev-ubuntu-24.04:${ROCM_VERSION}-full
+# ROCM_BASE_IMAGE must be a parseable reference even when ROCM_VERSION is
+# unset: BuildKit resolves every stage name before the `base` build-context
+# can override this stage, so interpolating an empty ROCM_VERSION fails the
+# whole build with `rocm/dev-ubuntu-24.04:-full: invalid reference format`
+# -- even for callers that do supply the context.  The tag here is only a
+# placeholder for that parse; docker/base/Dockerfile remains the single
+# source of truth, and the fallback-base guard below rejects an image that
+# actually ends up built on it.
+ARG ROCM_BASE_IMAGE=rocm/dev-ubuntu-24.04:latest
 # hadolint ignore=DL3006
 FROM ${ROCM_BASE_IMAGE} AS base
 

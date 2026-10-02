@@ -56,14 +56,17 @@ rocm="$(_arg ROCM_VERSION "${BASE_DOCKERFILE}")"
 # tag; PYTORCH_REF is the immutable commit actually built.  Fall back to
 # deriving the series from PYTORCH_REF so an older tree without PYTORCH_SERIES,
 # or an override pinning a release/X.Y branch, still tags sensibly.
-pytorch="$(_arg PYTORCH_SERIES "${BASE_DOCKERFILE}")"
-if [[ -z "${pytorch}" ]]; then
-  pytorch_raw="$(_arg PYTORCH_REF "${BASE_DOCKERFILE}")"
-  if [[ "${pytorch_raw}" =~ release/([0-9]+\.[0-9]+) ]]; then
-    pytorch="${BASH_REMATCH[1]}"
-  else
-    pytorch="${pytorch_raw:0:7}"
-  fi
+# Prefer a series derivable from PYTORCH_REF itself: a release/X.Y ref states
+# its own series, and honouring it keeps a PYTORCH_REF override reflected in the
+# tag.  PYTORCH_SERIES is the source only when the ref cannot say (a commit SHA,
+# which is how the pin is normally expressed), falling back to a short SHA so an
+# override without a matching PYTORCH_SERIES still produces a distinct tag.
+pytorch_raw="$(_arg PYTORCH_REF "${BASE_DOCKERFILE}")"
+if [[ "${pytorch_raw}" =~ release/([0-9]+\.[0-9]+) ]]; then
+  pytorch="${BASH_REMATCH[1]}"
+else
+  pytorch="$(_arg PYTORCH_SERIES "${BASE_DOCKERFILE}")"
+  [[ -n "${pytorch}" ]] || pytorch="${pytorch_raw:0:7}"
 fi
 
 # Refs are git tags like v0.29.0 so we drop the leading v.
@@ -110,7 +113,8 @@ tag="${tag}-lmcache${lmcache}-nixl${nixl}-hsasnoop${hsasnoop}"
 # and the failure surfaces far from its cause.  The `gfx` prefix is emitted once
 # and stripped from the rest to stay inside Docker's 128-character tag limit.
 _arch_slug() {
-  printf '%s' "$1" | tr ';, ' '\n\n\n' | sed '/^$/d; s/^gfx//' | paste -sd- -
+  # SET2 is a single char: tr pads it, mapping ';', ',' and ' ' all to newline.
+  printf '%s' "$1" | tr ';, ' '\n' | sed '/^$/d; s/^gfx//' | paste -sd- -
 }
 if [[ -n "${ROCM_ARCH:-}" ]]; then
   _slug="gfx$(_arch_slug "${ROCM_ARCH}")"

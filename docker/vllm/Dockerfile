@@ -1,9 +1,3 @@
-# check=skip=InvalidDefaultArgInFrom
-# ROCM_VERSION deliberately carries no default here -- docker/base/Dockerfile
-# is its single source of truth and the Makefile forwards it to every build.
-# That leaves the fallback ROCM_BASE_IMAGE default unresolvable at lint time,
-# which is harmless: the `base` stage is always replaced by the base
-# build-context supplied by `make build`.
 # Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
 #
 # SPDX-License-Identifier: MIT
@@ -47,7 +41,15 @@
 # carries no default and must not be given one -- a second literal here is
 # exactly the drift this removes.
 ARG ROCM_VERSION
-ARG ROCM_BASE_IMAGE=rocm/dev-ubuntu-24.04:${ROCM_VERSION}-full
+# ROCM_BASE_IMAGE must be a parseable reference even when ROCM_VERSION is
+# unset: BuildKit resolves every stage name before the `base` build-context
+# can override this stage, so interpolating an empty ROCM_VERSION fails the
+# whole build with `rocm/dev-ubuntu-24.04:-full: invalid reference format`
+# -- even for callers that do supply the context.  The tag here is only a
+# placeholder for that parse; docker/base/Dockerfile remains the single
+# source of truth, and the fallback-base guard below rejects an image that
+# actually ends up built on it.
+ARG ROCM_BASE_IMAGE=rocm/dev-ubuntu-24.04:latest
 # hadolint ignore=DL3006
 FROM ${ROCM_BASE_IMAGE} AS base
 
@@ -184,15 +186,20 @@ print('vllm_emulator subpackages import OK')" && \
 # msgpack payloads with no version negotiation, so a mismatched pair misroutes
 # calls rather than failing cleanly.
 #
-# Single source of truth: ARG LMCACHE_REF in docker/lmcache/Dockerfile.  The
-# Makefile reads it there and forwards it here, so this carries no default and
-# must not be given one.  No build isolation needed: torch is already here.
+# Single source of truth: ARG LMCACHE_REF in docker/lmcache/Dockerfile.  Rather
+# than duplicating the pin here, read it out of that file at build time via a
+# bind mount, so every consumer agrees without having to pass the arg.  Callers
+# that do pass LMCACHE_REF (the Makefile forwards it) still win.  No build
+# isolation needed: torch is already here.
 ARG LMCACHE_REF
 RUN --mount=type=cache,target=/root/.cache/pip \
-    test -n "${LMCACHE_REF}" || { \
-        echo "ERROR: LMCACHE_REF is empty; build via 'make build'" >&2; exit 1; } && \
-    _ver="${LMCACHE_REF#v}" && \
-    pip3 install --no-cache-dir "lmcache==${_ver}"
+    --mount=type=bind,source=docker/lmcache/Dockerfile,target=/tmp/lmcache.Dockerfile \
+    _ref="${LMCACHE_REF:-$(sed -n 's/^ARG LMCACHE_REF=//p' /tmp/lmcache.Dockerfile | head -1)}" && \
+    test -n "${_ref}" || { \
+        echo "ERROR: could not resolve LMCACHE_REF from docker/lmcache/Dockerfile" >&2; \
+        exit 1; } && \
+    echo "lmcache client pin: ${_ref}" && \
+    pip3 install --no-cache-dir "lmcache==${_ref#v}"
 
 # ----- Runtime ENV + metadata -------------------------------------------------
 ENV PYTHONUNBUFFERED=1 \
