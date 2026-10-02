@@ -7,11 +7,17 @@
 # the versions pinned in the split Dockerfiles.
 #
 # Emits just the tag component (no image name) in the following format:
-#   CDNA (gfx9xx):  0.1.0-rocm7.14.1-pytorch2.13-vllm0.29.0-aiter0.1.22.post1-fa2.8.3.post1-lmcache0.5.5-nixl1.4.1-hsasnoop1.1.1
-#   RDNA (gfx12xx): 0.1.0-rocm7.14.1-pytorch2.13-vllm0.29.0-aiter0.1.22.post1-lmcache0.5.5-nixl1.4.1-hsasnoop1.1.1
+#   CDNA (gfx9xx):  0.1.0-rocm7.14.1-pytorch2.13-vllm0.29.0-aiter0.1.22.post1-fa2.8.3.post1-lmcache0.5.5-nixl1.4.1-hsasnoop1.1.1-gfx942
+#   RDNA (gfx12xx): 0.1.0-rocm7.14.1-pytorch2.13-vllm0.29.0-aiter0.1.22.post1-lmcache0.5.5-nixl1.4.1-hsasnoop1.1.1-gfx1250
+#   multi-arch:     ...-hsasnoop1.1.1-gfx90a-942-950
 # FlashAttention is omitted for non-CDNA arches (gfx10xx/gfx11xx/gfx12xx) because
 # the CK backend does not support RDNA Wave32 GPUs.
 # Where 0.1.0 represents the AIC version.
+#
+# The trailing arch suffix comes from ROCM_ARCH (`;`-separated, `,` and spaces
+# also accepted).  It is omitted when ROCM_ARCH is unset, and collapses to
+# gfxm<sha1-8> if a long arch list would exceed Docker's 128-character tag
+# limit.
 #
 # Usage:  aic-image-tag.sh
 #         aic-image-tag.sh [path/to/base/Dockerfile] [path/to/vllm/Dockerfile] [path/to/lmcache/Dockerfile]
@@ -97,4 +103,21 @@ done
 tag="${aic}-rocm${rocm}-pytorch${pytorch}-vllm${vllm}-aiter${aiter}"
 [[ "${include_fa}" -eq 1 ]] && tag="${tag}-fa${flash_attn}"
 tag="${tag}-lmcache${lmcache}-nixl${nixl}-hsasnoop${hsasnoop}"
+
+# The GPU arch is part of the image identity: the same framework versions
+# compiled for a different arch are a different image.  Without this they
+# collide on one tag, so a gfx1151 build silently satisfies a gfx1250 request
+# and the failure surfaces far from its cause.  The `gfx` prefix is emitted once
+# and stripped from the rest to stay inside Docker's 128-character tag limit.
+_arch_slug() {
+  printf '%s' "$1" | tr ';, ' '\n\n\n' | sed '/^$/d; s/^gfx//' | paste -sd- -
+}
+if [[ -n "${ROCM_ARCH:-}" ]]; then
+  _slug="gfx$(_arch_slug "${ROCM_ARCH}")"
+  # Fall back to a digest if a long multi-arch list would overflow the limit.
+  if (( ${#tag} + ${#_slug} + 1 > 128 )); then
+    _slug="gfxm$(printf '%s' "${ROCM_ARCH}" | sha1sum | cut -c1-8)"
+  fi
+  tag="${tag}-${_slug}"
+fi
 printf '%s\n' "${tag}"

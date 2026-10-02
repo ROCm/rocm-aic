@@ -294,16 +294,19 @@ capture-profile-local: prep-dirs
 # ---- rocjitsu VM test (local, no GPU hardware required) -------------------------
 #
 # Boots an Ubuntu guest VM under QEMU with an emulated gfx1250 GPU (rocjitsu
-# vfio-user server), builds the aic image for ROCM_ARCH=gfx1250 on the host,
-# loads it into the guest, and runs a single completion to verify the full stack.
+# vfio-user server), builds the aic image for ROCM_ARCH=gfx1250 on the host
+# (reusing it if already built — see RJ_FORCE_BUILD), loads it into the guest,
+# and runs a single completion to verify the full stack.
 #
 # Requires: /dev/kvm, HF_TOKEN (for HF model download), docker, docker buildx.
 # Images are pulled from sbates130272/batesste-ci-images-* on Docker Hub.
 # The VM gets an emulated NVMe device (RJ_NVME_COUNT) used as lmcache L2 storage.
 
-RJ_QEMU_IMAGE    ?= sbates130272/batesste-ci-images-ubuntu-qemu-libvfio-user-sbates-fork:20260919.g359579e-qemu.7794baa-vfu.8039244
-RJ_ROCJITSU_IMAGE ?= sbates130272/batesste-ci-images-ubuntu-rocm-rocjitsu:20260922.g555f601-rocjitsu.8e01a5a
-RJ_QCOW2_IMAGE   ?= sbates130272/batesste-ci-images-ubuntu-qcow2-gen-rocjitsu:20260922.gd2b49c6-vm.resolute-rocjitsu-qm.63cc0bc
+# All three come from the same 20260929.g2bdbd16 build of batesste-ci-images,
+# so bump them as a set — a mixed set is not a tested combination.
+RJ_QEMU_IMAGE    ?= sbates130272/batesste-ci-images-ubuntu-qemu-libvfio-user-sbates-fork:20260929.g2bdbd16-qemu.d757fa6-vfu.8039244
+RJ_ROCJITSU_IMAGE ?= sbates130272/batesste-ci-images-ubuntu-rocm-rocjitsu:20260929.g2bdbd16-rocjitsu.f2d13fb
+RJ_QCOW2_IMAGE   ?= sbates130272/batesste-ci-images-ubuntu-qcow2-gen-rocjitsu:20260929.g2bdbd16-vm.resolute-rocjitsu-qm.54cc234
 RJ_ROCJITSU_ARCH ?= gfx1250
 RJ_ROCJITSU_CONFIG ?= gfx1250_mi455x.json
 RJ_VM_VCPUS      ?= 4
@@ -317,7 +320,12 @@ RJ_LMCACHE_L1_SIZE_GB ?= 0.3
 # Number of emulated NVMe devices to attach via qemu-tool --nvme.
 RJ_NVME_COUNT    ?= 1
 RJ_NVME_MOUNT    ?= /mnt/lmcache-nvme
-# The built image tag for gfx1250 (computed at make time).
+# Rebuild even when arch-matching images are already present.  The default
+# reuses them: the image tag carries ROCM_ARCH, so a gfx1151 image can no longer
+# masquerade as the gfx1250 one this test needs.  A rebuild is a multi-hour
+# PyTorch + vLLM compile, so set AIC_CACHE_DIR to make one incremental.
+RJ_FORCE_BUILD   ?= 0
+# The built image tag for RJ_ROCJITSU_ARCH (computed at make time).
 _RJ_IMAGE_TAG    := $(shell ROCM_ARCH=$(RJ_ROCJITSU_ARCH) $(_FRAMEWORK_VERSION_ENV) \
                         $(REPO_ROOT)/docker/scripts/aic-image-tag.sh 2>/dev/null)
 RJ_IMAGE_REF     ?= $(VLLM_IMAGE_NAME):$(_RJ_IMAGE_TAG)
@@ -333,8 +341,16 @@ test-rocjitsu-local: prep-dirs
 	@docker pull -q "$(RJ_QEMU_IMAGE)"
 	@docker pull -q "$(RJ_ROCJITSU_IMAGE)"
 	@docker pull -q "$(RJ_QCOW2_IMAGE)"
-	@echo "[2/6] Building $(RJ_IMAGE_REF) for ROCM_ARCH=$(RJ_ROCJITSU_ARCH) on the host ..."
-	@ROCM_ARCH=$(RJ_ROCJITSU_ARCH) $(MAKE) --no-print-directory build IMAGE_TAG="$(_RJ_IMAGE_TAG)"
+	@if [ "$(RJ_FORCE_BUILD)" != "1" ] && \
+	    docker image inspect "$(RJ_IMAGE_REF)" >/dev/null 2>&1 && \
+	    docker image inspect "$(RJ_LMCACHE_IMAGE_REF)" >/dev/null 2>&1; then \
+	    echo "[2/6] Reusing existing $(RJ_ROCJITSU_ARCH) images (RJ_FORCE_BUILD=1 to rebuild):"; \
+	    echo "        $(RJ_IMAGE_REF)"; \
+	    echo "        $(RJ_LMCACHE_IMAGE_REF)"; \
+	else \
+	    echo "[2/6] Building $(RJ_IMAGE_REF) for ROCM_ARCH=$(RJ_ROCJITSU_ARCH) on the host ..."; \
+	    ROCM_ARCH=$(RJ_ROCJITSU_ARCH) $(MAKE) --no-print-directory build IMAGE_TAG="$(_RJ_IMAGE_TAG)"; \
+	fi
 	@echo "[3/6] Extracting guest disk and credentials ..."
 	@mkdir -p "$(RJ_WORK_DIR)/vm" "$(RJ_WORK_DIR)/fw"
 	@if [ -f "$(RJ_WORK_DIR)/vm/vm-info.json" ]; then \
