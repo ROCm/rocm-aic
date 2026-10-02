@@ -324,6 +324,8 @@ help:
 	@echo "  make tiny-test         End-to-end serve check (MP stack + tiny model, one completion)"
 	@echo "  make tiny-test-fast    Fast variant of tiny-test"
 	@echo "  make test-rocjitsu-local  Boot a QEMU VM with emulated gfx1250 (rocjitsu), build+load the gfx1250 image, run a test completion (requires /dev/kvm)"
+	@echo "                         Reuses matching gfx1250 images if present; RJ_FORCE_BUILD=1 rebuilds."
+	@echo "                         Set AIC_CACHE_DIR to make a rebuild incremental."
 	@echo "  make test-emulate-local  Local emulate test (no SLURM): bring up vllm-emulator, assert completion + hook"
 	@echo "  make stress-emulate-local  Start emulator + Prometheus, run sustained sweep, print /metrics"
 	@echo "  make capture-profile-local  Local profile capture (requires /dev/kfd): real GPU serve + sweep -> pack"
