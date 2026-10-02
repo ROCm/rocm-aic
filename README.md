@@ -3,12 +3,15 @@
 [![MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://github.com/ROCm/rocm-aic/blob/main/LICENSE.md)
 [![Platform](https://img.shields.io/badge/platform-linux-lightgrey.svg)](README.md)
 [![ROCm](https://img.shields.io/badge/ROCm-7.14.1-green.svg)](https://rocm.docs.amd.com)
-[![PyTorch](https://img.shields.io/badge/PyTorch-release%2F2.13-ee4c2c.svg)](https://github.com/ROCm/pytorch/tree/release/2.13)
+[![PyTorch](https://img.shields.io/badge/PyTorch-2.13%20%288e0af7f%29-ee4c2c.svg)](https://github.com/ROCm/pytorch/tree/8e0af7fa4388411493540afa152777537bbbfc1c)
 [![AITER](https://img.shields.io/badge/AITER-v0.1.22.post1-blue.svg)](https://github.com/ROCm/aiter/tree/v0.1.22.post1)
 [![vLLM](https://img.shields.io/badge/vLLM-v0.29.0-blue.svg)](https://github.com/vllm-project/vllm)
 [![LMCache](https://img.shields.io/badge/LMCache-v0.5.5-blue.svg)](https://github.com/LMCache/LMCache)
 [![NIXL](https://img.shields.io/badge/NIXL-v1.4.1-blue.svg)](https://github.com/ai-dynamo/nixl)
 [![hsa-snoop](https://img.shields.io/badge/hsa--snoop-v1.1.1-blue.svg)](https://github.com/sbates130272/hsa-snoop)
+[![rocjitsu](https://img.shields.io/badge/rocjitsu-f2d13fb-red.svg)](https://github.com/sbates130272/batesste-ci-images/tree/main/ubuntu-rocm-rocjitsu)
+[![qemu-vfu](https://img.shields.io/badge/qemu--vfu-d757fa6-red.svg)](https://github.com/sbates130272/batesste-ci-images/tree/main/ubuntu-qemu-libvfio-user)
+[![rocjitsu-guest](https://img.shields.io/badge/guest-resolute%2F54cc234-red.svg)](https://github.com/sbates130272/batesste-ci-images/tree/main/ubuntu-qcow2-gen)
 [![Spelling](https://github.com/ROCm/rocm-aic/actions/workflows/rocm-aic-spell-check.yml/badge.svg)](https://github.com/ROCm/rocm-aic/actions/workflows/rocm-aic-spell-check.yml)
 [![Lint](https://github.com/ROCm/rocm-aic/actions/workflows/rocm-aic-lint-check.yml/badge.svg)](https://github.com/ROCm/rocm-aic/actions/workflows/rocm-aic-lint-check.yml)
 [![Export Tarball](https://github.com/ROCm/rocm-aic/actions/workflows/rocm-aic-export-tarball.yml/badge.svg)](https://github.com/ROCm/rocm-aic/actions/workflows/rocm-aic-export-tarball.yml)
@@ -19,6 +22,7 @@
 [![Nightly Cliff](https://github.com/ROCm/rocm-aic/actions/workflows/rocm-aic-self-hosted-nightly-cliff-test.yml/badge.svg)](https://github.com/ROCm/rocm-aic/actions/workflows/rocm-aic-self-hosted-nightly-cliff-test.yml)
 [![Nightly Wheels](https://github.com/ROCm/rocm-aic/actions/workflows/rocm-aic-nightly-wheels-publication.yml/badge.svg)](https://github.com/ROCm/rocm-aic/actions/workflows/rocm-aic-nightly-wheels-publication.yml)
 [![Check PRs + Patches](https://github.com/ROCm/rocm-aic/actions/workflows/rocm-aic-check-prs-and-patches.yml/badge.svg)](https://github.com/ROCm/rocm-aic/actions/workflows/rocm-aic-check-prs-and-patches.yml)
+[![Rocjitsu VM Test](https://github.com/ROCm/rocm-aic/actions/workflows/rocm-aic-rocjitsu-test.yml/badge.svg)](https://github.com/ROCm/rocm-aic/actions/workflows/rocm-aic-rocjitsu-test.yml)
 [![Metrics Reference](https://img.shields.io/badge/Prometheus-Metrics_Reference-E05D00?logo=prometheus&logoColor=white)](https://rocm.github.io/rocm-aic/prometheus/)
 [![Cliff Perf Dashboard](https://img.shields.io/badge/Cliff-Perf_Dashboard-2980b9?logo=github&logoColor=white)](https://rocm.github.io/rocm-aic/cliff/)
 
@@ -44,7 +48,7 @@ platform.
 | Component | Source | Ref |
 | --- | --- | --- |
 | Base OS | `rocm/dev-ubuntu-24.04:7.14.1-full` | Ubuntu 24.04, ROCm 7.14, Python 3.12 |
-| PyTorch | `ROCm/pytorch` (source build) | `release/2.13` |
+| PyTorch | `ROCm/pytorch` (source build) | `2.13 (8e0af7f)` |
 | vLLM | `github.com/vllm-project/vllm` (source build) | `v0.29.0` + 3 AMD patches |
 | AITER | `ROCm/aiter` (source build) | `v0.1.22.post1` (vLLM ROCm-validated) |
 | FlashAttention | `Dao-AILab/flash-attention` (source build) | `0e60e394` (vLLM ROCm-validated) |

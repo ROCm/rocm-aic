@@ -36,8 +36,20 @@
 # when building this Dockerfile standalone without a pre-built aic-base image).
 # When --build-context base=docker-image://aic-base:<TAG> IS supplied, BuildKit
 # overrides this stage with the pre-built image and skips this FROM entirely.
-ARG ROCM_VERSION=7.14.1
-ARG ROCM_BASE_IMAGE=rocm/dev-ubuntu-24.04:${ROCM_VERSION}-full
+# Single source of truth: ARG ROCM_VERSION in docker/base/Dockerfile.
+# The Makefile reads it from there and forwards it to every build, so this
+# carries no default and must not be given one -- a second literal here is
+# exactly the drift this removes.
+ARG ROCM_VERSION
+# ROCM_BASE_IMAGE must be a parseable reference even when ROCM_VERSION is
+# unset: BuildKit resolves every stage name before the `base` build-context
+# can override this stage, so interpolating an empty ROCM_VERSION fails the
+# whole build with `rocm/dev-ubuntu-24.04:-full: invalid reference format`
+# -- even for callers that do supply the context.  The tag here is only a
+# placeholder for that parse; docker/base/Dockerfile remains the single
+# source of truth, and the fallback-base guard below rejects an image that
+# actually ends up built on it.
+ARG ROCM_BASE_IMAGE=rocm/dev-ubuntu-24.04:latest
 # hadolint ignore=DL3006
 FROM ${ROCM_BASE_IMAGE} AS base
 
@@ -48,6 +60,33 @@ FROM ${ROCM_BASE_IMAGE} AS base
 FROM base AS vllm
 
 ARG ROCM_ARCH
+# Cap compile parallelism; empty means "all cores".  Matches
+# docker/base/Dockerfile and docker/lmcache/Dockerfile.
+ARG BUILD_JOBS=
+
+# Guard against the fallback `base` stage being used by accident.  When a caller
+# forgets `--build-context base=...` this image builds green on the raw ROCm
+# base and ships without the source-built torch, and the failure only surfaces
+# at runtime, far from its cause.  Test for torch directly rather than guessing
+# about contexts.
+#
+# The `emulate` target legitimately has no aic-base: it builds with
+# VLLM_TARGET_DEVICE=empty and takes torch from the AMD wheel index instead
+# (see docs/EMULATE.md).  That path sets AIC_ALLOW_FALLBACK_BASE=1 to opt in.
+ARG AIC_ALLOW_FALLBACK_BASE=0
+RUN if ! python3 -c "import torch" >/dev/null 2>&1; then \
+        if [ "${AIC_ALLOW_FALLBACK_BASE}" = "1" ]; then \
+            echo "NOTE: no torch in base; continuing (AIC_ALLOW_FALLBACK_BASE=1)"; \
+        else \
+            echo "ERROR: no torch in the 'base' stage — the aic-base build-context" >&2; \
+            echo "       was not supplied, so the fallback raw-ROCm stage was used." >&2; \
+            echo "       Build via 'make build', or pass:" >&2; \
+            echo "         --build-context base=docker-image://aic-base:<tag>" >&2; \
+            echo "       Set AIC_ALLOW_FALLBACK_BASE=1 only for torch-from-pip" >&2; \
+            echo "       builds such as --target emulate." >&2; \
+            exit 1; \
+        fi; \
+    fi
 
 # vLLM: built from source at this tag.
 ARG VLLM_GIT_URL=https://github.com/vllm-project/vllm.git
@@ -103,11 +142,15 @@ RUN --mount=type=cache,target=/root/.cache/pip \
     VLLM_TARGET_DEVICE="${VLLM_TARGET_DEVICE}" \
         PYTORCH_ROCM_ARCH="${ROCM_ARCH}" \
         TORCH_DONT_CHECK_COMPILER_ABI=1 \
-        MAX_JOBS="$(nproc)" \
+        MAX_JOBS="${BUILD_JOBS:-$(nproc)}" \
+        CMAKE_BUILD_PARALLEL_LEVEL="${BUILD_JOBS:-$(nproc)}" \
         CCACHE_DIR=/root/.cache/ccache \
         VLLM_VERSION_OVERRIDE="${VLLM_REF#v}+${VLLM_TARGET_DEVICE}" \
         pip3 wheel --no-build-isolation --no-deps --no-cache-dir -w /wheels . && \
-    pip3 install --no-cache-dir /wheels/vllm-*.whl
+    pip3 install --no-cache-dir /wheels/vllm-*.whl && \
+    rm -rf /app/vllm /wheels /tmp/torch-constraints.txt && \
+    find /usr/lib/python3 /usr/local/lib/python3 -name '__pycache__' -type d \
+         -exec rm -rf {} + 2>/dev/null; true
 
 # ----- 3b. vllm_emulator (llm-emu profile-driven emulation plugin) -----------
 ARG LLM_EMU_GIT_URL=https://github.com/AKafakA/llm-emu.git
@@ -133,7 +176,30 @@ vllm_emulator.profile.loader, vllm_emulator.profiler.trace_profiler; \
 print('vllm_emulator subpackages import OK')" && \
     mkdir -p /opt/llm-emu/profiles && \
     cp /app/llm-emu/example_profiling_data/*.json /opt/llm-emu/profiles/ && \
-    test -r "${AIC_EMULATOR_EXAMPLE_PACK}"
+    test -r "${AIC_EMULATOR_EXAMPLE_PACK}" && \
+    rm -rf /app/llm-emu /app/patches
+
+# ----- LMCache client (KV transfer connector used by vllm service) -----------
+# Provides LMCacheMPConnector, which vLLM loads in-process for
+# --kv-transfer-config.  It must be the same release as the aic-lmcache server:
+# the MP wire protocol carries auto-numbered opcodes and positionally-decoded
+# msgpack payloads with no version negotiation, so a mismatched pair misroutes
+# calls rather than failing cleanly.
+#
+# Single source of truth: ARG LMCACHE_REF in docker/lmcache/Dockerfile.  Rather
+# than duplicating the pin here, read it out of that file at build time via a
+# bind mount, so every consumer agrees without having to pass the arg.  Callers
+# that do pass LMCACHE_REF (the Makefile forwards it) still win.  No build
+# isolation needed: torch is already here.
+ARG LMCACHE_REF
+RUN --mount=type=cache,target=/root/.cache/pip \
+    --mount=type=bind,source=docker/lmcache/Dockerfile,target=/tmp/lmcache.Dockerfile \
+    _ref="${LMCACHE_REF:-$(sed -n 's/^ARG LMCACHE_REF=//p' /tmp/lmcache.Dockerfile | head -1)}" && \
+    test -n "${_ref}" || { \
+        echo "ERROR: could not resolve LMCACHE_REF from docker/lmcache/Dockerfile" >&2; \
+        exit 1; } && \
+    echo "lmcache client pin: ${_ref}" && \
+    pip3 install --no-cache-dir "lmcache==${_ref#v}"
 
 # ----- Runtime ENV + metadata -------------------------------------------------
 ENV PYTHONUNBUFFERED=1 \

@@ -36,8 +36,20 @@
 # when building this Dockerfile standalone without a pre-built aic-base image).
 # When --build-context base=docker-image://aic-base:<TAG> IS supplied, BuildKit
 # overrides this stage with the pre-built image and skips this FROM entirely.
-ARG ROCM_VERSION=7.14.1
-ARG ROCM_BASE_IMAGE=rocm/dev-ubuntu-24.04:${ROCM_VERSION}-full
+# Single source of truth: ARG ROCM_VERSION in docker/base/Dockerfile.
+# The Makefile reads it from there and forwards it to every build, so this
+# carries no default and must not be given one -- a second literal here is
+# exactly the drift this removes.
+ARG ROCM_VERSION
+# ROCM_BASE_IMAGE must be a parseable reference even when ROCM_VERSION is
+# unset: BuildKit resolves every stage name before the `base` build-context
+# can override this stage, so interpolating an empty ROCM_VERSION fails the
+# whole build with `rocm/dev-ubuntu-24.04:-full: invalid reference format`
+# -- even for callers that do supply the context.  The tag here is only a
+# placeholder for that parse; docker/base/Dockerfile remains the single
+# source of truth, and the fallback-base guard below rejects an image that
+# actually ends up built on it.
+ARG ROCM_BASE_IMAGE=rocm/dev-ubuntu-24.04:latest
 # hadolint ignore=DL3006
 FROM ${ROCM_BASE_IMAGE} AS base
 
@@ -48,6 +60,23 @@ FROM ${ROCM_BASE_IMAGE} AS base
 FROM base AS build
 
 ARG ROCM_ARCH
+
+# See the matching guard in docker/vllm/Dockerfile.  AITER, FlashAttention and
+# LMCache all compile against torch, so a fallback base here produces an image
+# that fails at runtime rather than at build time.  No emulate equivalent exists
+# for this Dockerfile, but the opt-in is kept symmetric.
+ARG AIC_ALLOW_FALLBACK_BASE=0
+RUN if ! python3 -c "import torch" >/dev/null 2>&1; then \
+        if [ "${AIC_ALLOW_FALLBACK_BASE}" = "1" ]; then \
+            echo "NOTE: no torch in base; continuing (AIC_ALLOW_FALLBACK_BASE=1)"; \
+        else \
+            echo "ERROR: no torch in the 'base' stage — the aic-base build-context" >&2; \
+            echo "       was not supplied, so the fallback raw-ROCm stage was used." >&2; \
+            echo "       Build via 'make build', or pass:" >&2; \
+            echo "         --build-context base=docker-image://aic-base:<tag>" >&2; \
+            exit 1; \
+        fi; \
+    fi
 
 # Parallel compile jobs for C++/HIP source builds (LMCache, hsa-snoop).
 ARG BUILD_JOBS=
@@ -189,7 +218,7 @@ RUN --mount=type=cache,target=/root/.cache/pip \
     uv pip install --system --no-cache /wheels/lmcache-*.whl
 
 RUN --mount=type=cache,target=/root/.cache/uv \
-    uv pip install --system "matplotlib>=3.8,<4"
+    uv pip install --system "matplotlib>=3.8,<4" "openai>=1.0,<2"
 
 # Remove any NIXL wheels that upstream packages may have pulled — we build from source below.
 # Also purge stray CUDA-only deps (cupy-cuda12x, cufile-python, cuda-pathfinder).
@@ -205,6 +234,7 @@ COPY docker/scripts /tmp/nixl-scripts
 COPY patches/nixl/ /tmp/nixl-patches/
 # hadolint ignore=SC3054,SC3044
 RUN --mount=type=cache,target=/root/.cache/uv \
+    --mount=type=cache,target=/root/.cache/pip \
     chmod +x /tmp/nixl-scripts/*.sh && \
     NIXL_GIT_URL="${NIXL_GIT_URL}" NIXL_REF="${NIXL_REF}" NIXL_REQUIRE_ROCM=1 \
         NIXL_DEST=/tmp/nixl /tmp/nixl-scripts/clone-nixl.sh && \
@@ -240,7 +270,11 @@ RUN git clone --depth 1 --branch "${HSA_SNOOP_REF}" "${HSA_SNOOP_GIT_URL}" /app/
     # hadolint ignore=SC2015
     { /usr/local/bin/hsa-snoop --help 2>&1 || true; } | grep -q -- '--prometheus' \
         || { echo "ERROR: hsa-snoop built without Prometheus mode (--prometheus absent)" >&2; exit 1; } && \
-    echo "PASS: hsa-snoop ${HSA_SNOOP_REF} with Prometheus exporter (incl. AIS metrics) installed"
+    echo "PASS: hsa-snoop ${HSA_SNOOP_REF} with Prometheus exporter (incl. AIS metrics) installed" && \
+    rm -rf /app/hsa-snoop /app/patches /app/aiter /app/LMCache \
+           /app/flash-attention /wheels /tmp/nixl-patches /tmp/nixl-scripts && \
+    find /usr/lib/python3 /usr/local/lib/python3 -name '__pycache__' -type d \
+         -exec rm -rf {} + 2>/dev/null; true
 
 # ----- 8. Runtime environment ------------------------------------------------
 ENV PYTHONUNBUFFERED=1 \

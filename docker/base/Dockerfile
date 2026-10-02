@@ -108,8 +108,16 @@ RUN curl -fsSL "https://astral.sh/uv/${UV_VERSION}/install.sh" | sh && \
 FROM base AS build_pytorch
 
 ARG ROCM_ARCH
-ARG PYTORCH_REPO=https://github.com/ROCm/pytorch.git
-ARG PYTORCH_BRANCH=release/2.13
+ARG PYTORCH_GIT_URL=https://github.com/ROCm/pytorch.git
+# Immutable commit pin.  ROCm/pytorch publishes no tag for the 2.13 series, so
+# a SHA is the only reproducible ref available; it is cloned then checked out,
+# so a branch or tag would work here too.  Head of release/2.13 as of
+# 2026-10-02 — the built wheel self-reports 2.13.0+git8e0af7f.
+ARG PYTORCH_REF=8e0af7fa4388411493540afa152777537bbbfc1c
+# Display only: the human-readable torch series carried in the image tag and
+# the README, since a bare SHA says nothing about which torch this is.  Bump
+# alongside PYTORCH_REF whenever the series changes.
+ARG PYTORCH_SERIES=2.13
 
 # torch 2.13 emits float->__bf16 libcalls absent from gcc-11; build with gcc-13.
 # hadolint ignore=DL3008
@@ -121,7 +129,8 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-13 130 \
         --slave /usr/bin/g++ g++ /usr/bin/g++-13
 
-RUN git clone --branch "${PYTORCH_BRANCH}" "${PYTORCH_REPO}" /app/pytorch
+RUN git clone "${PYTORCH_GIT_URL}" /app/pytorch && \
+    git -C /app/pytorch checkout "${PYTORCH_REF}"
 
 RUN --mount=type=cache,target=/root/.cache/uv \
     cd /app/pytorch && \
@@ -130,6 +139,12 @@ RUN --mount=type=cache,target=/root/.cache/uv \
 
 ENV PYTORCH_ROCM_ARCH=${ROCM_ARCH}
 
+# Cap compile parallelism.  Without this the torch_cpu/ATen compile fans out to
+# every core; the heavier translation units peak well above 1 GB each, so on a
+# host with less RAM than ~2 GB per core this exhausts memory and can hard-hang
+# the machine.  Empty means "all cores", matching docker/lmcache/Dockerfile.
+ARG BUILD_JOBS=
+
 # hadolint ignore=SC2086
 RUN --mount=type=cache,target=/root/.cache/ccache \
     cd /app/pytorch && \
@@ -137,22 +152,30 @@ RUN --mount=type=cache,target=/root/.cache/ccache \
     CCACHE_DIR=/root/.cache/ccache \
     CMAKE_C_COMPILER_LAUNCHER=ccache \
     CMAKE_CXX_COMPILER_LAUNCHER=ccache \
+    MAX_JOBS="${BUILD_JOBS:-$(nproc)}" \
+    CMAKE_BUILD_PARALLEL_LEVEL="${BUILD_JOBS:-$(nproc)}" \
     CMAKE_PREFIX_PATH=$(python3 -c 'import sys; print(sys.prefix)') \
-        python3 setup.py bdist_wheel --dist-dir=/app/pytorch/dist
+        python3 setup.py bdist_wheel --dist-dir=/app/pytorch/dist && \
+    rm -rf /app/pytorch/build /app/pytorch/.git && \
+    find /app/pytorch -name '__pycache__' -type d -exec rm -rf {} + 2>/dev/null; \
+    find /app/pytorch -name '*.o' -maxdepth 8 -delete 2>/dev/null; true
 
 # =============================================================================
 # torchvision source build — must compile against our source-built PyTorch.
-# Pin TORCHVISION_BRANCH to the release matching PyTorch 2.13 (v0.28.x series).
+# Pin TORCHVISION_REF to the release matching PyTorch 2.13 (v0.28.x series).
 # NOTE: v0.29.0 requires torch::stable::permute which is not present in
 # ROCm/pytorch@release/2.13; stay on v0.28.0 until the ROCm fork advances.
 # =============================================================================
 FROM build_pytorch AS build_torchvision
 
 ARG ROCM_ARCH
-ARG TORCHVISION_REPO=https://github.com/pytorch/vision.git
-ARG TORCHVISION_BRANCH=v0.28.0
+# Re-declared: ARG does not carry across a FROM.
+ARG BUILD_JOBS=
+ARG TORCHVISION_GIT_URL=https://github.com/pytorch/vision.git
+# Immutable tag.  Shallow clone, so this must be a branch or tag, not a SHA.
+ARG TORCHVISION_REF=v0.28.0
 
-RUN git clone --depth 1 --branch "${TORCHVISION_BRANCH}" "${TORCHVISION_REPO}" /app/vision
+RUN git clone --depth 1 --branch "${TORCHVISION_REF}" "${TORCHVISION_GIT_URL}" /app/vision
 
 # hadolint ignore=SC2086,DL3008
 RUN --mount=type=cache,target=/root/.cache/pip \
@@ -167,6 +190,8 @@ RUN --mount=type=cache,target=/root/.cache/pip \
     CCACHE_DIR=/root/.cache/ccache \
     CMAKE_C_COMPILER_LAUNCHER=ccache \
     CMAKE_CXX_COMPILER_LAUNCHER=ccache \
+    MAX_JOBS="${BUILD_JOBS:-$(nproc)}" \
+    CMAKE_BUILD_PARALLEL_LEVEL="${BUILD_JOBS:-$(nproc)}" \
         python3 setup.py bdist_wheel --dist-dir=/app/vision/dist
 
 # =============================================================================
@@ -178,4 +203,7 @@ RUN --mount=type=cache,target=/root/.cache/pip \
 FROM build_torchvision AS runtime
 
 RUN --mount=type=cache,target=/root/.cache/pip \
-    pip3 install --no-cache-dir /app/vision/dist/*.whl
+    pip3 install --no-cache-dir /app/vision/dist/*.whl && \
+    rm -rf /app/pytorch /app/vision && \
+    find /usr/lib/python3 /usr/local/lib/python3 -name '__pycache__' -type d \
+         -exec rm -rf {} + 2>/dev/null; true

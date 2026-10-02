@@ -6,10 +6,6 @@
 # "repo root" is this directory (no dependency on any parent checkout).
 REPO_ROOT := $(CURDIR)
 
-# ai-dynamo/nixl v1.4.1 release; AIS_MT added via patches/nixl/.
-NIXL_GIT_URL := https://github.com/ai-dynamo/nixl.git
-NIXL_SHA     := v1.4.1
-
 IMAGE_NAME       ?= rocm-aic
 VLLM_IMAGE_NAME  ?= aic-vllm
 LMCACHE_IMAGE_NAME ?= aic-lmcache
@@ -20,9 +16,38 @@ override AIC_VERSION := $(strip $(file <$(REPO_ROOT)/VERSION))
 _ROCM_ARCH_DETECTED := $(shell rocm_agent_enumerator 2>/dev/null | grep -E '^gfx' | head -1)
 ROCM_ARCH := $(if $(strip $(ROCM_ARCH)),$(strip $(ROCM_ARCH)),$(_ROCM_ARCH_DETECTED))
 
-# PyTorch, vLLM, and all deps are source-built; PYTORCH_BRANCH, VLLM_REF, and
+# ROCM_VERSION has a single source of truth: the ARG in docker/base/Dockerfile.
+# It is read from there and forwarded to all three image builds, so the vllm and
+# lmcache images cannot drift from the base they are built on.  Must be defined
+# before _FRAMEWORK_VERSION_ENV below, which bakes it into the image tag.
+# Simply-expanded (:=) on purpose: _FRAMEWORK_VERSION_ENV and _BUILD_ARGS use
+# $(value ROCM_VERSION), which would otherwise hand on the literal $(shell ...)
+# text instead of the version string.
+ifeq ($(origin ROCM_VERSION),undefined)
+ROCM_VERSION := $(shell sed -n 's/^ARG ROCM_VERSION=//p' $(REPO_ROOT)/docker/base/Dockerfile | head -1)
+endif
+
+# LMCACHE_REF likewise: docker/lmcache/Dockerfile owns the pin (it is what the
+# image tag and the CI pin check read), and it is forwarded to the vllm build
+# too.  The vllm image installs the lmcache client that provides
+# LMCacheMPConnector, and the MP wire protocol has no version negotiation, so
+# client and server must come from the same release.  Also feeds _LMCACHE_VER
+# in mk/bench.mk.  Simply-expanded for the same reason as ROCM_VERSION.
+ifeq ($(origin LMCACHE_REF),undefined)
+LMCACHE_REF := $(shell sed -n 's/^ARG LMCACHE_REF=//p' $(REPO_ROOT)/docker/lmcache/Dockerfile | head -1)
+endif
+
+# PyTorch, vLLM, and all deps are source-built; PYTORCH_REF, VLLM_REF, and
 # LLM_EMU_REF are the key version knobs.  hipFile ships in the ROCm base image.
-_FRAMEWORK_VERSION_ARGS := AIC_VERSION ROCM_VERSION PYTORCH_BRANCH VLLM_REF LLM_EMU_REF AITER_REF FLASH_ATTN_REF LMCACHE_REF NIXL_REF HSA_SNOOP_REF
+_FRAMEWORK_VERSION_ARGS := AIC_VERSION ROCM_VERSION PYTORCH_REF PYTORCH_SERIES TORCHVISION_REF VLLM_REF LLM_EMU_REF AITER_REF FLASH_ATTN_REF LMCACHE_REF NIXL_REF HSA_SNOOP_REF
+# Repository URLs for the same frameworks.  Forwarded exactly like the version
+# pins so a build can be pointed at a fork without editing a Dockerfile; the
+# Dockerfile ARGs remain the source of truth for the defaults.  These do not
+# affect the image tag, so they stay out of _FRAMEWORK_VERSION_ENV.
+_FRAMEWORK_URL_ARGS := PYTORCH_GIT_URL TORCHVISION_GIT_URL VLLM_GIT_URL LLM_EMU_GIT_URL \
+                       AITER_GIT_URL FLASH_ATTN_GIT_URL LMCACHE_GIT_URL NIXL_GIT_URL HSA_SNOOP_GIT_URL
+_FRAMEWORK_ARGS := $(_FRAMEWORK_VERSION_ARGS) $(_FRAMEWORK_URL_ARGS)
+
 _single_quote := '
 _shell_quote = '$(subst $(_single_quote),'"'"',$(1))'
 _FRAMEWORK_VERSION_ENV := $(foreach _arg,$(_FRAMEWORK_VERSION_ARGS),$(if $(filter undefined,$(origin $(_arg))),,$(_arg)=$(call _shell_quote,$(value $(_arg)))))
@@ -91,9 +116,28 @@ BENCH_OUT         := $(BENCH_LOGDIR)/results/cliff-$(BENCH_ARM)-$(shell date +%Y
 # ---- Build parallelism -----------------------------------------------------
 BUILD_JOBS ?=
 
-# ---- Local buildx cache ----------------------------------------------------
-AIC_LOCAL_BUILDER   ?= aic-local
-AIC_LOCAL_CACHE_DIR ?= $(HOME)/.cache/rocm-aic-buildx
+# ---- BuildKit builder + layer cache ----------------------------------------
+# One builder name and one cache dir cover both the local `build` target and the
+# distributed build in .slurm/run-build-distribute.sh.  AIC_CACHE_DIR is set
+# further down (SPUR block); empty means "no layer cache".
+export AIC_BUILDX_BUILDER ?= aic-local
+export AIC_CACHE_MODE     ?= max
+
+# Registry endpoints that must bypass a TLS-intercepting corporate proxy.
+# The docker CLI forwards the shell's HTTPS_PROXY into every build, and the
+# docker-container builder then pulls base images through it and fails with
+# "x509: certificate signed by unknown authority".  Reached directly these hosts
+# serve a valid public cert, so listing them in NO_PROXY fixes the pull.  The
+# value is appended to any NO_PROXY already in the environment; set it empty to
+# opt out.  Only registry hosts belong here — build steps still need the proxy
+# for pypi.org, github.com, repo.radeon.com and friends.
+AIC_BUILD_NO_PROXY ?= docker.io,.docker.io,.docker.com,auth.docker.io,registry-1.docker.io,index.docker.io,production.cloudflare.docker.com
+
+# Per-arch cache subdir slug; mirrors _arch_tag() in run-build-distribute.sh.
+# Recursive (=) on purpose: the SPUR block below may override ROCM_ARCH.
+empty :=
+space := $(empty) $(empty)
+_ARCH_SLUG = $(subst $(comma),-,$(subst ;,-,$(subst $(space),-,$(ROCM_ARCH))))
 
 export AIC_VERSION ROCM_ARCH GPU GDS_SLAB_DATA LOG HF_HOME HF_TOKEN IMAGE_NAME IMAGE_REF IMAGE_TAG BUILD_JOBS
 export VLLM_IMAGE_NAME VLLM_IMAGE_REF LMCACHE_IMAGE_NAME LMCACHE_IMAGE_REF
@@ -101,21 +145,17 @@ export LMCACHE_PORT LMCACHE_L1_SIZE_GB LMCACHE_NVME_POOL LMCACHE_NVME_SLOT_SIZE 
 export NVME_DATA NFS_DATA
 export VLLM_MODEL TENSOR_PARALLEL_SIZE
 export VLM_GPU_MEMORY_UTILIZATION VLM_MAX_MODEL_LEN VLM_MAX_NUM_BATCHED_TOKENS VLM_BLOCK_SIZE
-export NIXL_GIT_URL NIXL_SHA
 export KVBENCH_GIT_URL KVBENCH_REF KVBENCH_IMAGE_REF KVBENCH_MODEL KVBENCH_GPU_PROFILE
 export KVBENCH_PORT KVBENCH_HOST_PORT KVBENCH_CHUNK_SIZE KVBENCH_LOCAL_CPU_SIZE_GB
 
-# Compose passes a declared build argument through only when it is present in
-# its environment.  Do not export empty attention-backend overrides: an empty
-# value would override the pinned Dockerfile default and produce an invalid
-# AITER release URL.  A non-empty command-line or environment override remains
-# available for validated version-pair updates.
-ifneq ($(strip $(AITER_REF)),)
-export AITER_REF
-endif
-ifneq ($(strip $(FLASH_ATTN_REF)),)
-export FLASH_ATTN_REF
-endif
+# Export every framework pin the caller actually overrode, so that
+# .slurm/run-build-distribute.sh and docker/scripts/aic-image-tag.sh — both of
+# which test `[[ -v NAME ]]` — see it.  Never export an empty value: an empty
+# build arg overrides the pinned Dockerfile default rather than falling back to
+# it (an empty AITER_REF, for example, produces an invalid AITER release URL).
+# The Dockerfile ARGs remain the single source of truth for the pins themselves;
+# this only forwards deliberate overrides.
+$(foreach _v,$(_FRAMEWORK_ARGS),$(if $(strip $(value $(_v))),$(eval export $(_v))))
 
 comma := ,
 _COMPOSE_BIN := docker compose
@@ -181,7 +221,10 @@ override export AIC_EXPORTERS            := safe
 override export AIC_HSA_SNOOP_PID_MODE  := container:aic-lmcache
 export LMCACHE_MAX_GPU_WORKERS      ?= 1
 else
-export AIC_CACHE_DIR        ?= /scratch/$(USER)/images/buildcache
+# Empty by default off-SPUR: a workstation has no /scratch, and an unwritable
+# cache dir is worse than none.  Set AIC_CACHE_DIR explicitly to enable the
+# BuildKit layer cache (e.g. a non-SPUR cluster with shared /scratch).
+export AIC_CACHE_DIR        ?=
 ifneq ($(wildcard /scratch/models/hub),)
 ifeq ($(origin HF_HOME),file)
 override export HF_HOME     := /scratch/models
@@ -226,10 +269,16 @@ help:
 	@echo ""
 	@echo "Stack targets:"
 	@echo "  make ensure-compose    Install the docker compose v2 plugin if missing (user-local)"
-	@echo "  make build             Build the shared image ($(IMAGE_REF))"
-	@echo "  make build-cached      Like build but uses buildx with a local layer cache"
-	@echo "                         (build_pytorch survives docker system prune)"
-	@echo "                         AIC_LOCAL_CACHE_DIR=$(AIC_LOCAL_CACHE_DIR)"
+	@echo "  make build             Three-stage buildx build, no Slurm needed:"
+	@echo "                           1. aic-base:$(IMAGE_TAG) (torch + torchvision)"
+	@echo "                           2. $(VLLM_IMAGE_REF)"
+	@echo "                           3. $(LMCACHE_IMAGE_REF)"
+	@echo "                         Stages 2-3 inherit aic-base via an OCI build-context."
+	@echo "                         AIC_CACHE_DIR=$(if $(strip $(AIC_CACHE_DIR)),$(AIC_CACHE_DIR),<empty: no layer cache>)"
+	@echo "                           Set it to keep BuildKit layers across docker system prune."
+	@echo "                           Cached per arch under <dir>/$(_ARCH_SLUG)/; mode=$(AIC_CACHE_MODE)."
+	@echo "                         AIC_BUILDX_BUILDER=$(AIC_BUILDX_BUILDER)"
+	@echo "                         TMPDIR holds a multi-GB base OCI layout — keep it off tmpfs."
 	@echo "  make up                Start lmcache + vllm (foreground, DRAM L1 + AIS_MT/NFS L2)"
 	@echo "  make up-batch          Start lmcache + vllm (background)"
 	@echo "  make up-dev            Start in dev mode: --enforce-eager skips CUDA graph capture (~60s faster, ~10% slower inference)"
@@ -275,6 +324,9 @@ help:
 	@echo "  make smoke-test-fast   Smoke-test the single-arch dev image (AIC_FAST_ARCH=$(AIC_FAST_ARCH))"
 	@echo "  make tiny-test         End-to-end serve check (MP stack + tiny model, one completion)"
 	@echo "  make tiny-test-fast    Fast variant of tiny-test"
+	@echo "  make test-rocjitsu-local  Boot a QEMU VM with emulated gfx1250 (rocjitsu), build+load the gfx1250 image, run a test completion (requires /dev/kvm)"
+	@echo "                         Reuses matching gfx1250 images if present; RJ_FORCE_BUILD=1 rebuilds."
+	@echo "                         Set AIC_CACHE_DIR to make a rebuild incremental."
 	@echo "  make test-emulate-local  Local emulate test (no SLURM): bring up vllm-emulator, assert completion + hook"
 	@echo "  make stress-emulate-local  Start emulator + Prometheus, run sustained sweep, print /metrics"
 	@echo "  make capture-profile-local  Local profile capture (requires /dev/kfd): real GPU serve + sweep -> pack"
@@ -300,7 +352,7 @@ help:
 	@echo "    Pin a node: AIC_CLIFF_NODE=<node>   Narrow arms: AIC_CLIFF_ARMS=nvme (vram,nvme,gds)"
 	@echo "    Target another GFX: AIC_CLIFF_GFX=gfx950 (or AIC_CLIFF_CONSTRAINT=<site>&GFX90A)"
 	@echo "    Override sweep/model via env: BENCH_CONCUR=1,8,64 VLLM_MODEL=... make cliff-submit"
-	@echo "    AIC_CACHE_DIR=$(AIC_CACHE_DIR)  (shared BuildKit cache; set empty to disable)"
+	@echo "    AIC_CACHE_DIR=$(if $(strip $(AIC_CACHE_DIR)),$(AIC_CACHE_DIR),<empty: no cache>)  (shared BuildKit cache; empty disables)"
 	@echo ""
 	@echo "Export target:"
 	@echo "  make export            Tarball the working-tree sources (tracked + local edits)"
@@ -338,7 +390,7 @@ help:
 	@echo ""
 	@echo "Examples:"
 	@echo "  make build"
-	@echo "  make build-cached ROCM_ARCH=gfx1201  # persistent buildx cache"
+	@echo "  make build ROCM_ARCH=gfx1201 AIC_CACHE_DIR=~/.cache/rocm-aic-buildx  # persistent layer cache"
 	@echo "  make build BUILD_JOBS=3          # cap parallelism on low-RAM hosts"
 	@echo "  make up HF_TOKEN=hf_... NVME_DATA=/mnt/nvme NFS_DATA=/mnt/nfs"
 	@echo "  make up-gds-l1 GDS_SLAB_DATA=/mnt/nvme HF_TOKEN=hf_..."

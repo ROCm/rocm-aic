@@ -3,7 +3,7 @@
 #
 # Local-dev targets: build, stack lifecycle, shells, logs, venv, reset test.
 
-.PHONY: ensure-compose build build-cached up up-batch up-dev up-gds-l1 up-gds-l1-batch \
+.PHONY: ensure-compose build up up-batch up-dev up-gds-l1 up-gds-l1-batch \
         down logs logs-lmcache logs-vllm ps shell-lmcache shell-vllm \
         restart-vllm restart-lmcache venv vllm-reset-test
 
@@ -22,40 +22,96 @@ ensure-compose:
 		echo "installed: $$(docker compose version --short 2>/dev/null)"; \
 	fi
 
-build: ensure-compose
-	@test -n "$(ROCM_ARCH)" || { \
-		echo "ERROR: ROCM_ARCH empty (install ROCm or set ROCM_ARCH=gfxNNNN)" >&2; exit 1; }
-	cd "$(REPO_ROOT)" && $(COMPOSE_CACHE) build \
-		$(if $(TLS_CERT),--secret id=tls_cert$(comma)src=$(TLS_CERT),)
-	@docker tag "$(IMAGE_REF)" "$(IMAGE_NAME):latest"
-	@echo "Built $(IMAGE_REF) (also tagged $(IMAGE_NAME):latest)"
+# Three-stage build: aic-base (torch + torchvision), then aic-vllm and
+# aic-lmcache, which both sit on top of it.  Each Dockerfile declares a fallback
+# `base` stage (FROM $ROCM_BASE_IMAGE); supplying a `base` build-context is what
+# makes vllm/lmcache inherit the torch-bearing aic-base instead.  Without it they
+# build green against the raw ROCm image and ship without torch.
+#
+# The docker-container buildx driver is isolated from the host daemon, so a
+# docker-image:// build-context cannot see a locally built aic-base.  Export the
+# base in OCI layout and hand it over as oci-layout:// — the same approach
+# .slurm/run-build-distribute.sh uses for the distributed build.
+_BUILD_ARGS := \
+	--build-arg ROCM_ARCH="$(ROCM_ARCH)" \
+	--build-arg BUILD_JOBS="$(BUILD_JOBS)" \
+	--build-arg AIC_UCX_FAST="$(AIC_UCX_FAST)" \
+	$(foreach _v,$(_FRAMEWORK_ARGS),$(if $(value $(_v)),--build-arg $(_v)="$(value $(_v))")) \
+	$(if $(TLS_CERT),--secret id=tls_cert$(comma)src=$(TLS_CERT),)
 
-build-cached:
+# Layer cache is opt-in: empty AIC_CACHE_DIR means no --cache-from/--cache-to.
+# ignore-error=true so a cache-export failure never fails the build.
+_CACHE_DIR  = $(if $(strip $(AIC_CACHE_DIR)),$(AIC_CACHE_DIR)/$(_ARCH_SLUG),)
+_CACHE_ARGS = $(if $(strip $(AIC_CACHE_DIR)),\
+	--cache-from type=local$(comma)src="$(_CACHE_DIR)" \
+	--cache-to type=local$(comma)dest="$(_CACHE_DIR)"$(comma)mode=$(AIC_CACHE_MODE)$(comma)ignore-error=true,)
+
+# Prefix for every buildx invocation: see AIC_BUILD_NO_PROXY in the top Makefile.
+# Appends to an existing NO_PROXY rather than replacing it.
+_NO_PROXY_ENV = $(if $(strip $(AIC_BUILD_NO_PROXY)),\
+	NO_PROXY="$${NO_PROXY:+$${NO_PROXY}$(comma)}$(AIC_BUILD_NO_PROXY)" \
+	no_proxy="$${no_proxy:+$${no_proxy}$(comma)}$(AIC_BUILD_NO_PROXY)",)
+
+# Base image OCI layout staging area.  Multi-GB — keep it off a small /tmp tmpfs
+# by pointing TMPDIR at a real filesystem.
+_OCI_TAR = $${TMPDIR:-/tmp}/aic-base-oci.$(IMAGE_TAG).tar
+_OCI_DIR = $${TMPDIR:-/tmp}/aic-base-oci.$(IMAGE_TAG).d
+
+build:
 	@test -n "$(ROCM_ARCH)" || { \
 		echo "ERROR: ROCM_ARCH empty (install ROCm or set ROCM_ARCH=gfxNNNN)" >&2; exit 1; }
-	@if ! docker buildx inspect $(AIC_LOCAL_BUILDER) >/dev/null 2>&1; then \
-		echo "Creating buildx builder $(AIC_LOCAL_BUILDER) (docker-container driver)..."; \
-		docker buildx create --name $(AIC_LOCAL_BUILDER) --driver docker-container --bootstrap; \
+	@if ! docker buildx inspect $(AIC_BUILDX_BUILDER) >/dev/null 2>&1; then \
+		echo "Creating buildx builder $(AIC_BUILDX_BUILDER) (docker-container driver)..."; \
+		docker buildx create --name $(AIC_BUILDX_BUILDER) --driver docker-container --bootstrap; \
 	fi
-	@mkdir -p "$(AIC_LOCAL_CACHE_DIR)"
-	@echo "Cache dir: $(AIC_LOCAL_CACHE_DIR)"
-	$(_FRAMEWORK_VERSION_ENV) DOCKER_BUILDKIT=1 \
-	docker buildx build \
-		--builder $(AIC_LOCAL_BUILDER) \
+	@if [ -n "$(strip $(AIC_CACHE_DIR))" ]; then \
+		mkdir -p "$(_CACHE_DIR)"; \
+		echo "Layer cache: $(_CACHE_DIR) (mode $(AIC_CACHE_MODE))"; \
+	else \
+		echo "Layer cache: disabled (set AIC_CACHE_DIR to enable)"; \
+	fi
+	@rm -rf "$(_OCI_TAR)" "$(_OCI_DIR)"
+	@echo "--- build [1/3]: aic-base:$(IMAGE_TAG) (ROCM_ARCH=$(ROCM_ARCH)) ---"
+	$(_NO_PROXY_ENV) docker buildx build \
+		--builder $(AIC_BUILDX_BUILDER) \
 		--progress=plain \
 		--load \
-		--build-arg ROCM_ARCH="$(ROCM_ARCH)" \
-		--build-arg BUILD_JOBS="$(BUILD_JOBS)" \
-		--build-arg AIC_UCX_FAST="$(AIC_UCX_FAST)" \
-		$(if $(TLS_CERT),--secret id=tls_cert$(comma)src=$(TLS_CERT),) \
-		--cache-from type=local,src="$(AIC_LOCAL_CACHE_DIR)" \
-		--cache-to   type=local,dest="$(AIC_LOCAL_CACHE_DIR)",mode=max \
-		-f "$(REPO_ROOT)/docker/lmcache/Dockerfile" \
-		-t "$(IMAGE_REF)" \
-		-t "$(IMAGE_NAME):latest" \
+		--output type=oci$(comma)dest="$(_OCI_TAR)" \
+		$(_BUILD_ARGS) \
+		$(_CACHE_ARGS) \
+		-f "$(REPO_ROOT)/docker/base/Dockerfile" \
+		-t "aic-base:$(IMAGE_TAG)" \
 		"$(REPO_ROOT)"
-	@echo "Built $(IMAGE_REF) (also tagged $(IMAGE_NAME):latest)"
-	@echo "Cache stored in $(AIC_LOCAL_CACHE_DIR)"
+	@mkdir -p "$(_OCI_DIR)"
+	@tar -xf "$(_OCI_TAR)" -C "$(_OCI_DIR)"
+	@rm -f "$(_OCI_TAR)"
+	@echo "--- build [2/3]: $(VLLM_IMAGE_REF) ---"
+	$(_NO_PROXY_ENV) docker buildx build \
+		--builder $(AIC_BUILDX_BUILDER) \
+		--progress=plain \
+		--load \
+		$(_BUILD_ARGS) \
+		$(_CACHE_ARGS) \
+		--build-context base="oci-layout://$(_OCI_DIR)" \
+		-f "$(REPO_ROOT)/docker/vllm/Dockerfile" \
+		-t "$(VLLM_IMAGE_REF)" \
+		"$(REPO_ROOT)"
+	@docker tag "$(VLLM_IMAGE_REF)" "$(VLLM_IMAGE_NAME):latest"
+	@echo "Built $(VLLM_IMAGE_REF) (also tagged $(VLLM_IMAGE_NAME):latest)"
+	@echo "--- build [3/3]: $(LMCACHE_IMAGE_REF) ---"
+	$(_NO_PROXY_ENV) docker buildx build \
+		--builder $(AIC_BUILDX_BUILDER) \
+		--progress=plain \
+		--load \
+		$(_BUILD_ARGS) \
+		$(_CACHE_ARGS) \
+		--build-context base="oci-layout://$(_OCI_DIR)" \
+		-f "$(REPO_ROOT)/docker/lmcache/Dockerfile" \
+		-t "$(LMCACHE_IMAGE_REF)" \
+		"$(REPO_ROOT)"
+	@docker tag "$(LMCACHE_IMAGE_REF)" "$(LMCACHE_IMAGE_NAME):latest"
+	@echo "Built $(LMCACHE_IMAGE_REF) (also tagged $(LMCACHE_IMAGE_NAME):latest)"
+	@rm -rf "$(_OCI_DIR)"
 
 up: ensure-compose check-hf-token prep-dirs
 	@mkdir -p "$(AIC_METRICS_DIR)"
@@ -76,10 +132,13 @@ up-dev: ensure-compose check-hf-token prep-dirs
 	@echo "Started in dev mode (enforce-eager, no CUDA graphs). Use 'make logs' to follow."
 
 up-gds-l1: ensure-compose check-hf-token check-gds-slab prep-dirs
-	GDS_MODE=1 $(COMPOSE_CACHE) up
+	@mkdir -p "$(AIC_METRICS_DIR)"
+	PROM_UID="$$(id -u)" PROM_GID="$$(id -g)" GDS_MODE=1 $(COMPOSE_CACHE) --profile monitoring up
 
 up-gds-l1-batch: ensure-compose check-hf-token check-gds-slab prep-dirs
-	GDS_MODE=1 $(COMPOSE_CACHE) up -d
+	@mkdir -p "$(AIC_METRICS_DIR)"
+	PROM_UID="$$(id -u)" PROM_GID="$$(id -g)" GDS_MODE=1 $(COMPOSE_CACHE) --profile monitoring up -d
+	@echo "Started (GDS L1 mode + monitoring). Use 'make logs' to follow or 'make down' to stop."
 	@echo "Started (GDS L1 mode). Use 'make logs' to follow or 'make down' to stop."
 
 down:
@@ -127,11 +186,11 @@ vllm-reset-test: check-hf-token prep-dirs
 	    AIC_L2_BACKEND=$(AIC_L2_BACKEND) \
 	    $(COMPOSE_CACHE) --profile monitoring up -d
 	@echo "Waiting for vLLM to be healthy..."
-	@for i in $$(seq 1 60); do \
+	@for i in $$(seq 1 $${VLM_READY_RETRIES:-60}); do \
 	    r=$$(docker exec aic-client curl -s -o /dev/null -w '%{http_code}' \
 	        http://aic-vllm-gpu0:8000/health 2>/dev/null); \
 	    [ "$$r" = "200" ] && echo "vLLM healthy after $${i}s" && break; \
-	    [ "$$i" = "60" ] && echo "ERROR: vLLM not healthy after 300s" >&2 && exit 1; \
+	    [ "$$i" = "$${VLM_READY_RETRIES:-60}" ] && echo "ERROR: vLLM not healthy after vllm_reset_test timeout" >&2 && exit 1; \
 	    sleep 5; \
 	done
 	@echo "Clearing vLLM GPU prefix cache..."
