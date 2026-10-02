@@ -110,10 +110,11 @@ FROM base AS build_pytorch
 ARG ROCM_ARCH
 ARG PYTORCH_GIT_URL=https://github.com/ROCm/pytorch.git
 # Accepts a branch, tag, or commit SHA (cloned then checked out, so all three
-# work).  NOTE: release/2.13 is a MOVING branch — two builds of the same image
-# tag are not guaranteed to contain the same torch.  Pin to a commit SHA for a
-# reproducible build; every other framework here is pinned to an immutable ref.
-ARG PYTORCH_REF=release/2.13
+# work).  Pinned to a SHA for reproducibility — release/2.13 is a moving branch
+# and a later commit updated third_party/composable_kernel to a version that
+# breaks gfx1250 (CK_BUFFER_RESOURCE_3RD_DWORD undeclared).  ec5f3b1 is the
+# last known-good commit for gfx1201+gfx1250.
+ARG PYTORCH_REF=ec5f3b1effb14f0e36b66bab4db1c9b49b278f82
 
 # torch 2.13 emits float->__bf16 libcalls absent from gcc-11; build with gcc-13.
 # hadolint ignore=DL3008
@@ -132,6 +133,20 @@ RUN --mount=type=cache,target=/root/.cache/uv \
     cd /app/pytorch && \
     uv pip install --system -r requirements.txt && \
     git submodule update --init --recursive
+
+COPY patches/ /app/patches/
+
+# Apply patches to pytorch and its submodules before the build.
+# Uses `patch -p1` (not `git apply`) so patches to submodule files work without
+# git submodule boundary issues.
+# hadolint ignore=SC2061
+RUN if compgen -G "/app/patches/pytorch/*.patch" > /dev/null; then \
+        for p in /app/patches/pytorch/*.patch; do \
+            echo "Applying pytorch patch: $p"; \
+            patch -p1 -d /app/pytorch < "$p" || { \
+                echo "ERROR: patch does not apply cleanly: $p" >&2; exit 1; }; \
+        done; \
+    fi
 
 ENV PYTORCH_ROCM_ARCH=${ROCM_ARCH}
 

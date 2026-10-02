@@ -64,7 +64,10 @@ build:
 		echo "ERROR: ROCM_ARCH empty (install ROCm or set ROCM_ARCH=gfxNNNN)" >&2; exit 1; }
 	@if ! docker buildx inspect $(AIC_BUILDX_BUILDER) >/dev/null 2>&1; then \
 		echo "Creating buildx builder $(AIC_BUILDX_BUILDER) (docker-container driver)..."; \
-		docker buildx create --name $(AIC_BUILDX_BUILDER) --driver docker-container --bootstrap; \
+		docker buildx create --name $(AIC_BUILDX_BUILDER) --driver docker-container \
+			--driver-opt env.BUILDKIT_STEP_LOG_MAX_SIZE=-1 \
+			--driver-opt env.BUILDKIT_STEP_LOG_MAX_SPEED=10485760 \
+			--bootstrap; \
 	fi
 	@if [ -n "$(strip $(AIC_CACHE_DIR))" ]; then \
 		mkdir -p "$(_CACHE_DIR)"; \
