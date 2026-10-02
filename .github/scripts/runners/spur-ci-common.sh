@@ -48,7 +48,6 @@ _aic_ci_session_exit() {
             AIC_CI_STAGE="${AIC_CI_STAGE}" \
             AIC_CI_SHORT_SHA="${AIC_CI_SHORT_SHA}" \
             AIC_CI_STORAGE_ROOT="${AIC_CI_STORAGE_ROOT}" \
-            AIC_SPUR_CONTROLLER="${AIC_SPUR_CONTROLLER}" \
             bash <<'REMOTE_CANCEL' || true
 set -u
 export PATH="/usr/local/bin:${PATH}"
@@ -70,7 +69,7 @@ if [[ -s "${JOB_FILE}" ]]; then
     read -r job_id < "${JOB_FILE}" || job_id=""
     if [[ "${job_id}" =~ ^[0-9]+$ ]]; then
         echo "Cancelling Slurm job ${job_id}"
-        scancel --controller="${AIC_SPUR_CONTROLLER}" "${job_id}" || true
+        scancel "${job_id}" || true
     fi
 fi
 

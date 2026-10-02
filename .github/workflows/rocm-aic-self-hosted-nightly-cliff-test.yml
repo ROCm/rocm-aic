@@ -17,7 +17,6 @@
 # Requires (all already in use by sibling nightly workflows):
 #   secrets.AIC_SPUR_HOST        — SSH target for the SPUR head node
 #   secrets.AIC_SHARED_NFS       — shared NFS path for image tarballs + scratch
-#   secrets.AIC_SPUR_CONTROLLER  — SPUR controller address
 #
 # GitHub Pages setup (one-time): Settings → Pages → Source: gh-pages branch, / (root).
 # The page will be served at https://rocm.github.io/rocm-aic/cliff/.
@@ -41,7 +40,6 @@ jobs:
       AIC_SPUR_HOST:       ${{ secrets.AIC_SPUR_HOST }}
       AIC_SHARED_NFS:      ${{ secrets.AIC_SHARED_NFS }}
       AIC_CI_STORAGE_ROOT: ${{ secrets.AIC_SHARED_NFS }}/rocm-aic
-      AIC_SPUR_CONTROLLER: ${{ secrets.AIC_SPUR_CONTROLLER }}
 
     steps:
       - uses: actions/checkout@v5
