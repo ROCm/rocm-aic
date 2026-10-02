@@ -59,6 +59,23 @@ FROM base AS build
 
 ARG ROCM_ARCH
 
+# See the matching guard in docker/vllm/Dockerfile.  AITER, FlashAttention and
+# LMCache all compile against torch, so a fallback base here produces an image
+# that fails at runtime rather than at build time.  No emulate equivalent exists
+# for this Dockerfile, but the opt-in is kept symmetric.
+ARG AIC_ALLOW_FALLBACK_BASE=0
+RUN if ! python3 -c "import torch" >/dev/null 2>&1; then \
+        if [ "${AIC_ALLOW_FALLBACK_BASE}" = "1" ]; then \
+            echo "NOTE: no torch in base; continuing (AIC_ALLOW_FALLBACK_BASE=1)"; \
+        else \
+            echo "ERROR: no torch in the 'base' stage — the aic-base build-context" >&2; \
+            echo "       was not supplied, so the fallback raw-ROCm stage was used." >&2; \
+            echo "       Build via 'make build', or pass:" >&2; \
+            echo "         --build-context base=docker-image://aic-base:<tag>" >&2; \
+            exit 1; \
+        fi; \
+    fi
+
 # Parallel compile jobs for C++/HIP source builds (LMCache, hsa-snoop).
 ARG BUILD_JOBS=
 

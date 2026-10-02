@@ -62,6 +62,30 @@ ARG ROCM_ARCH
 # docker/base/Dockerfile and docker/lmcache/Dockerfile.
 ARG BUILD_JOBS=
 
+# Guard against the fallback `base` stage being used by accident.  When a caller
+# forgets `--build-context base=...` this image builds green on the raw ROCm
+# base and ships without the source-built torch, and the failure only surfaces
+# at runtime, far from its cause.  Test for torch directly rather than guessing
+# about contexts.
+#
+# The `emulate` target legitimately has no aic-base: it builds with
+# VLLM_TARGET_DEVICE=empty and takes torch from the AMD wheel index instead
+# (see docs/EMULATE.md).  That path sets AIC_ALLOW_FALLBACK_BASE=1 to opt in.
+ARG AIC_ALLOW_FALLBACK_BASE=0
+RUN if ! python3 -c "import torch" >/dev/null 2>&1; then \
+        if [ "${AIC_ALLOW_FALLBACK_BASE}" = "1" ]; then \
+            echo "NOTE: no torch in base; continuing (AIC_ALLOW_FALLBACK_BASE=1)"; \
+        else \
+            echo "ERROR: no torch in the 'base' stage — the aic-base build-context" >&2; \
+            echo "       was not supplied, so the fallback raw-ROCm stage was used." >&2; \
+            echo "       Build via 'make build', or pass:" >&2; \
+            echo "         --build-context base=docker-image://aic-base:<tag>" >&2; \
+            echo "       Set AIC_ALLOW_FALLBACK_BASE=1 only for torch-from-pip" >&2; \
+            echo "       builds such as --target emulate." >&2; \
+            exit 1; \
+        fi; \
+    fi
+
 # vLLM: built from source at this tag.
 ARG VLLM_GIT_URL=https://github.com/vllm-project/vllm.git
 ARG VLLM_REF=v0.29.0

@@ -958,10 +958,17 @@ cmd_build() {
     [[ -n "${AIC_VLLM_TARGET_DEVICE}" ]] && \
         _vllm_device_arg="--build-arg VLLM_TARGET_DEVICE=${AIC_VLLM_TARGET_DEVICE}"
     # Pass a pre-built aic-base image as a named build context when one is
-    # available (AIC_BUILD_CONTEXT_BASE).  vllm/ and lmcache/ Dockerfiles have
-    # a self-contained fallback FROM stage so the build still works without it.
-    [[ -n "${AIC_BUILD_CONTEXT_BASE:-}" ]] && \
+    # available (AIC_BUILD_CONTEXT_BASE, e.g. docker-image://aic-base:<tag> or
+    # oci-layout://<dir>).  Without it the vllm/ and lmcache/ Dockerfiles fall
+    # back to a raw-ROCm `base` stage that has no source-built torch, so they
+    # now refuse to build unless AIC_ALLOW_FALLBACK_BASE=1 says that is
+    # intended (the emulate target, which takes torch from the wheel index).
+    local _fallback_arg=""
+    if [[ -n "${AIC_BUILD_CONTEXT_BASE:-}" ]]; then
         _context_arg="--build-context base=${AIC_BUILD_CONTEXT_BASE}"
+    else
+        _fallback_arg="--build-arg AIC_ALLOW_FALLBACK_BASE=${AIC_ALLOW_FALLBACK_BASE:-0}"
+    fi
 
     # --- Build program: plain `docker build`, or `docker buildx` with a shared
     #     registry cache when AIC_CACHE_REF is set.  The registry cache pushes each
@@ -1074,7 +1081,7 @@ docker buildx build --builder ${AIC_BUILDX_BUILDER} --progress=plain --output ty
     ${_version_build_args} \
     ${_vllm_device_arg} \
     ${_target_arg} \
-    ${_context_arg} \
+    ${_context_arg} ${_fallback_arg} \
     ${_secret_arg} \
     ${_cache_args} \
     -f "${AIC_DAY_DIR}/docker/${AIC_BUILD_DOCKERFILE:-lmcache/Dockerfile}" \
@@ -1120,7 +1127,7 @@ ${_build_program} \
     ${_version_build_args} \
     ${_vllm_device_arg} \
     ${_target_arg} \
-    ${_context_arg} \
+    ${_context_arg} ${_fallback_arg} \
     ${_secret_arg} \
     -f "${AIC_DAY_DIR}/docker/${AIC_BUILD_DOCKERFILE:-lmcache/Dockerfile}" \
     -t "${AIC_IMAGE}" \
@@ -1184,6 +1191,11 @@ cmd_build_emulate() {
     AIC_BUILD_TARGET="emulate"
     AIC_VLLM_TARGET_DEVICE="${AIC_EMULATE_VLLM_DEVICE}"
     AIC_BUILD_DOCKERFILE="vllm/Dockerfile"
+    # Deliberately builds without aic-base: with VLLM_TARGET_DEVICE=empty the
+    # vLLM stage installs requirements/common.txt and takes torch from the AMD
+    # wheel index, and nothing in this image runs on a GPU (docs/EMULATE.md).
+    # Opt in explicitly so the fallback-base guard allows it.
+    AIC_ALLOW_FALLBACK_BASE=1
     log "build-emulate: emulation-only image, no GPU kernels compiled"
     cmd_build
 }
