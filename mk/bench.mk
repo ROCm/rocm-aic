@@ -334,7 +334,7 @@ test-rocjitsu-local: prep-dirs
 	@docker pull -q "$(RJ_ROCJITSU_IMAGE)"
 	@docker pull -q "$(RJ_QCOW2_IMAGE)"
 	@echo "[2/6] Building $(RJ_IMAGE_REF) for ROCM_ARCH=$(RJ_ROCJITSU_ARCH) on the host ..."
-	@ROCM_ARCH=$(RJ_ROCJITSU_ARCH) $(MAKE) --no-print-directory build-local IMAGE_TAG="$(_RJ_IMAGE_TAG)"
+	@ROCM_ARCH=$(RJ_ROCJITSU_ARCH) $(MAKE) --no-print-directory build IMAGE_TAG="$(_RJ_IMAGE_TAG)"
 	@echo "[3/6] Extracting guest disk and credentials ..."
 	@mkdir -p "$(RJ_WORK_DIR)/vm" "$(RJ_WORK_DIR)/fw"
 	@if [ -f "$(RJ_WORK_DIR)/vm/vm-info.json" ]; then \

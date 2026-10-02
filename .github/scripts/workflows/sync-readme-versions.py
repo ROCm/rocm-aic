@@ -18,7 +18,7 @@ from urllib.parse import quote
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 # After the Dockerfile split, each service has its own Dockerfile.
-# ROCM_VERSION and PYTORCH_BRANCH live in base/; VLLM_REF in vllm/;
+# ROCM_VERSION and PYTORCH_REF live in base/; VLLM_REF in vllm/;
 # AITER_REF, LMCACHE_REF, NIXL_REF, HSA_SNOOP_REF in lmcache/.
 # For README sync we probe each Dockerfile for its own ARGs.
 BASE_DOCKERFILE = REPO_ROOT / "docker" / "base" / "Dockerfile"
@@ -31,7 +31,7 @@ README = REPO_ROOT / "README.md"
 _ARG_DOCKERFILE: dict[str, "Path"] = {
     "ROCM_VERSION": BASE_DOCKERFILE,
     "ROCM_BASE_IMAGE": BASE_DOCKERFILE,
-    "PYTORCH_BRANCH": BASE_DOCKERFILE,
+    "PYTORCH_REF": BASE_DOCKERFILE,
     "VLLM_REF": VLLM_DOCKERFILE,
     "AITER_REF": LMCACHE_DOCKERFILE,
     "LMCACHE_REF": LMCACHE_DOCKERFILE,
@@ -164,7 +164,7 @@ def render_readme(dockerfile_text: str, readme_text: str) -> tuple[str, list[str
         ensure_table_safe("NIXL patch filename", patch.name, patch)
     nixl_patch_summary = " + ".join(f"`{patch.name}`" for patch in nixl_patches)
     rocm_short = ".".join(rocm.split(".")[:2])
-    pytorch = values["PYTORCH_BRANCH"]
+    pytorch = values["PYTORCH_REF"]
     vllm = values["VLLM_REF"]
     aiter = values["AITER_REF"]
     lmcache = values["LMCACHE_REF"]

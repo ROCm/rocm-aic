@@ -58,7 +58,7 @@
 #   IMAGE_NAME             — image name when IMAGE_REF is unset (default: rocm-aic)
 #   AIC_VERSION            — AIC release from the root VERSION file
 #   ROCM_VERSION           — ROCm release used by the default base image
-#   PYTORCH_BRANCH, VLLM_REF, LLM_EMU_REF, AITER_REF, FLASH_ATTN_REF, LMCACHE_REF, NIXL_REF, HSA_SNOOP_REF
+#   PYTORCH_REF, VLLM_REF, LLM_EMU_REF, AITER_REF, FLASH_ATTN_REF, LMCACHE_REF, NIXL_REF, HSA_SNOOP_REF
 #                          — optional framework version build-arg overrides
 #   VLLM_MODEL             — model to serve
 #   LMCACHE_PORT           — lmcache ZMQ listen port (default: 6555)
@@ -325,23 +325,11 @@ services:
   lmcache:
     profiles:
       - cache
-    build:
-      # Compose lives in docker/; the build context is the  tree
-      # root (one level up) so the Dockerfile's COPY scripts/ patches/ benchmarks/
-      # monitoring/ paths still resolve.
-      context: ..
-      dockerfile: docker/lmcache/Dockerfile
-      args:
-        AIC_VERSION:
-        ROCM_VERSION:
-        ROCM_ARCH: ${ROCM_ARCH}
-        BUILD_JOBS: ${BUILD_JOBS:-}
-        AIC_UCX_FAST: ${AIC_UCX_FAST:-}
-        AITER_REF:
-        FLASH_ATTN_REF:
-        LMCACHE_REF:
-        NIXL_REF:
-        HSA_SNOOP_REF:
+    # No `build:` stanza on purpose.  This image must be built by `make build`,
+    # which supplies the `base` build-context carrying torch.  Compose cannot
+    # express that context, so a `docker compose build` here would silently fall
+    # back to the Dockerfile's raw-ROCm `base` stage and produce a torch-less
+    # image that fails at runtime.
     image: ${LMCACHE_IMAGE_REF:-${IMAGE_REF:-${IMAGE_NAME:-rocm-aic}:latest}}
     container_name: aic-lmcache
     # Cross-container HIP IPC (LMCacheMPConnector registering vLLM's KV tensors) on
@@ -453,16 +441,8 @@ services:
   # vllm: vLLM serve, optionally with LMCacheMPConnector (via KV_TRANSFER_ARG)
   # ---------------------------------------------------------------------------
   vllm:
-    build:
-      context: ..
-      dockerfile: docker/vllm/Dockerfile
-      args:
-        AIC_VERSION:
-        ROCM_VERSION:
-        ROCM_ARCH: ${ROCM_ARCH}
-        BUILD_JOBS: ${BUILD_JOBS:-}
-        VLLM_REF:
-        LLM_EMU_REF:
+    # No `build:` stanza on purpose — see the lmcache service above.  Build with
+    # `make build`, which supplies the torch-bearing `base` build-context.
     image: ${VLLM_IMAGE_REF:-${IMAGE_REF:-${IMAGE_NAME:-rocm-aic}:latest}}
     container_name: aic-vllm-gpu${GPU:-0}
     # Shared IPC/PID namespaces with lmcache: required for cross-container HIP IPC

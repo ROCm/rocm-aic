@@ -36,7 +36,11 @@
 # when building this Dockerfile standalone without a pre-built aic-base image).
 # When --build-context base=docker-image://aic-base:<TAG> IS supplied, BuildKit
 # overrides this stage with the pre-built image and skips this FROM entirely.
-ARG ROCM_VERSION=7.14.1
+# Single source of truth: ARG ROCM_VERSION in docker/base/Dockerfile.
+# The Makefile reads it from there and forwards it to every build, so this
+# carries no default and must not be given one -- a second literal here is
+# exactly the drift this removes.
+ARG ROCM_VERSION
 ARG ROCM_BASE_IMAGE=rocm/dev-ubuntu-24.04:${ROCM_VERSION}-full
 # hadolint ignore=DL3006
 FROM ${ROCM_BASE_IMAGE} AS base
@@ -48,6 +52,9 @@ FROM ${ROCM_BASE_IMAGE} AS base
 FROM base AS vllm
 
 ARG ROCM_ARCH
+# Cap compile parallelism; empty means "all cores".  Matches
+# docker/base/Dockerfile and docker/lmcache/Dockerfile.
+ARG BUILD_JOBS=
 
 # vLLM: built from source at this tag.
 ARG VLLM_GIT_URL=https://github.com/vllm-project/vllm.git
@@ -103,7 +110,8 @@ RUN --mount=type=cache,target=/root/.cache/pip \
     VLLM_TARGET_DEVICE="${VLLM_TARGET_DEVICE}" \
         PYTORCH_ROCM_ARCH="${ROCM_ARCH}" \
         TORCH_DONT_CHECK_COMPILER_ABI=1 \
-        MAX_JOBS="$(nproc)" \
+        MAX_JOBS="${BUILD_JOBS:-$(nproc)}" \
+        CMAKE_BUILD_PARALLEL_LEVEL="${BUILD_JOBS:-$(nproc)}" \
         CCACHE_DIR=/root/.cache/ccache \
         VLLM_VERSION_OVERRIDE="${VLLM_REF#v}+${VLLM_TARGET_DEVICE}" \
         pip3 wheel --no-build-isolation --no-deps --no-cache-dir -w /wheels . && \
