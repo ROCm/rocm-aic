@@ -37,7 +37,9 @@ _SPUR_COMMON_ARGS := --partition=amd-spur --constraint= --gres= --gpus=$(AIC_CLI
 _CLIFF_SUBMIT     = $(_CLIFF_SPUR_CTL) $(_CLIFF_STRIP) sbatch \
     $(_SPUR_COMMON_ARGS) $(1) .slurm/run-cliff.sbatch 2>&1 | \
     tee /dev/stderr | grep -oE '[0-9]+$$' | tail -1
-_KVBENCH_SBATCH_ARGS := --partition=amd-spur --constraint= \
+# GPUs reserved for a SPUR kvbench submit.  The KVBench cliff drives no GPU,
+# but SPUR refuses any submission that carries no GPU request at all.
+_KVBENCH_SBATCH_ARGS := --partition=amd-spur --constraint= --gpus=1 \
     $(if $(AIC_KVBENCH_NODE),--nodelist=$(AIC_KVBENCH_NODE),)
 _KVBENCH_SUBMIT := SPUR_CONTROLLER_ADDR=$(AIC_SPUR_CONTROLLER) $(_CLIFF_STRIP) sbatch \
     $(_KVBENCH_SBATCH_ARGS) $(1) .slurm/run-kvbench-cliff.sbatch 2>&1 | \

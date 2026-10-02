@@ -143,6 +143,10 @@
 #                        (e.g. <your-registry>/<project>/rocm-aic:buildcache)
 #                        (default: unset)
 #   AIC_CACHE_MODE       cache mode: min | max              (default: max)
+#   AIC_CACHE_RESET      pass reset=true on the type=local --cache-to so the
+#                        exporter drops blobs the new index.json no longer
+#                        references (default: 1; 0 disables). Requires Docker
+#                        buildx >= 0.35.0.
 #   AIC_BUILDX_BUILDER   docker-container buildx builder name (default: aic-cache)
 #   AIC_CACHE_INSECURE   set to 1 when AIC_CACHE_REF has an untrusted TLS cert
 #                        (self-signed / private-CA HTTPS, e.g. the in-cluster
@@ -373,6 +377,8 @@ AIC_PUSH_REF="${AIC_PUSH_REF:-}"
 AIC_CACHE_DIR="${AIC_CACHE_DIR:-}"
 AIC_CACHE_REF="${AIC_CACHE_REF:-}"
 AIC_CACHE_MODE="${AIC_CACHE_MODE:-max}"
+# Needs buildx >= 0.35.0. Avoids the Docker cache from growing endlessly.
+AIC_CACHE_RESET="${AIC_CACHE_RESET:-1}"
 AIC_BUILDX_BUILDER="${AIC_BUILDX_BUILDER:-aic-local}"
 AIC_CACHE_INSECURE="${AIC_CACHE_INSECURE:-}"
 AIC_TEST_TIME="${AIC_TEST_TIME:-00:45:00}"
@@ -417,7 +423,7 @@ fi
 AIC_TLS_CERT="${AIC_TLS_CERT:-}"
 
 log()  { printf '[build-distribute] %s\n' "$*" >&2; }
-die()  { printf '[build-distribute] ERROR: %s\n' "$*" >&2; _dump_job_log_tail; exit 1; }
+die()  { printf '[build-distribute] ERROR: %s\n' "$*" >&2; _dump_spur_job_state; _dump_job_log_tail; exit 1; }
 
 # Log of the sbatch job currently being watched.  Set by _sbatch_run once the job
 # id resolves, cleared when it returns; empty at every other point, which is what
@@ -425,6 +431,7 @@ die()  { printf '[build-distribute] ERROR: %s\n' "$*" >&2; _dump_job_log_tail; e
 # happen before a job exists.
 _active_job_logfile=""
 _active_job_desc=""
+_active_job_id=""
 
 # Last-resort diagnostics: re-read the job's own log and print its tail.
 #
@@ -453,6 +460,26 @@ _dump_job_log_tail() {
     tail -n "${n}" "${f}" ||
         log "WARNING: could not read ${f}"
     log "--- end of ${f} ---"
+}
+
+# SPUR only: print the scheduler's own verdict on the job.
+_dump_spur_job_state() {
+    [[ "${AIC_SPUR_CLUSTER}" == "1" && -n "${_active_job_id}" ]] || return 0
+    command -v spur >/dev/null 2>&1 || return 0
+    local out rc=0
+    out="$(spur show job "${_active_job_id}" \
+        --controller="${AIC_SPUR_CONTROLLER}" 2>&1)" || rc=$?
+    if (( rc != 0 )); then
+        log "WARNING: could not read scheduler state for job ${_active_job_id} (spur show job exited ${rc}): ${out}"
+        return 0
+    fi
+    if [[ -z "${out}" ]]; then
+        log "scheduler has no record of job ${_active_job_id}"
+        return 0
+    fi
+    log "--- scheduler state for job ${_active_job_id} ---"
+    printf '%s\n' "${out}" >&2
+    log "--- end scheduler state for job ${_active_job_id} ---"
 }
 
 # --- Compression: pick tool + file extension --------------------------------
@@ -600,6 +627,7 @@ PROLOGUE
     _track_job_log() {
         _active_job_logfile="${logfile}"
         _active_job_desc="${jobname} job ${jobid}"
+        _active_job_id="${jobid}"
     }
 
     _record_active_job() {
@@ -623,6 +651,15 @@ PROLOGUE
         printf '%s\n' "${script}" > "${tmpscript}"
         chmod +x "${tmpscript}"
 
+        # Need to provide atleast one GPU due to SPUR scheduling requirements.
+        local -a _spur_gpu=(--gpus=1)
+        local _opt
+        for _opt in "$@"; do
+            case "${_opt}" in
+                --gpus=*|--gpus-per-node=*|--gpus-per-task=*|--gres=gpu:*) _spur_gpu=() ;;
+            esac
+        done
+
         local submit_out
         submit_out="$(sbatch \
             --controller="${AIC_SPUR_CONTROLLER}" \
@@ -630,6 +667,7 @@ PROLOGUE
             --partition="${AIC_BUILD_PARTITION}" \
             ${AIC_SLURM_ACCOUNT:+--account="${AIC_SLURM_ACCOUNT}"} \
             --output=/dev/null \
+            "${_spur_gpu[@]}" \
             "$@" \
             "${tmpscript}" 2>&1)" || { rm -f "${tmpscript}"; die "sbatch submission failed: ${submit_out}"; }
         rm -f "${tmpscript}"
@@ -690,12 +728,13 @@ PROLOGUE
         _squeue_err_text() { tr '\n' ' ' < "${squeue_err}" 2>/dev/null | head -c 300; }
 
         # SPUR does NOT fold the job's stderr into --output the way Slurm does.
-        # It writes stderr to <submit-cwd>/spur-<jobid>.out and nothing reads
-        # that file.
+        # It writes stderr to spur-<jobid>.out and nothing reads that file.
+        # Check both <submit-cwd>/spur-<jobid>.out and /tmp/spur-<jobid>.out.
         _dump_spur_stderr() {
             local f
             local -a candidates=()
-            for f in "${PWD}/spur-${jobid}.out" "${AIC_DAY_DIR}/spur-${jobid}.out"; do
+            for f in "${PWD}/spur-${jobid}.out" "${AIC_DAY_DIR}/spur-${jobid}.out" \
+                     "/tmp/spur-${jobid}.out"; do
                 [[ " ${candidates[*]-} " == *" ${f} "* ]] || candidates+=("${f}")
             done
             for f in "${candidates[@]}"; do
@@ -870,8 +909,8 @@ PROLOGUE
         rm -f "${idfile}" 2>/dev/null || true
     fi
 
-    (( rc == 0 )) || _dump_job_log_tail
-    _active_job_logfile=""; _active_job_desc=""
+    (( rc == 0 )) || { _dump_spur_job_state; _dump_job_log_tail; }
+    _active_job_logfile=""; _active_job_desc=""; _active_job_id=""
     _clear_active_job
     return "${rc}"
 }
@@ -972,8 +1011,10 @@ cmd_build() {
             # apart stops one from evicting/locking the other's entries.
             local _cdir
             _cdir="${AIC_CACHE_DIR%/}/$(_arch_tag)${AIC_BUILD_TARGET:+-${AIC_BUILD_TARGET}}"
-            log "build cache: local dir ${_cdir} (mode ${AIC_CACHE_MODE}, builder ${AIC_BUILDX_BUILDER})"
-            _cache_args="--cache-from type=local,src=${_cdir} --cache-to type=local,dest=${_cdir},mode=${AIC_CACHE_MODE},ignore-error=true"
+            log "build cache: local dir ${_cdir} (mode ${AIC_CACHE_MODE}, reset ${AIC_CACHE_RESET}, builder ${AIC_BUILDX_BUILDER})"
+            local _reset=""
+            [[ "${AIC_CACHE_RESET}" == "1" ]] && _reset=",reset=true"
+            _cache_args="--cache-from type=local,src=${_cdir} --cache-to type=local,dest=${_cdir},mode=${AIC_CACHE_MODE},ignore-error=true${_reset}"
             _mkdir="mkdir -p '${_cdir}'; "
         fi
         # Create the docker-container builder once per node (idempotent), then
@@ -1073,7 +1114,6 @@ command -v docker >/dev/null 2>&1 || { echo "docker not found on build node \$(h
 echo "[build] host=\$(hostname) docker=\$(docker --version)"
 cd "${AIC_DAY_DIR}"
 ${_builder_setup}
-${_pre_load_block}
 ${_build_program} \
     --build-arg ROCM_ARCH="${AIC_ROCM_ARCH}" \
     --build-arg AIC_UCX_FAST="${AIC_UCX_FAST}" \
@@ -1438,8 +1478,11 @@ cmd_load() {
     # (unsupported); harmless on standard Slurm.
     local -a _overcommit_arg=(); [[ "${AIC_SPUR_CLUSTER}" != "1" ]] && _overcommit_arg=(--overcommit)
     local -a _spur_ctl_arg=(); [[ "${AIC_SPUR_CLUSTER}" == "1" ]] && _spur_ctl_arg=(--controller="${AIC_SPUR_CONTROLLER}")
+    # Need to provide atleast one GPU due to SPUR scheduling requirements.
+    local -a _spur_gpu_arg=(); [[ "${AIC_SPUR_CLUSTER}" == "1" ]] && _spur_gpu_arg=(--gpus-per-node=1)
     srun \
         "${_spur_ctl_arg[@]}" \
+        "${_spur_gpu_arg[@]}" \
         --job-name=aic-load \
         --partition="${AIC_BUILD_PARTITION}" \
         --nodelist="${AIC_TARGETS}" \
@@ -1512,8 +1555,11 @@ REMOTE
     fi
     local -a _push_overcommit=(); [[ "${AIC_SPUR_CLUSTER}" != "1" ]] && _push_overcommit=(--overcommit)
     local -a _push_spur_ctl=(); [[ "${AIC_SPUR_CLUSTER}" == "1" ]] && _push_spur_ctl=(--controller="${AIC_SPUR_CONTROLLER}")
+    # Need to provide atleast one GPU due to SPUR scheduling requirements.
+    local -a _push_spur_gpu=(); [[ "${AIC_SPUR_CLUSTER}" == "1" ]] && _push_spur_gpu=(--gpus=1)
     srun \
         "${_push_spur_ctl[@]}" \
+        "${_push_spur_gpu[@]}" \
         --job-name=aic-push \
         --partition="${AIC_BUILD_PARTITION}" \
         "${_sel[@]}" \
@@ -1822,9 +1868,15 @@ REMOTE
 # path end-to-end -- the functional gate wired into CI after smoke-test.
 cmd_tiny_test() {
     _pick_compress
-    local tarball; tarball="$(_tarball_path)"
+    local saved_image="${AIC_IMAGE}"
+    AIC_IMAGE="${AIC_VLLM_IMAGE}"
+    local vllm_tarball; vllm_tarball="$(_tarball_path)"
+    AIC_IMAGE="${AIC_LMCACHE_IMAGE}"
+    local lmcache_tarball; lmcache_tarball="$(_tarball_path)"
+    AIC_IMAGE="${saved_image}"
     command -v sbatch >/dev/null 2>&1 || die "sbatch not found; cannot run the GPU tiny-test job"
-    [[ -r "${tarball}" ]] || die "tarball not found: ${tarball} (run 'build' first)"
+    [[ -r "${vllm_tarball}" ]]    || die "vllm tarball not found: ${vllm_tarball} (run 'build' first)"
+    [[ -r "${lmcache_tarball}" ]] || die "lmcache tarball not found: ${lmcache_tarball} (run 'build' first)"
 
     local -a _sel
     if [[ -n "${AIC_TEST_NODE:-}" ]]; then
@@ -1834,7 +1886,7 @@ cmd_tiny_test() {
         _sel=(--constraint="${AIC_TEST_CONSTRAINT}")
         log "tiny-test via sbatch (partition ${AIC_BUILD_PARTITION}, constraint ${AIC_TEST_CONSTRAINT})"
     fi
-    log "image: ${AIC_IMAGE}  model: ${AIC_TINY_MODEL}  hf: ${HF_HOME}"
+    log "vllm: ${AIC_VLLM_IMAGE}  lmcache: ${AIC_LMCACHE_IMAGE}  model: ${AIC_TINY_MODEL}  hf: ${HF_HOME}"
 
     local remote_script
     remote_script="$(cat <<REMOTE
@@ -1852,19 +1904,25 @@ export GPU="\${AIC_ROCR_VISIBLE%%,*}"
 VLLM_CONTAINER="aic-vllm-gpu\${GPU}"
 echo "[tiny-test] allocated gpu: ROCR=\${AIC_ROCR_VISIBLE} HIP=\${AIC_HIP_VISIBLE} container=\${VLLM_CONTAINER}"
 
-# Load the image from the shared tarball only when needed (same marker logic as
-# smoke-test): reload when forced, absent, or the tarball is newer.
-_marker="/var/tmp/aic-loaded-\$(id -u)-\$(echo '${AIC_IMAGE}' | tr '/:' '__').mtime"
-_tar_mtime="\$(stat -c %Y '${tarball}' 2>/dev/null || echo 0)"
-_have_img="\$(docker images -q '${AIC_IMAGE}')"
-_loaded_mtime="\$(cat "\${_marker}" 2>/dev/null || echo 0)"
-if [ "${AIC_FORCE_LOAD:-0}" = "1" ] || [ -z "\${_have_img}" ] || [ "\${_tar_mtime}" -gt "\${_loaded_mtime}" ]; then
-    echo "[tiny-test] loading ${AIC_IMAGE} from ${tarball}"
-    ${DECOMPRESS_CMD} '${tarball}' | docker load >/dev/null
-    echo "\${_tar_mtime}" > "\${_marker}" 2>/dev/null || true
-else
-    echo "[tiny-test] image up to date on \$(hostname) (id \${_have_img})"
-fi
+# Load vllm + lmcache images only when needed (marker logic: reload when forced,
+# absent, or the tarball is newer than the last recorded load).
+_load_tiny_image() {
+    local _img="\$1" _tb="\$2"
+    local _marker
+    _marker="/var/tmp/aic-loaded-\$(id -u)-\$(echo "\${_img}" | tr '/:' '--').mtime"
+    local _tar_mtime; _tar_mtime="\$(stat -c %Y "\${_tb}" 2>/dev/null || echo 0)"
+    local _have; _have="\$(docker images -q "\${_img}" 2>&1)"
+    local _loaded_mtime; _loaded_mtime="\$(cat "\${_marker}" 2>/dev/null || echo 0)"
+    if [ "${AIC_FORCE_LOAD:-0}" = "1" ] || [ -z "\${_have}" ] || [ "\${_tar_mtime}" -gt "\${_loaded_mtime}" ]; then
+        echo "[tiny-test] loading \${_img} from \${_tb}"
+        ${DECOMPRESS_CMD} "\${_tb}" | docker load >/dev/null
+        echo "\${_tar_mtime}" > "\${_marker}" 2>/dev/null || true
+    else
+        echo "[tiny-test] \${_img} up to date on \$(hostname)"
+    fi
+}
+_load_tiny_image '${AIC_VLLM_IMAGE}'    '${vllm_tarball}'
+_load_tiny_image '${AIC_LMCACHE_IMAGE}' '${lmcache_tarball}'
 
 cd '${AIC_DAY_DIR}'
 # docker compose v2 only -- install user-locally if the node lacks the plugin.
@@ -1874,8 +1932,10 @@ ensure_compose || { echo "[tiny-test] docker compose unavailable and could not b
 
 # Tiny-model MP stack env.  Small footprint; the tiny model is downloaded online
 # into the persistent HF_HOME forwarded by the Makefile.
-export IMAGE_REF='${AIC_IMAGE}'
-export IMAGE_NAME='${AIC_IMAGE%:*}'
+export VLLM_IMAGE_REF='${AIC_VLLM_IMAGE}'
+export LMCACHE_IMAGE_REF='${AIC_LMCACHE_IMAGE}'
+export IMAGE_REF='${AIC_LMCACHE_IMAGE}'
+export IMAGE_NAME='${AIC_LMCACHE_IMAGE%:*}'
 export ROCM_ARCH='${AIC_ROCM_ARCH}'
 export VLLM_MODEL='${AIC_TINY_MODEL}'
 export HF_HOME='${HF_HOME}'
@@ -3158,7 +3218,8 @@ exec '${AIC_DAY_DIR}/.slurm/run-accuracy.sh'
 REMOTE
 )"
 
-    local -a _gres_arg=(); [[ "${AIC_SPUR_CLUSTER}" != "1" ]] && _gres_arg=(--gres=gpu:1)
+    local -a _gres_arg=(--gres=gpu:1)
+    [[ "${AIC_SPUR_CLUSTER}" == "1" ]] && _gres_arg=(--gpus=1)
     _sbatch_run aic-accuracy-test accuracy-test "${remote_script}" \
         "${_sel[@]}" \
         "${_gres_arg[@]}" \
@@ -3399,7 +3460,8 @@ exit \${sweep_rc}
 REMOTE
 )"
 
-    local -a _gres_arg=(); [[ "${AIC_SPUR_CLUSTER}" != "1" ]] && _gres_arg=(--gres=gpu:1)
+    local -a _gres_arg=(--gres=gpu:1)
+    [[ "${AIC_SPUR_CLUSTER}" == "1" ]] && _gres_arg=(--gpus=1)
     _sbatch_run aic-profile-capture profile-capture "${remote_script}" \
         "${_sel[@]}" \
         "${_gres_arg[@]}" \
