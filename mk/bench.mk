@@ -309,8 +309,8 @@ RJ_ROCJITSU_IMAGE ?= sbates130272/batesste-ci-images-ubuntu-rocm-rocjitsu:202609
 RJ_QCOW2_IMAGE   ?= sbates130272/batesste-ci-images-ubuntu-qcow2-gen-rocjitsu:20260929.g2bdbd16-vm.resolute-rocjitsu-qm.54cc234
 RJ_ROCJITSU_ARCH ?= gfx1250
 RJ_ROCJITSU_CONFIG ?= gfx1250_mi455x.json
-RJ_VM_VCPUS      ?= 4
-RJ_VM_MEM_MB     ?= 8192
+RJ_VM_VCPUS      ?= 8
+RJ_VM_MEM_MB     ?= 16384
 RJ_SSH_PORT      ?= 12222
 RJ_READY_S       ?= 300
 RJ_WORK_DIR      ?= /tmp/aic-rocjitsu-test
@@ -367,7 +367,24 @@ test-rocjitsu-local: prep-dirs
 	@docker run --rm -v "$(RJ_WORK_DIR)/fw:/out" "$(RJ_ROCJITSU_IMAGE)" \
 	    python3 /usr/local/bin/vfio_guest_firmware.py --output /out \
 	    2>&1 | sed 's/^/  [fw] /'
-	@mkdir -p "$(RJ_WORK_DIR)/shared/metrics"
+	@mkdir -p "$(RJ_WORK_DIR)/shared/metrics" "$(RJ_WORK_DIR)/shared/images"
+	@echo "[4b/6] Pre-saving images to shared dir (runs in background while VM boots) ..."
+	@for _img in "$(RJ_IMAGE_REF)" "$(RJ_LMCACHE_IMAGE_REF)" \
+	             "aic-nvme-exporter:local" "aic-rdma-exporter:local"; do \
+	    _slug=$$(echo "$$_img" | tr '/: ' '___'); \
+	    _tar="$(RJ_WORK_DIR)/shared/images/$$_slug.tar"; \
+	    _local_id=$$(docker inspect --format '{{.ID}}' "$$_img" 2>/dev/null); \
+	    _cached_id=$$(cat "$$_tar.id" 2>/dev/null); \
+	    if [ "$$_local_id" = "$$_cached_id" ] && [ -f "$$_tar" ]; then \
+	        echo "  $$_img — tar cache hit, skipping save"; \
+	        touch "$$_tar.done"; \
+	    else \
+	        echo "  $$_img — saving to $$_tar ..."; \
+	        rm -f "$$_tar.done"; \
+	        (docker save "$$_img" -o "$$_tar" && echo "$$_local_id" > "$$_tar.id" \
+	            && touch "$$_tar.done" && echo "  $$_img — save done") & \
+	    fi; \
+	done
 	@rsync -a --delete --exclude='.git' --exclude='__pycache__' --exclude='*.pyc' \
 	    --exclude='.venv' --exclude='logs/' --exclude='$(notdir $(RJ_WORK_DIR))/' \
 	    "$(REPO_ROOT)/" "$(RJ_WORK_DIR)/shared/repo/"
@@ -446,9 +463,19 @@ test-rocjitsu-local: prep-dirs
 	_vmuser=$$(python3 -c "import json,sys; print(json.load(open(sys.argv[1]))['username'])" \
 	    "$(RJ_WORK_DIR)/vm/vm-info.json"); \
 	_ssh_flags="-i $$_key -o StrictHostKeyChecking=no -o BatchMode=yes -p $(RJ_SSH_PORT)"; \
+	echo "  Mounting 9p shared filesystem in VM ..."; \
+	ssh $$_ssh_flags "$$_vmuser@localhost" \
+	    "sudo mkdir -p /rj-share && \
+	     mountpoint -q /rj-share || \
+	     sudo mount -t 9p -o trans=virtio,version=9p2000.L hostfs /rj-share" \
+	    2>&1 | sed 's/^/  [9p] /'; \
 	echo "  Installing Docker in VM if not present ..."; \
 	ssh $$_ssh_flags "$$_vmuser@localhost" \
-	    "which docker >/dev/null 2>&1 || (curl -fsSL https://get.docker.com | sudo sh && sudo usermod -aG docker $$_vmuser)" \
+	    "sudo rm -f /etc/apt/sources.list.d/rocm.sources && sudo apt-get update -qq 2>/dev/null; true" \
+	    2>&1 | sed 's/^/  [apt-cleanup] /'; \
+	ssh $$_ssh_flags "$$_vmuser@localhost" \
+	    "which docker >/dev/null 2>&1 || \
+	         (curl -fsSL https://get.docker.com | sudo sh && sudo usermod -aG docker $$_vmuser)" \
 	    2>&1 | sed 's/^/  [docker-install] /'; \
 	echo "  Installing generated firmware into VM ..."; \
 	ssh $$_ssh_flags "$$_vmuser@localhost" "sudo mkdir -p /lib/firmware/amdgpu"; \
@@ -509,33 +536,35 @@ test-rocjitsu-local: prep-dirs
 	     && sudo chmod 1777 $(RJ_NVME_MOUNT)" \
 	    2>&1 | sed 's/^/  [nvme] /'; \
 	echo "  NVMe $$_nvme mounted at $(RJ_NVME_MOUNT)"; \
-	echo "  [6c] Loading images into VM ..."; \
+	echo "  [6c] Loading images into VM (via 9p shared dir) ..."; \
 	for _img in "$(RJ_IMAGE_REF)" "$(RJ_LMCACHE_IMAGE_REF)" \
 	             "aic-nvme-exporter:local" "aic-rdma-exporter:local"; do \
+	    _slug=$$(echo "$$_img" | tr '/: ' '___'); \
+	    _tar="$(RJ_WORK_DIR)/shared/images/$$_slug.tar"; \
+	    _rj_tar="/rj-share/images/$$_slug.tar"; \
 	    _local_id=$$(docker inspect --format '{{.ID}}' "$$_img" 2>/dev/null); \
 	    _vm_id=$$(ssh $$_ssh_flags "$$_vmuser@localhost" \
 	        "sudo docker inspect --format '{{.ID}}' '$$_img' 2>/dev/null" 2>/dev/null); \
 	    if [ -n "$$_local_id" ] && [ "$$_local_id" = "$$_vm_id" ]; then \
 	        echo "  $$_img already in VM — skipping"; \
 	    else \
-	        echo "  Transferring $$_img ..."; \
-	        docker save "$$_img" | ssh $$_ssh_flags "$$_vmuser@localhost" "sudo docker load" \
+	        echo "  Waiting for $$_img tar ..."; \
+	        _waited=0; \
+	        while [ ! -f "$$_tar.done" ] && [ "$$_waited" -lt 600 ]; do \
+	            sleep 2; _waited=$$(($$_waited+2)); \
+	        done; \
+	        [ -f "$$_tar.done" ] || { echo "WARN: save did not finish, loading anyway"; }; \
+	        echo "  Loading $$_img from 9p share ..."; \
+	        ssh $$_ssh_flags "$$_vmuser@localhost" "sudo docker load -i $$_rj_tar" \
 	            2>&1 | sed 's/^/  [load] /'; \
 	    fi; \
 	done; \
 	echo "  [6c.4] Patching images with missing deps ..."; \
 	ssh $$_ssh_flags "$$_vmuser@localhost" \
-	    "sudo docker rm -f lmcache-patch vllm-patch 2>/dev/null || true; \
-	     sudo docker run --name lmcache-patch \
-	         --entrypoint pip3 $(RJ_LMCACHE_IMAGE_REF) \
-	         install openai -q 2>&1 && \
-	     sudo docker commit lmcache-patch $(RJ_LMCACHE_IMAGE_REF) >/dev/null && \
-	     sudo docker rm lmcache-patch >/dev/null && \
-	     sudo docker run --name vllm-patch \
-	         --entrypoint pip3 $(RJ_IMAGE_REF) \
-	         install 'lmcache==$(_LMCACHE_VER)' -q 2>&1 && \
-	     sudo docker commit vllm-patch $(RJ_IMAGE_REF) >/dev/null && \
-	     sudo docker rm vllm-patch >/dev/null" \
+	    "printf 'FROM %s\nRUN pip3 install openai -q\n' '$(RJ_LMCACHE_IMAGE_REF)' | \
+	         sudo docker build -q -t '$(RJ_LMCACHE_IMAGE_REF)' -f - /tmp 2>&1 && \
+	     printf 'FROM %s\nRUN pip3 install lmcache==$(patsubst v%,%,$(LMCACHE_REF)) -q\n' '$(RJ_IMAGE_REF)' | \
+	         sudo docker build -q -t '$(RJ_IMAGE_REF)' -f - /tmp 2>&1" \
 	    2>&1 | sed 's/^/  [patch] /'; \
 	echo "  [6c.5] Pulling public monitoring images inside VM ..."; \
 	ssh $$_ssh_flags "$$_vmuser@localhost" \
@@ -549,9 +578,7 @@ test-rocjitsu-local: prep-dirs
 	    2>&1 | sed 's/^/  [pull] /'; \
 	echo "  [6d] Mounting shared dir via 9p and running make vllm-reset-test ..."; \
 	ssh $$_ssh_flags "$$_vmuser@localhost" \
-	    "sudo mkdir -p /rj-share \
-	     && sudo mount -t 9p -o trans=virtio,version=9p2000.L hostfs /rj-share \
-	     && sudo chmod 1777 /rj-share/metrics" \
+	    "sudo chmod 1777 /rj-share/metrics" \
 	    2>&1 | sed 's/^/  [mount] /'; \
 	printf '%s\n' \
 	  'set -e' \
@@ -560,7 +587,7 @@ test-rocjitsu-local: prep-dirs
 	  "export IMAGE_TAG='$(_RJ_IMAGE_TAG)' VLLM_MODEL='$(RJ_MODEL)'" \
 	  'export VLM_LOAD_FORMAT=auto VLM_MAX_MODEL_LEN=4096 VLM_GPU_MEMORY_UTILIZATION=0.85' \
 	  'export _KC='"'"'{\"enable_jit_warmup\":false,\"enable_cutedsl_warmup\":false,\"enable_flashinfer_autotune\":false}'"'"'' \
-	  'export VLLM_EXTRA_ARGS="--num-gpu-blocks-override 50 --kernel-config $_KC"' \
+	  'export VLLM_EXTRA_ARGS="--num-gpu-blocks-override 50 --kernel-config $$_KC"' \
 	  'export ROCM_ARCH=$(RJ_ROCJITSU_ARCH) LMCACHE_L1_SIZE_GB=$(RJ_LMCACHE_L1_SIZE_GB)' \
 	  'export AIC_L2_BACKEND=none NVME_DATA=$(RJ_NVME_MOUNT) NFS_DATA=/tmp/lmcache-nfs' \
 	  'export AIC_METRICS_DIR=/rj-share/metrics AIC_EXPORTERS=0 HF_HOME=/tmp/hf-home' \

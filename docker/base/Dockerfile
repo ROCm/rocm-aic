@@ -172,9 +172,7 @@ RUN --mount=type=cache,target=/root/.cache/ccache \
     CMAKE_BUILD_PARALLEL_LEVEL="${BUILD_JOBS:-$(nproc)}" \
     CMAKE_PREFIX_PATH=$(python3 -c 'import sys; print(sys.prefix)') \
         python3 setup.py bdist_wheel --dist-dir=/app/pytorch/dist && \
-    rm -rf /app/pytorch/build /app/pytorch/.git && \
-    find /app/pytorch -name '__pycache__' -type d -exec rm -rf {} + 2>/dev/null || true && \
-    find /app/pytorch -name '*.o' -maxdepth 8 -delete 2>/dev/null || true
+    find /app/pytorch -mindepth 1 -maxdepth 1 ! -name 'dist' -exec rm -rf {} + 2>/dev/null || true
 
 # =============================================================================
 # torchvision source build — must compile against our source-built PyTorch.
@@ -211,15 +209,70 @@ RUN --mount=type=cache,target=/root/.cache/pip \
         python3 setup.py bdist_wheel --dist-dir=/app/vision/dist
 
 # =============================================================================
-# runtime — default target: pytorch + torchvision installed system-wide.
+# runtime — fresh-start multi-stage image: no build toolchain, no source trees.
+#
+# Starts FROM the same ROCm base image (not FROM build_torchvision) so the
+# ~14 GB /app/pytorch source tree, ~7 GB submodules, and all build-time
+# apt packages (cmake, ninja, gcc-13, ccache, *-dev headers) are excluded
+# from the shipped image.  Only the installed Python packages and runtime
+# apt deps are copied/kept.
+#
 # Downstream Dockerfiles (docker/vllm, docker/lmcache) use this stage via
-# --build-context base=docker/base so they get a fully working torch env
-# without bind-mounting intermediate wheel directories.
+# --build-context base=oci-layout://... so they get a fully working torch env.
 # =============================================================================
-FROM build_torchvision AS runtime
+FROM ${ROCM_BASE_IMAGE} AS runtime
 
+ARG ROCM_VERSION
+ARG ROCM_BASE_IMAGE
+
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
+
+# Corporate CA cert (same as base stage — needed for pip at runtime if behind proxy).
+RUN --mount=type=secret,id=tls_cert,required=false \
+    if [ -f /run/secrets/tls_cert ] && [ -s /run/secrets/tls_cert ]; then \
+        cp /run/secrets/tls_cert /usr/local/share/ca-certificates/corp-ca.crt && \
+        update-ca-certificates; \
+    fi
+
+# Runtime-only system packages.  Excludes all build tools (cmake, ninja,
+# ccache, gcc-13, *-dev headers) which are only needed to compile PyTorch.
+# hadolint ignore=DL3008
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
+    rm -f /etc/apt/apt.conf.d/docker-clean && \
+    apt-get update && \
+    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+        ca-certificates \
+        curl \
+        git \
+        ibverbs-providers \
+        libibverbs-dev \
+        libopenmpi3t64 \
+        nvme-cli \
+        pkg-config \
+        bpftrace \
+    && update-ca-certificates && \
+    DEBIAN_FRONTEND=noninteractive apt-get remove -y --purge \
+        libhsa-runtime64-1 libhsakmt1 2>/dev/null || true
+
+RUN git config --global advice.detachedHead false
+RUN rm -f /usr/lib/python3.*/EXTERNALLY-MANAGED
+
+# uv — used by downstream vllm/lmcache Dockerfiles for pip operations.
+COPY --from=build_pytorch /root/.local/bin/uv  /usr/local/bin/uv
+COPY --from=build_pytorch /root/.local/bin/uvx /usr/local/bin/uvx
+
+# Installed Python packages: torch + all requirements (from build_pytorch),
+# plus setuptools/wheel/packaging (from build_torchvision).
+# Does NOT include the PyTorch or torchvision source trees.
+COPY --from=build_torchvision /usr/local/lib/python3.12/dist-packages/ \
+                               /usr/local/lib/python3.12/dist-packages/
+COPY --from=build_torchvision /usr/local/bin/ /usr/local/bin/
+
+# torchvision wheel (built in build_torchvision but not yet installed there).
+COPY --from=build_torchvision /app/vision/dist/ /tmp/vision/
 RUN --mount=type=cache,target=/root/.cache/pip \
-    pip3 install --no-cache-dir /app/vision/dist/*.whl && \
-    rm -rf /app/pytorch /app/vision && \
-    find /usr/lib/python3 /usr/local/lib/python3 -name '__pycache__' -type d \
+    pip3 install --no-cache-dir /tmp/vision/*.whl && \
+    rm -rf /tmp/vision && \
+    find /usr/local/lib/python3 -name '__pycache__' -type d \
          -exec rm -rf {} + 2>/dev/null; true
