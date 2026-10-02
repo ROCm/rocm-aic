@@ -916,7 +916,7 @@ cmd_build() {
     printf -v _version_value '%q' "${AIC_VERSION}"
     _version_build_args+=" --build-arg AIC_VERSION=${_version_value}"
     for _version_arg in \
-        ROCM_VERSION PYTORCH_REF TORCHVISION_REF VLLM_REF LLM_EMU_REF \
+        ROCM_VERSION PYTORCH_REF PYTORCH_SERIES TORCHVISION_REF VLLM_REF LLM_EMU_REF \
         LMCACHE_REF NIXL_REF HSA_SNOOP_REF AITER_REF FLASH_ATTN_REF \
         PYTORCH_GIT_URL TORCHVISION_GIT_URL VLLM_GIT_URL LLM_EMU_GIT_URL \
         AITER_GIT_URL FLASH_ATTN_GIT_URL LMCACHE_GIT_URL NIXL_GIT_URL HSA_SNOOP_GIT_URL; do
@@ -1221,7 +1221,7 @@ cmd_build_split() {
     local _version_build_args="" _version_arg _version_value
     printf -v _version_value '%q' "${AIC_VERSION}"
     _version_build_args+=" --build-arg AIC_VERSION=${_version_value}"
-    for _version_arg in ROCM_VERSION PYTORCH_REF TORCHVISION_REF VLLM_REF LLM_EMU_REF \
+    for _version_arg in ROCM_VERSION PYTORCH_REF PYTORCH_SERIES TORCHVISION_REF VLLM_REF LLM_EMU_REF \
                         LMCACHE_REF NIXL_REF HSA_SNOOP_REF AITER_REF FLASH_ATTN_REF \
         PYTORCH_GIT_URL TORCHVISION_GIT_URL VLLM_GIT_URL LLM_EMU_GIT_URL \
         AITER_GIT_URL FLASH_ATTN_GIT_URL LMCACHE_GIT_URL NIXL_GIT_URL HSA_SNOOP_GIT_URL; do

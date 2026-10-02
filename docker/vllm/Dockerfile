@@ -1,3 +1,9 @@
+# check=skip=InvalidDefaultArgInFrom
+# ROCM_VERSION deliberately carries no default here -- docker/base/Dockerfile
+# is its single source of truth and the Makefile forwards it to every build.
+# That leaves the fallback ROCM_BASE_IMAGE default unresolvable at lint time,
+# which is harmless: the `base` stage is always replaced by the base
+# build-context supplied by `make build`.
 # Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
 #
 # SPDX-License-Identifier: MIT
@@ -148,10 +154,19 @@ print('vllm_emulator subpackages import OK')" && \
     rm -rf /app/llm-emu /app/patches
 
 # ----- LMCache client (KV transfer connector used by vllm service) -----------
-# Install the same pinned version used by aic-lmcache so the connector
-# protocol matches exactly.  No build isolation needed: torch is already here.
-ARG LMCACHE_REF=v0.5.5
+# Provides LMCacheMPConnector, which vLLM loads in-process for
+# --kv-transfer-config.  It must be the same release as the aic-lmcache server:
+# the MP wire protocol carries auto-numbered opcodes and positionally-decoded
+# msgpack payloads with no version negotiation, so a mismatched pair misroutes
+# calls rather than failing cleanly.
+#
+# Single source of truth: ARG LMCACHE_REF in docker/lmcache/Dockerfile.  The
+# Makefile reads it there and forwards it here, so this carries no default and
+# must not be given one.  No build isolation needed: torch is already here.
+ARG LMCACHE_REF
 RUN --mount=type=cache,target=/root/.cache/pip \
+    test -n "${LMCACHE_REF}" || { \
+        echo "ERROR: LMCACHE_REF is empty; build via 'make build'" >&2; exit 1; } && \
     _ver="${LMCACHE_REF#v}" && \
     pip3 install --no-cache-dir "lmcache==${_ver}"
 

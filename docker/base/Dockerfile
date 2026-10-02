@@ -109,12 +109,17 @@ FROM base AS build_pytorch
 
 ARG ROCM_ARCH
 ARG PYTORCH_GIT_URL=https://github.com/ROCm/pytorch.git
-# Accepts a branch, tag, or commit SHA (cloned then checked out, so all three
-# work).  Pinned to a SHA for reproducibility — release/2.13 is a moving branch
-# and a later commit updated third_party/composable_kernel to a version that
-# breaks gfx1250 (CK_BUFFER_RESOURCE_3RD_DWORD undeclared).  ec5f3b1 is the
-# last known-good commit for gfx1201+gfx1250.
+# Immutable commit pin.  ROCm/pytorch publishes no tag for the 2.13 series, so
+# a SHA is the only reproducible ref available; it is cloned then checked out,
+# so a branch or tag would work here too.  Pinned to ec5f3b1 rather than the
+# current head of release/2.13 (8e0af7fa) because a later commit updated
+# third_party/composable_kernel in a way that breaks gfx1250 multi-arch builds
+# (CK_BUFFER_RESOURCE_3RD_DWORD undeclared).  See patches/pytorch/01-ck-gfx1250-*.
 ARG PYTORCH_REF=ec5f3b1effb14f0e36b66bab4db1c9b49b278f82
+# Display only: the human-readable torch series carried in the image tag and
+# the README, since a bare SHA says nothing about which torch this is.  Bump
+# alongside PYTORCH_REF whenever the series changes.
+ARG PYTORCH_SERIES=2.13
 
 # torch 2.13 emits float->__bf16 libcalls absent from gcc-11; build with gcc-13.
 # hadolint ignore=DL3008

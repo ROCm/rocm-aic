@@ -46,12 +46,18 @@ _arg() {
 
 rocm="$(_arg ROCM_VERSION "${BASE_DOCKERFILE}")"
 
-# PYTORCH_REF is a branch name (e.g. release/2.13), a tag, or a commit SHA.
-pytorch_raw="$(_arg PYTORCH_REF "${BASE_DOCKERFILE}")"
-if [[ "${pytorch_raw}" =~ release/([0-9]+\.[0-9]+) ]]; then
-  pytorch="${BASH_REMATCH[1]}"
-else
-  pytorch="${pytorch_raw:0:7}"
+# PYTORCH_SERIES is the human-readable torch series (e.g. 2.13) carried in the
+# tag; PYTORCH_REF is the immutable commit actually built.  Fall back to
+# deriving the series from PYTORCH_REF so an older tree without PYTORCH_SERIES,
+# or an override pinning a release/X.Y branch, still tags sensibly.
+pytorch="$(_arg PYTORCH_SERIES "${BASE_DOCKERFILE}")"
+if [[ -z "${pytorch}" ]]; then
+  pytorch_raw="$(_arg PYTORCH_REF "${BASE_DOCKERFILE}")"
+  if [[ "${pytorch_raw}" =~ release/([0-9]+\.[0-9]+) ]]; then
+    pytorch="${BASH_REMATCH[1]}"
+  else
+    pytorch="${pytorch_raw:0:7}"
+  fi
 fi
 
 # Refs are git tags like v0.29.0 so we drop the leading v.

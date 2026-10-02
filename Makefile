@@ -27,9 +27,19 @@ ifeq ($(origin ROCM_VERSION),undefined)
 ROCM_VERSION := $(shell sed -n 's/^ARG ROCM_VERSION=//p' $(REPO_ROOT)/docker/base/Dockerfile | head -1)
 endif
 
+# LMCACHE_REF likewise: docker/lmcache/Dockerfile owns the pin (it is what the
+# image tag and the CI pin check read), and it is forwarded to the vllm build
+# too.  The vllm image installs the lmcache client that provides
+# LMCacheMPConnector, and the MP wire protocol has no version negotiation, so
+# client and server must come from the same release.  Also feeds _LMCACHE_VER
+# in mk/bench.mk.  Simply-expanded for the same reason as ROCM_VERSION.
+ifeq ($(origin LMCACHE_REF),undefined)
+LMCACHE_REF := $(shell sed -n 's/^ARG LMCACHE_REF=//p' $(REPO_ROOT)/docker/lmcache/Dockerfile | head -1)
+endif
+
 # PyTorch, vLLM, and all deps are source-built; PYTORCH_REF, VLLM_REF, and
 # LLM_EMU_REF are the key version knobs.  hipFile ships in the ROCm base image.
-_FRAMEWORK_VERSION_ARGS := AIC_VERSION ROCM_VERSION PYTORCH_REF TORCHVISION_REF VLLM_REF LLM_EMU_REF AITER_REF FLASH_ATTN_REF LMCACHE_REF NIXL_REF HSA_SNOOP_REF
+_FRAMEWORK_VERSION_ARGS := AIC_VERSION ROCM_VERSION PYTORCH_REF PYTORCH_SERIES TORCHVISION_REF VLLM_REF LLM_EMU_REF AITER_REF FLASH_ATTN_REF LMCACHE_REF NIXL_REF HSA_SNOOP_REF
 # Repository URLs for the same frameworks.  Forwarded exactly like the version
 # pins so a build can be pointed at a fork without editing a Dockerfile; the
 # Dockerfile ARGs remain the source of truth for the defaults.  These do not
