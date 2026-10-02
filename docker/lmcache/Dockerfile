@@ -36,7 +36,11 @@
 # when building this Dockerfile standalone without a pre-built aic-base image).
 # When --build-context base=docker-image://aic-base:<TAG> IS supplied, BuildKit
 # overrides this stage with the pre-built image and skips this FROM entirely.
-ARG ROCM_VERSION=7.14.1
+# Single source of truth: ARG ROCM_VERSION in docker/base/Dockerfile.
+# The Makefile reads it from there and forwards it to every build, so this
+# carries no default and must not be given one -- a second literal here is
+# exactly the drift this removes.
+ARG ROCM_VERSION
 ARG ROCM_BASE_IMAGE=rocm/dev-ubuntu-24.04:${ROCM_VERSION}-full
 # hadolint ignore=DL3006
 FROM ${ROCM_BASE_IMAGE} AS base

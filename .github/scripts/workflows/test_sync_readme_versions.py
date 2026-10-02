@@ -26,7 +26,7 @@ class ReadmeSyncTest(unittest.TestCase):
     _ARG_DOCKERFILE_REL: dict[str, str] = {
         "ROCM_VERSION": "base/Dockerfile",
         "ROCM_BASE_IMAGE": "base/Dockerfile",
-        "PYTORCH_BRANCH": "base/Dockerfile",
+        "PYTORCH_REF": "base/Dockerfile",
         "VLLM_REF": "vllm/Dockerfile",
         "AITER_REF": "lmcache/Dockerfile",
         "LMCACHE_REF": "lmcache/Dockerfile",
@@ -169,7 +169,7 @@ class ReadmeSyncTest(unittest.TestCase):
     def test_write_repairs_all_versions_and_is_idempotent(self) -> None:
         new_values = {
             "ROCM_VERSION": "98.76.54",
-            "PYTORCH_BRANCH": "release/98.76",
+            "PYTORCH_REF": "release/98.76",
             "VLLM_REF": "v98.76.54-fixture",
             "AITER_REF": "v98.76.58-fixture",
             "LMCACHE_REF": "v98.76.55-fixture",
@@ -201,7 +201,7 @@ class ReadmeSyncTest(unittest.TestCase):
             f"(https://github.com/ROCm/aiter/tree/{new_values['AITER_REF']})",
             rendered,
         )
-        for name in ("PYTORCH_BRANCH", "AITER_REF", "LMCACHE_REF", "NIXL_REF", "HSA_SNOOP_REF"):
+        for name in ("PYTORCH_REF", "AITER_REF", "LMCACHE_REF", "NIXL_REF", "HSA_SNOOP_REF"):
             self.assertIn(f"`{new_values[name]}`", rendered)
         rocm_short = ".".join(new_values["ROCM_VERSION"].split(".")[:2])
         self.assertIn(f"ROCm {rocm_short} base image | GA in ROCm 7.14", rendered)
@@ -259,7 +259,7 @@ class ReadmeSyncTest(unittest.TestCase):
     def test_ref_badge_value_is_escaped(self) -> None:
         cases = (
             (
-                "PYTORCH_BRANCH",
+                "PYTORCH_REF",
                 "PyTorch",
                 "ee4c2c",
                 "https://github.com/ROCm/pytorch/tree/",

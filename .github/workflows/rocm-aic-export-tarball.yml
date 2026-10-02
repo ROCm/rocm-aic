@@ -63,7 +63,7 @@ jobs:
           # CDNA override: FlashAttention included (ROCM_ARCH unset → conservative default)
           override_tag="$(
             ROCM_VERSION=8.7.6 \
-            PYTORCH_BRANCH=release/9.9 \
+            PYTORCH_REF=release/9.9 \
             VLLM_REF=v1.2.3 \
             AITER_REF=v0.1.19 \
             FLASH_ATTN_REF=0e60e394 \
@@ -82,7 +82,7 @@ jobs:
           rdna_tag="$(
             ROCM_ARCH=gfx1201 \
             ROCM_VERSION=8.7.6 \
-            PYTORCH_BRANCH=release/9.9 \
+            PYTORCH_REF=release/9.9 \
             VLLM_REF=v1.2.3 \
             AITER_REF=v0.1.19 \
             FLASH_ATTN_REF=0e60e394 \

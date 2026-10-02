@@ -101,7 +101,7 @@
 #   AIC_IMAGE_DIR        shared dir for the tarball        (default: /scratch/$USER/images)
 #   HF_HOME              persistent Hugging Face cache used by tiny-test
 #                        (default: <AIC_IMAGE_DIR>/tiny-hf)
-#   ROCM_VERSION, PYTORCH_BRANCH, VLLM_REF, LLM_EMU_REF, LMCACHE_REF,
+#   ROCM_VERSION, PYTORCH_REF, VLLM_REF, LLM_EMU_REF, LMCACHE_REF,
 #   NIXL_REF, HSA_SNOOP_REF
 #                        optional Docker build-arg overrides.
 #   AIC_FORCE_LOAD       test/push: force a reload from the tarball even when the
@@ -369,7 +369,7 @@ AIC_CACHE_REF="${AIC_CACHE_REF:-}"
 AIC_CACHE_MODE="${AIC_CACHE_MODE:-max}"
 # Needs buildx >= 0.35.0. Avoids the Docker cache from growing endlessly.
 AIC_CACHE_RESET="${AIC_CACHE_RESET:-1}"
-AIC_BUILDX_BUILDER="${AIC_BUILDX_BUILDER:-aic-cache}"
+AIC_BUILDX_BUILDER="${AIC_BUILDX_BUILDER:-aic-local}"
 AIC_CACHE_INSECURE="${AIC_CACHE_INSECURE:-}"
 AIC_TEST_TIME="${AIC_TEST_TIME:-00:45:00}"
 AIC_TEST_CPUS="${AIC_TEST_CPUS:-8}"
@@ -916,8 +916,10 @@ cmd_build() {
     printf -v _version_value '%q' "${AIC_VERSION}"
     _version_build_args+=" --build-arg AIC_VERSION=${_version_value}"
     for _version_arg in \
-        ROCM_VERSION PYTORCH_BRANCH VLLM_REF LLM_EMU_REF \
-        LMCACHE_REF NIXL_REF HSA_SNOOP_REF; do
+        ROCM_VERSION PYTORCH_REF TORCHVISION_REF VLLM_REF LLM_EMU_REF \
+        LMCACHE_REF NIXL_REF HSA_SNOOP_REF AITER_REF FLASH_ATTN_REF \
+        PYTORCH_GIT_URL TORCHVISION_GIT_URL VLLM_GIT_URL LLM_EMU_GIT_URL \
+        AITER_GIT_URL FLASH_ATTN_GIT_URL LMCACHE_GIT_URL NIXL_GIT_URL HSA_SNOOP_GIT_URL; do
         if [[ -v "${_version_arg}" ]]; then
             printf -v _version_value '%q' "${!_version_arg}"
             _version_build_args+=" --build-arg ${_version_arg}=${_version_value}"
@@ -1219,8 +1221,10 @@ cmd_build_split() {
     local _version_build_args="" _version_arg _version_value
     printf -v _version_value '%q' "${AIC_VERSION}"
     _version_build_args+=" --build-arg AIC_VERSION=${_version_value}"
-    for _version_arg in ROCM_VERSION PYTORCH_BRANCH VLLM_REF LLM_EMU_REF \
-                        LMCACHE_REF NIXL_REF HSA_SNOOP_REF; do
+    for _version_arg in ROCM_VERSION PYTORCH_REF TORCHVISION_REF VLLM_REF LLM_EMU_REF \
+                        LMCACHE_REF NIXL_REF HSA_SNOOP_REF AITER_REF FLASH_ATTN_REF \
+        PYTORCH_GIT_URL TORCHVISION_GIT_URL VLLM_GIT_URL LLM_EMU_GIT_URL \
+        AITER_GIT_URL FLASH_ATTN_GIT_URL LMCACHE_GIT_URL NIXL_GIT_URL HSA_SNOOP_GIT_URL; do
         if [[ -v "${_version_arg}" ]]; then
             printf -v _version_value '%q' "${!_version_arg}"
             _version_build_args+=" --build-arg ${_version_arg}=${_version_value}"

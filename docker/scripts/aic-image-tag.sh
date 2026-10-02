@@ -46,8 +46,8 @@ _arg() {
 
 rocm="$(_arg ROCM_VERSION "${BASE_DOCKERFILE}")"
 
-# PYTORCH_BRANCH is a branch name (e.g. release/2.13) or a commit hash.
-pytorch_raw="$(_arg PYTORCH_BRANCH "${BASE_DOCKERFILE}")"
+# PYTORCH_REF is a branch name (e.g. release/2.13), a tag, or a commit SHA.
+pytorch_raw="$(_arg PYTORCH_REF "${BASE_DOCKERFILE}")"
 if [[ "${pytorch_raw}" =~ release/([0-9]+\.[0-9]+) ]]; then
   pytorch="${BASH_REMATCH[1]}"
 else

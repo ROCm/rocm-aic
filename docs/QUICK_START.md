@@ -2,17 +2,30 @@
 
 All commands run from the repo root with `make <target>`.
 
-## 1. Build the image
+## 1. Build the images
 
 ```bash
 make build ROCM_ARCH=gfx942
 ```
+
+This builds three images in sequence: `aic-base` (PyTorch + torchvision), then
+`aic-vllm` and `aic-lmcache`, which both inherit from it.
 
 > **Low on RAM?**
 >
 > ```bash
 > make build ROCM_ARCH=gfx942 BUILD_JOBS=8
 > ```
+>
+> **Rebuilding often?** Set `AIC_CACHE_DIR` to persist BuildKit layers across
+> `docker system prune`, so the expensive PyTorch stage is not recompiled:
+>
+> ```bash
+> make build ROCM_ARCH=gfx942 AIC_CACHE_DIR=~/.cache/rocm-aic-buildx
+> ```
+>
+> The build stages a multi-GB OCI copy of `aic-base` under `TMPDIR`; point
+> `TMPDIR` at a real filesystem if `/tmp` is a small tmpfs.
 
 ## 2. Start the stack (standard mode: DRAM L1 + NVMe L2a + NFS L2b)
 
