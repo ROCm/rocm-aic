@@ -352,7 +352,7 @@ test-lmcache-p2p-local: prep-dirs
 	    fi; \
 	fi
 	@echo "[2/8] Extracting VM disk images from $(AIC_LMCACHE_P2P_QCOW2_IMAGE) ..."
-	@sudo mkdir -p "$(AIC_LMCACHE_P2P_VM_IMAGES_DIR)"
+	@mkdir -p "$(AIC_LMCACHE_P2P_VM_IMAGES_DIR)"
 	@docker pull -q "$(AIC_LMCACHE_P2P_QCOW2_IMAGE)"
 	@if [ ! -f "$(AIC_LMCACHE_P2P_VM_IMAGES_DIR)/$(AIC_LMCACHE_P2P_VM1_NAME).qcow2" ]; then \
 	    echo "  Extracting $(AIC_LMCACHE_P2P_VM1_NAME).qcow2 ..."; \
@@ -362,15 +362,15 @@ test-lmcache-p2p-local: prep-dirs
 	        || docker cp "$$_cid:/." "$(AIC_LMCACHE_P2P_WORK_DIR)/qcow2-tmp"; \
 	    docker rm "$$_cid" >/dev/null; \
 	    _qcow2=$$(find "$(AIC_LMCACHE_P2P_WORK_DIR)/qcow2-tmp" -name '*.qcow2' | head -1); \
-	    sudo cp "$$_qcow2" "$(AIC_LMCACHE_P2P_VM_IMAGES_DIR)/$(AIC_LMCACHE_P2P_VM1_NAME).qcow2"; \
-	    sudo cp "$$_qcow2" "$(AIC_LMCACHE_P2P_VM_IMAGES_DIR)/$(AIC_LMCACHE_P2P_VM2_NAME).qcow2"; \
+	    cp "$$_qcow2" "$(AIC_LMCACHE_P2P_VM_IMAGES_DIR)/$(AIC_LMCACHE_P2P_VM1_NAME).qcow2"; \
+	    cp "$$_qcow2" "$(AIC_LMCACHE_P2P_VM_IMAGES_DIR)/$(AIC_LMCACHE_P2P_VM2_NAME).qcow2"; \
 	    rm -rf "$(AIC_LMCACHE_P2P_WORK_DIR)/qcow2-tmp"; \
 	    echo "  Disk images extracted"; \
 	else \
 	    echo "  $(AIC_LMCACHE_P2P_VM1_NAME).qcow2 already present — skipping (delete $(AIC_LMCACHE_P2P_VM_IMAGES_DIR)/$(AIC_LMCACHE_P2P_VM1_NAME).qcow2 to refresh)"; \
 	    if [ ! -f "$(AIC_LMCACHE_P2P_VM_IMAGES_DIR)/$(AIC_LMCACHE_P2P_VM2_NAME).qcow2" ]; then \
-	        sudo cp "$(AIC_LMCACHE_P2P_VM_IMAGES_DIR)/$(AIC_LMCACHE_P2P_VM1_NAME).qcow2" \
-	                "$(AIC_LMCACHE_P2P_VM_IMAGES_DIR)/$(AIC_LMCACHE_P2P_VM2_NAME).qcow2"; \
+	        cp "$(AIC_LMCACHE_P2P_VM_IMAGES_DIR)/$(AIC_LMCACHE_P2P_VM1_NAME).qcow2" \
+	           "$(AIC_LMCACHE_P2P_VM_IMAGES_DIR)/$(AIC_LMCACHE_P2P_VM2_NAME).qcow2"; \
 	    fi; \
 	fi
 	@echo "[3/8] Starting 2-VM ernic compose stack ..."
