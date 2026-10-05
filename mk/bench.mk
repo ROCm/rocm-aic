@@ -343,8 +343,13 @@ test-lmcache-p2p-local: prep-dirs
 	@echo "  model=$(AIC_LMCACHE_P2P_MODEL)  VM1=$(AIC_LMCACHE_P2P_VM1_NAME):$(AIC_LMCACHE_P2P_VM1_SSH_PORT)  VM2=$(AIC_LMCACHE_P2P_VM2_NAME):$(AIC_LMCACHE_P2P_VM2_SSH_PORT)"
 	@echo "[1/8] Ensuring qemu-tool is installed ..."
 	@if ! python3 -m qemu_tool --help >/dev/null 2>&1; then \
-	    echo "  Installing qemu-tool from PyPI ..."; \
-	    pip install --quiet qemu-tool; \
+	    echo "  Installing qemu-tool via pipx ..."; \
+	    if command -v pipx >/dev/null 2>&1; then \
+	        PIPX_BIN_DIR=/usr/local/bin pipx install --force qemu-tool >/dev/null; \
+	    else \
+	        pip install --quiet --break-system-packages qemu-tool 2>/dev/null \
+	            || pip install --quiet qemu-tool; \
+	    fi; \
 	fi
 	@echo "[2/8] Extracting VM disk images from $(AIC_LMCACHE_P2P_QCOW2_IMAGE) ..."
 	@sudo mkdir -p "$(AIC_LMCACHE_P2P_VM_IMAGES_DIR)"
