@@ -31,10 +31,11 @@
 ARG ROCM_VERSION=7.14.1
 # Build base: full ROCm toolchain (compiler, headers, math libs) for source builds.
 ARG ROCM_BASE_IMAGE=rocm/dev-ubuntu-24.04:${ROCM_VERSION}-full
-# Runtime base: plain ROCm image (no compiler toolchain, headers, or math libs).
-# AMD maintains this as the official runtime base; the apt repo is pre-configured
-# so the 13 runtime packages install without any keyring setup.
-ARG ROCM_RUNTIME_IMAGE=rocm/dev-ubuntu-24.04:${ROCM_VERSION}
+# Runtime base: plain Ubuntu 24.04 + AMD apt repo + 13 ROCm runtime packages.
+# rocm/dev-ubuntu-24.04:7.14.1 (no -full suffix) does not exist for 7.14.x —
+# AMD only publishes the -full variant for this release series.  Ubuntu 24.04
+# is used instead; the AMD apt signing key is COPYed from the base stage.
+ARG ROCM_RUNTIME_IMAGE=ubuntu:24.04
 
 # Empty default for the `pip-wheels` build context.  A caller that passes
 # --build-context pip-wheels=<dir> overrides this stage exactly as before.
@@ -228,6 +229,10 @@ ARG NIXL_REF=v1.4.1
 ARG BUILD_JOBS=
 ARG AIC_UCX_FAST=
 
+# numpy is required by NIXL's Python bindings at install time.
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv pip install --system numpy numba
+
 COPY docker/scripts /tmp/nixl-scripts
 COPY patches/nixl/ /tmp/nixl-patches/
 # hadolint ignore=SC3054,SC3044
@@ -261,11 +266,11 @@ RUN --mount=type=cache,target=/root/.cache/uv \
 # =============================================================================
 # runtime — plain ROCm image + 13 ROCm runtime packages + torch + NIXL.
 #
-# Starts FROM rocm/dev-ubuntu-24.04:7.14.1 (plain, ~3 GB) instead of -full
-# (~18 GB).  The plain image has the AMD apt repo pre-configured.  We install
-# only the 13 ROCm packages that torch actually dlopens at process start
-# (~2 GB extra), confirmed by /proc/self/maps audit with a live GPU.
-# Build toolchain, headers, and ~15 GB of -full content are excluded.
+# Starts FROM ubuntu:24.04 instead of the -full ROCm image (~18 GB).  AMD
+# stopped publishing a lightweight runtime image (no -full suffix) for Ubuntu
+# 24.04 after ROCm 7.2.x, so we build from plain Ubuntu and add only the 13
+# ROCm packages that torch actually dlopens at process start (~2 GB), confirmed
+# by /proc/self/maps audit with a live GPU.  ~15 GB of -full content excluded.
 #
 # ROCm runtime packages installed (~2 GB total):
 #   amdrocm-runtime     HIP + HSA + comgr + hipRTC        (47 MB)
@@ -301,17 +306,38 @@ RUN --mount=type=secret,id=tls_cert,required=false \
         update-ca-certificates; \
     fi
 
-# The plain ROCm base image has the AMD apt repo pre-configured.
+# AMD stopped publishing the lightweight runtime image (no -full suffix) for
+# Ubuntu 24.04 after ROCm 7.2.x.  Use ubuntu:24.04 as the base and add the
+# AMD apt repo using the signing key COPYed from the build-time base stage
+# (which already has it from the -full image — no network fetch needed).
 # Version-specific package names are computed from ROCM_VERSION (7.14.1 → "7.14").
+# hadolint ignore=DL3008
+# Step 1: ca-certificates must be installed before adding the HTTPS AMD repo,
+# otherwise apt-get update cannot verify the TLS connection and silently skips
+# the AMD packages.
 # hadolint ignore=DL3008
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
     rm -f /etc/apt/apt.conf.d/docker-clean && \
     apt-get update && \
+    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+        ca-certificates && \
+    update-ca-certificates
+
+# Step 2: add AMD ROCm apt repo (requires ca-certificates for HTTPS), then
+# install the 13 runtime packages + system deps.
+# Key copied from the build-time base stage — it signs repo.amd.com (not repo.radeon.com).
+# Version-specific package names are computed from ROCM_VERSION (7.14.1 → "7.14").
+COPY --from=base /etc/apt/keyrings/amdrocm.gpg /etc/apt/keyrings/amdrocm.gpg
+# hadolint ignore=DL3008
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
+    echo "deb [arch=amd64 signed-by=/etc/apt/keyrings/amdrocm.gpg] \
+https://repo.amd.com/rocm/packages-multi-arch/ubuntu2404 stable main" \
+        > /etc/apt/sources.list.d/amdrocm.list && \
+    apt-get update && \
     _mm=$(echo "${ROCM_VERSION}" | cut -d. -f1-2) && \
     DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-        ca-certificates \
-        curl \
         git \
         ibverbs-providers \
         libibverbs-dev \
