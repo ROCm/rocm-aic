@@ -59,9 +59,9 @@ fi
 # The ionic NIC appears as a netdev named by the driver (rocm-ernic0 or
 # similar).  Find it by its ionic driver.
 if [ -z "${IONIC_IFACE:-}" ]; then
-    IONIC_IFACE=$(ls /sys/class/net/ | while read -r iface; do
-        drv=$(readlink "/sys/class/net/$iface/device/driver" 2>/dev/null | xargs basename 2>/dev/null || true)
-        [ "$drv" = "ionic" ] && echo "$iface" && break
+    IONIC_IFACE=$(for iface in /sys/class/net/*; do
+        drv=$(readlink "$iface/device/driver" 2>/dev/null | xargs basename 2>/dev/null || true)
+        [ "$drv" = "ionic" ] && basename "$iface" && break
     done)
 fi
 
@@ -82,13 +82,11 @@ fi
 # ---------------------------------------------------------------------------
 # Launch compose
 # ---------------------------------------------------------------------------
-COMPOSE_DIR="$(dirname "${COMPOSE_FILE}")"
-
-compose_profiles=""
+compose_args=()
 if [ "${LMCACHE_P2P_ROLE}" = "primary" ]; then
-    compose_profiles="--profile primary"
+    compose_args=(--profile primary)
 elif [ "${LMCACHE_P2P_ROLE}" = "secondary" ]; then
-    compose_profiles="--profile secondary"
+    compose_args=(--profile secondary)
 fi
 
 echo "Starting docker compose (${LMCACHE_P2P_ROLE}) ..."
@@ -108,5 +106,5 @@ VLLM_MODEL="${VLLM_MODEL}" \
 HF_TOKEN="${HF_TOKEN}" \
     docker compose \
         -f "${COMPOSE_FILE}" \
-        ${compose_profiles} \
+        "${compose_args[@]}" \
         up -d
