@@ -2,20 +2,23 @@
 
 ## SPUR Cluster Access
 
-SPUR commands (`srun`, `sinfo`, `squeue`) require the controller address
-to be exported. This is **not** set automatically in non-login shells
-(e.g. Claude Code):
+Reach the cluster over ssh at `crs-spur.crusoe.amd.com`, a load balancer in
+front of the login nodes `crsuse2-slog-00{3,4,5}`. Each backend presents a
+**different** host key, so all three must be in `known_hosts` under both the
+load-balancer name and their own — pinning only the one you happen to land on
+fails intermittently as the balancer re-hashes.
 
-```bash
-export SPUR_CONTROLLER_ADDR=http://crs-m2m-cpu-spur-005.crusoe.amd.com:6817
-```
-
-Add this before any `srun` invocation, or it will fail with
-"Connection refused on localhost:6817".
+Do **not** export `SPUR_CONTROLLER_ADDR`. Login and compute nodes both set it
+in `/etc/environment`, and `pam_env` applies it to non-interactive
+`ssh host 'cmd'` sessions too, so `squeue`/`srun` work with no setup. The
+cluster's value lists all three controllers (`crs-m2m-cpu-spur-00{5,6,7}`),
+which form a Raft quorum; overriding it with a single address silently drops
+that redundancy.
 
 - **Partition:** `amd-spur`
 - **No `--account` flag needed** for `srun`
 - Node naming convention: `crsuse2-m2m-NNN`
+- Controllers are *not* compute nodes and never appear in `sinfo`
 
 ## Historical ROCm 7.14 torch wheel integration issue (2026-07-20)
 

@@ -22,7 +22,6 @@ AIC_IMAGE_NAME="rocm-aic-ci-${SHORT}"
 AIC_SPUR_HOST="${AIC_SPUR_HOST:?AIC_SPUR_HOST must be set (e.g. via GitHub repo variable)}"
 AIC_SPUR_HOST="${AIC_SPUR_HOST//[$'\t\r\n ']}"
 AIC_SHARED_NFS="${AIC_SHARED_NFS:?AIC_SHARED_NFS must be set (e.g. via GitHub repo variable)}"
-AIC_SPUR_CONTROLLER="${AIC_SPUR_CONTROLLER:?AIC_SPUR_CONTROLLER must be set (e.g. via GitHub repo variable)}"
 AIC_CI_STORAGE_ROOT="${AIC_CI_STORAGE_ROOT:-}"
 AIC_SMOKE_USE_REGISTRY="${AIC_SMOKE_USE_REGISTRY:-0}"
 AIC_SLURM_ACCOUNT="${AIC_SLURM_ACCOUNT:-}"
@@ -34,8 +33,6 @@ ssh -o ServerAliveInterval=30 -o ServerAliveCountMax=4 "${AIC_SPUR_HOST}" env \
     AIC_IMAGE_NAME="${AIC_IMAGE_NAME}" \
     AIC_SHARED_NFS="${AIC_SHARED_NFS}" \
     AIC_CI_STORAGE_ROOT="${AIC_CI_STORAGE_ROOT}" \
-    AIC_SPUR_CONTROLLER="${AIC_SPUR_CONTROLLER}" \
-    SPUR_CONTROLLER_ADDR="${AIC_SPUR_CONTROLLER}" \
     AIC_SLURM_ACCOUNT="${AIC_SLURM_ACCOUNT}" \
     AIC_SMOKE_USE_REGISTRY="${AIC_SMOKE_USE_REGISTRY}" \
     bash << 'REMOTE'
@@ -246,7 +243,6 @@ chmod +x "${SRUN_SCRIPT}"
 
 echo "=== Submitting CPU-only srun job ==="
 srun \
-    --controller="${SPUR_CONTROLLER_ADDR}" \
     ${AIC_SLURM_ACCOUNT:+--account="${AIC_SLURM_ACCOUNT}"} \
     --nodes=1 \
     --ntasks=1 \
