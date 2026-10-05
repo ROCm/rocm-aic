@@ -1,0 +1,74 @@
+---
+# LMCache P2P two-node test compose file.
+#
+# Runs inside each rocm-ernic VM.  Both VMs run the SAME service (lmcache).
+# The coordinator runs as a separate Docker container on the HOST bridge
+# (started by run-lmcache-p2p-test.sh before calling this compose file).
+#
+# Per https://docs.lmcache.ai/mp/p2p.html
+#
+# Network: dedicated bridge inside the VM.  P2P and HTTP ports are
+# published to the VM's host network for cross-VM RDMA and monitoring.
+#
+# Required env:
+#   LMCACHE_IMAGE_REF   lmcache image (with torch+nixl if available)
+#   COORD_IP            Coordinator IP (host Docker bridge IP, e.g. 172.18.0.5)
+#   THIS_IP             This VM's ionic IP (for P2P advertisement)
+#   COORD_PORT          Coordinator port (default: 9300)
+#   P2P_PORT            P2P RDMA transfer port (default: 8500)
+#   LMCACHE_PORT        lmcache ZMQ port (default: 6555)
+#   LMCACHE_HTTP_PORT   lmcache HTTP port for /healthz (default: 7555)
+#   LMCACHE_L1_SIZE_GB  L1 DRAM cap in GiB (default: 0.5)
+
+networks:
+  lmcache-net:
+    driver: bridge
+
+services:
+
+  # ---- lmcache server with P2P -----------------------------------------------
+  # Both primary and secondary VMs run this same service.
+  # The coordinator is a host-side container (not in this compose file).
+  lmcache:
+    image: "${LMCACHE_IMAGE_REF:?LMCACHE_IMAGE_REF is required}"
+    container_name: "aic-lmcache-p2p"
+    networks:
+      - lmcache-net
+    ports:
+      - "${LMCACHE_PORT:-6555}:${LMCACHE_PORT:-6555}"
+      - "${LMCACHE_HTTP_PORT:-7555}:${LMCACHE_HTTP_PORT:-7555}"
+      - "${P2P_PORT:-8500}:${P2P_PORT:-8500}"
+    environment:
+      PYTHONHASHSEED: "0"
+    restart: "no"
+    # lmcache_server uses positional args and env vars — avoids the CLI
+    # import chain that requires 30+ deps (openai, numba, etc.) at startup.
+    # Coordinator/P2P config via LMCACHE_* env vars.
+    environment:
+      PYTHONHASHSEED: "0"
+      LMCACHE_COORDINATOR_URL: "http://${COORD_IP:?}:${COORD_PORT:-9300}"
+      LMCACHE_COORDINATOR_ADVERTISE_IP: "${THIS_IP:?}"
+      LMCACHE_P2P_ADVERTISE_URL: "${THIS_IP}:${P2P_PORT:-8500}"
+      LMCACHE_P2P_LISTEN_URL: "0.0.0.0:${P2P_PORT:-8500}"
+      LMCACHE_P2P_TRANSFER_ENGINE: "nixl"
+      LMCACHE_L1_ALIGN_BYTES: "65536"
+      LMCACHE_CHUNK_SIZE: "256"
+    entrypoint:
+      - /usr/local/bin/lmcache_server
+      - "0.0.0.0"
+      - "${LMCACHE_PORT:-6555}"
+      - cpu
+    command: []
+    healthcheck:
+      test:
+        - CMD
+        - python3
+        - -c
+        - |
+          import socket
+          s = socket.create_connection(('127.0.0.1', ${LMCACHE_PORT:-6555}), 2)
+          s.close()
+      interval: 5s
+      timeout: 3s
+      retries: 60
+      start_period: 10s
