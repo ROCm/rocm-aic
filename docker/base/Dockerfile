@@ -12,10 +12,11 @@
 #
 # Stages:
 #   pip-wheels        scratch stub for --build-context pip-wheels override
-#   base              ROCm base + system deps + uv                    (sections 0-2)
+#   base              ROCm-full base + system deps + uv               (sections 0-2)
 #   build_pytorch     PyTorch 2.13 built from source                  (section 2b)
 #   build_torchvision torchvision built from source                   (section 2c)
-#   runtime           slim image: no build toolchain; torch + NIXL    (section 3)
+#   build_nixl        NIXL built from source (uses ROCm headers)      (section 2d)
+#   runtime           Ubuntu 24.04 + 13 ROCm runtime pkgs + torch + NIXL (section 3)
 #
 # Build (from repo root):
 #   DOCKER_BUILDKIT=1 docker build \
@@ -28,8 +29,11 @@
 #   make dist-build-base ROCM_ARCH=gfx950
 
 ARG ROCM_VERSION=7.14.1
-# ROCm 7.14 publishes the hipFile-bearing variant as `-full` (not `-complete`).
+# Build base: full ROCm toolchain (compiler, headers, math libs) for source builds.
 ARG ROCM_BASE_IMAGE=rocm/dev-ubuntu-24.04:${ROCM_VERSION}-full
+# Runtime base: plain Ubuntu 24.04.  The 13 ROCm runtime packages needed by
+# torch are installed explicitly below — ~2 GB installed vs ~18 GB for -full.
+ARG ROCM_RUNTIME_IMAGE=ubuntu:24.04
 
 # Empty default for the `pip-wheels` build context.  A caller that passes
 # --build-context pip-wheels=<dir> overrides this stage exactly as before.
@@ -212,90 +216,16 @@ RUN --mount=type=cache,target=/root/.cache/pip \
         python3 setup.py bdist_wheel --dist-dir=/app/vision/dist
 
 # =============================================================================
-# runtime — fresh-start multi-stage image: no build toolchain, no source trees.
-#
-# Starts FROM the same ROCm base image (not FROM build_torchvision) so the
-# ~14 GB /app/pytorch source tree, ~7 GB submodules, and all build-time
-# apt packages (cmake, ninja, gcc-13, ccache, *-dev headers) are excluded
-# from the shipped image.  Only the installed Python packages and runtime
-# apt deps are copied/kept.
-#
-# Downstream Dockerfiles (docker/vllm, docker/lmcache) use this stage via
-# --build-context base=oci-layout://... so they get a fully working torch env.
+# build_nixl — NIXL source build using the ROCm-full toolchain.
+# Output (/opt/nixl, /opt/rocnixl-ucx) is copied to the slim runtime stage so
+# the runtime image never needs cmake, clang, or ROCm headers.
 # =============================================================================
-FROM ${ROCM_BASE_IMAGE} AS runtime
+FROM base AS build_nixl
 
-ARG ROCM_VERSION
-ARG ROCM_BASE_IMAGE
-
-SHELL ["/bin/bash", "-o", "pipefail", "-c"]
-
-# Corporate CA cert (same as base stage — needed for pip at runtime if behind proxy).
-RUN --mount=type=secret,id=tls_cert,required=false \
-    if [ -f /run/secrets/tls_cert ] && [ -s /run/secrets/tls_cert ]; then \
-        cp /run/secrets/tls_cert /usr/local/share/ca-certificates/corp-ca.crt && \
-        update-ca-certificates; \
-    fi
-
-# Runtime-only system packages.  Excludes all build tools (cmake, ninja,
-# ccache, gcc-13, *-dev headers) which are only needed to compile PyTorch.
-# hadolint ignore=DL3008
-RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
-    --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
-    rm -f /etc/apt/apt.conf.d/docker-clean && \
-    apt-get update && \
-    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-        ca-certificates \
-        curl \
-        git \
-        ibverbs-providers \
-        libibverbs-dev \
-        libopenmpi3t64 \
-        nvme-cli \
-        pkg-config \
-        bpftrace \
-    && update-ca-certificates && \
-    DEBIAN_FRONTEND=noninteractive apt-get remove -y --purge \
-        libhsa-runtime64-1 libhsakmt1 2>/dev/null || true
-
-RUN git config --global advice.detachedHead false
-RUN rm -f /usr/lib/python3.*/EXTERNALLY-MANAGED
-
-# uv — used by downstream vllm/lmcache Dockerfiles for pip operations.
-COPY --from=build_pytorch /root/.local/bin/uv  /usr/local/bin/uv
-COPY --from=build_pytorch /root/.local/bin/uvx /usr/local/bin/uvx
-
-# Installed Python packages: torch + all requirements (from build_pytorch),
-# plus setuptools/wheel/packaging (from build_torchvision).
-# Does NOT include the PyTorch or torchvision source trees.
-COPY --from=build_torchvision /usr/local/lib/python3.12/dist-packages/ \
-                               /usr/local/lib/python3.12/dist-packages/
-COPY --from=build_torchvision /usr/local/bin/ /usr/local/bin/
-
-# torchvision wheel (built in build_torchvision but not yet installed there).
-COPY --from=build_torchvision /app/vision/dist/ /tmp/vision/
-RUN --mount=type=cache,target=/root/.cache/pip \
-    pip3 install --no-cache-dir /tmp/vision/*.whl && \
-    rm -rf /tmp/vision && \
-    find /usr/local/lib/python3 -name '__pycache__' -type d \
-         -exec rm -rf {} + 2>/dev/null; true
-
-# =============================================================================
-# NIXL — KV-transfer transport used by both aic-vllm and aic-lmcache.
-# Built from source with ROCm/HIP + AIS_MT patch; installed into /opt/nixl.
-# Placing it here avoids duplicating a 2-minute compile in both downstream
-# images and ensures a single consistent version across the stack.
-# =============================================================================
 ARG NIXL_GIT_URL=https://github.com/ai-dynamo/nixl.git
 ARG NIXL_REF=v1.4.1
 ARG BUILD_JOBS=
 ARG AIC_UCX_FAST=
-
-# Guard: upstream pip deps (e.g. lmcache requirements) may transitively pull
-# CUDA-only nixl variants.  Uninstall first so the source build wins.
-RUN uv pip uninstall --system \
-        nixl nixl-cu12 nixl-cu13 \
-        cupy-cuda12x cufile-python cuda-pathfinder 2>/dev/null || true
 
 COPY docker/scripts /tmp/nixl-scripts
 COPY patches/nixl/ /tmp/nixl-patches/
@@ -326,6 +256,125 @@ RUN --mount=type=cache,target=/root/.cache/uv \
         UV_SYSTEM_CERTS=1 \
         /tmp/nixl-scripts/build-nixl.sh && \
     rm -rf /tmp/nixl /tmp/nixl-patches /tmp/nixl-scripts /tmp/nixl-wheels
+
+# =============================================================================
+# runtime — Ubuntu 24.04 + 13 ROCm runtime packages + torch + NIXL.
+#
+# Starts FROM ubuntu:24.04 (not the -full ROCm image) and installs only the
+# ROCm runtime libraries that torch actually dlopens at process start.
+# Build toolchain, headers, and ~17 GB of unreferenced -full content are
+# excluded.  The AMD apt signing key is copied from the build-time base stage
+# (which already has it from the -full image) so no network key fetch is needed.
+#
+# ROCm runtime packages installed (~2 GB total):
+#   amdrocm-runtime     HIP + HSA + comgr + hipRTC        (47 MB)
+#   amdrocm-base        rocm-core + profiler-register      (5 MB)
+#   amdrocm-profiler-base  profiler SDK + rocTX + AQL      (122 MB)
+#   amdrocm-dnn-host    MIOpen                             (463 MB)
+#   amdrocm-blas-host   rocBLAS + hipBLAS + hipBLASLt + rocRoller  (273 MB)
+#   amdrocm-fft-host    hipFFT + rocFFT                    (13 MB)
+#   amdrocm-rand-host   hipRAND + rocRAND                  (52 MB)
+#   amdrocm-rccl-host   RCCL                               (4 MB)
+#   amdrocm-solver-host hipSOLVER + rocSOLVER              (29 MB)
+#   amdrocm-sparse-host hipSPARSE + rocSPARSE              (74 MB)
+#   amdrocm-amdsmi      AMD SMI lib + Python bindings      (36 MB)
+#   amdrocm-llvm        libLLVM + libclang (JIT needed)    (839 MB)
+#   amdrocm-math-common rocm-openblas + host-math          (97 MB)
+#
+# Downstream Dockerfiles (docker/vllm, docker/lmcache) use this stage via
+# --build-context base=oci-layout://... so they get a fully working torch env.
+# =============================================================================
+# hadolint ignore=DL3006
+FROM ${ROCM_RUNTIME_IMAGE} AS runtime
+
+ARG ROCM_VERSION
+ARG ROCM_BASE_IMAGE
+ARG ROCM_RUNTIME_IMAGE
+
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
+
+# Corporate CA cert (needed for pip at runtime if behind a corporate proxy).
+RUN --mount=type=secret,id=tls_cert,required=false \
+    if [ -f /run/secrets/tls_cert ] && [ -s /run/secrets/tls_cert ]; then \
+        cp /run/secrets/tls_cert /usr/local/share/ca-certificates/corp-ca.crt && \
+        update-ca-certificates; \
+    fi
+
+# AMD ROCm apt repo — key copied from the build-time base stage (already
+# fetched and verified there from the -full image).  Version-specific package
+# names are computed from ROCM_VERSION (e.g. 7.14.1 → "7.14" suffix).
+# hadolint ignore=DL3008
+COPY --from=base /etc/apt/keyrings/amdrocm.gpg /etc/apt/keyrings/amdrocm.gpg
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
+    rm -f /etc/apt/apt.conf.d/docker-clean && \
+    echo "deb [arch=amd64 signed-by=/etc/apt/keyrings/amdrocm.gpg] \
+https://repo.amd.com/rocm/packages-multi-arch/ubuntu2404 stable main" \
+        > /etc/apt/sources.list.d/amdrocm.list && \
+    apt-get update && \
+    _mm=$(echo "${ROCM_VERSION}" | cut -d. -f1-2) && \
+    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+        ca-certificates \
+        curl \
+        git \
+        ibverbs-providers \
+        libibverbs-dev \
+        libopenmpi3t64 \
+        nvme-cli \
+        pkg-config \
+        bpftrace \
+        "amdrocm-runtime${_mm}" \
+        "amdrocm-base${_mm}" \
+        "amdrocm-profiler-base${_mm}" \
+        "amdrocm-dnn-host${_mm}" \
+        "amdrocm-blas-host${_mm}" \
+        "amdrocm-fft-host${_mm}" \
+        "amdrocm-rand-host${_mm}" \
+        "amdrocm-rccl-host${_mm}" \
+        "amdrocm-solver-host${_mm}" \
+        "amdrocm-sparse-host${_mm}" \
+        "amdrocm-amdsmi${_mm}" \
+        "amdrocm-llvm${_mm}" \
+        "amdrocm-math-common${_mm}" \
+    && update-ca-certificates
+
+RUN git config --global advice.detachedHead false
+RUN rm -f /usr/lib/python3.*/EXTERNALLY-MANAGED
+
+# uv — used by downstream vllm/lmcache Dockerfiles for pip operations.
+COPY --from=build_pytorch /root/.local/bin/uv  /usr/local/bin/uv
+COPY --from=build_pytorch /root/.local/bin/uvx /usr/local/bin/uvx
+
+# Installed Python packages: torch + all requirements (from build_pytorch),
+# plus setuptools/wheel/packaging (from build_torchvision).
+# Does NOT include the PyTorch or torchvision source trees.
+COPY --from=build_torchvision /usr/local/lib/python3.12/dist-packages/ \
+                               /usr/local/lib/python3.12/dist-packages/
+COPY --from=build_torchvision /usr/local/bin/ /usr/local/bin/
+
+ENV PIP_ROOT_USER_ACTION=ignore \
+    UV_LINK_MODE=copy \
+    UV_BREAK_SYSTEM_PACKAGES=1 \
+    PIP_BREAK_SYSTEM_PACKAGES=1
+
+# torchvision wheel (built in build_torchvision but not yet installed there).
+COPY --from=build_torchvision /app/vision/dist/ /tmp/vision/
+RUN --mount=type=cache,target=/root/.cache/pip \
+    pip3 install --no-cache-dir /tmp/vision/*.whl && \
+    rm -rf /tmp/vision && \
+    find /usr/local/lib/python3 -name '__pycache__' -type d \
+         -exec rm -rf {} + 2>/dev/null; true
+
+# NIXL native libs and Python bindings — compiled in build_nixl against the
+# ROCm-full toolchain; only the output directories are needed at runtime.
+COPY --from=build_nixl /opt/nixl/ /opt/nixl/
+COPY --from=build_nixl /opt/rocnixl-ucx/ /opt/rocnixl-ucx/
+
+# Guard: upstream pip deps may pull CUDA-only nixl variants that would shadow
+# the source-built install from build_nixl.  Remove them if present.
+RUN uv pip uninstall --system \
+        nixl nixl-cu12 nixl-cu13 \
+        cupy-cuda12x cufile-python cuda-pathfinder 2>/dev/null || true
 
 ENV NIXL_PLUGIN_DIR=/opt/nixl/lib/x86_64-linux-gnu/plugins \
     PYTHONPATH=/opt/rocm/share/amd_smi:/opt/nixl/lib/python3/dist-packages \
