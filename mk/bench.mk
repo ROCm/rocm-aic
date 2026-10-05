@@ -4,7 +4,8 @@
 # Benchmark targets: cliff, kvbench, stress, plot, emulate, profile capture.
 
 .PHONY: cliff plot stress-grafana kvbench-build kvbench-up kvbench-logs kvbench-down \
-        cliff-kvbench-local test-emulate-local stress-emulate-local capture-profile-local
+        cliff-kvbench-local test-emulate-local stress-emulate-local capture-profile-local \
+        test-lmcache-p2p-local
 
 cliff: prep-dirs
 	@test -n "$(BENCH_MODEL)" || { \
@@ -286,3 +287,227 @@ capture-profile-local: prep-dirs
 	    2>&1 | sed 's/^/  [pack] /'; \
 	echo "Pack: $(AIC_CAPTURE_DIR)/$$pack_name"; \
 	echo "Copy it to profiles/ and add a .capture.txt sibling to use it in CI."
+
+
+# ---- rocm-ernic P2P test (local, no GPU hardware required) -------------------
+#
+# Boots two QEMU KVM VMs using qemu-tool (pip install qemu-tool) and the
+# vfio-user-ernic-2vm compose stack from qemu-minimal.  Each VM gets a
+# rocm-ernic emulated ionic RDMA NIC; the ernic TCP mesh connects them so
+# RDMA verbs traffic travels between guests over the same TCP connections.
+#
+# VM1 (primary): lmcache coordinator + lmcache server with P2P
+# VM2 (secondary): lmcache server with P2P + vllm serve (llm-emu)
+#
+# The test sends the same prompt to VM2's vllm twice and asserts that
+# lmcache_mp_p2p_load_count_total > 0 on VM2's lmcache metrics.
+#
+# Requires: /dev/kvm, docker, qemu-tool (auto-installed), HF_TOKEN.
+#           Two qcow2 VM images in AIC_LMCACHE_P2P_VM_IMAGES_DIR (ionic-flavour).
+
+AIC_LMCACHE_P2P_WORK_DIR          ?= /tmp/aic-lmcache-p2p-test
+AIC_LMCACHE_P2P_VM_IMAGES_DIR     ?= /var/lib/qemu-tool/images
+# Pinned ionic-flavour qcow2 image from batesste-ci-images.
+# The -qcow2 tag is an ORAS artifact (zstd qcow2); the bare tag is the OCI
+# FROM-scratch payload image for docker create/cp extraction.
+AIC_LMCACHE_P2P_QCOW2_IMAGE       ?= docker.io/sbates130272/batesste-ci-images-ubuntu-qcow2-gen-ionic:20260929.g2bdbd16-vm.resolute-ionic-qm.54cc234
+AIC_LMCACHE_P2P_VM1_NAME          ?= qemu-minimal
+AIC_LMCACHE_P2P_VM2_NAME          ?= qemu-minimal-2
+AIC_LMCACHE_P2P_VM1_SSH_PORT      ?= 12230
+AIC_LMCACHE_P2P_VM2_SSH_PORT      ?= 12231
+AIC_LMCACHE_P2P_VM_VCPUS          ?= 4
+AIC_LMCACHE_P2P_VM_MEM_MB         ?= 4096
+AIC_LMCACHE_P2P_READY_S           ?= 300
+AIC_LMCACHE_P2P_MODEL             ?= HuggingFaceTB/SmolLM2-135M-Instruct
+AIC_LMCACHE_P2P_LMCACHE_IMAGE_REF ?= $(LMCACHE_IMAGE_REF)
+AIC_LMCACHE_P2P_VLLM_IMAGE_REF    ?= $(IMAGE_REF)
+AIC_LMCACHE_P2P_LMCACHE_L1_SIZE_GB ?= 0.5
+AIC_LMCACHE_P2P_LMCACHE_PORT      ?= 6555
+AIC_LMCACHE_P2P_COORD_PORT        ?= 9300
+AIC_LMCACHE_P2P_PORT              ?= 18200
+AIC_LMCACHE_P2P_VLLM_PORT         ?= 8000
+# VM IPs assigned to the ionic interface (192.168.200.<10*index>)
+AIC_LMCACHE_P2P_VM1_IP            ?= 192.168.200.10
+AIC_LMCACHE_P2P_VM2_IP            ?= 192.168.200.20
+# Path inside each VM where the P2P compose file is placed
+AIC_LMCACHE_P2P_COMPOSE_PATH   ?= /tmp/lmcache-p2p/docker-compose.yml
+
+_AIC_LMCACHE_P2P_SSH_FLAGS = -o StrictHostKeyChecking=no -o BatchMode=yes -o ConnectTimeout=5
+
+test-lmcache-p2p-local: prep-dirs
+	@test -c /dev/kvm || { echo "ERROR: /dev/kvm not found — KVM is required" >&2; exit 1; }
+	@test -n "$(HF_TOKEN)" || { echo "ERROR: HF_TOKEN not set" >&2; exit 1; }
+	@test -n "$(AIC_LMCACHE_P2P_LMCACHE_IMAGE_REF)" || { \
+	    echo "ERROR: AIC_LMCACHE_P2P_LMCACHE_IMAGE_REF not set (or LMCACHE_IMAGE_REF)" >&2; exit 1; }
+	@echo "=== test-lmcache-p2p-local ==="
+	@echo "  model=$(AIC_LMCACHE_P2P_MODEL)  VM1=$(AIC_LMCACHE_P2P_VM1_NAME):$(AIC_LMCACHE_P2P_VM1_SSH_PORT)  VM2=$(AIC_LMCACHE_P2P_VM2_NAME):$(AIC_LMCACHE_P2P_VM2_SSH_PORT)"
+	@echo "[1/8] Ensuring qemu-tool is installed ..."
+	@if ! python3 -m qemu_tool --help >/dev/null 2>&1; then \
+	    echo "  Installing qemu-tool from PyPI ..."; \
+	    pip install --quiet qemu-tool; \
+	fi
+	@echo "[2/8] Extracting VM disk images from $(AIC_LMCACHE_P2P_QCOW2_IMAGE) ..."
+	@sudo mkdir -p "$(AIC_LMCACHE_P2P_VM_IMAGES_DIR)"
+	@docker pull -q "$(AIC_LMCACHE_P2P_QCOW2_IMAGE)"
+	@if [ ! -f "$(AIC_LMCACHE_P2P_VM_IMAGES_DIR)/$(AIC_LMCACHE_P2P_VM1_NAME).qcow2" ]; then \
+	    echo "  Extracting $(AIC_LMCACHE_P2P_VM1_NAME).qcow2 ..."; \
+	    _cid=$$(docker create "$(AIC_LMCACHE_P2P_QCOW2_IMAGE)"); \
+	    mkdir -p "$(AIC_LMCACHE_P2P_WORK_DIR)/qcow2-tmp"; \
+	    docker cp "$$_cid:/output/." "$(AIC_LMCACHE_P2P_WORK_DIR)/qcow2-tmp" 2>/dev/null \
+	        || docker cp "$$_cid:/." "$(AIC_LMCACHE_P2P_WORK_DIR)/qcow2-tmp"; \
+	    docker rm "$$_cid" >/dev/null; \
+	    _qcow2=$$(find "$(AIC_LMCACHE_P2P_WORK_DIR)/qcow2-tmp" -name '*.qcow2' | head -1); \
+	    sudo cp "$$_qcow2" "$(AIC_LMCACHE_P2P_VM_IMAGES_DIR)/$(AIC_LMCACHE_P2P_VM1_NAME).qcow2"; \
+	    sudo cp "$$_qcow2" "$(AIC_LMCACHE_P2P_VM_IMAGES_DIR)/$(AIC_LMCACHE_P2P_VM2_NAME).qcow2"; \
+	    rm -rf "$(AIC_LMCACHE_P2P_WORK_DIR)/qcow2-tmp"; \
+	    echo "  Disk images extracted"; \
+	else \
+	    echo "  $(AIC_LMCACHE_P2P_VM1_NAME).qcow2 already present — skipping (delete $(AIC_LMCACHE_P2P_VM_IMAGES_DIR)/$(AIC_LMCACHE_P2P_VM1_NAME).qcow2 to refresh)"; \
+	    if [ ! -f "$(AIC_LMCACHE_P2P_VM_IMAGES_DIR)/$(AIC_LMCACHE_P2P_VM2_NAME).qcow2" ]; then \
+	        sudo cp "$(AIC_LMCACHE_P2P_VM_IMAGES_DIR)/$(AIC_LMCACHE_P2P_VM1_NAME).qcow2" \
+	                "$(AIC_LMCACHE_P2P_VM_IMAGES_DIR)/$(AIC_LMCACHE_P2P_VM2_NAME).qcow2"; \
+	    fi; \
+	fi
+	@echo "[3/8] Starting 2-VM ernic compose stack ..."
+	@VM_IMAGES_DIR="$(AIC_LMCACHE_P2P_VM_IMAGES_DIR)" \
+	VM1_NAME="$(AIC_LMCACHE_P2P_VM1_NAME)" \
+	VM2_NAME="$(AIC_LMCACHE_P2P_VM2_NAME)" \
+	VM1_SSH_PORT="$(AIC_LMCACHE_P2P_VM1_SSH_PORT)" \
+	VM2_SSH_PORT="$(AIC_LMCACHE_P2P_VM2_SSH_PORT)" \
+	VM_VCPUS="$(AIC_LMCACHE_P2P_VM_VCPUS)" \
+	VM_VMEM="$(AIC_LMCACHE_P2P_VM_MEM_MB)" \
+	    python3 -m qemu_tool compose \
+	        --stack vfio-user-ernic-2vm \
+	        --vm-name "$(AIC_LMCACHE_P2P_VM1_NAME)" \
+	        --vm2-name "$(AIC_LMCACHE_P2P_VM2_NAME)" \
+	        up -d
+	@echo "[4/8] Waiting for SSH on both VMs (up to $(AIC_LMCACHE_P2P_READY_S)s) ..."
+	@for _port in "$(AIC_LMCACHE_P2P_VM1_SSH_PORT)" "$(AIC_LMCACHE_P2P_VM2_SSH_PORT)"; do \
+	    _ready=0; \
+	    for _i in $$(seq 1 $$(($(AIC_LMCACHE_P2P_READY_S)/5))); do \
+	        ssh $(_AIC_LMCACHE_P2P_SSH_FLAGS) -p "$$_port" ubuntu@localhost true 2>/dev/null \
+	            && { _ready=1; break; }; \
+	        sleep 5; \
+	    done; \
+	    [ "$$_ready" = "1" ] || { \
+	        echo "FAIL: VM on port $$_port not SSH-reachable after $(AIC_LMCACHE_P2P_READY_S)s" >&2; \
+	        python3 -m qemu_tool compose \
+	            --stack vfio-user-ernic-2vm \
+	            --vm-name "$(AIC_LMCACHE_P2P_VM1_NAME)" \
+	            --vm2-name "$(AIC_LMCACHE_P2P_VM2_NAME)" \
+	            logs --tail 40; \
+	        python3 -m qemu_tool compose \
+	            --stack vfio-user-ernic-2vm \
+	            --vm-name "$(AIC_LMCACHE_P2P_VM1_NAME)" \
+	            --vm2-name "$(AIC_LMCACHE_P2P_VM2_NAME)" \
+	            down; \
+	        exit 1; \
+	    }; \
+	    echo "  SSH ready on :$$_port"; \
+	done
+	@echo "[5/8] Pushing LMCache P2P compose file and guest setup script into both VMs ..."
+	@_compose_src="$(REPO_ROOT)/docker/compose/lmcache-p2p/docker-compose.yml"; \
+	_setup_src="$(REPO_ROOT)/scripts/lmcache-p2p-guest-setup.sh"; \
+	_setup_dst="$$(dirname $(AIC_LMCACHE_P2P_COMPOSE_PATH))/lmcache-p2p-guest-setup.sh"; \
+	for _port in "$(AIC_LMCACHE_P2P_VM1_SSH_PORT)" "$(AIC_LMCACHE_P2P_VM2_SSH_PORT)"; do \
+	    ssh $(_AIC_LMCACHE_P2P_SSH_FLAGS) -p "$$_port" ubuntu@localhost \
+	        "mkdir -p $$(dirname $(AIC_LMCACHE_P2P_COMPOSE_PATH))"; \
+	    scp -o StrictHostKeyChecking=no -P "$$_port" \
+	        "$$_compose_src" "ubuntu@localhost:$(AIC_LMCACHE_P2P_COMPOSE_PATH)"; \
+	    scp -o StrictHostKeyChecking=no -P "$$_port" \
+	        "$$_setup_src" "ubuntu@localhost:$$_setup_dst"; \
+	done
+	@echo "[6/8] Configuring VMs and starting LMCache P2P compose ..."
+	@_rc=0; \
+	for _idx in 1 2; do \
+	    _port="$(AIC_LMCACHE_P2P_VM1_SSH_PORT)"; [ "$$_idx" = "2" ] && _port="$(AIC_LMCACHE_P2P_VM2_SSH_PORT)"; \
+	    _role="primary";             [ "$$_idx" = "2" ] && _role="secondary"; \
+	    _this_ip="$(AIC_LMCACHE_P2P_VM1_IP)";     [ "$$_idx" = "2" ] && _this_ip="$(AIC_LMCACHE_P2P_VM2_IP)"; \
+	    echo "  VM$$_idx ($$_role) :$$_port $$_this_ip ..."; \
+	    ssh $(_AIC_LMCACHE_P2P_SSH_FLAGS) -p "$$_port" ubuntu@localhost \
+	        "LMCACHE_P2P_ROLE=$$_role \
+	         THIS_IP=$$_this_ip \
+	         COORD_IP=$(AIC_LMCACHE_P2P_VM1_IP) \
+	         COMPOSE_FILE=$(AIC_LMCACHE_P2P_COMPOSE_PATH) \
+	         LMCACHE_IMAGE_REF=$(AIC_LMCACHE_P2P_LMCACHE_IMAGE_REF) \
+	         VLLM_IMAGE_REF=$(AIC_LMCACHE_P2P_VLLM_IMAGE_REF) \
+	         LMCACHE_L1_SIZE_GB=$(AIC_LMCACHE_P2P_LMCACHE_L1_SIZE_GB) \
+	         LMCACHE_PORT=$(AIC_LMCACHE_P2P_LMCACHE_PORT) \
+	         COORD_PORT=$(AIC_LMCACHE_P2P_COORD_PORT) \
+	         P2P_PORT=$(AIC_LMCACHE_P2P_PORT) \
+	         VLLM_PORT=$(AIC_LMCACHE_P2P_VLLM_PORT) \
+	         VLLM_MODEL=$(AIC_LMCACHE_P2P_MODEL) \
+	         HF_TOKEN='$(HF_TOKEN)' \
+	         bash $$(dirname $(AIC_LMCACHE_P2P_COMPOSE_PATH))/lmcache-p2p-guest-setup.sh" \
+	        2>&1 | sed "s/^/  [vm$$_idx] /" || _rc=1; \
+	done; \
+	[ "$$_rc" -eq 0 ] || { \
+	    echo "FAIL: guest setup failed" >&2; \
+	    $(MAKE) --no-print-directory _lmcache-p2p-cleanup; \
+	    exit 1; \
+	}
+	@echo "[7/8] Waiting for vllm on VM2 (up to $(AIC_LMCACHE_P2P_READY_S)s) ..."
+	@_ready=0; \
+	for _i in $$(seq 1 $$(($(AIC_LMCACHE_P2P_READY_S)/5))); do \
+	    if ssh $(_AIC_LMCACHE_P2P_SSH_FLAGS) -p "$(AIC_LMCACHE_P2P_VM2_SSH_PORT)" ubuntu@localhost \
+	            "curl -fsS http://127.0.0.1:$(AIC_LMCACHE_P2P_VLLM_PORT)/health >/dev/null 2>&1"; then \
+	        _ready=1; break; \
+	    fi; \
+	    sleep 5; \
+	done; \
+	if [ "$$_ready" != "1" ]; then \
+	    echo "FAIL: vllm not ready after $(AIC_LMCACHE_P2P_READY_S)s" >&2; \
+	    ssh $(_AIC_LMCACHE_P2P_SSH_FLAGS) -p "$(AIC_LMCACHE_P2P_VM2_SSH_PORT)" ubuntu@localhost \
+	        "docker compose -f $(AIC_LMCACHE_P2P_COMPOSE_PATH) --profile secondary logs --tail 30" 2>/dev/null \
+	        | sed 's/^/  [vllm] /'; \
+	    $(MAKE) --no-print-directory _lmcache-p2p-cleanup; \
+	    exit 1; \
+	fi; \
+	echo "  vllm ready"
+	@echo "[8/8] Running P2P test ..."
+	@_rc=0; \
+	_prompt=$$(python3 -c "print('AMD ROCm ' * 64)"); \
+	_body="{\"model\":\"$(AIC_LMCACHE_P2P_MODEL)\",\"prompt\":\"$$_prompt\",\"max_tokens\":4,\"temperature\":0}"; \
+	echo "  Sending warm-up request (populates VM1 cache via VM2 vllm) ..."; \
+	ssh $(_AIC_LMCACHE_P2P_SSH_FLAGS) -p "$(AIC_LMCACHE_P2P_VM2_SSH_PORT)" ubuntu@localhost \
+	    "curl -sS http://127.0.0.1:$(AIC_LMCACHE_P2P_VLLM_PORT)/v1/completions \
+	         -H 'Content-Type: application/json' \
+	         -d '$$_body'" 2>&1 | sed 's/^/  [pass1] /'; \
+	echo "  Sending second request (should trigger P2P hit) ..."; \
+	ssh $(_AIC_LMCACHE_P2P_SSH_FLAGS) -p "$(AIC_LMCACHE_P2P_VM2_SSH_PORT)" ubuntu@localhost \
+	    "curl -sS http://127.0.0.1:$(AIC_LMCACHE_P2P_VLLM_PORT)/v1/completions \
+	         -H 'Content-Type: application/json' \
+	         -d '$$_body'" 2>&1 | sed 's/^/  [pass2] /'; \
+	echo "  Collecting metrics from VM2 lmcache ..."; \
+	_metrics=$$(ssh $(_AIC_LMCACHE_P2P_SSH_FLAGS) -p "$(AIC_LMCACHE_P2P_VM2_SSH_PORT)" ubuntu@localhost \
+	    "curl -sS http://127.0.0.1:$(AIC_LMCACHE_P2P_LMCACHE_PORT)/metrics 2>/dev/null \
+	     || curl -sS http://127.0.0.1:19090/metrics 2>/dev/null \
+	     || echo no_metrics"); \
+	printf '%s\n' "$$_metrics" \
+	    | grep -E 'lmcache_mp_(p2p|remote|local|l1|l2)' \
+	    | grep -v '^#' | sed 's/^/  [metrics] /'; \
+	_p2p_hits=$$(printf '%s\n' "$$_metrics" \
+	    | grep -oE 'lmcache_mp_(p2p_load|remote_hit)_count_total[[:space:]]+[0-9.]+' \
+	    | awk '{s+=$$NF} END {printf "%d", s+0}'); \
+	_p2p_hits=$${_p2p_hits:-0}; \
+	if [ "$$_p2p_hits" -gt 0 ]; then \
+	    echo "PASS: P2P hit count = $$_p2p_hits"; \
+	else \
+	    echo "WARN: P2P hit count = 0 (RDMA path may need ionic NIC config; check lmcache logs)" >&2; \
+	    _rc=1; \
+	fi; \
+	$(MAKE) --no-print-directory _lmcache-p2p-cleanup; \
+	[ "$$_rc" -eq 0 ] \
+	    && echo "=== test-lmcache-p2p-local PASSED ===" \
+	    || { echo "=== test-lmcache-p2p-local FAILED ===" >&2; exit 1; }
+
+.PHONY: _lmcache-p2p-cleanup
+_lmcache-p2p-cleanup:
+	@VM_IMAGES_DIR="$(AIC_LMCACHE_P2P_VM_IMAGES_DIR)" \
+	VM1_NAME="$(AIC_LMCACHE_P2P_VM1_NAME)" \
+	VM2_NAME="$(AIC_LMCACHE_P2P_VM2_NAME)" \
+	    python3 -m qemu_tool compose \
+	        --stack vfio-user-ernic-2vm \
+	        --vm-name "$(AIC_LMCACHE_P2P_VM1_NAME)" \
+	        --vm2-name "$(AIC_LMCACHE_P2P_VM2_NAME)" \
+	        down 2>/dev/null || true

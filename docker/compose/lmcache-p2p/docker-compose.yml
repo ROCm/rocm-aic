@@ -1,0 +1,140 @@
+---
+# LMCache P2P two-node test compose file.
+#
+# Runs inside each rocm-ernic VM booted by qemu-tool.  The role of each VM
+# is selected by LMCACHE_P2P_ROLE:
+#
+#   primary    coordinator + lmcache-server with P2P enabled
+#   secondary  lmcache-server with P2P enabled + vllm serve (llm-emu)
+#
+# Required env (set in the shell before `docker compose up`):
+#   LMCACHE_P2P_ROLE        primary | secondary
+#   LMCACHE_IMAGE_REF       lmcache image (e.g. rocm-aic:latest)
+#   VLLM_IMAGE_REF          vllm image (secondary only)
+#   COORD_IP                IP of the primary VM (coordinator)
+#   THIS_IP                 This VM's ionic RDMA interface IP
+#   P2P_PORT                Transfer-channel port (default: 18200)
+#   LMCACHE_PORT            LMCache HTTP API port (default: 6555)
+#   COORD_PORT              Coordinator port (default: 9300)
+#   VLLM_PORT               vLLM serve port (default: 8000)
+#   LMCACHE_L1_SIZE_GB      L1 DRAM cap in GiB (default: 0.5)
+#   LMCACHE_CHUNK_SIZE      Tokens per KV chunk (default: 256)
+#   VLLM_MODEL              Model name (default: HuggingFaceTB/SmolLM2-135M-Instruct)
+#   HF_TOKEN                HuggingFace token (secondary only, for model download)
+
+x-lmcache-common: &lmcache-common
+  network_mode: host
+  restart: "no"
+  environment:
+    PYTHONHASHSEED: "0"
+    LMCACHE_PORT:         "${LMCACHE_PORT:-6555}"
+    LMCACHE_L1_SIZE_GB:   "${LMCACHE_L1_SIZE_GB:-0.5}"
+    LMCACHE_CHUNK_SIZE:   "${LMCACHE_CHUNK_SIZE:-256}"
+    COORD_IP:             "${COORD_IP:?COORD_IP is required}"
+    COORD_PORT:           "${COORD_PORT:-9300}"
+    THIS_IP:              "${THIS_IP:?THIS_IP is required}"
+    P2P_PORT:             "${P2P_PORT:-18200}"
+    # Surface ionic RDMA device to NIXL/UCX
+    UCX_NET_DEVICES:      all
+    NIXL_LOG_LEVEL:       "${NIXL_LOG_LEVEL:-warn}"
+
+services:
+
+  # ---- coordinator (primary VM only) ----------------------------------------
+  coordinator:
+    profiles: [primary]
+    image: "${LMCACHE_IMAGE_REF:?LMCACHE_IMAGE_REF is required}"
+    network_mode: host
+    restart: "no"
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        exec lmcache coordinator \
+          --host 0.0.0.0 \
+          --port "${COORD_PORT:-9300}"
+    healthcheck:
+      test:
+        - CMD
+        - python3
+        - -c
+        - |
+          import urllib.request
+          urllib.request.urlopen(
+            'http://127.0.0.1:${COORD_PORT:-9300}/healthz', timeout=2)
+      interval: 5s
+      timeout: 3s
+      retries: 24
+      start_period: 5s
+
+  # ---- lmcache server with P2P (both VMs) ------------------------------------
+  lmcache:
+    <<: *lmcache-common
+    image: "${LMCACHE_IMAGE_REF:?LMCACHE_IMAGE_REF is required}"
+    container_name: "aic-lmcache-p2p"
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        exec lmcache server \
+          --host 0.0.0.0 \
+          --port "$${LMCACHE_PORT}" \
+          --l1-size-gb "$${LMCACHE_L1_SIZE_GB}" \
+          --chunk-size "$${LMCACHE_CHUNK_SIZE}" \
+          --coordinator-url "http://$${COORD_IP}:$${COORD_PORT}" \
+          --coordinator-advertise-ip "$${THIS_IP}" \
+          --coordinator-event-reporting \
+          --p2p-advertise-url "$${THIS_IP}:$${P2P_PORT}" \
+          --p2p-listen-url "0.0.0.0:$${P2P_PORT}" \
+          --p2p-transfer-engine nixl \
+          --l1-align-bytes 65536
+    healthcheck:
+      test:
+        - CMD
+        - python3
+        - -c
+        - |
+          import os, socket
+          port = int(os.getenv('LMCACHE_PORT', '6555'))
+          s = socket.create_connection(('127.0.0.1', port), 2)
+          s.close()
+      interval: 5s
+      timeout: 3s
+      retries: 36
+      start_period: 15s
+
+  # ---- vLLM serve connected to local lmcache (secondary VM only) -------------
+  vllm:
+    profiles: [secondary]
+    image: "${VLLM_IMAGE_REF:?VLLM_IMAGE_REF is required}"
+    network_mode: host
+    pid: service:lmcache
+    ipc: service:lmcache
+    restart: "no"
+    environment:
+      HF_TOKEN:   "${HF_TOKEN:-}"
+      HF_HUB_OFFLINE: "0"
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        exec vllm serve "${VLLM_MODEL:-HuggingFaceTB/SmolLM2-135M-Instruct}" \
+          --host 0.0.0.0 \
+          --port "${VLLM_PORT:-8000}" \
+          --max-model-len 4096 \
+          --gpu-memory-utilization 0.90 \
+          --kv-transfer-config \
+            '{"kv_connector":"LMCacheConnectorV1","kv_role":"kv_both","kv_connector_extra_config":{"lmcache_port":${LMCACHE_PORT:-6555},"lmcache_host":"127.0.0.1"}}'
+    depends_on:
+      lmcache:
+        condition: service_healthy
+    healthcheck:
+      test:
+        - CMD
+        - python3
+        - -c
+        - |
+          import urllib.request
+          urllib.request.urlopen(
+            'http://127.0.0.1:${VLLM_PORT:-8000}/health', timeout=2)
+      interval: 5s
+      timeout: 3s
+      retries: 60
+      start_period: 30s

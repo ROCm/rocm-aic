@@ -277,6 +277,7 @@ help:
 	@echo "  make test-emulate-local  Local emulate test (no SLURM): bring up vllm-emulator, assert completion + hook"
 	@echo "  make stress-emulate-local  Start emulator + Prometheus, run sustained sweep, print /metrics"
 	@echo "  make capture-profile-local  Local profile capture (requires /dev/kfd): real GPU serve + sweep -> pack"
+	@echo "  make test-lmcache-p2p-local  LMCache P2P KV-cache sharing: two rocm-ernic VMs via qemu-tool compose (no GPU required)"
 	@echo "  make emulate-test      Serve check of the emulation image on a CPU-only node (no GPU)"
 	@echo "  make emulate-mp-test   Emulation + the full LMCache MP recipe on a CPU-only node"
 	@echo "  make profile-capture   Capture an AMD profile pack from a REAL GPU serve (gfx942/gfx950)"
