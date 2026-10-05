@@ -31,9 +31,10 @@
 ARG ROCM_VERSION=7.14.1
 # Build base: full ROCm toolchain (compiler, headers, math libs) for source builds.
 ARG ROCM_BASE_IMAGE=rocm/dev-ubuntu-24.04:${ROCM_VERSION}-full
-# Runtime base: plain Ubuntu 24.04.  The 13 ROCm runtime packages needed by
-# torch are installed explicitly below — ~2 GB installed vs ~18 GB for -full.
-ARG ROCM_RUNTIME_IMAGE=ubuntu:24.04
+# Runtime base: plain ROCm image (no compiler toolchain, headers, or math libs).
+# AMD maintains this as the official runtime base; the apt repo is pre-configured
+# so the 13 runtime packages install without any keyring setup.
+ARG ROCM_RUNTIME_IMAGE=rocm/dev-ubuntu-24.04:${ROCM_VERSION}
 
 # Empty default for the `pip-wheels` build context.  A caller that passes
 # --build-context pip-wheels=<dir> overrides this stage exactly as before.
@@ -258,13 +259,13 @@ RUN --mount=type=cache,target=/root/.cache/uv \
     rm -rf /tmp/nixl /tmp/nixl-patches /tmp/nixl-scripts /tmp/nixl-wheels
 
 # =============================================================================
-# runtime — Ubuntu 24.04 + 13 ROCm runtime packages + torch + NIXL.
+# runtime — plain ROCm image + 13 ROCm runtime packages + torch + NIXL.
 #
-# Starts FROM ubuntu:24.04 (not the -full ROCm image) and installs only the
-# ROCm runtime libraries that torch actually dlopens at process start.
-# Build toolchain, headers, and ~17 GB of unreferenced -full content are
-# excluded.  The AMD apt signing key is copied from the build-time base stage
-# (which already has it from the -full image) so no network key fetch is needed.
+# Starts FROM rocm/dev-ubuntu-24.04:7.14.1 (plain, ~3 GB) instead of -full
+# (~18 GB).  The plain image has the AMD apt repo pre-configured.  We install
+# only the 13 ROCm packages that torch actually dlopens at process start
+# (~2 GB extra), confirmed by /proc/self/maps audit with a live GPU.
+# Build toolchain, headers, and ~15 GB of -full content are excluded.
 #
 # ROCm runtime packages installed (~2 GB total):
 #   amdrocm-runtime     HIP + HSA + comgr + hipRTC        (47 MB)
@@ -300,17 +301,12 @@ RUN --mount=type=secret,id=tls_cert,required=false \
         update-ca-certificates; \
     fi
 
-# AMD ROCm apt repo — key copied from the build-time base stage (already
-# fetched and verified there from the -full image).  Version-specific package
-# names are computed from ROCM_VERSION (e.g. 7.14.1 → "7.14" suffix).
+# The plain ROCm base image has the AMD apt repo pre-configured.
+# Version-specific package names are computed from ROCM_VERSION (7.14.1 → "7.14").
 # hadolint ignore=DL3008
-COPY --from=base /etc/apt/keyrings/amdrocm.gpg /etc/apt/keyrings/amdrocm.gpg
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
     rm -f /etc/apt/apt.conf.d/docker-clean && \
-    echo "deb [arch=amd64 signed-by=/etc/apt/keyrings/amdrocm.gpg] \
-https://repo.amd.com/rocm/packages-multi-arch/ubuntu2404 stable main" \
-        > /etc/apt/sources.list.d/amdrocm.list && \
     apt-get update && \
     _mm=$(echo "${ROCM_VERSION}" | cut -d. -f1-2) && \
     DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
