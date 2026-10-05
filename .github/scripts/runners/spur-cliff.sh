@@ -26,6 +26,9 @@ _on_err() {
 }
 trap '_on_err "$?" "${PIPESTATUS[*]}" "$LINENO" "${FUNCNAME[*]-}"' ERR
 
+# Commit `make install-ci-scripts` deployed; if it predates your change, redeploy.
+echo "Installed CI scripts: $(cat "$(dirname -- "${BASH_SOURCE[0]}")/VERSION" || echo unknown)"
+
 SHA="${1:?usage: $0 <full-sha> <cliff-short|cliff-submit>}"
 TARGET="${2:?usage: $0 <full-sha> <cliff-short|cliff-submit>}"
 SHORT="${SHA:0:7}"

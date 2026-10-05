@@ -22,6 +22,9 @@ _on_err() {
 }
 trap '_on_err "$?" "${PIPESTATUS[*]}" "$LINENO" "${FUNCNAME[*]-}"' ERR
 
+# Commit `make install-ci-scripts` deployed; if it predates your change, redeploy.
+echo "Installed CI scripts: $(cat "$(dirname -- "${BASH_SOURCE[0]}")/VERSION" || echo unknown)"
+
 SHA="${1:?usage: $0 <full-sha> [smoke-test|smoke-test-fast]}"
 AIC_SMOKE_TEST_TARGET="${2:-smoke-test}"
 case "${AIC_SMOKE_TEST_TARGET}" in
