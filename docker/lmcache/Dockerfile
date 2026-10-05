@@ -134,6 +134,13 @@ RUN --mount=type=cache,target=/root/.cache/pip \
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv pip install --system "matplotlib>=3.8,<4" "openai>=1.0,<2"
 
+# CuPy (ROCm variant): provides hipMalloc without pulling in the ROCm compute
+# stack (librocblas, libMIOpen, etc.).  Used by the NIXL GPU buffer allocator
+# when LMCACHE_NIXL_USE_CUPY=1.  cupy-rocm-7-0 links only against
+# libamdhip64.so + libhsa-runtime64.so — both already in aic-base.
+RUN --mount=type=cache,target=/root/.cache/pip \
+    pip3 install --no-cache-dir cupy-rocm-7-0
+
 # ----- 6. hipFile — provided by the ROCm 7.14 base image (GA since 7.14) ------
 # No source build needed.
 
@@ -144,10 +151,13 @@ RUN rm -rf /app/patches /app/LMCache /wheels && \
 # ----- 8. Runtime environment ------------------------------------------------
 # NIXL_PLUGIN_DIR, PYTHONPATH (incl. NIXL), LD_LIBRARY_PATH, and
 # HSA_ENABLE_IPC_MODE_LEGACY are set in aic-base and inherited here.
+# LMCACHE_NIXL_USE_CUPY=1: activate the CuPy GPU buffer allocator so
+# librocblas/libMIOpen/etc. are never dlopened in the lmcache process.
 ENV PYTHONUNBUFFERED=1 \
     PYTHONHASHSEED=0 \
     SAFETENSORS_FAST_GPU=1 \
-    HIP_FORCE_DEV_KERNARG=1
+    HIP_FORCE_DEV_KERNARG=1 \
+    LMCACHE_NIXL_USE_CUPY=1
 
 ARG AIC_VERSION
 ARG ROCM_BASE_IMAGE

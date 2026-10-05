@@ -1,0 +1,286 @@
+# lmcache: CuPy-backed GPU buffer allocator for the NIXL MP connector
+#
+# Context
+# -------
+# The NIXL MP connector allocates a staging GPU buffer via torch.empty(device="cuda").
+# On ROCm, importing libtorch_hip.so triggers DT_NEEDED resolution of
+# librocblas, libMIOpen, librccl, libhipblaslt, etc. even though LMCache
+# never invokes GPU compute kernels — it only does GPU ↔ CPU DMA.
+#
+# NIXL registration is entirely pointer-based: register_memory() accepts
+# (ptr: int, size: int, device_id: int, meta: str) tuples and never holds
+# a reference to any Python tensor object.  After data_ptr() is extracted,
+# PyTorch plays no further role in the DMA hot path.
+#
+# Fix
+# ---
+# When LMCACHE_NIXL_USE_CUPY=1 (opt-in), replace torch.empty(device="cuda")
+# with cupy.cuda.alloc() (hipMalloc).  cupy-rocm-7-0 links only against
+# libamdhip64.so + libhsa-runtime64.so — no compute libraries.
+# PagedCuPyMemoryAllocator provides the same interface as
+# PagedTensorMemoryAllocator so the NIXL backend is unchanged post-construction.
+#
+# The existing torch path is the default and is not modified.
+#
+# Applies to: LMCache v0.5.5 (commit 05a013b)
+# Upstream PR: TODO — submit after validation on gfx1201 / gfx950.
+#
+diff --git a/lmcache/v1/memory_management.py b/lmcache/v1/memory_management.py
+--- a/lmcache/v1/memory_management.py
++++ b/lmcache/v1/memory_management.py
+@@ -616,6 +616,69 @@ def _allocate_gpu_memory(
+     return base_buffer, aligned_buffer
+
+
++# ---------------------------------------------------------------------------
++# CuPy-backed GPU allocator — opt-in via LMCACHE_NIXL_USE_CUPY=1
++# ---------------------------------------------------------------------------
++
++def _have_cupy() -> bool:
++    """True when cupy (ROCm or CUDA variant) is importable."""
++    try:
++        import cupy  # noqa: F401
++        return True
++    except ImportError:
++        return False
++
++
++class CuPyGpuRegion:
++    """
++    Keeps a cupy.cuda.MemoryPointer alive and exposes data_ptr() so the
++    NIXL backend can treat it identically to the torch.Tensor 'base_buffer'
++    returned by _allocate_gpu_memory().
++    """
++
++    def __init__(self, memptr, aligned_view) -> None:
++        self._memptr = memptr        # prevents GC of the CuPy allocation
++        self.aligned_view = aligned_view   # cupy.ndarray of the usable region
++
++    def data_ptr(self) -> int:
++        return int(self._memptr.ptr)
++
++
++def _allocate_gpu_memory_cupy(
++    size: int,
++    device: str,
++) -> "tuple[CuPyGpuRegion, cupy.ndarray]":
++    """
++    Allocate a page-aligned GPU buffer via hipMalloc (CuPy).
++
++    Returns (region, aligned_ndarray) matching _allocate_gpu_memory()'s
++    (base_buffer, aligned_buffer) signature so call sites are identical.
++    Only requires libamdhip64.so + libhsa-runtime64.so at runtime.
++    """
++    import cupy
++
++    dev_id = int(device.split(":")[-1]) if ":" in device else 0
++    page_size = os.sysconf("SC_PAGESIZE")
++
++    with cupy.cuda.Device(dev_id):
++        memptr = cupy.cuda.alloc(size + page_size)
++        base_ptr = int(memptr.ptr)
++        offset = (-base_ptr) % page_size
++        aligned = cupy.ndarray(
++            (size,),
++            dtype=cupy.uint8,
++            memptr=cupy.cuda.MemoryPointer(memptr.mem, offset),
++        )
++
++    return CuPyGpuRegion(memptr, aligned), aligned
++
++
++def _nixl_use_cupy() -> bool:
++    """True when the operator opts into the CuPy GPU allocator."""
++    return os.environ.get("LMCACHE_NIXL_USE_CUPY", "0") == "1" and _have_cupy()
++
++
+diff --git a/lmcache/v1/storage_backend/nixl_storage_backend.py b/lmcache/v1/storage_backend/nixl_storage_backend.py
+--- a/lmcache/v1/storage_backend/nixl_storage_backend.py
++++ b/lmcache/v1/storage_backend/nixl_storage_backend.py
+@@ -74,9 +74,15 @@ from lmcache.v1.memory_management import (
+     MemoryFormat,
+     TensorMemoryObj,
+     _allocate_cpu_memory,
+-    _allocate_gpu_memory,
++    _allocate_gpu_memory,
++    _allocate_gpu_memory_cupy,
++    _nixl_use_cupy,
+     logger,
+ )
++from lmcache.v1.memory_allocators.paged_cupy_memory_allocator import (
++    PagedCuPyMemoryAllocator,
++)
+ from lmcache.v1.memory_allocators.paged_tensor_memory_allocator import (
+     PagedTensorMemoryAllocator,
+ )
+@@ -920,12 +926,27 @@ class NixlStorageBackend:
+         else:
+             if self.use_hugepages:
+                 logger.warning("Hugepages are not supported for GPU memory allocation")
+                 self.use_hugepages = False
+-            base_buffer, self.buffer = _allocate_gpu_memory(
+-                config.nixl_buffer_size, corrected_device
+-            )
+-            torch_dev.set_device(corrected_device)
+-            self.base_buffer = base_buffer  # Prevents early GC of the aligned tensor.
++            if _nixl_use_cupy():
++                logger.info(
++                    "NIXL GPU buffer: CuPy allocator (LMCACHE_NIXL_USE_CUPY=1) — "
++                    "librocblas/libMIOpen not required."
++                )
++                base_region, self.buffer = _allocate_gpu_memory_cupy(
++                    config.nixl_buffer_size, corrected_device
++                )
++                self.base_buffer = base_region
++            else:
++                base_buffer, self.buffer = _allocate_gpu_memory(
++                    config.nixl_buffer_size, corrected_device
++                )
++                torch_dev.set_device(corrected_device)
++                self.base_buffer = base_buffer
+             self.free_pinned_buffer = False
+
+-        return PagedTensorMemoryAllocator(
+-            self.buffer,
+-            [torch.Size(metadata.kv_shape)],
+-            [metadata.kv_dtype],
+-            MemoryFormat.KV_2LTD,
+-        )
++        if _nixl_use_cupy() and corrected_device != "cpu":
++            return PagedCuPyMemoryAllocator(
++                self.buffer,
++                [torch.Size(metadata.kv_shape)],
++                [metadata.kv_dtype],
++                MemoryFormat.KV_2LTD,
++            )
++        return PagedTensorMemoryAllocator(
++            self.buffer,
++            [torch.Size(metadata.kv_shape)],
++            [metadata.kv_dtype],
++            MemoryFormat.KV_2LTD,
++        )
+diff --git a/lmcache/v1/memory_allocators/paged_cupy_memory_allocator.py b/lmcache/v1/memory_allocators/paged_cupy_memory_allocator.py
+new file mode 100644
+--- /dev/null
++++ b/lmcache/v1/memory_allocators/paged_cupy_memory_allocator.py
+@@ -0,0 +1,107 @@
++# SPDX-License-Identifier: Apache-2.0
++"""
++CuPy-backed paged memory allocator for the NIXL GPU buffer path.
++
++Drop-in replacement for PagedTensorMemoryAllocator when
++LMCACHE_NIXL_USE_CUPY=1.  Uses cupy.ndarray page slices instead of
++torch.Tensor slices; only libamdhip64.so + libhsa-runtime64.so are
++required at runtime (no rocblas/MIOpen/rccl).
++
++NIXL registration is raw-pointer-based, so switching the Python-side
++page handles from torch.Tensor to cupy.ndarray is transparent to NIXL.
++"""
++
++from collections import deque
++from typing import List, Optional, Union
++
++import cupy
++import torch
++
++from lmcache.utils import get_size_bytes
++from lmcache.v1.memory_management import (
++    MemoryAllocatorInterface,
++    MemoryFormat,
++    MemoryObjMetadata,
++    TensorMemoryObj,
++    logger,
++)
++
++
++class CuPyMemoryObj(TensorMemoryObj):
++    """
++    Page handle backed by a cupy.ndarray slice instead of torch.Tensor.
++
++    Inherits TensorMemoryObj so isinstance() checks and metadata handling
++    remain valid.  Only data_ptr() is overridden; the NIXL backend never
++    reads raw_data bytes directly — all transfers are done by NIXL's
++    C++ DMA engine via the registered pointer.
++    """
++
++    def __init__(
++        self,
++        raw_data: "cupy.ndarray",
++        metadata: "MemoryObjMetadata",
++        parent_allocator: "PagedCuPyMemoryAllocator",
++    ) -> None:
++        # Bypass TensorMemoryObj.__init__ (expects torch.Tensor).
++        self.raw_data = raw_data
++        self.metadata = metadata
++        self._parent_allocator = parent_allocator
++        self.monitor = None
++
++    def data_ptr(self) -> int:  # type: ignore[override]
++        return int(self.raw_data.data.ptr)
++
++
++class PagedCuPyMemoryAllocator(MemoryAllocatorInterface):
++    """
++    Paged allocator backed by a single cupy.ndarray GPU buffer.
++
++    Provides the same external interface as PagedTensorMemoryAllocator:
++      buffer_ptr: int        — raw GPU pointer to the buffer start
++      allocate(...)          — returns CuPyMemoryObj | None
++      free(mem_obj)          — returns the page to the free pool
++    """
++
++    def __init__(
++        self,
++        buffer: "cupy.ndarray",
++        shapes: "list[torch.Size]",
++        dtypes: "list[torch.dtype]",
++        fmt: MemoryFormat = MemoryFormat.KV_2LTD,
++    ) -> None:
++        self.buffer = buffer.view(cupy.uint8).ravel()
++        self.buffer_size = int(self.buffer.nbytes)
++        self.buffer_ptr = int(self.buffer.data.ptr)
++
++        self.shapes = shapes
++        self.dtypes = dtypes
++        self.fmt = fmt
++        self.align_bytes = get_size_bytes(shapes, dtypes)
++
++        assert self.buffer_size % self.align_bytes == 0, (
++            f"Buffer size {self.buffer_size} is not a multiple of "
++            f"align_bytes {self.align_bytes}."
++        )
++
++        n_pages = self.buffer_size // self.align_bytes
++        self.free_blocks: deque[CuPyMemoryObj] = deque()
++
++        for idx in range(n_pages):
++            start = idx * self.align_bytes
++            page = self.buffer[start : start + self.align_bytes]
++            meta = MemoryObjMetadata(
++                shapes[0], dtypes[0], idx, self.align_bytes, 1, 0, fmt,
++                shapes=shapes, dtypes=dtypes,
++            )
++            self.free_blocks.append(CuPyMemoryObj(page, meta, self))
++
++        self.num_active_allocations = 0
++        logger.info(
++            "PagedCuPyMemoryAllocator: %d pages × %d B (ptr=0x%x)",
++            n_pages, self.align_bytes, self.buffer_ptr,
++        )
++
++    def allocate(self, shapes, dtypes, fmt=MemoryFormat.KV_2LTD,
++                 allocator_type=None) -> Optional[CuPyMemoryObj]:
++        if not self.free_blocks:
++            return None
++        self.num_active_allocations += 1
++        return self.free_blocks.popleft()
++
++    def free(self, mem_obj: CuPyMemoryObj) -> None:
++        self.free_blocks.append(mem_obj)
++        self.num_active_allocations -= 1
++
++    def get_free_size(self) -> int:
++        return len(self.free_blocks) * self.align_bytes
++
++    def get_heap_size(self) -> int:
++        return self.buffer_size
