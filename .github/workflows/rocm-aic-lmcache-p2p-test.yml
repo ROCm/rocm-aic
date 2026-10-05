@@ -174,11 +174,16 @@ jobs:
           AIC_LMCACHE_P2P_VM1_NAME: qemu-minimal
           AIC_LMCACHE_P2P_VM2_NAME: qemu-minimal-2
           # SSH to qemu-1/qemu-2 by container hostname on internal port 2222.
+          # SSH via compose service hostname + internal qemu-tool ssh-port.
+          # qemu-tool binds --ssh-port N inside the container; from the
+          # compose network we reach it as <service>:<port>.
           AIC_LMCACHE_P2P_VM1_SSH_PORT: "2222"
-          AIC_LMCACHE_P2P_VM2_SSH_PORT: "2222"
+          AIC_LMCACHE_P2P_VM2_SSH_PORT: "2223"
           AIC_LMCACHE_P2P_VM1_SSH_HOST: qemu-1
           AIC_LMCACHE_P2P_VM2_SSH_HOST: qemu-2
-          AIC_LMCACHE_P2P_READY_S: "240"
+          # VMs booted successfully within 240s but SSH wasn't reached —
+          # increase to 480s (8 min) to cover slow cloud-init + SSH startup.
+          AIC_LMCACHE_P2P_READY_S: "480"
           # Skip the compose up step — already done above.
           AIC_LMCACHE_P2P_SKIP_COMPOSE_UP: "1"
         run: |
