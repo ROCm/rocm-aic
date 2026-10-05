@@ -2,7 +2,8 @@
 #
 # SPDX-License-Identifier: MIT
 #
-# AIC base image: Ubuntu 24.04 + ROCm 7.14.1 + PyTorch (source) + torchvision (source).
+# AIC base image: Ubuntu 24.04 + ROCm 7.14.1 + PyTorch (source) + torchvision (source)
+# + NIXL (KV-transfer transport).
 #
 # This is the shared foundation consumed by docker/vllm/Dockerfile and
 # docker/lmcache/Dockerfile via --build-context base=docker-image://aic-base:TAG.
@@ -14,6 +15,7 @@
 #   base              ROCm base + system deps + uv                    (sections 0-2)
 #   build_pytorch     PyTorch 2.13 built from source                  (section 2b)
 #   build_torchvision torchvision built from source                   (section 2c)
+#   runtime           slim image: no build toolchain; torch + NIXL    (section 3)
 #
 # Build (from repo root):
 #   DOCKER_BUILDKIT=1 docker build \
@@ -171,6 +173,7 @@ RUN --mount=type=cache,target=/root/.cache/ccache \
     MAX_JOBS="${BUILD_JOBS:-$(nproc)}" \
     CMAKE_BUILD_PARALLEL_LEVEL="${BUILD_JOBS:-$(nproc)}" \
     CMAKE_PREFIX_PATH=$(python3 -c 'import sys; print(sys.prefix)') \
+    PYTORCH_ROCM_ARCH=$(echo "${PYTORCH_ROCM_ARCH}" | tr ',' ' ') \
         python3 setup.py bdist_wheel --dist-dir=/app/pytorch/dist && \
     find /app/pytorch -mindepth 1 -maxdepth 1 ! -name 'dist' -exec rm -rf {} + 2>/dev/null || true
 
@@ -276,3 +279,55 @@ RUN --mount=type=cache,target=/root/.cache/pip \
     rm -rf /tmp/vision && \
     find /usr/local/lib/python3 -name '__pycache__' -type d \
          -exec rm -rf {} + 2>/dev/null; true
+
+# =============================================================================
+# NIXL — KV-transfer transport used by both aic-vllm and aic-lmcache.
+# Built from source with ROCm/HIP + AIS_MT patch; installed into /opt/nixl.
+# Placing it here avoids duplicating a 2-minute compile in both downstream
+# images and ensures a single consistent version across the stack.
+# =============================================================================
+ARG NIXL_GIT_URL=https://github.com/ai-dynamo/nixl.git
+ARG NIXL_REF=v1.4.1
+ARG BUILD_JOBS=
+ARG AIC_UCX_FAST=
+
+# Guard: upstream pip deps (e.g. lmcache requirements) may transitively pull
+# CUDA-only nixl variants.  Uninstall first so the source build wins.
+RUN uv pip uninstall --system \
+        nixl nixl-cu12 nixl-cu13 \
+        cupy-cuda12x cufile-python cuda-pathfinder 2>/dev/null || true
+
+COPY docker/scripts /tmp/nixl-scripts
+COPY patches/nixl/ /tmp/nixl-patches/
+# hadolint ignore=SC3054,SC3044
+RUN --mount=type=cache,target=/root/.cache/uv \
+    --mount=type=cache,target=/root/.cache/pip \
+    chmod +x /tmp/nixl-scripts/*.sh && \
+    NIXL_GIT_URL="${NIXL_GIT_URL}" NIXL_REF="${NIXL_REF}" NIXL_REQUIRE_ROCM=1 \
+        NIXL_DEST=/tmp/nixl /tmp/nixl-scripts/clone-nixl.sh && \
+    shopt -s nullglob && \
+    nixl_patches=(/tmp/nixl-patches/*.patch) && \
+    if [ "${#nixl_patches[@]}" -eq 0 ]; then \
+        echo "ERROR: no patches found in /tmp/nixl-patches/" >&2; exit 1; \
+    fi && \
+    for patch in "${nixl_patches[@]}"; do \
+        if git -C /tmp/nixl apply --verbose "$patch"; then \
+            echo "[nixl] applied $(basename "$patch")"; \
+        else \
+            echo "ERROR: nixl patch does not apply cleanly: $patch" >&2; exit 1; \
+        fi; \
+    done && \
+    NIXL_SRC=/tmp/nixl \
+        AIS_PATH=/opt/rocm ROCM_PATH=/opt/rocm \
+        NIXL_INSTALL_PREFIX=/opt/nixl \
+        NIXL_BUILD_WHEEL=1 NIXL_WHEEL_DIR=/tmp/nixl-wheels \
+        BUILD_JOBS="${BUILD_JOBS}" \
+        AIC_UCX_FAST="${AIC_UCX_FAST}" \
+        UV_SYSTEM_CERTS=1 \
+        /tmp/nixl-scripts/build-nixl.sh && \
+    rm -rf /tmp/nixl /tmp/nixl-patches /tmp/nixl-scripts /tmp/nixl-wheels
+
+ENV NIXL_PLUGIN_DIR=/opt/nixl/lib/x86_64-linux-gnu/plugins \
+    PYTHONPATH=/opt/rocm/share/amd_smi:/opt/nixl/lib/python3/dist-packages \
+    LD_LIBRARY_PATH=/opt/nixl/lib/x86_64-linux-gnu:/opt/nixl/lib:/opt/rocnixl-ucx/lib:/opt/rocm/lib \
+    HSA_ENABLE_IPC_MODE_LEGACY=1

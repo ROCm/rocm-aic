@@ -8,13 +8,14 @@
 #
 # SPDX-License-Identifier: MIT
 #
-# AIC vLLM image: torch + torchvision (from aic-base) + vLLM v0.29.0 + llm-emu plugin.
+# AIC vLLM image: torch + torchvision + NIXL (from aic-base) + AITER +
+# FlashAttention + vLLM v0.29.0 + llm-emu plugin.
 #
 # Consumed by the `vllm` compose service.  Built independently from aic-lmcache
 # (both share aic-base) so the two images can be built in parallel after the base.
 #
 # Stages:
-#   vllm      torch + vLLM source build + llm-emu                   (sections 3, 3b)
+#   vllm      AITER + FlashAttention + vLLM source build + llm-emu  (sections 3-3b)
 #   emulate   CPU-only runtime (--target emulate)                   (section 3c)
 #   runtime   default target, aliases `vllm`
 #
@@ -70,8 +71,73 @@ ARG VLLM_REF=v0.29.0
 # usable only for emulation (--target emulate); do NOT ship it to a GPU node.
 ARG VLLM_TARGET_DEVICE=rocm
 
-# ----- 3. vLLM (built from source at pinned tag) ---------------------------------
+# ROCm attention backends — validated pair, update together after revalidation.
+ARG AITER_GIT_URL=https://github.com/ROCm/aiter.git
+ARG AITER_REF=v0.1.22.post1
+ARG FLASH_ATTN_GIT_URL=https://github.com/Dao-AILab/flash-attention.git
+ARG FLASH_ATTN_REF=v2.8.3.post1
+
+# ----- 3. ROCm attention backends (AITER + FlashAttention) ----------------------
 RUN test -n "$ROCM_ARCH" || { echo "ERROR: ROCM_ARCH is not set"; exit 1; }
+
+# hadolint ignore=SC2039
+RUN --mount=type=cache,target=/root/.cache/pip \
+    --mount=type=cache,target=/root/.cache/ccache \
+    mkdir -p /wheels && \
+    pip3 install --no-cache-dir \
+        "pandas==3.0.3" \
+        "psutil==7.2.2" \
+        "pyyaml==6.0.3" \
+        "einops==0.8.2" \
+        "pybind11==3.0.4" \
+        "ninja==1.13.0" \
+        "flydsl==0.2.4" && \
+    git clone --depth 1 --branch "${AITER_REF}" "${AITER_GIT_URL}" /app/aiter && \
+    cd /app/aiter && \
+    git submodule update --init --recursive && \
+    PYTORCH_ROCM_ARCH="${ROCM_ARCH}" \
+        TORCH_DONT_CHECK_COMPILER_ABI=1 \
+        MAX_JOBS="${BUILD_JOBS:-$(nproc)}" \
+        CCACHE_DIR=/root/.cache/ccache \
+        python3 setup.py bdist_wheel --dist-dir=/wheels && \
+    pip3 install --no-cache-dir --no-deps /wheels/amd_aiter-*.whl && \
+    python3 -c 'import importlib.util, pathlib; spec = importlib.util.find_spec("aiter"); assert spec and spec.submodule_search_locations; print("AITER installed:", next(iter(spec.submodule_search_locations)))'
+
+# FlashAttention: CDNA-only (gfx9xx — MI100/MI200/MI300/MI355X).
+# hadolint ignore=SC2039
+RUN --mount=type=cache,target=/root/.cache/pip \
+    --mount=type=cache,target=/root/.cache/ccache \
+    _cdna_only() { \
+        _a=""; for _a in $(echo "$1" | tr ';' '\n'); do \
+            [ "${_a#gfx9}" != "${_a}" ] || return 1; done; return 0; }; \
+    if _cdna_only "${ROCM_ARCH}"; then \
+        git clone --depth 1 --branch "${FLASH_ATTN_REF}" \
+            --recurse-submodules --shallow-submodules \
+            "${FLASH_ATTN_GIT_URL}" /app/flash-attention && \
+        cd /app/flash-attention && \
+        GPU_ARCHS="${ROCM_ARCH}" \
+            PYTORCH_ROCM_ARCH="${ROCM_ARCH}" \
+            MAX_JOBS="${BUILD_JOBS:-$(nproc)}" \
+            CCACHE_DIR=/root/.cache/ccache \
+            python3 setup.py bdist_wheel --dist-dir=/wheels && \
+        pip3 install --no-cache-dir --no-deps /wheels/flash_attn-*.whl && \
+        python3 -c 'import flash_attn; print("FlashAttention installed:", flash_attn.__file__)' && \
+        { \
+            echo "AITER_REF=${AITER_REF}"; \
+            echo "FLASH_ATTN_REF=${FLASH_ATTN_REF}"; \
+            python3 -c 'import importlib.util; spec = importlib.util.find_spec("aiter"); assert spec and spec.submodule_search_locations; print("AITER_PACKAGE=" + next(iter(spec.submodule_search_locations)))'; \
+            python3 -c 'import flash_attn; print("FLASH_ATTN_PACKAGE=" + flash_attn.__file__)'; \
+        } > /etc/rocm-aic-attention-backends.env; \
+    else \
+        echo "Skipping FlashAttention: ${ROCM_ARCH} contains non-CDNA arch(es); using Triton attention" && \
+        { \
+            echo "AITER_REF=${AITER_REF}"; \
+            echo "FLASH_ATTN_REF="; \
+            python3 -c 'import importlib.util; spec = importlib.util.find_spec("aiter"); assert spec and spec.submodule_search_locations; print("AITER_PACKAGE=" + next(iter(spec.submodule_search_locations)))'; \
+        } > /etc/rocm-aic-attention-backends.env; \
+    fi
+
+# ----- 3b. vLLM (built from source at pinned tag) --------------------------------
 
 RUN git clone --depth 1 --branch "${VLLM_REF}" "${VLLM_GIT_URL}" /app/vllm
 
@@ -132,7 +198,7 @@ ARG LLM_EMU_REF=b71c602
 ENV AIC_EMULATOR_EXAMPLE_PACK=/opt/llm-emu/profiles/A40-Q8-Qwen3-8B.json \
     AIC_EMULATOR_DEFAULT_PACK=/opt/llm-emu/profiles/MI300X-Qwen3-8B.json
 # hadolint ignore=SC3044
-RUN git clone "${LLM_EMU_GIT_URL}" /app/llm-emu && \
+RUN git clone --filter=blob:none --no-checkout "${LLM_EMU_GIT_URL}" /app/llm-emu && \
     git -C /app/llm-emu checkout "${LLM_EMU_REF}" && \
     shopt -s nullglob && \
     for patch in /app/patches/llm-emu/*.patch; do \
@@ -151,7 +217,9 @@ print('vllm_emulator subpackages import OK')" && \
     mkdir -p /opt/llm-emu/profiles && \
     cp /app/llm-emu/example_profiling_data/*.json /opt/llm-emu/profiles/ && \
     test -r "${AIC_EMULATOR_EXAMPLE_PACK}" && \
-    rm -rf /app/llm-emu /app/patches
+    rm -rf /app/llm-emu /app/patches /app/aiter /app/flash-attention /wheels && \
+    find /usr/lib/python3 /usr/local/lib/python3 -name '__pycache__' -type d \
+         -exec rm -rf {} + 2>/dev/null; true
 
 # ----- LMCache client (KV transfer connector used by vllm service) -----------
 # Provides LMCacheMPConnector, which vLLM loads in-process for
@@ -168,14 +236,18 @@ RUN --mount=type=cache,target=/root/.cache/pip \
     test -n "${LMCACHE_REF}" || { \
         echo "ERROR: LMCACHE_REF is empty; build via 'make build'" >&2; exit 1; } && \
     _ver="${LMCACHE_REF#v}" && \
-    pip3 install --no-cache-dir "lmcache==${_ver}"
+    pip3 install --no-cache-dir "lmcache==${_ver}" && \
+    uv pip uninstall --system \
+        nixl nixl-cu12 nixl-cu13 \
+        cupy-cuda12x cufile-python cuda-pathfinder 2>/dev/null || true
 
 # ----- Runtime ENV + metadata -------------------------------------------------
+# PYTHONPATH and LD_LIBRARY_PATH (including NIXL paths) are inherited from
+# aic-base; do not redefine them here or the NIXL entries will be lost.
 ENV PYTHONUNBUFFERED=1 \
     PYTHONHASHSEED=0 \
     SAFETENSORS_FAST_GPU=1 \
-    HIP_FORCE_DEV_KERNARG=1 \
-    PYTHONPATH=/opt/rocm/share/amd_smi
+    HIP_FORCE_DEV_KERNARG=1
 
 COPY profiles/*.json /opt/llm-emu/profiles/
 RUN test -r "${AIC_EMULATOR_DEFAULT_PACK}" || \
@@ -192,7 +264,9 @@ LABEL org.opencontainers.image.title="aic-vllm" \
       ai.amd.aic.version="${AIC_VERSION}" \
       ai.amd.aic.rocm="${ROCM_VERSION}" \
       ai.amd.aic.vllm="${VLLM_REF}" \
-      ai.amd.aic.llm-emu="${LLM_EMU_REF}"
+      ai.amd.aic.llm-emu="${LLM_EMU_REF}" \
+      ai.amd.aic.aiter="${AITER_REF}" \
+      ai.amd.aic.flash-attention="${FLASH_ATTN_REF}"
 
 ENTRYPOINT ["python3", "-m", "vllm.entrypoints.openai.api_server"]
 
