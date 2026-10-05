@@ -1,34 +1,20 @@
 # lmcache: CuPy-backed GPU buffer allocator for the NIXL MP connector
 #
-# Context
-# -------
-# The NIXL MP connector allocates a staging GPU buffer via torch.empty(device="cuda").
-# On ROCm, importing libtorch_hip.so triggers DT_NEEDED resolution of
-# librocblas, libMIOpen, librccl, libhipblaslt, etc. even though LMCache
-# never invokes GPU compute kernels — it only does GPU <-> CPU DMA.
-#
-# NIXL registration is entirely pointer-based: register_memory() accepts
-# (ptr: int, size: int, device_id: int, meta: str) tuples and never holds
-# a reference to any Python tensor object. After data_ptr() is extracted,
-# PyTorch plays no further role in the DMA hot path.
-#
-# Fix
-# ---
 # When LMCACHE_NIXL_USE_CUPY=1 (opt-in), replace torch.empty(device="cuda")
 # with cupy.cuda.alloc() (hipMalloc). cupy-rocm-7-0 links only against
-# libamdhip64.so + libhsa-runtime64.so — no compute libraries.
-# PagedCuPyMemoryAllocator (shipped separately and COPYed into the image)
-# provides the same interface as PagedTensorMemoryAllocator so the NIXL
-# backend is unchanged post-construction.
-#
+# libamdhip64.so + libhsa-runtime64.so — no ROCm compute libraries needed.
 # The existing torch path is the default and is not modified.
+#
+# PagedCuPyMemoryAllocator is shipped in the AIC repo and COPYed into the
+# LMCache source tree before this patch is applied (avoids new-file diffs).
 #
 # Applies to: LMCache v0.5.5 (commit 05a013b)
 #
 diff --git a/lmcache/v1/memory_management.py b/lmcache/v1/memory_management.py
 --- a/lmcache/v1/memory_management.py
 +++ b/lmcache/v1/memory_management.py
-@@ -616,6 +616,62 @@ def _allocate_gpu_memory(
+@@ -630,6 +630,62 @@ def _allocate_gpu_memory(
+     # Need to return the base buffer as well in order to prevent GC
      return base_buffer, aligned_buffer
 
 
@@ -90,18 +76,20 @@ diff --git a/lmcache/v1/memory_management.py b/lmcache/v1/memory_management.py
 +    return os.environ.get("LMCACHE_NIXL_USE_CUPY", "0") == "1" and _have_cupy()
 +
 +
+ class TensorMemoryObj(MemoryObj):
 diff --git a/lmcache/v1/storage_backend/nixl_storage_backend.py b/lmcache/v1/storage_backend/nixl_storage_backend.py
 --- a/lmcache/v1/storage_backend/nixl_storage_backend.py
 +++ b/lmcache/v1/storage_backend/nixl_storage_backend.py
-@@ -74,9 +74,17 @@ from lmcache.v1.memory_management import (
+@@ -73,9 +73,17 @@ from lmcache.v1.memory_management import (
      MemoryFormat,
-     TensorMemoryObj,
+     MemoryObj,
+     MemoryObjMetadata,
      _allocate_cpu_memory,
 -    _allocate_gpu_memory,
 +    _allocate_gpu_memory,
 +    _allocate_gpu_memory_cupy,
 +    _nixl_use_cupy,
-     logger,
+     _free_cpu_memory,
  )
 +try:
 +    from lmcache.v1.memory_allocators.paged_cupy_memory_allocator import (
@@ -109,10 +97,8 @@ diff --git a/lmcache/v1/storage_backend/nixl_storage_backend.py b/lmcache/v1/sto
 +    )
 +except ImportError:
 +    PagedCuPyMemoryAllocator = None  # type: ignore[assignment,misc]
- from lmcache.v1.memory_allocators.paged_tensor_memory_allocator import (
-     PagedTensorMemoryAllocator,
- )
-@@ -920,12 +928,22 @@ class NixlStorageBackend:
+ from lmcache.v1.metadata import LMCacheMetadata
+@@ -921,12 +929,22 @@ class NixlStorageBackend:
          else:
              if self.use_hugepages:
                  logger.warning("Hugepages are not supported for GPU memory allocation")
@@ -124,8 +110,7 @@ diff --git a/lmcache/v1/storage_backend/nixl_storage_backend.py b/lmcache/v1/sto
 -            self.base_buffer = base_buffer  # Prevents early GC of the aligned tensor.
 +            if _nixl_use_cupy() and PagedCuPyMemoryAllocator is not None:
 +                logger.info(
-+                    "NIXL GPU buffer: CuPy allocator (LMCACHE_NIXL_USE_CUPY=1) — "
-+                    "librocblas/libMIOpen not required."
++                    "NIXL GPU buffer: CuPy allocator (LMCACHE_NIXL_USE_CUPY=1)"
 +                )
 +                base_region, self.buffer = _allocate_gpu_memory_cupy(
 +                    config.nixl_buffer_size, corrected_device
