@@ -117,13 +117,16 @@ jobs:
           fi
           echo "Pulling $IMG ..."
           sudo mkdir -p /var/lib/qemu-tool/images
-          # Extract qcow2 from the OCI FROM-scratch payload image
-          _cid=$(docker pull -q "$IMG" && docker create "$IMG")
+          # Extract qcow2 from the OCI FROM-scratch payload image.
+          # Pull and create are separated so _cid only captures the container ID.
+          docker pull -q "$IMG"
+          _cid=$(docker create "$IMG")
           mkdir -p /tmp/qcow2-extract
           docker cp "$_cid:/output/." /tmp/qcow2-extract 2>/dev/null \
             || docker cp "$_cid:/." /tmp/qcow2-extract
           docker rm "$_cid" >/dev/null
           _qcow2=$(find /tmp/qcow2-extract -name '*.qcow2' | head -1)
+          [ -n "$_qcow2" ] || { echo "::error::No .qcow2 found in image"; ls -lR /tmp/qcow2-extract; exit 1; }
           sudo cp "$_qcow2" /var/lib/qemu-tool/images/qemu-minimal.qcow2
           sudo cp "$_qcow2" /var/lib/qemu-tool/images/qemu-minimal-2.qcow2
           rm -rf /tmp/qcow2-extract
