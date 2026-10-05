@@ -1,0 +1,188 @@
+#!/bin/bash
+# Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+# SPDX-License-Identifier: MIT
+#
+# run-lmcache-p2p-test.sh — LMCache P2P KV-cache sharing test on a SPUR node.
+#
+# Boots two QEMU KVM VMs with rocm-ernic emulated ionic RDMA NICs using
+# qemu-tool compose (vfio-user-ernic-2vm stack), then runs the Python-level
+# P2P test (tests/test_lmcache_p2p.py) against those VMs.
+#
+# Invoked by: make test-lmcache-p2p-spur
+# Or directly: srun --partition=amd-spur --gpus=1 bash .slurm/run-lmcache-p2p-test.sh
+#
+# Required env:
+#   SLURM_SUBMIT_DIR    Path to repo root (set by make target)
+#   HF_TOKEN            HuggingFace token (for model download inside VMs)
+#   AIC_LMCACHE_IMAGE   LMCache+NIXL image ref
+#   AIC_VLLM_IMAGE      vLLM image ref (used only if secondary needs vllm)
+#
+# Optional env:
+#   AIC_LMCACHE_P2P_VM_IMAGES_DIR  Where to store qcow2 images (default: /tmp/aic-p2p-images)
+#   AIC_LMCACHE_P2P_QCOW2_IMAGE    Docker image containing the ionic guest qcow2
+#   AIC_LMCACHE_P2P_READY_S        SSH readiness timeout in seconds (default: 480)
+#   AIC_LMCACHE_P2P_VM1_IP         Ionic interface IP for VM1 (default: 192.168.200.10)
+#   AIC_LMCACHE_P2P_VM2_IP         Ionic interface IP for VM2 (default: 192.168.200.20)
+
+set -euo pipefail
+
+REPO_ROOT="${SLURM_SUBMIT_DIR:?SLURM_SUBMIT_DIR must be set to the repo root}"
+VM_IMAGES_DIR="${AIC_LMCACHE_P2P_VM_IMAGES_DIR:-/tmp/aic-p2p-images-${SLURM_JOB_ID:-$$}}"
+QCOW2_IMAGE="${AIC_LMCACHE_P2P_QCOW2_IMAGE:-docker.io/sbates130272/batesste-ci-images-ubuntu-qcow2-gen-ionic:20260929.g2bdbd16-vm.resolute-ionic-qm.54cc234}"
+READY_S="${AIC_LMCACHE_P2P_READY_S:-480}"
+VM1_IP="${AIC_LMCACHE_P2P_VM1_IP:-192.168.200.10}"
+VM2_IP="${AIC_LMCACHE_P2P_VM2_IP:-192.168.200.20}"
+VM1_SSH_PORT=12230
+VM2_SSH_PORT=12231
+VM1_NAME="p2p-vm1-${SLURM_JOB_ID:-$$}"
+VM2_NAME="p2p-vm2-${SLURM_JOB_ID:-$$}"
+WORK_DIR="/tmp/aic-p2p-work-${SLURM_JOB_ID:-$$}"
+
+SSH_FLAGS="-o StrictHostKeyChecking=no -o BatchMode=yes -o ConnectTimeout=5"
+
+log() { echo "[$(date -u +%H:%M:%S)] $*"; }
+die() { log "FATAL: $*" >&2; cleanup; exit 1; }
+
+cleanup() {
+    log "Tearing down compose stack ..."
+    VM_IMAGES_DIR="$VM_IMAGES_DIR" \
+    VM1_NAME="$VM1_NAME" \
+    VM2_NAME="$VM2_NAME" \
+        qemu-tool compose \
+            --stack vfio-user-ernic-2vm \
+            --vm-name "$VM1_NAME" \
+            --vm2-name "$VM2_NAME" \
+            down 2>/dev/null || true
+    rm -rf "$WORK_DIR"
+}
+trap cleanup EXIT
+
+log "=== LMCache P2P SPUR test ==="
+log "  Node:     $(hostname)"
+log "  Repo:     $REPO_ROOT"
+log "  Images:   $VM_IMAGES_DIR"
+
+# ---- Step 1: prerequisites -----------------------------------------------
+log "[1/8] Checking prerequisites ..."
+test -c /dev/kvm || die "/dev/kvm not available — nested virtualisation required"
+command -v docker >/dev/null || die "docker not found"
+
+# ---- Step 2: install qemu-tool -------------------------------------------
+log "[2/8] Ensuring qemu-tool is installed ..."
+if ! command -v qemu-tool >/dev/null 2>&1; then
+    log "  Installing qemu-tool via pipx ..."
+    if command -v pipx >/dev/null 2>&1; then
+        PIPX_BIN_DIR=/usr/local/bin pipx install --force qemu-tool >/dev/null
+    else
+        pip install --quiet --break-system-packages qemu-tool 2>/dev/null \
+            || pip install --quiet qemu-tool
+    fi
+fi
+qemu-tool --version
+
+# ---- Step 3: pull and extract guest qcow2 --------------------------------
+log "[3/8] Setting up VM disk images ..."
+mkdir -p "$VM_IMAGES_DIR" "$WORK_DIR"
+
+if [ ! -f "$VM_IMAGES_DIR/${VM1_NAME}.qcow2" ]; then
+    log "  Pulling $QCOW2_IMAGE ..."
+    docker pull -q "$QCOW2_IMAGE"
+    _cid=$(docker create "$QCOW2_IMAGE")
+    mkdir -p "$WORK_DIR/qcow2-tmp"
+    docker cp "$_cid:/output/." "$WORK_DIR/qcow2-tmp" 2>/dev/null \
+        || docker cp "$_cid:/." "$WORK_DIR/qcow2-tmp"
+    docker rm "$_cid" >/dev/null
+    _qcow2=$(find "$WORK_DIR/qcow2-tmp" -name '*.qcow2' | head -1)
+    [ -n "$_qcow2" ] || die "No .qcow2 found in $QCOW2_IMAGE"
+    cp "$_qcow2" "$VM_IMAGES_DIR/${VM1_NAME}.qcow2"
+    cp "$_qcow2" "$VM_IMAGES_DIR/${VM2_NAME}.qcow2"
+    rm -rf "$WORK_DIR/qcow2-tmp"
+    log "  Disk images ready"
+else
+    log "  Disk images already present"
+    [ -f "$VM_IMAGES_DIR/${VM2_NAME}.qcow2" ] || \
+        cp "$VM_IMAGES_DIR/${VM1_NAME}.qcow2" "$VM_IMAGES_DIR/${VM2_NAME}.qcow2"
+fi
+
+# ---- Step 4: start compose stack -----------------------------------------
+log "[4/8] Starting vfio-user-ernic-2vm compose stack ..."
+VM_IMAGES_DIR="$VM_IMAGES_DIR" \
+VM1_NAME="$VM1_NAME" \
+VM2_NAME="$VM2_NAME" \
+VM1_SSH_PORT="$VM1_SSH_PORT" \
+VM2_SSH_PORT="$VM2_SSH_PORT" \
+VM_VCPUS=4 \
+VM_VMEM=4096 \
+    qemu-tool compose \
+        --stack vfio-user-ernic-2vm \
+        --vm-name "$VM1_NAME" \
+        --vm2-name "$VM2_NAME" \
+        up -d
+
+# ---- Step 5: wait for SSH ------------------------------------------------
+log "[5/8] Waiting for SSH on both VMs (up to ${READY_S}s) ..."
+for _vmspec in "$VM1_SSH_PORT VM1" "$VM2_SSH_PORT VM2"; do
+    _port=$(echo "$_vmspec" | awk '{print $1}')
+    _label=$(echo "$_vmspec" | awk '{print $2}')
+    _ready=0
+    for _i in $(seq 1 $(( READY_S / 5 ))); do
+        # shellcheck disable=SC2086
+        if ssh $SSH_FLAGS -p "$_port" ubuntu@localhost true 2>/dev/null; then
+            _ready=1; break
+        fi
+        sleep 5
+    done
+    [ "$_ready" = "1" ] || {
+        log "Compose logs on failure:"
+        VM_IMAGES_DIR="$VM_IMAGES_DIR" VM1_NAME="$VM1_NAME" VM2_NAME="$VM2_NAME" \
+            qemu-tool compose --stack vfio-user-ernic-2vm \
+            --vm-name "$VM1_NAME" --vm2-name "$VM2_NAME" \
+            logs --tail 40 2>/dev/null || true
+        die "$_label not SSH-reachable after ${READY_S}s"
+    }
+    log "  $_label SSH ready (:$_port)"
+done
+
+# ---- Step 6: copy test files into VMs ------------------------------------
+log "[6/8] Pushing test files into VMs ..."
+_compose_src="$REPO_ROOT/docker/compose/lmcache-p2p/docker-compose.yml"
+_setup_src="$REPO_ROOT/scripts/lmcache-p2p-guest-setup.sh"
+for _port in "$VM1_SSH_PORT" "$VM2_SSH_PORT"; do
+    # shellcheck disable=SC2086
+    ssh $SSH_FLAGS -p "$_port" ubuntu@localhost "mkdir -p /tmp/lmcache-p2p"
+    scp -o StrictHostKeyChecking=no -P "$_port" \
+        "$_compose_src" "ubuntu@localhost:/tmp/lmcache-p2p/docker-compose.yml"
+    scp -o StrictHostKeyChecking=no -P "$_port" \
+        "$_setup_src"  "ubuntu@localhost:/tmp/lmcache-p2p/lmcache-p2p-guest-setup.sh"
+done
+
+# ---- Step 7: start lmcache on both VMs -----------------------------------
+log "[7/8] Configuring VMs and starting LMCache P2P ..."
+for _idx in 1 2; do
+    _port="$VM1_SSH_PORT"; [ "$_idx" = "2" ] && _port="$VM2_SSH_PORT"
+    _role="primary";        [ "$_idx" = "2" ] && _role="secondary"
+    _this_ip="$VM1_IP";     [ "$_idx" = "2" ] && _this_ip="$VM2_IP"
+    log "  VM$_idx ($_role) :$_port $_this_ip ..."
+    # shellcheck disable=SC2086
+    ssh $SSH_FLAGS -p "$_port" ubuntu@localhost \
+        "LMCACHE_P2P_ROLE=$_role \
+         THIS_IP=$_this_ip \
+         COORD_IP=$VM1_IP \
+         COMPOSE_FILE=/tmp/lmcache-p2p/docker-compose.yml \
+         LMCACHE_IMAGE_REF=${AIC_LMCACHE_IMAGE:-} \
+         VLLM_IMAGE_REF=${AIC_VLLM_IMAGE:-} \
+         HF_TOKEN=${HF_TOKEN:-} \
+         bash /tmp/lmcache-p2p/lmcache-p2p-guest-setup.sh" \
+        2>&1 | sed "s/^/  [vm$_idx] /"
+done
+
+# ---- Step 8: run the Python P2P test ------------------------------------
+log "[8/8] Running LMCache P2P test ..."
+python3 "$REPO_ROOT/tests/test_lmcache_p2p.py" \
+    --vm1-host localhost --vm1-port "$VM1_SSH_PORT" \
+    --vm2-host localhost --vm2-port "$VM2_SSH_PORT" \
+    --vm1-ip "$VM1_IP" --vm2-ip "$VM2_IP" \
+    --ssh-user ubuntu \
+    --timeout 300
+
+log "=== test-lmcache-p2p-spur complete ==="

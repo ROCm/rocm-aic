@@ -5,7 +5,7 @@
 
 .PHONY: cliff plot stress-grafana kvbench-build kvbench-up kvbench-logs kvbench-down \
         cliff-kvbench-local test-emulate-local stress-emulate-local capture-profile-local \
-        test-lmcache-p2p-local
+        test-lmcache-p2p-local test-lmcache-p2p-spur
 
 cliff: prep-dirs
 	@test -n "$(BENCH_MODEL)" || { \
@@ -535,3 +535,41 @@ _lmcache-p2p-cleanup:
 	        --vm-name "$(AIC_LMCACHE_P2P_VM1_NAME)" \
 	        --vm2-name "$(AIC_LMCACHE_P2P_VM2_NAME)" \
 	        down 2>/dev/null || true
+
+# ---- SPUR target: LMCache P2P test via rocm-ernic VMs -------------------
+#
+# Submits a SPUR job that boots two QEMU KVM VMs with rocm-ernic ionic NICs
+# (vfio-user-ernic-2vm compose stack) and runs tests/test_lmcache_p2p.py.
+# KVM is available on SPUR nodes (confirmed); Docker runs natively so
+# localhost:12230/12231 SSH works without DinD workarounds.
+#
+# Usage:
+#   make test-lmcache-p2p-spur \
+#     HF_TOKEN=$(cat ~/.cache/huggingface/token) \
+#     AIC_LMCACHE_IMAGE=<lmcache-image>
+
+AIC_LMCACHE_P2P_SPUR_GPUS    ?= 1
+AIC_LMCACHE_P2P_SPUR_NODE    ?=
+AIC_LMCACHE_P2P_SPUR_TIME    ?= 60
+AIC_LMCACHE_P2P_SPUR_WORKDIR ?= /shared_nfs/$(shell id -un)
+
+test-lmcache-p2p-spur: prep-dirs
+	@test -n "$(HF_TOKEN)" || { echo "ERROR: HF_TOKEN not set" >&2; exit 1; }
+	@echo "=== test-lmcache-p2p-spur ==="
+	@echo "  Submitting to amd-spur (gpus=$(AIC_LMCACHE_P2P_SPUR_GPUS) time=$(AIC_LMCACHE_P2P_SPUR_TIME)m)"
+	@export SPUR_CONTROLLER_ADDR=http://crs-m2m-cpu-spur-005.crusoe.amd.com:6817; \
+	srun --partition=amd-spur \
+	     --gpus=$(AIC_LMCACHE_P2P_SPUR_GPUS) \
+	     --time=$(AIC_LMCACHE_P2P_SPUR_TIME) \
+	     $(if $(AIC_LMCACHE_P2P_SPUR_NODE),--nodelist=$(AIC_LMCACHE_P2P_SPUR_NODE),) \
+	     --chdir="$(AIC_LMCACHE_P2P_SPUR_WORKDIR)" \
+	     env \
+	         SLURM_SUBMIT_DIR="$(REPO_ROOT)" \
+	         HF_TOKEN="$(HF_TOKEN)" \
+	         AIC_LMCACHE_IMAGE="$(AIC_LMCACHE_P2P_LMCACHE_IMAGE_REF)" \
+	         AIC_VLLM_IMAGE="$(AIC_LMCACHE_P2P_VLLM_IMAGE_REF)" \
+	         AIC_LMCACHE_P2P_QCOW2_IMAGE="$(AIC_LMCACHE_P2P_QCOW2_IMAGE)" \
+	         AIC_LMCACHE_P2P_READY_S="$(AIC_LMCACHE_P2P_READY_S)" \
+	         AIC_LMCACHE_P2P_VM1_IP="$(AIC_LMCACHE_P2P_VM1_IP)" \
+	         AIC_LMCACHE_P2P_VM2_IP="$(AIC_LMCACHE_P2P_VM2_IP)" \
+	     bash "$(REPO_ROOT)/.slurm/run-lmcache-p2p-test.sh"
