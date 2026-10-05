@@ -86,8 +86,8 @@ ARG HSA_SNOOP_REF=v1.1.1
 
 # ----- 5. LMCache (upstream release + AMD patches) ---------------------------
 COPY patches/ /app/patches/
-# CuPy-backed GPU allocator module — shipped separately so the patch only
-# modifies existing LMCache files (avoids new-file patch format issues).
+# CuPy-backed GPU allocator: COPYed into the LMCache source tree before
+# patches apply so the patch can import it without a new-file diff hunk.
 COPY docker/lmcache/paged_cupy_memory_allocator.py \
      /app/paged_cupy_memory_allocator.py
 COPY docker/scripts/apply-github-prs.sh /usr/local/bin/apply-github-prs.sh
@@ -129,13 +129,11 @@ RUN cd /app/LMCache && \
 RUN --mount=type=cache,target=/root/.cache/pip \
     pip3 install --no-cache-dir grpcio-tools
 
-# Install the CuPy-backed paged allocator into LMCache's package tree so
-# the patch's import of paged_cupy_memory_allocator works.
+# Install the CuPy allocator into LMCache's package tree before patches apply.
 RUN cp /app/paged_cupy_memory_allocator.py \
        /app/LMCache/lmcache/v1/memory_allocators/paged_cupy_memory_allocator.py
 
-# CuPy (ROCm variant): provides hipMalloc without pulling in the ROCm compute
-# stack. Used by the NIXL GPU buffer allocator (LMCACHE_NIXL_USE_CUPY=1).
+# CuPy (ROCm): hipMalloc without ROCm compute stack (LMCACHE_NIXL_USE_CUPY=1).
 RUN --mount=type=cache,target=/root/.cache/pip \
     pip3 install --no-cache-dir cupy-rocm-7-0
 
