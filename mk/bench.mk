@@ -342,7 +342,7 @@ test-lmcache-p2p-local: prep-dirs
 	@echo "=== test-lmcache-p2p-local ==="
 	@echo "  model=$(AIC_LMCACHE_P2P_MODEL)  VM1=$(AIC_LMCACHE_P2P_VM1_NAME):$(AIC_LMCACHE_P2P_VM1_SSH_PORT)  VM2=$(AIC_LMCACHE_P2P_VM2_NAME):$(AIC_LMCACHE_P2P_VM2_SSH_PORT)"
 	@echo "[1/8] Ensuring qemu-tool is installed ..."
-	@if ! python3 -m qemu_tool --help >/dev/null 2>&1; then \
+	@if ! qemu-tool --help >/dev/null 2>&1; then \
 	    echo "  Installing qemu-tool via pipx ..."; \
 	    if command -v pipx >/dev/null 2>&1; then \
 	        PIPX_BIN_DIR=/usr/local/bin pipx install --force qemu-tool >/dev/null; \
@@ -381,7 +381,7 @@ test-lmcache-p2p-local: prep-dirs
 	VM2_SSH_PORT="$(AIC_LMCACHE_P2P_VM2_SSH_PORT)" \
 	VM_VCPUS="$(AIC_LMCACHE_P2P_VM_VCPUS)" \
 	VM_VMEM="$(AIC_LMCACHE_P2P_VM_MEM_MB)" \
-	    python3 -m qemu_tool compose \
+	    qemu-tool compose \
 	        --stack vfio-user-ernic-2vm \
 	        --vm-name "$(AIC_LMCACHE_P2P_VM1_NAME)" \
 	        --vm2-name "$(AIC_LMCACHE_P2P_VM2_NAME)" \
@@ -396,12 +396,12 @@ test-lmcache-p2p-local: prep-dirs
 	    done; \
 	    [ "$$_ready" = "1" ] || { \
 	        echo "FAIL: VM on port $$_port not SSH-reachable after $(AIC_LMCACHE_P2P_READY_S)s" >&2; \
-	        python3 -m qemu_tool compose \
+	        qemu-tool compose \
 	            --stack vfio-user-ernic-2vm \
 	            --vm-name "$(AIC_LMCACHE_P2P_VM1_NAME)" \
 	            --vm2-name "$(AIC_LMCACHE_P2P_VM2_NAME)" \
 	            logs --tail 40; \
-	        python3 -m qemu_tool compose \
+	        qemu-tool compose \
 	            --stack vfio-user-ernic-2vm \
 	            --vm-name "$(AIC_LMCACHE_P2P_VM1_NAME)" \
 	            --vm2-name "$(AIC_LMCACHE_P2P_VM2_NAME)" \
@@ -511,7 +511,7 @@ _lmcache-p2p-cleanup:
 	@VM_IMAGES_DIR="$(AIC_LMCACHE_P2P_VM_IMAGES_DIR)" \
 	VM1_NAME="$(AIC_LMCACHE_P2P_VM1_NAME)" \
 	VM2_NAME="$(AIC_LMCACHE_P2P_VM2_NAME)" \
-	    python3 -m qemu_tool compose \
+	    qemu-tool compose \
 	        --stack vfio-user-ernic-2vm \
 	        --vm-name "$(AIC_LMCACHE_P2P_VM1_NAME)" \
 	        --vm2-name "$(AIC_LMCACHE_P2P_VM2_NAME)" \
