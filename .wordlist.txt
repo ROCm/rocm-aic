@@ -302,11 +302,14 @@ KV-cache
 KVM
 llm-emu
 Pensando
+qemu
 QEMU
 qcow2
 qemu-minimal
 qemu-tool
+repo
 rocm-ernic
 vCPU
 vCPUs
+vfio
 vfio-user-ernic-2vm
