@@ -68,7 +68,6 @@ jobs:
         docker.io/sbates130272/batesste-ci-images-ubuntu-qemu-libvfio-user:20260929.g2bdbd16-qemu11.1.2-vfu.8039244
       options: >-
         --device /dev/kvm
-        --network host
         -v /var/run/docker.sock:/var/run/docker.sock
         -v /var/lib/qemu-tool:/var/lib/qemu-tool
 
@@ -145,16 +144,43 @@ jobs:
           echo "lmcache_ref=${LMC}" >> "$GITHUB_OUTPUT"
           echo "vllm_ref=${VLLM}" >> "$GITHUB_OUTPUT"
 
+      - name: Start ernic-2vm compose stack
+        env:
+          VM_IMAGES_DIR: /var/lib/qemu-tool/images
+          VM1_NAME: qemu-minimal
+          VM2_NAME: qemu-minimal-2
+          # Use default ports 2222/2223 — SSH via container hostname, not localhost
+          VM1_SSH_PORT: "2222"
+          VM2_SSH_PORT: "2223"
+          VM_VCPUS: "4"
+          VM_VMEM: "4096"
+        run: |
+          qemu-tool compose \
+            --stack vfio-user-ernic-2vm \
+            --vm-name qemu-minimal \
+            --vm2-name qemu-minimal-2 \
+            up -d
+
+      - name: Join compose network
+        run: |
+          # Connect this CI container to the compose network so we can reach
+          # the QEMU containers by hostname (qemu-1, qemu-2) on port 2222.
+          docker network connect vfio-user-ernic-2vm_default "$(cat /etc/hostname)"
+
       - name: Run LMCache P2P test
         env:
           HF_TOKEN: ${{ secrets.AIC_HF_TOKEN }}
-          # VM_IMAGES_DIR is already populated by the cache/pull steps above.
           AIC_LMCACHE_P2P_VM_IMAGES_DIR: /var/lib/qemu-tool/images
-          # Disk images were extracted with the default names; pass them through.
           AIC_LMCACHE_P2P_VM1_NAME: qemu-minimal
           AIC_LMCACHE_P2P_VM2_NAME: qemu-minimal-2
-          # Tighter timeout for CI — runners are generally faster than dev boxes.
+          # SSH to qemu-1/qemu-2 by container hostname on internal port 2222.
+          AIC_LMCACHE_P2P_VM1_SSH_PORT: "2222"
+          AIC_LMCACHE_P2P_VM2_SSH_PORT: "2222"
+          AIC_LMCACHE_P2P_VM1_SSH_HOST: qemu-1
+          AIC_LMCACHE_P2P_VM2_SSH_HOST: qemu-2
           AIC_LMCACHE_P2P_READY_S: "240"
+          # Skip the compose up step — already done above.
+          AIC_LMCACHE_P2P_SKIP_COMPOSE_UP: "1"
         run: |
           EXTRA_ARGS=""
           if [ -n "${{ steps.images.outputs.lmcache_ref }}" ]; then
@@ -177,8 +203,17 @@ jobs:
       - name: Show ernic-2vm compose logs on failure
         if: failure()
         run: |
-          python3 -m qemu_tool compose \
+          qemu-tool compose \
             --stack vfio-user-ernic-2vm \
             --vm-name qemu-minimal \
             --vm2-name qemu-minimal-2 \
             logs --tail 60 2>/dev/null || true
+
+      - name: Tear down compose stack
+        if: always()
+        run: |
+          qemu-tool compose \
+            --stack vfio-user-ernic-2vm \
+            --vm-name qemu-minimal \
+            --vm2-name qemu-minimal-2 \
+            down 2>/dev/null || true

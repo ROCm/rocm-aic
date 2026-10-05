@@ -330,7 +330,13 @@ AIC_LMCACHE_P2P_VLLM_PORT         ?= 8000
 AIC_LMCACHE_P2P_VM1_IP            ?= 192.168.200.10
 AIC_LMCACHE_P2P_VM2_IP            ?= 192.168.200.20
 # Path inside each VM where the P2P compose file is placed
-AIC_LMCACHE_P2P_COMPOSE_PATH   ?= /tmp/lmcache-p2p/docker-compose.yml
+AIC_LMCACHE_P2P_COMPOSE_PATH      ?= /tmp/lmcache-p2p/docker-compose.yml
+# SSH host for each VM.  Default: localhost (published ports).
+# In CI (DinD) override to the compose service name after joining the network.
+AIC_LMCACHE_P2P_VM1_SSH_HOST      ?= localhost
+AIC_LMCACHE_P2P_VM2_SSH_HOST      ?= localhost
+# Set to 1 to skip compose up (CI runs it as a separate step before joining network)
+AIC_LMCACHE_P2P_SKIP_COMPOSE_UP   ?= 0
 
 _AIC_LMCACHE_P2P_SSH_FLAGS = -o StrictHostKeyChecking=no -o BatchMode=yes -o ConnectTimeout=5
 
@@ -374,23 +380,31 @@ test-lmcache-p2p-local: prep-dirs
 	    fi; \
 	fi
 	@echo "[3/8] Starting 2-VM ernic compose stack ..."
-	@VM_IMAGES_DIR="$(AIC_LMCACHE_P2P_VM_IMAGES_DIR)" \
-	VM1_NAME="$(AIC_LMCACHE_P2P_VM1_NAME)" \
-	VM2_NAME="$(AIC_LMCACHE_P2P_VM2_NAME)" \
-	VM1_SSH_PORT="$(AIC_LMCACHE_P2P_VM1_SSH_PORT)" \
-	VM2_SSH_PORT="$(AIC_LMCACHE_P2P_VM2_SSH_PORT)" \
-	VM_VCPUS="$(AIC_LMCACHE_P2P_VM_VCPUS)" \
-	VM_VMEM="$(AIC_LMCACHE_P2P_VM_MEM_MB)" \
-	    qemu-tool compose \
-	        --stack vfio-user-ernic-2vm \
-	        --vm-name "$(AIC_LMCACHE_P2P_VM1_NAME)" \
-	        --vm2-name "$(AIC_LMCACHE_P2P_VM2_NAME)" \
-	        up -d
+	@if [ "$(AIC_LMCACHE_P2P_SKIP_COMPOSE_UP)" = "1" ]; then \
+	    echo "  Skipping compose up (AIC_LMCACHE_P2P_SKIP_COMPOSE_UP=1)"; \
+	else \
+	    VM_IMAGES_DIR="$(AIC_LMCACHE_P2P_VM_IMAGES_DIR)" \
+	    VM1_NAME="$(AIC_LMCACHE_P2P_VM1_NAME)" \
+	    VM2_NAME="$(AIC_LMCACHE_P2P_VM2_NAME)" \
+	    VM1_SSH_PORT="$(AIC_LMCACHE_P2P_VM1_SSH_PORT)" \
+	    VM2_SSH_PORT="$(AIC_LMCACHE_P2P_VM2_SSH_PORT)" \
+	    VM_VCPUS="$(AIC_LMCACHE_P2P_VM_VCPUS)" \
+	    VM_VMEM="$(AIC_LMCACHE_P2P_VM_MEM_MB)" \
+	        qemu-tool compose \
+	            --stack vfio-user-ernic-2vm \
+	            --vm-name "$(AIC_LMCACHE_P2P_VM1_NAME)" \
+	            --vm2-name "$(AIC_LMCACHE_P2P_VM2_NAME)" \
+	            up -d; \
+	fi
 	@echo "[4/8] Waiting for SSH on both VMs (up to $(AIC_LMCACHE_P2P_READY_S)s) ..."
-	@for _port in "$(AIC_LMCACHE_P2P_VM1_SSH_PORT)" "$(AIC_LMCACHE_P2P_VM2_SSH_PORT)"; do \
+	@for _vmspec in \
+	        "$(AIC_LMCACHE_P2P_VM1_SSH_PORT) $(AIC_LMCACHE_P2P_VM1_SSH_HOST)" \
+	        "$(AIC_LMCACHE_P2P_VM2_SSH_PORT) $(AIC_LMCACHE_P2P_VM2_SSH_HOST)"; do \
+	    _port=$$(echo "$$_vmspec" | awk '{print $$1}'); \
+	    _host=$$(echo "$$_vmspec" | awk '{print $$2}'); \
 	    _ready=0; \
 	    for _i in $$(seq 1 $$(($(AIC_LMCACHE_P2P_READY_S)/5))); do \
-	        ssh $(_AIC_LMCACHE_P2P_SSH_FLAGS) -p "$$_port" ubuntu@localhost true 2>/dev/null \
+	        ssh $(_AIC_LMCACHE_P2P_SSH_FLAGS) -p "$$_port" "ubuntu@$$_host" true 2>/dev/null \
 	            && { _ready=1; break; }; \
 	        sleep 5; \
 	    done; \
@@ -414,22 +428,27 @@ test-lmcache-p2p-local: prep-dirs
 	@_compose_src="$(REPO_ROOT)/docker/compose/lmcache-p2p/docker-compose.yml"; \
 	_setup_src="$(REPO_ROOT)/scripts/lmcache-p2p-guest-setup.sh"; \
 	_setup_dst="$$(dirname $(AIC_LMCACHE_P2P_COMPOSE_PATH))/lmcache-p2p-guest-setup.sh"; \
-	for _port in "$(AIC_LMCACHE_P2P_VM1_SSH_PORT)" "$(AIC_LMCACHE_P2P_VM2_SSH_PORT)"; do \
-	    ssh $(_AIC_LMCACHE_P2P_SSH_FLAGS) -p "$$_port" ubuntu@localhost \
+	for _vmspec in \
+	        "$(AIC_LMCACHE_P2P_VM1_SSH_PORT) $(AIC_LMCACHE_P2P_VM1_SSH_HOST)" \
+	        "$(AIC_LMCACHE_P2P_VM2_SSH_PORT) $(AIC_LMCACHE_P2P_VM2_SSH_HOST)"; do \
+	    _port=$$(echo "$$_vmspec" | awk '{print $$1}'); \
+	    _host=$$(echo "$$_vmspec" | awk '{print $$2}'); \
+	    ssh $(_AIC_LMCACHE_P2P_SSH_FLAGS) -p "$$_port" "ubuntu@$$_host" \
 	        "mkdir -p $$(dirname $(AIC_LMCACHE_P2P_COMPOSE_PATH))"; \
 	    scp -o StrictHostKeyChecking=no -P "$$_port" \
-	        "$$_compose_src" "ubuntu@localhost:$(AIC_LMCACHE_P2P_COMPOSE_PATH)"; \
+	        "$$_compose_src" "ubuntu@$$_host:$(AIC_LMCACHE_P2P_COMPOSE_PATH)"; \
 	    scp -o StrictHostKeyChecking=no -P "$$_port" \
-	        "$$_setup_src" "ubuntu@localhost:$$_setup_dst"; \
+	        "$$_setup_src" "ubuntu@$$_host:$$_setup_dst"; \
 	done
 	@echo "[6/8] Configuring VMs and starting LMCache P2P compose ..."
 	@_rc=0; \
 	for _idx in 1 2; do \
 	    _port="$(AIC_LMCACHE_P2P_VM1_SSH_PORT)"; [ "$$_idx" = "2" ] && _port="$(AIC_LMCACHE_P2P_VM2_SSH_PORT)"; \
+	    _host="$(AIC_LMCACHE_P2P_VM1_SSH_HOST)"; [ "$$_idx" = "2" ] && _host="$(AIC_LMCACHE_P2P_VM2_SSH_HOST)"; \
 	    _role="primary";             [ "$$_idx" = "2" ] && _role="secondary"; \
 	    _this_ip="$(AIC_LMCACHE_P2P_VM1_IP)";     [ "$$_idx" = "2" ] && _this_ip="$(AIC_LMCACHE_P2P_VM2_IP)"; \
 	    echo "  VM$$_idx ($$_role) :$$_port $$_this_ip ..."; \
-	    ssh $(_AIC_LMCACHE_P2P_SSH_FLAGS) -p "$$_port" ubuntu@localhost \
+	    ssh $(_AIC_LMCACHE_P2P_SSH_FLAGS) -p "$$_port" "ubuntu@$$_host" \
 	        "LMCACHE_P2P_ROLE=$$_role \
 	         THIS_IP=$$_this_ip \
 	         COORD_IP=$(AIC_LMCACHE_P2P_VM1_IP) \
@@ -454,7 +473,7 @@ test-lmcache-p2p-local: prep-dirs
 	@echo "[7/8] Waiting for vllm on VM2 (up to $(AIC_LMCACHE_P2P_READY_S)s) ..."
 	@_ready=0; \
 	for _i in $$(seq 1 $$(($(AIC_LMCACHE_P2P_READY_S)/5))); do \
-	    if ssh $(_AIC_LMCACHE_P2P_SSH_FLAGS) -p "$(AIC_LMCACHE_P2P_VM2_SSH_PORT)" ubuntu@localhost \
+	    if ssh $(_AIC_LMCACHE_P2P_SSH_FLAGS) -p "$(AIC_LMCACHE_P2P_VM2_SSH_PORT)" ubuntu@"$(AIC_LMCACHE_P2P_VM2_SSH_HOST)" \
 	            "curl -fsS http://127.0.0.1:$(AIC_LMCACHE_P2P_VLLM_PORT)/health >/dev/null 2>&1"; then \
 	        _ready=1; break; \
 	    fi; \
@@ -462,7 +481,7 @@ test-lmcache-p2p-local: prep-dirs
 	done; \
 	if [ "$$_ready" != "1" ]; then \
 	    echo "FAIL: vllm not ready after $(AIC_LMCACHE_P2P_READY_S)s" >&2; \
-	    ssh $(_AIC_LMCACHE_P2P_SSH_FLAGS) -p "$(AIC_LMCACHE_P2P_VM2_SSH_PORT)" ubuntu@localhost \
+	    ssh $(_AIC_LMCACHE_P2P_SSH_FLAGS) -p "$(AIC_LMCACHE_P2P_VM2_SSH_PORT)" ubuntu@"$(AIC_LMCACHE_P2P_VM2_SSH_HOST)" \
 	        "docker compose -f $(AIC_LMCACHE_P2P_COMPOSE_PATH) --profile secondary logs --tail 30" 2>/dev/null \
 	        | sed 's/^/  [vllm] /'; \
 	    $(MAKE) --no-print-directory _lmcache-p2p-cleanup; \
@@ -474,17 +493,17 @@ test-lmcache-p2p-local: prep-dirs
 	_prompt=$$(python3 -c "print('AMD ROCm ' * 64)"); \
 	_body="{\"model\":\"$(AIC_LMCACHE_P2P_MODEL)\",\"prompt\":\"$$_prompt\",\"max_tokens\":4,\"temperature\":0}"; \
 	echo "  Sending warm-up request (populates VM1 cache via VM2 vllm) ..."; \
-	ssh $(_AIC_LMCACHE_P2P_SSH_FLAGS) -p "$(AIC_LMCACHE_P2P_VM2_SSH_PORT)" ubuntu@localhost \
+	ssh $(_AIC_LMCACHE_P2P_SSH_FLAGS) -p "$(AIC_LMCACHE_P2P_VM2_SSH_PORT)" ubuntu@"$(AIC_LMCACHE_P2P_VM2_SSH_HOST)" \
 	    "curl -sS http://127.0.0.1:$(AIC_LMCACHE_P2P_VLLM_PORT)/v1/completions \
 	         -H 'Content-Type: application/json' \
 	         -d '$$_body'" 2>&1 | sed 's/^/  [pass1] /'; \
 	echo "  Sending second request (should trigger P2P hit) ..."; \
-	ssh $(_AIC_LMCACHE_P2P_SSH_FLAGS) -p "$(AIC_LMCACHE_P2P_VM2_SSH_PORT)" ubuntu@localhost \
+	ssh $(_AIC_LMCACHE_P2P_SSH_FLAGS) -p "$(AIC_LMCACHE_P2P_VM2_SSH_PORT)" ubuntu@"$(AIC_LMCACHE_P2P_VM2_SSH_HOST)" \
 	    "curl -sS http://127.0.0.1:$(AIC_LMCACHE_P2P_VLLM_PORT)/v1/completions \
 	         -H 'Content-Type: application/json' \
 	         -d '$$_body'" 2>&1 | sed 's/^/  [pass2] /'; \
 	echo "  Collecting metrics from VM2 lmcache ..."; \
-	_metrics=$$(ssh $(_AIC_LMCACHE_P2P_SSH_FLAGS) -p "$(AIC_LMCACHE_P2P_VM2_SSH_PORT)" ubuntu@localhost \
+	_metrics=$$(ssh $(_AIC_LMCACHE_P2P_SSH_FLAGS) -p "$(AIC_LMCACHE_P2P_VM2_SSH_PORT)" ubuntu@"$(AIC_LMCACHE_P2P_VM2_SSH_HOST)" \
 	    "curl -sS http://127.0.0.1:$(AIC_LMCACHE_P2P_LMCACHE_PORT)/metrics 2>/dev/null \
 	     || curl -sS http://127.0.0.1:19090/metrics 2>/dev/null \
 	     || echo no_metrics"); \
