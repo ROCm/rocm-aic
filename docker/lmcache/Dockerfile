@@ -9,11 +9,13 @@
 # SPDX-License-Identifier: MIT
 #
 # AIC LMCache image: torch + torchvision + NIXL (from aic-base) + LMCache v0.5.5
-# (patched) + hsa-snoop.
+# (patched).
 #
-# AITER and FlashAttention live in aic-base (via aic-vllm) — LMCache is a
-# KV-cache storage/transfer service and runs no inference kernels itself.
-# NIXL is also inherited from aic-base (the shared transport layer).
+# AITER and FlashAttention live in aic-vllm — LMCache is a KV-cache
+# storage/transfer service and runs no inference kernels itself.
+# NIXL is inherited from aic-base (the shared transport layer).
+# hsa-snoop is a separate sidecar image (docker/hsa-snoop/Dockerfile) that
+# attaches to this container's PID namespace at runtime.
 #
 # Consumed by the `lmcache` and `lmcache-coordinator` compose services.  Built
 # independently from aic-vllm (both share aic-base) so the two images can be
@@ -25,7 +27,7 @@
 #               L2b: nixl_store POSIX  → NFS-over-RDMA
 #
 # Stages:
-#   build     LMCache + hsa-snoop + runtime ENV                      (sections 5-8)
+#   build     LMCache + runtime ENV                                  (sections 5-8)
 #   wheels    scratch image holding just /wheels                             (section 9)
 #   runtime   default target, aliases `build`
 #
@@ -55,20 +57,14 @@ ARG ROCM_BASE_IMAGE=rocm/dev-ubuntu-24.04:${ROCM_VERSION}-full
 # hadolint ignore=DL3006
 FROM ${ROCM_BASE_IMAGE} AS base
 
-# Full LMCache stack — AITER, FlashAttention, LMCache, NIXL, hsa-snoop.
-# Inherits from the final stage of docker/base/ (build_torchvision), which
-# already has pytorch + torchvision installed system-wide.
+# LMCache: inherits torch + torchvision + NIXL from aic-base.
 # =============================================================================
 FROM base AS build
 
 ARG ROCM_ARCH
 
-# Parallel compile jobs for C++/HIP source builds (LMCache, hsa-snoop).
+# Parallel compile jobs for C++/HIP source builds (LMCache HIP extension).
 ARG BUILD_JOBS=
-
-# hsa-snoop: HSA AQL queue/dispatch snooper + Prometheus exporter (includes AIS metrics).
-ARG HSA_SNOOP_GIT_URL=https://github.com/sbates130272/hsa-snoop.git
-ARG HSA_SNOOP_REF=v1.1.1
 
 # LMCache: upstream repo, pinned to the v0.5.5 release tag.
 # Optional open-PR heads from patches/lmcache.pull-requests are cherry-picked
@@ -141,19 +137,7 @@ RUN --mount=type=cache,target=/root/.cache/uv \
 # ----- 6. hipFile — provided by the ROCm 7.14 base image (GA since 7.14) ------
 # No source build needed.
 
-# ----- 7. hsa-snoop (HSA AQL queue snooper + Prometheus exporter) ------------
-RUN git clone --depth 1 --branch "${HSA_SNOOP_REF}" "${HSA_SNOOP_GIT_URL}" /app/hsa-snoop && \
-    cmake -S /app/hsa-snoop -B /app/hsa-snoop/build -G Ninja \
-        -DCMAKE_BUILD_TYPE=Release -DHSA_SNOOP_PROMETHEUS=ON \
-        -DCMAKE_DISABLE_FIND_PACKAGE_hip=ON && \
-    cmake --build /app/hsa-snoop/build --parallel "${BUILD_JOBS:-$(nproc)}" && \
-    cmake --install /app/hsa-snoop/build --prefix /usr/local && \
-    test -x /usr/local/bin/hsa-snoop && \
-    # hadolint ignore=SC2015
-    { /usr/local/bin/hsa-snoop --help 2>&1 || true; } | grep -q -- '--prometheus' \
-        || { echo "ERROR: hsa-snoop built without Prometheus mode (--prometheus absent)" >&2; exit 1; } && \
-    echo "PASS: hsa-snoop ${HSA_SNOOP_REF} with Prometheus exporter (incl. AIS metrics) installed" && \
-    rm -rf /app/hsa-snoop /app/patches /app/LMCache /wheels && \
+RUN rm -rf /app/patches /app/LMCache /wheels && \
     find /usr/lib/python3 /usr/local/lib/python3 -name '__pycache__' -type d \
          -exec rm -rf {} + 2>/dev/null; true
 
@@ -177,8 +161,7 @@ LABEL org.opencontainers.image.title="aic-lmcache" \
       ai.amd.aic.rocm="${ROCM_VERSION}" \
       ai.amd.aic.lmcache="${LMCACHE_REF}" \
       ai.amd.aic.nixl="${NIXL_REF}" \
-      ai.amd.aic.hipfile="rocm-${ROCM_VERSION}" \
-      ai.amd.aic.hsa-snoop="${HSA_SNOOP_REF}"
+      ai.amd.aic.hipfile="rocm-${ROCM_VERSION}"
 
 ENTRYPOINT ["python3", "-m", "lmcache.server"]
 

@@ -707,7 +707,7 @@ services:
   # ---------------------------------------------------------------------------
   hsa-snoop:
     profiles: [monitoring, exporters, exporters-safe]
-    image: ${LMCACHE_IMAGE_REF:-${IMAGE_REF:-${IMAGE_NAME:-rocm-aic}:latest}}
+    image: ${HSA_SNOOP_IMAGE:-aic-hsa-snoop:local}
     container_name: aic-hsa-snoop
     networks: [aic-network]
     pid: "${AIC_HSA_SNOOP_PID_MODE:-service:lmcache}"
@@ -722,7 +722,6 @@ services:
     volumes:
       - /sys/kernel/debug:/sys/kernel/debug
       - /sys/kernel/tracing:/sys/kernel/tracing
-    entrypoint: ["/usr/local/bin/hsa-snoop"]
     command: ["--all", "--prometheus", "--prometheus-port", "${HSA_SNOOP_PORT:-9488}", "--mem-snoop"]
 
   # ---------------------------------------------------------------------------

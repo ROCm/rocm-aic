@@ -179,9 +179,10 @@ MON_COMPOSE     := $(_COMPOSE_BIN) -f "$(CURDIR)/docker/docker-compose.yml"
 _MON_PROFILE    := --profile monitoring-base $(if $(filter 1,$(AIC_EXPORTERS)),--profile exporters,)
 export AIC_METRICS_DIR AIC_GRAFANA_PORT AIC_GRAFANA_IMAGE
 
-# ---- Fabric exporters (nvme_exporter / rdma_exporter) ----------------------
+# ---- Fabric exporters (nvme_exporter / rdma_exporter) + hsa-snoop sidecar --
 NVME_EXPORTER_IMAGE   ?= aic-nvme-exporter:local
 RDMA_EXPORTER_IMAGE   ?= aic-rdma-exporter:local
+HSA_SNOOP_IMAGE       ?= aic-hsa-snoop:local
 NVME_EXPORTER_VERSION ?= 3.0.0
 RDMA_EXPORTER_VERSION ?= 0.7.3
 

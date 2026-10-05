@@ -370,7 +370,7 @@ test-rocjitsu-local: prep-dirs
 	@mkdir -p "$(RJ_WORK_DIR)/shared/metrics" "$(RJ_WORK_DIR)/shared/images"
 	@echo "[4b/6] Pre-saving images to shared dir (runs in background while VM boots) ..."
 	@for _img in "$(RJ_IMAGE_REF)" "$(RJ_LMCACHE_IMAGE_REF)" \
-	             "aic-nvme-exporter:local" "aic-rdma-exporter:local"; do \
+	             "aic-nvme-exporter:local" "aic-rdma-exporter:local" "aic-hsa-snoop:local"; do \
 	    _slug=$$(echo "$$_img" | tr '/: ' '___'); \
 	    _tar="$(RJ_WORK_DIR)/shared/images/$$_slug.tar"; \
 	    _local_id=$$(docker inspect --format '{{.ID}}' "$$_img" 2>/dev/null); \
@@ -538,7 +538,7 @@ test-rocjitsu-local: prep-dirs
 	echo "  NVMe $$_nvme mounted at $(RJ_NVME_MOUNT)"; \
 	echo "  [6c] Loading images into VM (via 9p shared dir) ..."; \
 	for _img in "$(RJ_IMAGE_REF)" "$(RJ_LMCACHE_IMAGE_REF)" \
-	             "aic-nvme-exporter:local" "aic-rdma-exporter:local"; do \
+	             "aic-nvme-exporter:local" "aic-rdma-exporter:local" "aic-hsa-snoop:local"; do \
 	    _slug=$$(echo "$$_img" | tr '/: ' '___'); \
 	    _tar="$(RJ_WORK_DIR)/shared/images/$$_slug.tar"; \
 	    _rj_tar="/rj-share/images/$$_slug.tar"; \

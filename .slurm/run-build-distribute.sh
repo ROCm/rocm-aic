@@ -396,13 +396,14 @@ AIC_TINY_CPUS="${AIC_TINY_CPUS:-8}"
 AIC_TINY_MEM="${AIC_TINY_MEM:-32G}"
 AIC_TINY_READY_TIMEOUT="${AIC_TINY_READY_TIMEOUT:-120}"   # x5s = up to 10 min for weights + download
 
-# --- Fabric exporter images (nvme_exporter / rdma_exporter) -------------------
-# Built from monitoring/*/Dockerfile and distributed alongside the main image so
+# --- Fabric exporter images (nvme_exporter / rdma_exporter / hsa-snoop) -------
+# Built from docker/*/Dockerfile and distributed alongside the main image so
 # bare cliff nodes can containerize them (no host-installed exporter service needed).  Names
 # must match run-cliff.sbatch's defaults so the tarballs written here are found there.
 # Versions default to the Grafana-parity versions; override via AIC_NVME/RDMA_EXPORTER_VERSION.
 AIC_NVME_EXPORTER_IMAGE="${AIC_NVME_EXPORTER_IMAGE:-aic-nvme-exporter:latest}"
 AIC_RDMA_EXPORTER_IMAGE="${AIC_RDMA_EXPORTER_IMAGE:-aic-rdma-exporter:latest}"
+AIC_HSA_SNOOP_IMAGE="${AIC_HSA_SNOOP_IMAGE:-aic-hsa-snoop:latest}"
 AIC_NVME_EXPORTER_VERSION="${AIC_NVME_EXPORTER_VERSION:-3.0.0}"  # matches host-service default; override as needed
 AIC_RDMA_EXPORTER_VERSION="${AIC_RDMA_EXPORTER_VERSION:-0.3.0}"  # matches host-service default; override as needed
 
@@ -1347,16 +1348,18 @@ REMOTE
 # reachability to GitHub/Debian.
 cmd_build_exporters() {
     _pick_compress
-    local nvme_tar rdma_tar
+    local nvme_tar rdma_tar hsa_snoop_tar
     nvme_tar="$(_exporter_tarball_path "${AIC_NVME_EXPORTER_IMAGE}")"
     rdma_tar="$(_exporter_tarball_path "${AIC_RDMA_EXPORTER_IMAGE}")"
+    hsa_snoop_tar="$(_exporter_tarball_path "${AIC_HSA_SNOOP_IMAGE}")"
     # Taken before anything is submitted; see _verify_tarball.
-    local nvme_before rdma_before
+    local nvme_before rdma_before hsa_snoop_before
     nvme_before="$(_tarball_stamp "${nvme_tar}")"
     rdma_before="$(_tarball_stamp "${rdma_tar}")"
+    hsa_snoop_before="$(_tarball_stamp "${hsa_snoop_tar}")"
 
-    log "exporter images : ${AIC_NVME_EXPORTER_IMAGE} (nvme v${AIC_NVME_EXPORTER_VERSION}), ${AIC_RDMA_EXPORTER_IMAGE} (rdma v${AIC_RDMA_EXPORTER_VERSION})"
-    log "tarballs   : ${nvme_tar}, ${rdma_tar}  (compress: ${AIC_COMPRESS})"
+    log "exporter images : ${AIC_NVME_EXPORTER_IMAGE} (nvme v${AIC_NVME_EXPORTER_VERSION}), ${AIC_RDMA_EXPORTER_IMAGE} (rdma v${AIC_RDMA_EXPORTER_VERSION}), ${AIC_HSA_SNOOP_IMAGE}"
+    log "tarballs   : ${nvme_tar}, ${rdma_tar}, ${hsa_snoop_tar}  (compress: ${AIC_COMPRESS})"
 
     local remote_script
     remote_script="$(cat <<REMOTE
@@ -1400,8 +1403,22 @@ if [ "\${_rc[0]}" -ne 0 ]; then
     echo "[build-exporters] WARN: docker buildx exited \${_rc[0]} for rdma image (cache lock race?); tarball written, continuing"
 fi
 mv -f "\${tmp}" "${rdma_tar}"
+tmp="${hsa_snoop_tar}.partial.\$\$"
+set +o pipefail
+docker buildx build --builder ${AIC_BUILDX_BUILDER} --output type=docker,dest=- \
+    -t "${AIC_HSA_SNOOP_IMAGE}" "${AIC_DAY_DIR}/docker/hsa-snoop" | ${COMPRESS_CMD} > "\${tmp}"
+_rc=("\${PIPESTATUS[@]}")
+set -o pipefail
+if [ "\${_rc[1]}" -ne 0 ]; then
+    echo "[build-exporters] ERROR: compressor exited \${_rc[1]} for hsa-snoop image; tarball may be corrupt" >&2; exit 1
+fi
+if [ "\${_rc[0]}" -ne 0 ]; then
+    echo "[build-exporters] WARN: docker buildx exited \${_rc[0]} for hsa-snoop image (cache lock race?); tarball written, continuing"
+fi
+mv -f "\${tmp}" "${hsa_snoop_tar}"
 echo "[build-exporters] saved \$(du -h "${nvme_tar}" | cut -f1) -> ${nvme_tar}"
 echo "[build-exporters] saved \$(du -h "${rdma_tar}" | cut -f1) -> ${rdma_tar}"
+echo "[build-exporters] saved \$(du -h "${hsa_snoop_tar}" | cut -f1) -> ${hsa_snoop_tar}"
 exit 0
 REMOTE
 )"
@@ -1430,7 +1447,8 @@ REMOTE
     fi
     _verify_tarball "${nvme_tar}" "nvme-exporter" "${nvme_before}"
     _verify_tarball "${rdma_tar}" "rdma-exporter" "${rdma_before}"
-    log "exporter build complete: ${nvme_tar}, ${rdma_tar}"
+    _verify_tarball "${hsa_snoop_tar}" "hsa-snoop" "${hsa_snoop_before}"
+    log "exporter build complete: ${nvme_tar}, ${rdma_tar}, ${hsa_snoop_tar}"
 }
 
 # --- load: docker load the tarball on every target node, then verify ---------
