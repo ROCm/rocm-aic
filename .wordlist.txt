@@ -313,3 +313,13 @@ vCPU
 vCPUs
 vfio
 vfio-user-ernic-2vm
+basename
+minimal's
+NIC
+NICs
+PyPI
+qcow
+SCP
+VM's
+VMs
+vm

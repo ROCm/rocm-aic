@@ -116,7 +116,8 @@ jobs:
                   | head -1 | awk '{print $NF}')
           fi
           echo "Pulling $IMG ..."
-          sudo mkdir -p /var/lib/qemu-tool/images
+          # Job runs as root inside the CI container image — no sudo available.
+          mkdir -p /var/lib/qemu-tool/images
           # Extract qcow2 from the OCI FROM-scratch payload image.
           # Pull and create are separated so _cid only captures the container ID.
           docker pull -q "$IMG"
@@ -127,8 +128,8 @@ jobs:
           docker rm "$_cid" >/dev/null
           _qcow2=$(find /tmp/qcow2-extract -name '*.qcow2' | head -1)
           [ -n "$_qcow2" ] || { echo "::error::No .qcow2 found in image"; ls -lR /tmp/qcow2-extract; exit 1; }
-          sudo cp "$_qcow2" /var/lib/qemu-tool/images/qemu-minimal.qcow2
-          sudo cp "$_qcow2" /var/lib/qemu-tool/images/qemu-minimal-2.qcow2
+          cp "$_qcow2" /var/lib/qemu-tool/images/qemu-minimal.qcow2
+          cp "$_qcow2" /var/lib/qemu-tool/images/qemu-minimal-2.qcow2
           rm -rf /tmp/qcow2-extract
           ls -lh /var/lib/qemu-tool/images/
 
