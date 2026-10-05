@@ -232,6 +232,7 @@ print('vllm_emulator subpackages import OK')" && \
 # Makefile reads it there and forwards it here, so this carries no default and
 # must not be given one.  No build isolation needed: torch is already here.
 ARG LMCACHE_REF
+# hadolint ignore=SC2015
 RUN --mount=type=cache,target=/root/.cache/pip \
     test -n "${LMCACHE_REF}" || { \
         echo "ERROR: LMCACHE_REF is empty; build via 'make build'" >&2; exit 1; } && \

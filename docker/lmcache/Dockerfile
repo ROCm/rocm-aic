@@ -77,10 +77,12 @@ ARG LMCACHE_REF=v0.5.5
 ARG NIXL_GIT_URL=https://github.com/ai-dynamo/nixl.git
 ARG NIXL_REF=v1.4.1
 
-# AITER_REF/FLASH_ATTN_REF carried for the README version-sync check —
-# AITER and FlashAttention are built in aic-vllm, not here.
+# AITER_REF/FLASH_ATTN_REF/HSA_SNOOP_REF carried for the README version-sync
+# check — AITER and FlashAttention are built in aic-vllm; hsa-snoop in its own
+# sidecar image (docker/hsa-snoop/).  None are built here.
 ARG AITER_REF=v0.1.22.post1
 ARG FLASH_ATTN_REF=v2.8.3.post1
+ARG HSA_SNOOP_REF=v1.1.1
 
 # ----- 5. LMCache (upstream release + AMD patches) ---------------------------
 COPY patches/ /app/patches/
