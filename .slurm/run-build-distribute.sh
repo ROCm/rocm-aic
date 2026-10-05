@@ -143,6 +143,10 @@
 #                        (e.g. <your-registry>/<project>/rocm-aic:buildcache)
 #                        (default: unset)
 #   AIC_CACHE_MODE       cache mode: min | max              (default: max)
+#   AIC_CACHE_RESET      pass reset=true on the type=local --cache-to so the
+#                        exporter drops blobs the new index.json no longer
+#                        references (default: 1; 0 disables). Requires Docker
+#                        buildx >= 0.35.0.
 #   AIC_BUILDX_BUILDER   docker-container buildx builder name (default: aic-cache)
 #   AIC_CACHE_INSECURE   set to 1 when AIC_CACHE_REF has an untrusted TLS cert
 #                        (self-signed / private-CA HTTPS, e.g. the in-cluster
@@ -176,9 +180,6 @@
 #                        and polls squeue until the job leaves the queue.  cmd_load and
 #                        cmd_push also drop --overcommit from their srun calls.
 #                        (default: 0)
-#   AIC_SPUR_CONTROLLER  SPUR controller address passed as --controller to every
-#                        sbatch/srun/squeue call when AIC_SPUR_CLUSTER=1.
-#                        (default: $SPUR_CONTROLLER_ADDR)
 #   AIC_SPUR_RPC_RETRIES consecutive squeue RPC failures tolerated while watching
 #                        a job before _sbatch_run gives up.  At the 10s poll
 #                        interval the default is ~5min of controller
@@ -342,11 +343,6 @@ AIC_CAPTURE_SWEEP="${AIC_CAPTURE_SWEEP:-256,64,1,16 256,64,8,64 1024,128,1,12 10
 # and clear the build/test constraints (SPUR nodes have no MARKHAM/CPUONLY/GFX942
 # feature labels; node selection is done by partition or explicit --nodelist).
 if [[ "${AIC_SPUR_CLUSTER}" == "1" ]]; then
-    # Only SPUR needs a controller address -- every `--controller=` below is
-    # inside an AIC_SPUR_CLUSTER=1 branch.  Demanding it unconditionally (as
-    # this once did, one line after defaulting AIC_SPUR_CLUSTER to 0) aborted
-    # every ordinary defq build on a host that has no SPUR controller at all.
-    AIC_SPUR_CONTROLLER="${AIC_SPUR_CONTROLLER:-${SPUR_CONTROLLER_ADDR:?set SPUR_CONTROLLER_ADDR or AIC_SPUR_CONTROLLER before using AIC_SPUR_CLUSTER=1}}"
     AIC_BUILD_PARTITION="${AIC_BUILD_PARTITION:-amd-spur}"
     AIC_IMAGE_DIR="${AIC_IMAGE_DIR:-${AIC_SHARED_NFS:-/shared_nfs}/${USER}/images}"
     # Use ${VAR-default} (not ${VAR:-default}) so an explicitly set empty string
@@ -354,8 +350,6 @@ if [[ "${AIC_SPUR_CLUSTER}" == "1" ]]; then
     AIC_BUILD_CONSTRAINT="${AIC_BUILD_CONSTRAINT-}"
     AIC_TEST_CONSTRAINT="${AIC_TEST_CONSTRAINT-}"
 else
-    # Never read on this path; defined only so `set -u` stays satisfied.
-    AIC_SPUR_CONTROLLER=""
     AIC_BUILD_PARTITION="${AIC_BUILD_PARTITION:-defq}"
     AIC_BUILD_CONSTRAINT="${AIC_BUILD_CONSTRAINT:-CPUONLY}"
     AIC_TEST_CONSTRAINT="${AIC_TEST_CONSTRAINT:-GFX942&NVME}"
@@ -373,6 +367,8 @@ AIC_PUSH_REF="${AIC_PUSH_REF:-}"
 AIC_CACHE_DIR="${AIC_CACHE_DIR:-}"
 AIC_CACHE_REF="${AIC_CACHE_REF:-}"
 AIC_CACHE_MODE="${AIC_CACHE_MODE:-max}"
+# Needs buildx >= 0.35.0. Avoids the Docker cache from growing endlessly.
+AIC_CACHE_RESET="${AIC_CACHE_RESET:-1}"
 AIC_BUILDX_BUILDER="${AIC_BUILDX_BUILDER:-aic-cache}"
 AIC_CACHE_INSECURE="${AIC_CACHE_INSECURE:-}"
 AIC_TEST_TIME="${AIC_TEST_TIME:-00:45:00}"
@@ -417,7 +413,7 @@ fi
 AIC_TLS_CERT="${AIC_TLS_CERT:-}"
 
 log()  { printf '[build-distribute] %s\n' "$*" >&2; }
-die()  { printf '[build-distribute] ERROR: %s\n' "$*" >&2; _dump_job_log_tail; exit 1; }
+die()  { printf '[build-distribute] ERROR: %s\n' "$*" >&2; _dump_spur_job_state; _dump_job_log_tail; exit 1; }
 
 # Log of the sbatch job currently being watched.  Set by _sbatch_run once the job
 # id resolves, cleared when it returns; empty at every other point, which is what
@@ -425,6 +421,7 @@ die()  { printf '[build-distribute] ERROR: %s\n' "$*" >&2; _dump_job_log_tail; e
 # happen before a job exists.
 _active_job_logfile=""
 _active_job_desc=""
+_active_job_id=""
 
 # Last-resort diagnostics: re-read the job's own log and print its tail.
 #
@@ -453,6 +450,25 @@ _dump_job_log_tail() {
     tail -n "${n}" "${f}" ||
         log "WARNING: could not read ${f}"
     log "--- end of ${f} ---"
+}
+
+# SPUR only: print the scheduler's own verdict on the job.
+_dump_spur_job_state() {
+    [[ "${AIC_SPUR_CLUSTER}" == "1" && -n "${_active_job_id}" ]] || return 0
+    command -v spur >/dev/null 2>&1 || return 0
+    local out rc=0
+    out="$(spur show job "${_active_job_id}" 2>&1)" || rc=$?
+    if (( rc != 0 )); then
+        log "WARNING: could not read scheduler state for job ${_active_job_id} (spur show job exited ${rc}): ${out}"
+        return 0
+    fi
+    if [[ -z "${out}" ]]; then
+        log "scheduler has no record of job ${_active_job_id}"
+        return 0
+    fi
+    log "--- scheduler state for job ${_active_job_id} ---"
+    printf '%s\n' "${out}" >&2
+    log "--- end scheduler state for job ${_active_job_id} ---"
 }
 
 # --- Compression: pick tool + file extension --------------------------------
@@ -600,6 +616,7 @@ PROLOGUE
     _track_job_log() {
         _active_job_logfile="${logfile}"
         _active_job_desc="${jobname} job ${jobid}"
+        _active_job_id="${jobid}"
     }
 
     _record_active_job() {
@@ -623,13 +640,22 @@ PROLOGUE
         printf '%s\n' "${script}" > "${tmpscript}"
         chmod +x "${tmpscript}"
 
+        # Need to provide atleast one GPU due to SPUR scheduling requirements.
+        local -a _spur_gpu=(--gpus=1)
+        local _opt
+        for _opt in "$@"; do
+            case "${_opt}" in
+                --gpus=*|--gpus-per-node=*|--gpus-per-task=*|--gres=gpu:*) _spur_gpu=() ;;
+            esac
+        done
+
         local submit_out
         submit_out="$(sbatch \
-            --controller="${AIC_SPUR_CONTROLLER}" \
             --job-name="${jobname}" \
             --partition="${AIC_BUILD_PARTITION}" \
             ${AIC_SLURM_ACCOUNT:+--account="${AIC_SLURM_ACCOUNT}"} \
             --output=/dev/null \
+            "${_spur_gpu[@]}" \
             "$@" \
             "${tmpscript}" 2>&1)" || { rm -f "${tmpscript}"; die "sbatch submission failed: ${submit_out}"; }
         rm -f "${tmpscript}"
@@ -679,7 +705,7 @@ PROLOGUE
         local squeue_err; squeue_err="$(mktemp)"
         _spur_job_is_queued() {
             local out rc=0
-            out="$(squeue --controller="${AIC_SPUR_CONTROLLER}" -j "${jobid}" -h \
+            out="$(squeue -j "${jobid}" -h \
                     2>"${squeue_err}")" || rc=$?
             (( rc == 0 )) || return 2
             awk -v id="${jobid}" '
@@ -690,12 +716,13 @@ PROLOGUE
         _squeue_err_text() { tr '\n' ' ' < "${squeue_err}" 2>/dev/null | head -c 300; }
 
         # SPUR does NOT fold the job's stderr into --output the way Slurm does.
-        # It writes stderr to <submit-cwd>/spur-<jobid>.out and nothing reads
-        # that file.
+        # It writes stderr to spur-<jobid>.out and nothing reads that file.
+        # Check both <submit-cwd>/spur-<jobid>.out and /tmp/spur-<jobid>.out.
         _dump_spur_stderr() {
             local f
             local -a candidates=()
-            for f in "${PWD}/spur-${jobid}.out" "${AIC_DAY_DIR}/spur-${jobid}.out"; do
+            for f in "${PWD}/spur-${jobid}.out" "${AIC_DAY_DIR}/spur-${jobid}.out" \
+                     "/tmp/spur-${jobid}.out"; do
                 [[ " ${candidates[*]-} " == *" ${f} "* ]] || candidates+=("${f}")
             done
             for f in "${candidates[@]}"; do
@@ -746,7 +773,7 @@ PROLOGUE
                         # stderr matters most: the controller is unreachable,
                         # so nothing downstream will report why.
                         _dump_spur_stderr
-                        die "squeue RPC to ${AIC_SPUR_CONTROLLER} failed ${rpc_fail} consecutive times while watching job ${jobid}; refusing to assume it finished. Last error: $(_squeue_err_text)"
+                        die "squeue RPC failed ${rpc_fail} consecutive times while watching job ${jobid}; refusing to assume it finished. Last error: $(_squeue_err_text)"
                     fi
                     log "squeue RPC failed (${rpc_fail}/${rpc_max}) while watching job ${jobid}, retrying: $(_squeue_err_text)"
                     ;;
@@ -792,7 +819,7 @@ PROLOGUE
             log "WARNING: falling back to using sacct instead of reading expected exit file ${exit_file}."
             local _terminal='COMPLETED|FAILED|CANCELLED|TIMEOUT|NODE_FAIL|OUT_OF_MEMORY|PREEMPTED|DEADLINE|BOOT_FAIL'
             _spur_sacct_row() {
-                sacct --controller="${AIC_SPUR_CONTROLLER}" -j "${jobid}" \
+                sacct -j "${jobid}" \
                     --format=JobID,State,ExitCode --noheader 2>/dev/null \
                     | awk -v id="${jobid}" '$1 == id && !found { print $2, $3; found = 1 }'
             }
@@ -870,8 +897,8 @@ PROLOGUE
         rm -f "${idfile}" 2>/dev/null || true
     fi
 
-    (( rc == 0 )) || _dump_job_log_tail
-    _active_job_logfile=""; _active_job_desc=""
+    (( rc == 0 )) || { _dump_spur_job_state; _dump_job_log_tail; }
+    _active_job_logfile=""; _active_job_desc=""; _active_job_id=""
     _clear_active_job
     return "${rc}"
 }
@@ -970,8 +997,10 @@ cmd_build() {
             # apart stops one from evicting/locking the other's entries.
             local _cdir
             _cdir="${AIC_CACHE_DIR%/}/$(_arch_tag)${AIC_BUILD_TARGET:+-${AIC_BUILD_TARGET}}"
-            log "build cache: local dir ${_cdir} (mode ${AIC_CACHE_MODE}, builder ${AIC_BUILDX_BUILDER})"
-            _cache_args="--cache-from type=local,src=${_cdir} --cache-to type=local,dest=${_cdir},mode=${AIC_CACHE_MODE},ignore-error=true"
+            log "build cache: local dir ${_cdir} (mode ${AIC_CACHE_MODE}, reset ${AIC_CACHE_RESET}, builder ${AIC_BUILDX_BUILDER})"
+            local _reset=""
+            [[ "${AIC_CACHE_RESET}" == "1" ]] && _reset=",reset=true"
+            _cache_args="--cache-from type=local,src=${_cdir} --cache-to type=local,dest=${_cdir},mode=${AIC_CACHE_MODE},ignore-error=true${_reset}"
             _mkdir="mkdir -p '${_cdir}'; "
         fi
         # Create the docker-container builder once per node (idempotent), then
@@ -1432,9 +1461,10 @@ cmd_load() {
     # GPU jobs -- docker load needs no GPU.  --overcommit is dropped on SPUR
     # (unsupported); harmless on standard Slurm.
     local -a _overcommit_arg=(); [[ "${AIC_SPUR_CLUSTER}" != "1" ]] && _overcommit_arg=(--overcommit)
-    local -a _spur_ctl_arg=(); [[ "${AIC_SPUR_CLUSTER}" == "1" ]] && _spur_ctl_arg=(--controller="${AIC_SPUR_CONTROLLER}")
+    # Need to provide atleast one GPU due to SPUR scheduling requirements.
+    local -a _spur_gpu_arg=(); [[ "${AIC_SPUR_CLUSTER}" == "1" ]] && _spur_gpu_arg=(--gpus-per-node=1)
     srun \
-        "${_spur_ctl_arg[@]}" \
+        "${_spur_gpu_arg[@]}" \
         --job-name=aic-load \
         --partition="${AIC_BUILD_PARTITION}" \
         --nodelist="${AIC_TARGETS}" \
@@ -1506,9 +1536,10 @@ REMOTE
         log "pushing via srun (partition ${AIC_BUILD_PARTITION}, constraint ${AIC_BUILD_CONSTRAINT})"
     fi
     local -a _push_overcommit=(); [[ "${AIC_SPUR_CLUSTER}" != "1" ]] && _push_overcommit=(--overcommit)
-    local -a _push_spur_ctl=(); [[ "${AIC_SPUR_CLUSTER}" == "1" ]] && _push_spur_ctl=(--controller="${AIC_SPUR_CONTROLLER}")
+    # Need to provide atleast one GPU due to SPUR scheduling requirements.
+    local -a _push_spur_gpu=(); [[ "${AIC_SPUR_CLUSTER}" == "1" ]] && _push_spur_gpu=(--gpus=1)
     srun \
-        "${_push_spur_ctl[@]}" \
+        "${_push_spur_gpu[@]}" \
         --job-name=aic-push \
         --partition="${AIC_BUILD_PARTITION}" \
         "${_sel[@]}" \
@@ -3167,7 +3198,8 @@ exec '${AIC_DAY_DIR}/.slurm/run-accuracy.sh'
 REMOTE
 )"
 
-    local -a _gres_arg=(); [[ "${AIC_SPUR_CLUSTER}" != "1" ]] && _gres_arg=(--gres=gpu:1)
+    local -a _gres_arg=(--gres=gpu:1)
+    [[ "${AIC_SPUR_CLUSTER}" == "1" ]] && _gres_arg=(--gpus=1)
     _sbatch_run aic-accuracy-test accuracy-test "${remote_script}" \
         "${_sel[@]}" \
         "${_gres_arg[@]}" \
@@ -3408,7 +3440,8 @@ exit \${sweep_rc}
 REMOTE
 )"
 
-    local -a _gres_arg=(); [[ "${AIC_SPUR_CLUSTER}" != "1" ]] && _gres_arg=(--gres=gpu:1)
+    local -a _gres_arg=(--gres=gpu:1)
+    [[ "${AIC_SPUR_CLUSTER}" == "1" ]] && _gres_arg=(--gpus=1)
     _sbatch_run aic-profile-capture profile-capture "${remote_script}" \
         "${_sel[@]}" \
         "${_gres_arg[@]}" \

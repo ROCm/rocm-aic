@@ -20,7 +20,6 @@ AIC_IMAGE_NAME="rocm-aic-ci-${SHORT}"
 AIC_SPUR_HOST="${AIC_SPUR_HOST:?AIC_SPUR_HOST must be set (e.g. via GitHub repo variable)}"
 AIC_SPUR_HOST="${AIC_SPUR_HOST//[$'\t\r\n ']}"
 AIC_SHARED_NFS="${AIC_SHARED_NFS:?AIC_SHARED_NFS must be set (e.g. via GitHub repo variable)}"
-AIC_SPUR_CONTROLLER="${AIC_SPUR_CONTROLLER:?AIC_SPUR_CONTROLLER must be set (e.g. via GitHub repo variable)}"
 AIC_CI_STORAGE_ROOT="${AIC_CI_STORAGE_ROOT:-}"
 REPO="https://github.com/ROCm/rocm-aic.git"
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
@@ -34,9 +33,7 @@ aic_ci_ssh_bash \
     AIC_IMAGE_NAME="${AIC_IMAGE_NAME}" \
     AIC_SMOKE_TEST_TARGET="${AIC_SMOKE_TEST_TARGET}" \
     AIC_SHARED_NFS="${AIC_SHARED_NFS}" \
-    AIC_CI_STORAGE_ROOT="${AIC_CI_STORAGE_ROOT}" \
-    AIC_SPUR_CONTROLLER="${AIC_SPUR_CONTROLLER}" \
-    SPUR_CONTROLLER_ADDR="${AIC_SPUR_CONTROLLER}" << 'REMOTE'
+    AIC_CI_STORAGE_ROOT="${AIC_CI_STORAGE_ROOT}" << 'REMOTE'
 set -euo pipefail
 
 SHORT="${SHA:0:7}"

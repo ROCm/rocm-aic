@@ -17,7 +17,6 @@ set -euo pipefail
 # Requires:
 #   secrets.AIC_SPUR_HOST        — SSH target for the SPUR head node
 #   secrets.AIC_SHARED_NFS       — shared NFS path for image tarballs + scratch
-#   secrets.AIC_SPUR_CONTROLLER  — SPUR controller address
 #
 # Usage:
 #   bash .github/scripts/workflows/spur-prometheus-dump.sh <full-sha>
@@ -28,7 +27,6 @@ AIC_IMAGE_NAME="rocm-aic-ci-${SHORT}"
 AIC_SPUR_HOST="${AIC_SPUR_HOST:?AIC_SPUR_HOST must be set}"
 AIC_SPUR_HOST="${AIC_SPUR_HOST//[$'\t\r\n ']}"
 AIC_SHARED_NFS="${AIC_SHARED_NFS:?AIC_SHARED_NFS must be set}"
-AIC_SPUR_CONTROLLER="${AIC_SPUR_CONTROLLER:?AIC_SPUR_CONTROLLER must be set}"
 AIC_CI_STORAGE_ROOT="${AIC_CI_STORAGE_ROOT:-}"
 REPO="https://github.com/ROCm/rocm-aic.git"
 
@@ -38,8 +36,6 @@ ssh -o ServerAliveInterval=30 -o ServerAliveCountMax=4 "${AIC_SPUR_HOST}" env \
     AIC_IMAGE_NAME="${AIC_IMAGE_NAME}" \
     AIC_SHARED_NFS="${AIC_SHARED_NFS}" \
     AIC_CI_STORAGE_ROOT="${AIC_CI_STORAGE_ROOT}" \
-    AIC_SPUR_CONTROLLER="${AIC_SPUR_CONTROLLER}" \
-    SPUR_CONTROLLER_ADDR="${AIC_SPUR_CONTROLLER}" \
     bash << 'REMOTE'
 set -euo pipefail
 export PATH="/usr/local/bin:${PATH}"
@@ -74,8 +70,6 @@ echo "=== Running make prometheus-dump ==="
 make prometheus-dump \
     AIC_SPUR_CLUSTER=1 \
     AIC_SHARED_NFS="${AIC_SHARED_NFS}" \
-    SPUR_CONTROLLER_ADDR="${SPUR_CONTROLLER_ADDR}" \
-    AIC_SPUR_CONTROLLER="${AIC_SPUR_CONTROLLER}" \
     AIC_IMAGE_DIR="${CI_STORAGE_ROOT}/images/aic-ci-${SHORT}" \
     PROM_DUMP_OUT="${PROM_DUMP_OUT}"
 
