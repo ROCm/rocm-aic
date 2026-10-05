@@ -152,7 +152,7 @@ COPY patches/ /app/patches/
 # Apply patches to pytorch and its submodules before the build.
 # Uses `patch -p1` (not `git apply`) so patches to submodule files work without
 # git submodule boundary issues.
-# hadolint ignore=SC2061
+# hadolint ignore=SC2061,SC3044
 RUN if compgen -G "/app/patches/pytorch/*.patch" > /dev/null; then \
         for p in /app/patches/pytorch/*.patch; do \
             echo "Applying pytorch patch: $p"; \
@@ -169,7 +169,7 @@ ENV PYTORCH_ROCM_ARCH=${ROCM_ARCH}
 # the machine.  Empty means "all cores", matching docker/lmcache/Dockerfile.
 ARG BUILD_JOBS=
 
-# hadolint ignore=SC2086
+# hadolint ignore=SC2086,SC2015
 RUN --mount=type=cache,target=/root/.cache/ccache \
     cd /app/pytorch && \
     python3 tools/amd_build/build_amd.py && \
@@ -362,6 +362,12 @@ https://repo.amd.com/rocm/packages-multi-arch/ubuntu2404 stable main" \
 
 RUN git config --global advice.detachedHead false
 RUN rm -f /usr/lib/python3.*/EXTERNALLY-MANAGED
+
+# ROCm version info file — AITER's setup.py reads /opt/rocm/.info/version at
+# build time to determine the HIP version.  The runtime packages install the
+# ROCm toolchain but not this metadata file; create it from the ROCM_VERSION
+# build ARG so downstream Dockerfiles that compile ROCm code (vllm/AITER) work.
+RUN mkdir -p /opt/rocm/.info && echo "${ROCM_VERSION}" > /opt/rocm/.info/version
 
 # uv — used by downstream vllm/lmcache Dockerfiles for pip operations.
 COPY --from=build_pytorch /root/.local/bin/uv  /usr/local/bin/uv

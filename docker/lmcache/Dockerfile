@@ -72,12 +72,22 @@ ARG BUILD_JOBS=
 ARG LMCACHE_GIT_URL=https://github.com/LMCache/LMCache.git
 ARG LMCACHE_REF=v0.5.5
 
-# NIXL_REF carried for the image label — NIXL itself is built and installed
-# in aic-base and inherited via --build-context base=.
+# NIXL_REF/NIXL_GIT_URL carried for the image label and CI patch checks —
+# NIXL itself is built and installed in aic-base.
+ARG NIXL_GIT_URL=https://github.com/ai-dynamo/nixl.git
 ARG NIXL_REF=v1.4.1
+
+# AITER_REF/FLASH_ATTN_REF carried for the README version-sync check —
+# AITER and FlashAttention are built in aic-vllm, not here.
+ARG AITER_REF=v0.1.22.post1
+ARG FLASH_ATTN_REF=v2.8.3.post1
 
 # ----- 5. LMCache (upstream release + AMD patches) ---------------------------
 COPY patches/ /app/patches/
+# CuPy-backed GPU allocator module — shipped separately so the patch only
+# modifies existing LMCache files (avoids new-file patch format issues).
+COPY docker/lmcache/paged_cupy_memory_allocator.py \
+     /app/paged_cupy_memory_allocator.py
 COPY docker/scripts/apply-github-prs.sh /usr/local/bin/apply-github-prs.sh
 
 RUN git clone --depth 1 --branch "${LMCACHE_REF}" "${LMCACHE_GIT_URL}" /app/LMCache
@@ -117,6 +127,16 @@ RUN cd /app/LMCache && \
 RUN --mount=type=cache,target=/root/.cache/pip \
     pip3 install --no-cache-dir grpcio-tools
 
+# Install the CuPy-backed paged allocator into LMCache's package tree so
+# the patch's import of paged_cupy_memory_allocator works.
+RUN cp /app/paged_cupy_memory_allocator.py \
+       /app/LMCache/lmcache/v1/memory_allocators/paged_cupy_memory_allocator.py
+
+# CuPy (ROCm variant): provides hipMalloc without pulling in the ROCm compute
+# stack. Used by the NIXL GPU buffer allocator (LMCACHE_NIXL_USE_CUPY=1).
+RUN --mount=type=cache,target=/root/.cache/pip \
+    pip3 install --no-cache-dir cupy-rocm-7-0
+
 RUN --mount=type=cache,target=/root/.cache/pip \
     mkdir -p /wheels && \
     printf '%s\n' "${ROCM_ARCH%%,*}" > /etc/rocm_target.lst && \
@@ -134,12 +154,6 @@ RUN --mount=type=cache,target=/root/.cache/pip \
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv pip install --system "matplotlib>=3.8,<4" "openai>=1.0,<2"
 
-# CuPy (ROCm variant): provides hipMalloc without pulling in the ROCm compute
-# stack (librocblas, libMIOpen, etc.).  Used by the NIXL GPU buffer allocator
-# when LMCACHE_NIXL_USE_CUPY=1.  cupy-rocm-7-0 links only against
-# libamdhip64.so + libhsa-runtime64.so — both already in aic-base.
-RUN --mount=type=cache,target=/root/.cache/pip \
-    pip3 install --no-cache-dir cupy-rocm-7-0
 
 # ----- 6. hipFile — provided by the ROCm 7.14 base image (GA since 7.14) ------
 # No source build needed.

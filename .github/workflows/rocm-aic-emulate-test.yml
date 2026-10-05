@@ -101,6 +101,7 @@ jobs:
             ROCM_ARCH=gfx942
             VLLM_TARGET_DEVICE=empty
             AIC_VERSION=${{ env.AIC_VERSION }}
+            ROCM_VERSION=7.14.1
           build-contexts: |
             base=oci-layout:///tmp/aic-base-emulate
           secrets: |

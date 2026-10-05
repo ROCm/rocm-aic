@@ -110,7 +110,7 @@ tag="${tag}-lmcache${lmcache}-nixl${nixl}-hsasnoop${hsasnoop}"
 # and the failure surfaces far from its cause.  The `gfx` prefix is emitted once
 # and stripped from the rest to stay inside Docker's 128-character tag limit.
 _arch_slug() {
-  printf '%s' "$1" | tr ';, ' '\n\n\n' | sed '/^$/d; s/^gfx//' | paste -sd- -
+  printf '%s' "$1" | tr ';, ' '\n' | sed '/^$/d; s/^gfx//' | paste -sd- -
 }
 if [[ -n "${ROCM_ARCH:-}" ]]; then
   _slug="gfx$(_arch_slug "${ROCM_ARCH}")"
