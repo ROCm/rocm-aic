@@ -145,32 +145,32 @@ def start_lmcache_server(host, port, user, key, this_ip, coord_ip,
                           lmcache_port, coord_port, p2p_port,
                           l1_size_gb=0.5, chunk_size=256):
     print(f"  Starting lmcache server on {host} (ip={this_ip}) ...")
-    # lmcache_server v0.5.5: positional args <host> <port> [storage]
-    # Coordinator/P2P flags passed via environment variables using export.
+    # Use the standalone lmcache_server binary (positional: <host> <port> <storage>)
+    # which is confirmed to bind correctly.  The MP CLI (lmcache server) requires
+    # many more deps (opentelemetry, numba, etc.) that cause immediate import errors.
+    # Coordinator/P2P flags are passed via env vars.
+    # systemd-run --user survives SSH session end; nohup/setsid/disown do not.
     cmd = (
-        # Use the MP server (lmcache server) — exposes /metrics, supports P2P/coordinator.
-        # systemd-run --user survives SSH session end (nohup/setsid/disown do not).
         f"systemd-run --user --unit=lmcache-server "
-        f"{LMCACHE_CLI} server "
-        f"--host 0.0.0.0 --port {lmcache_port} "
-        f"--l1-size-gb {l1_size_gb} --chunk-size {chunk_size} "
-        f"--coordinator-url http://{coord_ip}:{coord_port} "
-        f"--coordinator-advertise-ip {this_ip} "
-        f"--coordinator-event-reporting "
-        f"--p2p-advertise-url {this_ip}:{p2p_port} "
-        f"--p2p-listen-url 0.0.0.0:{p2p_port} "
-        f"--p2p-transfer-engine nixl "
-        f"--l1-align-bytes 65536"
+        f"--setenv=LMCACHE_COORDINATOR_URL=http://{coord_ip}:{coord_port} "
+        f"--setenv=LMCACHE_COORDINATOR_ADVERTISE_IP={this_ip} "
+        f"--setenv=LMCACHE_P2P_ADVERTISE_URL={this_ip}:{p2p_port} "
+        f"--setenv=LMCACHE_P2P_LISTEN_URL=0.0.0.0:{p2p_port} "
+        f"--setenv=LMCACHE_P2P_TRANSFER_ENGINE=nixl "
+        f"--setenv=LMCACHE_L1_ALIGN_BYTES=65536 "
+        f"--setenv=LMCACHE_CHUNK_SIZE={chunk_size} "
+        f"$HOME/lmcvenv312/bin/lmcache_server 0.0.0.0 {lmcache_port} cpu"
     )
     ssh(host, port, user, key, cmd, check=False)
 
 
 LMCACHE_VENV = "$HOME/lmcvenv312"  # $HOME has plenty of space; /tmp is only 2GB
 LMCACHE_PYTHON = f"{LMCACHE_VENV}/bin/python"
-# Use the MP server (lmcache server subcommand) — exposes /metrics, supports P2P.
-# Not the standalone lmcache_server which has no metrics and no coordinator.
 LMCACHE_CLI = f"{LMCACHE_VENV}/bin/lmcache"
 LMCACHE_COORD_BIN = f"{LMCACHE_VENV}/bin/lmcache_controller"
+# Default LMCache image — official image has all deps pre-installed.
+# Override with AIC_LMCACHE_P2P_IMAGE env var.
+DEFAULT_LMCACHE_IMAGE = "lmcacheai/lmcache:latest"
 
 
 def install_lmcache(host, port, user, key):
@@ -183,34 +183,30 @@ def install_lmcache(host, port, user, key):
         print(f"  lmcache {already} already present")
         return
 
-    # Check if the shared venv is mounted from the host (fast path, no download).
-    shared = ssh(host, port, user, key,
-                 "ls /mnt/shared/lmcvenv312/bin/lmcache_server 2>/dev/null && echo found || echo missing",
-                 capture=True, check=False).strip()
-    if shared == "found":
-        print(f"  Symlinking shared venv from host mount ...")
-        ssh(host, port, user, key,
-            "sudo mkdir -p /mnt/shared 2>/dev/null || true; "
-            f"ln -sfn /mnt/shared/lmcvenv312 {LMCACHE_VENV} 2>/dev/null || "
-            f"cp -a /mnt/shared/lmcvenv312 {LMCACHE_VENV}",
-            check=False)
-        ok = ssh(host, port, user, key,
-                 f"timeout 30 {LMCACHE_PYTHON} -c 'import lmcache; print(lmcache.__version__)' 2>/dev/null || echo FAIL",
-                 capture=True, check=False).strip()
-        print(f"  lmcache (shared): {ok}")
-        return
-
-    print(f"  Installing lmcache via uv+Python3.12 on {host} (downloading) ...")
+    # The SCP'd venv has lmcache wheels but its Python symlink points to the
+    # SPUR host's uv-managed Python which doesn't exist in the VM.
+    # Fix: install uv in the VM (~15s), install Python 3.12 (~30s CDN), then
+    # use the pre-staged uv wheel cache to install lmcache without downloading.
+    print(f"  Setting up lmcache via uv+Python3.12 on {host} ...")
     install_cmd = (
-        # Install uv if not present
+        # Install uv (tiny, fast even over SLIRP)
         "command -v $HOME/.local/bin/uv >/dev/null 2>&1 || "
         "curl -LsSf https://astral.sh/uv/install.sh | sh 2>/dev/null; "
         "export PATH=$HOME/.local/bin:$PATH; "
-        # Create Python 3.12 venv in $HOME (root disk has space; /tmp only 2GB)
-        f"UV_LINK_MODE=copy uv venv --python 3.12 {LMCACHE_VENV} 2>/dev/null || true; "
-        # Install lmcache — wrap with timeout to avoid hanging forever on slow SLIRP
-        f"timeout 600 bash -c 'UV_LINK_MODE=copy uv pip install --python {LMCACHE_VENV} lmcache 2>&1 | tail -3' "
-        f"|| echo 'INSTALL_TIMEOUT'; "
+        # Install Python 3.12 via uv (downloads ~30MB from CDN)
+        "uv python install 3.12 2>/dev/null || true; "
+        # Create fresh venv with the VM's own Python 3.12
+        f"rm -rf {LMCACHE_VENV}; "
+        f"UV_LINK_MODE=copy uv venv --python 3.12 {LMCACHE_VENV} 2>/dev/null; "
+        # Install lmcache with all required deps except torch (2.5GB — not needed
+        # for CPU-only P2P server). Use --no-deps first then add deps explicitly.
+        f"UV_LINK_MODE=copy uv pip install --python {LMCACHE_VENV} --no-deps lmcache 2>/dev/null; "
+        f"UV_LINK_MODE=copy uv pip install --python {LMCACHE_VENV} "
+        "aiofile aiofiles blake3 aiohttp fastapi httpx huggingface_hub "
+        "msgspec numpy psutil pyyaml pyzmq grpcio protobuf redis safetensors "
+        "prometheus_client opentelemetry-api opentelemetry-sdk "
+        "'opentelemetry-exporter-otlp' 'opentelemetry-exporter-prometheus' "
+        "uvicorn setuptools msgpack 2>/dev/null; "
         # Verify
         f"timeout 30 {LMCACHE_PYTHON} -c 'import lmcache; print(lmcache.__version__)' 2>/dev/null || echo FAIL"
     )
@@ -354,11 +350,12 @@ def main():
         deadline = time.time() + args.timeout
         ready = False
         while time.time() < deadline:
-            # MP server exposes HTTP — check /healthz endpoint
+            # lmcache server v0.5.5 uses ZMQ (TCP) not HTTP.
+            # Check with a raw TCP connection (same as the AIC compose healthcheck).
             result = ssh(host, port, u, k,
-                         f"curl -fsS --max-time 3 http://127.0.0.1:{args.lmcache_port}/healthz 2>/dev/null && echo ok || "
-                         f"curl -fsS --max-time 3 http://127.0.0.1:{args.lmcache_port}/health 2>/dev/null && echo ok",
-                         capture=True, check=False).strip()
+                         f"python3 -c 'import socket; s=socket.create_connection((\"127.0.0.1\",{args.lmcache_port}),2); s.close(); print(\"ok\")' 2>/dev/null || "
+                         f"timeout 3 bash -c 'echo >/dev/tcp/127.0.0.1/{args.lmcache_port}' 2>/dev/null && echo ok",
+                         capture=True, check=False, timeout=15).strip()
             if result == "ok":
                 ready = True
                 break
