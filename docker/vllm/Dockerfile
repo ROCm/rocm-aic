@@ -57,29 +57,30 @@ ARG ROCM_BASE_IMAGE=rocm/dev-ubuntu-24.04:${ROCM_VERSION}-full
 FROM ${ROCM_BASE_IMAGE} AS base
 
 # =============================================================================
-# vLLM stage — inherits from the final stage of docker/base/ (build_torchvision)
-# which already has pytorch + torchvision installed system-wide.
+# build_vllm — compile AITER, FlashAttention, and vLLM against the full ROCm
+# image (which has hipcc + HIP CMake files).  Torch is COPYed in from aic-base
+# so the built wheels are compatible with the slim runtime stage.
 # =============================================================================
-FROM base AS vllm
+FROM ${ROCM_BASE_IMAGE} AS build_vllm
 
 ARG ROCM_ARCH
-# Cap compile parallelism; empty means "all cores".  Matches
-# docker/base/Dockerfile and docker/lmcache/Dockerfile.
 ARG BUILD_JOBS=
-
-# vLLM: built from source at this tag.
 ARG VLLM_GIT_URL=https://github.com/vllm-project/vllm.git
 ARG VLLM_REF=v0.29.0
-
-# `rocm` compiles HIP kernels for ROCM_ARCH.  `empty` is the no-extension build
-# usable only for emulation (--target emulate); do NOT ship it to a GPU node.
 ARG VLLM_TARGET_DEVICE=rocm
-
-# ROCm attention backends — validated pair, update together after revalidation.
 ARG AITER_GIT_URL=https://github.com/ROCm/aiter.git
 ARG AITER_REF=v0.1.22.post1
 ARG FLASH_ATTN_GIT_URL=https://github.com/Dao-AILab/flash-attention.git
 ARG FLASH_ATTN_REF=v2.8.3.post1
+
+# Bring torch + Python packages from aic-base so wheels link against the same torch.
+COPY --from=base /usr/local/lib/python3.12/dist-packages/ \
+                 /usr/local/lib/python3.12/dist-packages/
+COPY --from=base /usr/local/bin/uv  /usr/local/bin/uv
+COPY --from=base /usr/local/bin/uvx /usr/local/bin/uvx
+RUN rm -f /usr/lib/python3.*/EXTERNALLY-MANAGED
+
+COPY patches/ /app/patches/
 
 # ----- 3. ROCm attention backends (AITER + FlashAttention) ----------------------
 # Skipped when VLLM_TARGET_DEVICE=empty (CPU-only emulate build: no hipcc).
@@ -120,6 +121,7 @@ RUN --mount=type=cache,target=/root/.cache/pip \
     _cdna_only() { \
         _a=""; for _a in $(echo "$1" | tr ';' '\n'); do \
             [ "${_a#gfx9}" != "${_a}" ] || return 1; done; return 0; }; \
+    touch /etc/rocm-aic-attention-backends.env && \
     if [ "${VLLM_TARGET_DEVICE}" = "empty" ]; then \
         echo "Skipping FlashAttention (VLLM_TARGET_DEVICE=empty)"; \
     elif _cdna_only "${ROCM_ARCH}"; then \
@@ -152,8 +154,6 @@ RUN --mount=type=cache,target=/root/.cache/pip \
 # ----- 3b. vLLM (built from source at pinned tag) --------------------------------
 
 RUN git clone --depth 1 --branch "${VLLM_REF}" "${VLLM_GIT_URL}" /app/vllm
-
-COPY patches/ /app/patches/
 
 # Patch setup.py so _is_hip() short-circuits on VLLM_TARGET_DEVICE=rocm at
 # build time, without probing torch.version.hip before it is installed.
@@ -233,6 +233,28 @@ print('vllm_emulator subpackages import OK')" && \
     find /usr/lib/python3 /usr/local/lib/python3 -name '__pycache__' -type d \
          -exec rm -rf {} + 2>/dev/null; true
 
+# =============================================================================
+# vllm — slim runtime stage: aic-base + packages built in build_vllm
+# =============================================================================
+FROM base AS vllm
+
+# Copy all installed Python packages (vllm, aiter, flash_attn, llm-emu, deps)
+# from the full-ROCm build stage into the slim aic-base runtime.
+COPY --from=build_vllm /usr/local/lib/python3.12/dist-packages/ \
+                       /usr/local/lib/python3.12/dist-packages/
+COPY --from=build_vllm /usr/local/bin/uv  /usr/local/bin/uv
+COPY --from=build_vllm /usr/local/bin/uvx /usr/local/bin/uvx
+COPY --from=build_vllm /opt/llm-emu/      /opt/llm-emu/
+COPY --from=build_vllm /etc/rocm-aic-attention-backends.env \
+                       /etc/rocm-aic-attention-backends.env
+
+ARG VLLM_REF=v0.29.0
+ARG AITER_REF=v0.1.22.post1
+ARG FLASH_ATTN_REF=v2.8.3.post1
+ARG LLM_EMU_REF=b71c602
+ENV AIC_EMULATOR_EXAMPLE_PACK=/opt/llm-emu/profiles/A40-Q8-Qwen3-8B.json \
+    AIC_EMULATOR_DEFAULT_PACK=/opt/llm-emu/profiles/MI300X-Qwen3-8B.json
+
 # ----- LMCache client (KV transfer connector used by vllm service) -----------
 # Provides LMCacheMPConnector, which vLLM loads in-process for
 # --kv-transfer-config.  It must be the same release as the aic-lmcache server:
@@ -262,7 +284,6 @@ ENV PYTHONUNBUFFERED=1 \
     SAFETENSORS_FAST_GPU=1 \
     HIP_FORCE_DEV_KERNARG=1
 
-COPY profiles/*.json /opt/llm-emu/profiles/
 RUN test -r "${AIC_EMULATOR_DEFAULT_PACK}" || \
     { echo "ERROR: default profile pack missing: ${AIC_EMULATOR_DEFAULT_PACK}" >&2; exit 1; }
 
@@ -287,13 +308,8 @@ ENTRYPOINT ["python3", "-m", "vllm.entrypoints.openai.api_server"]
 # ----- 3c. emulate — emulation-only runtime image (--target emulate) ---------
 # =============================================================================
 FROM vllm AS emulate
-ENV PYTHONUNBUFFERED=1 \
-    PYTHONHASHSEED=0 \
-    SAFETENSORS_FAST_GPU=1 \
-    PYTHONPATH=/opt/rocm/share/amd_smi
+ENV PYTHONPATH=/opt/rocm/share/amd_smi
 COPY profiles/*.json /opt/llm-emu/profiles/
-RUN test -r "${AIC_EMULATOR_DEFAULT_PACK}" || \
-    { echo "ERROR: default profile pack missing: ${AIC_EMULATOR_DEFAULT_PACK}" >&2; exit 1; }
 ENTRYPOINT ["python3", "-m", "vllm.entrypoints.openai.api_server"]
 
 # ----- runtime: default target -----------------------------------------------
