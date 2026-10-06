@@ -326,15 +326,13 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
 
 # Step 2: add AMD ROCm apt repo (requires ca-certificates for HTTPS), then
 # install the 13 runtime packages + system deps.
-# Key copied from the build-time base stage — it signs repo.amd.com (not repo.radeon.com).
-# Version-specific package names are computed from ROCM_VERSION (7.14.1 → "7.14").
+# Key and sources list copied from the build-time base stage so that the repo
+# URL tracks the base image automatically (ROCm 10.0 changed the URL).
 COPY --from=base /etc/apt/keyrings/amdrocm.gpg /etc/apt/keyrings/amdrocm.gpg
+COPY --from=base /etc/apt/sources.list.d/rocm.list /etc/apt/sources.list.d/amdrocm.list
 # hadolint ignore=DL3008
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
-    echo "deb [arch=amd64 signed-by=/etc/apt/keyrings/amdrocm.gpg] \
-https://repo.amd.com/rocm/packages-multi-arch/ubuntu2404 stable main" \
-        > /etc/apt/sources.list.d/amdrocm.list && \
     apt-get update && \
     _mm=$(echo "${ROCM_VERSION}" | cut -d. -f1-2) && \
     DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \

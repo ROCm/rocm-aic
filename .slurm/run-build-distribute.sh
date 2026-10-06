@@ -1173,7 +1173,13 @@ cmd_build_emulate() {
     AIC_BUILD_TARGET="emulate"
     AIC_VLLM_TARGET_DEVICE="${AIC_EMULATE_VLLM_DEVICE}"
     AIC_BUILD_DOCKERFILE="vllm/Dockerfile"
-    log "build-emulate: emulation-only image, no GPU kernels compiled"
+    # Use the pre-built aic-base as the named build context so the emulate image
+    # inherits the slim runtime base rather than pulling the -full ROCm image.
+    local _base_ref="${AIC_BASE_IMAGE:-aic-base:${IMAGE_TAG:-latest}}"
+    if [[ -z "${AIC_BUILD_CONTEXT_BASE:-}" ]]; then
+        AIC_BUILD_CONTEXT_BASE="docker-image://${_base_ref}"
+    fi
+    log "build-emulate: emulation-only image, no GPU kernels compiled (base: ${AIC_BUILD_CONTEXT_BASE})"
     cmd_build
 }
 

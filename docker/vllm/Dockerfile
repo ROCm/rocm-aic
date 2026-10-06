@@ -48,6 +48,10 @@
 # carries no default and must not be given one -- a second literal here is
 # exactly the drift this removes.
 ARG ROCM_VERSION
+# ROCM_BASE_IMAGE is overridden by --build-context base=oci-layout://... (make build)
+# or by --build-arg ROCM_BASE_IMAGE=<ref> (dist build).  The default intentionally
+# references the -full image so standalone builds still work; pass the named
+# build-context to avoid pulling it.
 ARG ROCM_BASE_IMAGE=rocm/dev-ubuntu-24.04:${ROCM_VERSION}-full
 # hadolint ignore=DL3006
 FROM ${ROCM_BASE_IMAGE} AS base
