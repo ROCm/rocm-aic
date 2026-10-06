@@ -1,0 +1,178 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>RocJITSU Emulated Performance</title>
+  <style>
+    :root {
+      --bg: #0d1117;
+      --surface: #161b22;
+      --border: #30363d;
+      --text: #e6edf3;
+      --muted: #8b949e;
+      --accent: #58a6ff;
+      --good: #3fb950;
+      --bad: #f85149;
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: var(--bg); color: var(--text); padding: 2rem 1.25rem 4rem; }
+    main { max-width: 1200px; margin: 0 auto; }
+    h1 { margin: 0 0 0.5rem; font-size: 2rem; }
+    h2 { margin: 0 0 1rem; font-size: 1.1rem; }
+    p, li { color: var(--muted); line-height: 1.6; }
+    a { color: var(--accent); text-decoration: none; }
+    a:hover { text-decoration: underline; }
+    .lede { max-width: 820px; margin-bottom: 1.5rem; }
+    .meta { margin-bottom: 2rem; }
+    .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 1rem; margin-bottom: 2rem; }
+    .card, .history-block, .config { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 1.25rem; }
+    dl { margin: 0; display: grid; gap: 0.85rem; }
+    dt { color: var(--muted); font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.06em; margin-bottom: 0.25rem; }
+    dd { margin: 0; font-size: 1.15rem; font-weight: 600; }
+    .delta { margin-left: 0.4rem; font-size: 0.9rem; }
+    .delta.up { color: var(--good); }
+    .delta.down { color: var(--bad); }
+    .delta.flat { color: var(--muted); }
+    .config ul { margin: 0.75rem 0 0; padding-left: 1.1rem; }
+    .history { display: grid; gap: 1rem; }
+    table { width: 100%; border-collapse: collapse; }
+    th, td { padding: 0.75rem; border-top: 1px solid var(--border); text-align: left; }
+    th { color: var(--muted); font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.06em; }
+    @media (max-width: 720px) {
+      body { padding: 1.25rem 0.75rem 3rem; }
+      th, td { padding: 0.6rem 0.45rem; font-size: 0.9rem; }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>RocJITSU Emulated Performance</h1>
+    <p class="lede">
+      Daily CPU-only replays of the current ROCm AIC emulator pack, published to GitHub Pages with durable history on <code>gh-pages</code>.
+      This is intended to track the upcoming RocJITSU performance envelope before dedicated hardware lanes are available.
+    </p>
+    <p class="meta">
+      Latest run: 2026-10-06 · commit <a href="https://github.com/ROCm/rocm-aic/commit/9cee15457d76bf8e8e3262d6e86e2f0873242e2c">9cee154</a> · <a href="https://github.com/ROCm/rocm-aic/actions/runs/37466015035">workflow run</a>
+    </p>
+
+    <section class="config">
+      <h2>Tracked configuration</h2>
+      <ul>
+        <li>Model: <code>Qwen/Qwen3-8B</code></li>
+        <li>Profile pack: <code>/opt/llm-emu/profiles/MI300X-Qwen3-8B.json</code></li>
+        <li>Sweep points: <code>isl1024/osl128/c1</code>, <code>isl1024/osl128/c16</code>, <code>isl4096/osl128/c8</code></li>
+      </ul>
+    </section>
+
+    <h2 style="margin-top:2rem">Latest nightly metrics</h2>
+    <section class="cards">
+      
+      <section class="card">
+        <h2>isl1024/osl128/c1</h2>
+        <dl>
+          <div><dt>TTFT</dt><dd>43.5 ms —</dd></div>
+          <div><dt>TPOT</dt><dd>5.6 ms —</dd></div>
+          <div><dt>Throughput</dt><dd>170.5 tok/s —</dd></div>
+        </dl>
+      </section>
+      <section class="card">
+        <h2>isl1024/osl128/c16</h2>
+        <dl>
+          <div><dt>TTFT</dt><dd>215.0 ms —</dd></div>
+          <div><dt>TPOT</dt><dd>11.8 ms —</dd></div>
+          <div><dt>Throughput</dt><dd>1,195.5 tok/s —</dd></div>
+        </dl>
+      </section>
+      <section class="card">
+        <h2>isl4096/osl128/c8</h2>
+        <dl>
+          <div><dt>TTFT</dt><dd>0.0 ms —</dd></div>
+          <div><dt>TPOT</dt><dd>0.0 ms —</dd></div>
+          <div><dt>Throughput</dt><dd>0.0 tok/s —</dd></div>
+        </dl>
+      </section>
+    </section>
+
+    <h2>History</h2>
+    <section class="history">
+      
+      <section class="history-block">
+        <h2>isl1024/osl128/c1</h2>
+        <table>
+          <thead>
+            <tr>
+              <th>Date</th>
+              <th>Commit</th>
+              <th>Workflow</th>
+              <th>TTFT</th>
+              <th>TPOT</th>
+              <th>Throughput</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>2026-10-06</td>
+              <td><a href="https://github.com/ROCm/rocm-aic/commit/9cee15457d76bf8e8e3262d6e86e2f0873242e2c">9cee154</a></td>
+              <td><a href="https://github.com/ROCm/rocm-aic/actions/runs/37466015035">run</a></td>
+              <td>43.5 ms</td>
+              <td>5.6 ms</td>
+              <td>170.5 tok/s</td>
+            </tr>
+          </tbody>
+        </table>
+      </section>
+      <section class="history-block">
+        <h2>isl1024/osl128/c16</h2>
+        <table>
+          <thead>
+            <tr>
+              <th>Date</th>
+              <th>Commit</th>
+              <th>Workflow</th>
+              <th>TTFT</th>
+              <th>TPOT</th>
+              <th>Throughput</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>2026-10-06</td>
+              <td><a href="https://github.com/ROCm/rocm-aic/commit/9cee15457d76bf8e8e3262d6e86e2f0873242e2c">9cee154</a></td>
+              <td><a href="https://github.com/ROCm/rocm-aic/actions/runs/37466015035">run</a></td>
+              <td>215.0 ms</td>
+              <td>11.8 ms</td>
+              <td>1,195.5 tok/s</td>
+            </tr>
+          </tbody>
+        </table>
+      </section>
+      <section class="history-block">
+        <h2>isl4096/osl128/c8</h2>
+        <table>
+          <thead>
+            <tr>
+              <th>Date</th>
+              <th>Commit</th>
+              <th>Workflow</th>
+              <th>TTFT</th>
+              <th>TPOT</th>
+              <th>Throughput</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>2026-10-06</td>
+              <td><a href="https://github.com/ROCm/rocm-aic/commit/9cee15457d76bf8e8e3262d6e86e2f0873242e2c">9cee154</a></td>
+              <td><a href="https://github.com/ROCm/rocm-aic/actions/runs/37466015035">run</a></td>
+              <td>0.0 ms</td>
+              <td>0.0 ms</td>
+              <td>0.0 tok/s</td>
+            </tr>
+          </tbody>
+        </table>
+      </section>
+    </section>
+  </main>
+</body>
+</html>
