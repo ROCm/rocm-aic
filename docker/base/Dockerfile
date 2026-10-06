@@ -341,7 +341,9 @@ https://repo.amd.com/rocm/packages-multi-arch/ubuntu2404 stable main" \
         git \
         ibverbs-providers \
         libibverbs-dev \
+        libaio1t64 \
         libopenmpi3t64 \
+        liburing2 \
         nvme-cli \
         pkg-config \
         bpftrace \
