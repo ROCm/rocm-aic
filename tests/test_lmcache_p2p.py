@@ -38,6 +38,8 @@ SSH_FLAGS = [
     "-o", "StrictHostKeyChecking=no",
     "-o", "BatchMode=yes",
     "-o", "ConnectTimeout=10",
+    "-o", "ServerAliveInterval=30",
+    "-o", "ServerAliveCountMax=3",
 ]
 
 COORD_PORT = 9300
@@ -46,7 +48,7 @@ P2P_PORT = 18200
 METRICS_PORT = 19090
 
 
-def ssh(host, port, user, key, cmd, *, check=True, capture=False):
+def ssh(host, port, user, key, cmd, *, check=True, capture=False, timeout=120):
     """Run cmd on host:port via SSH."""
     args = [
         "ssh", *SSH_FLAGS,
@@ -56,14 +58,24 @@ def ssh(host, port, user, key, cmd, *, check=True, capture=False):
         cmd,
     ]
     if capture:
-        result = subprocess.run(args, capture_output=True, text=True)
+        try:
+            result = subprocess.run(args, capture_output=True, text=True, timeout=timeout)
+        except subprocess.TimeoutExpired:
+            print(f"  SSH timeout after {timeout}s: {cmd[:60]}...", file=sys.stderr)
+            return type("R", (), {"returncode": 1, "stdout": "", "stderr": ""})() if not check else sys.exit(1)
         if check and result.returncode != 0:
             print(f"SSH command failed: {cmd}", file=sys.stderr)
             print(result.stderr, file=sys.stderr)
             sys.exit(1)
         return result.stdout
     else:
-        result = subprocess.run(args, check=check)
+        try:
+            result = subprocess.run(args, check=check, timeout=timeout)
+        except subprocess.TimeoutExpired:
+            print(f"  SSH timeout after {timeout}s: {cmd[:60]}...", file=sys.stderr)
+            if check:
+                sys.exit(1)
+            return False
         return result.returncode == 0
 
 
@@ -165,13 +177,30 @@ def install_lmcache(host, port, user, key):
     """Install lmcache into a Python 3.12 venv via uv (works on Ubuntu 26.04 / Python 3.14)."""
     # Check if already installed
     already = ssh(host, port, user, key,
-                  f"{LMCACHE_PYTHON} -c 'import lmcache; print(lmcache.__version__)' 2>/dev/null || echo missing",
+                  f"timeout 30 {LMCACHE_PYTHON} -c 'import lmcache; print(lmcache.__version__)' 2>/dev/null || echo missing",
                   capture=True, check=False).strip()
     if "missing" not in already and already:
         print(f"  lmcache {already} already present")
         return
 
-    print(f"  Installing lmcache via uv+Python3.12 on {host} ...")
+    # Check if the shared venv is mounted from the host (fast path, no download).
+    shared = ssh(host, port, user, key,
+                 "ls /mnt/shared/lmcvenv312/bin/lmcache_server 2>/dev/null && echo found || echo missing",
+                 capture=True, check=False).strip()
+    if shared == "found":
+        print(f"  Symlinking shared venv from host mount ...")
+        ssh(host, port, user, key,
+            "sudo mkdir -p /mnt/shared 2>/dev/null || true; "
+            f"ln -sfn /mnt/shared/lmcvenv312 {LMCACHE_VENV} 2>/dev/null || "
+            f"cp -a /mnt/shared/lmcvenv312 {LMCACHE_VENV}",
+            check=False)
+        ok = ssh(host, port, user, key,
+                 f"timeout 30 {LMCACHE_PYTHON} -c 'import lmcache; print(lmcache.__version__)' 2>/dev/null || echo FAIL",
+                 capture=True, check=False).strip()
+        print(f"  lmcache (shared): {ok}")
+        return
+
+    print(f"  Installing lmcache via uv+Python3.12 on {host} (downloading) ...")
     install_cmd = (
         # Install uv if not present
         "command -v $HOME/.local/bin/uv >/dev/null 2>&1 || "
@@ -179,10 +208,11 @@ def install_lmcache(host, port, user, key):
         "export PATH=$HOME/.local/bin:$PATH; "
         # Create Python 3.12 venv in $HOME (root disk has space; /tmp only 2GB)
         f"UV_LINK_MODE=copy uv venv --python 3.12 {LMCACHE_VENV} 2>/dev/null || true; "
-        # Install lmcache with torch (full install into $HOME)
-        f"UV_LINK_MODE=copy uv pip install --python {LMCACHE_VENV} lmcache 2>&1 | tail -3; "
+        # Install lmcache — wrap with timeout to avoid hanging forever on slow SLIRP
+        f"timeout 600 bash -c 'UV_LINK_MODE=copy uv pip install --python {LMCACHE_VENV} lmcache 2>&1 | tail -3' "
+        f"|| echo 'INSTALL_TIMEOUT'; "
         # Verify
-        f"{LMCACHE_PYTHON} -c 'import lmcache; print(lmcache.__version__)' 2>/dev/null || echo FAIL"
+        f"timeout 30 {LMCACHE_PYTHON} -c 'import lmcache; print(lmcache.__version__)' 2>/dev/null || echo FAIL"
     )
     result = ssh(host, port, user, key, install_cmd, capture=True, check=False).strip()
     print(f"  lmcache: {result.splitlines()[-1] if result else 'FAIL'}")
@@ -196,20 +226,19 @@ def load_ionic(host, port, user, key):
     ib_core → ib_uverbs → ionic → ionic_rdma.  Run depmod first in case the
     DKMS modules aren't in the depmod database yet (can happen on first boot).
     """
+    # Keep this minimal — udevadm settle hangs in QEMU VMs without a working udev socket.
     ssh(host, port, user, key,
         "sudo depmod -a 2>/dev/null || true; "
         "sudo modprobe ib_core 2>/dev/null || true; "
         "sudo modprobe ib_uverbs 2>/dev/null || true; "
         "sudo modprobe ionic 2>/dev/null || true; "
         "sudo modprobe ionic_rdma 2>/dev/null || true; "
-        "sleep 3; "
-        # Bring the ionic netdev up (required for PORT_ACTIVE and GID table)
-        "for net in /sys/class/infiniband/*/device/net/*; do "
-        "  [ -e \"$net\" ] && sudo ip link set $(basename $net) up 2>/dev/null || true; "
+        "sleep 2; "
+        # Bring the ionic netdev up (required for PORT_ACTIVE and GID table).
+        # Use ls -d to avoid glob expansion failure when no ibdev exists yet.
+        "for d in $(ls -d /sys/class/infiniband/*/device/net/* 2>/dev/null); do "
+        "  sudo ip link set $(basename $d) up 2>/dev/null || true; "
         "done; "
-        "sudo udevadm trigger --subsystem-match=net --subsystem-match=infiniband 2>/dev/null; "
-        "sudo udevadm settle --timeout=5 2>/dev/null || true; "
-        "dkms status 2>/dev/null | grep ionic || true; "
         "lsmod | grep ionic_rdma || echo 'ionic_rdma not loaded'",
         check=False)
 

@@ -27,7 +27,7 @@
 set -euo pipefail
 
 REPO_ROOT="${SLURM_SUBMIT_DIR:?SLURM_SUBMIT_DIR must be set to the repo root}"
-VM_IMAGES_DIR="${AIC_LMCACHE_P2P_VM_IMAGES_DIR:-/tmp/aic-p2p-images-${SLURM_JOB_ID:-$$}}"
+VM_IMAGES_DIR="${AIC_LMCACHE_P2P_VM_IMAGES_DIR:-/var/tmp/aic-p2p-images-${SLURM_JOB_ID:-$$}}"
 QCOW2_IMAGE="${AIC_LMCACHE_P2P_QCOW2_IMAGE:-docker.io/sbates130272/batesste-ci-images-ubuntu-qcow2-gen-ionic:20260929.g2bdbd16-vm.resolute-ionic-qm.54cc234}"
 READY_S="${AIC_LMCACHE_P2P_READY_S:-480}"
 VM1_IP="${AIC_LMCACHE_P2P_VM1_IP:-192.168.200.10}"
@@ -36,7 +36,7 @@ VM1_SSH_PORT=12230
 VM2_SSH_PORT=12231
 VM1_NAME="p2p-vm1-${SLURM_JOB_ID:-$$}"
 VM2_NAME="p2p-vm2-${SLURM_JOB_ID:-$$}"
-WORK_DIR="/tmp/aic-p2p-work-${SLURM_JOB_ID:-$$}"
+WORK_DIR="/var/tmp/aic-p2p-work-${SLURM_JOB_ID:-$$}"
 
 VM_SSH_KEY="${VM_IMAGES_DIR}/id_rsa"
 VM_SSH_USER="ubuntu"   # overridden from vm-info.json after extraction
@@ -132,15 +132,27 @@ fi
 log "  SSH user=$VM_SSH_USER key=$([ -f "$VM_SSH_KEY" ] && echo present || echo MISSING)"
 [ -f "$VM_SSH_KEY" ] || die "SSH key not found at $VM_SSH_KEY — re-run to re-extract"
 
+# Pass shared venv path into VMs via the virtfs filesystem mount.
+# qemu-tool compose already mounts --filesystem for the repo; we add the venv dir.
+AIC_LMCACHE_P2P_SHARED_VENV="${AIC_LMCACHE_P2P_SHARED_VENV:-}"
+
 # ---- Step 4: start compose stack -----------------------------------------
 log "[4/8] Starting vfio-user-ernic-2vm compose stack ..."
-VM_IMAGES_DIR="$VM_IMAGES_DIR" \
-VM1_NAME="$VM1_NAME" \
-VM2_NAME="$VM2_NAME" \
-VM1_SSH_PORT="$VM1_SSH_PORT" \
-VM2_SSH_PORT="$VM2_SSH_PORT" \
-VM_VCPUS=4 \
-VM_VMEM=4096 \
+# Pass shared venv dir as VM_FILESYSTEM so qemu-tool mounts it into VMs
+# as /mnt/shared (avoids downloading torch inside each VM over slow SLIRP).
+_compose_env=(
+    "VM_IMAGES_DIR=$VM_IMAGES_DIR"
+    "VM1_NAME=$VM1_NAME"
+    "VM2_NAME=$VM2_NAME"
+    "VM1_SSH_PORT=$VM1_SSH_PORT"
+    "VM2_SSH_PORT=$VM2_SSH_PORT"
+    "VM_VCPUS=4"
+    "VM_VMEM=4096"
+)
+[ -n "$AIC_LMCACHE_P2P_SHARED_VENV" ] && \
+    _compose_env+=("VM_FILESYSTEM=$AIC_LMCACHE_P2P_SHARED_VENV")
+
+env "${_compose_env[@]}" \
     qemu-tool compose \
         --stack vfio-user-ernic-2vm \
         --vm-name "$VM1_NAME" \
@@ -171,10 +183,26 @@ for _vmspec in "$VM1_SSH_PORT VM1" "$VM2_SSH_PORT VM2"; do
     log "  $_label SSH ready (:$_port)"
 done
 
+# ---- Step 5b: SCP pre-built venv tarball into both VMs -------------------
+# Avoids downloading torch (~2GB) inside VMs over slow SLIRP network.
+AIC_LMCACHE_P2P_SHARED_TARBALL="${AIC_LMCACHE_P2P_SHARED_TARBALL:-}"
+if [ -f "$AIC_LMCACHE_P2P_SHARED_TARBALL" ]; then
+    _tarbytes=$(wc -c < "$AIC_LMCACHE_P2P_SHARED_TARBALL")
+    _tarsize=$(du -sh "$AIC_LMCACHE_P2P_SHARED_TARBALL" | cut -f1)
+    log "  Copying pre-built venv into VMs ($_tarsize = $_tarbytes bytes) ..."
+    for _port in "$VM1_SSH_PORT" "$VM2_SSH_PORT"; do
+        scp -o StrictHostKeyChecking=no -o ConnectTimeout=10 \
+            -P "$_port" -i "$VM_SSH_KEY" \
+            "$AIC_LMCACHE_P2P_SHARED_TARBALL" \
+            "${VM_SSH_USER}@localhost:/tmp/lmcvenv312.tar.gz" && \
+        # shellcheck disable=SC2086
+        ssh $SSH_FLAGS -i "$VM_SSH_KEY" -p "$_port" "${VM_SSH_USER}@localhost" \
+            "tar -xzf /tmp/lmcvenv312.tar.gz -C \$HOME && echo extracted || echo failed"
+    done
+    log "  Venv deployed to both VMs"
+fi
+
 # ---- Step 6: run the Python P2P test ------------------------------------
-# test_lmcache_p2p.py handles: ionic RDMA device detection, lmcache[nixl]
-# install via pip, coordinator + P2P server startup, cache population, and
-# the P2P hit assertion — all without requiring Docker inside the VMs.
 log "[6/6] Running LMCache P2P test ..."
 python3 "$REPO_ROOT/tests/test_lmcache_p2p.py" \
     --vm1-host localhost --vm1-port "$VM1_SSH_PORT" \
