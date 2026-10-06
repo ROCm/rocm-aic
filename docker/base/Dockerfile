@@ -345,6 +345,7 @@ https://repo.amd.com/rocm/packages-multi-arch/ubuntu2404 stable main" \
         nvme-cli \
         pkg-config \
         bpftrace \
+        python3-dev \
         "amdrocm-runtime${_mm}" \
         "amdrocm-base${_mm}" \
         "amdrocm-profiler-base${_mm}" \
