@@ -330,3 +330,4 @@ gfx
 lmcache
 dev
 env
+tmpfs

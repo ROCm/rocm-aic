@@ -22,7 +22,9 @@
 
 ARG ROCM_VERSION=7.14.1
 ARG ROCM_BUILD_IMAGE=rocm/dev-ubuntu-24.04:${ROCM_VERSION}-full
-ARG ROCM_RUNTIME_IMAGE=rocm/dev-ubuntu-24.04:${ROCM_VERSION}
+# rocm/dev-ubuntu-24.04:7.14.x (no -full suffix) does not exist in the AMD repo.
+# Use ubuntu:24.04 + the HSA runtime library (only libhsa-runtime64.so is needed).
+ARG ROCM_RUNTIME_IMAGE=ubuntu:24.04
 
 # =============================================================================
 # Build stage — needs ROCm HSA headers and cmake/ninja
@@ -66,6 +68,23 @@ ARG ROCM_VERSION
 ARG ROCM_RUNTIME_IMAGE
 
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
+
+# hsa-snoop needs libhsa-runtime64.so to intercept HSA AQL dispatches.
+# Copy the AMD apt signing key from the build stage (which has the -full image).
+# hadolint ignore=DL3008
+COPY --from=build /etc/apt/keyrings/amdrocm.gpg /etc/apt/keyrings/amdrocm.gpg
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
+    apt-get update && \
+    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+        ca-certificates && \
+    echo "deb [arch=amd64 signed-by=/etc/apt/keyrings/amdrocm.gpg] \
+https://repo.amd.com/rocm/packages-multi-arch/ubuntu2404 stable main" \
+        > /etc/apt/sources.list.d/amdrocm.list && \
+    apt-get update && \
+    _mm=$(echo "${ROCM_VERSION}" | cut -d. -f1-2) && \
+    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+        "amdrocm-runtime${_mm}"
 
 COPY --from=build /usr/local/bin/hsa-snoop /usr/local/bin/hsa-snoop
 

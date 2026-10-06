@@ -369,9 +369,9 @@ RUN rm -f /usr/lib/python3.*/EXTERNALLY-MANAGED
 # ROCm toolchain but not this metadata file; create it from the ROCM_VERSION
 # build ARG so downstream Dockerfiles that compile ROCm code (vllm/AITER) work.
 RUN _mm=$(echo "${ROCM_VERSION}" | cut -d. -f1-2) && \
-    mkdir -p /opt/rocm/core-${_mm}/.info && \
-    echo "${ROCM_VERSION}" > /opt/rocm/core-${_mm}/.info/version && \
-    ln -sfn core-${_mm}/lib /opt/rocm/lib
+    mkdir -p "/opt/rocm/core-${_mm}/.info" && \
+    echo "${ROCM_VERSION}" > "/opt/rocm/core-${_mm}/.info/version" && \
+    ln -sfn "core-${_mm}/lib" /opt/rocm/lib
 
 # uv — used by downstream vllm/lmcache Dockerfiles for pip operations.
 COPY --from=build_pytorch /root/.local/bin/uv  /usr/local/bin/uv

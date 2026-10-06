@@ -150,7 +150,9 @@ FROM base AS build
 ARG ROCM_ARCH
 ARG BUILD_JOBS=
 ARG LMCACHE_GIT_URL=https://github.com/LMCache/LMCache.git
-ARG LMCACHE_REF=v0.5.5
+# LMCACHE_REF has a default in build_lmcache_wheel; redeclare here without
+# a default so it is forwarded from the outer ARG (single source of truth).
+ARG LMCACHE_REF
 
 # NIXL_REF/NIXL_GIT_URL carried for the image label and CI patch checks.
 ARG NIXL_GIT_URL=https://github.com/ai-dynamo/nixl.git
