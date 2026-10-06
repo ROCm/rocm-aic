@@ -90,32 +90,28 @@ fi
 # ---------------------------------------------------------------------------
 # Launch compose
 # ---------------------------------------------------------------------------
-echo "Starting docker compose (role=${LMCACHE_P2P_ROLE} coord=${COORD_IP:-UNSET}:${COORD_PORT:-9300} this=${THIS_IP:-UNSET}) ..."
+echo "Starting lmcache_server via docker run (role=${LMCACHE_P2P_ROLE} coord=${COORD_IP:-UNSET}:${COORD_PORT:-9300} this=${THIS_IP:-UNSET}) ..."
 echo "  IMAGE=${LMCACHE_IMAGE_REF:-UNSET}"
 
-# Both primary and secondary run the same lmcache service.
-# The coordinator runs on the host Docker bridge (not in this VM).
-# Use sudo -E to run docker compose as root (group membership may not apply to this session).
-LMCACHE_IMAGE_REF="${LMCACHE_IMAGE_REF}" \
-COORD_IP="${COORD_IP}" \
-THIS_IP="${THIS_IP}" \
-COORD_PORT="${COORD_PORT:-9300}" \
-P2P_PORT="${P2P_PORT:-8500}" \
-LMCACHE_PORT="${LMCACHE_PORT:-6555}" \
-LMCACHE_HTTP_PORT="${LMCACHE_HTTP_PORT:-7555}" \
-LMCACHE_L1_SIZE_GB="${LMCACHE_L1_SIZE_GB:-0.5}" \
-    sudo env \
-        LMCACHE_IMAGE_REF="${LMCACHE_IMAGE_REF}" \
-        COORD_IP="${COORD_IP}" \
-        THIS_IP="${THIS_IP}" \
-        COORD_PORT="${COORD_PORT:-9300}" \
-        P2P_PORT="${P2P_PORT:-8500}" \
-        LMCACHE_PORT="${LMCACHE_PORT:-6555}" \
-        LMCACHE_HTTP_PORT="${LMCACHE_HTTP_PORT:-7555}" \
-        LMCACHE_L1_SIZE_GB="${LMCACHE_L1_SIZE_GB:-0.5}" \
-        docker compose -f "${COMPOSE_FILE}" up -d 2>&1
-    _rc=$?
-    echo "  compose exit code: $_rc"
-    sudo docker ps -a 2>/dev/null | head -5
-    sudo docker logs aic-lmcache-p2p 2>/dev/null | tail -5 || true
-    exit $_rc
+# Use docker run directly — avoids docker-compose / docker-compose-plugin dependency.
+sudo docker rm -f aic-lmcache-p2p 2>/dev/null || true
+sudo docker run -d \
+    --name aic-lmcache-p2p \
+    -p "${LMCACHE_PORT:-6555}:${LMCACHE_PORT:-6555}" \
+    -p "${LMCACHE_HTTP_PORT:-7555}:${LMCACHE_HTTP_PORT:-7555}" \
+    -p "${P2P_PORT:-8500}:${P2P_PORT:-8500}" \
+    -e LMCACHE_COORDINATOR_URL="http://${COORD_IP}:${COORD_PORT:-9300}" \
+    -e LMCACHE_COORDINATOR_ADVERTISE_IP="${THIS_IP}" \
+    -e LMCACHE_P2P_ADVERTISE_URL="${THIS_IP}:${P2P_PORT:-8500}" \
+    -e LMCACHE_P2P_LISTEN_URL="0.0.0.0:${P2P_PORT:-8500}" \
+    -e LMCACHE_P2P_TRANSFER_ENGINE="nixl" \
+    -e LMCACHE_L1_ALIGN_BYTES="65536" \
+    -e LMCACHE_CHUNK_SIZE="256" \
+    -e PYTHONHASHSEED="0" \
+    --entrypoint /usr/local/bin/lmcache_server \
+    "${LMCACHE_IMAGE_REF:?}" \
+    0.0.0.0 "${LMCACHE_PORT:-6555}" cpu
+echo "  docker run exit code: $?"
+sleep 2
+sudo docker ps --filter name=aic-lmcache-p2p --format "{{.Status}}" 2>/dev/null || true
+sudo docker logs aic-lmcache-p2p 2>/dev/null | tail -3 || true
