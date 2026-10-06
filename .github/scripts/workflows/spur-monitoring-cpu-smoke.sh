@@ -26,11 +26,15 @@ set -Eeuo pipefail
 _on_err() {
     # set -E carries this trap into $(...), where errexit is off.
     [[ $- == *e* ]] || return 0
+    # The failing command was a child that reports its own failures.
+    [[ -z ${_aic_err_child_reports-} ]] || return 0
     # || : so a failed write cannot replace the exit status.
     printf '%s: command failed (exit %s, pipeline status %s) at line %s%s\n' \
         "${0##*/}" "$1" "$2" "$3" "${4:+ in ${4// / <- }}" >&2 || :
 }
 trap '_on_err "$?" "${PIPESTATUS[*]}" "$LINENO" "${FUNCNAME[*]-}"' ERR
+# Run a child that reports its own failures; only the child reports.
+_err_delegate() { local _aic_err_child_reports=1; "$@"; }
 
 SHA="${1:?usage: $0 <full-sha>}"
 SHORT="${SHA:0:7}"
@@ -43,7 +47,7 @@ AIC_SMOKE_USE_REGISTRY="${AIC_SMOKE_USE_REGISTRY:-0}"
 AIC_SLURM_ACCOUNT="${AIC_SLURM_ACCOUNT:-}"
 REPO="https://github.com/ROCm/rocm-aic.git"
 
-ssh -o ServerAliveInterval=30 -o ServerAliveCountMax=4 "${AIC_SPUR_HOST}" env \
+_err_delegate ssh -o ServerAliveInterval=30 -o ServerAliveCountMax=4 "${AIC_SPUR_HOST}" env \
     SHA="${SHA}" \
     REPO="${REPO}" \
     AIC_IMAGE_NAME="${AIC_IMAGE_NAME}" \
@@ -63,11 +67,15 @@ set -Eeuo pipefail
 _on_err() {
     # set -E carries this trap into $(...), where errexit is off.
     [[ $- == *e* ]] || return 0
+    # The failing command was a child that reports its own failures.
+    [[ -z ${_aic_err_child_reports-} ]] || return 0
     # || : so a failed write cannot replace the exit status.
     printf '%s: command failed (exit %s, pipeline status %s) at line %s%s\n' \
         'spur-monitoring-cpu-smoke.sh (remote)' "$1" "$2" "$3" "${4:+ in ${4// / <- }}" >&2 || :
 }
 trap '_on_err "$?" "${PIPESTATUS[*]}" "$LINENO" "${FUNCNAME[*]-}"' ERR
+# Run a child that reports its own failures; only the child reports.
+_err_delegate() { local _aic_err_child_reports=1; "$@"; }
 export PATH="/usr/local/bin:${PATH}"
 
 SHORT="${SHA:0:7}"
@@ -288,7 +296,7 @@ SRUN_BODY
 chmod +x "${SRUN_SCRIPT}"
 
 echo "=== Submitting CPU-only srun job ==="
-srun \
+_err_delegate srun \
     ${AIC_SLURM_ACCOUNT:+--account="${AIC_SLURM_ACCOUNT}"} \
     --nodes=1 \
     --ntasks=1 \

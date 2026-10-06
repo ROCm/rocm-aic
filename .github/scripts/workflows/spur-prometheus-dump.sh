@@ -31,11 +31,15 @@ set -Eeuo pipefail
 _on_err() {
     # set -E carries this trap into $(...), where errexit is off.
     [[ $- == *e* ]] || return 0
+    # The failing command was a child that reports its own failures.
+    [[ -z ${_aic_err_child_reports-} ]] || return 0
     # || : so a failed write cannot replace the exit status.
     printf '%s: command failed (exit %s, pipeline status %s) at line %s%s\n' \
         "${0##*/}" "$1" "$2" "$3" "${4:+ in ${4// / <- }}" >&2 || :
 }
 trap '_on_err "$?" "${PIPESTATUS[*]}" "$LINENO" "${FUNCNAME[*]-}"' ERR
+# Run a child that reports its own failures; only the child reports.
+_err_delegate() { local _aic_err_child_reports=1; "$@"; }
 
 SHA="${1:?usage: $0 <full-sha>}"
 SHORT="${SHA:0:7}"
@@ -46,7 +50,7 @@ AIC_SHARED_NFS="${AIC_SHARED_NFS:?AIC_SHARED_NFS must be set}"
 AIC_CI_STORAGE_ROOT="${AIC_CI_STORAGE_ROOT:-}"
 REPO="https://github.com/ROCm/rocm-aic.git"
 
-ssh -o ServerAliveInterval=30 -o ServerAliveCountMax=4 "${AIC_SPUR_HOST}" env \
+_err_delegate ssh -o ServerAliveInterval=30 -o ServerAliveCountMax=4 "${AIC_SPUR_HOST}" env \
     SHA="${SHA}" \
     REPO="${REPO}" \
     AIC_IMAGE_NAME="${AIC_IMAGE_NAME}" \
@@ -64,11 +68,15 @@ set -Eeuo pipefail
 _on_err() {
     # set -E carries this trap into $(...), where errexit is off.
     [[ $- == *e* ]] || return 0
+    # The failing command was a child that reports its own failures.
+    [[ -z ${_aic_err_child_reports-} ]] || return 0
     # || : so a failed write cannot replace the exit status.
     printf '%s: command failed (exit %s, pipeline status %s) at line %s%s\n' \
         'spur-prometheus-dump.sh (remote)' "$1" "$2" "$3" "${4:+ in ${4// / <- }}" >&2 || :
 }
 trap '_on_err "$?" "${PIPESTATUS[*]}" "$LINENO" "${FUNCNAME[*]-}"' ERR
+# Run a child that reports its own failures; only the child reports.
+_err_delegate() { local _aic_err_child_reports=1; "$@"; }
 export PATH="/usr/local/bin:${PATH}"
 
 SHORT="${SHA:0:7}"
@@ -98,7 +106,7 @@ git checkout "${SHA}"
 # Run make prometheus-dump — submits an sbatch GPU job on SPUR and waits
 # ---------------------------------------------------------------------------
 echo "=== Running make prometheus-dump ==="
-make prometheus-dump \
+_err_delegate make prometheus-dump \
     AIC_SPUR_CLUSTER=1 \
     AIC_SHARED_NFS="${AIC_SHARED_NFS}" \
     AIC_IMAGE_DIR="${CI_STORAGE_ROOT}/images/aic-ci-${SHORT}" \
