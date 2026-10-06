@@ -76,7 +76,7 @@ build:
 		echo "Layer cache: disabled (set AIC_CACHE_DIR to enable)"; \
 	fi
 	@rm -rf "$(_OCI_TAR)" "$(_OCI_DIR)"
-	@echo "--- build [1/3]: aic-base:$(IMAGE_TAG) (ROCM_ARCH=$(ROCM_ARCH)) ---"
+	@echo "--- build [1/4]: aic-base:$(IMAGE_TAG) (ROCM_ARCH=$(ROCM_ARCH)) ---"
 	$(_NO_PROXY_ENV) docker buildx build \
 		--builder $(AIC_BUILDX_BUILDER) \
 		--progress=$(BUILD_PROGRESS) \
@@ -90,7 +90,7 @@ build:
 	@mkdir -p "$(_OCI_DIR)"
 	@tar -xf "$(_OCI_TAR)" -C "$(_OCI_DIR)"
 	@rm -f "$(_OCI_TAR)"
-	@echo "--- build [2/3]: $(VLLM_IMAGE_REF) ---"
+	@echo "--- build [2/4]: $(VLLM_IMAGE_REF) ---"
 	$(_NO_PROXY_ENV) docker buildx build \
 		--builder $(AIC_BUILDX_BUILDER) \
 		--progress=$(BUILD_PROGRESS) \
@@ -103,7 +103,7 @@ build:
 		"$(REPO_ROOT)"
 	@docker tag "$(VLLM_IMAGE_REF)" "$(VLLM_IMAGE_NAME):latest"
 	@echo "Built $(VLLM_IMAGE_REF) (also tagged $(VLLM_IMAGE_NAME):latest)"
-	@echo "--- build [3/3]: $(LMCACHE_IMAGE_REF) ---"
+	@echo "--- build [3/4]: $(LMCACHE_IMAGE_REF) ---"
 	$(_NO_PROXY_ENV) docker buildx build \
 		--builder $(AIC_BUILDX_BUILDER) \
 		--progress=$(BUILD_PROGRESS) \
@@ -117,6 +117,18 @@ build:
 	@docker tag "$(LMCACHE_IMAGE_REF)" "$(LMCACHE_IMAGE_NAME):latest"
 	@echo "Built $(LMCACHE_IMAGE_REF) (also tagged $(LMCACHE_IMAGE_NAME):latest)"
 	@rm -rf "$(_OCI_DIR)"
+	@echo "--- build [4/4]: $(HSA_SNOOP_IMAGE_REF) ---"
+	$(_NO_PROXY_ENV) docker buildx build \
+		--builder $(AIC_BUILDX_BUILDER) \
+		--progress=$(BUILD_PROGRESS) \
+		--load \
+		$(_BUILD_ARGS) \
+		$(_CACHE_ARGS) \
+		-f "$(REPO_ROOT)/docker/hsa-snoop/Dockerfile" \
+		-t "$(HSA_SNOOP_IMAGE_REF)" \
+		"$(REPO_ROOT)"
+	@docker tag "$(HSA_SNOOP_IMAGE_REF)" "$(HSA_SNOOP_IMAGE_NAME):latest"
+	@echo "Built $(HSA_SNOOP_IMAGE_REF) (also tagged $(HSA_SNOOP_IMAGE_NAME):latest)"
 
 up: ensure-compose check-hf-token prep-dirs
 	@mkdir -p "$(AIC_METRICS_DIR)"

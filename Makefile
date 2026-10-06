@@ -182,7 +182,10 @@ export AIC_METRICS_DIR AIC_GRAFANA_PORT AIC_GRAFANA_IMAGE
 # ---- Fabric exporters (nvme_exporter / rdma_exporter) + hsa-snoop sidecar --
 NVME_EXPORTER_IMAGE   ?= aic-nvme-exporter:local
 RDMA_EXPORTER_IMAGE   ?= aic-rdma-exporter:local
-HSA_SNOOP_IMAGE       ?= aic-hsa-snoop:local
+HSA_SNOOP_IMAGE_NAME  ?= aic-hsa-snoop
+HSA_SNOOP_IMAGE_REF   := $(HSA_SNOOP_IMAGE_NAME):$(IMAGE_TAG)
+HSA_SNOOP_IMAGE       ?= $(HSA_SNOOP_IMAGE_REF)
+export HSA_SNOOP_IMAGE_NAME HSA_SNOOP_IMAGE_REF HSA_SNOOP_IMAGE
 NVME_EXPORTER_VERSION ?= 3.0.0
 RDMA_EXPORTER_VERSION ?= 0.7.3
 
