@@ -365,8 +365,8 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     # "TensileLibrary_lazy_gfxNNNN.dat: not found".
     for _arch in $(echo "${ROCM_ARCH}" | tr ',' ' '); do \
         apt-get install -y --no-install-recommends \
-            "amdrocm-core${_mm}-${_arch}" 2>/dev/null || \
-        echo "  NOTE: no arch package for ${_arch} (expected for emulated arches)"; \
+            "amdrocm-blas${_mm}-${_arch}" 2>/dev/null || \
+        echo "  NOTE: no blas arch package for ${_arch} (expected for emulated arches)"; \
     done
 
 RUN git config --global advice.detachedHead false
