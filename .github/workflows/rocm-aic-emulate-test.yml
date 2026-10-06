@@ -57,7 +57,9 @@ jobs:
       - uses: docker/setup-buildx-action@v3
 
       - name: Read AIC_VERSION from VERSION file
-        run: echo "AIC_VERSION=$(cat VERSION)" >> "$GITHUB_ENV"
+        run: |
+          echo "AIC_VERSION=$(cat VERSION)" >> "$GITHUB_ENV"
+          echo "LMCACHE_VERSION=$(grep -E '^ARG LMCACHE_REF=' docker/lmcache/Dockerfile | head -1 | cut -d= -f2)" >> "$GITHUB_ENV"
 
       - name: Write corp CA cert secret (AMD Zscaler proxy)
         id: cert
@@ -102,6 +104,7 @@ jobs:
             VLLM_TARGET_DEVICE=empty
             AIC_VERSION=${{ env.AIC_VERSION }}
             ROCM_VERSION=7.14.1
+            LMCACHE_REF=${{ env.LMCACHE_VERSION }}
           build-contexts: |
             base=oci-layout:///tmp/aic-base-emulate
           secrets: |

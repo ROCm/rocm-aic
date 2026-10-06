@@ -93,7 +93,7 @@ jobs:
             HSA_SNOOP_REF=v4.5.6 \
               bash docker/scripts/aic-image-tag.sh
           )"
-          expected_rdna="${aic_version}-rocm8.7.6-pytorch9.9-vllm1.2.3-aiter0.1.19-lmcache2.3.4-nixl3.4.5-hsasnoop4.5.6"
+          expected_rdna="${aic_version}-rocm8.7.6-pytorch9.9-vllm1.2.3-aiter0.1.19-lmcache2.3.4-nixl3.4.5-hsasnoop4.5.6-gfx1201"
           [[ "${rdna_tag}" == "${expected_rdna}" ]] \
             || {
               echo "ERROR: RDNA tag: expected ${expected_rdna}, got ${rdna_tag}" >&2
