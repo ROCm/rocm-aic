@@ -210,6 +210,8 @@ _aic_on_err() {
     # || : so a failed write cannot replace the exit status.
     printf '%s: command failed (exit %s, pipeline status %s) at line %s%s\n' \
         "${_aic_err_tag:-${0##*/}}" "$1" "$2" "$3" "${4:+ in ${4// / <- }}" >&2 || :
+    # Lets _sbatch_run tell that a job body already reported.
+    [[ -z ${_aic_err_report_file-} ]] || : >"${_aic_err_report_file}" || :
 }
 # Set ERR trap.
 trap '_aic_on_err "$?" "${PIPESTATUS[*]}" "$LINENO" "${FUNCNAME[*]-}"' ERR
@@ -625,6 +627,7 @@ if ! exec >>"\${_logdir}/${logname}.out" 2>&1; then
     echo "FATAL: \$(hostname): cannot open \${_logdir}/${logname}.out for append" >&2
     exit 99
 fi
+_aic_err_report_file="\${_logdir}/${logname}.err-reported"
 $(_aic_err_trap_src "${jobname}")
 ( ${body} )
 _body_rc=\$?
@@ -930,6 +933,12 @@ PROLOGUE
     (( rc == 0 )) || { _dump_spur_job_state; _dump_job_log_tail; }
     _active_job_logfile=""; _active_job_desc=""; _active_job_id=""
     _clear_active_job
+    if (( rc != 0 )) && [[ -e "${AIC_DAY_DIR}/logs/${jobid}/${logname}.err-reported" ]]; then
+        # The job body's handler already reported where it failed.  Fail
+        # here, where the guard is in scope, rather than at our caller.
+        local _aic_err_child_reports=1
+        (exit "${rc}")
+    fi
     return "${rc}"
 }
 
