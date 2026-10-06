@@ -41,30 +41,34 @@ services:
     environment:
       PYTHONHASHSEED: "0"
     restart: "no"
-    entrypoint: ["/bin/sh", "-c"]
-    command:
-      - |
-        exec lmcache server \
-          --host 0.0.0.0 \
-          --port "$${LMCACHE_PORT:-6555}" \
-          --http-port "$${LMCACHE_HTTP_PORT:-7555}" \
-          --l1-size-gb "$${LMCACHE_L1_SIZE_GB:-0.5}" \
-          --l1-align-bytes 65536 \
-          --eviction-policy LRU \
-          --coordinator-url "http://$${COORD_IP:?}:$${COORD_PORT:-9300}" \
-          --coordinator-advertise-ip "$${THIS_IP:?}" \
-          --coordinator-event-reporting \
-          --p2p-advertise-url "$${THIS_IP}:$${P2P_PORT:-8500}"
+    # lmcache_server uses positional args and env vars — avoids the CLI
+    # import chain that requires 30+ deps (openai, numba, etc.) at startup.
+    # Coordinator/P2P config via LMCACHE_* env vars.
+    environment:
+      PYTHONHASHSEED: "0"
+      LMCACHE_COORDINATOR_URL: "http://${COORD_IP:?}:${COORD_PORT:-9300}"
+      LMCACHE_COORDINATOR_ADVERTISE_IP: "${THIS_IP:?}"
+      LMCACHE_P2P_ADVERTISE_URL: "${THIS_IP}:${P2P_PORT:-8500}"
+      LMCACHE_P2P_LISTEN_URL: "0.0.0.0:${P2P_PORT:-8500}"
+      LMCACHE_P2P_TRANSFER_ENGINE: "nixl"
+      LMCACHE_L1_ALIGN_BYTES: "65536"
+      LMCACHE_CHUNK_SIZE: "256"
+    entrypoint:
+      - /usr/local/bin/lmcache_server
+      - "0.0.0.0"
+      - "${LMCACHE_PORT:-6555}"
+      - cpu
+    command: []
     healthcheck:
       test:
         - CMD
         - python3
         - -c
         - |
-          import urllib.request
-          urllib.request.urlopen(
-            'http://127.0.0.1:${LMCACHE_HTTP_PORT:-7555}/healthz', timeout=2)
+          import socket
+          s = socket.create_connection(('127.0.0.1', ${LMCACHE_PORT:-6555}), 2)
+          s.close()
       interval: 5s
       timeout: 3s
       retries: 60
-      start_period: 15s
+      start_period: 10s

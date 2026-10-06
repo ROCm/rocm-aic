@@ -89,6 +89,7 @@ echo "Starting docker compose (role=${LMCACHE_P2P_ROLE} coord=${COORD_IP}:${COOR
 
 # Both primary and secondary run the same lmcache service.
 # The coordinator runs on the host Docker bridge (not in this VM).
+# Use sudo -E to run docker compose as root (group membership may not apply to this session).
 LMCACHE_IMAGE_REF="${LMCACHE_IMAGE_REF}" \
 COORD_IP="${COORD_IP}" \
 THIS_IP="${THIS_IP}" \
@@ -97,6 +98,6 @@ P2P_PORT="${P2P_PORT:-8500}" \
 LMCACHE_PORT="${LMCACHE_PORT:-6555}" \
 LMCACHE_HTTP_PORT="${LMCACHE_HTTP_PORT:-7555}" \
 LMCACHE_L1_SIZE_GB="${LMCACHE_L1_SIZE_GB:-0.5}" \
-    docker compose \
+    sudo -E docker compose \
         -f "${COMPOSE_FILE}" \
         up -d

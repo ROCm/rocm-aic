@@ -97,6 +97,8 @@ mkdir -p "$WORK_DIR"
 # Build a minimal lmcache image if not already present.
 # The full aic-lmcache:latest is 59GB (ROCm+torch) — too large to stream into VMs.
 # aic-lmcache-minimal is ~500MB and has only lmcache+nixl for CPU-only P2P testing.
+# Force rebuild if Dockerfile changed (delete old image)
+docker rmi aic-lmcache-minimal:latest >/dev/null 2>&1 || true
 if ! docker image inspect aic-lmcache-minimal:latest >/dev/null 2>&1; then
     log "  Building minimal lmcache image (no torch/ROCm) ..."
     # Extract nixl libs from the full image for the minimal build
@@ -117,7 +119,7 @@ RUN pip install --quiet --no-cache-dir \
     "opentelemetry-api" "opentelemetry-sdk" \
     "opentelemetry-exporter-otlp" "opentelemetry-exporter-prometheus" \
     huggingface_hub numpy psutil pyyaml redis safetensors \
-    blake3 httpx msgspec setuptools
+    blake3 httpx msgspec setuptools openai
 DOCKEREOF
     docker build -q -t aic-lmcache-minimal:latest -f "$WORK_DIR/Dockerfile.minimal" "$WORK_DIR"
     log "  Minimal image built: $(docker image inspect aic-lmcache-minimal:latest --format '{{.Size}}' | numfmt --to=si)B"
@@ -191,8 +193,27 @@ for _vmspec in "$VM1_SSH_PORT VM1" "$VM2_SSH_PORT VM2"; do
     log "  $_label SSH ready (:$_port)"
 done
 
-# ---- Step 5: load AIC lmcache image + compose files into VMs ----------------
-log "[5/7] Loading AIC lmcache image and compose files into VMs ..."
+# ---- Step 5a: start coordinator on the ernic Docker bridge ------------------
+# Must happen AFTER compose up (step 3) so vfio-user-ernic-2vm_default exists.
+log "[5a/7] Starting coordinator on host Docker bridge ..."
+docker rm -f aic-lmcache-coordinator 2>/dev/null || true
+docker run -d --name aic-lmcache-coordinator \
+    --network vfio-user-ernic-2vm_default \
+    --entrypoint /usr/local/bin/lmcache_controller \
+    aic-lmcache:latest \
+    --host 0.0.0.0 --port "${COORD_PORT}" \
+    2>&1 | tail -2 || die "Failed to start coordinator container"
+
+sleep 5
+COORD_DOCKER_IP=$(docker inspect aic-lmcache-coordinator \
+    --format '{{(index .NetworkSettings.Networks "vfio-user-ernic-2vm_default").IPAddress}}' \
+    2>/dev/null || echo "")
+[ -n "$COORD_DOCKER_IP" ] && [[ "$COORD_DOCKER_IP" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]] \
+    || die "Could not get coordinator Docker IP (got: '$COORD_DOCKER_IP')"
+log "  Coordinator at ${COORD_DOCKER_IP}:${COORD_PORT}"
+
+# ---- Step 5b: load AIC lmcache image + compose files into VMs ---------------
+log "[5b/7] Loading AIC lmcache image and compose files into VMs ..."
 _compose_src="$REPO_ROOT/docker/compose/lmcache-p2p/docker-compose.yml"
 _setup_src="$REPO_ROOT/scripts/lmcache-p2p-guest-setup.sh"
 
@@ -232,27 +253,9 @@ for _port in "$VM1_SSH_PORT" "$VM2_SSH_PORT"; do
     log "  Image loaded"
 done
 
-# ---- Step 6: start coordinator on host + lmcache servers in VMs --------------
-log "[6/7] Starting coordinator on host Docker network + lmcache servers in VMs ..."
-
-# Start coordinator as a Docker container on the same network as the QEMU containers.
-# Use the full aic-lmcache image (not minimal) since it has all deps for coordinator.
-# VMs reach it via SLIRP outbound NAT through the QEMU container's Docker bridge.
-docker rm -f aic-lmcache-coordinator 2>/dev/null || true
-docker run -d --name aic-lmcache-coordinator \
-    --network vfio-user-ernic-2vm_default \
-    aic-lmcache:latest \
-    lmcache coordinator --host 0.0.0.0 --port "${COORD_PORT}" \
-    2>&1 | tail -2 || die "Failed to start coordinator container"
-
-# Wait for coordinator to start and get its Docker IP on the ernic network
-sleep 5
-COORD_DOCKER_IP=$(docker inspect aic-lmcache-coordinator \
-    --format '{{(index .NetworkSettings.Networks "vfio-user-ernic-2vm_default").IPAddress}}' \
-    2>/dev/null || echo "")
-[ -n "$COORD_DOCKER_IP" ] && [[ "$COORD_DOCKER_IP" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]] \
-    || die "Could not get coordinator Docker IP (got: '$COORD_DOCKER_IP')"
-log "  Coordinator running at ${COORD_DOCKER_IP}:${COORD_PORT}"
+# ---- Step 6: start lmcache servers in VMs ------------------------------------
+log "[6/7] Starting lmcache P2P servers in VMs ..."
+# Coordinator is already running (started in step 5a) at COORD_DOCKER_IP.
 
 # Start lmcache server in each VM — coordinator reachable via Docker bridge IP
 for _idx in 1 2; do
@@ -284,9 +287,10 @@ for _vmspec in "$VM1_SSH_PORT VM1" "$VM2_SSH_PORT VM2"; do
     _label=$(echo "$_vmspec" | awk '{print $2}')
     _ready=0
     for _i in $(seq 1 $(( READY_S / 5 ))); do
+        # Check if lmcache_server container is running (TCP socket)
         # shellcheck disable=SC2086
         if ssh $SSH_FLAGS -i "$VM_SSH_KEY" -p "$_port" "$VM_SSH_USER@localhost" \
-                "curl -fsS --max-time 3 http://127.0.0.1:${LMCACHE_HTTP_PORT}/healthz >/dev/null 2>&1"; then
+                "sudo docker inspect aic-lmcache-p2p --format '{{.State.Status}}' 2>/dev/null | grep -q running"; then
             _ready=1; break
         fi
         sleep 5
