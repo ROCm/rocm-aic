@@ -359,7 +359,15 @@ https://repo.amd.com/rocm/packages-multi-arch/ubuntu2404 stable main" \
         "amdrocm-amdsmi${_mm}" \
         "amdrocm-llvm${_mm}" \
         "amdrocm-math-common${_mm}" \
-    && update-ca-certificates
+    && update-ca-certificates && \
+    # Install arch-specific GPU kernel data packages (Tensile .dat files for
+    # hipBLAS/rocBLAS).  Without these, GPU matrix operations fail with
+    # "TensileLibrary_lazy_gfxNNNN.dat: not found".
+    for _arch in $(echo "${ROCM_ARCH}" | tr ',' ' '); do \
+        apt-get install -y --no-install-recommends \
+            "amdrocm-core${_mm}-${_arch}" 2>/dev/null || \
+        echo "  NOTE: no arch package for ${_arch} (expected for emulated arches)"; \
+    done
 
 RUN git config --global advice.detachedHead false
 RUN rm -f /usr/lib/python3.*/EXTERNALLY-MANAGED

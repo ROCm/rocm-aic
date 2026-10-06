@@ -16,6 +16,8 @@ matrix:
             - pre
     sources:
       - '**/*.md'
+    excludes:
+      - '.docs-remove/**'
     default_encoding: utf-8
 
   - name: HTML
