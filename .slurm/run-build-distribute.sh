@@ -205,12 +205,16 @@ export PATH="/usr/local/bin:${PATH}"
 _aic_on_err() {
     # set -E carries this trap into $(...), where errexit is off.
     [[ $- == *e* ]] || return 0
+    # The failing command was a child that reports its own failures.
+    [[ -z ${_aic_err_child_reports-} ]] || return 0
     # || : so a failed write cannot replace the exit status.
     printf '%s: command failed (exit %s, pipeline status %s) at line %s%s\n' \
         "${_aic_err_tag:-${0##*/}}" "$1" "$2" "$3" "${4:+ in ${4// / <- }}" >&2 || :
 }
 # Set ERR trap.
 trap '_aic_on_err "$?" "${PIPESTATUS[*]}" "$LINENO" "${FUNCNAME[*]-}"' ERR
+# Run a child that installs this handler too; only the child reports.
+_aic_err_delegate() { local _aic_err_child_reports=1; "$@"; }
 # The same handler as source, to prepend to a generated job body.  Its reports
 # name the body ($1); their line numbers count from the top of the generated
 # script, not this file.
@@ -1150,7 +1154,7 @@ REMOTE
 
     if [[ "${AIC_BUILD_LOCAL:-}" == "1" ]]; then
         log "building locally on $(hostname) (AIC_BUILD_LOCAL=1)"
-        bash -c "$(_aic_err_trap_src aic-build)
+        _aic_err_delegate bash -c "$(_aic_err_trap_src aic-build)
 ${remote_script}"
     else
         # Pin an exact node if AIC_BUILD_NODE is set; otherwise let Slurm choose
@@ -1431,7 +1435,7 @@ REMOTE
 
     if [[ "${AIC_BUILD_LOCAL:-}" == "1" ]]; then
         log "building exporters locally on $(hostname) (AIC_BUILD_LOCAL=1)"
-        bash -c "$(_aic_err_trap_src aic-build-exporters)
+        _aic_err_delegate bash -c "$(_aic_err_trap_src aic-build-exporters)
 ${remote_script}"
     else
         local -a _sel
@@ -1491,7 +1495,7 @@ cmd_load() {
     local -a _overcommit_arg=(); [[ "${AIC_SPUR_CLUSTER}" != "1" ]] && _overcommit_arg=(--overcommit)
     # Need to provide atleast one GPU due to SPUR scheduling requirements.
     local -a _spur_gpu_arg=(); [[ "${AIC_SPUR_CLUSTER}" == "1" ]] && _spur_gpu_arg=(--gpus-per-node=1)
-    srun \
+    _aic_err_delegate srun \
         "${_spur_gpu_arg[@]}" \
         --job-name=aic-load \
         --partition="${AIC_BUILD_PARTITION}" \
@@ -1566,7 +1570,7 @@ REMOTE
     local -a _push_overcommit=(); [[ "${AIC_SPUR_CLUSTER}" != "1" ]] && _push_overcommit=(--overcommit)
     # Need to provide atleast one GPU due to SPUR scheduling requirements.
     local -a _push_spur_gpu=(); [[ "${AIC_SPUR_CLUSTER}" == "1" ]] && _push_spur_gpu=(--gpus=1)
-    srun \
+    _aic_err_delegate srun \
         "${_push_spur_gpu[@]}" \
         --job-name=aic-push \
         --partition="${AIC_BUILD_PARTITION}" \
