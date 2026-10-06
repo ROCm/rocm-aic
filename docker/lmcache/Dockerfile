@@ -75,6 +75,14 @@ ARG LMCACHE_REF=v0.5.5
 
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 
+# Install git + minimal build tools (the -full ROCm image does not include them).
+# hadolint ignore=DL3008
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
+    apt-get update && \
+    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+        git ca-certificates python3-dev
+
 # Bring torch + Python packages from aic-base into this full-ROCm stage.
 # Now this stage has: ROCm -full headers + aic-base's torch.
 COPY --from=base /usr/local/lib/python3.12/dist-packages/ \
