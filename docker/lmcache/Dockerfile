@@ -143,7 +143,8 @@ RUN --mount=type=cache,target=/root/.cache/pip \
     cd /app/LMCache && \
     PYTORCH_ROCM_ARCH="${ROCM_ARCH}" \
         TORCH_DONT_CHECK_COMPILER_ABI=1 \
-        BUILD_WITH_HIP=0 \
+        CXX=hipcc \
+        BUILD_WITH_HIP=1 \
         ROCM_TARGET_LST=/etc/rocm_target.lst \
         MAX_JOBS="${BUILD_JOBS:-$(nproc)}" \
         CMAKE_BUILD_PARALLEL_LEVEL="${BUILD_JOBS:-$(nproc)}" \
