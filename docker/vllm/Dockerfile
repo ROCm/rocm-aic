@@ -63,6 +63,9 @@ FROM ${ROCM_BASE_IMAGE} AS base
 # =============================================================================
 FROM ${ROCM_BASE_IMAGE} AS build_vllm
 
+# hadolint ignore=DL4006
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
+
 ARG ROCM_ARCH
 ARG BUILD_JOBS=
 ARG VLLM_GIT_URL=https://github.com/vllm-project/vllm.git
@@ -292,6 +295,7 @@ ENV PYTHONUNBUFFERED=1 \
     SAFETENSORS_FAST_GPU=1 \
     HIP_FORCE_DEV_KERNARG=1
 
+COPY profiles/*.json /opt/llm-emu/profiles/
 RUN test -r "${AIC_EMULATOR_DEFAULT_PACK}" || \
     { echo "ERROR: default profile pack missing: ${AIC_EMULATOR_DEFAULT_PACK}" >&2; exit 1; }
 
