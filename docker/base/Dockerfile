@@ -359,8 +359,6 @@ https://repo.amd.com/rocm/packages-multi-arch/ubuntu2404 stable main" \
         "amdrocm-amdsmi${_mm}" \
         "amdrocm-llvm${_mm}" \
         "amdrocm-math-common${_mm}" \
-        "amdrocm-runtime-dev${_mm}" \
-        "amdrocm-ccl-dev${_mm}" \
     && update-ca-certificates
 
 RUN git config --global advice.detachedHead false

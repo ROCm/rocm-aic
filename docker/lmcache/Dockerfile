@@ -57,58 +57,115 @@ ARG ROCM_BASE_IMAGE=rocm/dev-ubuntu-24.04:${ROCM_VERSION}-full
 # hadolint ignore=DL3006
 FROM ${ROCM_BASE_IMAGE} AS base
 
-# LMCache: inherits torch + torchvision + NIXL from aic-base.
 # =============================================================================
-FROM base AS build
+# build_lmcache_wheel — compile the LMCache HIP extension with the FULL ROCm
+# toolchain (ROCM_BASE_IMAGE = -full, not the slim aic-base runtime).
+# This stage is NOT replaced by --build-context base=oci-layout://...
+# because only the stage named "base" is overridden by that flag.
+# torch is COPYed from aic-base (which has it) into this full-ROCm stage.
+# The compiled wheel is COPYed into the runtime build stage below.
+# =============================================================================
+# hadolint ignore=DL3006
+FROM ${ROCM_BASE_IMAGE} AS build_lmcache_wheel
 
 ARG ROCM_ARCH
-
-# Parallel compile jobs for C++/HIP source builds (LMCache HIP extension).
 ARG BUILD_JOBS=
-
-# LMCache: upstream repo, pinned to the v0.5.5 release tag.
-# Optional open-PR heads from patches/lmcache.pull-requests are cherry-picked
-# first; AMD patches in patches/lmcache/ apply on top of that tree.
 ARG LMCACHE_GIT_URL=https://github.com/LMCache/LMCache.git
 ARG LMCACHE_REF=v0.5.5
 
-# NIXL_REF/NIXL_GIT_URL carried for the image label and CI patch checks —
-# NIXL itself is built and installed in aic-base.
-ARG NIXL_GIT_URL=https://github.com/ai-dynamo/nixl.git
-ARG NIXL_REF=v1.4.1
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 
-# AITER_REF/FLASH_ATTN_REF/HSA_SNOOP_REF carried for the README version-sync
-# check — AITER and FlashAttention are built in aic-vllm; hsa-snoop in its own
-# sidecar image (docker/hsa-snoop/).  None are built here.
-ARG AITER_REF=v0.1.22.post1
-ARG FLASH_ATTN_REF=v2.8.3.post1
-ARG HSA_SNOOP_REF=v1.1.1
+# Bring torch + Python packages from aic-base into this full-ROCm stage.
+# Now this stage has: ROCm -full headers + aic-base's torch.
+COPY --from=base /usr/local/lib/python3.12/dist-packages/ \
+                 /usr/local/lib/python3.12/dist-packages/
+COPY --from=base /usr/local/bin/uv  /usr/local/bin/uv
+COPY --from=base /usr/local/bin/uvx /usr/local/bin/uvx
+RUN rm -f /usr/lib/python3.*/EXTERNALLY-MANAGED
 
-# ----- 5. LMCache (upstream release + AMD patches) ---------------------------
 COPY patches/ /app/patches/
-# CuPy-backed GPU allocator: COPYed into the LMCache source tree before
-# patches apply so the patch can import it without a new-file diff hunk.
 COPY docker/lmcache/paged_cupy_memory_allocator.py \
      /app/paged_cupy_memory_allocator.py
 COPY docker/scripts/apply-github-prs.sh /usr/local/bin/apply-github-prs.sh
 
 RUN git clone --depth 1 --branch "${LMCACHE_REF}" "${LMCACHE_GIT_URL}" /app/LMCache
 
-# Cherry-pick optional LMCache PR heads listed in patches/lmcache.pull-requests.
-# Line format:
-#   <pr-number>
-#   <remote-name> <pr-number>
-#   <remote-name>=<remote-url> <pr-number>
-# Blank lines and # comments are ignored. Inline remote URLs must point at
-# GitHub repositories that expose refs/pull/<pr-number>/head. Stacked PRs are
-# allowed: dependency commits not already present are cherry-picked first.
 RUN chmod +x /usr/local/bin/apply-github-prs.sh && \
     /usr/local/bin/apply-github-prs.sh \
         /app/LMCache \
         /app/patches/lmcache.pull-requests \
         "${LMCACHE_REF}"
 
-# Apply every patch under patches/lmcache/ in lexical order after optional PRs.
+# hadolint ignore=SC3054,SC3044
+RUN cd /app/LMCache && \
+    shopt -s nullglob && \
+    patches=(/app/patches/lmcache/*.patch) && \
+    if [ "${#patches[@]}" -eq 0 ]; then \
+        echo "ERROR: no patches found in /app/patches/lmcache/" >&2; exit 1; \
+    fi && \
+    for patch in "${patches[@]}"; do \
+        if git apply "$patch"; then \
+            echo "Applied: $patch"; \
+        else \
+            echo "ERROR: LMCache patch does not apply cleanly: $patch" >&2; \
+            exit 1; \
+        fi; \
+    done
+
+RUN --mount=type=cache,target=/root/.cache/pip \
+    pip3 install --no-cache-dir grpcio-tools
+
+RUN cp /app/paged_cupy_memory_allocator.py \
+       /app/LMCache/lmcache/v1/memory_allocators/paged_cupy_memory_allocator.py
+
+# Build the LMCache wheel with full ROCm headers available.
+RUN --mount=type=cache,target=/root/.cache/pip \
+    mkdir -p /wheels && \
+    printf '%s\n' "${ROCM_ARCH%%,*}" > /etc/rocm_target.lst && \
+    cd /app/LMCache && \
+    PYTORCH_ROCM_ARCH="${ROCM_ARCH}" \
+        TORCH_DONT_CHECK_COMPILER_ABI=1 \
+        CXX=hipcc \
+        BUILD_WITH_HIP=1 \
+        ROCM_TARGET_LST=/etc/rocm_target.lst \
+        MAX_JOBS="${BUILD_JOBS:-$(nproc)}" \
+        CMAKE_BUILD_PARALLEL_LEVEL="${BUILD_JOBS:-$(nproc)}" \
+        python3 -m pip wheel --no-build-isolation --no-deps -w /wheels .
+
+# =============================================================================
+# Runtime build stage (FROM aic-base via --build-context base=oci-layout://...)
+# =============================================================================
+# LMCache: inherits torch + torchvision + NIXL from aic-base.
+# =============================================================================
+FROM base AS build
+
+ARG ROCM_ARCH
+ARG BUILD_JOBS=
+ARG LMCACHE_GIT_URL=https://github.com/LMCache/LMCache.git
+ARG LMCACHE_REF=v0.5.5
+
+# NIXL_REF/NIXL_GIT_URL carried for the image label and CI patch checks.
+ARG NIXL_GIT_URL=https://github.com/ai-dynamo/nixl.git
+ARG NIXL_REF=v1.4.1
+
+# ARGs carried for the README version-sync check only.
+ARG AITER_REF=v0.1.22.post1
+ARG FLASH_ATTN_REF=v2.8.3.post1
+ARG HSA_SNOOP_REF=v1.1.1
+
+COPY patches/ /app/patches/
+COPY docker/lmcache/paged_cupy_memory_allocator.py \
+     /app/paged_cupy_memory_allocator.py
+COPY docker/scripts/apply-github-prs.sh /usr/local/bin/apply-github-prs.sh
+
+RUN git clone --depth 1 --branch "${LMCACHE_REF}" "${LMCACHE_GIT_URL}" /app/LMCache
+
+RUN chmod +x /usr/local/bin/apply-github-prs.sh && \
+    /usr/local/bin/apply-github-prs.sh \
+        /app/LMCache \
+        /app/patches/lmcache.pull-requests \
+        "${LMCACHE_REF}"
+
 # hadolint ignore=SC3054,SC3044
 RUN cd /app/LMCache && \
     shopt -s nullglob && \
@@ -129,7 +186,6 @@ RUN cd /app/LMCache && \
 RUN --mount=type=cache,target=/root/.cache/pip \
     pip3 install --no-cache-dir grpcio-tools
 
-# Install the CuPy allocator into LMCache's package tree before patches apply.
 RUN cp /app/paged_cupy_memory_allocator.py \
        /app/LMCache/lmcache/v1/memory_allocators/paged_cupy_memory_allocator.py
 
@@ -137,19 +193,9 @@ RUN cp /app/paged_cupy_memory_allocator.py \
 RUN --mount=type=cache,target=/root/.cache/pip \
     pip3 install --no-cache-dir cupy-rocm-7-0
 
-RUN --mount=type=cache,target=/root/.cache/pip \
-    mkdir -p /wheels && \
-    printf '%s\n' "${ROCM_ARCH%%,*}" > /etc/rocm_target.lst && \
-    cd /app/LMCache && \
-    PYTORCH_ROCM_ARCH="${ROCM_ARCH}" \
-        TORCH_DONT_CHECK_COMPILER_ABI=1 \
-        CXX=hipcc \
-        BUILD_WITH_HIP=1 \
-        ROCM_TARGET_LST=/etc/rocm_target.lst \
-        MAX_JOBS="${BUILD_JOBS:-$(nproc)}" \
-        CMAKE_BUILD_PARALLEL_LEVEL="${BUILD_JOBS:-$(nproc)}" \
-        python3 -m pip wheel --no-build-isolation --no-deps -w /wheels . && \
-    uv pip install --system --no-cache /wheels/lmcache-*.whl
+# Install the pre-compiled LMCache wheel from the build_lmcache_wheel stage.
+COPY --from=build_lmcache_wheel /wheels/ /wheels/
+RUN uv pip install --system --no-cache /wheels/lmcache-*.whl && rm -rf /wheels
 
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv pip install --system "matplotlib>=3.8,<4" "openai>=1.0,<2"
