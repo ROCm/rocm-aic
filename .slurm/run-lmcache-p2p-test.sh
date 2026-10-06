@@ -38,6 +38,8 @@ VM1_NAME="p2p-vm1-${SLURM_JOB_ID:-$$}"
 VM2_NAME="p2p-vm2-${SLURM_JOB_ID:-$$}"
 WORK_DIR="/tmp/aic-p2p-work-${SLURM_JOB_ID:-$$}"
 
+VM_SSH_KEY="${VM_IMAGES_DIR}/id_rsa"
+VM_SSH_USER="ubuntu"   # overridden from vm-info.json after extraction
 SSH_FLAGS="-o StrictHostKeyChecking=no -o BatchMode=yes -o ConnectTimeout=5"
 
 log() { echo "[$(date -u +%H:%M:%S)] $*"; }
@@ -69,10 +71,13 @@ command -v docker >/dev/null || die "docker not found"
 
 # ---- Step 2: install qemu-tool -------------------------------------------
 log "[2/8] Ensuring qemu-tool is installed ..."
+# Always prefer ~/.local/bin (user-writable, no sudo needed).
+QEMU_TOOL_BIN="${HOME}/.local/bin/qemu-tool"
+export PATH="${HOME}/.local/bin:${PATH}"
 if ! command -v qemu-tool >/dev/null 2>&1; then
     log "  Installing qemu-tool via pipx ..."
     if command -v pipx >/dev/null 2>&1; then
-        PIPX_BIN_DIR=/usr/local/bin pipx install --force qemu-tool >/dev/null
+        PIPX_BIN_DIR="${HOME}/.local/bin" pipx install --force qemu-tool >/dev/null
     else
         pip install --quiet --break-system-packages qemu-tool 2>/dev/null \
             || pip install --quiet qemu-tool
@@ -96,13 +101,27 @@ if [ ! -f "$VM_IMAGES_DIR/${VM1_NAME}.qcow2" ]; then
     [ -n "$_qcow2" ] || die "No .qcow2 found in $QCOW2_IMAGE"
     cp "$_qcow2" "$VM_IMAGES_DIR/${VM1_NAME}.qcow2"
     cp "$_qcow2" "$VM_IMAGES_DIR/${VM2_NAME}.qcow2"
+    # Copy the SSH key and vm-info.json that ship alongside the disk
+    find "$WORK_DIR/qcow2-tmp" -name 'id_rsa' -exec cp {} "$VM_IMAGES_DIR/" \;
+    find "$WORK_DIR/qcow2-tmp" -name 'vm-info.json' -exec cp {} "$VM_IMAGES_DIR/" \;
+    chmod 600 "$VM_IMAGES_DIR/id_rsa" 2>/dev/null || true
     rm -rf "$WORK_DIR/qcow2-tmp"
-    log "  Disk images ready"
+    log "  Disk images ready (key: $(ls "$VM_IMAGES_DIR/id_rsa" 2>/dev/null && echo present || echo MISSING))"
 else
     log "  Disk images already present"
     [ -f "$VM_IMAGES_DIR/${VM2_NAME}.qcow2" ] || \
         cp "$VM_IMAGES_DIR/${VM1_NAME}.qcow2" "$VM_IMAGES_DIR/${VM2_NAME}.qcow2"
 fi
+
+# Resolve SSH key and username from the vm-info.json bundled with the disk image.
+VM_SSH_KEY="$VM_IMAGES_DIR/id_rsa"
+if [ -f "$VM_IMAGES_DIR/vm-info.json" ]; then
+    VM_SSH_USER=$(python3 -c "import json; print(json.load(open('$VM_IMAGES_DIR/vm-info.json')).get('username','ubuntu'))" 2>/dev/null || echo "ubuntu")
+else
+    VM_SSH_USER="ubuntu"
+fi
+log "  SSH user=$VM_SSH_USER key=$([ -f "$VM_SSH_KEY" ] && echo present || echo MISSING)"
+[ -f "$VM_SSH_KEY" ] || die "SSH key not found at $VM_SSH_KEY — re-run to re-extract"
 
 # ---- Step 4: start compose stack -----------------------------------------
 log "[4/8] Starting vfio-user-ernic-2vm compose stack ..."
@@ -127,7 +146,7 @@ for _vmspec in "$VM1_SSH_PORT VM1" "$VM2_SSH_PORT VM2"; do
     _ready=0
     for _i in $(seq 1 $(( READY_S / 5 ))); do
         # shellcheck disable=SC2086
-        if ssh $SSH_FLAGS -p "$_port" ubuntu@localhost true 2>/dev/null; then
+        if ssh $SSH_FLAGS -i "$VM_SSH_KEY" -p "$_port" "$VM_SSH_USER@localhost" true 2>/dev/null; then
             _ready=1; break
         fi
         sleep 5
@@ -143,46 +162,17 @@ for _vmspec in "$VM1_SSH_PORT VM1" "$VM2_SSH_PORT VM2"; do
     log "  $_label SSH ready (:$_port)"
 done
 
-# ---- Step 6: copy test files into VMs ------------------------------------
-log "[6/8] Pushing test files into VMs ..."
-_compose_src="$REPO_ROOT/docker/compose/lmcache-p2p/docker-compose.yml"
-_setup_src="$REPO_ROOT/scripts/lmcache-p2p-guest-setup.sh"
-for _port in "$VM1_SSH_PORT" "$VM2_SSH_PORT"; do
-    # shellcheck disable=SC2086
-    ssh $SSH_FLAGS -p "$_port" ubuntu@localhost "mkdir -p /tmp/lmcache-p2p"
-    scp -o StrictHostKeyChecking=no -P "$_port" \
-        "$_compose_src" "ubuntu@localhost:/tmp/lmcache-p2p/docker-compose.yml"
-    scp -o StrictHostKeyChecking=no -P "$_port" \
-        "$_setup_src"  "ubuntu@localhost:/tmp/lmcache-p2p/lmcache-p2p-guest-setup.sh"
-done
-
-# ---- Step 7: start lmcache on both VMs -----------------------------------
-log "[7/8] Configuring VMs and starting LMCache P2P ..."
-for _idx in 1 2; do
-    _port="$VM1_SSH_PORT"; [ "$_idx" = "2" ] && _port="$VM2_SSH_PORT"
-    _role="primary";        [ "$_idx" = "2" ] && _role="secondary"
-    _this_ip="$VM1_IP";     [ "$_idx" = "2" ] && _this_ip="$VM2_IP"
-    log "  VM$_idx ($_role) :$_port $_this_ip ..."
-    # shellcheck disable=SC2086
-    ssh $SSH_FLAGS -p "$_port" ubuntu@localhost \
-        "LMCACHE_P2P_ROLE=$_role \
-         THIS_IP=$_this_ip \
-         COORD_IP=$VM1_IP \
-         COMPOSE_FILE=/tmp/lmcache-p2p/docker-compose.yml \
-         LMCACHE_IMAGE_REF=${AIC_LMCACHE_IMAGE:-} \
-         VLLM_IMAGE_REF=${AIC_VLLM_IMAGE:-} \
-         HF_TOKEN=${HF_TOKEN:-} \
-         bash /tmp/lmcache-p2p/lmcache-p2p-guest-setup.sh" \
-        2>&1 | sed "s/^/  [vm$_idx] /"
-done
-
-# ---- Step 8: run the Python P2P test ------------------------------------
-log "[8/8] Running LMCache P2P test ..."
+# ---- Step 6: run the Python P2P test ------------------------------------
+# test_lmcache_p2p.py handles: ionic RDMA device detection, lmcache[nixl]
+# install via pip, coordinator + P2P server startup, cache population, and
+# the P2P hit assertion — all without requiring Docker inside the VMs.
+log "[6/6] Running LMCache P2P test ..."
 python3 "$REPO_ROOT/tests/test_lmcache_p2p.py" \
     --vm1-host localhost --vm1-port "$VM1_SSH_PORT" \
     --vm2-host localhost --vm2-port "$VM2_SSH_PORT" \
     --vm1-ip "$VM1_IP" --vm2-ip "$VM2_IP" \
-    --ssh-user ubuntu \
+    --ssh-user "$VM_SSH_USER" \
+    --ssh-key "$VM_SSH_KEY" \
     --timeout 300
 
 log "=== test-lmcache-p2p-spur complete ==="

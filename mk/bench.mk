@@ -553,23 +553,14 @@ AIC_LMCACHE_P2P_SPUR_NODE    ?=
 AIC_LMCACHE_P2P_SPUR_TIME    ?= 60
 AIC_LMCACHE_P2P_SPUR_WORKDIR ?= /shared_nfs/$(shell id -un)
 
-test-lmcache-p2p-spur: prep-dirs
-	@test -n "$(HF_TOKEN)" || { echo "ERROR: HF_TOKEN not set" >&2; exit 1; }
+test-lmcache-p2p-spur:
 	@echo "=== test-lmcache-p2p-spur ==="
 	@echo "  Submitting to amd-spur (gpus=$(AIC_LMCACHE_P2P_SPUR_GPUS) time=$(AIC_LMCACHE_P2P_SPUR_TIME)m)"
-	@export SPUR_CONTROLLER_ADDR=http://crs-m2m-cpu-spur-005.crusoe.amd.com:6817; \
-	srun --partition=amd-spur \
-	     --gpus=$(AIC_LMCACHE_P2P_SPUR_GPUS) \
+	@sbatch \
+	     --partition=amd-spur \
+	     --gres=gpu:$(AIC_LMCACHE_P2P_SPUR_GPUS) \
 	     --time=$(AIC_LMCACHE_P2P_SPUR_TIME) \
 	     $(if $(AIC_LMCACHE_P2P_SPUR_NODE),--nodelist=$(AIC_LMCACHE_P2P_SPUR_NODE),) \
 	     --chdir="$(AIC_LMCACHE_P2P_SPUR_WORKDIR)" \
-	     env \
-	         SLURM_SUBMIT_DIR="$(REPO_ROOT)" \
-	         HF_TOKEN="$(HF_TOKEN)" \
-	         AIC_LMCACHE_IMAGE="$(AIC_LMCACHE_P2P_LMCACHE_IMAGE_REF)" \
-	         AIC_VLLM_IMAGE="$(AIC_LMCACHE_P2P_VLLM_IMAGE_REF)" \
-	         AIC_LMCACHE_P2P_QCOW2_IMAGE="$(AIC_LMCACHE_P2P_QCOW2_IMAGE)" \
-	         AIC_LMCACHE_P2P_READY_S="$(AIC_LMCACHE_P2P_READY_S)" \
-	         AIC_LMCACHE_P2P_VM1_IP="$(AIC_LMCACHE_P2P_VM1_IP)" \
-	         AIC_LMCACHE_P2P_VM2_IP="$(AIC_LMCACHE_P2P_VM2_IP)" \
-	     bash "$(REPO_ROOT)/.slurm/run-lmcache-p2p-test.sh"
+	     --export=ALL,SLURM_SUBMIT_DIR="$(REPO_ROOT)",HF_TOKEN="$(HF_TOKEN)",AIC_LMCACHE_P2P_QCOW2_IMAGE="$(AIC_LMCACHE_P2P_QCOW2_IMAGE)",AIC_LMCACHE_P2P_READY_S="$(AIC_LMCACHE_P2P_READY_S)",AIC_LMCACHE_P2P_VM1_IP="$(AIC_LMCACHE_P2P_VM1_IP)",AIC_LMCACHE_P2P_VM2_IP="$(AIC_LMCACHE_P2P_VM2_IP)" \
+	     "$(REPO_ROOT)/.slurm/run-lmcache-p2p-test.sbatch"
