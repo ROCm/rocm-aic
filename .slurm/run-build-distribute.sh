@@ -1271,9 +1271,16 @@ cmd_build_split() {
     local _cache_dir
     _cache_dir="${AIC_CACHE_DIR%/}/$(_arch_tag)"
     local _builder="${AIC_BUILDX_BUILDER}"
-    local _cache_args=""
-    [[ -n "${AIC_CACHE_DIR}" ]] && \
-        _cache_args="--cache-from type=local,src=${_cache_dir} --cache-to type=local,dest=${_cache_dir},mode=${AIC_CACHE_MODE:-max},ignore-error=true"
+    # One cache dir per image, like cmd_build's per-target subdir: a type=local
+    # cache keeps a single `latest` ref, so a shared dir ends up holding only
+    # the last build's chain and the next base build gets no hits.
+    local _cache_args_base="" _cache_args_vllm="" _cache_args_lmcache=""
+    if [[ -n "${AIC_CACHE_DIR}" ]]; then
+        local _cache_opts="mode=${AIC_CACHE_MODE:-max},ignore-error=true"
+        _cache_args_base="--cache-from type=local,src=${_cache_dir}-base --cache-to type=local,dest=${_cache_dir}-base,${_cache_opts}"
+        _cache_args_vllm="--cache-from type=local,src=${_cache_dir}-vllm --cache-to type=local,dest=${_cache_dir}-vllm,${_cache_opts}"
+        _cache_args_lmcache="--cache-from type=local,src=${_cache_dir}-lmcache --cache-to type=local,dest=${_cache_dir}-lmcache,${_cache_opts}"
+    fi
 
     local remote_script
     remote_script="$(cat <<REMOTE
@@ -1308,7 +1315,7 @@ docker buildx build --builder ${_builder} --progress=plain \
     --build-arg ROCM_ARCH="${AIC_ROCM_ARCH}" \
     ${_version_build_args} \
     ${_secret_arg} \
-    ${_cache_args} \
+    ${_cache_args_base} \
     -f "${AIC_DAY_DIR}/docker/base/Dockerfile" \
     -t "${base_image}" \
     "${AIC_DAY_DIR}" | ${COMPRESS_CMD} > "\${tmp_base}"
@@ -1330,7 +1337,7 @@ docker buildx build --builder ${_builder} --progress=plain \
     ${_version_build_args} \
     --build-context "base=oci-layout://\${_base_oci_dir}" \
     ${_secret_arg} \
-    ${_cache_args} \
+    ${_cache_args_vllm} \
     -f "${AIC_DAY_DIR}/docker/vllm/Dockerfile" \
     -t "${AIC_VLLM_IMAGE}" \
     -t "${vllm_latest_ref}" \
@@ -1348,7 +1355,7 @@ docker buildx build --builder ${_builder} --progress=plain --output type=docker,
     ${_version_build_args} \
     --build-context "base=oci-layout://\${_base_oci_dir}" \
     ${_secret_arg} \
-    ${_cache_args} \
+    ${_cache_args_lmcache} \
     -f "${AIC_DAY_DIR}/docker/lmcache/Dockerfile" \
     -t "${AIC_LMCACHE_IMAGE}" \
     -t "${lmcache_latest_ref}" \
