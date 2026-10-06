@@ -593,7 +593,7 @@ test-rocjitsu-local: prep-dirs
 	  'export AIC_METRICS_DIR=/rj-share/metrics AIC_EXPORTERS=0 HF_HOME=/tmp/hf-home' \
 	  'export LOG=/tmp/aic-logs BENCH_LOGDIR=/tmp/aic-logs/manual HF_TOKEN=$(HF_TOKEN)' \
 	  '# vllm-reset-test: real GPU; kernel-config disables JIT warmup; weight loading ~7s/270MB on rocjitsu' \
-	  'make -C /rj-share/repo vllm-reset-test VLM_READY_RETRIES=120' \
+	  'make -C /rj-share/repo vllm-reset-test VLM_READY_RETRIES=600' \
 	  'echo vllm_reset_test_rc=$$?' \
 	  > /tmp/aic-rj-inner.sh; \
 	scp -i $$_key -o StrictHostKeyChecking=no -P "$(RJ_SSH_PORT)" \

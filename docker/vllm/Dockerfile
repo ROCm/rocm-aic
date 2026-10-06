@@ -78,39 +78,47 @@ ARG FLASH_ATTN_GIT_URL=https://github.com/Dao-AILab/flash-attention.git
 ARG FLASH_ATTN_REF=v2.8.3.post1
 
 # ----- 3. ROCm attention backends (AITER + FlashAttention) ----------------------
+# Skipped when VLLM_TARGET_DEVICE=empty (CPU-only emulate build: no hipcc).
 RUN test -n "$ROCM_ARCH" || { echo "ERROR: ROCM_ARCH is not set"; exit 1; }
 
 # hadolint ignore=SC2039
 RUN --mount=type=cache,target=/root/.cache/pip \
     --mount=type=cache,target=/root/.cache/ccache \
-    mkdir -p /wheels && \
-    pip3 install --no-cache-dir \
-        "pandas==3.0.3" \
-        "psutil==7.2.2" \
-        "pyyaml==6.0.3" \
-        "einops==0.8.2" \
-        "pybind11==3.0.4" \
-        "ninja==1.13.0" \
-        "flydsl==0.2.4" && \
-    git clone --depth 1 --branch "${AITER_REF}" "${AITER_GIT_URL}" /app/aiter && \
-    cd /app/aiter && \
-    git submodule update --init --recursive && \
-    PYTORCH_ROCM_ARCH="${ROCM_ARCH}" \
-        TORCH_DONT_CHECK_COMPILER_ABI=1 \
-        MAX_JOBS="${BUILD_JOBS:-$(nproc)}" \
-        CCACHE_DIR=/root/.cache/ccache \
-        python3 setup.py bdist_wheel --dist-dir=/wheels && \
-    pip3 install --no-cache-dir --no-deps /wheels/amd_aiter-*.whl && \
-    python3 -c 'import importlib.util, pathlib; spec = importlib.util.find_spec("aiter"); assert spec and spec.submodule_search_locations; print("AITER installed:", next(iter(spec.submodule_search_locations)))'
+    if [ "${VLLM_TARGET_DEVICE}" = "empty" ]; then \
+        echo "Skipping AITER build (VLLM_TARGET_DEVICE=empty)"; \
+    else \
+        mkdir -p /wheels && \
+        pip3 install --no-cache-dir \
+            "pandas==3.0.3" \
+            "psutil==7.2.2" \
+            "pyyaml==6.0.3" \
+            "einops==0.8.2" \
+            "pybind11==3.0.4" \
+            "ninja==1.13.0" \
+            "flydsl==0.2.4" && \
+        git clone --depth 1 --branch "${AITER_REF}" "${AITER_GIT_URL}" /app/aiter && \
+        cd /app/aiter && \
+        git submodule update --init --recursive && \
+        PYTORCH_ROCM_ARCH="${ROCM_ARCH}" \
+            TORCH_DONT_CHECK_COMPILER_ABI=1 \
+            MAX_JOBS="${BUILD_JOBS:-$(nproc)}" \
+            CCACHE_DIR=/root/.cache/ccache \
+            python3 setup.py bdist_wheel --dist-dir=/wheels && \
+        pip3 install --no-cache-dir --no-deps /wheels/amd_aiter-*.whl && \
+        python3 -c 'import importlib.util, pathlib; spec = importlib.util.find_spec("aiter"); assert spec and spec.submodule_search_locations; print("AITER installed:", next(iter(spec.submodule_search_locations)))'; \
+    fi
 
 # FlashAttention: CDNA-only (gfx9xx — MI100/MI200/MI300/MI355X).
+# Skipped when VLLM_TARGET_DEVICE=empty (CPU-only emulate build).
 # hadolint ignore=SC2039
 RUN --mount=type=cache,target=/root/.cache/pip \
     --mount=type=cache,target=/root/.cache/ccache \
     _cdna_only() { \
         _a=""; for _a in $(echo "$1" | tr ';' '\n'); do \
             [ "${_a#gfx9}" != "${_a}" ] || return 1; done; return 0; }; \
-    if _cdna_only "${ROCM_ARCH}"; then \
+    if [ "${VLLM_TARGET_DEVICE}" = "empty" ]; then \
+        echo "Skipping FlashAttention (VLLM_TARGET_DEVICE=empty)"; \
+    elif _cdna_only "${ROCM_ARCH}"; then \
         git clone --depth 1 --branch "${FLASH_ATTN_REF}" \
             --recurse-submodules --shallow-submodules \
             "${FLASH_ATTN_GIT_URL}" /app/flash-attention && \
@@ -133,7 +141,7 @@ RUN --mount=type=cache,target=/root/.cache/pip \
         { \
             echo "AITER_REF=${AITER_REF}"; \
             echo "FLASH_ATTN_REF="; \
-            python3 -c 'import importlib.util; spec = importlib.util.find_spec("aiter"); assert spec and spec.submodule_search_locations; print("AITER_PACKAGE=" + next(iter(spec.submodule_search_locations)))'; \
+            python3 -c 'import importlib.util; spec = importlib.util.find_spec("aiter"); assert spec and spec.submodule_search_locations; print("AITER_PACKAGE=" + next(iter(spec.submodule_search_locations)))' 2>/dev/null || true; \
         } > /etc/rocm-aic-attention-backends.env; \
     fi
 
