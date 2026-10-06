@@ -111,21 +111,35 @@ def get_metric(host, port, name):
     return 0.0
 
 
+def stop_systemd_units(host, port, user, key):
+    """Stop any leftover lmcache systemd units from a previous run."""
+    ssh(host, port, user, key,
+        "systemctl --user stop lmcache-server lmcache-coordinator 2>/dev/null; "
+        "systemctl --user reset-failed 2>/dev/null; true",
+        check=False)
+
+
 def start_coordinator(host, port, user, key, coord_port):
     print(f"  Starting lmcache coordinator on {host} ...")
+    # systemd-run --user survives SSH session end (nohup/setsid/disown do not).
     ssh(host, port, user, key,
-        f"nohup lmcache coordinator --host 0.0.0.0 --port {coord_port} "
-        f"</dev/null >/tmp/lmcache-coordinator.log 2>&1 &",
+        f"systemd-run --user --unit=lmcache-coordinator "
+        f"$HOME/lmcvenv312/bin/lmcache_controller --host 0.0.0.0 --port {coord_port}",
         check=False)
-    time.sleep(3)
+    time.sleep(5)
 
 
 def start_lmcache_server(host, port, user, key, this_ip, coord_ip,
                           lmcache_port, coord_port, p2p_port,
                           l1_size_gb=0.5, chunk_size=256):
     print(f"  Starting lmcache server on {host} (ip={this_ip}) ...")
+    # lmcache_server v0.5.5: positional args <host> <port> [storage]
+    # Coordinator/P2P flags passed via environment variables using export.
     cmd = (
-        f"nohup lmcache server "
+        # Use the MP server (lmcache server) — exposes /metrics, supports P2P/coordinator.
+        # systemd-run --user survives SSH session end (nohup/setsid/disown do not).
+        f"systemd-run --user --unit=lmcache-server "
+        f"{LMCACHE_CLI} server "
         f"--host 0.0.0.0 --port {lmcache_port} "
         f"--l1-size-gb {l1_size_gb} --chunk-size {chunk_size} "
         f"--coordinator-url http://{coord_ip}:{coord_port} "
@@ -134,33 +148,65 @@ def start_lmcache_server(host, port, user, key, this_ip, coord_ip,
         f"--p2p-advertise-url {this_ip}:{p2p_port} "
         f"--p2p-listen-url 0.0.0.0:{p2p_port} "
         f"--p2p-transfer-engine nixl "
-        f"--l1-align-bytes 65536 "
-        f"</dev/null >/tmp/lmcache-server.log 2>&1 &"
+        f"--l1-align-bytes 65536"
     )
     ssh(host, port, user, key, cmd, check=False)
 
 
+LMCACHE_VENV = "$HOME/lmcvenv312"  # $HOME has plenty of space; /tmp is only 2GB
+LMCACHE_PYTHON = f"{LMCACHE_VENV}/bin/python"
+# Use the MP server (lmcache server subcommand) — exposes /metrics, supports P2P.
+# Not the standalone lmcache_server which has no metrics and no coordinator.
+LMCACHE_CLI = f"{LMCACHE_VENV}/bin/lmcache"
+LMCACHE_COORD_BIN = f"{LMCACHE_VENV}/bin/lmcache_controller"
+
+
 def install_lmcache(host, port, user, key):
-    """Install lmcache[nixl] inside the VM if not already present."""
+    """Install lmcache into a Python 3.12 venv via uv (works on Ubuntu 26.04 / Python 3.14)."""
+    # Check if already installed
     already = ssh(host, port, user, key,
-                  "python3 -c 'import lmcache' 2>/dev/null && echo ok || echo missing",
-                  capture=True).strip()
-    if already != "ok":
-        print(f"  Installing lmcache[nixl] on {host} ...")
-        ssh(host, port, user, key,
-            "pip install --quiet 'lmcache[nixl]' 2>/dev/null || pip install --quiet lmcache",
-            check=False)
+                  f"{LMCACHE_PYTHON} -c 'import lmcache; print(lmcache.__version__)' 2>/dev/null || echo missing",
+                  capture=True, check=False).strip()
+    if "missing" not in already and already:
+        print(f"  lmcache {already} already present")
+        return
+
+    print(f"  Installing lmcache via uv+Python3.12 on {host} ...")
+    install_cmd = (
+        # Install uv if not present
+        "command -v $HOME/.local/bin/uv >/dev/null 2>&1 || "
+        "curl -LsSf https://astral.sh/uv/install.sh | sh 2>/dev/null; "
+        "export PATH=$HOME/.local/bin:$PATH; "
+        # Create Python 3.12 venv in $HOME (root disk has space; /tmp only 2GB)
+        f"UV_LINK_MODE=copy uv venv --python 3.12 {LMCACHE_VENV} 2>/dev/null || true; "
+        # Install lmcache with torch (full install into $HOME)
+        f"UV_LINK_MODE=copy uv pip install --python {LMCACHE_VENV} lmcache 2>&1 | tail -3; "
+        # Verify
+        f"{LMCACHE_PYTHON} -c 'import lmcache; print(lmcache.__version__)' 2>/dev/null || echo FAIL"
+    )
+    result = ssh(host, port, user, key, install_cmd, capture=True, check=False).strip()
+    print(f"  lmcache: {result.splitlines()[-1] if result else 'FAIL'}")
+
+
+def load_ionic(host, port, user, key):
+    """Load ionic and ionic_rdma kernel modules in the VM."""
+    ssh(host, port, user, key,
+        "sudo modprobe ionic 2>/dev/null || true; "
+        "sudo modprobe ionic_rdma 2>/dev/null || true; "
+        "sleep 2",
+        check=False)
 
 
 def find_ibdev(host, port, user, key):
     """Find the ionic RDMA device name by PCI vendor 0x1dd8."""
+    # Use ls to guard against empty glob expansion (exits 0 even with no matches).
     script = (
-        "for d in /sys/class/infiniband/*; do "
-        "  v=$(cat $d/device/vendor 2>/dev/null); "
-        "  [ \"$v\" = '0x1dd8' ] && basename $d && break; "
-        "done"
+        "ls /sys/class/infiniband/ 2>/dev/null | while read d; do "
+        "  v=$(cat /sys/class/infiniband/$d/device/vendor 2>/dev/null); "
+        "  [ \"$v\" = '0x1dd8' ] && echo $d && break; "
+        "done; exit 0"
     )
-    return ssh(host, port, user, key, script, capture=True).strip()
+    return ssh(host, port, user, key, script, capture=True, check=False).strip()
 
 
 def populate_vm1_cache(host, port, user, key, lmcache_port, model, prompt_tokens):
@@ -223,12 +269,14 @@ def main():
             sys.exit(1)
         print(f"  {label} SSH OK")
 
-    # Step 2: verify ionic RDMA device
-    print("\n[2] Checking ionic RDMA devices ...")
+    # Step 2: load ionic modules and verify RDMA device
+    print("\n[2] Loading ionic modules and checking RDMA devices ...")
     for host, port, label in [(h1, p1, "VM1"), (h2, p2, "VM2")]:
+        print(f"  Loading ionic/ionic_rdma on {label} ...")
+        load_ionic(host, port, u, k)
         dev = find_ibdev(host, port, u, k)
         if not dev:
-            print(f"WARN: No ionic RDMA device found on {label} — P2P may fail",
+            print(f"  WARN: No ionic RDMA device on {label} — modules may need more time or driver is missing",
                   file=sys.stderr)
         else:
             print(f"  {label} ibdev: {dev}")
@@ -239,8 +287,10 @@ def main():
         print(f"  {label} ...")
         install_lmcache(host, port, u, k)
 
-    # Step 4: start coordinator on VM1
+    # Step 4: clean up any leftover units then start coordinator on VM1
     print("\n[4] Starting LMCache coordinator on VM1 ...")
+    for host, port, label in [(h1, p1, "VM1"), (h2, p2, "VM2")]:
+        stop_systemd_units(host, port, u, k)
     start_coordinator(h1, p1, u, k, args.coord_port)
 
     # Step 5: start lmcache servers on both VMs
@@ -258,8 +308,10 @@ def main():
         deadline = time.time() + args.timeout
         ready = False
         while time.time() < deadline:
+            # MP server exposes HTTP — check /healthz endpoint
             result = ssh(host, port, u, k,
-                         f"python3 -c 'import socket; s=socket.create_connection((\"127.0.0.1\",{args.lmcache_port}),2); s.close(); print(\"ok\")' 2>/dev/null",
+                         f"curl -fsS --max-time 3 http://127.0.0.1:{args.lmcache_port}/healthz 2>/dev/null && echo ok || "
+                         f"curl -fsS --max-time 3 http://127.0.0.1:{args.lmcache_port}/health 2>/dev/null && echo ok",
                          capture=True, check=False).strip()
             if result == "ok":
                 ready = True
