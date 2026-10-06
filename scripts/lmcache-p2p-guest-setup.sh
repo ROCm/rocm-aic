@@ -24,7 +24,7 @@
 #   VLLM_PORT           vLLM serve port (default: 8000)
 #   IONIC_IFACE         Ionic ethernet interface name (default: auto-detect)
 
-set -euo pipefail
+set -uo pipefail
 
 LMCACHE_P2P_ROLE="${LMCACHE_P2P_ROLE:?LMCACHE_P2P_ROLE is required}"
 THIS_IP="${THIS_IP:?THIS_IP is required}"
@@ -55,10 +55,15 @@ fi
 # The ionic NIC appears as a netdev named by the driver (rocm-ernic0 or
 # similar).  Find it by its ionic driver.
 if [ -z "${IONIC_IFACE:-}" ]; then
-    IONIC_IFACE=$(for iface in /sys/class/net/*; do
-        drv=$(readlink "$iface/device/driver" 2>/dev/null | xargs basename 2>/dev/null || true)
-        [ "$drv" = "ionic" ] && basename "$iface" && break
-    done)
+    # Try rocm-ernic0 first (udev rename), then any ionic-driver interface
+    if ip link show rocm-ernic0 >/dev/null 2>&1; then
+        IONIC_IFACE="rocm-ernic0"
+    else
+        IONIC_IFACE=$(for iface in /sys/class/net/*; do
+            drv=$(readlink "$iface/device/driver" 2>/dev/null | xargs basename 2>/dev/null || true)
+            [ "$drv" = "ionic" ] && basename "$iface" && break
+        done)
+    fi
 fi
 
 if [ -n "${IONIC_IFACE:-}" ]; then
@@ -85,7 +90,8 @@ fi
 # ---------------------------------------------------------------------------
 # Launch compose
 # ---------------------------------------------------------------------------
-echo "Starting docker compose (role=${LMCACHE_P2P_ROLE} coord=${COORD_IP}:${COORD_PORT:-9300}) ..."
+echo "Starting docker compose (role=${LMCACHE_P2P_ROLE} coord=${COORD_IP:-UNSET}:${COORD_PORT:-9300} this=${THIS_IP:-UNSET}) ..."
+echo "  IMAGE=${LMCACHE_IMAGE_REF:-UNSET}"
 
 # Both primary and secondary run the same lmcache service.
 # The coordinator runs on the host Docker bridge (not in this VM).
@@ -98,6 +104,18 @@ P2P_PORT="${P2P_PORT:-8500}" \
 LMCACHE_PORT="${LMCACHE_PORT:-6555}" \
 LMCACHE_HTTP_PORT="${LMCACHE_HTTP_PORT:-7555}" \
 LMCACHE_L1_SIZE_GB="${LMCACHE_L1_SIZE_GB:-0.5}" \
-    sudo -E docker compose \
-        -f "${COMPOSE_FILE}" \
-        up -d
+    sudo env \
+        LMCACHE_IMAGE_REF="${LMCACHE_IMAGE_REF}" \
+        COORD_IP="${COORD_IP}" \
+        THIS_IP="${THIS_IP}" \
+        COORD_PORT="${COORD_PORT:-9300}" \
+        P2P_PORT="${P2P_PORT:-8500}" \
+        LMCACHE_PORT="${LMCACHE_PORT:-6555}" \
+        LMCACHE_HTTP_PORT="${LMCACHE_HTTP_PORT:-7555}" \
+        LMCACHE_L1_SIZE_GB="${LMCACHE_L1_SIZE_GB:-0.5}" \
+        docker compose -f "${COMPOSE_FILE}" up -d 2>&1
+    _rc=$?
+    echo "  compose exit code: $_rc"
+    sudo docker ps -a 2>/dev/null | head -5
+    sudo docker logs aic-lmcache-p2p 2>/dev/null | tail -5 || true
+    exit $_rc

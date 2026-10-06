@@ -110,16 +110,12 @@ FROM python:3.12-slim
 RUN apt-get update -qq && apt-get install -y -qq \
     libibverbs1 librdmacm1 libnl-3-200 libnl-route-3-200 curl \
     && rm -rf /var/lib/apt/lists/*
-# Install lmcache and minimal deps (no torch)
+# Install CPU-only torch first, then lmcache with all deps.
+# CPU torch is ~200MB vs ROCm torch ~8GB — sufficient for coordinator/P2P testing.
 RUN pip install --quiet --no-cache-dir \
-    "lmcache==0.5.5" --no-deps && \
-    pip install --quiet --no-cache-dir \
-    aiofile aiofiles aiohttp fastapi uvicorn pydantic \
-    pyzmq grpcio protobuf prometheus_client \
-    "opentelemetry-api" "opentelemetry-sdk" \
-    "opentelemetry-exporter-otlp" "opentelemetry-exporter-prometheus" \
-    huggingface_hub numpy psutil pyyaml redis safetensors \
-    blake3 httpx msgspec setuptools openai
+    --extra-index-url https://download.pytorch.org/whl/cpu \
+    torch && \
+    pip install --quiet --no-cache-dir "lmcache==0.5.5"
 DOCKEREOF
     docker build -q -t aic-lmcache-minimal:latest -f "$WORK_DIR/Dockerfile.minimal" "$WORK_DIR"
     log "  Minimal image built: $(docker image inspect aic-lmcache-minimal:latest --format '{{.Size}}' | numfmt --to=si)B"
@@ -197,10 +193,12 @@ done
 # Must happen AFTER compose up (step 3) so vfio-user-ernic-2vm_default exists.
 log "[5a/7] Starting coordinator on host Docker bridge ..."
 docker rm -f aic-lmcache-coordinator 2>/dev/null || true
+# Use the minimal image (available on every node) for the coordinator.
+# lmcache_controller needs torch — add torch-cpu to the minimal image.
 docker run -d --name aic-lmcache-coordinator \
     --network vfio-user-ernic-2vm_default \
     --entrypoint /usr/local/bin/lmcache_controller \
-    aic-lmcache:latest \
+    aic-lmcache-minimal:latest \
     --host 0.0.0.0 --port "${COORD_PORT}" \
     2>&1 | tail -2 || die "Failed to start coordinator container"
 
@@ -228,7 +226,7 @@ for _port in "$VM1_SSH_PORT" "$VM2_SSH_PORT"; do
         ssh $SSH_FLAGS -i "$VM_SSH_KEY" -p "$_port" "$VM_SSH_USER@localhost" \
             "export DEBIAN_FRONTEND=noninteractive;
              sudo apt-get update -qq 2>/dev/null;
-             sudo apt-get install -y -qq docker.io 2>/dev/null;
+             sudo apt-get install -y -qq docker.io docker-compose-plugin 2>/dev/null;
              sudo usermod -aG docker \$USER 2>/dev/null || true;
              sudo systemctl start docker 2>/dev/null || true" \
             2>&1 | tail -3
