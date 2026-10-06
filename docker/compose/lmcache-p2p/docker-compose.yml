@@ -1,90 +1,60 @@
 ---
 # LMCache P2P two-node test compose file.
 #
-# Runs inside each rocm-ernic VM booted by qemu-tool.  The role of each VM
-# is selected by LMCACHE_P2P_ROLE:
+# Runs inside each rocm-ernic VM.  Both VMs run the SAME service (lmcache).
+# The coordinator runs as a separate Docker container on the HOST bridge
+# (started by run-lmcache-p2p-test.sh before calling this compose file).
 #
-#   primary    coordinator + lmcache server (node A)
-#   secondary  lmcache server (node B)
+# Per https://docs.lmcache.ai/mp/p2p.html
 #
-# Per https://docs.lmcache.ai/mp/p2p.html — both roles run lmcache server
-# with --http-port for healthz and --p2p-advertise-url for RDMA transfer.
-# No vLLM is needed for basic P2P functional validation.
+# Network: dedicated bridge inside the VM.  P2P and HTTP ports are
+# published to the VM's host network for cross-VM RDMA and monitoring.
 #
-# Required env (set in the shell before `docker compose up`):
-#   LMCACHE_P2P_ROLE        primary | secondary
-#   LMCACHE_IMAGE_REF       lmcache image (e.g. aic-lmcache:latest)
-#   COORD_IP                IP of the primary VM (coordinator)
-#   THIS_IP                 This VM's routable IP (ionic RDMA or management)
-#   P2P_PORT                P2P RDMA transfer-channel port (default: 8500)
-#   LMCACHE_PORT            LMCache ZMQ port (default: 6555)
-#   LMCACHE_HTTP_PORT       LMCache HTTP port for /healthz and /metrics (default: 7555)
-#   COORD_PORT              Coordinator port (default: 9300)
-#   LMCACHE_L1_SIZE_GB      L1 DRAM cap in GiB (default: 0.5)
+# Required env:
+#   LMCACHE_IMAGE_REF   lmcache image (with torch+nixl if available)
+#   COORD_IP            Coordinator IP (host Docker bridge IP, e.g. 172.18.0.5)
+#   THIS_IP             This VM's ionic IP (for P2P advertisement)
+#   COORD_PORT          Coordinator port (default: 9300)
+#   P2P_PORT            P2P RDMA transfer port (default: 8500)
+#   LMCACHE_PORT        lmcache ZMQ port (default: 6555)
+#   LMCACHE_HTTP_PORT   lmcache HTTP port for /healthz (default: 7555)
+#   LMCACHE_L1_SIZE_GB  L1 DRAM cap in GiB (default: 0.5)
 
-x-lmcache-common: &lmcache-common
-  network_mode: host
-  restart: "no"
-  environment:
-    PYTHONHASHSEED: "0"
-    LMCACHE_PORT:         "${LMCACHE_PORT:-6555}"
-    LMCACHE_HTTP_PORT:    "${LMCACHE_HTTP_PORT:-7555}"
-    LMCACHE_L1_SIZE_GB:   "${LMCACHE_L1_SIZE_GB:-0.5}"
-    COORD_IP:             "${COORD_IP:?COORD_IP is required}"
-    COORD_PORT:           "${COORD_PORT:-9300}"
-    THIS_IP:              "${THIS_IP:?THIS_IP is required}"
-    P2P_PORT:             "${P2P_PORT:-8500}"
-    UCX_NET_DEVICES:      all
-    NIXL_LOG_LEVEL:       "${NIXL_LOG_LEVEL:-warn}"
+networks:
+  lmcache-net:
+    driver: bridge
 
 services:
 
-  # ---- coordinator (primary VM only) ----------------------------------------
-  coordinator:
-    profiles: [primary]
-    image: "${LMCACHE_IMAGE_REF:?LMCACHE_IMAGE_REF is required}"
-    network_mode: host
-    restart: "no"
-    entrypoint: ["/bin/sh", "-c"]
-    command:
-      - |
-        exec lmcache coordinator \
-          --host 0.0.0.0 \
-          --port "${COORD_PORT:-9300}"
-    healthcheck:
-      test:
-        - CMD
-        - python3
-        - -c
-        - |
-          import urllib.request
-          urllib.request.urlopen(
-            'http://127.0.0.1:${COORD_PORT:-9300}/healthz', timeout=2)
-      interval: 5s
-      timeout: 3s
-      retries: 24
-      start_period: 5s
-
-  # ---- lmcache server with P2P (both VMs) ------------------------------------
-  # Per LMCache P2P docs: --port is ZMQ, --http-port exposes /healthz + /metrics
+  # ---- lmcache server with P2P -----------------------------------------------
+  # Both primary and secondary VMs run this same service.
+  # The coordinator is a host-side container (not in this compose file).
   lmcache:
-    <<: *lmcache-common
     image: "${LMCACHE_IMAGE_REF:?LMCACHE_IMAGE_REF is required}"
     container_name: "aic-lmcache-p2p"
+    networks:
+      - lmcache-net
+    ports:
+      - "${LMCACHE_PORT:-6555}:${LMCACHE_PORT:-6555}"
+      - "${LMCACHE_HTTP_PORT:-7555}:${LMCACHE_HTTP_PORT:-7555}"
+      - "${P2P_PORT:-8500}:${P2P_PORT:-8500}"
+    environment:
+      PYTHONHASHSEED: "0"
+    restart: "no"
     entrypoint: ["/bin/sh", "-c"]
     command:
       - |
         exec lmcache server \
           --host 0.0.0.0 \
-          --port "$${LMCACHE_PORT}" \
-          --http-port "$${LMCACHE_HTTP_PORT}" \
-          --l1-size-gb "$${LMCACHE_L1_SIZE_GB}" \
+          --port "$${LMCACHE_PORT:-6555}" \
+          --http-port "$${LMCACHE_HTTP_PORT:-7555}" \
+          --l1-size-gb "$${LMCACHE_L1_SIZE_GB:-0.5}" \
           --l1-align-bytes 65536 \
           --eviction-policy LRU \
-          --coordinator-url "http://$${COORD_IP}:$${COORD_PORT}" \
-          --coordinator-advertise-ip "$${THIS_IP}" \
+          --coordinator-url "http://$${COORD_IP:?}:$${COORD_PORT:-9300}" \
+          --coordinator-advertise-ip "$${THIS_IP:?}" \
           --coordinator-event-reporting \
-          --p2p-advertise-url "$${THIS_IP}:$${P2P_PORT}"
+          --p2p-advertise-url "$${THIS_IP}:$${P2P_PORT:-8500}"
     healthcheck:
       test:
         - CMD

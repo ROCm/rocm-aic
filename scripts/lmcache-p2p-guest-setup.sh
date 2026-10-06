@@ -67,27 +67,28 @@ if [ -n "${IONIC_IFACE:-}" ]; then
         || sudo ip addr add "${THIS_IP}/24" dev "${IONIC_IFACE}" 2>/dev/null || true
     sudo ip link set "${IONIC_IFACE}" up 2>/dev/null || true
 
-    # Verify the RDMA device appeared
-    sleep 1
+    # Wait for the IP to be reachable (up to 10s)
+    for _i in $(seq 1 10); do
+        ip addr show "${IONIC_IFACE}" 2>/dev/null | grep -q "${THIS_IP}" && break
+        sleep 1
+    done
+
     echo "RDMA devices:"
     ibv_devices 2>/dev/null || echo "  (ibv_devices not available)"
 else
-    echo "WARNING: no ionic interface found; P2P will fall back to TCP-only" >&2
+    echo "WARNING: no ionic interface found; using management NIC for P2P" >&2
+    # Fall back to management NIC IP for coordinator/P2P (SLIRP: 10.0.2.15)
+    THIS_IP=$(ip -4 addr show scope global 2>/dev/null | grep -oP '(?<=inet )[0-9.]+' | grep -v '192\.168\.200' | head -1)
+    echo "Using fallback IP: ${THIS_IP:-unknown}"
 fi
 
 # ---------------------------------------------------------------------------
 # Launch compose
 # ---------------------------------------------------------------------------
-compose_args=()
-if [ "${LMCACHE_P2P_ROLE}" = "primary" ]; then
-    compose_args=(--profile primary)
-elif [ "${LMCACHE_P2P_ROLE}" = "secondary" ]; then
-    compose_args=(--profile secondary)
-fi
+echo "Starting docker compose (role=${LMCACHE_P2P_ROLE} coord=${COORD_IP}:${COORD_PORT:-9300}) ..."
 
-echo "Starting docker compose (${LMCACHE_P2P_ROLE}) ..."
-
-LMCACHE_P2P_ROLE="${LMCACHE_P2P_ROLE}" \
+# Both primary and secondary run the same lmcache service.
+# The coordinator runs on the host Docker bridge (not in this VM).
 LMCACHE_IMAGE_REF="${LMCACHE_IMAGE_REF}" \
 COORD_IP="${COORD_IP}" \
 THIS_IP="${THIS_IP}" \
@@ -98,5 +99,4 @@ LMCACHE_HTTP_PORT="${LMCACHE_HTTP_PORT:-7555}" \
 LMCACHE_L1_SIZE_GB="${LMCACHE_L1_SIZE_GB:-0.5}" \
     docker compose \
         -f "${COMPOSE_FILE}" \
-        "${compose_args[@]}" \
         up -d

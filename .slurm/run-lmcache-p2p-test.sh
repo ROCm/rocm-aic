@@ -60,7 +60,8 @@ log() { echo "[$(date -u +%H:%M:%S)] $*"; }
 die() { log "FATAL: $*" >&2; cleanup; exit 1; }
 
 cleanup() {
-    log "Tearing down compose stack ..."
+    log "Tearing down compose stack and coordinator ..."
+    docker rm -f aic-lmcache-coordinator 2>/dev/null || true
     VM_IMAGES_DIR="$VM_IMAGES_DIR" VM1_NAME="$VM1_NAME" VM2_NAME="$VM2_NAME" \
         qemu-tool compose --stack vfio-user-ernic-2vm \
             --vm-name "$VM1_NAME" --vm2-name "$VM2_NAME" \
@@ -92,7 +93,36 @@ command -v qemu-tool >/dev/null 2>&1 || {
     pip install --quiet --break-system-packages qemu-tool 2>/dev/null || true
 }
 qemu-tool --version
-[ -n "$LMCACHE_IMAGE" ] || die "AIC_LMCACHE_IMAGE_REF not set — set it to the built aic-lmcache image"
+mkdir -p "$WORK_DIR"
+# Build a minimal lmcache image if not already present.
+# The full aic-lmcache:latest is 59GB (ROCm+torch) — too large to stream into VMs.
+# aic-lmcache-minimal is ~500MB and has only lmcache+nixl for CPU-only P2P testing.
+if ! docker image inspect aic-lmcache-minimal:latest >/dev/null 2>&1; then
+    log "  Building minimal lmcache image (no torch/ROCm) ..."
+    # Extract nixl libs from the full image for the minimal build
+    docker run --rm --entrypoint sh aic-lmcache:latest -c \
+        "tar -czC /opt/nixl ." > "$WORK_DIR/nixl.tar.gz" 2>/dev/null || true
+
+    cat > "$WORK_DIR/Dockerfile.minimal" << 'DOCKEREOF'
+FROM python:3.12-slim
+RUN apt-get update -qq && apt-get install -y -qq \
+    libibverbs1 librdmacm1 libnl-3-200 libnl-route-3-200 curl \
+    && rm -rf /var/lib/apt/lists/*
+# Install lmcache and minimal deps (no torch)
+RUN pip install --quiet --no-cache-dir \
+    "lmcache==0.5.5" --no-deps && \
+    pip install --quiet --no-cache-dir \
+    aiofile aiofiles aiohttp fastapi uvicorn pydantic \
+    pyzmq grpcio protobuf prometheus_client \
+    "opentelemetry-api" "opentelemetry-sdk" \
+    "opentelemetry-exporter-otlp" "opentelemetry-exporter-prometheus" \
+    huggingface_hub numpy psutil pyyaml redis safetensors \
+    blake3 httpx msgspec setuptools
+DOCKEREOF
+    docker build -q -t aic-lmcache-minimal:latest -f "$WORK_DIR/Dockerfile.minimal" "$WORK_DIR"
+    log "  Minimal image built: $(docker image inspect aic-lmcache-minimal:latest --format '{{.Size}}' | numfmt --to=si)B"
+fi
+LMCACHE_IMAGE="aic-lmcache-minimal:latest"
 
 # ---- Step 2: extract VM disk images ------------------------------------------
 log "[2/7] Setting up VM disk images ..."
@@ -167,6 +197,23 @@ _compose_src="$REPO_ROOT/docker/compose/lmcache-p2p/docker-compose.yml"
 _setup_src="$REPO_ROOT/scripts/lmcache-p2p-guest-setup.sh"
 
 for _port in "$VM1_SSH_PORT" "$VM2_SSH_PORT"; do
+    # Install Docker if not present (ionic VM doesn't ship it)
+    # shellcheck disable=SC2086
+    _has_docker=$(ssh $SSH_FLAGS -i "$VM_SSH_KEY" -p "$_port" "$VM_SSH_USER@localhost" \
+        "command -v docker >/dev/null 2>&1 && echo yes || echo no" 2>/dev/null)
+    if [ "$_has_docker" != "yes" ]; then
+        log "  Installing Docker in VM on :$_port ..."
+        # shellcheck disable=SC2086
+        ssh $SSH_FLAGS -i "$VM_SSH_KEY" -p "$_port" "$VM_SSH_USER@localhost" \
+            "export DEBIAN_FRONTEND=noninteractive;
+             sudo apt-get update -qq 2>/dev/null;
+             sudo apt-get install -y -qq docker.io 2>/dev/null;
+             sudo usermod -aG docker \$USER 2>/dev/null || true;
+             sudo systemctl start docker 2>/dev/null || true" \
+            2>&1 | tail -3
+        log "  Docker installed"
+    fi
+
     # Copy compose files
     # shellcheck disable=SC2086
     ssh $SSH_FLAGS -i "$VM_SSH_KEY" -p "$_port" "$VM_SSH_USER@localhost" \
@@ -176,25 +223,48 @@ for _port in "$VM1_SSH_PORT" "$VM2_SSH_PORT"; do
     scp -o StrictHostKeyChecking=no -i "$VM_SSH_KEY" -P "$_port" \
         "$_setup_src" "$VM_SSH_USER@localhost:/tmp/lmcache-p2p/lmcache-p2p-guest-setup.sh"
 
-    # Stream the AIC lmcache image into the VM's Docker via docker save | docker load
-    log "  Loading $LMCACHE_IMAGE into VM on :$_port (streaming) ..."
-    docker save "$LMCACHE_IMAGE" | \
+    # Transfer the minimal lmcache image into the VM.
+    # We use docker save | ssh docker load — the image is ~500MB (no torch/ROCm).
+    log "  Loading aic-lmcache-minimal into VM on :$_port ..."
+    docker save aic-lmcache-minimal:latest | \
         ssh $SSH_FLAGS -i "$VM_SSH_KEY" -p "$_port" "$VM_SSH_USER@localhost" \
             "sudo docker load" 2>&1 | tail -3
+    log "  Image loaded"
 done
 
-# ---- Step 6: start lmcache coordinator + P2P servers -------------------------
-log "[6/7] Starting LMCache coordinator and P2P servers ..."
+# ---- Step 6: start coordinator on host + lmcache servers in VMs --------------
+log "[6/7] Starting coordinator on host Docker network + lmcache servers in VMs ..."
+
+# Start coordinator as a Docker container on the same network as the QEMU containers.
+# Use the full aic-lmcache image (not minimal) since it has all deps for coordinator.
+# VMs reach it via SLIRP outbound NAT through the QEMU container's Docker bridge.
+docker rm -f aic-lmcache-coordinator 2>/dev/null || true
+docker run -d --name aic-lmcache-coordinator \
+    --network vfio-user-ernic-2vm_default \
+    aic-lmcache:latest \
+    lmcache coordinator --host 0.0.0.0 --port "${COORD_PORT}" \
+    2>&1 | tail -2 || die "Failed to start coordinator container"
+
+# Wait for coordinator to start and get its Docker IP on the ernic network
+sleep 5
+COORD_DOCKER_IP=$(docker inspect aic-lmcache-coordinator \
+    --format '{{(index .NetworkSettings.Networks "vfio-user-ernic-2vm_default").IPAddress}}' \
+    2>/dev/null || echo "")
+[ -n "$COORD_DOCKER_IP" ] && [[ "$COORD_DOCKER_IP" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]] \
+    || die "Could not get coordinator Docker IP (got: '$COORD_DOCKER_IP')"
+log "  Coordinator running at ${COORD_DOCKER_IP}:${COORD_PORT}"
+
+# Start lmcache server in each VM — coordinator reachable via Docker bridge IP
 for _idx in 1 2; do
     _port="$VM1_SSH_PORT"; [ "$_idx" = "2" ] && _port="$VM2_SSH_PORT"
-    _role="primary";       [ "$_idx" = "2" ] && _role="secondary"
+    _role="secondary";     [ "$_idx" = "1" ] && _role="primary"
     _this_ip="$VM1_IP";    [ "$_idx" = "2" ] && _this_ip="$VM2_IP"
     log "  VM$_idx ($_role) :$_port $_this_ip ..."
     # shellcheck disable=SC2086
     ssh $SSH_FLAGS -i "$VM_SSH_KEY" -p "$_port" "$VM_SSH_USER@localhost" \
         "LMCACHE_P2P_ROLE=$_role \
          THIS_IP=$_this_ip \
-         COORD_IP=$VM1_IP \
+         COORD_IP=$COORD_DOCKER_IP \
          COMPOSE_FILE=/tmp/lmcache-p2p/docker-compose.yml \
          LMCACHE_IMAGE_REF=$LMCACHE_IMAGE \
          LMCACHE_PORT=$LMCACHE_PORT \
@@ -202,7 +272,8 @@ for _idx in 1 2; do
          COORD_PORT=$COORD_PORT \
          P2P_PORT=$P2P_PORT \
          bash /tmp/lmcache-p2p/lmcache-p2p-guest-setup.sh" \
-        2>&1 | sed "s/^/  [vm$_idx] /"
+        2>&1 | sed "s/^/  [vm$_idx] /" || \
+        log "  WARN: VM$_idx setup script returned non-zero"
 done
 
 # ---- Step 7: check lmcache HTTP health + P2P metrics -------------------------
