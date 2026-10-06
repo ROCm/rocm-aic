@@ -367,7 +367,10 @@ RUN rm -f /usr/lib/python3.*/EXTERNALLY-MANAGED
 # build time to determine the HIP version.  The runtime packages install the
 # ROCm toolchain but not this metadata file; create it from the ROCM_VERSION
 # build ARG so downstream Dockerfiles that compile ROCm code (vllm/AITER) work.
-RUN mkdir -p /opt/rocm/.info && echo "${ROCM_VERSION}" > /opt/rocm/.info/version
+RUN _mm=$(echo "${ROCM_VERSION}" | cut -d. -f1-2) && \
+    mkdir -p /opt/rocm/core-${_mm}/.info && \
+    echo "${ROCM_VERSION}" > /opt/rocm/core-${_mm}/.info/version && \
+    ln -sfn core-${_mm}/lib /opt/rocm/lib
 
 # uv — used by downstream vllm/lmcache Dockerfiles for pip operations.
 COPY --from=build_pytorch /root/.local/bin/uv  /usr/local/bin/uv
@@ -404,7 +407,16 @@ RUN uv pip uninstall --system \
         nixl nixl-cu12 nixl-cu13 \
         cupy-cuda12x cufile-python cuda-pathfinder 2>/dev/null || true
 
+# The AMD packages install to /opt/rocm/core-7.14/ (not /opt/rocm/ directly).
+# The -full image creates symlinks; with explicit packages we must use the
+# versioned path.  ROCM_VERSION_MM is 7.14 derived from 7.14.1.
+RUN _mm=$(echo "${ROCM_VERSION}" | cut -d. -f1-2) && \
+    echo "/opt/rocm/core-${_mm}/lib" > /etc/ld.so.conf.d/rocm.conf && \
+    ldconfig
+
 ENV NIXL_PLUGIN_DIR=/opt/nixl/lib/x86_64-linux-gnu/plugins \
-    PYTHONPATH=/opt/rocm/share/amd_smi:/opt/nixl/lib/python3/dist-packages \
-    LD_LIBRARY_PATH=/opt/nixl/lib/x86_64-linux-gnu:/opt/nixl/lib:/opt/rocnixl-ucx/lib:/opt/rocm/lib \
+    PYTHONPATH=/opt/rocm/core-7.14/share/amd_smi:/opt/nixl/lib/python3/dist-packages \
+    LD_LIBRARY_PATH=/opt/nixl/lib/x86_64-linux-gnu:/opt/nixl/lib:/opt/rocnixl-ucx/lib:/opt/rocm/core-7.14/lib \
+    ROCM_PATH=/opt/rocm/core-7.14 \
+    PATH=/opt/rocm/core-7.14/bin:/opt/rocm/core-7.14/lib/llvm/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
     HSA_ENABLE_IPC_MODE_LEGACY=1
