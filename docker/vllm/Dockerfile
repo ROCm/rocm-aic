@@ -82,7 +82,7 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
     apt-get update && \
     DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-        git ca-certificates python3-dev
+        cmake git ca-certificates ninja-build python3-dev
 
 # Bring torch + Python packages from aic-base so wheels link against the same torch.
 COPY --from=base /usr/local/lib/python3.12/dist-packages/ \
@@ -211,6 +211,7 @@ RUN --mount=type=cache,target=/root/.cache/pip \
         VLLM_VERSION_OVERRIDE="${VLLM_REF#v}+${VLLM_TARGET_DEVICE}" \
         pip3 wheel --no-build-isolation --no-deps --no-cache-dir -w /wheels . && \
     pip3 install --no-cache-dir /wheels/vllm-*.whl && \
+    python3 -c 'import vllm; print("vLLM installed:", vllm.__version__)' && \
     rm -rf /app/vllm /wheels /tmp/torch-constraints.txt && \
     find /usr/lib/python3 /usr/local/lib/python3 -name '__pycache__' -type d \
          -exec rm -rf {} + 2>/dev/null; true
