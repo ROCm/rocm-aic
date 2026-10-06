@@ -73,6 +73,14 @@ ARG AITER_REF=v0.1.22.post1
 ARG FLASH_ATTN_GIT_URL=https://github.com/Dao-AILab/flash-attention.git
 ARG FLASH_ATTN_REF=v2.8.3.post1
 
+# git and ca-certificates are not in the -full image; install before cloning.
+# hadolint ignore=DL3008
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
+    apt-get update && \
+    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+        git ca-certificates python3-dev
+
 # Bring torch + Python packages from aic-base so wheels link against the same torch.
 COPY --from=base /usr/local/lib/python3.12/dist-packages/ \
                  /usr/local/lib/python3.12/dist-packages/
