@@ -20,11 +20,15 @@ set -Eeuo pipefail
 _on_err() {
     # set -E carries this trap into $(...), where errexit is off.
     [[ $- == *e* ]] || return 0
+    # The failing command was a child that reports its own failures.
+    [[ -z ${_aic_err_child_reports-} ]] || return 0
     # || : so a failed write cannot replace the exit status.
     printf '%s: command failed (exit %s, pipeline status %s) at line %s%s\n' \
         "${0##*/}" "$1" "$2" "$3" "${4:+ in ${4// / <- }}" >&2 || :
 }
 trap '_on_err "$?" "${PIPESTATUS[*]}" "$LINENO" "${FUNCNAME[*]-}"' ERR
+# Run a child that reports its own failures; only the child reports.
+_err_delegate() { local _aic_err_child_reports=1; "$@"; }
 
 # Commit `make install-ci-scripts` deployed; if it predates your change, redeploy.
 echo "Installed CI scripts: $(cat "$(dirname -- "${BASH_SOURCE[0]}")/VERSION" || echo unknown)"
@@ -44,7 +48,7 @@ case "${TARGET}" in
     *) echo "ERROR: target must be cliff-short or cliff-submit" >&2; exit 1 ;;
 esac
 
-ssh -o ServerAliveInterval=30 -o ServerAliveCountMax=4 "${AIC_SPUR_HOST}" env \
+_err_delegate ssh -o ServerAliveInterval=30 -o ServerAliveCountMax=4 "${AIC_SPUR_HOST}" env \
     SHA="${SHA}" \
     REPO="${REPO}" \
     TARGET="${TARGET}" \

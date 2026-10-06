@@ -16,6 +16,8 @@ set -Eeuo pipefail
 _on_err() {
     # set -E carries this trap into $(...), where errexit is off.
     [[ $- == *e* ]] || return 0
+    # The failing command was a child that reports its own failures.
+    [[ -z ${_aic_err_child_reports-} ]] || return 0
     # || : so a failed write cannot replace the exit status.
     printf '%s: command failed (exit %s, pipeline status %s) at line %s%s\n' \
         "${0##*/}" "$1" "$2" "$3" "${4:+ in ${4// / <- }}" >&2 || :
@@ -64,11 +66,15 @@ set -Eeuo pipefail
 _on_err() {
     # set -E carries this trap into $(...), where errexit is off.
     [[ $- == *e* ]] || return 0
+    # The failing command was a child that reports its own failures.
+    [[ -z ${_aic_err_child_reports-} ]] || return 0
     # || : so a failed write cannot replace the exit status.
     printf '%s: command failed (exit %s, pipeline status %s) at line %s%s\n' \
         'spur-dist-build.sh (remote)' "$1" "$2" "$3" "${4:+ in ${4// / <- }}" >&2 || :
 }
 trap '_on_err "$?" "${PIPESTATUS[*]}" "$LINENO" "${FUNCNAME[*]-}"' ERR
+# Run a child that reports its own failures; only the child reports.
+_err_delegate() { local _aic_err_child_reports=1; "$@"; }
 
 SHORT="${SHA:0:7}"
 WORKDIR="$HOME/Projects/rocm-aic.${SHORT}.${AIC_CI_RUN_KEY}"
@@ -155,7 +161,7 @@ AIC_SPUR_CLUSTER=1 \
     AIC_IMAGE_DIR="${TARBALL_DIR}" \
     AIC_CACHE_DIR="${CACHE_DIR}" \
     ${AIC_BUILD_EXCLUDE_NODES:+AIC_BUILD_EXCLUDE_NODES="${AIC_BUILD_EXCLUDE_NODES}"} \
-    make "${AIC_DIST_BUILD_TARGET}"
+    _err_delegate make "${AIC_DIST_BUILD_TARGET}"
 
 echo "=== ${AIC_DIST_BUILD_TARGET} complete — tarball in ${TARBALL_DIR} ==="
 REMOTE

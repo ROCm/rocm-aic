@@ -27,11 +27,15 @@ set -Eeuo pipefail
 _on_err() {
     # set -E carries this trap into $(...), where errexit is off.
     [[ $- == *e* ]] || return 0
+    # The failing command was a child that reports its own failures.
+    [[ -z ${_aic_err_child_reports-} ]] || return 0
     # || : so a failed write cannot replace the exit status.
     printf '%s: command failed (exit %s, pipeline status %s) at line %s%s\n' \
         "${0##*/}" "$1" "$2" "$3" "${4:+ in ${4// / <- }}" >&2 || :
 }
 trap '_on_err "$?" "${PIPESTATUS[*]}" "$LINENO" "${FUNCNAME[*]-}"' ERR
+# Run a child that reports its own failures; only the child reports.
+_err_delegate() { local _aic_err_child_reports=1; "$@"; }
 
 # Commit `make install-ci-scripts` deployed; if it predates your change, redeploy.
 echo "Installed CI scripts: $(cat "$(dirname -- "${BASH_SOURCE[0]}")/VERSION" || echo unknown)"
@@ -45,7 +49,7 @@ AIC_SHARED_NFS="${AIC_SHARED_NFS:?AIC_SHARED_NFS must be set (e.g. via GitHub re
 KEEP_ARTIFACTS="${KEEP_ARTIFACTS:-0}"
 REPO="https://github.com/ROCm/rocm-aic.git"
 
-ssh -o ServerAliveInterval=30 -o ServerAliveCountMax=4 "${AIC_SPUR_HOST}" env \
+_err_delegate ssh -o ServerAliveInterval=30 -o ServerAliveCountMax=4 "${AIC_SPUR_HOST}" env \
     SHA="${SHA}" \
     REPO="${REPO}" \
     AIC_EMULATE_IMAGE="${AIC_EMULATE_IMAGE}" \
@@ -64,11 +68,15 @@ set -Eeuo pipefail
 _on_err() {
     # set -E carries this trap into $(...), where errexit is off.
     [[ $- == *e* ]] || return 0
+    # The failing command was a child that reports its own failures.
+    [[ -z ${_aic_err_child_reports-} ]] || return 0
     # || : so a failed write cannot replace the exit status.
     printf '%s: command failed (exit %s, pipeline status %s) at line %s%s\n' \
         'spur-emulate-test.sh (remote)' "$1" "$2" "$3" "${4:+ in ${4// / <- }}" >&2 || :
 }
 trap '_on_err "$?" "${PIPESTATUS[*]}" "$LINENO" "${FUNCNAME[*]-}"' ERR
+# Run a child that reports its own failures; only the child reports.
+_err_delegate() { local _aic_err_child_reports=1; "$@"; }
 
 SHORT="${SHA:0:7}"
 WORKDIR="$HOME/Projects/rocm-aic.emu.${SHORT}"
@@ -101,7 +109,7 @@ echo "=== Building the emulation image (no GPU kernels) ==="
 AIC_SPUR_CLUSTER=1 \
     AIC_EMULATE_IMAGE="${AIC_EMULATE_IMAGE}" \
     AIC_IMAGE_DIR="${TARBALL_DIR}" \
-    make -C "${WORKDIR}" dist-build-emulate
+    _err_delegate make -C "${WORKDIR}" dist-build-emulate
 
 echo "=== Serve-testing it on a CPU-only node ==="
 AIC_SPUR_CLUSTER=1 \
@@ -109,7 +117,7 @@ AIC_SPUR_CLUSTER=1 \
     AIC_IMAGE_DIR="${TARBALL_DIR}" \
     AIC_TINY_HF_HOME="${EMU_HF_HOME}" \
     HF_TOKEN="${HF_TOKEN:-}" \
-    make -C "${WORKDIR}" emulate-test
+    _err_delegate make -C "${WORKDIR}" emulate-test
 
 echo "=== emulate-test complete ==="
 REMOTE
