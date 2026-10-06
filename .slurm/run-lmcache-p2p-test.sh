@@ -64,6 +64,15 @@ log "  Node:     $(hostname)"
 log "  Repo:     $REPO_ROOT"
 log "  Images:   $VM_IMAGES_DIR"
 
+# ---- Step 0: clean up any stale containers from a prior run ---------------
+# Force-remove containers that share our VM names to avoid compose collision.
+log "[0/8] Cleaning up any stale containers ..."
+docker ps -a --filter "name=vfio-user-ernic-2vm" --format "{{.ID}}" \
+  | xargs -r docker rm -f 2>/dev/null || true
+docker network ls --filter "name=vfio-user-ernic-2vm" --format "{{.ID}}" \
+  | xargs -r docker network rm 2>/dev/null || true
+sleep 2
+
 # ---- Step 1: prerequisites -----------------------------------------------
 log "[1/8] Checking prerequisites ..."
 test -c /dev/kvm || die "/dev/kvm not available — nested virtualisation required"

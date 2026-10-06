@@ -189,11 +189,28 @@ def install_lmcache(host, port, user, key):
 
 
 def load_ionic(host, port, user, key):
-    """Load ionic and ionic_rdma kernel modules in the VM."""
+    """Load ionic and ionic_rdma kernel modules in the VM.
+
+    The ionic-flavour qcow2 has the DKMS package pre-built for its pinned
+    mainline kernel (7.2.x).  Load order matches the rocm-ernic Ansible role:
+    ib_core → ib_uverbs → ionic → ionic_rdma.  Run depmod first in case the
+    DKMS modules aren't in the depmod database yet (can happen on first boot).
+    """
     ssh(host, port, user, key,
+        "sudo depmod -a 2>/dev/null || true; "
+        "sudo modprobe ib_core 2>/dev/null || true; "
+        "sudo modprobe ib_uverbs 2>/dev/null || true; "
         "sudo modprobe ionic 2>/dev/null || true; "
         "sudo modprobe ionic_rdma 2>/dev/null || true; "
-        "sleep 2",
+        "sleep 3; "
+        # Bring the ionic netdev up (required for PORT_ACTIVE and GID table)
+        "for net in /sys/class/infiniband/*/device/net/*; do "
+        "  [ -e \"$net\" ] && sudo ip link set $(basename $net) up 2>/dev/null || true; "
+        "done; "
+        "sudo udevadm trigger --subsystem-match=net --subsystem-match=infiniband 2>/dev/null; "
+        "sudo udevadm settle --timeout=5 2>/dev/null || true; "
+        "dkms status 2>/dev/null | grep ionic || true; "
+        "lsmod | grep ionic_rdma || echo 'ionic_rdma not loaded'",
         check=False)
 
 
