@@ -40,12 +40,14 @@ scrape_configs:
   - job_name: vllm
     metrics_path: /metrics
     static_configs:
-      - targets: ["aic-vllm-gpu0:8000"]
+      # vllm uses network_mode:host (required for KFD GPU IPC); reach via host-gateway.
+      - targets: ["host-gateway:8000"]
 
   - job_name: lmcache
     metrics_path: /metrics
     static_configs:
-      - targets: ["aic-lmcache:8080"]
+      # lmcache uses network_mode:host (required for KFD GPU IPC); reach via host-gateway.
+      - targets: ["host-gateway:8080"]
 
   # LMCache coordinator exporter — polls the coordinator REST API (/instances,
   # /directory/stats, /quota) and emits Prometheus text format on :9301.
@@ -63,7 +65,7 @@ scrape_configs:
   - job_name: nixl
     metrics_path: /metrics
     static_configs:
-      - targets: ["aic-lmcache:19090"]
+      - targets: ["host-gateway:19090"]
 
   # node-exporter: CPU/mem/net + NVMe I/O (diskstats/nvme collectors) and
   # RDMA/InfiniBand port counters (infiniband collector).

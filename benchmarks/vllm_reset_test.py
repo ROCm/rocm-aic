@@ -45,8 +45,8 @@ import time
 from datetime import datetime
 
 # ── Configuration ────────────────────────────────────────────────────────────
-VLLM     = os.getenv("AIC_TEST_VLLM_URL",    "http://aic-vllm-gpu0:8000")
-LMCACHE  = os.getenv("AIC_TEST_LMCACHE_URL", "http://aic-lmcache:8080")
+VLLM     = os.getenv("AIC_TEST_VLLM_URL",    "http://localhost:8000")
+LMCACHE  = os.getenv("AIC_TEST_LMCACHE_URL", "http://localhost:8080")
 MODEL    = os.getenv("AIC_TEST_MODEL",        "Qwen/Qwen2.5-3B-Instruct")
 N_ANCHOR = int(os.getenv("AIC_TEST_ANCHORS", "10"))
 N_FLOOD  = int(os.getenv("AIC_TEST_FLOOD",   "50"))

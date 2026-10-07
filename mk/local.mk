@@ -204,25 +204,25 @@ vllm-reset-test: check-hf-token prep-dirs
 	    $(COMPOSE_CACHE) --profile monitoring up -d
 	@echo "Waiting for vLLM to be healthy..."
 	@for i in $$(seq 1 $${VLM_READY_RETRIES:-60}); do \
-	    r=$$(docker exec aic-client curl -s -o /dev/null -w '%{http_code}' \
-	        http://aic-vllm-gpu0:8000/health 2>/dev/null); \
+	    r=$$(curl -s -o /dev/null -w '%{http_code}' \
+	        http://localhost:${VLLM_HOST_PORT:-8000}/health 2>/dev/null); \
 	    [ "$$r" = "200" ] && echo "vLLM healthy after $${i}s" && break; \
 	    [ "$$i" = "$${VLM_READY_RETRIES:-60}" ] && echo "ERROR: vLLM not healthy after vllm_reset_test timeout" >&2 && exit 1; \
 	    sleep 5; \
 	done
 	@echo "Clearing vLLM GPU prefix cache..."
-	@docker exec aic-client curl -s -X POST \
-	    http://aic-vllm-gpu0:8000/reset_prefix_cache \
+	@curl -s -X POST \
+	    http://localhost:${VLLM_HOST_PORT:-8000}/reset_prefix_cache \
 	    -H 'Content-Type: application/json' -d '{}' | grep -q '"success":true' \
 	    || { echo "ERROR: vLLM cache reset failed" >&2; exit 1; }
 	@echo "Clearing LMCache L1 DRAM cache..."
-	@docker exec aic-client curl -s -X POST \
-	    http://aic-lmcache:8080/cache/clear \
+	@curl -s -X POST \
+	    http://localhost:${LMCACHE_PORT:-8080}/cache/clear \
 	    -H 'Content-Type: application/json' \
 	    -d '{"tier":"l1","force":true}' | grep -q '"status":"ok"' \
 	    || { echo "ERROR: LMCache L1 clear failed" >&2; exit 1; }
 	@echo "Resetting LMCache Prometheus counters..."
-	@docker exec aic-client curl -s -X POST \
-	    http://aic-lmcache:8080/metrics/reset > /dev/null
+	@curl -s -X POST \
+	    http://localhost:${LMCACHE_PORT:-8080}/metrics/reset > /dev/null
 	$(PYTHON) "$(CURDIR)/benchmarks/vllm_reset_test.py"
 	@echo "Test complete. Run 'make down' to stop the stack."

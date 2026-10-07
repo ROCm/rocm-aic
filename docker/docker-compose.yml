@@ -338,8 +338,9 @@ services:
     # namespace; vllm joins it via ipc/pid: service:lmcache (see vllm service below).
     # IPC namespace sharing is independent of network_mode — the aic bridge network
     # provides DNS-based service discovery for prometheus without affecting IPC.
-    # ipc:host + pid:host required for KFD GPU memory IPC (hipIpcOpenMemHandle).
-    networks: [aic-network]
+    # network_mode:host + ipc:host + pid:host required for KFD GPU memory IPC.
+    # Prometheus scrapes lmcache via host-gateway (see prometheus.yml).
+    network_mode: host
     ipc: host
     pid: host
     shm_size: "${AIC_SHM_SIZE:-64gb}"
@@ -452,9 +453,8 @@ services:
     # (set in image ENV) plus shared IPC+PID namespaces.  Container-scoped sharing
     # (ipc: service:lmcache, pid: service:lmcache) is sufficient and safer than
     # ipc: host / pid: host.  Override via VLLM_IPC_MODE / VLLM_PID_MODE if needed.
-    networks: [aic-network]
-    ports:
-      - "${VLLM_HOST_PORT:-8000}:8000"
+    # network_mode:host required for KFD GPU IPC; prometheus scrapes via host-gateway.
+    network_mode: host
     ipc: "${VLLM_IPC_MODE:-host}"
     shm_size: "${AIC_SHM_SIZE:-64gb}"
     pid: "${VLLM_PID_MODE:-host}"
