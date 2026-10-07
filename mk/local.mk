@@ -212,17 +212,17 @@ vllm-reset-test: check-hf-token prep-dirs
 	done
 	@echo "Clearing vLLM GPU prefix cache..."
 	@curl -s -X POST \
-	    http://localhost:$(VLLM_HOST_PORT)/reset_prefix_cache \
+	    http://localhost:8000/reset_prefix_cache \
 	    -H 'Content-Type: application/json' -d '{}' | grep -q '"success":true' \
 	    || { echo "ERROR: vLLM cache reset failed" >&2; exit 1; }
 	@echo "Clearing LMCache L1 DRAM cache..."
 	@curl -s -X POST \
-	    http://localhost:$(LMCACHE_PORT)/cache/clear \
+	    http://localhost:8080/cache/clear \
 	    -H 'Content-Type: application/json' \
 	    -d '{"tier":"l1","force":true}' | grep -q '"status":"ok"' \
 	    || { echo "ERROR: LMCache L1 clear failed" >&2; exit 1; }
 	@echo "Resetting LMCache Prometheus counters..."
 	@curl -s -X POST \
-	    http://localhost:$(LMCACHE_PORT)/metrics/reset > /dev/null
+	    http://localhost:8080/metrics/reset > /dev/null
 	$(PYTHON) "$(CURDIR)/benchmarks/vllm_reset_test.py"
 	@echo "Test complete. Run 'make down' to stop the stack."
