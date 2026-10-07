@@ -2398,18 +2398,25 @@ export VLLM_EMULATOR_PROFILE_PACK='${AIC_EMULATE_PROFILE_PACK}'
 # service.  Set AIC_EMULATE_PACK_HOST + point AIC_EMULATE_PROFILE_PACK at
 # /profiles/<pack>.json to replay an MI300X/MI355X capture.
 [ -n '${AIC_EMULATE_PACK_HOST}' ] && export EMU_PROFILE_PACK_HOST='${AIC_EMULATE_PACK_HOST}'
-# Containers default to root, and HF_HOME is very often a SHARED cluster cache
-# (Alola's /scratch/models).  Root-owned entries there cannot be refreshed or
-# deleted by anyone else, so run the emulator as the submitting user instead.
-# Resolved on the COMPUTE node -- id is what matters where the bind mount lives.
-export AIC_CONTAINER_USER="\$(id -u):\$(id -g)"
-export AIC_CONTAINER_USERNAME="\$(id -un)"
-export AIC_CONTAINER_HOME=/tmp
 export HF_HOME='${AIC_TINY_HF_HOME}'
 export HF_TOKEN='${HF_TOKEN:-}'
 export HF_HUB_OFFLINE=0 TRANSFORMERS_OFFLINE=0
 export LOG="\${_logdir}"
 mkdir -p "\${HF_HOME}" "\${_logdir}/vllm-emulator"
+# Containers default to root, and HF_HOME is very often a SHARED cluster cache
+# (Alola's /scratch/models).  Root-owned entries there cannot be refreshed or
+# deleted by anyone else, so run the emulator as the submitting user instead.
+# Resolved on the COMPUTE node -- id is what matters where the bind mount lives.
+# Docker drops supplementary groups, so a cache writable only through its group
+# (SPUR's /shared_nfs/huggingface grants allusers via a setgid dir + ACL) is
+# read-only to \$(id -u):\$(id -g).  Run with the cache's group instead -- but
+# only one the user is in, since docker never checks membership.
+_hf_gid="\$(stat -c %g "\${HF_HOME}")"
+case " \$(id -G) " in *" \${_hf_gid} "*) ;; *) _hf_gid="\$(id -g)" ;; esac
+export AIC_CONTAINER_USER="\$(id -u):\${_hf_gid}"
+export AIC_CONTAINER_USERNAME="\$(id -un)"
+export AIC_CONTAINER_HOME=/tmp
+echo "[emulate-test] container user \${AIC_CONTAINER_USER}, HF cache \${HF_HOME}"
 
 # NB: \`timeout\` cannot run a shell function, so the calls below spell out
 # \`docker compose\` rather than wrapping the compose() helper.
@@ -2584,13 +2591,6 @@ export IMAGE_NAME='${AIC_IMAGE}'
 export VLLM_MODEL='${AIC_EMULATE_MODEL}'
 export VLLM_EMULATOR_PROFILE_PACK='${AIC_EMULATE_PROFILE_PACK}'
 [ -n '${AIC_EMULATE_PACK_HOST}' ] && export EMU_PROFILE_PACK_HOST='${AIC_EMULATE_PACK_HOST}'
-# Containers default to root, and HF_HOME is very often a SHARED cluster cache
-# (Alola's /scratch/models).  Root-owned entries there cannot be refreshed or
-# deleted by anyone else, so run the emulator as the submitting user instead.
-# Resolved on the COMPUTE node -- id is what matters where the bind mount lives.
-export AIC_CONTAINER_USER="\$(id -u):\$(id -g)"
-export AIC_CONTAINER_USERNAME="\$(id -un)"
-export AIC_CONTAINER_HOME=/tmp
 export HF_HOME='${AIC_TINY_HF_HOME}'
 export HF_TOKEN='${HF_TOKEN:-}'
 export HF_HUB_OFFLINE=0 TRANSFORMERS_OFFLINE=0
@@ -2608,6 +2608,14 @@ export NVME_DATA='${AIC_EMULATE_MP_DATA}/nvme'
 export NFS_DATA='${AIC_EMULATE_MP_DATA}/nfs'
 mkdir -p "\${HF_HOME}" "\${_logdir}/vllm-emulator" "\${_logdir}/lmcache-emulator" \
     '${AIC_EMULATE_MP_DATA}/nvme' '${AIC_EMULATE_MP_DATA}/nfs'
+# Run the emulator as the submitting user with the HF cache's group -- see
+# cmd_emulate_test for why both halves matter.
+_hf_gid="\$(stat -c %g "\${HF_HOME}")"
+case " \$(id -G) " in *" \${_hf_gid} "*) ;; *) _hf_gid="\$(id -g)" ;; esac
+export AIC_CONTAINER_USER="\$(id -u):\${_hf_gid}"
+export AIC_CONTAINER_USERNAME="\$(id -un)"
+export AIC_CONTAINER_HOME=/tmp
+echo "[emulate-mp-test] container user \${AIC_CONTAINER_USER}, HF cache \${HF_HOME}"
 
 # local_disk needs a native LocalDiskBackend config mounted at
 # /config/lmcache.yml; the compose service reads it only when
