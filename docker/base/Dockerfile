@@ -359,10 +359,17 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
         "amdrocm-amdsmi${_mm}" \
         "amdrocm-llvm${_mm}" \
         "amdrocm-math-common${_mm}" \
-    && update-ca-certificates && \
-    # Install arch-specific GPU kernel data packages (Tensile .dat files for
-    # hipBLAS/rocBLAS).  Without these, GPU matrix operations fail with
-    # "TensileLibrary_lazy_gfxNNNN.dat: not found".
+    && update-ca-certificates
+
+# Arch-specific GPU kernel data (Tensile hsaco/dat files for hipBLAS/rocBLAS).
+# In a separate RUN so apt-get update runs fresh with the AMD repo already
+# configured — inside the shared apt cache mount the lists from the previous
+# step are not always visible to a subsequent install in the same RUN.
+# hadolint ignore=DL3008
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
+    _mm=$(echo "${ROCM_VERSION}" | cut -d. -f1-2) && \
+    apt-get update && \
     for _arch in $(echo "${ROCM_ARCH}" | tr ',' ' '); do \
         apt-get install -y --no-install-recommends \
             "amdrocm-blas${_mm}-${_arch}" || \
