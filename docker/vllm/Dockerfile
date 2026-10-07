@@ -260,10 +260,10 @@ COPY --from=build_vllm /opt/llm-emu/      /opt/llm-emu/
 COPY --from=build_vllm /etc/rocm-aic-attention-backends.env \
                        /etc/rocm-aic-attention-backends.env
 
-ARG VLLM_REF=v0.29.0
-ARG AITER_REF=v0.1.22.post1
-ARG FLASH_ATTN_REF=v2.8.3.post1
-ARG LLM_EMU_REF=b71c602
+ARG VLLM_REF
+ARG AITER_REF
+ARG FLASH_ATTN_REF
+ARG LLM_EMU_REF
 ENV AIC_EMULATOR_EXAMPLE_PACK=/opt/llm-emu/profiles/A40-Q8-Qwen3-8B.json \
     AIC_EMULATOR_DEFAULT_PACK=/opt/llm-emu/profiles/MI300X-Qwen3-8B.json
 

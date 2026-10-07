@@ -73,14 +73,14 @@ SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 # Copy the AMD apt signing key from the build stage (which has the -full image).
 # hadolint ignore=DL3008
 COPY --from=build /etc/apt/keyrings/amdrocm.gpg /etc/apt/keyrings/amdrocm.gpg
+COPY --from=build /etc/apt/sources.list.d/rocm.list /etc/apt/sources.list.d/amdrocm.list
+# hadolint ignore=DL3008
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
     apt-get update && \
     DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
         ca-certificates && \
-    echo "deb [arch=amd64 signed-by=/etc/apt/keyrings/amdrocm.gpg] \
-https://repo.amd.com/rocm/packages-multi-arch/ubuntu2404 stable main" \
-        > /etc/apt/sources.list.d/amdrocm.list && \
+    update-ca-certificates && \
     apt-get update && \
     _mm=$(echo "${ROCM_VERSION}" | cut -d. -f1-2) && \
     DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
