@@ -82,9 +82,6 @@ SHORT="${SHA:0:7}"
 WORKDIR="$HOME/Projects/rocm-aic.emu.${SHORT}"
 # $USER here is the head-node user — define paths here, not on the runner.
 TARBALL_DIR="${AIC_SHARED_NFS}/${USER}/images/aic-ci-emu-${SHORT}"
-# The emulator downloads only the model's config + tokenizer (weights are never
-# loaded), so it can share the small persistent HF cache the tiny test uses.
-EMU_HF_HOME="${AIC_SHARED_NFS}/${USER}/tiny-hf"
 
 _cleanup() {
     echo "=== Cleaning up ==="
@@ -115,7 +112,6 @@ echo "=== Serve-testing it on a CPU-only node ==="
 AIC_SPUR_CLUSTER=1 \
     AIC_EMULATE_IMAGE="${AIC_EMULATE_IMAGE}" \
     AIC_IMAGE_DIR="${TARBALL_DIR}" \
-    AIC_TINY_HF_HOME="${EMU_HF_HOME}" \
     HF_TOKEN="${HF_TOKEN:-}" \
     _err_delegate make -C "${WORKDIR}" emulate-test
 
