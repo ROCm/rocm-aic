@@ -456,9 +456,9 @@ services:
     networks: [aic-network]
     ports:
       - "${VLLM_HOST_PORT:-8000}:8000"
-    ipc: "${VLLM_IPC_MODE:-shareable}"
+    ipc: "${VLLM_IPC_MODE:-service:lmcache}"
     shm_size: "${AIC_SHM_SIZE:-64gb}"
-    pid: "${VLLM_PID_MODE-service:lmcache}"
+    pid: "${VLLM_PID_MODE:-service:lmcache}"
     cap_add:
       - CAP_SYS_ADMIN
       - SYS_PTRACE

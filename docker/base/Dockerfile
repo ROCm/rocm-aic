@@ -16,6 +16,7 @@
 #   build_pytorch     PyTorch 2.13 built from source                  (section 2b)
 #   build_torchvision torchvision built from source                   (section 2c)
 #   build_nixl        NIXL built from source (uses ROCm headers)      (section 2d)
+#   build_clr_patch   patched libamdhip64.so (IPC event ring fix)     (section 2e)
 #   runtime           Ubuntu 24.04 + 13 ROCm runtime pkgs + torch + NIXL (section 3)
 #
 # Build (from repo root):
@@ -264,6 +265,57 @@ RUN --mount=type=cache,target=/root/.cache/uv \
     rm -rf /tmp/nixl /tmp/nixl-patches /tmp/nixl-scripts /tmp/nixl-wheels
 
 # =============================================================================
+# build_clr_patch — patch libamdhip64.so to fix IPC event signal ring overflow.
+#
+# ROCm/rocm-systems PRs #11511 and #11749 fix IPCEventEmulated::streamWait to
+# wrap read_index with % IPC_SIGNALS_PER_EVENT (ring size = 32).  Without this,
+# the 33rd cross-process use of the same IPC event handle reads past the end of
+# the signal array, causing hipErrorInvalidValue.  The PRs are open on 'develop'
+# and not yet in any released ROCm build, so we patch and rebuild here.
+# =============================================================================
+FROM base AS build_clr_patch
+
+ARG CLR_GIT_URL=https://github.com/ROCm/rocm-systems.git
+ARG CLR_REF=therock-7.14.1
+ARG BUILD_JOBS=
+
+# hadolint ignore=DL3008
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
+    apt-get update && \
+    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+        cmake git ninja-build python3-dev
+
+COPY patches/hip-ipc-event-ring-fix.patch /tmp/hip-ipc-event-ring-fix.patch
+
+RUN git clone --filter=blob:none --no-checkout "${CLR_GIT_URL}" /app/rocm-systems && \
+    git -C /app/rocm-systems checkout "${CLR_REF}" -- projects/clr && \
+    sed -i 's/const int offset = ipc_evt_.ipc_shmem_->read_index;/const int offset = ipc_evt_.ipc_shmem_->read_index % IPC_SIGNALS_PER_EVENT;/' \
+        /app/rocm-systems/projects/clr/hipamd/src/hip_event_ipc.cpp && \
+    grep -q "IPC_SIGNALS_PER_EVENT" /app/rocm-systems/projects/clr/hipamd/src/hip_event_ipc.cpp || \
+    { echo "ERROR: patch did not apply"; exit 1; } && \
+    echo "Patch applied OK"
+
+RUN cmake -G Ninja \
+        -S /app/rocm-systems/projects/clr \
+        -B /app/clr-build \
+        -DCMAKE_BUILD_TYPE=Release \
+        -DCMAKE_CXX_COMPILER=/opt/rocm/core-7.14/lib/llvm/bin/clang++ \
+        -DCMAKE_INSTALL_PREFIX=/app/clr-install \
+        -DHIP_COMPILER=clang \
+        -DHIP_PLATFORM=amd \
+        -DROCM_PATH=/opt/rocm/core-7.14 \
+        -DHIP_COMMON_DIR=/opt/rocm/core-7.14 \
+        -DOFFLOAD_ARCH_STR="" \
+        -DBUILD_SHARED_LIBS=ON \
+        -DCLR_BUILD_HIP=ON \
+        -DCLR_BUILD_OCL=OFF && \
+    cmake --build /app/clr-build --target amdhip64 \
+        --parallel "${BUILD_JOBS:-$(nproc)}" && \
+    ls /app/clr-build/hipamd/libamdhip64.so* && \
+    echo "libamdhip64.so built OK"
+
+# =============================================================================
 # runtime — plain ROCm image + 13 ROCm runtime packages + torch + NIXL.
 #
 # Starts FROM ubuntu:24.04 instead of the -full ROCm image (~18 GB).  AMD
@@ -416,6 +468,12 @@ RUN --mount=type=cache,target=/root/.cache/pip \
 # ROCm-full toolchain; only the output directories are needed at runtime.
 COPY --from=build_nixl /opt/nixl/ /opt/nixl/
 COPY --from=build_nixl /opt/rocnixl-ucx/ /opt/rocnixl-ucx/
+
+# Patched libamdhip64.so: fixes IPC event signal ring overflow (ROCm#11511/#11749).
+# read_index must be wrapped with % IPC_SIGNALS_PER_EVENT (32) or the 33rd
+# cross-process import of the same event handle reads past the signal array.
+COPY --from=build_clr_patch /app/clr-build/hipamd/libamdhip64.so \
+                             /opt/rocm/core-7.14/lib/libamdhip64.so
 
 # Guard: upstream pip deps may pull CUDA-only nixl variants that would shadow
 # the source-built install from build_nixl.  Remove them if present.
