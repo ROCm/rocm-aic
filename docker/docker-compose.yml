@@ -338,9 +338,13 @@ services:
     # namespace; vllm joins it via ipc/pid: service:lmcache (see vllm service below).
     # IPC namespace sharing is independent of network_mode — the aic bridge network
     # provides DNS-based service discovery for prometheus without affecting IPC.
-    # Ports reachable within the aic network: lmcache HTTP API 8080, NIXL telemetry 19090.
+    # Both ipc:host and pid:host are required for KFD GPU memory IPC
+    # (hipIpcOpenMemHandle). The KFD validates handles using the exporting
+    # process PID; separate PID namespaces both appear as PID 1 to the kernel,
+    # causing hipErrorInvalidDevicePointer. Host IPC+PID namespaces fix this.
     networks: [aic-network]
-    ipc: shareable
+    ipc: host
+    pid: host
     shm_size: "${AIC_SHM_SIZE:-64gb}"
     cap_add:
       - CAP_SYS_ADMIN
@@ -451,14 +455,13 @@ services:
     # (set in image ENV) plus shared IPC+PID namespaces.  Container-scoped sharing
     # (ipc: service:lmcache, pid: service:lmcache) is sufficient and safer than
     # ipc: host / pid: host.  Override via VLLM_IPC_MODE / VLLM_PID_MODE if needed.
-    # vLLM OpenAI API + /metrics reachable on host port 8000 (curl localhost:8000
-    # from the sbatch shell) and within the aic network on port 8000.
+    # vLLM OpenAI API + /metrics reachable on host port 8000.
     networks: [aic-network]
     ports:
       - "${VLLM_HOST_PORT:-8000}:8000"
-    ipc: "${VLLM_IPC_MODE:-service:lmcache}"
+    ipc: "${VLLM_IPC_MODE:-host}"
     shm_size: "${AIC_SHM_SIZE:-64gb}"
-    pid: "${VLLM_PID_MODE:-service:lmcache}"
+    pid: "${VLLM_PID_MODE:-host}"
     cap_add:
       - CAP_SYS_ADMIN
       - SYS_PTRACE
