@@ -97,7 +97,7 @@ mkdir -p "$WORK_DIR"
 # Build a minimal lmcache image if not already present.
 # The full aic-lmcache:latest is 59GB (ROCm+torch) — too large to stream into VMs.
 # aic-lmcache-minimal is ~500MB and has only lmcache+nixl for CPU-only P2P testing.
-# Force rebuild if Dockerfile changed (delete old image)
+# Always rebuild minimal image to pick up Dockerfile changes
 docker rmi aic-lmcache-minimal:latest >/dev/null 2>&1 || true
 if ! docker image inspect aic-lmcache-minimal:latest >/dev/null 2>&1; then
     log "  Building minimal lmcache image (no torch/ROCm) ..."
@@ -115,7 +115,11 @@ RUN apt-get update -qq && apt-get install -y -qq \
 RUN pip install --quiet --no-cache-dir \
     --extra-index-url https://download.pytorch.org/whl/cpu \
     torch && \
-    pip install --quiet --no-cache-dir "lmcache==0.5.5"
+    pip install --quiet --no-cache-dir "lmcache==0.5.5" openai numba && \
+    pip install --quiet --no-cache-dir "nixl==1.4.1" && \
+    python3 -c "import nixl._api; print('nixl OK')" && \
+    python3 -c "from lmcache.cli.main import main; print('lmcache CLI OK')" && \
+    /usr/local/bin/lmcache server --help 2>&1 | head -3 || true
 DOCKEREOF
     docker build -q -t aic-lmcache-minimal:latest -f "$WORK_DIR/Dockerfile.minimal" "$WORK_DIR"
     log "  Minimal image built: $(docker image inspect aic-lmcache-minimal:latest --format '{{.Size}}' | numfmt --to=si)B"
@@ -197,6 +201,7 @@ docker rm -f aic-lmcache-coordinator 2>/dev/null || true
 # lmcache_controller needs torch — add torch-cpu to the minimal image.
 docker run -d --name aic-lmcache-coordinator \
     --network vfio-user-ernic-2vm_default \
+    -p "${COORD_PORT}:${COORD_PORT}" \
     --entrypoint /usr/local/bin/lmcache_controller \
     aic-lmcache-minimal:latest \
     --host 0.0.0.0 --port "${COORD_PORT}" \
@@ -209,6 +214,20 @@ COORD_DOCKER_IP=$(docker inspect aic-lmcache-coordinator \
 [ -n "$COORD_DOCKER_IP" ] && [[ "$COORD_DOCKER_IP" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]] \
     || die "Could not get coordinator Docker IP (got: '$COORD_DOCKER_IP')"
 log "  Coordinator at ${COORD_DOCKER_IP}:${COORD_PORT}"
+
+# Verify coordinator is actually running (inspect IP can be non-empty even after exit)
+if ! docker inspect aic-lmcache-coordinator --format '{{.State.Status}}' 2>/dev/null | grep -q running; then
+    log "  Coordinator logs:"
+    docker logs aic-lmcache-coordinator 2>&1 | tail -15
+    die "Coordinator container not running — check logs above"
+fi
+sleep 3
+if curl -fsS --max-time 5 "http://${COORD_DOCKER_IP}:${COORD_PORT}/healthz" >/dev/null 2>&1; then
+    log "  Coordinator healthz OK"
+else
+    log "  Coordinator healthz not responding (may still be starting — continuing)"
+    docker logs aic-lmcache-coordinator 2>&1 | tail -10
+fi
 
 # ---- Step 5b: load AIC lmcache image + compose files into VMs ---------------
 log "[5b/7] Loading AIC lmcache image and compose files into VMs ..."
@@ -224,9 +243,7 @@ for _port in "$VM1_SSH_PORT" "$VM2_SSH_PORT"; do
         log "  Installing Docker in VM on :$_port ..."
         # shellcheck disable=SC2086
         ssh $SSH_FLAGS -i "$VM_SSH_KEY" -p "$_port" "$VM_SSH_USER@localhost" \
-            "export DEBIAN_FRONTEND=noninteractive;
-             sudo apt-get update -qq 2>/dev/null;
-             sudo apt-get install -y -qq docker.io docker-compose-plugin 2>/dev/null;
+            "command -v docker >/dev/null 2>&1 || curl -fsSL https://get.docker.com | sudo sh 2>/dev/null;
              sudo usermod -aG docker \$USER 2>/dev/null || true;
              sudo systemctl start docker 2>/dev/null || true" \
             2>&1 | tail -3
@@ -247,7 +264,7 @@ for _port in "$VM1_SSH_PORT" "$VM2_SSH_PORT"; do
     log "  Loading aic-lmcache-minimal into VM on :$_port ..."
     docker save aic-lmcache-minimal:latest | \
         ssh $SSH_FLAGS -i "$VM_SSH_KEY" -p "$_port" "$VM_SSH_USER@localhost" \
-            "sudo docker load" 2>&1 | tail -3
+            "sudo $(which docker || echo /usr/bin/docker) load" 2>&1 | tail -3
     log "  Image loaded"
 done
 
@@ -255,7 +272,9 @@ done
 log "[6/7] Starting lmcache P2P servers in VMs ..."
 # Coordinator is already running (started in step 5a) at COORD_DOCKER_IP.
 
-# Start lmcache server in each VM — coordinator reachable via Docker bridge IP
+# Coordinator port is published on the host (-p 9300:9300), so VMs reach it via
+# the SLIRP host gateway (10.0.2.2), not the Docker bridge IP (only host-reachable).
+COORD_VM_IP="10.0.2.2"
 for _idx in 1 2; do
     _port="$VM1_SSH_PORT"; [ "$_idx" = "2" ] && _port="$VM2_SSH_PORT"
     _role="secondary";     [ "$_idx" = "1" ] && _role="primary"
@@ -265,7 +284,7 @@ for _idx in 1 2; do
     ssh $SSH_FLAGS -i "$VM_SSH_KEY" -p "$_port" "$VM_SSH_USER@localhost" \
         "LMCACHE_P2P_ROLE=$_role \
          THIS_IP=$_this_ip \
-         COORD_IP=$COORD_DOCKER_IP \
+         COORD_IP=$COORD_VM_IP \
          COMPOSE_FILE=/tmp/lmcache-p2p/docker-compose.yml \
          LMCACHE_IMAGE_REF=$LMCACHE_IMAGE \
          LMCACHE_PORT=$LMCACHE_PORT \
@@ -285,21 +304,28 @@ for _vmspec in "$VM1_SSH_PORT VM1" "$VM2_SSH_PORT VM2"; do
     _label=$(echo "$_vmspec" | awk '{print $2}')
     _ready=0
     for _i in $(seq 1 $(( READY_S / 5 ))); do
-        # Check if lmcache_server container is running (TCP socket)
         # shellcheck disable=SC2086
-        if ssh $SSH_FLAGS -i "$VM_SSH_KEY" -p "$_port" "$VM_SSH_USER@localhost" \
-                "sudo docker inspect aic-lmcache-p2p --format '{{.State.Status}}' 2>/dev/null | grep -q running"; then
-            _ready=1; break
+        _cstate=$(ssh $SSH_FLAGS -i "$VM_SSH_KEY" -p "$_port" "$VM_SSH_USER@localhost" \
+            "sudo docker inspect aic-lmcache-p2p --format '{{.State.Status}}' 2>/dev/null || echo missing" 2>/dev/null || echo ssh_err)
+        if [ "$_cstate" = "running" ]; then
+            # shellcheck disable=SC2086
+            if ssh $SSH_FLAGS -i "$VM_SSH_KEY" -p "$_port" "$VM_SSH_USER@localhost" \
+                    "curl -fsS --max-time 3 http://127.0.0.1:${LMCACHE_HTTP_PORT}/metrics >/dev/null 2>&1"; then
+                _ready=1; break
+            fi
+        elif [ "$_cstate" = "exited" ] || [ "$_cstate" = "dead" ]; then
+            log "  $_label container $_cstate — logs:"
+            # shellcheck disable=SC2086
+            ssh $SSH_FLAGS -i "$VM_SSH_KEY" -p "$_port" "$VM_SSH_USER@localhost" \
+                "sudo docker logs aic-lmcache-p2p 2>&1 | tail -20" 2>/dev/null || true
+            break
         fi
         sleep 5
     done
     if [ "$_ready" = "1" ]; then
-        log "  $_label lmcache ready (/healthz on :${LMCACHE_HTTP_PORT})"
+        log "  $_label lmcache MP server ready (/metrics on :${LMCACHE_HTTP_PORT})"
     else
-        log "WARN: $_label lmcache not ready after ${READY_S}s — checking logs"
-        # shellcheck disable=SC2086
-        ssh $SSH_FLAGS -i "$VM_SSH_KEY" -p "$_port" "$VM_SSH_USER@localhost" \
-            "docker compose -f /tmp/lmcache-p2p/docker-compose.yml logs --tail 20 2>/dev/null || true"
+        log "WARN: $_label lmcache not ready after ${READY_S}s"
     fi
 done
 

@@ -42,12 +42,19 @@ LMCACHE_L1_SIZE_GB="${LMCACHE_L1_SIZE_GB:-0.5}"
 # ---------------------------------------------------------------------------
 echo "=== lmcache-p2p-guest-setup: ROLE=${LMCACHE_P2P_ROLE} THIS_IP=${THIS_IP} ==="
 
-if ! lsmod | grep -qw ionic_rdma; then
-    echo "Loading ionic and ionic_rdma modules ..."
-    sudo modprobe ionic  2>/dev/null || true
-    sudo modprobe ionic_rdma 2>/dev/null || true
-    sleep 2
+echo "Loading ionic and ionic_rdma modules ..."
+sudo modprobe ionic      2>/dev/null || true
+sudo modprobe ionic_rdma 2>/dev/null || true
+sleep 1
+
+# Bind vfio-user emulated ERNIC (AMD Pensando 1dd8:100a) to the ionic driver.
+# ionic_rdma is not a PCI driver; it activates via ionic once the NIC is claimed.
+# The emulated device ID is 100a (DSC), not in ionic's built-in table, so use new_id.
+_new_id="/sys/bus/pci/drivers/ionic/new_id"
+if [ -e "${_new_id}" ]; then
+    echo "1dd8 100a" | sudo tee "${_new_id}" >/dev/null 2>&1 || true
 fi
+sleep 2
 
 # ---------------------------------------------------------------------------
 # Configure ionic interface IP
@@ -97,20 +104,22 @@ echo "  IMAGE=${LMCACHE_IMAGE_REF:-UNSET}"
 sudo docker rm -f aic-lmcache-p2p 2>/dev/null || true
 sudo docker run -d \
     --name aic-lmcache-p2p \
-    -p "${LMCACHE_PORT:-6555}:${LMCACHE_PORT:-6555}" \
-    -p "${LMCACHE_HTTP_PORT:-7555}:${LMCACHE_HTTP_PORT:-7555}" \
-    -p "${P2P_PORT:-8500}:${P2P_PORT:-8500}" \
-    -e LMCACHE_COORDINATOR_URL="http://${COORD_IP}:${COORD_PORT:-9300}" \
-    -e LMCACHE_COORDINATOR_ADVERTISE_IP="${THIS_IP}" \
-    -e LMCACHE_P2P_ADVERTISE_URL="${THIS_IP}:${P2P_PORT:-8500}" \
-    -e LMCACHE_P2P_LISTEN_URL="0.0.0.0:${P2P_PORT:-8500}" \
-    -e LMCACHE_P2P_TRANSFER_ENGINE="nixl" \
-    -e LMCACHE_L1_ALIGN_BYTES="65536" \
-    -e LMCACHE_CHUNK_SIZE="256" \
+    --network host \
     -e PYTHONHASHSEED="0" \
-    --entrypoint /usr/local/bin/lmcache_server \
+    --entrypoint /usr/local/bin/lmcache \
     "${LMCACHE_IMAGE_REF:?}" \
-    0.0.0.0 "${LMCACHE_PORT:-6555}" cpu
+    server \
+    --host 0.0.0.0 \
+    --port "${LMCACHE_PORT:-6555}" \
+    --http-port "${LMCACHE_HTTP_PORT:-7555}" \
+    --l1-size-gb "${LMCACHE_L1_SIZE_GB:-0.5}" \
+    --l1-align-bytes 65536 \
+    --eviction-policy LRU \
+    --coordinator-url "http://${COORD_IP}:${COORD_PORT:-9300}" \
+    --coordinator-advertise-ip "${THIS_IP}" \
+    --coordinator-event-reporting \
+    --p2p-transfer-engine nixl \
+    --p2p-advertise-url "${THIS_IP}:${P2P_PORT:-8500}"
 echo "  docker run exit code: $?"
 sleep 2
 sudo docker ps --filter name=aic-lmcache-p2p --format "{{.Status}}" 2>/dev/null || true
