@@ -2392,6 +2392,8 @@ source '${AIC_DAY_DIR}/monitoring/monitoring-lib.sh'
 ensure_compose || { echo "[emulate-test] docker compose unavailable and could not be installed" >&2; exit 1; }
 
 export IMAGE_NAME='${AIC_IMAGE}'
+# The emulator service reads VLLM_IMAGE_REF first, and make exports its own.
+export VLLM_IMAGE_REF='${AIC_IMAGE}'
 export VLLM_MODEL='${AIC_EMULATE_MODEL}'
 export VLLM_EMULATOR_PROFILE_PACK='${AIC_EMULATE_PROFILE_PACK}'
 # Host dir of real-hardware packs, bind-mounted at /profiles by the compose
@@ -2588,6 +2590,8 @@ source '${AIC_DAY_DIR}/monitoring/monitoring-lib.sh'
 ensure_compose || { echo "[emulate-mp-test] docker compose unavailable and could not be installed" >&2; exit 1; }
 
 export IMAGE_NAME='${AIC_IMAGE}'
+# The emulator service reads VLLM_IMAGE_REF first, and make exports its own.
+export VLLM_IMAGE_REF='${AIC_IMAGE}'
 export VLLM_MODEL='${AIC_EMULATE_MODEL}'
 export VLLM_EMULATOR_PROFILE_PACK='${AIC_EMULATE_PROFILE_PACK}'
 [ -n '${AIC_EMULATE_PACK_HOST}' ] && export EMU_PROFILE_PACK_HOST='${AIC_EMULATE_PACK_HOST}'
@@ -3120,6 +3124,8 @@ source '${AIC_DAY_DIR}/monitoring/monitoring-lib.sh'
 ensure_compose || { echo "[validate] docker compose unavailable" >&2; exit 1; }
 
 export IMAGE_NAME='${AIC_IMAGE}'
+# The emulator service reads VLLM_IMAGE_REF first, and make exports its own.
+export VLLM_IMAGE_REF='${AIC_IMAGE}'
 export VLLM_MODEL='${model}'
 export EMU_PROFILE_PACK_HOST='${pack_dir}'
 export VLLM_EMULATOR_PROFILE_PACK='/profiles/${pack_file}'
