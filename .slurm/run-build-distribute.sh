@@ -53,8 +53,8 @@
 #   build   Build the image on AIC_BUILD_NODE, then save the tarball to AIC_IMAGE_DIR
 #   build-emulate
 #           Build the CPU-only EMULATION image (Dockerfile `emulate` stage +
-#           VLLM_TARGET_DEVICE=empty): vLLM + the llm-emu plugin with no GPU
-#           kernels compiled at all, so it takes minutes rather than hours.
+#           VLLM_TARGET_DEVICE=empty): vLLM + the llm-emu plugin with no vLLM
+#           GPU kernels, on an aic-base the same job builds first.
 #           Tagged AIC_EMULATE_IMAGE (default rocm-aic:7.14-emulate) with its
 #           own tarball, so it never overwrites the real GPU image.
 #   emulate-test
@@ -269,9 +269,9 @@ AIC_VLLM_TARGET_DEVICE="${AIC_VLLM_TARGET_DEVICE:-}"
 # --- build-emulate / emulate-test defaults ----------------------------------
 # The emulation image stops at the Dockerfile's `emulate` stage (vLLM + the
 # llm-emu plugin, no LMCache HIP ext / NIXL / hsa-snoop) and builds vLLM with
-# VLLM_TARGET_DEVICE=empty, so NO GPU kernels are compiled at all -- minutes,
-# not hours.  The arch below only picks torch's device extra from AMD's wheel
-# index; nothing in this image runs on a GPU.
+# VLLM_TARGET_DEVICE=empty, so vLLM compiles no GPU kernels.  It still sits on
+# aic-base, whose PyTorch is built for the arch below; that build is cached per
+# arch, but the first one is not quick.  Nothing in this image runs on a GPU.
 AIC_EMULATE_IMAGE="${AIC_EMULATE_IMAGE:-${IMAGE_NAME:-rocm-aic}:${IMAGE_TAG_EMULATE:-7.14-emulate}}"
 AIC_EMULATE_ARCH="${AIC_EMULATE_ARCH:-gfx942}"
 AIC_EMULATE_VLLM_DEVICE="${AIC_EMULATE_VLLM_DEVICE:-empty}"
@@ -982,11 +982,19 @@ cmd_build() {
     [[ -n "${AIC_BUILD_TARGET}" ]] && _target_arg="--target ${AIC_BUILD_TARGET}"
     [[ -n "${AIC_VLLM_TARGET_DEVICE}" ]] && \
         _vllm_device_arg="--build-arg VLLM_TARGET_DEVICE=${AIC_VLLM_TARGET_DEVICE}"
-    # Pass a pre-built aic-base image as a named build context when one is
-    # available (AIC_BUILD_CONTEXT_BASE).  vllm/ and lmcache/ Dockerfiles have
-    # a self-contained fallback FROM stage so the build still works without it.
-    [[ -n "${AIC_BUILD_CONTEXT_BASE:-}" ]] && \
+    # vllm/ and lmcache/ take aic-base as their `base` stage.  Without it they
+    # fall back to the stock ROCm image, which has neither git nor torch, so
+    # pass either a pre-built one (AIC_BUILD_CONTEXT_BASE) or, with
+    # AIC_BUILD_BASE_FIRST=1, one built earlier in the same job.
+    local _base_first="" _base_step=""
+    local _base_ref="${AIC_IMAGE%:*}-base:${AIC_IMAGE##*:}"
+    if [[ -n "${AIC_BUILD_CONTEXT_BASE:-}" ]]; then
         _context_arg="--build-context base=${AIC_BUILD_CONTEXT_BASE}"
+    elif [[ "${AIC_BUILD_BASE_FIRST:-}" == "1" ]]; then
+        [[ -n "${AIC_CACHE_REF}" || -n "${AIC_CACHE_DIR}" ]] || \
+            die "building aic-base first needs the buildx path; set AIC_CACHE_DIR or AIC_CACHE_REF, or pass AIC_BUILD_CONTEXT_BASE"
+        _base_first=1
+    fi
 
     # --- Build program: plain `docker build`, or `docker buildx` with a shared
     #     registry cache when AIC_CACHE_REF is set.  The registry cache pushes each
@@ -1010,11 +1018,12 @@ cmd_build() {
             *) die "AIC_CACHE_MODE must be min or max (got '${AIC_CACHE_MODE}')" ;;
         esac
         # _pre / _mkdir run before the build; _cfg_arg tweaks builder creation.
-        local _cfg_arg="" _pre="" _mkdir=""
+        local _cfg_arg="" _pre="" _mkdir="" _base_cache_args=""
         if [[ -n "${AIC_CACHE_REF}" ]]; then
             # Registry backend (takes precedence over AIC_CACHE_DIR).
             log "build cache: registry ${AIC_CACHE_REF} (mode ${AIC_CACHE_MODE}, builder ${AIC_BUILDX_BUILDER})"
             _cache_args="--cache-from type=registry,ref=${AIC_CACHE_REF} --cache-to type=registry,ref=${AIC_CACHE_REF},mode=${AIC_CACHE_MODE}"
+            _base_cache_args="--cache-from type=registry,ref=${AIC_CACHE_REF}-base --cache-to type=registry,ref=${AIC_CACHE_REF}-base,mode=${AIC_CACHE_MODE}"
             # Optional buildkitd config for a cache registry with an untrusted TLS
             # cert (self-signed / private-CA HTTPS).  The docker-container builder
             # does NOT inherit /etc/docker/daemon.json's insecure-registries, so it
@@ -1041,6 +1050,11 @@ cmd_build() {
             [[ "${AIC_CACHE_RESET}" == "1" ]] && _reset=",reset=true"
             _cache_args="--cache-from type=local,src=${_cdir} --cache-to type=local,dest=${_cdir},mode=${AIC_CACHE_MODE},ignore-error=true${_reset}"
             _mkdir="mkdir -p '${_cdir}'; "
+            # The same per-arch dir cmd_build_split caches aic-base in.
+            local _base_cdir
+            _base_cdir="${AIC_CACHE_DIR%/}/$(_arch_tag)-base"
+            _base_cache_args="--cache-from type=local,src=${_base_cdir} --cache-to type=local,dest=${_base_cdir},mode=${AIC_CACHE_MODE},ignore-error=true${_reset}"
+            [[ -n "${_base_first}" ]] && _mkdir+="mkdir -p '${_base_cdir}'; "
         fi
         # Create the docker-container builder once per node (idempotent), then
         # bootstrap it so its BuildKit is ready before the build starts.
@@ -1063,6 +1077,28 @@ cmd_build() {
         # images (the build finishes but `docker save` hangs forever at 0 bytes).
         # `set -o pipefail` (from set -euo pipefail) makes a build failure fail
         # the whole pipeline instead of writing a truncated tarball.
+        if [[ -n "${_base_first}" ]]; then
+            # The docker-container builder cannot see the host daemon's images,
+            # so hand aic-base over as an OCI layout, as cmd_build_split does.
+            # shellcheck disable=SC2016  # expanded by the job, not here
+            _context_arg='--build-context "base=oci-layout://${_base_oci_dir}"'
+            _base_step="$(cat <<REMOTE
+_base_oci_dir="\${TMPDIR}/aic-base-oci.\${SLURM_JOB_ID:-\$\$}.d"
+trap 'rm -rf "\${_base_oci_dir}"' EXIT
+rm -rf "\${_base_oci_dir}"
+mkdir -p "\${_base_oci_dir}"
+echo "[build] building docker/base/Dockerfile image: ${_base_ref} (base context)"
+docker buildx build --builder ${AIC_BUILDX_BUILDER} --progress=plain --output type=oci,dest=- \
+    --build-arg ROCM_ARCH="${AIC_ROCM_ARCH}" \
+    ${_version_build_args} \
+    ${_secret_arg} \
+    ${_base_cache_args} \
+    -f "${AIC_DAY_DIR}/docker/base/Dockerfile" \
+    -t "${_base_ref}" \
+    "${AIC_DAY_DIR}" | tar -xf - -C "\${_base_oci_dir}"
+REMOTE
+)"
+        fi
         remote_script="$(cat <<REMOTE
 set -euo pipefail
 command -v docker >/dev/null 2>&1 || { echo "docker not found on build node \$(hostname) (PATH=\${PATH})" >&2; exit 1; }
@@ -1091,6 +1127,7 @@ docker buildx prune --builder ${AIC_BUILDX_BUILDER} --force 2>/dev/null || true
 _droot="\$(docker info --format '{{.DockerRootDir}}' 2>/dev/null)"
 [ -d "\${_droot:-}" ] || _droot=/
 echo "[build] disk after prune (\${_droot}): \$(df -h "\${_droot}" | tail -1)"
+${_base_step}
 tmp="${tarball}.partial.\$\$"
 echo "[build] building docker/${AIC_BUILD_DOCKERFILE:-lmcache/Dockerfile} image: ${AIC_IMAGE}"
 docker buildx build --builder ${AIC_BUILDX_BUILDER} --progress=plain --output type=docker,dest=- \
@@ -1199,7 +1236,8 @@ ${remote_script}"
 # kernels, no LMCache HIP extension, no NIXL and no hsa-snoop.  The result runs
 # the full vLLM scheduler/HTTP stack on a CPU-only node with the forward pass
 # replaced by a profile-pack latency draw.  Tagged separately from the GPU image
-# (AIC_EMULATE_IMAGE), so its tarball never overwrites the real one.
+# (AIC_EMULATE_IMAGE), so its tarball never overwrites the real one.  The vLLM
+# stage needs git and torch from aic-base, so the job builds that first.
 _use_emulate_image() {
     AIC_IMAGE="${AIC_EMULATE_IMAGE}"
     AIC_ROCM_ARCH="${AIC_EMULATE_ARCH}"
@@ -1210,7 +1248,8 @@ cmd_build_emulate() {
     AIC_BUILD_TARGET="emulate"
     AIC_VLLM_TARGET_DEVICE="${AIC_EMULATE_VLLM_DEVICE}"
     AIC_BUILD_DOCKERFILE="vllm/Dockerfile"
-    log "build-emulate: emulation-only image, no GPU kernels compiled"
+    AIC_BUILD_BASE_FIRST=1
+    log "build-emulate: emulation-only image, no vLLM GPU kernels compiled"
     cmd_build
 }
 
