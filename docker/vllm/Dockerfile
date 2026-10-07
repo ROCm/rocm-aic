@@ -87,6 +87,9 @@ RUN cd /app/vllm && \
         done; \
     fi
 
+# --no-build-isolation means nothing installs vLLM's [build-system].requires.
+# rocm.txt lists setuptools-rust/-scm itself; common.txt does not, so the
+# `empty` path adds build/rust.txt for them.
 # hadolint ignore=SC2098
 RUN --mount=type=cache,target=/root/.cache/pip \
     --mount=type=cache,target=/root/.cache/ccache \
@@ -95,6 +98,7 @@ RUN --mount=type=cache,target=/root/.cache/pip \
     printf 'torch>=2.13,<2.14\n' > /tmp/torch-constraints.txt && \
     if [ "${VLLM_TARGET_DEVICE}" = "empty" ]; then \
         pip3 install -r requirements/common.txt \
+            -r requirements/build/rust.txt \
             --constraint /tmp/torch-constraints.txt; \
     else \
         pip3 install -r requirements/rocm.txt \
