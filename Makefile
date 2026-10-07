@@ -166,7 +166,7 @@ COMPOSE_PLUGIN_VERSION ?= v5.5.1
 
 # vLLM --kv-transfer-config for the MP connector.  Leave KV_TRANSFER_ARG empty
 # for a plain (baseline) vLLM.
-_MP_CONNECTOR_JSON := {"kv_connector":"LMCacheMPConnector","kv_role":"kv_both","kv_connector_extra_config":{"lmcache.mp.host":"tcp://localhost","lmcache.mp.port":$(LMCACHE_PORT)}}
+_MP_CONNECTOR_JSON := {"kv_connector":"LMCacheMPConnector","kv_role":"kv_both","kv_connector_extra_config":{"lmcache.mp.host":"tcp://aic-lmcache","lmcache.mp.port":$(LMCACHE_PORT)}}
 KV_TRANSFER_ARG    ?= --kv-transfer-config '$(_MP_CONNECTOR_JSON)'
 export KV_TRANSFER_ARG
 
