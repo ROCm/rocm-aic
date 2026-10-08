@@ -197,6 +197,9 @@ ENTRYPOINT ["python3", "-m", "vllm.entrypoints.openai.api_server"]
 # installs the same lmcache wheel aic-lmcache runs: one build, with its HIP
 # extension, on both ends of the MP protocol.  Installed after vLLM, as the
 # pre-split image did.
+# Do not try to import the vllm lmcache_mp_connector at this step, since it
+# requires a GPU to be found by amdsmi. This import check will be done during
+# the smoke test when a GPU is present in the container.
 FROM vllm AS runtime
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 RUN --mount=type=bind,from=lmcache-wheels,target=/aic-wheels \
@@ -212,7 +215,7 @@ RUN --mount=type=bind,from=lmcache-wheels,target=/aic-wheels \
     { uv pip uninstall --system \
         nixl nixl-cu12 nixl-cu13 \
         cupy-cuda12x cufile-python cuda-pathfinder 2>/dev/null || true; } && \
-    python3 -c 'import lmcache.integration.vllm.vllm_multi_process_adapter, vllm.distributed.kv_transfer.kv_connector.v1.lmcache_mp_connector; print("LMCacheMPConnector imports OK")'
+    python3 -c 'import lmcache.integration.vllm.vllm_multi_process_adapter; print("lmcache MP adapter imports OK")'
 
 # Cross-container HIP IPC with the lmcache server; must match aic-lmcache's ENV.
 ENV HSA_ENABLE_IPC_MODE_LEGACY=1
