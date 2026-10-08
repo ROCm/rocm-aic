@@ -870,7 +870,8 @@
             "lineWidth": 1,
             "fillOpacity": 10
           },
-          "unit": "hertz"
+          "unit": "megahertz",
+          "decimals": 0
         },
         "overrides": []
       },
@@ -881,7 +882,7 @@
         "h": 4
       },
       "id": 4,
-      "title": "GPU System Clock (Hz)",
+      "title": "GPU System Clock (MHz)",
       "options": {
         "reduceOptions": {
           "calcs": [
@@ -970,7 +971,8 @@
             "lineWidth": 1,
             "fillOpacity": 10
           },
-          "unit": "hertz"
+          "unit": "megahertz",
+          "decimals": 0
         },
         "overrides": []
       },
@@ -981,7 +983,7 @@
         "h": 4
       },
       "id": 6,
-      "title": "GPU Memory Clock (Hz)",
+      "title": "GPU Memory Clock (MHz)",
       "options": {
         "reduceOptions": {
           "calcs": [
@@ -5889,7 +5891,7 @@
       },
       "fieldConfig": {
         "defaults": {
-          "unit": "percent",
+          "unit": "watt",
           "min": 0,
           "max": 100,
           "thresholds": {
@@ -5939,12 +5941,12 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "gpu_average_package_power / 300 * 100",
-          "legendFormat": "Power % (of 300W TDP)",
+          "expr": "gpu_average_package_power",
+          "legendFormat": "Power (W)",
           "refId": "B"
         }
       ],
-      "title": "GPU Activity & Power %",
+      "title": "GPU GFX Activity & Power",
       "type": "timeseries"
     }
   ],

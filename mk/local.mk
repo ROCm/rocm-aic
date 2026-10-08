@@ -5,7 +5,13 @@
 
 .PHONY: ensure-compose build up up-batch up-dev up-gds-l1 up-gds-l1-batch \
         down logs logs-lmcache logs-vllm ps shell-lmcache shell-vllm \
-        restart-vllm restart-lmcache venv vllm-reset-test
+        restart-vllm restart-lmcache venv vllm-reset-test bench-serve
+
+# ---- Agentic serving benchmark -----------------------------------------------
+BENCH_DURATION ?= 60     # minutes
+BENCH_RATE     ?= 0.5    # requests/second (keep low on 16 GB GPU)
+BENCH_TOKENS   ?= 256    # max output tokens per request
+BENCH_CONCUR   ?= 2      # max concurrent requests
 
 ensure-compose:
 	@if docker compose version >/dev/null 2>&1; then \
@@ -226,3 +232,18 @@ vllm-reset-test: check-hf-token prep-dirs
 	    http://localhost:8080/metrics/reset > /dev/null
 	$(PYTHON) "$(CURDIR)/benchmarks/vllm_reset_test.py"
 	@echo "Test complete. Run 'make down' to stop the stack."
+
+bench-serve:
+	@echo "Starting AIC agentic serving benchmark ($(BENCH_DURATION)min @ $(BENCH_RATE)req/s)..."
+	@echo "  Model:       $(VLLM_MODEL)"
+	@echo "  Concurrency: $(BENCH_CONCUR)  Max tokens: $(BENCH_TOKENS)"
+	@echo "  Results:     /tmp/aic-bench-results/"
+	$(PYTHON) "$(REPO_ROOT)/benchmarks/aic_bench_serve.py" \
+	    --base-url http://localhost:8000 \
+	    --model "$(VLLM_MODEL)" \
+	    --duration $(BENCH_DURATION) \
+	    --rate $(BENCH_RATE) \
+	    --max-tokens $(BENCH_TOKENS) \
+	    --concurrency $(BENCH_CONCUR) \
+	    --output /tmp/aic-bench-results
+	@echo "Benchmark complete."
