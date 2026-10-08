@@ -213,3 +213,6 @@ RUN --mount=type=bind,from=lmcache-wheels,target=/aic-wheels \
         nixl nixl-cu12 nixl-cu13 \
         cupy-cuda12x cufile-python cuda-pathfinder 2>/dev/null || true; } && \
     python3 -c 'import lmcache.integration.vllm.vllm_multi_process_adapter, vllm.distributed.kv_transfer.kv_connector.v1.lmcache_mp_connector; print("LMCacheMPConnector imports OK")'
+
+# Cross-container HIP IPC with the lmcache server; must match aic-lmcache's ENV.
+ENV HSA_ENABLE_IPC_MODE_LEGACY=1
