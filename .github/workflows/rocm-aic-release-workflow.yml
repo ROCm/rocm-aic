@@ -147,13 +147,15 @@ jobs:
       # Compose release notes + publish
       # ---------------------------------------------------------------------------
       - name: Compose release notes
+        env:
+          REF_NAME: ${{ github.ref_name }}
         run: |
           set -euo pipefail
           bash .github/scripts/workflows/render-release-notes.sh \
             docker/base/Dockerfile \
             docker/vllm/Dockerfile \
             docker/lmcache/Dockerfile \
-            "${{ github.ref_name }}" \
+            "${REF_NAME}" \
             "${{ github.sha }}" \
             "${ROCM_ARCH}" \
             "${IMAGE_NAME}" \
@@ -164,9 +166,10 @@ jobs:
       - name: Publish GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
+          REF_NAME: ${{ github.ref_name }}
         run: |
           set -euo pipefail
-          tag="${{ github.ref_name }}"
+          tag="${REF_NAME}"
           gh release create "${tag}" wheels/*.whl "${TARBALL}" \
             --repo "${GITHUB_REPOSITORY}" \
             --title "AIC ${tag}" \
