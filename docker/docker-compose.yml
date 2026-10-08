@@ -572,6 +572,31 @@ services:
     restart: unless-stopped
 
   # ---------------------------------------------------------------------------
+  # loki: log aggregation store for Docker container logs.
+  # alloy: Grafana Alloy collector — tails container logs via Docker socket and ships to Loki.
+  loki:
+    profiles: [monitoring, monitoring-base]
+    image: grafana/loki:3.5.0
+    container_name: aic-loki
+    networks: [aic-network]
+    command: -config.file=/etc/loki/loki.yml
+    volumes:
+      - ../monitoring/loki/loki.yml:/etc/loki/loki.yml:ro
+      - loki-data:/loki
+    restart: unless-stopped
+
+  alloy:
+    profiles: [monitoring, monitoring-base]
+    image: grafana/alloy:v1.8.3
+    container_name: aic-alloy
+    networks: [aic-network]
+    volumes:
+      - ../monitoring/alloy/config.alloy:/etc/alloy/config.alloy:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    command: run --server.http.listen-addr=0.0.0.0:12345 /etc/alloy/config.alloy
+    restart: unless-stopped
+    depends_on: [loki]
+
   # prometheus: scrapes all stack targets by container name via the aic network.
   # Behind the `monitoring` profile — start with `make up-monitoring` or
   # `docker compose --profile cache --profile monitoring up`.
@@ -991,3 +1016,4 @@ services:
 
 volumes:
   grafana-data:
+  loki-data:

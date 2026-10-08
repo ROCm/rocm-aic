@@ -51,7 +51,7 @@ MODEL    = os.getenv("AIC_TEST_MODEL",        "Qwen/Qwen2.5-3B-Instruct")
 N_ANCHOR = int(os.getenv("AIC_TEST_ANCHORS", "10"))
 N_FLOOD  = int(os.getenv("AIC_TEST_FLOOD",   "50"))
 TIMEOUT  = int(os.getenv("AIC_TEST_TIMEOUT", "120"))
-EXEC     = ["docker", "exec", "aic-client"]
+EXEC     = []  # run curl directly on the host (vllm/lmcache use network_mode:host)
 
 # chunk_size=256 tok × fp8 KV for Qwen2.5-3B ≈ 4.7 MiB/chunk; L1=1 GiB ≈ 222 chunks.
 # Each anchor uses ~14 chunks; 10 anchors = 140 chunks, leaving ~82 free L1 slots.

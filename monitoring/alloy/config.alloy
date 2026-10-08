@@ -1,0 +1,40 @@
+// AIC Alloy config — collect Docker container logs and ship to Loki.
+// Discovers all running containers via the Docker socket, tails their
+// stdout/stderr, and labels each stream with the container name so
+// Grafana can filter by service (aic-vllm-gpu0, aic-lmcache, etc.).
+
+discovery.docker "aic_containers" {
+  host = "unix:///var/run/docker.sock"
+}
+
+// Relabel: extract container_name (strip leading '/') and image.
+discovery.relabel "aic_containers" {
+  targets = discovery.docker.aic_containers.targets
+
+  rule {
+    source_labels = ["__meta_docker_container_name"]
+    regex         = "/(.*)"
+    target_label  = "container"
+  }
+
+  rule {
+    source_labels = ["__meta_docker_container_image"]
+    target_label  = "image"
+  }
+}
+
+loki.source.docker "aic_logs" {
+  host       = "unix:///var/run/docker.sock"
+  targets    = discovery.relabel.aic_containers.output
+  forward_to = [loki.write.aic_loki.receiver]
+
+  labels = {
+    job = "docker",
+  }
+}
+
+loki.write "aic_loki" {
+  endpoint {
+    url = "http://aic-loki:3100/loki/api/v1/push"
+  }
+}
