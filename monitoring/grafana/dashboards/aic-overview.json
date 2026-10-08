@@ -74,641 +74,6 @@
       "type": "logs"
     },
     {
-      "collapsed": false,
-      "gridPos": {
-        "h": 1,
-        "w": 24,
-        "x": 0,
-        "y": 11
-      },
-      "id": 300,
-      "title": "Summary",
-      "type": "row"
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "${datasource}"
-      },
-      "description": "Cumulative completed inference requests since last metrics reset (all finish reasons: stop, length, abort, error).",
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "palette-classic"
-          },
-          "custom": {
-            "lineWidth": 1,
-            "fillOpacity": 10
-          },
-          "unit": "short"
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 4,
-        "w": 4,
-        "x": 0,
-        "y": 12
-      },
-      "id": 301,
-      "title": "Total Prompts",
-      "options": {
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ]
-        },
-        "orientation": "auto",
-        "textMode": "value",
-        "colorMode": "background",
-        "graphMode": "none"
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${datasource}"
-          },
-          "expr": "sum(max_over_time(vllm:request_success_total[$__range]))",
-          "legendFormat": "",
-          "instant": true
-        }
-      ],
-      "type": "stat"
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "${datasource}"
-      },
-      "description": "Cumulative prompt tokens processed since last metrics reset. Includes tokens served from GPU prefix cache, LMCache L1, LMCache L2, and full compute.",
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "palette-classic"
-          },
-          "custom": {
-            "lineWidth": 1,
-            "fillOpacity": 10
-          },
-          "unit": "short"
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 4,
-        "w": 4,
-        "x": 4,
-        "y": 12
-      },
-      "id": 302,
-      "title": "Total Input Tokens",
-      "options": {
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ]
-        },
-        "orientation": "auto",
-        "textMode": "value",
-        "colorMode": "background",
-        "graphMode": "none"
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${datasource}"
-          },
-          "expr": "sum(max_over_time(vllm:prompt_tokens_total[$__range]))",
-          "legendFormat": "",
-          "instant": true
-        }
-      ],
-      "type": "stat"
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "${datasource}"
-      },
-      "description": "Cumulative generation (decode) tokens produced since last metrics reset.",
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "palette-classic"
-          },
-          "custom": {
-            "lineWidth": 1,
-            "fillOpacity": 10
-          },
-          "unit": "short"
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 4,
-        "w": 4,
-        "x": 8,
-        "y": 12
-      },
-      "id": 303,
-      "title": "Total Output Tokens",
-      "options": {
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ]
-        },
-        "orientation": "auto",
-        "textMode": "value",
-        "colorMode": "background",
-        "graphMode": "none"
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${datasource}"
-          },
-          "expr": "sum(max_over_time(vllm:generation_tokens_total[$__range]))",
-          "legendFormat": "",
-          "instant": true
-        }
-      ],
-      "type": "stat"
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "${datasource}"
-      },
-      "description": "Cumulative prompt tokens that required full GPU prefill \u2014 no cache hit at any tier. The expensive path; high values relative to total input tokens means low cache effectiveness.",
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "palette-classic"
-          },
-          "custom": {
-            "lineWidth": 1,
-            "fillOpacity": 10
-          },
-          "unit": "short"
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 4,
-        "w": 4,
-        "x": 12,
-        "y": 12
-      },
-      "id": 304,
-      "title": "Tokens Computed (prefill)",
-      "options": {
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ]
-        },
-        "orientation": "auto",
-        "textMode": "value",
-        "colorMode": "background",
-        "graphMode": "none"
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${datasource}"
-          },
-          "expr": "sum(max_over_time(vllm:prompt_tokens_by_source_total{source=\"local_compute\"}[$__range]))",
-          "legendFormat": "",
-          "instant": true
-        }
-      ],
-      "type": "stat"
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "${datasource}"
-      },
-      "description": "Cumulative prompt tokens served from the LMCache DRAM L1 cache. These bypassed GPU prefill entirely via the local_cache_hit path.",
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "palette-classic"
-          },
-          "custom": {
-            "lineWidth": 1,
-            "fillOpacity": 10
-          },
-          "unit": "short"
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 4,
-        "w": 4,
-        "x": 16,
-        "y": 12
-      },
-      "id": 305,
-      "title": "Tokens from LMCache L1",
-      "options": {
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ]
-        },
-        "orientation": "auto",
-        "textMode": "value",
-        "colorMode": "background",
-        "graphMode": "none"
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${datasource}"
-          },
-          "expr": "sum(max_over_time(vllm:prompt_tokens_by_source_total{source=\"local_cache_hit\"}[$__range]))",
-          "legendFormat": "",
-          "instant": true
-        }
-      ],
-      "type": "stat"
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "${datasource}"
-      },
-      "description": "Cumulative prompt tokens served via external KV transfer from the LMCache L2 NVMe store (NIXL POSIX or AIS_MT). Non-zero confirms the L1\u2192NVMe\u2192GPU round-trip is working.",
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "palette-classic"
-          },
-          "custom": {
-            "lineWidth": 1,
-            "fillOpacity": 10
-          },
-          "unit": "short"
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 4,
-        "w": 4,
-        "x": 20,
-        "y": 12
-      },
-      "id": 306,
-      "title": "Tokens from LMCache L2",
-      "options": {
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ]
-        },
-        "orientation": "auto",
-        "textMode": "value",
-        "colorMode": "background",
-        "graphMode": "none"
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${datasource}"
-          },
-          "expr": "sum(max_over_time(vllm:prompt_tokens_by_source_total{source=\"external_kv_transfer\"}[$__range]))",
-          "legendFormat": "",
-          "instant": true
-        }
-      ],
-      "type": "stat"
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "${datasource}"
-      },
-      "description": "Average time to first token over the selected time window (sum of TTFT / request count). Dominated by prefill compute; low values confirm prefix cache hits are short-circuiting prefill.",
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "palette-classic"
-          },
-          "custom": {
-            "lineWidth": 1,
-            "fillOpacity": 10
-          },
-          "unit": "s",
-          "decimals": 3
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 4,
-        "w": 4,
-        "x": 0,
-        "y": 16
-      },
-      "id": 307,
-      "title": "Avg TTFT",
-      "options": {
-        "reduceOptions": {
-          "calcs": [
-            "mean"
-          ]
-        },
-        "orientation": "auto",
-        "textMode": "value",
-        "colorMode": "background",
-        "graphMode": "none"
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${datasource}"
-          },
-          "expr": "sum(rate(vllm:time_to_first_token_seconds_sum[$__rate_interval])) / sum(rate(vllm:time_to_first_token_seconds_count[$__rate_interval]))",
-          "legendFormat": ""
-        }
-      ],
-      "type": "stat"
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "${datasource}"
-      },
-      "description": "Average time per output token (inter-token latency) over the selected time window \u2014 the per-step decode speed. High TPOT means decode is memory-bandwidth bound or the batch is too large.",
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "palette-classic"
-          },
-          "custom": {
-            "lineWidth": 1,
-            "fillOpacity": 10
-          },
-          "unit": "s",
-          "decimals": 3
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 4,
-        "w": 4,
-        "x": 4,
-        "y": 16
-      },
-      "id": 308,
-      "title": "Avg TPOT",
-      "options": {
-        "reduceOptions": {
-          "calcs": [
-            "mean"
-          ]
-        },
-        "orientation": "auto",
-        "textMode": "value",
-        "colorMode": "background",
-        "graphMode": "none"
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${datasource}"
-          },
-          "expr": "sum(rate(vllm:inter_token_latency_seconds_sum[$__rate_interval])) / sum(rate(vllm:inter_token_latency_seconds_count[$__rate_interval]))",
-          "legendFormat": ""
-        }
-      ],
-      "type": "stat"
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "${datasource}"
-      },
-      "description": "Total token throughput: prompt tokens processed plus generation tokens produced per second. The primary inference throughput metric.",
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "palette-classic"
-          },
-          "custom": {
-            "lineWidth": 1,
-            "fillOpacity": 10
-          },
-          "unit": "short"
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 4,
-        "w": 4,
-        "x": 8,
-        "y": 16
-      },
-      "id": 309,
-      "title": "Total Tokens/s",
-      "options": {
-        "reduceOptions": {
-          "calcs": [
-            "mean"
-          ]
-        },
-        "orientation": "auto",
-        "textMode": "value",
-        "colorMode": "background",
-        "graphMode": "none"
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${datasource}"
-          },
-          "expr": "sum(rate(vllm:prompt_tokens_total[$__rate_interval])) + sum(rate(vllm:generation_tokens_total[$__rate_interval]))",
-          "legendFormat": ""
-        }
-      ],
-      "type": "stat"
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "${datasource}"
-      },
-      "description": "Fraction of prompt tokens served from any cache tier (L1 + L2) vs total prompt tokens. = (local_cache_hit + external_kv_transfer) / prompt_tokens_total. 100% means zero prefill compute needed.",
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "palette-classic"
-          },
-          "custom": {
-            "lineWidth": 1,
-            "fillOpacity": 10
-          },
-          "unit": "percentunit",
-          "decimals": 1
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 4,
-        "w": 4,
-        "x": 12,
-        "y": 16
-      },
-      "id": 310,
-      "title": "Cache Hit Rate",
-      "options": {
-        "reduceOptions": {
-          "calcs": [
-            "mean"
-          ]
-        },
-        "orientation": "auto",
-        "textMode": "value",
-        "colorMode": "background",
-        "graphMode": "none"
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${datasource}"
-          },
-          "expr": "(sum(rate(vllm:prompt_tokens_by_source_total{source=\"local_cache_hit\"}[$__rate_interval])) + sum(rate(vllm:prompt_tokens_by_source_total{source=\"external_kv_transfer\"}[$__rate_interval]))) / sum(rate(vllm:prompt_tokens_total[$__rate_interval]))",
-          "legendFormat": ""
-        }
-      ],
-      "type": "stat"
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "${datasource}"
-      },
-      "description": "Fraction of prompt tokens served from LMCache L1 DRAM vs total prompt tokens. A high L1 rate means the DRAM cache is large enough to absorb most reuse without touching NVMe.",
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "palette-classic"
-          },
-          "custom": {
-            "lineWidth": 1,
-            "fillOpacity": 10
-          },
-          "unit": "percentunit",
-          "decimals": 1
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 4,
-        "w": 4,
-        "x": 16,
-        "y": 16
-      },
-      "id": 311,
-      "title": "L1 Hit Rate",
-      "options": {
-        "reduceOptions": {
-          "calcs": [
-            "mean"
-          ]
-        },
-        "orientation": "auto",
-        "textMode": "value",
-        "colorMode": "background",
-        "graphMode": "none"
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${datasource}"
-          },
-          "expr": "sum(rate(vllm:prompt_tokens_by_source_total{source=\"local_cache_hit\"}[$__rate_interval])) / sum(rate(vllm:prompt_tokens_total[$__rate_interval]))",
-          "legendFormat": ""
-        }
-      ],
-      "type": "stat"
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "${datasource}"
-      },
-      "description": "Fraction of prompt tokens served from LMCache L2 NVMe vs total prompt tokens. Non-zero confirms L2 reads are reaching vLLM. Low values vs L1 hit rate are expected (L1 absorbs most reuse; L2 handles overflow).",
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "palette-classic"
-          },
-          "custom": {
-            "lineWidth": 1,
-            "fillOpacity": 10
-          },
-          "unit": "percentunit",
-          "decimals": 1
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 4,
-        "w": 4,
-        "x": 20,
-        "y": 16
-      },
-      "id": 312,
-      "title": "L2 Hit Rate",
-      "options": {
-        "reduceOptions": {
-          "calcs": [
-            "mean"
-          ]
-        },
-        "orientation": "auto",
-        "textMode": "value",
-        "colorMode": "background",
-        "graphMode": "none"
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${datasource}"
-          },
-          "expr": "sum(rate(vllm:prompt_tokens_by_source_total{source=\"external_kv_transfer\"}[$__rate_interval])) / sum(rate(vllm:prompt_tokens_total[$__rate_interval]))",
-          "legendFormat": ""
-        }
-      ],
-      "type": "stat"
-    },
-    {
-      "collapsed": false,
-      "gridPos": {
-        "x": 0,
-        "y": 24,
-        "w": 24,
-        "h": 1
-      },
-      "id": 100,
-      "title": "GPU",
-      "type": "row"
-    },
-    {
       "datasource": {
         "type": "prometheus",
         "uid": "${datasource}"
@@ -807,6 +172,782 @@
       "description": "Absolute GPU VRAM used and total capacity in MB. Used = active KV cache blocks + model weights + CUDA overhead."
     },
     {
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 11
+      },
+      "id": 430,
+      "title": "vLLM Serving Traffic (Loki)",
+      "type": "row"
+    },
+    {
+      "datasource": {
+        "type": "loki",
+        "uid": "loki"
+      },
+      "gridPos": {
+        "h": 12,
+        "w": 16,
+        "x": 0,
+        "y": 12
+      },
+      "id": 431,
+      "options": {
+        "dedupStrategy": "none",
+        "enableLogDetails": true,
+        "prettifyLogMessage": false,
+        "showCommonLabels": false,
+        "showLabels": false,
+        "showTime": true,
+        "sortOrder": "Descending",
+        "wrapLogMessage": true
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "loki",
+            "uid": "loki"
+          },
+          "editorMode": "code",
+          "expr": "{container=\"aic-vllm-gpu0\"} |~ \"APIServer|POST|GET|HTTP|chat|completions|tokens|latency|request|response|metrics\"",
+          "queryType": "range",
+          "refId": "A"
+        }
+      ],
+      "title": "vLLM API Server Logs (requests, responses, latency)",
+      "type": "logs"
+    },
+    {
+      "datasource": {
+        "type": "loki",
+        "uid": "loki"
+      },
+      "gridPos": {
+        "h": 6,
+        "w": 8,
+        "x": 16,
+        "y": 12
+      },
+      "id": 432,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "reduceOptions": {
+          "calcs": [
+            "last"
+          ]
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps",
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 0.5
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "loki",
+            "uid": "loki"
+          },
+          "editorMode": "code",
+          "expr": "rate({container=\"aic-vllm-gpu0\"} |~ \"POST /v1/chat/completions\" [1m])",
+          "queryType": "range",
+          "refId": "A"
+        }
+      ],
+      "title": "Chat Completions Request Rate",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "loki",
+        "uid": "loki"
+      },
+      "gridPos": {
+        "h": 6,
+        "w": 8,
+        "x": 16,
+        "y": 18
+      },
+      "id": 433,
+      "options": {
+        "dedupStrategy": "exact",
+        "enableLogDetails": true,
+        "showTime": true,
+        "sortOrder": "Descending",
+        "wrapLogMessage": false
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "loki",
+            "uid": "loki"
+          },
+          "editorMode": "code",
+          "expr": "{container=\"aic-lmcache\"} |~ \"ERROR|WARN|store|retrieve|evict|L1|L2|chunk\"",
+          "queryType": "range",
+          "refId": "A"
+        }
+      ],
+      "title": "LMCache Key Events (store/retrieve/evict)",
+      "type": "logs"
+    },
+    {
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 36
+      },
+      "id": 300,
+      "title": "Summary",
+      "type": "row"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "description": "Cumulative completed inference requests since last metrics reset (all finish reasons: stop, length, abort, error).",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "lineWidth": 1,
+            "fillOpacity": 10
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 0,
+        "y": 37
+      },
+      "id": 301,
+      "title": "Total Prompts",
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "orientation": "auto",
+        "textMode": "value",
+        "colorMode": "background",
+        "graphMode": "none"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum(max_over_time(vllm:request_success_total[$__range]))",
+          "legendFormat": "",
+          "instant": true
+        }
+      ],
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "description": "Cumulative prompt tokens processed since last metrics reset. Includes tokens served from GPU prefix cache, LMCache L1, LMCache L2, and full compute.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "lineWidth": 1,
+            "fillOpacity": 10
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 4,
+        "y": 37
+      },
+      "id": 302,
+      "title": "Total Input Tokens",
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "orientation": "auto",
+        "textMode": "value",
+        "colorMode": "background",
+        "graphMode": "none"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum(max_over_time(vllm:prompt_tokens_total[$__range]))",
+          "legendFormat": "",
+          "instant": true
+        }
+      ],
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "description": "Cumulative generation (decode) tokens produced since last metrics reset.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "lineWidth": 1,
+            "fillOpacity": 10
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 8,
+        "y": 37
+      },
+      "id": 303,
+      "title": "Total Output Tokens",
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "orientation": "auto",
+        "textMode": "value",
+        "colorMode": "background",
+        "graphMode": "none"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum(max_over_time(vllm:generation_tokens_total[$__range]))",
+          "legendFormat": "",
+          "instant": true
+        }
+      ],
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "description": "Cumulative prompt tokens that required full GPU prefill \u2014 no cache hit at any tier. The expensive path; high values relative to total input tokens means low cache effectiveness.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "lineWidth": 1,
+            "fillOpacity": 10
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 12,
+        "y": 37
+      },
+      "id": 304,
+      "title": "Tokens Computed (prefill)",
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "orientation": "auto",
+        "textMode": "value",
+        "colorMode": "background",
+        "graphMode": "none"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum(max_over_time(vllm:prompt_tokens_by_source_total{source=\"local_compute\"}[$__range]))",
+          "legendFormat": "",
+          "instant": true
+        }
+      ],
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "description": "Cumulative prompt tokens served from the LMCache DRAM L1 cache. These bypassed GPU prefill entirely via the local_cache_hit path.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "lineWidth": 1,
+            "fillOpacity": 10
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 16,
+        "y": 37
+      },
+      "id": 305,
+      "title": "Tokens from LMCache L1",
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "orientation": "auto",
+        "textMode": "value",
+        "colorMode": "background",
+        "graphMode": "none"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum(max_over_time(vllm:prompt_tokens_by_source_total{source=\"local_cache_hit\"}[$__range]))",
+          "legendFormat": "",
+          "instant": true
+        }
+      ],
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "description": "Cumulative prompt tokens served via external KV transfer from the LMCache L2 NVMe store (NIXL POSIX or AIS_MT). Non-zero confirms the L1\u2192NVMe\u2192GPU round-trip is working.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "lineWidth": 1,
+            "fillOpacity": 10
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 20,
+        "y": 37
+      },
+      "id": 306,
+      "title": "Tokens from LMCache L2",
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "orientation": "auto",
+        "textMode": "value",
+        "colorMode": "background",
+        "graphMode": "none"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum(max_over_time(vllm:prompt_tokens_by_source_total{source=\"external_kv_transfer\"}[$__range]))",
+          "legendFormat": "",
+          "instant": true
+        }
+      ],
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "description": "Average time to first token over the selected time window (sum of TTFT / request count). Dominated by prefill compute; low values confirm prefix cache hits are short-circuiting prefill.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "lineWidth": 1,
+            "fillOpacity": 10
+          },
+          "unit": "s",
+          "decimals": 3
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 0,
+        "y": 41
+      },
+      "id": 307,
+      "title": "Avg TTFT",
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "mean"
+          ]
+        },
+        "orientation": "auto",
+        "textMode": "value",
+        "colorMode": "background",
+        "graphMode": "none"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum(rate(vllm:time_to_first_token_seconds_sum[$__rate_interval])) / sum(rate(vllm:time_to_first_token_seconds_count[$__rate_interval]))",
+          "legendFormat": ""
+        }
+      ],
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "description": "Average time per output token (inter-token latency) over the selected time window \u2014 the per-step decode speed. High TPOT means decode is memory-bandwidth bound or the batch is too large.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "lineWidth": 1,
+            "fillOpacity": 10
+          },
+          "unit": "s",
+          "decimals": 3
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 4,
+        "y": 41
+      },
+      "id": 308,
+      "title": "Avg TPOT",
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "mean"
+          ]
+        },
+        "orientation": "auto",
+        "textMode": "value",
+        "colorMode": "background",
+        "graphMode": "none"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum(rate(vllm:inter_token_latency_seconds_sum[$__rate_interval])) / sum(rate(vllm:inter_token_latency_seconds_count[$__rate_interval]))",
+          "legendFormat": ""
+        }
+      ],
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "description": "Total token throughput: prompt tokens processed plus generation tokens produced per second. The primary inference throughput metric.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "lineWidth": 1,
+            "fillOpacity": 10
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 8,
+        "y": 41
+      },
+      "id": 309,
+      "title": "Total Tokens/s",
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "mean"
+          ]
+        },
+        "orientation": "auto",
+        "textMode": "value",
+        "colorMode": "background",
+        "graphMode": "none"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum(rate(vllm:prompt_tokens_total[$__rate_interval])) + sum(rate(vllm:generation_tokens_total[$__rate_interval]))",
+          "legendFormat": ""
+        }
+      ],
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "description": "Fraction of prompt tokens served from any cache tier (L1 + L2) vs total prompt tokens. = (local_cache_hit + external_kv_transfer) / prompt_tokens_total. 100% means zero prefill compute needed.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "lineWidth": 1,
+            "fillOpacity": 10
+          },
+          "unit": "percentunit",
+          "decimals": 1
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 12,
+        "y": 41
+      },
+      "id": 310,
+      "title": "Cache Hit Rate",
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "mean"
+          ]
+        },
+        "orientation": "auto",
+        "textMode": "value",
+        "colorMode": "background",
+        "graphMode": "none"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "(sum(rate(vllm:prompt_tokens_by_source_total{source=\"local_cache_hit\"}[$__rate_interval])) + sum(rate(vllm:prompt_tokens_by_source_total{source=\"external_kv_transfer\"}[$__rate_interval]))) / sum(rate(vllm:prompt_tokens_total[$__rate_interval]))",
+          "legendFormat": ""
+        }
+      ],
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "description": "Fraction of prompt tokens served from LMCache L1 DRAM vs total prompt tokens. A high L1 rate means the DRAM cache is large enough to absorb most reuse without touching NVMe.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "lineWidth": 1,
+            "fillOpacity": 10
+          },
+          "unit": "percentunit",
+          "decimals": 1
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 16,
+        "y": 41
+      },
+      "id": 311,
+      "title": "L1 Hit Rate",
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "mean"
+          ]
+        },
+        "orientation": "auto",
+        "textMode": "value",
+        "colorMode": "background",
+        "graphMode": "none"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum(rate(vllm:prompt_tokens_by_source_total{source=\"local_cache_hit\"}[$__rate_interval])) / sum(rate(vllm:prompt_tokens_total[$__rate_interval]))",
+          "legendFormat": ""
+        }
+      ],
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "description": "Fraction of prompt tokens served from LMCache L2 NVMe vs total prompt tokens. Non-zero confirms L2 reads are reaching vLLM. Low values vs L1 hit rate are expected (L1 absorbs most reuse; L2 handles overflow).",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "lineWidth": 1,
+            "fillOpacity": 10
+          },
+          "unit": "percentunit",
+          "decimals": 1
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 20,
+        "y": 41
+      },
+      "id": 312,
+      "title": "L2 Hit Rate",
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "mean"
+          ]
+        },
+        "orientation": "auto",
+        "textMode": "value",
+        "colorMode": "background",
+        "graphMode": "none"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum(rate(vllm:prompt_tokens_by_source_total{source=\"external_kv_transfer\"}[$__rate_interval])) / sum(rate(vllm:prompt_tokens_total[$__rate_interval]))",
+          "legendFormat": ""
+        }
+      ],
+      "type": "stat"
+    },
+    {
+      "collapsed": false,
+      "gridPos": {
+        "x": 0,
+        "y": 49,
+        "w": 24,
+        "h": 1
+      },
+      "id": 100,
+      "title": "GPU",
+      "type": "row"
+    },
+    {
       "datasource": {
         "type": "prometheus",
         "uid": "${datasource}"
@@ -826,7 +967,7 @@
       },
       "gridPos": {
         "x": 16,
-        "y": 25,
+        "y": 50,
         "w": 4,
         "h": 4
       },
@@ -877,7 +1018,7 @@
       },
       "gridPos": {
         "x": 20,
-        "y": 25,
+        "y": 50,
         "w": 4,
         "h": 4
       },
@@ -927,7 +1068,7 @@
       },
       "gridPos": {
         "x": 16,
-        "y": 29,
+        "y": 54,
         "w": 4,
         "h": 4
       },
@@ -978,7 +1119,7 @@
       },
       "gridPos": {
         "x": 20,
-        "y": 29,
+        "y": 54,
         "w": 4,
         "h": 4
       },
@@ -1012,7 +1153,7 @@
       "collapsed": false,
       "gridPos": {
         "x": 0,
-        "y": 41,
+        "y": 66,
         "w": 24,
         "h": 1
       },
@@ -1041,7 +1182,7 @@
       },
       "gridPos": {
         "x": 0,
-        "y": 42,
+        "y": 67,
         "w": 8,
         "h": 8
       },
@@ -1086,7 +1227,7 @@
       },
       "gridPos": {
         "x": 8,
-        "y": 42,
+        "y": 67,
         "w": 8,
         "h": 8
       },
@@ -1139,7 +1280,7 @@
       },
       "gridPos": {
         "x": 16,
-        "y": 42,
+        "y": 67,
         "w": 8,
         "h": 8
       },
@@ -1200,7 +1341,7 @@
       },
       "gridPos": {
         "x": 0,
-        "y": 50,
+        "y": 75,
         "w": 12,
         "h": 4
       },
@@ -1253,7 +1394,7 @@
       },
       "gridPos": {
         "x": 12,
-        "y": 50,
+        "y": 75,
         "w": 12,
         "h": 4
       },
@@ -1289,7 +1430,7 @@
       "collapsed": false,
       "gridPos": {
         "x": 0,
-        "y": 54,
+        "y": 79,
         "w": 24,
         "h": 1
       },
@@ -1332,7 +1473,7 @@
       },
       "gridPos": {
         "x": 0,
-        "y": 55,
+        "y": 80,
         "w": 4,
         "h": 8
       },
@@ -1381,7 +1522,7 @@
       },
       "gridPos": {
         "x": 4,
-        "y": 55,
+        "y": 80,
         "w": 4,
         "h": 4
       },
@@ -1431,7 +1572,7 @@
       },
       "gridPos": {
         "x": 4,
-        "y": 59,
+        "y": 84,
         "w": 4,
         "h": 4
       },
@@ -1482,7 +1623,7 @@
       },
       "gridPos": {
         "x": 8,
-        "y": 55,
+        "y": 80,
         "w": 8,
         "h": 8
       },
@@ -1535,7 +1676,7 @@
       },
       "gridPos": {
         "x": 16,
-        "y": 55,
+        "y": 80,
         "w": 8,
         "h": 8
       },
@@ -1589,7 +1730,7 @@
       },
       "gridPos": {
         "x": 0,
-        "y": 63,
+        "y": 88,
         "w": 12,
         "h": 8
       },
@@ -1634,7 +1775,7 @@
       },
       "gridPos": {
         "x": 12,
-        "y": 63,
+        "y": 88,
         "w": 12,
         "h": 8
       },
@@ -1669,7 +1810,7 @@
       "collapsed": false,
       "gridPos": {
         "x": 0,
-        "y": 71,
+        "y": 96,
         "w": 24,
         "h": 1
       },
@@ -1698,7 +1839,7 @@
       },
       "gridPos": {
         "x": 0,
-        "y": 72,
+        "y": 97,
         "w": 8,
         "h": 8
       },
@@ -1744,7 +1885,7 @@
       },
       "gridPos": {
         "x": 8,
-        "y": 72,
+        "y": 97,
         "w": 8,
         "h": 8
       },
@@ -1789,7 +1930,7 @@
       },
       "gridPos": {
         "x": 16,
-        "y": 72,
+        "y": 97,
         "w": 8,
         "h": 8
       },
@@ -1833,7 +1974,7 @@
       "collapsed": false,
       "gridPos": {
         "x": 0,
-        "y": 80,
+        "y": 105,
         "w": 24,
         "h": 1
       },
@@ -1862,7 +2003,7 @@
       },
       "gridPos": {
         "x": 0,
-        "y": 81,
+        "y": 106,
         "w": 8,
         "h": 8
       },
@@ -1915,7 +2056,7 @@
       },
       "gridPos": {
         "x": 8,
-        "y": 81,
+        "y": 106,
         "w": 8,
         "h": 8
       },
@@ -1968,7 +2109,7 @@
       },
       "gridPos": {
         "x": 16,
-        "y": 81,
+        "y": 106,
         "w": 8,
         "h": 8
       },
@@ -2004,7 +2145,7 @@
       "collapsed": false,
       "gridPos": {
         "x": 0,
-        "y": 89,
+        "y": 114,
         "w": 24,
         "h": 1
       },
@@ -2033,7 +2174,7 @@
       },
       "gridPos": {
         "x": 0,
-        "y": 90,
+        "y": 115,
         "w": 8,
         "h": 8
       },
@@ -2077,7 +2218,7 @@
       },
       "gridPos": {
         "x": 8,
-        "y": 90,
+        "y": 115,
         "w": 4,
         "h": 4
       },
@@ -2127,7 +2268,7 @@
       },
       "gridPos": {
         "x": 12,
-        "y": 90,
+        "y": 115,
         "w": 4,
         "h": 4
       },
@@ -2178,7 +2319,7 @@
       },
       "gridPos": {
         "x": 16,
-        "y": 90,
+        "y": 115,
         "w": 8,
         "h": 8
       },
@@ -2231,7 +2372,7 @@
       },
       "gridPos": {
         "x": 8,
-        "y": 94,
+        "y": 119,
         "w": 8,
         "h": 4
       },
@@ -2267,7 +2408,7 @@
       "collapsed": false,
       "gridPos": {
         "x": 0,
-        "y": 98,
+        "y": 123,
         "w": 24,
         "h": 1
       },
@@ -2297,7 +2438,7 @@
       },
       "gridPos": {
         "x": 0,
-        "y": 99,
+        "y": 124,
         "w": 12,
         "h": 8
       },
@@ -2342,7 +2483,7 @@
       },
       "gridPos": {
         "x": 12,
-        "y": 99,
+        "y": 124,
         "w": 6,
         "h": 8
       },
@@ -2387,7 +2528,7 @@
       },
       "gridPos": {
         "x": 18,
-        "y": 99,
+        "y": 124,
         "w": 6,
         "h": 4
       },
@@ -2440,7 +2581,7 @@
       },
       "gridPos": {
         "x": 18,
-        "y": 103,
+        "y": 128,
         "w": 6,
         "h": 4
       },
@@ -2485,7 +2626,7 @@
       },
       "gridPos": {
         "x": 0,
-        "y": 107,
+        "y": 132,
         "w": 12,
         "h": 8
       },
@@ -2538,7 +2679,7 @@
       },
       "gridPos": {
         "x": 12,
-        "y": 107,
+        "y": 132,
         "w": 6,
         "h": 8
       },
@@ -2583,7 +2724,7 @@
       },
       "gridPos": {
         "x": 18,
-        "y": 107,
+        "y": 132,
         "w": 6,
         "h": 8
       },
@@ -2638,7 +2779,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 33
+        "y": 58
       },
       "id": 70,
       "title": "GPU Compute / Memory / Matrix Activity (%)",
@@ -2699,7 +2840,7 @@
         "h": 8,
         "w": 6,
         "x": 12,
-        "y": 33
+        "y": 58
       },
       "id": 71,
       "title": "GPU Temperatures (\u00b0C)",
@@ -2752,7 +2893,7 @@
         "h": 8,
         "w": 6,
         "x": 18,
-        "y": 33
+        "y": 58
       },
       "id": 72,
       "title": "PCIe Speed / xGMI Fabric (GT/s)",
@@ -2795,7 +2936,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 115
+        "y": 140
       },
       "id": 200,
       "title": "vLLM \u2014 Extended",
@@ -2825,7 +2966,7 @@
         "h": 8,
         "w": 8,
         "x": 0,
-        "y": 116
+        "y": 141
       },
       "id": 80,
       "title": "GPU KV Cache Usage %",
@@ -2870,7 +3011,7 @@
         "h": 8,
         "w": 8,
         "x": 8,
-        "y": 116
+        "y": 141
       },
       "id": 81,
       "title": "E2E Request Latency p50 / p95 (s)",
@@ -2923,7 +3064,7 @@
         "h": 8,
         "w": 8,
         "x": 16,
-        "y": 116
+        "y": 141
       },
       "id": 82,
       "title": "Inter-Token Latency p50 / p95 (s)",
@@ -2976,7 +3117,7 @@
         "h": 8,
         "w": 8,
         "x": 0,
-        "y": 124
+        "y": 149
       },
       "id": 83,
       "title": "GPU Prefix Cache Hit Rate",
@@ -3029,7 +3170,7 @@
         "h": 8,
         "w": 8,
         "x": 8,
-        "y": 124
+        "y": 149
       },
       "id": 84,
       "title": "Preemptions & Queue Time p95",
@@ -3082,7 +3223,7 @@
         "h": 8,
         "w": 8,
         "x": 16,
-        "y": 124
+        "y": 149
       },
       "id": 85,
       "title": "Estimated GPU FLOP & Memory Bandwidth Rate",
@@ -3125,7 +3266,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 154
+        "y": 179
       },
       "id": 201,
       "title": "LMCache \u2014 Extended",
@@ -3155,7 +3296,7 @@
         "h": 8,
         "w": 8,
         "x": 0,
-        "y": 155
+        "y": 180
       },
       "id": 90,
       "title": "L1\u2192GPU Load Throughput (GB/s)",
@@ -3216,7 +3357,7 @@
         "h": 8,
         "w": 8,
         "x": 8,
-        "y": 155
+        "y": 180
       },
       "id": 91,
       "title": "L2 In-Flight Store Queue Depth",
@@ -3261,7 +3402,7 @@
         "h": 8,
         "w": 8,
         "x": 16,
-        "y": 155
+        "y": 180
       },
       "id": 92,
       "title": "Chunk Reuse Gap (s) \u2014 Cache Effectiveness",
@@ -3314,7 +3455,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 163
+        "y": 188
       },
       "id": 93,
       "title": "LMCache Operation Rate",
@@ -3378,7 +3519,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 163
+        "y": 188
       },
       "id": 94,
       "title": "LMCache L0\u2192L1 Throughput (GB/s)",
@@ -3415,7 +3556,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 172
+        "y": 197
       },
       "id": 202,
       "title": "Node \u2014 Extended",
@@ -3445,7 +3586,7 @@
         "h": 8,
         "w": 8,
         "x": 0,
-        "y": 173
+        "y": 198
       },
       "id": 95,
       "title": "System Load (1m / 5m / 15m)",
@@ -3506,7 +3647,7 @@
         "h": 8,
         "w": 8,
         "x": 8,
-        "y": 173
+        "y": 198
       },
       "id": 96,
       "title": "NVMe Capacity Used (bytes)",
@@ -3559,7 +3700,7 @@
         "h": 8,
         "w": 8,
         "x": 16,
-        "y": 173
+        "y": 198
       },
       "id": 97,
       "title": "IO Pressure (PSI stalled seconds rate)",
@@ -3612,7 +3753,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 181
+        "y": 206
       },
       "id": 98,
       "title": "InfiniBand / RoCE Port Throughput (B/s)",
@@ -3665,7 +3806,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 181
+        "y": 206
       },
       "id": 99,
       "title": "Filesystem Available Space",
@@ -3692,7 +3833,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 132
+        "y": 157
       },
       "id": 203,
       "title": "vLLM \u2014 ISL / OSL (Input & Output Sequence Length)",
@@ -3722,7 +3863,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 133
+        "y": 158
       },
       "id": 110,
       "title": "ISL Distribution (prompt tokens) \u2014 p50 / p95 / p99",
@@ -3783,7 +3924,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 133
+        "y": 158
       },
       "id": 111,
       "title": "OSL Distribution (generation tokens) \u2014 p50 / p95 / p99",
@@ -3843,7 +3984,7 @@
         "h": 4,
         "w": 6,
         "x": 0,
-        "y": 141
+        "y": 166
       },
       "id": 112,
       "title": "Average ISL (prompt tokens)",
@@ -3893,7 +4034,7 @@
         "h": 4,
         "w": 6,
         "x": 6,
-        "y": 141
+        "y": 166
       },
       "id": 113,
       "title": "Average OSL (generation tokens)",
@@ -3943,7 +4084,7 @@
         "h": 4,
         "w": 6,
         "x": 12,
-        "y": 141
+        "y": 166
       },
       "id": 114,
       "title": "ISL p99 (prompt tokens)",
@@ -3993,7 +4134,7 @@
         "h": 4,
         "w": 6,
         "x": 18,
-        "y": 141
+        "y": 166
       },
       "id": 115,
       "title": "OSL p99 (generation tokens)",
@@ -4044,7 +4185,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 145
+        "y": 170
       },
       "id": 116,
       "title": "Average ISL vs OSL over time",
@@ -4097,7 +4238,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 145
+        "y": 170
       },
       "id": 117,
       "title": "Request Rate & Total Tokens/s",
@@ -4149,7 +4290,7 @@
         "h": 4,
         "w": 4,
         "x": 0,
-        "y": 20
+        "y": 45
       },
       "id": 313,
       "title": "Avg GPU VRAM Used",
@@ -4200,7 +4341,7 @@
         "h": 4,
         "w": 4,
         "x": 4,
-        "y": 20
+        "y": 45
       },
       "id": 314,
       "title": "Avg LMCache L1 Used",
@@ -4251,7 +4392,7 @@
         "h": 4,
         "w": 4,
         "x": 8,
-        "y": 20
+        "y": 45
       },
       "id": 315,
       "title": "Avg LMCache L2 Used",
@@ -4285,7 +4426,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 189
+        "y": 214
       },
       "id": 400,
       "title": "LMCache Coordinator",
@@ -4340,7 +4481,7 @@
         "h": 4,
         "w": 4,
         "x": 0,
-        "y": 190
+        "y": 215
       },
       "id": 401,
       "options": {
@@ -4396,7 +4537,7 @@
         "h": 4,
         "w": 4,
         "x": 4,
-        "y": 190
+        "y": 215
       },
       "id": 402,
       "options": {
@@ -4468,7 +4609,7 @@
         "h": 4,
         "w": 4,
         "x": 8,
-        "y": 190
+        "y": 215
       },
       "id": 403,
       "options": {
@@ -4520,7 +4661,7 @@
         "h": 8,
         "w": 8,
         "x": 0,
-        "y": 194
+        "y": 219
       },
       "id": 404,
       "options": {
@@ -4580,7 +4721,7 @@
         "h": 8,
         "w": 8,
         "x": 8,
-        "y": 194
+        "y": 219
       },
       "id": 405,
       "options": {
@@ -4631,7 +4772,7 @@
         "h": 8,
         "w": 8,
         "x": 16,
-        "y": 194
+        "y": 219
       },
       "id": 406,
       "options": {
@@ -4691,7 +4832,7 @@
         "h": 4,
         "w": 12,
         "x": 12,
-        "y": 190
+        "y": 215
       },
       "id": 407,
       "options": {
@@ -4723,7 +4864,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 202
+        "y": 227
       },
       "id": 408,
       "title": "LMCache \u2014 Adapter & Transport Health",
@@ -4815,7 +4956,7 @@
         "h": 6,
         "w": 8,
         "x": 0,
-        "y": 203
+        "y": 228
       },
       "id": 409,
       "options": {
@@ -4892,7 +5033,7 @@
         "h": 6,
         "w": 8,
         "x": 8,
-        "y": 203
+        "y": 228
       },
       "id": 410,
       "options": {
@@ -4967,7 +5108,7 @@
         "h": 6,
         "w": 8,
         "x": 16,
-        "y": 203
+        "y": 228
       },
       "id": 411,
       "options": {
@@ -5032,7 +5173,7 @@
         "h": 4,
         "w": 4,
         "x": 12,
-        "y": 20
+        "y": 45
       },
       "id": 412,
       "options": {
@@ -5114,7 +5255,7 @@
         "h": 4,
         "w": 4,
         "x": 16,
-        "y": 20
+        "y": 45
       },
       "id": 413,
       "options": {
@@ -5171,7 +5312,7 @@
         "h": 4,
         "w": 4,
         "x": 20,
-        "y": 20
+        "y": 45
       },
       "id": 414,
       "options": {
@@ -5205,7 +5346,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 209
+        "y": 234
       },
       "id": 415,
       "title": "KV Block Residency (vLLM + LMCache L0)",
@@ -5235,7 +5376,7 @@
         "h": 8,
         "w": 8,
         "x": 0,
-        "y": 210
+        "y": 235
       },
       "id": 416,
       "options": {
@@ -5312,7 +5453,7 @@
         "h": 8,
         "w": 8,
         "x": 8,
-        "y": 210
+        "y": 235
       },
       "id": 417,
       "options": {
@@ -5389,7 +5530,7 @@
         "h": 8,
         "w": 8,
         "x": 16,
-        "y": 210
+        "y": 235
       },
       "id": 418,
       "options": {
@@ -5467,7 +5608,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 218
+        "y": 243
       },
       "id": 419,
       "options": {
@@ -5528,7 +5669,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 218
+        "y": 243
       },
       "id": 420,
       "options": {
@@ -5560,7 +5701,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 226
+        "y": 251
       },
       "id": 421,
       "title": "Engine & Event Bus Health",
@@ -5607,7 +5748,7 @@
         "h": 4,
         "w": 4,
         "x": 0,
-        "y": 227
+        "y": 252
       },
       "id": 422,
       "options": {
@@ -5648,7 +5789,7 @@
         "h": 4,
         "w": 6,
         "x": 4,
-        "y": 227
+        "y": 252
       },
       "id": 423,
       "options": {
@@ -5706,7 +5847,7 @@
         "h": 4,
         "w": 5,
         "x": 10,
-        "y": 227
+        "y": 252
       },
       "id": 424,
       "options": {
@@ -5760,7 +5901,7 @@
         "h": 4,
         "w": 5,
         "x": 15,
-        "y": 227
+        "y": 252
       },
       "id": 425,
       "options": {
@@ -5801,7 +5942,7 @@
         "h": 4,
         "w": 4,
         "x": 20,
-        "y": 227
+        "y": 252
       },
       "id": 426,
       "options": {
@@ -5833,7 +5974,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 231
+        "y": 256
       },
       "id": 427,
       "title": "GPU Activity (hsa-snoop)",
@@ -5857,7 +5998,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 232
+        "y": 257
       },
       "id": 428,
       "options": {
@@ -5918,7 +6059,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 232
+        "y": 257
       },
       "id": 429,
       "options": {
@@ -5948,147 +6089,6 @@
       ],
       "title": "GPU GFX Activity & Power",
       "type": "timeseries"
-    },
-    {
-      "collapsed": false,
-      "gridPos": {
-        "h": 1,
-        "w": 24,
-        "x": 0,
-        "y": 240
-      },
-      "id": 430,
-      "title": "vLLM Serving Traffic (Loki)",
-      "type": "row"
-    },
-    {
-      "datasource": {
-        "type": "loki",
-        "uid": "loki"
-      },
-      "gridPos": {
-        "h": 12,
-        "w": 16,
-        "x": 0,
-        "y": 241
-      },
-      "id": 431,
-      "options": {
-        "dedupStrategy": "none",
-        "enableLogDetails": true,
-        "prettifyLogMessage": false,
-        "showCommonLabels": false,
-        "showLabels": false,
-        "showTime": true,
-        "sortOrder": "Descending",
-        "wrapLogMessage": true
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "loki",
-            "uid": "loki"
-          },
-          "editorMode": "code",
-          "expr": "{container=\"aic-vllm-gpu0\"} |~ \"APIServer|POST|GET|HTTP|chat|completions|tokens|latency|request|response|metrics\"",
-          "queryType": "range",
-          "refId": "A"
-        }
-      ],
-      "title": "vLLM API Server Logs (requests, responses, latency)",
-      "type": "logs"
-    },
-    {
-      "datasource": {
-        "type": "loki",
-        "uid": "loki"
-      },
-      "gridPos": {
-        "h": 6,
-        "w": 8,
-        "x": 16,
-        "y": 241
-      },
-      "id": 432,
-      "options": {
-        "colorMode": "value",
-        "graphMode": "area",
-        "reduceOptions": {
-          "calcs": [
-            "last"
-          ]
-        }
-      },
-      "fieldConfig": {
-        "defaults": {
-          "unit": "reqps",
-          "color": {
-            "mode": "thresholds"
-          },
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": null
-              },
-              {
-                "color": "yellow",
-                "value": 0.5
-              }
-            ]
-          }
-        },
-        "overrides": []
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "loki",
-            "uid": "loki"
-          },
-          "editorMode": "code",
-          "expr": "rate({container=\"aic-vllm-gpu0\"} |~ \"POST /v1/chat/completions\" [1m])",
-          "queryType": "range",
-          "refId": "A"
-        }
-      ],
-      "title": "Chat Completions Request Rate",
-      "type": "stat"
-    },
-    {
-      "datasource": {
-        "type": "loki",
-        "uid": "loki"
-      },
-      "gridPos": {
-        "h": 6,
-        "w": 8,
-        "x": 16,
-        "y": 247
-      },
-      "id": 433,
-      "options": {
-        "dedupStrategy": "exact",
-        "enableLogDetails": true,
-        "showTime": true,
-        "sortOrder": "Descending",
-        "wrapLogMessage": false
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "loki",
-            "uid": "loki"
-          },
-          "editorMode": "code",
-          "expr": "{container=\"aic-lmcache\"} |~ \"ERROR|WARN|store|retrieve|evict|L1|L2|chunk\"",
-          "queryType": "range",
-          "refId": "A"
-        }
-      ],
-      "title": "LMCache Key Events (store/retrieve/evict)",
-      "type": "logs"
     }
   ],
   "refresh": "10s",
