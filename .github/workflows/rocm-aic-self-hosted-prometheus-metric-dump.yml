@@ -42,7 +42,7 @@ jobs:
       AIC_CI_STORAGE_ROOT: ${{ secrets.AIC_SHARED_NFS }}/rocm-aic
 
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
 
       - name: Run prometheus-dump on SPUR
         run: |
@@ -50,7 +50,7 @@ jobs:
           bash .github/scripts/workflows/spur-prometheus-dump.sh "${SHA}"
 
       - name: Upload prometheus-dump artifact
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         with:
           name: prometheus-dump-${{ github.sha }}
           path: prometheus-page/
@@ -58,7 +58,7 @@ jobs:
           retention-days: 30
 
       - name: Deploy prometheus-dump to GitHub Pages
-        uses: peaceiris/actions-gh-pages@v4
+        uses: peaceiris/actions-gh-pages@84c30a85c19949d7eee79c4ff27748b70285e453 # v4.1.0
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           publish_dir: ./prometheus-page

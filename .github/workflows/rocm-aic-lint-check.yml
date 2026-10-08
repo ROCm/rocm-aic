@@ -10,7 +10,7 @@ jobs:
     name: ShellCheck
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
       - name: Install shellcheck
         run: sudo apt-get install -y shellcheck
       - name: Run shellcheck
@@ -24,8 +24,8 @@ jobs:
     name: Hadolint
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v5
-      - uses: hadolint/hadolint-action@v3.1.0
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+      - uses: hadolint/hadolint-action@54c9adbab1582c2ef04b2016b760714a4bfde3cf # v3.1.0
         with:
           recursive: true
 
@@ -33,7 +33,7 @@ jobs:
     name: HTMLHint
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
       - name: Install htmlhint
         run: npm install -g htmlhint
       - name: Run htmlhint
@@ -43,7 +43,7 @@ jobs:
     name: Validate LLM-Emu profile packs
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
       - name: Resolve LLM-Emu ref from Dockerfile
         id: meta
         run: |
@@ -69,7 +69,7 @@ jobs:
     name: Grafana dashboard lint
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
       - name: Install dashboard-linter
         run: |
           set -euo pipefail
