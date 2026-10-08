@@ -1,0 +1,25 @@
+Enable standalone Prometheus HTTP server on --prometheus-port in MP mode.
+
+lmcache v0.5.5 http_server.py calls init_observability with
+start_prometheus_http_server=False, expecting uvicorn at :8080 to serve
+/metrics via FastAPI. Under load (concurrency >= 4) uvicorn is saturated
+with KV store/retrieve operations and accumulates CLOSE-WAIT connections,
+making /metrics inaccessible. The --prometheus-port flag (default: 9091) is
+parsed but unused.
+
+Setting start_prometheus_http_server=True causes prometheus_client to bind
+a dedicated lightweight HTTP server on --prometheus-port using its own
+thread, independent of uvicorn. This thread only serves GET /metrics and is
+not affected by KV operation load.
+
+--- a/lmcache/v1/multiprocess/http_server.py
++++ b/lmcache/v1/multiprocess/http_server.py
+@@ -86,7 +86,7 @@ def run_http_server(
+         storage_manager_config=_configs["storage_manager"],
+         obs_config=_configs["observability"],
+         return_engine=True,
+-        start_prometheus_http_server=False,
++        start_prometheus_http_server=True,
+         coordinator_config=coordinator_config,
+     )
+     assert result is not None, "run_cache_server returned None with return_engine=True"
