@@ -33,6 +33,19 @@ loki.source.docker "aic_logs" {
   }
 }
 
+// Tail the AIC benchmark conversation log — written by aic_bench_serve.py
+// so each conversation (prompt + response) appears in Grafana as a log entry.
+local.file_match "bench_conversations" {
+  path_targets = [{"__path__" = "/tmp/aic-conversations.log",
+                   "job"      = "aic_bench",
+                   "container" = "host"}]
+}
+
+loki.source.file "bench_conversations" {
+  targets    = local.file_match.bench_conversations.targets
+  forward_to = [loki.write.aic_loki.receiver]
+}
+
 loki.write "aic_loki" {
   endpoint {
     url = "http://aic-loki:3100/loki/api/v1/push"

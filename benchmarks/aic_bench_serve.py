@@ -73,14 +73,20 @@ def send_request(base_url: str, model: str, messages: list, max_tokens: int,
             body = json.loads(resp.read())
             latency = time.monotonic() - t0
             usage = body.get("usage", {})
+            response_text = ""
+            choices = body.get("choices", [])
+            if choices:
+                response_text = choices[0].get("message", {}).get("content", "")
             return {
                 "ok": True,
                 "latency": latency,
                 "prompt_tokens": usage.get("prompt_tokens", 0),
                 "completion_tokens": usage.get("completion_tokens", 0),
+                "response_text": response_text,
             }
     except Exception as e:
-        return {"ok": False, "latency": time.monotonic() - t0, "error": str(e)}
+        return {"ok": False, "latency": time.monotonic() - t0, "error": str(e),
+                "response_text": ""}
 
 
 def main():
@@ -98,6 +104,10 @@ def main():
 
     random.seed(args.seed)
     os.makedirs(args.output, exist_ok=True)
+
+    # Conversation log for Loki/Grafana (tailed by Alloy)
+    CONV_LOG = "/tmp/aic-conversations.log"
+    conv_log = open(CONV_LOG, "a", buffering=1)
 
     data = download_dataset(args.dataset)
     # Build prompt pool from conversations with ≥2 turns
@@ -130,12 +140,12 @@ def main():
                     args.base_url, args.model, msgs,
                     args.max_tokens, timeout=300,
                 )
-                futures[fut] = time.monotonic()
+                futures[fut] = (msgs, time.monotonic())
 
                 # Collect completed futures
                 done = [f for f in list(futures) if f.done()]
                 for f in done:
-                    r = f.result()
+                    msgs, r = futures[f][0], f.result()
                     results.append(r)
                     del futures[f]
                     status = "✓" if r["ok"] else "✗"
@@ -143,6 +153,16 @@ def main():
                         print(f"  {status} {len(results):4d}  "
                               f"lat={r['latency']:.1f}s  "
                               f"in={r['prompt_tokens']}  out={r['completion_tokens']}")
+                        # Write conversation to Loki-tailed log
+                        user_msg = next((m["content"] for m in reversed(msgs)
+                                        if m["role"] == "user"), "")
+                        conv_log.write(
+                            f"[REQ #{len(results)} | {r['prompt_tokens']}in "
+                            f"{r['completion_tokens']}out | {r['latency']:.1f}s]\n"
+                            f"USER: {user_msg[:500]}\n"
+                            f"ASSISTANT: {r['response_text'][:500]}\n"
+                            f"---\n"
+                        )
                     else:
                         print(f"  {status} {len(results):4d}  ERROR: {r['error'][:60]}")
 
@@ -158,6 +178,7 @@ def main():
         for f in as_completed(futures, timeout=60):
             r = f.result()
             results.append(r)
+    conv_log.close()
 
     # Summary
     ok = [r for r in results if r["ok"]]
