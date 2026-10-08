@@ -47,9 +47,11 @@ jobs:
           persist-credentials: false
 
       - name: Run cliff benchmark + harvest results from SPUR
+        env:
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
         run: |
           bash .github/scripts/workflows/spur-cliff-harvest.sh \
-            "${{ github.event.workflow_run.head_sha }}" \
+            "${HEAD_SHA}" \
             "$(date -u +%Y-%m-%d)"
 
       - name: Upload cliff performance page artifact

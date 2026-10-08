@@ -47,8 +47,10 @@ jobs:
           persist-credentials: false
 
       - name: Run prometheus-dump on SPUR
+        env:
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
         run: |
-          SHA="${{ github.event.workflow_run.head_sha || github.sha }}"
+          SHA="${HEAD_SHA}"
           bash .github/scripts/workflows/spur-prometheus-dump.sh "${SHA}"
 
       - name: Upload prometheus-dump artifact
