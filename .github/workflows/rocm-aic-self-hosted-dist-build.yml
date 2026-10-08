@@ -39,7 +39,7 @@ jobs:
     steps:
       - name: Check commenter is a maintainer or admin
         if: github.event_name == 'issue_comment'
-        uses: actions/github-script@v9
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         with:
           script: |
             const { data } = await github.rest.repos.getCollaboratorPermissionLevel({
@@ -54,7 +54,7 @@ jobs:
 
       - name: Resolve SHA and PR number
         id: resolve
-        uses: actions/github-script@v9
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         with:
           script: |
             let runAccuracy = false;
@@ -78,7 +78,7 @@ jobs:
 
       - name: React to comment with eyes
         if: github.event_name == 'issue_comment'
-        uses: actions/github-script@v9
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         with:
           script: |
             await github.rest.reactions.createForIssueComment({
@@ -103,7 +103,7 @@ jobs:
     steps:
       - name: Set commit status to pending
         if: needs.authorize.outputs.pr_number != ''
-        uses: actions/github-script@v9
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         with:
           script: |
             await github.rest.repos.createCommitStatus({
@@ -121,7 +121,7 @@ jobs:
 
       - name: Set commit status on success
         if: success() && needs.authorize.outputs.pr_number != ''
-        uses: actions/github-script@v9
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         with:
           script: |
             await github.rest.repos.createCommitStatus({
@@ -136,7 +136,7 @@ jobs:
 
       - name: Set commit status on failure
         if: failure() && needs.authorize.outputs.pr_number != ''
-        uses: actions/github-script@v9
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         with:
           script: |
             await github.rest.repos.createCommitStatus({
@@ -151,7 +151,7 @@ jobs:
 
       - name: Post failure comment on PR
         if: failure() && needs.authorize.outputs.pr_number != ''
-        uses: actions/github-script@v9
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         with:
           script: |
             await github.rest.issues.createComment({
@@ -176,7 +176,7 @@ jobs:
     steps:
       - name: Set commit status to pending
         if: needs.authorize.outputs.pr_number != ''
-        uses: actions/github-script@v9
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         with:
           script: |
             await github.rest.repos.createCommitStatus({
@@ -194,7 +194,7 @@ jobs:
 
       - name: Set commit status on success
         if: success() && needs.authorize.outputs.pr_number != ''
-        uses: actions/github-script@v9
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         with:
           script: |
             await github.rest.repos.createCommitStatus({
@@ -209,7 +209,7 @@ jobs:
 
       - name: Set commit status on failure
         if: failure() && needs.authorize.outputs.pr_number != ''
-        uses: actions/github-script@v9
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         with:
           script: |
             await github.rest.repos.createCommitStatus({
@@ -224,7 +224,7 @@ jobs:
 
       - name: Post failure comment on PR
         if: failure() && needs.authorize.outputs.pr_number != ''
-        uses: actions/github-script@v9
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         with:
           script: |
             await github.rest.issues.createComment({
@@ -249,7 +249,7 @@ jobs:
     steps:
       - name: Set commit status to pending
         if: needs.authorize.outputs.pr_number != ''
-        uses: actions/github-script@v9
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         with:
           script: |
             await github.rest.repos.createCommitStatus({
@@ -269,7 +269,7 @@ jobs:
 
       - name: Set commit status on success
         if: success() && needs.authorize.outputs.pr_number != ''
-        uses: actions/github-script@v9
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         with:
           script: |
             await github.rest.repos.createCommitStatus({
@@ -284,7 +284,7 @@ jobs:
 
       - name: Set commit status on failure
         if: failure() && needs.authorize.outputs.pr_number != ''
-        uses: actions/github-script@v9
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         with:
           script: |
             await github.rest.repos.createCommitStatus({
@@ -299,7 +299,7 @@ jobs:
 
       - name: Post result comment on PR
         if: always() && needs.authorize.outputs.pr_number != ''
-        uses: actions/github-script@v9
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         with:
           script: |
             const success = '${{ job.status }}' === 'success';
@@ -339,7 +339,7 @@ jobs:
     steps:
       - name: Set commit status to pending
         if: needs.authorize.outputs.pr_number != ''
-        uses: actions/github-script@v9
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         with:
           script: |
             await github.rest.repos.createCommitStatus({
@@ -358,7 +358,7 @@ jobs:
 
       - name: Set commit status on success
         if: success() && needs.authorize.outputs.pr_number != ''
-        uses: actions/github-script@v9
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         with:
           script: |
             await github.rest.repos.createCommitStatus({
@@ -373,7 +373,7 @@ jobs:
 
       - name: Set commit status on failure
         if: failure() && needs.authorize.outputs.pr_number != ''
-        uses: actions/github-script@v9
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         with:
           script: |
             await github.rest.repos.createCommitStatus({
@@ -388,7 +388,7 @@ jobs:
 
       - name: Post result comment on PR
         if: always() && needs.authorize.outputs.pr_number != ''
-        uses: actions/github-script@v9
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         with:
           script: |
             const success = '${{ job.status }}' === 'success';
@@ -423,7 +423,7 @@ jobs:
 
       - name: Upload accuracy logs
         if: always()
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         with:
           name: accuracy-logs-${{ needs.authorize.outputs.sha }}
           path: ${{ runner.temp }}/accuracy-logs/
