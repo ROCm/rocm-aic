@@ -77,12 +77,22 @@ scrape_configs:
   - job_name: nvme_exporter
     static_configs:
       - targets: ["aic-nvme-exporter:9998"]
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: instance
+        regex: "aic-nvme-exporter:(.*)"
+        replacement: "localhost:$1"
 
-  # Dedicated RDMA exporter (containerised in monitoring profile; yuuki-style
-  # rdma_port_rcv_data_total / rdma_port_xmit_data_total metrics).
+  # Dedicated RDMA exporter (containerised in monitoring profile).
+  # No RDMA HCA present on this node; exporter emits only its own error counters.
   - job_name: rdma_exporter
     static_configs:
       - targets: ["aic-rdma-exporter:9879"]
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: instance
+        regex: "aic-rdma-exporter:(.*)"
+        replacement: "localhost:$1"
 
   # AMD GPU device-metrics-exporter (gpu_* metrics).  Always on :5000 on aic-network.
   - job_name: amd_metrics_exporter
@@ -104,5 +114,3 @@ scrape_configs:
     metrics_path: /metrics
     static_configs:
       - targets: ["aic-hsa-snoop:9488"]
-      # Fallback for host-network or standalone deployments
-      - targets: ["host-gateway:9488"]
