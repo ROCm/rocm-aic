@@ -5332,7 +5332,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "clamp_min(sum(lmcache_mp_l2_store_completed_objects_chunks_total{job=\"lmcache\"}) - sum(lmcache_mp_l2_evicted_objects_chunks_total{job=\"lmcache\"} or vector(0)), 0)",
+          "expr": "clamp_min(sum(lmcache_mp_l2_store_completed_objects_chunks_total{job=\"lmcache\"}) - sum(lmcache_mp_l2_store_completed_objects_chunks_total{job=\"lmcache\"} or vector(0)), 0)",
           "instant": true,
           "legendFormat": ""
         }
