@@ -34,6 +34,8 @@ jobs:
       # Full history so `git ls-files` / `git rev-parse --short HEAD` (used by the
       # export target for the filename stamp) resolve against a real commit.
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
 
       - name: Build export tarball
         id: export
