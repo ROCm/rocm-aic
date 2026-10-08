@@ -288,31 +288,37 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
 
 COPY patches/hip-ipc-event-ring-fix.patch /tmp/hip-ipc-event-ring-fix.patch
 
-RUN git clone --filter=blob:none --no-checkout "${CLR_GIT_URL}" /app/rocm-systems && \
-    git -C /app/rocm-systems checkout "${CLR_REF}" -- projects/clr && \
+RUN pip3 install --break-system-packages CppHeaderParser && \
+    git clone --filter=blob:none --no-checkout "${CLR_GIT_URL}" /app/rocm-systems && \
+    git -C /app/rocm-systems checkout "${CLR_REF}" -- projects/clr projects/hip && \
     sed -i 's/const int offset = ipc_evt_.ipc_shmem_->read_index;/const int offset = ipc_evt_.ipc_shmem_->read_index % IPC_SIGNALS_PER_EVENT;/' \
         /app/rocm-systems/projects/clr/hipamd/src/hip_event_ipc.cpp && \
     grep -q "IPC_SIGNALS_PER_EVENT" /app/rocm-systems/projects/clr/hipamd/src/hip_event_ipc.cpp || \
     { echo "ERROR: patch did not apply"; exit 1; } && \
     echo "Patch applied OK"
 
+# hadolint ignore=DL3008
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
+    apt-get update && \
+    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends libgl-dev
+
 RUN cmake -G Ninja \
         -S /app/rocm-systems/projects/clr \
         -B /app/clr-build \
         -DCMAKE_BUILD_TYPE=Release \
+        -DCMAKE_C_COMPILER=/opt/rocm/core-7.14/lib/llvm/bin/clang \
         -DCMAKE_CXX_COMPILER=/opt/rocm/core-7.14/lib/llvm/bin/clang++ \
-        -DCMAKE_INSTALL_PREFIX=/app/clr-install \
-        -DHIP_COMPILER=clang \
+        -DHIP_COMMON_DIR=/app/rocm-systems/projects/hip \
         -DHIP_PLATFORM=amd \
         -DROCM_PATH=/opt/rocm/core-7.14 \
-        -DHIP_COMMON_DIR=/opt/rocm/core-7.14 \
-        -DOFFLOAD_ARCH_STR="" \
-        -DBUILD_SHARED_LIBS=ON \
+        -DCMAKE_PREFIX_PATH=/opt/rocm/core-7.14 \
         -DCLR_BUILD_HIP=ON \
-        -DCLR_BUILD_OCL=OFF && \
+        -DCLR_BUILD_OCL=OFF \
+        -D__HIP_ENABLE_PCH=OFF && \
     cmake --build /app/clr-build --target amdhip64 \
         --parallel "${BUILD_JOBS:-$(nproc)}" && \
-    ls /app/clr-build/hipamd/libamdhip64.so* && \
+    ls /app/clr-build/hipamd/lib/libamdhip64.so* && \
     echo "libamdhip64.so built OK"
 
 # =============================================================================
@@ -472,7 +478,7 @@ COPY --from=build_nixl /opt/rocnixl-ucx/ /opt/rocnixl-ucx/
 # Patched libamdhip64.so: fixes IPC event signal ring overflow (ROCm#11511/#11749).
 # read_index must be wrapped with % IPC_SIGNALS_PER_EVENT (32) or the 33rd
 # cross-process import of the same event handle reads past the signal array.
-COPY --from=build_clr_patch /app/clr-build/hipamd/libamdhip64.so \
+COPY --from=build_clr_patch /app/clr-build/hipamd/lib/libamdhip64.so \
                              /opt/rocm/core-7.14/lib/libamdhip64.so
 
 # Guard: upstream pip deps may pull CUDA-only nixl variants that would shadow
