@@ -11,6 +11,8 @@ on:
     workflows: ["rocm-aic - Self Hosted - Nightly Dist Build"]
     types: [completed]
 
+permissions: {}
+
 jobs:
   smoke-test:
     if: github.event.workflow_run.conclusion == 'success'
