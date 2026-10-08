@@ -391,7 +391,8 @@ services:
       # Coordinator registration: the MP server registers, heartbeats, and
       # deregisters against the coordinator so it can track which blocks are held.
       # Unset LMCACHE_COORDINATOR_URL to run without coordinator (standalone mode).
-      LMCACHE_COORDINATOR_URL: "${LMCACHE_COORDINATOR_URL:-http://aic-lmcache-coordinator:9300}"
+      # lmcache uses network_mode:host — coordinator is on bridge, reach via localhost port.
+      LMCACHE_COORDINATOR_URL: "${LMCACHE_COORDINATOR_URL:-http://localhost:9300}"
     entrypoint: ["/bin/bash", "-o", "pipefail", "-c"]
     command: *lmcache-command
     depends_on:
@@ -416,6 +417,8 @@ services:
     image: ${LMCACHE_IMAGE_REF:-${IMAGE_REF:-${IMAGE_NAME:-rocm-aic}:latest}}
     container_name: aic-lmcache-coordinator
     networks: [aic-network]
+    ports:
+      - "${LMCACHE_COORDINATOR_PORT:-9300}:${LMCACHE_COORDINATOR_PORT:-9300}"
     restart: unless-stopped
     environment:
       - LMCACHE_DISABLE_BANNER=1
