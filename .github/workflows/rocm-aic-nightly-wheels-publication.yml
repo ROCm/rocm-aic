@@ -57,7 +57,7 @@ on:
         options: ['false', 'true']
 
 permissions:
-  contents: write   # create/update the rolling `nightly` release
+  contents: read
 
 env:
   RELEASE_TAG: nightly
@@ -393,6 +393,8 @@ jobs:
     if: needs.check.outputs.should_build == 'true' && needs.build-wheels-cdna.result == 'success'
     runs-on: ubuntu-24.04
     timeout-minutes: 30
+    permissions:
+      contents: write   # create/update the rolling `nightly` release
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
