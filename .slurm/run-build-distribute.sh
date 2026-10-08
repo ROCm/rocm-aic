@@ -1706,6 +1706,9 @@ else
 fi
 
 check "import vllm" timeout 120 python3 -c 'import vllm; print("vllm", vllm.__version__)'
+# The module imports lmcache at top level; this is what --kv-transfer-config loads.
+check "import LMCacheMPConnector" timeout 120 python3 -c \
+    'import vllm.distributed.kv_transfer.kv_connector.v1.lmcache_mp_connector'
 
 # Kernel release + block-device layout (informational)
 note "INFO kernel release: $(uname -r)"
@@ -1738,7 +1741,11 @@ check() { local d="$1"; shift; if "$@" >/tmp/_ck 2>&1; then note "OK   ${d}"; \
 note "container: $(uname -srm)"
 
 check "import lmcache" timeout 60 python3 -c 'import lmcache; print("lmcache", getattr(lmcache, "__version__", "?"))'
-check "lmcache CLI"    command -v lmcache
+# Registers every subcommand, so a missing dependency of any of them fails here.
+# A lightweight (no native extension) install also exits 0 but omits the
+# server's own options, hence the grep.
+check "lmcache server --help" timeout 120 bash -c \
+    'lmcache server --help | grep -q -- --l1-size-gb'
 check "ais-stats (hipFile)" command -v ais-stats
 # ais-check is INFORMATIONAL for environment-dependent bits (P2PDMA, volume)
 # but hard-fail if the binary is missing (image defect).
