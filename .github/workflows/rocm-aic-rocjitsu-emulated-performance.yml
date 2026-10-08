@@ -34,10 +34,10 @@ jobs:
       ROCJITSU_PAGES_DIR: rocjitsu-emulated
 
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Free disk space on runner
-        uses: jlumbroso/free-disk-space@v2.0.0
+        uses: jlumbroso/free-disk-space@ceedf095f4ec1a097402bc6bd80831f2e1a6fde6 # v2.0.0
         with:
           tool-cache: true
           android: true
@@ -47,7 +47,7 @@ jobs:
           docker-images: true
           swap-storage: true
 
-      - uses: docker/setup-buildx-action@v4
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
 
       - name: Read AIC_VERSION from VERSION file
         run: echo "AIC_VERSION=$(cat VERSION)" >> "$GITHUB_ENV"
@@ -64,7 +64,7 @@ jobs:
           fi
 
       - name: Build minimal CPU base for emulate target
-        uses: docker/build-push-action@v7
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: .
           file: docker/emulate-base.Dockerfile
@@ -79,7 +79,7 @@ jobs:
 
       - name: Build emulation image (no GPU kernels, with corp CA)
         if: steps.cert.outputs.present == 'true'
-        uses: docker/build-push-action@v7
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: .
           file: docker/vllm/Dockerfile
@@ -99,7 +99,7 @@ jobs:
 
       - name: Build emulation image (no GPU kernels)
         if: steps.cert.outputs.present != 'true'
-        uses: docker/build-push-action@v7
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: .
           file: docker/vllm/Dockerfile
@@ -201,7 +201,7 @@ jobs:
           done
 
       - name: Upload RocJITSU page artifact
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: rocjitsu-emulated-page-${{ github.run_id }}
           path: ${{ runner.temp }}/rocjitsu-page/${{ env.ROCJITSU_PAGES_DIR }}

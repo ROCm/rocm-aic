@@ -133,7 +133,7 @@ jobs:
     steps:
       - name: Check commenter is a maintainer or admin
         if: github.event_name == 'issue_comment'
-        uses: actions/github-script@v9
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         with:
           script: |
             const { data } = await github.rest.repos.getCollaboratorPermissionLevel({
@@ -148,7 +148,7 @@ jobs:
 
       - name: Resolve SHA, arch groups and publish mode
         id: resolve
-        uses: actions/github-script@v9
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         with:
           script: |
             if (context.eventName === 'issue_comment') {
@@ -186,7 +186,7 @@ jobs:
 
       - name: React to comment with eyes
         if: github.event_name == 'issue_comment'
-        uses: actions/github-script@v9
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         with:
           script: |
             await github.rest.reactions.createForIssueComment({
@@ -247,14 +247,14 @@ jobs:
       AIC_BUILD_EXCLUDE_NODES: ${{ vars.AIC_BUILD_EXCLUDE_NODES }}
       AIC_WHEEL_OUT: ${{ github.workspace }}/wheels-cdna
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ needs.authorize.outputs.sha }}
           fetch-depth: 1
 
       - name: Set commit status to pending
         if: needs.authorize.outputs.pr_number != ''
-        uses: actions/github-script@v9
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         with:
           script: |
             await github.rest.repos.createCommitStatus({
@@ -276,7 +276,7 @@ jobs:
         run: bash .github/scripts/workflows/check-wheels.sh "${AIC_WHEEL_OUT}" "${CDNA_ARCH}"
 
       - name: Upload wheel artifacts
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: wheels-cdna
           path: ${{ env.AIC_WHEEL_OUT }}/
@@ -284,7 +284,7 @@ jobs:
 
       - name: Set commit status on success
         if: success() && needs.authorize.outputs.pr_number != ''
-        uses: actions/github-script@v9
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         with:
           script: |
             await github.rest.repos.createCommitStatus({
@@ -299,7 +299,7 @@ jobs:
 
       - name: Set commit status on failure
         if: failure() && needs.authorize.outputs.pr_number != ''
-        uses: actions/github-script@v9
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         with:
           script: |
             await github.rest.repos.createCommitStatus({
@@ -327,7 +327,7 @@ jobs:
       AIC_BUILD_EXCLUDE_NODES: ${{ vars.AIC_BUILD_EXCLUDE_NODES }}
       AIC_WHEEL_OUT: ${{ github.workspace }}/wheels-rdna
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ needs.authorize.outputs.sha }}
           fetch-depth: 1
@@ -343,7 +343,7 @@ jobs:
         run: bash .github/scripts/workflows/check-wheels.sh "${AIC_WHEEL_OUT}" "${RDNA_ARCH}"
 
       - name: Upload wheel artifacts
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: wheels-rdna
           path: ${{ env.AIC_WHEEL_OUT }}/
@@ -367,7 +367,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ needs.authorize.outputs.sha }}
           fetch-depth: 1
@@ -379,14 +379,14 @@ jobs:
       # instead of `path/<name>`, so a CDNA-only run (the scheduled default)
       # left no `all-wheels/wheels-*` directory and staged nothing.
       - name: Download wheel artifacts (cdna)
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: wheels-cdna
           path: all-wheels/wheels-cdna
 
       - name: Download wheel artifacts (rdna)
         if: needs.build-wheels-rdna.result == 'success'
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: wheels-rdna
           path: all-wheels/wheels-rdna
@@ -446,7 +446,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
-      - uses: actions/github-script@v9
+      - uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         env:
           CDNA_RESULT: ${{ needs.build-wheels-cdna.result }}
           HEAD_SHA: ${{ needs.authorize.outputs.sha }}
