@@ -995,6 +995,11 @@ cmd_build() {
             die "building aic-base first needs the buildx path; set AIC_CACHE_DIR or AIC_CACHE_REF, or pass AIC_BUILD_CONTEXT_BASE"
         _base_first=1
     fi
+    # vllm/'s default target installs aic-lmcache's wheel from a
+    # `docker/lmcache/Dockerfile --target wheels` export directory.
+    local _lmc_wheels_arg=""
+    [[ -n "${AIC_BUILD_CONTEXT_LMCACHE_WHEELS:-}" ]] && \
+        _lmc_wheels_arg="--build-context lmcache-wheels=${AIC_BUILD_CONTEXT_LMCACHE_WHEELS}"
 
     # --- Build program: plain `docker build`, or `docker buildx` with a shared
     #     registry cache when AIC_CACHE_REF is set.  The registry cache pushes each
@@ -1137,6 +1142,7 @@ docker buildx build --builder ${AIC_BUILDX_BUILDER} --progress=plain --output ty
     ${_vllm_device_arg} \
     ${_target_arg} \
     ${_context_arg} \
+    ${_lmc_wheels_arg} \
     ${_secret_arg} \
     ${_cache_args} \
     -f "${AIC_DAY_DIR}/docker/${AIC_BUILD_DOCKERFILE:-lmcache/Dockerfile}" \
@@ -1183,6 +1189,7 @@ ${_build_program} \
     ${_vllm_device_arg} \
     ${_target_arg} \
     ${_context_arg} \
+    ${_lmc_wheels_arg} \
     ${_secret_arg} \
     -f "${AIC_DAY_DIR}/docker/${AIC_BUILD_DOCKERFILE:-lmcache/Dockerfile}" \
     -t "${AIC_IMAGE}" \
@@ -1264,6 +1271,8 @@ cmd_build_base() {
 # --- build-vllm: build the aic-vllm image (standalone, no pre-built base) ----
 cmd_build_vllm() {
     AIC_BUILD_DOCKERFILE="vllm/Dockerfile"
+    [[ -n "${AIC_BUILD_CONTEXT_LMCACHE_WHEELS:-}" ]] || \
+        die "build-vllm needs AIC_BUILD_CONTEXT_LMCACHE_WHEELS (a docker/lmcache/Dockerfile --target wheels export dir); build-split builds both"
     log "build-vllm: building aic-vllm -> ${AIC_IMAGE}"
     cmd_build
 }
@@ -1275,11 +1284,11 @@ cmd_build_lmcache() {
     cmd_build
 }
 
-# --- build-split: build base → load → vllm + lmcache in a single Slurm job ---
+# --- build-split: build base → lmcache → vllm in a single Slurm job ----------
 # Running three separate jobs (base, vllm, lmcache) fails because vllm/lmcache
 # land on a fresh node without the base image in the local daemon.  This command
-# submits ONE job that builds base first, loads the resulting tarball into the
-# local docker daemon, then builds vllm and lmcache using it as a build context.
+# submits ONE job that builds base first, then lmcache and vllm using it as a
+# build context.  lmcache goes first because the vllm image installs its wheel.
 cmd_build_split() {
     _pick_compress
     local base_image="${AIC_BASE_IMAGE:-aic-base:${IMAGE_TAG:-latest}}"
@@ -1292,7 +1301,8 @@ cmd_build_split() {
     AIC_IMAGE="${AIC_LMCACHE_IMAGE}"
     local lmcache_tarball; lmcache_tarball="$(_tarball_path)"
     AIC_IMAGE="${saved_image}"
-    local tarball_before; tarball_before="$(_tarball_stamp "${lmcache_tarball}")"
+    local lmcache_before; lmcache_before="$(_tarball_stamp "${lmcache_tarball}")"
+    local vllm_before; vllm_before="$(_tarball_stamp "${vllm_tarball}")"
     local vllm_latest_ref="${AIC_VLLM_IMAGE%:*}:latest"
     local lmcache_latest_ref="${AIC_LMCACHE_IMAGE%:*}:latest"
     local _version_build_args="" _version_arg _version_value
@@ -1313,12 +1323,13 @@ cmd_build_split() {
     # One cache dir per image, like cmd_build's per-target subdir: a type=local
     # cache keeps a single `latest` ref, so a shared dir ends up holding only
     # the last build's chain and the next base build gets no hits.
-    local _cache_args_base="" _cache_args_vllm="" _cache_args_lmcache=""
+    local _cache_args_base="" _cache_args_vllm="" _cache_args_lmcache="" _cache_from_lmcache=""
     if [[ -n "${AIC_CACHE_DIR}" ]]; then
         local _cache_opts="mode=${AIC_CACHE_MODE:-max},ignore-error=true"
         _cache_args_base="--cache-from type=local,src=${_cache_dir}-base --cache-to type=local,dest=${_cache_dir}-base,${_cache_opts}"
         _cache_args_vllm="--cache-from type=local,src=${_cache_dir}-vllm --cache-to type=local,dest=${_cache_dir}-vllm,${_cache_opts}"
         _cache_args_lmcache="--cache-from type=local,src=${_cache_dir}-lmcache --cache-to type=local,dest=${_cache_dir}-lmcache,${_cache_opts}"
+        _cache_from_lmcache="--cache-from type=local,src=${_cache_dir}-lmcache"
     fi
 
     local remote_script
@@ -1342,7 +1353,7 @@ docker buildx prune --builder ${_builder} --force 2>/dev/null || true
 # Instead we export the base image in OCI layout format to a host directory;
 # the docker CLI reads that directory and transfers it to BuildKit as a named
 # context, which works regardless of daemon isolation.
-echo "[build-split] step 1/3: building aic-base (${base_image})"
+echo "[build-split] step 1/4: building aic-base (${base_image})"
 _base_oci_tar="\${TMPDIR}/aic-base-oci.\${SLURM_JOB_ID:-\$\$}.tar"
 _base_oci_dir="\${TMPDIR}/aic-base-oci.\${SLURM_JOB_ID:-\$\$}.d"
 rm -f "\${_base_oci_tar}" 2>/dev/null || true
@@ -1366,26 +1377,8 @@ tar -xf "\${_base_oci_tar}" -C "\${_base_oci_dir}"
 rm -f "\${_base_oci_tar}"
 echo "[build-split] base OCI dir: \${_base_oci_dir} (\$(ls "\${_base_oci_dir}"))"
 
-# --- Step 3a: build aic-vllm from base, save as separate tarball --------------
-echo "[build-split] step 3a/3: building aic-vllm (${AIC_VLLM_IMAGE})"
-tmp_vllm="${vllm_tarball}.partial.\${SLURM_JOB_ID:-\$\$}"
-docker buildx build --builder ${_builder} --progress=plain \
-    --output "type=docker,dest=-" \
-    --build-arg ROCM_ARCH="${AIC_ROCM_ARCH}" \
-    --build-arg AIC_UCX_FAST="${AIC_UCX_FAST}" \
-    ${_version_build_args} \
-    --build-context "base=oci-layout://\${_base_oci_dir}" \
-    ${_secret_arg} \
-    ${_cache_args_vllm} \
-    -f "${AIC_DAY_DIR}/docker/vllm/Dockerfile" \
-    -t "${AIC_VLLM_IMAGE}" \
-    -t "${vllm_latest_ref}" \
-    "${AIC_DAY_DIR}" | ${COMPRESS_CMD} > "\${tmp_vllm}"
-mv -f "\${tmp_vllm}" "${vllm_tarball}"
-echo "[build-split] vllm saved: \$(du -h "${vllm_tarball}" | cut -f1) -> ${vllm_tarball}"
-
-# --- Step 3b: build aic-lmcache from base (independent; not on top of vllm) --
-echo "[build-split] step 3b/3: building aic-lmcache (${AIC_LMCACHE_IMAGE})"
+# --- Step 2/4: build aic-lmcache from base -----------------------------------
+echo "[build-split] step 2/4: building aic-lmcache (${AIC_LMCACHE_IMAGE})"
 tmp_lmcache="${lmcache_tarball}.partial.\${SLURM_JOB_ID:-\$\$}"
 docker buildx build --builder ${_builder} --progress=plain --output type=docker,dest=- \
     --build-arg ROCM_ARCH="${AIC_ROCM_ARCH}" \
@@ -1401,7 +1394,46 @@ docker buildx build --builder ${_builder} --progress=plain --output type=docker,
     "${AIC_DAY_DIR}" | ${COMPRESS_CMD} > "\${tmp_lmcache}"
 mv -f "\${tmp_lmcache}" "${lmcache_tarball}"
 echo "[build-split] lmcache saved: \$(du -h "${lmcache_tarball}" | cut -f1) -> ${lmcache_tarball}"
-rm -rf "\${_base_oci_dir}"
+
+# --- Step 3/4: export aic-lmcache's /wheels for the vllm image ----------------
+# Same args as step 2, so every layer is a cache hit.  No --cache-to: the
+# -lmcache dir keeps a single ref, and it should stay step 2's chain.
+echo "[build-split] step 3/4: exporting aic-lmcache wheels"
+_lmc_wheels_dir="\${TMPDIR}/aic-lmcache-wheels.\${SLURM_JOB_ID:-\$\$}.d"
+rm -rf "\${_lmc_wheels_dir}"
+docker buildx build --builder ${_builder} --progress=plain \
+    --target wheels \
+    --output "type=local,dest=\${_lmc_wheels_dir}" \
+    --build-arg ROCM_ARCH="${AIC_ROCM_ARCH}" \
+    --build-arg BUILD_JOBS="${BUILD_JOBS:-}" \
+    --build-arg AIC_UCX_FAST="${AIC_UCX_FAST}" \
+    ${_version_build_args} \
+    --build-context "base=oci-layout://\${_base_oci_dir}" \
+    ${_secret_arg} \
+    ${_cache_from_lmcache} \
+    -f "${AIC_DAY_DIR}/docker/lmcache/Dockerfile" \
+    "${AIC_DAY_DIR}"
+echo "[build-split] lmcache wheels: \$(ls "\${_lmc_wheels_dir}")"
+
+# --- Step 4/4: build aic-vllm from base + aic-lmcache's wheels ----------------
+echo "[build-split] step 4/4: building aic-vllm (${AIC_VLLM_IMAGE})"
+tmp_vllm="${vllm_tarball}.partial.\${SLURM_JOB_ID:-\$\$}"
+docker buildx build --builder ${_builder} --progress=plain \
+    --output "type=docker,dest=-" \
+    --build-arg ROCM_ARCH="${AIC_ROCM_ARCH}" \
+    --build-arg AIC_UCX_FAST="${AIC_UCX_FAST}" \
+    ${_version_build_args} \
+    --build-context "base=oci-layout://\${_base_oci_dir}" \
+    --build-context "lmcache-wheels=\${_lmc_wheels_dir}" \
+    ${_secret_arg} \
+    ${_cache_args_vllm} \
+    -f "${AIC_DAY_DIR}/docker/vllm/Dockerfile" \
+    -t "${AIC_VLLM_IMAGE}" \
+    -t "${vllm_latest_ref}" \
+    "${AIC_DAY_DIR}" | ${COMPRESS_CMD} > "\${tmp_vllm}"
+mv -f "\${tmp_vllm}" "${vllm_tarball}"
+echo "[build-split] vllm saved: \$(du -h "${vllm_tarball}" | cut -f1) -> ${vllm_tarball}"
+rm -rf "\${_base_oci_dir}" "\${_lmc_wheels_dir}"
 exit 0
 REMOTE
 )"
@@ -1412,7 +1444,8 @@ REMOTE
         --nodes=1 --ntasks=1 \
         --cpus-per-task="${AIC_BUILD_CPUS}" \
         --time="${AIC_BUILD_TIME}"
-    _verify_tarball "${lmcache_tarball}" "image" "${tarball_before}"
+    _verify_tarball "${lmcache_tarball}" "lmcache image" "${lmcache_before}"
+    _verify_tarball "${vllm_tarball}" "vllm image" "${vllm_before}"
     log "build-split complete: vllm=${vllm_tarball} lmcache=${lmcache_tarball}"
 }
 

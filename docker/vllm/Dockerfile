@@ -2,21 +2,29 @@
 #
 # SPDX-License-Identifier: MIT
 #
-# AIC vLLM image: torch + torchvision (from aic-base) + vLLM v0.29.0 + llm-emu plugin.
+# AIC vLLM image: torch + torchvision (from aic-base) + vLLM v0.29.0 + llm-emu plugin
+# + the LMCache wheel built by docker/lmcache/Dockerfile.
 #
-# Consumed by the `vllm` compose service.  Built independently from aic-lmcache
-# (both share aic-base) so the two images can be built in parallel after the base.
+# Consumed by the `vllm` compose service.  Shares aic-base with aic-lmcache, but
+# its default target needs aic-lmcache's wheels, so build aic-lmcache first.
 #
 # Stages:
 #   vllm      torch + vLLM source build + llm-emu                   (sections 3, 3b)
 #   emulate   CPU-only runtime (--target emulate)                   (section 3c)
-#   runtime   default target, aliases `vllm`
+#   runtime   default target: `vllm` + aic-lmcache's lmcache wheel  (section 3d)
 #
 # Build (from repo root — build context is this tree):
 #   BASE_TAG=$(ROCM_ARCH=gfx950 docker/scripts/aic-image-tag.sh docker/base/Dockerfile)
 #   DOCKER_BUILDKIT=1 docker buildx build \
 #     --build-arg ROCM_ARCH=gfx950 \
 #     --build-context base=docker-image://aic-base:${BASE_TAG} \
+#     -f docker/lmcache/Dockerfile --target wheels \
+#     --output type=local,dest=/tmp/aic-lmcache-wheels \
+#     .
+#   DOCKER_BUILDKIT=1 docker buildx build \
+#     --build-arg ROCM_ARCH=gfx950 \
+#     --build-context base=docker-image://aic-base:${BASE_TAG} \
+#     --build-context lmcache-wheels=/tmp/aic-lmcache-wheels \
 #     -f docker/vllm/Dockerfile \
 #     -t aic-vllm:${BASE_TAG} \
 #     .
@@ -40,6 +48,12 @@ ARG ROCM_VERSION=7.14.1
 ARG ROCM_BASE_IMAGE=rocm/dev-ubuntu-24.04:${ROCM_VERSION}-full
 # hadolint ignore=DL3006
 FROM ${ROCM_BASE_IMAGE} AS base
+
+# Empty default for the `lmcache-wheels` build context (the --target wheels
+# export of docker/lmcache/Dockerfile).  Only `runtime` reads it, and fails on
+# an empty one, so a build that forgot the context stops instead of shipping a
+# vLLM that cannot load LMCacheMPConnector.  `emulate` never reads it.
+FROM scratch AS lmcache-wheels
 
 # =============================================================================
 # vLLM stage — inherits from the final stage of docker/base/ (build_torchvision)
@@ -178,5 +192,24 @@ RUN test -r "${AIC_EMULATOR_DEFAULT_PACK}" || \
     { echo "ERROR: default profile pack missing: ${AIC_EMULATOR_DEFAULT_PACK}" >&2; exit 1; }
 ENTRYPOINT ["python3", "-m", "vllm.entrypoints.openai.api_server"]
 
-# ----- runtime: default target -----------------------------------------------
+# ----- 3d. runtime: default target -------------------------------------------
+# vLLM's LMCacheMPConnector imports lmcache in the vLLM process, so this image
+# installs the same lmcache wheel aic-lmcache runs: one build, with its HIP
+# extension, on both ends of the MP protocol.  Installed after vLLM, as the
+# pre-split image did.
 FROM vllm AS runtime
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
+RUN --mount=type=bind,from=lmcache-wheels,target=/aic-wheels \
+    shopt -s nullglob && \
+    lmc=(/aic-wheels/lmcache-*.whl) && \
+    if [ "${#lmc[@]}" -ne 1 ]; then \
+        echo "ERROR: expected one lmcache wheel in the lmcache-wheels build context, found:" >&2; \
+        ls -l /aic-wheels >&2; \
+        echo "Pass --build-context lmcache-wheels=DIR, exported by: docker buildx build -f docker/lmcache/Dockerfile --target wheels --output type=local,dest=DIR ." >&2; \
+        exit 1; \
+    fi && \
+    uv pip install --system --no-cache "${lmc[@]}" && \
+    { uv pip uninstall --system \
+        nixl nixl-cu12 nixl-cu13 \
+        cupy-cuda12x cufile-python cuda-pathfinder 2>/dev/null || true; } && \
+    python3 -c 'import lmcache.integration.vllm.vllm_multi_process_adapter, vllm.distributed.kv_transfer.kv_connector.v1.lmcache_mp_connector; print("LMCacheMPConnector imports OK")'

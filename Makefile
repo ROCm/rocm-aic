@@ -264,7 +264,7 @@ help:
 	@echo "  make dist-build-fast   Single-arch dev build (AIC_FAST_ARCH=$(AIC_FAST_ARCH), no exporters) -- faster iteration"
 	@echo "  make dist-build-emulate  Build the CPU-only emulation image (no GPU kernels compiled)"
 	@echo "  make dist-build-base   Build aic-base image (PyTorch + torchvision)"
-	@echo "  make dist-build-vllm   Build aic-vllm image (requires aic-base)"
+	@echo "  make dist-build-vllm   Build aic-vllm image (requires aic-base + AIC_BUILD_CONTEXT_LMCACHE_WHEELS)"
 	@echo "  make dist-build-lmcache  Build aic-lmcache image (requires aic-base)"
 	@echo "  make dist-build-parallel  Build base, then vllm + lmcache in parallel"
 	@echo "  make dist-build-exporters  Build ONLY the nvme/rdma exporter images (no main rebuild)"
