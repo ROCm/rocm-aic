@@ -188,8 +188,11 @@ RUN --mount=type=cache,target=/root/.cache/pip \
         python3 -m pip wheel --no-build-isolation --no-deps -w /wheels . && \
     uv pip install --system --no-cache /wheels/lmcache-*.whl
 
+# The `lmcache` CLI imports every subcommand eagerly, so `lmcache server` dies
+# without the bench subcommands' openai.  Upstream lists those deps only in
+# requirements/cli.txt (the lmcache-cli package), not in this wheel's metadata.
 RUN --mount=type=cache,target=/root/.cache/uv \
-    uv pip install --system "matplotlib>=3.8,<4"
+    uv pip install --system -r /app/LMCache/requirements/cli.txt "matplotlib>=3.8,<4"
 
 # Remove any NIXL wheels that upstream packages may have pulled — we build from source below.
 # Also purge stray CUDA-only deps (cupy-cuda12x, cufile-python, cuda-pathfinder).
