@@ -64,10 +64,12 @@ jobs:
       # Nightly (workflow_run): Cliff runs alongside and owns the final cleanup,
       # so the image must survive.  Manual dispatch is terminal and cleans up.
       - name: Run accuracy-test on the SPUR head node
+        env:
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
         run: |
           KEEP_ARTIFACTS=${{ github.event_name == 'workflow_run' && '1' || '0' }} \
           bash /usr/local/lib/aic-ci/spur-accuracy-test.sh \
-            "${{ github.event.workflow_run.head_sha || github.sha }}" \
+            "${HEAD_SHA}" \
             accuracy-test
 
       # if: always() — a failed gate is exactly when the per-phase scores and
