@@ -33,7 +33,7 @@ ARG ROCM_RUNTIME_IMAGE=ubuntu:24.04
 FROM ${ROCM_BUILD_IMAGE} AS build
 
 ARG HSA_SNOOP_GIT_URL=https://github.com/sbates130272/hsa-snoop.git
-ARG HSA_SNOOP_REF=v1.1.1
+ARG HSA_SNOOP_REF=v1.2.0
 ARG BUILD_JOBS=
 
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
@@ -63,7 +63,7 @@ RUN git clone --depth 1 --branch "${HSA_SNOOP_REF}" "${HSA_SNOOP_GIT_URL}" /app/
 # hadolint ignore=DL3006
 FROM ${ROCM_RUNTIME_IMAGE} AS runtime
 
-ARG HSA_SNOOP_REF=v1.1.1
+ARG HSA_SNOOP_REF=v1.2.0
 ARG ROCM_VERSION
 ARG ROCM_RUNTIME_IMAGE
 

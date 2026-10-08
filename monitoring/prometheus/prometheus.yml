@@ -45,11 +45,10 @@ scrape_configs:
 
   - job_name: lmcache
     metrics_path: /metrics
-    scrape_interval: 30s    # lmcache HTTP server can block under load; longer interval
-    scrape_timeout: 25s     # generous timeout so metrics aren't lost under stress
     static_configs:
-      # lmcache uses network_mode:host (required for KFD GPU IPC); reach via host-gateway.
-      - targets: ["host-gateway:8080"]
+      # lmcache serves /metrics on --prometheus-port (9091) via a dedicated thread,
+      # independent of the main uvicorn server at :8080.
+      - targets: ["host-gateway:9091"]
 
   # LMCache coordinator exporter — polls the coordinator REST API (/instances,
   # /directory/stats, /quota) and emits Prometheus text format on :9301.
