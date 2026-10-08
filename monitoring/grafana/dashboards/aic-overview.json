@@ -870,7 +870,7 @@
             "lineWidth": 1,
             "fillOpacity": 10
           },
-          "unit": "megahertz",
+          "unit": "hertz",
           "decimals": 0
         },
         "overrides": []
@@ -900,7 +900,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "avg by (gpu_id) (gpu_clock{gpu_id=~\"$gpu_id\", clock_type=\"system\"})",
+          "expr": "(avg by (gpu_id) (gpu_clock{gpu_id=~\"$gpu_id\", clock_type=\"system\"})) * 1000000",
           "legendFormat": "GPU {{gpu_id}}"
         }
       ],
@@ -971,7 +971,7 @@
             "lineWidth": 1,
             "fillOpacity": 10
           },
-          "unit": "megahertz",
+          "unit": "hertz",
           "decimals": 0
         },
         "overrides": []
@@ -1001,7 +1001,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "avg by (gpu_id) (gpu_clock{gpu_id=~\"$gpu_id\", clock_type=\"memory\"})",
+          "expr": "(avg by (gpu_id) (gpu_clock{gpu_id=~\"$gpu_id\", clock_type=\"memory\"})) * 1000000",
           "legendFormat": "GPU {{gpu_id}}"
         }
       ],
@@ -5948,6 +5948,147 @@
       ],
       "title": "GPU GFX Activity & Power",
       "type": "timeseries"
+    },
+    {
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 240
+      },
+      "id": 430,
+      "title": "vLLM Serving Traffic (Loki)",
+      "type": "row"
+    },
+    {
+      "datasource": {
+        "type": "loki",
+        "uid": "loki"
+      },
+      "gridPos": {
+        "h": 12,
+        "w": 16,
+        "x": 0,
+        "y": 241
+      },
+      "id": 431,
+      "options": {
+        "dedupStrategy": "none",
+        "enableLogDetails": true,
+        "prettifyLogMessage": false,
+        "showCommonLabels": false,
+        "showLabels": false,
+        "showTime": true,
+        "sortOrder": "Descending",
+        "wrapLogMessage": true
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "loki",
+            "uid": "loki"
+          },
+          "editorMode": "code",
+          "expr": "{container=\"aic-vllm-gpu0\"} |~ \"APIServer|POST|GET|HTTP|chat|completions|tokens|latency|request|response|metrics\"",
+          "queryType": "range",
+          "refId": "A"
+        }
+      ],
+      "title": "vLLM API Server Logs (requests, responses, latency)",
+      "type": "logs"
+    },
+    {
+      "datasource": {
+        "type": "loki",
+        "uid": "loki"
+      },
+      "gridPos": {
+        "h": 6,
+        "w": 8,
+        "x": 16,
+        "y": 241
+      },
+      "id": 432,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "reduceOptions": {
+          "calcs": [
+            "last"
+          ]
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps",
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 0.5
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "loki",
+            "uid": "loki"
+          },
+          "editorMode": "code",
+          "expr": "rate({container=\"aic-vllm-gpu0\"} |~ \"POST /v1/chat/completions\" [1m])",
+          "queryType": "range",
+          "refId": "A"
+        }
+      ],
+      "title": "Chat Completions Request Rate",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "loki",
+        "uid": "loki"
+      },
+      "gridPos": {
+        "h": 6,
+        "w": 8,
+        "x": 16,
+        "y": 247
+      },
+      "id": 433,
+      "options": {
+        "dedupStrategy": "exact",
+        "enableLogDetails": true,
+        "showTime": true,
+        "sortOrder": "Descending",
+        "wrapLogMessage": false
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "loki",
+            "uid": "loki"
+          },
+          "editorMode": "code",
+          "expr": "{container=\"aic-lmcache\"} |~ \"ERROR|WARN|store|retrieve|evict|L1|L2|chunk\"",
+          "queryType": "range",
+          "refId": "A"
+        }
+      ],
+      "title": "LMCache Key Events (store/retrieve/evict)",
+      "type": "logs"
     }
   ],
   "refresh": "10s",
