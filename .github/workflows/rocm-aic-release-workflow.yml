@@ -33,7 +33,7 @@ on:
       - 'v*'
 
 permissions:
-  contents: write   # create the versioned GitHub Release
+  contents: read
 
 env:
   IMAGE_NAME: rocm-aic
@@ -84,6 +84,8 @@ jobs:
     # GitHub hard-caps a hosted job at 360 minutes; the previous 420 could never
     # take effect.  The image build below is what needs this budget.
     timeout-minutes: 350
+    permissions:
+      contents: write   # create the versioned GitHub Release
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

@@ -32,8 +32,7 @@ on:
         options: ['true', 'false']
 
 permissions:
-  contents: write      # push to gh-pages
-  pages: write
+  contents: read
 
 concurrency:
   group: wheel-latency
@@ -88,6 +87,9 @@ jobs:
     runs-on: [self-hosted, rocm-aic-cicd]
     # A two-hour image build plus the one-hour test job, and their queueing.
     timeout-minutes: 240
+    permissions:
+      contents: write      # push to gh-pages
+      pages: write
     env:
       AIC_SPUR_HOST:        ${{ secrets.AIC_SPUR_HOST }}
       AIC_SHARED_NFS:       ${{ secrets.AIC_SHARED_NFS }}

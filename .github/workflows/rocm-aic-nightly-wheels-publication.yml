@@ -91,9 +91,7 @@ on:
     types: [created]
 
 permissions:
-  contents: write        # create/update the rolling `nightly*` releases
-  pull-requests: write   # react to / comment on the triggering PR comment
-  statuses: write        # commit status on the PR head
+  contents: read
 
 # One wheels run at a time: the groups drive the same SPUR layer cache and the
 # same single self-hosted runner.  Not cancel-in-progress -- a half-way killed
@@ -124,6 +122,9 @@ jobs:
         contains(github.event.comment.body, '/run-wheels')
       )
     runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      pull-requests: write   # react to the triggering PR comment
     outputs:
       sha: ${{ steps.resolve.outputs.sha }}
       pr_number: ${{ steps.resolve.outputs.pr_number }}
@@ -240,6 +241,9 @@ jobs:
     # The SPUR stack builds in 30m-2h warm; this covers a cold layer cache plus
     # Slurm queue time.
     timeout-minutes: 300
+    permissions:
+      contents: read
+      statuses: write   # commit status on the PR head
     env:
       AIC_SPUR_HOST: ${{ secrets.AIC_SPUR_HOST }}
       AIC_SHARED_NFS: ${{ secrets.AIC_SHARED_NFS }}
@@ -368,6 +372,8 @@ jobs:
       needs.build-wheels-cdna.result == 'success'
     runs-on: ubuntu-24.04
     timeout-minutes: 45
+    permissions:
+      contents: write   # create/update the rolling `nightly*` releases
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -448,6 +454,8 @@ jobs:
     if: always() && needs.authorize.outputs.pr_number != ''
     runs-on: ubuntu-24.04
     timeout-minutes: 10
+    permissions:
+      pull-requests: write   # comment on the triggering PR
     steps:
       - uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         env:
