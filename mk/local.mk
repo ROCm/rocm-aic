@@ -44,6 +44,7 @@ _BUILD_ARGS := \
 	--build-arg ROCM_ARCH="$(ROCM_ARCH)" \
 	--build-arg BUILD_JOBS="$(BUILD_JOBS)" \
 	--build-arg AIC_UCX_FAST="$(AIC_UCX_FAST)" \
+	--build-arg BLAS_CACHE_BUST="$(shell date +%Y%m%d)" \
 	$(foreach _v,$(_FRAMEWORK_ARGS),$(if $(value $(_v)),--build-arg $(_v)="$(value $(_v))")) \
 	$(if $(TLS_CERT),--secret id=tls_cert$(comma)src=$(TLS_CERT),)
 

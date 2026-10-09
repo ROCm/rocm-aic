@@ -426,7 +426,11 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
 # hadolint ignore=DL3008
 # Separate RUN with its own apt-get update so the arch-specific blas package
 # is always visible even when the apt cache mount was populated by a prior build.
-RUN apt-get update && \
+# ARG BLAS_CACHE_BUST is set to the current date by `make build` to force this
+# layer to rerun whenever the base image is rebuilt, preventing stale cache hits.
+ARG BLAS_CACHE_BUST=1
+RUN echo "blas cache bust: ${BLAS_CACHE_BUST}" && \
+    apt-get update && \
     _mm=$(echo "${ROCM_VERSION}" | cut -d. -f1-2) && \
     for _arch in $(echo "${ROCM_ARCH}" | tr ',' ' '); do \
         apt-get install -y --no-install-recommends \
