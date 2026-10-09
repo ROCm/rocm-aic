@@ -66,3 +66,9 @@ EXPOSE 9998
 # Defaults mirror the role's systemd ExecStart; override the CMD to change them.
 ENTRYPOINT ["/usr/local/bin/nvme_exporter"]
 CMD ["--web.listen-address=:9998", "--web.telemetry-path=/metrics"]
+
+# TCP connect only.  /metrics shells out to nvme-cli, so probing it would touch
+# the drives on every check and hang behind a wedged one.  The port is the CMD
+# default above; a CMD override that changes it has to override this check too.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+    CMD ["bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/9998"]

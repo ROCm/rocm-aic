@@ -67,3 +67,10 @@ EXPOSE 9879
 # Defaults mirror the role's systemd ExecStart; override the CMD to change them.
 ENTRYPOINT ["/usr/local/bin/rdma_exporter"]
 CMD ["--listen-address=:9879", "--metrics-path=/metrics", "--health-path=/health"]
+
+# debian-slim ships bash but neither curl nor python, so probe over /dev/tcp.
+# Asserts an HTTP 200 from the exporter's own health endpoint.  The port and
+# path are the CMD defaults above; a CMD override that changes them has to
+# override this check too.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+    CMD ["bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/9879 && printf 'GET /health HTTP/1.0\\r\\n\\r\\n' >&3 && read -r status <&3 && [[ $status == *' 200 '* ]]"]
