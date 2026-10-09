@@ -61,16 +61,18 @@ jobs:
 
     steps:
       - name: Run accuracy-test on the SPUR head node
+        env:
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
         run: |
           bash /usr/local/lib/aic-ci/spur-accuracy-test.sh \
-            "${{ github.event.workflow_run.head_sha || github.sha }}" \
+            "${HEAD_SHA}" \
             accuracy-test
 
       # if: always() — a failed gate is exactly when the per-phase scores and
       # per-arm container logs are worth having.
       - name: Upload accuracy logs
         if: always()
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         with:
           name: accuracy-logs-${{ github.event.workflow_run.head_sha || github.sha }}
           path: ${{ runner.temp }}/accuracy-logs/

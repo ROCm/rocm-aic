@@ -5,11 +5,16 @@ on:
   pull_request:
     branches: [main]
 
+permissions:
+  contents: read
+
 jobs:
   spellcheck:
     name: Spellcheck
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v5
-      - uses: rojopolis/spellcheck-github-actions@v0
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+      - uses: rojopolis/spellcheck-github-actions@c1934c57e61c734261d7905b525486b12f8eb670 # 0.66.0
         name: Spellcheck

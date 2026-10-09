@@ -11,6 +11,8 @@ on:
     workflows: ["rocm-aic - Self Hosted - Nightly Smoke Test"]
     types: [completed]
 
+permissions: {}
+
 jobs:
   tiny-test:
     if: github.event.workflow_run.conclusion == 'success'
@@ -23,4 +25,6 @@ jobs:
 
     steps:
       - name: Run tiny-test on SPUR head node
-        run: bash /usr/local/lib/aic-ci/spur-tiny-test.sh "${{ github.event.workflow_run.head_sha }}"
+        env:
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+        run: bash /usr/local/lib/aic-ci/spur-tiny-test.sh "${HEAD_SHA}"

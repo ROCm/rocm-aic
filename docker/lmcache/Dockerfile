@@ -88,8 +88,12 @@ RUN --mount=type=cache,target=/root/.cache/pip \
         "pybind11==3.0.4" \
         "ninja==1.13.0" \
         "flydsl==0.2.4" && \
-    git clone --depth 1 --branch "${AITER_REF}" "${AITER_GIT_URL}" /app/aiter && \
-    cd /app/aiter && \
+    git clone --depth 1 --branch "${AITER_REF}" "${AITER_GIT_URL}" /app/aiter
+
+WORKDIR /app/aiter
+# hadolint ignore=SC2039
+RUN --mount=type=cache,target=/root/.cache/pip \
+    --mount=type=cache,target=/root/.cache/ccache \
     git submodule update --init --recursive && \
     PYTORCH_ROCM_ARCH="${ROCM_ARCH}" \
         TORCH_DONT_CHECK_COMPILER_ABI=1 \
@@ -100,6 +104,9 @@ RUN --mount=type=cache,target=/root/.cache/pip \
     python3 -c 'import importlib.util, pathlib; spec = importlib.util.find_spec("aiter"); assert spec and spec.submodule_search_locations; print("AITER installed:", next(iter(spec.submodule_search_locations)))'
 
 # FlashAttention: CDNA-only (gfx9xx — MI100/MI200/MI300/MI355X).
+# WORKDIR creates /app/flash-attention even when the build is skipped; the
+# clone below targets that empty directory.
+WORKDIR /app/flash-attention
 # hadolint ignore=SC2039
 RUN --mount=type=cache,target=/root/.cache/pip \
     --mount=type=cache,target=/root/.cache/ccache \
@@ -107,8 +114,7 @@ RUN --mount=type=cache,target=/root/.cache/pip \
         _a=""; for _a in $(echo "$1" | tr ';' '\n'); do \
             [ "${_a#gfx9}" != "${_a}" ] || return 1; done; return 0; }; \
     if _cdna_only "${ROCM_ARCH}"; then \
-        git clone --recurse-submodules "${FLASH_ATTN_GIT_URL}" /app/flash-attention && \
-        cd /app/flash-attention && \
+        git clone --recurse-submodules "${FLASH_ATTN_GIT_URL}" . && \
         git checkout "${FLASH_ATTN_REF}" && \
         git submodule update --init --recursive && \
         GPU_ARCHS="${ROCM_ARCH}" \
@@ -132,6 +138,7 @@ RUN --mount=type=cache,target=/root/.cache/pip \
             python3 -c 'import importlib.util; spec = importlib.util.find_spec("aiter"); assert spec and spec.submodule_search_locations; print("AITER_PACKAGE=" + next(iter(spec.submodule_search_locations)))'; \
         } > /etc/rocm-aic-attention-backends.env; \
     fi
+WORKDIR /
 
 # ----- 5. LMCache (upstream release + AMD patches) ---------------------------
 COPY patches/ /app/patches/
@@ -154,9 +161,9 @@ RUN chmod +x /usr/local/bin/apply-github-prs.sh && \
         "${LMCACHE_REF}"
 
 # Apply every patch under patches/lmcache/ in lexical order after optional PRs.
+WORKDIR /app/LMCache
 # hadolint ignore=SC3054,SC3044
-RUN cd /app/LMCache && \
-    shopt -s nullglob && \
+RUN shopt -s nullglob && \
     patches=(/app/patches/lmcache/*.patch) && \
     if [ "${#patches[@]}" -eq 0 ]; then \
         echo "ERROR: no patches found in /app/patches/lmcache/" >&2; exit 1; \
@@ -177,7 +184,6 @@ RUN --mount=type=cache,target=/root/.cache/pip \
 RUN --mount=type=cache,target=/root/.cache/pip \
     mkdir -p /wheels && \
     printf '%s\n' "${ROCM_ARCH%%;*}" > /etc/rocm_target.lst && \
-    cd /app/LMCache && \
     PYTORCH_ROCM_ARCH="${ROCM_ARCH}" \
         TORCH_DONT_CHECK_COMPILER_ABI=1 \
         CXX=hipcc \
@@ -187,6 +193,7 @@ RUN --mount=type=cache,target=/root/.cache/pip \
         CMAKE_BUILD_PARALLEL_LEVEL="${BUILD_JOBS:-$(nproc)}" \
         python3 -m pip wheel --no-build-isolation --no-deps -w /wheels . && \
     uv pip install --system --no-cache /wheels/lmcache-*.whl
+WORKDIR /
 
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv pip install --system "matplotlib>=3.8,<4"
@@ -277,3 +284,9 @@ COPY --from=build /wheels /
 
 # ----- 10. Runtime image (default target) ------------------------------------
 FROM build AS runtime
+
+# Asserts that the ZMQ port vLLM connects to is bound and that the HTTP API
+# answers /metrics with a 200.  Services that run this image with another
+# entrypoint (the coordinator, hsa-snoop) override the check in compose.
+HEALTHCHECK --interval=10s --timeout=5s --start-period=30s --retries=18 \
+    CMD ["python3", "-c", "import os, socket, urllib.request as u; socket.create_connection(('127.0.0.1', int(os.getenv('LMCACHE_PORT', '6555'))), 2).close(); u.build_opener(u.ProxyHandler({})).open('http://127.0.0.1:8080/metrics', timeout=3).close()"]

@@ -18,3 +18,6 @@ RUN git clone --depth 1 "${KVBENCH_GIT_URL}" /tmp/kvbench \
     && rm -rf /tmp/kvbench
 
 EXPOSE 8000
+
+# No default command: compose supplies one (and its own healthcheck) per service.
+HEALTHCHECK NONE

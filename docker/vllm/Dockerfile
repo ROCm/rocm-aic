@@ -71,9 +71,9 @@ RUN sed -i 's/def _is_hip() -> bool:/def _is_hip() -> bool:\n    if VLLM_TARGET_
         grep -Fxq '    if VLLM_TARGET_DEVICE == "rocm":'
 
 # Apply every patch under patches/vllm/ in lexical order.
+WORKDIR /app/vllm
 # hadolint ignore=SC3054,SC3044,SC2098
-RUN cd /app/vllm && \
-    shopt -s nullglob && \
+RUN shopt -s nullglob && \
     patches=(/app/patches/vllm/*.patch) && \
     if [ "${#patches[@]}" -gt 0 ]; then \
         for patch in "${patches[@]}"; do \
@@ -91,7 +91,6 @@ RUN cd /app/vllm && \
 RUN --mount=type=cache,target=/root/.cache/pip \
     --mount=type=cache,target=/root/.cache/ccache \
     mkdir -p /wheels && \
-    cd /app/vllm && \
     printf 'torch>=2.13,<2.14\n' > /tmp/torch-constraints.txt && \
     if [ "${VLLM_TARGET_DEVICE}" = "empty" ]; then \
         pip3 install -r requirements/common.txt \
@@ -108,6 +107,7 @@ RUN --mount=type=cache,target=/root/.cache/pip \
         VLLM_VERSION_OVERRIDE="${VLLM_REF#v}+${VLLM_TARGET_DEVICE}" \
         pip3 wheel --no-build-isolation --no-deps --no-cache-dir -w /wheels . && \
     pip3 install --no-cache-dir /wheels/vllm-*.whl
+WORKDIR /
 
 # ----- 3b. vllm_emulator (llm-emu profile-driven emulation plugin) -----------
 ARG LLM_EMU_GIT_URL=https://github.com/AKafakA/llm-emu.git
@@ -174,5 +174,16 @@ RUN test -r "${AIC_EMULATOR_DEFAULT_PACK}" || \
     { echo "ERROR: default profile pack missing: ${AIC_EMULATOR_DEFAULT_PACK}" >&2; exit 1; }
 ENTRYPOINT ["python3", "-m", "vllm.entrypoints.openai.api_server"]
 
+# /health is 200 only while the engine is alive (503 once it has died).  Port
+# 8000 is what the compose service serves on; the emulated model loads fast.
+HEALTHCHECK --interval=15s --timeout=5s --start-period=60s --retries=20 \
+    CMD ["curl", "-fsS", "--noproxy", "*", "-o", "/dev/null", "http://127.0.0.1:8000/health"]
+
 # ----- runtime: default target -----------------------------------------------
 FROM vllm AS runtime
+
+# Same probe as emulate.  start-period is sized for loading and compiling a
+# large model (gpt-oss-120b); the first success marks the container healthy
+# immediately, so a long period only delays unhealthy reporting.
+HEALTHCHECK --interval=30s --timeout=10s --start-period=15m --retries=5 \
+    CMD ["curl", "-fsS", "--noproxy", "*", "-o", "/dev/null", "http://127.0.0.1:8000/health"]
