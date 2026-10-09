@@ -424,15 +424,16 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
 # configured — inside the shared apt cache mount the lists from the previous
 # step are not always visible to a subsequent install in the same RUN.
 # hadolint ignore=DL3008
-RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
-    --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
+# Separate RUN with its own apt-get update so the arch-specific blas package
+# is always visible even when the apt cache mount was populated by a prior build.
+RUN apt-get update && \
     _mm=$(echo "${ROCM_VERSION}" | cut -d. -f1-2) && \
-    apt-get update && \
     for _arch in $(echo "${ROCM_ARCH}" | tr ',' ' '); do \
         apt-get install -y --no-install-recommends \
             "amdrocm-blas${_mm}-${_arch}" || \
         echo "  NOTE: no blas arch package for ${_arch} (expected for emulated arches)"; \
-    done
+    done && \
+    rm -rf /var/lib/apt/lists/*
 
 RUN git config --global advice.detachedHead false
 RUN rm -f /usr/lib/python3.*/EXTERNALLY-MANAGED

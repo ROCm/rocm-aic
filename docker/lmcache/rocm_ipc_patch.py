@@ -14,7 +14,10 @@ import os, sys, shutil
 
 BASE = '/app/LMCache'
 VMEM_MODULE_SRC = '/tmp/rocm_vmem_ipc.py'   # COPYed into image by Dockerfile
-VMEM_MODULE_DST = f'{BASE}/rocm_vmem_ipc.py'
+# Install to site-packages so it survives the `rm -rf /app/LMCache` cleanup step.
+import sysconfig as _sc
+_site = _sc.get_path('purelib')
+VMEM_MODULE_DST = f'{_site}/rocm_vmem_ipc.py'
 
 def patch(path, old, new, name):
     with open(path) as f: src = f.read()
@@ -45,17 +48,11 @@ if wrap_start >= 0:
     new1 = (
         '        if __import__("torch").version.hip:\n'
         '            try:\n'
-        '                import sys as _sys\n'
-        '                import os as _os\n'
-        '                _lmc_base = _os.path.dirname(_os.path.dirname(\n'
-        '                    _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))))\n'
-        '                if _lmc_base not in _sys.path:\n'
-        '                    _sys.path.insert(0, _lmc_base)\n'
         '                from rocm_vmem_ipc import RocmVmemIPCWrapper as _R\n'
         '                return _R.wrap(tensor)\n'
         '            except ImportError:\n'
         '                raise RuntimeError(\n'
-        '                    "ROCm VMEM IPC module not found. "\n'
+        '                    "ROCm VMEM IPC module not found (rocm_vmem_ipc). "\n'
         '                    "hipIpcGetMemHandle unavailable on gfx1201/RDNA4."\n'
         '                )\n'
         '        return cls(tensor)'
@@ -120,10 +117,6 @@ patch(f5,
     '        self._device_host_func_dispatcher = DeviceHostFuncDispatcher()',
     '        if __import__("torch").version.hip:\n'
     '            try:\n'
-    '                import sys as _sys, os as _os\n'
-    '                _lmc = _os.path.dirname(_os.path.dirname(\n'
-    '                    _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))))\n'
-    '                if _lmc not in _sys.path: _sys.path.insert(0, _lmc)\n'
     '                from rocm_vmem_ipc import RocmVmemIPCWrapper as _R\n'
     '                _R.init_receiver()\n'
     '            except Exception as _e:\n'
