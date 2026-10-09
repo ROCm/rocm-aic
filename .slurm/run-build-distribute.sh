@@ -101,7 +101,7 @@
 #   AIC_IMAGE_DIR        shared dir for the tarball        (default: /scratch/$USER/images)
 #   HF_HOME              persistent Hugging Face cache used by tiny-test
 #                        (default: <AIC_IMAGE_DIR>/tiny-hf)
-#   ROCM_VERSION, PYTORCH_BRANCH, VLLM_REF, LLM_EMU_REF, LMCACHE_REF,
+#   ROCM_VERSION, PYTORCH_REF, VLLM_REF, LLM_EMU_REF, LMCACHE_REF,
 #   NIXL_REF, HSA_SNOOP_REF
 #                        optional Docker build-arg overrides.
 #   AIC_FORCE_LOAD       test/push: force a reload from the tarball even when the
@@ -369,7 +369,7 @@ AIC_CACHE_REF="${AIC_CACHE_REF:-}"
 AIC_CACHE_MODE="${AIC_CACHE_MODE:-max}"
 # Needs buildx >= 0.35.0. Avoids the Docker cache from growing endlessly.
 AIC_CACHE_RESET="${AIC_CACHE_RESET:-1}"
-AIC_BUILDX_BUILDER="${AIC_BUILDX_BUILDER:-aic-cache}"
+AIC_BUILDX_BUILDER="${AIC_BUILDX_BUILDER:-aic-local}"
 AIC_CACHE_INSECURE="${AIC_CACHE_INSECURE:-}"
 AIC_TEST_TIME="${AIC_TEST_TIME:-00:45:00}"
 AIC_TEST_CPUS="${AIC_TEST_CPUS:-8}"
@@ -396,13 +396,14 @@ AIC_TINY_CPUS="${AIC_TINY_CPUS:-8}"
 AIC_TINY_MEM="${AIC_TINY_MEM:-32G}"
 AIC_TINY_READY_TIMEOUT="${AIC_TINY_READY_TIMEOUT:-120}"   # x5s = up to 10 min for weights + download
 
-# --- Fabric exporter images (nvme_exporter / rdma_exporter) -------------------
-# Built from monitoring/*/Dockerfile and distributed alongside the main image so
+# --- Fabric exporter images (nvme_exporter / rdma_exporter / hsa-snoop) -------
+# Built from docker/*/Dockerfile and distributed alongside the main image so
 # bare cliff nodes can containerize them (no host-installed exporter service needed).  Names
 # must match run-cliff.sbatch's defaults so the tarballs written here are found there.
 # Versions default to the Grafana-parity versions; override via AIC_NVME/RDMA_EXPORTER_VERSION.
 AIC_NVME_EXPORTER_IMAGE="${AIC_NVME_EXPORTER_IMAGE:-aic-nvme-exporter:latest}"
 AIC_RDMA_EXPORTER_IMAGE="${AIC_RDMA_EXPORTER_IMAGE:-aic-rdma-exporter:latest}"
+AIC_HSA_SNOOP_IMAGE="${AIC_HSA_SNOOP_IMAGE:-aic-hsa-snoop:latest}"
 AIC_NVME_EXPORTER_VERSION="${AIC_NVME_EXPORTER_VERSION:-3.0.0}"  # matches host-service default; override as needed
 AIC_RDMA_EXPORTER_VERSION="${AIC_RDMA_EXPORTER_VERSION:-0.3.0}"  # matches host-service default; override as needed
 
@@ -916,8 +917,10 @@ cmd_build() {
     printf -v _version_value '%q' "${AIC_VERSION}"
     _version_build_args+=" --build-arg AIC_VERSION=${_version_value}"
     for _version_arg in \
-        ROCM_VERSION PYTORCH_BRANCH VLLM_REF LLM_EMU_REF \
-        LMCACHE_REF NIXL_REF HSA_SNOOP_REF; do
+        ROCM_VERSION PYTORCH_REF PYTORCH_SERIES TORCHVISION_REF VLLM_REF LLM_EMU_REF \
+        LMCACHE_REF NIXL_REF HSA_SNOOP_REF AITER_REF FLASH_ATTN_REF \
+        PYTORCH_GIT_URL TORCHVISION_GIT_URL VLLM_GIT_URL LLM_EMU_GIT_URL \
+        AITER_GIT_URL FLASH_ATTN_GIT_URL LMCACHE_GIT_URL NIXL_GIT_URL HSA_SNOOP_GIT_URL; do
         if [[ -v "${_version_arg}" ]]; then
             printf -v _version_value '%q' "${!_version_arg}"
             _version_build_args+=" --build-arg ${_version_arg}=${_version_value}"
@@ -1170,7 +1173,13 @@ cmd_build_emulate() {
     AIC_BUILD_TARGET="emulate"
     AIC_VLLM_TARGET_DEVICE="${AIC_EMULATE_VLLM_DEVICE}"
     AIC_BUILD_DOCKERFILE="vllm/Dockerfile"
-    log "build-emulate: emulation-only image, no GPU kernels compiled"
+    # Use the pre-built aic-base as the named build context so the emulate image
+    # inherits the slim runtime base rather than pulling the -full ROCm image.
+    local _base_ref="${AIC_BASE_IMAGE:-aic-base:${IMAGE_TAG:-latest}}"
+    if [[ -z "${AIC_BUILD_CONTEXT_BASE:-}" ]]; then
+        AIC_BUILD_CONTEXT_BASE="docker-image://${_base_ref}"
+    fi
+    log "build-emulate: emulation-only image, no GPU kernels compiled (base: ${AIC_BUILD_CONTEXT_BASE})"
     cmd_build
 }
 
@@ -1219,8 +1228,10 @@ cmd_build_split() {
     local _version_build_args="" _version_arg _version_value
     printf -v _version_value '%q' "${AIC_VERSION}"
     _version_build_args+=" --build-arg AIC_VERSION=${_version_value}"
-    for _version_arg in ROCM_VERSION PYTORCH_BRANCH VLLM_REF LLM_EMU_REF \
-                        LMCACHE_REF NIXL_REF HSA_SNOOP_REF; do
+    for _version_arg in ROCM_VERSION PYTORCH_REF PYTORCH_SERIES TORCHVISION_REF VLLM_REF LLM_EMU_REF \
+                        LMCACHE_REF NIXL_REF HSA_SNOOP_REF AITER_REF FLASH_ATTN_REF \
+        PYTORCH_GIT_URL TORCHVISION_GIT_URL VLLM_GIT_URL LLM_EMU_GIT_URL \
+        AITER_GIT_URL FLASH_ATTN_GIT_URL LMCACHE_GIT_URL NIXL_GIT_URL HSA_SNOOP_GIT_URL; do
         if [[ -v "${_version_arg}" ]]; then
             printf -v _version_value '%q' "${!_version_arg}"
             _version_build_args+=" --build-arg ${_version_arg}=${_version_value}"
@@ -1343,16 +1354,18 @@ REMOTE
 # reachability to GitHub/Debian.
 cmd_build_exporters() {
     _pick_compress
-    local nvme_tar rdma_tar
+    local nvme_tar rdma_tar hsa_snoop_tar
     nvme_tar="$(_exporter_tarball_path "${AIC_NVME_EXPORTER_IMAGE}")"
     rdma_tar="$(_exporter_tarball_path "${AIC_RDMA_EXPORTER_IMAGE}")"
+    hsa_snoop_tar="$(_exporter_tarball_path "${AIC_HSA_SNOOP_IMAGE}")"
     # Taken before anything is submitted; see _verify_tarball.
-    local nvme_before rdma_before
+    local nvme_before rdma_before hsa_snoop_before
     nvme_before="$(_tarball_stamp "${nvme_tar}")"
     rdma_before="$(_tarball_stamp "${rdma_tar}")"
+    hsa_snoop_before="$(_tarball_stamp "${hsa_snoop_tar}")"
 
-    log "exporter images : ${AIC_NVME_EXPORTER_IMAGE} (nvme v${AIC_NVME_EXPORTER_VERSION}), ${AIC_RDMA_EXPORTER_IMAGE} (rdma v${AIC_RDMA_EXPORTER_VERSION})"
-    log "tarballs   : ${nvme_tar}, ${rdma_tar}  (compress: ${AIC_COMPRESS})"
+    log "exporter images : ${AIC_NVME_EXPORTER_IMAGE} (nvme v${AIC_NVME_EXPORTER_VERSION}), ${AIC_RDMA_EXPORTER_IMAGE} (rdma v${AIC_RDMA_EXPORTER_VERSION}), ${AIC_HSA_SNOOP_IMAGE}"
+    log "tarballs   : ${nvme_tar}, ${rdma_tar}, ${hsa_snoop_tar}  (compress: ${AIC_COMPRESS})"
 
     local remote_script
     remote_script="$(cat <<REMOTE
@@ -1396,8 +1409,22 @@ if [ "\${_rc[0]}" -ne 0 ]; then
     echo "[build-exporters] WARN: docker buildx exited \${_rc[0]} for rdma image (cache lock race?); tarball written, continuing"
 fi
 mv -f "\${tmp}" "${rdma_tar}"
+tmp="${hsa_snoop_tar}.partial.\$\$"
+set +o pipefail
+docker buildx build --builder ${AIC_BUILDX_BUILDER} --output type=docker,dest=- \
+    -t "${AIC_HSA_SNOOP_IMAGE}" "${AIC_DAY_DIR}/docker/hsa-snoop" | ${COMPRESS_CMD} > "\${tmp}"
+_rc=("\${PIPESTATUS[@]}")
+set -o pipefail
+if [ "\${_rc[1]}" -ne 0 ]; then
+    echo "[build-exporters] ERROR: compressor exited \${_rc[1]} for hsa-snoop image; tarball may be corrupt" >&2; exit 1
+fi
+if [ "\${_rc[0]}" -ne 0 ]; then
+    echo "[build-exporters] WARN: docker buildx exited \${_rc[0]} for hsa-snoop image (cache lock race?); tarball written, continuing"
+fi
+mv -f "\${tmp}" "${hsa_snoop_tar}"
 echo "[build-exporters] saved \$(du -h "${nvme_tar}" | cut -f1) -> ${nvme_tar}"
 echo "[build-exporters] saved \$(du -h "${rdma_tar}" | cut -f1) -> ${rdma_tar}"
+echo "[build-exporters] saved \$(du -h "${hsa_snoop_tar}" | cut -f1) -> ${hsa_snoop_tar}"
 exit 0
 REMOTE
 )"
@@ -1426,7 +1453,8 @@ REMOTE
     fi
     _verify_tarball "${nvme_tar}" "nvme-exporter" "${nvme_before}"
     _verify_tarball "${rdma_tar}" "rdma-exporter" "${rdma_before}"
-    log "exporter build complete: ${nvme_tar}, ${rdma_tar}"
+    _verify_tarball "${hsa_snoop_tar}" "hsa-snoop" "${hsa_snoop_before}"
+    log "exporter build complete: ${nvme_tar}, ${rdma_tar}, ${hsa_snoop_tar}"
 }
 
 # --- load: docker load the tarball on every target node, then verify ---------

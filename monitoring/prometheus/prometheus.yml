@@ -40,12 +40,15 @@ scrape_configs:
   - job_name: vllm
     metrics_path: /metrics
     static_configs:
-      - targets: ["aic-vllm-gpu0:8000"]
+      # vllm uses network_mode:host (required for KFD GPU IPC); reach via host-gateway.
+      - targets: ["host-gateway:8000"]
 
   - job_name: lmcache
     metrics_path: /metrics
     static_configs:
-      - targets: ["aic-lmcache:8080"]
+      # lmcache serves /metrics on --prometheus-port (9091) via a dedicated thread,
+      # independent of the main uvicorn server at :8080.
+      - targets: ["host-gateway:9091"]
 
   # LMCache coordinator exporter — polls the coordinator REST API (/instances,
   # /directory/stats, /quota) and emits Prometheus text format on :9301.
@@ -63,7 +66,7 @@ scrape_configs:
   - job_name: nixl
     metrics_path: /metrics
     static_configs:
-      - targets: ["aic-lmcache:19090"]
+      - targets: ["host-gateway:19090"]
 
   # node-exporter: CPU/mem/net + NVMe I/O (diskstats/nvme collectors) and
   # RDMA/InfiniBand port counters (infiniband collector).
@@ -75,12 +78,22 @@ scrape_configs:
   - job_name: nvme_exporter
     static_configs:
       - targets: ["aic-nvme-exporter:9998"]
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: instance
+        regex: "aic-nvme-exporter:(.*)"
+        replacement: "localhost:$1"
 
-  # Dedicated RDMA exporter (containerised in monitoring profile; yuuki-style
-  # rdma_port_rcv_data_total / rdma_port_xmit_data_total metrics).
+  # Dedicated RDMA exporter (containerised in monitoring profile).
+  # No RDMA HCA present on this node; exporter emits only its own error counters.
   - job_name: rdma_exporter
     static_configs:
       - targets: ["aic-rdma-exporter:9879"]
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: instance
+        regex: "aic-rdma-exporter:(.*)"
+        replacement: "localhost:$1"
 
   # AMD GPU device-metrics-exporter (gpu_* metrics).  Always on :5000 on aic-network.
   - job_name: amd_metrics_exporter
@@ -102,5 +115,3 @@ scrape_configs:
     metrics_path: /metrics
     static_configs:
       - targets: ["aic-hsa-snoop:9488"]
-      # Fallback for host-network or standalone deployments
-      - targets: ["host-gateway:9488"]

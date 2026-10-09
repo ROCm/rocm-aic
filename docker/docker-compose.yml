@@ -58,7 +58,7 @@
 #   IMAGE_NAME             — image name when IMAGE_REF is unset (default: rocm-aic)
 #   AIC_VERSION            — AIC release from the root VERSION file
 #   ROCM_VERSION           — ROCm release used by the default base image
-#   PYTORCH_BRANCH, VLLM_REF, LLM_EMU_REF, AITER_REF, FLASH_ATTN_REF, LMCACHE_REF, NIXL_REF, HSA_SNOOP_REF
+#   PYTORCH_REF, VLLM_REF, LLM_EMU_REF, AITER_REF, FLASH_ATTN_REF, LMCACHE_REF, NIXL_REF, HSA_SNOOP_REF
 #                          — optional framework version build-arg overrides
 #   VLLM_MODEL             — model to serve
 #   LMCACHE_PORT           — lmcache ZMQ listen port (default: 6555)
@@ -325,23 +325,11 @@ services:
   lmcache:
     profiles:
       - cache
-    build:
-      # Compose lives in docker/; the build context is the  tree
-      # root (one level up) so the Dockerfile's COPY scripts/ patches/ benchmarks/
-      # monitoring/ paths still resolve.
-      context: ..
-      dockerfile: docker/lmcache/Dockerfile
-      args:
-        AIC_VERSION:
-        ROCM_VERSION:
-        ROCM_ARCH: ${ROCM_ARCH}
-        BUILD_JOBS: ${BUILD_JOBS:-}
-        AIC_UCX_FAST: ${AIC_UCX_FAST:-}
-        AITER_REF:
-        FLASH_ATTN_REF:
-        LMCACHE_REF:
-        NIXL_REF:
-        HSA_SNOOP_REF:
+    # No `build:` stanza on purpose.  This image must be built by `make build`,
+    # which supplies the `base` build-context carrying torch.  Compose cannot
+    # express that context, so a `docker compose build` here would silently fall
+    # back to the Dockerfile's raw-ROCm `base` stage and produce a torch-less
+    # image that fails at runtime.
     image: ${LMCACHE_IMAGE_REF:-${IMAGE_REF:-${IMAGE_NAME:-rocm-aic}:latest}}
     container_name: aic-lmcache
     # Cross-container HIP IPC (LMCacheMPConnector registering vLLM's KV tensors) on
@@ -350,9 +338,11 @@ services:
     # namespace; vllm joins it via ipc/pid: service:lmcache (see vllm service below).
     # IPC namespace sharing is independent of network_mode — the aic bridge network
     # provides DNS-based service discovery for prometheus without affecting IPC.
-    # Ports reachable within the aic network: lmcache HTTP API 8080, NIXL telemetry 19090.
-    networks: [aic-network]
-    ipc: shareable
+    # network_mode:host + ipc:host + pid:host required for KFD GPU memory IPC.
+    # Prometheus scrapes lmcache via host-gateway (see prometheus.yml).
+    network_mode: host
+    ipc: host
+    pid: host
     shm_size: "${AIC_SHM_SIZE:-64gb}"
     cap_add:
       - CAP_SYS_ADMIN
@@ -373,6 +363,7 @@ services:
       - /dev/kfd
       - /dev/dri
     volumes:
+      - aic-ipc:/tmp/aic-ipc   # ROCm VMEM IPC sidecar socket (gfx1201)
       # L2a NVMe — AIS_MT pool files (standard mode)
       - ${NVME_DATA:-/mnt/lmcache-nvme}:/data/nvme
       # L2b NFS — POSIX pool files (standard mode)
@@ -401,7 +392,10 @@ services:
       # Coordinator registration: the MP server registers, heartbeats, and
       # deregisters against the coordinator so it can track which blocks are held.
       # Unset LMCACHE_COORDINATOR_URL to run without coordinator (standalone mode).
-      LMCACHE_COORDINATOR_URL: "${LMCACHE_COORDINATOR_URL:-http://aic-lmcache-coordinator:9300}"
+      # lmcache uses network_mode:host — coordinator is on bridge, reach via localhost port.
+      LMCACHE_COORDINATOR_URL: "${LMCACHE_COORDINATOR_URL:-http://localhost:9300}"
+      # ROCm VMEM IPC sidecar socket path (shared with vllm via aic-ipc volume)
+      AIC_IPC_SOCK: /tmp/aic-ipc/fds.sock
     entrypoint: ["/bin/bash", "-o", "pipefail", "-c"]
     command: *lmcache-command
     depends_on:
@@ -426,6 +420,8 @@ services:
     image: ${LMCACHE_IMAGE_REF:-${IMAGE_REF:-${IMAGE_NAME:-rocm-aic}:latest}}
     container_name: aic-lmcache-coordinator
     networks: [aic-network]
+    ports:
+      - "${LMCACHE_COORDINATOR_PORT:-9300}:${LMCACHE_COORDINATOR_PORT:-9300}"
     restart: unless-stopped
     environment:
       - LMCACHE_DISABLE_BANNER=1
@@ -453,16 +449,8 @@ services:
   # vllm: vLLM serve, optionally with LMCacheMPConnector (via KV_TRANSFER_ARG)
   # ---------------------------------------------------------------------------
   vllm:
-    build:
-      context: ..
-      dockerfile: docker/vllm/Dockerfile
-      args:
-        AIC_VERSION:
-        ROCM_VERSION:
-        ROCM_ARCH: ${ROCM_ARCH}
-        BUILD_JOBS: ${BUILD_JOBS:-}
-        VLLM_REF:
-        LLM_EMU_REF:
+    # No `build:` stanza on purpose — see the lmcache service above.  Build with
+    # `make build`, which supplies the torch-bearing `base` build-context.
     image: ${VLLM_IMAGE_REF:-${IMAGE_REF:-${IMAGE_NAME:-rocm-aic}:latest}}
     container_name: aic-vllm-gpu${GPU:-0}
     # Shared IPC/PID namespaces with lmcache: required for cross-container HIP IPC
@@ -471,14 +459,11 @@ services:
     # (set in image ENV) plus shared IPC+PID namespaces.  Container-scoped sharing
     # (ipc: service:lmcache, pid: service:lmcache) is sufficient and safer than
     # ipc: host / pid: host.  Override via VLLM_IPC_MODE / VLLM_PID_MODE if needed.
-    # vLLM OpenAI API + /metrics reachable on host port 8000 (curl localhost:8000
-    # from the sbatch shell) and within the aic network on port 8000.
-    networks: [aic-network]
-    ports:
-      - "${VLLM_HOST_PORT:-8000}:8000"
-    ipc: "${VLLM_IPC_MODE:-shareable}"
+    # network_mode:host required for KFD GPU IPC; prometheus scrapes via host-gateway.
+    network_mode: host
+    ipc: "${VLLM_IPC_MODE:-host}"
     shm_size: "${AIC_SHM_SIZE:-64gb}"
-    pid: "${VLLM_PID_MODE-service:lmcache}"
+    pid: "${VLLM_PID_MODE:-host}"
     cap_add:
       - CAP_SYS_ADMIN
       - SYS_PTRACE
@@ -490,12 +475,14 @@ services:
     volumes:
       - ${HF_HOME:-~/.cache/huggingface}:/hf
       - ${LOG:-../logs}/vllm:/var/log/aic-vllm
+      - aic-ipc:/tmp/aic-ipc   # ROCm VMEM IPC sidecar socket (gfx1201)
     environment:
       - HF_TOKEN=${HF_TOKEN:-}
       - HF_HOME=/hf
       - HF_HUB_CACHE=/hf/hub
       - HF_DATASETS_CACHE=/hf/datasets
       - HF_HUB_OFFLINE=${HF_HUB_OFFLINE:-0}
+      - AIC_IPC_SOCK=/tmp/aic-ipc/fds.sock
       - TRANSFORMERS_OFFLINE=${TRANSFORMERS_OFFLINE:-0}
       - VLLM_CACHE_ROOT=/hf/vllm
       - VLLM_CONFIG_ROOT=/hf/vllm_config
@@ -504,6 +491,7 @@ services:
       - VLLM_TARGET_DEVICE=rocm
       - ROCR_VISIBLE_DEVICES=${AIC_ROCR_VISIBLE:-${GPU:-0}}
       - HIP_VISIBLE_DEVICES=${AIC_HIP_VISIBLE:-0}
+      - CUDA_VISIBLE_DEVICES=
       - AMDGCN_USE_BUFFER_OPS=0
       - MIOPEN_FIND_MODE=FAST
       - MIOPEN_USER_DB_PATH=/app/miopen
@@ -525,6 +513,12 @@ services:
       # Enable vLLM dev endpoints: POST /reset_prefix_cache, /reset_mm_cache, etc.
       # Required to flush the GPU-side prefix cache via API without restarting vLLM.
       - VLLM_SERVER_DEV_MODE=${VLLM_SERVER_DEV_MODE:-1}
+      # llm-emu executor hook (passthrough — set VLLM_EMULATOR_EXECUTOR_HOOK=1 in host env
+      # to enable profile-driven emulation on a real GPU node, bypassing slow GPU compute)
+      - VLLM_EMULATOR_EXECUTOR_HOOK
+      - VLLM_EMULATOR_ENABLE_ORACLE
+      - VLLM_EMULATOR_PROFILE_PACK
+      - VLLM_EMULATOR_MODE
     command: >
       --model ${VLLM_MODEL:-openai/gpt-oss-120b}
         --host 0.0.0.0
@@ -586,6 +580,32 @@ services:
     restart: unless-stopped
 
   # ---------------------------------------------------------------------------
+  # loki: log aggregation store for Docker container logs.
+  # alloy: Grafana Alloy collector — tails container logs via Docker socket and ships to Loki.
+  loki:
+    profiles: [monitoring, monitoring-base]
+    image: grafana/loki:3.5.0
+    container_name: aic-loki
+    networks: [aic-network]
+    command: -config.file=/etc/loki/loki.yml
+    volumes:
+      - ../monitoring/loki/loki.yml:/etc/loki/loki.yml:ro
+      - loki-data:/loki
+    restart: unless-stopped
+
+  alloy:
+    profiles: [monitoring, monitoring-base]
+    image: grafana/alloy:v1.8.3
+    container_name: aic-alloy
+    networks: [aic-network]
+    volumes:
+      - ../monitoring/alloy/config.alloy:/etc/alloy/config.alloy:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - /tmp:/tmp:ro
+    command: run --server.http.listen-addr=0.0.0.0:12345 /etc/alloy/config.alloy
+    restart: unless-stopped
+    depends_on: [loki]
+
   # prometheus: scrapes all stack targets by container name via the aic network.
   # Behind the `monitoring` profile — start with `make up-monitoring` or
   # `docker compose --profile cache --profile monitoring up`.
@@ -690,7 +710,7 @@ services:
       - --listen-address=:9879
       - --metrics-path=/metrics
       - --health-path=/health
-      - --enable-roce-pfc-metrics=false
+      - --collector.ethtool=false
 
   # ---------------------------------------------------------------------------
   # grafana: pre-provisioned AIC dashboard, anonymous access, port 3000.
@@ -720,7 +740,7 @@ services:
   # ---------------------------------------------------------------------------
   hsa-snoop:
     profiles: [monitoring, exporters, exporters-safe]
-    image: ${LMCACHE_IMAGE_REF:-${IMAGE_REF:-${IMAGE_NAME:-rocm-aic}:latest}}
+    image: ${HSA_SNOOP_IMAGE:-aic-hsa-snoop:local}
     container_name: aic-hsa-snoop
     networks: [aic-network]
     pid: "${AIC_HSA_SNOOP_PID_MODE:-service:lmcache}"
@@ -735,7 +755,6 @@ services:
     volumes:
       - /sys/kernel/debug:/sys/kernel/debug
       - /sys/kernel/tracing:/sys/kernel/tracing
-    entrypoint: ["/usr/local/bin/hsa-snoop"]
     command: ["--all", "--prometheus", "--prometheus-port", "${HSA_SNOOP_PORT:-9488}", "--mem-snoop"]
 
   # ---------------------------------------------------------------------------
@@ -1006,3 +1025,5 @@ services:
 
 volumes:
   grafana-data:
+  loki-data:
+  aic-ipc:   # ROCm VMEM IPC sidecar socket shared between vllm and lmcache

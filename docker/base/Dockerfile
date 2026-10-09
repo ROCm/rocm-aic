@@ -2,7 +2,8 @@
 #
 # SPDX-License-Identifier: MIT
 #
-# AIC base image: Ubuntu 24.04 + ROCm 7.14.1 + PyTorch (source) + torchvision (source).
+# AIC base image: Ubuntu 24.04 + ROCm 7.14.1 + PyTorch (source) + torchvision (source)
+# + NIXL (KV-transfer transport).
 #
 # This is the shared foundation consumed by docker/vllm/Dockerfile and
 # docker/lmcache/Dockerfile via --build-context base=docker-image://aic-base:TAG.
@@ -11,9 +12,12 @@
 #
 # Stages:
 #   pip-wheels        scratch stub for --build-context pip-wheels override
-#   base              ROCm base + system deps + uv                    (sections 0-2)
+#   base              ROCm-full base + system deps + uv               (sections 0-2)
 #   build_pytorch     PyTorch 2.13 built from source                  (section 2b)
 #   build_torchvision torchvision built from source                   (section 2c)
+#   build_nixl        NIXL built from source (uses ROCm headers)      (section 2d)
+#   build_clr_patch   patched libamdhip64.so (IPC event ring fix)     (section 2e)
+#   runtime           Ubuntu 24.04 + 13 ROCm runtime pkgs + torch + NIXL (section 3)
 #
 # Build (from repo root):
 #   DOCKER_BUILDKIT=1 docker build \
@@ -26,8 +30,13 @@
 #   make dist-build-base ROCM_ARCH=gfx950
 
 ARG ROCM_VERSION=7.14.1
-# ROCm 7.14 publishes the hipFile-bearing variant as `-full` (not `-complete`).
+# Build base: full ROCm toolchain (compiler, headers, math libs) for source builds.
 ARG ROCM_BASE_IMAGE=rocm/dev-ubuntu-24.04:${ROCM_VERSION}-full
+# Runtime base: plain Ubuntu 24.04 + AMD apt repo + 13 ROCm runtime packages.
+# rocm/dev-ubuntu-24.04:7.14.1 (no -full suffix) does not exist for 7.14.x —
+# AMD only publishes the -full variant for this release series.  Ubuntu 24.04
+# is used instead; the AMD apt signing key is COPYed from the base stage.
+ARG ROCM_RUNTIME_IMAGE=ubuntu:24.04
 
 # Empty default for the `pip-wheels` build context.  A caller that passes
 # --build-context pip-wheels=<dir> overrides this stage exactly as before.
@@ -108,8 +117,18 @@ RUN curl -fsSL "https://astral.sh/uv/${UV_VERSION}/install.sh" | sh && \
 FROM base AS build_pytorch
 
 ARG ROCM_ARCH
-ARG PYTORCH_REPO=https://github.com/ROCm/pytorch.git
-ARG PYTORCH_BRANCH=release/2.13
+ARG PYTORCH_GIT_URL=https://github.com/ROCm/pytorch.git
+# Immutable commit pin.  ROCm/pytorch publishes no tag for the 2.13 series, so
+# a SHA is the only reproducible ref available; it is cloned then checked out,
+# so a branch or tag would work here too.  Pinned to ec5f3b1 rather than the
+# current head of release/2.13 (8e0af7fa) because a later commit updated
+# third_party/composable_kernel in a way that breaks gfx1250 multi-arch builds
+# (CK_BUFFER_RESOURCE_3RD_DWORD undeclared).  See patches/pytorch/01-ck-gfx1250-*.
+ARG PYTORCH_REF=ec5f3b1effb14f0e36b66bab4db1c9b49b278f82
+# Display only: the human-readable torch series carried in the image tag and
+# the README, since a bare SHA says nothing about which torch this is.  Bump
+# alongside PYTORCH_REF whenever the series changes.
+ARG PYTORCH_SERIES=2.13
 
 # torch 2.13 emits float->__bf16 libcalls absent from gcc-11; build with gcc-13.
 # hadolint ignore=DL3008
@@ -121,38 +140,66 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-13 130 \
         --slave /usr/bin/g++ g++ /usr/bin/g++-13
 
-RUN git clone --branch "${PYTORCH_BRANCH}" "${PYTORCH_REPO}" /app/pytorch
+RUN git clone "${PYTORCH_GIT_URL}" /app/pytorch && \
+    git -C /app/pytorch checkout "${PYTORCH_REF}"
 
 RUN --mount=type=cache,target=/root/.cache/uv \
     cd /app/pytorch && \
     uv pip install --system -r requirements.txt && \
     git submodule update --init --recursive
 
+COPY patches/pytorch/ /app/patches/pytorch/
+
+# Apply patches to pytorch and its submodules before the build.
+# Uses `patch -p1` (not `git apply`) so patches to submodule files work without
+# git submodule boundary issues.
+# hadolint ignore=SC2061,SC3044
+RUN if compgen -G "/app/patches/pytorch/*.patch" > /dev/null; then \
+        for p in /app/patches/pytorch/*.patch; do \
+            echo "Applying pytorch patch: $p"; \
+            patch -p1 -d /app/pytorch < "$p" || { \
+                echo "ERROR: patch does not apply cleanly: $p" >&2; exit 1; }; \
+        done; \
+    fi
+
 ENV PYTORCH_ROCM_ARCH=${ROCM_ARCH}
 
-# hadolint ignore=SC2086
+# Cap compile parallelism.  Without this the torch_cpu/ATen compile fans out to
+# every core; the heavier translation units peak well above 1 GB each, so on a
+# host with less RAM than ~2 GB per core this exhausts memory and can hard-hang
+# the machine.  Empty means "all cores", matching docker/lmcache/Dockerfile.
+ARG BUILD_JOBS=
+
+# hadolint ignore=SC2086,SC2015
 RUN --mount=type=cache,target=/root/.cache/ccache \
     cd /app/pytorch && \
     python3 tools/amd_build/build_amd.py && \
     CCACHE_DIR=/root/.cache/ccache \
     CMAKE_C_COMPILER_LAUNCHER=ccache \
     CMAKE_CXX_COMPILER_LAUNCHER=ccache \
+    MAX_JOBS="${BUILD_JOBS:-$(nproc)}" \
+    CMAKE_BUILD_PARALLEL_LEVEL="${BUILD_JOBS:-$(nproc)}" \
     CMAKE_PREFIX_PATH=$(python3 -c 'import sys; print(sys.prefix)') \
-        python3 setup.py bdist_wheel --dist-dir=/app/pytorch/dist
+    PYTORCH_ROCM_ARCH=$(echo "${PYTORCH_ROCM_ARCH}" | tr ',' ' ') \
+        python3 setup.py bdist_wheel --dist-dir=/app/pytorch/dist && \
+    find /app/pytorch -mindepth 1 -maxdepth 1 ! -name 'dist' -exec rm -rf {} + 2>/dev/null || true
 
 # =============================================================================
 # torchvision source build — must compile against our source-built PyTorch.
-# Pin TORCHVISION_BRANCH to the release matching PyTorch 2.13 (v0.28.x series).
+# Pin TORCHVISION_REF to the release matching PyTorch 2.13 (v0.28.x series).
 # NOTE: v0.29.0 requires torch::stable::permute which is not present in
 # ROCm/pytorch@release/2.13; stay on v0.28.0 until the ROCm fork advances.
 # =============================================================================
 FROM build_pytorch AS build_torchvision
 
 ARG ROCM_ARCH
-ARG TORCHVISION_REPO=https://github.com/pytorch/vision.git
-ARG TORCHVISION_BRANCH=v0.28.0
+# Re-declared: ARG does not carry across a FROM.
+ARG BUILD_JOBS=
+ARG TORCHVISION_GIT_URL=https://github.com/pytorch/vision.git
+# Immutable tag.  Shallow clone, so this must be a branch or tag, not a SHA.
+ARG TORCHVISION_REF=v0.28.0
 
-RUN git clone --depth 1 --branch "${TORCHVISION_BRANCH}" "${TORCHVISION_REPO}" /app/vision
+RUN git clone --depth 1 --branch "${TORCHVISION_REF}" "${TORCHVISION_GIT_URL}" /app/vision
 
 # hadolint ignore=SC2086,DL3008
 RUN --mount=type=cache,target=/root/.cache/pip \
@@ -167,15 +214,288 @@ RUN --mount=type=cache,target=/root/.cache/pip \
     CCACHE_DIR=/root/.cache/ccache \
     CMAKE_C_COMPILER_LAUNCHER=ccache \
     CMAKE_CXX_COMPILER_LAUNCHER=ccache \
+    MAX_JOBS="${BUILD_JOBS:-$(nproc)}" \
+    CMAKE_BUILD_PARALLEL_LEVEL="${BUILD_JOBS:-$(nproc)}" \
         python3 setup.py bdist_wheel --dist-dir=/app/vision/dist
 
 # =============================================================================
-# runtime — default target: pytorch + torchvision installed system-wide.
-# Downstream Dockerfiles (docker/vllm, docker/lmcache) use this stage via
-# --build-context base=docker/base so they get a fully working torch env
-# without bind-mounting intermediate wheel directories.
+# build_nixl — NIXL source build using the ROCm-full toolchain.
+# Output (/opt/nixl, /opt/rocnixl-ucx) is copied to the slim runtime stage so
+# the runtime image never needs cmake, clang, or ROCm headers.
 # =============================================================================
-FROM build_torchvision AS runtime
+FROM base AS build_nixl
 
+ARG NIXL_GIT_URL=https://github.com/ai-dynamo/nixl.git
+ARG NIXL_REF=v1.4.1
+ARG BUILD_JOBS=
+ARG AIC_UCX_FAST=
+
+# numpy is required by NIXL's Python bindings at install time.
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv pip install --system numpy numba
+
+COPY docker/scripts /tmp/nixl-scripts
+COPY patches/nixl/ /tmp/nixl-patches/
+# hadolint ignore=SC3054,SC3044
+RUN --mount=type=cache,target=/root/.cache/uv \
+    --mount=type=cache,target=/root/.cache/pip \
+    chmod +x /tmp/nixl-scripts/*.sh && \
+    NIXL_GIT_URL="${NIXL_GIT_URL}" NIXL_REF="${NIXL_REF}" NIXL_REQUIRE_ROCM=1 \
+        NIXL_DEST=/tmp/nixl /tmp/nixl-scripts/clone-nixl.sh && \
+    shopt -s nullglob && \
+    nixl_patches=(/tmp/nixl-patches/*.patch) && \
+    if [ "${#nixl_patches[@]}" -eq 0 ]; then \
+        echo "ERROR: no patches found in /tmp/nixl-patches/" >&2; exit 1; \
+    fi && \
+    for patch in "${nixl_patches[@]}"; do \
+        if git -C /tmp/nixl apply --verbose "$patch"; then \
+            echo "[nixl] applied $(basename "$patch")"; \
+        else \
+            echo "ERROR: nixl patch does not apply cleanly: $patch" >&2; exit 1; \
+        fi; \
+    done && \
+    NIXL_SRC=/tmp/nixl \
+        AIS_PATH=/opt/rocm ROCM_PATH=/opt/rocm \
+        NIXL_INSTALL_PREFIX=/opt/nixl \
+        NIXL_BUILD_WHEEL=1 NIXL_WHEEL_DIR=/tmp/nixl-wheels \
+        BUILD_JOBS="${BUILD_JOBS}" \
+        AIC_UCX_FAST="${AIC_UCX_FAST}" \
+        UV_SYSTEM_CERTS=1 \
+        /tmp/nixl-scripts/build-nixl.sh && \
+    rm -rf /tmp/nixl /tmp/nixl-patches /tmp/nixl-scripts /tmp/nixl-wheels
+
+# =============================================================================
+# build_clr_patch — patch libamdhip64.so to fix IPC event signal ring overflow.
+#
+# ROCm/rocm-systems PRs #11511 and #11749 fix IPCEventEmulated::streamWait to
+# wrap read_index with % IPC_SIGNALS_PER_EVENT (ring size = 32).  Without this,
+# the 33rd cross-process use of the same IPC event handle reads past the end of
+# the signal array, causing hipErrorInvalidValue.  The PRs are open on 'develop'
+# and not yet in any released ROCm build, so we patch and rebuild here.
+# =============================================================================
+FROM base AS build_clr_patch
+
+ARG CLR_GIT_URL=https://github.com/ROCm/rocm-systems.git
+ARG CLR_REF=therock-7.14.1
+ARG BUILD_JOBS=
+
+# hadolint ignore=DL3008
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
+    apt-get update && \
+    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+        cmake git ninja-build python3-dev
+
+COPY patches/hip-ipc-event-ring-fix.patch /tmp/hip-ipc-event-ring-fix.patch
+
+RUN pip3 install --break-system-packages CppHeaderParser && \
+    git clone --filter=blob:none --no-checkout "${CLR_GIT_URL}" /app/rocm-systems && \
+    git -C /app/rocm-systems checkout "${CLR_REF}" -- projects/clr projects/hip && \
+    sed -i 's/const int offset = ipc_evt_.ipc_shmem_->read_index;/const int offset = ipc_evt_.ipc_shmem_->read_index % IPC_SIGNALS_PER_EVENT;/' \
+        /app/rocm-systems/projects/clr/hipamd/src/hip_event_ipc.cpp && \
+    grep -q "IPC_SIGNALS_PER_EVENT" /app/rocm-systems/projects/clr/hipamd/src/hip_event_ipc.cpp || \
+    { echo "ERROR: patch did not apply"; exit 1; } && \
+    echo "Patch applied OK"
+
+# hadolint ignore=DL3008
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
+    apt-get update && \
+    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends libgl-dev
+
+RUN cmake -G Ninja \
+        -S /app/rocm-systems/projects/clr \
+        -B /app/clr-build \
+        -DCMAKE_BUILD_TYPE=Release \
+        -DCMAKE_C_COMPILER=/opt/rocm/core-7.14/lib/llvm/bin/clang \
+        -DCMAKE_CXX_COMPILER=/opt/rocm/core-7.14/lib/llvm/bin/clang++ \
+        -DHIP_COMMON_DIR=/app/rocm-systems/projects/hip \
+        -DHIP_PLATFORM=amd \
+        -DROCM_PATH=/opt/rocm/core-7.14 \
+        -DCMAKE_PREFIX_PATH=/opt/rocm/core-7.14 \
+        -DCLR_BUILD_HIP=ON \
+        -DCLR_BUILD_OCL=OFF \
+        -D__HIP_ENABLE_PCH=OFF && \
+    cmake --build /app/clr-build --target amdhip64 \
+        --parallel "${BUILD_JOBS:-$(nproc)}" && \
+    ls /app/clr-build/hipamd/lib/libamdhip64.so* && \
+    echo "libamdhip64.so built OK"
+
+# =============================================================================
+# runtime — plain ROCm image + 13 ROCm runtime packages + torch + NIXL.
+#
+# Starts FROM ubuntu:24.04 instead of the -full ROCm image (~18 GB).  AMD
+# stopped publishing a lightweight runtime image (no -full suffix) for Ubuntu
+# 24.04 after ROCm 7.2.x, so we build from plain Ubuntu and add only the 13
+# ROCm packages that torch actually dlopens at process start (~2 GB), confirmed
+# by /proc/self/maps audit with a live GPU.  ~15 GB of -full content excluded.
+#
+# ROCm runtime packages installed (~2 GB total):
+#   amdrocm-runtime     HIP + HSA + comgr + hipRTC        (47 MB)
+#   amdrocm-base        rocm-core + profiler-register      (5 MB)
+#   amdrocm-profiler-base  profiler SDK + rocTX + AQL      (122 MB)
+#   amdrocm-dnn-host    MIOpen                             (463 MB)
+#   amdrocm-blas-host   rocBLAS + hipBLAS + hipBLASLt + rocRoller  (273 MB)
+#   amdrocm-fft-host    hipFFT + rocFFT                    (13 MB)
+#   amdrocm-rand-host   hipRAND + rocRAND                  (52 MB)
+#   amdrocm-rccl-host   RCCL                               (4 MB)
+#   amdrocm-solver-host hipSOLVER + rocSOLVER              (29 MB)
+#   amdrocm-sparse-host hipSPARSE + rocSPARSE              (74 MB)
+#   amdrocm-amdsmi      AMD SMI lib + Python bindings      (36 MB)
+#   amdrocm-llvm        libLLVM + libclang (JIT needed)    (839 MB)
+#   amdrocm-math-common rocm-openblas + host-math          (97 MB)
+#
+# Downstream Dockerfiles (docker/vllm, docker/lmcache) use this stage via
+# --build-context base=oci-layout://... so they get a fully working torch env.
+# =============================================================================
+# hadolint ignore=DL3006
+FROM ${ROCM_RUNTIME_IMAGE} AS runtime
+
+ARG ROCM_VERSION
+ARG ROCM_BASE_IMAGE
+ARG ROCM_RUNTIME_IMAGE
+
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
+
+# Corporate CA cert (needed for pip at runtime if behind a corporate proxy).
+RUN --mount=type=secret,id=tls_cert,required=false \
+    if [ -f /run/secrets/tls_cert ] && [ -s /run/secrets/tls_cert ]; then \
+        cp /run/secrets/tls_cert /usr/local/share/ca-certificates/corp-ca.crt && \
+        update-ca-certificates; \
+    fi
+
+# AMD stopped publishing the lightweight runtime image (no -full suffix) for
+# Ubuntu 24.04 after ROCm 7.2.x.  Use ubuntu:24.04 as the base and add the
+# AMD apt repo using the signing key COPYed from the build-time base stage
+# (which already has it from the -full image — no network fetch needed).
+# Version-specific package names are computed from ROCM_VERSION (7.14.1 → "7.14").
+# hadolint ignore=DL3008
+# Step 1: ca-certificates must be installed before adding the HTTPS AMD repo,
+# otherwise apt-get update cannot verify the TLS connection and silently skips
+# the AMD packages.
+# hadolint ignore=DL3008
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
+    rm -f /etc/apt/apt.conf.d/docker-clean && \
+    apt-get update && \
+    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+        ca-certificates && \
+    update-ca-certificates
+
+# Step 2: add AMD ROCm apt repo (requires ca-certificates for HTTPS), then
+# install the 13 runtime packages + system deps.
+# Key and sources list copied from the build-time base stage so that the repo
+# URL tracks the base image automatically (ROCm 10.0 changed the URL).
+COPY --from=base /etc/apt/keyrings/amdrocm.gpg /etc/apt/keyrings/amdrocm.gpg
+COPY --from=base /etc/apt/sources.list.d/rocm.list /etc/apt/sources.list.d/amdrocm.list
+# hadolint ignore=DL3008
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
+    apt-get update && \
+    _mm=$(echo "${ROCM_VERSION}" | cut -d. -f1-2) && \
+    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+        git \
+        ibverbs-providers \
+        libibverbs-dev \
+        libaio1t64 \
+        libopenmpi3t64 \
+        liburing2 \
+        nvme-cli \
+        pkg-config \
+        bpftrace \
+        python3-dev \
+        "amdrocm-runtime${_mm}" \
+        "amdrocm-base${_mm}" \
+        "amdrocm-profiler-base${_mm}" \
+        "amdrocm-dnn-host${_mm}" \
+        "amdrocm-blas-host${_mm}" \
+        "amdrocm-fft-host${_mm}" \
+        "amdrocm-rand-host${_mm}" \
+        "amdrocm-rccl-host${_mm}" \
+        "amdrocm-solver-host${_mm}" \
+        "amdrocm-sparse-host${_mm}" \
+        "amdrocm-amdsmi${_mm}" \
+        "amdrocm-llvm${_mm}" \
+        "amdrocm-math-common${_mm}" \
+    && update-ca-certificates
+
+# Arch-specific GPU kernel data (Tensile hsaco/dat files for hipBLAS/rocBLAS).
+# In a separate RUN so apt-get update runs fresh with the AMD repo already
+# configured — inside the shared apt cache mount the lists from the previous
+# step are not always visible to a subsequent install in the same RUN.
+# hadolint ignore=DL3008
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
+    _mm=$(echo "${ROCM_VERSION}" | cut -d. -f1-2) && \
+    apt-get update && \
+    for _arch in $(echo "${ROCM_ARCH}" | tr ',' ' '); do \
+        apt-get install -y --no-install-recommends \
+            "amdrocm-blas${_mm}-${_arch}" || \
+        echo "  NOTE: no blas arch package for ${_arch} (expected for emulated arches)"; \
+    done
+
+RUN git config --global advice.detachedHead false
+RUN rm -f /usr/lib/python3.*/EXTERNALLY-MANAGED
+
+# ROCm version info file — AITER's setup.py reads /opt/rocm/.info/version at
+# build time to determine the HIP version.  The runtime packages install the
+# ROCm toolchain but not this metadata file; create it from the ROCM_VERSION
+# build ARG so downstream Dockerfiles that compile ROCm code (vllm/AITER) work.
+RUN _mm=$(echo "${ROCM_VERSION}" | cut -d. -f1-2) && \
+    mkdir -p "/opt/rocm/core-${_mm}/.info" && \
+    echo "${ROCM_VERSION}" > "/opt/rocm/core-${_mm}/.info/version" && \
+    ln -sfn "core-${_mm}/lib" /opt/rocm/lib
+
+# uv — used by downstream vllm/lmcache Dockerfiles for pip operations.
+COPY --from=build_pytorch /root/.local/bin/uv  /usr/local/bin/uv
+COPY --from=build_pytorch /root/.local/bin/uvx /usr/local/bin/uvx
+
+# Installed Python packages: torch + all requirements (from build_pytorch),
+# plus setuptools/wheel/packaging (from build_torchvision).
+# Does NOT include the PyTorch or torchvision source trees.
+COPY --from=build_torchvision /usr/local/lib/python3.12/dist-packages/ \
+                               /usr/local/lib/python3.12/dist-packages/
+COPY --from=build_torchvision /usr/local/bin/ /usr/local/bin/
+
+ENV PIP_ROOT_USER_ACTION=ignore \
+    UV_LINK_MODE=copy \
+    UV_BREAK_SYSTEM_PACKAGES=1 \
+    PIP_BREAK_SYSTEM_PACKAGES=1
+
+# torchvision wheel (built in build_torchvision but not yet installed there).
+COPY --from=build_torchvision /app/vision/dist/ /tmp/vision/
 RUN --mount=type=cache,target=/root/.cache/pip \
-    pip3 install --no-cache-dir /app/vision/dist/*.whl
+    pip3 install --no-cache-dir /tmp/vision/*.whl && \
+    rm -rf /tmp/vision && \
+    find /usr/local/lib/python3 -name '__pycache__' -type d \
+         -exec rm -rf {} + 2>/dev/null; true
+
+# NIXL native libs and Python bindings — compiled in build_nixl against the
+# ROCm-full toolchain; only the output directories are needed at runtime.
+COPY --from=build_nixl /opt/nixl/ /opt/nixl/
+COPY --from=build_nixl /opt/rocnixl-ucx/ /opt/rocnixl-ucx/
+
+# Patched libamdhip64.so: fixes IPC event signal ring overflow (ROCm#11511/#11749).
+# read_index must be wrapped with % IPC_SIGNALS_PER_EVENT (32) or the 33rd
+# cross-process import of the same event handle reads past the signal array.
+COPY --from=build_clr_patch /app/clr-build/hipamd/lib/libamdhip64.so \
+                             /opt/rocm/core-7.14/lib/libamdhip64.so
+
+# Guard: upstream pip deps may pull CUDA-only nixl variants that would shadow
+# the source-built install from build_nixl.  Remove them if present.
+RUN uv pip uninstall --system \
+        nixl nixl-cu12 nixl-cu13 \
+        cupy-cuda12x cufile-python cuda-pathfinder 2>/dev/null || true
+
+# The AMD packages install to /opt/rocm/core-7.14/ (not /opt/rocm/ directly).
+# The -full image creates symlinks; with explicit packages we must use the
+# versioned path.  ROCM_VERSION_MM is 7.14 derived from 7.14.1.
+RUN _mm=$(echo "${ROCM_VERSION}" | cut -d. -f1-2) && \
+    echo "/opt/rocm/core-${_mm}/lib" > /etc/ld.so.conf.d/rocm.conf && \
+    ldconfig
+
+ENV NIXL_PLUGIN_DIR=/opt/nixl/lib/x86_64-linux-gnu/plugins \
+    PYTHONPATH=/opt/rocm/core-7.14/share/amd_smi:/opt/nixl/lib/python3/dist-packages \
+    LD_LIBRARY_PATH=/opt/nixl/lib/x86_64-linux-gnu:/opt/nixl/lib:/opt/rocnixl-ucx/lib:/opt/rocm/core-7.14/lib \
+    ROCM_PATH=/opt/rocm/core-7.14 \
+    PATH=/opt/rocm/core-7.14/bin:/opt/rocm/core-7.14/lib/llvm/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
