@@ -112,7 +112,30 @@ if os.path.exists(f_event):
         'event_ipc.export_event returns b"" on ROCm (hipIpcGetEventHandle unsupported)'
     )
 
-# 5. worker_transfer.py: set device/event_backend before early return in register()
+# 5. lmcache_driven_transfer.py: start VMEM IPC fd-receiver at server startup.
+#    Injects an import + init_receiver() call into __init__ so the background
+#    thread is running before any register_kv_cache request arrives.
+f5 = f'{BASE}/lmcache/v1/multiprocess/modules/lmcache_driven_transfer.py'
+patch(f5,
+    '        self._device_host_func_dispatcher = DeviceHostFuncDispatcher()',
+    '        if __import__("torch").version.hip:\n'
+    '            try:\n'
+    '                import sys as _sys, os as _os\n'
+    '                _lmc = _os.path.dirname(_os.path.dirname(\n'
+    '                    _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))))\n'
+    '                if _lmc not in _sys.path: _sys.path.insert(0, _lmc)\n'
+    '                from rocm_vmem_ipc import RocmVmemIPCWrapper as _R\n'
+    '                _R.init_receiver()\n'
+    '            except Exception as _e:\n'
+    '                import warnings\n'
+    '                warnings.warn(f"ROCm VMEM IPC receiver init failed: {_e}")\n'
+    '        self._device_host_func_dispatcher = DeviceHostFuncDispatcher()',
+    'lmcache_driven_transfer: start VMEM IPC receiver at server init'
+)
+
+# 6. (REMOVED) worker_transfer.py early-return skip — no longer needed with VMEM IPC.
+#    Registrations now succeed via RocmVmemIPCWrapper. Keep the safety-net patches
+#    (2 and 3) so that if VMEM wrap raises the system degrades gracefully to NIXL POSIX.
 f4 = f'{BASE}/v1/multiprocess/transfer_context/worker_transfer.py'
 patch(f4,
     '        future = req_client.register_kv_cache(\n'
