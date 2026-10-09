@@ -498,5 +498,4 @@ ENV NIXL_PLUGIN_DIR=/opt/nixl/lib/x86_64-linux-gnu/plugins \
     PYTHONPATH=/opt/rocm/core-7.14/share/amd_smi:/opt/nixl/lib/python3/dist-packages \
     LD_LIBRARY_PATH=/opt/nixl/lib/x86_64-linux-gnu:/opt/nixl/lib:/opt/rocnixl-ucx/lib:/opt/rocm/core-7.14/lib \
     ROCM_PATH=/opt/rocm/core-7.14 \
-    PATH=/opt/rocm/core-7.14/bin:/opt/rocm/core-7.14/lib/llvm/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
-    HSA_ENABLE_IPC_MODE_LEGACY=1
+    PATH=/opt/rocm/core-7.14/bin:/opt/rocm/core-7.14/lib/llvm/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin

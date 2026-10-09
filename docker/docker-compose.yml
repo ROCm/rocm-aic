@@ -363,6 +363,7 @@ services:
       - /dev/kfd
       - /dev/dri
     volumes:
+      - aic-ipc:/tmp/aic-ipc   # ROCm VMEM IPC sidecar socket (gfx1201)
       # L2a NVMe — AIS_MT pool files (standard mode)
       - ${NVME_DATA:-/mnt/lmcache-nvme}:/data/nvme
       # L2b NFS — POSIX pool files (standard mode)
@@ -393,6 +394,8 @@ services:
       # Unset LMCACHE_COORDINATOR_URL to run without coordinator (standalone mode).
       # lmcache uses network_mode:host — coordinator is on bridge, reach via localhost port.
       LMCACHE_COORDINATOR_URL: "${LMCACHE_COORDINATOR_URL:-http://localhost:9300}"
+      # ROCm VMEM IPC sidecar socket path (shared with vllm via aic-ipc volume)
+      AIC_IPC_SOCK: /tmp/aic-ipc/fds.sock
     entrypoint: ["/bin/bash", "-o", "pipefail", "-c"]
     command: *lmcache-command
     depends_on:
@@ -472,12 +475,14 @@ services:
     volumes:
       - ${HF_HOME:-~/.cache/huggingface}:/hf
       - ${LOG:-../logs}/vllm:/var/log/aic-vllm
+      - aic-ipc:/tmp/aic-ipc   # ROCm VMEM IPC sidecar socket (gfx1201)
     environment:
       - HF_TOKEN=${HF_TOKEN:-}
       - HF_HOME=/hf
       - HF_HUB_CACHE=/hf/hub
       - HF_DATASETS_CACHE=/hf/datasets
       - HF_HUB_OFFLINE=${HF_HUB_OFFLINE:-0}
+      - AIC_IPC_SOCK=/tmp/aic-ipc/fds.sock
       - TRANSFORMERS_OFFLINE=${TRANSFORMERS_OFFLINE:-0}
       - VLLM_CACHE_ROOT=/hf/vllm
       - VLLM_CONFIG_ROOT=/hf/vllm_config
@@ -1021,3 +1026,4 @@ services:
 volumes:
   grafana-data:
   loki-data:
+  aic-ipc:   # ROCm VMEM IPC sidecar socket shared between vllm and lmcache

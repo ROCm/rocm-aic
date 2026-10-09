@@ -127,8 +127,8 @@ def lm_snap():
         "l1_ratio":   m.get("lmcache_mp_l1_usage_ratio", 0),
         "l2_bytes":   m.get('lmcache_mp_l2_usage_bytes{l2_name="nixl_store"}', 0),
         "l1_hits":    int(m.get('lmcache_mp_prefetch_hit_chunks_total{tier="l1"}', 0)),
-        "l2_hits":    int(m.get("lmcache_mp_l2_prefetch_hit_chunks_total", 0)),
-        "l2_stored":  int(m.get("lmcache_mp_l2_store_completed_objects_chunks_total", 0)),
+        "l2_hits":    int(m.get('lmcache_mp_prefetch_hit_chunks_total{tier="l2"}', 0)),
+        "l2_stored":  int(m.get("lmcache_mp_l2_store_completed_objects_total", 0)),
         "misses":     int(m.get("lmcache_mp_prefetch_miss_chunks_total", 0)),
     }
 

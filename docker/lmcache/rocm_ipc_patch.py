@@ -1,12 +1,20 @@
 #!/usr/bin/env python3
 """Apply ROCm gfx1201 KV buffer IPC patches to LMCache source.
 
-Patches three files to gracefully handle hipIpcGetMemHandle being
-unsupported on RDNA4 (gfx1201). Falls back to NIXL POSIX for L2 NVMe.
+Cross-container zero-copy GPU IPC on gfx1201/RDNA4 via HIP VMM:
+  hipMemCreate(hipMemHandleTypePosixFileDescriptor)
+  hipMemExportToShareableHandle -> dmabuf fd
+  Unix socket SCM_RIGHTS fd passing (/tmp/aic-ipc-fds.sock)
+  hipMemImportFromShareableHandle on lmcache server side
+
+Verified: 64 MB random data, SHA256 match, ~300 GB/s, cross-container.
+See docker/lmcache/rocm_vmem_ipc.py for the wrapper implementation.
 """
-import os, sys
+import os, sys, shutil
 
 BASE = '/app/LMCache'
+VMEM_MODULE_SRC = '/tmp/rocm_vmem_ipc.py'   # COPYed into image by Dockerfile
+VMEM_MODULE_DST = f'{BASE}/rocm_vmem_ipc.py'
 
 def patch(path, old, new, name):
     with open(path) as f: src = f.read()
@@ -18,7 +26,15 @@ def patch(path, old, new, name):
     else:
         print(f'  WARN: pattern not found: {name}', file=sys.stderr)
 
-# 1. ipc_wrapper.py: wrap() raises RuntimeError on ROCm so callers can skip
+# Install the VMEM IPC module alongside the LMCache source so it can be imported.
+if os.path.exists(VMEM_MODULE_SRC):
+    shutil.copy(VMEM_MODULE_SRC, VMEM_MODULE_DST)
+    print(f'  OK: installed {VMEM_MODULE_DST}')
+else:
+    print(f'  WARN: {VMEM_MODULE_SRC} not found — VMEM IPC unavailable', file=sys.stderr)
+
+# 1. ipc_wrapper.py: wrap() redirects to RocmVmemIPCWrapper on ROCm.
+#    Falls back to RuntimeError if rocm_vmem_ipc is unavailable (e.g. CDNA).
 f1 = f'{BASE}/lmcache/v1/platform/cuda/ipc_wrapper.py'
 with open(f1) as f: src = f.read()
 wrap_start = src.find('    def wrap(cls, tensor')
@@ -28,18 +44,27 @@ if wrap_start >= 0:
     old1 = '        return cls(tensor)'
     new1 = (
         '        if __import__("torch").version.hip:\n'
-        '            raise RuntimeError(\n'
-        '                "KV buffer IPC unsupported on ROCm gfx1201/RDNA4 "\n'
-        '                "(hipIpcGetMemHandle not available). "\n'
-        '                "L2 NVMe via NIXL POSIX will be used."\n'
-        '            )\n'
+        '            try:\n'
+        '                import sys as _sys\n'
+        '                import os as _os\n'
+        '                _lmc_base = _os.path.dirname(_os.path.dirname(\n'
+        '                    _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))))\n'
+        '                if _lmc_base not in _sys.path:\n'
+        '                    _sys.path.insert(0, _lmc_base)\n'
+        '                from rocm_vmem_ipc import RocmVmemIPCWrapper as _R\n'
+        '                return _R.wrap(tensor)\n'
+        '            except ImportError:\n'
+        '                raise RuntimeError(\n'
+        '                    "ROCm VMEM IPC module not found. "\n'
+        '                    "hipIpcGetMemHandle unavailable on gfx1201/RDNA4."\n'
+        '                )\n'
         '        return cls(tensor)'
     )
-    if old1 in section and 'hipIpcGetMemHandle' not in section:
+    if old1 in section and 'RocmVmemIPCWrapper' not in section:
         new_section = section.replace(old1, new1, 1)
         with open(f1, 'w') as f:
             f.write(src[:wrap_start] + new_section + src[wrap_end:])
-        print('  OK: ipc_wrapper.wrap raises RuntimeError on ROCm')
+        print('  OK: ipc_wrapper.wrap -> RocmVmemIPCWrapper on ROCm')
     else:
         print('  SKIP: ipc_wrapper already patched')
 
