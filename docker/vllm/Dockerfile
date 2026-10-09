@@ -449,6 +449,11 @@ ENV PYTHONPATH=/opt/rocm/share/amd_smi
 COPY profiles/*.json /opt/llm-emu/profiles/
 ENTRYPOINT ["python3", "-m", "vllm.entrypoints.openai.api_server"]
 
+# /health is 200 only while the engine is alive (503 once it has died).  Port
+# 8000 is what the compose service serves on; the emulated model loads fast.
+HEALTHCHECK --interval=15s --timeout=5s --start-period=60s --retries=20 \
+    CMD ["curl", "-fsS", "--noproxy", "*", "-o", "/dev/null", "http://127.0.0.1:8000/health"]
+
 # ----- 3d. runtime: default target -------------------------------------------
 # vLLM's LMCacheMPConnector imports lmcache in the vLLM process, so this image
 # installs the same lmcache wheel aic-lmcache runs: one build, with its HIP
@@ -486,3 +491,9 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
 # aic-base's NIXL/UCX entries survive.
 ENV LD_LIBRARY_PATH=/opt/rocm/lib${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}
 RUN python3 -c 'import ctypes; ctypes.CDLL("libamdhip64.so")'
+
+# Same probe as emulate.  start-period is sized for loading and compiling a
+# large model (gpt-oss-120b); the first success marks the container healthy
+# immediately, so a long period only delays unhealthy reporting.
+HEALTHCHECK --interval=30s --timeout=10s --start-period=15m --retries=5 \
+    CMD ["curl", "-fsS", "--noproxy", "*", "-o", "/dev/null", "http://127.0.0.1:8000/health"]
