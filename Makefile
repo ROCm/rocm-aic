@@ -269,7 +269,7 @@ help:
 	@echo "  make dist-build-parallel  Build base, then vllm + lmcache in parallel"
 	@echo "  make dist-build-exporters  Build ONLY the nvme/rdma exporter images (no main rebuild)"
 	@echo "  make dist-build-monitoring Pull + save Prometheus/amdgpu-exporter to AIC_IMAGE_DIR"
-	@echo "  make dist-push         Tag + push the built image (needs AIC_PUSH_REF)"
+	@echo "  make dist-push         Tag + push the built images (needs AIC_VLLM_PUSH_REF + AIC_LMCACHE_PUSH_REF)"
 	@echo "  make smoke-test        Load + smoke-test the image on a GPU+NVMe node"
 	@echo "  make smoke-test-fast   Smoke-test the single-arch dev image (AIC_FAST_ARCH=$(AIC_FAST_ARCH))"
 	@echo "  make tiny-test         End-to-end serve check (MP stack + tiny model, one completion)"

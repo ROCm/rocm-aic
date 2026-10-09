@@ -59,8 +59,10 @@
 # Every value arrives as an environment variable, so the script is also runnable
 # by hand on a GPU node that has the repo:
 #
-#   AIC_DAY_DIR=/path/to/repo AIC_LOG_DIR=/tmp/acc AIC_IMAGE=rocm-aic:latest \
-#   AIC_TARBALL=/shared/rocm-aic-latest-gfx950.tar.zst AIC_DECOMPRESS_CMD='zstd -dc' \
+#   AIC_DAY_DIR=/path/to/repo AIC_LOG_DIR=/tmp/acc \
+#   AIC_VLLM_IMAGE=aic-vllm:latest AIC_VLLM_TARBALL=/shared/aic-vllm-latest-gfx950.tar.zst \
+#   AIC_LMCACHE_IMAGE=aic-lmcache:latest AIC_LMCACHE_TARBALL=/shared/aic-lmcache-latest-gfx950.tar.zst \
+#   AIC_DECOMPRESS_CMD='zstd -dc' \
 #   AIC_ROCM_ARCH=gfx950 HF_HOME=/shared/hf AIC_ACCURACY_MODEL=Qwen/Qwen2.5-0.5B-Instruct \
 #   AIC_ACCURACY_DELTA=0.02 AIC_ACCURACY_READY_TIMEOUT=120 \
 #       bash .slurm/run-accuracy.sh
@@ -68,8 +70,10 @@
 # Required, all set by the submitter:
 #   AIC_DAY_DIR                 repo root, absolute, on storage the node can see
 #   AIC_LOG_DIR                 per-job log dir; scores and container logs land here
-#   AIC_IMAGE                   image ref to load and run
-#   AIC_TARBALL                 image tarball to load from
+#   AIC_VLLM_IMAGE              vllm image ref to load and run
+#   AIC_VLLM_TARBALL            vllm image tarball to load from
+#   AIC_LMCACHE_IMAGE           lmcache image ref to load and run
+#   AIC_LMCACHE_TARBALL         lmcache image tarball to load from
 #   AIC_DECOMPRESS_CMD          matching decompressor (e.g. "zstd -dc")
 #   AIC_ROCM_ARCH               arch tag forwarded to compose
 #   HF_HOME                     persistent HF cache
@@ -92,8 +96,10 @@ set -uo pipefail
 # an unset one would otherwise surface as an empty path deep inside a phase.
 : "${AIC_DAY_DIR:?run-accuracy.sh: AIC_DAY_DIR must be set by the submitter}"
 : "${AIC_LOG_DIR:?run-accuracy.sh: AIC_LOG_DIR must be set by the submitter}"
-: "${AIC_IMAGE:?run-accuracy.sh: AIC_IMAGE must be set by the submitter}"
-: "${AIC_TARBALL:?run-accuracy.sh: AIC_TARBALL must be set by the submitter}"
+: "${AIC_VLLM_IMAGE:?run-accuracy.sh: AIC_VLLM_IMAGE must be set by the submitter}"
+: "${AIC_VLLM_TARBALL:?run-accuracy.sh: AIC_VLLM_TARBALL must be set by the submitter}"
+: "${AIC_LMCACHE_IMAGE:?run-accuracy.sh: AIC_LMCACHE_IMAGE must be set by the submitter}"
+: "${AIC_LMCACHE_TARBALL:?run-accuracy.sh: AIC_LMCACHE_TARBALL must be set by the submitter}"
 : "${AIC_DECOMPRESS_CMD:?run-accuracy.sh: AIC_DECOMPRESS_CMD must be set by the submitter}"
 : "${AIC_ROCM_ARCH:?run-accuracy.sh: AIC_ROCM_ARCH must be set by the submitter}"
 : "${HF_HOME:?run-accuracy.sh: HF_HOME must be set by the submitter}"
@@ -104,19 +110,24 @@ set -uo pipefail
 command -v docker >/dev/null 2>&1 || { echo "$(hostname): docker not found" >&2; exit 1; }
 echo "[accuracy-test] host=$(hostname) docker=$(docker --version)"
 
-# Load the image from the shared tarball only when needed (same marker logic as
+# Load each image from its shared tarball only when needed (same marker logic as
 # tiny-test): reload when forced, absent, or the tarball is newer.
-_marker="/var/tmp/aic-loaded-$(id -u)-$(echo "${AIC_IMAGE}" | tr '/:' '__').mtime"
-_tar_mtime="$(stat -c %Y "${AIC_TARBALL}" 2>/dev/null || echo 0)"
-_have_img="$(docker images -q "${AIC_IMAGE}")"
-_loaded_mtime="$(cat "${_marker}" 2>/dev/null || echo 0)"
-if [ "${AIC_FORCE_LOAD:-0}" = "1" ] || [ -z "${_have_img}" ] || [ "${_tar_mtime}" -gt "${_loaded_mtime}" ]; then
-    echo "[accuracy-test] loading ${AIC_IMAGE} from ${AIC_TARBALL}"
-    ${AIC_DECOMPRESS_CMD} "${AIC_TARBALL}" | docker load >/dev/null
-    echo "${_tar_mtime}" > "${_marker}" 2>/dev/null || true
-else
-    echo "[accuracy-test] image up to date on $(hostname) (id ${_have_img})"
-fi
+_load_image() {
+    local img="$1" tb="$2" marker tar_mtime have loaded_mtime
+    marker="/var/tmp/aic-loaded-$(id -u)-$(echo "${img}" | tr '/:' '--').mtime"
+    tar_mtime="$(stat -c %Y "${tb}" 2>/dev/null || echo 0)"
+    have="$(docker images -q "${img}")"
+    loaded_mtime="$(cat "${marker}" 2>/dev/null || echo 0)"
+    if [ "${AIC_FORCE_LOAD:-0}" = "1" ] || [ -z "${have}" ] || [ "${tar_mtime}" -gt "${loaded_mtime}" ]; then
+        echo "[accuracy-test] loading ${img} from ${tb}"
+        ${AIC_DECOMPRESS_CMD} "${tb}" | docker load >/dev/null
+        echo "${tar_mtime}" > "${marker}" 2>/dev/null || true
+    else
+        echo "[accuracy-test] ${img} up to date on $(hostname) (id ${have})"
+    fi
+}
+_load_image "${AIC_VLLM_IMAGE}"    "${AIC_VLLM_TARBALL}"
+_load_image "${AIC_LMCACHE_IMAGE}" "${AIC_LMCACHE_TARBALL}"
 
 cd "${AIC_DAY_DIR}" || { echo "[accuracy-test] FAIL: cannot cd to ${AIC_DAY_DIR}" >&2; exit 1; }
 # shellcheck source=/dev/null
@@ -149,8 +160,10 @@ export AIC_ACCURACY_DELTA="${AIC_ACCURACY_DELTA}"
 export AIC_ACCURACY_REQUIRED=1
 
 # --- shared compose env ------------------------------------------------------
-export IMAGE_REF="${AIC_IMAGE}"
-export IMAGE_NAME="${AIC_IMAGE%:*}"
+export VLLM_IMAGE_REF="${AIC_VLLM_IMAGE}"
+export LMCACHE_IMAGE_REF="${AIC_LMCACHE_IMAGE}"
+export IMAGE_REF="${AIC_LMCACHE_IMAGE}"
+export IMAGE_NAME="${AIC_LMCACHE_IMAGE%:*}"
 export ROCM_ARCH="${AIC_ROCM_ARCH}"
 export GPU=0
 export VLLM_MODEL="${AIC_ACCURACY_MODEL}"
