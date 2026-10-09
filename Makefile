@@ -131,7 +131,7 @@ export AIC_CACHE_MODE     ?= max
 # value is appended to any NO_PROXY already in the environment; set it empty to
 # opt out.  Only registry hosts belong here — build steps still need the proxy
 # for pypi.org, github.com, repo.radeon.com and friends.
-AIC_BUILD_NO_PROXY ?= docker.io,.docker.io,.docker.com,auth.docker.io,registry-1.docker.io,index.docker.io,production.cloudflare.docker.com
+AIC_BUILD_NO_PROXY ?= docker.io,.docker.io,.docker.com,auth.docker.io,registry-1.docker.io,index.docker.io,production.cloudflare.docker.com,repo.amd.com,.amd.com
 
 # Per-arch cache subdir slug; mirrors _arch_tag() in run-build-distribute.sh.
 # Recursive (=) on purpose: the SPUR block below may override ROCM_ARCH.

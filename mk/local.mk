@@ -44,7 +44,7 @@ _BUILD_ARGS := \
 	--build-arg ROCM_ARCH="$(ROCM_ARCH)" \
 	--build-arg BUILD_JOBS="$(BUILD_JOBS)" \
 	--build-arg AIC_UCX_FAST="$(AIC_UCX_FAST)" \
-	--build-arg BLAS_CACHE_BUST="$(shell date +%Y%m%d)" \
+	--build-arg BLAS_CACHE_BUST="$(shell date +%Y%m%d%H%M)" \
 	$(foreach _v,$(_FRAMEWORK_ARGS),$(if $(value $(_v)),--build-arg $(_v)="$(value $(_v))")) \
 	$(if $(TLS_CERT),--secret id=tls_cert$(comma)src=$(TLS_CERT),)
 
@@ -234,11 +234,24 @@ vllm-reset-test: check-hf-token prep-dirs
 	$(PYTHON) "$(CURDIR)/benchmarks/vllm_reset_test.py"
 	@echo "Test complete. Run 'make down' to stop the stack."
 
-bench-serve:
+bench-serve: check-hf-token prep-dirs
 	@echo "Starting AIC agentic serving benchmark ($(BENCH_DURATION)min @ $(BENCH_RATE)req/s)..."
 	@echo "  Model:       $(VLLM_MODEL)"
 	@echo "  Concurrency: $(BENCH_CONCUR)  Max tokens: $(BENCH_TOKENS)"
 	@echo "  Results:     /tmp/aic-bench-results/"
+	@mkdir -p "$(AIC_METRICS_DIR)"
+	PROM_UID="$$(id -u)" PROM_GID="$$(id -g)" \
+	    LMCACHE_L1_SIZE_GB=$(LMCACHE_L1_SIZE_GB) \
+	    AIC_L2_BACKEND=$(AIC_L2_BACKEND) \
+	    $(COMPOSE_CACHE) --profile monitoring up -d
+	@echo "Waiting for vLLM to be healthy..."
+	@for i in $$(seq 1 $${VLM_READY_RETRIES:-60}); do \
+	    r=$$(curl -s -o /dev/null -w '%{http_code}' \
+	        http://localhost:$${VLLM_HOST_PORT:-8000}/health 2>/dev/null); \
+	    [ "$$r" = "200" ] && echo "vLLM healthy after $$((i*5))s" && break; \
+	    [ "$$i" = "$${VLM_READY_RETRIES:-60}" ] && echo "ERROR: vLLM not healthy after timeout" >&2 && exit 1; \
+	    sleep 5; \
+	done
 	$(PYTHON) "$(REPO_ROOT)/benchmarks/aic_bench_serve.py" \
 	    --base-url http://localhost:8000 \
 	    --model "$(VLLM_MODEL)" \
@@ -247,4 +260,4 @@ bench-serve:
 	    --max-tokens $(BENCH_TOKENS) \
 	    --concurrency $(BENCH_CONCUR) \
 	    --output /tmp/aic-bench-results
-	@echo "Benchmark complete."
+	@echo "Benchmark complete. Run 'make down' to stop the stack."
