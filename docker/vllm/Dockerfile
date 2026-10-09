@@ -166,6 +166,9 @@ COPY patches/aiter/ /app/patches/aiter/
 # branch, as VLLM_REF already must.
 RUN test -n "$ROCM_ARCH" || { echo "ERROR: ROCM_ARCH is not set"; exit 1; }
 
+# WORKDIR creates /app/aiter even when the build is skipped; the clone below
+# targets that empty directory.
+WORKDIR /app/aiter
 # hadolint ignore=SC2039
 RUN --mount=type=cache,target=/root/.cache/pip \
     --mount=type=cache,target=/root/.cache/ccache \
@@ -173,8 +176,7 @@ RUN --mount=type=cache,target=/root/.cache/pip \
         echo "Skipping AITER build (VLLM_TARGET_DEVICE=empty)"; \
     else \
         mkdir -p /wheels && \
-        git clone --depth 1 --branch "${AITER_REF}" "${AITER_GIT_URL}" --recurse-submodules /app/aiter && \
-        cd /app/aiter && \
+        git clone --depth 1 --branch "${AITER_REF}" "${AITER_GIT_URL}" --recurse-submodules . && \
         pip3 install --no-cache-dir -r requirements.txt && \
         _prebuild="${AITER_PREBUILD_KERNELS}" && \
         case "${ROCM_ARCH}" in \
@@ -214,6 +216,8 @@ RUN --mount=type=cache,target=/root/.cache/pip \
 # ROCM_ARCH names at least one gfx9 arch, and compiled for only those: in a mixed
 # list the other archs fall back to Triton attention.
 # Skipped when VLLM_TARGET_DEVICE=empty (CPU-only emulate build).
+# As with AITER, WORKDIR creates /app/flash-attention even when it is skipped.
+WORKDIR /app/flash-attention
 # hadolint ignore=SC2039
 RUN --mount=type=cache,target=/root/.cache/pip \
     --mount=type=cache,target=/root/.cache/ccache \
@@ -227,8 +231,7 @@ RUN --mount=type=cache,target=/root/.cache/pip \
     elif _fa_arch="$(_gfx9_archs "${ROCM_ARCH}")"; [ -n "${_fa_arch}" ]; then \
         git clone --depth 1 --revision "${FLASH_ATTN_REF}" \
             --recurse-submodules --shallow-submodules \
-            "${FLASH_ATTN_GIT_URL}" /app/flash-attention && \
-        cd /app/flash-attention && \
+            "${FLASH_ATTN_GIT_URL}" . && \
         GPU_ARCHS="${_fa_arch}" \
             PYTORCH_ROCM_ARCH="${_fa_arch}" \
             HIPFLAGS="-Wno-deprecated-attributes" \
@@ -252,6 +255,7 @@ RUN --mount=type=cache,target=/root/.cache/pip \
             python3 -c 'import importlib.util; spec = importlib.util.find_spec("aiter"); assert spec and spec.submodule_search_locations; print("AITER_PACKAGE=" + next(iter(spec.submodule_search_locations)))' 2>/dev/null || true; \
         } > /etc/rocm-aic-attention-backends.env; \
     fi
+WORKDIR /
 
 # ----- 3b. vLLM (built from source at pinned tag) --------------------------------
 
@@ -264,9 +268,9 @@ RUN sed -i 's/def _is_hip() -> bool:/def _is_hip() -> bool:\n    if VLLM_TARGET_
         grep -Fxq '    if VLLM_TARGET_DEVICE == "rocm":'
 
 # Apply every patch under patches/vllm/ in lexical order.
+WORKDIR /app/vllm
 # hadolint ignore=SC3054,SC3044,SC2098
-RUN cd /app/vllm && \
-    shopt -s nullglob && \
+RUN shopt -s nullglob && \
     patches=(/app/patches/vllm/*.patch) && \
     if [ "${#patches[@]}" -gt 0 ]; then \
         for patch in "${patches[@]}"; do \
@@ -287,7 +291,6 @@ RUN cd /app/vllm && \
 RUN --mount=type=cache,target=/root/.cache/pip \
     --mount=type=cache,target=/root/.cache/ccache \
     mkdir -p /wheels && \
-    cd /app/vllm && \
     printf 'torch>=2.13,<2.14\n' > /tmp/torch-constraints.txt && \
     if [ "${VLLM_TARGET_DEVICE}" = "empty" ]; then \
         pip3 install -r requirements/common.txt \
@@ -311,6 +314,7 @@ RUN --mount=type=cache,target=/root/.cache/pip \
     { find /usr/lib/python3 /usr/local/lib/python3.12 -name '__pycache__' -type d \
          -exec rm -rf {} + || \
       echo "WARNING: __pycache__ cleanup failed; see find's error above" >&2; }
+WORKDIR /
 
 # ----- 3b. vllm_emulator (llm-emu profile-driven emulation plugin) -----------
 ARG LLM_EMU_GIT_URL=https://github.com/AKafakA/llm-emu.git
