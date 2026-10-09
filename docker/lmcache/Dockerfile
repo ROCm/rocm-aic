@@ -126,14 +126,17 @@ RUN --mount=type=cache,target=/root/.cache/pip \
 RUN cp /app/paged_cupy_memory_allocator.py \
        /app/LMCache/lmcache/v1/memory_allocators/paged_cupy_memory_allocator.py
 
-# Apply ROCm IPC event livelock fix directly via sed (patch 10b).
-# git apply has strict whitespace requirements that make the patch fragile;
-# sed is more reliable for a single-line targeted change.
+# Apply ROCm IPC patches.
+# Fix 1: IPC event livelock — skip event IPC on ROCm (futures.py).
 RUN sed -i \
     "s/        if event_bytes:/        if event_bytes and not __import__('torch').version.hip:/" \
     /app/LMCache/lmcache/v1/multiprocess/futures.py && \
     grep -q "version.hip" /app/LMCache/lmcache/v1/multiprocess/futures.py || \
     { echo "ERROR: ROCm IPC livelock patch did not apply"; exit 1; }
+# Fix 2: KV buffer IPC (hipIpcGetMemHandle) unsupported on gfx1201/RDNA4.
+# Uses a copied Python script to avoid Dockerfile parse errors with multi-line Python.
+COPY docker/lmcache/rocm_ipc_patch.py /tmp/rocm_ipc_patch.py
+RUN python3 /tmp/rocm_ipc_patch.py && rm /tmp/rocm_ipc_patch.py
 
 # Build the LMCache wheel with full ROCm headers available.
 RUN --mount=type=cache,target=/root/.cache/pip \
@@ -208,12 +211,14 @@ RUN --mount=type=cache,target=/root/.cache/pip \
 RUN cp /app/paged_cupy_memory_allocator.py \
        /app/LMCache/lmcache/v1/memory_allocators/paged_cupy_memory_allocator.py
 
-# Apply ROCm IPC event livelock fix (see build_lmcache_wheel stage for rationale).
+# Apply ROCm IPC patches (same as build_lmcache_wheel stage above).
+COPY docker/lmcache/rocm_ipc_patch.py /tmp/rocm_ipc_patch.py
 RUN sed -i \
     "s/        if event_bytes:/        if event_bytes and not __import__('torch').version.hip:/" \
     /app/LMCache/lmcache/v1/multiprocess/futures.py && \
     grep -q "version.hip" /app/LMCache/lmcache/v1/multiprocess/futures.py || \
     { echo "ERROR: ROCm IPC livelock patch did not apply"; exit 1; }
+RUN python3 /tmp/rocm_ipc_patch.py && rm /tmp/rocm_ipc_patch.py
 
 # CuPy (ROCm): hipMalloc without ROCm compute stack (LMCACHE_NIXL_USE_CUPY=1).
 RUN --mount=type=cache,target=/root/.cache/pip \
