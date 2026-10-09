@@ -123,8 +123,8 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
 
 RUN git clone --branch "${PYTORCH_BRANCH}" "${PYTORCH_REPO}" /app/pytorch
 
+WORKDIR /app/pytorch
 RUN --mount=type=cache,target=/root/.cache/uv \
-    cd /app/pytorch && \
     uv pip install --system -r requirements.txt && \
     git submodule update --init --recursive
 
@@ -132,13 +132,13 @@ ENV PYTORCH_ROCM_ARCH=${ROCM_ARCH}
 
 # hadolint ignore=SC2086
 RUN --mount=type=cache,target=/root/.cache/ccache \
-    cd /app/pytorch && \
     python3 tools/amd_build/build_amd.py && \
     CCACHE_DIR=/root/.cache/ccache \
     CMAKE_C_COMPILER_LAUNCHER=ccache \
     CMAKE_CXX_COMPILER_LAUNCHER=ccache \
     CMAKE_PREFIX_PATH=$(python3 -c 'import sys; print(sys.prefix)') \
         python3 setup.py bdist_wheel --dist-dir=/app/pytorch/dist
+WORKDIR /
 
 # =============================================================================
 # torchvision source build — must compile against our source-built PyTorch.
@@ -154,6 +154,7 @@ ARG TORCHVISION_BRANCH=v0.28.0
 
 RUN git clone --depth 1 --branch "${TORCHVISION_BRANCH}" "${TORCHVISION_REPO}" /app/vision
 
+WORKDIR /app/vision
 # hadolint ignore=SC2086,DL3008
 RUN --mount=type=cache,target=/root/.cache/pip \
     --mount=type=cache,target=/root/.cache/ccache \
@@ -161,13 +162,13 @@ RUN --mount=type=cache,target=/root/.cache/pip \
     --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
     DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends libnuma-dev && \
     pip3 install setuptools wheel packaging /app/pytorch/dist/*.whl && \
-    cd /app/vision && \
     USE_ROCM=1 USE_CUDA=0 \
     PYTORCH_ROCM_ARCH="${ROCM_ARCH}" \
     CCACHE_DIR=/root/.cache/ccache \
     CMAKE_C_COMPILER_LAUNCHER=ccache \
     CMAKE_CXX_COMPILER_LAUNCHER=ccache \
         python3 setup.py bdist_wheel --dist-dir=/app/vision/dist
+WORKDIR /
 
 # =============================================================================
 # runtime — default target: pytorch + torchvision installed system-wide.
