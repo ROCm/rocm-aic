@@ -133,10 +133,10 @@ patch(f5,
     'lmcache_driven_transfer: start VMEM IPC receiver at server init'
 )
 
-# 6. (REMOVED) worker_transfer.py early-return skip — no longer needed with VMEM IPC.
-#    Registrations now succeed via RocmVmemIPCWrapper. Keep the safety-net patches
-#    (2 and 3) so that if VMEM wrap raises the system degrades gracefully to NIXL POSIX.
-f4 = f'{BASE}/v1/multiprocess/transfer_context/worker_transfer.py'
+# 6. worker_transfer.py: set _device/_event_backend before early return when
+#    kv_wrappers is empty. Kept as a safety net — if RocmVmemIPCWrapper.wrap()
+#    raises, wrap_kv_caches returns [] and this prevents AttributeError downstream.
+f4 = f'{BASE}/lmcache/v1/multiprocess/transfer_context/worker_transfer.py'
 patch(f4,
     '        future = req_client.register_kv_cache(\n'
     '            instance_id,\n'
@@ -145,7 +145,7 @@ patch(f4,
     '        if not kv_wrappers:\n'
     '            import lmcache.logging as _ll\n'
     '            _ll.init_logger(__name__).warning(\n'
-    '                "KV cache IPC registration skipped (no IPC wrappers, ROCm gfx1201/RDNA4). "\n'
+    '                "KV cache IPC registration skipped (no IPC wrappers). "\n'
     '                "L2 NVMe transfers will use NIXL POSIX."\n'
     '            )\n'
     '            self._device = device\n'
