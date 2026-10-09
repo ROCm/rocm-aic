@@ -284,3 +284,9 @@ COPY --from=build /wheels /
 
 # ----- 10. Runtime image (default target) ------------------------------------
 FROM build AS runtime
+
+# Asserts that the ZMQ port vLLM connects to is bound and that the HTTP API
+# answers /metrics with a 200.  Services that run this image with another
+# entrypoint (the coordinator, hsa-snoop) override the check in compose.
+HEALTHCHECK --interval=10s --timeout=5s --start-period=30s --retries=18 \
+    CMD ["python3", "-c", "import os, socket, urllib.request as u; socket.create_connection(('127.0.0.1', int(os.getenv('LMCACHE_PORT', '6555'))), 2).close(); u.build_opener(u.ProxyHandler({})).open('http://127.0.0.1:8080/metrics', timeout=3).close()"]
