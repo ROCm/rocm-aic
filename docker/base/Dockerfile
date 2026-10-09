@@ -148,7 +148,7 @@ RUN --mount=type=cache,target=/root/.cache/uv \
     uv pip install --system -r requirements.txt && \
     git submodule update --init --recursive
 
-COPY patches/ /app/patches/
+COPY patches/pytorch/ /app/patches/pytorch/
 
 # Apply patches to pytorch and its submodules before the build.
 # Uses `patch -p1` (not `git apply`) so patches to submodule files work without

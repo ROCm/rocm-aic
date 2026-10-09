@@ -91,7 +91,7 @@ COPY --from=base /usr/local/bin/uv  /usr/local/bin/uv
 COPY --from=base /usr/local/bin/uvx /usr/local/bin/uvx
 RUN rm -f /usr/lib/python3.*/EXTERNALLY-MANAGED
 
-COPY patches/ /app/patches/
+COPY patches/lmcache/ /app/patches/lmcache/
 COPY docker/lmcache/paged_cupy_memory_allocator.py \
      /app/paged_cupy_memory_allocator.py
 COPY docker/scripts/apply-github-prs.sh /usr/local/bin/apply-github-prs.sh
@@ -125,6 +125,15 @@ RUN --mount=type=cache,target=/root/.cache/pip \
 
 RUN cp /app/paged_cupy_memory_allocator.py \
        /app/LMCache/lmcache/v1/memory_allocators/paged_cupy_memory_allocator.py
+
+# Apply ROCm IPC event livelock fix directly via sed (patch 10b).
+# git apply has strict whitespace requirements that make the patch fragile;
+# sed is more reliable for a single-line targeted change.
+RUN sed -i \
+    "s/        if event_bytes:/        if event_bytes and not __import__('torch').version.hip:/" \
+    /app/LMCache/lmcache/v1/multiprocess/futures.py && \
+    grep -q "version.hip" /app/LMCache/lmcache/v1/multiprocess/futures.py || \
+    { echo "ERROR: ROCm IPC livelock patch did not apply"; exit 1; }
 
 # Build the LMCache wheel with full ROCm headers available.
 RUN --mount=type=cache,target=/root/.cache/pip \
@@ -163,7 +172,7 @@ ARG AITER_REF=v0.1.22.post1
 ARG FLASH_ATTN_REF=v2.8.3.post1
 ARG HSA_SNOOP_REF=v1.1.1
 
-COPY patches/ /app/patches/
+COPY patches/lmcache/ /app/patches/lmcache/
 COPY docker/lmcache/paged_cupy_memory_allocator.py \
      /app/paged_cupy_memory_allocator.py
 COPY docker/scripts/apply-github-prs.sh /usr/local/bin/apply-github-prs.sh
@@ -198,6 +207,13 @@ RUN --mount=type=cache,target=/root/.cache/pip \
 
 RUN cp /app/paged_cupy_memory_allocator.py \
        /app/LMCache/lmcache/v1/memory_allocators/paged_cupy_memory_allocator.py
+
+# Apply ROCm IPC event livelock fix (see build_lmcache_wheel stage for rationale).
+RUN sed -i \
+    "s/        if event_bytes:/        if event_bytes and not __import__('torch').version.hip:/" \
+    /app/LMCache/lmcache/v1/multiprocess/futures.py && \
+    grep -q "version.hip" /app/LMCache/lmcache/v1/multiprocess/futures.py || \
+    { echo "ERROR: ROCm IPC livelock patch did not apply"; exit 1; }
 
 # CuPy (ROCm): hipMalloc without ROCm compute stack (LMCACHE_NIXL_USE_CUPY=1).
 RUN --mount=type=cache,target=/root/.cache/pip \

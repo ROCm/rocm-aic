@@ -91,7 +91,8 @@ COPY --from=base /usr/local/bin/uv  /usr/local/bin/uv
 COPY --from=base /usr/local/bin/uvx /usr/local/bin/uvx
 RUN rm -f /usr/lib/python3.*/EXTERNALLY-MANAGED
 
-COPY patches/ /app/patches/
+COPY patches/vllm/ /app/patches/vllm/
+COPY patches/llm-emu/ /app/patches/llm-emu/
 
 # ----- 3. ROCm attention backends (AITER + FlashAttention) ----------------------
 # Skipped when VLLM_TARGET_DEVICE=empty (CPU-only emulate build: no hipcc).
