@@ -3380,6 +3380,7 @@ cmd_accuracy_test() {
     remote_script="$(cat <<REMOTE
 export AIC_LOG_DIR="\${_logdir}"
 export AIC_DAY_DIR='${AIC_DAY_DIR}'
+export AIC_SPUR_CLUSTER='${AIC_SPUR_CLUSTER}'
 export AIC_VLLM_IMAGE='${AIC_VLLM_IMAGE}'
 export AIC_VLLM_TARBALL='${vllm_tarball}'
 export AIC_LMCACHE_IMAGE='${AIC_LMCACHE_IMAGE}'
