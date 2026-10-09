@@ -581,3 +581,6 @@ ENV NIXL_PLUGIN_DIR=/opt/nixl/lib/x86_64-linux-gnu/plugins \
     LD_LIBRARY_PATH=/opt/nixl/lib/x86_64-linux-gnu:/opt/nixl/lib:/opt/rocnixl-ucx/lib:/opt/rocm/core-7.14/lib \
     ROCM_PATH=/opt/rocm/core-7.14 \
     PATH=/opt/rocm/core-7.14/bin:/opt/rocm/core-7.14/lib/llvm/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+# Build parent, not a service: downstream images define their own checks.
+HEALTHCHECK NONE
