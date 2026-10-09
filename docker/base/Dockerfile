@@ -180,3 +180,6 @@ FROM build_torchvision AS runtime
 
 RUN --mount=type=cache,target=/root/.cache/pip \
     pip3 install --no-cache-dir /app/vision/dist/*.whl
+
+# Build parent, not a service: downstream images define their own checks.
+HEALTHCHECK NONE

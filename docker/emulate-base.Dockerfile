@@ -23,3 +23,6 @@ RUN pip3 install --no-cache-dir \
 # when resolving dependencies from inside the /app/vllm source tree.
 RUN pip3 install --no-cache-dir \
         setuptools "setuptools-scm>=8" setuptools-rust wheel build
+
+# Build parent, not a service: the emulate image defines its own check.
+HEALTHCHECK NONE
