@@ -1,10 +1,31 @@
 #!/usr/bin/env bash
-set -euo pipefail
+# -E inherit ERR trap in functions and subshells,
+# -e exit the script upon commands failing,
+# -u to error if the script ever references a variable that is unset,
+# -o pipefail to error if any stage of a pipeline fails.
+set -Eeuo pipefail
 
 # Installed on the self-hosted runner; SSHes to the SPUR head node (AIC_SPUR_HOST), clones the repo at
 # the current SHA, and runs the requested dist-build target with a CI-scoped
 # image name and tarball path.  The tarball is left in place for
 # spur-smoke-test.sh; the run-attempt-scoped clone is always removed.
+
+# errexit exits without saying where; report it.  Only the line number and
+# function call stack are printed, never the command text, which can carry
+# secret values.
+_on_err() {
+    # set -E carries this trap into $(...), where errexit is off.
+    [[ $- == *e* ]] || return 0
+    # The failing command was a child that reports its own failures.
+    [[ -z ${_aic_err_child_reports-} ]] || return 0
+    # || : so a failed write cannot replace the exit status.
+    printf '%s: command failed (exit %s, pipeline status %s) at line %s%s\n' \
+        "${0##*/}" "$1" "$2" "$3" "${4:+ in ${4// / <- }}" >&2 || :
+}
+trap '_on_err "$?" "${PIPESTATUS[*]}" "$LINENO" "${FUNCNAME[*]-}"' ERR
+
+# Commit `make install-ci-scripts` deployed; if it predates your change, redeploy.
+echo "Installed CI scripts: $(cat "$(dirname -- "${BASH_SOURCE[0]}")/VERSION" || echo unknown)"
 
 SHA="${1:?usage: $0 <full-sha> [dist-build|dist-build-fast]}"
 AIC_DIST_BUILD_TARGET="${2:-dist-build}"
@@ -34,7 +55,26 @@ aic_ci_ssh_bash \
     AIC_DIST_BUILD_TARGET="${AIC_DIST_BUILD_TARGET}" \
     AIC_SHARED_NFS="${AIC_SHARED_NFS}" \
     AIC_CI_STORAGE_ROOT="${AIC_CI_STORAGE_ROOT}" << 'REMOTE'
-set -euo pipefail
+# -E inherit ERR trap in functions and subshells,
+# -e exit the script upon commands failing,
+# -u to error if the script ever references a variable that is unset,
+# -o pipefail to error if any stage of a pipeline fails.
+set -Eeuo pipefail
+# errexit exits without saying where; report it.  Only the line number and
+# function call stack are printed, never the command text, which can carry
+# secret values.
+_on_err() {
+    # set -E carries this trap into $(...), where errexit is off.
+    [[ $- == *e* ]] || return 0
+    # The failing command was a child that reports its own failures.
+    [[ -z ${_aic_err_child_reports-} ]] || return 0
+    # || : so a failed write cannot replace the exit status.
+    printf '%s: command failed (exit %s, pipeline status %s) at line %s%s\n' \
+        'spur-dist-build.sh (remote)' "$1" "$2" "$3" "${4:+ in ${4// / <- }}" >&2 || :
+}
+trap '_on_err "$?" "${PIPESTATUS[*]}" "$LINENO" "${FUNCNAME[*]-}"' ERR
+# Run a child that reports its own failures; only the child reports.
+_err_delegate() { local _aic_err_child_reports=1; "$@"; }
 
 SHORT="${SHA:0:7}"
 WORKDIR="$HOME/Projects/rocm-aic.${SHORT}.${AIC_CI_RUN_KEY}"
@@ -121,7 +161,7 @@ AIC_SPUR_CLUSTER=1 \
     AIC_IMAGE_DIR="${TARBALL_DIR}" \
     AIC_CACHE_DIR="${CACHE_DIR}" \
     ${AIC_BUILD_EXCLUDE_NODES:+AIC_BUILD_EXCLUDE_NODES="${AIC_BUILD_EXCLUDE_NODES}"} \
-    make "${AIC_DIST_BUILD_TARGET}"
+    _err_delegate make "${AIC_DIST_BUILD_TARGET}"
 
 echo "=== ${AIC_DIST_BUILD_TARGET} complete — tarball in ${TARBALL_DIR} ==="
 REMOTE

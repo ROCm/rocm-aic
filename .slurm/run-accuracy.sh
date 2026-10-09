@@ -59,8 +59,10 @@
 # Every value arrives as an environment variable, so the script is also runnable
 # by hand on a GPU node that has the repo:
 #
-#   AIC_DAY_DIR=/path/to/repo AIC_LOG_DIR=/tmp/acc AIC_IMAGE=rocm-aic:latest \
-#   AIC_TARBALL=/shared/rocm-aic-latest-gfx950.tar.zst AIC_DECOMPRESS_CMD='zstd -dc' \
+#   AIC_DAY_DIR=/path/to/repo AIC_LOG_DIR=/tmp/acc \
+#   AIC_VLLM_IMAGE=aic-vllm:latest AIC_VLLM_TARBALL=/shared/aic-vllm-latest-gfx950.tar.zst \
+#   AIC_LMCACHE_IMAGE=aic-lmcache:latest AIC_LMCACHE_TARBALL=/shared/aic-lmcache-latest-gfx950.tar.zst \
+#   AIC_DECOMPRESS_CMD='zstd -dc' \
 #   AIC_ROCM_ARCH=gfx950 HF_HOME=/shared/hf AIC_ACCURACY_MODEL=Qwen/Qwen2.5-0.5B-Instruct \
 #   AIC_ACCURACY_DELTA=0.02 AIC_ACCURACY_READY_TIMEOUT=120 \
 #       bash .slurm/run-accuracy.sh
@@ -68,8 +70,10 @@
 # Required, all set by the submitter:
 #   AIC_DAY_DIR                 repo root, absolute, on storage the node can see
 #   AIC_LOG_DIR                 per-job log dir; scores and container logs land here
-#   AIC_IMAGE                   image ref to load and run
-#   AIC_TARBALL                 image tarball to load from
+#   AIC_VLLM_IMAGE              vllm image ref to load and run
+#   AIC_VLLM_TARBALL            vllm image tarball to load from
+#   AIC_LMCACHE_IMAGE           lmcache image ref to load and run
+#   AIC_LMCACHE_TARBALL         lmcache image tarball to load from
 #   AIC_DECOMPRESS_CMD          matching decompressor (e.g. "zstd -dc")
 #   AIC_ROCM_ARCH               arch tag forwarded to compose
 #   HF_HOME                     persistent HF cache
@@ -79,6 +83,9 @@
 # Optional:
 #   HF_TOKEN                    gated-model download token (default: empty)
 #   AIC_FORCE_LOAD              1 forces an image reload (default: 0)
+#   AIC_SPUR_CLUSTER            1 takes the GPU from SPUR's job env; otherwise
+#                               from ROCR_VISIBLE_DEVICES & co, else GPU or 0
+#                               (default: 0; see aic_resolve_gpu_visibility)
 #   AIC_ACCURACY_POOL_ROOT      L2 pool root (default: /tmp/aic-accuracy.$SLURM_JOB_ID)
 #   AIC_ACCURACY_ALLOW_L1_ONLY  1 downgrades phase 5's L2-read gate to a warning
 #   AIC_ACCURACY_MIN_HIT_PCT    floor on the % of looked-up tokens the tier
@@ -92,8 +99,10 @@ set -uo pipefail
 # an unset one would otherwise surface as an empty path deep inside a phase.
 : "${AIC_DAY_DIR:?run-accuracy.sh: AIC_DAY_DIR must be set by the submitter}"
 : "${AIC_LOG_DIR:?run-accuracy.sh: AIC_LOG_DIR must be set by the submitter}"
-: "${AIC_IMAGE:?run-accuracy.sh: AIC_IMAGE must be set by the submitter}"
-: "${AIC_TARBALL:?run-accuracy.sh: AIC_TARBALL must be set by the submitter}"
+: "${AIC_VLLM_IMAGE:?run-accuracy.sh: AIC_VLLM_IMAGE must be set by the submitter}"
+: "${AIC_VLLM_TARBALL:?run-accuracy.sh: AIC_VLLM_TARBALL must be set by the submitter}"
+: "${AIC_LMCACHE_IMAGE:?run-accuracy.sh: AIC_LMCACHE_IMAGE must be set by the submitter}"
+: "${AIC_LMCACHE_TARBALL:?run-accuracy.sh: AIC_LMCACHE_TARBALL must be set by the submitter}"
 : "${AIC_DECOMPRESS_CMD:?run-accuracy.sh: AIC_DECOMPRESS_CMD must be set by the submitter}"
 : "${AIC_ROCM_ARCH:?run-accuracy.sh: AIC_ROCM_ARCH must be set by the submitter}"
 : "${HF_HOME:?run-accuracy.sh: HF_HOME must be set by the submitter}"
@@ -104,24 +113,39 @@ set -uo pipefail
 command -v docker >/dev/null 2>&1 || { echo "$(hostname): docker not found" >&2; exit 1; }
 echo "[accuracy-test] host=$(hostname) docker=$(docker --version)"
 
-# Load the image from the shared tarball only when needed (same marker logic as
+# Load each image from its shared tarball only when needed (same marker logic as
 # tiny-test): reload when forced, absent, or the tarball is newer.
-_marker="/var/tmp/aic-loaded-$(id -u)-$(echo "${AIC_IMAGE}" | tr '/:' '__').mtime"
-_tar_mtime="$(stat -c %Y "${AIC_TARBALL}" 2>/dev/null || echo 0)"
-_have_img="$(docker images -q "${AIC_IMAGE}")"
-_loaded_mtime="$(cat "${_marker}" 2>/dev/null || echo 0)"
-if [ "${AIC_FORCE_LOAD:-0}" = "1" ] || [ -z "${_have_img}" ] || [ "${_tar_mtime}" -gt "${_loaded_mtime}" ]; then
-    echo "[accuracy-test] loading ${AIC_IMAGE} from ${AIC_TARBALL}"
-    ${AIC_DECOMPRESS_CMD} "${AIC_TARBALL}" | docker load >/dev/null
-    echo "${_tar_mtime}" > "${_marker}" 2>/dev/null || true
-else
-    echo "[accuracy-test] image up to date on $(hostname) (id ${_have_img})"
-fi
+_load_image() {
+    local img="$1" tb="$2" marker tar_mtime have loaded_mtime
+    marker="/var/tmp/aic-loaded-$(id -u)-$(echo "${img}" | tr '/:' '--').mtime"
+    tar_mtime="$(stat -c %Y "${tb}" 2>/dev/null || echo 0)"
+    have="$(docker images -q "${img}")"
+    loaded_mtime="$(cat "${marker}" 2>/dev/null || echo 0)"
+    if [ "${AIC_FORCE_LOAD:-0}" = "1" ] || [ -z "${have}" ] || [ "${tar_mtime}" -gt "${loaded_mtime}" ]; then
+        echo "[accuracy-test] loading ${img} from ${tb}"
+        ${AIC_DECOMPRESS_CMD} "${tb}" | docker load >/dev/null
+        echo "${tar_mtime}" > "${marker}" 2>/dev/null || true
+    else
+        echo "[accuracy-test] ${img} up to date on $(hostname) (id ${have})"
+    fi
+}
+_load_image "${AIC_VLLM_IMAGE}"    "${AIC_VLLM_TARBALL}"
+_load_image "${AIC_LMCACHE_IMAGE}" "${AIC_LMCACHE_TARBALL}"
 
 cd "${AIC_DAY_DIR}" || { echo "[accuracy-test] FAIL: cannot cd to ${AIC_DAY_DIR}" >&2; exit 1; }
 # shellcheck source=/dev/null
 source "${AIC_DAY_DIR}/monitoring/monitoring-lib.sh"
 ensure_compose || { echo "[accuracy-test] docker compose unavailable" >&2; exit 1; }
+
+# Serve on the GPU Slurm allocated rather than host GPU 0: --device /dev/dri
+# exposes every GPU on the node, so only ROCR_VISIBLE_DEVICES keeps the two arms
+# off somebody else's.  Compose reads AIC_ROCR_VISIBLE/AIC_HIP_VISIBLE and
+# names the vLLM container after GPU.
+aic_resolve_gpu_visibility \
+    || { echo "[accuracy-test] FAIL: could not resolve the GPU allocation (refusing to default to GPU 0)" >&2; exit 1; }
+export GPU="${AIC_ROCR_VISIBLE%%,*}"
+VLLM_CONTAINER="aic-vllm-gpu${GPU}"
+echo "[accuracy-test] allocated gpu: ROCR=${AIC_ROCR_VISIBLE} HIP=${AIC_HIP_VISIBLE} container=${VLLM_CONTAINER}"
 
 # --- host-side pytest venv ---------------------------------------------------
 # lm_eval is deliberately NOT in the image: the gsm8k download does not belong
@@ -149,10 +173,11 @@ export AIC_ACCURACY_DELTA="${AIC_ACCURACY_DELTA}"
 export AIC_ACCURACY_REQUIRED=1
 
 # --- shared compose env ------------------------------------------------------
-export IMAGE_REF="${AIC_IMAGE}"
-export IMAGE_NAME="${AIC_IMAGE%:*}"
+export VLLM_IMAGE_REF="${AIC_VLLM_IMAGE}"
+export LMCACHE_IMAGE_REF="${AIC_LMCACHE_IMAGE}"
+export IMAGE_REF="${AIC_LMCACHE_IMAGE}"
+export IMAGE_NAME="${AIC_LMCACHE_IMAGE%:*}"
 export ROCM_ARCH="${AIC_ROCM_ARCH}"
-export GPU=0
 export VLLM_MODEL="${AIC_ACCURACY_MODEL}"
 export HF_HOME="${HF_HOME}"
 export HF_TOKEN="${HF_TOKEN:-}"
@@ -212,7 +237,7 @@ _teardown() {
     pkill -9 -f 'lmcache server'          2>/dev/null || true
     sleep 2
     timeout 60 compose --profile cache down --remove-orphans --timeout 5 >/dev/null 2>&1 || true
-    for c in aic-vllm-gpu0 aic-lmcache; do timeout 30 docker rm -f "$c" >/dev/null 2>&1 || true; done
+    for c in "${VLLM_CONTAINER}" aic-lmcache; do timeout 30 docker rm -f "$c" >/dev/null 2>&1 || true; done
 }
 # shellcheck disable=SC2317  # reached via the EXIT trap below, not inline
 cleanup() {
@@ -229,7 +254,7 @@ trap cleanup EXIT
 _wait_ready() {
     local tag="$1"
     for _ in $(seq 1 "${AIC_ACCURACY_READY_TIMEOUT}"); do
-        if docker exec aic-vllm-gpu0 curl -fsS http://127.0.0.1:8000/v1/models >/dev/null 2>&1; then
+        if docker exec "${VLLM_CONTAINER}" curl -fsS http://127.0.0.1:8000/v1/models >/dev/null 2>&1; then
             echo "[accuracy-test] ${tag}: endpoint ready"
             return 0
         fi
@@ -247,8 +272,8 @@ _wait_ready() {
 # the compute node.
 _endpoint_url() {
     local ip
-    ip="$(docker inspect -f '{{(index .NetworkSettings.Networks "aic").IPAddress}}' aic-vllm-gpu0 2>/dev/null)"
-    [ -n "${ip}" ] || { echo "[accuracy-test] FAIL: no aic bridge IP for aic-vllm-gpu0" >&2; return 1; }
+    ip="$(docker inspect -f '{{(index .NetworkSettings.Networks "aic").IPAddress}}' "${VLLM_CONTAINER}" 2>/dev/null)"
+    [ -n "${ip}" ] || { echo "[accuracy-test] FAIL: no aic bridge IP for ${VLLM_CONTAINER}" >&2; return 1; }
     curl -fsS --max-time 10 "http://${ip}:8000/v1/models" >/dev/null 2>&1 || {
         echo "[accuracy-test] FAIL: host cannot reach ${ip}:8000 on the aic bridge" >&2
         echo "[accuracy-test]       (fallback: run pytest inside the client container)" >&2
@@ -338,7 +363,7 @@ _dump_metrics() {
 # vLLM's own view of the connector: how many blocks it asked the external tier
 # for, and how many it got.  These are the numbers that decide whether a
 # re-score was actually served from the tier or silently recomputed.
-_vllm_ext() { _metric_sum aic-vllm-gpu0 http://127.0.0.1:8000/metrics "$1"; }
+_vllm_ext() { _metric_sum "${VLLM_CONTAINER}" http://127.0.0.1:8000/metrics "$1"; }
 # LMCache's own view, one tier down: which level answered.
 _lmc() { _metric_sum aic-lmcache http://127.0.0.1:8080/metrics "$1"; }
 
@@ -395,7 +420,7 @@ if docker ps --format '{{.Names}}' | grep -qx aic-lmcache; then
     exit 1
 fi
 BASELINE_EXT_Q="$(_vllm_ext vllm:external_prefix_cache_queries_total)"
-_metric_present aic-vllm-gpu0 http://127.0.0.1:8000/metrics \
+_metric_present "${VLLM_CONTAINER}" http://127.0.0.1:8000/metrics \
     vllm:external_prefix_cache_queries_total
 case "$?" in
     2)
@@ -510,7 +535,7 @@ echo "[accuracy-test] === Phase 3: NVMe pool liveness ==="
 # measuring anything.
 _dump_metrics aic-lmcache    http://127.0.0.1:8080/metrics "${AIC_LOG_DIR}/lmcache-metrics-phase3.prom" \
     || L2_METRICS_OK=0
-_dump_metrics aic-vllm-gpu0  http://127.0.0.1:8000/metrics "${AIC_LOG_DIR}/vllm-metrics-phase3.prom" || true
+_dump_metrics "${VLLM_CONTAINER}"  http://127.0.0.1:8000/metrics "${AIC_LOG_DIR}/vllm-metrics-phase3.prom" || true
 POOL_AFTER="$(_pool_bytes)"
 POOL_ALLOC_AFTER="$(_pool_alloc_bytes)"
 POOL_FILES="$(find "${NVME_DATA}" -type f -size +0c 2>/dev/null | wc -l)"
@@ -689,7 +714,7 @@ TIERED_URL="$(_endpoint_url)" || exit 1
 # before sampling: phase 5 fails hard on `ext_q <= 0`, and an unreadable
 # endpoint produces exactly that number while proving nothing.
 RESCORE_METRICS_OK=1
-_metrics_reachable aic-vllm-gpu0 http://127.0.0.1:8000/metrics || RESCORE_METRICS_OK=0
+_metrics_reachable "${VLLM_CONTAINER}" http://127.0.0.1:8000/metrics || RESCORE_METRICS_OK=0
 _metrics_reachable aic-lmcache   http://127.0.0.1:8080/metrics || RESCORE_METRICS_OK=0
 EXT_Q_BEFORE="$(_vllm_ext vllm:external_prefix_cache_queries_total)"
 EXT_H_BEFORE="$(_vllm_ext vllm:external_prefix_cache_hits_total)"
@@ -735,7 +760,7 @@ unset AIC_ACCURACY_BASELINE_SCORE
 #   * LMCache's counters say which level served them -- but are cumulative
 #     across phase 2, hence the differencing.
 echo "[accuracy-test] === Phase 5: verify the re-score hit the cache ==="
-_metrics_reachable aic-vllm-gpu0 http://127.0.0.1:8000/metrics || RESCORE_METRICS_OK=0
+_metrics_reachable "${VLLM_CONTAINER}" http://127.0.0.1:8000/metrics || RESCORE_METRICS_OK=0
 _metrics_reachable aic-lmcache   http://127.0.0.1:8080/metrics || RESCORE_METRICS_OK=0
 EXT_Q_AFTER="$(_vllm_ext vllm:external_prefix_cache_queries_total)"
 EXT_H_AFTER="$(_vllm_ext vllm:external_prefix_cache_hits_total)"

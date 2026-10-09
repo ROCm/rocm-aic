@@ -8,7 +8,8 @@ three-arm sweep end-to-end (they wrap `.slurm/run-build-distribute.sh` and
 ```bash
 # Build the image (+ fabric exporters) on a CPU build node and save tarballs to
 # the shared image dir; chain push + smoke-test:
-make dist-build dist-push smoke-test AIC_PUSH_REF=<registry>/rocm-aic:latest
+make dist-build dist-push smoke-test \
+  AIC_VLLM_PUSH_REF=<registry>/aic-vllm:latest AIC_LMCACHE_PUSH_REF=<registry>/aic-lmcache:latest
 
 # Submit the full sweep (vram_only + kvd_v2 nvme + kvd_v2 gds) on a GPU+NVMe node.
 # Output lands in logs/<job-id>/. Pin a node / narrow arms / override the sweep via env:

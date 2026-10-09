@@ -172,6 +172,10 @@ install-ci-scripts:
 		$$SUDO install -m 0755 "$$f" "$$dst/$$(basename "$$f")"; \
 		echo "installed $$(basename "$$f") -> $$dst/"; \
 	done; \
+	rev=$$(git -C "$$src" rev-parse HEAD) || rev=unknown; \
+	git -C "$$src" diff --quiet HEAD -- . || rev="$$rev-dirty"; \
+	echo "$$rev" | $$SUDO tee "$$dst/VERSION" >/dev/null; \
+	echo "recorded $$rev -> $$dst/VERSION"; \
 	echo "CI runner scripts deployed to $$dst"
 
 prometheus-dump:

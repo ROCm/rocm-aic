@@ -1,5 +1,9 @@
 #!/usr/bin/env bash
-set -euo pipefail
+# -E inherit ERR trap in functions and subshells,
+# -e exit the script upon commands failing,
+# -u to error if the script ever references a variable that is unset,
+# -o pipefail to error if any stage of a pipeline fails.
+set -Eeuo pipefail
 
 # Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
 #
@@ -21,6 +25,22 @@ set -euo pipefail
 # Usage:
 #   bash .github/scripts/workflows/spur-prometheus-dump.sh <full-sha>
 
+# errexit exits without saying where; report it.  Only the line number and
+# function call stack are printed, never the command text, which can carry
+# secret values.
+_on_err() {
+    # set -E carries this trap into $(...), where errexit is off.
+    [[ $- == *e* ]] || return 0
+    # The failing command was a child that reports its own failures.
+    [[ -z ${_aic_err_child_reports-} ]] || return 0
+    # || : so a failed write cannot replace the exit status.
+    printf '%s: command failed (exit %s, pipeline status %s) at line %s%s\n' \
+        "${0##*/}" "$1" "$2" "$3" "${4:+ in ${4// / <- }}" >&2 || :
+}
+trap '_on_err "$?" "${PIPESTATUS[*]}" "$LINENO" "${FUNCNAME[*]-}"' ERR
+# Run a child that reports its own failures; only the child reports.
+_err_delegate() { local _aic_err_child_reports=1; "$@"; }
+
 SHA="${1:?usage: $0 <full-sha>}"
 SHORT="${SHA:0:7}"
 AIC_IMAGE_NAME="rocm-aic-ci-${SHORT}"
@@ -30,14 +50,33 @@ AIC_SHARED_NFS="${AIC_SHARED_NFS:?AIC_SHARED_NFS must be set}"
 AIC_CI_STORAGE_ROOT="${AIC_CI_STORAGE_ROOT:-}"
 REPO="https://github.com/ROCm/rocm-aic.git"
 
-ssh -o ServerAliveInterval=30 -o ServerAliveCountMax=4 "${AIC_SPUR_HOST}" env \
+_err_delegate ssh -o ServerAliveInterval=30 -o ServerAliveCountMax=4 "${AIC_SPUR_HOST}" env \
     SHA="${SHA}" \
     REPO="${REPO}" \
     AIC_IMAGE_NAME="${AIC_IMAGE_NAME}" \
     AIC_SHARED_NFS="${AIC_SHARED_NFS}" \
     AIC_CI_STORAGE_ROOT="${AIC_CI_STORAGE_ROOT}" \
     bash << 'REMOTE'
-set -euo pipefail
+# -E inherit ERR trap in functions and subshells,
+# -e exit the script upon commands failing,
+# -u to error if the script ever references a variable that is unset,
+# -o pipefail to error if any stage of a pipeline fails.
+set -Eeuo pipefail
+# errexit exits without saying where; report it.  Only the line number and
+# function call stack are printed, never the command text, which can carry
+# secret values.
+_on_err() {
+    # set -E carries this trap into $(...), where errexit is off.
+    [[ $- == *e* ]] || return 0
+    # The failing command was a child that reports its own failures.
+    [[ -z ${_aic_err_child_reports-} ]] || return 0
+    # || : so a failed write cannot replace the exit status.
+    printf '%s: command failed (exit %s, pipeline status %s) at line %s%s\n' \
+        'spur-prometheus-dump.sh (remote)' "$1" "$2" "$3" "${4:+ in ${4// / <- }}" >&2 || :
+}
+trap '_on_err "$?" "${PIPESTATUS[*]}" "$LINENO" "${FUNCNAME[*]-}"' ERR
+# Run a child that reports its own failures; only the child reports.
+_err_delegate() { local _aic_err_child_reports=1; "$@"; }
 export PATH="/usr/local/bin:${PATH}"
 
 SHORT="${SHA:0:7}"
@@ -67,7 +106,7 @@ git checkout "${SHA}"
 # Run make prometheus-dump — submits an sbatch GPU job on SPUR and waits
 # ---------------------------------------------------------------------------
 echo "=== Running make prometheus-dump ==="
-make prometheus-dump \
+_err_delegate make prometheus-dump \
     AIC_SPUR_CLUSTER=1 \
     AIC_SHARED_NFS="${AIC_SHARED_NFS}" \
     AIC_IMAGE_DIR="${CI_STORAGE_ROOT}/images/aic-ci-${SHORT}" \

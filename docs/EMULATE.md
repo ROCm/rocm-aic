@@ -76,7 +76,7 @@ serve is unaffected. The plugin is present in both images.
 Two images can serve in emulation mode:
 
 ```bash
-# Emulation-only image: ~10 min, NO GPU kernels compiled at all
+# Emulation-only image: no vLLM GPU kernels; builds aic-base first
 make dist-build-emulate        # -> rocm-aic:7.14-emulate
 
 # The normal production image also works (it ships the plugin)
@@ -88,8 +88,11 @@ make dist-build                # -> rocm-aic:7.14-latest
 
 - the `emulate` stage stops after vLLM + the plugin — no LMCache HIP extension,
   no NIXL/AIS_MT, no hsa-snoop;
-- `VLLM_TARGET_DEVICE=empty` is upstream vLLM's no-extension build, so no HIP
-  kernels are compiled — minutes instead of hours.
+- `VLLM_TARGET_DEVICE=empty` is upstream vLLM's no-extension build, so vLLM
+  compiles no HIP kernels;
+- the vLLM stage needs aic-base (git, PyTorch), so the same job builds
+  `docker/base/Dockerfile` first and passes it in as the `base` build context.
+  That PyTorch build is cached per arch, so only the first run pays for it.
 
 > [!WARNING]
 > An `empty` image has no `vllm._C` and cannot run a real forward pass. Never
@@ -98,8 +101,8 @@ make dist-build                # -> rocm-aic:7.14-latest
 The image is tagged separately (`AIC_EMULATE_IMAGE`, default
 `rocm-aic:7.14-emulate`) and gets its own tarball, so it can never overwrite the
 GPU image. `ROCM_ARCH` still has to be a valid gfx (`AIC_EMULATE_ARCH`, default
-`gfx942`) because torch's AMD wheel index picks its device extra from it —
-nothing in the image runs on a GPU.
+`gfx942`) because aic-base builds PyTorch for it — nothing in the image runs on
+a GPU.
 
 ## 2. Run
 
