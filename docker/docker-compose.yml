@@ -861,6 +861,13 @@ services:
       - /sys/kernel/debug:/sys/kernel/debug
       - /sys/kernel/tracing:/sys/kernel/tracing
     command: ["--all", "--prometheus", "--prometheus-port", "${HSA_SNOOP_PORT:-9488}", "--mem-snoop"]
+    # The image's check assumes the default port; follow HSA_SNOOP_PORT.
+    healthcheck:
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/${HSA_SNOOP_PORT:-9488}"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
 
   # ---------------------------------------------------------------------------
   # lmcache-emulator: the SAME lmcache server, on a node with no GPU
