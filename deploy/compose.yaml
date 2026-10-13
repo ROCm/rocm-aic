@@ -1,0 +1,36 @@
+# LMCache MP mode on ROCm.
+#
+#   MODEL=Qwen/Qwen2.5-0.5B-Instruct docker compose -f deploy/compose.yaml up
+#
+# The cache server and the vLLM workers are separate processes in one
+# container. They must share a container: the MP connector hands the KV buffer
+# over as a GPU IPC handle, and that import fails across container boundaries
+# on ROCm. See "Why one container" in the README.
+
+services:
+  vllm:
+    image: vllm-lmcache-rocm:${TAG:-dev}-${GPU_ARCH:-gfx90a}
+    entrypoint: /usr/local/bin/mp-serve
+    command:
+      - ${MODEL:?set MODEL}
+      - --host=0.0.0.0
+      - --port=8000
+      # LMCache owns KV reuse here; vLLM's own prefix cache would shadow it.
+      - --no-enable-prefix-caching
+    devices:
+      - /dev/kfd
+      - ${RENDER_NODE:-/dev/dri/renderD128}
+    # Host GIDs owning the device nodes.
+    group_add: ["44", "109"]
+    # Shared /dev/shm: torch's GPU IPC keeps its handle refcount there.
+    ipc: host
+    ulimits:
+      memlock: -1
+    environment:
+      LMCACHE_L1_SIZE_GB: ${LMCACHE_L1_SIZE_GB:-32}
+      HF_TOKEN: ${HF_TOKEN:-}
+    volumes:
+      - ${HF_HOME:-/root/.cache/huggingface}:/root/.cache/huggingface
+    ports:
+      - "8000:8000"
+    restart: unless-stopped

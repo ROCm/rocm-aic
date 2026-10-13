@@ -1,0 +1,31 @@
+#!/bin/bash
+# Start the LMCache MP cache server, then hand off to `vllm serve`.
+#
+# The two have to share a container: the MP connector passes the KV buffer by
+# GPU IPC handle, and hipIpcOpenMemHandle fails with hipErrorInvalidDevicePointer
+# across container boundaries -- even with ipc:host, pid:host and --privileged.
+# See the "Why one container" section of the README.
+set -euo pipefail
+
+LMCACHE_PORT="${LMCACHE_PORT:-6555}"
+LMCACHE_L1_SIZE_GB="${LMCACHE_L1_SIZE_GB:-32}"
+LMCACHE_MAX_WORKERS="${LMCACHE_MAX_WORKERS:-4}"
+
+python3 -m lmcache.v1.multiprocess.server \
+  --host 127.0.0.1 --port "${LMCACHE_PORT}" \
+  --l1-size-gb "${LMCACHE_L1_SIZE_GB}" \
+  --eviction-policy LRU \
+  --max-workers "${LMCACHE_MAX_WORKERS}" &
+lmcache_pid=$!
+
+# Don't outlive the cache server: vLLM's connector gives up after 300s anyway.
+trap 'kill "${lmcache_pid}" 2>/dev/null || true' EXIT
+
+for _ in $(seq 60); do
+  kill -0 "${lmcache_pid}" 2>/dev/null || { echo "LMCache MP server died on startup" >&2; exit 1; }
+  (echo > "/dev/tcp/127.0.0.1/${LMCACHE_PORT}") 2>/dev/null && break
+  sleep 1
+done
+
+exec vllm serve "$@" \
+  --kv-transfer-config "{\"kv_connector\":\"LMCacheMPConnector\",\"kv_role\":\"kv_both\",\"kv_connector_extra_config\":{\"lmcache.mp.host\":\"tcp://127.0.0.1\",\"lmcache.mp.port\":${LMCACHE_PORT}}}"
