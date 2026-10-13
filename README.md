@@ -15,23 +15,23 @@ vLLM are all built from source** against them.
 
 ```mermaid
 graph TD
-  UB[ubuntu:26.04] --> PB[python-base<br/>py3.14 · /opt/venv · uv]
-  PB --> RR[rocm-runtime<br/>rocm-sdk core/libraries/device-GPU_ARCH<br/>torch + amd-torch-device-GPU_ARCH<br/>6.7 GB, one arch]
+  UB["ubuntu:26.04 — 101 MB"] --> PB["python-base — ~5s · 238 MB<br/>py3.14 · /opt/venv · uv"]
+  PB --> RR["rocm-runtime — 49s<br/>rocm-sdk core/libraries/device-GPU_ARCH<br/>torch + amd-torch-device-GPU_ARCH<br/>6.7 GB, one arch"]
 
-  RR --> BB[build-base<br/>+ rocm-sdk-devel/hipcc · gcc · cmake/ninja/meson · rdma hdrs]
+  RR --> BB["build-base — 2m47s<br/>+ rocm-sdk-devel/hipcc · gcc · cmake/ninja/meson · rdma hdrs"]
 
-  BB --> UCX[ucx<br/>--with-rocm → /opt/ucx]
-  UCX --> NIXL[nixl<br/>-Drocm_path -Ducx_path → wheel]
-  BB --> LMC[lmcache<br/>BUILD_WITH_HIP=1 hipcc → wheel]
-  BB --> VW[vllm-wheel<br/>VLLM_TARGET_DEVICE=rocm → wheel]
+  BB --> UCX["ucx — 1m24s<br/>--with-rocm → /opt/ucx"]
+  UCX --> NIXL["nixl — 20m00s<br/>-Drocm_path -Ducx_path → wheel"]
+  BB --> LMC["lmcache — ~21m<br/>BUILD_WITH_HIP=1 hipcc → wheel"]
+  BB --> VW["vllm-wheel — 20m33s<br/>VLLM_TARGET_DEVICE=rocm → wheel"]
 
-  RR --> RB[runtime-base<br/>+ /opt/ucx + nixl & lmcache wheels]
+  RR --> RB["runtime-base — 20s<br/>+ /opt/ucx + nixl & lmcache wheels"]
   UCX -.COPY /opt/ucx.-> RB
   NIXL -.wheel.-> RB
   LMC -.wheel.-> RB
 
-  RB --> LS[lmcache-server target<br/>ENTRYPOINT -m lmcache.v1.multiprocess.server]
-  RB --> VL[vllm target<br/>+ vllm wheel · ENTRYPOINT vllm serve]
+  RB --> LS["lmcache-server target<br/>ENTRYPOINT -m lmcache.v1.multiprocess.server"]
+  RB --> VL["vllm target<br/>+ vllm wheel · ENTRYPOINT vllm serve"]
   VW -.wheel.-> VL
 
   classDef build fill:#fff4e6,stroke:#d9480f
@@ -39,6 +39,30 @@ graph TD
   class BB,UCX,NIXL,LMC,VW build
   class LS,VL ship
 ```
+
+Timings are from a cold `GPU_ARCH=gfx1201` bake on a 128-core EPYC 7513 with
+an empty ccache, so they are an upper bound — the per-stage figures come from
+BuildKit's own `DONE` records. `lmcache` is approximate: that run died at
+21m33s on an unrelated error, after the hipify and most of the compile.
+
+Three things the numbers show that the shape alone does not:
+
+- **`nixl` is not cheap.** At 20m it rivals `vllm-wheel`, and because it sits
+  behind `ucx` the `ucx → nixl` chain is ~21m24s — the real critical path, not
+  vLLM as you might assume.
+- **The three compile stages are within ~1m of each other**, so they retire at
+  roughly the same time and the wall clock is ~25m rather than their 42m sum.
+- **`vllm-wheel` is Amdahl-bound on a single file.** Its ninja graph has only
+  51 jobs; 48 finish in the first 4 minutes, then nothing completes for 15
+  while `csrc/rocm/attention.hip.o` compiles on one core. That one translation
+  unit is ~965s, 78% of the stage. `MAX_JOBS=64` does reach ninja (`ninja -j
+  64`), so neither raising it nor a bigger machine changes anything.
+
+ccache is wired through every compile stage and is confirmed in the chain
+(`sh -c ccache clang++ …`), but **measured no cross-build speedup**: the same
+`attention.hip.o` took 1182.7s cold and 1210.7s on a `--no-cache` rebuild that
+re-ran every step. Treat the ccache setup as unproven — the stages now end with
+`ccache -s`, so the next build's hit rate lands in `buildx history logs`.
 
 Orange stages are build-only: the 7 GB `rocm-sdk-devel` tree, the compilers and
 the source checkouts live there and are never copied forward — only wheels and

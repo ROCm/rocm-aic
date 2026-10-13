@@ -141,7 +141,12 @@ RUN --mount=type=cache,target=/root/.cache/ccache \
         --enable-optimizations --enable-cma --enable-devel-headers \
         --with-rocm=${ROCM_PATH} --without-cuda --with-verbs --with-dm --without-gdrcopy \
     && make -j${MAX_JOBS} && make install-strip \
-    && rm -rf /src/ucx
+    && rm -rf /src/ucx \
+    # Record the compiler-cache hit rate into the build log: ccache lives
+    # inside this RUN, so BuildKit cannot see it and `buildx history` has
+    # no other way to report it. Counters are shared with the other
+    # compile stages running concurrently, so read them as build-wide.
+    && ccache -s
 
 ####################  NIXL  ####################
 FROM ucx AS nixl
@@ -165,7 +170,12 @@ RUN --mount=type=cache,target=/root/.cache/ccache \
            -e "s/setuptools>=80.9.0/setuptools/" pyproject.toml.in > pyproject.toml \
     && cp /src/nixl/LICENSE . \
     && python3 -m build --wheel --no-isolation -o /wheels \
-    && rm -rf /src/nixl
+    && rm -rf /src/nixl \
+    # Record the compiler-cache hit rate into the build log: ccache lives
+    # inside this RUN, so BuildKit cannot see it and `buildx history` has
+    # no other way to report it. Counters are shared with the other
+    # compile stages running concurrently, so read them as build-wide.
+    && ccache -s
 
 ####################  LMCache (HIP extensions)  ####################
 FROM build-base AS lmcache
@@ -194,7 +204,12 @@ RUN --mount=type=cache,target=/root/.cache/ccache \
     # is looked up as one literal name and fails. The hipcc shim created in
     # build-base is what routes this through ccache instead.
     && BUILD_WITH_HIP=1 CXX=hipcc python3 setup.py bdist_wheel --dist-dir=/wheels \
-    && rm -rf /src/lmcache
+    && rm -rf /src/lmcache \
+    # Record the compiler-cache hit rate into the build log: ccache lives
+    # inside this RUN, so BuildKit cannot see it and `buildx history` has
+    # no other way to report it. Counters are shared with the other
+    # compile stages running concurrently, so read them as build-wide.
+    && ccache -s
 
 ####################  vLLM  ####################
 FROM build-base AS vllm-wheel
@@ -215,7 +230,12 @@ RUN --mount=type=cache,target=/root/.cache/ccache \
     # so keeping it would pin the whole image to an older Python.
     && sed -i '/mooncake-transfer-engine-rocm/d' requirements/rocm.txt \
     && uv build --wheel --no-build-isolation -o /wheels \
-    && rm -rf /src/vllm
+    && rm -rf /src/vllm \
+    # Record the compiler-cache hit rate into the build log: ccache lives
+    # inside this RUN, so BuildKit cannot see it and `buildx history` has
+    # no other way to report it. Counters are shared with the other
+    # compile stages running concurrently, so read them as build-wide.
+    && ccache -s
 
 ####################  shared runtime: ROCm + UCX + NIXL + LMCache  ####################
 FROM rocm-runtime AS runtime-base
