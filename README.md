@@ -58,11 +58,8 @@ Three things the numbers show that the shape alone does not:
   unit is ~965s, 78% of the stage. `MAX_JOBS=64` does reach ninja (`ninja -j
   64`), so neither raising it nor a bigger machine changes anything.
 
-ccache is wired through every compile stage and is confirmed in the chain
-(`sh -c ccache clang++ …`), but **measured no cross-build speedup**: the same
-`attention.hip.o` took 1182.7s cold and 1210.7s on a `--no-cache` rebuild that
-re-ran every step. Treat the ccache setup as unproven — the stages now end with
-`ccache -s`, so the next build's hit rate lands in `buildx history logs`.
+Which is exactly why ccache carries this build: on a rebuild that one job is a
+cache hit and the stage collapses from 20m33s to 64.5s. See "Build cache".
 
 Orange stages are build-only: the 7 GB `rocm-sdk-devel` tree, the compilers and
 the source checkouts live there and are never copied forward — only wheels and
@@ -188,9 +185,25 @@ one `runtime-base` layer, so the cache server does not carry vLLM.
 ## Build cache
 
 `ccache`, `uv` and `apt` all use `--mount=type=cache`, so they persist across
-builds without entering any layer. Stage-level cache is exported per target
-and per GPU arch, to `.cache/buildx/` by default or to
+builds without entering any layer. These live in BuildKit's own state volume,
+not in the repo. Stage-level cache is exported per target and per GPU arch, to
+`$CACHE_DIR` (default `/var/tmp/buildx-cache`) or to
 `${REGISTRY}buildcache:<target>-<arch>` with `CACHE=registry`.
+
+**Keep `CACHE_DIR` off NFS.** The local cache exporter is containerd's content
+store and needs atomic renames and `startedat` lock files, which NFS does not
+provide. Pointing it at a network home directory orphans ingest entries and
+ends every build with `failed to resume the status from path ... will recreate
+them` followed by `ERROR: failed to remove ingest directory`. The images are
+fine — it is the export tail that fails — but the exported cache is left
+incomplete, so `cache-from` stops paying for itself.
+
+ccache is the one that matters most. The `vllm-wheel` stage drops from 20m33s
+to 64.5s on a rebuild, because `attention.hip.o` — 965s of the cold build —
+becomes a cache hit. End to end that is 29m56s cold against 12m37s warm, with
+ccache self-reporting 440/926 cacheable calls hit (47.5%). Each compile stage
+ends with `ccache -s`, so the rate is recoverable later via
+`docker buildx history logs <id>`.
 
 The source-built components (UCX → NIXL, LMCache, vLLM) are independent
 stages, so BuildKit compiles them in parallel.

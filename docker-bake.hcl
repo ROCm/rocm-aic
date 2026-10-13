@@ -39,12 +39,22 @@ variable "MAX_JOBS" { default = "64" }
 # builder; the default docker driver cannot export cache.
 variable "CACHE" { default = "local" }
 
+# Where CACHE=local writes. Deliberately NOT inside the repo: the local cache
+# exporter is containerd's content store, which needs atomic renames and
+# startedat lock files. On NFS those semantics do not hold, so ingest entries
+# are orphaned and every build ends in "failed to resume the status from path
+# ... will recreate them" and "ERROR: failed to remove ingest directory".
+# The images still build -- it is the export tail that fails -- but the
+# exported cache is incomplete, so cache-from stops paying for itself.
+# Keep this on a local filesystem. Nothing here is precious; delete freely.
+variable "CACHE_DIR" { default = "/var/tmp/buildx-cache" }
+
 function "cache_from" {
   params = [name]
   result = (
     CACHE == "none" ? [] :
     CACHE == "registry" ? ["type=registry,ref=${REGISTRY}buildcache:${name}-${GPU_ARCH}"] :
-    ["type=local,src=.cache/buildx/${name}-${GPU_ARCH}"]
+    ["type=local,src=${CACHE_DIR}/${name}-${GPU_ARCH}"]
   )
 }
 
@@ -53,7 +63,7 @@ function "cache_to" {
   result = (
     CACHE == "none" ? [] :
     CACHE == "registry" ? ["type=registry,ref=${REGISTRY}buildcache:${name}-${GPU_ARCH},mode=max"] :
-    ["type=local,dest=.cache/buildx/${name}-${GPU_ARCH},mode=max"]
+    ["type=local,dest=${CACHE_DIR}/${name}-${GPU_ARCH},mode=max"]
   )
 }
 
