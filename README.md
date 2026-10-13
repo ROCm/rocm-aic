@@ -58,6 +58,21 @@ docker buildx bake vllm             # just the serving image
 GPU_ARCH=gfx942 docker buildx bake  # retarget to MI300X / MI325X
 ```
 
+To target whatever GPU this host actually has, let ROCm name it:
+
+```sh
+GPU_ARCH=$(rocm_agent_enumerator | grep -v gfx000 | sort -u | head -1) docker buildx bake
+```
+
+`rocm_agent_enumerator` reads KFD topology from sysfs rather than initialising
+the runtime, so it works even when ROCr enumeration is broken. It has to run on
+the **host**: build stages have no GPU, where it exits 0 printing nothing, so it
+cannot drive `GPU_ARCH` from inside the Dockerfile. `gfx000` is the CPU agent.
+
+Known-good targets: `gfx90a` (MI210/MI250), `gfx942` (MI300X/MI325X), `gfx950`
+(MI350X), `gfx908` (MI100), `gfx1200`/`gfx1201` (RDNA4). Only `gfx90a` has been
+built and run here; the rest are whatever the wheel index offers.
+
 Push to a registry, with registry-backed cache:
 
 ```sh
@@ -167,7 +182,7 @@ One MI210 (gfx90a), ROCm 10.1 + amdgpu DKMS 6.14.14, Ubuntu 24.04 host:
 `vllm serve Qwen/Qwen2.5-0.5B-Instruct` with the MP connector reaches
 `health: 200`, and a repeated 1.5k-token prompt gives
 
-```
+```text
 LMCache INFO: Stored 1280 tokens in 0.038 seconds   (lmcache_driven_transfer)
 LMCache INFO: Retrieved 1280 tokens in 0.001 seconds
 vllm:external_prefix_cache_hits_total  1280

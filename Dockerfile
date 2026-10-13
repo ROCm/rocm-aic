@@ -89,9 +89,20 @@ ARG PYTHON_VERSION
 ARG MAX_JOBS=64
 ENV MAX_JOBS=${MAX_JOBS} \
     CCACHE_DIR=/root/.cache/ccache \
+    # hipcc is a wrapper script, so hash the real compiler, not the wrapper.
     CCACHE_COMPILERCHECK=content \
     CMAKE_C_COMPILER_LAUNCHER=ccache \
-    CMAKE_CXX_COMPILER_LAUNCHER=ccache
+    CMAKE_CXX_COMPILER_LAUNCHER=ccache \
+    # vLLM's expensive work is HIP kernels, which CMake routes through this one
+    # rather than the C/CXX launchers above.
+    CMAKE_HIP_COMPILER_LAUNCHER=ccache
+# Puts ccache's compiler shims ahead of the real ones, which is what catches
+# UCX's autotools build -- it invokes the compiler by name and reads neither
+# the CMake launchers nor meson's. /usr/lib/ccache has to come before the venv:
+# the SDK wheels ship their own hipcc in /opt/venv/bin, which would otherwise
+# shadow the shim. The dir holds compiler shims only, so python and everything
+# else still resolve from the venv as before.
+ENV PATH=/usr/lib/ccache:/opt/venv/bin:${PATH}
 
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
@@ -100,7 +111,13 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
         autoconf automake libtool \
         python${PYTHON_VERSION}-dev \
         libnuma-dev libdrm-dev libibverbs-dev librdmacm-dev rdma-core ibverbs-providers \
-        libssl-dev libcurl4-openssl-dev libaio-dev liburing-dev
+        libssl-dev libcurl4-openssl-dev libaio-dev liburing-dev \
+    # apt's ccache only shims compilers it installed, so hipcc gets one by hand.
+    # Invoked through this name, ccache compiles with the next hipcc on PATH
+    # (the SDK's). This is the only thing that caches LMCache's HIP kernels:
+    # torch's cpp_extension execs $CXX as a single binary, so a "ccache hipcc"
+    # command string is not an option.
+    && ln -sf "$(command -v ccache)" /usr/lib/ccache/hipcc
 
 # hipcc and the HIP headers live in rocm-sdk-devel; `rocm-sdk init` expands the
 # devel tree and links in the device wheels already installed.
@@ -173,6 +190,9 @@ RUN --mount=type=cache,target=/root/.cache/ccache \
     && sed -i '/^cupy-rocm/d' requirements/rocm_core.txt \
     # setup.py directly, as LMCache's own Dockerfile does: `uv build
     # --no-build-isolation` fails to expose setuptools to the backend on 3.14.
+    # torch's cpp_extension execs $CXX as a single binary, so CXX="ccache hipcc"
+    # is looked up as one literal name and fails. The hipcc shim created in
+    # build-base is what routes this through ccache instead.
     && BUILD_WITH_HIP=1 CXX=hipcc python3 setup.py bdist_wheel --dist-dir=/wheels \
     && rm -rf /src/lmcache
 
