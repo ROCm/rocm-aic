@@ -54,7 +54,8 @@ build:
 		echo "Layer cache: disabled (set AIC_CACHE_DIR to enable)"; \
 	fi
 	@echo "--- build: aic-base/vllm/lmcache/hsa-snoop:$(IMAGE_TAG) (ROCM_ARCH=$(ROCM_ARCH)) ---"
-	ROCM_ARCH="$(ROCM_ARCH)" BUILD_JOBS="$(BUILD_JOBS)" AIC_UCX_FAST="$(AIC_UCX_FAST)" \
+	BUILDX_BAKE_ENTITLEMENTS_FS=0 \
+	    ROCM_ARCH="$(ROCM_ARCH)" BUILD_JOBS="$(BUILD_JOBS)" AIC_UCX_FAST="$(AIC_UCX_FAST)" \
 	    AIC_VERSION="$(AIC_VERSION)" \
 	    AIC_CACHE_DIR="$(AIC_CACHE_DIR)" AIC_CACHE_MODE="$(AIC_CACHE_MODE)" \
 	    $(if $(strip $(TLS_CERT)),TLS_CERT="$(TLS_CERT)",) \

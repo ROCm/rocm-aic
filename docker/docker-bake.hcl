@@ -160,7 +160,7 @@ group "all" {
 # ---- Targets -----------------------------------------------------------------
 
 target "base" {
-  context    = ".."
+  context    = "."
   dockerfile = "docker/base/Dockerfile"
   tags       = ["aic-base:${IMAGE_TAG}"]
   args = {
@@ -184,7 +184,7 @@ target "base" {
 }
 
 target "vllm" {
-  context    = ".."
+  context    = "."
   dockerfile = "docker/vllm/Dockerfile"
   contexts   = { base = "target:base" }
   tags       = ["aic-vllm:${IMAGE_TAG}", "aic-vllm:latest"]
@@ -210,7 +210,7 @@ target "vllm" {
 }
 
 target "lmcache" {
-  context    = ".."
+  context    = "."
   dockerfile = "docker/lmcache/Dockerfile"
   contexts   = { base = "target:base" }
   tags       = ["aic-lmcache:${IMAGE_TAG}", "aic-lmcache:latest"]
@@ -233,7 +233,7 @@ target "lmcache" {
 }
 
 target "hsa-snoop" {
-  context    = ".."
+  context    = "."
   dockerfile = "docker/hsa-snoop/Dockerfile"
   tags       = ["aic-hsa-snoop:${IMAGE_TAG}", "aic-hsa-snoop:latest"]
   args = {
@@ -260,7 +260,7 @@ target "emulate" {
 }
 
 target "nvme-exporter" {
-  context    = ".."
+  context    = "."
   dockerfile = "docker/nvme-exporter/Dockerfile"
   tags       = ["aic-nvme-exporter:local"]
   args = {
@@ -269,7 +269,7 @@ target "nvme-exporter" {
 }
 
 target "rdma-exporter" {
-  context    = ".."
+  context    = "."
   dockerfile = "docker/rdma-exporter/Dockerfile"
   tags       = ["aic-rdma-exporter:local"]
   args = {
@@ -278,7 +278,7 @@ target "rdma-exporter" {
 }
 
 target "kvbench" {
-  context    = ".."
+  context    = "."
   dockerfile = "docker/kvbench/Dockerfile"
   tags       = ["aic-kvbench:${KVBENCH_IMAGE_TAG}"]
   args = {
