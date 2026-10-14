@@ -1,0 +1,165 @@
+# NixlObjPool: allocate and free in O(batch), not O(pool)
+#
+# The NIXL store L2 adapter manages pool_size * (file_size / l1_align_bytes)
+# slots -- 32768 * (16 MiB / 4 KiB) = 134M for the AIC POSIX defaults -- and
+# NixlObjPool kept them as list(range(134M)), then re-sliced that list on every
+# allocation (self.indices = self.indices[num_objs:]).
+#
+# Measured on MI355X inside aic-lmcache: building the list takes 1.3 s and ~5 GB
+# of RSS, and each allocation 0.53 s with the GIL held.  A store allocates once
+# per chunk, so a 6-chunk store blocked every other server thread for ~3 s.
+# Under the accuracy gate's 32-way load py-spy found the L2 store loop inside
+# batched_allocate in 12 of 12 samples.  Everything else waited behind it:
+# lookups averaged 7-8 s, /metrics stopped answering within 15 s, and stores sat
+# pending for seconds -- long enough for the request's next store to overwrite
+# them (patch 16), or for heartbeat PINGs to miss their 10 s timeout so the vLLM
+# adapter entered degraded mode and dropped every producer event.  Either way
+# the server then imports a dead IPC event and patch 11 skips the store.
+#
+# Same 256-request, 32-way burst, fresh stack each, before -> after:
+#   skipped stores 130 -> 0, store latency p50 0.41 s -> 0.001 s,
+#   mean lookup 7.43 s -> 0.06 s.
+#
+# Fix: hand out never-used slots from a high-water mark and reuse freed slots
+# from a free list, so allocation and free cost O(num_objs) and memory is
+# O(freed slots).  report_status() reads the free count through the pool's new
+# free_count() rather than reaching into its private list.
+#
+# Applies after patches 01-15.
+diff --git a/lmcache/v1/distributed/l2_adapters/nixl_store_l2_adapter.py b/lmcache/v1/distributed/l2_adapters/nixl_store_l2_adapter.py
+index 9bbd946..88128f4 100644
+--- a/lmcache/v1/distributed/l2_adapters/nixl_store_l2_adapter.py
++++ b/lmcache/v1/distributed/l2_adapters/nixl_store_l2_adapter.py
+@@ -75,15 +75,26 @@ class NixlStoreObj:
+ 
+ 
+ class NixlObjPool:
+-    """Thread-safe pool of integer indices representing pre-allocated storage slots."""
++    """Thread-safe pool of integer indices representing pre-allocated storage slots.
++
++    Allocation and free cost O(batch), not O(pool).  The pool is
++    ``pool_size * file_size / l1_align_bytes`` slots -- 134M for the default
++    32768 x 16 MiB POSIX pool at 4 KiB alignment -- so materialising it as a
++    list cost ~5 GB of RAM, and slicing that list on every allocation held
++    the GIL for ~0.5 s per stored chunk, long enough to starve the server's
++    other threads (heartbeat PINGs, lookups, /metrics).
++    """
+ 
+     def __init__(self, num_total_objs: int):
+         """
+         Args:
+             num_total_objs: Total number of storage slots to manage.
+         """
+-        self.indices = list(range(num_total_objs))
+         self._total = num_total_objs
++        # Slots [_next, _total) have never been handed out; _freed holds the
++        # ones that have been returned, reused before touching fresh slots.
++        self._next = 0
++        self._freed: list[int] = []
+         self._lock = threading.Lock()
+ 
+     @property
+@@ -105,11 +116,15 @@ class NixlObjPool:
+             RuntimeError: If fewer than ``num_objs`` slots remain in the pool.
+         """
+         with self._lock:
+-            if num_objs > len(self.indices):
++            if num_objs > self._free_count_locked():
+                 logger.debug("NixlObjPool allocation failure.")
+                 return []
+-            allocated = self.indices[:num_objs]
+-            self.indices = self.indices[num_objs:]
++            from_freed = min(num_objs, len(self._freed))
++            allocated = self._freed[len(self._freed) - from_freed :]
++            del self._freed[len(self._freed) - from_freed :]
++            fresh = num_objs - from_freed
++            allocated.extend(range(self._next, self._next + fresh))
++            self._next += fresh
+             return allocated
+ 
+     def batched_free(self, obj_indices: list[int]) -> None:
+@@ -120,7 +135,15 @@ class NixlObjPool:
+             obj_indices: Indices previously obtained from ``batched_allocate``.
+         """
+         with self._lock:
+-            self.indices.extend(obj_indices)
++            self._freed.extend(obj_indices)
++
++    def _free_count_locked(self) -> int:
++        return len(self._freed) + self._total - self._next
++
++    def free_count(self) -> int:
++        """Number of slots currently available for allocation."""
++        with self._lock:
++            return self._free_count_locked()
+ 
+     def get_slot_usage(self) -> tuple[float, float]:
+         """
+@@ -134,7 +157,7 @@ class NixlObjPool:
+         with self._lock:
+             if self._total == 0:
+                 return (0.0, 0.0)
+-            usage = (self._total - len(self.indices)) / self._total
++            usage = (self._total - self._free_count_locked()) / self._total
+             return (usage, usage)
+ 
+ 
+@@ -700,9 +723,7 @@ class NixlStoreL2Adapter(L2AdapterInterface):
+             pinned_object_count = sum(
+                 1 for obj in self._memory_objects.values() if obj.pin_count > 0
+             )
+-        pool = self.nixl_agent.pool
+-        with pool._lock:
+-            pool_free_slots = len(pool.indices)
++        pool_free_slots = self.nixl_agent.pool.free_count()
+         return {
+             "is_healthy": self._loop_thread.is_alive(),
+             "type": "NixlStoreL2Adapter",
+diff --git a/tests/v1/distributed/test_nixl_store_l2_adapter.py b/tests/v1/distributed/test_nixl_store_l2_adapter.py
+index d772c6a..835812a 100644
+--- a/tests/v1/distributed/test_nixl_store_l2_adapter.py
++++ b/tests/v1/distributed/test_nixl_store_l2_adapter.py
+@@ -42,11 +42,43 @@ from lmcache.v1.distributed.internal_api import (  # noqa: E402
+ )
+ from lmcache.v1.distributed.l2_adapters import create_l2_adapter  # noqa: E402
+ from lmcache.v1.distributed.l2_adapters.nixl_store_l2_adapter import (  # noqa: E402
++    NixlObjPool,
+     NixlStoreL2Adapter,
+     NixlStoreL2AdapterConfig,
+ )
+ 
+ 
++class TestNixlObjPool:
++    def test_allocates_distinct_slots_until_exhausted(self):
++        pool = NixlObjPool(num_total_objs=10)
++        first = pool.batched_allocate(4)
++        second = pool.batched_allocate(6)
++        assert sorted(first + second) == list(range(10))
++        assert pool.free_count() == 0
++        assert pool.batched_allocate(1) == []
++
++    def test_oversized_request_allocates_nothing(self):
++        pool = NixlObjPool(num_total_objs=4)
++        assert pool.batched_allocate(5) == []
++        assert pool.free_count() == 4
++
++    def test_freed_slots_are_reused(self):
++        pool = NixlObjPool(num_total_objs=4)
++        held = pool.batched_allocate(4)
++        pool.batched_free(held[:2])
++        assert pool.free_count() == 2
++        assert sorted(pool.batched_allocate(2)) == sorted(held[:2])
++        assert pool.batched_allocate(1) == []
++
++    def test_mixes_freed_and_fresh_slots(self):
++        pool = NixlObjPool(num_total_objs=6)
++        held = pool.batched_allocate(3)
++        pool.batched_free(held[:1])
++        got = pool.batched_allocate(3)
++        assert set(got) == {held[0], 3, 4}
++        assert pool.get_slot_usage() == (5 / 6, 5 / 6)
++
++
+ def test_nixl_store_adapter_requires_l1_memory_desc():
+     config = NixlStoreL2AdapterConfig(
+         backend="AIS_MT",
