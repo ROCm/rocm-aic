@@ -1,0 +1,178 @@
+# Keep every in-flight store for a request, not just the latest
+#
+# LMCacheMPWorkerAdapter.submit_store_request() tracked one store future and
+# one producer event per request id, and overwrote both when a request
+# submitted another store before its previous one had completed (decode
+# crossing a chunk boundary, or a scheduler step while the server is behind).
+#
+# The overwritten event was the last reference to it, so it was destroyed while
+# the server still held its IPC handle.  On HIP an IPC event handle is only
+# importable while the exporting event is alive; importing it afterwards fails
+# with hipErrorInvalidValue, and patch 11 then skips the store ("Event.
+# from_ipc_handle failed; skipping store ...").  Reproduced on MI355X with a
+# two-process probe: a live handle imports (twice, too); the same handle after
+# the producer drops its event fails every time.  So these failures are an
+# event-lifetime bug, not the platform bug patch 11's message assumes.
+#
+# Overwriting also let get_finished() report the request's stores finished
+# once the *latest* future completed, while an earlier store could still be
+# reading the request's KV blocks.
+#
+# What kept stores pending long enough to be overwritten was the server stall
+# fixed by patch 17: on a 256-request burst, the stock image skipped 130 stores
+# this way without ever entering degraded mode.  With patch 17 the gate's load
+# no longer reaches this path, but any store that is still pending at the
+# request's next submit re-exposes it.
+#
+# Fix: group a request's store futures (_StoreFutureGroup completes when all
+# of them have, and fails if any failed) and keep every producer event until
+# the request's stores are finished.
+#
+# Applies after patches 01-15.
+diff --git a/lmcache/integration/vllm/vllm_multi_process_adapter.py b/lmcache/integration/vllm/vllm_multi_process_adapter.py
+index b319784..d8a8909 100644
+--- a/lmcache/integration/vllm/vllm_multi_process_adapter.py
++++ b/lmcache/integration/vllm/vllm_multi_process_adapter.py
+@@ -187,6 +187,35 @@ class _IpcEvent(Protocol):
+     def wait(self, stream: Any = None) -> None: ...
+ 
+ 
++class _StoreFutureGroup:
++    """Every in-flight store future for one request, completing as a unit.
++
++    A request can submit another store (e.g. decode crossing a chunk
++    boundary) before its previous one has completed.  Each store must stay
++    tracked until it finishes: dropping the earlier future also drops the
++    only reference to its producer event, and destroying an exported event
++    invalidates its IPC handle before the server has imported it (HIP
++    reports ``hipErrorInvalidValue`` and the server skips the store).  The
++    request must also not be reported finished while an earlier store is
++    still reading its blocks.
++    """
++
++    def __init__(self, *futures: MessagingFuture["StoreResult"]) -> None:
++        self._futures = list(futures)
++
++    def add(self, future: MessagingFuture["StoreResult"]) -> None:
++        self._futures.append(future)
++
++    def query(self) -> bool:
++        return all(f.query() for f in self._futures)
++
++    def wait(self, timeout: float | None = None) -> bool:
++        return all([f.wait(timeout) for f in self._futures])
++
++    def result(self, timeout: float | None = None) -> "StoreResult":
++        return all([f.result(timeout=timeout) for f in self._futures])
++
++
+ @dataclass
+ class _LookupAck:
+     """LOOKUP requests whose server acknowledgement has not been observed yet.
+@@ -1275,14 +1304,17 @@ class LMCacheMPWorkerAdapter:
+         self.transfer_ctx: TransferContext | None = None
+ 
+         # Request futures
+-        self.store_futures: dict[str, MessagingFuture[StoreResult]] = {}
++        self.store_futures: dict[
++            str, MessagingFuture[StoreResult] | _StoreFutureGroup
++        ] = {}
+         # request_id -> (future, block_ids)
+         self.retrieve_futures: dict[
+             str, tuple[MessagingFuture[RetrieveResult], list[int]]
+         ] = {}
+         # The IPC handle is not enough by itself; CUDA needs the exporting
+         # event object to stay alive until the consumer is done with it.
+-        self.store_events: dict[str, _IpcEvent] = {}
++        # A request may have several stores in flight, so keep every event.
++        self.store_events: dict[str, list[_IpcEvent]] = {}
+         self.retrieve_events: dict[str, _IpcEvent] = {}
+ 
+         # Block IDs that failed due to retrieve timeout
+@@ -1643,9 +1675,17 @@ class LMCacheMPWorkerAdapter:
+             event,
+             self.blocks_in_chunk,
+         )
+-        self.store_futures[request_id] = future
++        # Track, never replace, a store still in flight for this request: see
++        # _StoreFutureGroup.
++        pending = self.store_futures.get(request_id)
++        if pending is None:
++            self.store_futures[request_id] = future
++        elif isinstance(pending, _StoreFutureGroup):
++            pending.add(future)
++        else:
++            self.store_futures[request_id] = _StoreFutureGroup(pending, future)
+         if event is not None:
+-            self.store_events[request_id] = event
++            self.store_events.setdefault(request_id, []).append(event)
+ 
+     @_lmcache_nvtx_annotate
+     def submit_retrieve_request(
+diff --git a/tests/v1/test_vllm_mp_adapter.py b/tests/v1/test_vllm_mp_adapter.py
+index d7ec75b..754fb29 100644
+--- a/tests/v1/test_vllm_mp_adapter.py
++++ b/tests/v1/test_vllm_mp_adapter.py
+@@ -570,6 +570,62 @@ def test_store_keeps_event_until_future_finishes(fake_adapter):
+     assert event_ref() is None
+ 
+ 
++def test_second_store_keeps_first_store_pending(fake_adapter):
++    """A request's second store must not drop its first, still-pending one.
++
++    Dropping it destroyed the first store's exported event before the server
++    imported it (HIP: hipErrorInvalidValue, store skipped), and let the
++    request finish while the first store was still reading its blocks.
++    """
++    adapter, _send_mock, _future = fake_adapter
++    first_future = MagicMock(name="first_future")
++    second_future = MagicMock(name="second_future")
++    first_future.query.return_value = False
++    second_future.query.return_value = True
++    first_future.result.return_value = True
++    second_future.result.return_value = True
++    transfer_ctx = MagicMock()
++    transfer_ctx.submit_store.side_effect = [first_future, second_future]
++    adapter.transfer_ctx = transfer_ctx
++
++    first_event = FakeCudaEvent()
++    first_ref = weakref.ref(first_event)
++    op = LoadStoreOp(token_ids=[1, 2], block_ids=[[7]], start=0, end=2)
++    adapter.submit_store_request("req-1", op, first_event)
++    adapter.submit_store_request("req-1", op, FakeCudaEvent())
++    transfer_ctx.reset_mock()  # its call record also holds the events
++    del first_event
++    gc.collect()
++    assert first_ref() is not None
++
++    finished_stores, _ = adapter.get_finished({"req-1"})
++    assert finished_stores == set()
++    assert first_ref() is not None
++
++    first_future.query.return_value = True
++    finished_stores, _ = adapter.get_finished(set())
++    assert finished_stores == {"req-1"}
++    assert "req-1" not in adapter.store_events
++    gc.collect()
++    assert first_ref() is None
++
++
++def test_failed_earlier_store_fails_the_request(fake_adapter):
++    adapter, _send_mock, _future = fake_adapter
++    futures = [MagicMock(name="f0"), MagicMock(name="f1")]
++    for f, ok in zip(futures, (False, True), strict=True):
++        f.query.return_value = True
++        f.result.return_value = ok
++    transfer_ctx = MagicMock()
++    transfer_ctx.submit_store.side_effect = futures
++    adapter.transfer_ctx = transfer_ctx
++    op = LoadStoreOp(token_ids=[1, 2], block_ids=[[7]], start=0, end=2)
++    adapter.submit_store_request("req-1", op, FakeCudaEvent())
++    adapter.submit_store_request("req-1", op, FakeCudaEvent())
++
++    assert adapter.store_futures["req-1"].result() is False
++
++
+ def test_retrieve_keeps_event_until_future_finishes(fake_adapter):
+     """Retrieve requests keep the exported CUDA event alive while pending."""
+     adapter, _send_mock, _future = fake_adapter
