@@ -617,15 +617,14 @@ if [ "${POOL_GROWTH}" -gt 0 ] && [ "${POOL_ALLOC_GROWTH}" -lt $(( POOL_GROWTH / 
 fi
 
 # --- read path during the scored pass ----------------------------------------
-# The gate above proves KV went OUT to L2.  Nothing proved anything came BACK
-# until phase 5, and phase 5 only covers the post-restart re-score -- so the
-# scored pass whose number test_tiered_matches_baseline actually compares had
-# its read path entirely unchecked.  A tiered arm that stored diligently and
-# served nothing would satisfy every existing assertion.
-#
-# 5-shot gsm8k puts the same prefix in front of all 1319 items, so a tier that
-# was never consulted, or was consulted and answered nothing, is a real finding
-# rather than a plausible configuration.
+# The gate above proves KV went OUT to L2.  Here the scored pass must at least
+# have consulted the tier; a tier that was never asked is a real finding.  One
+# that was asked and served nothing is not: lm_eval samples gsm8k's five shots per item, so
+# items share almost no prefix (vLLM's own prefix-cache hit rate is ~1%), and
+# whatever does repeat is served from VRAM first -- at 0.15 utilisation an
+# MI355X holds ~3.3M KV tokens, more than the scored pass's ~1.3M.  A zero hit
+# count is therefore the expected reading, and the read path is asserted where
+# it is actually exercised: phase 5, after the restart empties VRAM.
 LOOKUP_REQ=$(( $(_lmc lmcache_mp_lookup_requested_tokens_total) - LOOKUP_REQ_BEFORE ))
 LOOKUP_HIT=$(( $(_lmc lmcache_mp_lookup_hit_tokens_total) - LOOKUP_HIT_BEFORE ))
 HIT_PCT=0
@@ -640,16 +639,10 @@ if [ "${rc}" = "0" ] && [ "${LOOKUP_REQ}" -le 0 ]; then
     echo "[accuracy-test]   lmcache_mp_lookup_requested_tokens_total was renamed:" >&2
     echo "[accuracy-test]   see ${AIC_LOG_DIR}/lmcache-metrics-phase3.prom" >&2
     rc=1
-elif [ "${rc}" = "0" ] && [ "${LOOKUP_HIT}" -le 0 ]; then
-    echo "[accuracy-test] FAIL Phase 3: ${LOOKUP_REQ} tokens looked up, zero served." >&2
-    echo "[accuracy-test]   Every prompt was recomputed, so the scored pass exercised the" >&2
-    echo "[accuracy-test]   store path only." >&2
-    rc=1
 fi
 
-# Coverage floor, off by default.  The gates above are liveness -- one served
-# token passes them -- and the honest fix is a floor on the fraction of the
-# scored pass the tier actually carried.  No number is hardcoded because none
+# Coverage floor, off by default: a floor on the fraction of the scored pass
+# the tier actually carried.  No number is hardcoded because none
 # has been measured on this model and L1 size, and README.md's rule for
 # expected.json applies just as well here: a guessed threshold either never
 # fires or fires spuriously, and both are worse than none.  Set this once a few
