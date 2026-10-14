@@ -174,7 +174,7 @@ ARG BUILD_JOBS=
 RUN --mount=type=cache,target=/root/.cache/ccache \
     cd /app/pytorch && \
     python3 tools/amd_build/build_amd.py && \
-    CCACHE_DIR=/root/.cache/ccache \
+    CCACHE_DIR=/root/.cache/ccache CCACHE_MAXSIZE=25G \
     CMAKE_C_COMPILER_LAUNCHER=ccache \
     CMAKE_CXX_COMPILER_LAUNCHER=ccache \
     MAX_JOBS="${BUILD_JOBS:-$(nproc)}" \
@@ -211,7 +211,7 @@ RUN --mount=type=cache,target=/root/.cache/pip \
     cd /app/vision && \
     USE_ROCM=1 USE_CUDA=0 \
     PYTORCH_ROCM_ARCH="${ROCM_ARCH}" \
-    CCACHE_DIR=/root/.cache/ccache \
+    CCACHE_DIR=/root/.cache/ccache CCACHE_MAXSIZE=25G \
     CMAKE_C_COMPILER_LAUNCHER=ccache \
     CMAKE_CXX_COMPILER_LAUNCHER=ccache \
     MAX_JOBS="${BUILD_JOBS:-$(nproc)}" \

@@ -119,7 +119,7 @@ RUN --mount=type=cache,target=/root/.cache/pip \
         PYTORCH_ROCM_ARCH="${ROCM_ARCH}" \
             TORCH_DONT_CHECK_COMPILER_ABI=1 \
             MAX_JOBS="${BUILD_JOBS:-$(nproc)}" \
-            CCACHE_DIR=/root/.cache/ccache \
+            CCACHE_DIR=/root/.cache/ccache CCACHE_MAXSIZE=25G \
             python3 setup.py bdist_wheel --dist-dir=/wheels && \
         pip3 install --no-cache-dir --no-deps /wheels/amd_aiter-*.whl && \
         python3 -c 'import importlib.util, pathlib; spec = importlib.util.find_spec("aiter"); assert spec and spec.submodule_search_locations; print("AITER installed:", next(iter(spec.submodule_search_locations)))'; \
@@ -144,7 +144,7 @@ RUN --mount=type=cache,target=/root/.cache/pip \
         GPU_ARCHS="${ROCM_ARCH}" \
             PYTORCH_ROCM_ARCH="${ROCM_ARCH}" \
             MAX_JOBS="${BUILD_JOBS:-$(nproc)}" \
-            CCACHE_DIR=/root/.cache/ccache \
+            CCACHE_DIR=/root/.cache/ccache CCACHE_MAXSIZE=25G \
             python3 setup.py bdist_wheel --dist-dir=/wheels && \
         pip3 install --no-cache-dir --no-deps /wheels/flash_attn-*.whl && \
         python3 -c 'import flash_attn; print("FlashAttention installed:", flash_attn.__file__)' && \
@@ -208,7 +208,7 @@ RUN --mount=type=cache,target=/root/.cache/pip \
         TORCH_DONT_CHECK_COMPILER_ABI=1 \
         MAX_JOBS="${BUILD_JOBS:-$(nproc)}" \
         CMAKE_BUILD_PARALLEL_LEVEL="${BUILD_JOBS:-$(nproc)}" \
-        CCACHE_DIR=/root/.cache/ccache \
+        CCACHE_DIR=/root/.cache/ccache CCACHE_MAXSIZE=25G \
         VLLM_VERSION_OVERRIDE="${VLLM_REF#v}+${VLLM_TARGET_DEVICE}" \
         pip3 wheel --no-build-isolation --no-deps --no-cache-dir -w /wheels . && \
     pip3 install --no-cache-dir /wheels/vllm-*.whl && \

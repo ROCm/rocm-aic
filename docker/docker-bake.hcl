@@ -126,15 +126,23 @@ variable "IMAGE_TAG" {
 # Layer cache sources/exports.  Registry ref wins over a per-arch local dir;
 # with neither set the cache is disabled.  Mirrors the backend precedence in
 # .slurm/run-build-distribute.sh.
+#
+# `name` gives every target its OWN local cache subdir
+# (<dir>/<arch>/<target>).  A single bake call builds all targets concurrently,
+# and vllm/lmcache share base's layers; pointing them at one shared dir makes
+# their cache *exports* race and fail with "ref ... locked ... unavailable".
+# Per-target dirs remove the contention (at the cost of storing base's layers
+# once per dependent).  Registry refs are content-addressed and handle
+# concurrent writers, so they stay on a single ref.
 function "cache_from" {
-  params = [arch]
+  params = [arch, name]
   result = AIC_CACHE_REF != "" ? ["type=registry,ref=${AIC_CACHE_REF}"] : (
-           AIC_CACHE_DIR != "" ? ["type=local,src=${AIC_CACHE_DIR}/${cache_arch_slug(arch)}"] : [])
+           AIC_CACHE_DIR != "" ? ["type=local,src=${AIC_CACHE_DIR}/${cache_arch_slug(arch)}/${name}"] : [])
 }
 function "cache_to" {
-  params = [arch]
+  params = [arch, name]
   result = AIC_CACHE_REF != "" ? ["type=registry,ref=${AIC_CACHE_REF},mode=${AIC_CACHE_MODE}"] : (
-           AIC_CACHE_DIR != "" ? ["type=local,dest=${AIC_CACHE_DIR}/${cache_arch_slug(arch)},mode=${AIC_CACHE_MODE},ignore-error=true"] : [])
+           AIC_CACHE_DIR != "" ? ["type=local,dest=${AIC_CACHE_DIR}/${cache_arch_slug(arch)}/${name},mode=${AIC_CACHE_MODE},ignore-error=true"] : [])
 }
 
 # Corporate CA secret, only when TLS_CERT is set.
@@ -178,8 +186,8 @@ target "base" {
     # Busts the arch-specific ROCm BLAS install layer on every build.
     BLAS_CACHE_BUST     = timestamp()
   }
-  cache-from = cache_from(ROCM_ARCH)
-  cache-to   = cache_to(ROCM_ARCH)
+  cache-from = cache_from(ROCM_ARCH, "base")
+  cache-to   = cache_to(ROCM_ARCH, "base")
   secret     = tls_secret()
 }
 
@@ -204,8 +212,8 @@ target "vllm" {
     LLM_EMU_REF        = LLM_EMU_REF
     LMCACHE_REF        = LMCACHE_REF
   }
-  cache-from = cache_from(ROCM_ARCH)
-  cache-to   = cache_to(ROCM_ARCH)
+  cache-from = cache_from(ROCM_ARCH, "vllm")
+  cache-to   = cache_to(ROCM_ARCH, "vllm")
   secret     = tls_secret()
 }
 
@@ -227,8 +235,8 @@ target "lmcache" {
     FLASH_ATTN_REF  = FLASH_ATTN_REF
     HSA_SNOOP_REF   = HSA_SNOOP_REF
   }
-  cache-from = cache_from(ROCM_ARCH)
-  cache-to   = cache_to(ROCM_ARCH)
+  cache-from = cache_from(ROCM_ARCH, "lmcache")
+  cache-to   = cache_to(ROCM_ARCH, "lmcache")
   secret     = tls_secret()
 }
 
@@ -242,8 +250,8 @@ target "hsa-snoop" {
     HSA_SNOOP_GIT_URL = HSA_SNOOP_GIT_URL
     HSA_SNOOP_REF    = HSA_SNOOP_REF
   }
-  cache-from = cache_from(ROCM_ARCH)
-  cache-to   = cache_to(ROCM_ARCH)
+  cache-from = cache_from(ROCM_ARCH, "hsa-snoop")
+  cache-to   = cache_to(ROCM_ARCH, "hsa-snoop")
   secret     = tls_secret()
 }
 
