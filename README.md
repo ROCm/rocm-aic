@@ -8,7 +8,7 @@
 [![vLLM](https://img.shields.io/badge/vLLM-v0.29.0-blue.svg)](https://github.com/vllm-project/vllm)
 [![LMCache](https://img.shields.io/badge/LMCache-v0.5.5-blue.svg)](https://github.com/LMCache/LMCache)
 [![NIXL](https://img.shields.io/badge/NIXL-v1.4.1-blue.svg)](https://github.com/ai-dynamo/nixl)
-[![hsa-snoop](https://img.shields.io/badge/hsa--snoop-v1.1.1-blue.svg)](https://github.com/sbates130272/hsa-snoop)
+[![hsa-snoop](https://img.shields.io/badge/hsa--snoop-v1.2.0-blue.svg)](https://github.com/sbates130272/hsa-snoop)
 [![rocjitsu](https://img.shields.io/badge/rocjitsu-f2d13fb-red.svg)](https://github.com/sbates130272/batesste-ci-images/tree/main/ubuntu-rocm-rocjitsu)
 [![qemu-vfu](https://img.shields.io/badge/qemu--vfu-d757fa6-red.svg)](https://github.com/sbates130272/batesste-ci-images/tree/main/ubuntu-qemu-libvfio-user)
 [![rocjitsu-guest](https://img.shields.io/badge/guest-resolute%2F54cc234-red.svg)](https://github.com/sbates130272/batesste-ci-images/tree/main/ubuntu-qcow2-gen)
@@ -54,7 +54,7 @@ platform.
 | FlashAttention | `Dao-AILab/flash-attention` (source build) | `0e60e394` (vLLM ROCm-validated) |
 | LMCache | `LMCache/LMCache` (upstream) | `v0.5.5` + 17 AMD patches |
 | NIXL | `ai-dynamo/nixl` (upstream) | `v1.4.1` + `nixl-rocm-ais-mt.patch` |
-| hsa-snoop | `sbates130272/hsa-snoop` (source build) | `v1.1.1` |
+| hsa-snoop | `sbates130272/hsa-snoop` (source build) | `v1.2.0` |
 | hipFile | ROCm 7.14 base image | GA in ROCm 7.14 — no separate source build |
 
 ## Pip Nightly Wheels

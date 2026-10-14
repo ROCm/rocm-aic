@@ -28,43 +28,20 @@ ensure-compose:
 		echo "installed: $$(docker compose version --short 2>/dev/null)"; \
 	fi
 
-# Three-stage build: aic-base (torch + torchvision), then aic-vllm and
-# aic-lmcache, which both sit on top of it.  Each Dockerfile declares a fallback
-# `base` stage (FROM $ROCM_BASE_IMAGE); supplying a `base` build-context is what
-# makes vllm/lmcache inherit the torch-bearing aic-base instead.  Without it they
-# build green against the raw ROCm image and ship without torch.
-#
-# The docker-container buildx driver is isolated from the host daemon, so a
-# docker-image:// build-context cannot see a locally built aic-base.  Export the
-# base in OCI layout and hand it over as oci-layout:// — the same approach
-# .slurm/run-build-distribute.sh uses for the distributed build.
+# Build aic-base, then aic-vllm + aic-lmcache (which sit on top of it) and the
+# aic-hsa-snoop sidecar, in one `docker buildx bake` pass.  The build graph lives
+# in docker/docker-bake.hcl: bake's `base = "target:base"` build-context wires the
+# in-session aic-base into vllm/lmcache directly, so the old per-stage buildx
+# calls + OCI-layout export/untar handoff (needed to cross the docker-container
+# builder's daemon isolation) are gone.  Version pins, the image tag and the
+# cache/secret wiring all live in the HCL; the Makefile only forwards env.
 BUILD_PROGRESS ?= auto
-
-_BUILD_ARGS := \
-	--build-arg ROCM_ARCH="$(ROCM_ARCH)" \
-	--build-arg BUILD_JOBS="$(BUILD_JOBS)" \
-	--build-arg AIC_UCX_FAST="$(AIC_UCX_FAST)" \
-	--build-arg BLAS_CACHE_BUST="$(shell date +%Y%m%d%H%M)" \
-	$(foreach _v,$(_FRAMEWORK_ARGS),$(if $(value $(_v)),--build-arg $(_v)="$(value $(_v))")) \
-	$(if $(TLS_CERT),--secret id=tls_cert$(comma)src=$(TLS_CERT),)
-
-# Layer cache is opt-in: empty AIC_CACHE_DIR means no --cache-from/--cache-to.
-# ignore-error=true so a cache-export failure never fails the build.
-_CACHE_DIR  = $(if $(strip $(AIC_CACHE_DIR)),$(AIC_CACHE_DIR)/$(_ARCH_SLUG),)
-_CACHE_ARGS = $(if $(strip $(AIC_CACHE_DIR)),\
-	--cache-from type=local$(comma)src="$(_CACHE_DIR)" \
-	--cache-to type=local$(comma)dest="$(_CACHE_DIR)"$(comma)mode=$(AIC_CACHE_MODE)$(comma)ignore-error=true,)
 
 # Prefix for every buildx invocation: see AIC_BUILD_NO_PROXY in the top Makefile.
 # Appends to an existing NO_PROXY rather than replacing it.
 _NO_PROXY_ENV = $(if $(strip $(AIC_BUILD_NO_PROXY)),\
 	NO_PROXY="$${NO_PROXY:+$${NO_PROXY}$(comma)}$(AIC_BUILD_NO_PROXY)" \
 	no_proxy="$${no_proxy:+$${no_proxy}$(comma)}$(AIC_BUILD_NO_PROXY)",)
-
-# Base image OCI layout staging area.  Multi-GB — keep it off a small /tmp tmpfs
-# by pointing TMPDIR at a real filesystem.
-_OCI_TAR = $${TMPDIR:-/tmp}/aic-base-oci.$(IMAGE_TAG).tar
-_OCI_DIR = $${TMPDIR:-/tmp}/aic-base-oci.$(IMAGE_TAG).d
 
 build:
 	@test -n "$(ROCM_ARCH)" || { \
@@ -77,65 +54,24 @@ build:
 			--bootstrap; \
 	fi
 	@if [ -n "$(strip $(AIC_CACHE_DIR))" ]; then \
-		mkdir -p "$(_CACHE_DIR)"; \
-		echo "Layer cache: $(_CACHE_DIR) (mode $(AIC_CACHE_MODE))"; \
+		mkdir -p "$(AIC_CACHE_DIR)/$(_ARCH_SLUG)"; \
+		echo "Layer cache: $(AIC_CACHE_DIR)/$(_ARCH_SLUG) (mode $(AIC_CACHE_MODE))"; \
 	else \
 		echo "Layer cache: disabled (set AIC_CACHE_DIR to enable)"; \
 	fi
-	@rm -rf "$(_OCI_TAR)" "$(_OCI_DIR)"
-	@echo "--- build [1/4]: aic-base:$(IMAGE_TAG) (ROCM_ARCH=$(ROCM_ARCH)) ---"
-	$(_NO_PROXY_ENV) docker buildx build \
+	@echo "--- build: aic-base/vllm/lmcache/hsa-snoop:$(IMAGE_TAG) (ROCM_ARCH=$(ROCM_ARCH)) ---"
+	$(_NO_PROXY_ENV) \
+	    ROCM_ARCH="$(ROCM_ARCH)" BUILD_JOBS="$(BUILD_JOBS)" AIC_UCX_FAST="$(AIC_UCX_FAST)" \
+	    AIC_VERSION="$(AIC_VERSION)" \
+	    AIC_CACHE_DIR="$(AIC_CACHE_DIR)" AIC_CACHE_MODE="$(AIC_CACHE_MODE)" \
+	    $(if $(strip $(TLS_CERT)),TLS_CERT="$(TLS_CERT)",) \
+	    docker buildx bake \
 		--builder $(AIC_BUILDX_BUILDER) \
 		--progress=$(BUILD_PROGRESS) \
 		--load \
-		--output type=oci$(comma)dest="$(_OCI_TAR)" \
-		$(_BUILD_ARGS) \
-		$(_CACHE_ARGS) \
-		-f "$(REPO_ROOT)/docker/base/Dockerfile" \
-		-t "aic-base:$(IMAGE_TAG)" \
-		"$(REPO_ROOT)"
-	@mkdir -p "$(_OCI_DIR)"
-	@tar -xf "$(_OCI_TAR)" -C "$(_OCI_DIR)"
-	@rm -f "$(_OCI_TAR)"
-	@echo "--- build [2/4]: $(VLLM_IMAGE_REF) ---"
-	$(_NO_PROXY_ENV) docker buildx build \
-		--builder $(AIC_BUILDX_BUILDER) \
-		--progress=$(BUILD_PROGRESS) \
-		--load \
-		$(_BUILD_ARGS) \
-		$(_CACHE_ARGS) \
-		--build-context base="oci-layout://$(_OCI_DIR)" \
-		-f "$(REPO_ROOT)/docker/vllm/Dockerfile" \
-		-t "$(VLLM_IMAGE_REF)" \
-		"$(REPO_ROOT)"
-	@docker tag "$(VLLM_IMAGE_REF)" "$(VLLM_IMAGE_NAME):latest"
-	@echo "Built $(VLLM_IMAGE_REF) (also tagged $(VLLM_IMAGE_NAME):latest)"
-	@echo "--- build [3/4]: $(LMCACHE_IMAGE_REF) ---"
-	$(_NO_PROXY_ENV) docker buildx build \
-		--builder $(AIC_BUILDX_BUILDER) \
-		--progress=$(BUILD_PROGRESS) \
-		--load \
-		$(_BUILD_ARGS) \
-		$(_CACHE_ARGS) \
-		--build-context base="oci-layout://$(_OCI_DIR)" \
-		-f "$(REPO_ROOT)/docker/lmcache/Dockerfile" \
-		-t "$(LMCACHE_IMAGE_REF)" \
-		"$(REPO_ROOT)"
-	@docker tag "$(LMCACHE_IMAGE_REF)" "$(LMCACHE_IMAGE_NAME):latest"
-	@echo "Built $(LMCACHE_IMAGE_REF) (also tagged $(LMCACHE_IMAGE_NAME):latest)"
-	@rm -rf "$(_OCI_DIR)"
-	@echo "--- build [4/4]: $(HSA_SNOOP_IMAGE_REF) ---"
-	$(_NO_PROXY_ENV) docker buildx build \
-		--builder $(AIC_BUILDX_BUILDER) \
-		--progress=$(BUILD_PROGRESS) \
-		--load \
-		$(_BUILD_ARGS) \
-		$(_CACHE_ARGS) \
-		-f "$(REPO_ROOT)/docker/hsa-snoop/Dockerfile" \
-		-t "$(HSA_SNOOP_IMAGE_REF)" \
-		"$(REPO_ROOT)"
-	@docker tag "$(HSA_SNOOP_IMAGE_REF)" "$(HSA_SNOOP_IMAGE_NAME):latest"
-	@echo "Built $(HSA_SNOOP_IMAGE_REF) (also tagged $(HSA_SNOOP_IMAGE_NAME):latest)"
+		-f "$(REPO_ROOT)/docker/docker-bake.hcl" \
+		default
+	@echo "Built aic-base/aic-vllm/aic-lmcache/aic-hsa-snoop:$(IMAGE_TAG) (vllm/lmcache/hsa-snoop also tagged :latest)"
 
 up: ensure-compose check-hf-token prep-dirs
 	@mkdir -p "$(AIC_METRICS_DIR)"

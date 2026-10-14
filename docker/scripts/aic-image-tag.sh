@@ -3,121 +3,41 @@
 #
 # SPDX-License-Identifier: MIT
 #
-# Derive the AIC image tag from framework version build args, falling back to
-# the versions pinned in the split Dockerfiles.
+# Emit the AIC image tag (no image name), e.g.
+#   CDNA (gfx9xx):  0.1.0-rocm7.14.1-pytorch2.13-vllm0.29.0-aiter0.1.22.post1-fa2.8.3.post1-lmcache0.5.5-nixl1.4.1-hsasnoop1.2.0-gfx942
+#   RDNA (gfx12xx): 0.1.0-rocm7.14.1-pytorch2.13-vllm0.29.0-aiter0.1.22.post1-lmcache0.5.5-nixl1.4.1-hsasnoop1.2.0-gfx1250
 #
-# Emits just the tag component (no image name) in the following format:
-#   CDNA (gfx9xx):  0.1.0-rocm7.14.1-pytorch2.13-vllm0.29.0-aiter0.1.22.post1-fa2.8.3.post1-lmcache0.5.5-nixl1.4.1-hsasnoop1.1.1-gfx942
-#   RDNA (gfx12xx): 0.1.0-rocm7.14.1-pytorch2.13-vllm0.29.0-aiter0.1.22.post1-lmcache0.5.5-nixl1.4.1-hsasnoop1.1.1-gfx1250
-#   multi-arch:     ...-hsasnoop1.1.1-gfx90a-942-950
-# FlashAttention is omitted for non-CDNA arches (gfx10xx/gfx11xx/gfx12xx) because
-# the CK backend does not support RDNA Wave32 GPUs.
-# Where 0.1.0 represents the AIC version.
+# The tag is now derived in docker/docker-bake.hcl (the single source of truth
+# for version pins and tag format).  This script is a thin wrapper that asks bake
+# to resolve the `base` target and strips the image name off its tag, so every
+# existing caller keeps working unchanged.
 #
-# The trailing arch suffix comes from ROCM_ARCH (`;`-separated, `,` and spaces
-# also accepted).  It is omitted when ROCM_ARCH is unset, and collapses to
-# gfxm<sha1-8> if a long arch list would exceed Docker's 128-character tag
-# limit.
+# Overrides still work exactly as before: a same-named environment variable
+# (ROCM_ARCH, ROCM_VERSION, PYTORCH_SERIES, VLLM_REF, AITER_REF, FLASH_ATTN_REF,
+# LMCACHE_REF, NIXL_REF, HSA_SNOOP_REF, ...) overrides the HCL default because
+# bake reads variables from the environment.
 #
 # Usage:  aic-image-tag.sh
-#         aic-image-tag.sh [path/to/base/Dockerfile] [path/to/vllm/Dockerfile] [path/to/lmcache/Dockerfile]
+#         aic-image-tag.sh [...]   # trailing args accepted for back-compat, ignored
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
+BAKE_FILE="${REPO_ROOT}/docker/docker-bake.hcl"
 
-BASE_DOCKERFILE="${1:-${SCRIPT_DIR}/../base/Dockerfile}"
-VLLM_DOCKERFILE="${2:-${SCRIPT_DIR}/../vllm/Dockerfile}"
-LMCACHE_DOCKERFILE="${3:-${SCRIPT_DIR}/../lmcache/Dockerfile}"
-VERSION_FILE="${REPO_ROOT}/VERSION"
+[[ -r "${BAKE_FILE}" ]] || { echo "aic-image-tag: cannot read ${BAKE_FILE}" >&2; exit 1; }
 
-for f in "${BASE_DOCKERFILE}" "${VLLM_DOCKERFILE}" "${LMCACHE_DOCKERFILE}" "${VERSION_FILE}"; do
-  [[ -r "${f}" ]] || { echo "aic-image-tag: cannot read ${f}" >&2; exit 1; }
-done
-
-aic="$(<"${VERSION_FILE}")"
-
-# A same-named environment variable represents a user-provided build-arg
-# override.  Honour even an explicitly empty override so validation below fails
-# instead of silently producing a tag for the Dockerfile default.
-# Probe the correct Dockerfile for each ARG.
-_arg() {
-  local name="$1" dockerfile="$2"
-  if [[ -v "${name}" ]]; then
-    printf '%s\n' "${!name}"
-  else
-    grep -E "^ARG ${name}=" "${dockerfile}" | head -1 | cut -d= -f2-
-  fi
-}
-
-rocm="$(_arg ROCM_VERSION "${BASE_DOCKERFILE}")"
-
-# PYTORCH_SERIES is the human-readable torch series (e.g. 2.13) carried in the
-# tag; PYTORCH_REF is the immutable commit actually built.  Fall back to
-# deriving the series from PYTORCH_REF so an older tree without PYTORCH_SERIES,
-# or an override pinning a release/X.Y branch, still tags sensibly.
-pytorch="$(_arg PYTORCH_SERIES "${BASE_DOCKERFILE}")"
-if [[ -z "${pytorch}" ]]; then
-  pytorch_raw="$(_arg PYTORCH_REF "${BASE_DOCKERFILE}")"
-  if [[ "${pytorch_raw}" =~ release/([0-9]+\.[0-9]+) ]]; then
-    pytorch="${BASH_REMATCH[1]}"
-  else
-    pytorch="${pytorch_raw:0:7}"
-  fi
+# VERSION owns AIC_VERSION; forward it so a bumped VERSION is reflected without
+# editing the HCL default.  An explicit AIC_VERSION in the environment still wins.
+if [[ -z "${AIC_VERSION:-}" && -r "${REPO_ROOT}/VERSION" ]]; then
+  AIC_VERSION="$(<"${REPO_ROOT}/VERSION")"
+  export AIC_VERSION
 fi
 
-# Refs are git tags like v0.29.0 so we drop the leading v.
-vllm="$(_arg VLLM_REF "${VLLM_DOCKERFILE}" | sed 's/^v//')"
-lmcache="$(_arg LMCACHE_REF "${LMCACHE_DOCKERFILE}" | sed 's/^v//')"
-nixl="$(_arg NIXL_REF "${LMCACHE_DOCKERFILE}" | sed 's/^v//')"
-aiter="$(_arg AITER_REF "${LMCACHE_DOCKERFILE}" | sed 's/^v//')"
-flash_attn="$(_arg FLASH_ATTN_REF "${LMCACHE_DOCKERFILE}" | sed 's/^v//')"
-hsasnoop="$(_arg HSA_SNOOP_REF "${LMCACHE_DOCKERFILE}" | sed 's/^v//')"
+tag="$(
+  docker buildx bake -f "${BAKE_FILE}" base --print 2>/dev/null \
+    | python3 -c 'import json,sys; print(json.load(sys.stdin)["target"]["base"]["tags"][0].split(":", 1)[1])'
+)"
 
-# FlashAttention is CDNA-only (gfx9xx). Detect from ROCM_ARCH env (set by make/caller)
-# or fall back to including fa in the tag when arch is unknown (conservative default).
-_cdna_only() {
-  local a
-  for a in $(echo "$1" | tr ';' '\n'); do
-    [[ "$a" == gfx9* ]] || return 1
-  done
-  return 0
-}
-if [[ -n "${ROCM_ARCH:-}" ]] && ! _cdna_only "${ROCM_ARCH}"; then
-  include_fa=0
-else
-  include_fa=1
-fi
-
-for _v in aic rocm pytorch vllm aiter lmcache nixl hsasnoop; do
-  [[ -n "${!_v}" ]] || {
-    echo "aic-image-tag: could not resolve ${_v}" >&2
-    exit 1
-  }
-done
-[[ "${include_fa}" -eq 1 ]] && [[ -z "${flash_attn}" ]] && {
-  echo "aic-image-tag: could not resolve flash_attn" >&2
-  exit 1
-}
-
-tag="${aic}-rocm${rocm}-pytorch${pytorch}-vllm${vllm}-aiter${aiter}"
-[[ "${include_fa}" -eq 1 ]] && tag="${tag}-fa${flash_attn}"
-tag="${tag}-lmcache${lmcache}-nixl${nixl}-hsasnoop${hsasnoop}"
-
-# The GPU arch is part of the image identity: the same framework versions
-# compiled for a different arch are a different image.  Without this they
-# collide on one tag, so a gfx1151 build silently satisfies a gfx1250 request
-# and the failure surfaces far from its cause.  The `gfx` prefix is emitted once
-# and stripped from the rest to stay inside Docker's 128-character tag limit.
-_arch_slug() {
-  printf '%s' "$1" | tr ';, ' '\n' | sed '/^$/d; s/^gfx//' | paste -sd- -
-}
-if [[ -n "${ROCM_ARCH:-}" ]]; then
-  _slug="gfx$(_arch_slug "${ROCM_ARCH}")"
-  # Fall back to a digest if a long multi-arch list would overflow the limit.
-  if (( ${#tag} + ${#_slug} + 1 > 128 )); then
-    _slug="gfxm$(printf '%s' "${ROCM_ARCH}" | sha1sum | cut -c1-8)"
-  fi
-  tag="${tag}-${_slug}"
-fi
+[[ -n "${tag}" ]] || { echo "aic-image-tag: bake --print produced no tag" >&2; exit 1; }
 printf '%s\n' "${tag}"

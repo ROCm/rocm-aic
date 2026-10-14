@@ -176,7 +176,7 @@ ARG NIXL_REF=v1.4.1
 # ARGs carried for the README version-sync check only.
 ARG AITER_REF=v0.1.22.post1
 ARG FLASH_ATTN_REF=v2.8.3.post1
-ARG HSA_SNOOP_REF=v1.1.1
+ARG HSA_SNOOP_REF=v1.2.0
 
 COPY patches/lmcache/ /app/patches/lmcache/
 COPY docker/lmcache/paged_cupy_memory_allocator.py \

@@ -20,7 +20,7 @@ ROCM_ARCH := $(if $(strip $(ROCM_ARCH)),$(strip $(ROCM_ARCH)),$(_ROCM_ARCH_DETEC
 # It is read from there and forwarded to all three image builds, so the vllm and
 # lmcache images cannot drift from the base they are built on.  Must be defined
 # before _FRAMEWORK_VERSION_ENV below, which bakes it into the image tag.
-# Simply-expanded (:=) on purpose: _FRAMEWORK_VERSION_ENV and _BUILD_ARGS use
+# Simply-expanded (:=) on purpose: _FRAMEWORK_VERSION_ENV uses
 # $(value ROCM_VERSION), which would otherwise hand on the literal $(shell ...)
 # text instead of the version string.
 ifeq ($(origin ROCM_VERSION),undefined)
@@ -319,7 +319,6 @@ help:
 	@echo "  make dist-build-base   Build aic-base image (PyTorch + torchvision)"
 	@echo "  make dist-build-vllm   Build aic-vllm image (requires aic-base)"
 	@echo "  make dist-build-lmcache  Build aic-lmcache image (requires aic-base)"
-	@echo "  make dist-build-parallel  Build base, then vllm + lmcache in parallel"
 	@echo "  make dist-build-exporters  Build ONLY the nvme/rdma exporter images (no main rebuild)"
 	@echo "  make dist-build-monitoring Pull + save Prometheus/amdgpu-exporter to AIC_IMAGE_DIR"
 	@echo "  make dist-push         Tag + push the built image (needs AIC_PUSH_REF)"
