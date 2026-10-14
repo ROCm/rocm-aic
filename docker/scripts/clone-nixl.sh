@@ -4,7 +4,22 @@
 # SPDX-License-Identifier: MIT
 #
 # Clone NIXL from the ai-dynamo upstream at a pinned ref for AIC image builds.
-set -euo pipefail
+# -E inherit ERR trap in functions and subshells,
+# -e exit the script upon commands failing,
+# -u to error if the script ever references a variable that is unset,
+# -o pipefail to error if any stage of a pipeline fails.
+set -Eeuo pipefail
+# errexit exits without saying where; report it.  Only the line number and
+# function call stack are printed, never the command text, which can carry
+# secret values.
+_on_err() {
+	# set -E carries this trap into $(...), where errexit is off.
+	[[ $- == *e* ]] || return 0
+	# || : so a failed write cannot replace the exit status.
+	printf '%s: command failed (exit %s, pipeline status %s) at line %s%s\n' \
+		"${0##*/}" "$1" "$2" "$3" "${4:+ in ${4// / <- }}" >&2 || :
+}
+trap '_on_err "$?" "${PIPESTATUS[*]}" "$LINENO" "${FUNCNAME[*]-}"' ERR
 
 : "${NIXL_GIT_URL:?NIXL_GIT_URL is required}"
 : "${NIXL_REF:?NIXL_REF is required}"
