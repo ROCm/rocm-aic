@@ -37,12 +37,6 @@ ensure-compose:
 # cache/secret wiring all live in the HCL; the Makefile only forwards env.
 BUILD_PROGRESS ?= auto
 
-# Prefix for every buildx invocation: see AIC_BUILD_NO_PROXY in the top Makefile.
-# Appends to an existing NO_PROXY rather than replacing it.
-_NO_PROXY_ENV = $(if $(strip $(AIC_BUILD_NO_PROXY)),\
-	NO_PROXY="$${NO_PROXY:+$${NO_PROXY}$(comma)}$(AIC_BUILD_NO_PROXY)" \
-	no_proxy="$${no_proxy:+$${no_proxy}$(comma)}$(AIC_BUILD_NO_PROXY)",)
-
 build:
 	@test -n "$(ROCM_ARCH)" || { \
 		echo "ERROR: ROCM_ARCH empty (install ROCm or set ROCM_ARCH=gfxNNNN)" >&2; exit 1; }
@@ -60,8 +54,7 @@ build:
 		echo "Layer cache: disabled (set AIC_CACHE_DIR to enable)"; \
 	fi
 	@echo "--- build: aic-base/vllm/lmcache/hsa-snoop:$(IMAGE_TAG) (ROCM_ARCH=$(ROCM_ARCH)) ---"
-	$(_NO_PROXY_ENV) \
-	    ROCM_ARCH="$(ROCM_ARCH)" BUILD_JOBS="$(BUILD_JOBS)" AIC_UCX_FAST="$(AIC_UCX_FAST)" \
+	ROCM_ARCH="$(ROCM_ARCH)" BUILD_JOBS="$(BUILD_JOBS)" AIC_UCX_FAST="$(AIC_UCX_FAST)" \
 	    AIC_VERSION="$(AIC_VERSION)" \
 	    AIC_CACHE_DIR="$(AIC_CACHE_DIR)" AIC_CACHE_MODE="$(AIC_CACHE_MODE)" \
 	    $(if $(strip $(TLS_CERT)),TLS_CERT="$(TLS_CERT)",) \

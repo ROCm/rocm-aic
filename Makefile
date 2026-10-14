@@ -123,16 +123,6 @@ BUILD_JOBS ?=
 export AIC_BUILDX_BUILDER ?= aic-local
 export AIC_CACHE_MODE     ?= max
 
-# Registry endpoints that must bypass a TLS-intercepting corporate proxy.
-# The docker CLI forwards the shell's HTTPS_PROXY into every build, and the
-# docker-container builder then pulls base images through it and fails with
-# "x509: certificate signed by unknown authority".  Reached directly these hosts
-# serve a valid public cert, so listing them in NO_PROXY fixes the pull.  The
-# value is appended to any NO_PROXY already in the environment; set it empty to
-# opt out.  Only registry hosts belong here — build steps still need the proxy
-# for pypi.org, github.com, repo.radeon.com and friends.
-AIC_BUILD_NO_PROXY ?= docker.io,.docker.io,.docker.com,auth.docker.io,registry-1.docker.io,index.docker.io,production.cloudflare.docker.com,repo.amd.com,.amd.com
-
 # Per-arch cache subdir slug; mirrors _arch_tag() in run-build-distribute.sh.
 # Recursive (=) on purpose: the SPUR block below may override ROCM_ARCH.
 empty :=
