@@ -221,7 +221,7 @@ compose() { docker compose -f "${AIC_DAY_DIR}/docker/docker-compose.yml" "$@"; }
 # from reaping vLLM's EngineCore children -> compose down/docker rm hang.  Force-
 # kill the stack first, then tear down.  Load-bearing; see cmd_tiny_test.
 _teardown() {
-    local tag="$1" svc c
+    local tag="$1" svc c out
     for svc in vllm lmcache; do
         # 'timeout' needs a real executable, and compose() is a shell function --
         # 'timeout 30 compose ...' fails with "No such file or directory" and
@@ -236,7 +236,12 @@ _teardown() {
     pkill -9 -f 'EngineCore'              2>/dev/null || true
     pkill -9 -f 'lmcache server'          2>/dev/null || true
     sleep 2
-    timeout 60 compose --profile cache down --remove-orphans --timeout 5 >/dev/null 2>&1 || true
+    # docker compose, not compose(): see the logs loop above.
+    if ! out="$(timeout 60 docker compose -f "${AIC_DAY_DIR}/docker/docker-compose.yml" \
+            --profile cache down --remove-orphans --timeout 5 2>&1)"; then
+        echo "[accuracy-test] WARN: compose down (${tag}) failed; containers may outlive the job:" >&2
+        printf '%s\n' "${out}" | tail -5 | sed 's/^/[accuracy-test]   /' >&2
+    fi
     for c in "${VLLM_CONTAINER}" aic-lmcache; do timeout 30 docker rm -f "$c" >/dev/null 2>&1 || true; done
 }
 # shellcheck disable=SC2317  # reached via the EXIT trap below, not inline
