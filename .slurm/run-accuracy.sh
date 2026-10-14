@@ -197,9 +197,24 @@ export VLM_MAX_MODEL_LEN=4096
 export VLM_MAX_NUM_BATCHED_TOKENS=4096
 export VLM_ATTENTION_BACKEND=TRITON_ATTN
 export VLM_KV_CACHE_DTYPE=auto
+# The containers run as root, so the slot files they leave are root-owned and a
+# plain rm from this shell cannot remove them.  Fall back to removing the pool
+# from inside a container, and report whatever survives.
+_rm_pool() {
+    local d="$1" out
+    [ -e "${d}" ] || return 0
+    rm -rf "${d}" 2>/dev/null
+    [ -e "${d}" ] || return 0
+    out="$(docker run --rm --network none -v "$(dirname "${d}"):/parent" \
+        --entrypoint rm "${AIC_LMCACHE_IMAGE}" -rf "/parent/$(basename "${d}")" 2>&1)"
+    [ -e "${d}" ] || return 0
+    echo "[accuracy-test] WARN: could not remove pool ${d}: ${out:-still present}" >&2
+    return 1
+}
+
 # Pre-clear our own namespace: a requeued job keeps its id, so without this a
 # retry would compute POOL_BEFORE against the killed attempt's slot files.
-rm -rf "${AIC_ACCURACY_POOL_ROOT}"
+_rm_pool "${AIC_ACCURACY_POOL_ROOT}" || true
 mkdir -p "${NVME_DATA}" "${NFS_DATA}" "${HF_HOME}"
 
 # Namespacing stops runs colliding but on its own it turns one reused directory
@@ -210,8 +225,8 @@ mkdir -p "${NVME_DATA}" "${NFS_DATA}" "${HF_HOME}"
 _reaped="$(find /tmp -maxdepth 1 -name 'aic-accuracy.*' -type d -mtime +0 2>/dev/null | wc -l)"
 if [ "${_reaped}" -gt 0 ]; then
     echo "[accuracy-test] reaping ${_reaped} abandoned accuracy pool(s) from /tmp"
-    find /tmp -maxdepth 1 -name 'aic-accuracy.*' -type d -mtime +0 \
-        -exec rm -rf {} + 2>&1 | sed 's/^/[accuracy-test]   reap: /' || true
+    find /tmp -maxdepth 1 -name 'aic-accuracy.*' -type d -mtime +0 -print 2>/dev/null \
+        | while read -r _pool; do _rm_pool "${_pool}" || true; done
 fi
 
 compose() { docker compose -f "${AIC_DAY_DIR}/docker/docker-compose.yml" "$@"; }
@@ -249,7 +264,7 @@ cleanup() {
     _teardown final
     # Best-effort only: this trap does not run on SIGKILL, which is why the pool
     # is namespaced and both pre-cleared and reaped above.
-    rm -rf "${AIC_ACCURACY_POOL_ROOT}" 2>/dev/null || true
+    _rm_pool "${AIC_ACCURACY_POOL_ROOT}" || true
 }
 trap cleanup EXIT
 
