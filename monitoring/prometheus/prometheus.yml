@@ -45,6 +45,13 @@ scrape_configs:
 
   - job_name: lmcache
     metrics_path: /metrics
+    # lmcache's /metrics thread shares the GIL with the KV store/retrieve workers,
+    # so under stress load (concurrency 8, multi-second stores) it blocks well past
+    # the global 10s timeout and every scrape fails -> panels go No Data. Give it a
+    # generous per-job timeout (restores commit 60cc7f4, lost when metrics moved to
+    # the dedicated :9091 port in 340e2a9). scrape_timeout must be <= scrape_interval.
+    scrape_interval: 30s
+    scrape_timeout: 25s
     static_configs:
       # lmcache serves /metrics on --prometheus-port (9091) via a dedicated thread,
       # independent of the main uvicorn server at :8080.

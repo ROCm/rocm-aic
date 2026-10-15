@@ -53,7 +53,7 @@ build:
 	else \
 		echo "Layer cache: disabled (set AIC_CACHE_DIR to enable)"; \
 	fi
-	@echo "--- build: aic-base/vllm/lmcache/hsa-snoop:$(IMAGE_TAG) (ROCM_ARCH=$(ROCM_ARCH)) ---"
+	@echo "--- build: aic-base/vllm/lmcache/hsa-snoop:$(IMAGE_TAG) + nvme/rdma-exporter:local (ROCM_ARCH=$(ROCM_ARCH)) ---"
 	BUILDX_BAKE_ENTITLEMENTS_FS=0 \
 	    ROCM_ARCH="$(ROCM_ARCH)" BUILD_JOBS="$(BUILD_JOBS)" AIC_UCX_FAST="$(AIC_UCX_FAST)" \
 	    AIC_VERSION="$(AIC_VERSION)" \
@@ -66,6 +66,7 @@ build:
 		-f "$(REPO_ROOT)/docker/docker-bake.hcl" \
 		default
 	@echo "Built aic-base/aic-vllm/aic-lmcache/aic-hsa-snoop:$(IMAGE_TAG) (vllm/lmcache/hsa-snoop also tagged :latest)"
+	@echo "Built aic-nvme-exporter:local, aic-rdma-exporter:local"
 
 up: ensure-compose check-hf-token prep-dirs
 	@mkdir -p "$(AIC_METRICS_DIR)"

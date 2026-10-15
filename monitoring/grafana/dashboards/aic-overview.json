@@ -32,6 +32,56 @@
         "x": 0,
         "y": 0
       },
+      "id": 436,
+      "panels": [],
+      "title": "Agent Conversations",
+      "type": "row"
+    },
+    {
+      "datasource": {
+        "type": "loki",
+        "uid": "loki"
+      },
+      "gridPos": {
+        "h": 12,
+        "w": 24,
+        "x": 0,
+        "y": 1
+      },
+      "id": 434,
+      "options": {
+        "dedupStrategy": "none",
+        "enableLogDetails": true,
+        "prettifyLogMessage": false,
+        "showCommonLabels": false,
+        "showLabels": false,
+        "showTime": true,
+        "sortOrder": "Descending",
+        "wrapLogMessage": true
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "loki",
+            "uid": "loki"
+          },
+          "editorMode": "code",
+          "expr": "{job=\"aic_bench\"}",
+          "queryType": "range",
+          "refId": "A"
+        }
+      ],
+      "title": "Conversations \u2014 USER prompt + ASSISTANT response",
+      "type": "logs"
+    },
+    {
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 13
+      },
       "id": 1,
       "title": "Container Logs",
       "type": "row"
@@ -45,7 +95,7 @@
         "h": 10,
         "w": 24,
         "x": 0,
-        "y": 1
+        "y": 14
       },
       "id": 2,
       "options": {
@@ -94,7 +144,7 @@
       },
       "gridPos": {
         "x": 0,
-        "y": 25,
+        "y": 38,
         "w": 8,
         "h": 8
       },
@@ -139,7 +189,7 @@
       },
       "gridPos": {
         "x": 8,
-        "y": 25,
+        "y": 38,
         "w": 8,
         "h": 8
       },
@@ -177,7 +227,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 11
+        "y": 24
       },
       "id": 430,
       "title": "vLLM Serving Traffic (Loki)",
@@ -192,7 +242,7 @@
         "h": 12,
         "w": 16,
         "x": 0,
-        "y": 12
+        "y": 25
       },
       "id": 431,
       "options": {
@@ -229,7 +279,7 @@
         "h": 6,
         "w": 8,
         "x": 16,
-        "y": 12
+        "y": 25
       },
       "id": 432,
       "options": {
@@ -287,7 +337,7 @@
         "h": 6,
         "w": 8,
         "x": 16,
-        "y": 18
+        "y": 31
       },
       "id": 433,
       "options": {
@@ -318,7 +368,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 48
+        "y": 61
       },
       "id": 300,
       "title": "Summary",
@@ -347,7 +397,7 @@
         "h": 4,
         "w": 4,
         "x": 0,
-        "y": 49
+        "y": 62
       },
       "id": 301,
       "title": "Total Prompts",
@@ -398,7 +448,7 @@
         "h": 4,
         "w": 4,
         "x": 4,
-        "y": 49
+        "y": 62
       },
       "id": 302,
       "title": "Total Input Tokens",
@@ -449,7 +499,7 @@
         "h": 4,
         "w": 4,
         "x": 8,
-        "y": 49
+        "y": 62
       },
       "id": 303,
       "title": "Total Output Tokens",
@@ -500,7 +550,7 @@
         "h": 4,
         "w": 4,
         "x": 12,
-        "y": 49
+        "y": 62
       },
       "id": 304,
       "title": "Tokens Computed (prefill)",
@@ -551,7 +601,7 @@
         "h": 4,
         "w": 4,
         "x": 16,
-        "y": 49
+        "y": 62
       },
       "id": 305,
       "title": "Tokens from LMCache L1",
@@ -602,7 +652,7 @@
         "h": 4,
         "w": 4,
         "x": 20,
-        "y": 49
+        "y": 62
       },
       "id": 306,
       "title": "Tokens from LMCache L2",
@@ -654,7 +704,7 @@
         "h": 4,
         "w": 4,
         "x": 0,
-        "y": 53
+        "y": 66
       },
       "id": 307,
       "title": "Avg TTFT",
@@ -705,7 +755,7 @@
         "h": 4,
         "w": 4,
         "x": 4,
-        "y": 53
+        "y": 66
       },
       "id": 308,
       "title": "Avg TPOT",
@@ -755,7 +805,7 @@
         "h": 4,
         "w": 4,
         "x": 8,
-        "y": 53
+        "y": 66
       },
       "id": 309,
       "title": "Total Tokens/s",
@@ -806,7 +856,7 @@
         "h": 4,
         "w": 4,
         "x": 12,
-        "y": 53
+        "y": 66
       },
       "id": 310,
       "title": "Cache Hit Rate",
@@ -857,7 +907,7 @@
         "h": 4,
         "w": 4,
         "x": 16,
-        "y": 53
+        "y": 66
       },
       "id": 311,
       "title": "L1 Hit Rate",
@@ -908,7 +958,7 @@
         "h": 4,
         "w": 4,
         "x": 20,
-        "y": 53
+        "y": 66
       },
       "id": 312,
       "title": "L2 Hit Rate",
@@ -939,7 +989,7 @@
       "collapsed": false,
       "gridPos": {
         "x": 0,
-        "y": 61,
+        "y": 74,
         "w": 24,
         "h": 1
       },
@@ -967,7 +1017,7 @@
       },
       "gridPos": {
         "x": 16,
-        "y": 62,
+        "y": 75,
         "w": 4,
         "h": 4
       },
@@ -1018,7 +1068,7 @@
       },
       "gridPos": {
         "x": 20,
-        "y": 62,
+        "y": 75,
         "w": 4,
         "h": 4
       },
@@ -1068,7 +1118,7 @@
       },
       "gridPos": {
         "x": 16,
-        "y": 66,
+        "y": 79,
         "w": 4,
         "h": 4
       },
@@ -1119,7 +1169,7 @@
       },
       "gridPos": {
         "x": 20,
-        "y": 66,
+        "y": 79,
         "w": 4,
         "h": 4
       },
@@ -1153,7 +1203,7 @@
       "collapsed": false,
       "gridPos": {
         "x": 0,
-        "y": 78,
+        "y": 91,
         "w": 24,
         "h": 1
       },
@@ -1182,7 +1232,7 @@
       },
       "gridPos": {
         "x": 0,
-        "y": 83,
+        "y": 96,
         "w": 8,
         "h": 8
       },
@@ -1227,7 +1277,7 @@
       },
       "gridPos": {
         "x": 8,
-        "y": 83,
+        "y": 96,
         "w": 8,
         "h": 8
       },
@@ -1280,7 +1330,7 @@
       },
       "gridPos": {
         "x": 16,
-        "y": 83,
+        "y": 96,
         "w": 8,
         "h": 8
       },
@@ -1341,7 +1391,7 @@
       },
       "gridPos": {
         "x": 0,
-        "y": 91,
+        "y": 104,
         "w": 12,
         "h": 4
       },
@@ -1394,7 +1444,7 @@
       },
       "gridPos": {
         "x": 12,
-        "y": 91,
+        "y": 104,
         "w": 12,
         "h": 4
       },
@@ -1430,7 +1480,7 @@
       "collapsed": false,
       "gridPos": {
         "x": 0,
-        "y": 95,
+        "y": 108,
         "w": 24,
         "h": 1
       },
@@ -1473,7 +1523,7 @@
       },
       "gridPos": {
         "x": 0,
-        "y": 96,
+        "y": 109,
         "w": 4,
         "h": 8
       },
@@ -1522,7 +1572,7 @@
       },
       "gridPos": {
         "x": 4,
-        "y": 96,
+        "y": 109,
         "w": 4,
         "h": 4
       },
@@ -1572,7 +1622,7 @@
       },
       "gridPos": {
         "x": 4,
-        "y": 100,
+        "y": 113,
         "w": 4,
         "h": 4
       },
@@ -1623,7 +1673,7 @@
       },
       "gridPos": {
         "x": 8,
-        "y": 96,
+        "y": 109,
         "w": 8,
         "h": 8
       },
@@ -1676,7 +1726,7 @@
       },
       "gridPos": {
         "x": 16,
-        "y": 96,
+        "y": 109,
         "w": 8,
         "h": 8
       },
@@ -1730,7 +1780,7 @@
       },
       "gridPos": {
         "x": 0,
-        "y": 104,
+        "y": 117,
         "w": 12,
         "h": 8
       },
@@ -1775,7 +1825,7 @@
       },
       "gridPos": {
         "x": 12,
-        "y": 104,
+        "y": 117,
         "w": 12,
         "h": 8
       },
@@ -1810,7 +1860,7 @@
       "collapsed": false,
       "gridPos": {
         "x": 0,
-        "y": 112,
+        "y": 125,
         "w": 24,
         "h": 1
       },
@@ -1839,7 +1889,7 @@
       },
       "gridPos": {
         "x": 0,
-        "y": 113,
+        "y": 126,
         "w": 8,
         "h": 8
       },
@@ -1885,7 +1935,7 @@
       },
       "gridPos": {
         "x": 8,
-        "y": 113,
+        "y": 126,
         "w": 8,
         "h": 8
       },
@@ -1930,7 +1980,7 @@
       },
       "gridPos": {
         "x": 16,
-        "y": 113,
+        "y": 126,
         "w": 8,
         "h": 8
       },
@@ -1974,7 +2024,7 @@
       "collapsed": false,
       "gridPos": {
         "x": 0,
-        "y": 121,
+        "y": 134,
         "w": 24,
         "h": 1
       },
@@ -2003,7 +2053,7 @@
       },
       "gridPos": {
         "x": 0,
-        "y": 122,
+        "y": 135,
         "w": 8,
         "h": 8
       },
@@ -2056,7 +2106,7 @@
       },
       "gridPos": {
         "x": 8,
-        "y": 122,
+        "y": 135,
         "w": 8,
         "h": 8
       },
@@ -2109,7 +2159,7 @@
       },
       "gridPos": {
         "x": 16,
-        "y": 122,
+        "y": 135,
         "w": 8,
         "h": 8
       },
@@ -2145,7 +2195,7 @@
       "collapsed": false,
       "gridPos": {
         "x": 0,
-        "y": 130,
+        "y": 143,
         "w": 24,
         "h": 1
       },
@@ -2174,7 +2224,7 @@
       },
       "gridPos": {
         "x": 0,
-        "y": 131,
+        "y": 144,
         "w": 8,
         "h": 8
       },
@@ -2218,7 +2268,7 @@
       },
       "gridPos": {
         "x": 8,
-        "y": 131,
+        "y": 144,
         "w": 4,
         "h": 4
       },
@@ -2268,7 +2318,7 @@
       },
       "gridPos": {
         "x": 12,
-        "y": 131,
+        "y": 144,
         "w": 4,
         "h": 4
       },
@@ -2319,7 +2369,7 @@
       },
       "gridPos": {
         "x": 16,
-        "y": 131,
+        "y": 144,
         "w": 8,
         "h": 8
       },
@@ -2372,7 +2422,7 @@
       },
       "gridPos": {
         "x": 8,
-        "y": 135,
+        "y": 148,
         "w": 8,
         "h": 4
       },
@@ -2408,7 +2458,7 @@
       "collapsed": false,
       "gridPos": {
         "x": 0,
-        "y": 139,
+        "y": 152,
         "w": 24,
         "h": 1
       },
@@ -2438,7 +2488,7 @@
       },
       "gridPos": {
         "x": 0,
-        "y": 140,
+        "y": 153,
         "w": 12,
         "h": 8
       },
@@ -2483,7 +2533,7 @@
       },
       "gridPos": {
         "x": 12,
-        "y": 140,
+        "y": 153,
         "w": 6,
         "h": 8
       },
@@ -2528,7 +2578,7 @@
       },
       "gridPos": {
         "x": 18,
-        "y": 140,
+        "y": 153,
         "w": 6,
         "h": 4
       },
@@ -2581,7 +2631,7 @@
       },
       "gridPos": {
         "x": 18,
-        "y": 144,
+        "y": 157,
         "w": 6,
         "h": 4
       },
@@ -2626,7 +2676,7 @@
       },
       "gridPos": {
         "x": 0,
-        "y": 148,
+        "y": 161,
         "w": 12,
         "h": 8
       },
@@ -2679,7 +2729,7 @@
       },
       "gridPos": {
         "x": 12,
-        "y": 148,
+        "y": 161,
         "w": 6,
         "h": 8
       },
@@ -2724,7 +2774,7 @@
       },
       "gridPos": {
         "x": 18,
-        "y": 148,
+        "y": 161,
         "w": 6,
         "h": 8
       },
@@ -2779,7 +2829,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 70
+        "y": 83
       },
       "id": 70,
       "title": "GPU Compute / Memory / Matrix Activity (%)",
@@ -2840,7 +2890,7 @@
         "h": 8,
         "w": 6,
         "x": 12,
-        "y": 70
+        "y": 83
       },
       "id": 71,
       "title": "GPU Temperatures (\u00b0C)",
@@ -2893,7 +2943,7 @@
         "h": 8,
         "w": 6,
         "x": 18,
-        "y": 70
+        "y": 83
       },
       "id": 72,
       "title": "PCIe Speed / xGMI Fabric (GT/s)",
@@ -2936,7 +2986,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 156
+        "y": 169
       },
       "id": 200,
       "title": "vLLM \u2014 Extended",
@@ -2966,7 +3016,7 @@
         "h": 8,
         "w": 8,
         "x": 0,
-        "y": 157
+        "y": 170
       },
       "id": 80,
       "title": "GPU KV Cache Usage %",
@@ -3011,7 +3061,7 @@
         "h": 8,
         "w": 8,
         "x": 8,
-        "y": 157
+        "y": 170
       },
       "id": 81,
       "title": "E2E Request Latency p50 / p95 (s)",
@@ -3064,7 +3114,7 @@
         "h": 8,
         "w": 8,
         "x": 16,
-        "y": 157
+        "y": 170
       },
       "id": 82,
       "title": "Inter-Token Latency p50 / p95 (s)",
@@ -3117,7 +3167,7 @@
         "h": 8,
         "w": 8,
         "x": 0,
-        "y": 165
+        "y": 178
       },
       "id": 83,
       "title": "GPU Prefix Cache Hit Rate",
@@ -3170,7 +3220,7 @@
         "h": 8,
         "w": 8,
         "x": 8,
-        "y": 165
+        "y": 178
       },
       "id": 84,
       "title": "Preemptions & Queue Time p95",
@@ -3223,7 +3273,7 @@
         "h": 8,
         "w": 8,
         "x": 16,
-        "y": 165
+        "y": 178
       },
       "id": 85,
       "title": "Estimated GPU FLOP & Memory Bandwidth Rate",
@@ -3266,7 +3316,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 195
+        "y": 208
       },
       "id": 201,
       "title": "LMCache \u2014 Extended",
@@ -3296,7 +3346,7 @@
         "h": 8,
         "w": 8,
         "x": 0,
-        "y": 196
+        "y": 209
       },
       "id": 90,
       "title": "L1\u2192GPU Load Throughput (GB/s)",
@@ -3357,7 +3407,7 @@
         "h": 8,
         "w": 8,
         "x": 8,
-        "y": 196
+        "y": 209
       },
       "id": 91,
       "title": "L2 In-Flight Store Queue Depth",
@@ -3402,7 +3452,7 @@
         "h": 8,
         "w": 8,
         "x": 16,
-        "y": 196
+        "y": 209
       },
       "id": 92,
       "title": "Chunk Reuse Gap (s) \u2014 Cache Effectiveness",
@@ -3455,7 +3505,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 204
+        "y": 217
       },
       "id": 93,
       "title": "LMCache Operation Rate",
@@ -3519,7 +3569,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 204
+        "y": 217
       },
       "id": 94,
       "title": "LMCache L0\u2192L1 Throughput (GB/s)",
@@ -3556,7 +3606,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 213
+        "y": 226
       },
       "id": 202,
       "title": "Node \u2014 Extended",
@@ -3586,7 +3636,7 @@
         "h": 8,
         "w": 8,
         "x": 0,
-        "y": 214
+        "y": 227
       },
       "id": 95,
       "title": "System Load (1m / 5m / 15m)",
@@ -3647,7 +3697,7 @@
         "h": 8,
         "w": 8,
         "x": 8,
-        "y": 214
+        "y": 227
       },
       "id": 96,
       "title": "NVMe Capacity Used (bytes)",
@@ -3700,7 +3750,7 @@
         "h": 8,
         "w": 8,
         "x": 16,
-        "y": 214
+        "y": 227
       },
       "id": 97,
       "title": "IO Pressure (PSI stalled seconds rate)",
@@ -3753,7 +3803,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 222
+        "y": 235
       },
       "id": 98,
       "title": "InfiniBand / RoCE Port Throughput (B/s)",
@@ -3806,7 +3856,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 222
+        "y": 235
       },
       "id": 99,
       "title": "Filesystem Available Space",
@@ -3833,7 +3883,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 173
+        "y": 186
       },
       "id": 203,
       "title": "vLLM \u2014 ISL / OSL (Input & Output Sequence Length)",
@@ -3863,7 +3913,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 174
+        "y": 187
       },
       "id": 110,
       "title": "ISL Distribution (prompt tokens) \u2014 p50 / p95 / p99",
@@ -3924,7 +3974,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 174
+        "y": 187
       },
       "id": 111,
       "title": "OSL Distribution (generation tokens) \u2014 p50 / p95 / p99",
@@ -3984,7 +4034,7 @@
         "h": 4,
         "w": 6,
         "x": 0,
-        "y": 182
+        "y": 195
       },
       "id": 112,
       "title": "Average ISL (prompt tokens)",
@@ -4034,7 +4084,7 @@
         "h": 4,
         "w": 6,
         "x": 6,
-        "y": 182
+        "y": 195
       },
       "id": 113,
       "title": "Average OSL (generation tokens)",
@@ -4084,7 +4134,7 @@
         "h": 4,
         "w": 6,
         "x": 12,
-        "y": 182
+        "y": 195
       },
       "id": 114,
       "title": "ISL p99 (prompt tokens)",
@@ -4134,7 +4184,7 @@
         "h": 4,
         "w": 6,
         "x": 18,
-        "y": 182
+        "y": 195
       },
       "id": 115,
       "title": "OSL p99 (generation tokens)",
@@ -4185,7 +4235,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 186
+        "y": 199
       },
       "id": 116,
       "title": "Average ISL vs OSL over time",
@@ -4238,7 +4288,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 186
+        "y": 199
       },
       "id": 117,
       "title": "Request Rate & Total Tokens/s",
@@ -4290,7 +4340,7 @@
         "h": 4,
         "w": 4,
         "x": 0,
-        "y": 57
+        "y": 70
       },
       "id": 313,
       "title": "Avg GPU VRAM Used",
@@ -4341,7 +4391,7 @@
         "h": 4,
         "w": 4,
         "x": 4,
-        "y": 57
+        "y": 70
       },
       "id": 314,
       "title": "Avg LMCache L1 Used",
@@ -4392,7 +4442,7 @@
         "h": 4,
         "w": 4,
         "x": 8,
-        "y": 57
+        "y": 70
       },
       "id": 315,
       "title": "Avg LMCache L2 Used",
@@ -4426,7 +4476,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 230
+        "y": 243
       },
       "id": 400,
       "title": "LMCache Coordinator",
@@ -4481,7 +4531,7 @@
         "h": 4,
         "w": 4,
         "x": 0,
-        "y": 231
+        "y": 244
       },
       "id": 401,
       "options": {
@@ -4537,7 +4587,7 @@
         "h": 4,
         "w": 4,
         "x": 4,
-        "y": 231
+        "y": 244
       },
       "id": 402,
       "options": {
@@ -4609,7 +4659,7 @@
         "h": 4,
         "w": 4,
         "x": 8,
-        "y": 231
+        "y": 244
       },
       "id": 403,
       "options": {
@@ -4661,7 +4711,7 @@
         "h": 8,
         "w": 8,
         "x": 0,
-        "y": 235
+        "y": 248
       },
       "id": 404,
       "options": {
@@ -4721,7 +4771,7 @@
         "h": 8,
         "w": 8,
         "x": 8,
-        "y": 235
+        "y": 248
       },
       "id": 405,
       "options": {
@@ -4772,7 +4822,7 @@
         "h": 8,
         "w": 8,
         "x": 16,
-        "y": 235
+        "y": 248
       },
       "id": 406,
       "options": {
@@ -4832,7 +4882,7 @@
         "h": 4,
         "w": 12,
         "x": 12,
-        "y": 231
+        "y": 244
       },
       "id": 407,
       "options": {
@@ -4864,7 +4914,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 243
+        "y": 256
       },
       "id": 408,
       "title": "LMCache \u2014 Adapter & Transport Health",
@@ -4956,7 +5006,7 @@
         "h": 6,
         "w": 8,
         "x": 0,
-        "y": 244
+        "y": 257
       },
       "id": 409,
       "options": {
@@ -5033,7 +5083,7 @@
         "h": 6,
         "w": 8,
         "x": 8,
-        "y": 244
+        "y": 257
       },
       "id": 410,
       "options": {
@@ -5108,7 +5158,7 @@
         "h": 6,
         "w": 8,
         "x": 16,
-        "y": 244
+        "y": 257
       },
       "id": 411,
       "options": {
@@ -5173,7 +5223,7 @@
         "h": 4,
         "w": 4,
         "x": 12,
-        "y": 57
+        "y": 70
       },
       "id": 412,
       "options": {
@@ -5255,7 +5305,7 @@
         "h": 4,
         "w": 4,
         "x": 16,
-        "y": 57
+        "y": 70
       },
       "id": 413,
       "options": {
@@ -5312,7 +5362,7 @@
         "h": 4,
         "w": 4,
         "x": 20,
-        "y": 57
+        "y": 70
       },
       "id": 414,
       "options": {
@@ -5346,7 +5396,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 250
+        "y": 263
       },
       "id": 415,
       "title": "KV Block Residency (vLLM + LMCache L0)",
@@ -5376,7 +5426,7 @@
         "h": 8,
         "w": 8,
         "x": 0,
-        "y": 251
+        "y": 264
       },
       "id": 416,
       "options": {
@@ -5453,7 +5503,7 @@
         "h": 8,
         "w": 8,
         "x": 8,
-        "y": 251
+        "y": 264
       },
       "id": 417,
       "options": {
@@ -5530,7 +5580,7 @@
         "h": 8,
         "w": 8,
         "x": 16,
-        "y": 251
+        "y": 264
       },
       "id": 418,
       "options": {
@@ -5608,7 +5658,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 259
+        "y": 272
       },
       "id": 419,
       "options": {
@@ -5669,7 +5719,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 259
+        "y": 272
       },
       "id": 420,
       "options": {
@@ -5701,7 +5751,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 267
+        "y": 280
       },
       "id": 421,
       "title": "Engine & Event Bus Health",
@@ -5748,7 +5798,7 @@
         "h": 4,
         "w": 4,
         "x": 0,
-        "y": 268
+        "y": 281
       },
       "id": 422,
       "options": {
@@ -5789,7 +5839,7 @@
         "h": 4,
         "w": 6,
         "x": 4,
-        "y": 268
+        "y": 281
       },
       "id": 423,
       "options": {
@@ -5847,7 +5897,7 @@
         "h": 4,
         "w": 5,
         "x": 10,
-        "y": 268
+        "y": 281
       },
       "id": 424,
       "options": {
@@ -5901,7 +5951,7 @@
         "h": 4,
         "w": 5,
         "x": 15,
-        "y": 268
+        "y": 281
       },
       "id": 425,
       "options": {
@@ -5942,7 +5992,7 @@
         "h": 4,
         "w": 4,
         "x": 20,
-        "y": 268
+        "y": 281
       },
       "id": 426,
       "options": {
@@ -5974,7 +6024,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 272
+        "y": 285
       },
       "id": 427,
       "title": "GPU Activity (hsa-snoop)",
@@ -5998,7 +6048,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 273
+        "y": 286
       },
       "id": 428,
       "options": {
@@ -6059,7 +6109,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 273
+        "y": 286
       },
       "id": 429,
       "options": {
@@ -6089,43 +6139,6 @@
       ],
       "title": "GPU GFX Activity & Power",
       "type": "timeseries"
-    },
-    {
-      "datasource": {
-        "type": "loki",
-        "uid": "loki"
-      },
-      "gridPos": {
-        "h": 12,
-        "w": 24,
-        "x": 0,
-        "y": 36
-      },
-      "id": 434,
-      "options": {
-        "dedupStrategy": "none",
-        "enableLogDetails": true,
-        "prettifyLogMessage": false,
-        "showCommonLabels": false,
-        "showLabels": false,
-        "showTime": true,
-        "sortOrder": "Descending",
-        "wrapLogMessage": true
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "loki",
-            "uid": "loki"
-          },
-          "editorMode": "code",
-          "expr": "{job=\"aic_bench\"}",
-          "queryType": "range",
-          "refId": "A"
-        }
-      ],
-      "title": "Conversations \u2014 USER prompt + ASSISTANT response",
-      "type": "logs"
     },
     {
       "datasource": {
@@ -6165,7 +6178,7 @@
         "h": 4,
         "w": 8,
         "x": 0,
-        "y": 79
+        "y": 92
       },
       "id": 435,
       "options": {

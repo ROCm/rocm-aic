@@ -153,8 +153,12 @@ function "tls_secret" {
 
 # ---- Groups ------------------------------------------------------------------
 
+# `make build` bakes this group: the full local stack including the fabric
+# exporters, so a fresh build can run the monitored compose stack
+# (`make up` / `vllm-reset-test`) without a separate exporter build.  kvbench is
+# a standalone benchmarking tool and stays out (see the `all` group).
 group "default" {
-  targets = ["base", "vllm", "lmcache", "hsa-snoop"]
+  targets = ["base", "vllm", "lmcache", "hsa-snoop", "nvme-exporter", "rdma-exporter"]
 }
 
 group "exporters" {

@@ -12,7 +12,11 @@ See docker/lmcache/rocm_vmem_ipc.py for the wrapper implementation.
 """
 import os, sys, shutil
 
-BASE = '/app/LMCache'
+# Root that CONTAINS the `lmcache/` package. Defaults to the source tree the
+# lmcache image patches before `setup.py bdist_wheel`; override with
+# AIC_LMCACHE_SRC to patch a pip-installed package in site-packages (e.g. the
+# vLLM image, which installs the lmcache client via `pip install lmcache`).
+BASE = os.environ.get('AIC_LMCACHE_SRC', '/app/LMCache')
 VMEM_MODULE_SRC = '/tmp/rocm_vmem_ipc.py'   # COPYed into image by Dockerfile
 # Install to site-packages so it survives the `rm -rf /app/LMCache` cleanup step.
 import sysconfig as _sc
@@ -97,17 +101,63 @@ patch(f3,
 
 print('ROCm KV IPC patches done — part 1')
 
-# 4. event_ipc.py: export_event() returns b"" on ROCm so the importer skips
-#    event synchronisation (hipIpcGetEventHandle also unsupported on gfx1201).
-f_event = f'{BASE}/lmcache/v1/multiprocess/event_ipc.py'
-if os.path.exists(f_event):
-    patch(f_event,
-        '        return event.ipc_handle()  # type: ignore[attr-defined]',
-        '        if __import__("torch").version.hip:\n'
-        '            return b""\n'
-        '        return event.ipc_handle()  # type: ignore[attr-defined]',
-        'event_ipc.export_event returns b"" on ROCm (hipIpcGetEventHandle unsupported)'
-    )
+# 4. event_ipc.py — PRODUCER-SIDE SYNC for gfx1201.
+#    Cross-process HIP event IPC is broken on gfx1201: torch.cuda.Event
+#    .from_ipc_handle raises hipErrorInvalidContext (verified same-process AND
+#    cross-container, LEGACY and non-LEGACY — see tests/ipc/).  Memory IPC
+#    (VMM dmabuf + SCM_RIGHTS) works fine; only the event-based ordering is
+#    unavailable.  So move the ordering to the PRODUCER:
+#      export_event():  event.synchronize() on the producer's OWN context (works),
+#                       then return b"" — the GPU write is complete before the
+#                       store/retrieve request is even sent.
+#      import_event():  never call the broken from_ipc_handle; return an
+#                       already-complete dummy event so wait_event()/query() are
+#                       no-ops and store()/retrieve() proceed (vs. patch 11's skip).
+#    Correct: the producer guaranteed the write landed before signalling.  BOTH
+#    the vLLM client AND the lmcache server images must apply this (vLLM image
+#    currently does NOT run this script — see docker/vllm/Dockerfile).
+#    The multi-path loop tolerates event_ipc.py moving across LMCache versions.
+_event_paths = [
+    f'{BASE}/lmcache/v1/platform/base/event_ipc.py',
+    f'{BASE}/lmcache/v1/multiprocess/event_ipc.py',
+]
+_exp_pat = '        return event.ipc_handle()  # type: ignore[attr-defined]'
+_exp_new = (
+    '        if __import__("torch").version.hip:\n'
+    '            event.synchronize()  # type: ignore[attr-defined]  # producer-side sync\n'
+    '            return b""\n'
+    '        return event.ipc_handle()  # type: ignore[attr-defined]'
+)
+_imp_pat = (
+    '        return self._event_module.Event.from_ipc_handle(  # type: ignore[union-attr]\n'
+    '            device, handle\n'
+    '        )'
+)
+_imp_new = (
+    '        if __import__("torch").version.hip:\n'
+    '            _ev = self._event_module.Event()  # type: ignore[union-attr]\n'
+    '            _ev.record()\n'
+    '            _ev.synchronize()\n'
+    '            return _ev\n'
+    '        return self._event_module.Event.from_ipc_handle(  # type: ignore[union-attr]\n'
+    '            device, handle\n'
+    '        )'
+)
+_event_done = False
+for f_event in _event_paths:
+    if not os.path.exists(f_event):
+        continue
+    src = open(f_event).read()
+    if _exp_pat in src or _imp_pat in src:
+        patch(f_event, _exp_pat, _exp_new,
+              f'event_ipc.export_event: producer-side sync ({f_event})')
+        patch(f_event, _imp_pat, _imp_new,
+              f'event_ipc.import_event: dummy-complete event ({f_event})')
+        _event_done = True
+        break
+if not _event_done:
+    print('  WARN: event_ipc patterns not found; producer-side-sync NOT applied '
+          '(gfx1201 event-IPC)', file=sys.stderr)
 
 # 5. lmcache_driven_transfer.py: start VMEM IPC fd-receiver at server startup.
 #    Injects an import + init_receiver() call into __init__ so the background

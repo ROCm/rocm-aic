@@ -289,6 +289,17 @@ RUN --mount=type=cache,target=/root/.cache/pip \
         nixl nixl-cu12 nixl-cu13 \
         cupy-cuda12x cufile-python cuda-pathfinder 2>/dev/null || true
 
+# gfx1201: apply the event-IPC producer-side-sync patch to the lmcache CLIENT
+# installed above.  vLLM is the producer on the store path, so its export_event
+# must synchronize locally + emit b"" (hipIpcOpenEventHandle is broken on
+# gfx1201 — see tests/ipc/).  Only the event patch is applied here; the VMM
+# memory patches belong to the lmcache server image.  AIC_LMCACHE_SRC points the
+# patcher at the pip-installed package (site-packages), not the /app source tree.
+COPY docker/lmcache/rocm_event_ipc_patch.py /tmp/rocm_event_ipc_patch.py
+RUN AIC_LMCACHE_SRC="$(python3 -c 'import lmcache, os; print(os.path.dirname(os.path.dirname(lmcache.__file__)))')" \
+        python3 /tmp/rocm_event_ipc_patch.py && \
+    rm /tmp/rocm_event_ipc_patch.py
+
 # ----- Runtime ENV + metadata -------------------------------------------------
 # PYTHONPATH and LD_LIBRARY_PATH (including NIXL paths) are inherited from
 # aic-base; do not redefine them here or the NIXL entries will be lost.

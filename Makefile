@@ -77,6 +77,12 @@ LMCACHE_L1_SIZE_GB     ?= 20
 LMCACHE_NVME_POOL      ?= 4096
 LMCACHE_NVME_SLOT_SIZE ?= 268435456
 LMCACHE_NFS_POOL       ?= 1024
+# lmcache --max-gpu-workers: parallel STORE/RETRIEVE worker threads.  1 serializes
+# all clients onto one thread (AffinityThreadPool warns), so under concurrent load
+# stores back up behind L1->L2 eviction and trip vLLM's health check into degraded
+# mode.  Default 4 to sustain bench-serve / multi-client load; drop to 1 for a
+# single-client run to save GPU memory.
+LMCACHE_MAX_GPU_WORKERS ?= 4
 
 # ---- vLLM knobs ------------------------------------------------------------
 VLLM_MODEL                  ?=
@@ -132,6 +138,7 @@ _ARCH_SLUG = $(subst $(comma),-,$(subst ;,-,$(subst $(space),-,$(ROCM_ARCH))))
 export AIC_VERSION ROCM_ARCH GPU GDS_SLAB_DATA LOG HF_HOME HF_TOKEN IMAGE_NAME IMAGE_REF IMAGE_TAG BUILD_JOBS
 export VLLM_IMAGE_NAME VLLM_IMAGE_REF LMCACHE_IMAGE_NAME LMCACHE_IMAGE_REF
 export LMCACHE_PORT LMCACHE_L1_SIZE_GB LMCACHE_NVME_POOL LMCACHE_NVME_SLOT_SIZE LMCACHE_NFS_POOL
+export LMCACHE_MAX_GPU_WORKERS
 export NVME_DATA NFS_DATA
 export VLLM_MODEL TENSOR_PARALLEL_SIZE
 export VLM_GPU_MEMORY_UTILIZATION VLM_MAX_MODEL_LEN VLM_MAX_NUM_BATCHED_TOKENS VLM_BLOCK_SIZE
@@ -212,7 +219,6 @@ export LMCACHE_NIXL_POSIX_SLOT_SIZE ?= 33554432
 export LMCACHE_NIXL_POSIX_POOL      ?= 32768
 override export AIC_EXPORTERS            := safe
 override export AIC_HSA_SNOOP_PID_MODE  := container:aic-lmcache
-export LMCACHE_MAX_GPU_WORKERS      ?= 1
 else
 # Empty by default off-SPUR: a workstation has no /scratch, and an unwritable
 # cache dir is worse than none.  Set AIC_CACHE_DIR explicitly to enable the
@@ -378,6 +384,7 @@ help:
 	@echo ""
 	@echo "Key LMCache vars (current):"
 	@echo "  LMCACHE_PORT=$(LMCACHE_PORT)  LMCACHE_L1_SIZE_GB=$(LMCACHE_L1_SIZE_GB) GiB"
+	@echo "  LMCACHE_MAX_GPU_WORKERS=$(LMCACHE_MAX_GPU_WORKERS)  (parallel store/retrieve threads; raise under concurrent load)"
 	@echo "  LMCACHE_NVME_POOL=$(LMCACHE_NVME_POOL)  LMCACHE_NFS_POOL=$(LMCACHE_NFS_POOL)"
 	@echo ""
 	@echo "Examples:"
