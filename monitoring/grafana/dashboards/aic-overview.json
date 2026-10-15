@@ -190,7 +190,7 @@
       "gridPos": {
         "x": 8,
         "y": 38,
-        "w": 8,
+        "w": 16,
         "h": 8
       },
       "id": 2,
@@ -272,8 +272,8 @@
     },
     {
       "datasource": {
-        "type": "loki",
-        "uid": "loki"
+        "type": "prometheus",
+        "uid": "prometheus"
       },
       "gridPos": {
         "h": 6,
@@ -316,12 +316,11 @@
       "targets": [
         {
           "datasource": {
-            "type": "loki",
-            "uid": "loki"
+            "type": "prometheus",
+            "uid": "prometheus"
           },
-          "editorMode": "code",
-          "expr": "rate({container=\"aic-vllm-gpu0\"} |~ \"POST /v1/chat/completions\" [1m])",
-          "queryType": "range",
+          "expr": "sum(rate(vllm:request_success_total{job=\"vllm\"}[2m]))",
+          "legendFormat": "requests/s",
           "refId": "A"
         }
       ],
@@ -725,7 +724,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "sum(rate(vllm:time_to_first_token_seconds_sum[$__rate_interval])) / sum(rate(vllm:time_to_first_token_seconds_count[$__rate_interval]))",
+          "expr": "sum(rate(vllm:time_to_first_token_seconds_sum[2m])) / sum(rate(vllm:time_to_first_token_seconds_count[2m]))",
           "legendFormat": ""
         }
       ],
@@ -776,7 +775,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "sum(rate(vllm:inter_token_latency_seconds_sum[$__rate_interval])) / sum(rate(vllm:inter_token_latency_seconds_count[$__rate_interval]))",
+          "expr": "sum(rate(vllm:inter_token_latency_seconds_sum[2m])) / sum(rate(vllm:inter_token_latency_seconds_count[2m]))",
           "legendFormat": ""
         }
       ],
@@ -826,7 +825,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "sum(rate(vllm:prompt_tokens_total[$__rate_interval])) + sum(rate(vllm:generation_tokens_total[$__rate_interval]))",
+          "expr": "sum(rate(vllm:prompt_tokens_total[2m])) + sum(rate(vllm:generation_tokens_total[2m]))",
           "legendFormat": ""
         }
       ],
@@ -877,7 +876,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "(sum(rate(vllm:prompt_tokens_by_source_total{source=\"local_cache_hit\"}[$__rate_interval])) + sum(rate(vllm:prompt_tokens_by_source_total{source=\"external_kv_transfer\"}[$__rate_interval]))) / sum(rate(vllm:prompt_tokens_total[$__rate_interval]))",
+          "expr": "(sum(rate(vllm:prompt_tokens_by_source_total{source=\"local_cache_hit\"}[2m])) + sum(rate(vllm:prompt_tokens_by_source_total{source=\"external_kv_transfer\"}[2m]))) / sum(rate(vllm:prompt_tokens_total[2m]))",
           "legendFormat": ""
         }
       ],
@@ -928,7 +927,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "sum(rate(vllm:prompt_tokens_by_source_total{source=\"local_cache_hit\"}[$__rate_interval])) / sum(rate(vllm:prompt_tokens_total[$__rate_interval]))",
+          "expr": "sum(rate(vllm:prompt_tokens_by_source_total{source=\"local_cache_hit\"}[2m])) / sum(rate(vllm:prompt_tokens_total[2m]))",
           "legendFormat": ""
         }
       ],
@@ -979,7 +978,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "sum(rate(vllm:prompt_tokens_by_source_total{source=\"external_kv_transfer\"}[$__rate_interval])) / sum(rate(vllm:prompt_tokens_total[$__rate_interval]))",
+          "expr": "sum(rate(vllm:prompt_tokens_by_source_total{source=\"external_kv_transfer\"}[2m])) / sum(rate(vllm:prompt_tokens_total[2m]))",
           "legendFormat": ""
         }
       ],
@@ -1016,7 +1015,7 @@
         "overrides": []
       },
       "gridPos": {
-        "x": 16,
+        "x": 0,
         "y": 75,
         "w": 4,
         "h": 4
@@ -1067,9 +1066,9 @@
         "overrides": []
       },
       "gridPos": {
-        "x": 20,
+        "x": 4,
         "y": 75,
-        "w": 4,
+        "w": 20,
         "h": 4
       },
       "id": 4,
@@ -1117,7 +1116,7 @@
         "overrides": []
       },
       "gridPos": {
-        "x": 16,
+        "x": 0,
         "y": 79,
         "w": 4,
         "h": 4
@@ -1168,9 +1167,9 @@
         "overrides": []
       },
       "gridPos": {
-        "x": 20,
+        "x": 4,
         "y": 79,
-        "w": 4,
+        "w": 20,
         "h": 4
       },
       "id": 6,
@@ -1249,7 +1248,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "sum(rate(vllm:request_success_total[$__rate_interval]))",
+          "expr": "sum(rate(vllm:request_success_total[2m]))",
           "legendFormat": "completed"
         }
       ],
@@ -1294,7 +1293,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "histogram_quantile(0.5, rate(vllm:time_to_first_token_seconds_bucket[$__rate_interval]))",
+          "expr": "histogram_quantile(0.5, rate(vllm:time_to_first_token_seconds_bucket[2m]))",
           "legendFormat": "p50"
         },
         {
@@ -1302,7 +1301,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "histogram_quantile(0.95, rate(vllm:time_to_first_token_seconds_bucket[$__rate_interval]))",
+          "expr": "histogram_quantile(0.95, rate(vllm:time_to_first_token_seconds_bucket[2m]))",
           "legendFormat": "p95"
         }
       ],
@@ -1347,7 +1346,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "sum(rate(vllm:prompt_tokens_by_source_total{source=\"local_cache_hit\"}[$__rate_interval]))",
+          "expr": "sum(rate(vllm:prompt_tokens_by_source_total{source=\"local_cache_hit\"}[2m]))",
           "legendFormat": "L1 cache hit"
         },
         {
@@ -1355,7 +1354,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "sum(rate(vllm:prompt_tokens_by_source_total{source=\"external_kv_transfer\"}[$__rate_interval]))",
+          "expr": "sum(rate(vllm:prompt_tokens_by_source_total{source=\"external_kv_transfer\"}[2m]))",
           "legendFormat": "L2 transfer"
         },
         {
@@ -1363,7 +1362,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "sum(rate(vllm:prompt_tokens_by_source_total{source=\"local_compute\"}[$__rate_interval]))",
+          "expr": "sum(rate(vllm:prompt_tokens_by_source_total{source=\"local_compute\"}[2m]))",
           "legendFormat": "computed"
         }
       ],
@@ -1461,7 +1460,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "sum(rate(vllm:external_prefix_cache_queries_total[$__rate_interval]))",
+          "expr": "sum(rate(vllm:external_prefix_cache_queries_total[2m]))",
           "legendFormat": "queries/s"
         },
         {
@@ -1469,7 +1468,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "sum(rate(vllm:external_prefix_cache_hits_total[$__rate_interval]))",
+          "expr": "sum(rate(vllm:external_prefix_cache_hits_total[2m]))",
           "legendFormat": "hits/s"
         }
       ],
@@ -1574,7 +1573,7 @@
         "x": 4,
         "y": 109,
         "w": 4,
-        "h": 4
+        "h": 8
       },
       "id": 21,
       "title": "L1 Memory Used",
@@ -1621,9 +1620,9 @@
         "overrides": []
       },
       "gridPos": {
-        "x": 4,
+        "x": 0,
         "y": 113,
-        "w": 4,
+        "w": 24,
         "h": 4
       },
       "id": 22,
@@ -1690,7 +1689,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "sum(rate(lmcache_mp_l1_write_chunks_total[$__rate_interval]))",
+          "expr": "sum(rate(lmcache_mp_l1_write_chunks_total[2m]))",
           "legendFormat": "writes/s"
         },
         {
@@ -1698,7 +1697,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "sum(rate(lmcache_mp_l1_read_chunks_total[$__rate_interval]))",
+          "expr": "sum(rate(lmcache_mp_l1_read_chunks_total[2m]))",
           "legendFormat": "reads/s"
         }
       ],
@@ -1743,7 +1742,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "sum(rate(lmcache_mp_l2_store_submitted_requests_total[$__rate_interval]))",
+          "expr": "sum(rate(lmcache_mp_l2_store_submitted_requests_total[2m]))",
           "legendFormat": "submitted/s"
         },
         {
@@ -1751,7 +1750,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "sum(rate(lmcache_mp_l2_store_completed_requests_total[$__rate_interval]))",
+          "expr": "sum(rate(lmcache_mp_l2_store_completed_requests_total[2m]))",
           "legendFormat": "completed/s"
         }
       ],
@@ -1797,7 +1796,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "sum(increase(lmcache_mp_l1_write_chunks_total[$__range])) - sum(increase(lmcache_mp_l1_evicted_chunks_total[$__range]))",
+          "expr": "sum(increase(lmcache_mp_l1_write_chunks_total[$__range])) - (sum(increase(lmcache_mp_l1_evicted_chunks_total[$__range])) or vector(0))",
           "legendFormat": "L1 chunks (net)"
         }
       ],
@@ -1906,7 +1905,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "sum(rate(agent_tx_bytes_total{job=\"nixl\"}[$__rate_interval]))",
+          "expr": "sum(rate(agent_tx_bytes_total{job=\"nixl\"}[2m]))",
           "legendFormat": "TX (writes)"
         }
       ],
@@ -1952,7 +1951,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "sum(rate(agent_rx_bytes_total{job=\"nixl\"}[$__rate_interval]))",
+          "expr": "sum(rate(agent_rx_bytes_total{job=\"nixl\"}[2m]))",
           "legendFormat": "RX (reads / L2 hits)"
         }
       ],
@@ -1997,7 +1996,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "sum(rate(lmcache_mp_l2_prefetch_lookup_objects_chunks_total[$__rate_interval]))",
+          "expr": "sum(rate(lmcache_mp_l2_prefetch_lookup_objects_chunks_total[2m]))",
           "legendFormat": "prefetch lookups/s"
         },
         {
@@ -2005,7 +2004,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "sum(rate(lmcache_mp_l2_prefetch_hit_chunks_total[$__rate_interval]))",
+          "expr": "sum(rate(lmcache_mp_l2_prefetch_hit_chunks_total[2m]))",
           "legendFormat": "prefetch hits/s"
         },
         {
@@ -2070,7 +2069,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "rate(node_disk_read_bytes_total{device=~\"$nvme_device\"}[$__rate_interval])",
+          "expr": "rate(node_disk_read_bytes_total{device=~\"$nvme_device\"}[2m])",
           "legendFormat": "read {{device}}"
         },
         {
@@ -2078,7 +2077,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "rate(node_disk_written_bytes_total{device=~\"$nvme_device\"}[$__rate_interval])",
+          "expr": "rate(node_disk_written_bytes_total{device=~\"$nvme_device\"}[2m])",
           "legendFormat": "write {{device}}"
         }
       ],
@@ -2123,7 +2122,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "rate(node_disk_reads_completed_total{device=~\"$nvme_device\"}[$__rate_interval])",
+          "expr": "rate(node_disk_reads_completed_total{device=~\"$nvme_device\"}[2m])",
           "legendFormat": "read IOPS {{device}}"
         },
         {
@@ -2131,7 +2130,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "rate(node_disk_writes_completed_total{device=~\"$nvme_device\"}[$__rate_interval])",
+          "expr": "rate(node_disk_writes_completed_total{device=~\"$nvme_device\"}[2m])",
           "legendFormat": "write IOPS {{device}}"
         }
       ],
@@ -2176,7 +2175,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "1000 * rate(node_disk_read_time_seconds_total{device=~\"$nvme_device\"}[$__rate_interval]) / clamp_min(rate(node_disk_reads_completed_total{device=~\"$nvme_device\"}[$__rate_interval]), 1)",
+          "expr": "1000 * rate(node_disk_read_time_seconds_total{device=~\"$nvme_device\"}[2m]) / clamp_min(rate(node_disk_reads_completed_total{device=~\"$nvme_device\"}[2m]), 1)",
           "legendFormat": "read lat {{device}}"
         },
         {
@@ -2184,7 +2183,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "1000 * rate(node_disk_write_time_seconds_total{device=~\"$nvme_device\"}[$__rate_interval]) / clamp_min(rate(node_disk_writes_completed_total{device=~\"$nvme_device\"}[$__rate_interval]), 1)",
+          "expr": "1000 * rate(node_disk_write_time_seconds_total{device=~\"$nvme_device\"}[2m]) / clamp_min(rate(node_disk_writes_completed_total{device=~\"$nvme_device\"}[2m]), 1)",
           "legendFormat": "write lat {{device}}"
         }
       ],
@@ -2192,10 +2191,284 @@
       "description": "Average NVMe read and write latency in ms (io_time / completions). Latencies above ~1 ms for reads indicate queue depth pressure or drive saturation."
     },
     {
+      "type": "row",
+      "title": "L2 Dynamic File Monitor",
       "collapsed": false,
       "gridPos": {
         "x": 0,
         "y": 143,
+        "w": 24,
+        "h": 1
+      },
+      "id": 9901,
+      "panels": []
+    },
+    {
+      "type": "stat",
+      "title": "L2 NVMe Files",
+      "description": "Current number of KV chunk files persisted on NVMe by the nixl_posix_dynamic adapter.",
+      "id": 9902,
+      "gridPos": {
+        "x": 0,
+        "y": 144,
+        "w": 4,
+        "h": 4
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "expr": "aic_l2_dynamic_files_total",
+          "legendFormat": "files",
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
+        }
+      ],
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "orientation": "auto",
+        "textMode": "auto",
+        "colorMode": "value",
+        "graphMode": "area"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "type": "stat",
+      "title": "L2 NVMe Used",
+      "description": "Total bytes consumed by L2 KV chunk files on NVMe.",
+      "id": 9903,
+      "gridPos": {
+        "x": 4,
+        "y": 144,
+        "w": 4,
+        "h": 4
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "expr": "aic_l2_dynamic_bytes_total",
+          "legendFormat": "bytes",
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
+        }
+      ],
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "orientation": "auto",
+        "textMode": "auto",
+        "colorMode": "value",
+        "graphMode": "area"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bytes",
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "type": "stat",
+      "title": "L2 File Reads (total)",
+      "description": "Cumulative IN_OPEN inotify events on L2 chunk files \u2014 counts each time lmcache reads a file back from NVMe into L1.",
+      "id": 9904,
+      "gridPos": {
+        "x": 8,
+        "y": 144,
+        "w": 4,
+        "h": 4
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "expr": "aic_l2_dynamic_file_reads_total",
+          "legendFormat": "reads",
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
+        }
+      ],
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "orientation": "auto",
+        "textMode": "auto",
+        "colorMode": "value",
+        "graphMode": "area"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "blue",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "L2 Files & Read Rate",
+      "description": "Left: total NVMe chunk files (gauge). Right: file read-back rate (IN_OPEN/s) \u2014 spikes indicate L2\u2192L1 reloads.",
+      "id": 9905,
+      "gridPos": {
+        "x": 12,
+        "y": 144,
+        "w": 12,
+        "h": 4
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "expr": "aic_l2_dynamic_files_total",
+          "legendFormat": "NVMe files",
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
+        },
+        {
+          "expr": "rate(aic_l2_dynamic_file_reads_total[2m])",
+          "legendFormat": "Read-back rate (/s)",
+          "refId": "B",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "options": {
+        "tooltip": {
+          "mode": "multi"
+        },
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        }
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "L2 Per-File Read Count Distribution",
+      "description": "How many times each NVMe chunk file has been read back. Files at le=0 have never been read (cold). Files at higher buckets are hot and candidates for L1 pinning.",
+      "id": 9906,
+      "gridPos": {
+        "x": 0,
+        "y": 148,
+        "w": 24,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "expr": "aic_l2_dynamic_read_count",
+          "legendFormat": "reads={{reads}}",
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "options": {
+        "tooltip": {
+          "mode": "multi"
+        },
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        }
+      }
+    },
+    {
+      "collapsed": false,
+      "gridPos": {
+        "x": 0,
+        "y": 160,
         "w": 24,
         "h": 1
       },
@@ -2224,7 +2497,7 @@
       },
       "gridPos": {
         "x": 0,
-        "y": 144,
+        "y": 161,
         "w": 8,
         "h": 8
       },
@@ -2241,7 +2514,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "1 - avg(rate(node_cpu_seconds_total{mode=\"idle\"}[$__rate_interval]))",
+          "expr": "1 - avg(rate(node_cpu_seconds_total{mode=\"idle\"}[2m]))",
           "legendFormat": "CPU utilization"
         }
       ],
@@ -2268,7 +2541,7 @@
       },
       "gridPos": {
         "x": 8,
-        "y": 144,
+        "y": 161,
         "w": 4,
         "h": 4
       },
@@ -2318,7 +2591,7 @@
       },
       "gridPos": {
         "x": 12,
-        "y": 144,
+        "y": 161,
         "w": 4,
         "h": 4
       },
@@ -2369,7 +2642,7 @@
       },
       "gridPos": {
         "x": 16,
-        "y": 144,
+        "y": 161,
         "w": 8,
         "h": 8
       },
@@ -2386,7 +2659,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "rate(rdma_port_rcv_data_total[$__rate_interval])",
+          "expr": "rate(rdma_port_rcv_data_total[2m])",
           "legendFormat": "RX {{device}} p{{port}}"
         },
         {
@@ -2394,7 +2667,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "rate(rdma_port_xmit_data_total[$__rate_interval])",
+          "expr": "rate(rdma_port_xmit_data_total[2m])",
           "legendFormat": "TX {{device}} p{{port}}"
         }
       ],
@@ -2421,9 +2694,9 @@
         "overrides": []
       },
       "gridPos": {
-        "x": 8,
-        "y": 148,
-        "w": 8,
+        "x": 0,
+        "y": 165,
+        "w": 24,
         "h": 4
       },
       "id": 54,
@@ -2435,20 +2708,22 @@
       },
       "targets": [
         {
+          "expr": "rate(rocm_aic_kfd_ais_rw_operations{rw=\"write\"}[2m])",
+          "legendFormat": "AIS writes/s",
+          "refId": "A",
           "datasource": {
             "type": "prometheus",
-            "uid": "${datasource}"
-          },
-          "expr": "rate(ais_tx_bytes_total[$__rate_interval])",
-          "legendFormat": "AIS TX (writes)"
+            "uid": "prometheus"
+          }
         },
         {
+          "expr": "rate(rocm_aic_kfd_ais_rw_operations{rw=\"read\"}[2m])",
+          "legendFormat": "AIS reads/s",
+          "refId": "B",
           "datasource": {
             "type": "prometheus",
-            "uid": "${datasource}"
-          },
-          "expr": "rate(ais_rx_bytes_total[$__rate_interval])",
-          "legendFormat": "AIS RX (reads)"
+            "uid": "prometheus"
+          }
         }
       ],
       "type": "timeseries",
@@ -2458,7 +2733,7 @@
       "collapsed": false,
       "gridPos": {
         "x": 0,
-        "y": 152,
+        "y": 169,
         "w": 24,
         "h": 1
       },
@@ -2488,7 +2763,7 @@
       },
       "gridPos": {
         "x": 0,
-        "y": 153,
+        "y": 170,
         "w": 12,
         "h": 8
       },
@@ -2505,7 +2780,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "topk(10, sum by (kernel_name) (rate(hsa_kernel_launches_total{job=\"hsa_snoop\"}[$__rate_interval])))",
+          "expr": "topk(10, sum by (kernel_name) (rate(hsa_kernel_launches_total{job=\"hsa_snoop\"}[2m])))",
           "legendFormat": "{{kernel_name}}"
         }
       ],
@@ -2533,7 +2808,7 @@
       },
       "gridPos": {
         "x": 12,
-        "y": 153,
+        "y": 170,
         "w": 6,
         "h": 8
       },
@@ -2550,7 +2825,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "sum by (comm) (rate(hsa_kernel_launches_total{job=\"hsa_snoop\"}[$__rate_interval]))",
+          "expr": "sum by (comm) (rate(hsa_kernel_launches_total{job=\"hsa_snoop\"}[2m]))",
           "legendFormat": "{{comm}}"
         }
       ],
@@ -2578,7 +2853,7 @@
       },
       "gridPos": {
         "x": 18,
-        "y": 153,
+        "y": 170,
         "w": 6,
         "h": 4
       },
@@ -2630,9 +2905,9 @@
         "overrides": []
       },
       "gridPos": {
-        "x": 18,
-        "y": 157,
-        "w": 6,
+        "x": 0,
+        "y": 174,
+        "w": 24,
         "h": 4
       },
       "id": 63,
@@ -2648,7 +2923,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "sum by (comm) (rate(hsa_barrier_packets_total{job=\"hsa_snoop\"}[$__rate_interval]))",
+          "expr": "sum by (comm) (rate(hsa_barrier_packets_total{job=\"hsa_snoop\"}[2m]))",
           "legendFormat": "{{comm}}"
         }
       ],
@@ -2676,7 +2951,7 @@
       },
       "gridPos": {
         "x": 0,
-        "y": 161,
+        "y": 178,
         "w": 12,
         "h": 8
       },
@@ -2693,7 +2968,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "topk(5, 1000 * histogram_quantile(0.5, sum by (kernel_name, le) (rate(hsa_kernel_duration_seconds_bucket{job=\"hsa_snoop\"}[$__rate_interval]))))",
+          "expr": "topk(5, 1000 * histogram_quantile(0.5, sum by (kernel_name, le) (rate(hsa_kernel_duration_seconds_bucket{job=\"hsa_snoop\"}[2m]))))",
           "legendFormat": "p50 {{kernel_name}}"
         },
         {
@@ -2701,7 +2976,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "topk(5, 1000 * histogram_quantile(0.95, sum by (kernel_name, le) (rate(hsa_kernel_duration_seconds_bucket{job=\"hsa_snoop\"}[$__rate_interval]))))",
+          "expr": "topk(5, 1000 * histogram_quantile(0.95, sum by (kernel_name, le) (rate(hsa_kernel_duration_seconds_bucket{job=\"hsa_snoop\"}[2m]))))",
           "legendFormat": "p95 {{kernel_name}}"
         }
       ],
@@ -2729,7 +3004,7 @@
       },
       "gridPos": {
         "x": 12,
-        "y": 161,
+        "y": 178,
         "w": 6,
         "h": 8
       },
@@ -2746,7 +3021,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "sum by (comm) (rate(hsa_sdma_bytes_total{job=\"hsa_snoop\"}[$__rate_interval]))",
+          "expr": "sum by (comm) (rate(hsa_sdma_bytes_total{job=\"hsa_snoop\"}[2m]))",
           "legendFormat": "{{comm}}"
         }
       ],
@@ -2774,7 +3049,7 @@
       },
       "gridPos": {
         "x": 18,
-        "y": 161,
+        "y": 178,
         "w": 6,
         "h": 8
       },
@@ -2791,7 +3066,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "sum(rate(hsa_sdma_copies_total{job=\"hsa_snoop\"}[$__rate_interval]))",
+          "expr": "sum(rate(hsa_sdma_copies_total{job=\"hsa_snoop\"}[2m]))",
           "legendFormat": "copies/s"
         },
         {
@@ -2799,7 +3074,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "sum(rate(hsa_sdma_packets_total{job=\"hsa_snoop\"}[$__rate_interval]))",
+          "expr": "sum(rate(hsa_sdma_packets_total{job=\"hsa_snoop\"}[2m]))",
           "legendFormat": "packets/s"
         }
       ],
@@ -2986,7 +3261,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 169
+        "y": 186
       },
       "id": 200,
       "title": "vLLM \u2014 Extended",
@@ -3016,7 +3291,7 @@
         "h": 8,
         "w": 8,
         "x": 0,
-        "y": 170
+        "y": 187
       },
       "id": 80,
       "title": "GPU KV Cache Usage %",
@@ -3061,7 +3336,7 @@
         "h": 8,
         "w": 8,
         "x": 8,
-        "y": 170
+        "y": 187
       },
       "id": 81,
       "title": "E2E Request Latency p50 / p95 (s)",
@@ -3076,7 +3351,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "histogram_quantile(0.5, sum by (le) (rate(vllm:e2e_request_latency_seconds_bucket[$__rate_interval])))",
+          "expr": "histogram_quantile(0.5, sum by (le) (rate(vllm:e2e_request_latency_seconds_bucket[2m])))",
           "legendFormat": "p50"
         },
         {
@@ -3084,7 +3359,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "histogram_quantile(0.95, sum by (le) (rate(vllm:e2e_request_latency_seconds_bucket[$__rate_interval])))",
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(vllm:e2e_request_latency_seconds_bucket[2m])))",
           "legendFormat": "p95"
         }
       ],
@@ -3114,7 +3389,7 @@
         "h": 8,
         "w": 8,
         "x": 16,
-        "y": 170
+        "y": 187
       },
       "id": 82,
       "title": "Inter-Token Latency p50 / p95 (s)",
@@ -3129,7 +3404,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "histogram_quantile(0.5, sum by (le) (rate(vllm:inter_token_latency_seconds_bucket[$__rate_interval])))",
+          "expr": "histogram_quantile(0.5, sum by (le) (rate(vllm:inter_token_latency_seconds_bucket[2m])))",
           "legendFormat": "p50"
         },
         {
@@ -3137,7 +3412,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "histogram_quantile(0.95, sum by (le) (rate(vllm:inter_token_latency_seconds_bucket[$__rate_interval])))",
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(vllm:inter_token_latency_seconds_bucket[2m])))",
           "legendFormat": "p95"
         }
       ],
@@ -3167,7 +3442,7 @@
         "h": 8,
         "w": 8,
         "x": 0,
-        "y": 178
+        "y": 195
       },
       "id": 83,
       "title": "GPU Prefix Cache Hit Rate",
@@ -3182,7 +3457,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "sum(rate(vllm:prefix_cache_queries_total[$__rate_interval]))",
+          "expr": "sum(rate(vllm:prefix_cache_queries_total[2m]))",
           "legendFormat": "queries/s"
         },
         {
@@ -3190,7 +3465,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "sum(rate(vllm:prefix_cache_hits_total[$__rate_interval]))",
+          "expr": "sum(rate(vllm:prefix_cache_hits_total[2m]))",
           "legendFormat": "hits/s"
         }
       ],
@@ -3220,7 +3495,7 @@
         "h": 8,
         "w": 8,
         "x": 8,
-        "y": 178
+        "y": 195
       },
       "id": 84,
       "title": "Preemptions & Queue Time p95",
@@ -3235,7 +3510,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "sum(rate(vllm:num_preemptions_total[$__rate_interval]))",
+          "expr": "sum(rate(vllm:num_preemptions_total[2m]))",
           "legendFormat": "preemptions/s"
         },
         {
@@ -3243,7 +3518,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "histogram_quantile(0.95, sum by (le) (rate(vllm:request_queue_time_seconds_bucket[$__rate_interval])))",
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(vllm:request_queue_time_seconds_bucket[2m])))",
           "legendFormat": "queue time p95 (s)"
         }
       ],
@@ -3273,7 +3548,7 @@
         "h": 8,
         "w": 8,
         "x": 16,
-        "y": 178
+        "y": 195
       },
       "id": 85,
       "title": "Estimated GPU FLOP & Memory Bandwidth Rate",
@@ -3288,7 +3563,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "rate(vllm:estimated_flops_per_gpu_total[$__rate_interval])",
+          "expr": "rate(vllm:estimated_flops_per_gpu_total[2m])",
           "legendFormat": "FLOP/s"
         },
         {
@@ -3296,7 +3571,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "rate(vllm:estimated_read_bytes_per_gpu_total[$__rate_interval])",
+          "expr": "rate(vllm:estimated_read_bytes_per_gpu_total[2m])",
           "legendFormat": "read B/s"
         },
         {
@@ -3304,7 +3579,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "rate(vllm:estimated_write_bytes_per_gpu_total[$__rate_interval])",
+          "expr": "rate(vllm:estimated_write_bytes_per_gpu_total[2m])",
           "legendFormat": "write B/s"
         }
       ],
@@ -3316,7 +3591,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 208
+        "y": 225
       },
       "id": 201,
       "title": "LMCache \u2014 Extended",
@@ -3346,7 +3621,7 @@
         "h": 8,
         "w": 8,
         "x": 0,
-        "y": 209
+        "y": 226
       },
       "id": 90,
       "title": "L1\u2192GPU Load Throughput (GB/s)",
@@ -3361,7 +3636,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "histogram_quantile(0.5, sum by (le) (rate(lmcache_mp_l0_l1_load_throughput_GB_per_second_bucket[$__rate_interval])))",
+          "expr": "histogram_quantile(0.5, sum by (le) (rate(lmcache_mp_l0_l1_load_throughput_GB_per_second_bucket[2m])))",
           "legendFormat": "load p50 GB/s"
         },
         {
@@ -3369,7 +3644,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "histogram_quantile(0.95, sum by (le) (rate(lmcache_mp_l0_l1_load_throughput_GB_per_second_bucket[$__rate_interval])))",
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(lmcache_mp_l0_l1_load_throughput_GB_per_second_bucket[2m])))",
           "legendFormat": "load p95 GB/s"
         },
         {
@@ -3377,7 +3652,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "histogram_quantile(0.5, sum by (le) (rate(lmcache_mp_l0_l1_store_throughput_GB_per_second_bucket[$__rate_interval])))",
+          "expr": "histogram_quantile(0.5, sum by (le) (rate(lmcache_mp_l0_l1_store_throughput_GB_per_second_bucket[2m])))",
           "legendFormat": "store p50 GB/s"
         }
       ],
@@ -3407,7 +3682,7 @@
         "h": 8,
         "w": 8,
         "x": 8,
-        "y": 209
+        "y": 226
       },
       "id": 91,
       "title": "L2 In-Flight Store Queue Depth",
@@ -3422,7 +3697,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "sum(lmcache_mp_num_inflight_l2_stores)",
+          "expr": "(sum(lmcache_mp_num_inflight_l2_stores)) or vector(0)",
           "legendFormat": "in-flight L2 stores"
         }
       ],
@@ -3452,7 +3727,7 @@
         "h": 8,
         "w": 8,
         "x": 16,
-        "y": 209
+        "y": 226
       },
       "id": 92,
       "title": "Chunk Reuse Gap (s) \u2014 Cache Effectiveness",
@@ -3467,7 +3742,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "histogram_quantile(0.5, sum by (le) (rate(lmcache_mp_l1_chunk_reuse_gap_seconds_bucket[$__rate_interval])))",
+          "expr": "histogram_quantile(0.5, sum by (le) (rate(lmcache_mp_l1_chunk_reuse_gap_seconds_bucket[2m])))",
           "legendFormat": "p50 reuse gap"
         },
         {
@@ -3475,7 +3750,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "histogram_quantile(0.95, sum by (le) (rate(lmcache_mp_l1_chunk_reuse_gap_seconds_bucket[$__rate_interval])))",
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(lmcache_mp_l1_chunk_reuse_gap_seconds_bucket[2m])))",
           "legendFormat": "p95 reuse gap"
         }
       ],
@@ -3505,7 +3780,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 217
+        "y": 234
       },
       "id": 93,
       "title": "LMCache Operation Rate",
@@ -3520,7 +3795,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "sum(rate(lmcache_mp_prefetch_requests_total{job=\"lmcache\"}[$__rate_interval]))",
+          "expr": "sum(rate(lmcache_mp_prefetch_requests_total{job=\"lmcache\"}[2m]))",
           "legendFormat": "prefetch lookups/s",
           "refId": "A"
         },
@@ -3529,7 +3804,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "sum(rate(lmcache_mp_l2_store_submitted_requests_total{job=\"lmcache\"}[$__rate_interval]))",
+          "expr": "sum(rate(lmcache_mp_l2_store_submitted_requests_total{job=\"lmcache\"}[2m]))",
           "legendFormat": "L2 store submitted/s",
           "refId": "B"
         },
@@ -3538,7 +3813,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "sum(rate(lmcache_mp_l2_prefetch_load_submitted_requests_total{job=\"lmcache\"}[$__rate_interval]))",
+          "expr": "sum(rate(lmcache_mp_l2_prefetch_load_submitted_requests_total{job=\"lmcache\"}[2m]))",
           "legendFormat": "L2 load submitted/s",
           "refId": "C"
         }
@@ -3569,7 +3844,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 217
+        "y": 234
       },
       "id": 94,
       "title": "LMCache L0\u2192L1 Throughput (GB/s)",
@@ -3584,7 +3859,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "histogram_quantile(0.5, sum by (le) (rate(lmcache_mp_l0_l1_store_throughput_GB_per_second_bucket{job=\"lmcache\"}[$__rate_interval])))",
+          "expr": "histogram_quantile(0.5, sum by (le) (rate(lmcache_mp_l0_l1_store_throughput_GB_per_second_bucket{job=\"lmcache\"}[2m])))",
           "legendFormat": "store p50 (GB/s)",
           "refId": "A"
         },
@@ -3593,7 +3868,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "histogram_quantile(0.5, sum by (le) (rate(lmcache_mp_l0_l1_load_throughput_GB_per_second_bucket{job=\"lmcache\"}[$__rate_interval])))",
+          "expr": "histogram_quantile(0.5, sum by (le) (rate(lmcache_mp_l0_l1_load_throughput_GB_per_second_bucket{job=\"lmcache\"}[2m])))",
           "legendFormat": "load p50 (GB/s)",
           "refId": "B"
         }
@@ -3606,7 +3881,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 226
+        "y": 243
       },
       "id": 202,
       "title": "Node \u2014 Extended",
@@ -3636,7 +3911,7 @@
         "h": 8,
         "w": 8,
         "x": 0,
-        "y": 227
+        "y": 244
       },
       "id": 95,
       "title": "System Load (1m / 5m / 15m)",
@@ -3697,7 +3972,7 @@
         "h": 8,
         "w": 8,
         "x": 8,
-        "y": 227
+        "y": 244
       },
       "id": 96,
       "title": "NVMe Capacity Used (bytes)",
@@ -3750,7 +4025,7 @@
         "h": 8,
         "w": 8,
         "x": 16,
-        "y": 227
+        "y": 244
       },
       "id": 97,
       "title": "IO Pressure (PSI stalled seconds rate)",
@@ -3765,7 +4040,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "rate(node_pressure_io_stalled_seconds_total[$__rate_interval])",
+          "expr": "rate(node_pressure_io_stalled_seconds_total[2m])",
           "legendFormat": "IO stalled"
         },
         {
@@ -3773,7 +4048,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "rate(node_pressure_memory_stalled_seconds_total[$__rate_interval])",
+          "expr": "rate(node_pressure_memory_stalled_seconds_total[2m])",
           "legendFormat": "memory stalled"
         }
       ],
@@ -3803,7 +4078,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 235
+        "y": 252
       },
       "id": 98,
       "title": "InfiniBand / RoCE Port Throughput (B/s)",
@@ -3818,7 +4093,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "rate(node_infiniband_port_data_received_bytes_total[$__rate_interval])",
+          "expr": "rate(node_infiniband_port_data_received_bytes_total[2m])",
           "legendFormat": "RX {{device}} p{{port}}"
         },
         {
@@ -3826,7 +4101,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "rate(node_infiniband_port_data_transmitted_bytes_total[$__rate_interval])",
+          "expr": "rate(node_infiniband_port_data_transmitted_bytes_total[2m])",
           "legendFormat": "TX {{device}} p{{port}}"
         }
       ],
@@ -3856,7 +4131,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 235
+        "y": 252
       },
       "id": 99,
       "title": "Filesystem Available Space",
@@ -3883,7 +4158,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 186
+        "y": 203
       },
       "id": 203,
       "title": "vLLM \u2014 ISL / OSL (Input & Output Sequence Length)",
@@ -3913,7 +4188,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 187
+        "y": 204
       },
       "id": 110,
       "title": "ISL Distribution (prompt tokens) \u2014 p50 / p95 / p99",
@@ -3928,7 +4203,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "histogram_quantile(0.5,  sum by (le) (rate(vllm:request_prompt_tokens_bucket[$__rate_interval])))",
+          "expr": "histogram_quantile(0.5,  sum by (le) (rate(vllm:request_prompt_tokens_bucket[2m])))",
           "legendFormat": "ISL p50"
         },
         {
@@ -3936,7 +4211,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "histogram_quantile(0.95, sum by (le) (rate(vllm:request_prompt_tokens_bucket[$__rate_interval])))",
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(vllm:request_prompt_tokens_bucket[2m])))",
           "legendFormat": "ISL p95"
         },
         {
@@ -3944,7 +4219,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "histogram_quantile(0.99, sum by (le) (rate(vllm:request_prompt_tokens_bucket[$__rate_interval])))",
+          "expr": "histogram_quantile(0.99, sum by (le) (rate(vllm:request_prompt_tokens_bucket[2m])))",
           "legendFormat": "ISL p99"
         }
       ],
@@ -3974,7 +4249,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 187
+        "y": 204
       },
       "id": 111,
       "title": "OSL Distribution (generation tokens) \u2014 p50 / p95 / p99",
@@ -3989,7 +4264,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "histogram_quantile(0.5,  sum by (le) (rate(vllm:request_generation_tokens_bucket[$__rate_interval])))",
+          "expr": "histogram_quantile(0.5,  sum by (le) (rate(vllm:request_generation_tokens_bucket[2m])))",
           "legendFormat": "OSL p50"
         },
         {
@@ -3997,7 +4272,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "histogram_quantile(0.95, sum by (le) (rate(vllm:request_generation_tokens_bucket[$__rate_interval])))",
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(vllm:request_generation_tokens_bucket[2m])))",
           "legendFormat": "OSL p95"
         },
         {
@@ -4005,7 +4280,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "histogram_quantile(0.99, sum by (le) (rate(vllm:request_generation_tokens_bucket[$__rate_interval])))",
+          "expr": "histogram_quantile(0.99, sum by (le) (rate(vllm:request_generation_tokens_bucket[2m])))",
           "legendFormat": "OSL p99"
         }
       ],
@@ -4034,7 +4309,7 @@
         "h": 4,
         "w": 6,
         "x": 0,
-        "y": 195
+        "y": 212
       },
       "id": 112,
       "title": "Average ISL (prompt tokens)",
@@ -4055,7 +4330,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "sum(rate(vllm:request_prompt_tokens_sum[$__rate_interval])) / sum(rate(vllm:request_prompt_tokens_count[$__rate_interval]))",
+          "expr": "sum(rate(vllm:request_prompt_tokens_sum[2m])) / sum(rate(vllm:request_prompt_tokens_count[2m]))",
           "legendFormat": "avg ISL"
         }
       ],
@@ -4084,7 +4359,7 @@
         "h": 4,
         "w": 6,
         "x": 6,
-        "y": 195
+        "y": 212
       },
       "id": 113,
       "title": "Average OSL (generation tokens)",
@@ -4105,7 +4380,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "sum(rate(vllm:request_generation_tokens_sum[$__rate_interval])) / sum(rate(vllm:request_generation_tokens_count[$__rate_interval]))",
+          "expr": "sum(rate(vllm:request_generation_tokens_sum[2m])) / sum(rate(vllm:request_generation_tokens_count[2m]))",
           "legendFormat": "avg OSL"
         }
       ],
@@ -4134,7 +4409,7 @@
         "h": 4,
         "w": 6,
         "x": 12,
-        "y": 195
+        "y": 212
       },
       "id": 114,
       "title": "ISL p99 (prompt tokens)",
@@ -4155,7 +4430,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "histogram_quantile(0.99, sum by (le) (rate(vllm:request_prompt_tokens_bucket[$__rate_interval])))",
+          "expr": "histogram_quantile(0.99, sum by (le) (rate(vllm:request_prompt_tokens_bucket[2m])))",
           "legendFormat": "ISL p99"
         }
       ],
@@ -4184,7 +4459,7 @@
         "h": 4,
         "w": 6,
         "x": 18,
-        "y": 195
+        "y": 212
       },
       "id": 115,
       "title": "OSL p99 (generation tokens)",
@@ -4205,7 +4480,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "histogram_quantile(0.99, sum by (le) (rate(vllm:request_generation_tokens_bucket[$__rate_interval])))",
+          "expr": "histogram_quantile(0.99, sum by (le) (rate(vllm:request_generation_tokens_bucket[2m])))",
           "legendFormat": "OSL p99"
         }
       ],
@@ -4235,7 +4510,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 199
+        "y": 216
       },
       "id": 116,
       "title": "Average ISL vs OSL over time",
@@ -4250,7 +4525,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "sum(rate(vllm:request_prompt_tokens_sum[$__rate_interval])) / sum(rate(vllm:request_prompt_tokens_count[$__rate_interval]))",
+          "expr": "sum(rate(vllm:request_prompt_tokens_sum[2m])) / sum(rate(vllm:request_prompt_tokens_count[2m]))",
           "legendFormat": "avg ISL"
         },
         {
@@ -4258,7 +4533,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "sum(rate(vllm:request_generation_tokens_sum[$__rate_interval])) / sum(rate(vllm:request_generation_tokens_count[$__rate_interval]))",
+          "expr": "sum(rate(vllm:request_generation_tokens_sum[2m])) / sum(rate(vllm:request_generation_tokens_count[2m]))",
           "legendFormat": "avg OSL"
         }
       ],
@@ -4288,7 +4563,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 199
+        "y": 216
       },
       "id": 117,
       "title": "Request Rate & Total Tokens/s",
@@ -4303,7 +4578,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "sum(rate(vllm:request_success_total[$__rate_interval]))",
+          "expr": "sum(rate(vllm:request_success_total[2m]))",
           "legendFormat": "requests/s"
         },
         {
@@ -4311,7 +4586,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "sum(rate(vllm:request_prompt_tokens_sum[$__rate_interval])) + sum(rate(vllm:request_generation_tokens_sum[$__rate_interval]))",
+          "expr": "sum(rate(vllm:request_prompt_tokens_sum[2m])) + sum(rate(vllm:request_generation_tokens_sum[2m]))",
           "legendFormat": "total tokens/s"
         }
       ],
@@ -4476,7 +4751,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 243
+        "y": 260
       },
       "id": 400,
       "title": "LMCache Coordinator",
@@ -4531,7 +4806,7 @@
         "h": 4,
         "w": 4,
         "x": 0,
-        "y": 244
+        "y": 261
       },
       "id": 401,
       "options": {
@@ -4587,7 +4862,7 @@
         "h": 4,
         "w": 4,
         "x": 4,
-        "y": 244
+        "y": 261
       },
       "id": 402,
       "options": {
@@ -4659,7 +4934,7 @@
         "h": 4,
         "w": 4,
         "x": 8,
-        "y": 244
+        "y": 261
       },
       "id": 403,
       "options": {
@@ -4711,7 +4986,7 @@
         "h": 8,
         "w": 8,
         "x": 0,
-        "y": 248
+        "y": 265
       },
       "id": 404,
       "options": {
@@ -4771,7 +5046,7 @@
         "h": 8,
         "w": 8,
         "x": 8,
-        "y": 248
+        "y": 265
       },
       "id": 405,
       "options": {
@@ -4822,7 +5097,7 @@
         "h": 8,
         "w": 8,
         "x": 16,
-        "y": 248
+        "y": 265
       },
       "id": 406,
       "options": {
@@ -4882,7 +5157,7 @@
         "h": 4,
         "w": 12,
         "x": 12,
-        "y": 244
+        "y": 261
       },
       "id": 407,
       "options": {
@@ -4914,7 +5189,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 256
+        "y": 273
       },
       "id": 408,
       "title": "LMCache \u2014 Adapter & Transport Health",
@@ -5006,7 +5281,7 @@
         "h": 6,
         "w": 8,
         "x": 0,
-        "y": 257
+        "y": 274
       },
       "id": 409,
       "options": {
@@ -5083,7 +5358,7 @@
         "h": 6,
         "w": 8,
         "x": 8,
-        "y": 257
+        "y": 274
       },
       "id": 410,
       "options": {
@@ -5101,7 +5376,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "rate(agent_xfer_time_total{job=\"nixl\"}[$__rate_interval]) / rate(agent_tx_requests_num_total{job=\"nixl\"}[$__rate_interval])",
+          "expr": "rate(agent_xfer_time_total{job=\"nixl\"}[2m]) / rate(agent_tx_requests_num_total{job=\"nixl\"}[2m])",
           "legendFormat": "avg xfer latency (\u00b5s/req)",
           "refId": "A"
         },
@@ -5110,7 +5385,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "rate(agent_xfer_post_time_total{job=\"nixl\"}[$__rate_interval]) / rate(agent_tx_requests_num_total{job=\"nixl\"}[$__rate_interval])",
+          "expr": "rate(agent_xfer_post_time_total{job=\"nixl\"}[2m]) / rate(agent_tx_requests_num_total{job=\"nixl\"}[2m])",
           "legendFormat": "avg post-to-backend latency (\u00b5s/req)",
           "refId": "B"
         }
@@ -5158,7 +5433,7 @@
         "h": 6,
         "w": 8,
         "x": 16,
-        "y": 257
+        "y": 274
       },
       "id": 411,
       "options": {
@@ -5176,7 +5451,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "(sum(rate(lmcache_mp_l1_allocation_failure_chunks_total{job=\"lmcache\"}[$__rate_interval])) or vector(0))",
+          "expr": "(sum(rate(lmcache_mp_l1_allocation_failure_chunks_total{job=\"lmcache\"}[2m])) or vector(0))",
           "legendFormat": "L1 alloc failures/s",
           "refId": "A"
         },
@@ -5185,7 +5460,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "(sum(rate(lmcache_mp_l1_eviction_loop_triggered_total{job=\"lmcache\"}[$__rate_interval])) or vector(0))",
+          "expr": "(sum(rate(lmcache_mp_l1_eviction_loop_triggered_total{job=\"lmcache\"}[2m])) or vector(0))",
           "legendFormat": "eviction triggered/s",
           "refId": "B"
         }
@@ -5396,7 +5671,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 263
+        "y": 280
       },
       "id": 415,
       "title": "KV Block Residency (vLLM + LMCache L0)",
@@ -5426,7 +5701,7 @@
         "h": 8,
         "w": 8,
         "x": 0,
-        "y": 264
+        "y": 281
       },
       "id": 416,
       "options": {
@@ -5444,7 +5719,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "histogram_quantile(0.5, sum by (le) (rate(vllm:kv_block_lifetime_seconds_bucket{job=\"vllm\"}[$__rate_interval])))",
+          "expr": "histogram_quantile(0.5, sum by (le) (rate(vllm:kv_block_lifetime_seconds_bucket{job=\"vllm\"}[2m])))",
           "legendFormat": "vLLM p50",
           "refId": "A"
         },
@@ -5453,7 +5728,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "histogram_quantile(0.95, sum by (le) (rate(vllm:kv_block_lifetime_seconds_bucket{job=\"vllm\"}[$__rate_interval])))",
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(vllm:kv_block_lifetime_seconds_bucket{job=\"vllm\"}[2m])))",
           "legendFormat": "vLLM p95",
           "refId": "B"
         },
@@ -5462,7 +5737,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "histogram_quantile(0.5, sum by (le) (rate(lmcache_mp_l0_block_lifetime_seconds_bucket{job=\"lmcache\"}[$__rate_interval])))",
+          "expr": "histogram_quantile(0.5, sum by (le) (rate(lmcache_mp_l0_block_lifetime_seconds_bucket{job=\"lmcache\"}[2m])))",
           "legendFormat": "lmcache L0 p50",
           "refId": "C"
         },
@@ -5471,7 +5746,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "histogram_quantile(0.95, sum by (le) (rate(lmcache_mp_l0_block_lifetime_seconds_bucket{job=\"lmcache\"}[$__rate_interval])))",
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(lmcache_mp_l0_block_lifetime_seconds_bucket{job=\"lmcache\"}[2m])))",
           "legendFormat": "lmcache L0 p95",
           "refId": "D"
         }
@@ -5503,7 +5778,7 @@
         "h": 8,
         "w": 8,
         "x": 8,
-        "y": 264
+        "y": 281
       },
       "id": 417,
       "options": {
@@ -5521,7 +5796,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "histogram_quantile(0.5, sum by (le) (rate(vllm:kv_block_idle_before_evict_seconds_bucket{job=\"vllm\"}[$__rate_interval])))",
+          "expr": "histogram_quantile(0.5, sum by (le) (rate(vllm:kv_block_idle_before_evict_seconds_bucket{job=\"vllm\"}[2m])))",
           "legendFormat": "vLLM p50",
           "refId": "A"
         },
@@ -5530,7 +5805,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "histogram_quantile(0.95, sum by (le) (rate(vllm:kv_block_idle_before_evict_seconds_bucket{job=\"vllm\"}[$__rate_interval])))",
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(vllm:kv_block_idle_before_evict_seconds_bucket{job=\"vllm\"}[2m])))",
           "legendFormat": "vLLM p95",
           "refId": "B"
         },
@@ -5539,7 +5814,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "histogram_quantile(0.5, sum by (le) (rate(lmcache_mp_l0_block_idle_before_evict_seconds_bucket{job=\"lmcache\"}[$__rate_interval])))",
+          "expr": "histogram_quantile(0.5, sum by (le) (rate(lmcache_mp_l0_block_idle_before_evict_seconds_bucket{job=\"lmcache\"}[2m])))",
           "legendFormat": "lmcache L0 p50",
           "refId": "C"
         },
@@ -5548,7 +5823,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "histogram_quantile(0.95, sum by (le) (rate(lmcache_mp_l0_block_idle_before_evict_seconds_bucket{job=\"lmcache\"}[$__rate_interval])))",
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(lmcache_mp_l0_block_idle_before_evict_seconds_bucket{job=\"lmcache\"}[2m])))",
           "legendFormat": "lmcache L0 p95",
           "refId": "D"
         }
@@ -5580,7 +5855,7 @@
         "h": 8,
         "w": 8,
         "x": 16,
-        "y": 264
+        "y": 281
       },
       "id": 418,
       "options": {
@@ -5598,7 +5873,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "histogram_quantile(0.5, sum by (le) (rate(vllm:kv_block_reuse_gap_seconds_bucket{job=\"vllm\"}[$__rate_interval])))",
+          "expr": "histogram_quantile(0.5, sum by (le) (rate(vllm:kv_block_reuse_gap_seconds_bucket{job=\"vllm\"}[2m])))",
           "legendFormat": "vLLM p50",
           "refId": "A"
         },
@@ -5607,7 +5882,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "histogram_quantile(0.95, sum by (le) (rate(vllm:kv_block_reuse_gap_seconds_bucket{job=\"vllm\"}[$__rate_interval])))",
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(vllm:kv_block_reuse_gap_seconds_bucket{job=\"vllm\"}[2m])))",
           "legendFormat": "vLLM p95",
           "refId": "B"
         },
@@ -5616,7 +5891,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "histogram_quantile(0.5, sum by (le) (rate(lmcache_mp_l1_chunk_reuse_gap_seconds_bucket{job=\"lmcache\"}[$__rate_interval])))",
+          "expr": "histogram_quantile(0.5, sum by (le) (rate(lmcache_mp_l1_chunk_reuse_gap_seconds_bucket{job=\"lmcache\"}[2m])))",
           "legendFormat": "lmcache L1 chunk p50",
           "refId": "C"
         },
@@ -5625,7 +5900,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "histogram_quantile(0.95, sum by (le) (rate(lmcache_mp_l1_chunk_reuse_gap_seconds_bucket{job=\"lmcache\"}[$__rate_interval])))",
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(lmcache_mp_l1_chunk_reuse_gap_seconds_bucket{job=\"lmcache\"}[2m])))",
           "legendFormat": "lmcache L1 chunk p95",
           "refId": "D"
         }
@@ -5658,7 +5933,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 272
+        "y": 289
       },
       "id": 419,
       "options": {
@@ -5676,7 +5951,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "histogram_quantile(0.5, sum by (le) (rate(lmcache_mp_l0_l1_store_throughput_GB_per_second_bucket{job=\"lmcache\"}[$__rate_interval]))) * 1e9",
+          "expr": "histogram_quantile(0.5, sum by (le) (rate(lmcache_mp_l0_l1_store_throughput_GB_per_second_bucket{job=\"lmcache\"}[2m]))) * 1e9",
           "legendFormat": "store p50 (B/s)",
           "refId": "A"
         },
@@ -5685,7 +5960,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "histogram_quantile(0.5, sum by (le) (rate(lmcache_mp_l0_l1_load_throughput_GB_per_second_bucket{job=\"lmcache\"}[$__rate_interval]))) * 1e9",
+          "expr": "histogram_quantile(0.5, sum by (le) (rate(lmcache_mp_l0_l1_load_throughput_GB_per_second_bucket{job=\"lmcache\"}[2m]))) * 1e9",
           "legendFormat": "load p50 (B/s)",
           "refId": "B"
         }
@@ -5719,7 +5994,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 272
+        "y": 289
       },
       "id": 420,
       "options": {
@@ -5737,7 +6012,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "sum(rate(vllm:prefix_cache_hits_total{job=\"vllm\"}[$__rate_interval])) / sum(rate(vllm:prefix_cache_queries_total{job=\"vllm\"}[$__rate_interval]))",
+          "expr": "sum(rate(vllm:prefix_cache_hits_total{job=\"vllm\"}[2m])) / sum(rate(vllm:prefix_cache_queries_total{job=\"vllm\"}[2m]))",
           "legendFormat": "GPU prefix hit rate",
           "refId": "A"
         }
@@ -5751,7 +6026,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 280
+        "y": 297
       },
       "id": 421,
       "title": "Engine & Event Bus Health",
@@ -5798,7 +6073,7 @@
         "h": 4,
         "w": 4,
         "x": 0,
-        "y": 281
+        "y": 298
       },
       "id": 422,
       "options": {
@@ -5839,7 +6114,7 @@
         "h": 4,
         "w": 6,
         "x": 4,
-        "y": 281
+        "y": 298
       },
       "id": 423,
       "options": {
@@ -5897,7 +6172,7 @@
         "h": 4,
         "w": 5,
         "x": 10,
-        "y": 281
+        "y": 298
       },
       "id": 424,
       "options": {
@@ -5951,7 +6226,7 @@
         "h": 4,
         "w": 5,
         "x": 15,
-        "y": 281
+        "y": 298
       },
       "id": 425,
       "options": {
@@ -5992,7 +6267,7 @@
         "h": 4,
         "w": 4,
         "x": 20,
-        "y": 281
+        "y": 298
       },
       "id": 426,
       "options": {
@@ -6024,7 +6299,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 285
+        "y": 302
       },
       "id": 427,
       "title": "GPU Activity (hsa-snoop)",
@@ -6048,7 +6323,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 286
+        "y": 303
       },
       "id": 428,
       "options": {
@@ -6109,7 +6384,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 286
+        "y": 303
       },
       "id": 429,
       "options": {
@@ -6147,7 +6422,7 @@
       },
       "fieldConfig": {
         "defaults": {
-          "unit": "short",
+          "unit": "percentunit",
           "decimals": 0,
           "color": {
             "mode": "thresholds"
@@ -6170,13 +6445,13 @@
             ]
           },
           "min": 0,
-          "max": 4018
+          "max": 1
         },
         "overrides": []
       },
       "gridPos": {
         "h": 4,
-        "w": 8,
+        "w": 24,
         "x": 0,
         "y": 92
       },
@@ -6197,42 +6472,15 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "aic:vllm:kv_cache_usage_with_blocks",
-          "legendFormat": "Usage ratio",
+          "expr": "vllm:kv_cache_usage_perc{job=\"vllm\"}",
+          "legendFormat": "KV cache fill",
           "refId": "A"
         }
       ],
-      "title": "KV Blocks Resident in VRAM",
-      "description": "GPU KV cache blocks currently occupied. Total available: 4018 (block_size=64 tokens, fp8). Source: vllm:kv_cache_usage_perc \u00d7 num_gpu_blocks from cache_config_info.",
+      "title": "KV Cache Fill Rate",
+      "description": "Fraction of GPU KV cache blocks currently in use (0\u20131). Multiply by the block capacity in the \"VRAM KV Cache Block Capacity\" panel to get the absolute block count.",
       "type": "stat",
-      "transformations": [
-        {
-          "id": "convertFieldType",
-          "options": {
-            "conversions": [
-              {
-                "targetField": "num_gpu_blocks",
-                "destinationType": "number"
-              }
-            ]
-          }
-        },
-        {
-          "id": "calculateField",
-          "options": {
-            "alias": "KV Blocks in VRAM",
-            "mode": "binary",
-            "binary": {
-              "left": "Value",
-              "operator": "*",
-              "right": "num_gpu_blocks"
-            },
-            "reduce": {
-              "reducer": "sum"
-            }
-          }
-        }
-      ]
+      "transformations": []
     }
   ],
   "refresh": "10s",

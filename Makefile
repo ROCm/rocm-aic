@@ -215,8 +215,9 @@ override export GDS_SLAB_DATA := /mnt/m2m_nobackup/aic-cliff/slab
 override export HF_HOME       := $(AIC_SHARED_NFS)/huggingface
 override export ROCM_ARCH     := gfx950
 export AIC_L2_BACKEND         ?= nixl_posix
-export LMCACHE_NIXL_POSIX_SLOT_SIZE ?= 33554432
-export LMCACHE_NIXL_POSIX_POOL      ?= 32768
+export LMCACHE_NIXL_POSIX_SLOT_SIZE    ?= 33554432
+export LMCACHE_NIXL_POSIX_POOL         ?= 32768
+export LMCACHE_NIXL_DYNAMIC_MAX_GB     ?= 100
 override export AIC_EXPORTERS            := safe
 override export AIC_HSA_SNOOP_PID_MODE  := container:aic-lmcache
 else

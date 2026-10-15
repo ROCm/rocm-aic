@@ -8,9 +8,10 @@
         restart-vllm restart-lmcache venv vllm-reset-test bench-serve
 
 # ---- Agentic serving benchmark -----------------------------------------------
-BENCH_DURATION ?= 60     # minutes
-BENCH_RATE     ?= 0.5    # requests/second (keep low on 16 GB GPU)
-BENCH_TOKENS   ?= 256    # max output tokens per request
+BENCH_DURATION  ?= 60     # minutes
+BENCH_RATE      ?= 0.5    # requests/second (keep low on 16 GB GPU)
+BENCH_TOKENS    ?= 256    # max output tokens per request
+BENCH_POOL_SIZE ?= 0      # 0 = full dataset; N = repeat within N convs (generates cache hits)
 BENCH_CONCUR   ?= 2      # max concurrent requests
 
 ensure-compose:
@@ -170,19 +171,8 @@ bench-serve: check-hf-token prep-dirs
 	@echo "  Model:       $(VLLM_MODEL)"
 	@echo "  Concurrency: $(BENCH_CONCUR)  Max tokens: $(BENCH_TOKENS)"
 	@echo "  Results:     /tmp/aic-bench-results/"
-	@mkdir -p "$(AIC_METRICS_DIR)"
-	PROM_UID="$$(id -u)" PROM_GID="$$(id -g)" \
-	    LMCACHE_L1_SIZE_GB=$(LMCACHE_L1_SIZE_GB) \
-	    AIC_L2_BACKEND=$(AIC_L2_BACKEND) \
-	    $(COMPOSE_CACHE) --profile monitoring up -d
-	@echo "Waiting for vLLM to be healthy..."
-	@for i in $$(seq 1 $${VLM_READY_RETRIES:-60}); do \
-	    r=$$(curl -s -o /dev/null -w '%{http_code}' \
-	        http://localhost:$${VLLM_HOST_PORT:-8000}/health 2>/dev/null); \
-	    [ "$$r" = "200" ] && echo "vLLM healthy after $$((i*5))s" && break; \
-	    [ "$$i" = "$${VLM_READY_RETRIES:-60}" ] && echo "ERROR: vLLM not healthy after timeout" >&2 && exit 1; \
-	    sleep 5; \
-	done
+	@curl -sf http://localhost:$${VLLM_HOST_PORT:-8000}/health >/dev/null || { \
+	    echo "ERROR: vLLM not healthy at http://localhost:$${VLLM_HOST_PORT:-8000} — run 'make up' first" >&2; exit 1; }
 	$(PYTHON) "$(REPO_ROOT)/benchmarks/aic_bench_serve.py" \
 	    --base-url http://localhost:8000 \
 	    --model "$(VLLM_MODEL)" \
@@ -190,5 +180,6 @@ bench-serve: check-hf-token prep-dirs
 	    --rate $(BENCH_RATE) \
 	    --max-tokens $(BENCH_TOKENS) \
 	    --concurrency $(BENCH_CONCUR) \
+	    $(if $(filter-out 0,$(BENCH_POOL_SIZE)),--pool-size $(BENCH_POOL_SIZE),) \
 	    --output /tmp/aic-bench-results
 	@echo "Benchmark complete. Run 'make down' to stop the stack."

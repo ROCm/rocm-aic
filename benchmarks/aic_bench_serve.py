@@ -21,7 +21,10 @@ SHAREGPT_URL = (
     "ShareGPT_Vicuna_unfiltered/resolve/main/"
     "ShareGPT_V3_unfiltered_cleaned_split.json"
 )
-DEFAULT_DATASET = "/tmp/ShareGPT_V3_unfiltered_cleaned_split.json"
+DEFAULT_DATASET = os.getenv(
+    "AIC_BENCH_DATASET",
+    "/tmp/ShareGPT_V3_unfiltered_cleaned_split.json",
+)
 
 
 def download_dataset(path: str) -> list:
@@ -99,6 +102,10 @@ def main():
     ap.add_argument("--max-tokens", type=int, default=256, help="Max output tokens")
     ap.add_argument("--concurrency", type=int, default=2, help="Max concurrent requests")
     ap.add_argument("--seed", type=int, default=42)
+    ap.add_argument("--pool-size", type=int, default=0,
+                    help="Limit prompt pool to N randomly sampled conversations "
+                         "(0 = use full dataset). Repeat requests within the pool "
+                         "generate L1/L2 cache hits.")
     ap.add_argument("--output", default="/tmp/aic-bench-results")
     args = ap.parse_args()
 
@@ -117,7 +124,11 @@ def main():
         if msgs:
             prompts.append(msgs)
     random.shuffle(prompts)
-    print(f"Prompt pool: {len(prompts)} valid conversations")
+    if args.pool_size > 0:
+        prompts = prompts[:args.pool_size]
+        print(f"Prompt pool: {len(prompts)} conversations (limited by --pool-size)")
+    else:
+        print(f"Prompt pool: {len(prompts)} valid conversations")
 
     end_time = time.monotonic() + args.duration * 60
     interval = 1.0 / args.rate
@@ -133,7 +144,7 @@ def main():
         try:
             while time.monotonic() < end_time:
                 t_send = time.monotonic()
-                msgs = prompts[req_idx % len(prompts)]
+                msgs = random.choice(prompts) if args.pool_size > 0 else prompts[req_idx % len(prompts)]
                 req_idx += 1
                 fut = pool.submit(
                     send_request,
@@ -174,10 +185,14 @@ def main():
         except KeyboardInterrupt:
             print("\nInterrupted — waiting for in-flight requests...")
 
-        # Drain remaining
-        for f in as_completed(futures, timeout=60):
-            r = f.result()
-            results.append(r)
+        # Drain remaining in-flight requests
+        try:
+            for f in as_completed(futures, timeout=120):
+                r = f.result()
+                results.append(r)
+        except TimeoutError:
+            pending = sum(1 for f in futures if not f.done())
+            print(f"\nDrain timeout: {pending} request(s) still in flight after 120s — skipping.")
     conv_log.close()
 
     # Summary

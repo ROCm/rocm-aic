@@ -206,6 +206,24 @@ x-lmcache-command: &lmcache-command
         --worker-reap-timeout-seconds "$${LMCACHE_WORKER_REAP_TIMEOUT:-3600}" \
         --prometheus-port 9091 \
         $$_COORD_FLAGS
+    elif [ "$$AIC_L2_BACKEND" = "nixl_posix_dynamic" ]; then
+      # nixl_store_dynamic POSIX: same POSIX/buffered-IO path as nixl_posix but
+      # uses the dynamic-file adapter (one file per KV chunk, atomic rename on
+      # store completion).  On restart, existing files are rediscovered lazily on
+      # the first lookup miss — L2 blocks survive lmcache server restarts without
+      # a full scan.  max_capacity_gb caps total NVMe usage.
+      exec lmcache server \
+        --host 0.0.0.0 \
+        --http-port 8080 \
+        --port "$$LMCACHE_PORT" \
+        --l1-size-gb "$$LMCACHE_L1_SIZE_GB" \
+        --eviction-policy LRU \
+        --max-gpu-workers "$${LMCACHE_MAX_GPU_WORKERS:-4}" \
+        --l2-prefetch-max-in-flight "$${LMCACHE_L2_PREFETCH_MAX_IN_FLIGHT:-4}" \
+        --worker-reap-timeout-seconds "$${LMCACHE_WORKER_REAP_TIMEOUT:-3600}" \
+        --prometheus-port 9091 \
+        --l2-adapter "{\"type\":\"nixl_store_dynamic\",\"backend\":\"POSIX\",\"backend_params\":{\"file_path\":\"/data/nvme/lmcache\",\"use_direct_io\":\"false\",\"max_capacity_gb\":\"$${LMCACHE_NIXL_DYNAMIC_MAX_GB:-100}\"}}" \
+        $$_COORD_FLAGS
     elif [ "$${AIC_NIXL_BACKEND:-AIS_MT}" = "POSIX" ] || [ "$$AIC_L2_BACKEND" = "nixl_posix" ]; then
       # NIXL first-class POSIX plugin (cpu staging buffer, no hipFileBufRegister).
       # Use for nodes where GPUDirect P2PDMA is unavailable (e.g. XFS LVM, or a
@@ -560,9 +578,11 @@ services:
     image: ${AIC_CLIENT_IMAGE:-python:3.12}
     container_name: aic-client
     networks: [aic-network]
+    dns: ["8.8.8.8", "8.8.4.4"]
     environment:
       HF_TOKEN: "${HF_TOKEN:-}"
-      HF_HOME: "${HF_HOME:-/root/.cache/huggingface}"
+      HF_HOME: /root/.cache/huggingface
+      AIC_BENCH_DATASET: /root/.cache/huggingface/datasets/ShareGPT_V3_unfiltered_cleaned_split.json
     entrypoint: ["/bin/bash", "-c"]
     command:
       - |
@@ -577,6 +597,7 @@ services:
     volumes:
       - ..:/repo:ro
       - ../logs:/logs
+      - ${HF_HOME:-~/.cache/huggingface}:/root/.cache/huggingface
     working_dir: /repo
     restart: unless-stopped
 
@@ -635,6 +656,27 @@ services:
       - --web.listen-address=:${AIC_PROM_PORT:-9090}
 
   # ---------------------------------------------------------------------------
+  # l2-monitor: watches the nixl_posix_dynamic L2 directory via inotify.
+  # Emits Prometheus textfile metrics (file count, bytes, per-file read-back
+  # histogram) picked up by node-exporter's --collector.textfile.directory.
+  # Only meaningful when AIC_L2_BACKEND=nixl_posix_dynamic.
+  # ---------------------------------------------------------------------------
+  l2-monitor:
+    profiles: [monitoring, exporters, exporters-safe]
+    image: python:3.12-slim
+    container_name: aic-l2-monitor
+    networks: [aic-network]
+    restart: unless-stopped
+    environment:
+      AIC_L2_DIR: /data/nvme/lmcache
+      AIC_PROM_FILE: /prom/aic_l2_monitor.prom
+      AIC_PROM_INTERVAL: "15"
+    volumes:
+      - ${NVME_DATA:-/tmp/aic-nvme}:/data/nvme:ro
+      - aic-prom-textfile:/prom
+      - ./l2-monitor/l2_monitor.py:/app/l2_monitor.py:ro
+    entrypoint: ["python3", "-u", "/app/l2_monitor.py"]
+
   # node-exporter: host CPU/mem/disk/net/NVMe/RDMA metrics on :9100.
   # Behind the `monitoring` profile.  Uses pid:host for accurate per-process
   # CPU stats; mounts the host rootfs read-only via /host.
@@ -648,11 +690,13 @@ services:
     restart: unless-stopped
     volumes:
       - /:/host:ro,rslave
+      - aic-prom-textfile:/prom:ro
     command:
       - --path.rootfs=/host
       - --collector.diskstats
       - --collector.nvme
       - --collector.infiniband
+      - --collector.textfile.directory=/prom
       - --web.listen-address=:9100
 
   # ---------------------------------------------------------------------------
@@ -1028,3 +1072,4 @@ volumes:
   grafana-data:
   loki-data:
   aic-ipc:   # ROCm VMEM IPC sidecar socket shared between vllm and lmcache
+  aic-prom-textfile:  # shared between aic-l2-monitor (writer) and node-exporter (reader)
