@@ -81,7 +81,7 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
     apt-get update && \
     DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-        git ca-certificates python3-dev
+        git ca-certificates python3-dev libnuma1
 
 # Bring torch + Python packages from aic-base into this full-ROCm stage.
 # Now this stage has: ROCm -full headers + aic-base's torch.

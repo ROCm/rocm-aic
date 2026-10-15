@@ -6197,24 +6197,42 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "round(scalar(vllm:cache_config_info{num_gpu_blocks!=\"\"}) * on(engine) group_left() vllm:kv_cache_usage_perc)",
-          "legendFormat": "Blocks in VRAM",
+          "expr": "aic:vllm:kv_cache_usage_with_blocks",
+          "legendFormat": "Usage ratio",
           "refId": "A"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "expr": "scalar(vllm:cache_config_info{num_gpu_blocks!=\"\"})",
-          "legendFormat": "Total blocks",
-          "refId": "B",
-          "hide": true
         }
       ],
       "title": "KV Blocks Resident in VRAM",
       "description": "GPU KV cache blocks currently occupied. Total available: 4018 (block_size=64 tokens, fp8). Source: vllm:kv_cache_usage_perc \u00d7 num_gpu_blocks from cache_config_info.",
-      "type": "stat"
+      "type": "stat",
+      "transformations": [
+        {
+          "id": "convertFieldType",
+          "options": {
+            "conversions": [
+              {
+                "targetField": "num_gpu_blocks",
+                "destinationType": "number"
+              }
+            ]
+          }
+        },
+        {
+          "id": "calculateField",
+          "options": {
+            "alias": "KV Blocks in VRAM",
+            "mode": "binary",
+            "binary": {
+              "left": "Value",
+              "operator": "*",
+              "right": "num_gpu_blocks"
+            },
+            "reduce": {
+              "reducer": "sum"
+            }
+          }
+        }
+      ]
     }
   ],
   "refresh": "10s",
