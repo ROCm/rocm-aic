@@ -504,6 +504,7 @@ services:
       - VLLM_TARGET_DEVICE=rocm
       - ROCR_VISIBLE_DEVICES=${AIC_ROCR_VISIBLE:-${GPU:-0}}
       - HIP_VISIBLE_DEVICES=${AIC_HIP_VISIBLE:-0}
+      - CUDA_VISIBLE_DEVICES=
       - AMDGCN_USE_BUFFER_OPS=0
       - MIOPEN_FIND_MODE=FAST
       - MIOPEN_USER_DB_PATH=/app/miopen
@@ -525,6 +526,12 @@ services:
       # Enable vLLM dev endpoints: POST /reset_prefix_cache, /reset_mm_cache, etc.
       # Required to flush the GPU-side prefix cache via API without restarting vLLM.
       - VLLM_SERVER_DEV_MODE=${VLLM_SERVER_DEV_MODE:-1}
+      # llm-emu executor hook (passthrough — set VLLM_EMULATOR_EXECUTOR_HOOK=1 in host env
+      # to enable profile-driven emulation on a real GPU node, bypassing slow GPU compute)
+      - VLLM_EMULATOR_EXECUTOR_HOOK
+      - VLLM_EMULATOR_ENABLE_ORACLE
+      - VLLM_EMULATOR_PROFILE_PACK
+      - VLLM_EMULATOR_MODE
     command: >
       --model ${VLLM_MODEL:-openai/gpt-oss-120b}
         --host 0.0.0.0
@@ -690,7 +697,7 @@ services:
       - --listen-address=:9879
       - --metrics-path=/metrics
       - --health-path=/health
-      - --enable-roce-pfc-metrics=false
+      - --collector.ethtool=false
 
   # ---------------------------------------------------------------------------
   # grafana: pre-provisioned AIC dashboard, anonymous access, port 3000.

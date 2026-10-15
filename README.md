@@ -9,6 +9,9 @@
 [![LMCache](https://img.shields.io/badge/LMCache-v0.5.5-blue.svg)](https://github.com/LMCache/LMCache)
 [![NIXL](https://img.shields.io/badge/NIXL-v1.4.1-blue.svg)](https://github.com/ai-dynamo/nixl)
 [![hsa-snoop](https://img.shields.io/badge/hsa--snoop-v1.1.1-blue.svg)](https://github.com/sbates130272/hsa-snoop)
+[![rocjitsu](https://img.shields.io/badge/rocjitsu-8e01a5a-red.svg)](https://github.com/sbates130272/batesste-ci-images/tree/main/ubuntu-rocm-rocjitsu)
+[![qemu-vfu](https://img.shields.io/badge/qemu--vfu-7794baa-red.svg)](https://github.com/sbates130272/batesste-ci-images/tree/main/ubuntu-qemu-libvfio-user)
+[![rocjitsu-guest](https://img.shields.io/badge/guest-resolute%2F63cc0bc-red.svg)](https://github.com/sbates130272/batesste-ci-images/tree/main/ubuntu-qcow2-gen)
 [![Spelling](https://github.com/ROCm/rocm-aic/actions/workflows/rocm-aic-spell-check.yml/badge.svg)](https://github.com/ROCm/rocm-aic/actions/workflows/rocm-aic-spell-check.yml)
 [![Lint](https://github.com/ROCm/rocm-aic/actions/workflows/rocm-aic-lint-check.yml/badge.svg)](https://github.com/ROCm/rocm-aic/actions/workflows/rocm-aic-lint-check.yml)
 [![Export Tarball](https://github.com/ROCm/rocm-aic/actions/workflows/rocm-aic-export-tarball.yml/badge.svg)](https://github.com/ROCm/rocm-aic/actions/workflows/rocm-aic-export-tarball.yml)
@@ -19,6 +22,7 @@
 [![Nightly Cliff](https://github.com/ROCm/rocm-aic/actions/workflows/rocm-aic-self-hosted-nightly-cliff-test.yml/badge.svg)](https://github.com/ROCm/rocm-aic/actions/workflows/rocm-aic-self-hosted-nightly-cliff-test.yml)
 [![Nightly Wheels](https://github.com/ROCm/rocm-aic/actions/workflows/rocm-aic-nightly-wheels-publication.yml/badge.svg)](https://github.com/ROCm/rocm-aic/actions/workflows/rocm-aic-nightly-wheels-publication.yml)
 [![Check PRs + Patches](https://github.com/ROCm/rocm-aic/actions/workflows/rocm-aic-check-prs-and-patches.yml/badge.svg)](https://github.com/ROCm/rocm-aic/actions/workflows/rocm-aic-check-prs-and-patches.yml)
+[![Rocjitsu VM Test](https://github.com/ROCm/rocm-aic/actions/workflows/rocm-aic-rocjitsu-test.yml/badge.svg)](https://github.com/ROCm/rocm-aic/actions/workflows/rocm-aic-rocjitsu-test.yml)
 [![Metrics Reference](https://img.shields.io/badge/Prometheus-Metrics_Reference-E05D00?logo=prometheus&logoColor=white)](https://rocm.github.io/rocm-aic/prometheus/)
 [![Cliff Perf Dashboard](https://img.shields.io/badge/Cliff-Perf_Dashboard-2980b9?logo=github&logoColor=white)](https://rocm.github.io/rocm-aic/cliff/)
 
