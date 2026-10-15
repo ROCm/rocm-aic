@@ -31,13 +31,21 @@ PATHS = [
     f"{BASE}/lmcache/v1/multiprocess/event_ipc.py",
 ]
 
-EXP_PAT = '        return event.ipc_handle()  # type: ignore[attr-defined]'
-EXP_NEW = (
+# export_event body differs across LMCache versions:
+#   v0.5.5:  return event.ipc_handle()
+#   v0.5.6:  handle = event.ipc_handle(); self._exported_events.append(event); return handle
+# Patch whichever is present by prepending the producer-side sync + early return.
+_SYNC = (
     '        if __import__("torch").version.hip:\n'
     '            event.synchronize()  # type: ignore[attr-defined]  # producer-side sync\n'
     '            return b""\n'
-    '        return event.ipc_handle()  # type: ignore[attr-defined]'
 )
+EXP_VARIANTS = [
+    ('        return event.ipc_handle()  # type: ignore[attr-defined]',
+     _SYNC + '        return event.ipc_handle()  # type: ignore[attr-defined]'),
+    ('        handle = event.ipc_handle()  # type: ignore[attr-defined]',
+     _SYNC + '        handle = event.ipc_handle()  # type: ignore[attr-defined]'),
+]
 IMP_PAT = (
     '        return self._event_module.Event.from_ipc_handle(  # type: ignore[union-attr]\n'
     '            device, handle\n'
@@ -73,11 +81,18 @@ for f_event in PATHS:
     if not os.path.exists(f_event):
         continue
     src = open(f_event).read()
-    if EXP_PAT in src or IMP_PAT in src:
-        _apply(f_event, EXP_PAT, EXP_NEW, f"export_event: producer-side sync ({f_event})")
-        _apply(f_event, IMP_PAT, IMP_NEW, f"import_event: dummy-complete event ({f_event})")
-        done = True
-        break
+    exp_pat = next((p for p, _ in EXP_VARIANTS if p in src), None)
+    if exp_pat is None and IMP_PAT not in src:
+        continue
+    if exp_pat is not None:
+        exp_new = dict(EXP_VARIANTS)[exp_pat]
+        _apply(f_event, exp_pat, exp_new, f"export_event: producer-side sync ({f_event})")
+    else:
+        print(f"  WARN: export_event pattern not found in {f_event} (LMCache version drift?)",
+              file=sys.stderr)
+    _apply(f_event, IMP_PAT, IMP_NEW, f"import_event: dummy-complete event ({f_event})")
+    done = True
+    break
 if not done:
     print("  WARN: event_ipc patterns not found in any known path; "
           "gfx1201 event producer-side-sync NOT applied", file=sys.stderr)

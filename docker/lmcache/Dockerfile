@@ -71,7 +71,7 @@ FROM ${ROCM_BASE_IMAGE} AS build_lmcache_wheel
 ARG ROCM_ARCH
 ARG BUILD_JOBS=
 ARG LMCACHE_GIT_URL=https://github.com/LMCache/LMCache.git
-ARG LMCACHE_REF=v0.5.5
+ARG LMCACHE_REF=v0.5.6
 
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 

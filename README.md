@@ -6,7 +6,7 @@
 [![PyTorch](https://img.shields.io/badge/PyTorch-2.13%20%28ec5f3b1%29-ee4c2c.svg)](https://github.com/ROCm/pytorch/tree/ec5f3b1effb14f0e36b66bab4db1c9b49b278f82)
 [![AITER](https://img.shields.io/badge/AITER-v0.1.22.post1-blue.svg)](https://github.com/ROCm/aiter/tree/v0.1.22.post1)
 [![vLLM](https://img.shields.io/badge/vLLM-v0.29.0-blue.svg)](https://github.com/vllm-project/vllm)
-[![LMCache](https://img.shields.io/badge/LMCache-v0.5.5-blue.svg)](https://github.com/LMCache/LMCache)
+[![LMCache](https://img.shields.io/badge/LMCache-v0.5.6-blue.svg)](https://github.com/LMCache/LMCache)
 [![NIXL](https://img.shields.io/badge/NIXL-v1.4.1-blue.svg)](https://github.com/ai-dynamo/nixl)
 [![hsa-snoop](https://img.shields.io/badge/hsa--snoop-v1.2.0-blue.svg)](https://github.com/sbates130272/hsa-snoop)
 [![rocjitsu](https://img.shields.io/badge/rocjitsu-f2d13fb-red.svg)](https://github.com/sbates130272/batesste-ci-images/tree/main/ubuntu-rocm-rocjitsu)
@@ -52,7 +52,7 @@ platform.
 | vLLM | `github.com/vllm-project/vllm` (source build) | `v0.29.0` + 3 AMD patches |
 | AITER | `ROCm/aiter` (source build) | `v0.1.22.post1` (vLLM ROCm-validated) |
 | FlashAttention | `Dao-AILab/flash-attention` (source build) | `0e60e394` (vLLM ROCm-validated) |
-| LMCache | `LMCache/LMCache` (upstream) | `v0.5.5` + 17 AMD patches |
+| LMCache | `LMCache/LMCache` (upstream) | `v0.5.6` + AMD patches (re-validation in progress) |
 | NIXL | `ai-dynamo/nixl` (upstream) | `v1.4.1` + `nixl-rocm-ais-mt.patch` |
 | hsa-snoop | `sbates130272/hsa-snoop` (source build) | `v1.2.0` |
 | hipFile | ROCm 7.14 base image | GA in ROCm 7.14 — no separate source build |

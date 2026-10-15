@@ -33,11 +33,9 @@ chunk-level cache hit rate.
 
 Applies after patches 01-11.
 ---
-diff --git a/lmcache/v1/distributed/storage_manager.py b/lmcache/v1/distributed/storage_manager.py
-index 3054e24..86f7d60 100644
 --- a/lmcache/v1/distributed/storage_manager.py
 +++ b/lmcache/v1/distributed/storage_manager.py
-@@ -53,7 +53,7 @@ from lmcache.v1.memory_management import MemoryObj
+@@ -80,7 +80,7 @@
  from lmcache.v1.mp_observability.errors import LMCacheTimeoutError
  from lmcache.v1.mp_observability.event import Event, EventType
  from lmcache.v1.mp_observability.event_bus import get_event_bus
@@ -46,9 +44,9 @@ index 3054e24..86f7d60 100644
  from lmcache.v1.mp_observability.trace.decorator import (
      enable_tracing,
      is_tracing_enabled,
-@@ -166,6 +166,28 @@ class StorageManager:
-             self.get_l2_usages,
-         )
+@@ -284,6 +284,28 @@
+             )
+             cleanup.pop_all()
  
 +        # Prefetch hit/miss counters (observable, seeded at 0.001 so they appear
 +        # in Prometheus from the first scrape before any prefetch completes).
@@ -75,41 +73,34 @@ index 3054e24..86f7d60 100644
      # External APIs for serving engine integration code to call
      @enable_tracing()
      def reserve_write(
-@@ -701,11 +723,19 @@ class StorageManager:
-         # non-contiguous policies (SEGMENTED_PREFIX / SPARSE) too.
-         total_hits = found.popcount()
-         elapsed_ms = (time.monotonic() - handle.submit_time) * 1000
-+        total_requested = handle.total_requested_keys
+@@ -646,8 +668,15 @@
+         if result is None:
+             return None
+         total_hits = sum(row.popcount() for row in result.hit_cells)
 +        self._ctr_requests.add(1)
- 
          if total_hits > 0:
-             # L1 and L2 sets are disjoint (only L1-misses go to L2).
-             l1_hits = len(handle.l1_found_indices)
-             l2_hits = l2_r.popcount() if l2_r is not None else 0
-+            self._ctr_hit.add(l1_hits, {"tier": "l1"})
-+            if l2_hits > 0:
-+                self._ctr_hit.add(l2_hits, {"tier": "l2"})
-+            misses = total_requested - total_hits
+             elapsed_ms = (time.monotonic() - handle.submit_time) * 1000
++            self._ctr_hit.add(result.l1_hit_count, {"tier": "l1"})
++            if result.l2_hit_count > 0:
++                self._ctr_hit.add(result.l2_hit_count, {"tier": "l2"})
++            misses = handle.total_requested_keys - total_hits
 +            if misses > 0:
 +                self._ctr_miss.add(misses)
              logger.info(
                  "Prefetch request completed (L1+L2): "
                  "%d/%d retained keys (%d L1, %d L2) in %.1f ms "
-@@ -718,6 +748,9 @@ class StorageManager:
+@@ -660,6 +689,8 @@
                  handle.external_request_id,
                  handle.prefetch_request_id,
              )
 +        else:
-+            self._ctr_miss.add(total_requested)
-+
-         return found
++            self._ctr_miss.add(handle.total_requested_keys)
+         return result
  
-     def touch_l1_keys(self, keys: list[ObjectKey]):
-diff --git a/lmcache/v1/mp_observability/otel_init.py b/lmcache/v1/mp_observability/otel_init.py
-index 28f49fc..a60b130 100644
+     def wait_prefetch_status(
 --- a/lmcache/v1/mp_observability/otel_init.py
 +++ b/lmcache/v1/mp_observability/otel_init.py
-@@ -217,3 +217,59 @@ def register_gauge(
+@@ -279,3 +279,59 @@
              "opentelemetry package not found, skipping gauge %s",
              gauge_name,
          )
