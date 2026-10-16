@@ -222,7 +222,7 @@ x-lmcache-command: &lmcache-command
         --l2-prefetch-max-in-flight "$${LMCACHE_L2_PREFETCH_MAX_IN_FLIGHT:-4}" \
         --worker-reap-timeout-seconds "$${LMCACHE_WORKER_REAP_TIMEOUT:-3600}" \
         --prometheus-port 9091 \
-        --l2-adapter "{\"type\":\"nixl_store_dynamic\",\"backend\":\"POSIX\",\"backend_params\":{\"file_path\":\"/data/nvme/lmcache\",\"use_direct_io\":\"false\",\"max_capacity_gb\":\"$${LMCACHE_NIXL_DYNAMIC_MAX_GB:-100}\"}}" \
+        --l2-adapter "{\"type\":\"nixl_store_dynamic\",\"backend\":\"POSIX\",\"backend_params\":{\"file_path\":\"/data/nvme/lmcache\",\"use_direct_io\":\"${LMCACHE_NIXL_DYNAMIC_DIRECT_IO:-false}\",\"max_capacity_gb\":\"$${LMCACHE_NIXL_DYNAMIC_MAX_GB:-100}\"}}" \
         $$_COORD_FLAGS
     elif [ "$${AIC_NIXL_BACKEND:-AIS_MT}" = "POSIX" ] || [ "$$AIC_L2_BACKEND" = "nixl_posix" ]; then
       # NIXL first-class POSIX plugin (cpu staging buffer, no hipFileBufRegister).

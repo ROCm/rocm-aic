@@ -218,6 +218,7 @@ export AIC_L2_BACKEND         ?= nixl_posix
 export LMCACHE_NIXL_POSIX_SLOT_SIZE    ?= 33554432
 export LMCACHE_NIXL_POSIX_POOL         ?= 32768
 export LMCACHE_NIXL_DYNAMIC_MAX_GB     ?= 100
+export LMCACHE_NIXL_DYNAMIC_DIRECT_IO ?= false
 override export AIC_EXPORTERS            := safe
 override export AIC_HSA_SNOOP_PID_MODE  := container:aic-lmcache
 else
