@@ -250,33 +250,12 @@ patch(f5,
     'lmcache_driven_transfer: start VMEM IPC receiver at server init'
 )
 
-# 6. worker_transfer.py: wrap kv_caches before passing to _submit_registration
-#    so we can bail early if the wrapper list is empty (ROCm fallback to POSIX).
-#    v0.5.6: the register call is now wrapped in _submit_registration(lambda:...)
-#    with self._instance_id / self._req_client; anchor updated accordingly.
-f4 = f'{BASE}/lmcache/v1/multiprocess/transfer_context/worker_transfer.py'
-patch(f4,
-    '        event_backend.check_event_support(device)\n'
-    '\n'
-    '        future = self._submit_registration(\n'
-    '            lambda: self._req_client.register_kv_cache(\n'
-    '                self._instance_id,\n'
-    '                wrap_kv_caches(kv_caches),',
-    '        event_backend.check_event_support(device)\n'
-    '\n'
-    '        _kv_wrappers = wrap_kv_caches(kv_caches)\n'
-    '        if not _kv_wrappers:\n'
-    '            import lmcache.logging as _ll\n'
-    '            _ll.init_logger(__name__).warning(\n'
-    '                "KV cache IPC registration skipped (no IPC wrappers). "\n'
-    '                "L2 NVMe transfers will use NIXL POSIX."\n'
-    '            )\n'
-    '            self._device = device\n'
-    '            self._event_backend = event_backend\n'
-    '            return\n'
-    '        future = self._submit_registration(\n'
-    '            lambda: self._req_client.register_kv_cache(\n'
-    '                self._instance_id,\n'
-    '                _kv_wrappers,',
-    'worker_transfer.register skips on empty wrappers (v0.5.6 anchor)'
-)
+# 6. worker_transfer.py: REMOVED.
+#    The early-return on empty kv_wrappers prevented register_kv_cache from
+#    reaching the LMCache server, causing all subsequent stores to be silently
+#    rejected ("Rejecting STORE for unregistered GPU instance ID").  The guard
+#    was originally a safety net against AttributeError, but patch #1
+#    (_select_ipc_wrapper_cls → RocmVmemIPCWrapper) and patch #2 (kv_wrap
+#    returns [] gracefully on RuntimeError) now handle the gfx1201 fallback
+#    correctly without skipping registration.
+print('  SKIP (removed): worker_transfer registration guard — no longer needed')

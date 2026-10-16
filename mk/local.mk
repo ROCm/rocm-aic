@@ -8,11 +8,13 @@
         restart-vllm restart-lmcache venv vllm-reset-test bench-serve
 
 # ---- Agentic serving benchmark -----------------------------------------------
-BENCH_DURATION  ?= 60     # minutes
-BENCH_RATE      ?= 0.5    # requests/second (keep low on 16 GB GPU)
-BENCH_TOKENS    ?= 256    # max output tokens per request
-BENCH_POOL_SIZE ?= 0      # 0 = full dataset; N = repeat within N convs (generates cache hits)
-BENCH_CONCUR   ?= 2      # max concurrent requests
+BENCH_DURATION   ?= 60     # minutes
+BENCH_TOKENS     ?= 256    # max output tokens per turn
+BENCH_POOL_SIZE  ?= 0      # 0 = full dataset; N = repeat within N convs (generates cache hits)
+BENCH_SESSIONS   ?= 4      # concurrent simulated user sessions
+BENCH_THINK_MIN  ?= 1.0    # min think-time between turns (seconds)
+BENCH_THINK_MAX  ?= 5.0    # max think-time between turns (seconds)
+BENCH_SEED       ?= 42     # random seed — change to select a different conversation pool
 
 ensure-compose:
 	@if docker compose version >/dev/null 2>&1; then \
@@ -167,9 +169,10 @@ vllm-reset-test: check-hf-token prep-dirs
 	@echo "Test complete. Run 'make down' to stop the stack."
 
 bench-serve: check-hf-token prep-dirs
-	@echo "Starting AIC agentic serving benchmark ($(BENCH_DURATION)min @ $(BENCH_RATE)req/s)..."
+	@echo "Starting AIC multi-turn serving benchmark ($(BENCH_DURATION)min, $(BENCH_SESSIONS) sessions)..."
 	@echo "  Model:       $(VLLM_MODEL)"
-	@echo "  Concurrency: $(BENCH_CONCUR)  Max tokens: $(BENCH_TOKENS)"
+	@echo "  Sessions:    $(BENCH_SESSIONS)  Max tokens/turn: $(BENCH_TOKENS)"
+	@echo "  Think-time:  $(BENCH_THINK_MIN)–$(BENCH_THINK_MAX)s  Pool: $(BENCH_POOL_SIZE)"
 	@echo "  Results:     /tmp/aic-bench-results/"
 	@curl -sf http://localhost:$${VLLM_HOST_PORT:-8000}/health >/dev/null || { \
 	    echo "ERROR: vLLM not healthy at http://localhost:$${VLLM_HOST_PORT:-8000} — run 'make up' first" >&2; exit 1; }
@@ -177,9 +180,11 @@ bench-serve: check-hf-token prep-dirs
 	    --base-url http://localhost:8000 \
 	    --model "$(VLLM_MODEL)" \
 	    --duration $(BENCH_DURATION) \
-	    --rate $(BENCH_RATE) \
+	    --sessions $(BENCH_SESSIONS) \
 	    --max-tokens $(BENCH_TOKENS) \
-	    --concurrency $(BENCH_CONCUR) \
+	    --think-min $(BENCH_THINK_MIN) \
+	    --think-max $(BENCH_THINK_MAX) \
 	    $(if $(filter-out 0,$(BENCH_POOL_SIZE)),--pool-size $(BENCH_POOL_SIZE),) \
+	    --seed $(BENCH_SEED) \
 	    --output /tmp/aic-bench-results
 	@echo "Benchmark complete. Run 'make down' to stop the stack."
