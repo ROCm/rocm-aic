@@ -119,9 +119,8 @@ build (`AIC_ROCM_ARCH` default includes `gfx1201`). Key differences from CDNA:
     ROCM_ARCH=gfx1201 \
     VLLM_MODEL=Qwen/Qwen2.5-3B-Instruct \
     AIC_L2_BACKEND=nixl_posix \
-    NVME_DATA=/mnt/nvme2/aic-nvme \
+    NVME_DATA=/mnt/lmcache-nvme/aic-nvme \
     VLM_LOAD_FORMAT=auto \
-    HF_TOKEN_FILE=~/.cache/huggingface/token \
     LMCACHE_L1_SIZE_GB=2
   ```
 
@@ -129,8 +128,9 @@ build (`AIC_ROCM_ARCH` default includes `gfx1201`). Key differences from CDNA:
   - `VLM_LOAD_FORMAT=auto` — fastsafetensors GDS is CDNA-only.
   - `LMCACHE_L1_SIZE_GB=2` for this 16 GB node — default 20 GiB L1 prevents
     eviction to L2 in the reset test.
+  - HF_TOKEN is picked up from the environment; no HF_TOKEN_FILE needed.
   - Mount the 1.8 TB WD Black NVMe (`/dev/nvme1n1`) before running:
-    `sudo mount /dev/nvme1n1 /mnt/nvme2`
+    `sudo mount /dev/nvme1n1 /mnt/lmcache-nvme`
   - NVMe device names may shift after `modprobe -r/modprobe amdgpu` cycles;
     verify with `lsblk` before mounting.
 

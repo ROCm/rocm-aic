@@ -63,7 +63,8 @@ jobs:
           # CDNA override: FlashAttention included (ROCM_ARCH unset → conservative default)
           override_tag="$(
             ROCM_VERSION=8.7.6 \
-            PYTORCH_BRANCH=release/9.9 \
+            PYTORCH_SERIES=9.9 \
+            PYTORCH_REF=release/9.9 \
             VLLM_REF=v1.2.3 \
             AITER_REF=v0.1.19 \
             FLASH_ATTN_REF=0e60e394 \
@@ -82,7 +83,8 @@ jobs:
           rdna_tag="$(
             ROCM_ARCH=gfx1201 \
             ROCM_VERSION=8.7.6 \
-            PYTORCH_BRANCH=release/9.9 \
+            PYTORCH_SERIES=9.9 \
+            PYTORCH_REF=release/9.9 \
             VLLM_REF=v1.2.3 \
             AITER_REF=v0.1.19 \
             FLASH_ATTN_REF=0e60e394 \
@@ -91,7 +93,7 @@ jobs:
             HSA_SNOOP_REF=v4.5.6 \
               bash docker/scripts/aic-image-tag.sh
           )"
-          expected_rdna="${aic_version}-rocm8.7.6-pytorch9.9-vllm1.2.3-aiter0.1.19-lmcache2.3.4-nixl3.4.5-hsasnoop4.5.6"
+          expected_rdna="${aic_version}-rocm8.7.6-pytorch9.9-vllm1.2.3-aiter0.1.19-lmcache2.3.4-nixl3.4.5-hsasnoop4.5.6-gfx1201"
           [[ "${rdna_tag}" == "${expected_rdna}" ]] \
             || {
               echo "ERROR: RDNA tag: expected ${expected_rdna}, got ${rdna_tag}" >&2

@@ -45,13 +45,13 @@ import time
 from datetime import datetime
 
 # ── Configuration ────────────────────────────────────────────────────────────
-VLLM     = os.getenv("AIC_TEST_VLLM_URL",    "http://aic-vllm-gpu0:8000")
-LMCACHE  = os.getenv("AIC_TEST_LMCACHE_URL", "http://aic-lmcache:8080")
+VLLM     = os.getenv("AIC_TEST_VLLM_URL",    "http://localhost:8000")
+LMCACHE  = os.getenv("AIC_TEST_LMCACHE_URL", "http://localhost:8080")
 MODEL    = os.getenv("AIC_TEST_MODEL",        "Qwen/Qwen2.5-3B-Instruct")
 N_ANCHOR = int(os.getenv("AIC_TEST_ANCHORS", "10"))
 N_FLOOD  = int(os.getenv("AIC_TEST_FLOOD",   "50"))
 TIMEOUT  = int(os.getenv("AIC_TEST_TIMEOUT", "120"))
-EXEC     = ["docker", "exec", "aic-client"]
+EXEC     = []  # run curl directly on the host (vllm/lmcache use network_mode:host)
 
 # chunk_size=256 tok × fp8 KV for Qwen2.5-3B ≈ 4.7 MiB/chunk; L1=1 GiB ≈ 222 chunks.
 # Each anchor uses ~14 chunks; 10 anchors = 140 chunks, leaving ~82 free L1 slots.
@@ -127,8 +127,8 @@ def lm_snap():
         "l1_ratio":   m.get("lmcache_mp_l1_usage_ratio", 0),
         "l2_bytes":   m.get('lmcache_mp_l2_usage_bytes{l2_name="nixl_store"}', 0),
         "l1_hits":    int(m.get('lmcache_mp_prefetch_hit_chunks_total{tier="l1"}', 0)),
-        "l2_hits":    int(m.get("lmcache_mp_l2_prefetch_hit_chunks_total", 0)),
-        "l2_stored":  int(m.get("lmcache_mp_l2_store_completed_objects_chunks_total", 0)),
+        "l2_hits":    int(m.get('lmcache_mp_prefetch_hit_chunks_total{tier="l2"}', 0)),
+        "l2_stored":  int(m.get("lmcache_mp_l2_store_completed_objects_total", 0)),
         "misses":     int(m.get("lmcache_mp_prefetch_miss_chunks_total", 0)),
     }
 

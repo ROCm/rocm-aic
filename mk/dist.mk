@@ -64,7 +64,7 @@ endif
 # (build-base, build-vllm, build-lmcache) which are implemented in the script.
 
 .PHONY: dist-build dist-build-fast dist-build-emulate \
-        dist-build-base dist-build-vllm dist-build-lmcache dist-build-parallel \
+        dist-build-base dist-build-vllm dist-build-lmcache \
         dist-build-exporters dist-build-monitoring dist-push \
         smoke-test smoke-test-fast tiny-test tiny-test-fast \
         emulate-test emulate-mp-test emulate-validate profile-capture \
@@ -93,10 +93,6 @@ dist-build-vllm:
 
 dist-build-lmcache:
 	"$(DIST)" build-lmcache
-
-dist-build-parallel:
-	@$(MAKE) --no-print-directory dist-build-base
-	@$(MAKE) --no-print-directory -j2 dist-build-vllm dist-build-lmcache
 
 dist-build-exporters:
 	"$(DIST)" build-exporters

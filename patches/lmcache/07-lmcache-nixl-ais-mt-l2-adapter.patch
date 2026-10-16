@@ -1,17 +1,6 @@
-diff --git a/lmcache/v1/distributed/l2_adapters/nixl_store_l2_adapter.py b/lmcache/v1/distributed/l2_adapters/nixl_store_l2_adapter.py
-index 41a54be3ab550446072735258298bbef268b9234..bd801207a273e1877e958f5b9a4ba491ede38690 100644
 --- a/lmcache/v1/distributed/l2_adapters/nixl_store_l2_adapter.py
 +++ b/lmcache/v1/distributed/l2_adapters/nixl_store_l2_adapter.py
-@@ -185,7 +185,7 @@ class NixlStorageAgent:
-             device_id=0,  # 0 indicates cpu
-         )
- 
--        if self.backend in ["GDS", "GDS_MT", "POSIX", "HF3FS"]:
-+        if self.backend in ["GDS", "GDS_MT", "POSIX", "HF3FS", "AIS_MT"]:
-             file_size = int(
-                 self.backend_params.get("file_size", l1_memory_desc.align_bytes)
-             )
-@@ -905,11 +905,12 @@ _VALID_NIXL_BACKENDS = (
+@@ -933,12 +933,13 @@
      "GDS",
      "GDS_MT",
      "POSIX",
@@ -19,21 +8,27 @@ index 41a54be3ab550446072735258298bbef268b9234..bd801207a273e1877e958f5b9a4ba491
      "HF3FS",
      "OBJ",
      "AZURE_BLOB",
+     "IBM_SCALE",
  )
--_FILE_BACKENDS = ("GDS", "GDS_MT", "POSIX", "HF3FS")
-+_FILE_BACKENDS = ("GDS", "GDS_MT", "POSIX", "HF3FS", "AIS_MT")
+-_FILE_BACKENDS = ("GDS", "GDS_MT", "POSIX", "HF3FS", "IBM_SCALE")
++_FILE_BACKENDS = ("GDS", "GDS_MT", "POSIX", "HF3FS", "AIS_MT", "IBM_SCALE")
  
  
  class NixlStoreL2AdapterConfig(L2AdapterConfigBase):
-diff --git a/tests/v1/distributed/test_nixl_store_l2_adapter.py b/tests/v1/distributed/test_nixl_store_l2_adapter.py
-index 51a8028788dd9aa6a2f525eed40f3f51a7d00795..6d04a140f24077b5d50485a3eed43bc9dee75bab 100644
 --- a/tests/v1/distributed/test_nixl_store_l2_adapter.py
 +++ b/tests/v1/distributed/test_nixl_store_l2_adapter.py
-@@ -26,2 +26,3 @@ from lmcache.v1.distributed.internal_api import (  # noqa: E402
+@@ -40,12 +40,24 @@
+     L1MemoryDesc,
+     L2AdapterListener,
  )
 +from lmcache.v1.distributed.l2_adapters import create_l2_adapter  # noqa: E402
  from lmcache.v1.distributed.l2_adapters.nixl_store_l2_adapter import (  # noqa: E402
-@@ -33,2 +34,13 @@
+     NixlStoreL2Adapter,
+     NixlStoreL2AdapterConfig,
+ )
+ 
+ 
++
 +def test_nixl_store_adapter_requires_l1_memory_desc():
 +    config = NixlStoreL2AdapterConfig(
 +        backend="AIS_MT",
@@ -44,6 +39,6 @@ index 51a8028788dd9aa6a2f525eed40f3f51a7d00795..6d04a140f24077b5d50485a3eed43bc9
 +    with pytest.raises(ValueError, match="l1_memory_desc is required"):
 +        create_l2_adapter(config)
 +
-+
  class _RecordingListener(L2AdapterListener):
      """Listener that records all events for inspection in tests."""
+ 
