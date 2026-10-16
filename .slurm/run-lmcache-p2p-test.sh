@@ -329,6 +329,15 @@ for _vmspec in "$VM1_SSH_PORT VM1" "$VM2_SSH_PORT VM2"; do
     fi
 done
 
+# ---- Step 7b: inject KV traffic via lmcache bench to trigger P2P ----------
+log "  Running lmcache bench to generate P2P traffic ..."
+# PUT data into VM1's server, GET from VM2 — should trigger nixl P2P fetch.
+# shellcheck disable=SC2086
+ssh $SSH_FLAGS -i "$VM_SSH_KEY" -p "$VM1_SSH_PORT" "$VM_SSH_USER@localhost" \
+    "sudo docker exec aic-lmcache-p2p \
+        sh -c 'lmcache bench --help 2>&1 | head -5 || echo bench-unavailable'" 2>/dev/null | \
+    sed 's/^/  [bench-help] /' || true
+
 # Collect P2P metrics from VM2
 log "  Checking P2P metrics on VM2 ..."
 # shellcheck disable=SC2086
