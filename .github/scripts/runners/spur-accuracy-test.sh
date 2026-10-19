@@ -1,5 +1,9 @@
 #!/usr/bin/env bash
-set -euo pipefail
+# -E inherit ERR trap in functions and subshells,
+# -e exit the script upon commands failing,
+# -u to error if the script ever references a variable that is unset,
+# -o pipefail to error if any stage of a pipeline fails.
+set -Eeuo pipefail
 
 # Runs on the self-hosted runner; SSHes to the SPUR head node (AIC_SPUR_HOST) and
 # runs accuracy-test against the tarball produced by spur-dist-build.sh for the
@@ -43,6 +47,23 @@ set -euo pipefail
 # it produces, and an artifact nobody downloads is not a record.
 # The model uses the cluster-wide HF cache so it is downloaded once and reused
 # across CI workflows and SPUR accounts.
+
+# errexit exits without saying where; report it.  Only the line number and
+# function call stack are printed, never the command text, which can carry
+# secret values.
+_on_err() {
+    # set -E carries this trap into $(...), where errexit is off.
+    [[ $- == *e* ]] || return 0
+    # The failing command was a child that reports its own failures.
+    [[ -z ${_aic_err_child_reports-} ]] || return 0
+    # || : so a failed write cannot replace the exit status.
+    printf '%s: command failed (exit %s, pipeline status %s) at line %s%s\n' \
+        "${0##*/}" "$1" "$2" "$3" "${4:+ in ${4// / <- }}" >&2 || :
+}
+trap '_on_err "$?" "${PIPESTATUS[*]}" "$LINENO" "${FUNCNAME[*]-}"' ERR
+
+# Commit `make install-ci-scripts` deployed; if it predates your change, redeploy.
+echo "Installed CI scripts: $(cat "$(dirname -- "${BASH_SOURCE[0]}")/VERSION" || echo unknown)"
 
 SHA="${1:?usage: $0 <full-sha> [accuracy-test|accuracy-test-fast]}"
 AIC_ACCURACY_TEST_TARGET="${2:-accuracy-test}"
@@ -184,7 +205,26 @@ aic_ci_ssh_bash \
     AIC_CI_STORAGE_ROOT="${AIC_CI_STORAGE_ROOT}" \
     KEEP_ARTIFACTS="${KEEP_ARTIFACTS}" \
     HF_TOKEN="${HF_TOKEN:-}" << 'REMOTE' || rc=$?
-set -euo pipefail
+# -E inherit ERR trap in functions and subshells,
+# -e exit the script upon commands failing,
+# -u to error if the script ever references a variable that is unset,
+# -o pipefail to error if any stage of a pipeline fails.
+set -Eeuo pipefail
+# errexit exits without saying where; report it.  Only the line number and
+# function call stack are printed, never the command text, which can carry
+# secret values.
+_on_err() {
+    # set -E carries this trap into $(...), where errexit is off.
+    [[ $- == *e* ]] || return 0
+    # The failing command was a child that reports its own failures.
+    [[ -z ${_aic_err_child_reports-} ]] || return 0
+    # || : so a failed write cannot replace the exit status.
+    printf '%s: command failed (exit %s, pipeline status %s) at line %s%s\n' \
+        'spur-accuracy-test.sh (remote)' "$1" "$2" "$3" "${4:+ in ${4// / <- }}" >&2 || :
+}
+trap '_on_err "$?" "${PIPESTATUS[*]}" "$LINENO" "${FUNCNAME[*]-}"' ERR
+# Run a child that reports its own failures; only the child reports.
+_err_delegate() { local _aic_err_child_reports=1; "$@"; }
 
 SHORT="${SHA:0:7}"
 WORKDIR="$HOME/Projects/rocm-aic.${SHORT}"
@@ -296,7 +336,7 @@ AIC_SPUR_CLUSTER=1 \
     AIC_IMAGE_NAME="${AIC_IMAGE_NAME}" \
     AIC_IMAGE_DIR="${TARBALL_DIR}" \
     HF_TOKEN="${HF_TOKEN:-}" \
-    make -C "${WORKDIR}" "${AIC_ACCURACY_TEST_TARGET}"
+    _err_delegate make -C "${WORKDIR}" "${AIC_ACCURACY_TEST_TARGET}"
 
 echo "=== ${AIC_ACCURACY_TEST_TARGET} complete ==="
 REMOTE

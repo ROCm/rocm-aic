@@ -48,7 +48,7 @@ platform.
 | vLLM | `github.com/vllm-project/vllm` (source build) | `v0.29.0` + 3 AMD patches |
 | AITER | `ROCm/aiter` (source build) | `v0.1.22.post1` (vLLM ROCm-validated) |
 | FlashAttention | `Dao-AILab/flash-attention` (source build) | `0e60e394` (vLLM ROCm-validated) |
-| LMCache | `LMCache/LMCache` (upstream) | `v0.5.5` + 16 AMD patches |
+| LMCache | `LMCache/LMCache` (upstream) | `v0.5.5` + 18 AMD patches |
 | NIXL | `ai-dynamo/nixl` (upstream) | `v1.4.1` + `nixl-rocm-ais-mt.patch` |
 | hsa-snoop | `sbates130272/hsa-snoop` (source build) | `v1.1.1` |
 | hipFile | ROCm 7.14 base image | GA in ROCm 7.14 — no separate source build |
