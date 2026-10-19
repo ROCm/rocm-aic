@@ -54,7 +54,7 @@ declare -F log >/dev/null 2>&1 || log() { printf '[monitoring] %s\n' "$*" >&2; }
 #   AIC_ROCR_VISIBLE  absolute host GPU IDs   -> ROCR_VISIBLE_DEVICES
 #   AIC_HIP_VISIBLE   relative indices 0..n-1 -> HIP_VISIBLE_DEVICES + CUDA_VISIBLE_DEVICES
 aic_resolve_gpu_visibility() {
-    local helper rocr n hip
+    local rocr n hip id from
 
     _aic_set_gpu_visibility() {
         local device_ids="$1"
@@ -67,9 +67,8 @@ aic_resolve_gpu_visibility() {
         export AIC_ROCR_VISIBLE="${device_ids}" AIC_HIP_VISIBLE="${hip}"
     }
 
-    # Only SPUR needs a controller query.  Standard Slurm has already selected
-    # the GPU and exposes that choice via its normal visibility environment.
-    # Do not replace it with GPU 0 or contact SPUR from another cluster.
+    # Standard Slurm has already selected the GPU and exposes that choice via
+    # its normal visibility environment.  Do not replace it with GPU 0.
     if [[ "${AIC_SPUR_CLUSTER:-0}" != "1" ]]; then
         rocr="${ROCR_VISIBLE_DEVICES:-${HIP_VISIBLE_DEVICES:-${CUDA_VISIBLE_DEVICES:-${GPU:-0}}}}"
         _aic_set_gpu_visibility "${rocr}" || return 1
@@ -77,28 +76,30 @@ aic_resolve_gpu_visibility() {
         return 0
     fi
 
-    helper="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.slurm" 2>/dev/null && pwd)/spur-gpu-allocation"
-    [[ -n "${SLURM_JOB_ID:-}" ]] || {
-        printf 'aic_resolve_gpu_visibility: SLURM_JOB_ID unset; cannot resolve a SPUR GPU allocation\n' >&2
+    # SPUR exports the job's positional host GPU indices into the batch
+    # environment.  Never query the controller for them: its GetJob device id
+    # is a PCI-location ID, not an index.
+    if [[ -n "${SPUR_JOB_GPUS:-}" ]]; then
+        rocr="${SPUR_JOB_GPUS}" from=SPUR_JOB_GPUS
+    elif [[ -n "${ROCR_VISIBLE_DEVICES:-}" ]]; then
+        rocr="${ROCR_VISIBLE_DEVICES}" from=ROCR_VISIBLE_DEVICES
+    else
+        printf 'aic_resolve_gpu_visibility: SPUR_JOB_GPUS and ROCR_VISIBLE_DEVICES are empty for job %s (is a GPU requested?)\n' \
+            "${SLURM_JOB_ID:-<none>}" >&2
         return 1
-    }
-    [[ -x "${helper}" ]] || {
-        printf 'aic_resolve_gpu_visibility: helper not found or not executable: %s\n' "${helper}" >&2
-        return 1
-    }
+    fi
 
-    rocr="$("${helper}" "${SLURM_JOB_ID}" 2>&1)" \
-        || { printf 'aic_resolve_gpu_visibility: helper failed for job %s: %s\n' "${SLURM_JOB_ID}" "${rocr}" >&2; return 1; }
-
-    [[ -n "${rocr}" ]] || {
-        printf 'aic_resolve_gpu_visibility: no GPUs allocated to job %s (is a GPU requested?)\n' "${SLURM_JOB_ID}" >&2
-        return 1
-    }
+    # Positional indices are small; anything >= 64 (8 GPUs x 8 partitions) is
+    # an ID of some other kind and must not reach `docker run`.
     [[ "${rocr}" =~ ^[0-9]+(,[0-9]+)*$ ]] \
-        || { printf 'aic_resolve_gpu_visibility: malformed allocation for job %s: %s\n' "${SLURM_JOB_ID}" "${rocr}" >&2; return 1; }
+        || { printf 'aic_resolve_gpu_visibility: malformed %s for job %s: %s\n' "${from}" "${SLURM_JOB_ID:-<none>}" "${rocr}" >&2; return 1; }
+    for id in ${rocr//,/ }; do
+        (( ${#id} <= 2 && 10#${id} < 64 )) \
+            || { printf 'aic_resolve_gpu_visibility: %s for job %s is not a GPU index: %s\n' "${from}" "${SLURM_JOB_ID:-<none>}" "${rocr}" >&2; return 1; }
+    done
 
     _aic_set_gpu_visibility "${rocr}" || return 1
-    log "GPU allocation for job ${SLURM_JOB_ID}: ROCR=${AIC_ROCR_VISIBLE} HIP=${AIC_HIP_VISIBLE}"
+    log "GPU allocation for job ${SLURM_JOB_ID:-<none>} (${from}): ROCR=${AIC_ROCR_VISIBLE} HIP=${AIC_HIP_VISIBLE}"
 }
 
 have_compose() { docker compose version >/dev/null 2>&1; }
