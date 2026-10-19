@@ -28,6 +28,9 @@ aic_ci_session_init() {
 }
 
 aic_ci_ssh_bash() {
+    # The remote script reports its own failures; keep the caller's _on_err
+    # (installed by each spur-*.sh) from reporting this ssh line too.
+    local _aic_err_child_reports=1
     ssh -o ServerAliveInterval=30 -o ServerAliveCountMax=4 "${AIC_SPUR_HOST}" env \
         PATH="/usr/local/bin:\${PATH}" \
         AIC_CI_RUN_KEY="${AIC_CI_RUN_KEY}" \
