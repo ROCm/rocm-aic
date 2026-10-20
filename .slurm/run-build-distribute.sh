@@ -1668,9 +1668,10 @@ cmd_test() {
     # change the smoke-test's exit code (the in-image checks alone govern that).
     local _smoke_exporters="${AIC_SMOKE_EXPORTERS:-1}"
     local _smoke_scrape_s="${AIC_SMOKE_SCRAPE_S:-45}"
-    local nvme_tar rdma_tar
+    local nvme_tar rdma_tar hsa_snoop_tar
     nvme_tar="$(_exporter_tarball_path "${AIC_NVME_EXPORTER_IMAGE}")"
     rdma_tar="$(_exporter_tarball_path "${AIC_RDMA_EXPORTER_IMAGE}")"
+    hsa_snoop_tar="$(_exporter_tarball_path "${AIC_HSA_SNOOP_IMAGE}")"
 
     # In-container checks live in a standalone script on shared /scratch (visible
     # on the GPU node) and are bind-mounted in -- avoids nested shell quoting.
