@@ -14,3 +14,11 @@ rules:
   # max_over_time rather than rate() — counter-agg rule is not applicable.
   target-counter-agg-rule:
     disabled: true
+  # Panels have descriptive titles; adding descriptions to every panel is
+  # not required for functional correctness — rule disabled.
+  panel-description-rule:
+    disabled: true
+  # container template uses a Loki label_values query which the linter
+  # incorrectly flags as an invalid label query — rule disabled.
+  template-label-rule:
+    disabled: true

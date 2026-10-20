@@ -11,77 +11,73 @@
 # redundant and raised AttributeError on the shim.
 #
 diff --git a/lmcache/v1/distributed/l1_manager.py b/lmcache/v1/distributed/l1_manager.py
-index 64ae54cf..c1ed3562 100644
+# Re-ported against LMCache v0.5.6 (l1_manager gauge branching updated for v0.5.6
+# _observations() API; gds_context transfer_async loop structure unchanged).
+#
 --- a/lmcache/v1/distributed/l1_manager.py
 +++ b/lmcache/v1/distributed/l1_manager.py
-@@ -208,22 +208,44 @@ class L1Manager:
-         L1Manager._gauge_target = self
-         if not L1Manager._gauge_registered:
-             L1Manager._gauge_registered = True
--            register_gauge(
--                "lmcache.l1_manager",
--                "lmcache_mp.l1_memory_usage_bytes",
--                "Bytes currently held in L1 cache",
--                lambda: (
--                    L1Manager._gauge_target.get_memory_usage()[0]
--                    if L1Manager._gauge_target is not None
--                    else 0
--                ),
--            )
--            register_gauge(
--                "lmcache.l1_manager",
--                "lmcache_mp.l1_usage_ratio",
--                "L1 used/total ratio (0.0–1.0)",
--                lambda: _l1_usage_ratio_or_zero(L1Manager._gauge_target),
--            )
-+            if config.gds_l1_config is not None:
-+                register_gauge(
-+                    "lmcache.l1_manager",
-+                    "lmcache_mp.gds_l1_slab_used_bytes",
-+                    "Bytes currently allocated in the GDS NVMe slab",
-+                    lambda: (
-+                        L1Manager._gauge_target.get_memory_usage()[0]
-+                        if L1Manager._gauge_target is not None
-+                        else 0
-+                    ),
-+                )
-+                register_gauge(
-+                    "lmcache.l1_manager",
-+                    "lmcache_mp.gds_l1_slab_total_bytes",
-+                    "Total GDS NVMe slab capacity in bytes",
-+                    lambda: (
-+                        L1Manager._gauge_target.get_memory_usage()[1]
-+                        if L1Manager._gauge_target is not None
-+                        else 0
-+                    ),
-+                )
-+            else:
-+                register_gauge(
-+                    "lmcache.l1_manager",
-+                    "lmcache_mp.l1_memory_usage_bytes",
-+                    "Bytes currently held in L1 cache",
-+                    lambda: (
-+                        L1Manager._gauge_target.get_memory_usage()[0]
-+                        if L1Manager._gauge_target is not None
-+                        else 0
-+                    ),
-+                )
-+                register_gauge(
-+                    "lmcache.l1_manager",
-+                    "lmcache_mp.l1_usage_ratio",
-+                    "L1 used/total ratio (0.0-1.0)",
-+                    lambda: _l1_usage_ratio_or_zero(L1Manager._gauge_target),
-+                )
+@@ -254,24 +254,38 @@
+             L1Manager._gauge_targets[self._l1_manager_id] = self
+             if not L1Manager._gauge_registered:
+                 L1Manager._gauge_registered = True
+-                register_gauge(
+-                    "lmcache.l1_manager",
+-                    "lmcache_mp.l1_memory_usage_bytes",
+-                    "Bytes currently held in L1 cache",
+-                    lambda: L1Manager._observations(lambda m: m.get_memory_usage()[0]),
+-                )
+-                register_gauge(
+-                    "lmcache.l1_manager",
+-                    "lmcache_mp.l1_usage_ratio",
+-                    "L1 used/total ratio (0.0–1.0)",
+-                    lambda: L1Manager._observations(_l1_usage_ratio_or_zero),
+-                )
+-                register_gauge(
+-                    "lmcache.l1_manager",
+-                    "lmcache_mp.l1_staging_bytes",
+-                    "Bytes held by L1 staging objects (write-reserved, not admitted)",
+-                    lambda: L1Manager._observations(_l1_staging_bytes_or_zero),
+-                )
++                if config.gds_l1_config is not None:
++                    register_gauge(
++                        "lmcache.l1_manager",
++                        "lmcache_mp.gds_l1_slab_used_bytes",
++                        "Bytes currently allocated in the GDS NVMe slab",
++                        lambda: L1Manager._observations(lambda m: m.get_memory_usage()[0]),
++                    )
++                    register_gauge(
++                        "lmcache.l1_manager",
++                        "lmcache_mp.gds_l1_slab_total_bytes",
++                        "Total GDS NVMe slab capacity in bytes",
++                        lambda: L1Manager._observations(lambda m: m.get_memory_usage()[1]),
++                    )
++                else:
++                    register_gauge(
++                        "lmcache.l1_manager",
++                        "lmcache_mp.l1_memory_usage_bytes",
++                        "Bytes currently held in L1 cache",
++                        lambda: L1Manager._observations(lambda m: m.get_memory_usage()[0]),
++                    )
++                    register_gauge(
++                        "lmcache.l1_manager",
++                        "lmcache_mp.l1_usage_ratio",
++                        "L1 used/total ratio (0.0–1.0)",
++                        lambda: L1Manager._observations(_l1_usage_ratio_or_zero),
++                    )
++                    register_gauge(
++                        "lmcache.l1_manager",
++                        "lmcache_mp.l1_staging_bytes",
++                        "Bytes held by L1 staging objects (write-reserved, not admitted)",
++                        lambda: L1Manager._observations(_l1_staging_bytes_or_zero),
++                    )
  
-     def register_listener(self, listener: L1ManagerListener) -> None:
-         """Register a listener for L1Manager events.
-diff --git a/lmcache/v1/gpu_connector/gds_context.py b/lmcache/v1/gpu_connector/gds_context.py
-index 4ce183a0..af95c999 100644
+     @property
+     def l1_manager_id(self) -> int:
 --- a/lmcache/v1/gpu_connector/gds_context.py
 +++ b/lmcache/v1/gpu_connector/gds_context.py
-@@ -33,6 +33,12 @@ from lmcache.logging import init_logger
- from lmcache.v1.distributed.config import GdsL1Config
- from lmcache.v1.gpu_connector import _gds_async as ca
+@@ -28,6 +28,12 @@
+ from lmcache.v1.gpu_connector._gds_backends import create_backend
+ from lmcache.v1.gpu_connector.gds_backends.base import GDSBackend, GDSHandle, Submission
  from lmcache.v1.memory_management import GDSMemoryObject
 +from lmcache.v1.mp_observability.otel_init import register_gauge
 +
@@ -89,11 +85,11 @@ index 4ce183a0..af95c999 100644
 +_gds_bytes_read: int = 0
 +_gds_bytes_written: int = 0
 +_gds_counter_lock = threading.Lock()
+ from lmcache.v1.platform import stream as platform_stream
  
  logger = init_logger(__name__)
- 
-@@ -127,6 +133,21 @@ class GDSContext:
-         self._open_and_register_slab(config.use_direct_io)
+@@ -222,6 +228,21 @@
+         )
          self.initialized = True
  
 +        register_gauge(
@@ -113,19 +109,12 @@ index 4ce183a0..af95c999 100644
 +
      # --- Public API ---------------------------------------------------
  
-     def register_gpu_buffer(self, buffer: torch.Tensor) -> None:
-@@ -202,6 +223,7 @@ class GDSContext:
-                 ``get_size()`` bytes are transferred.
-             direction: :attr:`SlabDirection.READ` or ``.WRITE``.
-         """
-+        global _gds_bytes_read, _gds_bytes_written
-         slab_op = (
-             self._slab_read if direction is SlabDirection.READ else self._slab_write
-         )
-@@ -214,6 +236,12 @@ class GDSContext:
-             slab_op(memory_obj.slab_offset + pos, seg_len, dev_offset, base_ptr)
+     @property
+@@ -352,6 +373,13 @@
+             )
              pos += seg_len
  
++        global _gds_bytes_read, _gds_bytes_written
 +        with _gds_counter_lock:
 +            if direction is SlabDirection.READ:
 +                _gds_bytes_read += nbytes
@@ -134,4 +123,4 @@ index 4ce183a0..af95c999 100644
 +
      def close(self) -> None:
          """Sync the stream, deregister GDS state, and close the slab handle."""
-         if self._buffers:
+         devices = {str(buffer.device): buffer.device for buffer in self._buffers}

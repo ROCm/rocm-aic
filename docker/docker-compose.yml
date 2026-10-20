@@ -58,7 +58,7 @@
 #   IMAGE_NAME             — image name when IMAGE_REF is unset (default: rocm-aic)
 #   AIC_VERSION            — AIC release from the root VERSION file
 #   ROCM_VERSION           — ROCm release used by the default base image
-#   PYTORCH_BRANCH, VLLM_REF, LLM_EMU_REF, AITER_REF, FLASH_ATTN_REF, LMCACHE_REF, NIXL_REF, HSA_SNOOP_REF
+#   PYTORCH_REF, VLLM_REF, LLM_EMU_REF, AITER_REF, FLASH_ATTN_REF, LMCACHE_REF, NIXL_REF, HSA_SNOOP_REF
 #                          — optional framework version build-arg overrides
 #   VLLM_MODEL             — model to serve
 #   LMCACHE_PORT           — lmcache ZMQ listen port (default: 6555)
@@ -206,6 +206,24 @@ x-lmcache-command: &lmcache-command
         --worker-reap-timeout-seconds "$${LMCACHE_WORKER_REAP_TIMEOUT:-3600}" \
         --prometheus-port 9091 \
         $$_COORD_FLAGS
+    elif [ "$$AIC_L2_BACKEND" = "nixl_posix_dynamic" ]; then
+      # nixl_store_dynamic POSIX: same POSIX/buffered-IO path as nixl_posix but
+      # uses the dynamic-file adapter (one file per KV chunk, atomic rename on
+      # store completion).  On restart, existing files are rediscovered lazily on
+      # the first lookup miss — L2 blocks survive lmcache server restarts without
+      # a full scan.  max_capacity_gb caps total NVMe usage.
+      exec lmcache server \
+        --host 0.0.0.0 \
+        --http-port 8080 \
+        --port "$$LMCACHE_PORT" \
+        --l1-size-gb "$$LMCACHE_L1_SIZE_GB" \
+        --eviction-policy LRU \
+        --max-gpu-workers "$${LMCACHE_MAX_GPU_WORKERS:-4}" \
+        --l2-prefetch-max-in-flight "$${LMCACHE_L2_PREFETCH_MAX_IN_FLIGHT:-4}" \
+        --worker-reap-timeout-seconds "$${LMCACHE_WORKER_REAP_TIMEOUT:-3600}" \
+        --prometheus-port 9091 \
+        --l2-adapter "{\"type\":\"nixl_store_dynamic\",\"backend\":\"POSIX\",\"backend_params\":{\"file_path\":\"/data/nvme/lmcache\",\"use_direct_io\":\"${LMCACHE_NIXL_DYNAMIC_DIRECT_IO:-false}\",\"max_capacity_gb\":\"$${LMCACHE_NIXL_DYNAMIC_MAX_GB:-100}\"}}" \
+        $$_COORD_FLAGS
     elif [ "$${AIC_NIXL_BACKEND:-AIS_MT}" = "POSIX" ] || [ "$$AIC_L2_BACKEND" = "nixl_posix" ]; then
       # NIXL first-class POSIX plugin (cpu staging buffer, no hipFileBufRegister).
       # Use for nodes where GPUDirect P2PDMA is unavailable (e.g. XFS LVM, or a
@@ -325,34 +343,26 @@ services:
   lmcache:
     profiles:
       - cache
-    build:
-      # Compose lives in docker/; the build context is the  tree
-      # root (one level up) so the Dockerfile's COPY scripts/ patches/ benchmarks/
-      # monitoring/ paths still resolve.
-      context: ..
-      dockerfile: docker/lmcache/Dockerfile
-      args:
-        AIC_VERSION:
-        ROCM_VERSION:
-        ROCM_ARCH: ${ROCM_ARCH}
-        BUILD_JOBS: ${BUILD_JOBS:-}
-        AIC_UCX_FAST: ${AIC_UCX_FAST:-}
-        AITER_REF:
-        FLASH_ATTN_REF:
-        LMCACHE_REF:
-        NIXL_REF:
-        HSA_SNOOP_REF:
+    # No `build:` stanza on purpose.  This image must be built by `make build`,
+    # which supplies the `base` build-context carrying torch.  Compose cannot
+    # express that context, so a `docker compose build` here would silently fall
+    # back to the Dockerfile's raw-ROCm `base` stage and produce a torch-less
+    # image that fails at runtime.
     image: ${LMCACHE_IMAGE_REF:-${IMAGE_REF:-${IMAGE_NAME:-rocm-aic}:latest}}
     container_name: aic-lmcache
     # Cross-container HIP IPC (LMCacheMPConnector registering vLLM's KV tensors) on
-    # ROCm with amdgpu-dkms 7.1.3 requires HSA_ENABLE_IPC_MODE_LEGACY=1 (set in image
-    # ENV) plus container-scoped shared IPC+PID namespaces.  lmcache owns the shareable
+    # gfx1201 uses HIP VMM + SCM_RIGHTS fd passing (docker/lmcache/rocm_vmem_ipc.py);
+    # HSA_ENABLE_IPC_MODE_LEGACY is deliberately NOT set (it breaks hipIpcGetMemHandle
+    # on gfx1201).  Cross-container GPU *event* IPC is skipped (rocm_ipc_patch.py).
+    # Needs container-scoped shared IPC+PID namespaces: lmcache owns the shareable
     # namespace; vllm joins it via ipc/pid: service:lmcache (see vllm service below).
     # IPC namespace sharing is independent of network_mode — the aic bridge network
     # provides DNS-based service discovery for prometheus without affecting IPC.
-    # Ports reachable within the aic network: lmcache HTTP API 8080, NIXL telemetry 19090.
-    networks: [aic-network]
-    ipc: shareable
+    # network_mode:host + ipc:host + pid:host required for KFD GPU memory IPC.
+    # Prometheus scrapes lmcache via host-gateway (see prometheus.yml).
+    network_mode: host
+    ipc: host
+    pid: host
     shm_size: "${AIC_SHM_SIZE:-64gb}"
     cap_add:
       - CAP_SYS_ADMIN
@@ -373,6 +383,7 @@ services:
       - /dev/kfd
       - /dev/dri
     volumes:
+      - aic-ipc:/tmp/aic-ipc   # ROCm VMEM IPC sidecar socket (gfx1201)
       # L2a NVMe — AIS_MT pool files (standard mode)
       - ${NVME_DATA:-/mnt/lmcache-nvme}:/data/nvme
       # L2b NFS — POSIX pool files (standard mode)
@@ -401,7 +412,10 @@ services:
       # Coordinator registration: the MP server registers, heartbeats, and
       # deregisters against the coordinator so it can track which blocks are held.
       # Unset LMCACHE_COORDINATOR_URL to run without coordinator (standalone mode).
-      LMCACHE_COORDINATOR_URL: "${LMCACHE_COORDINATOR_URL:-http://aic-lmcache-coordinator:9300}"
+      # lmcache uses network_mode:host — coordinator is on bridge, reach via localhost port.
+      LMCACHE_COORDINATOR_URL: "${LMCACHE_COORDINATOR_URL:-http://localhost:9300}"
+      # ROCm VMEM IPC sidecar socket path (shared with vllm via aic-ipc volume)
+      AIC_IPC_SOCK: /tmp/aic-ipc/fds.sock
     entrypoint: ["/bin/bash", "-o", "pipefail", "-c"]
     command: *lmcache-command
     depends_on:
@@ -426,6 +440,8 @@ services:
     image: ${LMCACHE_IMAGE_REF:-${IMAGE_REF:-${IMAGE_NAME:-rocm-aic}:latest}}
     container_name: aic-lmcache-coordinator
     networks: [aic-network]
+    ports:
+      - "${LMCACHE_COORDINATOR_PORT:-9300}:${LMCACHE_COORDINATOR_PORT:-9300}"
     restart: unless-stopped
     environment:
       - LMCACHE_DISABLE_BANNER=1
@@ -453,32 +469,21 @@ services:
   # vllm: vLLM serve, optionally with LMCacheMPConnector (via KV_TRANSFER_ARG)
   # ---------------------------------------------------------------------------
   vllm:
-    build:
-      context: ..
-      dockerfile: docker/vllm/Dockerfile
-      args:
-        AIC_VERSION:
-        ROCM_VERSION:
-        ROCM_ARCH: ${ROCM_ARCH}
-        BUILD_JOBS: ${BUILD_JOBS:-}
-        VLLM_REF:
-        LLM_EMU_REF:
+    # No `build:` stanza on purpose — see the lmcache service above.  Build with
+    # `make build`, which supplies the torch-bearing `base` build-context.
     image: ${VLLM_IMAGE_REF:-${IMAGE_REF:-${IMAGE_NAME:-rocm-aic}:latest}}
     container_name: aic-vllm-gpu${GPU:-0}
     # Shared IPC/PID namespaces with lmcache: required for cross-container HIP IPC
     # KV registration (see the lmcache service).  vllm joins lmcache's shareable IPC
-    # Cross-container HIP IPC (LMCacheMPConnector) requires HSA_ENABLE_IPC_MODE_LEGACY=1
-    # (set in image ENV) plus shared IPC+PID namespaces.  Container-scoped sharing
+    # Cross-container HIP IPC (LMCacheMPConnector) uses HIP VMM + SCM_RIGHTS fd passing
+    # (not HSA_ENABLE_IPC_MODE_LEGACY) plus shared IPC+PID namespaces.  Container-scoped sharing
     # (ipc: service:lmcache, pid: service:lmcache) is sufficient and safer than
     # ipc: host / pid: host.  Override via VLLM_IPC_MODE / VLLM_PID_MODE if needed.
-    # vLLM OpenAI API + /metrics reachable on host port 8000 (curl localhost:8000
-    # from the sbatch shell) and within the aic network on port 8000.
-    networks: [aic-network]
-    ports:
-      - "${VLLM_HOST_PORT:-8000}:8000"
-    ipc: "${VLLM_IPC_MODE:-shareable}"
+    # network_mode:host required for KFD GPU IPC; prometheus scrapes via host-gateway.
+    network_mode: host
+    ipc: "${VLLM_IPC_MODE:-host}"
     shm_size: "${AIC_SHM_SIZE:-64gb}"
-    pid: "${VLLM_PID_MODE-service:lmcache}"
+    pid: "${VLLM_PID_MODE:-host}"
     cap_add:
       - CAP_SYS_ADMIN
       - SYS_PTRACE
@@ -490,12 +495,14 @@ services:
     volumes:
       - ${HF_HOME:-~/.cache/huggingface}:/hf
       - ${LOG:-../logs}/vllm:/var/log/aic-vllm
+      - aic-ipc:/tmp/aic-ipc   # ROCm VMEM IPC sidecar socket (gfx1201)
     environment:
       - HF_TOKEN=${HF_TOKEN:-}
       - HF_HOME=/hf
       - HF_HUB_CACHE=/hf/hub
       - HF_DATASETS_CACHE=/hf/datasets
       - HF_HUB_OFFLINE=${HF_HUB_OFFLINE:-0}
+      - AIC_IPC_SOCK=/tmp/aic-ipc/fds.sock
       - TRANSFORMERS_OFFLINE=${TRANSFORMERS_OFFLINE:-0}
       - VLLM_CACHE_ROOT=/hf/vllm
       - VLLM_CONFIG_ROOT=/hf/vllm_config
@@ -525,6 +532,12 @@ services:
       # Enable vLLM dev endpoints: POST /reset_prefix_cache, /reset_mm_cache, etc.
       # Required to flush the GPU-side prefix cache via API without restarting vLLM.
       - VLLM_SERVER_DEV_MODE=${VLLM_SERVER_DEV_MODE:-1}
+      # llm-emu executor hook (passthrough — set VLLM_EMULATOR_EXECUTOR_HOOK=1 in host env
+      # to enable profile-driven emulation on a real GPU node, bypassing slow GPU compute)
+      - VLLM_EMULATOR_EXECUTOR_HOOK
+      - VLLM_EMULATOR_ENABLE_ORACLE
+      - VLLM_EMULATOR_PROFILE_PACK
+      - VLLM_EMULATOR_MODE
     command: >
       --model ${VLLM_MODEL:-openai/gpt-oss-120b}
         --host 0.0.0.0
@@ -565,9 +578,11 @@ services:
     image: ${AIC_CLIENT_IMAGE:-python:3.12}
     container_name: aic-client
     networks: [aic-network]
+    dns: ["8.8.8.8", "8.8.4.4"]
     environment:
       HF_TOKEN: "${HF_TOKEN:-}"
-      HF_HOME: "${HF_HOME:-/root/.cache/huggingface}"
+      HF_HOME: /root/.cache/huggingface
+      AIC_BENCH_DATASET: /root/.cache/huggingface/datasets/ShareGPT_V3_unfiltered_cleaned_split.json
     entrypoint: ["/bin/bash", "-c"]
     command:
       - |
@@ -582,10 +597,37 @@ services:
     volumes:
       - ..:/repo:ro
       - ../logs:/logs
+      - ${HF_HOME:-~/.cache/huggingface}:/root/.cache/huggingface
     working_dir: /repo
     restart: unless-stopped
 
   # ---------------------------------------------------------------------------
+  # loki: log aggregation store for Docker container logs.
+  # alloy: Grafana Alloy collector — tails container logs via Docker socket and ships to Loki.
+  loki:
+    profiles: [monitoring, monitoring-base]
+    image: grafana/loki:3.5.0
+    container_name: aic-loki
+    networks: [aic-network]
+    command: -config.file=/etc/loki/loki.yml
+    volumes:
+      - ../monitoring/loki/loki.yml:/etc/loki/loki.yml:ro
+      - loki-data:/loki
+    restart: unless-stopped
+
+  alloy:
+    profiles: [monitoring, monitoring-base]
+    image: grafana/alloy:v1.8.3
+    container_name: aic-alloy
+    networks: [aic-network]
+    volumes:
+      - ../monitoring/alloy/config.alloy:/etc/alloy/config.alloy:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - /tmp:/tmp:ro
+    command: run --server.http.listen-addr=0.0.0.0:12345 /etc/alloy/config.alloy
+    restart: unless-stopped
+    depends_on: [loki]
+
   # prometheus: scrapes all stack targets by container name via the aic network.
   # Behind the `monitoring` profile — start with `make up-monitoring` or
   # `docker compose --profile cache --profile monitoring up`.
@@ -614,6 +656,27 @@ services:
       - --web.listen-address=:${AIC_PROM_PORT:-9090}
 
   # ---------------------------------------------------------------------------
+  # l2-monitor: watches the nixl_posix_dynamic L2 directory via inotify.
+  # Emits Prometheus textfile metrics (file count, bytes, per-file read-back
+  # histogram) picked up by node-exporter's --collector.textfile.directory.
+  # Only meaningful when AIC_L2_BACKEND=nixl_posix_dynamic.
+  # ---------------------------------------------------------------------------
+  l2-monitor:
+    profiles: [monitoring, exporters, exporters-safe]
+    image: python:3.12-slim
+    container_name: aic-l2-monitor
+    networks: [aic-network]
+    restart: unless-stopped
+    environment:
+      AIC_L2_DIR: /data/nvme/lmcache
+      AIC_PROM_FILE: /prom/aic_l2_monitor.prom
+      AIC_PROM_INTERVAL: "15"
+    volumes:
+      - ${NVME_DATA:-/tmp/aic-nvme}:/data/nvme:ro
+      - aic-prom-textfile:/prom
+      - ./l2-monitor/l2_monitor.py:/app/l2_monitor.py:ro
+    entrypoint: ["python3", "-u", "/app/l2_monitor.py"]
+
   # node-exporter: host CPU/mem/disk/net/NVMe/RDMA metrics on :9100.
   # Behind the `monitoring` profile.  Uses pid:host for accurate per-process
   # CPU stats; mounts the host rootfs read-only via /host.
@@ -627,11 +690,13 @@ services:
     restart: unless-stopped
     volumes:
       - /:/host:ro,rslave
+      - aic-prom-textfile:/prom:ro
     command:
       - --path.rootfs=/host
       - --collector.diskstats
       - --collector.nvme
       - --collector.infiniband
+      - --collector.textfile.directory=/prom
       - --web.listen-address=:9100
 
   # ---------------------------------------------------------------------------
@@ -690,7 +755,7 @@ services:
       - --listen-address=:9879
       - --metrics-path=/metrics
       - --health-path=/health
-      - --enable-roce-pfc-metrics=false
+      - --collector.ethtool=false
 
   # ---------------------------------------------------------------------------
   # grafana: pre-provisioned AIC dashboard, anonymous access, port 3000.
@@ -720,7 +785,7 @@ services:
   # ---------------------------------------------------------------------------
   hsa-snoop:
     profiles: [monitoring, exporters, exporters-safe]
-    image: ${LMCACHE_IMAGE_REF:-${IMAGE_REF:-${IMAGE_NAME:-rocm-aic}:latest}}
+    image: ${HSA_SNOOP_IMAGE:-aic-hsa-snoop:local}
     container_name: aic-hsa-snoop
     networks: [aic-network]
     pid: "${AIC_HSA_SNOOP_PID_MODE:-service:lmcache}"
@@ -735,7 +800,6 @@ services:
     volumes:
       - /sys/kernel/debug:/sys/kernel/debug
       - /sys/kernel/tracing:/sys/kernel/tracing
-    entrypoint: ["/usr/local/bin/hsa-snoop"]
     command: ["--all", "--prometheus", "--prometheus-port", "${HSA_SNOOP_PORT:-9488}", "--mem-snoop"]
 
   # ---------------------------------------------------------------------------
@@ -1006,3 +1070,6 @@ services:
 
 volumes:
   grafana-data:
+  loki-data:
+  aic-ipc:   # ROCm VMEM IPC sidecar socket shared between vllm and lmcache
+  aic-prom-textfile:  # shared between aic-l2-monitor (writer) and node-exporter (reader)

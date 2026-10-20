@@ -349,3 +349,71 @@ jobs:
               sys.exit(1)
           print(f"\nAll {len(packs)} pack(s) passed oracle check")
           PYEOF
+
+  pytorch-pin:
+    name: PyTorch pin (PYTORCH_REF matches PYTORCH_SERIES)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Resolve PyTorch pin from Dockerfile
+        id: meta
+        run: |
+          set -euo pipefail
+          df=docker/base/Dockerfile
+          ref="$(grep -E '^ARG PYTORCH_REF=' "${df}" | head -1 | cut -d= -f2-)"
+          series="$(grep -E '^ARG PYTORCH_SERIES=' "${df}" | head -1 | cut -d= -f2-)"
+          url="$(grep -E '^ARG PYTORCH_GIT_URL=' "${df}" | head -1 | cut -d= -f2-)"
+          test -n "${ref}" || { echo "::error::PYTORCH_REF not set in ${df}"; exit 1; }
+          test -n "${series}" || { echo "::error::PYTORCH_SERIES not set in ${df}"; exit 1; }
+          test -n "${url}" || { echo "::error::PYTORCH_GIT_URL not set in ${df}"; exit 1; }
+          {
+            echo "ref=${ref}"
+            echo "series=${series}"
+            echo "url=${url}"
+          } >> "${GITHUB_OUTPUT}"
+          echo "PyTorch: ${url} @ ${ref} (series ${series})"
+
+      - name: Verify the pinned commit belongs to the declared series
+        env:
+          REF: ${{ steps.meta.outputs.ref }}
+          SERIES: ${{ steps.meta.outputs.series }}
+          URL: ${{ steps.meta.outputs.url }}
+        run: |
+          set -euo pipefail
+          # PYTORCH_SERIES is display-only (image tag + README) while PYTORCH_REF
+          # is what actually gets built, so nothing at build time stops the two
+          # from drifting.  version.txt in the pytorch tree at that exact ref is
+          # the authoritative statement of which series the commit belongs to.
+          slug="${URL#https://github.com/}"; slug="${slug%.git}"
+          raw="https://raw.githubusercontent.com/${slug}/${REF}/version.txt"
+          echo "Fetching ${raw}"
+          version="$(curl -fsSL --retry 3 --retry-delay 5 "${raw}" | tr -d '[:space:]')"
+          test -n "${version}" || {
+            echo "::error::version.txt is empty or missing at ${REF}"; exit 1; }
+          echo "version.txt at ${REF}: ${version}"
+          case "${version}" in
+            "${SERIES}"|"${SERIES}".*|"${SERIES}"a*)
+              echo "OK: PYTORCH_SERIES=${SERIES} matches version.txt ${version}"
+              ;;
+            *)
+              echo "::error::PYTORCH_SERIES=${SERIES} does not match version.txt"\
+                   "${version} at PYTORCH_REF=${REF}. Update PYTORCH_SERIES in"\
+                   "docker/base/Dockerfile to match the pinned commit (it feeds"\
+                   "the image tag and the README)."
+              exit 1
+              ;;
+          esac
+
+      - name: Warn if the pin is not an immutable commit
+        env:
+          REF: ${{ steps.meta.outputs.ref }}
+        run: |
+          set -euo pipefail
+          if [[ "${REF}" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "PYTORCH_REF is a full commit SHA — reproducible."
+          else
+            echo "::warning::PYTORCH_REF=${REF} is not a 40-character commit"\
+                 "SHA. Branches and tags build fine, but a branch moves, so two"\
+                 "builds sharing an image tag may not contain the same torch."
+          fi

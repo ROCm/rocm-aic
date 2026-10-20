@@ -30,10 +30,10 @@
 #
 # Applies after patches 01-15.
 diff --git a/lmcache/integration/vllm/vllm_multi_process_adapter.py b/lmcache/integration/vllm/vllm_multi_process_adapter.py
-index b319784..d8a8909 100644
+index 0000000..0000000 100644
 --- a/lmcache/integration/vllm/vllm_multi_process_adapter.py
 +++ b/lmcache/integration/vllm/vllm_multi_process_adapter.py
-@@ -187,6 +187,35 @@ class _IpcEvent(Protocol):
+@@ -240,6 +240,35 @@ class _IpcEvent(Protocol):
      def wait(self, stream: Any = None) -> None: ...
  
  
@@ -69,7 +69,7 @@ index b319784..d8a8909 100644
  @dataclass
  class _LookupAck:
      """LOOKUP requests whose server acknowledgement has not been observed yet.
-@@ -1275,14 +1304,17 @@ class LMCacheMPWorkerAdapter:
+@@ -1425,14 +1454,17 @@ class LMCacheMPWorkerAdapter:
          self.transfer_ctx: TransferContext | None = None
  
          # Request futures
@@ -88,8 +88,8 @@ index b319784..d8a8909 100644
 +        self.store_events: dict[str, list[_IpcEvent]] = {}
          self.retrieve_events: dict[str, _IpcEvent] = {}
  
-         # Block IDs that failed due to retrieve timeout
-@@ -1643,9 +1675,17 @@ class LMCacheMPWorkerAdapter:
+         # Alternative error reports, drained together by either public getter.
+@@ -1850,19 +1882,27 @@ class LMCacheMPWorkerAdapter:
              event,
              self.blocks_in_chunk,
          )
@@ -106,6 +106,16 @@ index b319784..d8a8909 100644
          if event is not None:
 -            self.store_events[request_id] = event
 +            self.store_events.setdefault(request_id, []).append(event)
+         if self._kv_events_enabled and not self._kv_event_server_source:
+             # Own completion events are the fallback when the server's
+             # cache-event log is not the source. A successful store result
+             # only means the request completed without a fatal error: chunks
+             # the server could not reserve are skipped silently, so when the
+             # log is the source, its write-finished records announce exactly
+             # the chunks written.
+             self._pending_store_kv_events.setdefault(request_id, []).extend(
+                 self._build_store_kv_events(key)
+             )
  
      @_lmcache_nvtx_annotate
      def submit_retrieve_request(
@@ -176,3 +186,4 @@ index d7ec75b..754fb29 100644
  def test_retrieve_keeps_event_until_future_finishes(fake_adapter):
      """Retrieve requests keep the exported CUDA event alive while pending."""
      adapter, _send_mock, _future = fake_adapter
+ 

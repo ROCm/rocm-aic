@@ -3,9 +3,18 @@
 #
 # Local-dev targets: build, stack lifecycle, shells, logs, venv, reset test.
 
-.PHONY: ensure-compose build build-cached up up-batch up-dev up-gds-l1 up-gds-l1-batch \
+.PHONY: ensure-compose build up up-batch up-dev up-gds-l1 up-gds-l1-batch \
         down logs logs-lmcache logs-vllm ps shell-lmcache shell-vllm \
-        restart-vllm restart-lmcache venv vllm-reset-test
+        restart-vllm restart-lmcache venv vllm-reset-test bench-serve
+
+# ---- Agentic serving benchmark -----------------------------------------------
+BENCH_DURATION   ?= 60     # minutes
+BENCH_TOKENS     ?= 256    # max output tokens per turn
+BENCH_POOL_SIZE  ?= 0      # 0 = full dataset; N = repeat within N convs (generates cache hits)
+BENCH_SESSIONS   ?= 4      # concurrent simulated user sessions
+BENCH_THINK_MIN  ?= 1.0    # min think-time between turns (seconds)
+BENCH_THINK_MAX  ?= 5.0    # max think-time between turns (seconds)
+BENCH_SEED       ?= 42     # random seed — change to select a different conversation pool
 
 ensure-compose:
 	@if docker compose version >/dev/null 2>&1; then \
@@ -22,40 +31,45 @@ ensure-compose:
 		echo "installed: $$(docker compose version --short 2>/dev/null)"; \
 	fi
 
-build: ensure-compose
-	@test -n "$(ROCM_ARCH)" || { \
-		echo "ERROR: ROCM_ARCH empty (install ROCm or set ROCM_ARCH=gfxNNNN)" >&2; exit 1; }
-	cd "$(REPO_ROOT)" && $(COMPOSE_CACHE) build \
-		$(if $(TLS_CERT),--secret id=tls_cert$(comma)src=$(TLS_CERT),)
-	@docker tag "$(IMAGE_REF)" "$(IMAGE_NAME):latest"
-	@echo "Built $(IMAGE_REF) (also tagged $(IMAGE_NAME):latest)"
+# Build aic-base, then aic-vllm + aic-lmcache (which sit on top of it) and the
+# aic-hsa-snoop sidecar, in one `docker buildx bake` pass.  The build graph lives
+# in docker/docker-bake.hcl: bake's `base = "target:base"` build-context wires the
+# in-session aic-base into vllm/lmcache directly, so the old per-stage buildx
+# calls + OCI-layout export/untar handoff (needed to cross the docker-container
+# builder's daemon isolation) are gone.  Version pins, the image tag and the
+# cache/secret wiring all live in the HCL; the Makefile only forwards env.
+BUILD_PROGRESS ?= auto
 
-build-cached:
+build:
 	@test -n "$(ROCM_ARCH)" || { \
 		echo "ERROR: ROCM_ARCH empty (install ROCm or set ROCM_ARCH=gfxNNNN)" >&2; exit 1; }
-	@if ! docker buildx inspect $(AIC_LOCAL_BUILDER) >/dev/null 2>&1; then \
-		echo "Creating buildx builder $(AIC_LOCAL_BUILDER) (docker-container driver)..."; \
-		docker buildx create --name $(AIC_LOCAL_BUILDER) --driver docker-container --bootstrap; \
+	@if ! docker buildx inspect $(AIC_BUILDX_BUILDER) >/dev/null 2>&1; then \
+		echo "Creating buildx builder $(AIC_BUILDX_BUILDER) (docker-container driver)..."; \
+		docker buildx create --name $(AIC_BUILDX_BUILDER) --driver docker-container \
+			--driver-opt env.BUILDKIT_STEP_LOG_MAX_SIZE=-1 \
+			--driver-opt env.BUILDKIT_STEP_LOG_MAX_SPEED=10485760 \
+			--bootstrap; \
 	fi
-	@mkdir -p "$(AIC_LOCAL_CACHE_DIR)"
-	@echo "Cache dir: $(AIC_LOCAL_CACHE_DIR)"
-	$(_FRAMEWORK_VERSION_ENV) DOCKER_BUILDKIT=1 \
-	docker buildx build \
-		--builder $(AIC_LOCAL_BUILDER) \
-		--progress=plain \
+	@if [ -n "$(strip $(AIC_CACHE_DIR))" ]; then \
+		mkdir -p "$(AIC_CACHE_DIR)/$(_ARCH_SLUG)"; \
+		echo "Layer cache: $(AIC_CACHE_DIR)/$(_ARCH_SLUG) (mode $(AIC_CACHE_MODE))"; \
+	else \
+		echo "Layer cache: disabled (set AIC_CACHE_DIR to enable)"; \
+	fi
+	@echo "--- build: aic-base/vllm/lmcache/hsa-snoop:$(IMAGE_TAG) + nvme/rdma-exporter:local (ROCM_ARCH=$(ROCM_ARCH)) ---"
+	BUILDX_BAKE_ENTITLEMENTS_FS=0 \
+	    ROCM_ARCH="$(ROCM_ARCH)" BUILD_JOBS="$(BUILD_JOBS)" AIC_UCX_FAST="$(AIC_UCX_FAST)" \
+	    AIC_VERSION="$(AIC_VERSION)" \
+	    AIC_CACHE_DIR="$(AIC_CACHE_DIR)" AIC_CACHE_MODE="$(AIC_CACHE_MODE)" \
+	    $(if $(strip $(TLS_CERT)),TLS_CERT="$(TLS_CERT)",) \
+	    docker buildx bake \
+		--builder $(AIC_BUILDX_BUILDER) \
+		--progress=$(BUILD_PROGRESS) \
 		--load \
-		--build-arg ROCM_ARCH="$(ROCM_ARCH)" \
-		--build-arg BUILD_JOBS="$(BUILD_JOBS)" \
-		--build-arg AIC_UCX_FAST="$(AIC_UCX_FAST)" \
-		$(if $(TLS_CERT),--secret id=tls_cert$(comma)src=$(TLS_CERT),) \
-		--cache-from type=local,src="$(AIC_LOCAL_CACHE_DIR)" \
-		--cache-to   type=local,dest="$(AIC_LOCAL_CACHE_DIR)",mode=max \
-		-f "$(REPO_ROOT)/docker/lmcache/Dockerfile" \
-		-t "$(IMAGE_REF)" \
-		-t "$(IMAGE_NAME):latest" \
-		"$(REPO_ROOT)"
-	@echo "Built $(IMAGE_REF) (also tagged $(IMAGE_NAME):latest)"
-	@echo "Cache stored in $(AIC_LOCAL_CACHE_DIR)"
+		-f "$(REPO_ROOT)/docker/docker-bake.hcl" \
+		default
+	@echo "Built aic-base/aic-vllm/aic-lmcache/aic-hsa-snoop:$(IMAGE_TAG) (vllm/lmcache/hsa-snoop also tagged :latest)"
+	@echo "Built aic-nvme-exporter:local, aic-rdma-exporter:local"
 
 up: ensure-compose check-hf-token prep-dirs
 	@mkdir -p "$(AIC_METRICS_DIR)"
@@ -76,10 +90,13 @@ up-dev: ensure-compose check-hf-token prep-dirs
 	@echo "Started in dev mode (enforce-eager, no CUDA graphs). Use 'make logs' to follow."
 
 up-gds-l1: ensure-compose check-hf-token check-gds-slab prep-dirs
-	GDS_MODE=1 $(COMPOSE_CACHE) up
+	@mkdir -p "$(AIC_METRICS_DIR)"
+	PROM_UID="$$(id -u)" PROM_GID="$$(id -g)" GDS_MODE=1 $(COMPOSE_CACHE) --profile monitoring up
 
 up-gds-l1-batch: ensure-compose check-hf-token check-gds-slab prep-dirs
-	GDS_MODE=1 $(COMPOSE_CACHE) up -d
+	@mkdir -p "$(AIC_METRICS_DIR)"
+	PROM_UID="$$(id -u)" PROM_GID="$$(id -g)" GDS_MODE=1 $(COMPOSE_CACHE) --profile monitoring up -d
+	@echo "Started (GDS L1 mode + monitoring). Use 'make logs' to follow or 'make down' to stop."
 	@echo "Started (GDS L1 mode). Use 'make logs' to follow or 'make down' to stop."
 
 down:
@@ -127,26 +144,47 @@ vllm-reset-test: check-hf-token prep-dirs
 	    AIC_L2_BACKEND=$(AIC_L2_BACKEND) \
 	    $(COMPOSE_CACHE) --profile monitoring up -d
 	@echo "Waiting for vLLM to be healthy..."
-	@for i in $$(seq 1 60); do \
-	    r=$$(docker exec aic-client curl -s -o /dev/null -w '%{http_code}' \
-	        http://aic-vllm-gpu0:8000/health 2>/dev/null); \
+	@for i in $$(seq 1 $${VLM_READY_RETRIES:-60}); do \
+	    r=$$(curl -s -o /dev/null -w '%{http_code}' \
+	        http://localhost:$${VLLM_HOST_PORT:-8000}/health 2>/dev/null); \
 	    [ "$$r" = "200" ] && echo "vLLM healthy after $${i}s" && break; \
-	    [ "$$i" = "60" ] && echo "ERROR: vLLM not healthy after 300s" >&2 && exit 1; \
+	    [ "$$i" = "$${VLM_READY_RETRIES:-60}" ] && echo "ERROR: vLLM not healthy after vllm_reset_test timeout" >&2 && exit 1; \
 	    sleep 5; \
 	done
 	@echo "Clearing vLLM GPU prefix cache..."
-	@docker exec aic-client curl -s -X POST \
-	    http://aic-vllm-gpu0:8000/reset_prefix_cache \
+	@curl -s -X POST \
+	    http://localhost:8000/reset_prefix_cache \
 	    -H 'Content-Type: application/json' -d '{}' | grep -q '"success":true' \
 	    || { echo "ERROR: vLLM cache reset failed" >&2; exit 1; }
 	@echo "Clearing LMCache L1 DRAM cache..."
-	@docker exec aic-client curl -s -X POST \
-	    http://aic-lmcache:8080/cache/clear \
+	@curl -s -X POST \
+	    http://localhost:8080/cache/clear \
 	    -H 'Content-Type: application/json' \
 	    -d '{"tier":"l1","force":true}' | grep -q '"status":"ok"' \
 	    || { echo "ERROR: LMCache L1 clear failed" >&2; exit 1; }
 	@echo "Resetting LMCache Prometheus counters..."
-	@docker exec aic-client curl -s -X POST \
-	    http://aic-lmcache:8080/metrics/reset > /dev/null
+	@curl -s -X POST \
+	    http://localhost:8080/metrics/reset > /dev/null
 	$(PYTHON) "$(CURDIR)/benchmarks/vllm_reset_test.py"
 	@echo "Test complete. Run 'make down' to stop the stack."
+
+bench-serve: check-hf-token prep-dirs
+	@echo "Starting AIC multi-turn serving benchmark ($(BENCH_DURATION)min, $(BENCH_SESSIONS) sessions)..."
+	@echo "  Model:       $(VLLM_MODEL)"
+	@echo "  Sessions:    $(BENCH_SESSIONS)  Max tokens/turn: $(BENCH_TOKENS)"
+	@echo "  Think-time:  $(BENCH_THINK_MIN)–$(BENCH_THINK_MAX)s  Pool: $(BENCH_POOL_SIZE)"
+	@echo "  Results:     /tmp/aic-bench-results/"
+	@curl -sf http://localhost:$${VLLM_HOST_PORT:-8000}/health >/dev/null || { \
+	    echo "ERROR: vLLM not healthy at http://localhost:$${VLLM_HOST_PORT:-8000} — run 'make up' first" >&2; exit 1; }
+	$(PYTHON) "$(REPO_ROOT)/benchmarks/aic_bench_serve.py" \
+	    --base-url http://localhost:8000 \
+	    --model "$(VLLM_MODEL)" \
+	    --duration $(BENCH_DURATION) \
+	    --sessions $(BENCH_SESSIONS) \
+	    --max-tokens $(BENCH_TOKENS) \
+	    --think-min $(BENCH_THINK_MIN) \
+	    --think-max $(BENCH_THINK_MAX) \
+	    $(if $(filter-out 0,$(BENCH_POOL_SIZE)),--pool-size $(BENCH_POOL_SIZE),) \
+	    --seed $(BENCH_SEED) \
+	    --output /tmp/aic-bench-results
+	@echo "Benchmark complete. Run 'make down' to stop the stack."
