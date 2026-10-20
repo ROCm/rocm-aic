@@ -1,0 +1,37 @@
+# SPUR cluster compose override.
+#
+# spur-authz blocks:
+#   B1: /:/host bind-mount (node-exporter rootfs)
+#   B2: /dev:/dev:rw bind-mount (nvme-exporter device access)
+#
+# Workarounds:
+#   node-exporter  -- replace /:/host with a tmpfs so the container starts;
+#                     CPU/mem/net metrics still come from /proc+/sys inside the
+#                     container, disk/fs metrics are absent.
+#   nvme-exporter  -- drop /dev entirely; nvme-cli ioctls fail but the
+#                     exporter starts and prometheus scrapes it (0 nvme_ series).
+#
+# Applied automatically by monitoring-lib.sh when AIC_SPUR_CLUSTER=1.
+
+services:
+  node-exporter:
+    volumes:
+      - type: tmpfs
+        target: /host
+      - aic-prom-textfile:/prom:ro
+    command:
+      - --collector.diskstats
+      - --collector.nvme
+      - --collector.infiniband
+      - --collector.textfile.directory=/prom
+      - --web.listen-address=:9100
+
+  nvme-exporter:
+    volumes:
+      - /sys:/sys:ro
+
+  # hsa-snoop: pid:host is blocked by spur-authz.  In the smoke-test monitoring
+  # phase lmcache is not running, so join prometheus's PID namespace instead —
+  # container-scoped (SPUR-safe) and sufficient for the /metrics health check.
+  hsa-snoop:
+    pid: "service:prometheus"

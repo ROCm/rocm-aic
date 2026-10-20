@@ -641,6 +641,8 @@ services:
     image: ${AIC_PROM_IMAGE:-prom/prometheus:v3.14.0}
     container_name: aic-prometheus
     networks: [aic-network]
+    ports:
+      - "${AIC_PROM_PORT:-9090}:${AIC_PROM_PORT:-9090}"
     extra_hosts:
       - "host-gateway:host-gateway"
     user: "${PROM_UID:-65534}:${PROM_GID:-65534}"
@@ -684,7 +686,7 @@ services:
   # starts cleanly.  Override with NODEX_PID_MODE=host when permitted.
   # ---------------------------------------------------------------------------
   node-exporter:
-    profiles: [monitoring, exporters, exporters-cpu]
+    profiles: [monitoring, exporters, exporters-cpu, exporters-safe]
     image: ${AIC_NODE_EXPORTER_IMAGE:-quay.io/prometheus/node-exporter:v1.12.1}
     container_name: aic-node-exporter
     networks: [aic-network]

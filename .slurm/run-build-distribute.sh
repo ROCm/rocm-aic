@@ -1042,6 +1042,8 @@ cmd_build() {
         remote_script="$(cat <<REMOTE
 set -euo pipefail
 command -v docker >/dev/null 2>&1 || { echo "docker not found on build node \$(hostname) (PATH=\${PATH})" >&2; exit 1; }
+docker system df >/dev/null 2>&1 \
+    || { echo "[preflight] FATAL: docker overlay snapshotter broken on \$(hostname) -- resubmit to a different node" >&2; exit 1; }
 echo "[build] host=\$(hostname) docker=\$(docker --version)"
 # BuildKit writes a temp dir for config injection into TMPDIR (defaults to /tmp).
 # On SPUR compute nodes /tmp may not be writable for this user; use $HOME/tmp instead.
@@ -1801,6 +1803,7 @@ echo "[test] host=\$(hostname) docker=\$(docker --version)"
 export AIC_SPUR_CLUSTER='${AIC_SPUR_CLUSTER}'
 # shellcheck source=/dev/null
 source '${AIC_DAY_DIR}/monitoring/monitoring-lib.sh'
+aic_docker_preflight || exit 1
 aic_resolve_gpu_visibility \
     || { echo "[test] could not resolve the GPU allocation (refusing to default to GPU 0)" >&2; exit 1; }
 echo "[test] allocated gpu: ROCR=\${AIC_ROCR_VISIBLE} HIP=\${AIC_HIP_VISIBLE}"
@@ -1899,7 +1902,10 @@ if [ '${_smoke_exporters}' = "1" ]; then
     # gone); without it start_monitoring skips the whole exporter/Prometheus stack.
     MON_COMPOSE='${AIC_DAY_DIR}/docker/docker-compose.yml'
     AIC_METRICS_DIR="\${_logdir}/prometheus"
-    AIC_EXPORTERS=1
+    # SPUR blocks /:/host (B1) and /dev:/dev:rw (B2) bind mounts.  Use the
+    # "safe" subset (amdgpu + hsa-snoop + rdma).  nvme-exporter is excluded
+    # via the AIC_SPUR_CLUSTER guard in mon_profile() safe-case.
+    AIC_EXPORTERS="${AIC_EXPORTERS:-safe}"
     AIC_MONITORING=1
     AIS_KFD_SYMBOL="\${AIS_KFD_SYMBOL:-kfd_ioctl_ais}"
     # In the smoke-test the full stack (lmcache/vllm) is not running when the
@@ -1982,6 +1988,7 @@ echo "[tiny-test] host=\$(hostname) docker=\$(docker --version)"
 export AIC_SPUR_CLUSTER='${AIC_SPUR_CLUSTER}'
 # shellcheck source=/dev/null
 source '${AIC_DAY_DIR}/monitoring/monitoring-lib.sh'
+aic_docker_preflight || exit 1
 aic_resolve_gpu_visibility \
     || { echo "[tiny-test] could not resolve the GPU allocation (refusing to default to GPU 0)" >&2; exit 1; }
 export GPU="\${AIC_ROCR_VISIBLE%%,*}"
@@ -2012,6 +2019,7 @@ cd '${AIC_DAY_DIR}'
 # docker compose v2 only -- install user-locally if the node lacks the plugin.
 # shellcheck source=/dev/null
 source '${AIC_DAY_DIR}/monitoring/monitoring-lib.sh'
+aic_docker_preflight || exit 1
 ensure_compose || { echo "[tiny-test] docker compose unavailable and could not be installed" >&2; exit 1; }
 
 # Tiny-model MP stack env.  Small footprint; the tiny model is downloaded online
@@ -2165,6 +2173,7 @@ echo "[prom-dump] host=\$(hostname) docker=\$(docker --version)"
 export AIC_SPUR_CLUSTER='${AIC_SPUR_CLUSTER}'
 # shellcheck source=/dev/null
 source '${AIC_DAY_DIR}/monitoring/monitoring-lib.sh'
+aic_docker_preflight || exit 1
 aic_resolve_gpu_visibility \
     || { echo "[prom-dump] could not resolve GPU allocation" >&2; exit 1; }
 export GPU="\${AIC_ROCR_VISIBLE%%,*}"
@@ -2405,6 +2414,7 @@ fi
 cd '${AIC_DAY_DIR}'
 # shellcheck source=/dev/null
 source '${AIC_DAY_DIR}/monitoring/monitoring-lib.sh'
+aic_docker_preflight || exit 1
 ensure_compose || { echo "[emulate-test] docker compose unavailable and could not be installed" >&2; exit 1; }
 
 export IMAGE_NAME='${AIC_IMAGE}'
@@ -2594,6 +2604,7 @@ fi
 cd '${AIC_DAY_DIR}'
 # shellcheck source=/dev/null
 source '${AIC_DAY_DIR}/monitoring/monitoring-lib.sh'
+aic_docker_preflight || exit 1
 ensure_compose || { echo "[emulate-mp-test] docker compose unavailable and could not be installed" >&2; exit 1; }
 
 export IMAGE_NAME='${AIC_IMAGE}'
@@ -3125,6 +3136,7 @@ fi
 cd '${AIC_DAY_DIR}'
 # shellcheck source=/dev/null
 source '${AIC_DAY_DIR}/monitoring/monitoring-lib.sh'
+aic_docker_preflight || exit 1
 ensure_compose || { echo "[validate] docker compose unavailable" >&2; exit 1; }
 
 export IMAGE_NAME='${AIC_IMAGE}'
@@ -3619,6 +3631,8 @@ cmd_bake() {
     remote_script="$(cat <<REMOTE
 set -euo pipefail
 command -v docker >/dev/null 2>&1 || { echo "docker not found on \$(hostname)" >&2; exit 1; }
+docker system df >/dev/null 2>&1 \
+    || { echo "[preflight] FATAL: docker overlay snapshotter broken on \$(hostname) -- resubmit to a different node" >&2; exit 1; }
 echo "[bake] host=\$(hostname) docker=\$(docker --version)"
 mkdir -p "\${HOME}/.tmp-rocm-aic-cicd"
 export TMPDIR="\${HOME}/.tmp-rocm-aic-cicd"
