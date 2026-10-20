@@ -484,7 +484,7 @@ services:
     network_mode: host
     ipc: "${VLLM_IPC_MODE:-service:lmcache}"
     shm_size: "${AIC_SHM_SIZE:-64gb}"
-    pid: "${VLLM_PID_MODE:-service:lmcache}"
+    pid: "${VLLM_PID_MODE-service:lmcache}"
     cap_add:
       - CAP_SYS_ADMIN
       - SYS_PTRACE
@@ -790,7 +790,7 @@ services:
     image: ${HSA_SNOOP_IMAGE:-aic-hsa-snoop:local}
     container_name: aic-hsa-snoop
     networks: [aic-network]
-    pid: "${AIC_HSA_SNOOP_PID_MODE:-service:lmcache}"
+    pid: "${AIC_HSA_SNOOP_PID_MODE-service:lmcache}"
     privileged: true
     restart: unless-stopped
     environment:

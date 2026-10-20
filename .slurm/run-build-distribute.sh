@@ -1906,7 +1906,11 @@ if [ '${_smoke_exporters}' = "1" ]; then
     # monitoring compose starts.  Override IPC/PID modes to avoid "cannot share
     # IPC namespace with service lmcache: container missing" errors — the
     # monitoring-phase containers don't need GPU IPC.
-    export VLLM_IPC_MODE="" VLLM_PID_MODE="" AIC_HSA_SNOOP_PID_MODE=""
+    # Use "none" for ipc (valid Docker value = isolated /dev/shm) and unset pid
+    # so the single-dash ${VAR-default} in compose uses the default only when
+    # VAR is unset — setting it to empty string disables PID sharing.
+    export VLLM_IPC_MODE=none AIC_HSA_SNOOP_PID_MODE=none
+    export VLLM_PID_MODE=""
     # shellcheck source=/dev/null
     source '${AIC_DAY_DIR}/monitoring/monitoring-lib.sh'
     mkdir -p "\${AIC_METRICS_DIR}"
