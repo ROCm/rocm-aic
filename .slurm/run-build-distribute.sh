@@ -1902,6 +1902,11 @@ if [ '${_smoke_exporters}' = "1" ]; then
     AIC_EXPORTERS=1
     AIC_MONITORING=1
     AIS_KFD_SYMBOL="\${AIS_KFD_SYMBOL:-kfd_ioctl_ais}"
+    # In the smoke-test the full stack (lmcache/vllm) is not running when the
+    # monitoring compose starts.  Override IPC/PID modes to avoid "cannot share
+    # IPC namespace with service lmcache: container missing" errors — the
+    # monitoring-phase containers don't need GPU IPC.
+    export VLLM_IPC_MODE="" VLLM_PID_MODE="" AIC_HSA_SNOOP_PID_MODE=""
     # shellcheck source=/dev/null
     source '${AIC_DAY_DIR}/monitoring/monitoring-lib.sh'
     mkdir -p "\${AIC_METRICS_DIR}"
