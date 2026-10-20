@@ -63,8 +63,8 @@ endif
 # dist-build-base/vllm/lmcache also require the corresponding Slurm subcommands
 # (build-base, build-vllm, build-lmcache) which are implemented in the script.
 
-.PHONY: dist-build dist-build-fast dist-build-emulate \
-        dist-build-base dist-build-vllm dist-build-lmcache dist-build-parallel \
+.PHONY: dist-build dist-build-bake dist-build-fast dist-build-emulate \
+        dist-build-base dist-build-vllm dist-build-lmcache \
         dist-build-exporters dist-build-monitoring dist-push \
         smoke-test smoke-test-fast tiny-test tiny-test-fast \
         emulate-test emulate-mp-test emulate-validate profile-capture \
@@ -75,12 +75,17 @@ endif
 
 dist-build:
 	"$(DIST)" build-split
-	@[ "$(AIC_BUILD_EXPORTERS)" = "0" ] || "$(DIST)" build-exporters \
-	    || echo "WARNING: fabric-exporter build failed (optional; main image is built). Retry on a node with Docker Hub access, or set AIC_BUILD_EXPORTERS=0."
+	"$(DIST)" build-exporters \
+	    || echo "WARNING: fabric-exporter build failed (optional; main image is built). Retry on a node with Docker Hub access."
+
+dist-build-bake:
+	"$(DIST)" bake
+	"$(DIST)" build-exporters \
+	    || echo "WARNING: fabric-exporter build failed (optional; main image is built). Retry on a node with Docker Hub access."
 
 dist-build-fast:
 	@$(MAKE) --no-print-directory dist-build \
-	    AIC_ROCM_ARCH='$(AIC_FAST_ARCH)' AIC_BUILD_EXPORTERS=0 AIC_UCX_FAST=1
+	    AIC_ROCM_ARCH='$(AIC_FAST_ARCH)' AIC_UCX_FAST=1
 
 dist-build-emulate:
 	"$(DIST)" build-emulate
@@ -93,10 +98,6 @@ dist-build-vllm:
 
 dist-build-lmcache:
 	"$(DIST)" build-lmcache
-
-dist-build-parallel:
-	@$(MAKE) --no-print-directory dist-build-base
-	@$(MAKE) --no-print-directory -j2 dist-build-vllm dist-build-lmcache
 
 dist-build-exporters:
 	"$(DIST)" build-exporters

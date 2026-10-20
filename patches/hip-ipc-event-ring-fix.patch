@@ -1,0 +1,11 @@
+Fix signal ring index overflow in IPCEventEmulated::streamWait.
+
+Without the modulo, read_index walks past the end of the 32-slot signal
+array after 32 uses of the same IPC event handle, causing hipErrorInvalidValue
+on the 33rd import. ROCm/rocm-systems#11511 and #11749.
+
+--- a/projects/clr/hipamd/src/hip_event_ipc.cpp
++++ b/projects/clr/hipamd/src/hip_event_ipc.cpp
+@@ -96,1 +96,1 @@
+-  const int offset = ipc_evt_.ipc_shmem_->read_index;
++  const int offset = ipc_evt_.ipc_shmem_->read_index % IPC_SIGNALS_PER_EVENT;

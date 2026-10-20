@@ -8,3 +8,12 @@ datasources:
     isDefault: true
     jsonData:
       timeInterval: 5s
+
+  - name: Loki
+    type: loki
+    uid: loki
+    access: proxy
+    url: http://aic-loki:3100
+    isDefault: false
+    jsonData:
+      maxLines: 1000

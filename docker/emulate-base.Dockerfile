@@ -16,10 +16,18 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         cmake ninja-build git build-essential \
     && rm -rf /var/lib/apt/lists/*
 RUN pip3 install --no-cache-dir \
-        "torch>=2.3,<3" torchvision \
+        "torch~=2.13.0" torchvision \
         --index-url https://download.pytorch.org/whl/cpu
 # Pre-install all vLLM build-system requirements (from its pyproject.toml
 # [build-system].requires) so pip can prepare vLLM's metadata without failing
 # when resolving dependencies from inside the /app/vllm source tree.
 RUN pip3 install --no-cache-dir \
         setuptools "setuptools-scm>=8" setuptools-rust wheel build
+# Install uv + uvx so COPY --from=base /usr/local/bin/uv[x] in vllm/Dockerfile succeeds.
+RUN curl -fsSL "https://astral.sh/uv/0.12.15/install.sh" | sh \
+    && ln -s /root/.local/bin/uv  /usr/local/bin/uv \
+    && ln -s /root/.local/bin/uvx /usr/local/bin/uvx
+# python:3.12-bookworm uses site-packages; the ROCm Ubuntu base uses dist-packages.
+# Symlink dist-packages -> site-packages so COPY --from=build_vllm dist-packages/ works.
+RUN ln -sf /usr/local/lib/python3.12/site-packages \
+           /usr/local/lib/python3.12/dist-packages

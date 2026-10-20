@@ -27,7 +27,7 @@
 #
 # Applies after patches 01-15.
 diff --git a/lmcache/v1/distributed/l2_adapters/nixl_store_l2_adapter.py b/lmcache/v1/distributed/l2_adapters/nixl_store_l2_adapter.py
-index 9bbd946..88128f4 100644
+index 66d664b..10d54d5 100644
 --- a/lmcache/v1/distributed/l2_adapters/nixl_store_l2_adapter.py
 +++ b/lmcache/v1/distributed/l2_adapters/nixl_store_l2_adapter.py
 @@ -75,15 +75,26 @@ class NixlStoreObj:
@@ -104,7 +104,7 @@ index 9bbd946..88128f4 100644
              return (usage, usage)
  
  
-@@ -700,9 +723,7 @@ class NixlStoreL2Adapter(L2AdapterInterface):
+@@ -684,9 +707,7 @@ class NixlStoreL2Adapter(L2AdapterInterface):
              pinned_object_count = sum(
                  1 for obj in self._memory_objects.values() if obj.pin_count > 0
              )
@@ -116,7 +116,7 @@ index 9bbd946..88128f4 100644
              "is_healthy": self._loop_thread.is_alive(),
              "type": "NixlStoreL2Adapter",
 diff --git a/tests/v1/distributed/test_nixl_store_l2_adapter.py b/tests/v1/distributed/test_nixl_store_l2_adapter.py
-index d772c6a..835812a 100644
+index 65f6ca8..8943048 100644
 --- a/tests/v1/distributed/test_nixl_store_l2_adapter.py
 +++ b/tests/v1/distributed/test_nixl_store_l2_adapter.py
 @@ -42,11 +42,43 @@ from lmcache.v1.distributed.internal_api import (  # noqa: E402
@@ -160,6 +160,6 @@ index d772c6a..835812a 100644
 +        assert pool.get_slot_usage() == (5 / 6, 5 / 6)
 +
 +
+ 
  def test_nixl_store_adapter_requires_l1_memory_desc():
      config = NixlStoreL2AdapterConfig(
-         backend="AIS_MT",

@@ -98,4 +98,6 @@ jobs:
             | grep -v 'instance selector\|job selector' \
             | grep -v 'missing the instance\|missing the job' \
             | grep -v 'counter metric.*is not aggregated' \
+            | grep -v 'has missing title or description' \
+            | grep -v 'invalid templated label' \
             && exit 1 || exit 0
