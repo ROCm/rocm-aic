@@ -75,13 +75,9 @@ endif
 
 dist-build:
 	"$(DIST)" build-split
-	"$(DIST)" build-exporters \
-	    || echo "WARNING: fabric-exporter build failed (optional; main image is built). Retry on a node with Docker Hub access."
 
 dist-build-bake:
 	"$(DIST)" bake
-	"$(DIST)" build-exporters \
-	    || echo "WARNING: fabric-exporter build failed (optional; main image is built). Retry on a node with Docker Hub access."
 
 dist-build-fast:
 	@$(MAKE) --no-print-directory dist-build \

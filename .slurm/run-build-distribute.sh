@@ -1357,6 +1357,31 @@ docker buildx build --builder ${_builder} --progress=plain --output type=docker,
 mv -f "\${tmp_lmcache}" "${lmcache_tarball}"
 echo "[build-split] lmcache saved: \$(du -h "${lmcache_tarball}" | cut -f1) -> ${lmcache_tarball}"
 rm -rf "\${_base_oci_dir}" "\${_lmc_wheels_dir}"
+
+# Build exporter images in the same allocation (same node = Docker access).
+if docker info >/dev/null 2>&1; then
+    echo "[build-split] building fabric exporter images (same allocation)"
+    for _img_spec in \
+        "${AIC_NVME_EXPORTER_IMAGE}|NVME_EXPORTER_VERSION=${AIC_NVME_EXPORTER_VERSION}|${AIC_DAY_DIR}/docker/nvme-exporter|${nvme_tar}" \
+        "${AIC_RDMA_EXPORTER_IMAGE}|RDMA_EXPORTER_VERSION=${AIC_RDMA_EXPORTER_VERSION}|${AIC_DAY_DIR}/docker/rdma-exporter|${rdma_tar}" \
+        "${AIC_HSA_SNOOP_IMAGE}||${AIC_DAY_DIR}/docker/hsa-snoop|${hsa_snoop_tar}"; do
+        _img="\$(cut -d'|' -f1 <<<"\${_img_spec}")"
+        _arg="\$(cut -d'|' -f2 <<<"\${_img_spec}")"
+        _ctx="\$(cut -d'|' -f3 <<<"\${_img_spec}")"
+        _tar="\$(cut -d'|' -f4 <<<"\${_img_spec}")"
+        _tmp="\${_tar}.partial.\$\$"
+        set +o pipefail
+        docker buildx build --builder ${_builder} --output type=docker,dest=- \
+            \${_arg:+--build-arg \${_arg}} -t "\${_img}" "\${_ctx}" | ${COMPRESS_CMD} > "\${_tmp}"
+        _rc=("\${PIPESTATUS[@]}")
+        set -o pipefail
+        [ "\${_rc[0]}" -eq 0 ] && [ "\${_rc[1]}" -eq 0 ] && mv -f "\${_tmp}" "\${_tar}" \
+            && echo "[build-split] exporter saved: \$(du -h "\${_tar}" | cut -f1) -> \${_tar}" \
+            || { echo "[build-split] WARN: exporter build failed for \${_img}; skipping" >&2; rm -f "\${_tmp}"; }
+    done
+else
+    echo "[build-split] WARN: Docker daemon not accessible; skipping exporter builds" >&2
+fi
 exit 0
 REMOTE
 )"
@@ -1403,6 +1428,14 @@ set -euo pipefail
 command -v docker >/dev/null 2>&1 || { echo "docker not found on build node \$(hostname) (PATH=\${PATH})" >&2; exit 1; }
 echo "[build-exporters] host=\$(hostname) docker=\$(docker --version)"
 mkdir -p "${AIC_IMAGE_DIR}"
+# Pre-flight: ensure the Docker daemon socket is accessible before attempting
+# any buildx operation.  On SPUR some nodes run Docker with restricted socket
+# permissions; fail fast with a clear message rather than writing corrupt tarballs.
+if ! docker info >/dev/null 2>&1; then
+    echo "[build-exporters] ERROR: cannot reach Docker daemon on \$(hostname) (permission denied or daemon not running)" >&2
+    echo "[build-exporters] ERROR: run 'make dist-build-exporters' on a node with Docker socket access, or pin with AIC_BUILD_NODE=" >&2
+    exit 1
+fi
 # A docker-container builder is required to stream a docker-format tar from
 # BuildKit (the default 'docker' driver cannot export type=docker to stdout).
 # Reuse/create the same builder cmd_build uses; idempotent, then bootstrap it.
@@ -1422,7 +1455,7 @@ if [ "\${_rc[1]}" -ne 0 ]; then
     echo "[build-exporters] ERROR: compressor exited \${_rc[1]} for nvme image; tarball may be corrupt" >&2; exit 1
 fi
 if [ "\${_rc[0]}" -ne 0 ]; then
-    echo "[build-exporters] WARN: docker buildx exited \${_rc[0]} for nvme image (cache lock race?); tarball written, continuing"
+    echo "[build-exporters] WARN: docker buildx exited \${_rc[0]} for nvme image (possible cache lock race; tarball may be valid if compressor succeeded)"
 fi
 mv -f "\${tmp}" "${nvme_tar}"
 tmp="${rdma_tar}.partial.\$\$"
@@ -1436,7 +1469,7 @@ if [ "\${_rc[1]}" -ne 0 ]; then
     echo "[build-exporters] ERROR: compressor exited \${_rc[1]} for rdma image; tarball may be corrupt" >&2; exit 1
 fi
 if [ "\${_rc[0]}" -ne 0 ]; then
-    echo "[build-exporters] WARN: docker buildx exited \${_rc[0]} for rdma image (cache lock race?); tarball written, continuing"
+    echo "[build-exporters] WARN: docker buildx exited \${_rc[0]} for rdma image (possible cache lock race; tarball may be valid if compressor succeeded)"
 fi
 mv -f "\${tmp}" "${rdma_tar}"
 tmp="${hsa_snoop_tar}.partial.\$\$"
@@ -1449,7 +1482,7 @@ if [ "\${_rc[1]}" -ne 0 ]; then
     echo "[build-exporters] ERROR: compressor exited \${_rc[1]} for hsa-snoop image; tarball may be corrupt" >&2; exit 1
 fi
 if [ "\${_rc[0]}" -ne 0 ]; then
-    echo "[build-exporters] WARN: docker buildx exited \${_rc[0]} for hsa-snoop image (cache lock race?); tarball written, continuing"
+    echo "[build-exporters] WARN: docker buildx exited \${_rc[0]} for hsa-snoop image (possible cache lock race; tarball may be valid if compressor succeeded)"
 fi
 mv -f "\${tmp}" "${hsa_snoop_tar}"
 echo "[build-exporters] saved \$(du -h "${nvme_tar}" | cut -f1) -> ${nvme_tar}"
@@ -3751,6 +3784,31 @@ rm -rf "\${_base_oci_dir}" "\${_lmc_wheels_dir}"
 (( _vllm_rc == 0 ))    || { echo "[bake] ERROR: vllm build/save failed (rc=\${_vllm_rc})" >&2; exit 1; }
 (( _lmcache_rc == 0 )) || { echo "[bake] ERROR: lmcache build/save failed (rc=\${_lmcache_rc})" >&2; exit 1; }
 echo "[bake] all images saved."
+
+# --- Build exporter images in the same allocation (same node = Docker access) -
+if docker info >/dev/null 2>&1; then
+    echo "[bake] building fabric exporter images (same allocation)"
+    for _img_spec in \
+        "${AIC_NVME_EXPORTER_IMAGE}|NVME_EXPORTER_VERSION=${AIC_NVME_EXPORTER_VERSION}|${AIC_DAY_DIR}/docker/nvme-exporter|$(_exporter_tarball_path "${AIC_NVME_EXPORTER_IMAGE}")" \
+        "${AIC_RDMA_EXPORTER_IMAGE}|RDMA_EXPORTER_VERSION=${AIC_RDMA_EXPORTER_VERSION}|${AIC_DAY_DIR}/docker/rdma-exporter|$(_exporter_tarball_path "${AIC_RDMA_EXPORTER_IMAGE}")" \
+        "${AIC_HSA_SNOOP_IMAGE}||${AIC_DAY_DIR}/docker/hsa-snoop|$(_exporter_tarball_path "${AIC_HSA_SNOOP_IMAGE}")"; do
+        _img="\$(cut -d'|' -f1 <<<"\${_img_spec}")"
+        _arg="\$(cut -d'|' -f2 <<<"\${_img_spec}")"
+        _ctx="\$(cut -d'|' -f3 <<<"\${_img_spec}")"
+        _tar="\$(cut -d'|' -f4 <<<"\${_img_spec}")"
+        _tmp="\${_tar}.partial.\$\$"
+        set +o pipefail
+        docker buildx build --builder ${AIC_BUILDX_BUILDER} --output type=docker,dest=- \
+            \${_arg:+--build-arg \${_arg}} -t "\${_img}" "\${_ctx}" | ${COMPRESS_CMD} > "\${_tmp}"
+        _rc=("\${PIPESTATUS[@]}")
+        set -o pipefail
+        [ "\${_rc[0]}" -eq 0 ] && [ "\${_rc[1]}" -eq 0 ] && mv -f "\${_tmp}" "\${_tar}" \
+            && echo "[bake] exporter saved: \$(du -h "\${_tar}" | cut -f1) -> \${_tar}" \
+            || { echo "[bake] WARN: exporter build failed for \${_img} (rc=\${_rc[0]}/\${_rc[1]}); skipping" >&2; rm -f "\${_tmp}"; }
+    done
+else
+    echo "[bake] WARN: Docker daemon not accessible; skipping exporter builds" >&2
+fi
 exit 0
 REMOTE
 )"
