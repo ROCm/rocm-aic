@@ -345,6 +345,7 @@ RUN cmake -G Ninja \
 #   amdrocm-llvm        libLLVM + libclang (JIT needed)    (839 MB)
 #   amdrocm-math-common rocm-openblas + host-math          (97 MB)
 #   amdrocm-hipfile     hipFile I/O + ais-check CLI tool   (~5 MB)
+#   amdrocm-dev         HIP headers (hip_runtime.h etc.) for AITER JIT compile
 #
 # Downstream Dockerfiles (docker/vllm, docker/lmcache) use this stage via
 # --build-context base=oci-layout://... so they get a fully working torch env.
@@ -425,6 +426,7 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
         "amdrocm-llvm${_mm}" \
         "amdrocm-math-common${_mm}" \
         "amdrocm-hipfile${_mm}" \
+        "amdrocm-dev${_mm}" \
     && _mm=$(echo "${ROCM_VERSION}" | cut -d. -f1-2) \
     && for _arch in $(echo "${ROCM_ARCH}" | tr ',' ' '); do \
         DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
