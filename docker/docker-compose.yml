@@ -358,11 +358,12 @@ services:
     # namespace; vllm joins it via ipc/pid: service:lmcache (see vllm service below).
     # IPC namespace sharing is independent of network_mode — the aic bridge network
     # provides DNS-based service discovery for prometheus without affecting IPC.
-    # network_mode:host + ipc:host + pid:host required for KFD GPU memory IPC.
+    # lmcache owns the shareable IPC+PID namespace; vllm joins via service:lmcache.
+    # ipc:shareable + no pid:host is sufficient with HSA_ENABLE_IPC_MODE_LEGACY=1
+    # (baked into the image ENV).  spur-authz blocks pid:host on SPUR nodes.
     # Prometheus scrapes lmcache via host-gateway (see prometheus.yml).
     network_mode: host
-    ipc: host
-    pid: host
+    ipc: shareable
     shm_size: "${AIC_SHM_SIZE:-64gb}"
     cap_add:
       - CAP_SYS_ADMIN
@@ -481,9 +482,9 @@ services:
     # ipc: host / pid: host.  Override via VLLM_IPC_MODE / VLLM_PID_MODE if needed.
     # network_mode:host required for KFD GPU IPC; prometheus scrapes via host-gateway.
     network_mode: host
-    ipc: "${VLLM_IPC_MODE:-host}"
+    ipc: "${VLLM_IPC_MODE:-service:lmcache}"
     shm_size: "${AIC_SHM_SIZE:-64gb}"
-    pid: "${VLLM_PID_MODE:-host}"
+    pid: "${VLLM_PID_MODE:-service:lmcache}"
     cap_add:
       - CAP_SYS_ADMIN
       - SYS_PTRACE
@@ -678,15 +679,16 @@ services:
     entrypoint: ["python3", "-u", "/app/l2_monitor.py"]
 
   # node-exporter: host CPU/mem/disk/net/NVMe/RDMA metrics on :9100.
-  # Behind the `monitoring` profile.  Uses pid:host for accurate per-process
-  # CPU stats; mounts the host rootfs read-only via /host.
+  # Behind the `monitoring` profile.  pid:host gives accurate per-process CPU
+  # stats but is blocked by spur-authz on SPUR; omitted here so the stack
+  # starts cleanly.  Override with NODEX_PID_MODE=host when permitted.
   # ---------------------------------------------------------------------------
   node-exporter:
     profiles: [monitoring, exporters, exporters-cpu]
     image: ${AIC_NODE_EXPORTER_IMAGE:-quay.io/prometheus/node-exporter:v1.12.1}
     container_name: aic-node-exporter
     networks: [aic-network]
-    pid: host
+    pid: "${NODEX_PID_MODE:-}"
     restart: unless-stopped
     volumes:
       - /:/host:ro,rslave
@@ -831,11 +833,11 @@ services:
       - emulate-mp
     image: ${LMCACHE_IMAGE_REF:-${IMAGE_REF:-${IMAGE_NAME:-rocm-aic}:latest}}
     container_name: aic-lmcache-emulator
-    # host net for ZMQ on :${LMCACHE_PORT}; host IPC so the POSIX SHM segments
-    # LMCache migrates the emulator's KV buffers into are visible here (Docker
-    # gives each container its own /dev/shm otherwise).
+    # host net for ZMQ on :${LMCACHE_PORT}; shareable IPC so the POSIX SHM
+    # segments LMCache migrates the emulator's KV buffers into are visible
+    # to joining containers (avoids the spur-authz ipc:host block).
     network_mode: host
-    ipc: host
+    ipc: shareable
     cap_add:
       - SYS_PTRACE
       - IPC_LOCK
@@ -917,11 +919,11 @@ services:
     # host net (like the vllm/lmcache services above) — vLLM's OpenAI API and
     # /metrics land on host :8000 with no bridge/NAT in the way.
     network_mode: host
-    # No devices/cap_add block: the emulator touches no GPU.  ipc: host IS
-    # needed under `emulate-mp` — LMCache migrates the fake KV buffers into
-    # POSIX SHM segments for the server to map, and Docker gives each container
-    # its own /dev/shm otherwise.  Harmless for the plain `emulate` profile.
-    ipc: host
+    # No devices/cap_add block: the emulator touches no GPU.  ipc: shareable
+    # under `emulate-mp` — LMCache migrates the fake KV buffers into POSIX SHM
+    # segments for the server to map; shareable avoids the spur-authz ipc:host
+    # block while still exposing /dev/shm to joining containers.
+    ipc: shareable
     # Run as the invoking user rather than root.  /hf below is a bind mount, and
     # on a cluster it is a SHARED cache: a root-owned entry there is one that
     # nobody but root can refresh or delete, because removing it needs write
