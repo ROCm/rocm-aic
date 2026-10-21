@@ -156,6 +156,8 @@ RUN --mount=type=cache,target=/root/.cache/pip \
         cd /app/flash-attention && \
         GPU_ARCHS="${ROCM_ARCH}" \
             PYTORCH_ROCM_ARCH="${ROCM_ARCH}" \
+            HIPFLAGS="-Wno-deprecated-attributes" \
+            CXXFLAGS="-Wno-deprecated-attributes" \
             MAX_JOBS="${BUILD_JOBS:-$(nproc)}" \
             CCACHE_DIR=/root/.cache/ccache CCACHE_MAXSIZE=25G \
             python3 setup.py bdist_wheel --dist-dir=/wheels && \

@@ -394,7 +394,7 @@ AIC_TINY_HF_HOME="${AIC_TINY_HF_HOME:-${HF_HOME}}"
 AIC_TINY_TIME="${AIC_TINY_TIME:-00:25:00}"
 AIC_TINY_CPUS="${AIC_TINY_CPUS:-8}"
 AIC_TINY_MEM="${AIC_TINY_MEM:-32G}"
-AIC_TINY_READY_TIMEOUT="${AIC_TINY_READY_TIMEOUT:-120}"   # x5s = up to 10 min for weights + download
+AIC_TINY_READY_TIMEOUT="${AIC_TINY_READY_TIMEOUT:-240}"   # x5s = up to 20 min (includes AITER JIT on cold start)
 
 # --- Fabric exporter images (nvme_exporter / rdma_exporter / hsa-snoop) -------
 # Built from docker/*/Dockerfile and distributed alongside the main image so
@@ -1041,6 +1041,7 @@ cmd_build() {
         # the whole pipeline instead of writing a truncated tarball.
         remote_script="$(cat <<REMOTE
 set -euo pipefail
+export BUILDKIT_STEP_LOG_MAX_SIZE=-1
 command -v docker >/dev/null 2>&1 || { echo "docker not found on build node \$(hostname) (PATH=\${PATH})" >&2; exit 1; }
 docker system df >/dev/null 2>&1 \
     || { echo "[preflight] FATAL: docker overlay snapshotter broken on \$(hostname) -- resubmit to a different node" >&2; exit 1; }
@@ -2047,10 +2048,10 @@ export LMCACHE_L1_SIZE_GB=4
 export AIC_L2_BACKEND=none
 export VLLM_IPC_MODE=service:lmcache
 export VLLM_PID_MODE=service:lmcache
-# PID/IPC namespace sharing is required for HIP IPC, but networking remains
-# isolated per Compose service.  Reach LMCache through Compose DNS rather than
-# vLLM's own loopback interface.
-export KV_TRANSFER_ARG="--kv-transfer-config '{\"kv_connector\":\"LMCacheMPConnector\",\"kv_role\":\"kv_both\",\"kv_connector_extra_config\":{\"lmcache.mp.host\":\"tcp://aic-lmcache\",\"lmcache.mp.port\":6555}}'"
+# Both vLLM and lmcache use network_mode:host — Docker DNS (container names)
+# does not work on the host network.  Use localhost to reach the lmcache ZMQ
+# server, which binds to 0.0.0.0:LMCACHE_PORT on the shared host namespace.
+export KV_TRANSFER_ARG="--kv-transfer-config '{\"kv_connector\":\"LMCacheMPConnector\",\"kv_role\":\"kv_both\",\"kv_connector_extra_config\":{\"lmcache.mp.host\":\"tcp://localhost\",\"lmcache.mp.port\":6555}}'"
 mkdir -p "\${HF_HOME}" /tmp/aic-tiny-nvme /tmp/aic-tiny-nfs
 
 compose() { docker compose -f '${AIC_DAY_DIR}/docker/docker-compose.yml' "\$@"; }
@@ -2220,7 +2221,7 @@ export LMCACHE_NIXL_POSIX_SLOT_SIZE=33554432
 export LMCACHE_MAX_GPU_WORKERS=1
 export VLLM_IPC_MODE=service:lmcache
 export VLLM_PID_MODE=service:lmcache
-export KV_TRANSFER_ARG="--kv-transfer-config '{\"kv_connector\":\"LMCacheMPConnector\",\"kv_role\":\"kv_both\",\"kv_connector_extra_config\":{\"lmcache.mp.host\":\"tcp://aic-lmcache\",\"lmcache.mp.port\":6555}}'"
+export KV_TRANSFER_ARG="--kv-transfer-config '{\"kv_connector\":\"LMCacheMPConnector\",\"kv_role\":\"kv_both\",\"kv_connector_extra_config\":{\"lmcache.mp.host\":\"tcp://localhost\",\"lmcache.mp.port\":6555}}'"
 # hsa-snoop: use container PID namespace (SPUR authz blocks --pid=host).
 export AIC_HSA_SNOOP_PID_MODE=container:aic-lmcache
 # Monitoring metrics dir for Prometheus TSDB.
@@ -3630,6 +3631,7 @@ cmd_bake() {
     local remote_script
     remote_script="$(cat <<REMOTE
 set -euo pipefail
+export BUILDKIT_STEP_LOG_MAX_SIZE=-1
 command -v docker >/dev/null 2>&1 || { echo "docker not found on \$(hostname)" >&2; exit 1; }
 docker system df >/dev/null 2>&1 \
     || { echo "[preflight] FATAL: docker overlay snapshotter broken on \$(hostname) -- resubmit to a different node" >&2; exit 1; }
@@ -3683,6 +3685,7 @@ ${NIXL_REF:+NIXL_REF="${NIXL_REF}"} \
 ${HSA_SNOOP_REF:+HSA_SNOOP_REF="${HSA_SNOOP_REF}"} \
 ${AIC_CACHE_DIR:+AIC_CACHE_DIR="${AIC_CACHE_DIR}"} \
 ${AIC_CACHE_REF:+AIC_CACHE_REF="${AIC_CACHE_REF}"} \
+BUILDKIT_STEP_LOG_MAX_SIZE=-1 \
 AIC_CACHE_MODE="${AIC_CACHE_MODE:-max}" \
 AIC_VERSION="${AIC_VERSION}" \
 docker buildx bake \
@@ -3709,6 +3712,7 @@ echo "[bake] base OCI dir: \${_base_oci_dir}"
 echo "[bake] phase 1.5: building lmcache wheels for vllm context"
 _lmc_wheels_dir="\${TMPDIR}/lmcache-wheels.\${SLURM_JOB_ID:-\$\$}"
 mkdir -p "\${_lmc_wheels_dir}"
+BUILDKIT_STEP_LOG_MAX_SIZE=-1 \
 docker buildx build --builder ${AIC_BUILDX_BUILDER} --progress=plain \
     --output "type=local,dest=\${_lmc_wheels_dir}" \
     --build-context "base=oci-layout://\${_base_oci_dir}" \
@@ -3742,6 +3746,7 @@ _lmcache_latest="${AIC_LMCACHE_IMAGE%:*}:latest"
 (
 set -euo pipefail
 set +o pipefail
+BUILDKIT_STEP_LOG_MAX_SIZE=-1 \
 docker buildx build --builder ${AIC_BUILDX_BUILDER} --progress=plain \
     --output type=docker,dest=- \
     --build-context "base=oci-layout://\${_base_oci_dir}" \
@@ -3775,6 +3780,7 @@ set -euo pipefail
 set +o pipefail
 _lm_cache_args=""
 [[ -n "${AIC_CACHE_DIR:-}" ]] && _lm_cache_args="--cache-from type=local,src=${AIC_CACHE_DIR%/}/$(_arch_tag)/lmcache --cache-to type=local,dest=${AIC_CACHE_DIR%/}/$(_arch_tag)/lmcache,mode=${AIC_CACHE_MODE:-max},ignore-error=true"
+BUILDKIT_STEP_LOG_MAX_SIZE=-1 \
 docker buildx build --builder ${AIC_BUILDX_BUILDER} --progress=plain \
     --output type=docker,dest=- \
     --build-context "base=oci-layout://\${_base_oci_dir}" \
@@ -3808,6 +3814,50 @@ rm -rf "\${_base_oci_dir}" "\${_lmc_wheels_dir}"
 (( _vllm_rc == 0 ))    || { echo "[bake] ERROR: vllm build/save failed (rc=\${_vllm_rc})" >&2; exit 1; }
 (( _lmcache_rc == 0 )) || { echo "[bake] ERROR: lmcache build/save failed (rc=\${_lmcache_rc})" >&2; exit 1; }
 echo "[bake] all images saved."
+
+# --- AITER JIT warmup: pre-compile AITER JIT modules into the vllm image ------
+# AITER JIT-compiles HIP kernels on first use; without this they compile at
+# test time (~5-10 min per run).  Load the tarball, run a short GPU container
+# to trigger all required JIT builds, commit the warmed-up filesystem back into
+# the image, and re-export as tarball.
+echo "[bake] warming AITER JIT in ${AIC_VLLM_IMAGE} ..."
+${DECOMPRESS_CMD} "${vllm_tar}" | docker load >/dev/null
+_warmup_cname="aic-aiter-warmup-\${SLURM_JOB_ID:-\$\$}"
+# Use the first GPU allocated by Slurm for the warmup container.
+_warmup_gpu="\${SPUR_JOB_GPUS:-0}"
+docker run --name "\${_warmup_cname}" \
+    --device /dev/kfd --device /dev/dri \
+    --security-opt seccomp=unconfined \
+    --env ROCR_VISIBLE_DEVICES="\${_warmup_gpu}" \
+    --env HIP_VISIBLE_DEVICES=0 \
+    --entrypoint python3 \
+    "${AIC_VLLM_IMAGE}" -c "
+import traceback, sys
+print('[warmup] triggering AITER JIT...', flush=True)
+try:
+    import aiter; print('[warmup] module_aiter_core OK', flush=True)
+except Exception: traceback.print_exc()
+try:
+    import torch
+    if torch.cuda.is_available():
+        from vllm.model_executor.layers.layernorm import RMSNorm
+        rms = RMSNorm(768).to('cuda', dtype=torch.float16)
+        x = torch.randn(2, 768, device='cuda', dtype=torch.float16)
+        rms(x); print('[warmup] module_rmsnorm_quant OK', flush=True)
+    else:
+        print('[warmup] WARN: no GPU visible; skipping rmsnorm JIT', flush=True)
+except Exception: traceback.print_exc()
+print('[warmup] done', flush=True)
+" 2>&1 || true
+# Always commit — even partial JIT warmup (module_aiter_core alone saves ~10s).
+docker commit "\${_warmup_cname}" "${AIC_VLLM_IMAGE}" >/dev/null \
+    && echo "[bake] AITER JIT committed; re-exporting vllm tarball ..." \
+    && { _tmp_vllm_warm="${vllm_tar}.warm.\${SLURM_JOB_ID:-\$\$}"
+         docker save "${AIC_VLLM_IMAGE}" | ${COMPRESS_CMD} > "\${_tmp_vllm_warm}" \
+             && mv -f "\${_tmp_vllm_warm}" "${vllm_tar}" \
+             && echo "[bake] vllm (warmed): \$(du -h "${vllm_tar}" | cut -f1) -> ${vllm_tar}"; } \
+    || echo "[bake] WARN: AITER JIT commit/export failed" >&2
+docker rm -f "\${_warmup_cname}" >/dev/null 2>&1 || true
 
 # --- Build exporter images in the same allocation (same node = Docker access) -
 if docker info >/dev/null 2>&1; then
