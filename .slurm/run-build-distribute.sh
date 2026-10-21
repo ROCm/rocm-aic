@@ -394,7 +394,7 @@ AIC_TINY_HF_HOME="${AIC_TINY_HF_HOME:-${HF_HOME}}"
 AIC_TINY_TIME="${AIC_TINY_TIME:-00:25:00}"
 AIC_TINY_CPUS="${AIC_TINY_CPUS:-8}"
 AIC_TINY_MEM="${AIC_TINY_MEM:-32G}"
-AIC_TINY_READY_TIMEOUT="${AIC_TINY_READY_TIMEOUT:-240}"   # x5s = up to 20 min (includes AITER JIT on cold start)
+AIC_TINY_READY_TIMEOUT="${AIC_TINY_READY_TIMEOUT:-1100}"   # x5s = up to 75 min (AITER JIT compiles many modules on cold start)
 
 # --- Fabric exporter images (nvme_exporter / rdma_exporter / hsa-snoop) -------
 # Built from docker/*/Dockerfile and distributed alongside the main image so
@@ -2048,6 +2048,10 @@ export LMCACHE_L1_SIZE_GB=4
 export AIC_L2_BACKEND=none
 export VLLM_IPC_MODE=service:lmcache
 export VLLM_PID_MODE=service:lmcache
+# Disable AITER to avoid 50-min JIT cold-start on each new node.
+# AITER provides fused kernels for better throughput but is not required for
+# correctness; vLLM falls back to standard ROCm/Triton kernels.
+export AIC_ROCM_USE_AITER="${AIC_ROCM_USE_AITER:-0}"
 # Both vLLM and lmcache use network_mode:host — Docker DNS (container names)
 # does not work on the host network.  Use localhost to reach the lmcache ZMQ
 # server, which binds to 0.0.0.0:LMCACHE_PORT on the shared host namespace.
@@ -2076,6 +2080,23 @@ cleanup() {
     rm -rf /tmp/aic-tiny-nvme /tmp/aic-tiny-nfs 2>/dev/null || true
 }
 trap cleanup EXIT
+
+# Load cached Python base images from shared NFS to avoid Docker Hub rate limits.
+for _py_img in "python:3.12" "python:3.12-slim"; do
+    if docker image inspect "\${_py_img}" >/dev/null 2>&1; then
+        : # already present on this node
+    else
+        _py_tag="\$(printf '%s' "\${_py_img}" | tr ':/' '--')"
+        _py_tar="${AIC_IMAGE_DIR}/\${_py_tag}.tar.zst"
+        if [[ -f "\${_py_tar}" ]]; then
+            ${DECOMPRESS_CMD} "\${_py_tar}" | docker load >/dev/null \
+                && echo "[tiny-test] loaded \${_py_img} from cache" \
+                || docker pull "\${_py_img}" >/dev/null 2>&1 || true
+        else
+            docker pull "\${_py_img}" >/dev/null 2>&1 || true
+        fi
+    fi
+done
 
 echo "[tiny-test] bringing up compose MP stack (model=${AIC_TINY_MODEL}) ..."
 if ! compose --profile cache up -d; then
@@ -3831,26 +3852,37 @@ docker run --name "\${_warmup_cname}" \
     --env ROCR_VISIBLE_DEVICES="\${_warmup_gpu}" \
     --env HIP_VISIBLE_DEVICES=0 \
     --entrypoint python3 \
+    --volume /shared_nfs/huggingface:/hf:ro \
+    --env HF_HOME=/hf \
+    --env HF_HUB_OFFLINE=1 \
+    --env VLLM_WORKER_MULTIPROC_METHOD=fork \
     "${AIC_VLLM_IMAGE}" -c "
-import traceback, sys
-print('[warmup] triggering AITER JIT...', flush=True)
+import traceback, sys, os
+print('[warmup] running vLLM init to pre-compile ALL AITER JIT modules...', flush=True)
 try:
-    import aiter; print('[warmup] module_aiter_core OK', flush=True)
-except Exception: traceback.print_exc()
-try:
-    import torch
-    if torch.cuda.is_available():
-        from vllm.model_executor.layers.layernorm import RMSNorm
-        rms = RMSNorm(768).to('cuda', dtype=torch.float16)
-        x = torch.randn(2, 768, device='cuda', dtype=torch.float16)
-        rms(x); print('[warmup] module_rmsnorm_quant OK', flush=True)
-    else:
-        print('[warmup] WARN: no GPU visible; skipping rmsnorm JIT', flush=True)
-except Exception: traceback.print_exc()
+    from vllm import LLM
+    llm = LLM(
+        model='Qwen/Qwen2.5-0.5B-Instruct',
+        max_model_len=512,
+        gpu_memory_utilization=0.3,
+        enforce_eager=True,
+    )
+    print('[warmup] vLLM LLM init complete — all AITER JIT modules compiled', flush=True)
+    del llm
+except Exception:
+    traceback.print_exc()
 print('[warmup] done', flush=True)
 " 2>&1 || true
 # Always commit — even partial JIT warmup (module_aiter_core alone saves ~10s).
-docker commit "\${_warmup_cname}" "${AIC_VLLM_IMAGE}" >/dev/null \
+# Restore original ENTRYPOINT+CMD so the committed image still starts vLLM
+# (docker run --entrypoint python3 overrides the entrypoint in the container
+# config; docker commit captures that override, breaking subsequent vLLM runs).
+_orig_ep="\$(docker inspect --format '{{json .Config.Entrypoint}}' "${AIC_VLLM_IMAGE}" 2>/dev/null)"
+_orig_cmd="\$(docker inspect --format '{{json .Config.Cmd}}'        "${AIC_VLLM_IMAGE}" 2>/dev/null)"
+docker commit \
+    --change "ENTRYPOINT \${_orig_ep}" \
+    --change "CMD \${_orig_cmd}" \
+    "\${_warmup_cname}" "${AIC_VLLM_IMAGE}" >/dev/null \
     && echo "[bake] AITER JIT committed; re-exporting vllm tarball ..." \
     && { _tmp_vllm_warm="${vllm_tar}.warm.\${SLURM_JOB_ID:-\$\$}"
          docker save "${AIC_VLLM_IMAGE}" | ${COMPRESS_CMD} > "\${_tmp_vllm_warm}" \
@@ -3883,6 +3915,21 @@ if docker info >/dev/null 2>&1; then
 else
     echo "[bake] WARN: Docker daemon not accessible; skipping exporter builds" >&2
 fi
+
+# --- Cache Python base images so test nodes avoid Docker Hub rate limits -------
+for _py_img in "python:3.12" "python:3.12-slim"; do
+    _py_tag="\$(printf '%s' "\${_py_img}" | tr ':/' '--')"
+    _py_tar="${AIC_IMAGE_DIR}/\${_py_tag}.tar.zst"
+    if [[ -f "\${_py_tar}" ]]; then
+        echo "[bake] python cache hit: \${_py_tar}"
+    elif docker pull "\${_py_img}" >/dev/null 2>&1; then
+        docker save "\${_py_img}" | ${COMPRESS_CMD} > "\${_py_tar}" \
+            && echo "[bake] cached \${_py_img} -> \${_py_tar}" \
+            || { echo "[bake] WARN: could not save \${_py_img}" >&2; rm -f "\${_py_tar}"; }
+    else
+        echo "[bake] WARN: could not pull \${_py_img} (rate-limited?); test nodes will pull on demand" >&2
+    fi
+done
 exit 0
 REMOTE
 )"
