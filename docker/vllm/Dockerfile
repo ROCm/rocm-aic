@@ -88,6 +88,16 @@ ARG AITER_GIT_URL=https://github.com/ROCm/aiter.git
 ARG AITER_REF=v0.1.22.post1
 ARG FLASH_ATTN_GIT_URL=https://github.com/Dao-AILab/flash-attention.git
 ARG FLASH_ATTN_REF=v2.8.3.post1
+# AITER kernels are JIT-compiled on first use, which costs 5-10 min on every
+# cold container -- and the only way to pay it at build time used to be running
+# vLLM on a real GPU after the build, which a CPU-only build node cannot do.
+# AITER's own setup.py can compile them ahead of time instead: PREBUILD_KERNELS
+# selects how much (1 = everything bar tune/mha variants, 2 = no _bwd/_tune,
+# 3 = fmha_v3 only, 0 = off, JIT at runtime).  No GPU is needed -- the arch
+# comes from GPU_ARCHS/PYTORCH_ROCM_ARCH -- but it only works for a SINGLE
+# arch, since AITER's build-time codegen keys on one gfx.  Off by default so
+# the default multi-arch image is unchanged; set it for single-arch builds.
+ARG AITER_PREBUILD_KERNELS=0
 
 # git and ca-certificates are not in the -full image; install before cloning.
 # hadolint ignore=DL3008
@@ -130,7 +140,20 @@ RUN --mount=type=cache,target=/root/.cache/pip \
         git clone --depth 1 --branch "${AITER_REF}" "${AITER_GIT_URL}" /app/aiter && \
         cd /app/aiter && \
         git submodule update --init --recursive && \
+        _prebuild="${AITER_PREBUILD_KERNELS}" && \
+        case "${ROCM_ARCH}" in \
+            *\;*) [ "${_prebuild}" = "0" ] || \
+                      echo "AITER AOT prebuild off: ROCM_ARCH='${ROCM_ARCH}' is multi-arch"; \
+                  _prebuild=0 ;; \
+        esac && \
+        echo "AITER PREBUILD_KERNELS=${_prebuild} (0 = JIT at runtime)" && \
+        if [ "${_prebuild}" != "0" ]; then \
+            export GPU_ARCHS="${ROCM_ARCH}"; \
+            export AITER_FLYDSL_AOT_WORKERS="${BUILD_JOBS:-$(nproc)}"; \
+            python3 /app/patches/aiter/02-flydsl-aot-tolerate-foreign-arch.py /app/aiter; \
+        fi && \
         PYTORCH_ROCM_ARCH="${ROCM_ARCH}" \
+            PREBUILD_KERNELS="${_prebuild}" \
             TORCH_DONT_CHECK_COMPILER_ABI=1 \
             MAX_JOBS="${BUILD_JOBS:-$(nproc)}" \
             CCACHE_DIR=/root/.cache/ccache CCACHE_MAXSIZE=25G \
