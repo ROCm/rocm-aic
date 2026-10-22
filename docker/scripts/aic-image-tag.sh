@@ -45,9 +45,19 @@ if [[ -z "${AIC_VERSION:-}" && -r "${REPO_ROOT}/VERSION" ]]; then
   export AIC_VERSION
 fi
 
+# Keep bake's stderr off the JSON, but show it on failure: it is the only
+# clue when buildx is missing or the HCL does not parse.
+bake_err="$(mktemp)"
+trap 'rm -f "${bake_err}"' EXIT
+if ! bake_json="$(docker buildx bake -f "${BAKE_FILE}" base --print 2>"${bake_err}")"; then
+  echo "aic-image-tag: docker buildx bake --print failed:" >&2
+  cat "${bake_err}" >&2
+  exit 1
+fi
+
 tag="$(
-  docker buildx bake -f "${BAKE_FILE}" base --print 2>/dev/null \
-    | python3 -c 'import json,sys; print(json.load(sys.stdin)["target"]["base"]["tags"][0].split(":", 1)[1])'
+  python3 -c 'import json,sys; print(json.load(sys.stdin)["target"]["base"]["tags"][0].split(":", 1)[1])' \
+    <<<"${bake_json}"
 )"
 
 [[ -n "${tag}" ]] || { echo "aic-image-tag: bake --print produced no tag" >&2; exit 1; }
