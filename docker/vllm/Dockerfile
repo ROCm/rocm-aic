@@ -156,15 +156,7 @@ RUN --mount=type=cache,target=/root/.cache/pip \
         git clone --depth 1 --branch "${FLASH_ATTN_REF}" \
             --recurse-submodules --shallow-submodules \
             "${FLASH_ATTN_GIT_URL}" /app/flash-attention && \
-        python3 -c "
-import re, glob
-for f in glob.glob('/app/flash-attention/setup.py') + glob.glob('/app/flash-attention/csrc/flash_attn*/**/*.py', recursive=True):
-    txt = open(f).read()
-    txt2 = re.sub(r'(-Wno-(?:unused-result|vla-cxx-extension))', r'\1 -Wno-deprecated-attributes', txt)
-    if txt2 != txt:
-        open(f, 'w').write(txt2)
-        print(f'[fa-patch] added -Wno-deprecated-attributes to {f}')
-" && \
+        python3 /app/patches/vllm/02-flash-attn-deprecated-attrs.py && \
         cd /app/flash-attention && \
         GPU_ARCHS="${ROCM_ARCH}" \
             PYTORCH_ROCM_ARCH="${ROCM_ARCH}" \
@@ -327,9 +319,12 @@ RUN --mount=type=cache,target=/root/.cache/pip \
 # memory patches belong to the lmcache server image.  AIC_LMCACHE_SRC points the
 # patcher at the pip-installed package (site-packages), not the /app source tree.
 COPY docker/lmcache/rocm_event_ipc_patch.py /tmp/rocm_event_ipc_patch.py
+COPY docker/lmcache/diag_register_kv_caches.py /tmp/diag_register_kv_caches.py
 RUN AIC_LMCACHE_SRC="$(python3 -c 'import lmcache, os; print(os.path.dirname(os.path.dirname(lmcache.__file__)))')" \
         python3 /tmp/rocm_event_ipc_patch.py && \
-    rm /tmp/rocm_event_ipc_patch.py
+    AIC_LMCACHE_SRC="$(python3 -c 'import lmcache, os; print(os.path.dirname(os.path.dirname(lmcache.__file__)))')" \
+        python3 /tmp/diag_register_kv_caches.py && \
+    rm /tmp/rocm_event_ipc_patch.py /tmp/diag_register_kv_caches.py
 
 # ----- Runtime ENV + metadata -------------------------------------------------
 # PYTHONPATH and LD_LIBRARY_PATH (including NIXL paths) are inherited from
