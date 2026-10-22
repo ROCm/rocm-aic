@@ -3933,11 +3933,15 @@ echo "[bake] base OCI dir: \${_base_oci_dir}"
 # lmcache-*.whl.  Build the lmcache --target wheels stage first; export to a
 # local dir; pass it as a named context to vllm in phase 2.
 echo "[bake] phase 1.5: building lmcache wheels for vllm context"
+# Read phase 2's lmcache cache dir, or the prune above makes this recompile
+# LMCache every run.  No --cache-to: that dir keeps a single ref, and it
+# should stay phase 2's full lmcache chain.
 _lmc_wheels_dir="\${TMPDIR}/lmcache-wheels.\${SLURM_JOB_ID:-\$\$}"
 mkdir -p "\${_lmc_wheels_dir}"
 BUILDKIT_STEP_LOG_MAX_SIZE=-1 \
 docker buildx build --builder ${AIC_BUILDX_BUILDER} --progress=plain \
     --output "type=local,dest=\${_lmc_wheels_dir}" \
+    ${AIC_CACHE_DIR:+--cache-from type=local,src=${AIC_CACHE_DIR%/}/$(_arch_tag)/lmcache} \
     --build-context "base=oci-layout://\${_base_oci_dir}" \
     --build-arg ROCM_ARCH="${AIC_ROCM_ARCH}" \
     --build-arg AIC_VERSION="${AIC_VERSION}" \
