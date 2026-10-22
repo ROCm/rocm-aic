@@ -1284,13 +1284,12 @@ cmd_build_emulate() {
     AIC_BUILD_TARGET="emulate"
     AIC_VLLM_TARGET_DEVICE="${AIC_EMULATE_VLLM_DEVICE}"
     AIC_BUILD_DOCKERFILE="vllm/Dockerfile"
-    # Use the pre-built aic-base as the named build context so the emulate image
-    # inherits the slim runtime base rather than pulling the -full ROCm image.
-    local _base_ref="${AIC_BASE_IMAGE:-aic-base:${IMAGE_TAG:-latest}}"
-    if [[ -z "${AIC_BUILD_CONTEXT_BASE:-}" ]]; then
-        AIC_BUILD_CONTEXT_BASE="docker-image://${_base_ref}"
-    fi
-    log "build-emulate: emulation-only image, no GPU kernels compiled (base: ${AIC_BUILD_CONTEXT_BASE})"
+    # Build aic-base in the same job so the emulate image inherits the slim
+    # runtime base rather than the -full ROCm image.  Not docker-image://: the
+    # docker-container builder cannot see the daemon's images.  An explicit
+    # AIC_BUILD_CONTEXT_BASE still wins (see cmd_build).
+    AIC_BUILD_BASE_FIRST=1
+    log "build-emulate: emulation-only image, no vLLM GPU kernels compiled"
     cmd_build
 }
 
@@ -1413,44 +1412,8 @@ tar -xf "\${_base_oci_tar}" -C "\${_base_oci_dir}"
 rm -f "\${_base_oci_tar}"
 echo "[build-split] base OCI dir: \${_base_oci_dir} (\$(ls "\${_base_oci_dir}"))"
 
-# --- Step 2b: build lmcache wheels for vllm build context --------------------
-# vllm/Dockerfile requires --build-context lmcache-wheels=DIR with one .whl.
-_lmc_wheels_dir="\${TMPDIR}/lmcache-wheels.\${SLURM_JOB_ID:-\$\$}"
-mkdir -p "\${_lmc_wheels_dir}"
-echo "[build-split] step 2b: building lmcache wheels"
-docker buildx build --builder ${_builder} --progress=plain \
-    --output "type=local,dest=\${_lmc_wheels_dir}" \
-    --build-context "base=oci-layout://\${_base_oci_dir}" \
-    --build-arg ROCM_ARCH="${AIC_ROCM_ARCH}" \
-    --build-arg AIC_VERSION="${AIC_VERSION}" \
-    ${_version_build_args} \
-    ${_secret_arg} \
-    --target wheels \
-    -f "${AIC_DAY_DIR}/docker/lmcache/Dockerfile" \
-    "${AIC_DAY_DIR}"
-echo "[build-split] lmcache wheels: \$(ls \${_lmc_wheels_dir}/*.whl 2>/dev/null || echo '(none found)')"
-
-# --- Step 3a: build aic-vllm from base, save as separate tarball --------------
-echo "[build-split] step 3a/3: building aic-vllm (${AIC_VLLM_IMAGE})"
-tmp_vllm="${vllm_tarball}.partial.\${SLURM_JOB_ID:-\$\$}"
-docker buildx build --builder ${_builder} --progress=plain \
-    --output "type=docker,dest=-" \
-    --build-arg ROCM_ARCH="${AIC_ROCM_ARCH}" \
-    --build-arg AIC_UCX_FAST="${AIC_UCX_FAST}" \
-    ${_version_build_args} \
-    --build-context "base=oci-layout://\${_base_oci_dir}" \
-    --build-context "lmcache-wheels=\${_lmc_wheels_dir}" \
-    ${_secret_arg} \
-    ${_cache_args} \
-    -f "${AIC_DAY_DIR}/docker/vllm/Dockerfile" \
-    -t "${AIC_VLLM_IMAGE}" \
-    -t "${vllm_latest_ref}" \
-    "${AIC_DAY_DIR}" | ${COMPRESS_CMD} > "\${tmp_vllm}"
-mv -f "\${tmp_vllm}" "${vllm_tarball}"
-echo "[build-split] vllm saved: \$(du -h "${vllm_tarball}" | cut -f1) -> ${vllm_tarball}"
-
-# --- Step 3b: build aic-lmcache from base (independent; not on top of vllm) --
-echo "[build-split] step 3b/3: building aic-lmcache (${AIC_LMCACHE_IMAGE})"
+# --- Step 2/4: build aic-lmcache from base -----------------------------------
+echo "[build-split] step 2/4: building aic-lmcache (${AIC_LMCACHE_IMAGE})"
 tmp_lmcache="${lmcache_tarball}.partial.\${SLURM_JOB_ID:-\$\$}"
 docker buildx build --builder ${_builder} --progress=plain --output type=docker,dest=- \
     --build-arg ROCM_ARCH="${AIC_ROCM_ARCH}" \
@@ -1466,6 +1429,45 @@ docker buildx build --builder ${_builder} --progress=plain --output type=docker,
     "${AIC_DAY_DIR}" | ${COMPRESS_CMD} > "\${tmp_lmcache}"
 mv -f "\${tmp_lmcache}" "${lmcache_tarball}"
 echo "[build-split] lmcache saved: \$(du -h "${lmcache_tarball}" | cut -f1) -> ${lmcache_tarball}"
+
+# --- Step 3/4: export aic-lmcache's /wheels for the vllm image ----------------
+# Same args as step 2, so every layer is a cache hit.  No --cache-to: the
+# -lmcache dir keeps a single ref, and it should stay step 2's chain.
+echo "[build-split] step 3/4: exporting aic-lmcache wheels"
+_lmc_wheels_dir="\${TMPDIR}/aic-lmcache-wheels.\${SLURM_JOB_ID:-\$\$}.d"
+rm -rf "\${_lmc_wheels_dir}"
+docker buildx build --builder ${_builder} --progress=plain \
+    --target wheels \
+    --output "type=local,dest=\${_lmc_wheels_dir}" \
+    --build-arg ROCM_ARCH="${AIC_ROCM_ARCH}" \
+    --build-arg BUILD_JOBS="${BUILD_JOBS:-}" \
+    --build-arg AIC_UCX_FAST="${AIC_UCX_FAST}" \
+    ${_version_build_args} \
+    --build-context "base=oci-layout://\${_base_oci_dir}" \
+    ${_secret_arg} \
+    ${_cache_from_lmcache} \
+    -f "${AIC_DAY_DIR}/docker/lmcache/Dockerfile" \
+    "${AIC_DAY_DIR}"
+echo "[build-split] lmcache wheels: \$(ls "\${_lmc_wheels_dir}")"
+
+# --- Step 4/4: build aic-vllm from base + aic-lmcache's wheels ----------------
+echo "[build-split] step 4/4: building aic-vllm (${AIC_VLLM_IMAGE})"
+tmp_vllm="${vllm_tarball}.partial.\${SLURM_JOB_ID:-\$\$}"
+docker buildx build --builder ${_builder} --progress=plain \
+    --output "type=docker,dest=-" \
+    --build-arg ROCM_ARCH="${AIC_ROCM_ARCH}" \
+    --build-arg AIC_UCX_FAST="${AIC_UCX_FAST}" \
+    ${_version_build_args} \
+    --build-context "base=oci-layout://\${_base_oci_dir}" \
+    --build-context "lmcache-wheels=\${_lmc_wheels_dir}" \
+    ${_secret_arg} \
+    ${_cache_args_vllm} \
+    -f "${AIC_DAY_DIR}/docker/vllm/Dockerfile" \
+    -t "${AIC_VLLM_IMAGE}" \
+    -t "${vllm_latest_ref}" \
+    "${AIC_DAY_DIR}" | ${COMPRESS_CMD} > "\${tmp_vllm}"
+mv -f "\${tmp_vllm}" "${vllm_tarball}"
+echo "[build-split] vllm saved: \$(du -h "${vllm_tarball}" | cut -f1) -> ${vllm_tarball}"
 rm -rf "\${_base_oci_dir}" "\${_lmc_wheels_dir}"
 
 # Build exporter images in the same allocation (same node = Docker access).
