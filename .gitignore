@@ -34,8 +34,12 @@ dictionary.dic
 .cline_storage/
 .mypy_cache/
 
-# Local AMD cluster environment (see .env.amd.example if it exists)
-.env.amd
+# Per-cluster environment files read by the Makefile and
+# .slurm/run-build-distribute.sh (.env.alola, .env.spur, ...).  These describe
+# one site and are where a private path or token ends up; never commit one.
+# Example files are tracked so the knobs stay discoverable.
+.env.*
+!.env.*.example
 
 # CI artifact staging dir (spur-monitoring-cpu-smoke.sh copies index.html here
 # for upload-artifact / gh-pages deploy; never committed)

@@ -42,7 +42,10 @@ export PATH="/usr/local/bin:${PATH}"
 : "${AIC_METRICS_DIR:=}"
 : "${MON_DIR:=}"
 : "${MON_COMPOSE:=}"
-: "${AIC_HSA_SNOOP_PID_MODE:=host}"
+# Single `=`, not `:=`: an explicitly empty value means "no PID sharing" and
+# must survive.  With `:=` it was silently rewritten to "host", so a caller
+# that deliberately opted out of PID sharing got pid:host instead.
+: "${AIC_HSA_SNOOP_PID_MODE=host}"
 # Provide a fallback logger only if the caller has not defined one (run-cliff.sbatch
 # and run-build-distribute.sh each define their own prefixed log()).
 declare -F log >/dev/null 2>&1 || log() { printf '[monitoring] %s\n' "$*" >&2; }
