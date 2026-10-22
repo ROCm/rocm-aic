@@ -1020,7 +1020,9 @@ cmd_build() {
         fi
         # Create the docker-container builder once per node (idempotent), then
         # bootstrap it so its BuildKit is ready before the build starts.
-        _builder_setup="${_pre}${_mkdir}if ! docker buildx inspect ${AIC_BUILDX_BUILDER} >/dev/null 2>&1; then echo '[build] creating buildx builder ${AIC_BUILDX_BUILDER} (docker-container)'; docker buildx create --name ${AIC_BUILDX_BUILDER} --driver docker-container${_cfg_arg} >/dev/null; fi; docker buildx inspect --bootstrap ${AIC_BUILDX_BUILDER} >/dev/null"
+        # Pass buildkitd.toml when it exists to raise per-step log limit to unlimited.
+        _bkd_cfg=""; [[ -f "${AIC_DAY_DIR}/docker/buildkitd.toml" ]] && _bkd_cfg=" --config '${AIC_DAY_DIR}/docker/buildkitd.toml'"
+        _builder_setup="${_pre}${_mkdir}if ! docker buildx inspect ${AIC_BUILDX_BUILDER} >/dev/null 2>&1; then echo '[build] creating buildx builder ${AIC_BUILDX_BUILDER} (docker-container)'; docker buildx create --name ${AIC_BUILDX_BUILDER} --driver docker-container${_cfg_arg}${_bkd_cfg} >/dev/null; fi; docker buildx inspect --bootstrap ${AIC_BUILDX_BUILDER} >/dev/null"
     fi
 
     # The build + save block runs on ONE node so the saved tarball comes from the
@@ -2111,7 +2113,9 @@ fi
 # inside its container instead of the Slurm host's loopback interface.
 ready=0
 for _i in \$(seq 1 ${AIC_TINY_READY_TIMEOUT}); do
-    if docker exec "\${VLLM_CONTAINER}" curl -fsS http://127.0.0.1:8000/v1/models >/dev/null 2>&1; then ready=1; break; fi
+    if docker exec "\${VLLM_CONTAINER}" python3 -c \
+        "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/v1/models', timeout=3)" \
+        >/dev/null 2>&1; then ready=1; break; fi
     _vllm_state="\$(docker inspect --format '{{.State.Status}}' "\${VLLM_CONTAINER}" 2>/dev/null || true)"
     if [ "\${_vllm_state}" != "running" ]; then
         _vllm_exit="\$(docker inspect --format '{{.State.ExitCode}}' "\${VLLM_CONTAINER}" 2>/dev/null || echo unknown)"
@@ -2130,9 +2134,14 @@ echo "[tiny-test] endpoint ready; sending one chat completion ..."
 
 # One real completion; assert a NON-EMPTY assistant content came back through the
 # LMCacheMPConnector path.
-resp="\$(docker exec "\${VLLM_CONTAINER}" curl -fsS http://127.0.0.1:8000/v1/chat/completions \
-    -H 'Content-Type: application/json' \
-    -d '{"model":"${AIC_TINY_MODEL}","messages":[{"role":"user","content":"Reply with the single word: pong"}],"max_tokens":16,"temperature":0}' 2>&1)" || {
+resp="\$(docker exec "\${VLLM_CONTAINER}" python3 -c "
+import urllib.request, json
+req = urllib.request.Request(
+    'http://127.0.0.1:8000/v1/chat/completions',
+    data=json.dumps({'model':'${AIC_TINY_MODEL}','messages':[{'role':'user','content':'Reply with the single word: pong'}],'max_tokens':16,'temperature':0}).encode(),
+    headers={'Content-Type':'application/json'})
+print(urllib.request.urlopen(req, timeout=30).read().decode())
+" 2>&1)" || {
     echo "[tiny-test] FAIL: completion request failed: \${resp}" >&2; exit 1; }
 echo "[tiny-test] response: \${resp}"
 if grep -qE '"content"[[:space:]]*:[[:space:]]*"[^"]+' <<<"\${resp}"; then
@@ -3298,8 +3307,13 @@ AIC_ACCURACY_READY_TIMEOUT="${AIC_ACCURACY_READY_TIMEOUT:-120}"   # x5s = up to 
 
 cmd_accuracy_test() {
     _pick_compress
-    local tarball; tarball="$(_tarball_path)"
-    [[ -r "${tarball}" ]] || die "tarball not found: ${tarball} (run 'build' first)"
+    # Use separate bake tarballs (aic-vllm + aic-lmcache) rather than the old
+    # monolithic rocm-aic tarball.  run-accuracy.sh accepts these natively.
+    local _vllm_tar _lmcache_tar
+    AIC_IMAGE="${AIC_VLLM_IMAGE}"    _vllm_tar="$(_tarball_path)"
+    AIC_IMAGE="${AIC_LMCACHE_IMAGE}" _lmcache_tar="$(_tarball_path)"
+    [[ -r "${_vllm_tar}" ]]    || die "vllm tarball not found: ${_vllm_tar} (run 'bake' first)"
+    [[ -r "${_lmcache_tar}" ]] || die "lmcache tarball not found: ${_lmcache_tar} (run 'bake' first)"
 
     local -a _sel
     if [[ -n "${AIC_TEST_NODE:-}" ]]; then
@@ -3309,21 +3323,20 @@ cmd_accuracy_test() {
         _sel=(--constraint="${AIC_TEST_CONSTRAINT}")
         log "accuracy-test via sbatch (partition ${AIC_BUILD_PARTITION}, constraint ${AIC_TEST_CONSTRAINT})"
     fi
-    log "image: ${AIC_IMAGE}  model: ${AIC_ACCURACY_MODEL}  gsm8k: ${AIC_ACCURACY_LIMIT:+${AIC_ACCURACY_LIMIT}-item cap}${AIC_ACCURACY_LIMIT:-full split}"
+    log "vllm: ${AIC_VLLM_IMAGE}  lmcache: ${AIC_LMCACHE_IMAGE}  model: ${AIC_ACCURACY_MODEL}  gsm8k: ${AIC_ACCURACY_LIMIT:+${AIC_ACCURACY_LIMIT}-item cap}${AIC_ACCURACY_LIMIT:-full split}"
 
-    # The node-side half is .slurm/run-accuracy.sh.  Everything it needs arrives
-    # as environment: the values are interpolated here, at submit time, exactly
-    # as they were when this body was an inline heredoc -- so the semantics are
-    # unchanged and nothing depends on how a given sbatch treats --export.
-    # AIC_LOG_DIR is _sbatch_run's per-job log dir, exported so the script (a
-    # separate process) can see it.
     local remote_script
     remote_script="$(cat <<REMOTE
 export AIC_LOG_DIR="\${_logdir}"
+export AIC_SPUR_CLUSTER='${AIC_SPUR_CLUSTER}'
+source '${AIC_DAY_DIR}/monitoring/monitoring-lib.sh'
+aic_docker_preflight || exit 1
 export AIC_DAY_DIR='${AIC_DAY_DIR}'
-export AIC_IMAGE='${AIC_IMAGE}'
 export AIC_ROCM_ARCH='${AIC_ROCM_ARCH}'
-export AIC_TARBALL='${tarball}'
+export AIC_VLLM_IMAGE='${AIC_VLLM_IMAGE}'
+export AIC_VLLM_TARBALL='${_vllm_tar}'
+export AIC_LMCACHE_IMAGE='${AIC_LMCACHE_IMAGE}'
+export AIC_LMCACHE_TARBALL='${_lmcache_tar}'
 export AIC_DECOMPRESS_CMD='${DECOMPRESS_CMD}'
 export AIC_FORCE_LOAD='${AIC_FORCE_LOAD:-0}'
 export HF_HOME='${HF_HOME}'
@@ -3662,9 +3675,18 @@ export TMPDIR="\${HOME}/.tmp-rocm-aic-cicd"
 cd "${AIC_DAY_DIR}"
 
 # Ensure the docker-container builder exists.
+# Recreate builder if a buildkitd.toml exists but the current builder was
+# created without it (so the daemon picks up the config, e.g. max-size=-1).
+_bkd_cfg=""; [[ -f "${AIC_DAY_DIR}/docker/buildkitd.toml" ]] && _bkd_cfg="--config ${AIC_DAY_DIR}/docker/buildkitd.toml"
+if docker buildx inspect ${AIC_BUILDX_BUILDER} >/dev/null 2>&1; then
+    if [[ -n "\${_bkd_cfg}" ]]; then
+        echo "[bake] removing existing builder to apply buildkitd config"
+        docker buildx rm ${AIC_BUILDX_BUILDER} >/dev/null 2>&1 || true
+    fi
+fi
 if ! docker buildx inspect ${AIC_BUILDX_BUILDER} >/dev/null 2>&1; then
     echo "[bake] creating buildx builder ${AIC_BUILDX_BUILDER} (docker-container)"
-    docker buildx create --name ${AIC_BUILDX_BUILDER} --driver docker-container --bootstrap --use
+    docker buildx create --name ${AIC_BUILDX_BUILDER} --driver docker-container \${_bkd_cfg} --bootstrap --use
 fi
 docker buildx inspect --bootstrap ${AIC_BUILDX_BUILDER} >/dev/null
 mkdir -p "${AIC_IMAGE_DIR}"

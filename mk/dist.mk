@@ -74,7 +74,7 @@ endif
         cliff-short cliff-long-64k cliff-long-128k
 
 dist-build:
-	"$(DIST)" build-split
+	"$(DIST)" bake
 
 dist-build-bake:
 	"$(DIST)" bake

@@ -274,7 +274,9 @@ trap cleanup EXIT
 _wait_ready() {
     local tag="$1"
     for _ in $(seq 1 "${AIC_ACCURACY_READY_TIMEOUT}"); do
-        if docker exec "${VLLM_CONTAINER}" curl -fsS http://127.0.0.1:8000/v1/models >/dev/null 2>&1; then
+        if docker exec "${VLLM_CONTAINER}" python3 -c \
+            "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/v1/models', timeout=3)" \
+            >/dev/null 2>&1; then
             echo "[accuracy-test] ${tag}: endpoint ready"
             return 0
         fi
@@ -291,14 +293,12 @@ _wait_ready() {
 # container (already on aic, repo mounted), at the cost of a gsm8k download on
 # the compute node.
 _endpoint_url() {
-    local ip
-    ip="$(docker inspect -f '{{(index .NetworkSettings.Networks "aic").IPAddress}}' "${VLLM_CONTAINER}" 2>/dev/null)"
-    [ -n "${ip}" ] || { echo "[accuracy-test] FAIL: no aic bridge IP for ${VLLM_CONTAINER}" >&2; return 1; }
-    curl -fsS --max-time 10 "http://${ip}:8000/v1/models" >/dev/null 2>&1 || {
-        echo "[accuracy-test] FAIL: host cannot reach ${ip}:8000 on the aic bridge" >&2
-        echo "[accuracy-test]       (fallback: run pytest inside the client container)" >&2
+    # vLLM uses network_mode:host — no bridge IP.  Reach it via localhost on the
+    # compute node (port 8000 is bound to the host interface).
+    curl -fsS --max-time 10 "http://127.0.0.1:8000/v1/models" >/dev/null 2>&1 || {
+        echo "[accuracy-test] FAIL: host cannot reach 127.0.0.1:8000" >&2
         return 1; }
-    echo "http://${ip}:8000/v1"
+    echo "http://127.0.0.1:8000/v1"
 }
 
 # Apparent size: the sum of file LENGTHS.  The NIXL POSIX adapter carves the
@@ -326,8 +326,9 @@ _pool_alloc_bytes() { du -s --block-size=1 "${NVME_DATA}" 2>/dev/null | cut -f1 
 # `$(( $(_lmc ...) - BEFORE ))` callers below never see an empty operand.
 _metric_sum() {
     local container="$1" url="$2" metric="$3" body
-    body="$(docker exec "${container}" curl -fsS --max-time 15 "${url}" 2>/dev/null)" || {
-        echo 0; return 1; }
+    body="$(docker exec "${container}" python3 -c \
+        "import urllib.request; print(urllib.request.urlopen('${url}', timeout=15).read().decode())" \
+        2>/dev/null)" || { echo 0; return 1; }
     printf '%s\n' "${body}" \
         | awk -v m="${metric}" '
             /^#/ { next }
@@ -346,7 +347,9 @@ _metric_sum() {
 # concluded "LMCache completed zero L2 chunk stores" from the resulting zeros.
 _metrics_reachable() {
     local container="$1" url="$2"
-    docker exec "${container}" curl -fsS --max-time 15 "${url}" >/dev/null 2>&1 && return 0
+    docker exec "${container}" python3 -c \
+        "import urllib.request; urllib.request.urlopen('${url}', timeout=15)" \
+        >/dev/null 2>&1 && return 0
     echo "[accuracy-test] WARN: cannot scrape ${container} at ${url}" >&2
     return 1
 }
@@ -360,7 +363,9 @@ _metrics_reachable() {
 #   2  scrape itself failed
 _metric_present() {
     local container="$1" url="$2" metric="$3" body
-    body="$(docker exec "${container}" curl -fsS --max-time 15 "${url}" 2>/dev/null)" || return 2
+    body="$(docker exec "${container}" python3 -c \
+        "import urllib.request; print(urllib.request.urlopen('${url}', timeout=15).read().decode())" \
+        2>/dev/null)" || return 2
     printf '%s\n' "${body}" | grep -qE "^${metric}([{ ]|\$)" && return 0
     return 1
 }
@@ -375,7 +380,10 @@ _metric_present() {
 # render a verdict from the zeros that failure produced.
 _dump_metrics() {
     local container="$1" url="$2" out="$3"
-    docker exec "${container}" curl -fsS --max-time 15 "${url}" > "${out}" 2>/dev/null && return 0
+    # Write to stdout inside the container, redirect to host-side file.
+    docker exec "${container}" python3 -c \
+        "import urllib.request,sys; sys.stdout.write(urllib.request.urlopen('${url}',timeout=15).read().decode())" \
+        > "${out}" 2>/dev/null && return 0
     echo "[accuracy-test] WARN: could not dump ${container} metrics to ${out}" >&2
     return 1
 }
@@ -385,7 +393,7 @@ _dump_metrics() {
 # re-score was actually served from the tier or silently recomputed.
 _vllm_ext() { _metric_sum "${VLLM_CONTAINER}" http://127.0.0.1:8000/metrics "$1"; }
 # LMCache's own view, one tier down: which level answered.
-_lmc() { _metric_sum aic-lmcache http://127.0.0.1:8080/metrics "$1"; }
+_lmc() { _metric_sum aic-lmcache http://127.0.0.1:9091/metrics "$1"; }
 
 # ===========================================================================
 # Phase 1: vram_only arm -- plain vLLM, KV never leaves VRAM
@@ -488,7 +496,7 @@ export VLLM_IPC_MODE=service:lmcache
 export VLLM_PID_MODE=service:lmcache
 # Sharing lmcache's PID/IPC namespaces does not share its network namespace;
 # resolve the peer over the compose network rather than vLLM's own loopback.
-export KV_TRANSFER_ARG="--kv-transfer-config '{\"kv_connector\":\"LMCacheMPConnector\",\"kv_role\":\"kv_both\",\"kv_connector_extra_config\":{\"lmcache.mp.host\":\"tcp://aic-lmcache\",\"lmcache.mp.port\":6555}}'"
+export KV_TRANSFER_ARG="--kv-transfer-config '{\"kv_connector\":\"LMCacheMPConnector\",\"kv_role\":\"kv_both\",\"kv_connector_extra_config\":{\"lmcache.mp.host\":\"tcp://localhost\",\"lmcache.mp.port\":6555}}'"
 
 POOL_BEFORE="$(_pool_bytes)"
 POOL_ALLOC_BEFORE="$(_pool_alloc_bytes)"
@@ -512,7 +520,7 @@ echo "[accuracy-test] tiered endpoint: ${TIERED_URL}"
 # phase 3 decide -- do not fail now, because pytest has yet to run and the
 # differential is the most valuable thing this job produces.
 L2_METRICS_OK=1
-_metrics_reachable aic-lmcache http://127.0.0.1:8080/metrics || L2_METRICS_OK=0
+_metrics_reachable aic-lmcache http://127.0.0.1:9091/metrics || L2_METRICS_OK=0
 L2_STORE_SUB_REQ_BEFORE="$(_lmc lmcache_mp_l2_store_submitted_requests_total)"
 L2_STORE_DONE_REQ_BEFORE="$(_lmc lmcache_mp_l2_store_completed_requests_total)"
 L2_STORE_DONE_CHUNKS_BEFORE="$(_lmc lmcache_mp_l2_store_completed_objects_chunks_total)"
@@ -553,7 +561,7 @@ echo "[accuracy-test] === Phase 3: NVMe pool liveness ==="
 # The dump doubles as this phase's scrape-health probe: every counter gate below
 # reads the same endpoint, so if the dump could not reach it, none of them are
 # measuring anything.
-_dump_metrics aic-lmcache    http://127.0.0.1:8080/metrics "${AIC_LOG_DIR}/lmcache-metrics-phase3.prom" \
+_dump_metrics aic-lmcache    http://127.0.0.1:9091/metrics "${AIC_LOG_DIR}/lmcache-metrics-phase3.prom" \
     || L2_METRICS_OK=0
 _dump_metrics "${VLLM_CONTAINER}"  http://127.0.0.1:8000/metrics "${AIC_LOG_DIR}/vllm-metrics-phase3.prom" || true
 POOL_AFTER="$(_pool_bytes)"
@@ -728,7 +736,7 @@ TIERED_URL="$(_endpoint_url)" || exit 1
 # endpoint produces exactly that number while proving nothing.
 RESCORE_METRICS_OK=1
 _metrics_reachable "${VLLM_CONTAINER}" http://127.0.0.1:8000/metrics || RESCORE_METRICS_OK=0
-_metrics_reachable aic-lmcache   http://127.0.0.1:8080/metrics || RESCORE_METRICS_OK=0
+_metrics_reachable aic-lmcache   http://127.0.0.1:9091/metrics || RESCORE_METRICS_OK=0
 EXT_Q_BEFORE="$(_vllm_ext vllm:external_prefix_cache_queries_total)"
 EXT_H_BEFORE="$(_vllm_ext vllm:external_prefix_cache_hits_total)"
 L1_READ_BEFORE="$(_lmc lmcache_mp_l1_read_chunks_total)"
@@ -774,7 +782,7 @@ unset AIC_ACCURACY_BASELINE_SCORE
 #     across phase 2, hence the differencing.
 echo "[accuracy-test] === Phase 5: verify the re-score hit the cache ==="
 _metrics_reachable "${VLLM_CONTAINER}" http://127.0.0.1:8000/metrics || RESCORE_METRICS_OK=0
-_metrics_reachable aic-lmcache   http://127.0.0.1:8080/metrics || RESCORE_METRICS_OK=0
+_metrics_reachable aic-lmcache   http://127.0.0.1:9091/metrics || RESCORE_METRICS_OK=0
 EXT_Q_AFTER="$(_vllm_ext vllm:external_prefix_cache_queries_total)"
 EXT_H_AFTER="$(_vllm_ext vllm:external_prefix_cache_hits_total)"
 L1_READ_AFTER="$(_lmc lmcache_mp_l1_read_chunks_total)"

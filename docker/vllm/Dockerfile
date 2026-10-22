@@ -106,6 +106,7 @@ RUN rm -f /usr/lib/python3.*/EXTERNALLY-MANAGED
 
 COPY patches/vllm/ /app/patches/vllm/
 COPY patches/llm-emu/ /app/patches/llm-emu/
+COPY patches/aiter/ /app/patches/aiter/
 
 # ----- 3. ROCm attention backends (AITER + FlashAttention) ----------------------
 # Skipped when VLLM_TARGET_DEVICE=empty (CPU-only emulate build: no hipcc).
@@ -135,7 +136,9 @@ RUN --mount=type=cache,target=/root/.cache/pip \
             CCACHE_DIR=/root/.cache/ccache CCACHE_MAXSIZE=25G \
             python3 setup.py bdist_wheel --dist-dir=/wheels && \
         pip3 install --no-cache-dir --no-deps /wheels/amd_aiter-*.whl && \
-        python3 -c 'import importlib.util, pathlib; spec = importlib.util.find_spec("aiter"); assert spec and spec.submodule_search_locations; print("AITER installed:", next(iter(spec.submodule_search_locations)))'; \
+        python3 -c 'import importlib.util; spec = importlib.util.find_spec("aiter"); assert spec and spec.submodule_search_locations; print("AITER installed:", next(iter(spec.submodule_search_locations)))' && \
+        PYTORCH_ROCM_ARCH="${ROCM_ARCH}" TORCH_DONT_CHECK_COMPILER_ABI=1 \
+            python3 /app/patches/aiter/01-jit-use-pytorch-rocm-arch.py; \
     fi
 
 # FlashAttention: CDNA-only (gfx9xx — MI100/MI200/MI300/MI355X).
@@ -153,6 +156,15 @@ RUN --mount=type=cache,target=/root/.cache/pip \
         git clone --depth 1 --branch "${FLASH_ATTN_REF}" \
             --recurse-submodules --shallow-submodules \
             "${FLASH_ATTN_GIT_URL}" /app/flash-attention && \
+        python3 -c "
+import re, glob
+for f in glob.glob('/app/flash-attention/setup.py') + glob.glob('/app/flash-attention/csrc/flash_attn*/**/*.py', recursive=True):
+    txt = open(f).read()
+    txt2 = re.sub(r'(-Wno-(?:unused-result|vla-cxx-extension))', r'\1 -Wno-deprecated-attributes', txt)
+    if txt2 != txt:
+        open(f, 'w').write(txt2)
+        print(f'[fa-patch] added -Wno-deprecated-attributes to {f}')
+" && \
         cd /app/flash-attention && \
         GPU_ARCHS="${ROCM_ARCH}" \
             PYTORCH_ROCM_ARCH="${ROCM_ARCH}" \
