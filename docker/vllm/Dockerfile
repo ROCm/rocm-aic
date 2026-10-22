@@ -392,6 +392,7 @@ RUN --mount=type=bind,from=lmcache-wheels,target=/aic-wheels \
 ENV HSA_ENABLE_IPC_MODE_LEGACY=1
 
 # For fastsafetensors' dlopen("libamdhip64.so").  Not in the shared `vllm`
-# stage: CI's emulate build swaps in a base with no ROCm.
-ENV LD_LIBRARY_PATH=/opt/rocm/lib
+# stage: CI's emulate build swaps in a base with no ROCm.  Prepend, so
+# aic-base's NIXL/UCX entries survive.
+ENV LD_LIBRARY_PATH=/opt/rocm/lib${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}
 RUN python3 -c 'import ctypes; ctypes.CDLL("libamdhip64.so")'
