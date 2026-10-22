@@ -93,8 +93,8 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     && update-ca-certificates && \
     # libdrm-dev pulls in old libhsa-runtime64-1/libhsakmt1 (ROCm 5.7 era) which
     # break hipIpcGetMemHandle.  Remove them so the ROCm 7.14 runtime is the only one.
-    DEBIAN_FRONTEND=noninteractive apt-get remove -y --purge \
-        libhsa-runtime64-1 libhsakmt1 2>/dev/null || true
+    { DEBIAN_FRONTEND=noninteractive apt-get remove -y --purge \
+        libhsa-runtime64-1 libhsakmt1 2>/dev/null || true; }
 
 RUN git config --global advice.detachedHead false
 
@@ -182,7 +182,8 @@ RUN --mount=type=cache,target=/root/.cache/ccache \
     CMAKE_PREFIX_PATH=$(python3 -c 'import sys; print(sys.prefix)') \
     PYTORCH_ROCM_ARCH=$(echo "${PYTORCH_ROCM_ARCH}" | tr ',' ' ') \
         python3 setup.py bdist_wheel --dist-dir=/app/pytorch/dist && \
-    find /app/pytorch -mindepth 1 -maxdepth 1 ! -name 'dist' -exec rm -rf {} + 2>/dev/null || true
+    { find /app/pytorch -mindepth 1 -maxdepth 1 ! -name 'dist' -exec rm -rf {} + || \
+      echo "WARNING: PyTorch source cleanup failed; see find's error above" >&2; }
 
 # =============================================================================
 # torchvision source build — must compile against our source-built PyTorch.

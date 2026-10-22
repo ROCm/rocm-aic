@@ -310,9 +310,9 @@ RUN --mount=type=cache,target=/root/.cache/pip \
         echo "ERROR: LMCACHE_REF is empty; build via 'make build'" >&2; exit 1; } && \
     _ver="${LMCACHE_REF#v}" && \
     pip3 install --no-cache-dir "lmcache==${_ver}" && \
-    uv pip uninstall --system \
+    { uv pip uninstall --system \
         nixl nixl-cu12 nixl-cu13 \
-        cupy-cuda12x cufile-python cuda-pathfinder 2>/dev/null || true
+        cupy-cuda12x cufile-python cuda-pathfinder 2>/dev/null || true; }
 
 # gfx1201: apply the event-IPC producer-side-sync patch to the lmcache CLIENT
 # installed above.  vLLM is the producer on the store path, so its export_event
