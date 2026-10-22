@@ -1121,6 +1121,7 @@ mkdir -p "\${_base_oci_dir}"
 echo "[build] building docker/base/Dockerfile image: ${_base_ref} (base context)"
 docker buildx build --builder ${AIC_BUILDX_BUILDER} --progress=plain --output type=oci,dest=- \
     --build-arg ROCM_ARCH="${AIC_ROCM_ARCH}" \
+    --build-arg AIC_UCX_FAST="${AIC_UCX_FAST}" \
     ${_version_build_args} \
     ${_secret_arg} \
     ${_base_cache_args} \
@@ -1399,6 +1400,7 @@ docker buildx build --builder ${_builder} --progress=plain \
     --output "type=docker,dest=-" \
     --output "type=oci,dest=\${_base_oci_tar}" \
     --build-arg ROCM_ARCH="${AIC_ROCM_ARCH}" \
+    --build-arg AIC_UCX_FAST="${AIC_UCX_FAST}" \
     ${_version_build_args} \
     ${_secret_arg} \
     ${_cache_args_base} \
@@ -3911,6 +3913,7 @@ ${AIC_CACHE_DIR:+AIC_CACHE_DIR="${AIC_CACHE_DIR}"} \
 ${AIC_CACHE_REF:+AIC_CACHE_REF="${AIC_CACHE_REF}"} \
 BUILDKIT_STEP_LOG_MAX_SIZE=-1 \
 AIC_CACHE_MODE="${AIC_CACHE_MODE:-max}" \
+AIC_UCX_FAST="${AIC_UCX_FAST}" \
 AIC_VERSION="${AIC_VERSION}" \
 docker buildx bake \
     --builder ${AIC_BUILDX_BUILDER} \
