@@ -235,7 +235,7 @@ RUN --mount=type=cache,target=/root/.cache/pip \
         VLLM_VERSION_OVERRIDE="${VLLM_REF#v}+${VLLM_TARGET_DEVICE}" \
         pip3 wheel --no-build-isolation --no-deps --no-cache-dir -w /wheels . && \
     pip3 install --no-cache-dir /wheels/vllm-*.whl && \
-    python3 -c 'import vllm; print("vLLM installed:", vllm.__version__)' && \
+    python3 -c 'import importlib.metadata as m; print("vLLM installed:", m.version("vllm"))' && \
     rm -rf /app/vllm /wheels /tmp/torch-constraints.txt && \
     { find /usr/lib/python3 /usr/local/lib/python3.12 -name '__pycache__' -type d \
          -exec rm -rf {} + || \
