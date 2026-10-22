@@ -3830,7 +3830,8 @@ cmd_bake() {
     local lmcache_tar; lmcache_tar="$(_tarball_path)"
     AIC_IMAGE="${saved_image}"
 
-    local tarball_before; tarball_before="$(_tarball_stamp "${lmcache_tar}")"
+    local lmcache_before; lmcache_before="$(_tarball_stamp "${lmcache_tar}")"
+    local vllm_before; vllm_before="$(_tarball_stamp "${vllm_tar}")"
 
     local _secret_arg=""
     [[ -n "${AIC_TLS_CERT}" ]] && _secret_arg="--secret id=tls_cert,src=${AIC_TLS_CERT}"
@@ -4146,7 +4147,8 @@ REMOTE
         --nodes=1 --ntasks=1 \
         --cpus-per-task="${AIC_BUILD_CPUS}" \
         --time="${AIC_BUILD_TIME}"
-    _verify_tarball "${lmcache_tar}" "image" "${tarball_before}"
+    _verify_tarball "${lmcache_tar}" "lmcache image" "${lmcache_before}"
+    _verify_tarball "${vllm_tar}" "vllm image" "${vllm_before}"
     log "bake complete: base=${base_tar} vllm=${vllm_tar} lmcache=${lmcache_tar}"
 }
 
