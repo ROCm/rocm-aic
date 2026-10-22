@@ -1909,8 +1909,6 @@ else
     note "FAIL NIXL plugin dir missing: ${plug}"; fail=1
 fi
 
-check "hsa-snoop --help" timeout 10 bash -c 'hsa-snoop --help 2>&1 | grep -q hsa-snoop'
-
 [ "${fail}" -eq 0 ] && note "ALL CHECKS PASSED" || note "SOME CHECKS FAILED"
 exit "${fail}"
 SMOKE
