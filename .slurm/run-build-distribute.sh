@@ -125,6 +125,13 @@
 #                        (both required for push; needs `docker login <registry>`
 #                        first) (e.g. <your-registry>/<project>/aic-vllm:latest)
 #
+#   AIC_CLUSTER          selects the per-cluster env file `.env.<cluster>` in the
+#                        repo root (default: auto-detected from the hostname --
+#                        the first dash-separated token with a matching file)
+#   AIC_ENV_FILE         path to that file, overriding the AIC_CLUSTER lookup.
+#                        KEY=value lines, unquoted; defaults only -- anything
+#                        already in the environment wins.  (default: derived)
+#
 #   AIC_BUILD_CONSTRAINT Slurm -C feature expr for the build node
 #                        (default: <site>&CPUONLY -- CPU-only build nodes).
 #                         Used only when AIC_BUILD_NODE is unset.
@@ -137,6 +144,14 @@
 #   AIC_BUILD_LOCAL      set to 1 to build on THIS host, no Slurm  (default: unset)
 #   AIC_BUILD_PARTITION  Slurm partition for build + load  (default: defq)
 #   AIC_BUILD_CPUS       --cpus-per-task for the build job (default: 32)
+#   AIC_BUILD_MEM        --mem for the build job; unset leaves it to Slurm's
+#                        DefMemPerCPU x cpus-per-task       (default: unset)
+#   AIC_AITER_PREBUILD_KERNELS
+#                        compile AITER kernels ahead of time into the vllm
+#                        image instead of JIT-ing them on first use.  Needs a
+#                        single-arch build (AIC_ROCM_ARCH=gfx942); ignored for
+#                        multi-arch.  1 = most, 2 = no bwd/tune, 3 = fmha_v3
+#                        only, 0 = off                      (default: 0)
 #   AIC_BUILD_GPUS       --gpus= for the build job; required on SPUR (AIC_SPUR_CLUSTER=1)
 #                        because the scheduler mandates a GPU request even for CPU-only
 #                        build jobs.  Set to 0 to request a zero-GPU allocation if
@@ -246,6 +261,77 @@ AIC_DAY_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
     exit 1
 }
 AIC_VERSION="$(<"${AIC_DAY_DIR}/VERSION")"
+
+# --- Per-cluster environment file --------------------------------------------
+# Every cluster needs a different partition, constraint, image dir and cache
+# dir, and carrying those on the make command line is how they get forgotten.
+# A repo-root `.env.<cluster>` holds them instead: plain KEY=value lines, no
+# shell quoting, no expansion -- the same file `make` reads (see Makefile).
+#
+# The file supplies DEFAULTS ONLY.  Anything already set in the environment or
+# on the make command line wins, so `make dist-build AIC_BUILD_CPUS=8` still
+# overrides the file.  Keep these files out of git (they describe one site, and
+# they are where a token or a private path ends up): .gitignore covers
+# `.env.*`.
+#
+# AIC_CLUSTER selects the file.  Unset, it is auto-detected: the first
+# dash-separated token of this host's name (or $SLURM_CLUSTER_NAME) for which a
+# `.env.<token>` exists.  On ctr2-alola-login-04 that finds `.env.alola`.
+_aic_detect_cluster() {
+    local tok
+    for tok in "${SLURM_CLUSTER_NAME:-}" ${HOSTNAME//-/ } $(hostname -s 2>/dev/null | tr '-' ' '); do
+        [[ -n "${tok}" && -f "${AIC_DAY_DIR}/.env.${tok}" ]] || continue
+        printf '%s' "${tok}"
+        return 0
+    done
+}
+
+# Expand ${NAME} / $NAME against what is already exported, and nothing else.
+# make expands those references when it includes the same file, so the shell
+# side has to agree or a line like AIC_CACHE_DIR=${AIC_SHARED_NFS}/cache means
+# two different directories depending on who read it.  Deliberately not `eval`:
+# command substitution in a config file is not a feature worth having.
+_aic_expand_env_value() {
+    local v="$1" out="" name
+    while [[ "${v}" =~ ^([^$]*)\$(\{([A-Za-z_][A-Za-z0-9_]*)\}|([A-Za-z_][A-Za-z0-9_]*))(.*)$ ]]; do
+        name="${BASH_REMATCH[3]:-${BASH_REMATCH[4]}}"
+        out+="${BASH_REMATCH[1]}${!name:-}"
+        v="${BASH_REMATCH[5]}"
+    done
+    printf '%s' "${out}${v}"
+}
+
+# Read KEY=value lines, exporting each key that is not already set.
+_aic_load_env_file() {
+    local file="$1" line key val loaded=0
+    [[ -n "${file}" && -f "${file}" ]] || return 0
+    while IFS= read -r line || [[ -n "${line}" ]]; do
+        line="${line%$'\r'}"
+        line="${line#"${line%%[![:space:]]*}"}"      # ltrim
+        [[ -z "${line}" || "${line}" == '#'* ]] && continue
+        line="${line#export }"
+        key="${line%%=*}"
+        val="${line#*=}"
+        [[ "${key}" == "${line}" ]] && continue      # no '=' on the line
+        key="${key%"${key##*[![:space:]]}"}"         # rtrim the key
+        val="${val#"${val%%[![:space:]]*}"}"         # ltrim the value, as make does
+        [[ "${key}" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || continue
+        # Tolerate quoted values even though the file is meant to be unquoted:
+        # make would take the quotes literally, so strip them here to match.
+        [[ "${val}" == \"*\" || "${val}" == \'*\' ]] && val="${val:1:${#val}-2}"
+        # Presence, not emptiness: `make AIC_SLURM_ACCOUNT=` means "this
+        # cluster has no account", and reading one back out of the file would
+        # fail every submission.  An exported empty value is a decision.
+        [[ -n "${!key+set}" ]] && continue           # environment / CLI wins
+        export "${key}=$(_aic_expand_env_value "${val}")"
+        ((loaded++)) || true
+    done <"${file}"
+    printf '[build-distribute] loaded %d setting(s) from %s\n' "${loaded}" "${file}" >&2
+}
+
+AIC_CLUSTER="${AIC_CLUSTER:-$(_aic_detect_cluster)}"
+AIC_ENV_FILE="${AIC_ENV_FILE:-${AIC_CLUSTER:+${AIC_DAY_DIR}/.env.${AIC_CLUSTER}}}"
+_aic_load_env_file "${AIC_ENV_FILE}"
 
 # --- Defaults ----------------------------------------------------------------
 # Multi-arch by default: every gfx the vLLM ROCm wheel ships kernels for.
@@ -402,7 +488,20 @@ else
 fi
 AIC_SLURM_ACCOUNT="${AIC_SLURM_ACCOUNT:-}"
 AIC_BUILD_CPUS="${AIC_BUILD_CPUS:-32}"
+# Unset by default: Slurm's DefMemPerCPU already scales with --cpus-per-task,
+# and a wrong --mem is a job that never starts rather than one that runs small.
+AIC_BUILD_MEM="${AIC_BUILD_MEM:-}"
 AIC_BUILD_TIME="${AIC_BUILD_TIME:-04:00:00}"
+# Compile parallelism.  BuildKit runs under the Docker daemon, outside the job's
+# cgroup, so `nproc` inside a build step reports the WHOLE node -- 384 cores on
+# a Markham build node -- no matter what --cpus-per-task reserved.  Defaulting
+# this to AIC_BUILD_CPUS makes -j match what Slurm actually gave us instead of
+# silently oversubscribing whatever else is on the node.  Set BUILD_JOBS to
+# override; set it empty to go back to nproc.
+AIC_BUILD_JOBS="${BUILD_JOBS-${AIC_BUILD_CPUS}}"
+# AITER ahead-of-time kernel compilation (see docker/vllm/Dockerfile).
+# Single-arch builds only; 0 = JIT at runtime, 1/2/3 = progressively less.
+AIC_AITER_PREBUILD_KERNELS="${AIC_AITER_PREBUILD_KERNELS:-0}"
 # SPUR requires a GPU request even for CPU-only build jobs.
 if [[ "${AIC_SPUR_CLUSTER}" == "1" ]]; then
     AIC_BUILD_GPUS="${AIC_BUILD_GPUS:-1}"
@@ -3944,19 +4043,39 @@ cd "${AIC_DAY_DIR}"
 # Recreate builder if a buildkitd.toml exists but the current builder was
 # created without it (so the daemon picks up the config, e.g. max-size=-1).
 _bkd_cfg=""; [[ -f "${AIC_DAY_DIR}/docker/buildkitd.toml" ]] && _bkd_cfg="--config ${AIC_DAY_DIR}/docker/buildkitd.toml"
+# Recreate the builder ONLY when the buildkitd config it was created with has
+# actually changed.  The old test was \`[[ -n "\${_bkd_cfg}" ]]\`, which is true
+# whenever docker/buildkitd.toml exists -- i.e. always -- so every bake tore the
+# builder down and built a new one.  That discards all of BuildKit's
+# \`--mount=type=cache\` state: ccache, the uv cache and the apt cache, which are
+# exactly what makes a torch or AITER recompile cheap.  The config's hash is
+# recorded beside the builder so the comparison is against what it was really
+# created with, not against whether a file happens to exist.
+_bkd_hash_file="\${HOME}/.tmp-rocm-aic-cicd/${AIC_BUILDX_BUILDER}.cfghash"
+_bkd_hash="none"
+[[ -n "\${_bkd_cfg}" ]] && _bkd_hash="\$(sha256sum "${AIC_DAY_DIR}/docker/buildkitd.toml" | cut -d' ' -f1)"
 if docker buildx inspect ${AIC_BUILDX_BUILDER} >/dev/null 2>&1; then
-    if [[ -n "\${_bkd_cfg}" ]]; then
-        echo "[bake] removing existing builder to apply buildkitd config"
+    if [[ "\$(cat "\${_bkd_hash_file}" 2>/dev/null)" != "\${_bkd_hash}" ]]; then
+        echo "[bake] buildkitd config changed -- recreating builder (cache mounts will be cold)"
         docker buildx rm ${AIC_BUILDX_BUILDER} >/dev/null 2>&1 || true
+    else
+        echo "[bake] reusing builder ${AIC_BUILDX_BUILDER} (ccache/uv/apt cache mounts preserved)"
     fi
 fi
 if ! docker buildx inspect ${AIC_BUILDX_BUILDER} >/dev/null 2>&1; then
     echo "[bake] creating buildx builder ${AIC_BUILDX_BUILDER} (docker-container)"
     docker buildx create --name ${AIC_BUILDX_BUILDER} --driver docker-container \${_bkd_cfg} --bootstrap --use
 fi
+printf '%s\n' "\${_bkd_hash}" > "\${_bkd_hash_file}"
 docker buildx inspect --bootstrap ${AIC_BUILDX_BUILDER} >/dev/null
 mkdir -p "${AIC_IMAGE_DIR}"
-docker buildx prune --builder ${AIC_BUILDX_BUILDER} --force 2>/dev/null || true
+# Pruning here would undo the point of reusing the builder.  AIC_CACHE_RESET=1
+# still keeps the /scratch type=local exporter tidy; this is the node-local
+# BuildKit store, and dropping it costs a full recompile.
+if [[ "${AIC_BUILDX_PRUNE:-0}" == "1" ]]; then
+    echo "[bake] AIC_BUILDX_PRUNE=1 -- pruning the builder's local cache"
+    docker buildx prune --builder ${AIC_BUILDX_BUILDER} --force 2>/dev/null || true
+fi
 _droot="\$(docker info --format '{{.DockerRootDir}}' 2>/dev/null)"
 [ -d "\${_droot:-}" ] || _droot=/
 echo "[bake] disk (\${_droot}): \$(df -h "\${_droot}" | tail -1)"
@@ -3982,6 +4101,7 @@ tmp_base="${base_tar}.partial.\${SLURM_JOB_ID:-\$\$}"
 # passed as an env var overrides the HCL default and breaks scripts that
 # require the value (e.g. clone-nixl.sh: NIXL_REF is required).
 ROCM_ARCH="${AIC_ROCM_ARCH}" \
+${AIC_BUILD_JOBS:+BUILD_JOBS="${AIC_BUILD_JOBS}"} \
 ${ROCM_VERSION:+ROCM_VERSION="${ROCM_VERSION}"} \
 ${PYTORCH_REF:+PYTORCH_REF="${PYTORCH_REF}"} \
 ${PYTORCH_SERIES:+PYTORCH_SERIES="${PYTORCH_SERIES}"} \
@@ -4026,13 +4146,23 @@ echo "[bake] phase 1.5: building lmcache wheels for vllm context"
 # should stay phase 2's full lmcache chain.
 _lmc_wheels_dir="\${TMPDIR}/lmcache-wheels.\${SLURM_JOB_ID:-\$\$}"
 mkdir -p "\${_lmc_wheels_dir}"
+# Share phase 2's lmcache cache dir: --target wheels and the full lmcache image
+# both build the build_lmcache_wheel stage, so without this the wheel is
+# compiled twice per bake -- once here with no cache at all (measured at 288s
+# cold AND 288s warm), then again in phase 2 where it is a 16s cache hit.
+_lmcw_cache_args=""
+if [[ -n "${AIC_CACHE_DIR:-}" ]]; then
+    _lmcw_cache_args="--cache-from type=local,src=${AIC_CACHE_DIR%/}/$(_arch_tag)/lmcache --cache-to type=local,dest=${AIC_CACHE_DIR%/}/$(_arch_tag)/lmcache,mode=${AIC_CACHE_MODE:-max},ignore-error=true"
+fi
 BUILDKIT_STEP_LOG_MAX_SIZE=-1 \
 docker buildx build --builder ${AIC_BUILDX_BUILDER} --progress=plain \
     --output "type=local,dest=\${_lmc_wheels_dir}" \
     ${AIC_CACHE_DIR:+--cache-from type=local,src=${AIC_CACHE_DIR%/}/$(_arch_tag)/lmcache} \
     --build-context "base=oci-layout://\${_base_oci_dir}" \
     --build-arg ROCM_ARCH="${AIC_ROCM_ARCH}" \
+    --build-arg BUILD_JOBS="${AIC_BUILD_JOBS}" \
     --build-arg AIC_VERSION="${AIC_VERSION}" \
+    \${_lmcw_cache_args:+\${_lmcw_cache_args}} \
     ${ROCM_VERSION:+--build-arg ROCM_VERSION="${ROCM_VERSION}"} \
     ${LMCACHE_REF:+--build-arg LMCACHE_REF="${LMCACHE_REF}"} \
     ${NIXL_REF:+--build-arg NIXL_REF="${NIXL_REF}"} \
@@ -4069,6 +4199,8 @@ docker buildx build --builder ${AIC_BUILDX_BUILDER} --progress=plain \
     --build-arg ROCM_ARCH="${AIC_ROCM_ARCH}" \
     --build-arg AIC_VERSION="${AIC_VERSION}" \
     --build-arg AIC_UCX_FAST="${AIC_UCX_FAST}" \
+    --build-arg BUILD_JOBS="${AIC_BUILD_JOBS}" \
+    --build-arg AITER_PREBUILD_KERNELS="${AIC_AITER_PREBUILD_KERNELS}" \
     ${ROCM_VERSION:+--build-arg ROCM_VERSION="${ROCM_VERSION}"} \
     ${VLLM_REF:+--build-arg VLLM_REF="${VLLM_REF}"} \
     ${AITER_REF:+--build-arg AITER_REF="${AITER_REF}"} \
@@ -4102,6 +4234,7 @@ docker buildx build --builder ${AIC_BUILDX_BUILDER} --progress=plain \
     --build-arg ROCM_ARCH="${AIC_ROCM_ARCH}" \
     --build-arg AIC_VERSION="${AIC_VERSION}" \
     --build-arg AIC_UCX_FAST="${AIC_UCX_FAST}" \
+    --build-arg BUILD_JOBS="${AIC_BUILD_JOBS}" \
     ${ROCM_VERSION:+--build-arg ROCM_VERSION="${ROCM_VERSION}"} \
     ${LMCACHE_REF:+--build-arg LMCACHE_REF="${LMCACHE_REF}"} \
     ${NIXL_REF:+--build-arg NIXL_REF="${NIXL_REF}"} \
@@ -4130,60 +4263,15 @@ rm -rf "\${_base_oci_dir}" "\${_lmc_wheels_dir}"
 (( _lmcache_rc == 0 )) || { echo "[bake] ERROR: lmcache build/save failed (rc=\${_lmcache_rc})" >&2; exit 1; }
 echo "[bake] all images saved."
 
-# --- AITER JIT warmup: pre-compile AITER JIT modules into the vllm image ------
-# AITER JIT-compiles HIP kernels on first use; without this they compile at
-# test time (~5-10 min per run).  Load the tarball, run a short GPU container
-# to trigger all required JIT builds, commit the warmed-up filesystem back into
-# the image, and re-export as tarball.
-echo "[bake] warming AITER JIT in ${AIC_VLLM_IMAGE} ..."
-${DECOMPRESS_CMD} "${vllm_tar}" | docker load >/dev/null
-_warmup_cname="aic-aiter-warmup-\${SLURM_JOB_ID:-\$\$}"
-# Use the first GPU allocated by Slurm for the warmup container.
-_warmup_gpu="\${SPUR_JOB_GPUS:-0}"
-docker run --name "\${_warmup_cname}" \
-    --device /dev/kfd --device /dev/dri \
-    --security-opt seccomp=unconfined \
-    --env ROCR_VISIBLE_DEVICES="\${_warmup_gpu}" \
-    --env HIP_VISIBLE_DEVICES=0 \
-    --entrypoint python3 \
-    --volume /shared_nfs/huggingface:/hf:ro \
-    --env HF_HOME=/hf \
-    --env HF_HUB_OFFLINE=1 \
-    --env VLLM_WORKER_MULTIPROC_METHOD=fork \
-    "${AIC_VLLM_IMAGE}" -c "
-import traceback, sys, os
-print('[warmup] running vLLM init to pre-compile ALL AITER JIT modules...', flush=True)
-try:
-    from vllm import LLM
-    llm = LLM(
-        model='Qwen/Qwen2.5-0.5B-Instruct',
-        max_model_len=512,
-        gpu_memory_utilization=0.3,
-        enforce_eager=True,
-    )
-    print('[warmup] vLLM LLM init complete — all AITER JIT modules compiled', flush=True)
-    del llm
-except Exception:
-    traceback.print_exc()
-print('[warmup] done', flush=True)
-" 2>&1 || true
-# Always commit — even partial JIT warmup (module_aiter_core alone saves ~10s).
-# Restore original ENTRYPOINT+CMD so the committed image still starts vLLM
-# (docker run --entrypoint python3 overrides the entrypoint in the container
-# config; docker commit captures that override, breaking subsequent vLLM runs).
-_orig_ep="\$(docker inspect --format '{{json .Config.Entrypoint}}' "${AIC_VLLM_IMAGE}" 2>/dev/null)"
-_orig_cmd="\$(docker inspect --format '{{json .Config.Cmd}}'        "${AIC_VLLM_IMAGE}" 2>/dev/null)"
-docker commit \
-    --change "ENTRYPOINT \${_orig_ep}" \
-    --change "CMD \${_orig_cmd}" \
-    "\${_warmup_cname}" "${AIC_VLLM_IMAGE}" >/dev/null \
-    && echo "[bake] AITER JIT committed; re-exporting vllm tarball ..." \
-    && { _tmp_vllm_warm="${vllm_tar}.warm.\${SLURM_JOB_ID:-\$\$}"
-         docker save "${AIC_VLLM_IMAGE}" | ${COMPRESS_CMD} > "\${_tmp_vllm_warm}" \
-             && mv -f "\${_tmp_vllm_warm}" "${vllm_tar}" \
-             && echo "[bake] vllm (warmed): \$(du -h "${vllm_tar}" | cut -f1) -> ${vllm_tar}"; } \
-    || echo "[bake] WARN: AITER JIT commit/export failed" >&2
-docker rm -f "\${_warmup_cname}" >/dev/null 2>&1 || true
+# AITER kernels used to be warmed here by loading the 11 GB tarball, running
+# vLLM in a GPU container and committing the result back into the image.  That
+# pinned the whole bake to a GPU node for a step that is not a build, and the
+# node it was written for is not this one (it mounted SPUR's
+# /shared_nfs/huggingface unconditionally).  The kernels are now compiled
+# ahead of time inside the vllm image instead -- AITER_PREBUILD_KERNELS, see
+# docker/vllm/Dockerfile -- which needs no GPU and leaves bake free to run on a
+# big CPU-only node.  With AIC_AITER_PREBUILD_KERNELS=0 (or a multi-arch build,
+# where AOT is not possible) AITER falls back to JIT on first use.
 
 # --- Build exporter images in the same allocation (same node = Docker access) -
 if docker info >/dev/null 2>&1; then
@@ -4228,9 +4316,22 @@ exit 0
 REMOTE
 )"
 
+    # Same node selection as cmd_build: without a constraint the job lands on
+    # whatever defq offers, which on a multi-site cluster includes nodes that
+    # cannot see this checkout at all.
+    local -a _sel=()
+    if [[ -n "${AIC_BUILD_NODE:-}" ]]; then
+        _sel=(--nodelist="${AIC_BUILD_NODE}")
+        log "baking on ${AIC_BUILD_NODE} via sbatch (partition ${AIC_BUILD_PARTITION})"
+    else
+        [[ -n "${AIC_BUILD_CONSTRAINT:-}" ]] && _sel=(--constraint="${AIC_BUILD_CONSTRAINT}")
+        [[ -n "${AIC_BUILD_EXCLUDE_NODES:-}" ]] && _sel+=(--exclude="${AIC_BUILD_EXCLUDE_NODES}")
+        log "baking via sbatch (partition ${AIC_BUILD_PARTITION}, constraint ${AIC_BUILD_CONSTRAINT}${AIC_BUILD_EXCLUDE_NODES:+, exclude ${AIC_BUILD_EXCLUDE_NODES}})"
+    fi
     _sbatch_run aic-build build "${remote_script}" \
-        ${AIC_BUILD_NODE:+--nodelist="${AIC_BUILD_NODE}"} \
+        "${_sel[@]}" \
         ${AIC_BUILD_GPUS:+--gpus="${AIC_BUILD_GPUS}"} \
+        ${AIC_BUILD_MEM:+--mem="${AIC_BUILD_MEM}"} \
         --nodes=1 --ntasks=1 \
         --cpus-per-task="${AIC_BUILD_CPUS}" \
         --time="${AIC_BUILD_TIME}"
