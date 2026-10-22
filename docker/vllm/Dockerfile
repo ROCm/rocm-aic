@@ -237,8 +237,9 @@ RUN --mount=type=cache,target=/root/.cache/pip \
     pip3 install --no-cache-dir /wheels/vllm-*.whl && \
     python3 -c 'import vllm; print("vLLM installed:", vllm.__version__)' && \
     rm -rf /app/vllm /wheels /tmp/torch-constraints.txt && \
-    find /usr/lib/python3 /usr/local/lib/python3 -name '__pycache__' -type d \
-         -exec rm -rf {} + 2>/dev/null; true
+    { find /usr/lib/python3 /usr/local/lib/python3.12 -name '__pycache__' -type d \
+         -exec rm -rf {} + || \
+      echo "WARNING: __pycache__ cleanup failed; see find's error above" >&2; }
 
 # ----- 3b. vllm_emulator (llm-emu profile-driven emulation plugin) -----------
 ARG LLM_EMU_GIT_URL=https://github.com/AKafakA/llm-emu.git
@@ -266,8 +267,9 @@ print('vllm_emulator subpackages import OK')" && \
     cp /app/llm-emu/example_profiling_data/*.json /opt/llm-emu/profiles/ && \
     test -r "${AIC_EMULATOR_EXAMPLE_PACK}" && \
     rm -rf /app/llm-emu /app/patches /app/aiter /app/flash-attention /wheels && \
-    find /usr/lib/python3 /usr/local/lib/python3 -name '__pycache__' -type d \
-         -exec rm -rf {} + 2>/dev/null; true
+    { find /usr/lib/python3 /usr/local/lib/python3.12 -name '__pycache__' -type d \
+         -exec rm -rf {} + || \
+      echo "WARNING: __pycache__ cleanup failed; see find's error above" >&2; }
 
 # =============================================================================
 # vllm — slim runtime stage: aic-base + packages built in build_vllm

@@ -478,8 +478,9 @@ COPY --from=build_torchvision /app/vision/dist/ /tmp/vision/
 RUN --mount=type=cache,target=/root/.cache/pip \
     pip3 install --no-cache-dir /tmp/vision/*.whl && \
     rm -rf /tmp/vision && \
-    find /usr/local/lib/python3 -name '__pycache__' -type d \
-         -exec rm -rf {} + 2>/dev/null; true
+    { find /usr/local/lib/python3.12 -name '__pycache__' -type d \
+         -exec rm -rf {} + || \
+      echo "WARNING: __pycache__ cleanup failed; see find's error above" >&2; }
 
 # NIXL native libs and Python bindings — compiled in build_nixl against the
 # ROCm-full toolchain; only the output directories are needed at runtime.
