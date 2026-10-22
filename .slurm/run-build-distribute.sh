@@ -1391,6 +1391,7 @@ docker buildx prune --builder ${_builder} --force 2>/dev/null || true
 echo "[build-split] step 1/4: building aic-base (${base_image})"
 _base_oci_tar="\${TMPDIR}/aic-base-oci.\${SLURM_JOB_ID:-\$\$}.tar"
 _base_oci_dir="\${TMPDIR}/aic-base-oci.\${SLURM_JOB_ID:-\$\$}.d"
+trap 'rm -rf "\${_base_oci_tar}" "\${_base_oci_dir}" "\${_lmc_wheels_dir:-}"' EXIT
 rm -f "\${_base_oci_tar}" 2>/dev/null || true
 rm -rf "\${_base_oci_dir}" 2>/dev/null || true
 tmp_base="${base_tarball_name}.partial.\${SLURM_JOB_ID:-\$\$}"
@@ -3885,6 +3886,7 @@ export BUILDX_BAKE_ENTITLEMENTS_FS=0
 echo "[bake] phase 1: building aic-base"
 _base_oci_tar="\${TMPDIR}/aic-base-oci.\${SLURM_JOB_ID:-\$\$}.tar"
 _base_oci_dir="\${TMPDIR}/aic-base-oci.\${SLURM_JOB_ID:-\$\$}.d"
+trap 'rm -rf "\${_base_oci_tar}" "\${_base_oci_dir}" "\${_lmc_wheels_dir:-}"' EXIT
 rm -f "\${_base_oci_tar}" 2>/dev/null || true
 rm -rf "\${_base_oci_dir}" 2>/dev/null || true
 tmp_base="${base_tar}.partial.\${SLURM_JOB_ID:-\$\$}"
