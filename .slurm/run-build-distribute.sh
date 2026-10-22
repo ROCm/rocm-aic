@@ -255,7 +255,7 @@ AIC_UCX_FAST="${AIC_UCX_FAST:-}"
 # Callers must pass one of:
 #   AIC_IMAGE_NAME  name only for the version-derived tag to be appended here.
 #   AIC_IMAGE       a complete name:tag, used verbatim.  Wins over AIC_IMAGE_NAME.
-_aic_tag="$(bash "${AIC_DAY_DIR}/docker/scripts/aic-image-tag.sh" 2>/dev/null || true)"
+_aic_tag="$(bash "${AIC_DAY_DIR}/docker/scripts/aic-image-tag.sh" || true)"
 AIC_IMAGE="${AIC_IMAGE:-${AIC_IMAGE_NAME:-rocm-aic}:${_aic_tag:-latest}}"
 AIC_VLLM_IMAGE="${AIC_VLLM_IMAGE:-aic-vllm:${_aic_tag:-latest}}"
 AIC_LMCACHE_IMAGE="${AIC_LMCACHE_IMAGE:-aic-lmcache:${_aic_tag:-latest}}"
