@@ -3987,7 +3987,7 @@ docker buildx build --builder ${AIC_BUILDX_BUILDER} --progress=plain \
     ${FLASH_ATTN_REF:+--build-arg FLASH_ATTN_REF="${FLASH_ATTN_REF}"} \
     ${LMCACHE_REF:+--build-arg LMCACHE_REF="${LMCACHE_REF}"} \
     ${LLM_EMU_REF:+--build-arg LLM_EMU_REF="${LLM_EMU_REF}"} \
-    ${_cache_args:+${_cache_args}} \
+    \${_cache_args:+\${_cache_args}} \
     ${_secret_arg:+${_secret_arg}} \
     -f "${AIC_DAY_DIR}/docker/vllm/Dockerfile" \
     -t "${AIC_VLLM_IMAGE}" -t "\${_vllm_latest}" \
