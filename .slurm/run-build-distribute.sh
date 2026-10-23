@@ -1339,6 +1339,10 @@ cmd_build_split() {
     local vllm_before; vllm_before="$(_tarball_stamp "${vllm_tarball}")"
     local vllm_latest_ref="${AIC_VLLM_IMAGE%:*}:latest"
     local lmcache_latest_ref="${AIC_LMCACHE_IMAGE%:*}:latest"
+    local nvme_tar rdma_tar hsa_snoop_tar
+    nvme_tar="$(_exporter_tarball_path "${AIC_NVME_EXPORTER_IMAGE}")"
+    rdma_tar="$(_exporter_tarball_path "${AIC_RDMA_EXPORTER_IMAGE}")"
+    hsa_snoop_tar="$(_exporter_tarball_path "${AIC_HSA_SNOOP_IMAGE}")"
     local _version_build_args="" _version_arg _version_value
     printf -v _version_value '%q' "${AIC_VERSION}"
     _version_build_args+=" --build-arg AIC_VERSION=${_version_value}"
