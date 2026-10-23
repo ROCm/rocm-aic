@@ -589,8 +589,18 @@ _active_job_id=""
 _dump_job_log_tail() {
     local f="${_active_job_logfile}" n="${AIC_JOB_LOG_TAIL:-200}"
     [[ -n "${f}" ]] || return 0
+    # The log lives on NFS and is written by the compute node, so a job that
+    # fails in seconds can return from `sbatch --wait` before its output is
+    # visible here.  Reporting "produced no output" then sends the reader
+    # looking for a scheduler problem when the real error is already in the
+    # file -- which is what happened to job 68149714's container-DNS failure.
+    local _w
+    for _w in 1 2 3 4 5; do
+        [[ -s "${f}" ]] && break
+        sleep 2
+    done
     if [[ ! -s "${f}" ]]; then
-        log "job log ${f} is missing or empty; ${_active_job_desc} produced no output"
+        log "job log ${f} is still missing or empty after 10s; ${_active_job_desc} produced no output"
         return 0
     fi
     log "--- last ${n} lines of ${f} (${_active_job_desc}) ---"
@@ -2218,7 +2228,12 @@ if [ '${_smoke_exporters}' = "1" ]; then
     # Use "none" for ipc (valid Docker value = isolated /dev/shm) and unset pid
     # so the single-dash ${VAR-default} in compose uses the default only when
     # VAR is unset — setting it to empty string disables PID sharing.
-    export VLLM_IPC_MODE=none AIC_HSA_SNOOP_PID_MODE=none
+    # "none" is a valid IPC mode but NOT a valid PID mode -- Docker rejects it
+    # with "invalid PID mode: none", which took the whole monitoring compose
+    # down (smoke-test 68151674).  PID sharing is disabled with an empty
+    # string, exactly as VLLM_PID_MODE does on the next line.
+    export VLLM_IPC_MODE=none
+    export AIC_HSA_SNOOP_PID_MODE=""
     export VLLM_PID_MODE=""
     # shellcheck source=/dev/null
     source '${AIC_DAY_DIR}/monitoring/monitoring-lib.sh'
@@ -4051,7 +4066,10 @@ _bkd_cfg=""; [[ -f "${AIC_DAY_DIR}/docker/buildkitd.toml" ]] && _bkd_cfg="--conf
 # exactly what makes a torch or AITER recompile cheap.  The config's hash is
 # recorded beside the builder so the comparison is against what it was really
 # created with, not against whether a file happens to exist.
-_bkd_hash_file="\${HOME}/.tmp-rocm-aic-cicd/${AIC_BUILDX_BUILDER}.cfghash"
+# Per-node: \$HOME is shared NFS across the Markham nodes but the builder is
+# node-local, so a single shared file would let a hash written on node A mark
+# node B's older builder as current -- reusing it with a stale buildkitd config.
+_bkd_hash_file="\${HOME}/.tmp-rocm-aic-cicd/${AIC_BUILDX_BUILDER}.\$(hostname -s).cfghash"
 _bkd_hash="none"
 [[ -n "\${_bkd_cfg}" ]] && _bkd_hash="\$(sha256sum "${AIC_DAY_DIR}/docker/buildkitd.toml" | cut -d' ' -f1)"
 if docker buildx inspect ${AIC_BUILDX_BUILDER} >/dev/null 2>&1; then
