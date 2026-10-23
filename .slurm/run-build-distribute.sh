@@ -2438,8 +2438,9 @@ compose up -d amdgpu-exporter 2>/dev/null || echo "[prom-dump] amdgpu-exporter u
 echo "[prom-dump] waiting for vLLM on :8000 (up to ${AIC_TINY_READY_TIMEOUT}s) ..."
 _ok=0
 for _i in \$(seq 1 \$(( ${AIC_TINY_READY_TIMEOUT:-300} / 5 ))); do
+    # vllm shares aic-lmcache's network namespace, so that name reaches it.
     r=\$(docker exec aic-client curl -s -o /dev/null -w '%{http_code}' \
-        http://"\${VLLM_CONTAINER}":8000/health 2>/dev/null || true)
+        http://aic-lmcache:8000/health 2>/dev/null || true)
     [ "\$r" = "200" ] && { _ok=1; break; }
     [ -z "\$(docker ps -q -f name="\${VLLM_CONTAINER}")" ] && break
     sleep 5
@@ -2497,7 +2498,7 @@ _scrape_host() {
         echo "  \${name} localhost:\${port} — not reachable (skipped)"
     fi
 }
-_scrape_compose vllm                "\${VLLM_CONTAINER}"         8000
+_scrape_compose vllm                aic-lmcache                  8000
 _scrape_compose lmcache             aic-lmcache                  8080
 _scrape_compose nixl                aic-lmcache                  19090
 _scrape_compose lmcache_coordinator aic-lmcache-coordinator      9301
