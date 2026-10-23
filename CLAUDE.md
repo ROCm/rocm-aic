@@ -32,7 +32,7 @@ failed because Triton was disabled at startup due to circular import side-effect
 in vLLM's platform detection code.
 
 The stack now uses PyTorch source-built from `ROCm/pytorch@release/2.13` against
-the ROCm 7.14.1 base image, with vLLM `v0.29.0`, LMCache `v0.5.6`, AITER
+the ROCm 7.14.1 base image, with vLLM `v0.29.0`, LMCache `v0.5.5`, AITER
 `v0.1.22.post1`, and NIXL `v1.4.1`. The single `docker/Dockerfile` was split into
 three independent Dockerfiles (`docker/base/`, `docker/vllm/`, `docker/lmcache/`)
 enabling parallel builds. Validate changes on an MI355X before modifying the stack.
@@ -107,12 +107,17 @@ build (`AIC_ROCM_ARCH` default includes `gfx1201`). Key differences from CDNA:
   echo "0000:10:00.0" | sudo tee /sys/bus/pci/drivers/amdgpu/bind
   ```
 
-  Legacy GPU IPC (`AIC_HSA_IPC_LEGACY=1` → `HSA_ENABLE_IPC_MODE_LEGACY=1` in
-  both containers) uses those DKMS-only KFD IPC ioctls.  The default
-  (non-legacy) mode does not, but vllm and lmcache must share a network
-  namespace (ROCr passes the dmabuf fd over the abstract socket `@hsa<pid>`)
-  and should share the PID namespace (`network_mode: host` + `pid:
-  service:lmcache` — the compose defaults; no make override needed).
+  With amdgpu-dkms 7.1.3, cross-container GPU IPC goes through HIP VMM +
+  SCM_RIGHTS fd passing (`docker/lmcache/rocm_vmem_ipc.py`) plus
+  container-scoped IPC+PID namespace sharing (`ipc: shareable` /
+  `pid: service:lmcache` in compose — these are now the compose defaults; no
+  make override needed).
+
+  `HSA_ENABLE_IPC_MODE_LEGACY` must **never** be set to 1, in any image or
+  compose service: it breaks `hipIpcGetMemHandle` and the VMM path does not
+  need it. See `ipc-report-2026-10-09.md` for the measurements. An earlier
+  revision of this file claimed the opposite and the flag was shipped in
+  `aic-vllm`'s runtime ENV; both are fixed.
 
   The standard vllm-reset-test command on gfx1201 (no extra overrides):
 
