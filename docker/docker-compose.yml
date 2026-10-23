@@ -350,17 +350,24 @@ services:
     # image that fails at runtime.
     image: ${LMCACHE_IMAGE_REF:-${IMAGE_REF:-${IMAGE_NAME:-rocm-aic}:latest}}
     container_name: aic-lmcache
-    # Cross-container HIP IPC (LMCacheMPConnector registering vLLM's KV tensors) on
-    # gfx1201 uses HIP VMM + SCM_RIGHTS fd passing (docker/lmcache/rocm_vmem_ipc.py);
-    # HSA_ENABLE_IPC_MODE_LEGACY is deliberately NOT set (it breaks hipIpcGetMemHandle
-    # on gfx1201).  Cross-container GPU *event* IPC is skipped (rocm_ipc_patch.py).
+    # Cross-container HIP IPC (LMCacheMPConnector registering vLLM's KV tensors)
+    # uses LMCache's stock CudaIPCWrapper (hipIpcGetMemHandle) in ROCr's default,
+    # non-legacy mode: the importer fetches the dmabuf fd from the exporting
+    # process over the abstract unix socket "@hsa<pid>".  Abstract sockets are
+    # per network namespace, so vllm and lmcache MUST share one (both use the host's
+    # today); on separate ones hipIpcOpenMemHandle retries for 10 s and fails with
+    # hipErrorInvalidDevicePointer.  Sharing the PID namespace too keeps the
+    # <pid> in that name unique.  HSA_ENABLE_IPC_MODE_LEGACY must be the same in
+    # both (AIC_HSA_IPC_LEGACY=1 for the KFD-handle mode, which needs DKMS amdgpu).
+    # AIC_LMCACHE_VMM_IPC=1 selects the HIP VMM wrapper (rocm_vmem_ipc.py), which
+    # copies the KV cache at registration.  GPU *event* IPC is skipped (rocm_ipc_patch.py).
     # Needs container-scoped shared IPC+PID namespaces: lmcache owns the shareable
     # namespace; vllm joins it via ipc/pid: service:lmcache (see vllm service below).
     # IPC namespace sharing is independent of network_mode — the aic bridge network
     # provides DNS-based service discovery for prometheus without affecting IPC.
     # lmcache owns the shareable IPC+PID namespace; vllm joins via service:lmcache.
-    # ipc:shareable + no pid:host is sufficient with HSA_ENABLE_IPC_MODE_LEGACY=1
-    # (baked into the image ENV).  spur-authz blocks pid:host on SPUR nodes.
+    # ipc:shareable + no pid:host is sufficient (see the IPC note above).
+    # spur-authz blocks pid:host on SPUR nodes.
     # Prometheus scrapes lmcache via host-gateway (see prometheus.yml).
     network_mode: host
     ipc: shareable
@@ -408,6 +415,8 @@ services:
       # lmcache lands on a different device.  Mirror vllm's ROCR_VISIBLE_DEVICES.
       ROCR_VISIBLE_DEVICES: "${AIC_ROCR_VISIBLE:-${GPU:-0}}"
       HIP_VISIBLE_DEVICES: "${AIC_HIP_VISIBLE:-0}"
+      # Must match vllm's; see the IPC note above.
+      HSA_ENABLE_IPC_MODE_LEGACY: "${AIC_HSA_IPC_LEGACY:-}"
       PYTHONHASHSEED: "0"
       TZ: "${TZ:-America/Edmonton}"
       # Coordinator registration: the MP server registers, heartbeats, and
@@ -476,8 +485,8 @@ services:
     container_name: aic-vllm-gpu${GPU:-0}
     # Shared IPC/PID namespaces with lmcache: required for cross-container HIP IPC
     # KV registration (see the lmcache service).  vllm joins lmcache's shareable IPC
-    # Cross-container HIP IPC (LMCacheMPConnector) uses HIP VMM + SCM_RIGHTS fd passing
-    # (not HSA_ENABLE_IPC_MODE_LEGACY) plus shared IPC+PID namespaces.  Container-scoped sharing
+    # Cross-container HIP IPC (LMCacheMPConnector) needs a network namespace shared
+    # with lmcache (see there) plus shared IPC+PID namespaces.  Container-scoped sharing
     # (ipc: service:lmcache, pid: service:lmcache) is sufficient and safer than
     # ipc: host / pid: host.  Override via VLLM_IPC_MODE / VLLM_PID_MODE if needed.
     # network_mode:host required for KFD GPU IPC; prometheus scrapes via host-gateway.
@@ -504,6 +513,8 @@ services:
       - HF_DATASETS_CACHE=/hf/datasets
       - HF_HUB_OFFLINE=${HF_HUB_OFFLINE:-0}
       - AIC_IPC_SOCK=/tmp/aic-ipc/fds.sock
+      - HSA_ENABLE_IPC_MODE_LEGACY=${AIC_HSA_IPC_LEGACY:-}
+      - AIC_LMCACHE_VMM_IPC=${AIC_LMCACHE_VMM_IPC:-0}
       - TRANSFORMERS_OFFLINE=${TRANSFORMERS_OFFLINE:-0}
       - VLLM_CACHE_ROOT=/hf/vllm
       - VLLM_CONFIG_ROOT=/hf/vllm_config

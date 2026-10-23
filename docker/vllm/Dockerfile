@@ -390,9 +390,6 @@ RUN --mount=type=bind,from=lmcache-wheels,target=/aic-wheels \
         cupy-cuda12x cufile-python cuda-pathfinder 2>/dev/null || true; } && \
     python3 -c 'import lmcache.integration.vllm.vllm_multi_process_adapter; print("lmcache MP adapter imports OK")'
 
-# Cross-container HIP IPC with the lmcache server; must match aic-lmcache's ENV.
-ENV HSA_ENABLE_IPC_MODE_LEGACY=1
-
 # For fastsafetensors' dlopen("libamdhip64.so").  Not in the shared `vllm`
 # stage: CI's emulate build swaps in a base with no ROCm.  Prepend, so
 # aic-base's NIXL/UCX entries survive.

@@ -252,7 +252,9 @@ RUN rm -rf /app/patches /app/LMCache /wheels && \
 # ----- 8. Runtime environment ------------------------------------------------
 # NIXL_PLUGIN_DIR, PYTHONPATH (incl. NIXL), and LD_LIBRARY_PATH are set in
 # aic-base and inherited here.  HSA_ENABLE_IPC_MODE_LEGACY is intentionally NOT
-# set — it breaks hipIpcGetMemHandle on gfx1201; cross-container IPC uses HIP VMM.
+# set: aic-vllm leaves it unset too, and the two must agree.  The default
+# (non-legacy) mode crosses containers that share a network namespace; see
+# docker-compose.yml.
 # LMCACHE_NIXL_USE_CUPY=1: activate the CuPy GPU buffer allocator so
 # librocblas/libMIOpen/etc. are never dlopened in the lmcache process.
 ENV PYTHONUNBUFFERED=1 \
