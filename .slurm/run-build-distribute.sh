@@ -101,6 +101,9 @@
 #   AIC_IMAGE            full image name:tag
 #   AIC_IMAGE_NAME       image name only
 #   AIC_IMAGE_DIR        shared dir for the tarball        (default: /scratch/$USER/images)
+#   AIC_TMP_DIR          build-job TMPDIR + OCI scratch    (default: auto --
+#                        node-local /tmp/aic-scratch.<job>, falling back to
+#                        $HOME/.tmp-rocm-aic-cicd; never shared_nfs)
 #   HF_HOME              persistent Hugging Face cache used by tiny-test
 #                        (default: <AIC_IMAGE_DIR>/tiny-hf)
 #   ROCM_VERSION, PYTORCH_REF, VLLM_REF, LLM_EMU_REF, LMCACHE_REF,
@@ -378,12 +381,16 @@ AIC_CAPTURE_SWEEP="${AIC_CAPTURE_SWEEP:-256,64,1,16 256,64,8,64 1024,128,1,12 10
 if [[ "${AIC_SPUR_CLUSTER}" == "1" ]]; then
     AIC_BUILD_PARTITION="${AIC_BUILD_PARTITION:-amd-spur}"
     AIC_IMAGE_DIR="${AIC_IMAGE_DIR:-${AIC_SHARED_NFS:-/shared_nfs}/${USER}/images}"
+    # Scratch is picked on the build node (auto: /tmp, then $HOME) -- never the
+    # hard-mounted shared_nfs, where a stall hangs the job silently.
+    AIC_TMP_DIR="${AIC_TMP_DIR-}"
     # Use ${VAR-default} (not ${VAR:-default}) so an explicitly set empty string
     # ("AIC_BUILD_CONSTRAINT=") is honoured as "no constraint".
     AIC_BUILD_CONSTRAINT="${AIC_BUILD_CONSTRAINT-}"
     AIC_TEST_CONSTRAINT="${AIC_TEST_CONSTRAINT-}"
 else
     AIC_BUILD_PARTITION="${AIC_BUILD_PARTITION:-defq}"
+    AIC_TMP_DIR="${AIC_TMP_DIR-}"
     AIC_BUILD_CONSTRAINT="${AIC_BUILD_CONSTRAINT:-CPUONLY}"
     AIC_TEST_CONSTRAINT="${AIC_TEST_CONSTRAINT:-GFX942&NVME}"
 fi
@@ -1139,9 +1146,19 @@ docker system df >/dev/null 2>&1 \
     || { echo "[preflight] FATAL: docker overlay snapshotter broken on \$(hostname) -- resubmit to a different node" >&2; exit 1; }
 echo "[build] host=\$(hostname) docker=\$(docker --version)"
 # BuildKit writes a temp dir for config injection into TMPDIR (defaults to /tmp).
-# On SPUR compute nodes /tmp may not be writable for this user; use $HOME/tmp instead.
-mkdir -p "\${HOME}/.tmp-rocm-aic-cicd"
-export TMPDIR="\${HOME}/.tmp-rocm-aic-cicd"
+# The scratch also holds the multi-GB OCI base tarball, so pick node-local /tmp
+# first (unwritable on some SPUR compute nodes) and fall back to $HOME.  Never
+# default to shared_nfs: a hard-mount NFS stall here hangs the job silently
+# until the SBATCH time limit reaps it (run 40037358957).
+_aic_tmp="${AIC_TMP_DIR:-}"
+if [[ -z "\${_aic_tmp:-}" ]]; then
+    for _d in "/tmp/aic-scratch.\${SLURM_JOB_ID:-\$\$}" "\${HOME}/.tmp-rocm-aic-cicd"; do
+        if mkdir -p "\$_d" 2>/dev/null && [[ -w "\$_d" ]]; then _aic_tmp="\$_d"; break; fi
+    done
+fi
+[[ -n "\${_aic_tmp:-}" ]] || { echo "[build] FATAL: no writable scratch dir (tried /tmp and \$HOME); set AIC_TMP_DIR" >&2; exit 1; }
+mkdir -p "\${_aic_tmp:-}"
+export TMPDIR="\${_aic_tmp:-}"
 cd "${AIC_DAY_DIR}"
 ${_builder_setup}
 mkdir -p "${AIC_IMAGE_DIR}"
@@ -1377,8 +1394,17 @@ cmd_build_split() {
 set -euo pipefail
 command -v docker >/dev/null 2>&1 || { echo "docker not found" >&2; exit 1; }
 echo "[build-split] host=\$(hostname) docker=\$(docker --version)"
-mkdir -p "\${HOME}/.tmp-rocm-aic-cicd"
-export TMPDIR="\${HOME}/.tmp-rocm-aic-cicd"
+# Scratch: node-local /tmp first (fall back to $HOME; never shared_nfs -- a
+# hard-mount NFS stall here hangs the job silently).  AIC_TMP_DIR overrides.
+_aic_tmp="${AIC_TMP_DIR:-}"
+if [[ -z "\${_aic_tmp:-}" ]]; then
+    for _d in "/tmp/aic-scratch.\${SLURM_JOB_ID:-\$\$}" "\${HOME}/.tmp-rocm-aic-cicd"; do
+        if mkdir -p "\$_d" 2>/dev/null && [[ -w "\$_d" ]]; then _aic_tmp="\$_d"; break; fi
+    done
+fi
+[[ -n "\${_aic_tmp:-}" ]] || { echo "[build-split] FATAL: no writable scratch dir (tried /tmp and \$HOME); set AIC_TMP_DIR" >&2; exit 1; }
+mkdir -p "\${_aic_tmp:-}"
+export TMPDIR="\${_aic_tmp:-}"
 cd "${AIC_DAY_DIR}"
 # Ensure the buildx builder exists
 if ! docker buildx inspect ${_builder} >/dev/null 2>&1; then
@@ -3863,8 +3889,18 @@ command -v docker >/dev/null 2>&1 || { echo "docker not found on \$(hostname)" >
 docker system df >/dev/null 2>&1 \
     || { echo "[preflight] FATAL: docker overlay snapshotter broken on \$(hostname) -- resubmit to a different node" >&2; exit 1; }
 echo "[bake] host=\$(hostname) docker=\$(docker --version)"
-mkdir -p "\${HOME}/.tmp-rocm-aic-cicd"
-export TMPDIR="\${HOME}/.tmp-rocm-aic-cicd"
+# Scratch: node-local /tmp first (fall back to $HOME; never shared_nfs -- a
+# hard-mount NFS stall here hangs the job silently until the SBATCH time limit
+# reaps it).  An explicit AIC_TMP_DIR override still wins.
+_aic_tmp="${AIC_TMP_DIR:-}"
+if [[ -z "\${_aic_tmp:-}" ]]; then
+    for _d in "/tmp/aic-scratch.\${SLURM_JOB_ID:-\$\$}" "\${HOME}/.tmp-rocm-aic-cicd"; do
+        if mkdir -p "\$_d" 2>/dev/null && [[ -w "\$_d" ]]; then _aic_tmp="\$_d"; break; fi
+    done
+fi
+[[ -n "\${_aic_tmp:-}" ]] || { echo "[bake] FATAL: no writable scratch dir (tried /tmp and \$HOME); set AIC_TMP_DIR" >&2; exit 1; }
+mkdir -p "\${_aic_tmp:-}"
+export TMPDIR="\${_aic_tmp:-}"
 cd "${AIC_DAY_DIR}"
 
 # Ensure the docker-container builder exists.
