@@ -32,7 +32,7 @@ failed because Triton was disabled at startup due to circular import side-effect
 in vLLM's platform detection code.
 
 The stack now uses PyTorch source-built from `ROCm/pytorch@release/2.13` against
-the ROCm 7.14.1 base image, with vLLM `v0.29.0`, LMCache `v0.5.5`, AITER
+the ROCm 7.14.1 base image, with vLLM `v0.29.0`, LMCache `v0.5.6`, AITER
 `v0.1.22.post1`, and NIXL `v1.4.1`. The single `docker/Dockerfile` was split into
 three independent Dockerfiles (`docker/base/`, `docker/vllm/`, `docker/lmcache/`)
 enabling parallel builds. Validate changes on an MI355X before modifying the stack.

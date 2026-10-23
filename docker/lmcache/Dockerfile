@@ -8,7 +8,7 @@
 #
 # SPDX-License-Identifier: MIT
 #
-# AIC LMCache image: torch + torchvision + NIXL (from aic-base) + LMCache v0.5.5
+# AIC LMCache image: torch + torchvision + NIXL (from aic-base) + LMCache v0.5.6
 # (patched).
 #
 # AITER and FlashAttention live in aic-vllm — LMCache is a KV-cache

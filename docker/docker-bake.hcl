@@ -40,7 +40,7 @@ variable "VLLM_TARGET_DEVICE" { default = "rocm" }
 variable "LLM_EMU_REF"       { default = "b71c602" }
 variable "AITER_REF"         { default = "v0.1.22.post1" }
 variable "FLASH_ATTN_REF"    { default = "v2.8.3.post1" }
-variable "LMCACHE_REF"       { default = "v0.5.5" }
+variable "LMCACHE_REF"       { default = "v0.5.6" }
 variable "NIXL_REF"          { default = "v1.4.1" }
 variable "HSA_SNOOP_REF"     { default = "v1.2.0" }
 

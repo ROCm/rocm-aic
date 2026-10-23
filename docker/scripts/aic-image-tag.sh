@@ -4,8 +4,8 @@
 # SPDX-License-Identifier: MIT
 #
 # Emit the AIC image tag (no image name), e.g.
-#   CDNA (gfx9xx):  0.1.0-rocm7.14.1-pytorch2.13-vllm0.29.0-aiter0.1.22.post1-fa2.8.3.post1-lmcache0.5.5-nixl1.4.1-hsasnoop1.2.0-gfx942
-#   RDNA (gfx12xx): 0.1.0-rocm7.14.1-pytorch2.13-vllm0.29.0-aiter0.1.22.post1-lmcache0.5.5-nixl1.4.1-hsasnoop1.2.0-gfx1250
+#   CDNA (gfx9xx):  0.1.0-rocm7.14.1-pytorch2.13-vllm0.29.0-aiter0.1.22.post1-fa2.8.3.post1-lmcache0.5.6-nixl1.4.1-hsasnoop1.2.0-gfx942
+#   RDNA (gfx12xx): 0.1.0-rocm7.14.1-pytorch2.13-vllm0.29.0-aiter0.1.22.post1-lmcache0.5.6-nixl1.4.1-hsasnoop1.2.0-gfx1250
 #
 # The tag is now derived in docker/docker-bake.hcl (the single source of truth
 # for version pins and tag format).  This script is a thin wrapper that asks bake
