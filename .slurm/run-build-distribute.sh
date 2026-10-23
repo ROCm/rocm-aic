@@ -2280,12 +2280,22 @@ print(urllib.request.urlopen(req, timeout=30).read().decode())
 " 2>&1)" || {
     echo "[tiny-test] FAIL: completion request failed: \${resp}" >&2; exit 1; }
 echo "[tiny-test] response: \${resp}"
-if grep -qE '"content"[[:space:]]*:[[:space:]]*"[^"]+' <<<"\${resp}"; then
-    echo "[tiny-test] OK: got a non-empty completion via LMCacheMPConnector"
-    exit 0
+if ! grep -qE '"content"[[:space:]]*:[[:space:]]*"[^"]+' <<<"\${resp}"; then
+    echo "[tiny-test] FAIL: empty or missing completion content" >&2
+    exit 1
 fi
-echo "[tiny-test] FAIL: empty or missing completion content" >&2
-exit 1
+echo "[tiny-test] OK: got a non-empty completion"
+
+# A completion also comes back when the connector skipped KV registration and
+# LMCache is inert, so check that LMCache really holds vLLM's KV cache.
+if ! docker exec -i "\${VLLM_CONTAINER}" python3 - '${AIC_TINY_MODEL}' \
+        < '${AIC_DAY_DIR}/.slurm/tiny-kv-roundtrip.py'; then
+    compose logs --no-color vllm 2>&1 | grep -E 'KV registration skipped|KV IPC unavailable|KV caches are not registered' \
+        | sed 's/^/  [vllm] /'
+    exit 1
+fi
+echo "[tiny-test] OK: KV round-trip through LMCacheMPConnector"
+exit 0
 REMOTE
 )"
 
