@@ -2085,13 +2085,20 @@ cmd_tiny_test() {
     [[ -r "${vllm_tarball}" ]]    || die "vllm tarball not found: ${vllm_tarball} (run 'build' first)"
     [[ -r "${lmcache_tarball}" ]] || die "lmcache tarball not found: ${lmcache_tarball} (run 'build' first)"
 
+    # AIC_TEST_EXCLUDE_NODES was honoured by smoke-test (:1894) and
+    # accuracy-test (:3422) but not here, so an exclude list silently did
+    # nothing for tiny-test and the job could still land on an excluded node
+    # (68153600 picked an MI300A that way).  Slurm has no feature-negation
+    # operator, so --exclude is the only way to keep a node class out.
+    local _tiny_exclude="${AIC_TEST_EXCLUDE_NODES:-${AIC_BUILD_EXCLUDE_NODES:-}}"
     local -a _sel
     if [[ -n "${AIC_TEST_NODE:-}" ]]; then
         _sel=(--nodelist="${AIC_TEST_NODE}")
         log "tiny-test on ${AIC_TEST_NODE} via sbatch (partition ${AIC_BUILD_PARTITION})"
     else
         _sel=(--constraint="${AIC_TEST_CONSTRAINT}")
-        log "tiny-test via sbatch (partition ${AIC_BUILD_PARTITION}, constraint ${AIC_TEST_CONSTRAINT})"
+        [[ -n "${_tiny_exclude}" ]] && _sel+=(--exclude="${_tiny_exclude}")
+        log "tiny-test via sbatch (partition ${AIC_BUILD_PARTITION}, constraint ${AIC_TEST_CONSTRAINT}${_tiny_exclude:+, exclude ${_tiny_exclude}})"
     fi
     log "vllm: ${AIC_VLLM_IMAGE}  lmcache: ${AIC_LMCACHE_IMAGE}  model: ${AIC_TINY_MODEL}  hf: ${HF_HOME}"
 
@@ -2168,10 +2175,11 @@ export VLLM_PID_MODE=service:lmcache
 # AITER provides fused kernels for better throughput but is not required for
 # correctness; vLLM falls back to standard ROCm/Triton kernels.
 export AIC_ROCM_USE_AITER="${AIC_ROCM_USE_AITER:-0}"
-# Both vLLM and lmcache use network_mode:host — Docker DNS (container names)
-# does not work on the host network.  Use localhost to reach the lmcache ZMQ
-# server, which binds to 0.0.0.0:LMCACHE_PORT on the shared host namespace.
-export KV_TRANSFER_ARG="--kv-transfer-config '{\"kv_connector\":\"LMCacheMPConnector\",\"kv_role\":\"kv_both\",\"kv_connector_extra_config\":{\"lmcache.mp.host\":\"tcp://localhost\",\"lmcache.mp.port\":6555}}'"
+# vLLM and lmcache are both on the aic bridge, so the MP connector reaches the
+# lmcache ZMQ server by service name.  It was tcp://localhost, which only
+# resolved while both ran with network_mode:host; on the bridge that would mean
+# vLLM's own loopback and the connector would never find the server.
+export KV_TRANSFER_ARG="--kv-transfer-config '{\"kv_connector\":\"LMCacheMPConnector\",\"kv_role\":\"kv_both\",\"kv_connector_extra_config\":{\"lmcache.mp.host\":\"tcp://aic-lmcache\",\"lmcache.mp.port\":6555}}'"
 mkdir -p "\${HF_HOME}" /tmp/aic-tiny-nvme /tmp/aic-tiny-nfs
 
 compose() { docker compose -f '${AIC_DAY_DIR}/docker/docker-compose.yml' "\$@"; }
@@ -2246,6 +2254,24 @@ if [ "\${ready}" != "1" ]; then
 fi
 echo "[tiny-test] endpoint ready; sending one chat completion ..."
 
+# --- metrics capture ---------------------------------------------------------
+# Started only now: hsa-snoop joins lmcache's PID namespace (pid: service:lmcache)
+# so the stack must already be up.  Unlike the smoke-test we do NOT override the
+# IPC/PID modes -- the real lmcache/vllm pair needs them.  The TSDB lands in the
+# per-job log dir, and because every service is on the aic bridge prometheus can
+# now scrape aic-lmcache:9091 and the vllm container by name, so this TSDB
+# actually contains lmcache/vLLM series rather than only prometheus_* ones.
+if [ "\${AIC_MONITORING:-1}" = "1" ]; then
+    MON_COMPOSE='${AIC_DAY_DIR}/docker/docker-compose.yml'
+    AIC_METRICS_DIR="\${_logdir}/prometheus"
+    AIC_EXPORTERS="${AIC_EXPORTERS:-safe}"
+    AIC_MONITORING=1
+    # shellcheck source=/dev/null
+    source '${AIC_DAY_DIR}/monitoring/monitoring-lib.sh'
+    mkdir -p "\${AIC_METRICS_DIR}"
+    start_monitoring
+fi
+
 # One real completion; assert a NON-EMPTY assistant content came back through the
 # LMCacheMPConnector path.
 resp="\$(docker exec "\${VLLM_CONTAINER}" python3 -c "
@@ -2258,12 +2284,24 @@ print(urllib.request.urlopen(req, timeout=30).read().decode())
 " 2>&1)" || {
     echo "[tiny-test] FAIL: completion request failed: \${resp}" >&2; exit 1; }
 echo "[tiny-test] response: \${resp}"
+_tiny_rc=1
 if grep -qE '"content"[[:space:]]*:[[:space:]]*"[^"]+' <<<"\${resp}"; then
     echo "[tiny-test] OK: got a non-empty completion via LMCacheMPConnector"
-    exit 0
+    _tiny_rc=0
+else
+    echo "[tiny-test] FAIL: empty or missing completion content" >&2
 fi
-echo "[tiny-test] FAIL: empty or missing completion content" >&2
-exit 1
+# Let prometheus scrape the served request, then retain the TSDB.  Informational:
+# never changes the exit code.
+if [ "\${AIC_MONITORING:-0}" = "1" ]; then
+    echo "[tiny-test] scraping metrics for ${AIC_TINY_SCRAPE_S:-30}s ..."
+    sleep ${AIC_TINY_SCRAPE_S:-30}
+    monitoring_healthcheck || true
+    monitoring_tsdb_summary || true
+    stop_monitoring || true
+    echo "[tiny-test] TSDB retained at \${AIC_METRICS_DIR}"
+fi
+exit \${_tiny_rc}
 REMOTE
 )"
 
@@ -2300,13 +2338,16 @@ cmd_prometheus_dump() {
     local prom_dump_wait="${PROM_DUMP_WAIT:-15}"
     local prom_scratch="${AIC_IMAGE_DIR%/*}/prom-dump-scratch"
 
+    # Same exclude handling as smoke-test/tiny-test/accuracy-test.
+    local _dump_exclude="${AIC_TEST_EXCLUDE_NODES:-${AIC_BUILD_EXCLUDE_NODES:-}}"
     local -a _sel
     if [[ -n "${AIC_TEST_NODE:-}" ]]; then
         _sel=(--nodelist="${AIC_TEST_NODE}")
         log "prometheus-dump on ${AIC_TEST_NODE} via sbatch (partition ${AIC_BUILD_PARTITION})"
     else
         _sel=(--constraint="${AIC_TEST_CONSTRAINT}")
-        log "prometheus-dump via sbatch (partition ${AIC_BUILD_PARTITION}, constraint ${AIC_TEST_CONSTRAINT})"
+        [[ -n "${_dump_exclude}" ]] && _sel+=(--exclude="${_dump_exclude}")
+        log "prometheus-dump via sbatch (partition ${AIC_BUILD_PARTITION}, constraint ${AIC_TEST_CONSTRAINT}${_dump_exclude:+, exclude ${_dump_exclude}})"
     fi
     log "image: ${AIC_IMAGE}  model: ${AIC_TINY_MODEL}  out: ${prom_dump_out}"
 
@@ -2365,7 +2406,7 @@ export LMCACHE_NIXL_POSIX_SLOT_SIZE=33554432
 export LMCACHE_MAX_GPU_WORKERS=1
 export VLLM_IPC_MODE=service:lmcache
 export VLLM_PID_MODE=service:lmcache
-export KV_TRANSFER_ARG="--kv-transfer-config '{\"kv_connector\":\"LMCacheMPConnector\",\"kv_role\":\"kv_both\",\"kv_connector_extra_config\":{\"lmcache.mp.host\":\"tcp://localhost\",\"lmcache.mp.port\":6555}}'"
+export KV_TRANSFER_ARG="--kv-transfer-config '{\"kv_connector\":\"LMCacheMPConnector\",\"kv_role\":\"kv_both\",\"kv_connector_extra_config\":{\"lmcache.mp.host\":\"tcp://aic-lmcache\",\"lmcache.mp.port\":6555}}'"
 # hsa-snoop: use container PID namespace (SPUR authz blocks --pid=host).
 export AIC_HSA_SNOOP_PID_MODE=container:aic-lmcache
 # Monitoring metrics dir for Prometheus TSDB.
@@ -2448,17 +2489,6 @@ _scrape_compose() {
         echo "  \${name} \${host}:\${port} — not reachable (skipped)"
     fi
 }
-# Scrape directly from the host (host-network services).
-_scrape_host() {
-    local name="\$1" port="\$2"
-    local out='${prom_scratch}'/metrics_"\${name}".txt
-    if curl -sf "http://localhost:\${port}/metrics" > "\${out}" 2>/dev/null && [ -s "\${out}" ]; then
-        echo "  \${name} localhost:\${port} — \$(grep -c '^# HELP' "\${out}") metrics"
-        _args="\${_args} --source \${name}:\${out}"
-    else
-        echo "  \${name} localhost:\${port} — not reachable (skipped)"
-    fi
-}
 _scrape_compose vllm                "\${VLLM_CONTAINER}"         8000
 _scrape_compose lmcache             aic-lmcache                  8080
 _scrape_compose nixl                aic-lmcache                  19090
@@ -2466,9 +2496,9 @@ _scrape_compose lmcache_coordinator aic-lmcache-coordinator      9301
 _scrape_compose hsa_snoop           aic-hsa-snoop                9488
 _scrape_compose amdgpu_exporter     aic-amdgpu-exporter          5000
 _scrape_compose prometheus          aic-prometheus               9090
-_scrape_host    node_exporter                                     9100
-_scrape_host    nvme_exporter                                     9998
-_scrape_host    rdma_exporter                                     9879
+_scrape_compose node_exporter       aic-node-exporter            9100
+_scrape_compose nvme_exporter       aic-nvme-exporter            9998
+_scrape_compose rdma_exporter       aic-rdma-exporter            9879
 
 # Collect running container names, images, and status for the report.
 # Write to a TSV file; metrics_to_md.py reads it via --containers-tsv.
@@ -2604,7 +2634,7 @@ fi
 
 ready=0
 for _i in \$(seq 1 ${AIC_EMULATE_READY_TIMEOUT}); do
-    if curl -fsS http://localhost:8000/v1/models >/dev/null 2>&1; then ready=1; break; fi
+    if docker exec aic-vllm-emulator curl -fsS http://localhost:8000/v1/models >/dev/null 2>&1; then ready=1; break; fi
     # Bail out early if the container died rather than waiting the full timeout.
     if [ -z "\$(docker ps -q -f name=aic-vllm-emulator)" ]; then
         echo "[emulate-test] FAIL: the emulator container exited during startup" >&2
@@ -2630,7 +2660,7 @@ else
 fi
 echo "[emulate-test] /dev/kfd inside the container: \${kfd_in_container}"
 
-resp="\$(curl -fsS http://localhost:8000/v1/chat/completions \
+resp="\$(docker exec aic-vllm-emulator curl -fsS http://localhost:8000/v1/chat/completions \
     -H 'Content-Type: application/json' \
     -d '{"model":"${AIC_EMULATE_MODEL}","messages":[{"role":"user","content":"Reply with the single word: pong"}],"max_tokens":16,"temperature":0}' 2>&1)" || {
     echo "[emulate-test] FAIL: completion request failed: \${resp}" >&2; exit 1; }
@@ -2805,7 +2835,7 @@ fi
 # tensor.device.type and host-memory KV falls to engine_driven, which moves the
 # copy into the vLLM worker.  lmcache_driven keeps the shipped topology (the
 # SERVER pulls from the registered buffers, here POSIX SHM instead of HIP IPC).
-export EMU_KV_TRANSFER_ARG="--kv-transfer-config '{\"kv_connector\":\"LMCacheMPConnector\",\"kv_role\":\"kv_both\",\"kv_connector_extra_config\":{\"lmcache.mp.host\":\"tcp://localhost\",\"lmcache.mp.port\":\${LMCACHE_PORT},\"lmcache.mp.mp_transfer_mode\":\"lmcache_driven\"}}'"
+export EMU_KV_TRANSFER_ARG="--kv-transfer-config '{\"kv_connector\":\"LMCacheMPConnector\",\"kv_role\":\"kv_both\",\"kv_connector_extra_config\":{\"lmcache.mp.host\":\"tcp://aic-lmcache-emulator\",\"lmcache.mp.port\":\${LMCACHE_PORT},\"lmcache.mp.mp_transfer_mode\":\"lmcache_driven\"}}'"
 export VLLM_EXTRA_ARGS="--enable-prefix-caching"
 
 compose() { docker compose -f '${AIC_DAY_DIR}/docker/docker-compose.yml' "\$@"; }
@@ -2880,7 +2910,7 @@ fi
 
 ready=0
 for _i in \$(seq 1 ${AIC_EMULATE_READY_TIMEOUT}); do
-    if curl -fsS http://localhost:8000/v1/models >/dev/null 2>&1; then ready=1; break; fi
+    if docker exec aic-vllm-emulator curl -fsS http://localhost:8000/v1/models >/dev/null 2>&1; then ready=1; break; fi
     if [ -z "\$(docker ps -q -f name=aic-vllm-emulator)" ]; then
         echo "[emulate-mp-test] FAIL: the emulator container exited during startup" >&2
         compose --profile emulate-mp logs --tail 150 --no-color 2>&1 | sed 's/^/  [mp] /'
@@ -2907,7 +2937,7 @@ fi
 # collide with anything else in the cache.
 _prompt="\$(python3 -c "print('The quick brown fox jumps over the lazy dog. ' * 96)")"
 _ask() {
-    curl -fsS http://localhost:8000/v1/chat/completions \
+    docker exec aic-vllm-emulator curl -fsS http://localhost:8000/v1/chat/completions \
         -H 'Content-Type: application/json' \
         -d "\$(python3 -c "
 import json,sys
@@ -2976,13 +3006,13 @@ if [ -n '${AIC_EMULATE_MP_BENCH}' ]; then
         fi
         # Per-point cache counters: the whole reason for a warm repeat is to see
         # these MOVE, and an end-of-run total cannot show that.
-        curl -fsS http://localhost:8080/metrics 2>/dev/null | awk -v tag="\${tag:-cold}" '
+        docker exec aic-lmcache-emulator curl -fsS http://localhost:8080/metrics 2>/dev/null | awk -v tag="\${tag:-cold}" '
             /^lmcache_mp_lookup_requested_tokens_total/ {req=\$NF}
             /^lmcache_mp_lookup_hit_tokens_total/       {hit=\$NF}
             /^lmcache_mp_l1_read_chunks_total/          {l1r=\$NF}
             /^lmcache_mp_l2_prefetch_hit_chunks_total/  {l2h=\$NF}
             END {printf "[emulate-mp-test]   after %-6s cum: lookup %d/%d tokens hit, L1 reads %d, L2 prefetch hits %d\n", tag, hit, req, l1r, l2h}'
-        curl -fsS http://localhost:19090/metrics 2>/dev/null | awk -v tag="\${tag:-cold}" '
+        docker exec aic-lmcache-emulator curl -fsS http://localhost:19090/metrics 2>/dev/null | awk -v tag="\${tag:-cold}" '
             /^agent_tx_bytes_total/ {tx=\$NF} /^agent_rx_bytes_total/ {rx=\$NF}
             END {printf "[emulate-mp-test]   after %-6s cum: NIXL tx %.1f MiB, rx %.1f MiB\n", tag, tx/1048576, rx/1048576}'
     done
@@ -3030,7 +3060,7 @@ fi
 #    log-format-dependent evidence; fall back to the connector's own counters.
 #    :8080 -- the MP server's HTTP API -- not --prometheus-port, which opens no
 #    listener in v0.5.2 ("standalone metrics HTTP server disabled").
-if curl -fsS http://localhost:8080/metrics -o "\${_logdir}/emulate-mp-lmcache-metrics.txt" 2>/dev/null; then
+if docker exec aic-lmcache-emulator curl -fsS http://localhost:8080/metrics > "\${_logdir}/emulate-mp-lmcache-metrics.txt" 2>/dev/null; then
     # 'write' matters: with AIC_EMULATE_MP_L2_BACKEND=none there is no L2 tier at
     # all, so every lmcache_mp_l2_store_* family is structurally absent and the
     # only evidence of a store is lmcache_mp_l1_write_chunks_total.  Matching just
@@ -3056,7 +3086,7 @@ fi
 #    leaves is the exact symptom of the connector output never reaching the
 #    scheduler -- the failure mode the executor hook's connector cycle exists
 #    to prevent -- and both requests above have already returned by now.
-_waiting="\$(curl -fsS http://localhost:8000/metrics 2>/dev/null \
+_waiting="\$(docker exec aic-vllm-emulator curl -fsS http://localhost:8000/metrics 2>/dev/null \
     | awk '/^vllm:num_requests_waiting/ {s+=\$NF} END {printf "%d", s+0}')"
 if [ "\${_waiting:-0}" -eq 0 ]; then
     echo "[emulate-mp-test] OK: no request left waiting on a remote KV load"
@@ -3120,8 +3150,8 @@ PYEOF
         [ \$? -eq 0 ] || rc=1
         # Keep the raw exporter output next to the verdict -- when a job is up
         # but empty, this is the only thing that says why.
-        curl -fsS http://localhost:8080/metrics  -o "\${_promdir}/lmcache-metrics.txt" 2>/dev/null || true
-        curl -fsS http://localhost:19090/metrics -o "\${_promdir}/nixl-metrics.txt"   2>/dev/null || true
+        docker exec aic-lmcache-emulator curl -fsS http://localhost:8080/metrics  > "\${_promdir}/lmcache-metrics.txt" 2>/dev/null || true
+        docker exec aic-lmcache-emulator curl -fsS http://localhost:19090/metrics > "\${_promdir}/nixl-metrics.txt"   2>/dev/null || true
         for _f in lmcache nixl; do
             [ -s "\${_promdir}/\${_f}-metrics.txt" ] && \
                 echo "[emulate-mp-test]   \${_f} exporter: \$(grep -cE '^[a-zA-Z]' "\${_promdir}/\${_f}-metrics.txt") sample lines"
@@ -3313,7 +3343,7 @@ echo "[validate] starting the emulator with pack /profiles/${pack_file} ..."
 compose --profile emulate up -d vllm-emulator || { echo "[validate] FAIL: compose up" >&2; exit 1; }
 ready=0
 for _i in \$(seq 1 ${AIC_EMULATE_READY_TIMEOUT}); do
-    curl -fsS http://localhost:8000/v1/models >/dev/null 2>&1 && { ready=1; break; }
+    docker exec aic-vllm-emulator curl -fsS http://localhost:8000/v1/models >/dev/null 2>&1 && { ready=1; break; }
     [ -z "\$(docker ps -q -f name=aic-vllm-emulator)" ] && break
     sleep 5
 done
@@ -3584,7 +3614,7 @@ docker run -d --name aic-vllm-capture \
 
 ready=0
 for _i in \$(seq 1 ${AIC_CAPTURE_READY_TIMEOUT}); do
-    if curl -fsS http://localhost:8000/v1/models >/dev/null 2>&1; then ready=1; break; fi
+    if docker exec aic-vllm-capture curl -fsS http://localhost:8000/v1/models >/dev/null 2>&1; then ready=1; break; fi
     if [ -z "\$(docker ps -q -f name=aic-vllm-capture)" ]; then
         echo "[capture] FAIL: the vLLM container exited during startup" >&2
         docker logs --tail 120 aic-vllm-capture 2>&1 | sed 's/^/  [vllm] /'

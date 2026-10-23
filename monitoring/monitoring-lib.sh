@@ -188,7 +188,16 @@ start_monitoring() {
     mkdir -p "${AIC_METRICS_DIR}" 2>/dev/null || { log "monitoring: cannot create ${AIC_METRICS_DIR}, skipping"; AIC_MONITORING=0; return 0; }
     ensure_compose || { log "monitoring: docker compose unavailable, skipping"; AIC_MONITORING=0; return 0; }
     [[ -f "${MON_COMPOSE}" ]] || { log "monitoring: ${MON_COMPOSE} not found, skipping"; AIC_MONITORING=0; return 0; }
-    log "starting metrics capture -> ${AIC_METRICS_DIR} (exporters=${AIC_EXPORTERS})"
+    # Grafana is a human UI, not part of metric capture, but it is in the
+    # monitoring-base profile so it always starts -- and a fixed host port 3000
+    # collides with anything else on the node that uses it (an unrelated
+    # observability stack took it on ctr-cx66-mi300x-31, and compose then
+    # reports the whole `up` as failed).  Publish it on an ephemeral port here;
+    # interactive users still get 3000 by setting AIC_GRAFANA_PORT themselves.
+    # `docker port aic-grafana 3000` prints the assigned port.
+    AIC_GRAFANA_PORT="${AIC_GRAFANA_PORT_OVERRIDE:-0}"
+    export AIC_GRAFANA_PORT
+    log "starting metrics capture -> ${AIC_METRICS_DIR} (exporters=${AIC_EXPORTERS}, grafana port=${AIC_GRAFANA_PORT})"
     # Sweep any leftover containers from a previous run on this node so port
     # bindings don't conflict with the new compose up.
     docker rm -f "${MON_CONTAINERS[@]}" >/dev/null 2>&1 || true
@@ -231,10 +240,12 @@ stop_monitoring() {
 # --- Health check + TSDB summary (used by the build smoke-test) ---------------
 # curl one exporter's /metrics and report whether it serves its expected series.
 # Purely informational: prints OK/WARN and returns 0/1, never exits.
-# $1=display name  $2=port  $3=extended-regex the metrics should contain.
+# $1=display name  $2=port  $3=extended-regex  $4=service name on aic-network
+# (default aic-prometheus).  Scraped from inside aic-client: nothing publishes a
+# host port any more, so a 127.0.0.1 scrape would always fail.
 _check_endpoint() {
-    local name="$1" port="$2" re="$3" body n
-    body="$(curl -fsS --max-time 3 "http://127.0.0.1:${port}/metrics" 2>/dev/null)" || {
+    local name="$1" port="$2" re="$3" host="${4:-aic-prometheus}" body n
+    body="$(docker exec aic-client curl -fsS --max-time 3 "http://${host}:${port}/metrics" 2>/dev/null)" || {
         log "  WARN ${name} :${port} -- /metrics not responding"; return 1; }
     n="$(printf '%s\n' "${body}" | grep -cE "${re}" 2>/dev/null || true)"
     if [[ "${n:-0}" -gt 0 ]]; then
@@ -249,9 +260,9 @@ _check_endpoint() {
 # $1=display name  $2=prometheus job name  $3=optional series regex to spot-check
 _check_job() {
     local name="$1" job="$2" re="${3:-}"
-    local prom="http://127.0.0.1:${AIC_PROM_PORT:-9090}"
+    local prom="http://aic-prometheus:${AIC_PROM_PORT:-9090}"
     local result n_up
-    result="$(curl -fsS --max-time 3 \
+    result="$(docker exec aic-client curl -fsS --max-time 3 \
         "${prom}/api/v1/query?query=up%7Bjob%3D%22${job}%22%7D" 2>/dev/null)" || {
         log "  WARN ${name} -- prometheus not reachable"; return 1; }
     n_up="$(printf '%s' "${result}" | python3 -c "
@@ -300,13 +311,12 @@ monitoring_healthcheck() {
 # actually landed in the TSDB) and print the TSDB path/size.  Uses the AIC
 # image's python3 to parse the query JSON (no jq on the host).  Informational.
 monitoring_tsdb_summary() {
-    local prom="http://127.0.0.1:${AIC_PROM_PORT:-9090}"
+    local prom="http://aic-prometheus:${AIC_PROM_PORT:-9090}"
     log "Prometheus scrape targets (query up):"
-    if ! curl -fsS --max-time 3 "${prom}/-/ready" >/dev/null 2>&1; then
+    if ! docker exec aic-client curl -fsS --max-time 3 "${prom}/-/ready" >/dev/null 2>&1; then
         log "  WARN Prometheus not ready at ${prom}"; return 0
     fi
-    docker run --rm --network host -e PROM_URL="${prom}" \
-        --entrypoint python3 "${AIC_IMAGE}" -c '
+    docker exec -e PROM_URL="${prom}" aic-client python3 -c '
 import json, os, sys, urllib.request
 prom = os.environ["PROM_URL"]
 try:
