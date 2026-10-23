@@ -293,8 +293,8 @@ _wait_ready() {
 # container (already on aic, repo mounted), at the cost of a gsm8k download on
 # the compute node.
 _endpoint_url() {
-    # vLLM uses network_mode:host — no bridge IP.  Reach it via localhost on the
-    # compute node (port 8000 is bound to the host interface).
+    # vLLM shares lmcache's network namespace, which publishes port 8000 on the
+    # compute node; reach it via localhost.
     curl -fsS --max-time 10 "http://127.0.0.1:8000/v1/models" >/dev/null 2>&1 || {
         echo "[accuracy-test] FAIL: host cannot reach 127.0.0.1:8000" >&2
         return 1; }
@@ -406,6 +406,7 @@ echo "[accuracy-test] === Phase 1: vram_only arm ==="
 # No LMCache: vllm owns its IPC ns, no KV_TRANSFER_ARG, no --profile cache.
 export VLLM_IPC_MODE=shareable
 export VLLM_PID_MODE=
+export VLLM_NETWORK_MODE=host
 export KV_TRANSFER_ARG=
 export AIC_L2_BACKEND=none
 export VLM_GPU_MEMORY_UTILIZATION=0.90
@@ -494,8 +495,8 @@ export AIC_L2_BACKEND=nixl_posix
 export AIC_NIXL_BACKEND=POSIX
 export VLLM_IPC_MODE=service:lmcache
 export VLLM_PID_MODE=service:lmcache
-# Sharing lmcache's PID/IPC namespaces does not share its network namespace;
-# resolve the peer over the compose network rather than vLLM's own loopback.
+export VLLM_NETWORK_MODE=container:aic-lmcache
+# vLLM shares lmcache's network namespace, so lmcache is on its loopback.
 export KV_TRANSFER_ARG="--kv-transfer-config '{\"kv_connector\":\"LMCacheMPConnector\",\"kv_role\":\"kv_both\",\"kv_connector_extra_config\":{\"lmcache.mp.host\":\"tcp://localhost\",\"lmcache.mp.port\":6555}}'"
 # Disable CUDA graph capture for the kvd arm: LMCacheMPConnector registers KV
 # caches after vLLM's graph warmup phase, so CUDA graphs trigger

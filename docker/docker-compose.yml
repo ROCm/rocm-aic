@@ -354,8 +354,8 @@ services:
     # uses LMCache's stock CudaIPCWrapper (hipIpcGetMemHandle) in ROCr's default,
     # non-legacy mode: the importer fetches the dmabuf fd from the exporting
     # process over the abstract unix socket "@hsa<pid>".  Abstract sockets are
-    # per network namespace, so vllm and lmcache MUST share one (both use the host's
-    # today); on separate ones hipIpcOpenMemHandle retries for 10 s and fails with
+    # per network namespace, so vllm and lmcache MUST share one (vllm joins this
+    # one); on separate ones hipIpcOpenMemHandle retries for 10 s and fails with
     # hipErrorInvalidDevicePointer.  Sharing the PID namespace too keeps the
     # <pid> in that name unique.  HSA_ENABLE_IPC_MODE_LEGACY must be the same in
     # both (AIC_HSA_IPC_LEGACY=1 for the KFD-handle mode, which needs DKMS amdgpu).
@@ -368,8 +368,18 @@ services:
     # lmcache owns the shareable IPC+PID namespace; vllm joins via service:lmcache.
     # ipc:shareable + no pid:host is sufficient (see the IPC note above).
     # spur-authz blocks pid:host on SPUR nodes.
-    # Prometheus scrapes lmcache via host-gateway (see prometheus.yml).
-    network_mode: host
+    # Own network namespace, not host: on the host one, "@hsa<pid>" would be
+    # shared with every host-net container on the node, each with its own PID
+    # namespace, and a PID clash breaks the export or hangs the import.  vllm's
+    # ports live here too, so publish what host-net used to expose; Prometheus
+    # still scrapes them via host-gateway (see prometheus.yml).
+    networks: [aic-network]
+    ports:
+      - "${VLLM_HOST_PORT:-8000}:8000"   # vllm (network_mode: container:aic-lmcache)
+      - "${LMCACHE_PORT:-6555}:${LMCACHE_PORT:-6555}"
+      - "8080:8080"                      # lmcache HTTP API
+      - "9091:9091"                      # lmcache Prometheus
+      - "${NIXL_METRICS_PORT:-19090}:${NIXL_METRICS_PORT:-19090}"
     ipc: shareable
     shm_size: "${AIC_SHM_SIZE:-64gb}"
     cap_add:
@@ -422,8 +432,7 @@ services:
       # Coordinator registration: the MP server registers, heartbeats, and
       # deregisters against the coordinator so it can track which blocks are held.
       # Unset LMCACHE_COORDINATOR_URL to run without coordinator (standalone mode).
-      # lmcache uses network_mode:host — coordinator is on bridge, reach via localhost port.
-      LMCACHE_COORDINATOR_URL: "${LMCACHE_COORDINATOR_URL:-http://localhost:9300}"
+      LMCACHE_COORDINATOR_URL: "${LMCACHE_COORDINATOR_URL:-http://aic-lmcache-coordinator:9300}"
       # ROCm VMEM IPC sidecar socket path (shared with vllm via aic-ipc volume)
       AIC_IPC_SOCK: /tmp/aic-ipc/fds.sock
     entrypoint: ["/bin/bash", "-o", "pipefail", "-c"]
@@ -485,12 +494,14 @@ services:
     container_name: aic-vllm-gpu${GPU:-0}
     # Shared IPC/PID namespaces with lmcache: required for cross-container HIP IPC
     # KV registration (see the lmcache service).  vllm joins lmcache's shareable IPC
-    # Cross-container HIP IPC (LMCacheMPConnector) needs a network namespace shared
-    # with lmcache (see there) plus shared IPC+PID namespaces.  Container-scoped sharing
+    # Cross-container HIP IPC (LMCacheMPConnector) needs lmcache's network namespace
+    # (see there) plus shared IPC+PID namespaces.  Container-scoped sharing
     # (ipc: service:lmcache, pid: service:lmcache) is sufficient and safer than
     # ipc: host / pid: host.  Override via VLLM_IPC_MODE / VLLM_PID_MODE if needed.
-    # network_mode:host required for KFD GPU IPC; prometheus scrapes via host-gateway.
-    network_mode: host
+    # lmcache publishes vllm's port; prometheus scrapes it via host-gateway.
+    # container:, not service:, so compose can still load the project without
+    # the cache profile; a vllm-only run sets VLLM_NETWORK_MODE=host.
+    network_mode: "${VLLM_NETWORK_MODE:-container:aic-lmcache}"
     ipc: "${VLLM_IPC_MODE:-service:lmcache}"
     shm_size: "${AIC_SHM_SIZE:-64gb}"
     pid: "${VLLM_PID_MODE-service:lmcache}"
