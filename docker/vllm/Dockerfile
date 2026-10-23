@@ -91,21 +91,42 @@ ARG FLASH_ATTN_REF=v2.8.3.post1
 # AITER kernels are JIT-compiled on first use, which costs 5-10 min on every
 # cold container -- and the only way to pay it at build time used to be running
 # vLLM on a real GPU after the build, which a CPU-only build node cannot do.
-# AITER's own setup.py can compile them ahead of time instead: PREBUILD_KERNELS
-# selects how much (1 = everything bar tune/mha variants, 2 = no _bwd/_tune,
-# 3 = fmha_v3 only, 0 = off, JIT at runtime).  No GPU is needed -- the arch
-# comes from GPU_ARCHS/PYTORCH_ROCM_ARCH -- but it only works for a SINGLE
-# arch, since AITER's build-time codegen keys on one gfx.  Off by default so
-# the default multi-arch image is unchanged; set it for single-arch builds.
+# AITER's own setup.py can compile them ahead of time instead.  No GPU is
+# needed -- the arch comes from GPU_ARCHS/PYTORCH_ROCM_ARCH -- but it only
+# works for a SINGLE arch, since AITER's build-time codegen keys on one gfx.
+# Off by default so the default multi-arch image is unchanged.
+#
+# The levels are NOT ordered by cost; read them as different MHA policies:
+#   0  off -- JIT at runtime (default)
+#   1  named-variant mode: drops the generic MHA modules and adds back five
+#      specific bf16 mha_varlen_fwd instances (req_md_names in setup.py).
+#      This is the cheap one.
+#   2  everything except _bwd/_tune -- which KEEPS the whole MHA family
+#      (libmha_fwd, module_mha_fwd, module_mha_varlen_fwd).  Those three alone
+#      took >85 min of a 128-core allocation on job 68147805, because CK emits
+#      a template instance per dtype x head-dim x mask x bias x lse x dropout
+#      x skip x qscale combination -- instance fan-out, not arch fan-out.
+#   3  fmha_v3 only
+# Prefer 1 for single-arch builds; 2 only when you need the full MHA set.
 ARG AITER_PREBUILD_KERNELS=0
 
 # git and ca-certificates are not in the -full image; install before cloning.
+# libnuma-dev: the ROCm base image ships libnuma.so.1 but NOT the unversioned
+# libnuma.so symlink, which lives in libnuma-dev.  rocSHMEM's NUMAWrapper
+# dlopen()s the unversioned name, so it fails and prints
+#   E-001h rocSHMEM Could not open libnuma. Returning  NUMAWrapper@...:48
+# once per AITER module build -- hundreds of lines of noise around the output
+# that actually matters.  -dev, not libnuma1: the runtime library is already
+# there, it is the symlink that is missing.  (This stage builds FROM the raw
+# ROCm image rather than aic-base, which is why it needs its own copy at all;
+# base/Dockerfile installs libnuma-dev for the same reason.)  It degrades
+# gracefully -- hence "Returning" -- so this is log legibility, not correctness.
 # hadolint ignore=DL3008
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
     apt-get update && \
     DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-        cmake git ca-certificates ninja-build python3-dev
+        cmake git ca-certificates ninja-build python3-dev libnuma-dev
 
 # Bring torch + Python packages from aic-base so wheels link against the same torch.
 COPY --from=base /usr/local/lib/python3.12/dist-packages/ \
@@ -120,6 +141,15 @@ COPY patches/aiter/ /app/patches/aiter/
 
 # ----- 3. ROCm attention backends (AITER + FlashAttention) ----------------------
 # Skipped when VLLM_TARGET_DEVICE=empty (CPU-only emulate build: no hipcc).
+#
+# On the AOT path (AITER_PREBUILD_KERNELS != 0) the RUN below exports three
+# FlyDSL knobs.  AITER_FLYDSL_AOT_TOLERATE_FAILURES=1 covers the residual
+# failures that survive patches/aiter/02's arch filter: on gfx942 those are the
+# `wint4` (INT4-weight) MoE kernels -- 51 of the 352 arch-correct jobs on job
+# 68149555, all named flydsl_moe{1,2}_abf16_wint4_bf16_*.  AITER lists them
+# under gfx942's cu_num but they do not compile for it in v0.1.22.post1.  This
+# is a narrow, named gap rather than blanket silencing: the other 6752 jobs are
+# dropped by arch before they are ever attempted.  Revisit on an AITER bump.
 RUN test -n "$ROCM_ARCH" || { echo "ERROR: ROCM_ARCH is not set"; exit 1; }
 
 # hadolint ignore=SC2039
@@ -147,15 +177,23 @@ RUN --mount=type=cache,target=/root/.cache/pip \
                   _prebuild=0 ;; \
         esac && \
         echo "AITER PREBUILD_KERNELS=${_prebuild} (0 = JIT at runtime)" && \
+        _jobs="${BUILD_JOBS:-$(nproc)}" && \
         if [ "${_prebuild}" != "0" ]; then \
             export GPU_ARCHS="${ROCM_ARCH}"; \
-            export AITER_FLYDSL_AOT_WORKERS="${BUILD_JOBS:-$(nproc)}"; \
-            python3 /app/patches/aiter/02-flydsl-aot-tolerate-foreign-arch.py /app/aiter; \
+            export AITER_FLYDSL_AOT_WORKERS="${_jobs}"; \
+            export AITER_FLYDSL_AOT_TOLERATE_FAILURES=1; \
+            python3 /app/patches/aiter/02-flydsl-aot-filter-by-arch.py /app/aiter; \
+            python3 /app/patches/aiter/03-aiter-prebuild-threads.py /app/aiter; \
+            : "${AITER_PREBUILD_THREADS:=$(( _jobs / 8 ))}"; \
+            [ "${AITER_PREBUILD_THREADS}" -lt 1 ] && AITER_PREBUILD_THREADS=1; \
+            [ "${AITER_PREBUILD_THREADS}" -gt 32 ] && AITER_PREBUILD_THREADS=32; \
+            export AITER_PREBUILD_THREADS; \
+            echo "AITER CK prebuild: ${AITER_PREBUILD_THREADS} concurrent modules, ninja -j${_jobs} each"; \
         fi && \
         PYTORCH_ROCM_ARCH="${ROCM_ARCH}" \
             PREBUILD_KERNELS="${_prebuild}" \
             TORCH_DONT_CHECK_COMPILER_ABI=1 \
-            MAX_JOBS="${BUILD_JOBS:-$(nproc)}" \
+            MAX_JOBS="${_jobs}" \
             CCACHE_DIR=/root/.cache/ccache CCACHE_MAXSIZE=25G \
             python3 setup.py bdist_wheel --dist-dir=/wheels && \
         pip3 install --no-cache-dir --no-deps /wheels/amd_aiter-*.whl && \
@@ -411,8 +449,13 @@ RUN --mount=type=bind,from=lmcache-wheels,target=/aic-wheels \
         cupy-cuda12x cufile-python cuda-pathfinder 2>/dev/null || true; } && \
     python3 -c 'import lmcache.integration.vllm.vllm_multi_process_adapter; print("lmcache MP adapter imports OK")'
 
-# Cross-container HIP IPC with the lmcache server; must match aic-lmcache's ENV.
-ENV HSA_ENABLE_IPC_MODE_LEGACY=1
+# HSA_ENABLE_IPC_MODE_LEGACY is deliberately NOT set, matching aic-lmcache
+# (docker/lmcache/Dockerfile).  It was carried over here from the old single
+# Dockerfile's base stage during the split, under a comment claiming it had to
+# match aic-lmcache -- which sets the opposite.  Setting it breaks
+# hipIpcGetMemHandle (measured in ipc-report-2026-10-09.md), and cross-container
+# HIP IPC for the LMCacheMPConnector goes through HIP VMM + SCM_RIGHTS fd
+# passing instead, which does not need it.
 
 # For fastsafetensors' dlopen("libamdhip64.so").  Not in the shared `vllm`
 # stage: CI's emulate build swaps in a base with no ROCm.

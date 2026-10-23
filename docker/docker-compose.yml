@@ -359,8 +359,8 @@ services:
     # IPC namespace sharing is independent of network_mode — the aic bridge network
     # provides DNS-based service discovery for prometheus without affecting IPC.
     # lmcache owns the shareable IPC+PID namespace; vllm joins via service:lmcache.
-    # ipc:shareable + no pid:host is sufficient with HSA_ENABLE_IPC_MODE_LEGACY=1
-    # (baked into the image ENV).  spur-authz blocks pid:host on SPUR nodes.
+    # ipc:shareable + no pid:host is sufficient on the HIP VMM + SCM_RIGHTS path.
+    # spur-authz blocks pid:host on SPUR nodes.
     # Prometheus scrapes lmcache via host-gateway (see prometheus.yml).
     network_mode: host
     ipc: shareable

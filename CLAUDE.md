@@ -107,10 +107,17 @@ build (`AIC_ROCM_ARCH` default includes `gfx1201`). Key differences from CDNA:
   echo "0000:10:00.0" | sudo tee /sys/bus/pci/drivers/amdgpu/bind
   ```
 
-  With amdgpu-dkms 7.1.3, GPU IPC requires `HSA_ENABLE_IPC_MODE_LEGACY=1`
-  (now baked into the image ENV) plus container-scoped IPC+PID namespace
-  sharing (`ipc: shareable` / `pid: service:lmcache` in compose — these are
-  now the compose defaults; no make override needed).
+  With amdgpu-dkms 7.1.3, cross-container GPU IPC goes through HIP VMM +
+  SCM_RIGHTS fd passing (`docker/lmcache/rocm_vmem_ipc.py`) plus
+  container-scoped IPC+PID namespace sharing (`ipc: shareable` /
+  `pid: service:lmcache` in compose — these are now the compose defaults; no
+  make override needed).
+
+  `HSA_ENABLE_IPC_MODE_LEGACY` must **never** be set to 1, in any image or
+  compose service: it breaks `hipIpcGetMemHandle` and the VMM path does not
+  need it. See `ipc-report-2026-10-09.md` for the measurements. An earlier
+  revision of this file claimed the opposite and the flag was shipped in
+  `aic-vllm`'s runtime ENV; both are fixed.
 
   The standard vllm-reset-test command on gfx1201 (no extra overrides):
 
