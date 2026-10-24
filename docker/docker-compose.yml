@@ -350,19 +350,37 @@ services:
     # image that fails at runtime.
     image: ${LMCACHE_IMAGE_REF:-${IMAGE_REF:-${IMAGE_NAME:-rocm-aic}:latest}}
     container_name: aic-lmcache
-    # Cross-container HIP IPC (LMCacheMPConnector registering vLLM's KV tensors) on
-    # gfx1201 uses HIP VMM + SCM_RIGHTS fd passing (docker/lmcache/rocm_vmem_ipc.py);
-    # HSA_ENABLE_IPC_MODE_LEGACY is deliberately NOT set (it breaks hipIpcGetMemHandle
-    # on gfx1201).  Cross-container GPU *event* IPC is skipped (rocm_ipc_patch.py).
+    # Cross-container HIP IPC (LMCacheMPConnector registering vLLM's KV tensors)
+    # uses LMCache's stock CudaIPCWrapper (hipIpcGetMemHandle) in ROCr's default,
+    # non-legacy mode: the importer fetches the dmabuf fd from the exporting
+    # process over the abstract unix socket "@hsa<pid>".  Abstract sockets are
+    # per network namespace, so vllm and lmcache MUST share one (vllm joins this
+    # one); on separate ones hipIpcOpenMemHandle retries for 10 s and fails with
+    # hipErrorInvalidDevicePointer.  Sharing the PID namespace too keeps the
+    # <pid> in that name unique.  HSA_ENABLE_IPC_MODE_LEGACY must be the same in
+    # both (AIC_HSA_IPC_LEGACY=1 for the KFD-handle mode, which needs DKMS amdgpu).
+    # AIC_LMCACHE_VMM_IPC=1 selects the HIP VMM wrapper (rocm_vmem_ipc.py), which
+    # copies the KV cache at registration.  GPU *event* IPC is skipped (rocm_ipc_patch.py).
     # Needs container-scoped shared IPC+PID namespaces: lmcache owns the shareable
     # namespace; vllm joins it via ipc/pid: service:lmcache (see vllm service below).
     # IPC namespace sharing is independent of network_mode — the aic bridge network
     # provides DNS-based service discovery for prometheus without affecting IPC.
-    # network_mode:host + ipc:host + pid:host required for KFD GPU memory IPC.
-    # Prometheus scrapes lmcache via host-gateway (see prometheus.yml).
-    network_mode: host
-    ipc: host
-    pid: host
+    # lmcache owns the shareable IPC+PID namespace; vllm joins via service:lmcache.
+    # ipc:shareable + no pid:host is sufficient (see the IPC note above).
+    # spur-authz blocks pid:host on SPUR nodes.
+    # Own network namespace, not host: on the host one, "@hsa<pid>" would be
+    # shared with every host-net container on the node, each with its own PID
+    # namespace, and a PID clash breaks the export or hangs the import.  vllm's
+    # ports live here too, so publish what host-net used to expose; Prometheus
+    # still scrapes them via host-gateway (see prometheus.yml).
+    networks: [aic-network]
+    ports:
+      - "${VLLM_HOST_PORT:-8000}:8000"   # vllm (network_mode: container:aic-lmcache)
+      - "${LMCACHE_PORT:-6555}:${LMCACHE_PORT:-6555}"
+      - "8080:8080"                      # lmcache HTTP API
+      - "9091:9091"                      # lmcache Prometheus
+      - "${NIXL_METRICS_PORT:-19090}:${NIXL_METRICS_PORT:-19090}"
+    ipc: shareable
     shm_size: "${AIC_SHM_SIZE:-64gb}"
     cap_add:
       - CAP_SYS_ADMIN
@@ -407,13 +425,14 @@ services:
       # lmcache lands on a different device.  Mirror vllm's ROCR_VISIBLE_DEVICES.
       ROCR_VISIBLE_DEVICES: "${AIC_ROCR_VISIBLE:-${GPU:-0}}"
       HIP_VISIBLE_DEVICES: "${AIC_HIP_VISIBLE:-0}"
+      # Must match vllm's; see the IPC note above.
+      HSA_ENABLE_IPC_MODE_LEGACY: "${AIC_HSA_IPC_LEGACY:-}"
       PYTHONHASHSEED: "0"
       TZ: "${TZ:-America/Edmonton}"
       # Coordinator registration: the MP server registers, heartbeats, and
       # deregisters against the coordinator so it can track which blocks are held.
       # Unset LMCACHE_COORDINATOR_URL to run without coordinator (standalone mode).
-      # lmcache uses network_mode:host — coordinator is on bridge, reach via localhost port.
-      LMCACHE_COORDINATOR_URL: "${LMCACHE_COORDINATOR_URL:-http://localhost:9300}"
+      LMCACHE_COORDINATOR_URL: "${LMCACHE_COORDINATOR_URL:-http://aic-lmcache-coordinator:9300}"
       # ROCm VMEM IPC sidecar socket path (shared with vllm via aic-ipc volume)
       AIC_IPC_SOCK: /tmp/aic-ipc/fds.sock
     entrypoint: ["/bin/bash", "-o", "pipefail", "-c"]
@@ -475,15 +494,17 @@ services:
     container_name: aic-vllm-gpu${GPU:-0}
     # Shared IPC/PID namespaces with lmcache: required for cross-container HIP IPC
     # KV registration (see the lmcache service).  vllm joins lmcache's shareable IPC
-    # Cross-container HIP IPC (LMCacheMPConnector) uses HIP VMM + SCM_RIGHTS fd passing
-    # (not HSA_ENABLE_IPC_MODE_LEGACY) plus shared IPC+PID namespaces.  Container-scoped sharing
+    # Cross-container HIP IPC (LMCacheMPConnector) needs lmcache's network namespace
+    # (see there) plus shared IPC+PID namespaces.  Container-scoped sharing
     # (ipc: service:lmcache, pid: service:lmcache) is sufficient and safer than
     # ipc: host / pid: host.  Override via VLLM_IPC_MODE / VLLM_PID_MODE if needed.
-    # network_mode:host required for KFD GPU IPC; prometheus scrapes via host-gateway.
-    network_mode: host
-    ipc: "${VLLM_IPC_MODE:-host}"
+    # lmcache publishes vllm's port; prometheus scrapes it via host-gateway.
+    # container:, not service:, so compose can still load the project without
+    # the cache profile; a vllm-only run sets VLLM_NETWORK_MODE=host.
+    network_mode: "${VLLM_NETWORK_MODE:-container:aic-lmcache}"
+    ipc: "${VLLM_IPC_MODE:-service:lmcache}"
     shm_size: "${AIC_SHM_SIZE:-64gb}"
-    pid: "${VLLM_PID_MODE:-host}"
+    pid: "${VLLM_PID_MODE-service:lmcache}"
     cap_add:
       - CAP_SYS_ADMIN
       - SYS_PTRACE
@@ -503,6 +524,8 @@ services:
       - HF_DATASETS_CACHE=/hf/datasets
       - HF_HUB_OFFLINE=${HF_HUB_OFFLINE:-0}
       - AIC_IPC_SOCK=/tmp/aic-ipc/fds.sock
+      - HSA_ENABLE_IPC_MODE_LEGACY=${AIC_HSA_IPC_LEGACY:-}
+      - AIC_LMCACHE_VMM_IPC=${AIC_LMCACHE_VMM_IPC:-0}
       - TRANSFORMERS_OFFLINE=${TRANSFORMERS_OFFLINE:-0}
       - VLLM_CACHE_ROOT=/hf/vllm
       - VLLM_CONFIG_ROOT=/hf/vllm_config
@@ -554,6 +577,7 @@ services:
         --stream-interval 20
         --async-scheduling
         --disable-access-log-for-endpoints "/health,/metrics,/v1/models,/v1/chat/completions,/v1/completions,/reset_prefix_cache"
+        ${VLM_ENFORCE_EAGER:+--enforce-eager}
         --enable-mfu-metrics
         --kv-cache-metrics
         --kv-cache-metrics-sample ${VLM_KV_CACHE_METRICS_SAMPLE:-0.05}
@@ -640,6 +664,8 @@ services:
     image: ${AIC_PROM_IMAGE:-prom/prometheus:v3.14.0}
     container_name: aic-prometheus
     networks: [aic-network]
+    ports:
+      - "${AIC_PROM_PORT:-9090}:${AIC_PROM_PORT:-9090}"
     extra_hosts:
       - "host-gateway:host-gateway"
     user: "${PROM_UID:-65534}:${PROM_GID:-65534}"
@@ -678,15 +704,16 @@ services:
     entrypoint: ["python3", "-u", "/app/l2_monitor.py"]
 
   # node-exporter: host CPU/mem/disk/net/NVMe/RDMA metrics on :9100.
-  # Behind the `monitoring` profile.  Uses pid:host for accurate per-process
-  # CPU stats; mounts the host rootfs read-only via /host.
+  # Behind the `monitoring` profile.  pid:host gives accurate per-process CPU
+  # stats but is blocked by spur-authz on SPUR; omitted here so the stack
+  # starts cleanly.  Override with NODEX_PID_MODE=host when permitted.
   # ---------------------------------------------------------------------------
   node-exporter:
-    profiles: [monitoring, exporters, exporters-cpu]
+    profiles: [monitoring, exporters, exporters-cpu, exporters-safe]
     image: ${AIC_NODE_EXPORTER_IMAGE:-quay.io/prometheus/node-exporter:v1.12.1}
     container_name: aic-node-exporter
     networks: [aic-network]
-    pid: host
+    pid: "${NODEX_PID_MODE:-}"
     restart: unless-stopped
     volumes:
       - /:/host:ro,rslave
@@ -788,7 +815,7 @@ services:
     image: ${HSA_SNOOP_IMAGE:-aic-hsa-snoop:local}
     container_name: aic-hsa-snoop
     networks: [aic-network]
-    pid: "${AIC_HSA_SNOOP_PID_MODE:-service:lmcache}"
+    pid: "${AIC_HSA_SNOOP_PID_MODE-service:lmcache}"
     privileged: true
     restart: unless-stopped
     environment:
@@ -831,11 +858,11 @@ services:
       - emulate-mp
     image: ${LMCACHE_IMAGE_REF:-${IMAGE_REF:-${IMAGE_NAME:-rocm-aic}:latest}}
     container_name: aic-lmcache-emulator
-    # host net for ZMQ on :${LMCACHE_PORT}; host IPC so the POSIX SHM segments
-    # LMCache migrates the emulator's KV buffers into are visible here (Docker
-    # gives each container its own /dev/shm otherwise).
+    # host net for ZMQ on :${LMCACHE_PORT}; shareable IPC so the POSIX SHM
+    # segments LMCache migrates the emulator's KV buffers into are visible
+    # to joining containers (avoids the spur-authz ipc:host block).
     network_mode: host
-    ipc: host
+    ipc: shareable
     cap_add:
       - SYS_PTRACE
       - IPC_LOCK
@@ -917,11 +944,11 @@ services:
     # host net (like the vllm/lmcache services above) — vLLM's OpenAI API and
     # /metrics land on host :8000 with no bridge/NAT in the way.
     network_mode: host
-    # No devices/cap_add block: the emulator touches no GPU.  ipc: host IS
-    # needed under `emulate-mp` — LMCache migrates the fake KV buffers into
-    # POSIX SHM segments for the server to map, and Docker gives each container
-    # its own /dev/shm otherwise.  Harmless for the plain `emulate` profile.
-    ipc: host
+    # No devices/cap_add block: the emulator touches no GPU.  ipc: shareable
+    # under `emulate-mp` — LMCache migrates the fake KV buffers into POSIX SHM
+    # segments for the server to map; shareable avoids the spur-authz ipc:host
+    # block while still exposing /dev/shm to joining containers.
+    ipc: shareable
     # Run as the invoking user rather than root.  /hf below is a bind mount, and
     # on a cluster it is a SHARED cache: a root-owned entry there is one that
     # nobody but root can refresh or delete, because removing it needs write

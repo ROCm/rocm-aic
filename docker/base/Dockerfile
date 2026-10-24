@@ -93,8 +93,8 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     && update-ca-certificates && \
     # libdrm-dev pulls in old libhsa-runtime64-1/libhsakmt1 (ROCm 5.7 era) which
     # break hipIpcGetMemHandle.  Remove them so the ROCm 7.14 runtime is the only one.
-    DEBIAN_FRONTEND=noninteractive apt-get remove -y --purge \
-        libhsa-runtime64-1 libhsakmt1 2>/dev/null || true
+    { DEBIAN_FRONTEND=noninteractive apt-get remove -y --purge \
+        libhsa-runtime64-1 libhsakmt1 2>/dev/null || true; }
 
 RUN git config --global advice.detachedHead false
 
@@ -182,7 +182,8 @@ RUN --mount=type=cache,target=/root/.cache/ccache \
     CMAKE_PREFIX_PATH=$(python3 -c 'import sys; print(sys.prefix)') \
     PYTORCH_ROCM_ARCH=$(echo "${PYTORCH_ROCM_ARCH}" | tr ',' ' ') \
         python3 setup.py bdist_wheel --dist-dir=/app/pytorch/dist && \
-    find /app/pytorch -mindepth 1 -maxdepth 1 ! -name 'dist' -exec rm -rf {} + 2>/dev/null || true
+    { find /app/pytorch -mindepth 1 -maxdepth 1 ! -name 'dist' -exec rm -rf {} + || \
+      echo "WARNING: PyTorch source cleanup failed; see find's error above" >&2; }
 
 # =============================================================================
 # torchvision source build — must compile against our source-built PyTorch.
@@ -440,10 +441,22 @@ RUN rm -f /usr/lib/python3.*/EXTERNALLY-MANAGED
 # build time to determine the HIP version.  The runtime packages install the
 # ROCm toolchain but not this metadata file; create it from the ROCM_VERSION
 # build ARG so downstream Dockerfiles that compile ROCm code (vllm/AITER) work.
+# Also symlink /opt/rocm/include -> core-<mm>/include (mirrors the lib symlink),
+# copy HIP headers from the build stage (no standalone apt package for them), and
+# expose clang++/clang as c++/cc so AITER JIT can link module_aiter_core.so.
 RUN _mm=$(echo "${ROCM_VERSION}" | cut -d. -f1-2) && \
     mkdir -p "/opt/rocm/core-${_mm}/.info" && \
     echo "${ROCM_VERSION}" > "/opt/rocm/core-${_mm}/.info/version" && \
-    ln -sfn "core-${_mm}/lib" /opt/rocm/lib
+    ln -sfn "core-${_mm}/lib" /opt/rocm/lib && \
+    ln -sfn "core-${_mm}/include" /opt/rocm/include && \
+    ln -sfn "/opt/rocm/core-${_mm}/lib/llvm/bin/clang++" /usr/local/bin/c++ && \
+    ln -sfn "/opt/rocm/core-${_mm}/lib/llvm/bin/clang"   /usr/local/bin/cc
+
+# HIP development headers required by AITER JIT (hip/hip_runtime.h and friends).
+# No standalone headers apt package exists in the therock-10.0 runtime repo;
+# copy them from the full ROCm build image.  The /opt/rocm/include symlink above
+# makes them findable at both the versioned and canonical paths.
+COPY --from=base /opt/rocm/include/ /opt/rocm/core-7.14/include/
 
 # uv — used by downstream vllm/lmcache Dockerfiles for pip operations.
 COPY --from=build_pytorch /root/.local/bin/uv  /usr/local/bin/uv
@@ -466,8 +479,9 @@ COPY --from=build_torchvision /app/vision/dist/ /tmp/vision/
 RUN --mount=type=cache,target=/root/.cache/pip \
     pip3 install --no-cache-dir /tmp/vision/*.whl && \
     rm -rf /tmp/vision && \
-    find /usr/local/lib/python3 -name '__pycache__' -type d \
-         -exec rm -rf {} + 2>/dev/null; true
+    { find /usr/local/lib/python3.12 -name '__pycache__' -type d \
+         -exec rm -rf {} + || \
+      echo "WARNING: __pycache__ cleanup failed; see find's error above" >&2; }
 
 # NIXL native libs and Python bindings — compiled in build_nixl against the
 # ROCm-full toolchain; only the output directories are needed at runtime.

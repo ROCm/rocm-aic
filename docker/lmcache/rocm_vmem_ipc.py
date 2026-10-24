@@ -290,12 +290,12 @@ class RocmVmemIPCWrapper:
     @classmethod
     def _device_id(cls, device_uuid: str) -> int:
         # Import lazily to avoid circular imports
-        from lmcache.v1.platform.cuda.ipc_wrapper import DeviceIPCWrapper
+        from lmcache.v1.platform.base.ipc_wrapper import DeviceIPCWrapper
         return DeviceIPCWrapper._get_device_index_from_uuid(device_uuid)
 
     @classmethod
     def _get_device_uuid(cls, device_index: int) -> str:
-        from lmcache.v1.platform.cuda.ipc_wrapper import DeviceIPCWrapper
+        from lmcache.v1.platform.base.ipc_wrapper import DeviceIPCWrapper
         return DeviceIPCWrapper._get_device_uuid(device_index)
 
     # ---- sender API ----

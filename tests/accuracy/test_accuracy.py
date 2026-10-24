@@ -84,7 +84,7 @@ def _delta_slack() -> float:
     se = math.sqrt(p * (1.0 - p) / LIMIT)
     return max(DELTA, 4.0 * math.sqrt(2.0) * se)
 
-NUM_CONCURRENT = int(os.getenv("AIC_ACCURACY_CONCURRENT", "32"))
+NUM_CONCURRENT = int(os.getenv("AIC_ACCURACY_CONCURRENT", "4"))
 
 _BASELINE_SCORE = os.getenv("AIC_ACCURACY_BASELINE_SCORE")
 BASELINE_SCORE = float(_BASELINE_SCORE) if _BASELINE_SCORE else None
@@ -123,30 +123,56 @@ def _within_delta(measured: float, reference: float, delta: float) -> bool:
 
 
 def _score(base_url: str) -> float:
-    """Run gsm8k against one endpoint and return its strict-match score."""
-    import lm_eval
+    """Run gsm8k against one endpoint and return its strict-match score.
 
-    model_args = (
-        f"model={MODEL},"
-        f"base_url={base_url}/completions,"
-        f"num_concurrent={NUM_CONCURRENT},"
-        "tokenized_requests=False,"
-        "trust_remote_code=True"
+    lm_eval.simple_evaluate() uses asyncio.run() internally; if called more
+    than once in the same process, aiohttp's TCPConnector retains a reference
+    to the first (now-closed) event loop and fails with addr_infos=[].  Running
+    in a subprocess gives each call a clean Python process and event loop.
+    """
+    import subprocess
+    import sys
+    import textwrap
+
+    script = textwrap.dedent(f"""
+        import json, lm_eval
+        model_args = (
+            "model={MODEL},"
+            "base_url={base_url}/completions,"
+            "num_concurrent={NUM_CONCURRENT},"
+            "tokenized_requests=False,"
+            "trust_remote_code=True"
+        )
+        results = lm_eval.simple_evaluate(
+            model="local-completions",
+            model_args=model_args,
+            tasks="{TASK}",
+            num_fewshot={NUM_FEWSHOT},
+            limit={LIMIT!r},
+            random_seed=42,
+            numpy_random_seed=42,
+            torch_random_seed=42,
+        )
+        print(json.dumps({{"url": "{base_url}", "model": "{MODEL}",
+                           "score": results["results"]["{TASK}"]["{FILTER}"]}}))
+    """)
+    proc = subprocess.run(
+        [sys.executable, "-c", script],
+        capture_output=True, text=True, timeout=1800,
     )
-    results = lm_eval.simple_evaluate(
-        model="local-completions",
-        model_args=model_args,
-        tasks=TASK,
-        num_fewshot=NUM_FEWSHOT,
-        limit=LIMIT,
-        # Fixed seeds ensure repeated calls (e.g. pre/post-restart) score the
-        # same items in the same order, so the restart delta only reflects model
-        # nondeterminism rather than sampling variance.
-        random_seed=42,
-        numpy_random_seed=42,
-        torch_random_seed=42,
-    )
-    return float(results["results"][TASK][FILTER])
+    if proc.returncode != 0:
+        raise RuntimeError(
+            f"lm_eval subprocess failed (rc={proc.returncode}):\n"
+            + proc.stderr[-2000:]
+        )
+    # The subprocess may emit lm_eval INFO lines before the JSON; take the last.
+    for line in reversed(proc.stdout.splitlines()):
+        line = line.strip()
+        if line.startswith("{"):
+            data = json.loads(line)
+            print(f'\n{{"url": "{base_url}", "model": "{MODEL}", "score": {data["score"]}}}')
+            return float(data["score"])
+    raise RuntimeError(f"No JSON score in subprocess output:\n{proc.stdout[-2000:]}")
 
 
 # --------------------------------------------------------------------------
