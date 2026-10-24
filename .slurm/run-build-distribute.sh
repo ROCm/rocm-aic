@@ -169,6 +169,14 @@
 #                        the daemon's insecure-registries, so it is told to skip
 #                        cert verification explicitly                (default: unset)
 #
+#   AIC_TEST_SITE        site feature prepended to each term of a derived test
+#                        constraint (e.g. MARKHAM).  Used whenever
+#                        AIC_TEST_CONSTRAINT is unset, for single- and
+#                        multi-arch alike.                  (default: unset)
+#   AIC_TEST_NVME        set to 1 to add &NVME to a derived test constraint.
+#                        Only the cliff really needs local NVMe: smoke/tiny
+#                        don't touch it and accuracy-test's "NVMe pool" is
+#                        /tmp (run-accuracy.sh:198).      (default: unset)
 #   AIC_TEST_CONSTRAINT  Slurm -C feature expr for the test node
 #                        (default: <site>&GFX942&NVME -- MI300X + local NVMe).
 #                        Used only when AIC_TEST_NODE is unset.
@@ -260,7 +268,7 @@ _aic_expand_env_value() {
 
 # Read KEY=value lines, exporting each key that is not already set.
 _aic_load_env_file() {
-    local file="$1" line key val loaded=0
+    local file="$1" line key val loaded=0 _aic_from_file=" "
     [[ -n "${file}" && -f "${file}" ]] || return 0
     while IFS= read -r line || [[ -n "${line}" ]]; do
         line="${line%$'\r'}"
@@ -272,6 +280,9 @@ _aic_load_env_file() {
         [[ "${key}" == "${line}" ]] && continue      # no '=' on the line
         key="${key%"${key##*[![:space:]]}"}"         # rtrim the key
         val="${val#"${val%%[![:space:]]*}"}"         # ltrim the value, as make does
+        val="${val%"${val##*[![:space:]]}"}"         # rtrim: a value padded for
+        # column alignment in the file produced "MARKHAM          &GFX942",
+        # which sbatch rejects as an Invalid feature specification.
         [[ "${key}" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || continue
         # Tolerate quoted values even though the file is meant to be unquoted:
         # make would take the quotes literally, so strip them here to match.
@@ -279,7 +290,15 @@ _aic_load_env_file() {
         # Presence, not emptiness: `make AIC_SLURM_ACCOUNT=` means "this
         # cluster has no account", and reading one back out of the file would
         # fail every submission.  An exported empty value is a decision.
-        [[ -n "${!key+set}" ]] && continue           # environment / CLI wins
+        # A key repeated INSIDE the file is different: make's `include` takes
+        # the last assignment, so this must too, or the same file yields
+        # different values depending on whether you went through make.  (A real
+        # .env.alola carried AIC_AITER_PREBUILD_KERNELS twice, and the two
+        # readers disagreed: make said 1, the script said 2.)
+        if [[ -n "${!key+set}" ]]; then
+            [[ " ${_aic_from_file} " == *" ${key} "* ]] || continue
+        fi
+        _aic_from_file+="${key} "
         export "${key}=$(_aic_expand_env_value "${val}")"
         ((loaded++)) || true
     done <"${file}"
@@ -438,7 +457,30 @@ if [[ "${AIC_SPUR_CLUSTER}" == "1" ]]; then
 else
     AIC_BUILD_PARTITION="${AIC_BUILD_PARTITION:-defq}"
     AIC_BUILD_CONSTRAINT="${AIC_BUILD_CONSTRAINT:-CPUONLY}"
-    AIC_TEST_CONSTRAINT="${AIC_TEST_CONSTRAINT:-GFX942&NVME}"
+    # Derive the test constraint from the arch(es) the image was built for, so
+    # the image and the node always agree.  No hardcoded GFX term: it is always
+    # whatever AIC_ROCM_ARCH says.
+    #
+    # Multi-arch gets an OR over the covered set rather than no constraint.
+    # Emitting nothing let Slurm place a gfx942;gfx950 image on a gfx1151
+    # Strix Halo APU, where every kernel failed with "device kernel image is
+    # invalid" -- tiny-test 68162256 and accuracy-test 68162261.  Slurm has no
+    # negation operator, but it does accept `A&B|A&C`; the bracket form
+    # `[A&B|A&C]` is rejected on this controller, so build the flat form.
+    # ${VAR-} not ${VAR:-}: an explicit empty constraint means "no -C at all".
+    if [[ -z "${AIC_TEST_CONSTRAINT+set}" ]]; then
+        _aic_terms=""
+        for _aic_a in ${AIC_ROCM_ARCH//;/ }; do
+            _aic_g="$(printf '%s' "${_aic_a}" | tr '[:lower:]' '[:upper:]')"
+            _aic_site="${AIC_TEST_SITE:-}"
+            _aic_site="${_aic_site#"${_aic_site%%[![:space:]]*}"}"
+            _aic_site="${_aic_site%"${_aic_site##*[![:space:]]}"}"
+            _aic_one="${_aic_site:+${_aic_site}&}${_aic_g}${AIC_TEST_NVME:+&NVME}"
+            _aic_terms="${_aic_terms:+${_aic_terms}|}${_aic_one}"
+        done
+        AIC_TEST_CONSTRAINT="${_aic_terms}"
+    fi
+    AIC_TEST_CONSTRAINT="${AIC_TEST_CONSTRAINT-}"
 fi
 AIC_SLURM_ACCOUNT="${AIC_SLURM_ACCOUNT:-}"
 AIC_BUILD_CPUS="${AIC_BUILD_CPUS:-32}"
@@ -490,7 +532,10 @@ HF_HOME="${HF_HOME:-${AIC_IMAGE_DIR}/tiny-hf}"
 # the tokenizer instead of reading the shared cache.  spur-emulate-test.sh passes
 # it explicitly; give the make path the same default as everything else.
 AIC_TINY_HF_HOME="${AIC_TINY_HF_HOME:-${HF_HOME}}"
-AIC_TINY_TIME="${AIC_TINY_TIME:-00:25:00}"
+# 00:25:00 was already tight on a cold node (the image load alone can take 20
+# min over BeeGFS); adding the metrics scrape tipped 68160110 into TIMEOUT
+# *after* it had passed.  Headroom is cheaper than a lost run.
+AIC_TINY_TIME="${AIC_TINY_TIME:-00:40:00}"
 AIC_TINY_CPUS="${AIC_TINY_CPUS:-8}"
 AIC_TINY_MEM="${AIC_TINY_MEM:-32G}"
 AIC_TINY_READY_TIMEOUT="${AIC_TINY_READY_TIMEOUT:-1100}"   # x5s = up to 75 min (AITER JIT compiles many modules on cold start)
@@ -966,7 +1011,12 @@ PROLOGUE
         # until the job finishes and exits with the job's exit code.
         local idfile; idfile="$(mktemp)"
         local -a _stdbuf=(); command -v stdbuf >/dev/null 2>&1 && _stdbuf=(stdbuf -oL)
-        "${_stdbuf[@]}" sbatch --parsable --wait \
+        # --no-requeue: a job that exits 0 has been observed coming back for
+        # another run anyway (tiny-test 68160869 reached Restarts=2 with
+        # tiny-test.exit=0 both times), which burns scarce GPU time and makes
+        # `sacct` report PENDING for work that already succeeded.  SPUR's sbatch
+        # does not support the flag, hence the guard -- see CLAUDE.md.
+        "${_stdbuf[@]}" sbatch --parsable --wait --no-requeue \
             --job-name="${jobname}" \
             --partition="${AIC_BUILD_PARTITION}" \
             ${AIC_SLURM_ACCOUNT:+--account="${AIC_SLURM_ACCOUNT}"} \
@@ -1810,12 +1860,21 @@ note "container: $(uname -srm)"
 if command -v rocminfo >/dev/null 2>&1; then
     gfx="$(timeout 60 rocminfo 2>/dev/null | grep -om1 'gfx[0-9a-z]*' || true)"
     if [ -n "${gfx}" ]; then
-        note "OK   GPU visible: ${gfx} (image built for ${EXPECT_ARCH:-?})"
         if [ -n "${EXPECT_ARCH:-}" ]; then
             case ";${EXPECT_ARCH};" in
-                *";${gfx};"*) : ;;
-                *) note "WARN GPU arch ${gfx} not in image arch set ${EXPECT_ARCH}" ;;
+                *";${gfx};"*)
+                    note "OK   GPU visible: ${gfx} (image built for ${EXPECT_ARCH})" ;;
+                *)
+                    # Was a WARN, so the job still exited 0.  That is how a
+                    # gfx942;gfx950 image "passed" on a gfx1151 Strix Halo APU
+                    # (68162236) while every later test on the same node died
+                    # with "device kernel image is invalid".  A node that
+                    # cannot run the image is a failed smoke-test.
+                    note "FAIL GPU arch ${gfx} not in image arch set ${EXPECT_ARCH}"
+                    fail=1 ;;
             esac
+        else
+            note "OK   GPU visible: ${gfx} (image arch set unknown)"
         fi
     else
         note "FAIL no GPU reported by rocminfo"; fail=1
@@ -1825,6 +1884,20 @@ else
 fi
 
 check "import vllm" timeout 120 python3 -c 'import vllm; print("vllm", vllm.__version__)'
+
+# Run one real matmul on the GPU.  Cheap (a 64x64 fp16 gemm) but it exercises
+# the hipBLASLt heuristic path that silently has no kernels for an arch the
+# libraries were not built for.
+check "torch gpu matmul" timeout 180 python3 -c '
+import torch
+assert torch.cuda.is_available(), "torch reports no GPU"
+d = torch.device("cuda")
+a = torch.randn(64, 64, device=d, dtype=torch.float16)
+b = torch.randn(64, 64, device=d, dtype=torch.float16)
+c = (a @ b).float().sum().item()
+assert c == c, "matmul produced NaN"
+print("matmul ok on", torch.cuda.get_device_name(0))
+'
 
 # Kernel release + block-device layout (informational)
 note "INFO kernel release: $(uname -r)"
@@ -2264,7 +2337,12 @@ echo "[tiny-test] endpoint ready; sending one chat completion ..."
 if [ "\${AIC_MONITORING:-1}" = "1" ]; then
     MON_COMPOSE='${AIC_DAY_DIR}/docker/docker-compose.yml'
     AIC_METRICS_DIR="\${_logdir}/prometheus"
-    AIC_EXPORTERS="${AIC_EXPORTERS:-safe}"
+    # Prometheus only: tiny-test wants lmcache/vLLM series, which prometheus
+    # scrapes straight off the bridge, and it never loads the exporter image
+    # tarballs the way cmd_test does.  With exporters on, a missing
+    # aic-hsa-snoop made compose fall back to a Docker Hub pull ("pull access
+    # denied"), which failed the whole compose up and left no TSDB (68160110).
+    AIC_EXPORTERS="${AIC_EXPORTERS:-0}"
     AIC_MONITORING=1
     # shellcheck source=/dev/null
     source '${AIC_DAY_DIR}/monitoring/monitoring-lib.sh'

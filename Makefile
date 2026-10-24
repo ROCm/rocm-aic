@@ -82,7 +82,11 @@ _single_quote := '
 _shell_quote = '$(subst $(_single_quote),'"'"',$(1))'
 _FRAMEWORK_VERSION_ENV := $(foreach _arg,$(_FRAMEWORK_VERSION_ARGS),$(if $(filter undefined,$(origin $(_arg))),,$(_arg)=$(call _shell_quote,$(value $(_arg)))))
 
-_IMAGE_TAG := $(shell ROCM_ARCH=$(ROCM_ARCH) $(_FRAMEWORK_VERSION_ENV) $(REPO_ROOT)/docker/scripts/aic-image-tag.sh 2>/dev/null)
+# ROCM_ARCH must be shell-quoted like the framework args above: a multi-arch
+# ';'-list (gfx942;gfx950) otherwise terminates the command mid-assignment, the
+# tag script never runs, and IMAGE_TAG silently degrades to "latest" -- so every
+# multi-arch image collided on :latest instead of carrying its arch.
+_IMAGE_TAG := $(shell ROCM_ARCH=$(call _shell_quote,$(ROCM_ARCH)) $(_FRAMEWORK_VERSION_ENV) $(REPO_ROOT)/docker/scripts/aic-image-tag.sh 2>/dev/null)
 IMAGE_TAG  ?= $(if $(_IMAGE_TAG),$(_IMAGE_TAG),latest)
 IMAGE_REF          := $(IMAGE_NAME):$(IMAGE_TAG)
 VLLM_IMAGE_REF     := $(VLLM_IMAGE_NAME):$(IMAGE_TAG)

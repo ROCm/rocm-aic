@@ -571,7 +571,9 @@ _wait_ready kvd || exit 1
 if [ "${AIC_MONITORING:-1}" = "1" ]; then
     export MON_COMPOSE="${AIC_DAY_DIR}/docker/docker-compose.yml"
     export AIC_METRICS_DIR="${AIC_LOG_DIR}/prometheus"
-    export AIC_EXPORTERS="${AIC_EXPORTERS:-safe}"
+    # Prometheus only, same reason as tiny-test: this path does not load the
+    # exporter image tarballs, and a missing one fails the whole compose up.
+    export AIC_EXPORTERS="${AIC_EXPORTERS:-0}"
     export AIC_MONITORING=1
     # shellcheck source=/dev/null
     source "${AIC_DAY_DIR}/monitoring/monitoring-lib.sh"

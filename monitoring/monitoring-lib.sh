@@ -224,17 +224,18 @@ start_monitoring() {
 stop_monitoring() {
     [[ "${AIC_MONITORING}" == "1" ]] || return 0
     log "stopping metrics capture (TSDB retained at ${AIC_METRICS_DIR})"
-    if have_compose && [[ -f "${MON_COMPOSE}" ]]; then
-        local -a profile; mapfile -t profile < <(mon_profile)
-        local -a compose_files=(-f "${MON_COMPOSE}")
-        [[ "${AIC_SPUR_CLUSTER:-0}" == "1" ]] && {
-            local _spur_override="${MON_COMPOSE%/*}/docker-compose.spur.yml"
-            [[ -f "${_spur_override}" ]] && compose_files+=(-f "${_spur_override}")
-        }
-        AIC_METRICS_DIR="${AIC_METRICS_DIR}" IMAGE_NAME="${AIC_IMAGE}" AIC_HSA_SNOOP_PID_MODE="${AIC_HSA_SNOOP_PID_MODE}" \
-            docker compose "${compose_files[@]}" --profile monitoring-base "${profile[@]}" down >/dev/null 2>&1 || true
-    fi
-    docker rm -f "${MON_CONTAINERS[@]}" >/dev/null 2>&1 || true
+    # Deliberately NOT `docker compose down`.  That is project-wide: with no
+    # service list it also stops vllm and lmcache when they are running
+    # (tiny-test, accuracy-test, cliff), which is the documented hang -- vLLM's
+    # EngineCore children are not reaped, so compose blocks indefinitely.
+    # tiny-test 68160609 hit the 40-minute wall right here, after the test
+    # itself had already passed and the TSDB was safely on disk.  It would also
+    # tear down the shared `aic` network out from under the still-running
+    # stack.  Removing exactly the containers this lib started is both
+    # sufficient and bounded; grafana is added because start_monitoring brings
+    # it up with the monitoring-base profile.
+    local -a _mon_rm=("${MON_CONTAINERS[@]}" aic-grafana)
+    timeout 60 docker rm -f "${_mon_rm[@]}" >/dev/null 2>&1 || true
 }
 
 # --- Health check + TSDB summary (used by the build smoke-test) ---------------
