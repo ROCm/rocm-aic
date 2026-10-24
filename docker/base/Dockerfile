@@ -440,10 +440,22 @@ RUN rm -f /usr/lib/python3.*/EXTERNALLY-MANAGED
 # build time to determine the HIP version.  The runtime packages install the
 # ROCm toolchain but not this metadata file; create it from the ROCM_VERSION
 # build ARG so downstream Dockerfiles that compile ROCm code (vllm/AITER) work.
+# Also symlink /opt/rocm/include -> core-<mm>/include (mirrors the lib symlink),
+# copy HIP headers from the build stage (no standalone apt package for them), and
+# expose clang++/clang as c++/cc so AITER JIT can link module_aiter_core.so.
 RUN _mm=$(echo "${ROCM_VERSION}" | cut -d. -f1-2) && \
     mkdir -p "/opt/rocm/core-${_mm}/.info" && \
     echo "${ROCM_VERSION}" > "/opt/rocm/core-${_mm}/.info/version" && \
-    ln -sfn "core-${_mm}/lib" /opt/rocm/lib
+    ln -sfn "core-${_mm}/lib" /opt/rocm/lib && \
+    ln -sfn "core-${_mm}/include" /opt/rocm/include && \
+    ln -sfn "/opt/rocm/core-${_mm}/lib/llvm/bin/clang++" /usr/local/bin/c++ && \
+    ln -sfn "/opt/rocm/core-${_mm}/lib/llvm/bin/clang"   /usr/local/bin/cc
+
+# HIP development headers required by AITER JIT (hip/hip_runtime.h and friends).
+# No standalone headers apt package exists in the therock-10.0 runtime repo;
+# copy them from the full ROCm build image.  The /opt/rocm/include symlink above
+# makes them findable at both the versioned and canonical paths.
+COPY --from=base /opt/rocm/include/ /opt/rocm/core-7.14/include/
 
 # uv — used by downstream vllm/lmcache Dockerfiles for pip operations.
 COPY --from=build_pytorch /root/.local/bin/uv  /usr/local/bin/uv

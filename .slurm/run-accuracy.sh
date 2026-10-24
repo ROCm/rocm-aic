@@ -151,17 +151,42 @@ echo "[accuracy-test] allocated gpu: ROCR=${AIC_ROCR_VISIBLE} HIP=${AIC_HIP_VISI
 # lm_eval is deliberately NOT in the image: the gsm8k download does not belong
 # on a compute node's container and the image stays lean.  PYTHONNOUSERSITE=1
 # because ~/.local shadows venv site-packages on these boxes.
-export PYTHONNOUSERSITE=1
-VENV="${AIC_DAY_DIR}/.venv"
-if [ ! -x "${VENV}/bin/pytest" ]; then
-    echo "[accuracy-test] creating host venv at ${VENV}"
-    python3 -m venv "${VENV}" || { echo "[accuracy-test] FAIL: venv creation failed" >&2; exit 1; }
-    "${VENV}/bin/pip" -q install --upgrade pip
-    "${VENV}/bin/pip" -q install -e "${AIC_DAY_DIR}[accuracy]" || {
-        echo "[accuracy-test] FAIL: could not install the accuracy extra" >&2; exit 1; }
-fi
-PYTEST="${VENV}/bin/pytest"
-PYBIN="${VENV}/bin/python"
+# The accuracy harness runs INSIDE aic-client, on the aic bridge: nothing
+# publishes a host port any more, and a host venv built under a different repo
+# path leaves unrunnable shebangs (that is what failed job 68152207).  The
+# client installs the [accuracy] extra on top of its usual client packages.
+export AIC_CLIENT_EXTRA_PIP='pytest>=9 lm-eval[api]>=0.4.13 transformers>=5.16'
+
+_client_ready() {
+    local _i
+    for _i in $(seq 1 120); do
+        docker exec aic-client test -f /tmp/aic-client-ready >/dev/null 2>&1 && return 0
+        sleep 5
+    done
+    echo "[accuracy-test] FAIL: aic-client deps never installed (PyPI unreachable?)" >&2
+    docker logs --tail 40 aic-client 2>&1 | sed 's/^/  [client] /' >&2
+    return 1
+}
+
+# docker exec inherits nothing, so every variable the fixtures read is forwarded
+# explicitly.  The ${VAR+-e VAR} form matters: `unset AIC_ACCURACY_BASELINE_SCORE`
+# must stay unset in the container, not arrive as an empty string.
+_cx() {
+    docker exec \
+        -e AIC_ACCURACY_MODEL -e AIC_ACCURACY_DELTA \
+        ${AIC_ACCURACY_REQUIRED+-e AIC_ACCURACY_REQUIRED} \
+        ${AIC_ACCURACY_LIMIT+-e AIC_ACCURACY_LIMIT} \
+        ${AIC_ACCURACY_CONCURRENT+-e AIC_ACCURACY_CONCURRENT} \
+        ${AIC_ACCURACY_TIERED_URL+-e AIC_ACCURACY_TIERED_URL} \
+        ${AIC_ACCURACY_SCORE_OUT+-e AIC_ACCURACY_SCORE_OUT} \
+        ${AIC_ACCURACY_BASELINE_SCORE+-e AIC_ACCURACY_BASELINE_SCORE} \
+        ${AIC_ACCURACY_REFERENCE_SCORE+-e AIC_ACCURACY_REFERENCE_SCORE} \
+        aic-client "$@"
+}
+# -p no:cacheprovider / --basetemp: /repo is read-only.
+_pytest() { _cx pytest /repo/tests/accuracy -p no:cacheprovider --basetemp=/tmp/pytest "$@"; }
+# Host-side JSON read of a file the client wrote into ${AIC_LOG_DIR} (= /logs).
+_score_of() { python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["score"])' "$1"; }
 
 export AIC_ACCURACY_MODEL="${AIC_ACCURACY_MODEL}"
 export AIC_ACCURACY_DELTA="${AIC_ACCURACY_DELTA}"
@@ -230,6 +255,7 @@ if [ "${_reaped}" -gt 0 ]; then
 fi
 
 compose() { docker compose -f "${AIC_DAY_DIR}/docker/docker-compose.yml" "$@"; }
+_ACC_MONITORING_UP=0
 
 # --- teardown ----------------------------------------------------------------
 # vLLM shares lmcache's PID ns (for cross-container HIP IPC), which blocks docker
@@ -252,15 +278,35 @@ _teardown() {
     pkill -9 -f 'lmcache server'          2>/dev/null || true
     sleep 2
     # docker compose, not compose(): see the logs loop above.
-    if ! out="$(timeout 60 docker compose -f "${AIC_DAY_DIR}/docker/docker-compose.yml" \
-            --profile cache down --remove-orphans --timeout 5 2>&1)"; then
-        echo "[accuracy-test] WARN: compose down (${tag}) failed; containers may outlive the job:" >&2
-        printf '%s\n' "${out}" | tail -5 | sed 's/^/[accuracy-test]   /' >&2
+    # Between arms remove only the GPU services -- a project-wide `down` would
+    # also take aic-client, which now runs the accuracy harness (and would have
+    # to reinstall lm_eval on every arm).  Only the final teardown is global.
+    if [ "${tag}" = "final" ]; then
+        out="$(timeout 60 docker compose -f "${AIC_DAY_DIR}/docker/docker-compose.yml" \
+            --profile cache down --remove-orphans --timeout 5 2>&1)" || out="__failed__${out}"
+    else
+        out="$(timeout 60 docker compose -f "${AIC_DAY_DIR}/docker/docker-compose.yml" \
+            --profile cache rm -sf vllm lmcache 2>&1)" || out="__failed__${out}"
+    fi
+    if [ "${out#__failed__}" != "${out}" ]; then
+        echo "[accuracy-test] WARN: compose teardown (${tag}) failed; containers may outlive the job:" >&2
+        printf '%s\n' "${out#__failed__}" | tail -5 | sed 's/^/[accuracy-test]   /' >&2
     fi
     for c in "${VLLM_CONTAINER}" aic-lmcache; do timeout 30 docker rm -f "$c" >/dev/null 2>&1 || true; done
 }
 # shellcheck disable=SC2317  # reached via the EXIT trap below, not inline
 cleanup() {
+    # Stop the capture BEFORE tearing the stack down, so the TSDB is flushed
+    # while prometheus can still be reached.  Informational: never changes rc.
+    if [ "${_ACC_MONITORING_UP:-0}" = "1" ]; then
+        echo "[accuracy-test] scraping metrics for ${AIC_ACCURACY_SCRAPE_S:-30}s ..."
+        sleep "${AIC_ACCURACY_SCRAPE_S:-30}"
+        monitoring_healthcheck || true
+        monitoring_tsdb_summary || true
+        stop_monitoring || true
+        echo "[accuracy-test] TSDB retained at ${AIC_METRICS_DIR}"
+        _ACC_MONITORING_UP=0
+    fi
     _teardown final
     # Best-effort only: this trap does not run on SIGKILL, which is why the pool
     # is namespaced and both pre-cleared and reaped above.
@@ -274,7 +320,9 @@ trap cleanup EXIT
 _wait_ready() {
     local tag="$1"
     for _ in $(seq 1 "${AIC_ACCURACY_READY_TIMEOUT}"); do
-        if docker exec "${VLLM_CONTAINER}" curl -fsS http://127.0.0.1:8000/v1/models >/dev/null 2>&1; then
+        if docker exec "${VLLM_CONTAINER}" python3 -c \
+            "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/v1/models', timeout=3)" \
+            >/dev/null 2>&1; then
             echo "[accuracy-test] ${tag}: endpoint ready"
             return 0
         fi
@@ -291,14 +339,14 @@ _wait_ready() {
 # container (already on aic, repo mounted), at the cost of a gsm8k download on
 # the compute node.
 _endpoint_url() {
-    local ip
-    ip="$(docker inspect -f '{{(index .NetworkSettings.Networks "aic").IPAddress}}' "${VLLM_CONTAINER}" 2>/dev/null)"
-    [ -n "${ip}" ] || { echo "[accuracy-test] FAIL: no aic bridge IP for ${VLLM_CONTAINER}" >&2; return 1; }
-    curl -fsS --max-time 10 "http://${ip}:8000/v1/models" >/dev/null 2>&1 || {
-        echo "[accuracy-test] FAIL: host cannot reach ${ip}:8000 on the aic bridge" >&2
-        echo "[accuracy-test]       (fallback: run pytest inside the client container)" >&2
+    # Both the harness and vLLM are on the aic bridge.  Address vLLM by its real
+    # container name, not the aic-vllm alias, which the emulator services also
+    # answer to.
+    docker exec aic-client curl -fsS --max-time 10 \
+        "http://${VLLM_CONTAINER}:8000/v1/models" >/dev/null 2>&1 || {
+        echo "[accuracy-test] FAIL: aic-client cannot reach ${VLLM_CONTAINER}:8000" >&2
         return 1; }
-    echo "http://${ip}:8000/v1"
+    echo "http://${VLLM_CONTAINER}:8000/v1"
 }
 
 # Apparent size: the sum of file LENGTHS.  The NIXL POSIX adapter carves the
@@ -326,8 +374,9 @@ _pool_alloc_bytes() { du -s --block-size=1 "${NVME_DATA}" 2>/dev/null | cut -f1 
 # `$(( $(_lmc ...) - BEFORE ))` callers below never see an empty operand.
 _metric_sum() {
     local container="$1" url="$2" metric="$3" body
-    body="$(docker exec "${container}" curl -fsS --max-time 15 "${url}" 2>/dev/null)" || {
-        echo 0; return 1; }
+    body="$(docker exec "${container}" python3 -c \
+        "import urllib.request; print(urllib.request.urlopen('${url}', timeout=15).read().decode())" \
+        2>/dev/null)" || { echo 0; return 1; }
     printf '%s\n' "${body}" \
         | awk -v m="${metric}" '
             /^#/ { next }
@@ -346,7 +395,9 @@ _metric_sum() {
 # concluded "LMCache completed zero L2 chunk stores" from the resulting zeros.
 _metrics_reachable() {
     local container="$1" url="$2"
-    docker exec "${container}" curl -fsS --max-time 15 "${url}" >/dev/null 2>&1 && return 0
+    docker exec "${container}" python3 -c \
+        "import urllib.request; urllib.request.urlopen('${url}', timeout=15)" \
+        >/dev/null 2>&1 && return 0
     echo "[accuracy-test] WARN: cannot scrape ${container} at ${url}" >&2
     return 1
 }
@@ -360,7 +411,9 @@ _metrics_reachable() {
 #   2  scrape itself failed
 _metric_present() {
     local container="$1" url="$2" metric="$3" body
-    body="$(docker exec "${container}" curl -fsS --max-time 15 "${url}" 2>/dev/null)" || return 2
+    body="$(docker exec "${container}" python3 -c \
+        "import urllib.request; print(urllib.request.urlopen('${url}', timeout=15).read().decode())" \
+        2>/dev/null)" || return 2
     printf '%s\n' "${body}" | grep -qE "^${metric}([{ ]|\$)" && return 0
     return 1
 }
@@ -375,7 +428,10 @@ _metric_present() {
 # render a verdict from the zeros that failure produced.
 _dump_metrics() {
     local container="$1" url="$2" out="$3"
-    docker exec "${container}" curl -fsS --max-time 15 "${url}" > "${out}" 2>/dev/null && return 0
+    # Write to stdout inside the container, redirect to host-side file.
+    docker exec "${container}" python3 -c \
+        "import urllib.request,sys; sys.stdout.write(urllib.request.urlopen('${url}',timeout=15).read().decode())" \
+        > "${out}" 2>/dev/null && return 0
     echo "[accuracy-test] WARN: could not dump ${container} metrics to ${out}" >&2
     return 1
 }
@@ -385,7 +441,7 @@ _dump_metrics() {
 # re-score was actually served from the tier or silently recomputed.
 _vllm_ext() { _metric_sum "${VLLM_CONTAINER}" http://127.0.0.1:8000/metrics "$1"; }
 # LMCache's own view, one tier down: which level answered.
-_lmc() { _metric_sum aic-lmcache http://127.0.0.1:8080/metrics "$1"; }
+_lmc() { _metric_sum aic-lmcache http://127.0.0.1:9091/metrics "$1"; }
 
 # ===========================================================================
 # Phase 1: vram_only arm -- plain vLLM, KV never leaves VRAM
@@ -401,18 +457,20 @@ export VLLM_PID_MODE=
 export KV_TRANSFER_ARG=
 export AIC_L2_BACKEND=none
 export VLM_GPU_MEMORY_UTILIZATION=0.90
-if ! compose up -d vllm; then
+if ! compose up -d vllm client; then
     echo "[accuracy-test] FAIL: baseline compose up failed" >&2
     compose logs --tail 60 --no-color vllm 2>&1 | sed 's/^/  [vllm] /'
     exit 1
 fi
 _wait_ready vram_only || exit 1
+# lm_eval/pytest live in aic-client; block until its pip install finished.
+_client_ready || exit 1
 BASE_URL="$(_endpoint_url)" || exit 1
 echo "[accuracy-test] scoring baseline at ${BASE_URL}"
-"${PYBIN}" "${AIC_DAY_DIR}/tests/accuracy/score_endpoint.py" "${BASE_URL}" \
-    --out "${AIC_LOG_DIR}/baseline-score.json" || {
+_cx python3 /repo/tests/accuracy/score_endpoint.py "${BASE_URL}" \
+    --out /logs/baseline-score.json || {
     echo "[accuracy-test] FAIL: baseline scoring failed" >&2; exit 1; }
-BASELINE_SCORE="$("${PYBIN}" -c "import json;print(json.load(open('${AIC_LOG_DIR}/baseline-score.json'))['score'])")"
+BASELINE_SCORE="$(_score_of "${AIC_LOG_DIR}/baseline-score.json")"
 echo "[accuracy-test] baseline score: ${BASELINE_SCORE}"
 
 # --- negative control: this arm must not have tiered -------------------------
@@ -489,6 +547,10 @@ export VLLM_PID_MODE=service:lmcache
 # Sharing lmcache's PID/IPC namespaces does not share its network namespace;
 # resolve the peer over the compose network rather than vLLM's own loopback.
 export KV_TRANSFER_ARG="--kv-transfer-config '{\"kv_connector\":\"LMCacheMPConnector\",\"kv_role\":\"kv_both\",\"kv_connector_extra_config\":{\"lmcache.mp.host\":\"tcp://aic-lmcache\",\"lmcache.mp.port\":6555}}'"
+# Disable CUDA graph capture for the kvd arm: LMCacheMPConnector registers KV
+# caches after vLLM's graph warmup phase, so CUDA graphs trigger
+# "KV caches are not registered" from the connector.  enforce_eager avoids this.
+export VLM_ENFORCE_EAGER=True
 
 POOL_BEFORE="$(_pool_bytes)"
 POOL_ALLOC_BEFORE="$(_pool_alloc_bytes)"
@@ -499,6 +561,26 @@ if ! compose --profile cache up -d; then
     exit 1
 fi
 _wait_ready kvd || exit 1
+
+# --- metrics capture ---------------------------------------------------------
+# Started here rather than in phase 1: hsa-snoop joins lmcache's PID namespace
+# (pid: service:lmcache in compose), so the tiered stack must already be up.
+# With every service on the aic bridge, prometheus scrapes aic-lmcache:9091 and
+# the vllm container by name, so this TSDB holds real lmcache/vLLM series.
+# AIC_MONITORING=0 skips the whole thing.
+if [ "${AIC_MONITORING:-1}" = "1" ]; then
+    export MON_COMPOSE="${AIC_DAY_DIR}/docker/docker-compose.yml"
+    export AIC_METRICS_DIR="${AIC_LOG_DIR}/prometheus"
+    # Prometheus only, same reason as tiny-test: this path does not load the
+    # exporter image tarballs, and a missing one fails the whole compose up.
+    export AIC_EXPORTERS="${AIC_EXPORTERS:-0}"
+    export AIC_MONITORING=1
+    # shellcheck source=/dev/null
+    source "${AIC_DAY_DIR}/monitoring/monitoring-lib.sh"
+    mkdir -p "${AIC_METRICS_DIR}"
+    start_monitoring
+    _ACC_MONITORING_UP=1
+fi
 TIERED_URL="$(_endpoint_url)" || exit 1
 echo "[accuracy-test] tiered endpoint: ${TIERED_URL}"
 
@@ -512,7 +594,7 @@ echo "[accuracy-test] tiered endpoint: ${TIERED_URL}"
 # phase 3 decide -- do not fail now, because pytest has yet to run and the
 # differential is the most valuable thing this job produces.
 L2_METRICS_OK=1
-_metrics_reachable aic-lmcache http://127.0.0.1:8080/metrics || L2_METRICS_OK=0
+_metrics_reachable aic-lmcache http://127.0.0.1:9091/metrics || L2_METRICS_OK=0
 L2_STORE_SUB_REQ_BEFORE="$(_lmc lmcache_mp_l2_store_submitted_requests_total)"
 L2_STORE_DONE_REQ_BEFORE="$(_lmc lmcache_mp_l2_store_completed_requests_total)"
 L2_STORE_DONE_CHUNKS_BEFORE="$(_lmc lmcache_mp_l2_store_completed_objects_chunks_total)"
@@ -526,11 +608,11 @@ echo "[accuracy-test] pre-score L2 counters: store_sub_req=${L2_STORE_SUB_REQ_BE
 echo "[accuracy-test] pre-score lookup: req_tokens=${LOOKUP_REQ_BEFORE} hit_tokens=${LOOKUP_HIT_BEFORE} l1_alloc_fail=${L1_ALLOC_FAIL_BEFORE} event_drops=${EVENT_DROPS_BEFORE}"
 
 export AIC_ACCURACY_TIERED_URL="${TIERED_URL}"
-export AIC_ACCURACY_SCORE_OUT="${AIC_LOG_DIR}/tiered-score.json"
+export AIC_ACCURACY_SCORE_OUT=/logs/tiered-score.json
 export AIC_ACCURACY_BASELINE_SCORE="${BASELINE_SCORE}"
 
 rc=0
-"${PYTEST}" "${AIC_DAY_DIR}/tests/accuracy" -v -rs --no-header || rc=$?
+_pytest -v -rs --no-header || rc=$?
 
 # ===========================================================================
 # Phase 3: liveness -- prove the tiered arm actually tiered
@@ -553,7 +635,7 @@ echo "[accuracy-test] === Phase 3: NVMe pool liveness ==="
 # The dump doubles as this phase's scrape-health probe: every counter gate below
 # reads the same endpoint, so if the dump could not reach it, none of them are
 # measuring anything.
-_dump_metrics aic-lmcache    http://127.0.0.1:8080/metrics "${AIC_LOG_DIR}/lmcache-metrics-phase3.prom" \
+_dump_metrics aic-lmcache    http://127.0.0.1:9091/metrics "${AIC_LOG_DIR}/lmcache-metrics-phase3.prom" \
     || L2_METRICS_OK=0
 _dump_metrics "${VLLM_CONTAINER}"  http://127.0.0.1:8000/metrics "${AIC_LOG_DIR}/vllm-metrics-phase3.prom" || true
 POOL_AFTER="$(_pool_bytes)"
@@ -706,7 +788,7 @@ fi
 # Phase 4: restart vLLM only -- LMCache keeps DRAM/NVMe state
 # ===========================================================================
 echo "[accuracy-test] === Phase 4: restart vLLM, re-score from the tier ==="
-TIERED_SCORE="$("${PYBIN}" -c "import json;print(json.load(open('${AIC_LOG_DIR}/tiered-score.json'))['score'])" 2>/dev/null)" || {
+TIERED_SCORE="$(_score_of "${AIC_LOG_DIR}/tiered-score.json" 2>/dev/null)" || {
     echo "[accuracy-test] FAIL: no tiered score recorded in phase 2" >&2; exit 1; }
 
 pkill -9 -f 'vllm.entrypoints.openai' 2>/dev/null || true
@@ -728,7 +810,7 @@ TIERED_URL="$(_endpoint_url)" || exit 1
 # endpoint produces exactly that number while proving nothing.
 RESCORE_METRICS_OK=1
 _metrics_reachable "${VLLM_CONTAINER}" http://127.0.0.1:8000/metrics || RESCORE_METRICS_OK=0
-_metrics_reachable aic-lmcache   http://127.0.0.1:8080/metrics || RESCORE_METRICS_OK=0
+_metrics_reachable aic-lmcache   http://127.0.0.1:9091/metrics || RESCORE_METRICS_OK=0
 EXT_Q_BEFORE="$(_vllm_ext vllm:external_prefix_cache_queries_total)"
 EXT_H_BEFORE="$(_vllm_ext vllm:external_prefix_cache_hits_total)"
 L1_READ_BEFORE="$(_lmc lmcache_mp_l1_read_chunks_total)"
@@ -751,10 +833,9 @@ export AIC_ACCURACY_REFERENCE_SCORE="${TIERED_SCORE}"
 # Its own file rather than unset: the CI report wants all three numbers, and
 # tiered-score.json is the reference this phase is compared against -- reusing
 # it would overwrite the comparand mid-comparison.
-export AIC_ACCURACY_SCORE_OUT="${AIC_LOG_DIR}/restart-score.json"
+export AIC_ACCURACY_SCORE_OUT=/logs/restart-score.json
 unset AIC_ACCURACY_BASELINE_SCORE
-"${PYTEST}" "${AIC_DAY_DIR}/tests/accuracy" -v -rs --no-header \
-    -k 'restart' || {
+_pytest -v -rs --no-header -k 'restart' || {
     echo "[accuracy-test] FAIL: phase 4 -- score regressed after restart" >&2
     exit 1; }
 
@@ -774,7 +855,7 @@ unset AIC_ACCURACY_BASELINE_SCORE
 #     across phase 2, hence the differencing.
 echo "[accuracy-test] === Phase 5: verify the re-score hit the cache ==="
 _metrics_reachable "${VLLM_CONTAINER}" http://127.0.0.1:8000/metrics || RESCORE_METRICS_OK=0
-_metrics_reachable aic-lmcache   http://127.0.0.1:8080/metrics || RESCORE_METRICS_OK=0
+_metrics_reachable aic-lmcache   http://127.0.0.1:9091/metrics || RESCORE_METRICS_OK=0
 EXT_Q_AFTER="$(_vllm_ext vllm:external_prefix_cache_queries_total)"
 EXT_H_AFTER="$(_vllm_ext vllm:external_prefix_cache_hits_total)"
 L1_READ_AFTER="$(_lmc lmcache_mp_l1_read_chunks_total)"

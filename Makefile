@@ -6,6 +6,36 @@
 # "repo root" is this directory (no dependency on any parent checkout).
 REPO_ROOT := $(CURDIR)
 
+# ---- Per-cluster environment file -------------------------------------------
+# A repo-root `.env.<cluster>` carries the settings that differ per site --
+# partition, constraint, image dir, cache dir, arch -- so they stop living on
+# the make command line.  Plain KEY=value lines, unquoted (make takes quotes
+# literally); `.slurm/run-build-distribute.sh` reads the same file.
+#
+# AIC_CLUSTER picks the file and is auto-detected from the hostname: the first
+# dash-separated token with a matching file (ctr2-alola-login-04 -> .env.alola).
+# Precedence here is `make VAR=...` > .env.<cluster> > the defaults below; in
+# the Slurm script an exported variable also beats the file.  Keep these files
+# untracked -- they describe one site and are where private paths end up.
+AIC_CLUSTER  ?= $(firstword $(foreach _t,$(SLURM_CLUSTER_NAME) \
+                    $(subst -, ,$(shell hostname -s 2>/dev/null)),\
+                    $(if $(wildcard $(REPO_ROOT)/.env.$(_t)),$(_t))))
+AIC_ENV_FILE ?= $(if $(AIC_CLUSTER),$(REPO_ROOT)/.env.$(AIC_CLUSTER))
+# Keys the file sets, so the site-specific defaults further down can tell
+# "the user chose this" from "the Makefile defaulted it".
+_AIC_ENV_KEYS := $(if $(wildcard $(AIC_ENV_FILE)),$(shell sed -n \
+    's/^[[:space:]]*\(export[[:space:]][[:space:]]*\)\{0,1\}\([A-Za-z_][A-Za-z0-9_]*\)[[:space:]]*=.*/\2/p' \
+    $(AIC_ENV_FILE)))
+-include $(AIC_ENV_FILE)
+$(foreach _k,$(_AIC_ENV_KEYS),$(eval export $(_k)))
+export AIC_CLUSTER AIC_ENV_FILE
+
+# "file" when VAR still holds a Makefile default, empty once the user has set
+# it (command line, environment, or .env.<cluster>).  `$(origin VAR)` alone
+# cannot tell the last case apart from a default -- an included makefile is
+# also origin "file" -- so the env file's keys are subtracted explicitly.
+_is_makefile_default = $(if $(filter $(1),$(_AIC_ENV_KEYS)),,$(filter file,$(origin $(1))))
+
 IMAGE_NAME       ?= rocm-aic
 VLLM_IMAGE_NAME  ?= aic-vllm
 LMCACHE_IMAGE_NAME ?= aic-lmcache
@@ -52,7 +82,11 @@ _single_quote := '
 _shell_quote = '$(subst $(_single_quote),'"'"',$(1))'
 _FRAMEWORK_VERSION_ENV := $(foreach _arg,$(_FRAMEWORK_VERSION_ARGS),$(if $(filter undefined,$(origin $(_arg))),,$(_arg)=$(call _shell_quote,$(value $(_arg)))))
 
-_IMAGE_TAG := $(shell ROCM_ARCH=$(ROCM_ARCH) $(_FRAMEWORK_VERSION_ENV) $(REPO_ROOT)/docker/scripts/aic-image-tag.sh 2>/dev/null)
+# ROCM_ARCH must be shell-quoted like the framework args above: a multi-arch
+# ';'-list (gfx942;gfx950) otherwise terminates the command mid-assignment, the
+# tag script never runs, and IMAGE_TAG silently degrades to "latest" -- so every
+# multi-arch image collided on :latest instead of carrying its arch.
+_IMAGE_TAG := $(shell ROCM_ARCH=$(call _shell_quote,$(ROCM_ARCH)) $(_FRAMEWORK_VERSION_ENV) $(REPO_ROOT)/docker/scripts/aic-image-tag.sh 2>/dev/null)
 IMAGE_TAG  ?= $(if $(_IMAGE_TAG),$(_IMAGE_TAG),latest)
 IMAGE_REF          := $(IMAGE_NAME):$(IMAGE_TAG)
 VLLM_IMAGE_REF     := $(VLLM_IMAGE_NAME):$(IMAGE_TAG)
@@ -163,7 +197,12 @@ COMPOSE_PLUGIN_VERSION ?= v5.5.1
 
 # vLLM --kv-transfer-config for the MP connector.  Leave KV_TRANSFER_ARG empty
 # for a plain (baseline) vLLM.
-_MP_CONNECTOR_JSON := {"kv_connector":"LMCacheMPConnector","kv_role":"kv_both","kv_connector_extra_config":{"lmcache.mp.host":"tcp://localhost","lmcache.mp.port":$(LMCACHE_PORT),"lmcache.mp.lazy_offload":true,"lmcache.mp.lazy_offload_policy":"EVICTION_AWARE","lmcache.mp.lazy_offload_max_deferral_seconds":30.0,"lmcache.mp.save_decode_cache":true}}
+# lmcache and vllm are both on the aic bridge, so vLLM reaches the MP server by
+# service name.  It was tcp://localhost, which only worked because both ran with
+# network_mode:host.  Override for a host-networked or remote lmcache.
+LMCACHE_MP_HOST ?= tcp://aic-lmcache
+export LMCACHE_MP_HOST
+_MP_CONNECTOR_JSON := {"kv_connector":"LMCacheMPConnector","kv_role":"kv_both","kv_connector_extra_config":{"lmcache.mp.host":"$(LMCACHE_MP_HOST)","lmcache.mp.port":$(LMCACHE_PORT),"lmcache.mp.lazy_offload":true,"lmcache.mp.lazy_offload_policy":"EVICTION_AWARE","lmcache.mp.lazy_offload_max_deferral_seconds":30.0,"lmcache.mp.save_decode_cache":true}}
 KV_TRANSFER_ARG    ?= --kv-transfer-config '$(_MP_CONNECTOR_JSON)'
 export KV_TRANSFER_ARG
 
@@ -227,23 +266,23 @@ else
 # BuildKit layer cache (e.g. a non-SPUR cluster with shared /scratch).
 export AIC_CACHE_DIR        ?=
 ifneq ($(wildcard /scratch/models/hub),)
-ifeq ($(origin HF_HOME),file)
+ifeq ($(call _is_makefile_default,HF_HOME),file)
 override export HF_HOME     := /scratch/models
 _HF_HOME_IS_DEFAULT := 1
 endif
 endif
 endif
-_HF_HOME_IS_DEFAULT ?= $(if $(filter file,$(origin HF_HOME)),1,)
+_HF_HOME_IS_DEFAULT ?= $(if $(call _is_makefile_default,HF_HOME),1,)
 
 # Strip Makefile-defaulted path vars before cliff sbatch so they don't clobber
 # the job's node-appropriate defaults.  User-set values (command-line /
-# environment) are preserved.
+# environment / .env.<cluster>) are preserved.
 _CLIFF_STRIP := env \
     $(if $(filter 0,$(AIC_SPUR_CLUSTER)),$(if $(_HF_HOME_IS_DEFAULT),-u HF_HOME)) \
-    $(if $(filter 0,$(AIC_SPUR_CLUSTER)),$(if $(filter file,$(origin NVME_DATA)),-u NVME_DATA)) \
-    $(if $(filter file,$(origin NFS_DATA)),-u NFS_DATA) \
-    $(if $(filter 0,$(AIC_SPUR_CLUSTER)),$(if $(filter file,$(origin GDS_SLAB_DATA)),-u GDS_SLAB_DATA)) \
-    $(if $(filter file,$(origin AIC_METRICS_DIR)),-u AIC_METRICS_DIR)
+    $(if $(filter 0,$(AIC_SPUR_CLUSTER)),$(if $(call _is_makefile_default,NVME_DATA),-u NVME_DATA)) \
+    $(if $(call _is_makefile_default,NFS_DATA),-u NFS_DATA) \
+    $(if $(filter 0,$(AIC_SPUR_CLUSTER)),$(if $(call _is_makefile_default,GDS_SLAB_DATA),-u GDS_SLAB_DATA)) \
+    $(if $(call _is_makefile_default,AIC_METRICS_DIR),-u AIC_METRICS_DIR)
 
 # ---- Export tarball --------------------------------------------------------
 EXPORT_PREFIX  ?= aic-release
@@ -311,12 +350,14 @@ help:
 	@echo ""
 	@echo "Distribute / cliff targets (Slurm; wrap .slurm/ scripts + sbatch):"
 	@echo "  (dist-build/smoke-test submit via sbatch and log to logs/<job-id>/)"
-	@echo "  make dist-build        Build image + fabric exporters on a Slurm build node, save tarballs"
-	@echo "  make dist-build-bake   Like dist-build but uses docker buildx bake: vllm+lmcache build in parallel after base"
+	@echo "  make dist-build        Build base, then vllm+lmcache in parallel (docker buildx bake) + fabric"
+	@echo "                         exporters on a Slurm build node, save tarballs"
+	@echo "  make dist-build-bake   Alias for dist-build (both run the bake path)"
 	@echo "  make dist-build-fast   Single-arch dev build (AIC_FAST_ARCH=$(AIC_FAST_ARCH)) -- faster iteration"
 	@echo "  make dist-build-emulate  Build the CPU-only emulation image (no GPU kernels compiled)"
 	@echo "  make dist-build-base   Build aic-base image (PyTorch + torchvision)"
-	@echo "  make dist-build-vllm   Build aic-vllm image (requires aic-base + AIC_BUILD_CONTEXT_LMCACHE_WHEELS)"
+	@echo "  make dist-build-vllm   Build aic-vllm image (requires AIC_BUILD_CONTEXT_BASE and a"
+	@echo "                         'lmcache-wheels' build context -- see docker/vllm/Dockerfile)"
 	@echo "  make dist-build-lmcache  Build aic-lmcache image (requires aic-base)"
 	@echo "  make dist-build-exporters  Build ONLY the nvme/rdma exporter images (no main rebuild)"
 	@echo "  make dist-build-monitoring Pull + save Prometheus/amdgpu-exporter to AIC_IMAGE_DIR"

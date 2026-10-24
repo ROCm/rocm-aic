@@ -356,13 +356,24 @@ services:
     # on gfx1201).  Cross-container GPU *event* IPC is skipped (rocm_ipc_patch.py).
     # Needs container-scoped shared IPC+PID namespaces: lmcache owns the shareable
     # namespace; vllm joins it via ipc/pid: service:lmcache (see vllm service below).
-    # IPC namespace sharing is independent of network_mode — the aic bridge network
-    # provides DNS-based service discovery for prometheus without affecting IPC.
-    # network_mode:host + ipc:host + pid:host required for KFD GPU memory IPC.
-    # Prometheus scrapes lmcache via host-gateway (see prometheus.yml).
-    network_mode: host
-    ipc: host
-    pid: host
+    # IPC namespace sharing is independent of the network — the aic bridge gives
+    # prometheus DNS-based service discovery without affecting IPC.
+    # lmcache owns the shareable IPC+PID namespace; vllm joins via service:lmcache.
+    # ipc:shareable + no pid:host is sufficient on the HIP VMM + SCM_RIGHTS path.
+    # spur-authz blocks pid:host on SPUR nodes.
+    #
+    # On the bridge, NOT network_mode:host.  ipc-report-2026-10-09.md:79 records
+    # that the VMM path needs --device=/dev/kfd --device=/dev/dri --ipc=host and
+    # explicitly NOT --network=host: the fd handoff is a Unix socket in the
+    # aic-ipc volume, not a network path.  Host networking made --prometheus-port
+    # 9091 a node-global bind, which collided with whatever else on the node uses
+    # 9091 (pushgateway's default) and killed tiny-test 68152006 and
+    # accuracy-test 68152524 with "Address already in use".  No ports are
+    # published: every consumer either runs `docker exec` against the container's
+    # own loopback (see _metric_sum in .slurm/run-accuracy.sh) or scrapes
+    # aic-lmcache by name from prometheus on this same network.
+    networks: [aic-network]
+    ipc: shareable
     shm_size: "${AIC_SHM_SIZE:-64gb}"
     cap_add:
       - CAP_SYS_ADMIN
@@ -412,8 +423,8 @@ services:
       # Coordinator registration: the MP server registers, heartbeats, and
       # deregisters against the coordinator so it can track which blocks are held.
       # Unset LMCACHE_COORDINATOR_URL to run without coordinator (standalone mode).
-      # lmcache uses network_mode:host — coordinator is on bridge, reach via localhost port.
-      LMCACHE_COORDINATOR_URL: "${LMCACHE_COORDINATOR_URL:-http://localhost:9300}"
+      # Both are on the aic bridge, so reach the coordinator by service name.
+      LMCACHE_COORDINATOR_URL: "${LMCACHE_COORDINATOR_URL:-http://aic-lmcache-coordinator:9300}"
       # ROCm VMEM IPC sidecar socket path (shared with vllm via aic-ipc volume)
       AIC_IPC_SOCK: /tmp/aic-ipc/fds.sock
     entrypoint: ["/bin/bash", "-o", "pipefail", "-c"]
@@ -479,11 +490,24 @@ services:
     # (not HSA_ENABLE_IPC_MODE_LEGACY) plus shared IPC+PID namespaces.  Container-scoped sharing
     # (ipc: service:lmcache, pid: service:lmcache) is sufficient and safer than
     # ipc: host / pid: host.  Override via VLLM_IPC_MODE / VLLM_PID_MODE if needed.
-    # network_mode:host required for KFD GPU IPC; prometheus scrapes via host-gateway.
-    network_mode: host
-    ipc: "${VLLM_IPC_MODE:-host}"
+    #
+    # On the bridge, NOT network_mode:host — KFD access comes from --device, not
+    # from the network namespace (ipc-report-2026-10-09.md:79).  The `aic-vllm`
+    # alias gives prometheus a stable scrape target: container_name carries the
+    # GPU index (aic-vllm-gpu${GPU}), which a static target cannot follow.
+    # The endpoint port is still published for the paths that have NOT moved
+    # onto the network yet: run-cliff.sbatch:667/:945 and mk/bench.mk:226 still
+    # use `docker run --network host`.  The accuracy harness no longer needs it
+    # (lm_eval runs inside aic-client now), so this publish can go once those
+    # three move -- it is the last node-global bind in the GPU path.
+    networks:
+      aic-network:
+        aliases: [aic-vllm]
+    ports:
+      - "${VLLM_ENDPOINT_PORT:-8000}:8000"
+    ipc: "${VLLM_IPC_MODE:-service:lmcache}"
     shm_size: "${AIC_SHM_SIZE:-64gb}"
-    pid: "${VLLM_PID_MODE:-host}"
+    pid: "${VLLM_PID_MODE-service:lmcache}"
     cap_add:
       - CAP_SYS_ADMIN
       - SYS_PTRACE
@@ -554,6 +578,7 @@ services:
         --stream-interval 20
         --async-scheduling
         --disable-access-log-for-endpoints "/health,/metrics,/v1/models,/v1/chat/completions,/v1/completions,/reset_prefix_cache"
+        ${VLM_ENFORCE_EAGER:+--enforce-eager}
         --enable-mfu-metrics
         --kv-cache-metrics
         --kv-cache-metrics-sample ${VLM_KV_CACHE_METRICS_SAMPLE:-0.05}
@@ -582,21 +607,38 @@ services:
     environment:
       HF_TOKEN: "${HF_TOKEN:-}"
       HF_HOME: /root/.cache/huggingface
+      # /repo is mounted read-only, so keep every write out of the tree.
+      PYTHONPYCACHEPREFIX: /tmp/pycache
+      PYTHONNOUSERSITE: "1"
+      # Passed as an ENV VAR, not interpolated into the command below.  Compose
+      # substitutes ${...} into the YAML before bash ever parses it, so a spec
+      # like `pytest>=9` arrived as a literal `>` and bash treated it as a
+      # redirection -- it tried to create a file named "=9" in the read-only
+      # /repo and the whole install died ("=9: Read-only file system",
+      # accuracy-test 68161242).  Expanded from the environment instead, the
+      # `>` is just a character in a word.
+      AIC_CLIENT_EXTRA_PIP: "${AIC_CLIENT_EXTRA_PIP:-}"
       AIC_BENCH_DATASET: /root/.cache/huggingface/datasets/ShareGPT_V3_unfiltered_cleaned_split.json
     entrypoint: ["/bin/bash", "-c"]
     command:
       - |
+        rm -f /tmp/aic-client-ready
         pip install --quiet \
           --root-user-action=ignore \
           --disable-pip-version-check \
           openai httpx pyyaml tqdm \
           transformers huggingface-hub \
           prometheus-client aiohttp \
-          matplotlib pandas numpy && \
+          matplotlib pandas numpy \
+          $${AIC_CLIENT_EXTRA_PIP} \
+          && touch /tmp/aic-client-ready \
+          || echo "[aic-client] WARN: pip install failed; curl-only use still works" >&2
         tail -f /dev/null
     volumes:
       - ..:/repo:ro
-      - ../logs:/logs
+      # ${LOG} is the per-job log dir (run-accuracy.sh exports it), so /logs in
+      # the container IS ${AIC_LOG_DIR} on the host -- no path translation.
+      - ${LOG:-../logs}:/logs
       - ${HF_HOME:-~/.cache/huggingface}:/root/.cache/huggingface
     working_dir: /repo
     restart: unless-stopped
@@ -640,6 +682,8 @@ services:
     image: ${AIC_PROM_IMAGE:-prom/prometheus:v3.14.0}
     container_name: aic-prometheus
     networks: [aic-network]
+    ports:
+      - "${AIC_PROM_PORT:-9090}:${AIC_PROM_PORT:-9090}"
     extra_hosts:
       - "host-gateway:host-gateway"
     user: "${PROM_UID:-65534}:${PROM_GID:-65534}"
@@ -678,15 +722,16 @@ services:
     entrypoint: ["python3", "-u", "/app/l2_monitor.py"]
 
   # node-exporter: host CPU/mem/disk/net/NVMe/RDMA metrics on :9100.
-  # Behind the `monitoring` profile.  Uses pid:host for accurate per-process
-  # CPU stats; mounts the host rootfs read-only via /host.
+  # Behind the `monitoring` profile.  pid:host gives accurate per-process CPU
+  # stats but is blocked by spur-authz on SPUR; omitted here so the stack
+  # starts cleanly.  Override with NODEX_PID_MODE=host when permitted.
   # ---------------------------------------------------------------------------
   node-exporter:
-    profiles: [monitoring, exporters, exporters-cpu]
+    profiles: [monitoring, exporters, exporters-cpu, exporters-safe]
     image: ${AIC_NODE_EXPORTER_IMAGE:-quay.io/prometheus/node-exporter:v1.12.1}
     container_name: aic-node-exporter
     networks: [aic-network]
-    pid: host
+    pid: "${NODEX_PID_MODE:-}"
     restart: unless-stopped
     volumes:
       - /:/host:ro,rslave
@@ -788,7 +833,7 @@ services:
     image: ${HSA_SNOOP_IMAGE:-aic-hsa-snoop:local}
     container_name: aic-hsa-snoop
     networks: [aic-network]
-    pid: "${AIC_HSA_SNOOP_PID_MODE:-service:lmcache}"
+    pid: "${AIC_HSA_SNOOP_PID_MODE-service:lmcache}"
     privileged: true
     restart: unless-stopped
     environment:
@@ -831,11 +876,16 @@ services:
       - emulate-mp
     image: ${LMCACHE_IMAGE_REF:-${IMAGE_REF:-${IMAGE_NAME:-rocm-aic}:latest}}
     container_name: aic-lmcache-emulator
-    # host net for ZMQ on :${LMCACHE_PORT}; host IPC so the POSIX SHM segments
-    # LMCache migrates the emulator's KV buffers into are visible here (Docker
-    # gives each container its own /dev/shm otherwise).
-    network_mode: host
-    ipc: host
+    # On the aic bridge: ZMQ on :${LMCACHE_PORT} and /metrics on :8080 are
+    # reached by service name from vllm-emulator and prometheus.  :8080 is kept
+    # published only for interactive use (mk/local.mk:161) -- emulate-mp-test
+    # now execs into this container instead.  shareable IPC so the
+    # POSIX SHM segments LMCache migrates the emulator's KV buffers into are
+    # visible to joining containers (avoids the spur-authz ipc:host block).
+    networks: [aic-network]
+    ports:
+      - "${LMCACHE_HTTP_PORT:-8080}:8080"
+    ipc: shareable
     cap_add:
       - SYS_PTRACE
       - IPC_LOCK
@@ -914,14 +964,17 @@ services:
       - emulate-mp
     image: ${VLLM_IMAGE_REF:-${IMAGE_REF:-${IMAGE_NAME:-rocm-aic}:latest}}
     container_name: aic-vllm-emulator
-    # host net (like the vllm/lmcache services above) — vLLM's OpenAI API and
-    # /metrics land on host :8000 with no bridge/NAT in the way.
-    network_mode: host
-    # No devices/cap_add block: the emulator touches no GPU.  ipc: host IS
-    # needed under `emulate-mp` — LMCache migrates the fake KV buffers into
-    # POSIX SHM segments for the server to map, and Docker gives each container
-    # its own /dev/shm otherwise.  Harmless for the plain `emulate` profile.
-    ipc: host
+    # On the aic bridge.  :8000 is kept published for interactive use only --
+    # the emulate tests now exec into this container rather than curling the
+    # host loopback.
+    networks: [aic-network]
+    ports:
+      - "${VLLM_ENDPOINT_PORT:-8000}:8000"
+    # No devices/cap_add block: the emulator touches no GPU.  ipc: shareable
+    # under `emulate-mp` — LMCache migrates the fake KV buffers into POSIX SHM
+    # segments for the server to map; shareable avoids the spur-authz ipc:host
+    # block while still exposing /dev/shm to joining containers.
+    ipc: shareable
     # Run as the invoking user rather than root.  /hf below is a bind mount, and
     # on a cluster it is a SHARED cache: a root-owned entry there is one that
     # nobody but root can refresh or delete, because removing it needs write
@@ -1051,7 +1104,10 @@ services:
       - cpu-smoke
     image: ${VLLM_IMAGE_REF:-${IMAGE_REF:-${IMAGE_NAME:-rocm-aic}:latest}}
     container_name: aic-vllm-emulator
-    network_mode: host
+    # On the aic bridge with :8000 published, matching the emulate services.
+    networks: [aic-network]
+    ports:
+      - "${VLLM_ENDPOINT_PORT:-8000}:8000"
     volumes:
       - ${HF_HOME:-~/.cache/huggingface}:/hf
       - ../monitoring/scripts/vllm_emulator_server.py:/app/vllm_emulator_server.py:ro

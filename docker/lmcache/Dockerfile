@@ -145,7 +145,7 @@ RUN python3 /tmp/rocm_ipc_patch.py && rm /tmp/rocm_ipc_patch.py
 # Build the LMCache wheel with full ROCm headers available.
 RUN --mount=type=cache,target=/root/.cache/pip \
     mkdir -p /wheels && \
-    printf '%s\n' "${ROCM_ARCH%%,*}" > /etc/rocm_target.lst && \
+    printf '%s\n' "${ROCM_ARCH%%;*}" > /etc/rocm_target.lst && \
     cd /app/LMCache && \
     PYTORCH_ROCM_ARCH="${ROCM_ARCH}" \
         TORCH_DONT_CHECK_COMPILER_ABI=1 \

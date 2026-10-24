@@ -42,7 +42,10 @@ export PATH="/usr/local/bin:${PATH}"
 : "${AIC_METRICS_DIR:=}"
 : "${MON_DIR:=}"
 : "${MON_COMPOSE:=}"
-: "${AIC_HSA_SNOOP_PID_MODE:=host}"
+# Single `=`, not `:=`: an explicitly empty value means "no PID sharing" and
+# must survive.  With `:=` it was silently rewritten to "host", so a caller
+# that deliberately opted out of PID sharing got pid:host instead.
+: "${AIC_HSA_SNOOP_PID_MODE=host}"
 # Provide a fallback logger only if the caller has not defined one (run-cliff.sbatch
 # and run-build-distribute.sh each define their own prefixed log()).
 declare -F log >/dev/null 2>&1 || log() { printf '[monitoring] %s\n' "$*" >&2; }
@@ -102,6 +105,20 @@ aic_resolve_gpu_visibility() {
     log "GPU allocation for job ${SLURM_JOB_ID:-<none>} (${from}): ROCR=${AIC_ROCR_VISIBLE} HIP=${AIC_HIP_VISIBLE}"
 }
 
+# Pre-flight check: detect a broken containerd overlay snapshotter before
+# wasting time loading images or creating containers.  The symptom is:
+#   "apply layer error: failed to open database file: ...metadata.db"
+# which occurs on cluster nodes where containerd lost its snapshot store.
+# Returns non-zero (caller should exit 1) if Docker or the snapshotter is broken.
+aic_docker_preflight() {
+    local host; host=$(hostname)
+    docker info >/dev/null 2>&1 \
+        || { printf '[preflight] FATAL: docker daemon unreachable on %s\n' "${host}" >&2; return 1; }
+    docker system df >/dev/null 2>&1 \
+        || { printf '[preflight] FATAL: docker overlay snapshotter broken on %s (containerd metadata.db missing?) -- resubmit to a different node\n' "${host}" >&2; return 1; }
+    log "docker preflight OK on ${host}"
+}
+
 have_compose() { docker compose version >/dev/null 2>&1; }
 
 # Ensure the `docker compose` (v2) plugin is available.  Docker checks
@@ -145,13 +162,14 @@ mon_profile() {  # echo the compose --profile args for the exporter fleet
             && printf -- '--profile\nexporters-fabric\n'
         ;;
     safe)
-        # Safe subset: amdgpu-exporter + hsa-snoop (container PID).  These do NOT
-        # use pid:host and work on SPUR nodes where spur-authz blocks host-namespace
-        # containers.  Provides GPU metrics (amd_*) and HSA/AIS telemetry.
+        # Safe subset: amdgpu-exporter + hsa-snoop + rdma-exporter (container PID,
+        # /sys:ro only).  Works on SPUR nodes where spur-authz blocks host-namespace
+        # containers and /dev bind mounts.
         printf -- '--profile\nexporters-safe\n'
-        # Also enable rdma-exporter (from exporters-fabric) when its pre-built image
-        # is already on the node.  Skip if absent — it needs internet egress to build.
-        [[ -n "${AIC_RDMA_EXPORTER_IMAGE:-}" ]] \
+        # Add exporters-fabric (nvme + rdma) only on non-SPUR nodes; nvme-exporter
+        # requires /dev:/dev:rw which spur-authz policy B2 blocks on SPUR.
+        [[ "${AIC_SPUR_CLUSTER:-0}" != "1" ]] \
+            && [[ -n "${AIC_RDMA_EXPORTER_IMAGE:-}" ]] \
             && docker image inspect "${AIC_RDMA_EXPORTER_IMAGE}" >/dev/null 2>&1 \
             && printf -- '--profile\nexporters-fabric\n'
         ;;
@@ -170,35 +188,65 @@ start_monitoring() {
     mkdir -p "${AIC_METRICS_DIR}" 2>/dev/null || { log "monitoring: cannot create ${AIC_METRICS_DIR}, skipping"; AIC_MONITORING=0; return 0; }
     ensure_compose || { log "monitoring: docker compose unavailable, skipping"; AIC_MONITORING=0; return 0; }
     [[ -f "${MON_COMPOSE}" ]] || { log "monitoring: ${MON_COMPOSE} not found, skipping"; AIC_MONITORING=0; return 0; }
-    log "starting metrics capture -> ${AIC_METRICS_DIR} (exporters=${AIC_EXPORTERS})"
+    # Grafana is a human UI, not part of metric capture, but it is in the
+    # monitoring-base profile so it always starts -- and a fixed host port 3000
+    # collides with anything else on the node that uses it (an unrelated
+    # observability stack took it on ctr-cx66-mi300x-31, and compose then
+    # reports the whole `up` as failed).  Publish it on an ephemeral port here;
+    # interactive users still get 3000 by setting AIC_GRAFANA_PORT themselves.
+    # `docker port aic-grafana 3000` prints the assigned port.
+    AIC_GRAFANA_PORT="${AIC_GRAFANA_PORT_OVERRIDE:-0}"
+    export AIC_GRAFANA_PORT
+    log "starting metrics capture -> ${AIC_METRICS_DIR} (exporters=${AIC_EXPORTERS}, grafana port=${AIC_GRAFANA_PORT})"
+    # Sweep any leftover containers from a previous run on this node so port
+    # bindings don't conflict with the new compose up.
+    docker rm -f "${MON_CONTAINERS[@]}" >/dev/null 2>&1 || true
     docker network inspect aic-network >/dev/null 2>&1 \
         || docker network create aic-network >/dev/null \
         || log "monitoring: could not create aic-network (continuing)"
     local -a profile; mapfile -t profile < <(mon_profile)
+    local -a compose_files=(-f "${MON_COMPOSE}")
+    # On SPUR, layer in the SPUR override (tmpfs rootfs for node-exporter,
+    # no /dev bind for nvme-exporter) so spur-authz policies B1/B2 don't
+    # block the compose up.
+    if [[ "${AIC_SPUR_CLUSTER:-0}" == "1" ]]; then
+        local _spur_override="${MON_COMPOSE%/*}/docker-compose.spur.yml"
+        [[ -f "${_spur_override}" ]] \
+            && compose_files+=(-f "${_spur_override}") \
+            || log "monitoring: WARN spur override ${_spur_override} not found"
+    fi
     AIC_METRICS_DIR="${AIC_METRICS_DIR}" PROM_UID="$(id -u)" PROM_GID="$(id -g)" \
         IMAGE_NAME="${AIC_IMAGE}" AIC_HSA_SNOOP_PID_MODE="${AIC_HSA_SNOOP_PID_MODE}" \
-        docker compose -f "${MON_COMPOSE}" --profile monitoring-base "${profile[@]}" up -d \
+        docker compose "${compose_files[@]}" --profile monitoring-base "${profile[@]}" up -d \
         || log "monitoring: compose up failed (continuing without metrics)"
 }
 
 stop_monitoring() {
     [[ "${AIC_MONITORING}" == "1" ]] || return 0
     log "stopping metrics capture (TSDB retained at ${AIC_METRICS_DIR})"
-    if have_compose && [[ -f "${MON_COMPOSE}" ]]; then
-        local -a profile; mapfile -t profile < <(mon_profile)
-        AIC_METRICS_DIR="${AIC_METRICS_DIR}" IMAGE_NAME="${AIC_IMAGE}" AIC_HSA_SNOOP_PID_MODE="${AIC_HSA_SNOOP_PID_MODE}" \
-            docker compose -f "${MON_COMPOSE}" --profile monitoring-base "${profile[@]}" down >/dev/null 2>&1 || true
-    fi
-    docker rm -f "${MON_CONTAINERS[@]}" >/dev/null 2>&1 || true
+    # Deliberately NOT `docker compose down`.  That is project-wide: with no
+    # service list it also stops vllm and lmcache when they are running
+    # (tiny-test, accuracy-test, cliff), which is the documented hang -- vLLM's
+    # EngineCore children are not reaped, so compose blocks indefinitely.
+    # tiny-test 68160609 hit the 40-minute wall right here, after the test
+    # itself had already passed and the TSDB was safely on disk.  It would also
+    # tear down the shared `aic` network out from under the still-running
+    # stack.  Removing exactly the containers this lib started is both
+    # sufficient and bounded; grafana is added because start_monitoring brings
+    # it up with the monitoring-base profile.
+    local -a _mon_rm=("${MON_CONTAINERS[@]}" aic-grafana)
+    timeout 60 docker rm -f "${_mon_rm[@]}" >/dev/null 2>&1 || true
 }
 
 # --- Health check + TSDB summary (used by the build smoke-test) ---------------
 # curl one exporter's /metrics and report whether it serves its expected series.
 # Purely informational: prints OK/WARN and returns 0/1, never exits.
-# $1=display name  $2=port  $3=extended-regex the metrics should contain.
+# $1=display name  $2=port  $3=extended-regex  $4=service name on aic-network
+# (default aic-prometheus).  Scraped from inside aic-client: nothing publishes a
+# host port any more, so a 127.0.0.1 scrape would always fail.
 _check_endpoint() {
-    local name="$1" port="$2" re="$3" body n
-    body="$(curl -fsS --max-time 3 "http://127.0.0.1:${port}/metrics" 2>/dev/null)" || {
+    local name="$1" port="$2" re="$3" host="${4:-aic-prometheus}" body n
+    body="$(docker exec aic-client curl -fsS --max-time 3 "http://${host}:${port}/metrics" 2>/dev/null)" || {
         log "  WARN ${name} :${port} -- /metrics not responding"; return 1; }
     n="$(printf '%s\n' "${body}" | grep -cE "${re}" 2>/dev/null || true)"
     if [[ "${n:-0}" -gt 0 ]]; then
@@ -207,29 +255,69 @@ _check_endpoint() {
     log "  WARN ${name} :${port} -- responding but no ${re} series"; return 1
 }
 
-# Probe every exporter's /metrics endpoint.  Informational only (the caller
-# decides whether to act on the result).
+# Query prometheus for an exporter job's scrape status.  Returns 0 if at least
+# one instance is up=1; logs OK/WARN.  Purely informational, never exits.
+# Exporters live on aic-network only (no host port); prometheus is the proxy.
+# $1=display name  $2=prometheus job name  $3=optional series regex to spot-check
+_check_job() {
+    local name="$1" job="$2" re="${3:-}"
+    local prom="http://aic-prometheus:${AIC_PROM_PORT:-9090}"
+    local result n_up
+    result="$(docker exec aic-client curl -fsS --max-time 3 \
+        "${prom}/api/v1/query?query=up%7Bjob%3D%22${job}%22%7D" 2>/dev/null)" || {
+        log "  WARN ${name} -- prometheus not reachable"; return 1; }
+    n_up="$(printf '%s' "${result}" | python3 -c "
+import json,sys
+d=json.load(sys.stdin)
+print(sum(1 for r in d.get('data',{}).get('result',[]) if r.get('value',['','0'])[1]=='1'))
+" 2>/dev/null || echo 0)"
+    if [[ "${n_up:-0}" -gt 0 ]]; then
+        if [[ -n "${re}" ]]; then
+            # Spot-check series count from prometheus metric store
+            local n_series
+            n_series="$(curl -fsS --max-time 3 \
+                "${prom}/api/v1/query?query=count%28${re}%7Bjob%3D%22${job}%22%7D%29" \
+                2>/dev/null \
+                | python3 -c "
+import json,sys
+d=json.load(sys.stdin)
+r=d.get('data',{}).get('result',[])
+print(int(r[0]['value'][1]) if r else 0)
+" 2>/dev/null || echo 0)"
+            log "  OK   ${name} (job=${job} up=${n_up} series=${n_series})"
+        else
+            log "  OK   ${name} (job=${job} up=${n_up})"
+        fi
+        return 0
+    fi
+    log "  WARN ${name} (job=${job} up=0)"; return 1
+}
+
+# Check every known exporter via prometheus scrape status.
+# Prometheus is the only service with a host port (9090); all exporters are on
+# aic-network only and are reached by prometheus via container name.
 monitoring_healthcheck() {
-    log "exporter health check (/metrics):"
-    _check_endpoint node-exporter   9100                           '^node_'       || true
-    _check_endpoint amdgpu-exporter 5000                           '^(amd_)?gpu_' || true
-    _check_endpoint nvme-exporter   "${NVME_EXPORTER_PORT:-9998}"  '^nvme_'       || true
-    _check_endpoint rdma-exporter   "${RDMA_EXPORTER_PORT:-9879}"  '^rdma_'       || true
-    _check_endpoint hsa-snoop       "${HSA_SNOOP_PORT:-9488}"      '^hsa_\|^ais_' || true
-    _check_endpoint prometheus      "${AIC_PROM_PORT:-9090}"       '^prometheus_' || true
+    log "exporter health check (via prometheus scrape status):"
+    # Direct check for prometheus itself (it has a host port)
+    _check_endpoint prometheus "${AIC_PROM_PORT:-9090}" '^prometheus_' || true
+    # All other exporters: checked via prometheus up metric
+    _check_job node-exporter   node_exporter        || true
+    _check_job amdgpu-exporter amd_metrics_exporter || true
+    _check_job nvme-exporter   nvme_exporter        || true
+    _check_job rdma-exporter   rdma_exporter        || true
+    _check_job hsa-snoop       hsa_snoop            || true
 }
 
 # After a scrape window, ask Prometheus which targets are up (confirms data
 # actually landed in the TSDB) and print the TSDB path/size.  Uses the AIC
 # image's python3 to parse the query JSON (no jq on the host).  Informational.
 monitoring_tsdb_summary() {
-    local prom="http://127.0.0.1:${AIC_PROM_PORT:-9090}"
+    local prom="http://aic-prometheus:${AIC_PROM_PORT:-9090}"
     log "Prometheus scrape targets (query up):"
-    if ! curl -fsS --max-time 3 "${prom}/-/ready" >/dev/null 2>&1; then
+    if ! docker exec aic-client curl -fsS --max-time 3 "${prom}/-/ready" >/dev/null 2>&1; then
         log "  WARN Prometheus not ready at ${prom}"; return 0
     fi
-    docker run --rm --network host -e PROM_URL="${prom}" \
-        --entrypoint python3 "${AIC_IMAGE}" -c '
+    docker exec -e PROM_URL="${prom}" aic-client python3 -c '
 import json, os, sys, urllib.request
 prom = os.environ["PROM_URL"]
 try:
