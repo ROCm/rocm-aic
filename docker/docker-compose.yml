@@ -610,6 +610,14 @@ services:
       # /repo is mounted read-only, so keep every write out of the tree.
       PYTHONPYCACHEPREFIX: /tmp/pycache
       PYTHONNOUSERSITE: "1"
+      # Passed as an ENV VAR, not interpolated into the command below.  Compose
+      # substitutes ${...} into the YAML before bash ever parses it, so a spec
+      # like `pytest>=9` arrived as a literal `>` and bash treated it as a
+      # redirection -- it tried to create a file named "=9" in the read-only
+      # /repo and the whole install died ("=9: Read-only file system",
+      # accuracy-test 68161242).  Expanded from the environment instead, the
+      # `>` is just a character in a word.
+      AIC_CLIENT_EXTRA_PIP: "${AIC_CLIENT_EXTRA_PIP:-}"
       AIC_BENCH_DATASET: /root/.cache/huggingface/datasets/ShareGPT_V3_unfiltered_cleaned_split.json
     entrypoint: ["/bin/bash", "-c"]
     command:
@@ -622,7 +630,7 @@ services:
           transformers huggingface-hub \
           prometheus-client aiohttp \
           matplotlib pandas numpy \
-          ${AIC_CLIENT_EXTRA_PIP:-} \
+          $${AIC_CLIENT_EXTRA_PIP} \
           && touch /tmp/aic-client-ready \
           || echo "[aic-client] WARN: pip install failed; curl-only use still works" >&2
         tail -f /dev/null
