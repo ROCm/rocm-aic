@@ -112,6 +112,10 @@ ARG FLASH_ATTN_REF=v2.8.3.post1
 ARG AITER_PREBUILD_KERNELS=0
 
 # git and ca-certificates are not in the -full image; install before cloning.
+# git comes from ppa:git-core because `git clone --revision` needs >= 2.49 and
+# Ubuntu 24.04 ships 2.43.  software-properties-common drags in a dpkg-owned
+# python3-jwt that pip cannot uninstall (vllm's requirements bump PyJWT), so it
+# is purged again once the PPA is configured.
 # libnuma-dev: the ROCm base image ships libnuma.so.1 but NOT the unversioned
 # libnuma.so symlink, which lives in libnuma-dev.  rocSHMEM's NUMAWrapper
 # dlopen()s the unversioned name, so it fails and prints
@@ -127,7 +131,12 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
     apt-get update && \
     DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-        cmake git ca-certificates ninja-build python3-dev libnuma-dev
+        software-properties-common && \
+    add-apt-repository ppa:git-core/ppa -y && \
+    apt-get update && \
+    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+        cmake git ca-certificates ninja-build python3-dev libnuma-dev && \
+    apt-get purge -y --auto-remove software-properties-common
 
 # Bring torch + Python packages from aic-base so wheels link against the same torch.
 COPY --from=base /usr/local/lib/python3.12/dist-packages/ \
@@ -198,8 +207,10 @@ RUN --mount=type=cache,target=/root/.cache/pip \
             python3 setup.py bdist_wheel --dist-dir=/wheels && \
         pip3 install --no-cache-dir --no-deps /wheels/amd_aiter-*.whl && \
         python3 -c 'import importlib.util; spec = importlib.util.find_spec("aiter"); assert spec and spec.submodule_search_locations; print("AITER installed:", next(iter(spec.submodule_search_locations)))' && \
-        PYTORCH_ROCM_ARCH="${ROCM_ARCH}" TORCH_DONT_CHECK_COMPILER_ABI=1 \
-            python3 /app/patches/aiter/01-jit-use-pytorch-rocm-arch.py; \
+        ( cd / && \
+          { GPU_ARCHS="${ROCM_ARCH}" PYTORCH_ROCM_ARCH="${ROCM_ARCH}" TORCH_DONT_CHECK_COMPILER_ABI=1 \
+                python3 -c 'import aiter' || :; } && \
+          test -f "$(python3 -c 'import importlib.util as u, os; print(os.path.join(next(iter(u.find_spec("aiter").submodule_search_locations)), "jit", "module_aiter_core.so"))')" ); \
     fi
 
 # FlashAttention: CDNA-only (gfx9xx — MI100/MI200/MI300/MI355X).
@@ -217,7 +228,6 @@ RUN --mount=type=cache,target=/root/.cache/pip \
         git clone --depth 1 --revision "${FLASH_ATTN_REF}" \
             --recurse-submodules --shallow-submodules \
             "${FLASH_ATTN_GIT_URL}" /app/flash-attention && \
-        python3 /app/patches/vllm/02-flash-attn-deprecated-attrs.py && \
         cd /app/flash-attention && \
         GPU_ARCHS="${ROCM_ARCH}" \
             PYTORCH_ROCM_ARCH="${ROCM_ARCH}" \
@@ -394,12 +404,9 @@ RUN --mount=type=cache,target=/root/.cache/pip \
 # memory patches belong to the lmcache server image.  AIC_LMCACHE_SRC points the
 # patcher at the pip-installed package (site-packages), not the /app source tree.
 COPY docker/lmcache/rocm_event_ipc_patch.py /tmp/rocm_event_ipc_patch.py
-COPY docker/lmcache/diag_register_kv_caches.py /tmp/diag_register_kv_caches.py
 RUN AIC_LMCACHE_SRC="$(python3 -c 'import lmcache, os; print(os.path.dirname(os.path.dirname(lmcache.__file__)))')" \
         python3 /tmp/rocm_event_ipc_patch.py && \
-    AIC_LMCACHE_SRC="$(python3 -c 'import lmcache, os; print(os.path.dirname(os.path.dirname(lmcache.__file__)))')" \
-        python3 /tmp/diag_register_kv_caches.py && \
-    rm /tmp/rocm_event_ipc_patch.py /tmp/diag_register_kv_caches.py
+    rm /tmp/rocm_event_ipc_patch.py
 
 # ----- Runtime ENV + metadata -------------------------------------------------
 # PYTHONPATH and LD_LIBRARY_PATH (including NIXL paths) are inherited from
