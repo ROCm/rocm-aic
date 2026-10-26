@@ -10,9 +10,8 @@
 #   - `make monitoring-up` (legacy cliff sbatch path): prometheus runs in the
 #     main compose file's monitoring-base profile on the same aic network.
 #
-# nvme_exporter and rdma_exporter remain host-side services (or launched via
-# the main compose exporters-fabric profile); prometheus reaches them via
-# host-gateway which resolves to the Docker host IP from within the aic network.
+# The emulators (vllm-emulator, lmcache-emulator, cpu-smoke-emulator) carry the
+# same aic-vllm / aic-lmcache aliases, so one config serves both stacks.
 #
 # Job names and ports mirror the batesste Ansible monitoring roles so the
 # same Grafana dashboards / recording rules apply.  NIXL exposes its own (beta)
@@ -40,8 +39,11 @@ scrape_configs:
   - job_name: vllm
     metrics_path: /metrics
     static_configs:
-      # vllm uses network_mode:host (required for KFD GPU IPC); reach via host-gateway.
-      - targets: ["host-gateway:8000"]
+      # aic-vllm is a network alias: on the lmcache container, whose network
+      # namespace vllm joins (network_mode: container:aic-lmcache), and on the
+      # emulators.  A static target cannot follow the vllm container name, which
+      # carries the GPU index (aic-vllm-gpu0, -gpu1, ...).
+      - targets: ["aic-vllm:8000"]
 
   - job_name: lmcache
     metrics_path: /metrics
@@ -55,7 +57,7 @@ scrape_configs:
     static_configs:
       # lmcache serves /metrics on --prometheus-port (9091) via a dedicated thread,
       # independent of the main uvicorn server at :8080.
-      - targets: ["host-gateway:9091"]
+      - targets: ["aic-lmcache:9091"]
 
   # LMCache coordinator exporter — polls the coordinator REST API (/instances,
   # /directory/stats, /quota) and emits Prometheus text format on :9301.
@@ -73,7 +75,7 @@ scrape_configs:
   - job_name: nixl
     metrics_path: /metrics
     static_configs:
-      - targets: ["host-gateway:19090"]
+      - targets: ["aic-lmcache:19090"]
 
   # node-exporter: CPU/mem/net + NVMe I/O (diskstats/nvme collectors) and
   # RDMA/InfiniBand port counters (infiniband collector).
@@ -116,8 +118,9 @@ scrape_configs:
   # ais_tx_latency_seconds, ais_rx_io_size_bytes, ais_tx_io_size_bytes) --
   # all metric families are served on the same :9488 endpoint; SDMA metrics
   # are available from v1.1.0.
-  # hsa-snoop: host service (or monitoring compose exporters profile).
-  # Reached via host-gateway since it holds tracefs exclusively on the host.
+  # hsa-snoop: monitoring compose exporters profile.  It reads tracefs from the
+  # host through bind mounts but is itself on the aic bridge, so it is scraped
+  # by service name like everything else.
   - job_name: hsa_snoop
     metrics_path: /metrics
     static_configs:

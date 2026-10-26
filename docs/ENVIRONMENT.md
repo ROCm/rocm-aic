@@ -13,7 +13,9 @@
 | `GDS_MODE` | — | Set to `1` to enable GDS L1 mode |
 | `AIC_L2_BACKEND` | `nixl` | LMCache L2 backend: `nixl` (AIS_MT NVMe + POSIX NFS) or `local_disk` (native LocalDiskBackend via a mounted config) |
 | `KV_TRANSFER_ARG` | LMCacheMPConnector JSON | vLLM `--kv-transfer-config` arg; empty = plain vLLM (the cliff `vram` baseline). Wrap the JSON in single quotes |
-| `VLLM_IPC_MODE` | `service:lmcache` | vLLM IPC namespace mode. Cache-backed runs join LMCache's shareable namespace; use `shareable` when launching vLLM alone |
+| `VLLM_IPC_MODE` | `service:lmcache` | vLLM IPC namespace mode. Cache-backed runs join LMCache's shareable namespace; to launch vLLM alone, start the `vllm-only` service (`--profile vllm-only up -d vllm-only`, container `aic-vllm-only-gpu<GPU>`) instead of overriding the mode |
+| `AIC_PUBLISH_ADDR` | `127.0.0.1` | Host address that published container ports bind; `0.0.0.0` exposes them beyond loopback |
+| `VLLM_HOST_PORT`, `LMCACHE_HTTP_HOST_PORT`, `KVBENCH_HOST_PORT`, `AIC_PROM_PORT`, `AIC_GRAFANA_PORT` | unset (ephemeral) | Pin the host port a service is published on. Unset, Docker picks a free port; `make endpoints` prints the URLs |
 | `AIC_SHM_SIZE` | `64gb` | Capacity of the private `/dev/shm` used by LMCache and vLLM; increase if LMCache's L1 request is larger |
 | `LMCACHE_L1_SIZE_GB` | `20` | MP server L1 cap in GiB (DRAM L1 in nvme mode, hipFile slab size in GDS mode) |
 | `LMCACHE_NVME_POOL` | `4096` | NIXL pool slots for NVMe adapter |
@@ -93,9 +95,9 @@ and that variant skipped the differential — the one assertion the gate is for.
 | `AIC_ACCURACY_MODEL` | `$AIC_TINY_MODEL` | Model to score. Must match what the arms serve |
 | `AIC_ACCURACY_DELTA` | `0.02` | How far the tiered arm may fall below the baseline arm before it counts as corruption |
 | `AIC_ACCURACY_CONCURRENT` | `32` | `lm_eval` request concurrency |
-| `AIC_ACCURACY_BASELINE_URL` | — | Baseline arm base URL, e.g. `http://172.18.0.4:8000/v1`. Only needed when running pytest by hand; the driver supplies it |
+| `AIC_ACCURACY_BASELINE_URL` | — | Baseline arm base URL, e.g. `$(aic_url aic-vllm-only-gpu0 8000)/v1`. Only needed when running pytest by hand; the driver supplies it |
 | `AIC_ACCURACY_TIERED_URL` | — | Tiered arm base URL. Unset or unreachable endpoints skip cleanly rather than failing |
-| `AIC_ACCURACY_BASELINE_SCORE` | — | Pre-measured baseline score. The arms share a container name, a port and the GPU, so the driver scores them sequentially and passes the first arm's number forward |
+| `AIC_ACCURACY_BASELINE_SCORE` | — | Pre-measured baseline score. The arms share the GPU, so the driver scores them sequentially and passes the first arm's number forward |
 | `AIC_ACCURACY_REFERENCE_SCORE` | — | Pre-restart tiered score; enables the restart assertion |
 | `AIC_ACCURACY_SCORE_OUT` | — | Write the measured tiered score here as JSON |
 | `AIC_ACCURACY_TIME` | `02:00:00` | Slurm wall-time for the accuracy job |

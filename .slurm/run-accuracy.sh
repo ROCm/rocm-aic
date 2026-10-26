@@ -35,10 +35,10 @@
 # so a checksum would be a flake generator; see tests/accuracy/README.md.
 #
 # pytest runs host-side (it needs .venv and lm_eval; the image stays lean and the
-# gsm8k download stays off the compute node), reaching vLLM on its `aic` bridge
-# IP.  vLLM publishes no ports, so a bridge IP -- not localhost -- is the only
-# host-side route; readiness probes use the `docker exec ... 127.0.0.1` form that
-# the rest of the repo uses.
+# gsm8k download stays off the compute node), reaching vLLM on the host port
+# Docker published for it (an ephemeral 127.0.0.1 port, found with aic_url): vLLM's
+# own in the vram arm, lmcache's in the tiered arm.  Readiness probes use the
+# `docker exec ... 127.0.0.1` form that the rest of the repo uses.
 #
 # Every scoring pass asks the full gsm8k split; there is no item cap to set.
 #
@@ -124,12 +124,17 @@ ensure_compose || { echo "[accuracy-test] docker compose unavailable" >&2; exit 
 # Serve on the GPU Slurm allocated rather than host GPU 0: --device /dev/dri
 # exposes every GPU on the node, so only ROCR_VISIBLE_DEVICES keeps the two arms
 # off somebody else's.  Compose reads AIC_ROCR_VISIBLE/AIC_HIP_VISIBLE and
-# names the vLLM container after GPU.
+# names the vLLM containers after GPU.
 aic_resolve_gpu_visibility \
     || { echo "[accuracy-test] FAIL: could not resolve the GPU allocation (refusing to default to GPU 0)" >&2; exit 1; }
 export GPU="${AIC_ROCR_VISIBLE%%,*}"
-VLLM_CONTAINER="aic-vllm-gpu${GPU}"
-echo "[accuracy-test] allocated gpu: ROCR=${AIC_ROCR_VISIBLE} HIP=${AIC_HIP_VISIBLE} container=${VLLM_CONTAINER}"
+# Each arm is its own compose service, so its own container: vllm-only for the
+# baseline, vllm (in lmcache's namespaces) for the tiered arm.  VLLM_CONTAINER
+# names the one serving now; every helper below goes through it.
+VLLM_BASELINE_CONTAINER="aic-vllm-only-gpu${GPU}"
+VLLM_TIERED_CONTAINER="aic-vllm-gpu${GPU}"
+VLLM_CONTAINER="${VLLM_BASELINE_CONTAINER}"
+echo "[accuracy-test] allocated gpu: ROCR=${AIC_ROCR_VISIBLE} HIP=${AIC_HIP_VISIBLE} containers=${VLLM_BASELINE_CONTAINER},${VLLM_TIERED_CONTAINER}"
 
 # --- host-side pytest venv ---------------------------------------------------
 # lm_eval is deliberately NOT in the image: the gsm8k download does not belong
@@ -220,28 +225,28 @@ compose() { docker compose -f "${AIC_DAY_DIR}/docker/docker-compose.yml" "$@"; }
 # from reaping vLLM's EngineCore children -> compose down/docker rm hang.  Force-
 # kill the stack first, then tear down.  Load-bearing; see cmd_tiny_test.
 _teardown() {
-    local tag="$1" svc c out
-    for svc in vllm lmcache; do
-        # 'timeout' needs a real executable, and compose() is a shell function --
-        # 'timeout 30 compose ...' fails with "No such file or directory" and
-        # captures nothing.  Invoke docker compose directly instead: these logs
-        # are the only post-mortem for a failed arm, so silently empty files are
-        # worse than useless.
-        timeout 30 docker compose -f "${AIC_DAY_DIR}/docker/docker-compose.yml" \
-            logs --no-color --no-log-prefix "$svc" \
-            > "${AIC_LOG_DIR}/accuracy-${tag}-${svc}.log" 2>&1 || true
-    done
+    local tag="$1" c out
+    # By container, not compose service: the serving arm's vLLM is a different
+    # service per phase, and these logs are the only post-mortem for a failed arm.
+    timeout 30 docker logs "${VLLM_CONTAINER}" \
+        > "${AIC_LOG_DIR}/accuracy-${tag}-vllm.log" 2>&1 || true
+    timeout 30 docker logs aic-lmcache \
+        > "${AIC_LOG_DIR}/accuracy-${tag}-lmcache.log" 2>&1 || true
     pkill -9 -f 'vllm.entrypoints.openai' 2>/dev/null || true
     pkill -9 -f 'EngineCore'              2>/dev/null || true
     pkill -9 -f 'lmcache server'          2>/dev/null || true
     sleep 2
-    # docker compose, not compose(): see the logs loop above.
+    # 'timeout' needs a real executable, and compose() is a shell function --
+    # 'timeout 60 compose ...' fails with "No such file or directory".  Both
+    # profiles: down leaves a profiled service's container alone otherwise.
     if ! out="$(timeout 60 docker compose -f "${AIC_DAY_DIR}/docker/docker-compose.yml" \
-            --profile cache down --remove-orphans --timeout 5 2>&1)"; then
+            --profile cache --profile vllm-only down --remove-orphans --timeout 5 2>&1)"; then
         echo "[accuracy-test] WARN: compose down (${tag}) failed; containers may outlive the job:" >&2
         printf '%s\n' "${out}" | tail -5 | sed 's/^/[accuracy-test]   /' >&2
     fi
-    for c in "${VLLM_CONTAINER}" aic-lmcache; do timeout 30 docker rm -f "$c" >/dev/null 2>&1 || true; done
+    for c in "${VLLM_BASELINE_CONTAINER}" "${VLLM_TIERED_CONTAINER}" aic-lmcache; do
+        timeout 30 docker rm -f "$c" >/dev/null 2>&1 || true
+    done
 }
 # shellcheck disable=SC2317  # reached via the EXIT trap below, not inline
 cleanup() {
@@ -253,36 +258,36 @@ cleanup() {
 trap cleanup EXIT
 
 # --- helpers -----------------------------------------------------------------
-# Readiness is probed from inside the container: vLLM publishes no ports, so the
-# Slurm host's loopback cannot reach it (the convention used across the repo).
+# Readiness is probed from inside the container so it does not depend on the
+# host-side port path (the convention used across the repo).
 _wait_ready() {
     local tag="$1"
     for _ in $(seq 1 "${AIC_ACCURACY_READY_TIMEOUT}"); do
-        if docker exec "${VLLM_CONTAINER}" python3 -c \
-            "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/v1/models', timeout=3)" \
-            >/dev/null 2>&1; then
+        if aic_probe "${VLLM_CONTAINER}" 8000 /v1/models; then
             echo "[accuracy-test] ${tag}: endpoint ready"
             return 0
         fi
         sleep 5
     done
     echo "[accuracy-test] FAIL: ${tag}: vLLM never became ready" >&2
-    compose logs --tail 80 --no-color vllm 2>&1 | sed 's/^/  [vllm] /'
+    docker logs --tail 80 "${VLLM_CONTAINER}" 2>&1 | sed 's/^/  [vllm] /'
     return 1
 }
 
-# pytest is host-side but vLLM lives on the aic bridge, so hand pytest the
-# container's bridge IP.  Verified host-routable before this was relied on; if a
-# node ever fails this check the fallback is to run pytest inside the client
+# If a node ever fails this check, fall back to running pytest inside the client
 # container (already on aic, repo mounted), at the cost of a gsm8k download on
 # the compute node.
+# Resolved on every call: the published host port is ephemeral and changes when
+# the publishing container is recreated, so never cache this across a restart.
 _endpoint_url() {
-    # vLLM shares lmcache's network namespace, which publishes port 8000 on the
-    # compute node; reach it via localhost.
-    curl -fsS --max-time 10 "http://127.0.0.1:8000/v1/models" >/dev/null 2>&1 || {
-        echo "[accuracy-test] FAIL: host cannot reach 127.0.0.1:8000" >&2
+    local url
+    url="$(aic_url "${VLLM_CONTAINER}" 8000)" || {
+        echo "[accuracy-test] FAIL: cannot resolve vLLM's published port" >&2
         return 1; }
-    echo "http://127.0.0.1:8000/v1"
+    curl -fsS --max-time 10 "${url}/v1/models" >/dev/null 2>&1 || {
+        echo "[accuracy-test] FAIL: host cannot reach ${url}" >&2
+        return 1; }
+    echo "${url}/v1"
 }
 
 # Apparent size: the sum of file LENGTHS.  The NIXL POSIX adapter carves the
@@ -387,16 +392,14 @@ _lmc() { _metric_sum aic-lmcache http://127.0.0.1:9091/metrics "$1"; }
 # differential the whole gate exists to run -- and left a run that could only
 # fail on catastrophe.
 echo "[accuracy-test] === Phase 1: vram_only arm ==="
-# No LMCache: vllm owns its IPC ns, no KV_TRANSFER_ARG, no --profile cache.
-export VLLM_IPC_MODE=shareable
-export VLLM_PID_MODE=
-export VLLM_NETWORK_MODE=host
+# No LMCache: no KV_TRANSFER_ARG, no --profile cache.  The vllm-only service is
+# vllm on the aic bridge with its own IPC/PID namespaces instead of lmcache's.
 export KV_TRANSFER_ARG=
 export AIC_L2_BACKEND=none
 export VLM_GPU_MEMORY_UTILIZATION=0.90
-if ! compose up -d vllm; then
+if ! compose --profile vllm-only up -d vllm-only; then
     echo "[accuracy-test] FAIL: baseline compose up failed" >&2
-    compose logs --tail 60 --no-color vllm 2>&1 | sed 's/^/  [vllm] /'
+    docker logs --tail 60 "${VLLM_CONTAINER}" 2>&1 | sed 's/^/  [vllm] /'
     exit 1
 fi
 _wait_ready vram_only || exit 1
@@ -469,6 +472,7 @@ sleep 30
 # Phase 2: kvd arm -- LMCache + NIXL POSIX NVMe L2
 # ===========================================================================
 echo "[accuracy-test] === Phase 2: kvd arm (LMCache + NIXL POSIX L2) ==="
+VLLM_CONTAINER="${VLLM_TIERED_CONTAINER}"
 # A constrained VRAM budget is what makes this test non-vacuous: without eviction
 # pressure the KV never reaches L2 and the differential compares two VRAM runs.
 # Phase 3 asserts the eviction actually happened.
@@ -477,9 +481,6 @@ export LMCACHE_L1_SIZE_GB=1
 # NIXL POSIX: no GPUDirect/hipFile requirement, so this runs on any node.
 export AIC_L2_BACKEND=nixl_posix
 export AIC_NIXL_BACKEND=POSIX
-export VLLM_IPC_MODE=service:lmcache
-export VLLM_PID_MODE=service:lmcache
-export VLLM_NETWORK_MODE=container:aic-lmcache
 # vLLM shares lmcache's network namespace, so lmcache is on its loopback.
 export KV_TRANSFER_ARG="--kv-transfer-config '{\"kv_connector\":\"LMCacheMPConnector\",\"kv_role\":\"kv_both\",\"kv_connector_extra_config\":{\"lmcache.mp.host\":\"tcp://localhost\",\"lmcache.mp.port\":6555}}'"
 # Disable CUDA graph capture for the kvd arm: LMCacheMPConnector registers KV

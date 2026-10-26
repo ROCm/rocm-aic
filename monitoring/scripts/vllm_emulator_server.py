@@ -14,7 +14,7 @@
 #
 # Mount this file into the rocm-aic container at runtime; no image rebuild needed:
 #
-#   docker run --rm -p 8000:8000 \
+#   docker run --rm -p 127.0.0.1::8000 \
 #     -v "$(pwd)/monitoring/scripts/vllm_emulator_server.py:/app/vllm_emulator_server.py:ro" \
 #     -e VLLM_MODEL=facebook/opt-125m \
 #     rocm-aic python3 /app/vllm_emulator_server.py

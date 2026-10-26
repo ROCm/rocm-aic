@@ -449,8 +449,8 @@ AIC_EMULATE_PACK_HOST="${AIC_EMULATE_PACK_HOST:-}"
 # stops before it -- so it runs the PRODUCTION images (AIC_VLLM_IMAGE /
 # AIC_LMCACHE_IMAGE).  aic-vllm also ships the llm-emu plugin, which is inert
 # unless VLLM_EMULATOR_ENABLE_ORACLE=1, so the same images cover both.
-# The emulated KV pool is really allocated here (host memory, lazily paged),
-# because the connector needs real buffers to register.  Default well under
+# The emulated KV pool is really allocated here (resident in /dev/shm from
+# startup), because the connector needs real buffers to register.  Default well under
 # AIC_EMULATE_MP_MEM rather than inheriting the pack's ~100+ GiB MI300X value.
 AIC_EMULATE_MP_KV_BYTES="${AIC_EMULATE_MP_KV_BYTES:-8589934592}"   # 8 GiB
 AIC_EMULATE_MP_MEM="${AIC_EMULATE_MP_MEM:-64G}"
@@ -2486,7 +2486,7 @@ cleanup() {
     done
     # vLLM shares lmcache's PID ns (for cross-container HIP IPC), which blocks docker
     # from reaping vLLM's EngineCore children -> compose down/docker rm hang.  Force-
-    # kill the stack first, then tear down (one MP stack per node under host net).
+    # kill the stack first, then tear down (one MP stack per node: fixed names).
     pkill -9 -f 'vllm.entrypoints.openai' 2>/dev/null || true
     pkill -9 -f 'EngineCore'              2>/dev/null || true
     pkill -9 -f 'lmcache server'          2>/dev/null || true
@@ -2496,23 +2496,6 @@ cleanup() {
     rm -rf /tmp/aic-tiny-nvme /tmp/aic-tiny-nfs 2>/dev/null || true
 }
 trap cleanup EXIT
-
-# Load cached Python base images from shared NFS to avoid Docker Hub rate limits.
-for _py_img in "python:3.12" "python:3.12-slim"; do
-    if docker image inspect "\${_py_img}" >/dev/null 2>&1; then
-        : # already present on this node
-    else
-        _py_tag="\$(printf '%s' "\${_py_img}" | tr ':/' '--')"
-        _py_tar="${AIC_IMAGE_DIR}/\${_py_tag}.tar.zst"
-        if [[ -f "\${_py_tar}" ]]; then
-            ${DECOMPRESS_CMD} "\${_py_tar}" | docker load >/dev/null \
-                && echo "[tiny-test] loaded \${_py_img} from cache" \
-                || docker pull "\${_py_img}" >/dev/null 2>&1 || true
-        else
-            docker pull "\${_py_img}" >/dev/null 2>&1 || true
-        fi
-    fi
-done
 
 echo "[tiny-test] bringing up compose MP stack (model=${AIC_TINY_MODEL}) ..."
 if ! compose --profile cache up -d; then
@@ -2527,9 +2510,7 @@ fi
 # inside its container instead of the Slurm host's loopback interface.
 ready=0
 for _i in \$(seq 1 ${AIC_TINY_READY_TIMEOUT}); do
-    if docker exec "\${VLLM_CONTAINER}" python3 -c \
-        "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/v1/models', timeout=3)" \
-        >/dev/null 2>&1; then ready=1; break; fi
+    if aic_probe "\${VLLM_CONTAINER}" 8000 /v1/models; then ready=1; break; fi
     _vllm_state="\$(docker inspect --format '{{.State.Status}}' "\${VLLM_CONTAINER}" 2>/dev/null || true)"
     if [ "\${_vllm_state}" != "running" ]; then
         _vllm_exit="\$(docker inspect --format '{{.State.ExitCode}}' "\${VLLM_CONTAINER}" 2>/dev/null || echo unknown)"
@@ -2746,10 +2727,8 @@ for _comp in version rocm pytorch vllm llm-emu aiter flash-attention lmcache nix
 done
 
 # Scrape every /metrics endpoint that may be present; skip those that are not.
-# Services on the compose bridge network (vllm, lmcache, etc.) are reached via
-# docker exec aic-client curl using compose DNS names.  Host-side exporters
-# (node_exporter, nvme_exporter, rdma_exporter, amdgpu_exporter) listen on the
-# host network and are reached directly via localhost.
+# Every service is reached via docker exec aic-client curl using its compose
+# DNS name; none of the exporters publishes a host port.
 echo "[prom-dump] scraping /metrics endpoints..."
 mkdir -p '${prom_scratch}'
 _args=""
@@ -2764,17 +2743,6 @@ _scrape_compose() {
         echo "  \${name} \${host}:\${port} — not reachable (skipped)"
     fi
 }
-# Scrape directly from the host (host-network services).
-_scrape_host() {
-    local name="\$1" port="\$2"
-    local out='${prom_scratch}'/metrics_"\${name}".txt
-    if curl -sf "http://localhost:\${port}/metrics" > "\${out}" 2>/dev/null && [ -s "\${out}" ]; then
-        echo "  \${name} localhost:\${port} — \$(grep -c '^# HELP' "\${out}") metrics"
-        _args="\${_args} --source \${name}:\${out}"
-    else
-        echo "  \${name} localhost:\${port} — not reachable (skipped)"
-    fi
-}
 _scrape_compose vllm                aic-lmcache                  8000
 _scrape_compose lmcache             aic-lmcache                  8080
 _scrape_compose nixl                aic-lmcache                  19090
@@ -2782,9 +2750,9 @@ _scrape_compose lmcache_coordinator aic-lmcache-coordinator      9301
 _scrape_compose hsa_snoop           aic-hsa-snoop                9488
 _scrape_compose amdgpu_exporter     aic-amdgpu-exporter          5000
 _scrape_compose prometheus          aic-prometheus               9090
-_scrape_host    node_exporter                                     9100
-_scrape_host    nvme_exporter                                     9998
-_scrape_host    rdma_exporter                                     9879
+_scrape_compose node_exporter       aic-node-exporter            9100
+_scrape_compose nvme_exporter       aic-nvme-exporter            9998
+_scrape_compose rdma_exporter       aic-rdma-exporter            9879
 
 # Collect running container names, images, and status for the report.
 # Write to a TSV file; metrics_to_md.py reads it via --containers-tsv.
@@ -2919,7 +2887,7 @@ fi
 
 ready=0
 for _i in \$(seq 1 ${AIC_EMULATE_READY_TIMEOUT}); do
-    if curl -fsS http://localhost:8000/v1/models >/dev/null 2>&1; then ready=1; break; fi
+    if aic_probe aic-vllm-emulator 8000 /v1/models; then ready=1; break; fi
     # Bail out early if the container died rather than waiting the full timeout.
     if [ -z "\$(docker ps -q -f name=aic-vllm-emulator)" ]; then
         echo "[emulate-test] FAIL: the emulator container exited during startup" >&2
@@ -2933,6 +2901,7 @@ if [ "\${ready}" != "1" ]; then
     compose --profile emulate logs --tail 120 --no-color vllm-emulator 2>&1 | sed 's/^/  [emu] /'
     exit 1
 fi
+_url="\$(aic_url aic-vllm-emulator 8000)" || exit 1
 echo "[emulate-test] endpoint ready; sending one chat completion ..."
 
 # The container maps no /dev/kfd or /dev/dri (see the compose service), so it
@@ -2945,7 +2914,7 @@ else
 fi
 echo "[emulate-test] /dev/kfd inside the container: \${kfd_in_container}"
 
-resp="\$(curl -fsS http://localhost:8000/v1/chat/completions \
+resp="\$(curl -fsS "\${_url}/v1/chat/completions" \
     -H 'Content-Type: application/json' \
     -d '{"model":"${AIC_EMULATE_MODEL}","messages":[{"role":"user","content":"Reply with the single word: pong"}],"max_tokens":16,"temperature":0}' 2>&1)" || {
     echo "[emulate-test] FAIL: completion request failed: \${resp}" >&2; exit 1; }
@@ -3117,13 +3086,17 @@ YML
     export LMCACHE_CONFIG_FILE=/config/lmcache.yml
 fi
 
-# The same connector JSON \`make up\` and the cliff kvd arm use, plus
+# The same connector JSON \`make up\` and the cliff kvd arm use, but addressed
+# by container name: the emulators sit in separate network namespaces on the
+# aic bridge, so localhost would be vllm-emulator's own loopback.  Plus
 # mp_transfer_mode: left on auto, create_transfer_context() dispatches on
 # tensor.device.type and host-memory KV falls to engine_driven, which moves the
 # copy into the vLLM worker.  lmcache_driven keeps the shipped topology (the
 # SERVER pulls from the registered buffers, here POSIX SHM instead of HIP IPC).
-export EMU_KV_TRANSFER_ARG="--kv-transfer-config '{\"kv_connector\":\"LMCacheMPConnector\",\"kv_role\":\"kv_both\",\"kv_connector_extra_config\":{\"lmcache.mp.host\":\"tcp://localhost\",\"lmcache.mp.port\":\${LMCACHE_PORT},\"lmcache.mp.mp_transfer_mode\":\"lmcache_driven\"}}'"
+export EMU_KV_TRANSFER_ARG="--kv-transfer-config '{\"kv_connector\":\"LMCacheMPConnector\",\"kv_role\":\"kv_both\",\"kv_connector_extra_config\":{\"lmcache.mp.host\":\"tcp://aic-lmcache-emulator\",\"lmcache.mp.port\":\${LMCACHE_PORT},\"lmcache.mp.mp_transfer_mode\":\"lmcache_driven\"}}'"
 export VLLM_EXTRA_ARGS="--enable-prefix-caching"
+# One /dev/shm for both: the server opens the KV SHM segments by name.
+export EMU_IPC_MODE=container:aic-lmcache-emulator
 
 compose() { docker compose -f '${AIC_DAY_DIR}/docker/docker-compose.yml' "\$@"; }
 cleanup() {
@@ -3136,36 +3109,8 @@ cleanup() {
     timeout 90 docker compose -f '${AIC_DAY_DIR}/docker/docker-compose.yml' \
         --profile emulate-mp down --remove-orphans --timeout 10 >/dev/null 2>&1 || true
     timeout 30 docker rm -f aic-vllm-emulator aic-lmcache-emulator >/dev/null 2>&1 || true
-    _clean_kv_shm
 }
 trap cleanup EXIT
-
-# LMCache migrates the emulator's KV buffers into POSIX SHM segments named
-# /lmcache_kv_<pid>_<n> (lmcache/v1/platform/cpu/shm.py).  With \`ipc: host\` --
-# which the server needs in order to map them -- those live in the HOST's
-# /dev/shm, and the pid is the containerised EngineCore's, which is the same
-# small number on every run.  A killed engine never runs its finaliser, so the
-# next run collides:  FileExistsError: [Errno 17] File exists: '/lmcache_kv_111_0'
-# Clean them at both ends, and only when no emulator container is live, so a
-# concurrent run on the same node is not sabotaged.
-_clean_kv_shm() {
-    if [ -n "\$(docker ps -q -f name=aic-vllm-emulator -f name=aic-lmcache-emulator 2>/dev/null)" ]; then
-        echo "[emulate-mp-test] emulator containers still running; leaving /dev/shm alone"
-        return 0
-    fi
-    _n="\$(ls /dev/shm/lmcache_kv_* 2>/dev/null | wc -l)"
-    if [ "\${_n}" -gt 0 ]; then
-        echo "[emulate-mp-test] removing \${_n} stale /dev/shm/lmcache_kv_* segment(s)"
-        # Through a container, not plain rm: the segments were created by the
-        # container's root, so an unprivileged host user gets EPERM.  --ipc=host
-        # is what puts the host's /dev/shm in view, the same way the emulator
-        # services see it.
-        timeout 60 docker run --rm --ipc=host --entrypoint /bin/sh \
-            '${AIC_LMCACHE_IMAGE}' -c 'rm -f /dev/shm/lmcache_kv_*' >/dev/null 2>&1 || true
-        echo "[emulate-mp-test]   remaining: \$(ls /dev/shm/lmcache_kv_* 2>/dev/null | wc -l)"
-    fi
-}
-_clean_kv_shm
 
 # Prometheus sidecar, started BEFORE the stack so it is scraping from the first
 # scrape interval (5s) rather than joining halfway through the run.  Exporters
@@ -3184,8 +3129,11 @@ start_monitoring
 # profile at all), and compose starts every profile-less service on any \`up\`,
 # so a bare \`--profile emulate-mp up\` also launches aic-vllm-gpu0 on this
 # CPU-only node.
+# --force-recreate: the KV SHM segments (/lmcache_kv_<pid>_<n>) live in
+# lmcache-emulator's IPC namespace and the containerised EngineCore pid repeats,
+# so a namespace left over from a killed run collides with FileExistsError.
 echo "[emulate-mp-test] bringing up the emulate-mp compose profile ..."
-if ! compose --profile emulate-mp up -d lmcache-emulator vllm-emulator; then
+if ! compose --profile emulate-mp up -d --force-recreate lmcache-emulator vllm-emulator; then
     echo "[emulate-mp-test] FAIL: compose up failed" >&2
     compose --profile emulate-mp logs --tail 80 --no-color 2>&1 | sed 's/^/  [mp] /'
     exit 1
@@ -3197,7 +3145,7 @@ fi
 
 ready=0
 for _i in \$(seq 1 ${AIC_EMULATE_READY_TIMEOUT}); do
-    if curl -fsS http://localhost:8000/v1/models >/dev/null 2>&1; then ready=1; break; fi
+    if aic_probe aic-vllm-emulator 8000 /v1/models; then ready=1; break; fi
     if [ -z "\$(docker ps -q -f name=aic-vllm-emulator)" ]; then
         echo "[emulate-mp-test] FAIL: the emulator container exited during startup" >&2
         compose --profile emulate-mp logs --tail 150 --no-color 2>&1 | sed 's/^/  [mp] /'
@@ -3212,6 +3160,8 @@ if [ "\${ready}" != "1" ]; then
 fi
 
 rc=0
+_url="\$(aic_url aic-vllm-emulator 8000)" || exit 1
+_lurl="\$(aic_url aic-lmcache-emulator 8080)" || exit 1
 if docker exec aic-vllm-emulator test -e /dev/kfd 2>/dev/null; then
     echo "[emulate-mp-test] FAIL: /dev/kfd is visible inside the emulator container" >&2; rc=1
 else
@@ -3224,7 +3174,7 @@ fi
 # collide with anything else in the cache.
 _prompt="\$(python3 -c "print('The quick brown fox jumps over the lazy dog. ' * 96)")"
 _ask() {
-    curl -fsS http://localhost:8000/v1/chat/completions \
+    curl -fsS "\${_url}/v1/chat/completions" \
         -H 'Content-Type: application/json' \
         -d "\$(python3 -c "
 import json,sys
@@ -3293,13 +3243,13 @@ if [ -n '${AIC_EMULATE_MP_BENCH}' ]; then
         fi
         # Per-point cache counters: the whole reason for a warm repeat is to see
         # these MOVE, and an end-of-run total cannot show that.
-        curl -fsS http://localhost:8080/metrics 2>/dev/null | awk -v tag="\${tag:-cold}" '
+        curl -fsS "\${_lurl}/metrics" 2>/dev/null | awk -v tag="\${tag:-cold}" '
             /^lmcache_mp_lookup_requested_tokens_total/ {req=\$NF}
             /^lmcache_mp_lookup_hit_tokens_total/       {hit=\$NF}
             /^lmcache_mp_l1_read_chunks_total/          {l1r=\$NF}
             /^lmcache_mp_l2_prefetch_hit_chunks_total/  {l2h=\$NF}
             END {printf "[emulate-mp-test]   after %-6s cum: lookup %d/%d tokens hit, L1 reads %d, L2 prefetch hits %d\n", tag, hit, req, l1r, l2h}'
-        curl -fsS http://localhost:19090/metrics 2>/dev/null | awk -v tag="\${tag:-cold}" '
+        docker exec aic-lmcache-emulator curl -fsS http://localhost:19090/metrics 2>/dev/null | awk -v tag="\${tag:-cold}" '
             /^agent_tx_bytes_total/ {tx=\$NF} /^agent_rx_bytes_total/ {rx=\$NF}
             END {printf "[emulate-mp-test]   after %-6s cum: NIXL tx %.1f MiB, rx %.1f MiB\n", tag, tx/1048576, rx/1048576}'
     done
@@ -3347,7 +3297,7 @@ fi
 #    log-format-dependent evidence; fall back to the connector's own counters.
 #    :8080 -- the MP server's HTTP API -- not --prometheus-port, which opens no
 #    listener in v0.5.2 ("standalone metrics HTTP server disabled").
-if curl -fsS http://localhost:8080/metrics -o "\${_logdir}/emulate-mp-lmcache-metrics.txt" 2>/dev/null; then
+if curl -fsS "\${_lurl}/metrics" -o "\${_logdir}/emulate-mp-lmcache-metrics.txt" 2>/dev/null; then
     # 'write' matters: with AIC_EMULATE_MP_L2_BACKEND=none there is no L2 tier at
     # all, so every lmcache_mp_l2_store_* family is structurally absent and the
     # only evidence of a store is lmcache_mp_l1_write_chunks_total.  Matching just
@@ -3366,14 +3316,14 @@ if curl -fsS http://localhost:8080/metrics -o "\${_logdir}/emulate-mp-lmcache-me
         echo "[emulate-mp-test] WARN: no retrieve/hit counter moved; the warm request may have been served from vLLM's own prefix cache"
     fi
 else
-    echo "[emulate-mp-test] WARN: lmcache /metrics unreachable on :9091; skipping the data-movement check"
+    echo "[emulate-mp-test] WARN: lmcache /metrics unreachable at \${_lurl}; skipping the data-movement check"
 fi
 
 # 7. Nothing stranded.  A request parked in WAITING_FOR_REMOTE_KVS that never
 #    leaves is the exact symptom of the connector output never reaching the
 #    scheduler -- the failure mode the executor hook's connector cycle exists
 #    to prevent -- and both requests above have already returned by now.
-_waiting="\$(curl -fsS http://localhost:8000/metrics 2>/dev/null \
+_waiting="\$(curl -fsS "\${_url}/metrics" 2>/dev/null \
     | awk '/^vllm:num_requests_waiting/ {s+=\$NF} END {printf "%d", s+0}')"
 if [ "\${_waiting:-0}" -eq 0 ]; then
     echo "[emulate-mp-test] OK: no request left waiting on a remote KV load"
@@ -3390,12 +3340,14 @@ if [ "${AIC_EMULATE_MP_MONITORING}" = "1" ]; then
     # Give Prometheus a few 5s scrape intervals past the last request.
     sleep 20
     _promdir="\${_logdir}/prom-check"; mkdir -p "\${_promdir}"
-    if curl -fsS 'http://localhost:9090/api/v1/targets?state=active' \
+    _prom="\$(aic_url aic-prometheus 9090)" || exit 1
+    if curl -fsS "\${_prom}/api/v1/targets?state=active" \
             -o "\${_promdir}/targets.json" 2>/dev/null; then
-        python3 - "\${_promdir}/targets.json" '${AIC_EMULATE_MP_L2_BACKEND}' <<'PYEOF'
+        python3 - "\${_promdir}/targets.json" '${AIC_EMULATE_MP_L2_BACKEND}' "\${_prom}" <<'PYEOF'
 import json, sys, urllib.parse, urllib.request
 targets = json.load(open(sys.argv[1]))["data"]["activeTargets"]
 l2 = sys.argv[2]
+prom = sys.argv[3]
 health = {}
 for t in targets:
     job = t["labels"]["job"]
@@ -3407,7 +3359,7 @@ def series(job):
     q = urllib.parse.quote(f'count(count by (__name__)({{job="{job}"}}))')
     try:
         with urllib.request.urlopen(
-                f"http://localhost:9090/api/v1/query?query={q}", timeout=10) as r:
+                f"{prom}/api/v1/query?query={q}", timeout=10) as r:
             res = json.load(r)["data"]["result"]
         return int(float(res[0]["value"][1])) if res else 0
     except Exception as e:
@@ -3437,8 +3389,10 @@ PYEOF
         [ \$? -eq 0 ] || rc=1
         # Keep the raw exporter output next to the verdict -- when a job is up
         # but empty, this is the only thing that says why.
-        curl -fsS http://localhost:8080/metrics  -o "\${_promdir}/lmcache-metrics.txt" 2>/dev/null || true
-        curl -fsS http://localhost:19090/metrics -o "\${_promdir}/nixl-metrics.txt"   2>/dev/null || true
+        curl -fsS "\${_lurl}/metrics" -o "\${_promdir}/lmcache-metrics.txt" 2>/dev/null || true
+        # :19090 is not published; read it from inside the lmcache container.
+        docker exec aic-lmcache-emulator curl -fsS http://localhost:19090/metrics \
+            > "\${_promdir}/nixl-metrics.txt" 2>/dev/null || true
         for _f in lmcache nixl; do
             [ -s "\${_promdir}/\${_f}-metrics.txt" ] && \
                 echo "[emulate-mp-test]   \${_f} exporter: \$(grep -cE '^[a-zA-Z]' "\${_promdir}/\${_f}-metrics.txt") sample lines"
@@ -3522,7 +3476,7 @@ if nx:
               + (f", {tx / xfer:.0f} MB/s effective" if tx else ""))
 PYEOF
     else
-        echo "[emulate-mp-test] FAIL: Prometheus not answering on :9090" >&2; rc=1
+        echo "[emulate-mp-test] FAIL: Prometheus not answering at \${_prom}" >&2; rc=1
     fi
 else
     echo "[emulate-mp-test] monitoring disabled (AIC_EMULATE_MP_MONITORING=0)"
@@ -3626,7 +3580,7 @@ echo "[validate] starting the emulator with pack /profiles/${pack_file} ..."
 compose --profile emulate up -d vllm-emulator || { echo "[validate] FAIL: compose up" >&2; exit 1; }
 ready=0
 for _i in \$(seq 1 ${AIC_EMULATE_READY_TIMEOUT}); do
-    curl -fsS http://localhost:8000/v1/models >/dev/null 2>&1 && { ready=1; break; }
+    aic_probe aic-vllm-emulator 8000 /v1/models && { ready=1; break; }
     [ -z "\$(docker ps -q -f name=aic-vllm-emulator)" ] && break
     sleep 5
 done
@@ -3833,6 +3787,8 @@ command -v rocm_agent_enumerator >/dev/null 2>&1 && \
 
 # shellcheck source=/dev/null
 source '${AIC_DAY_DIR}/.slurm/image-dist-lib.sh'
+# shellcheck source=/dev/null
+source '${AIC_DAY_DIR}/scripts/aic-endpoints.sh'
 aic_image_fetch capture '${AIC_VLLM_IMAGE}' '${tarball}' || exit 1
 
 # Honour Slurm's GPU allocation: with --gres=gpu:1 the scheduler exports the
@@ -3861,7 +3817,7 @@ trap cleanup EXIT
 echo "[capture] starting a REAL serve with step-cycle tracing -> \${trace}"
 docker run -d --name aic-vllm-capture \
     --device /dev/kfd --device /dev/dri \
-    --network host --ipc host \
+    --ipc host \
     --cap-add CAP_SYS_ADMIN --cap-add SYS_PTRACE \
     --security-opt seccomp=unconfined \
     -v '${AIC_CAPTURE_HF_HOME}':/hf \
@@ -3889,7 +3845,7 @@ docker run -d --name aic-vllm-capture \
 
 ready=0
 for _i in \$(seq 1 ${AIC_CAPTURE_READY_TIMEOUT}); do
-    if curl -fsS http://localhost:8000/v1/models >/dev/null 2>&1; then ready=1; break; fi
+    if aic_probe aic-vllm-capture 8000 /v1/models; then ready=1; break; fi
     if [ -z "\$(docker ps -q -f name=aic-vllm-capture)" ]; then
         echo "[capture] FAIL: the vLLM container exited during startup" >&2
         docker logs --tail 120 aic-vllm-capture 2>&1 | sed 's/^/  [vllm] /'
@@ -4410,21 +4366,6 @@ ${_bake_exporters}
 else
     echo "[bake] WARN: Docker daemon not accessible; skipping exporter builds" >&2
 fi
-
-# --- Cache Python base images so test nodes avoid Docker Hub rate limits -------
-for _py_img in "python:3.12" "python:3.12-slim"; do
-    _py_tag="\$(printf '%s' "\${_py_img}" | tr ':/' '--')"
-    _py_tar="${AIC_IMAGE_DIR}/\${_py_tag}.tar.zst"
-    if [[ -f "\${_py_tar}" ]]; then
-        echo "[bake] python cache hit: \${_py_tar}"
-    elif docker pull "\${_py_img}" >/dev/null 2>&1; then
-        docker save "\${_py_img}" | ${COMPRESS_CMD} > "\${_py_tar}" \
-            && echo "[bake] cached \${_py_img} -> \${_py_tar}" \
-            || { echo "[bake] WARN: could not save \${_py_img}" >&2; rm -f "\${_py_tar}"; }
-    else
-        echo "[bake] WARN: could not pull \${_py_img} (rate-limited?); test nodes will pull on demand" >&2
-    fi
-done
 exit 0
 REMOTE
 )"

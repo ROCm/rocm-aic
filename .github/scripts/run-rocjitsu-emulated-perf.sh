@@ -27,6 +27,8 @@ LOG_DIR="${ROCJITSU_OUT_DIR}/logs"
 RESULTS_DIR="${ROCJITSU_OUT_DIR}/results"
 
 mkdir -p "${LOG_DIR}/vllm-emulator/bench" "${RESULTS_DIR}"
+# shellcheck source=scripts/aic-endpoints.sh
+source scripts/aic-endpoints.sh
 
 compose() {
     docker compose -f docker/docker-compose.yml "$@"
@@ -52,7 +54,7 @@ compose --profile emulate up -d vllm-emulator
 
 ready=0
 for _i in $(seq 1 "${ROCJITSU_READY_TIMEOUT}"); do
-    if curl -fsS http://localhost:8000/v1/models >/dev/null 2>&1; then
+    if aic_probe aic-vllm-emulator 8000 /v1/models; then
         ready=1
         break
     fi

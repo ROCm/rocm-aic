@@ -259,8 +259,9 @@ AIC_VLLM_READY_TIMEOUT="${AIC_VLLM_READY_TIMEOUT:-1200}"
 # loader (e.g. when debugging load-order issues or on non-safetensor checkpoints).
 AIC_LOAD_FORMAT="${AIC_LOAD_FORMAT:-fastsafetensors}"
 
-# Every arm now serves vLLM on the compose-published :8000 (arms run sequentially,
-# each stack torn down before the next), so one endpoint port suffices.
+# Every arm serves vLLM on container port 8000 (arms run sequentially, each stack
+# torn down before the next), so one endpoint port suffices.  wait_ready probes it
+# from inside the container; the bench container uses the aic-vllm alias.
 VLLM_ENDPOINT_PORT=8000
 LMCACHE_PORT=6555
 STAMP="$(date +%Y%m%d-%H%M%S)"
@@ -565,8 +566,8 @@ if [[ "${AIC_EXPORTERS}" != "0" ]]; then
 fi
 
 # --- Benchmark client env (offline HF cache) ---------------------------------
-# The bench + plot containers run with --network host and reach the vLLM endpoint
-# at localhost:<published port>.  The inference stack itself is launched via
+# The bench container joins the aic bridge and reaches vLLM at http://aic-vllm:8000
+# (the plot container needs no network).  The inference stack itself is launched via
 # docker/docker-compose.yml (see the compose-stack setup block below), not raw
 # docker run -- all container/GPU/cap flags now live in that compose file.
 HF_ENV=(-e HF_HOME=/hf -e HF_HUB_CACHE=/hf/hub -e HF_HUB_OFFLINE=1
@@ -583,12 +584,12 @@ HF_ENV=(-e HF_HOME=/hf -e HF_HUB_CACHE=/hf/hub -e HF_HUB_OFFLINE=1
 
 # --- Compose stack (single source of truth: docker/docker-compose.yml) --------
 # Every arm drives the SAME compose file.  The plain vram baseline starts only the
-# `vllm` service (empty KV_TRANSFER_ARG; lmcache is skipped via its `cache`
-# profile, and vllm's depends_on uses required:false so it can run alone).  The
-# nvme/gds arms add `--profile cache`, so the standalone lmcache server runs and
-# vllm connects to it with LMCacheMPConnector -- i.e. LMCache MP mode on every
-# kvd arm.  Per-arm topology (GDS slab vs AIS_MT NVMe L2 vs local_disk) is
-# selected through the env exported below; the arm functions flip GDS_MODE /
+# `vllm-only` service (empty KV_TRANSFER_ARG; vllm proper runs in lmcache's
+# namespaces, and lmcache is behind the `cache` profile).  The nvme/gds arms
+# add `--profile cache`, so the standalone lmcache server runs and vllm connects
+# to it with LMCacheMPConnector -- i.e. LMCache MP mode on every kvd arm.
+# Per-arm topology (GDS slab vs AIS_MT NVMe L2 vs local_disk) is selected
+# through the env exported below; the arm functions flip GDS_MODE /
 # AIC_L2_BACKEND / LMCACHE_L1_SIZE_GB / KV_TRANSFER_ARG before `compose up`.
 COMPOSE_FILE="${REPO}/docker/docker-compose.yml"
 compose() { docker compose -f "${COMPOSE_FILE}" "$@"; }
@@ -631,11 +632,11 @@ export VLLM_LOGGING_LEVEL="${VLLM_LOGGING_LEVEL:-WARNING}"
 AIC_GDS_SLAB_GB="${LMCACHE_L1_SIZE_GB}"
 
 # --- Helpers -----------------------------------------------------------------
-wait_ready() { # $1=port $2=timeout_s
-  local port="$1" timeout="${2:-${AIC_VLLM_READY_TIMEOUT:-1200}}" waited=0
-  log "waiting for vLLM on :${port} (up to ${timeout}s)"
+wait_ready() { # $1=container $2=container-port $3=timeout_s
+  local ctr="$1" port="$2" timeout="${3:-${AIC_VLLM_READY_TIMEOUT:-1200}}" waited=0
+  log "waiting for vLLM on ${ctr}:${port} (up to ${timeout}s)"
   while ((waited < timeout)); do
-    if curl -fsS "http://localhost:${port}/v1/models" >/dev/null 2>&1; then
+    if aic_probe "${ctr}" "${port}" /v1/models; then
       log "vLLM :${port} is ready (${waited}s)"
       return 0
     fi
@@ -648,13 +649,13 @@ wait_ready() { # $1=port $2=timeout_s
 run_bench() { # $1=arm $2=endpoint_port $3=out_csv $4=extra args...
   local arm="$1" port="$2" out="$3"
   shift 3
-  log "running sweep: arm=${arm} endpoint=:${port} -> ${out}"
-  docker run --rm --network host \
+  log "running sweep: arm=${arm} endpoint=http://aic-vllm:${port} -> ${out}"
+  docker run --rm --network aic \
     -v "${REPO}":/work -w /work \
     -v "${HF_HOME}":/hf "${HF_ENV[@]}" \
     --entrypoint python3 "${AIC_IMAGE}" \
     benchmarks/run_cliff.py \
-    --endpoint "http://localhost:${port}" \
+    --endpoint "http://aic-vllm:${port}" \
     --model "${VLLM_MODEL}" \
     --arm "${arm}" \
     --isl "${BENCH_ISL}" \
@@ -680,20 +681,21 @@ rm_containers() { docker rm -f "$@" >/dev/null 2>&1 || true; }
 stop_stack() {
   local svc c
   # Capture each service's logs before teardown (bounded).
-  for svc in vllm lmcache; do
+  for svc in vllm-only vllm lmcache; do
     timeout 30 compose logs --no-color --no-log-prefix "${svc}" >"${LOGDIR}/container-aic-${svc}.log" 2>&1 || true
   done
   # vLLM + lmcache run in a SHARED PID namespace (required for cross-container HIP
   # IPC KV registration).  That prevents docker from reaping vLLM's EngineCore
   # children, so a plain `compose down`/`docker rm` HANGS.  Force-kill the stack's
-  # processes first (one MP stack per node under host networking, so scoping by
-  # process name is safe here), then tear the now-empty containers down.
+  # processes first (one MP stack per node: fixed container names, so scoping by
+  # process name is safe here), then tear the now-empty
+  # containers down.
   pkill -9 -f 'vllm.entrypoints.openai' 2>/dev/null || true
   pkill -9 -f 'EngineCore' 2>/dev/null || true
   pkill -9 -f 'lmcache server' 2>/dev/null || true
   sleep 2
-  timeout 60 compose --profile cache down --remove-orphans --timeout 5 >/dev/null 2>&1 || true
-  for c in aic-vllm-gpu0 aic-lmcache; do timeout 30 docker rm -f "${c}" >/dev/null 2>&1 || true; done
+  timeout 60 compose --profile cache --profile vllm-only down --remove-orphans --timeout 5 >/dev/null 2>&1 || true
+  for c in aic-vllm-only-gpu${GPU} aic-vllm-gpu0 aic-lmcache; do timeout 30 docker rm -f "${c}" >/dev/null 2>&1 || true; done
 }
 
 # --- Metrics-capture sidecar (Prometheus + optional exporters) ---------------
@@ -711,25 +713,22 @@ trap stop_monitoring EXIT
 # =============================================================================
 # Arm A — vram_only : plain vLLM baseline, no LMCache connector
 # =============================================================================
-# `compose up vllm` with an empty KV_TRANSFER_ARG starts vLLM alone -- lmcache is
-# behind the `cache` profile (skipped) and vllm's depends_on is required:false.
+# The vllm-only service with an empty KV_TRANSFER_ARG: vLLM alone, on the aic
+# bridge with its own IPC and PID namespaces (vllm proper lives in lmcache's).
 VRAM_CSV="${RESULTS}/cliff-vram_only-${STAMP}.csv"
 run_arm_vram() {
-  rm_containers aic-vllm-gpu0 aic-lmcache
+  rm_containers "aic-vllm-only-gpu${GPU}" aic-vllm-gpu0 aic-lmcache
   log "=== Arm A (vram_only): plain vLLM (no LMCache) on :${VLLM_ENDPOINT_PORT} ==="
   export KV_TRANSFER_ARG="" # no connector -> plain VRAM-prefix-cache-only vLLM
   export GDS_MODE=""
-  export VLLM_IPC_MODE=shareable # private IPC ns; no lmcache IPC ns to join
-  export VLLM_PID_MODE="" # vllm runs alone; no lmcache PID ns to join
-  export VLLM_NETWORK_MODE=host # no lmcache network ns to join
-  if ! compose up -d vllm; then
+  if ! compose --profile vllm-only up -d vllm-only; then
     log "Arm A: compose up vllm failed"
     stop_stack
     return 1
   fi
-  if ! wait_ready "${VLLM_ENDPOINT_PORT}"; then
+  if ! wait_ready "aic-vllm-only-gpu${GPU}" "${VLLM_ENDPOINT_PORT}"; then
     log "Arm A: server never became ready; last logs:"
-    compose logs --tail 40 --no-color vllm 2>&1 | sed 's/^/    /'
+    compose logs --tail 40 --no-color vllm-only 2>&1 | sed 's/^/    /'
     stop_stack
     return 1
   fi
@@ -785,8 +784,6 @@ run_arm_kvd() { # $1=mode(nvme|gds) $2=out_csv
   # falsely trigger recovery. Real crashes will still be detected once vLLM stops
   # responding entirely (the ZMQ channel closes cleanly on process exit).
   local _hb="${LMCACHE_HEARTBEAT_INTERVAL:-900}"
-  # Sharing lmcache's PID/IPC namespaces does not share its network namespace;
-  # resolve the peer through the Compose network, as the interactive stack does.
   export KV_TRANSFER_ARG="--kv-transfer-config '{\"kv_connector\":\"LMCacheMPConnector\",\"kv_role\":\"kv_both\"${_fp},\"kv_connector_extra_config\":{\"lmcache.mp.host\":\"tcp://aic-lmcache\",\"lmcache.mp.port\":${LMCACHE_PORT},\"lmcache.mp.heartbeat_interval\":${_hb}}}'"
   export VLLM_IPC_MODE=service:lmcache # join lmcache IPC ns for cross-container HIP IPC
   export VLLM_PID_MODE=service:lmcache # share lmcache PID ns for cross-container HIP IPC
@@ -835,7 +832,7 @@ run_arm_kvd() { # $1=mode(nvme|gds) $2=out_csv
     stop_stack
     return 1
   fi
-  if ! wait_ready "${VLLM_ENDPOINT_PORT}"; then
+  if ! wait_ready "aic-vllm-gpu${GPU}" "${VLLM_ENDPOINT_PORT}"; then
     log "kvd/${mode}: server never became ready; last logs:"
     compose logs --tail 40 --no-color lmcache 2>&1 | sed 's/^/  [lmcache] /'
     compose logs --tail 60 --no-color vllm 2>&1 | sed 's/^/  [vllm]    /'
@@ -929,7 +926,7 @@ run_plot() { # $1=out_subdir  $2..=candidate CSV paths (absolute)
     return
   }
   mkdir -p "${PLOTS}/${sub}"
-  docker run --rm --network host -v "${REPO}":/work -w /work \
+  docker run --rm --network none -v "${REPO}":/work -w /work \
     --entrypoint python3 "${AIC_IMAGE}" \
     benchmarks/plot_cliff.py \
     --input "${inputs[@]}" \

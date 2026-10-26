@@ -3,20 +3,25 @@
 #
 # Infrastructure targets: monitoring, export tarball, internal helpers.
 
-.PHONY: monitoring-up monitoring-down monitoring-logs \
+.PHONY: monitoring-up monitoring-down monitoring-logs endpoints \
         export check-hf-token check-gds-slab prep-dirs prep-kvbench-dirs
 
 monitoring-up: ensure-compose
 	@mkdir -p "$(AIC_METRICS_DIR)"
 	PROM_UID="$$(id -u)" PROM_GID="$$(id -g)" AIC_HSA_SNOOP_PID_MODE="$${AIC_HSA_SNOOP_PID_MODE:-host}" \
 		$(MON_COMPOSE) $(_MON_PROFILE) up -d
-	@echo "Prometheus up on :9090  (TSDB -> $(AIC_METRICS_DIR))"
+	@echo "Prometheus up  (TSDB -> $(AIC_METRICS_DIR)); 'make endpoints' prints its URL"
 
 monitoring-down:
 	AIC_HSA_SNOOP_PID_MODE="$${AIC_HSA_SNOOP_PID_MODE:-host}" $(MON_COMPOSE) $(_MON_PROFILE) down
 
 monitoring-logs:
 	$(MON_COMPOSE) logs -f prometheus
+
+# Published host ports are ephemeral unless a *_HOST_PORT pins them, so ask
+# Docker where each running service landed.
+endpoints:
+	@bash "$(CURDIR)/scripts/aic-endpoints.sh" list
 
 export:
 	@git -C "$(CURDIR)" rev-parse HEAD >/dev/null 2>&1 || { \

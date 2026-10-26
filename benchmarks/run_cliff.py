@@ -23,9 +23,10 @@ built differently). This script runs ONE arm at a time against a
 pre-launched vLLM endpoint, then merges the two CSVs offline.
 
 Usage:
-  # Pre-launch vLLM separately in its own container.
+  # Pre-launch vLLM separately in its own container.  Its host port is whatever
+  # Docker published (see `make endpoints`), not a fixed number.
   python -u -m bench.kv_cache_cliff.run_cliff \\
-      --endpoint http://localhost:8801 \\
+      --endpoint "$(scripts/aic-endpoints.sh url aic-vllm-gpu0 8000)" \\
       --model /mnt/vast/john/huggingface/gpt-oss-120b \\
       --arm vram_only \\
       --isl 20000 --shared-prefix-tokens 18000 \\
@@ -40,7 +41,7 @@ Usage:
   # Or point the same harness at a KVBench server (OpenAI-compatible API,
   # no vLLM metrics scraping):
   python -u -m bench.kv_cache_cliff.run_cliff ... --arm kvbench \\
-      --endpoint http://localhost:8000 \\
+      --endpoint "$(scripts/aic-endpoints.sh url aic-kvbench 8000)" \\
       --out logs/manual/results/cliff-kvbench.csv
 """
 
@@ -762,7 +763,7 @@ async def amain(args: argparse.Namespace) -> int:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--endpoint", required=True,
-                        help="OpenAI-compatible endpoint, e.g. http://localhost:8801")
+                        help="OpenAI-compatible endpoint, e.g. a URL from `make endpoints`")
     parser.add_argument("--model", required=True,
                         help="served model id/path expected by the endpoint")
     parser.add_argument("--tokenizer", default=None,

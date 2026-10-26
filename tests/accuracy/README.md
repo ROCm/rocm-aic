@@ -18,23 +18,26 @@ that unexpected increased or decreases in accuracy are caught.
 
 ### Against an existing stack
 
-`lm_eval` is host-side, so you need the venv (`make venv`). vLLM publishes no
-ports — it is reachable only on the `aic` bridge:
+`lm_eval` is host-side, so you need the venv (`make venv`). Each arm's vLLM
+publishes :8000 on a loopback port Docker picks; resolve it with `aic_url`.
+The baseline arm is the `vllm-only` compose service, the tiered arm `vllm`:
 
 ```bash
-IP=$(docker inspect -f '{{(index .NetworkSettings.Networks "aic").IPAddress}}' aic-vllm-gpu0)
-curl -fsS "http://$IP:8000/v1/models"      # confirm host -> bridge routing
+source scripts/aic-endpoints.sh
+BASELINE_URL="$(aic_url aic-vllm-only-gpu0 8000)"
+TIERED_URL="$(aic_url aic-vllm-gpu0 8000)"   # published by aic-lmcache
+curl -fsS "${TIERED_URL}/v1/models"
 ```
 
 With one arm up, the tiered-only assertions; with both, everything:
 
 ```bash
-PYTHONNOUSERSITE=1 AIC_ACCURACY_TIERED_URL="http://$IP:8000/v1" \
+PYTHONNOUSERSITE=1 AIC_ACCURACY_TIERED_URL="${TIERED_URL}/v1" \
   .venv/bin/pytest tests/accuracy -v -k "floor or restart"
 
 PYTHONNOUSERSITE=1 \
-  AIC_ACCURACY_BASELINE_URL="http://$BASELINE_IP:8000/v1" \
-  AIC_ACCURACY_TIERED_URL="http://$TIERED_IP:8000/v1" \
+  AIC_ACCURACY_BASELINE_URL="${BASELINE_URL}/v1" \
+  AIC_ACCURACY_TIERED_URL="${TIERED_URL}/v1" \
   .venv/bin/pytest tests/accuracy -v
 ```
 

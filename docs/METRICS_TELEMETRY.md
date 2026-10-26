@@ -7,6 +7,17 @@ live dashboarding via Grafana.
 
 ## Port map
 
+The ports below are **container** ports, reachable by name on the `aic` bridge
+(for example `http://aic-lmcache:8080`). Nothing binds a fixed host port. Only
+vLLM, the LMCache HTTP API, Prometheus, Grafana and KVBench are published to the
+host, on `127.0.0.1` with a free port Docker picks at `up`; `make endpoints`
+prints the URLs, and scripts resolve them with `aic_url` from
+`scripts/aic-endpoints.sh`. Pin a port with `VLLM_HOST_PORT`,
+`LMCACHE_HTTP_HOST_PORT`, `AIC_PROM_PORT`, `AIC_GRAFANA_PORT` or
+`KVBENCH_HOST_PORT`, and bind beyond loopback with `AIC_PUBLISH_ADDR=0.0.0.0`.
+The ephemeral port changes when its container is recreated, so look it up again
+after a restart.
+
 ### Single-GPU stack (1 lmcache + 1 vLLM)
 
 | Service | Port | Protocol | Notes |
@@ -14,11 +25,11 @@ live dashboarding via Grafana.
 | vLLM OpenAI API + `/metrics` | **8000** | HTTP | 8001 = vram-only baseline arm |
 | LMCache HTTP API + `/metrics` | **8080** | HTTP | OTel Prometheus fallback; `lmcache_mp_*` metrics |
 | NIXL telemetry `/metrics` | **19090** | HTTP | Native NIXL exporter; `agent_*` metrics |
-| LMCache ZMQ connector | **6555** | TCP | `LMCacheMPConnector` vLLM↔lmcache channel |
-| LMCache coordinator REST API | **9300** | HTTP | `/instances`, `/directory/stats`, `/quota` |
+| LMCache ZMQ connector | **6555** | TCP | `LMCacheMPConnector` vLLM↔lmcache channel; loopback of the shared namespace, never published |
+| LMCache coordinator REST API | **9300** | HTTP | `/instances`, `/directory/stats`, `/quota`; bridge only |
 | LMCache coordinator `/metrics` | **9301** | HTTP | Prometheus exporter sidecar in coordinator container |
 | Prometheus | **9090** | HTTP | TSDB written to `AIC_METRICS_DIR` |
-| Grafana | **3000** | HTTP | `AIC_GRAFANA_PORT` to override |
+| Grafana | **3000** | HTTP | `AIC_GRAFANA_PORT` pins the host port |
 | node-exporter | **9100** | HTTP | CPU/mem/disk/NVMe/InfiniBand |
 | nvme-exporter | **9998** | HTTP | NVMe SMART + health |
 | rdma-exporter | **9879** | HTTP | RDMA/RoCE sysfs counters |
@@ -49,17 +60,19 @@ needed (per-GPU override files or a generator script).
 
 ## Grafana dashboard
 
-Pre-provisioned at `http://localhost:3000` (anonymous viewer, no login).
+Pre-provisioned, anonymous viewer, no login. The Grafana host port is ephemeral
+unless `AIC_GRAFANA_PORT` pins it.
 
 ```bash
 make up HF_TOKEN=hf_... NVME_DATA=/mnt/lmcache-nvme NFS_DATA=/mnt/lmcache-nfs \
     VLLM_MODEL=openai/gpt-oss-120b
-# → open http://localhost:3000
+make endpoints   # → prints the Grafana URL to open
 ```
 
 | Variable | Default | Description |
 | --- | --- | --- |
-| `AIC_GRAFANA_PORT` | `3000` | Host port Grafana listens on |
+| `AIC_GRAFANA_PORT` | unset (ephemeral) | Host port Grafana is published on, `127.0.0.1` only |
+| `AIC_PROM_PORT` | unset (ephemeral) | Host port Prometheus is published on; it always listens on 9090 inside the container |
 | `AIC_GRAFANA_IMAGE` | `grafana/grafana:13.1.3` | Grafana image |
 | `AIC_PROM_IMAGE` | `prom/prometheus:v3.13.2` | Prometheus image |
 
