@@ -199,8 +199,10 @@ RUN --mount=type=cache,target=/root/.cache/pip \
             python3 setup.py bdist_wheel --dist-dir=/wheels && \
         pip3 install --no-cache-dir --no-deps /wheels/amd_aiter-*.whl && \
         python3 -c 'import importlib.util; spec = importlib.util.find_spec("aiter"); assert spec and spec.submodule_search_locations; print("AITER installed:", next(iter(spec.submodule_search_locations)))' && \
-        PYTORCH_ROCM_ARCH="${ROCM_ARCH}" TORCH_DONT_CHECK_COMPILER_ABI=1 \
-            python3 /app/patches/aiter/01-jit-use-pytorch-rocm-arch.py; \
+        ( cd / && \
+          { GPU_ARCHS="${ROCM_ARCH}" PYTORCH_ROCM_ARCH="${ROCM_ARCH}" TORCH_DONT_CHECK_COMPILER_ABI=1 \
+                python3 -c 'import aiter' || :; } && \
+          test -f "$(python3 -c 'import importlib.util as u, os; print(os.path.join(next(iter(u.find_spec("aiter").submodule_search_locations)), "jit", "module_aiter_core.so"))')" ); \
     fi
 
 # FlashAttention: CDNA-only (gfx9xx — MI100/MI200/MI300/MI355X).
