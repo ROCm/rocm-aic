@@ -540,7 +540,7 @@ AIC_TINY_HF_HOME="${AIC_TINY_HF_HOME:-${HF_HOME}}"
 AIC_TINY_TIME="${AIC_TINY_TIME:-00:25:00}"
 AIC_TINY_CPUS="${AIC_TINY_CPUS:-8}"
 AIC_TINY_MEM="${AIC_TINY_MEM:-32G}"
-AIC_TINY_READY_TIMEOUT="${AIC_TINY_READY_TIMEOUT:-1100}"   # x5s = up to 75 min (AITER JIT compiles many modules on cold start)
+AIC_TINY_READY_TIMEOUT="${AIC_TINY_READY_TIMEOUT:-240}"   # x5s = 20 min; must stay under AIC_TINY_TIME
 
 # --- Fabric exporter images (nvme_exporter / rdma_exporter / hsa-snoop) -------
 # Built from docker/*/Dockerfile and distributed alongside the main image so
@@ -2622,9 +2622,10 @@ fi
 compose up -d amdgpu-exporter 2>/dev/null || echo "[prom-dump] amdgpu-exporter unavailable (skipping)"
 
 # Wait for vLLM to be ready (probe from the client container on the Compose network).
-echo "[prom-dump] waiting for vLLM on :8000 (up to ${AIC_TINY_READY_TIMEOUT}s) ..."
+# AIC_TINY_READY_TIMEOUT counts 5 s polls, as in tiny-test.
+echo "[prom-dump] waiting for vLLM on :8000 (up to \$(( ${AIC_TINY_READY_TIMEOUT} * 5 ))s) ..."
 _ok=0
-for _i in \$(seq 1 \$(( ${AIC_TINY_READY_TIMEOUT:-300} / 5 ))); do
+for _i in \$(seq 1 ${AIC_TINY_READY_TIMEOUT}); do
     # vllm shares aic-lmcache's network namespace, so that name reaches it.
     r=\$(docker exec aic-client curl -s -o /dev/null -w '%{http_code}' \
         http://aic-lmcache:8000/health 2>/dev/null || true)
