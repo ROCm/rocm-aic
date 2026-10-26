@@ -1879,6 +1879,20 @@ check "import vllm" timeout 120 python3 -c 'import vllm; print("vllm", vllm.__ve
 check "import LMCacheMPConnector" timeout 120 python3 -c \
     'import vllm.distributed.kv_transfer.kv_connector.v1.lmcache_mp_connector'
 
+# A real GEMM on the visible GPU.  Import checks pass even when hipBLASLt
+# cannot serve the arch -- when the base image is missing the per-arch
+# TensileLibrary device libs, the first torch linear dies with
+# HIPBLAS_STATUS_INVALID_VALUE (hipblasLtMatmulAlgoGetHeuristic) at engine
+# startup.  K=896 is the tiny-test model's hidden size, so this is that
+# first GEMM's exact width; n=64, m=2 keeps it sub-second.
+check "bf16 linear on GPU (hipBLASLt)" timeout 120 python3 -c '
+import torch
+x = torch.randn(2, 896, dtype=torch.bfloat16, device="cuda")
+w = torch.randn(64, 896, dtype=torch.bfloat16, device="cuda")
+out = torch.nn.functional.linear(x, w)
+assert out.shape == (2, 64) and out.dtype == torch.bfloat16
+print("linear 2x896 @ 64x896 ok on", torch.cuda.get_device_name(0))'
+
 # Kernel release + block-device layout (informational)
 note "INFO kernel release: $(uname -r)"
 if command -v lsblk >/dev/null 2>&1; then

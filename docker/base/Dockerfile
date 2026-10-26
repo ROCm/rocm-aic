@@ -337,6 +337,9 @@ RUN cmake -G Ninja \
 #   amdrocm-profiler-base  profiler SDK + rocTX + AQL      (122 MB)
 #   amdrocm-dnn-host    MIOpen                             (463 MB)
 #   amdrocm-blas-host   rocBLAS + hipBLAS + hipBLASLt + rocRoller  (273 MB)
+#   amdrocm-blas<mm>-<arch>  per-arch hipBLASLt TensileLibrary device libs,
+#                        one per entry of ROCM_ARCH — torch's linear GEMM
+#                        fails with HIPBLAS_STATUS_INVALID_VALUE without them
 #   amdrocm-fft-host    hipFFT + rocFFT                    (13 MB)
 #   amdrocm-rand-host   hipRAND + rocRAND                  (52 MB)
 #   amdrocm-rccl-host   RCCL                               (4 MB)
@@ -427,11 +430,20 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
         "amdrocm-math-common${_mm}" \
         "amdrocm-hipfile${_mm}" \
     && _mm=$(echo "${ROCM_VERSION}" | cut -d. -f1-2) \
-    && for _arch in $(echo "${ROCM_ARCH}" | tr ',' ' '); do \
-        DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-            "amdrocm-blas${_mm}-${_arch}" \
-        || echo "  NOTE: no blas arch package for ${_arch} (expected for emulated arches)"; \
+    && _blas_archs_installed="" \
+    && for _arch in $(echo "${ROCM_ARCH}" | tr ',;' '  '); do \
+        if DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            "amdrocm-blas${_mm}-${_arch}"; then \
+            _blas_archs_installed="${_blas_archs_installed} ${_arch}"; \
+        else \
+            echo "  NOTE: no blas arch package for ${_arch} (expected for emulated arches)"; \
+        fi; \
        done \
+    && if [ -z "${_blas_archs_installed}" ]; then \
+        echo "  ERROR: no amdrocm-blas<mm>-<arch> device library installed for ROCM_ARCH='${ROCM_ARCH}'.  Without the per-arch TensileLibrary device libs, the first torch hipBLASLt GEMM dies with HIPBLAS_STATUS_INVALID_VALUE (hipblasLtMatmulAlgoGetHeuristic)." >&2; \
+        exit 1; \
+       fi \
+    && echo "blas arch device libraries installed: ${_blas_archs_installed}" \
     && update-ca-certificates
 
 RUN git config --global advice.detachedHead false
