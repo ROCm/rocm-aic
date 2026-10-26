@@ -206,9 +206,23 @@ start_monitoring() {
             && compose_files+=(-f "${_spur_override}") \
             || log "monitoring: WARN spur override ${_spur_override} not found"
     fi
-    AIC_METRICS_DIR="${AIC_METRICS_DIR}" PROM_UID="$(id -u)" PROM_GID="$(id -g)" \
-        IMAGE_NAME="${AIC_IMAGE}" AIC_HSA_SNOOP_PID_MODE="${AIC_HSA_SNOOP_PID_MODE}" \
-        docker compose "${compose_files[@]}" --profile monitoring-base "${profile[@]}" up -d \
+    # vllm carries no profile and client is in monitoring-base, so a bare `up`
+    # would start both; the caller owns those.  Name the services instead of
+    # relying on profiles alone.  `config` needs the same env as `up`: unset,
+    # AIC_HSA_SNOOP_PID_MODE makes hsa-snoop depend on the inactive lmcache
+    # service and the whole project fails validation.
+    local -a env=(AIC_METRICS_DIR="${AIC_METRICS_DIR}" PROM_UID="$(id -u)" PROM_GID="$(id -g)"
+                  IMAGE_NAME="${AIC_IMAGE}" AIC_HSA_SNOOP_PID_MODE="${AIC_HSA_SNOOP_PID_MODE}")
+    local -a dc=(docker compose "${compose_files[@]}" --profile monitoring-base "${profile[@]}")
+    local -a svc
+    mapfile -t svc < <(env "${env[@]}" "${dc[@]}" config --services \
+        | grep -vxE "vllm|client${AIC_MON_SKIP_SERVICES:+|${AIC_MON_SKIP_SERVICES// /|}}")
+    # An empty list would make `up` start every active service, vllm included.
+    if [[ "${#svc[@]}" -eq 0 ]]; then
+        log "monitoring: no services resolved from compose config (continuing without metrics)"
+        return 0
+    fi
+    env "${env[@]}" "${dc[@]}" up -d --no-deps "${svc[@]}" \
         || log "monitoring: compose up failed (continuing without metrics)"
 }
 
