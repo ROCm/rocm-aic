@@ -594,6 +594,9 @@ services:
   # pip deps are pre-installed from an explicit list matching pyproject.toml [dev] at startup.
   # ---------------------------------------------------------------------------
   client:
+    # Off the cache-only paths (tiny-test, accuracy): it would pull python:3.12
+    # and pip-install benchmark deps there for nothing.
+    profiles: [client, monitoring, monitoring-base]
     image: ${AIC_CLIENT_IMAGE:-python:3.12}
     container_name: aic-client
     networks: [aic-network]

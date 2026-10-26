@@ -2396,23 +2396,6 @@ cleanup() {
 }
 trap cleanup EXIT
 
-# Load cached Python base images from shared NFS to avoid Docker Hub rate limits.
-for _py_img in "python:3.12" "python:3.12-slim"; do
-    if docker image inspect "\${_py_img}" >/dev/null 2>&1; then
-        : # already present on this node
-    else
-        _py_tag="\$(printf '%s' "\${_py_img}" | tr ':/' '--')"
-        _py_tar="${AIC_IMAGE_DIR}/\${_py_tag}.tar.zst"
-        if [[ -f "\${_py_tar}" ]]; then
-            ${DECOMPRESS_CMD} "\${_py_tar}" | docker load >/dev/null \
-                && echo "[tiny-test] loaded \${_py_img} from cache" \
-                || docker pull "\${_py_img}" >/dev/null 2>&1 || true
-        else
-            docker pull "\${_py_img}" >/dev/null 2>&1 || true
-        fi
-    fi
-done
-
 echo "[tiny-test] bringing up compose MP stack (model=${AIC_TINY_MODEL}) ..."
 if ! compose --profile cache up -d; then
     echo "[tiny-test] FAIL: compose up failed" >&2
@@ -4316,21 +4299,6 @@ if docker info >/dev/null 2>&1; then
 else
     echo "[bake] WARN: Docker daemon not accessible; skipping exporter builds" >&2
 fi
-
-# --- Cache Python base images so test nodes avoid Docker Hub rate limits -------
-for _py_img in "python:3.12" "python:3.12-slim"; do
-    _py_tag="\$(printf '%s' "\${_py_img}" | tr ':/' '--')"
-    _py_tar="${AIC_IMAGE_DIR}/\${_py_tag}.tar.zst"
-    if [[ -f "\${_py_tar}" ]]; then
-        echo "[bake] python cache hit: \${_py_tar}"
-    elif docker pull "\${_py_img}" >/dev/null 2>&1; then
-        docker save "\${_py_img}" | ${COMPRESS_CMD} > "\${_py_tar}" \
-            && echo "[bake] cached \${_py_img} -> \${_py_tar}" \
-            || { echo "[bake] WARN: could not save \${_py_img}" >&2; rm -f "\${_py_tar}"; }
-    else
-        echo "[bake] WARN: could not pull \${_py_img} (rate-limited?); test nodes will pull on demand" >&2
-    fi
-done
 exit 0
 REMOTE
 )"
