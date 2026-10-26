@@ -218,7 +218,6 @@ RUN --mount=type=cache,target=/root/.cache/pip \
         git clone --depth 1 --branch "${FLASH_ATTN_REF}" \
             --recurse-submodules --shallow-submodules \
             "${FLASH_ATTN_GIT_URL}" /app/flash-attention && \
-        python3 /app/patches/vllm/02-flash-attn-deprecated-attrs.py && \
         cd /app/flash-attention && \
         GPU_ARCHS="${ROCM_ARCH}" \
             PYTORCH_ROCM_ARCH="${ROCM_ARCH}" \
@@ -395,12 +394,9 @@ RUN --mount=type=cache,target=/root/.cache/pip \
 # memory patches belong to the lmcache server image.  AIC_LMCACHE_SRC points the
 # patcher at the pip-installed package (site-packages), not the /app source tree.
 COPY docker/lmcache/rocm_event_ipc_patch.py /tmp/rocm_event_ipc_patch.py
-COPY docker/lmcache/diag_register_kv_caches.py /tmp/diag_register_kv_caches.py
 RUN AIC_LMCACHE_SRC="$(python3 -c 'import lmcache, os; print(os.path.dirname(os.path.dirname(lmcache.__file__)))')" \
         python3 /tmp/rocm_event_ipc_patch.py && \
-    AIC_LMCACHE_SRC="$(python3 -c 'import lmcache, os; print(os.path.dirname(os.path.dirname(lmcache.__file__)))')" \
-        python3 /tmp/diag_register_kv_caches.py && \
-    rm /tmp/rocm_event_ipc_patch.py /tmp/diag_register_kv_caches.py
+    rm /tmp/rocm_event_ipc_patch.py
 
 # ----- Runtime ENV + metadata -------------------------------------------------
 # PYTHONPATH and LD_LIBRARY_PATH (including NIXL paths) are inherited from
