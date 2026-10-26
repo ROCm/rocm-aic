@@ -35,10 +35,10 @@
 # so a checksum would be a flake generator; see tests/accuracy/README.md.
 #
 # pytest runs host-side (it needs .venv and lm_eval; the image stays lean and the
-# gsm8k download stays off the compute node), reaching vLLM on its `aic` bridge
-# IP.  vLLM publishes no ports, so a bridge IP -- not localhost -- is the only
-# host-side route; readiness probes use the `docker exec ... 127.0.0.1` form that
-# the rest of the repo uses.
+# gsm8k download stays off the compute node), reaching vLLM on 127.0.0.1:8000:
+# host networking in the vram arm, lmcache's published port in the tiered arm.
+# Readiness probes use the `docker exec ... 127.0.0.1` form that the rest of the
+# repo uses.
 #
 # Every scoring pass asks the full gsm8k split; there is no item cap to set.
 #
@@ -269,8 +269,8 @@ cleanup() {
 trap cleanup EXIT
 
 # --- helpers -----------------------------------------------------------------
-# Readiness is probed from inside the container: vLLM publishes no ports, so the
-# Slurm host's loopback cannot reach it (the convention used across the repo).
+# Readiness is probed from inside the container so it does not depend on the
+# host-side port path (the convention used across the repo).
 _wait_ready() {
     local tag="$1"
     for _ in $(seq 1 "${AIC_ACCURACY_READY_TIMEOUT}"); do
@@ -287,14 +287,10 @@ _wait_ready() {
     return 1
 }
 
-# pytest is host-side but vLLM lives on the aic bridge, so hand pytest the
-# container's bridge IP.  Verified host-routable before this was relied on; if a
-# node ever fails this check the fallback is to run pytest inside the client
+# If a node ever fails this check, fall back to running pytest inside the client
 # container (already on aic, repo mounted), at the cost of a gsm8k download on
 # the compute node.
 _endpoint_url() {
-    # vLLM shares lmcache's network namespace, which publishes port 8000 on the
-    # compute node; reach it via localhost.
     curl -fsS --max-time 10 "http://127.0.0.1:8000/v1/models" >/dev/null 2>&1 || {
         echo "[accuracy-test] FAIL: host cannot reach 127.0.0.1:8000" >&2
         return 1; }
