@@ -2221,20 +2221,9 @@ if [ '${_smoke_exporters}' = "1" ]; then
     AIC_EXPORTERS="${AIC_EXPORTERS:-safe}"
     AIC_MONITORING=1
     AIS_KFD_SYMBOL="\${AIS_KFD_SYMBOL:-kfd_ioctl_ais}"
-    # In the smoke-test the full stack (lmcache/vllm) is not running when the
-    # monitoring compose starts.  Override IPC/PID modes to avoid "cannot share
-    # IPC namespace with service lmcache: container missing" errors — the
-    # monitoring-phase containers don't need GPU IPC.
-    # Use "none" for ipc (valid Docker value = isolated /dev/shm) and unset pid
-    # so the single-dash ${VAR-default} in compose uses the default only when
-    # VAR is unset — setting it to empty string disables PID sharing.
-    # "none" is a valid IPC mode but NOT a valid PID mode -- Docker rejects it
-    # with "invalid PID mode: none", which took the whole monitoring compose
-    # down (smoke-test 68151674).  PID sharing is disabled with an empty
-    # string, exactly as VLLM_PID_MODE does on the next line.
-    export VLLM_IPC_MODE=none
-    export AIC_HSA_SNOOP_PID_MODE=""
-    export VLLM_PID_MODE=""
+    # No lmcache runs in this phase: hsa-snoop only has processes to watch inside
+    # lmcache's PID namespace, and l2-monitor only reads lmcache's L2 pool.
+    AIC_MON_SKIP_SERVICES="hsa-snoop l2-monitor"
     # shellcheck source=/dev/null
     source '${AIC_DAY_DIR}/monitoring/monitoring-lib.sh'
     mkdir -p "\${AIC_METRICS_DIR}"
