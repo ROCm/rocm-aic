@@ -2679,7 +2679,8 @@ export LMCACHE_NIXL_POSIX_SLOT_SIZE=33554432
 export LMCACHE_MAX_GPU_WORKERS=1
 export VLLM_IPC_MODE=service:lmcache
 export VLLM_PID_MODE=service:lmcache
-export KV_TRANSFER_ARG="--kv-transfer-config '{\"kv_connector\":\"LMCacheMPConnector\",\"kv_role\":\"kv_both\",\"kv_connector_extra_config\":{\"lmcache.mp.host\":\"tcp://aic-lmcache\",\"lmcache.mp.port\":6555}}'"
+# vLLM shares lmcache's network namespace, so lmcache is on its loopback.
+export KV_TRANSFER_ARG="--kv-transfer-config '{\"kv_connector\":\"LMCacheMPConnector\",\"kv_role\":\"kv_both\",\"kv_connector_extra_config\":{\"lmcache.mp.host\":\"tcp://localhost\",\"lmcache.mp.port\":6555}}'"
 # hsa-snoop: use container PID namespace (SPUR authz blocks --pid=host).
 export AIC_HSA_SNOOP_PID_MODE=container:aic-lmcache
 # Monitoring metrics dir for Prometheus TSDB.
