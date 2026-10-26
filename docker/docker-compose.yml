@@ -572,7 +572,6 @@ services:
         --stream-interval 20
         --async-scheduling
         --disable-access-log-for-endpoints "/health,/metrics,/v1/models,/v1/chat/completions,/v1/completions,/reset_prefix_cache"
-        ${VLM_ENFORCE_EAGER:+--enforce-eager}
         --enable-mfu-metrics
         --kv-cache-metrics
         --kv-cache-metrics-sample ${VLM_KV_CACHE_METRICS_SAMPLE:-0.05}

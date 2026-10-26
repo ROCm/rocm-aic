@@ -494,10 +494,6 @@ export VLLM_PID_MODE=service:lmcache
 export VLLM_NETWORK_MODE=container:aic-lmcache
 # vLLM shares lmcache's network namespace, so lmcache is on its loopback.
 export KV_TRANSFER_ARG="--kv-transfer-config '{\"kv_connector\":\"LMCacheMPConnector\",\"kv_role\":\"kv_both\",\"kv_connector_extra_config\":{\"lmcache.mp.host\":\"tcp://localhost\",\"lmcache.mp.port\":6555}}'"
-# Disable CUDA graph capture for the kvd arm: LMCacheMPConnector registers KV
-# caches after vLLM's graph warmup phase, so CUDA graphs trigger
-# "KV caches are not registered" from the connector.  enforce_eager avoids this.
-export VLM_ENFORCE_EAGER=True
 
 POOL_BEFORE="$(_pool_bytes)"
 POOL_ALLOC_BEFORE="$(_pool_alloc_bytes)"
