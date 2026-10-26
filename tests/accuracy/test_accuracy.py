@@ -84,7 +84,7 @@ def _delta_slack() -> float:
     se = math.sqrt(p * (1.0 - p) / LIMIT)
     return max(DELTA, 4.0 * math.sqrt(2.0) * se)
 
-NUM_CONCURRENT = int(os.getenv("AIC_ACCURACY_CONCURRENT", "4"))
+NUM_CONCURRENT = int(os.getenv("AIC_ACCURACY_CONCURRENT", "32"))
 
 _BASELINE_SCORE = os.getenv("AIC_ACCURACY_BASELINE_SCORE")
 BASELINE_SCORE = float(_BASELINE_SCORE) if _BASELINE_SCORE else None
