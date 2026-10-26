@@ -27,8 +27,9 @@
 #
 # The lmcache service sits behind the `cache` compose profile, so the plain
 # `vram` baseline can start `vllm` alone
-# (`VLLM_IPC_MODE=shareable docker compose up vllm`) without pulling in lmcache
-# — vllm's depends_on uses `required: false` for that.
+# (`VLLM_IPC_MODE=shareable VLLM_PID_MODE= VLLM_NETWORK_MODE=host docker compose
+# up vllm`) without pulling in lmcache — vllm's depends_on uses `required: false`
+# for that.  Each of the three otherwise joins lmcache's namespace.
 #
 # Required env:
 #   ROCM_ARCH      — e.g. gfx942
@@ -48,8 +49,10 @@
 #                            LocalDiskBackend via LMCACHE_CONFIG_FILE), or none (DRAM-only L1)
 #   LMCACHE_CONFIG_FILE_HOST — host path to an LMCache YAML config to mount (advanced; local_disk)
 #   KV_TRANSFER_ARG        — vLLM --kv-transfer-config arg (empty = plain vLLM baseline)
-#   VLLM_IPC_MODE          — vLLM IPC mode (default: service:lmcache; use shareable
-#                            when starting vllm without the lmcache service)
+#   VLLM_IPC_MODE          — vLLM IPC mode (default: service:lmcache)
+#   VLLM_PID_MODE          — vLLM PID mode (default: service:lmcache; empty = private)
+#   VLLM_NETWORK_MODE      — vLLM network mode (default: container:aic-lmcache)
+#                            A vllm-only run needs all three overridden (see above).
 #   AIC_SHM_SIZE           — private /dev/shm capacity (default: 64gb)
 #   HF_HOME                — host HF cache dir (default: ~/.cache/huggingface)
 #   LOG                    — host log dir (default: ../logs, i.e. /logs)
@@ -361,13 +364,8 @@ services:
     # both (AIC_HSA_IPC_LEGACY=1 for the KFD-handle mode, which needs DKMS amdgpu).
     # AIC_LMCACHE_VMM_IPC=1 selects the HIP VMM wrapper (rocm_vmem_ipc.py), which
     # copies the KV cache at registration.  GPU *event* IPC is skipped (rocm_ipc_patch.py).
-    # Needs container-scoped shared IPC+PID namespaces: lmcache owns the shareable
-    # namespace; vllm joins it via ipc/pid: service:lmcache (see vllm service below).
-    # IPC namespace sharing is independent of network_mode — the aic bridge network
-    # provides DNS-based service discovery for prometheus without affecting IPC.
-    # lmcache owns the shareable IPC+PID namespace; vllm joins via service:lmcache.
-    # ipc:shareable + no pid:host is sufficient (see the IPC note above).
-    # spur-authz blocks pid:host on SPUR nodes.
+    # lmcache owns the shareable IPC+PID namespaces; vllm joins them via
+    # ipc/pid: service:lmcache.  pid:host would work but spur-authz blocks it.
     # Own network namespace, not host: on the host one, "@hsa<pid>" would be
     # shared with every host-net container on the node, each with its own PID
     # namespace, and a PID clash breaks the export or hangs the import.  vllm's
@@ -492,12 +490,9 @@ services:
     # `make build`, which supplies the torch-bearing `base` build-context.
     image: ${VLLM_IMAGE_REF:-${IMAGE_REF:-${IMAGE_NAME:-rocm-aic}:latest}}
     container_name: aic-vllm-gpu${GPU:-0}
-    # Shared IPC/PID namespaces with lmcache: required for cross-container HIP IPC
-    # KV registration (see the lmcache service).  vllm joins lmcache's shareable IPC
-    # Cross-container HIP IPC (LMCacheMPConnector) needs lmcache's network namespace
-    # (see there) plus shared IPC+PID namespaces.  Container-scoped sharing
-    # (ipc: service:lmcache, pid: service:lmcache) is sufficient and safer than
-    # ipc: host / pid: host.  Override via VLLM_IPC_MODE / VLLM_PID_MODE if needed.
+    # Joins lmcache's IPC, PID and network namespaces; cross-container HIP IPC KV
+    # registration needs all three (see the lmcache service).  Override via
+    # VLLM_IPC_MODE / VLLM_PID_MODE / VLLM_NETWORK_MODE.
     # lmcache publishes vllm's port; prometheus scrapes it via host-gateway.
     # container:, not service:, so compose can still load the project without
     # the cache profile; a vllm-only run sets VLLM_NETWORK_MODE=host.

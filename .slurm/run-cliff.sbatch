@@ -701,8 +701,9 @@ stop_stack() {
   # vLLM + lmcache run in a SHARED PID namespace (required for cross-container HIP
   # IPC KV registration).  That prevents docker from reaping vLLM's EngineCore
   # children, so a plain `compose down`/`docker rm` HANGS.  Force-kill the stack's
-  # processes first (one MP stack per node under host networking, so scoping by
-  # process name is safe here), then tear the now-empty containers down.
+  # processes first (one MP stack per node: fixed container names and published
+  # ports, so scoping by process name is safe here), then tear the now-empty
+  # containers down.
   pkill -9 -f 'vllm.entrypoints.openai' 2>/dev/null || true
   pkill -9 -f 'EngineCore' 2>/dev/null || true
   pkill -9 -f 'lmcache server' 2>/dev/null || true
@@ -800,8 +801,6 @@ run_arm_kvd() { # $1=mode(nvme|gds) $2=out_csv
   # falsely trigger recovery. Real crashes will still be detected once vLLM stops
   # responding entirely (the ZMQ channel closes cleanly on process exit).
   local _hb="${LMCACHE_HEARTBEAT_INTERVAL:-900}"
-  # Sharing lmcache's PID/IPC namespaces does not share its network namespace;
-  # resolve the peer through the Compose network, as the interactive stack does.
   export KV_TRANSFER_ARG="--kv-transfer-config '{\"kv_connector\":\"LMCacheMPConnector\",\"kv_role\":\"kv_both\"${_fp},\"kv_connector_extra_config\":{\"lmcache.mp.host\":\"tcp://aic-lmcache\",\"lmcache.mp.port\":${LMCACHE_PORT},\"lmcache.mp.heartbeat_interval\":${_hb}}}'"
   export VLLM_IPC_MODE=service:lmcache # join lmcache IPC ns for cross-container HIP IPC
   export VLLM_PID_MODE=service:lmcache # share lmcache PID ns for cross-container HIP IPC

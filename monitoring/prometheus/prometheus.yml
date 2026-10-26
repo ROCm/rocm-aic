@@ -40,7 +40,7 @@ scrape_configs:
   - job_name: vllm
     metrics_path: /metrics
     static_configs:
-      # vllm uses network_mode:host (required for KFD GPU IPC); reach via host-gateway.
+      # vllm joins lmcache's netns (HIP IPC needs it), which publishes :8000; reach via host-gateway.
       - targets: ["host-gateway:8000"]
 
   - job_name: lmcache

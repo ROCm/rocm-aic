@@ -111,8 +111,8 @@ build (`AIC_ROCM_ARCH` default includes `gfx1201`). Key differences from CDNA:
   both containers) uses those DKMS-only KFD IPC ioctls.  The default
   (non-legacy) mode does not, but vllm and lmcache must share a network
   namespace (ROCR passes the dmabuf fd over the abstract socket `@hsa<pid>`)
-  and should share the PID namespace (`network_mode: host` + `pid:
-  service:lmcache` — the compose defaults; no make override needed).
+  and should share the PID namespace (`network_mode: container:aic-lmcache` +
+  `pid: service:lmcache` — the compose defaults; no make override needed).
 
   The standard vllm-reset-test command on gfx1201 (no extra overrides):
 
