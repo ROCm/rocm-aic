@@ -2354,10 +2354,6 @@ export LMCACHE_L1_SIZE_GB=4
 export AIC_L2_BACKEND=none
 export VLLM_IPC_MODE=service:lmcache
 export VLLM_PID_MODE=service:lmcache
-# Disable AITER to avoid 50-min JIT cold-start on each new node.
-# AITER provides fused kernels for better throughput but is not required for
-# correctness; vLLM falls back to standard ROCm/Triton kernels.
-export AIC_ROCM_USE_AITER="${AIC_ROCM_USE_AITER:-0}"
 # vLLM shares lmcache's network namespace, so lmcache is on its loopback.
 export KV_TRANSFER_ARG="--kv-transfer-config '{\"kv_connector\":\"LMCacheMPConnector\",\"kv_role\":\"kv_both\",\"kv_connector_extra_config\":{\"lmcache.mp.host\":\"tcp://localhost\",\"lmcache.mp.port\":6555}}'"
 mkdir -p "\${HF_HOME}" /tmp/aic-tiny-nvme /tmp/aic-tiny-nfs
