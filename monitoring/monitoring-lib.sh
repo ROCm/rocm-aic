@@ -183,7 +183,8 @@ mon_profile() {  # echo the compose --profile args for the exporter fleet
 
 # Compose service container_names -- used to sweep up any leftovers from a
 # crashed run before/after a compose up/down (compose down handles the rest).
-MON_CONTAINERS=(aic-prometheus aic-node-exporter aic-amdgpu-exporter
+MON_CONTAINERS=(aic-prometheus aic-grafana aic-loki aic-alloy
+                aic-node-exporter aic-amdgpu-exporter
                 aic-nvme-exporter aic-rdma-exporter aic-hsa-snoop
                 aic-vllm-emulator)
 
@@ -210,26 +211,36 @@ start_monitoring() {
             && compose_files+=(-f "${_spur_override}") \
             || log "monitoring: WARN spur override ${_spur_override} not found"
     fi
-    AIC_METRICS_DIR="${AIC_METRICS_DIR}" PROM_UID="$(id -u)" PROM_GID="$(id -g)" \
-        IMAGE_NAME="${AIC_IMAGE}" AIC_HSA_SNOOP_PID_MODE="${AIC_HSA_SNOOP_PID_MODE}" \
-        docker compose "${compose_files[@]}" --profile monitoring-base "${profile[@]}" up -d \
+    # vllm carries no profile and client is in monitoring-base, so a bare `up`
+    # would start both; the caller owns those.  Name the services instead of
+    # relying on profiles alone.  `config` needs the same env as `up`: unset,
+    # AIC_HSA_SNOOP_PID_MODE makes hsa-snoop depend on the inactive lmcache
+    # service and the whole project fails validation.
+    local -a env=(AIC_METRICS_DIR="${AIC_METRICS_DIR}" PROM_UID="$(id -u)" PROM_GID="$(id -g)"
+                  IMAGE_NAME="${AIC_IMAGE}" AIC_HSA_SNOOP_PID_MODE="${AIC_HSA_SNOOP_PID_MODE}")
+    local -a dc=(docker compose "${compose_files[@]}" --profile monitoring-base "${profile[@]}")
+    local -a svc
+    mapfile -t svc < <(env "${env[@]}" "${dc[@]}" config --services \
+        | grep -vxE "vllm|client${AIC_MON_SKIP_SERVICES:+|${AIC_MON_SKIP_SERVICES// /|}}")
+    # An empty list would make `up` start every active service, vllm included.
+    if [[ "${#svc[@]}" -eq 0 ]]; then
+        log "monitoring: no services resolved from compose config (continuing without metrics)"
+        return 0
+    fi
+    env "${env[@]}" "${dc[@]}" up -d --no-deps "${svc[@]}" \
         || log "monitoring: compose up failed (continuing without metrics)"
 }
 
 stop_monitoring() {
     [[ "${AIC_MONITORING}" == "1" ]] || return 0
     log "stopping metrics capture (TSDB retained at ${AIC_METRICS_DIR})"
-    if have_compose && [[ -f "${MON_COMPOSE}" ]]; then
-        local -a profile; mapfile -t profile < <(mon_profile)
-        local -a compose_files=(-f "${MON_COMPOSE}")
-        [[ "${AIC_SPUR_CLUSTER:-0}" == "1" ]] && {
-            local _spur_override="${MON_COMPOSE%/*}/docker-compose.spur.yml"
-            [[ -f "${_spur_override}" ]] && compose_files+=(-f "${_spur_override}")
-        }
-        AIC_METRICS_DIR="${AIC_METRICS_DIR}" IMAGE_NAME="${AIC_IMAGE}" AIC_HSA_SNOOP_PID_MODE="${AIC_HSA_SNOOP_PID_MODE}" \
-            docker compose "${compose_files[@]}" --profile monitoring-base "${profile[@]}" down >/dev/null 2>&1 || true
-    fi
-    docker rm -f "${MON_CONTAINERS[@]}" >/dev/null 2>&1 || true
+    # Not `docker compose down`: it is project-wide, so it also stops vllm (no
+    # profile) while a test is still serving, and blocks on vLLM's unreaped
+    # EngineCore children until the job's time limit.  Removing exactly the
+    # containers start_monitoring brought up is bounded and enough.  Stop first
+    # so prometheus gets SIGTERM and closes its WAL cleanly; rm -f alone kills.
+    timeout 60 docker stop -t 10 "${MON_CONTAINERS[@]}" >/dev/null 2>&1 || true
+    timeout 60 docker rm -f "${MON_CONTAINERS[@]}" >/dev/null 2>&1 || true
 }
 
 # --- Health check + TSDB summary (used by the build smoke-test) ---------------
