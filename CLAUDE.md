@@ -110,7 +110,7 @@ build (`AIC_ROCM_ARCH` default includes `gfx1201`). Key differences from CDNA:
   Legacy GPU IPC (`AIC_HSA_IPC_LEGACY=1` → `HSA_ENABLE_IPC_MODE_LEGACY=1` in
   both containers) uses those DKMS-only KFD IPC ioctls.  The default
   (non-legacy) mode does not, but vllm and lmcache must share a network
-  namespace (ROCr passes the dmabuf fd over the abstract socket `@hsa<pid>`)
+  namespace (ROCR passes the dmabuf fd over the abstract socket `@hsa<pid>`)
   and should share the PID namespace (`network_mode: host` + `pid:
   service:lmcache` — the compose defaults; no make override needed).
 
