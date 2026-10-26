@@ -106,7 +106,7 @@ git checkout "${SHA}"
 # Now that the tree is checked out, derive the version tag from the Dockerfile
 # pins so this stage names the image exactly as spur-dist-build.sh did.  Falling
 # back to :latest matches run-build-distribute.sh when the helper cannot resolve.
-_aic_tag="$(bash "${WORKDIR}/docker/scripts/aic-image-tag.sh" 2>/dev/null || true)"
+_aic_tag="$(bash "${WORKDIR}/docker/scripts/aic-image-tag.sh" || true)"
 AIC_IMAGE="${AIC_IMAGE_NAME}:${_aic_tag:-latest}"
 echo "=== Image ref for this SHA: ${AIC_IMAGE} ==="
 

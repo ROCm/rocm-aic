@@ -736,6 +736,7 @@ run_arm_vram() {
   export GDS_MODE=""
   export VLLM_IPC_MODE=shareable # private IPC ns; no lmcache IPC ns to join
   export VLLM_PID_MODE="" # vllm runs alone; no lmcache PID ns to join
+  export VLLM_NETWORK_MODE=host # no lmcache network ns to join
   if ! compose up -d vllm; then
     log "Arm A: compose up vllm failed"
     stop_stack
@@ -804,6 +805,7 @@ run_arm_kvd() { # $1=mode(nvme|gds) $2=out_csv
   export KV_TRANSFER_ARG="--kv-transfer-config '{\"kv_connector\":\"LMCacheMPConnector\",\"kv_role\":\"kv_both\"${_fp},\"kv_connector_extra_config\":{\"lmcache.mp.host\":\"tcp://aic-lmcache\",\"lmcache.mp.port\":${LMCACHE_PORT},\"lmcache.mp.heartbeat_interval\":${_hb}}}'"
   export VLLM_IPC_MODE=service:lmcache # join lmcache IPC ns for cross-container HIP IPC
   export VLLM_PID_MODE=service:lmcache # share lmcache PID ns for cross-container HIP IPC
+  export VLLM_NETWORK_MODE=container:aic-lmcache # HIP IPC's socket is per network ns
 
   local _l2desc
   if [[ "${mode}" == "gds" ]]; then

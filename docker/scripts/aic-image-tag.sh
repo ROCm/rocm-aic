@@ -4,8 +4,8 @@
 # SPDX-License-Identifier: MIT
 #
 # Emit the AIC image tag (no image name), e.g.
-#   CDNA (gfx9xx):  0.1.0-rocm7.14.1-pytorch2.13-vllm0.29.0-aiter0.1.22.post1-fa2.8.3.post1-lmcache0.5.5-nixl1.4.1-hsasnoop1.2.0-gfx942
-#   RDNA (gfx12xx): 0.1.0-rocm7.14.1-pytorch2.13-vllm0.29.0-aiter0.1.22.post1-lmcache0.5.5-nixl1.4.1-hsasnoop1.2.0-gfx1250
+#   CDNA (gfx9xx):  0.1.0-rocm7.14.1-pytorch2.13-vllm0.29.0-aiter0.1.22.post1-fa2.8.3.post1-lmcache0.5.6-nixl1.4.1-hsasnoop1.2.0-gfx942
+#   RDNA (gfx12xx): 0.1.0-rocm7.14.1-pytorch2.13-vllm0.29.0-aiter0.1.22.post1-lmcache0.5.6-nixl1.4.1-hsasnoop1.2.0-gfx1250
 #
 # The tag is now derived in docker/docker-bake.hcl (the single source of truth
 # for version pins and tag format).  This script is a thin wrapper that asks bake
@@ -19,7 +19,18 @@
 #
 # Usage:  aic-image-tag.sh
 #         aic-image-tag.sh [...]   # trailing args accepted for back-compat, ignored
-set -euo pipefail
+set -Eeuo pipefail
+# errexit exits without saying where; report it.  Only the line number and
+# function call stack are printed, never the command text, which can carry
+# secret values.
+_on_err() {
+  # set -E carries this trap into $(...), where errexit is off.
+  [[ $- == *e* ]] || return 0
+  # || : so a failed write cannot replace the exit status.
+  printf '%s: command failed (exit %s, pipeline status %s) at line %s%s\n' \
+    "${0##*/}" "$1" "$2" "$3" "${4:+ in ${4// / <- }}" >&2 || :
+}
+trap '_on_err "$?" "${PIPESTATUS[*]}" "$LINENO" "${FUNCNAME[*]-}"' ERR
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
@@ -34,9 +45,19 @@ if [[ -z "${AIC_VERSION:-}" && -r "${REPO_ROOT}/VERSION" ]]; then
   export AIC_VERSION
 fi
 
+# Keep bake's stderr off the JSON, but show it on failure: it is the only
+# clue when buildx is missing or the HCL does not parse.
+bake_err="$(mktemp)"
+trap 'rm -f "${bake_err}"' EXIT
+if ! bake_json="$(docker buildx bake -f "${BAKE_FILE}" base --print 2>"${bake_err}")"; then
+  echo "aic-image-tag: docker buildx bake --print failed:" >&2
+  cat "${bake_err}" >&2
+  exit 1
+fi
+
 tag="$(
-  docker buildx bake -f "${BAKE_FILE}" base --print 2>/dev/null \
-    | python3 -c 'import json,sys; print(json.load(sys.stdin)["target"]["base"]["tags"][0].split(":", 1)[1])'
+  python3 -c 'import json,sys; print(json.load(sys.stdin)["target"]["base"]["tags"][0].split(":", 1)[1])' \
+    <<<"${bake_json}"
 )"
 
 [[ -n "${tag}" ]] || { echo "aic-image-tag: bake --print produced no tag" >&2; exit 1; }

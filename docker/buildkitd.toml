@@ -1,0 +1,5 @@
+# BuildKit daemon config for aic-local builder.
+# Raises the per-build-step log limit from the default 2 MiB to unlimited
+# so verbose steps (FlashAttention/CK kernel compilation) are fully visible.
+[log]
+  max-size = -1

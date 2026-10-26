@@ -57,10 +57,17 @@ else:
 #    the platform package and introduced explicit class-selection machinery.
 #    The function lives in lmcache/v1/platform/devices/cuda/__init__.py
 #    (was lmcache/v1/platform/cuda/__init__.py in v0.5.5).
+#    Opt-in only (AIC_LMCACHE_VMM_IPC=1): RocmVmemIPCWrapper hands LMCache a
+#    copy of the KV cache taken at registration, whereas the stock
+#    CudaIPCWrapper's hipIpcGetMemHandle maps vLLM's KV cache itself.  That
+#    crosses containers in ROCr's default (non-legacy) IPC mode when both
+#    share a network namespace: the importer fetches the dmabuf fd from the
+#    exporter over the abstract unix socket "@hsa<pid>".
 f1 = f'{BASE}/lmcache/v1/platform/devices/cuda/__init__.py'
 patch(f1,
     '    return RawCudaIPCWrapper if policy.isolated_ipc else CudaIPCWrapper',
-    '    if __import__("torch").version.hip:\n'
+    '    if (__import__("torch").version.hip\n'
+    '            and __import__("os").environ.get("AIC_LMCACHE_VMM_IPC") == "1"):\n'
     '        try:\n'
     '            from rocm_vmem_ipc import RocmVmemIPCWrapper as _R\n'
     '            return _R\n'
@@ -70,7 +77,7 @@ patch(f1,
     '                "hipIpcGetMemHandle unavailable on gfx1201/RDNA4."\n'
     '            )\n'
     '    return RawCudaIPCWrapper if policy.isolated_ipc else CudaIPCWrapper',
-    'devices/cuda: _select_ipc_wrapper_cls -> RocmVmemIPCWrapper on ROCm'
+    'devices/cuda: _select_ipc_wrapper_cls -> RocmVmemIPCWrapper on ROCm if AIC_LMCACHE_VMM_IPC=1'
 )
 
 # 1b. DeviceIPCWrapper.Serialize/Deserialize: extend to handle

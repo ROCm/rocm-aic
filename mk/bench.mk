@@ -327,7 +327,7 @@ RJ_NVME_MOUNT    ?= /mnt/lmcache-nvme
 RJ_FORCE_BUILD   ?= 0
 # The built image tag for RJ_ROCJITSU_ARCH (computed at make time).
 _RJ_IMAGE_TAG    := $(shell ROCM_ARCH=$(RJ_ROCJITSU_ARCH) $(_FRAMEWORK_VERSION_ENV) \
-                        $(REPO_ROOT)/docker/scripts/aic-image-tag.sh 2>/dev/null)
+                        $(REPO_ROOT)/docker/scripts/aic-image-tag.sh)
 RJ_IMAGE_REF     ?= $(VLLM_IMAGE_NAME):$(_RJ_IMAGE_TAG)
 RJ_LMCACHE_IMAGE_REF ?= $(LMCACHE_IMAGE_NAME):$(_RJ_IMAGE_TAG)
 # lmcache pip version (strip leading 'v' from LMCACHE_REF for pip install)

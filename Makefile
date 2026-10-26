@@ -52,7 +52,7 @@ _single_quote := '
 _shell_quote = '$(subst $(_single_quote),'"'"',$(1))'
 _FRAMEWORK_VERSION_ENV := $(foreach _arg,$(_FRAMEWORK_VERSION_ARGS),$(if $(filter undefined,$(origin $(_arg))),,$(_arg)=$(call _shell_quote,$(value $(_arg)))))
 
-_IMAGE_TAG := $(shell ROCM_ARCH=$(ROCM_ARCH) $(_FRAMEWORK_VERSION_ENV) $(REPO_ROOT)/docker/scripts/aic-image-tag.sh 2>/dev/null)
+_IMAGE_TAG := $(shell ROCM_ARCH=$(ROCM_ARCH) $(_FRAMEWORK_VERSION_ENV) $(REPO_ROOT)/docker/scripts/aic-image-tag.sh)
 IMAGE_TAG  ?= $(if $(_IMAGE_TAG),$(_IMAGE_TAG),latest)
 IMAGE_REF          := $(IMAGE_NAME):$(IMAGE_TAG)
 VLLM_IMAGE_REF     := $(VLLM_IMAGE_NAME):$(IMAGE_TAG)

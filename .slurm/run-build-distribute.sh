@@ -38,23 +38,24 @@
 #   AIC_TARGETS=<node-a>,<node-b> \
 #     bash .slurm/run-build-distribute.sh all
 #
-#   # Just build + save the tarball:
-#   bash .slurm/run-build-distribute.sh build
+#   # Just build + save the vllm and lmcache tarballs:
+#   bash .slurm/run-build-distribute.sh build-split
 #
-#   # Just load an already-saved tarball onto targets:
+#   # Just load already-saved tarballs onto targets:
 #   AIC_TARGETS=<node-a>,<node-b> \
 #     bash .slurm/run-build-distribute.sh load
 #
-#   # Push the built image to a registry (pull-based distribution):
-#   AIC_PUSH_REF=<your-registry>/<project>/rocm-aic:latest \
+#   # Push the built images to a registry (pull-based distribution):
+#   AIC_VLLM_PUSH_REF=<your-registry>/<project>/aic-vllm:latest \
+#   AIC_LMCACHE_PUSH_REF=<your-registry>/<project>/aic-lmcache:latest \
 #     bash .slurm/run-build-distribute.sh push
 #
 # Commands:
 #   build   Build the image on AIC_BUILD_NODE, then save the tarball to AIC_IMAGE_DIR
 #   build-emulate
 #           Build the CPU-only EMULATION image (Dockerfile `emulate` stage +
-#           VLLM_TARGET_DEVICE=empty): vLLM + the llm-emu plugin with no GPU
-#           kernels compiled at all, so it takes minutes rather than hours.
+#           VLLM_TARGET_DEVICE=empty): vLLM + the llm-emu plugin with no vLLM
+#           GPU kernels, on an aic-base the same job builds first.
 #           Tagged AIC_EMULATE_IMAGE (default rocm-aic:7.14-emulate) with its
 #           own tarball, so it never overwrites the real GPU image.
 #   emulate-test
@@ -65,9 +66,9 @@
 #           The same, plus the full LMCache MP recipe: the compose `emulate-mp`
 #           profile (standalone lmcache server + vLLM LMCacheMPConnector) on a
 #           CPU-only node, with the KV tensors the connector registers
-#           synthesized in host memory.  Needs an image with LMCache in it, so
-#           it defaults to the PRODUCTION tarball, not the emulate one -- set
-#           AIC_EMULATE_MP_IMAGE / AIC_ROCM_ARCH accordingly.
+#           synthesized in host memory.  Needs LMCache, so it runs the
+#           PRODUCTION vllm + lmcache tarballs, not the emulate one -- set
+#           AIC_VLLM_IMAGE / AIC_LMCACHE_IMAGE / AIC_ROCM_ARCH accordingly.
 #   profile-capture
 #           Capture an AMD profile pack: runs the FULL image on a GPU node with
 #           VLLM_EMULATOR_TRACE_STEP_CYCLE=1 (a REAL serve, real weights, real
@@ -80,10 +81,11 @@
 #           Build the fabric exporter images (nvme_exporter / rdma_exporter) from
 #           monitoring/*/Dockerfile and save their tarballs to AIC_IMAGE_DIR, so
 #           bare cliff nodes can containerize them (no host-installed exporter service needed).
-#   load    Load the saved tarball on every node in AIC_TARGETS, then verify
+#   load    Load the saved vllm + lmcache tarballs on every node in AIC_TARGETS
 #           (also loads the exporter tarballs when present)
-#   push    Tag the built image as AIC_PUSH_REF and `docker push` it to a registry
-#           (loads from the shared tarball first if the image is not present)
+#   push    Tag the built vllm + lmcache images as AIC_VLLM_PUSH_REF /
+#           AIC_LMCACHE_PUSH_REF and `docker push` them to a registry (loads
+#           from the shared tarballs first if an image is not present)
 #   test    Smoke-test the image on a GPU+NVMe node (loads it there if missing):
 #           checks GPU visibility + arch, vLLM / LMCache / hipFile, ais-check
 #           (HIP+amdgpu AIS support), and the NIXL AIS_MT plugin (hard fail if
@@ -92,13 +94,16 @@
 #           stack (standalone lmcache server + vLLM LMCacheMPConnector) with a tiny
 #           model (Qwen/Qwen2.5-0.5B-Instruct) and asserts one non-empty chat
 #           completion.  Exercises the full connector path a smoke-test cannot.
-#   all     build, build-exporters, then load   (default)
+#   all     build-split, build-exporters, then load   (default)
 #
 # Key environment:
 #   AIC_ROCM_ARCH        gfx arch(es) baked in; ';'-list   (default: all vLLM archs)
 #   AIC_IMAGE            full image name:tag
 #   AIC_IMAGE_NAME       image name only
 #   AIC_IMAGE_DIR        shared dir for the tarball        (default: /scratch/$USER/images)
+#   AIC_TMP_DIR          build-job TMPDIR + OCI scratch    (default: auto --
+#                        node-local /tmp/aic-scratch.<job>, falling back to
+#                        $HOME/.tmp-rocm-aic-cicd; never shared_nfs)
 #   HF_HOME              persistent Hugging Face cache used by tiny-test
 #                        (default: <AIC_IMAGE_DIR>/tiny-hf)
 #   ROCM_VERSION, PYTORCH_REF, VLLM_REF, LLM_EMU_REF, LMCACHE_REF,
@@ -111,9 +116,10 @@
 #                        marker under /var/tmp), so a rebuild is picked up
 #                        automatically without setting this.
 #   AIC_TARGETS          comma-separated nodes to load     (required for load/all)
-#   AIC_PUSH_REF         registry-qualified ref to push the final image to
-#                        (required for push; needs `docker login <registry>` first)
-#                        (e.g. <your-registry>/<project>/rocm-aic:latest)
+#   AIC_VLLM_PUSH_REF, AIC_LMCACHE_PUSH_REF
+#                        registry-qualified refs to push the two images to
+#                        (both required for push; needs `docker login <registry>`
+#                        first) (e.g. <your-registry>/<project>/aic-vllm:latest)
 #
 #   AIC_BUILD_CONSTRAINT Slurm -C feature expr for the build node
 #                        (default: <site>&CPUONLY -- CPU-only build nodes).
@@ -191,8 +197,39 @@
 #   AIC_COMPRESS         zstd | gzip | none                (default: zstd if available,
 #                                                            else gzip)
 #
-set -euo pipefail
+# -E inherit ERR trap in functions and subshells,
+# -e exit the script upon commands failing,
+# -u to error if the script ever references a variable that is unset,
+# -o pipefail to error if any stage of a pipeline fails.
+set -Eeuo pipefail
 export PATH="/usr/local/bin:${PATH}"
+
+# --- Report where errexit fired ---------------------------------------------
+# errexit exits without saying where.  Only the line number and function call
+# stack are printed, never the command text: the job bodies below are
+# generated by unquoted heredocs that bake values such as HF_TOKEN into it.
+_aic_on_err() {
+    # set -E carries this trap into $(...), where errexit is off.
+    [[ $- == *e* ]] || return 0
+    # The failing command was a child that reports its own failures.
+    [[ -z ${_aic_err_child_reports-} ]] || return 0
+    # || : so a failed write cannot replace the exit status.
+    printf '%s: command failed (exit %s, pipeline status %s) at line %s%s\n' \
+        "${_aic_err_tag:-${0##*/}}" "$1" "$2" "$3" "${4:+ in ${4// / <- }}" >&2 || :
+    # Lets _sbatch_run tell that a job body already reported.
+    [[ -z ${_aic_err_report_file-} ]] || : >"${_aic_err_report_file}" || :
+}
+# Set ERR trap.
+trap '_aic_on_err "$?" "${PIPESTATUS[*]}" "$LINENO" "${FUNCNAME[*]-}"' ERR
+# Run a child that installs this handler too; only the child reports.
+_aic_err_delegate() { local _aic_err_child_reports=1; "$@"; }
+# The same handler as source, to prepend to a generated job body.  Its reports
+# name the body ($1); their line numbers count from the top of the generated
+# script, not this file.
+_aic_err_trap_src() {
+    printf '%s\n' "_aic_err_tag=$(printf '%q' "${0##*/} generated $1 body")" \
+        "$(declare -f _aic_on_err)" 'set -E' "$(trap -p ERR)"
+}
 
 # --- Resolve paths (script lives at aic-release/.slurm/) ------------------
 # The tree is self-contained: the Docker build context IS aic-release/.
@@ -221,7 +258,7 @@ AIC_UCX_FAST="${AIC_UCX_FAST:-}"
 # Callers must pass one of:
 #   AIC_IMAGE_NAME  name only for the version-derived tag to be appended here.
 #   AIC_IMAGE       a complete name:tag, used verbatim.  Wins over AIC_IMAGE_NAME.
-_aic_tag="$(bash "${AIC_DAY_DIR}/docker/scripts/aic-image-tag.sh" 2>/dev/null || true)"
+_aic_tag="$(bash "${AIC_DAY_DIR}/docker/scripts/aic-image-tag.sh" || true)"
 AIC_IMAGE="${AIC_IMAGE:-${AIC_IMAGE_NAME:-rocm-aic}:${_aic_tag:-latest}}"
 AIC_VLLM_IMAGE="${AIC_VLLM_IMAGE:-aic-vllm:${_aic_tag:-latest}}"
 AIC_LMCACHE_IMAGE="${AIC_LMCACHE_IMAGE:-aic-lmcache:${_aic_tag:-latest}}"
@@ -238,9 +275,9 @@ AIC_VLLM_TARGET_DEVICE="${AIC_VLLM_TARGET_DEVICE:-}"
 # --- build-emulate / emulate-test defaults ----------------------------------
 # The emulation image stops at the Dockerfile's `emulate` stage (vLLM + the
 # llm-emu plugin, no LMCache HIP ext / NIXL / hsa-snoop) and builds vLLM with
-# VLLM_TARGET_DEVICE=empty, so NO GPU kernels are compiled at all -- minutes,
-# not hours.  The arch below only picks torch's device extra from AMD's wheel
-# index; nothing in this image runs on a GPU.
+# VLLM_TARGET_DEVICE=empty, so vLLM compiles no GPU kernels.  It still sits on
+# aic-base, whose PyTorch is built for the arch below; that build is cached per
+# arch, but the first one is not quick.  Nothing in this image runs on a GPU.
 AIC_EMULATE_IMAGE="${AIC_EMULATE_IMAGE:-${IMAGE_NAME:-rocm-aic}:${IMAGE_TAG_EMULATE:-7.14-emulate}}"
 AIC_EMULATE_ARCH="${AIC_EMULATE_ARCH:-gfx942}"
 AIC_EMULATE_VLLM_DEVICE="${AIC_EMULATE_VLLM_DEVICE:-empty}"
@@ -256,11 +293,10 @@ AIC_EMULATE_READY_TIMEOUT="${AIC_EMULATE_READY_TIMEOUT:-96}"   # x5s = up to 8 m
 AIC_EMULATE_PACK_HOST="${AIC_EMULATE_PACK_HOST:-}"
 
 # --- emulate-mp-test defaults (emulation + the full LMCache MP recipe) -------
-# Unlike emulate-test this needs LMCache in the image, and the `emulate`
-# Dockerfile stage stops before LMCache -- so it defaults to the PRODUCTION
-# image/tarball.  That image also ships the llm-emu plugin, and the plugin is
-# inert unless VLLM_EMULATOR_ENABLE_ORACLE=1, so one image covers both.
-AIC_EMULATE_MP_IMAGE="${AIC_EMULATE_MP_IMAGE:-${IMAGE_NAME:-rocm-aic}:${IMAGE_TAG:-7.14-latest}}"
+# Unlike emulate-test this needs LMCache, and the `emulate` Dockerfile stage
+# stops before it -- so it runs the PRODUCTION images (AIC_VLLM_IMAGE /
+# AIC_LMCACHE_IMAGE).  aic-vllm also ships the llm-emu plugin, which is inert
+# unless VLLM_EMULATOR_ENABLE_ORACLE=1, so the same images cover both.
 # The emulated KV pool is really allocated here (host memory, lazily paged),
 # because the connector needs real buffers to register.  Default well under
 # AIC_EMULATE_MP_MEM rather than inheriting the pack's ~100+ GiB MI300X value.
@@ -345,12 +381,16 @@ AIC_CAPTURE_SWEEP="${AIC_CAPTURE_SWEEP:-256,64,1,16 256,64,8,64 1024,128,1,12 10
 if [[ "${AIC_SPUR_CLUSTER}" == "1" ]]; then
     AIC_BUILD_PARTITION="${AIC_BUILD_PARTITION:-amd-spur}"
     AIC_IMAGE_DIR="${AIC_IMAGE_DIR:-${AIC_SHARED_NFS:-/shared_nfs}/${USER}/images}"
+    # Scratch is picked on the build node (auto: /tmp, then $HOME) -- never the
+    # hard-mounted shared_nfs, where a stall hangs the job silently.
+    AIC_TMP_DIR="${AIC_TMP_DIR-}"
     # Use ${VAR-default} (not ${VAR:-default}) so an explicitly set empty string
     # ("AIC_BUILD_CONSTRAINT=") is honoured as "no constraint".
     AIC_BUILD_CONSTRAINT="${AIC_BUILD_CONSTRAINT-}"
     AIC_TEST_CONSTRAINT="${AIC_TEST_CONSTRAINT-}"
 else
     AIC_BUILD_PARTITION="${AIC_BUILD_PARTITION:-defq}"
+    AIC_TMP_DIR="${AIC_TMP_DIR-}"
     AIC_BUILD_CONSTRAINT="${AIC_BUILD_CONSTRAINT:-CPUONLY}"
     AIC_TEST_CONSTRAINT="${AIC_TEST_CONSTRAINT:-GFX942&NVME}"
 fi
@@ -363,7 +403,8 @@ if [[ "${AIC_SPUR_CLUSTER}" == "1" ]]; then
 fi
 AIC_LOAD_TIME="${AIC_LOAD_TIME:-00:30:00}"
 AIC_TARGETS="${AIC_TARGETS:-}"
-AIC_PUSH_REF="${AIC_PUSH_REF:-}"
+AIC_VLLM_PUSH_REF="${AIC_VLLM_PUSH_REF:-}"
+AIC_LMCACHE_PUSH_REF="${AIC_LMCACHE_PUSH_REF:-}"
 AIC_CACHE_DIR="${AIC_CACHE_DIR:-}"
 AIC_CACHE_REF="${AIC_CACHE_REF:-}"
 AIC_CACHE_MODE="${AIC_CACHE_MODE:-max}"
@@ -394,7 +435,7 @@ AIC_TINY_HF_HOME="${AIC_TINY_HF_HOME:-${HF_HOME}}"
 AIC_TINY_TIME="${AIC_TINY_TIME:-00:25:00}"
 AIC_TINY_CPUS="${AIC_TINY_CPUS:-8}"
 AIC_TINY_MEM="${AIC_TINY_MEM:-32G}"
-AIC_TINY_READY_TIMEOUT="${AIC_TINY_READY_TIMEOUT:-120}"   # x5s = up to 10 min for weights + download
+AIC_TINY_READY_TIMEOUT="${AIC_TINY_READY_TIMEOUT:-1100}"   # x5s = up to 75 min (AITER JIT compiles many modules on cold start)
 
 # --- Fabric exporter images (nvme_exporter / rdma_exporter / hsa-snoop) -------
 # Built from docker/*/Dockerfile and distributed alongside the main image so
@@ -502,6 +543,12 @@ _tarball_path() {
     printf '%s/%s-%s.%s' "${AIC_IMAGE_DIR}" "${base}" "$(_arch_tag)" "${COMPRESS_EXT}"
 }
 
+# --- Tarball path for an image other than AIC_IMAGE ($1=image name:tag) ------
+_tarball_path_for() {
+    local AIC_IMAGE="$1"
+    _tarball_path
+}
+
 # --- Exporter tarball path ($1=image name:tag) -------------------------------
 # The exporters bake a host-CPU-arch binary (not a gfx arch), so unlike the main
 # image their tarball name carries no arch tag -- just the sanitized name:tag.
@@ -597,6 +644,8 @@ if ! exec >>"\${_logdir}/${logname}.out" 2>&1; then
     echo "FATAL: \$(hostname): cannot open \${_logdir}/${logname}.out for append" >&2
     exit 99
 fi
+_aic_err_report_file="\${_logdir}/${logname}.err-reported"
+$(_aic_err_trap_src "${jobname}")
 ( ${body} )
 _body_rc=\$?
 echo "\${_body_rc}" > "\${_exitfile}" 2>/dev/null || true
@@ -913,6 +962,12 @@ PROLOGUE
     fi
     _active_job_logfile=""; _active_job_desc=""; _active_job_id=""
     _clear_active_job
+    if (( rc != 0 )) && [[ -e "${AIC_DAY_DIR}/logs/${jobid}/${logname}.err-reported" ]]; then
+        # The job body's handler already reported where it failed.  Fail
+        # here, where the guard is in scope, rather than at our caller.
+        local _aic_err_child_reports=1
+        (exit "${rc}")
+    fi
     return "${rc}"
 }
 
@@ -958,11 +1013,24 @@ cmd_build() {
     [[ -n "${AIC_BUILD_TARGET}" ]] && _target_arg="--target ${AIC_BUILD_TARGET}"
     [[ -n "${AIC_VLLM_TARGET_DEVICE}" ]] && \
         _vllm_device_arg="--build-arg VLLM_TARGET_DEVICE=${AIC_VLLM_TARGET_DEVICE}"
-    # Pass a pre-built aic-base image as a named build context when one is
-    # available (AIC_BUILD_CONTEXT_BASE).  vllm/ and lmcache/ Dockerfiles have
-    # a self-contained fallback FROM stage so the build still works without it.
-    [[ -n "${AIC_BUILD_CONTEXT_BASE:-}" ]] && \
+    # vllm/ and lmcache/ take aic-base as their `base` stage.  Without it they
+    # fall back to the stock ROCm image, which has neither git nor torch, so
+    # pass either a pre-built one (AIC_BUILD_CONTEXT_BASE) or, with
+    # AIC_BUILD_BASE_FIRST=1, one built earlier in the same job.
+    local _base_first="" _base_step=""
+    local _base_ref="${AIC_IMAGE%:*}-base:${AIC_IMAGE##*:}"
+    if [[ -n "${AIC_BUILD_CONTEXT_BASE:-}" ]]; then
         _context_arg="--build-context base=${AIC_BUILD_CONTEXT_BASE}"
+    elif [[ "${AIC_BUILD_BASE_FIRST:-}" == "1" ]]; then
+        [[ -n "${AIC_CACHE_REF}" || -n "${AIC_CACHE_DIR}" ]] || \
+            die "building aic-base first needs the buildx path; set AIC_CACHE_DIR or AIC_CACHE_REF, or pass AIC_BUILD_CONTEXT_BASE"
+        _base_first=1
+    fi
+    # vllm/'s default target installs aic-lmcache's wheel from a
+    # `docker/lmcache/Dockerfile --target wheels` export directory.
+    local _lmc_wheels_arg=""
+    [[ -n "${AIC_BUILD_CONTEXT_LMCACHE_WHEELS:-}" ]] && \
+        _lmc_wheels_arg="--build-context lmcache-wheels=${AIC_BUILD_CONTEXT_LMCACHE_WHEELS}"
 
     # --- Build program: plain `docker build`, or `docker buildx` with a shared
     #     registry cache when AIC_CACHE_REF is set.  The registry cache pushes each
@@ -986,11 +1054,12 @@ cmd_build() {
             *) die "AIC_CACHE_MODE must be min or max (got '${AIC_CACHE_MODE}')" ;;
         esac
         # _pre / _mkdir run before the build; _cfg_arg tweaks builder creation.
-        local _cfg_arg="" _pre="" _mkdir=""
+        local _cfg_arg="" _pre="" _mkdir="" _base_cache_args=""
         if [[ -n "${AIC_CACHE_REF}" ]]; then
             # Registry backend (takes precedence over AIC_CACHE_DIR).
             log "build cache: registry ${AIC_CACHE_REF} (mode ${AIC_CACHE_MODE}, builder ${AIC_BUILDX_BUILDER})"
             _cache_args="--cache-from type=registry,ref=${AIC_CACHE_REF} --cache-to type=registry,ref=${AIC_CACHE_REF},mode=${AIC_CACHE_MODE}"
+            _base_cache_args="--cache-from type=registry,ref=${AIC_CACHE_REF}-base --cache-to type=registry,ref=${AIC_CACHE_REF}-base,mode=${AIC_CACHE_MODE}"
             # Optional buildkitd config for a cache registry with an untrusted TLS
             # cert (self-signed / private-CA HTTPS).  The docker-container builder
             # does NOT inherit /etc/docker/daemon.json's insecure-registries, so it
@@ -1017,10 +1086,17 @@ cmd_build() {
             [[ "${AIC_CACHE_RESET}" == "1" ]] && _reset=",reset=true"
             _cache_args="--cache-from type=local,src=${_cdir} --cache-to type=local,dest=${_cdir},mode=${AIC_CACHE_MODE},ignore-error=true${_reset}"
             _mkdir="mkdir -p '${_cdir}'; "
+            # The same per-arch dir cmd_build_split caches aic-base in.
+            local _base_cdir
+            _base_cdir="${AIC_CACHE_DIR%/}/$(_arch_tag)-base"
+            _base_cache_args="--cache-from type=local,src=${_base_cdir} --cache-to type=local,dest=${_base_cdir},mode=${AIC_CACHE_MODE},ignore-error=true${_reset}"
+            [[ -n "${_base_first}" ]] && _mkdir+="mkdir -p '${_base_cdir}'; "
         fi
         # Create the docker-container builder once per node (idempotent), then
         # bootstrap it so its BuildKit is ready before the build starts.
-        _builder_setup="${_pre}${_mkdir}if ! docker buildx inspect ${AIC_BUILDX_BUILDER} >/dev/null 2>&1; then echo '[build] creating buildx builder ${AIC_BUILDX_BUILDER} (docker-container)'; docker buildx create --name ${AIC_BUILDX_BUILDER} --driver docker-container${_cfg_arg} >/dev/null; fi; docker buildx inspect --bootstrap ${AIC_BUILDX_BUILDER} >/dev/null"
+        # Pass buildkitd.toml when it exists to raise per-step log limit to unlimited.
+        _bkd_cfg=""; [[ -f "${AIC_DAY_DIR}/docker/buildkitd.toml" ]] && _bkd_cfg=" --config '${AIC_DAY_DIR}/docker/buildkitd.toml'"
+        _builder_setup="${_pre}${_mkdir}if ! docker buildx inspect ${AIC_BUILDX_BUILDER} >/dev/null 2>&1; then echo '[build] creating buildx builder ${AIC_BUILDX_BUILDER} (docker-container)'; docker buildx create --name ${AIC_BUILDX_BUILDER} --driver docker-container${_cfg_arg}${_bkd_cfg} >/dev/null; fi; docker buildx inspect --bootstrap ${AIC_BUILDX_BUILDER} >/dev/null"
     fi
 
     # The build + save block runs on ONE node so the saved tarball comes from the
@@ -1039,14 +1115,50 @@ cmd_build() {
         # images (the build finishes but `docker save` hangs forever at 0 bytes).
         # `set -o pipefail` (from set -euo pipefail) makes a build failure fail
         # the whole pipeline instead of writing a truncated tarball.
+        if [[ -n "${_base_first}" ]]; then
+            # The docker-container builder cannot see the host daemon's images,
+            # so hand aic-base over as an OCI layout, as cmd_build_split does.
+            # shellcheck disable=SC2016  # expanded by the job, not here
+            _context_arg='--build-context "base=oci-layout://${_base_oci_dir}"'
+            _base_step="$(cat <<REMOTE
+_base_oci_dir="\${TMPDIR}/aic-base-oci.\${SLURM_JOB_ID:-\$\$}.d"
+trap 'rm -rf "\${_base_oci_dir}"' EXIT
+rm -rf "\${_base_oci_dir}"
+mkdir -p "\${_base_oci_dir}"
+echo "[build] building docker/base/Dockerfile image: ${_base_ref} (base context)"
+docker buildx build --builder ${AIC_BUILDX_BUILDER} --progress=plain --output type=oci,dest=- \
+    --build-arg ROCM_ARCH="${AIC_ROCM_ARCH}" \
+    --build-arg AIC_UCX_FAST="${AIC_UCX_FAST}" \
+    ${_version_build_args} \
+    ${_secret_arg} \
+    ${_base_cache_args} \
+    -f "${AIC_DAY_DIR}/docker/base/Dockerfile" \
+    -t "${_base_ref}" \
+    "${AIC_DAY_DIR}" | tar -xf - -C "\${_base_oci_dir}"
+REMOTE
+)"
+        fi
         remote_script="$(cat <<REMOTE
 set -euo pipefail
+export BUILDKIT_STEP_LOG_MAX_SIZE=-1
 command -v docker >/dev/null 2>&1 || { echo "docker not found on build node \$(hostname) (PATH=\${PATH})" >&2; exit 1; }
+docker system df >/dev/null 2>&1 \
+    || { echo "[preflight] FATAL: docker overlay snapshotter broken on \$(hostname) -- resubmit to a different node" >&2; exit 1; }
 echo "[build] host=\$(hostname) docker=\$(docker --version)"
 # BuildKit writes a temp dir for config injection into TMPDIR (defaults to /tmp).
-# On SPUR compute nodes /tmp may not be writable for this user; use $HOME/tmp instead.
-mkdir -p "\${HOME}/.tmp-rocm-aic-cicd"
-export TMPDIR="\${HOME}/.tmp-rocm-aic-cicd"
+# The scratch also holds the multi-GB OCI base tarball, so pick node-local /tmp
+# first (unwritable on some SPUR compute nodes) and fall back to $HOME.  Never
+# default to shared_nfs: a hard-mount NFS stall here hangs the job silently
+# until the SBATCH time limit reaps it (run 40037358957).
+_aic_tmp="${AIC_TMP_DIR:-}"
+if [[ -z "\${_aic_tmp:-}" ]]; then
+    for _d in "/tmp/aic-scratch.\${SLURM_JOB_ID:-\$\$}" "\${HOME}/.tmp-rocm-aic-cicd"; do
+        if mkdir -p "\$_d" 2>/dev/null && [[ -w "\$_d" ]]; then _aic_tmp="\$_d"; break; fi
+    done
+fi
+[[ -n "\${_aic_tmp:-}" ]] || { echo "[build] FATAL: no writable scratch dir (tried /tmp and \$HOME); set AIC_TMP_DIR" >&2; exit 1; }
+mkdir -p "\${_aic_tmp:-}"
+export TMPDIR="\${_aic_tmp:-}"
 cd "${AIC_DAY_DIR}"
 ${_builder_setup}
 mkdir -p "${AIC_IMAGE_DIR}"
@@ -1067,6 +1179,7 @@ docker buildx prune --builder ${AIC_BUILDX_BUILDER} --force 2>/dev/null || true
 _droot="\$(docker info --format '{{.DockerRootDir}}' 2>/dev/null)"
 [ -d "\${_droot:-}" ] || _droot=/
 echo "[build] disk after prune (\${_droot}): \$(df -h "\${_droot}" | tail -1)"
+${_base_step}
 tmp="${tarball}.partial.\$\$"
 echo "[build] building docker/${AIC_BUILD_DOCKERFILE:-lmcache/Dockerfile} image: ${AIC_IMAGE}"
 docker buildx build --builder ${AIC_BUILDX_BUILDER} --progress=plain --output type=docker,dest=- \
@@ -1076,6 +1189,7 @@ docker buildx build --builder ${AIC_BUILDX_BUILDER} --progress=plain --output ty
     ${_vllm_device_arg} \
     ${_target_arg} \
     ${_context_arg} \
+    ${_lmc_wheels_arg} \
     ${_secret_arg} \
     ${_cache_args} \
     -f "${AIC_DAY_DIR}/docker/${AIC_BUILD_DOCKERFILE:-lmcache/Dockerfile}" \
@@ -1122,6 +1236,7 @@ ${_build_program} \
     ${_vllm_device_arg} \
     ${_target_arg} \
     ${_context_arg} \
+    ${_lmc_wheels_arg} \
     ${_secret_arg} \
     -f "${AIC_DAY_DIR}/docker/${AIC_BUILD_DOCKERFILE:-lmcache/Dockerfile}" \
     -t "${AIC_IMAGE}" \
@@ -1139,7 +1254,8 @@ REMOTE
 
     if [[ "${AIC_BUILD_LOCAL:-}" == "1" ]]; then
         log "building locally on $(hostname) (AIC_BUILD_LOCAL=1)"
-        bash -c "${remote_script}"
+        _aic_err_delegate bash -c "$(_aic_err_trap_src aic-build)
+${remote_script}"
     else
         # Pin an exact node if AIC_BUILD_NODE is set; otherwise let Slurm choose
         # any idle node matching the CPU-only build constraint.
@@ -1174,7 +1290,8 @@ REMOTE
 # kernels, no LMCache HIP extension, no NIXL and no hsa-snoop.  The result runs
 # the full vLLM scheduler/HTTP stack on a CPU-only node with the forward pass
 # replaced by a profile-pack latency draw.  Tagged separately from the GPU image
-# (AIC_EMULATE_IMAGE), so its tarball never overwrites the real one.
+# (AIC_EMULATE_IMAGE), so its tarball never overwrites the real one.  The vLLM
+# stage needs git and torch from aic-base, so the job builds that first.
 _use_emulate_image() {
     AIC_IMAGE="${AIC_EMULATE_IMAGE}"
     AIC_ROCM_ARCH="${AIC_EMULATE_ARCH}"
@@ -1185,13 +1302,12 @@ cmd_build_emulate() {
     AIC_BUILD_TARGET="emulate"
     AIC_VLLM_TARGET_DEVICE="${AIC_EMULATE_VLLM_DEVICE}"
     AIC_BUILD_DOCKERFILE="vllm/Dockerfile"
-    # Use the pre-built aic-base as the named build context so the emulate image
-    # inherits the slim runtime base rather than pulling the -full ROCm image.
-    local _base_ref="${AIC_BASE_IMAGE:-aic-base:${IMAGE_TAG:-latest}}"
-    if [[ -z "${AIC_BUILD_CONTEXT_BASE:-}" ]]; then
-        AIC_BUILD_CONTEXT_BASE="docker-image://${_base_ref}"
-    fi
-    log "build-emulate: emulation-only image, no GPU kernels compiled (base: ${AIC_BUILD_CONTEXT_BASE})"
+    # Build aic-base in the same job so the emulate image inherits the slim
+    # runtime base rather than the -full ROCm image.  Not docker-image://: the
+    # docker-container builder cannot see the daemon's images.  An explicit
+    # AIC_BUILD_CONTEXT_BASE still wins (see cmd_build).
+    AIC_BUILD_BASE_FIRST=1
+    log "build-emulate: emulation-only image, no vLLM GPU kernels compiled"
     cmd_build
 }
 
@@ -1206,6 +1322,8 @@ cmd_build_base() {
 # --- build-vllm: build the aic-vllm image (standalone, no pre-built base) ----
 cmd_build_vllm() {
     AIC_BUILD_DOCKERFILE="vllm/Dockerfile"
+    [[ -n "${AIC_BUILD_CONTEXT_LMCACHE_WHEELS:-}" ]] || \
+        die "build-vllm needs AIC_BUILD_CONTEXT_LMCACHE_WHEELS (a docker/lmcache/Dockerfile --target wheels export dir); build-split builds both"
     log "build-vllm: building aic-vllm -> ${AIC_IMAGE}"
     cmd_build
 }
@@ -1217,11 +1335,11 @@ cmd_build_lmcache() {
     cmd_build
 }
 
-# --- build-split: build base → load → vllm + lmcache in a single Slurm job ---
+# --- build-split: build base → lmcache → vllm in a single Slurm job ----------
 # Running three separate jobs (base, vllm, lmcache) fails because vllm/lmcache
 # land on a fresh node without the base image in the local daemon.  This command
-# submits ONE job that builds base first, loads the resulting tarball into the
-# local docker daemon, then builds vllm and lmcache using it as a build context.
+# submits ONE job that builds base first, then lmcache and vllm using it as a
+# build context.  lmcache goes first because the vllm image installs its wheel.
 cmd_build_split() {
     _pick_compress
     local base_image="${AIC_BASE_IMAGE:-aic-base:${IMAGE_TAG:-latest}}"
@@ -1234,9 +1352,14 @@ cmd_build_split() {
     AIC_IMAGE="${AIC_LMCACHE_IMAGE}"
     local lmcache_tarball; lmcache_tarball="$(_tarball_path)"
     AIC_IMAGE="${saved_image}"
-    local tarball_before; tarball_before="$(_tarball_stamp "${lmcache_tarball}")"
+    local lmcache_before; lmcache_before="$(_tarball_stamp "${lmcache_tarball}")"
+    local vllm_before; vllm_before="$(_tarball_stamp "${vllm_tarball}")"
     local vllm_latest_ref="${AIC_VLLM_IMAGE%:*}:latest"
     local lmcache_latest_ref="${AIC_LMCACHE_IMAGE%:*}:latest"
+    local nvme_tar rdma_tar hsa_snoop_tar
+    nvme_tar="$(_exporter_tarball_path "${AIC_NVME_EXPORTER_IMAGE}")"
+    rdma_tar="$(_exporter_tarball_path "${AIC_RDMA_EXPORTER_IMAGE}")"
+    hsa_snoop_tar="$(_exporter_tarball_path "${AIC_HSA_SNOOP_IMAGE}")"
     local _version_build_args="" _version_arg _version_value
     printf -v _version_value '%q' "${AIC_VERSION}"
     _version_build_args+=" --build-arg AIC_VERSION=${_version_value}"
@@ -1254,17 +1377,34 @@ cmd_build_split() {
     local _cache_dir
     _cache_dir="${AIC_CACHE_DIR%/}/$(_arch_tag)"
     local _builder="${AIC_BUILDX_BUILDER}"
-    local _cache_args=""
-    [[ -n "${AIC_CACHE_DIR}" ]] && \
-        _cache_args="--cache-from type=local,src=${_cache_dir} --cache-to type=local,dest=${_cache_dir},mode=${AIC_CACHE_MODE:-max},ignore-error=true"
+    # One cache dir per image, like cmd_build's per-target subdir: a type=local
+    # cache keeps a single `latest` ref, so a shared dir ends up holding only
+    # the last build's chain and the next base build gets no hits.
+    local _cache_args_base="" _cache_args_vllm="" _cache_args_lmcache="" _cache_from_lmcache=""
+    if [[ -n "${AIC_CACHE_DIR}" ]]; then
+        local _cache_opts="mode=${AIC_CACHE_MODE:-max},ignore-error=true"
+        _cache_args_base="--cache-from type=local,src=${_cache_dir}-base --cache-to type=local,dest=${_cache_dir}-base,${_cache_opts}"
+        _cache_args_vllm="--cache-from type=local,src=${_cache_dir}-vllm --cache-to type=local,dest=${_cache_dir}-vllm,${_cache_opts}"
+        _cache_args_lmcache="--cache-from type=local,src=${_cache_dir}-lmcache --cache-to type=local,dest=${_cache_dir}-lmcache,${_cache_opts}"
+        _cache_from_lmcache="--cache-from type=local,src=${_cache_dir}-lmcache"
+    fi
 
     local remote_script
     remote_script="$(cat <<REMOTE
 set -euo pipefail
 command -v docker >/dev/null 2>&1 || { echo "docker not found" >&2; exit 1; }
 echo "[build-split] host=\$(hostname) docker=\$(docker --version)"
-mkdir -p "\${HOME}/.tmp-rocm-aic-cicd"
-export TMPDIR="\${HOME}/.tmp-rocm-aic-cicd"
+# Scratch: node-local /tmp first (fall back to $HOME; never shared_nfs -- a
+# hard-mount NFS stall here hangs the job silently).  AIC_TMP_DIR overrides.
+_aic_tmp="${AIC_TMP_DIR:-}"
+if [[ -z "\${_aic_tmp:-}" ]]; then
+    for _d in "/tmp/aic-scratch.\${SLURM_JOB_ID:-\$\$}" "\${HOME}/.tmp-rocm-aic-cicd"; do
+        if mkdir -p "\$_d" 2>/dev/null && [[ -w "\$_d" ]]; then _aic_tmp="\$_d"; break; fi
+    done
+fi
+[[ -n "\${_aic_tmp:-}" ]] || { echo "[build-split] FATAL: no writable scratch dir (tried /tmp and \$HOME); set AIC_TMP_DIR" >&2; exit 1; }
+mkdir -p "\${_aic_tmp:-}"
+export TMPDIR="\${_aic_tmp:-}"
 cd "${AIC_DAY_DIR}"
 # Ensure the buildx builder exists
 if ! docker buildx inspect ${_builder} >/dev/null 2>&1; then
@@ -1279,9 +1419,10 @@ docker buildx prune --builder ${_builder} --force 2>/dev/null || true
 # Instead we export the base image in OCI layout format to a host directory;
 # the docker CLI reads that directory and transfers it to BuildKit as a named
 # context, which works regardless of daemon isolation.
-echo "[build-split] step 1/3: building aic-base (${base_image})"
+echo "[build-split] step 1/4: building aic-base (${base_image})"
 _base_oci_tar="\${TMPDIR}/aic-base-oci.\${SLURM_JOB_ID:-\$\$}.tar"
 _base_oci_dir="\${TMPDIR}/aic-base-oci.\${SLURM_JOB_ID:-\$\$}.d"
+trap 'rm -rf "\${_base_oci_tar}" "\${_base_oci_dir}" "\${_lmc_wheels_dir:-}"' EXIT
 rm -f "\${_base_oci_tar}" 2>/dev/null || true
 rm -rf "\${_base_oci_dir}" 2>/dev/null || true
 tmp_base="${base_tarball_name}.partial.\${SLURM_JOB_ID:-\$\$}"
@@ -1289,9 +1430,10 @@ docker buildx build --builder ${_builder} --progress=plain \
     --output "type=docker,dest=-" \
     --output "type=oci,dest=\${_base_oci_tar}" \
     --build-arg ROCM_ARCH="${AIC_ROCM_ARCH}" \
+    --build-arg AIC_UCX_FAST="${AIC_UCX_FAST}" \
     ${_version_build_args} \
     ${_secret_arg} \
-    ${_cache_args} \
+    ${_cache_args_base} \
     -f "${AIC_DAY_DIR}/docker/base/Dockerfile" \
     -t "${base_image}" \
     "${AIC_DAY_DIR}" | ${COMPRESS_CMD} > "\${tmp_base}"
@@ -1303,25 +1445,46 @@ tar -xf "\${_base_oci_tar}" -C "\${_base_oci_dir}"
 rm -f "\${_base_oci_tar}"
 echo "[build-split] base OCI dir: \${_base_oci_dir} (\$(ls "\${_base_oci_dir}"))"
 
-# --- Step 2b: build lmcache wheels for vllm build context --------------------
-# vllm/Dockerfile requires --build-context lmcache-wheels=DIR with one .whl.
-_lmc_wheels_dir="\${TMPDIR}/lmcache-wheels.\${SLURM_JOB_ID:-\$\$}"
-mkdir -p "\${_lmc_wheels_dir}"
-echo "[build-split] step 2b: building lmcache wheels"
-docker buildx build --builder ${_builder} --progress=plain \
-    --output "type=local,dest=\${_lmc_wheels_dir}" \
-    --build-context "base=oci-layout://\${_base_oci_dir}" \
+# --- Step 2/4: build aic-lmcache from base -----------------------------------
+echo "[build-split] step 2/4: building aic-lmcache (${AIC_LMCACHE_IMAGE})"
+tmp_lmcache="${lmcache_tarball}.partial.\${SLURM_JOB_ID:-\$\$}"
+docker buildx build --builder ${_builder} --progress=plain --output type=docker,dest=- \
     --build-arg ROCM_ARCH="${AIC_ROCM_ARCH}" \
-    --build-arg AIC_VERSION="${AIC_VERSION}" \
+    --build-arg BUILD_JOBS="${BUILD_JOBS:-}" \
+    --build-arg AIC_UCX_FAST="${AIC_UCX_FAST}" \
     ${_version_build_args} \
+    --build-context "base=oci-layout://\${_base_oci_dir}" \
     ${_secret_arg} \
+    ${_cache_args_lmcache} \
+    -f "${AIC_DAY_DIR}/docker/lmcache/Dockerfile" \
+    -t "${AIC_LMCACHE_IMAGE}" \
+    -t "${lmcache_latest_ref}" \
+    "${AIC_DAY_DIR}" | ${COMPRESS_CMD} > "\${tmp_lmcache}"
+mv -f "\${tmp_lmcache}" "${lmcache_tarball}"
+echo "[build-split] lmcache saved: \$(du -h "${lmcache_tarball}" | cut -f1) -> ${lmcache_tarball}"
+
+# --- Step 3/4: export aic-lmcache's /wheels for the vllm image ----------------
+# Same args as step 2, so every layer is a cache hit.  No --cache-to: the
+# -lmcache dir keeps a single ref, and it should stay step 2's chain.
+echo "[build-split] step 3/4: exporting aic-lmcache wheels"
+_lmc_wheels_dir="\${TMPDIR}/aic-lmcache-wheels.\${SLURM_JOB_ID:-\$\$}.d"
+rm -rf "\${_lmc_wheels_dir}"
+docker buildx build --builder ${_builder} --progress=plain \
     --target wheels \
+    --output "type=local,dest=\${_lmc_wheels_dir}" \
+    --build-arg ROCM_ARCH="${AIC_ROCM_ARCH}" \
+    --build-arg BUILD_JOBS="${BUILD_JOBS:-}" \
+    --build-arg AIC_UCX_FAST="${AIC_UCX_FAST}" \
+    ${_version_build_args} \
+    --build-context "base=oci-layout://\${_base_oci_dir}" \
+    ${_secret_arg} \
+    ${_cache_from_lmcache} \
     -f "${AIC_DAY_DIR}/docker/lmcache/Dockerfile" \
     "${AIC_DAY_DIR}"
-echo "[build-split] lmcache wheels: \$(ls \${_lmc_wheels_dir}/*.whl 2>/dev/null || echo '(none found)')"
+echo "[build-split] lmcache wheels: \$(ls "\${_lmc_wheels_dir}")"
 
-# --- Step 3a: build aic-vllm from base, save as separate tarball --------------
-echo "[build-split] step 3a/3: building aic-vllm (${AIC_VLLM_IMAGE})"
+# --- Step 4/4: build aic-vllm from base + aic-lmcache's wheels ----------------
+echo "[build-split] step 4/4: building aic-vllm (${AIC_VLLM_IMAGE})"
 tmp_vllm="${vllm_tarball}.partial.\${SLURM_JOB_ID:-\$\$}"
 docker buildx build --builder ${_builder} --progress=plain \
     --output "type=docker,dest=-" \
@@ -1331,32 +1494,39 @@ docker buildx build --builder ${_builder} --progress=plain \
     --build-context "base=oci-layout://\${_base_oci_dir}" \
     --build-context "lmcache-wheels=\${_lmc_wheels_dir}" \
     ${_secret_arg} \
-    ${_cache_args} \
+    ${_cache_args_vllm} \
     -f "${AIC_DAY_DIR}/docker/vllm/Dockerfile" \
     -t "${AIC_VLLM_IMAGE}" \
     -t "${vllm_latest_ref}" \
     "${AIC_DAY_DIR}" | ${COMPRESS_CMD} > "\${tmp_vllm}"
 mv -f "\${tmp_vllm}" "${vllm_tarball}"
 echo "[build-split] vllm saved: \$(du -h "${vllm_tarball}" | cut -f1) -> ${vllm_tarball}"
-
-# --- Step 3b: build aic-lmcache from base (independent; not on top of vllm) --
-echo "[build-split] step 3b/3: building aic-lmcache (${AIC_LMCACHE_IMAGE})"
-tmp_lmcache="${lmcache_tarball}.partial.\${SLURM_JOB_ID:-\$\$}"
-docker buildx build --builder ${_builder} --progress=plain --output type=docker,dest=- \
-    --build-arg ROCM_ARCH="${AIC_ROCM_ARCH}" \
-    --build-arg BUILD_JOBS="${BUILD_JOBS:-}" \
-    --build-arg AIC_UCX_FAST="${AIC_UCX_FAST}" \
-    ${_version_build_args} \
-    --build-context "base=oci-layout://\${_base_oci_dir}" \
-    ${_secret_arg} \
-    ${_cache_args} \
-    -f "${AIC_DAY_DIR}/docker/lmcache/Dockerfile" \
-    -t "${AIC_LMCACHE_IMAGE}" \
-    -t "${lmcache_latest_ref}" \
-    "${AIC_DAY_DIR}" | ${COMPRESS_CMD} > "\${tmp_lmcache}"
-mv -f "\${tmp_lmcache}" "${lmcache_tarball}"
-echo "[build-split] lmcache saved: \$(du -h "${lmcache_tarball}" | cut -f1) -> ${lmcache_tarball}"
 rm -rf "\${_base_oci_dir}" "\${_lmc_wheels_dir}"
+
+# Build exporter images in the same allocation (same node = Docker access).
+if docker info >/dev/null 2>&1; then
+    echo "[build-split] building fabric exporter images (same allocation)"
+    for _img_spec in \
+        "${AIC_NVME_EXPORTER_IMAGE}|NVME_EXPORTER_VERSION=${AIC_NVME_EXPORTER_VERSION}|${AIC_DAY_DIR}/docker/nvme-exporter|${nvme_tar}" \
+        "${AIC_RDMA_EXPORTER_IMAGE}|RDMA_EXPORTER_VERSION=${AIC_RDMA_EXPORTER_VERSION}|${AIC_DAY_DIR}/docker/rdma-exporter|${rdma_tar}" \
+        "${AIC_HSA_SNOOP_IMAGE}||${AIC_DAY_DIR}/docker/hsa-snoop|${hsa_snoop_tar}"; do
+        _img="\$(cut -d'|' -f1 <<<"\${_img_spec}")"
+        _arg="\$(cut -d'|' -f2 <<<"\${_img_spec}")"
+        _ctx="\$(cut -d'|' -f3 <<<"\${_img_spec}")"
+        _tar="\$(cut -d'|' -f4 <<<"\${_img_spec}")"
+        _tmp="\${_tar}.partial.\$\$"
+        set +o pipefail
+        docker buildx build --builder ${_builder} --output type=docker,dest=- \
+            \${_arg:+--build-arg \${_arg}} -t "\${_img}" "\${_ctx}" | ${COMPRESS_CMD} > "\${_tmp}"
+        _rc=("\${PIPESTATUS[@]}")
+        set -o pipefail
+        [ "\${_rc[0]}" -eq 0 ] && [ "\${_rc[1]}" -eq 0 ] && mv -f "\${_tmp}" "\${_tar}" \
+            && echo "[build-split] exporter saved: \$(du -h "\${_tar}" | cut -f1) -> \${_tar}" \
+            || { echo "[build-split] WARN: exporter build failed for \${_img}; skipping" >&2; rm -f "\${_tmp}"; }
+    done
+else
+    echo "[build-split] WARN: Docker daemon not accessible; skipping exporter builds" >&2
+fi
 exit 0
 REMOTE
 )"
@@ -1367,7 +1537,8 @@ REMOTE
         --nodes=1 --ntasks=1 \
         --cpus-per-task="${AIC_BUILD_CPUS}" \
         --time="${AIC_BUILD_TIME}"
-    _verify_tarball "${lmcache_tarball}" "image" "${tarball_before}"
+    _verify_tarball "${lmcache_tarball}" "lmcache image" "${lmcache_before}"
+    _verify_tarball "${vllm_tarball}" "vllm image" "${vllm_before}"
     log "build-split complete: vllm=${vllm_tarball} lmcache=${lmcache_tarball}"
 }
 
@@ -1403,6 +1574,14 @@ set -euo pipefail
 command -v docker >/dev/null 2>&1 || { echo "docker not found on build node \$(hostname) (PATH=\${PATH})" >&2; exit 1; }
 echo "[build-exporters] host=\$(hostname) docker=\$(docker --version)"
 mkdir -p "${AIC_IMAGE_DIR}"
+# Pre-flight: ensure the Docker daemon socket is accessible before attempting
+# any buildx operation.  On SPUR some nodes run Docker with restricted socket
+# permissions; fail fast with a clear message rather than writing corrupt tarballs.
+if ! docker info >/dev/null 2>&1; then
+    echo "[build-exporters] ERROR: cannot reach Docker daemon on \$(hostname) (permission denied or daemon not running)" >&2
+    echo "[build-exporters] ERROR: run 'make dist-build-exporters' on a node with Docker socket access, or pin with AIC_BUILD_NODE=" >&2
+    exit 1
+fi
 # A docker-container builder is required to stream a docker-format tar from
 # BuildKit (the default 'docker' driver cannot export type=docker to stdout).
 # Reuse/create the same builder cmd_build uses; idempotent, then bootstrap it.
@@ -1422,7 +1601,7 @@ if [ "\${_rc[1]}" -ne 0 ]; then
     echo "[build-exporters] ERROR: compressor exited \${_rc[1]} for nvme image; tarball may be corrupt" >&2; exit 1
 fi
 if [ "\${_rc[0]}" -ne 0 ]; then
-    echo "[build-exporters] WARN: docker buildx exited \${_rc[0]} for nvme image (cache lock race?); tarball written, continuing"
+    echo "[build-exporters] WARN: docker buildx exited \${_rc[0]} for nvme image (possible cache lock race; tarball may be valid if compressor succeeded)"
 fi
 mv -f "\${tmp}" "${nvme_tar}"
 tmp="${rdma_tar}.partial.\$\$"
@@ -1436,7 +1615,7 @@ if [ "\${_rc[1]}" -ne 0 ]; then
     echo "[build-exporters] ERROR: compressor exited \${_rc[1]} for rdma image; tarball may be corrupt" >&2; exit 1
 fi
 if [ "\${_rc[0]}" -ne 0 ]; then
-    echo "[build-exporters] WARN: docker buildx exited \${_rc[0]} for rdma image (cache lock race?); tarball written, continuing"
+    echo "[build-exporters] WARN: docker buildx exited \${_rc[0]} for rdma image (possible cache lock race; tarball may be valid if compressor succeeded)"
 fi
 mv -f "\${tmp}" "${rdma_tar}"
 tmp="${hsa_snoop_tar}.partial.\$\$"
@@ -1449,7 +1628,7 @@ if [ "\${_rc[1]}" -ne 0 ]; then
     echo "[build-exporters] ERROR: compressor exited \${_rc[1]} for hsa-snoop image; tarball may be corrupt" >&2; exit 1
 fi
 if [ "\${_rc[0]}" -ne 0 ]; then
-    echo "[build-exporters] WARN: docker buildx exited \${_rc[0]} for hsa-snoop image (cache lock race?); tarball written, continuing"
+    echo "[build-exporters] WARN: docker buildx exited \${_rc[0]} for hsa-snoop image (possible cache lock race; tarball may be valid if compressor succeeded)"
 fi
 mv -f "\${tmp}" "${hsa_snoop_tar}"
 echo "[build-exporters] saved \$(du -h "${nvme_tar}" | cut -f1) -> ${nvme_tar}"
@@ -1461,7 +1640,8 @@ REMOTE
 
     if [[ "${AIC_BUILD_LOCAL:-}" == "1" ]]; then
         log "building exporters locally on $(hostname) (AIC_BUILD_LOCAL=1)"
-        bash -c "${remote_script}"
+        _aic_err_delegate bash -c "$(_aic_err_trap_src aic-build-exporters)
+${remote_script}"
     else
         local -a _sel
         if [[ -n "${AIC_BUILD_NODE:-}" ]]; then
@@ -1496,16 +1676,18 @@ REMOTE
 # jobs that map cleanly onto run-cliff.sbatch's per-job logs/<job-id>/ structure.
 cmd_load() {
     _pick_compress
-    local tarball; tarball="$(_tarball_path)"
+    local vllm_tarball; vllm_tarball="$(_tarball_path_for "${AIC_VLLM_IMAGE}")"
+    local lmcache_tarball; lmcache_tarball="$(_tarball_path_for "${AIC_LMCACHE_IMAGE}")"
 
     [[ -n "${AIC_TARGETS}" ]] || die "set AIC_TARGETS=node1,node2,... for the load step"
     command -v srun >/dev/null 2>&1 || die "srun not found; cannot load onto remote nodes"
-    [[ -r "${tarball}" ]] || die "tarball not found: ${tarball} (run 'build' first)"
+    [[ -r "${vllm_tarball}" ]]    || die "vllm tarball not found: ${vllm_tarball} (run 'build' first)"
+    [[ -r "${lmcache_tarball}" ]] || die "lmcache tarball not found: ${lmcache_tarball} (run 'build' first)"
 
     # Also ship the fabric exporter tarballs when they exist (built by
     # 'build-exporters').  Best-effort: absent tarballs are simply skipped, so a
     # main-image-only build still loads fine.  Paths carry no spaces (/scratch...).
-    local tarballs="${tarball}" et
+    local tarballs="${vllm_tarball} ${lmcache_tarball}" et
     for et in "$(_exporter_tarball_path "${AIC_NVME_EXPORTER_IMAGE}")" \
               "$(_exporter_tarball_path "${AIC_RDMA_EXPORTER_IMAGE}")" \
               "$(_exporter_tarball_path "${AIC_HSA_SNOOP_IMAGE}")"; do
@@ -1513,8 +1695,8 @@ cmd_load() {
     done
 
     local n; n="$(awk -F, '{print NF}' <<<"${AIC_TARGETS}")"
-    log "loading ${AIC_IMAGE} (+ present exporter images) onto ${n} node(s): ${AIC_TARGETS}"
-    log "tarball: ${tarball}"
+    log "loading ${AIC_VLLM_IMAGE} + ${AIC_LMCACHE_IMAGE} (+ present exporter images) onto ${n} node(s): ${AIC_TARGETS}"
+    log "tarballs: ${vllm_tarball} ${lmcache_tarball}"
 
     # Small, oversubscribable request so the load can slip in alongside running
     # GPU jobs -- docker load needs no GPU.  --overcommit is dropped on SPUR
@@ -1522,7 +1704,7 @@ cmd_load() {
     local -a _overcommit_arg=(); [[ "${AIC_SPUR_CLUSTER}" != "1" ]] && _overcommit_arg=(--overcommit)
     # Need to provide atleast one GPU due to SPUR scheduling requirements.
     local -a _spur_gpu_arg=(); [[ "${AIC_SPUR_CLUSTER}" == "1" ]] && _spur_gpu_arg=(--gpus-per-node=1)
-    srun \
+    _aic_err_delegate srun \
         "${_spur_gpu_arg[@]}" \
         --job-name=aic-load \
         --partition="${AIC_BUILD_PARTITION}" \
@@ -1530,7 +1712,7 @@ cmd_load() {
         --nodes="${n}" --ntasks-per-node=1 \
         --cpus-per-task=2 --mem=8G "${_overcommit_arg[@]}" \
         --time="${AIC_LOAD_TIME}" \
-        bash -c "
+        bash -c "$(_aic_err_trap_src aic-load)
 set -euo pipefail
 command -v docker >/dev/null 2>&1 || { echo \"\$(hostname): docker not found\" >&2; exit 1; }
 for _tb in ${tarballs}; do
@@ -1540,45 +1722,59 @@ done
     log "load complete on: ${AIC_TARGETS}"
 }
 
-# --- push: tag the built image as AIC_PUSH_REF and push it to a registry ------
+# --- push: tag the built images with their push refs and push to a registry ---
 # Registry-based (pull) distribution as an alternative to the save->scratch->load
 # tarball flow.  Runs on a build-class node; if that node does not already have
-# the image locally (e.g. Slurm placed this job on a different node than build),
+# an image locally (e.g. Slurm placed this job on a different node than build),
 # it loads it from the shared tarball first, then tags and pushes.  Registry
 # creds come from ~/.docker/config.json on shared /home; `docker login` once.
 cmd_push() {
     _pick_compress
-    local tarball; tarball="$(_tarball_path)"
+    local vllm_tarball; vllm_tarball="$(_tarball_path_for "${AIC_VLLM_IMAGE}")"
+    local lmcache_tarball; lmcache_tarball="$(_tarball_path_for "${AIC_LMCACHE_IMAGE}")"
 
-    [[ -n "${AIC_PUSH_REF}" ]] || die "set AIC_PUSH_REF=registry/host/path:tag for the push step"
+    # The stack is two images now, so one ref cannot name both; refuse rather
+    # than push only half of it.
+    [[ -z "${AIC_PUSH_REF:-}" ]] \
+        || die "AIC_PUSH_REF is gone: the stack is two images; set AIC_VLLM_PUSH_REF and AIC_LMCACHE_PUSH_REF instead"
+    [[ -n "${AIC_VLLM_PUSH_REF}" && -n "${AIC_LMCACHE_PUSH_REF}" ]] \
+        || die "set AIC_VLLM_PUSH_REF and AIC_LMCACHE_PUSH_REF (registry/host/path:tag) for the push step"
     command -v srun >/dev/null 2>&1 || die "srun not found; cannot run the push job"
-    [[ -r "${tarball}" ]] || die "tarball not found: ${tarball} (run 'build' first)"
+    [[ -r "${vllm_tarball}" ]]    || die "vllm tarball not found: ${vllm_tarball} (run 'build' first)"
+    [[ -r "${lmcache_tarball}" ]] || die "lmcache tarball not found: ${lmcache_tarball} (run 'build' first)"
 
-    log "pushing ${AIC_IMAGE} -> ${AIC_PUSH_REF}"
-    log "tarball (load fallback): ${tarball}"
+    log "pushing ${AIC_VLLM_IMAGE} -> ${AIC_VLLM_PUSH_REF}"
+    log "pushing ${AIC_LMCACHE_IMAGE} -> ${AIC_LMCACHE_PUSH_REF}"
+    log "tarballs (load fallback): ${vllm_tarball} ${lmcache_tarball}"
 
     local remote_script
     remote_script="$(cat <<REMOTE
 set -euo pipefail
 command -v docker >/dev/null 2>&1 || { echo "\$(hostname): docker not found" >&2; exit 1; }
 echo "[push] host=\$(hostname) docker=\$(docker --version)"
-# Load the image from the shared tarball only when needed (see cmd_test for the
+# Load each image from its shared tarball only when needed (see cmd_test for the
 # marker/mtime rationale): reload when the tarball is newer than the last load
 # here, when the image is absent, or when forced.
-_marker="/var/tmp/aic-loaded-\$(id -u)-\$(echo '${AIC_IMAGE}' | tr '/:' '__').mtime"
-_tar_mtime="\$(stat -c %Y '${tarball}' 2>/dev/null || echo 0)"
-_have_img="\$(docker images -q '${AIC_IMAGE}')"
-_loaded_mtime="\$(cat "\${_marker}" 2>/dev/null || echo 0)"
-if [ "${AIC_FORCE_LOAD:-0}" = "1" ] || [ -z "\${_have_img}" ] || [ "\${_tar_mtime}" -gt "\${_loaded_mtime}" ]; then
-    echo "[push] loading ${AIC_IMAGE} from ${tarball} (tarball=\${_tar_mtime} last-loaded=\${_loaded_mtime} present=\$([ -n "\${_have_img}" ] && echo yes || echo no) force=${AIC_FORCE_LOAD:-0})"
-    ${DECOMPRESS_CMD} '${tarball}' | docker load >/dev/null
-    echo "\${_tar_mtime}" > "\${_marker}" 2>/dev/null || true
-else
-    echo "[push] image up to date on \$(hostname) (id \${_have_img}); AIC_FORCE_LOAD=1 forces a reload"
-fi
-docker tag '${AIC_IMAGE}' '${AIC_PUSH_REF}'
-docker push '${AIC_PUSH_REF}'
-echo "[push] pushed ${AIC_PUSH_REF}"
+_push_image() {
+    local img="\$1" tarball="\$2" ref="\$3"
+    local _marker
+    _marker="/var/tmp/aic-loaded-\$(id -u)-\$(echo "\${img}" | tr '/:' '--').mtime"
+    local _tar_mtime; _tar_mtime="\$(stat -c %Y "\${tarball}" 2>/dev/null || echo 0)"
+    local _have_img; _have_img="\$(docker images -q "\${img}")"
+    local _loaded_mtime; _loaded_mtime="\$(cat "\${_marker}" 2>/dev/null || echo 0)"
+    if [ "${AIC_FORCE_LOAD:-0}" = "1" ] || [ -z "\${_have_img}" ] || [ "\${_tar_mtime}" -gt "\${_loaded_mtime}" ]; then
+        echo "[push] loading \${img} from \${tarball} (tarball=\${_tar_mtime} last-loaded=\${_loaded_mtime} present=\$([ -n "\${_have_img}" ] && echo yes || echo no) force=${AIC_FORCE_LOAD:-0})"
+        ${DECOMPRESS_CMD} "\${tarball}" | docker load >/dev/null
+        echo "\${_tar_mtime}" > "\${_marker}" 2>/dev/null || true
+    else
+        echo "[push] \${img} up to date on \$(hostname) (id \${_have_img}); AIC_FORCE_LOAD=1 forces a reload"
+    fi
+    docker tag "\${img}" "\${ref}"
+    docker push "\${ref}"
+    echo "[push] pushed \${ref}"
+}
+_push_image '${AIC_VLLM_IMAGE}'    '${vllm_tarball}'    '${AIC_VLLM_PUSH_REF}'
+_push_image '${AIC_LMCACHE_IMAGE}' '${lmcache_tarball}' '${AIC_LMCACHE_PUSH_REF}'
 REMOTE
 )"
 
@@ -1597,7 +1793,7 @@ REMOTE
     local -a _push_overcommit=(); [[ "${AIC_SPUR_CLUSTER}" != "1" ]] && _push_overcommit=(--overcommit)
     # Need to provide atleast one GPU due to SPUR scheduling requirements.
     local -a _push_spur_gpu=(); [[ "${AIC_SPUR_CLUSTER}" == "1" ]] && _push_spur_gpu=(--gpus=1)
-    srun \
+    _aic_err_delegate srun \
         "${_push_spur_gpu[@]}" \
         --job-name=aic-push \
         --partition="${AIC_BUILD_PARTITION}" \
@@ -1605,8 +1801,9 @@ REMOTE
         --nodes=1 --ntasks=1 \
         --cpus-per-task=2 --mem=8G "${_push_overcommit[@]}" \
         --time="${AIC_LOAD_TIME}" \
-        bash -c "${remote_script}"
-    log "push complete: ${AIC_PUSH_REF}"
+        bash -c "$(_aic_err_trap_src aic-push)
+${remote_script}"
+    log "push complete: ${AIC_VLLM_PUSH_REF} ${AIC_LMCACHE_PUSH_REF}"
 }
 
 # --- test: smoke-test the image on a GPU+NVMe node ---------------------------
@@ -1635,9 +1832,10 @@ cmd_test() {
     # change the smoke-test's exit code (the in-image checks alone govern that).
     local _smoke_exporters="${AIC_SMOKE_EXPORTERS:-1}"
     local _smoke_scrape_s="${AIC_SMOKE_SCRAPE_S:-45}"
-    local nvme_tar rdma_tar
+    local nvme_tar rdma_tar hsa_snoop_tar
     nvme_tar="$(_exporter_tarball_path "${AIC_NVME_EXPORTER_IMAGE}")"
     rdma_tar="$(_exporter_tarball_path "${AIC_RDMA_EXPORTER_IMAGE}")"
+    hsa_snoop_tar="$(_exporter_tarball_path "${AIC_HSA_SNOOP_IMAGE}")"
 
     # In-container checks live in a standalone script on shared /scratch (visible
     # on the GPU node) and are bind-mounted in -- avoids nested shell quoting.
@@ -1677,6 +1875,23 @@ else
 fi
 
 check "import vllm" timeout 120 python3 -c 'import vllm; print("vllm", vllm.__version__)'
+# The module imports lmcache at top level; this is what --kv-transfer-config loads.
+check "import LMCacheMPConnector" timeout 120 python3 -c \
+    'import vllm.distributed.kv_transfer.kv_connector.v1.lmcache_mp_connector'
+
+# A real GEMM on the visible GPU.  Import checks pass even when hipBLASLt
+# cannot serve the arch -- when the base image is missing the per-arch
+# TensileLibrary device libs, the first torch linear dies with
+# HIPBLAS_STATUS_INVALID_VALUE (hipblasLtMatmulAlgoGetHeuristic) at engine
+# startup.  K=896 is the tiny-test model's hidden size, so this is that
+# first GEMM's exact width; n=64, m=2 keeps it sub-second.
+check "bf16 linear on GPU (hipBLASLt)" timeout 120 python3 -c '
+import torch
+x = torch.randn(2, 896, dtype=torch.bfloat16, device="cuda")
+w = torch.randn(64, 896, dtype=torch.bfloat16, device="cuda")
+out = torch.nn.functional.linear(x, w)
+assert out.shape == (2, 64) and out.dtype == torch.bfloat16
+print("linear 2x896 @ 64x896 ok on", torch.cuda.get_device_name(0))'
 
 # Kernel release + block-device layout (informational)
 note "INFO kernel release: $(uname -r)"
@@ -1709,7 +1924,11 @@ check() { local d="$1"; shift; if "$@" >/tmp/_ck 2>&1; then note "OK   ${d}"; \
 note "container: $(uname -srm)"
 
 check "import lmcache" timeout 60 python3 -c 'import lmcache; print("lmcache", getattr(lmcache, "__version__", "?"))'
-check "lmcache CLI"    command -v lmcache
+# Registers every subcommand, so a missing dependency of any of them fails here.
+# A lightweight (no native extension) install also exits 0 but omits the
+# server's own options, hence the grep.
+check "lmcache server --help" timeout 120 bash -c \
+    'lmcache server --help | grep -q -- --l1-size-gb'
 check "ais-stats (hipFile)" command -v ais-stats
 # ais-check is INFORMATIONAL for environment-dependent bits (P2PDMA, volume)
 # but hard-fail if the binary is missing (image defect).
@@ -1733,8 +1952,6 @@ if [ -d "${plug}" ]; then
 else
     note "FAIL NIXL plugin dir missing: ${plug}"; fail=1
 fi
-
-check "hsa-snoop --help" timeout 10 bash -c 'hsa-snoop --help 2>&1 | grep -q hsa-snoop'
 
 [ "${fail}" -eq 0 ] && note "ALL CHECKS PASSED" || note "SOME CHECKS FAILED"
 exit "${fail}"
@@ -1767,6 +1984,7 @@ echo "[test] host=\$(hostname) docker=\$(docker --version)"
 export AIC_SPUR_CLUSTER='${AIC_SPUR_CLUSTER}'
 # shellcheck source=/dev/null
 source '${AIC_DAY_DIR}/monitoring/monitoring-lib.sh'
+aic_docker_preflight || exit 1
 aic_resolve_gpu_visibility \
     || { echo "[test] could not resolve the GPU allocation (refusing to default to GPU 0)" >&2; exit 1; }
 echo "[test] allocated gpu: ROCR=\${AIC_ROCR_VISIBLE} HIP=\${AIC_HIP_VISIBLE}"
@@ -1865,9 +2083,21 @@ if [ '${_smoke_exporters}' = "1" ]; then
     # gone); without it start_monitoring skips the whole exporter/Prometheus stack.
     MON_COMPOSE='${AIC_DAY_DIR}/docker/docker-compose.yml'
     AIC_METRICS_DIR="\${_logdir}/prometheus"
-    AIC_EXPORTERS=1
+    # SPUR blocks /:/host (B1) and /dev:/dev:rw (B2) bind mounts.  Use the
+    # "safe" subset (amdgpu + hsa-snoop + rdma).  nvme-exporter is excluded
+    # via the AIC_SPUR_CLUSTER guard in mon_profile() safe-case.
+    AIC_EXPORTERS="${AIC_EXPORTERS:-safe}"
     AIC_MONITORING=1
     AIS_KFD_SYMBOL="\${AIS_KFD_SYMBOL:-kfd_ioctl_ais}"
+    # In the smoke-test the full stack (lmcache/vllm) is not running when the
+    # monitoring compose starts.  Override IPC/PID modes to avoid "cannot share
+    # IPC namespace with service lmcache: container missing" errors — the
+    # monitoring-phase containers don't need GPU IPC.
+    # Use "none" for ipc (valid Docker value = isolated /dev/shm) and unset pid
+    # so the single-dash ${VAR-default} in compose uses the default only when
+    # VAR is unset — setting it to empty string disables PID sharing.
+    export VLLM_IPC_MODE=none AIC_HSA_SNOOP_PID_MODE=none
+    export VLLM_PID_MODE=""
     # shellcheck source=/dev/null
     source '${AIC_DAY_DIR}/monitoring/monitoring-lib.sh'
     mkdir -p "\${AIC_METRICS_DIR}"
@@ -1939,6 +2169,7 @@ echo "[tiny-test] host=\$(hostname) docker=\$(docker --version)"
 export AIC_SPUR_CLUSTER='${AIC_SPUR_CLUSTER}'
 # shellcheck source=/dev/null
 source '${AIC_DAY_DIR}/monitoring/monitoring-lib.sh'
+aic_docker_preflight || exit 1
 aic_resolve_gpu_visibility \
     || { echo "[tiny-test] could not resolve the GPU allocation (refusing to default to GPU 0)" >&2; exit 1; }
 export GPU="\${AIC_ROCR_VISIBLE%%,*}"
@@ -1969,6 +2200,7 @@ cd '${AIC_DAY_DIR}'
 # docker compose v2 only -- install user-locally if the node lacks the plugin.
 # shellcheck source=/dev/null
 source '${AIC_DAY_DIR}/monitoring/monitoring-lib.sh'
+aic_docker_preflight || exit 1
 ensure_compose || { echo "[tiny-test] docker compose unavailable and could not be installed" >&2; exit 1; }
 
 # Tiny-model MP stack env.  Small footprint; the tiny model is downloaded online
@@ -1996,10 +2228,12 @@ export LMCACHE_L1_SIZE_GB=4
 export AIC_L2_BACKEND=none
 export VLLM_IPC_MODE=service:lmcache
 export VLLM_PID_MODE=service:lmcache
-# PID/IPC namespace sharing is required for HIP IPC, but networking remains
-# isolated per Compose service.  Reach LMCache through Compose DNS rather than
-# vLLM's own loopback interface.
-export KV_TRANSFER_ARG="--kv-transfer-config '{\"kv_connector\":\"LMCacheMPConnector\",\"kv_role\":\"kv_both\",\"kv_connector_extra_config\":{\"lmcache.mp.host\":\"tcp://aic-lmcache\",\"lmcache.mp.port\":6555}}'"
+# Disable AITER to avoid 50-min JIT cold-start on each new node.
+# AITER provides fused kernels for better throughput but is not required for
+# correctness; vLLM falls back to standard ROCm/Triton kernels.
+export AIC_ROCM_USE_AITER="${AIC_ROCM_USE_AITER:-0}"
+# vLLM shares lmcache's network namespace, so lmcache is on its loopback.
+export KV_TRANSFER_ARG="--kv-transfer-config '{\"kv_connector\":\"LMCacheMPConnector\",\"kv_role\":\"kv_both\",\"kv_connector_extra_config\":{\"lmcache.mp.host\":\"tcp://localhost\",\"lmcache.mp.port\":6555}}'"
 mkdir -p "\${HF_HOME}" /tmp/aic-tiny-nvme /tmp/aic-tiny-nfs
 
 compose() { docker compose -f '${AIC_DAY_DIR}/docker/docker-compose.yml' "\$@"; }
@@ -2025,6 +2259,23 @@ cleanup() {
 }
 trap cleanup EXIT
 
+# Load cached Python base images from shared NFS to avoid Docker Hub rate limits.
+for _py_img in "python:3.12" "python:3.12-slim"; do
+    if docker image inspect "\${_py_img}" >/dev/null 2>&1; then
+        : # already present on this node
+    else
+        _py_tag="\$(printf '%s' "\${_py_img}" | tr ':/' '--')"
+        _py_tar="${AIC_IMAGE_DIR}/\${_py_tag}.tar.zst"
+        if [[ -f "\${_py_tar}" ]]; then
+            ${DECOMPRESS_CMD} "\${_py_tar}" | docker load >/dev/null \
+                && echo "[tiny-test] loaded \${_py_img} from cache" \
+                || docker pull "\${_py_img}" >/dev/null 2>&1 || true
+        else
+            docker pull "\${_py_img}" >/dev/null 2>&1 || true
+        fi
+    fi
+done
+
 echo "[tiny-test] bringing up compose MP stack (model=${AIC_TINY_MODEL}) ..."
 if ! compose --profile cache up -d; then
     echo "[tiny-test] FAIL: compose up failed" >&2
@@ -2038,7 +2289,9 @@ fi
 # inside its container instead of the Slurm host's loopback interface.
 ready=0
 for _i in \$(seq 1 ${AIC_TINY_READY_TIMEOUT}); do
-    if docker exec "\${VLLM_CONTAINER}" curl -fsS http://127.0.0.1:8000/v1/models >/dev/null 2>&1; then ready=1; break; fi
+    if docker exec "\${VLLM_CONTAINER}" python3 -c \
+        "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/v1/models', timeout=3)" \
+        >/dev/null 2>&1; then ready=1; break; fi
     _vllm_state="\$(docker inspect --format '{{.State.Status}}' "\${VLLM_CONTAINER}" 2>/dev/null || true)"
     if [ "\${_vllm_state}" != "running" ]; then
         _vllm_exit="\$(docker inspect --format '{{.State.ExitCode}}' "\${VLLM_CONTAINER}" 2>/dev/null || echo unknown)"
@@ -2057,17 +2310,32 @@ echo "[tiny-test] endpoint ready; sending one chat completion ..."
 
 # One real completion; assert a NON-EMPTY assistant content came back through the
 # LMCacheMPConnector path.
-resp="\$(docker exec "\${VLLM_CONTAINER}" curl -fsS http://127.0.0.1:8000/v1/chat/completions \
-    -H 'Content-Type: application/json' \
-    -d '{"model":"${AIC_TINY_MODEL}","messages":[{"role":"user","content":"Reply with the single word: pong"}],"max_tokens":16,"temperature":0}' 2>&1)" || {
+resp="\$(docker exec "\${VLLM_CONTAINER}" python3 -c "
+import urllib.request, json
+req = urllib.request.Request(
+    'http://127.0.0.1:8000/v1/chat/completions',
+    data=json.dumps({'model':'${AIC_TINY_MODEL}','messages':[{'role':'user','content':'Reply with the single word: pong'}],'max_tokens':16,'temperature':0}).encode(),
+    headers={'Content-Type':'application/json'})
+print(urllib.request.urlopen(req, timeout=30).read().decode())
+" 2>&1)" || {
     echo "[tiny-test] FAIL: completion request failed: \${resp}" >&2; exit 1; }
 echo "[tiny-test] response: \${resp}"
-if grep -qE '"content"[[:space:]]*:[[:space:]]*"[^"]+' <<<"\${resp}"; then
-    echo "[tiny-test] OK: got a non-empty completion via LMCacheMPConnector"
-    exit 0
+if ! grep -qE '"content"[[:space:]]*:[[:space:]]*"[^"]+' <<<"\${resp}"; then
+    echo "[tiny-test] FAIL: empty or missing completion content" >&2
+    exit 1
 fi
-echo "[tiny-test] FAIL: empty or missing completion content" >&2
-exit 1
+echo "[tiny-test] OK: got a non-empty completion"
+
+# A completion also comes back when the connector skipped KV registration and
+# LMCache is inert, so check that LMCache really holds vLLM's KV cache.
+if ! docker exec -i "\${VLLM_CONTAINER}" python3 - '${AIC_TINY_MODEL}' \
+        < '${AIC_DAY_DIR}/.slurm/tiny-kv-roundtrip.py'; then
+    compose logs --no-color vllm 2>&1 | grep -E 'KV registration skipped|KV IPC unavailable|KV caches are not registered' \
+        | sed 's/^/  [vllm] /'
+    exit 1
+fi
+echo "[tiny-test] OK: KV round-trip through LMCacheMPConnector"
+exit 0
 REMOTE
 )"
 
@@ -2096,9 +2364,11 @@ REMOTE
 # Output: ${PROM_DUMP_OUT} (default: ${AIC_IMAGE_DIR}/../prometheus-dump.md)
 cmd_prometheus_dump() {
     _pick_compress
-    local tarball; tarball="$(_tarball_path)"
+    local vllm_tarball; vllm_tarball="$(_tarball_path_for "${AIC_VLLM_IMAGE}")"
+    local lmcache_tarball; lmcache_tarball="$(_tarball_path_for "${AIC_LMCACHE_IMAGE}")"
     command -v sbatch >/dev/null 2>&1 || die "sbatch not found; cannot run prometheus-dump job"
-    [[ -r "${tarball}" ]] || die "tarball not found: ${tarball} (run 'build' first)"
+    [[ -r "${vllm_tarball}" ]]    || die "vllm tarball not found: ${vllm_tarball} (run 'build' first)"
+    [[ -r "${lmcache_tarball}" ]] || die "lmcache tarball not found: ${lmcache_tarball} (run 'build' first)"
 
     local prom_dump_out="${PROM_DUMP_OUT:-${AIC_IMAGE_DIR%/*}/prometheus-dump.md}"
     local prom_dump_wait="${PROM_DUMP_WAIT:-15}"
@@ -2112,7 +2382,7 @@ cmd_prometheus_dump() {
         _sel=(--constraint="${AIC_TEST_CONSTRAINT}")
         log "prometheus-dump via sbatch (partition ${AIC_BUILD_PARTITION}, constraint ${AIC_TEST_CONSTRAINT})"
     fi
-    log "image: ${AIC_IMAGE}  model: ${AIC_TINY_MODEL}  out: ${prom_dump_out}"
+    log "vllm: ${AIC_VLLM_IMAGE}  lmcache: ${AIC_LMCACHE_IMAGE}  model: ${AIC_TINY_MODEL}  out: ${prom_dump_out}"
 
     local remote_script
     remote_script="$(cat <<REMOTE
@@ -2122,30 +2392,39 @@ echo "[prom-dump] host=\$(hostname) docker=\$(docker --version)"
 export AIC_SPUR_CLUSTER='${AIC_SPUR_CLUSTER}'
 # shellcheck source=/dev/null
 source '${AIC_DAY_DIR}/monitoring/monitoring-lib.sh'
+aic_docker_preflight || exit 1
 aic_resolve_gpu_visibility \
     || { echo "[prom-dump] could not resolve GPU allocation" >&2; exit 1; }
 export GPU="\${AIC_ROCR_VISIBLE%%,*}"
 VLLM_CONTAINER="aic-vllm-gpu\${GPU}"
 echo "[prom-dump] allocated gpu: ROCR=\${AIC_ROCR_VISIBLE} HIP=\${AIC_HIP_VISIBLE}"
 
-_marker="/var/tmp/aic-loaded-\$(id -u)-\$(echo '${AIC_IMAGE}' | tr '/:' '__').mtime"
-_tar_mtime="\$(stat -c %Y '${tarball}' 2>/dev/null || echo 0)"
-_have_img="\$(docker images -q '${AIC_IMAGE}')"
-_loaded_mtime="\$(cat "\${_marker}" 2>/dev/null || echo 0)"
-if [ "${AIC_FORCE_LOAD:-0}" = "1" ] || [ -z "\${_have_img}" ] || [ "\${_tar_mtime}" -gt "\${_loaded_mtime}" ]; then
-    echo "[prom-dump] loading ${AIC_IMAGE} from ${tarball}"
-    ${DECOMPRESS_CMD} '${tarball}' | docker load >/dev/null
-    echo "\${_tar_mtime}" > "\${_marker}" 2>/dev/null || true
-else
-    echo "[prom-dump] image up to date on \$(hostname) (id \${_have_img})"
-fi
+_load_image() {
+    local img="\$1" tarball="\$2"
+    local _marker
+    _marker="/var/tmp/aic-loaded-\$(id -u)-\$(echo "\${img}" | tr '/:' '--').mtime"
+    local _tar_mtime; _tar_mtime="\$(stat -c %Y "\${tarball}" 2>/dev/null || echo 0)"
+    local _have_img; _have_img="\$(docker images -q "\${img}")"
+    local _loaded_mtime; _loaded_mtime="\$(cat "\${_marker}" 2>/dev/null || echo 0)"
+    if [ "${AIC_FORCE_LOAD:-0}" = "1" ] || [ -z "\${_have_img}" ] || [ "\${_tar_mtime}" -gt "\${_loaded_mtime}" ]; then
+        echo "[prom-dump] loading \${img} from \${tarball}"
+        ${DECOMPRESS_CMD} "\${tarball}" | docker load >/dev/null
+        echo "\${_tar_mtime}" > "\${_marker}" 2>/dev/null || true
+    else
+        echo "[prom-dump] \${img} up to date on \$(hostname) (id \${_have_img})"
+    fi
+}
+_load_image '${AIC_VLLM_IMAGE}'    '${vllm_tarball}'
+_load_image '${AIC_LMCACHE_IMAGE}' '${lmcache_tarball}'
 
 cd '${AIC_DAY_DIR}'
 source '${AIC_DAY_DIR}/monitoring/monitoring-lib.sh'
 ensure_compose || { echo "[prom-dump] docker compose unavailable" >&2; exit 1; }
 
-export IMAGE_REF='${AIC_IMAGE}'
-export IMAGE_NAME='${AIC_IMAGE%:*}'
+export VLLM_IMAGE_REF='${AIC_VLLM_IMAGE}'
+export LMCACHE_IMAGE_REF='${AIC_LMCACHE_IMAGE}'
+export IMAGE_REF='${AIC_LMCACHE_IMAGE}'
+export IMAGE_NAME='${AIC_LMCACHE_IMAGE%:*}'
 export ROCM_ARCH='${AIC_ROCM_ARCH}'
 export VLLM_MODEL='${AIC_TINY_MODEL}'
 export HF_HOME='${HF_HOME}'
@@ -2168,7 +2447,7 @@ export LMCACHE_NIXL_POSIX_SLOT_SIZE=33554432
 export LMCACHE_MAX_GPU_WORKERS=1
 export VLLM_IPC_MODE=service:lmcache
 export VLLM_PID_MODE=service:lmcache
-export KV_TRANSFER_ARG="--kv-transfer-config '{\"kv_connector\":\"LMCacheMPConnector\",\"kv_role\":\"kv_both\",\"kv_connector_extra_config\":{\"lmcache.mp.host\":\"tcp://aic-lmcache\",\"lmcache.mp.port\":6555}}'"
+export KV_TRANSFER_ARG="--kv-transfer-config '{\"kv_connector\":\"LMCacheMPConnector\",\"kv_role\":\"kv_both\",\"kv_connector_extra_config\":{\"lmcache.mp.host\":\"tcp://localhost\",\"lmcache.mp.port\":6555}}'"
 # hsa-snoop: use container PID namespace (SPUR authz blocks --pid=host).
 export AIC_HSA_SNOOP_PID_MODE=container:aic-lmcache
 # Monitoring metrics dir for Prometheus TSDB.
@@ -2196,7 +2475,7 @@ echo "[prom-dump] bringing up full MP + monitoring stack (model=${AIC_TINY_MODEL
 # Exporters started individually to avoid locally-built images that aren't
 # pre-loaded on this node:
 #   amdgpu-exporter  — public image, no --pid=host (SPUR-safe)
-#   hsa-snoop        — uses the already-loaded rocm-aic image
+#   hsa-snoop        — uses the already-loaded aic-lmcache image
 # node-exporter, nvme-exporter require --pid=host (blocked by spur-authz).
 # rdma-exporter uses a locally-built image not guaranteed to be present.
 if ! compose --profile cache --profile monitoring-base up -d; then
@@ -2209,8 +2488,9 @@ compose up -d amdgpu-exporter 2>/dev/null || echo "[prom-dump] amdgpu-exporter u
 echo "[prom-dump] waiting for vLLM on :8000 (up to ${AIC_TINY_READY_TIMEOUT}s) ..."
 _ok=0
 for _i in \$(seq 1 \$(( ${AIC_TINY_READY_TIMEOUT:-300} / 5 ))); do
+    # vllm shares aic-lmcache's network namespace, so that name reaches it.
     r=\$(docker exec aic-client curl -s -o /dev/null -w '%{http_code}' \
-        http://"\${VLLM_CONTAINER}":8000/health 2>/dev/null || true)
+        http://aic-lmcache:8000/health 2>/dev/null || true)
     [ "\$r" = "200" ] && { _ok=1; break; }
     [ -z "\$(docker ps -q -f name="\${VLLM_CONTAINER}")" ] && break
     sleep 5
@@ -2221,11 +2501,17 @@ compose up -d hsa-snoop 2>/dev/null || echo "[prom-dump] hsa-snoop unavailable (
 echo "[prom-dump] stack healthy — waiting ${prom_dump_wait}s for NIXL init + Prometheus scrape..."
 sleep '${prom_dump_wait}'
 
-# Extract component versions from the image LABEL metadata.
+# Extract component versions from the images' LABEL metadata.  Each image labels
+# only what it builds (vllm/llm-emu vs aiter/lmcache/nixl/...), so take the
+# first image that carries a given label.
 echo "[prom-dump] extracting component versions from image labels..."
 _version_args=""
 _label() {
-    docker inspect --format "{{index .Config.Labels \"ai.amd.aic.\$1\"}}" '${AIC_IMAGE}' 2>/dev/null
+    local img v
+    for img in '${AIC_VLLM_IMAGE}' '${AIC_LMCACHE_IMAGE}'; do
+        v="\$(docker inspect --format "{{index .Config.Labels \"ai.amd.aic.\$1\"}}" "\${img}" 2>/dev/null)"
+        [ -n "\${v}" ] && { printf '%s\n' "\${v}"; return 0; }
+    done
 }
 for _comp in version rocm pytorch vllm llm-emu aiter flash-attention lmcache nixl hipfile hsa-snoop; do
     _val="\$(_label "\${_comp}")"
@@ -2262,7 +2548,7 @@ _scrape_host() {
         echo "  \${name} localhost:\${port} — not reachable (skipped)"
     fi
 }
-_scrape_compose vllm                "\${VLLM_CONTAINER}"         8000
+_scrape_compose vllm                aic-lmcache                  8000
 _scrape_compose lmcache             aic-lmcache                  8080
 _scrape_compose nixl                aic-lmcache                  19090
 _scrape_compose lmcache_coordinator aic-lmcache-coordinator      9301
@@ -2362,27 +2648,37 @@ fi
 cd '${AIC_DAY_DIR}'
 # shellcheck source=/dev/null
 source '${AIC_DAY_DIR}/monitoring/monitoring-lib.sh'
+aic_docker_preflight || exit 1
 ensure_compose || { echo "[emulate-test] docker compose unavailable and could not be installed" >&2; exit 1; }
 
 export IMAGE_NAME='${AIC_IMAGE}'
+# The emulator service reads VLLM_IMAGE_REF first, and make exports its own.
+export VLLM_IMAGE_REF='${AIC_IMAGE}'
 export VLLM_MODEL='${AIC_EMULATE_MODEL}'
 export VLLM_EMULATOR_PROFILE_PACK='${AIC_EMULATE_PROFILE_PACK}'
 # Host dir of real-hardware packs, bind-mounted at /profiles by the compose
 # service.  Set AIC_EMULATE_PACK_HOST + point AIC_EMULATE_PROFILE_PACK at
 # /profiles/<pack>.json to replay an MI300X/MI355X capture.
 [ -n '${AIC_EMULATE_PACK_HOST}' ] && export EMU_PROFILE_PACK_HOST='${AIC_EMULATE_PACK_HOST}'
-# Containers default to root, and HF_HOME is very often a SHARED cluster cache
-# (Alola's /scratch/models).  Root-owned entries there cannot be refreshed or
-# deleted by anyone else, so run the emulator as the submitting user instead.
-# Resolved on the COMPUTE node -- id is what matters where the bind mount lives.
-export AIC_CONTAINER_USER="\$(id -u):\$(id -g)"
-export AIC_CONTAINER_USERNAME="\$(id -un)"
-export AIC_CONTAINER_HOME=/tmp
 export HF_HOME='${AIC_TINY_HF_HOME}'
 export HF_TOKEN='${HF_TOKEN:-}'
 export HF_HUB_OFFLINE=0 TRANSFORMERS_OFFLINE=0
 export LOG="\${_logdir}"
 mkdir -p "\${HF_HOME}" "\${_logdir}/vllm-emulator"
+# Containers default to root, and HF_HOME is very often a SHARED cluster cache
+# (Alola's /scratch/models).  Root-owned entries there cannot be refreshed or
+# deleted by anyone else, so run the emulator as the submitting user instead.
+# Resolved on the COMPUTE node -- id is what matters where the bind mount lives.
+# Docker drops supplementary groups, so a cache writable only through its group
+# (SPUR's /shared_nfs/huggingface grants allusers via a setgid dir + ACL) is
+# read-only to \$(id -u):\$(id -g).  Run with the cache's group instead -- but
+# only one the user is in, since docker never checks membership.
+_hf_gid="\$(stat -c %g "\${HF_HOME}")"
+case " \$(id -G) " in *" \${_hf_gid} "*) ;; *) _hf_gid="\$(id -g)" ;; esac
+export AIC_CONTAINER_USER="\$(id -u):\${_hf_gid}"
+export AIC_CONTAINER_USERNAME="\$(id -un)"
+export AIC_CONTAINER_HOME=/tmp
+echo "[emulate-test] container user \${AIC_CONTAINER_USER}, HF cache \${HF_HOME}"
 
 # NB: \`timeout\` cannot run a shell function, so the calls below spell out
 # \`docker compose\` rather than wrapping the compose() helper.
@@ -2511,11 +2807,15 @@ REMOTE
 # connector that silently failed to register would still serve 200s, just with
 # no cache in the loop, which is the failure this test exists to catch.
 cmd_emulate_mp_test() {
-    AIC_IMAGE="${AIC_EMULATE_MP_IMAGE}"
+    [[ -z "${AIC_EMULATE_MP_IMAGE:-}" ]] \
+        || die "AIC_EMULATE_MP_IMAGE is gone: emulate-mp-test runs the split images; set AIC_VLLM_IMAGE and AIC_LMCACHE_IMAGE instead"
     _pick_compress
-    local tarball; tarball="$(_tarball_path)"
+    local vllm_tarball; vllm_tarball="$(_tarball_path_for "${AIC_VLLM_IMAGE}")"
+    local lmcache_tarball; lmcache_tarball="$(_tarball_path_for "${AIC_LMCACHE_IMAGE}")"
     command -v sbatch >/dev/null 2>&1 || die "sbatch not found; cannot run the emulate-mp-test job"
-    [[ -r "${tarball}" ]] || die "tarball not found: ${tarball} (run 'build' first -- emulate-mp needs the PRODUCTION image, which is the only one with LMCache in it)"
+    # The PRODUCTION images, not the emulate one: that stage stops before LMCache.
+    [[ -r "${vllm_tarball}" ]]    || die "vllm tarball not found: ${vllm_tarball} (run 'build' first)"
+    [[ -r "${lmcache_tarball}" ]] || die "lmcache tarball not found: ${lmcache_tarball} (run 'build' first)"
 
     local _constraint="${AIC_EMULATE_TEST_CONSTRAINT-${AIC_BUILD_CONSTRAINT}}"
     local -a _sel=()
@@ -2526,7 +2826,7 @@ cmd_emulate_mp_test() {
         [[ -n "${_constraint}" ]] && _sel=(--constraint="${_constraint}")
         log "emulate-mp-test via sbatch (partition ${AIC_BUILD_PARTITION}, constraint ${_constraint:-<none>})"
     fi
-    log "image: ${AIC_IMAGE}  model: ${AIC_EMULATE_MODEL}  pack: ${AIC_EMULATE_PROFILE_PACK}"
+    log "vllm: ${AIC_VLLM_IMAGE}  lmcache: ${AIC_LMCACHE_IMAGE}  model: ${AIC_EMULATE_MODEL}  pack: ${AIC_EMULATE_PROFILE_PACK}"
     log "l2=${AIC_EMULATE_MP_L2_BACKEND}  emulated KV pool=$((AIC_EMULATE_MP_KV_BYTES / 1024 / 1024 / 1024)) GiB  node mem=${AIC_EMULATE_MP_MEM}"
 
     local remote_script
@@ -2536,34 +2836,38 @@ command -v docker >/dev/null 2>&1 || { echo "\$(hostname): docker not found" >&2
 echo "[emulate-mp-test] host=\$(hostname) docker=\$(docker --version)"
 echo "[emulate-mp-test] GPU devices present: \$(ls /dev/kfd /dev/dri 2>/dev/null | tr '\n' ' ' || echo none)"
 
-_marker="/var/tmp/aic-loaded-\$(id -u)-\$(echo '${AIC_IMAGE}' | tr '/:' '__').mtime"
-_tar_mtime="\$(stat -c %Y '${tarball}' 2>/dev/null || echo 0)"
-_have_img="\$(docker images -q '${AIC_IMAGE}')"
-_loaded_mtime="\$(cat "\${_marker}" 2>/dev/null || echo 0)"
-if [ "${AIC_FORCE_LOAD:-0}" = "1" ] || [ -z "\${_have_img}" ] || [ "\${_tar_mtime}" -gt "\${_loaded_mtime}" ]; then
-    echo "[emulate-mp-test] loading ${AIC_IMAGE} from ${tarball}"
-    ${DECOMPRESS_CMD} '${tarball}' | docker load >/dev/null
-    echo "\${_tar_mtime}" > "\${_marker}" 2>/dev/null || true
-else
-    echo "[emulate-mp-test] image up to date on \$(hostname) (id \${_have_img})"
-fi
+_load_image() {
+    local img="\$1" tarball="\$2"
+    local _marker
+    _marker="/var/tmp/aic-loaded-\$(id -u)-\$(echo "\${img}" | tr '/:' '--').mtime"
+    local _tar_mtime; _tar_mtime="\$(stat -c %Y "\${tarball}" 2>/dev/null || echo 0)"
+    local _have_img; _have_img="\$(docker images -q "\${img}")"
+    local _loaded_mtime; _loaded_mtime="\$(cat "\${_marker}" 2>/dev/null || echo 0)"
+    if [ "${AIC_FORCE_LOAD:-0}" = "1" ] || [ -z "\${_have_img}" ] || [ "\${_tar_mtime}" -gt "\${_loaded_mtime}" ]; then
+        echo "[emulate-mp-test] loading \${img} from \${tarball}"
+        ${DECOMPRESS_CMD} "\${tarball}" | docker load >/dev/null
+        echo "\${_tar_mtime}" > "\${_marker}" 2>/dev/null || true
+    else
+        echo "[emulate-mp-test] \${img} up to date on \$(hostname) (id \${_have_img})"
+    fi
+}
+_load_image '${AIC_VLLM_IMAGE}'    '${vllm_tarball}'
+_load_image '${AIC_LMCACHE_IMAGE}' '${lmcache_tarball}'
 
 cd '${AIC_DAY_DIR}'
 # shellcheck source=/dev/null
 source '${AIC_DAY_DIR}/monitoring/monitoring-lib.sh'
+aic_docker_preflight || exit 1
 ensure_compose || { echo "[emulate-mp-test] docker compose unavailable and could not be installed" >&2; exit 1; }
 
-export IMAGE_NAME='${AIC_IMAGE}'
+export IMAGE_NAME='${AIC_LMCACHE_IMAGE%:*}'
+# The emulator services read VLLM_IMAGE_REF / LMCACHE_IMAGE_REF first, and make
+# exports its own.
+export VLLM_IMAGE_REF='${AIC_VLLM_IMAGE}'
+export LMCACHE_IMAGE_REF='${AIC_LMCACHE_IMAGE}'
 export VLLM_MODEL='${AIC_EMULATE_MODEL}'
 export VLLM_EMULATOR_PROFILE_PACK='${AIC_EMULATE_PROFILE_PACK}'
 [ -n '${AIC_EMULATE_PACK_HOST}' ] && export EMU_PROFILE_PACK_HOST='${AIC_EMULATE_PACK_HOST}'
-# Containers default to root, and HF_HOME is very often a SHARED cluster cache
-# (Alola's /scratch/models).  Root-owned entries there cannot be refreshed or
-# deleted by anyone else, so run the emulator as the submitting user instead.
-# Resolved on the COMPUTE node -- id is what matters where the bind mount lives.
-export AIC_CONTAINER_USER="\$(id -u):\$(id -g)"
-export AIC_CONTAINER_USERNAME="\$(id -un)"
-export AIC_CONTAINER_HOME=/tmp
 export HF_HOME='${AIC_TINY_HF_HOME}'
 export HF_TOKEN='${HF_TOKEN:-}'
 export HF_HUB_OFFLINE=0 TRANSFORMERS_OFFLINE=0
@@ -2581,6 +2885,14 @@ export NVME_DATA='${AIC_EMULATE_MP_DATA}/nvme'
 export NFS_DATA='${AIC_EMULATE_MP_DATA}/nfs'
 mkdir -p "\${HF_HOME}" "\${_logdir}/vllm-emulator" "\${_logdir}/lmcache-emulator" \
     '${AIC_EMULATE_MP_DATA}/nvme' '${AIC_EMULATE_MP_DATA}/nfs'
+# Run the emulator as the submitting user with the HF cache's group -- see
+# cmd_emulate_test for why both halves matter.
+_hf_gid="\$(stat -c %g "\${HF_HOME}")"
+case " \$(id -G) " in *" \${_hf_gid} "*) ;; *) _hf_gid="\$(id -g)" ;; esac
+export AIC_CONTAINER_USER="\$(id -u):\${_hf_gid}"
+export AIC_CONTAINER_USERNAME="\$(id -un)"
+export AIC_CONTAINER_HOME=/tmp
+echo "[emulate-mp-test] container user \${AIC_CONTAINER_USER}, HF cache \${HF_HOME}"
 
 # local_disk needs a native LocalDiskBackend config mounted at
 # /config/lmcache.yml; the compose service reads it only when
@@ -2645,7 +2957,7 @@ _clean_kv_shm() {
         # is what puts the host's /dev/shm in view, the same way the emulator
         # services see it.
         timeout 60 docker run --rm --ipc=host --entrypoint /bin/sh \
-            '${AIC_IMAGE}' -c 'rm -f /dev/shm/lmcache_kv_*' >/dev/null 2>&1 || true
+            '${AIC_LMCACHE_IMAGE}' -c 'rm -f /dev/shm/lmcache_kv_*' >/dev/null 2>&1 || true
         echo "[emulate-mp-test]   remaining: \$(ls /dev/shm/lmcache_kv_* 2>/dev/null | wc -l)"
     fi
 }
@@ -2660,7 +2972,7 @@ export MON_COMPOSE='${AIC_DAY_DIR}/docker/docker-compose.yml'
 export AIC_METRICS_DIR="\${_logdir}/prometheus"
 export AIC_MONITORING='${AIC_EMULATE_MP_MONITORING}'
 export AIC_EXPORTERS=0
-export AIC_IMAGE='${AIC_IMAGE}'
+export AIC_IMAGE='${AIC_LMCACHE_IMAGE}'
 start_monitoring
 
 # Name the services explicitly.  The GPU \`vllm\` service has no \`profiles:\` key
@@ -3082,9 +3394,12 @@ fi
 cd '${AIC_DAY_DIR}'
 # shellcheck source=/dev/null
 source '${AIC_DAY_DIR}/monitoring/monitoring-lib.sh'
+aic_docker_preflight || exit 1
 ensure_compose || { echo "[validate] docker compose unavailable" >&2; exit 1; }
 
 export IMAGE_NAME='${AIC_IMAGE}'
+# The emulator service reads VLLM_IMAGE_REF first, and make exports its own.
+export VLLM_IMAGE_REF='${AIC_IMAGE}'
 export VLLM_MODEL='${model}'
 export EMU_PROFILE_PACK_HOST='${pack_dir}'
 export VLLM_EMULATOR_PROFILE_PACK='/profiles/${pack_file}'
@@ -3221,32 +3536,38 @@ AIC_ACCURACY_READY_TIMEOUT="${AIC_ACCURACY_READY_TIMEOUT:-120}"   # x5s = up to 
 
 cmd_accuracy_test() {
     _pick_compress
-    local tarball; tarball="$(_tarball_path)"
-    [[ -r "${tarball}" ]] || die "tarball not found: ${tarball} (run 'build' first)"
+    # Use separate bake tarballs (aic-vllm + aic-lmcache) rather than the old
+    # monolithic rocm-aic tarball.  run-accuracy.sh accepts these natively.
+    local _vllm_tar _lmcache_tar
+    AIC_IMAGE="${AIC_VLLM_IMAGE}"    _vllm_tar="$(_tarball_path)"
+    AIC_IMAGE="${AIC_LMCACHE_IMAGE}" _lmcache_tar="$(_tarball_path)"
+    [[ -r "${_vllm_tar}" ]]    || die "vllm tarball not found: ${_vllm_tar} (run 'bake' first)"
+    [[ -r "${_lmcache_tar}" ]] || die "lmcache tarball not found: ${_lmcache_tar} (run 'bake' first)"
 
+    local _acc_exclude="${AIC_TEST_EXCLUDE_NODES:-${AIC_BUILD_EXCLUDE_NODES:-}}"
     local -a _sel
     if [[ -n "${AIC_TEST_NODE:-}" ]]; then
         _sel=(--nodelist="${AIC_TEST_NODE}")
         log "accuracy-test on ${AIC_TEST_NODE} via sbatch (partition ${AIC_BUILD_PARTITION})"
     else
         _sel=(--constraint="${AIC_TEST_CONSTRAINT}")
-        log "accuracy-test via sbatch (partition ${AIC_BUILD_PARTITION}, constraint ${AIC_TEST_CONSTRAINT})"
+        [[ -n "${_acc_exclude}" ]] && _sel+=(--exclude="${_acc_exclude}")
+        log "accuracy-test via sbatch (partition ${AIC_BUILD_PARTITION}, constraint ${AIC_TEST_CONSTRAINT}${_acc_exclude:+, exclude ${_acc_exclude}})"
     fi
-    log "image: ${AIC_IMAGE}  model: ${AIC_ACCURACY_MODEL}  gsm8k: ${AIC_ACCURACY_LIMIT:+${AIC_ACCURACY_LIMIT}-item cap}${AIC_ACCURACY_LIMIT:-full split}"
+    log "vllm: ${AIC_VLLM_IMAGE}  lmcache: ${AIC_LMCACHE_IMAGE}  model: ${AIC_ACCURACY_MODEL}  gsm8k: ${AIC_ACCURACY_LIMIT:+${AIC_ACCURACY_LIMIT}-item cap}${AIC_ACCURACY_LIMIT:-full split}"
 
-    # The node-side half is .slurm/run-accuracy.sh.  Everything it needs arrives
-    # as environment: the values are interpolated here, at submit time, exactly
-    # as they were when this body was an inline heredoc -- so the semantics are
-    # unchanged and nothing depends on how a given sbatch treats --export.
-    # AIC_LOG_DIR is _sbatch_run's per-job log dir, exported so the script (a
-    # separate process) can see it.
     local remote_script
     remote_script="$(cat <<REMOTE
 export AIC_LOG_DIR="\${_logdir}"
+export AIC_SPUR_CLUSTER='${AIC_SPUR_CLUSTER}'
+source '${AIC_DAY_DIR}/monitoring/monitoring-lib.sh'
+aic_docker_preflight || exit 1
 export AIC_DAY_DIR='${AIC_DAY_DIR}'
-export AIC_IMAGE='${AIC_IMAGE}'
 export AIC_ROCM_ARCH='${AIC_ROCM_ARCH}'
-export AIC_TARBALL='${tarball}'
+export AIC_VLLM_IMAGE='${AIC_VLLM_IMAGE}'
+export AIC_VLLM_TARBALL='${_vllm_tar}'
+export AIC_LMCACHE_IMAGE='${AIC_LMCACHE_IMAGE}'
+export AIC_LMCACHE_TARBALL='${_lmcache_tar}'
 export AIC_DECOMPRESS_CMD='${DECOMPRESS_CMD}'
 export AIC_FORCE_LOAD='${AIC_FORCE_LOAD:-0}'
 export HF_HOME='${HF_HOME}'
@@ -3286,9 +3607,10 @@ REMOTE
 # tracing alone is a passive measurement.
 cmd_profile_capture() {
     _pick_compress
-    local tarball; tarball="$(_tarball_path)"
+    # A plain vLLM serve with tracing, no LMCache: the vllm image alone.
+    local tarball; tarball="$(_tarball_path_for "${AIC_VLLM_IMAGE}")"
     command -v sbatch >/dev/null 2>&1 || die "sbatch not found; cannot run the capture job"
-    [[ -r "${tarball}" ]] || die "tarball not found: ${tarball} (run 'build' with AIC_ROCM_ARCH=<arch> first)"
+    [[ -r "${tarball}" ]] || die "vllm tarball not found: ${tarball} (run 'build' with AIC_ROCM_ARCH=<arch> first)"
 
     local -a _sel=()
     if [[ -n "${AIC_CAPTURE_NODE:-}" ]]; then
@@ -3298,7 +3620,7 @@ cmd_profile_capture() {
         [[ -n "${AIC_CAPTURE_CONSTRAINT}" ]] && _sel=(--constraint="${AIC_CAPTURE_CONSTRAINT}")
         log "profile-capture via sbatch (partition ${AIC_BUILD_PARTITION}, constraint ${AIC_CAPTURE_CONSTRAINT:-<none>})"
     fi
-    log "image: ${AIC_IMAGE}  model: ${AIC_CAPTURE_MODEL}"
+    log "image: ${AIC_VLLM_IMAGE}  model: ${AIC_CAPTURE_MODEL}"
     log "output dir: ${AIC_CAPTURE_DIR}   hf cache: ${AIC_CAPTURE_HF_HOME}"
     log "sweep (isl,osl,concurrency,prompts): ${AIC_CAPTURE_SWEEP}"
 
@@ -3312,12 +3634,12 @@ echo "[capture] host=\$(hostname) docker=\$(docker --version)"
 command -v rocm_agent_enumerator >/dev/null 2>&1 && \
     echo "[capture] host GPU arch(es): \$(rocm_agent_enumerator | grep -E '^gfx' | sort -u | tr '\n' ' ')"
 
-_marker="/var/tmp/aic-loaded-\$(id -u)-\$(echo '${AIC_IMAGE}' | tr '/:' '__').mtime"
+_marker="/var/tmp/aic-loaded-\$(id -u)-\$(echo '${AIC_VLLM_IMAGE}' | tr '/:' '--').mtime"
 _tar_mtime="\$(stat -c %Y '${tarball}' 2>/dev/null || echo 0)"
-_have_img="\$(docker images -q '${AIC_IMAGE}')"
+_have_img="\$(docker images -q '${AIC_VLLM_IMAGE}')"
 _loaded_mtime="\$(cat "\${_marker}" 2>/dev/null || echo 0)"
 if [ "${AIC_FORCE_LOAD:-0}" = "1" ] || [ -z "\${_have_img}" ] || [ "\${_tar_mtime}" -gt "\${_loaded_mtime}" ]; then
-    echo "[capture] loading ${AIC_IMAGE} from ${tarball}"
+    echo "[capture] loading ${AIC_VLLM_IMAGE} from ${tarball}"
     ${DECOMPRESS_CMD} '${tarball}' | docker load >/dev/null
     echo "\${_tar_mtime}" > "\${_marker}" 2>/dev/null || true
 else
@@ -3365,7 +3687,7 @@ docker run -d --name aic-vllm-capture \
     -e PYTHONUNBUFFERED=1 \
     -e VLLM_EMULATOR_TRACE_STEP_CYCLE=1 \
     -e VLLM_EMULATOR_STEP_TRACE_OUTPUT="\${trace}" \
-    '${AIC_IMAGE}' \
+    '${AIC_VLLM_IMAGE}' \
     --model '${AIC_CAPTURE_MODEL}' \
     --host 0.0.0.0 --port 8000 \
     --max-model-len ${AIC_CAPTURE_MAX_MODEL_LEN} \
@@ -3448,7 +3770,7 @@ pack='${AIC_CAPTURE_DIR}'/"\${model_tag}-\${stamp}.json"
 echo "[capture] building profile pack -> \${pack}"
 docker run --rm \
     -v '${AIC_CAPTURE_DIR}':/trace \
-    --entrypoint python3 '${AIC_IMAGE}' \
+    --entrypoint python3 '${AIC_VLLM_IMAGE}' \
     -m vllm_emulator.profile.build_serving_profile_filtered \
     "/trace/\${trace_name}" "/trace/\$(basename "\${pack}")" \
     2>&1 | sed 's/^/  [pack] /'
@@ -3456,7 +3778,7 @@ docker run --rm \
 
 # The pack must validate against the emulator's own schema, and must carry the
 # AMD GPU identity -- a pack that says gpu=unknown is useless for comparison.
-docker run --rm -v '${AIC_CAPTURE_DIR}':/trace --entrypoint python3 '${AIC_IMAGE}' -c "
+docker run --rm -v '${AIC_CAPTURE_DIR}':/trace --entrypoint python3 '${AIC_VLLM_IMAGE}' -c "
 import json, sys
 from vllm_emulator.profile.loader import load_profile_pack
 p = load_profile_pack('/trace/\$(basename "\${pack}")')
@@ -3484,7 +3806,7 @@ if p.get('gpu_model') in (None, 'unknown') or not cells:
 # Record exactly how this pack was produced, next to the pack.
 cat > "\${pack%.json}.capture.txt" <<META
 model                 : ${AIC_CAPTURE_MODEL}
-image                 : ${AIC_IMAGE}
+image                 : ${AIC_VLLM_IMAGE}
 node                  : \$(hostname)
 serve flags           : --max-model-len ${AIC_CAPTURE_MAX_MODEL_LEN} --max-num-batched-tokens ${AIC_CAPTURE_MAX_BATCHED_TOKENS} --gpu-memory-utilization ${AIC_CAPTURE_GPU_UTIL} --attention-backend TRITON_ATTN ${AIC_CAPTURE_EXTRA_ARGS}
 env                   : VLLM_ROCM_USE_AITER=1
@@ -3561,7 +3883,8 @@ cmd_bake() {
     local lmcache_tar; lmcache_tar="$(_tarball_path)"
     AIC_IMAGE="${saved_image}"
 
-    local tarball_before; tarball_before="$(_tarball_stamp "${lmcache_tar}")"
+    local lmcache_before; lmcache_before="$(_tarball_stamp "${lmcache_tar}")"
+    local vllm_before; vllm_before="$(_tarball_stamp "${vllm_tar}")"
 
     local _secret_arg=""
     [[ -n "${AIC_TLS_CERT}" ]] && _secret_arg="--secret id=tls_cert,src=${AIC_TLS_CERT}"
@@ -3575,16 +3898,38 @@ cmd_bake() {
     local remote_script
     remote_script="$(cat <<REMOTE
 set -euo pipefail
+export BUILDKIT_STEP_LOG_MAX_SIZE=-1
 command -v docker >/dev/null 2>&1 || { echo "docker not found on \$(hostname)" >&2; exit 1; }
+docker system df >/dev/null 2>&1 \
+    || { echo "[preflight] FATAL: docker overlay snapshotter broken on \$(hostname) -- resubmit to a different node" >&2; exit 1; }
 echo "[bake] host=\$(hostname) docker=\$(docker --version)"
-mkdir -p "\${HOME}/.tmp-rocm-aic-cicd"
-export TMPDIR="\${HOME}/.tmp-rocm-aic-cicd"
+# Scratch: node-local /tmp first (fall back to $HOME; never shared_nfs -- a
+# hard-mount NFS stall here hangs the job silently until the SBATCH time limit
+# reaps it).  An explicit AIC_TMP_DIR override still wins.
+_aic_tmp="${AIC_TMP_DIR:-}"
+if [[ -z "\${_aic_tmp:-}" ]]; then
+    for _d in "/tmp/aic-scratch.\${SLURM_JOB_ID:-\$\$}" "\${HOME}/.tmp-rocm-aic-cicd"; do
+        if mkdir -p "\$_d" 2>/dev/null && [[ -w "\$_d" ]]; then _aic_tmp="\$_d"; break; fi
+    done
+fi
+[[ -n "\${_aic_tmp:-}" ]] || { echo "[bake] FATAL: no writable scratch dir (tried /tmp and \$HOME); set AIC_TMP_DIR" >&2; exit 1; }
+mkdir -p "\${_aic_tmp:-}"
+export TMPDIR="\${_aic_tmp:-}"
 cd "${AIC_DAY_DIR}"
 
 # Ensure the docker-container builder exists.
+# Recreate builder if a buildkitd.toml exists but the current builder was
+# created without it (so the daemon picks up the config, e.g. max-size=-1).
+_bkd_cfg=""; [[ -f "${AIC_DAY_DIR}/docker/buildkitd.toml" ]] && _bkd_cfg="--config ${AIC_DAY_DIR}/docker/buildkitd.toml"
+if docker buildx inspect ${AIC_BUILDX_BUILDER} >/dev/null 2>&1; then
+    if [[ -n "\${_bkd_cfg}" ]]; then
+        echo "[bake] removing existing builder to apply buildkitd config"
+        docker buildx rm ${AIC_BUILDX_BUILDER} >/dev/null 2>&1 || true
+    fi
+fi
 if ! docker buildx inspect ${AIC_BUILDX_BUILDER} >/dev/null 2>&1; then
     echo "[bake] creating buildx builder ${AIC_BUILDX_BUILDER} (docker-container)"
-    docker buildx create --name ${AIC_BUILDX_BUILDER} --driver docker-container --bootstrap --use
+    docker buildx create --name ${AIC_BUILDX_BUILDER} --driver docker-container \${_bkd_cfg} --bootstrap --use
 fi
 docker buildx inspect --bootstrap ${AIC_BUILDX_BUILDER} >/dev/null
 mkdir -p "${AIC_IMAGE_DIR}"
@@ -3605,6 +3950,7 @@ export BUILDX_BAKE_ENTITLEMENTS_FS=0
 echo "[bake] phase 1: building aic-base"
 _base_oci_tar="\${TMPDIR}/aic-base-oci.\${SLURM_JOB_ID:-\$\$}.tar"
 _base_oci_dir="\${TMPDIR}/aic-base-oci.\${SLURM_JOB_ID:-\$\$}.d"
+trap 'rm -rf "\${_base_oci_tar}" "\${_base_oci_dir}" "\${_lmc_wheels_dir:-}"' EXIT
 rm -f "\${_base_oci_tar}" 2>/dev/null || true
 rm -rf "\${_base_oci_dir}" 2>/dev/null || true
 tmp_base="${base_tar}.partial.\${SLURM_JOB_ID:-\$\$}"
@@ -3626,7 +3972,9 @@ ${NIXL_REF:+NIXL_REF="${NIXL_REF}"} \
 ${HSA_SNOOP_REF:+HSA_SNOOP_REF="${HSA_SNOOP_REF}"} \
 ${AIC_CACHE_DIR:+AIC_CACHE_DIR="${AIC_CACHE_DIR}"} \
 ${AIC_CACHE_REF:+AIC_CACHE_REF="${AIC_CACHE_REF}"} \
+BUILDKIT_STEP_LOG_MAX_SIZE=-1 \
 AIC_CACHE_MODE="${AIC_CACHE_MODE:-max}" \
+AIC_UCX_FAST="${AIC_UCX_FAST}" \
 AIC_VERSION="${AIC_VERSION}" \
 docker buildx bake \
     --builder ${AIC_BUILDX_BUILDER} \
@@ -3650,10 +3998,15 @@ echo "[bake] base OCI dir: \${_base_oci_dir}"
 # lmcache-*.whl.  Build the lmcache --target wheels stage first; export to a
 # local dir; pass it as a named context to vllm in phase 2.
 echo "[bake] phase 1.5: building lmcache wheels for vllm context"
+# Read phase 2's lmcache cache dir, or the prune above makes this recompile
+# LMCache every run.  No --cache-to: that dir keeps a single ref, and it
+# should stay phase 2's full lmcache chain.
 _lmc_wheels_dir="\${TMPDIR}/lmcache-wheels.\${SLURM_JOB_ID:-\$\$}"
 mkdir -p "\${_lmc_wheels_dir}"
+BUILDKIT_STEP_LOG_MAX_SIZE=-1 \
 docker buildx build --builder ${AIC_BUILDX_BUILDER} --progress=plain \
     --output "type=local,dest=\${_lmc_wheels_dir}" \
+    ${AIC_CACHE_DIR:+--cache-from type=local,src=${AIC_CACHE_DIR%/}/$(_arch_tag)/lmcache} \
     --build-context "base=oci-layout://\${_base_oci_dir}" \
     --build-arg ROCM_ARCH="${AIC_ROCM_ARCH}" \
     --build-arg AIC_VERSION="${AIC_VERSION}" \
@@ -3685,6 +4038,7 @@ _lmcache_latest="${AIC_LMCACHE_IMAGE%:*}:latest"
 (
 set -euo pipefail
 set +o pipefail
+BUILDKIT_STEP_LOG_MAX_SIZE=-1 \
 docker buildx build --builder ${AIC_BUILDX_BUILDER} --progress=plain \
     --output type=docker,dest=- \
     --build-context "base=oci-layout://\${_base_oci_dir}" \
@@ -3698,7 +4052,7 @@ docker buildx build --builder ${AIC_BUILDX_BUILDER} --progress=plain \
     ${FLASH_ATTN_REF:+--build-arg FLASH_ATTN_REF="${FLASH_ATTN_REF}"} \
     ${LMCACHE_REF:+--build-arg LMCACHE_REF="${LMCACHE_REF}"} \
     ${LLM_EMU_REF:+--build-arg LLM_EMU_REF="${LLM_EMU_REF}"} \
-    ${_cache_args:+${_cache_args}} \
+    \${_cache_args:+\${_cache_args}} \
     ${_secret_arg:+${_secret_arg}} \
     -f "${AIC_DAY_DIR}/docker/vllm/Dockerfile" \
     -t "${AIC_VLLM_IMAGE}" -t "\${_vllm_latest}" \
@@ -3718,6 +4072,7 @@ set -euo pipefail
 set +o pipefail
 _lm_cache_args=""
 [[ -n "${AIC_CACHE_DIR:-}" ]] && _lm_cache_args="--cache-from type=local,src=${AIC_CACHE_DIR%/}/$(_arch_tag)/lmcache --cache-to type=local,dest=${AIC_CACHE_DIR%/}/$(_arch_tag)/lmcache,mode=${AIC_CACHE_MODE:-max},ignore-error=true"
+BUILDKIT_STEP_LOG_MAX_SIZE=-1 \
 docker buildx build --builder ${AIC_BUILDX_BUILDER} --progress=plain \
     --output type=docker,dest=- \
     --build-context "base=oci-layout://\${_base_oci_dir}" \
@@ -3751,6 +4106,101 @@ rm -rf "\${_base_oci_dir}" "\${_lmc_wheels_dir}"
 (( _vllm_rc == 0 ))    || { echo "[bake] ERROR: vllm build/save failed (rc=\${_vllm_rc})" >&2; exit 1; }
 (( _lmcache_rc == 0 )) || { echo "[bake] ERROR: lmcache build/save failed (rc=\${_lmcache_rc})" >&2; exit 1; }
 echo "[bake] all images saved."
+
+# --- AITER JIT warmup: pre-compile AITER JIT modules into the vllm image ------
+# AITER JIT-compiles HIP kernels on first use; without this they compile at
+# test time (~5-10 min per run).  Load the tarball, run a short GPU container
+# to trigger all required JIT builds, commit the warmed-up filesystem back into
+# the image, and re-export as tarball.
+echo "[bake] warming AITER JIT in ${AIC_VLLM_IMAGE} ..."
+${DECOMPRESS_CMD} "${vllm_tar}" | docker load >/dev/null
+_warmup_cname="aic-aiter-warmup-\${SLURM_JOB_ID:-\$\$}"
+# Use the first GPU allocated by Slurm for the warmup container.
+_warmup_gpu="\${SPUR_JOB_GPUS:-0}"
+docker run --name "\${_warmup_cname}" \
+    --device /dev/kfd --device /dev/dri \
+    --security-opt seccomp=unconfined \
+    --env ROCR_VISIBLE_DEVICES="\${_warmup_gpu}" \
+    --env HIP_VISIBLE_DEVICES=0 \
+    --entrypoint python3 \
+    --volume /shared_nfs/huggingface:/hf:ro \
+    --env HF_HOME=/hf \
+    --env HF_HUB_OFFLINE=1 \
+    --env VLLM_WORKER_MULTIPROC_METHOD=fork \
+    "${AIC_VLLM_IMAGE}" -c "
+import traceback, sys, os
+print('[warmup] running vLLM init to pre-compile ALL AITER JIT modules...', flush=True)
+try:
+    from vllm import LLM
+    llm = LLM(
+        model='Qwen/Qwen2.5-0.5B-Instruct',
+        max_model_len=512,
+        gpu_memory_utilization=0.3,
+        enforce_eager=True,
+    )
+    print('[warmup] vLLM LLM init complete — all AITER JIT modules compiled', flush=True)
+    del llm
+except Exception:
+    traceback.print_exc()
+print('[warmup] done', flush=True)
+" 2>&1 || true
+# Always commit — even partial JIT warmup (module_aiter_core alone saves ~10s).
+# Restore original ENTRYPOINT+CMD so the committed image still starts vLLM
+# (docker run --entrypoint python3 overrides the entrypoint in the container
+# config; docker commit captures that override, breaking subsequent vLLM runs).
+_orig_ep="\$(docker inspect --format '{{json .Config.Entrypoint}}' "${AIC_VLLM_IMAGE}" 2>/dev/null)"
+_orig_cmd="\$(docker inspect --format '{{json .Config.Cmd}}'        "${AIC_VLLM_IMAGE}" 2>/dev/null)"
+docker commit \
+    --change "ENTRYPOINT \${_orig_ep}" \
+    --change "CMD \${_orig_cmd}" \
+    "\${_warmup_cname}" "${AIC_VLLM_IMAGE}" >/dev/null \
+    && echo "[bake] AITER JIT committed; re-exporting vllm tarball ..." \
+    && { _tmp_vllm_warm="${vllm_tar}.warm.\${SLURM_JOB_ID:-\$\$}"
+         docker save "${AIC_VLLM_IMAGE}" | ${COMPRESS_CMD} > "\${_tmp_vllm_warm}" \
+             && mv -f "\${_tmp_vllm_warm}" "${vllm_tar}" \
+             && echo "[bake] vllm (warmed): \$(du -h "${vllm_tar}" | cut -f1) -> ${vllm_tar}"; } \
+    || echo "[bake] WARN: AITER JIT commit/export failed" >&2
+docker rm -f "\${_warmup_cname}" >/dev/null 2>&1 || true
+
+# --- Build exporter images in the same allocation (same node = Docker access) -
+if docker info >/dev/null 2>&1; then
+    echo "[bake] building fabric exporter images (same allocation)"
+    for _img_spec in \
+        "${AIC_NVME_EXPORTER_IMAGE}|NVME_EXPORTER_VERSION=${AIC_NVME_EXPORTER_VERSION}|${AIC_DAY_DIR}/docker/nvme-exporter|$(_exporter_tarball_path "${AIC_NVME_EXPORTER_IMAGE}")" \
+        "${AIC_RDMA_EXPORTER_IMAGE}|RDMA_EXPORTER_VERSION=${AIC_RDMA_EXPORTER_VERSION}|${AIC_DAY_DIR}/docker/rdma-exporter|$(_exporter_tarball_path "${AIC_RDMA_EXPORTER_IMAGE}")" \
+        "${AIC_HSA_SNOOP_IMAGE}||${AIC_DAY_DIR}/docker/hsa-snoop|$(_exporter_tarball_path "${AIC_HSA_SNOOP_IMAGE}")"; do
+        _img="\$(cut -d'|' -f1 <<<"\${_img_spec}")"
+        _arg="\$(cut -d'|' -f2 <<<"\${_img_spec}")"
+        _ctx="\$(cut -d'|' -f3 <<<"\${_img_spec}")"
+        _tar="\$(cut -d'|' -f4 <<<"\${_img_spec}")"
+        _tmp="\${_tar}.partial.\$\$"
+        set +o pipefail
+        docker buildx build --builder ${AIC_BUILDX_BUILDER} --output type=docker,dest=- \
+            \${_arg:+--build-arg \${_arg}} -t "\${_img}" "\${_ctx}" | ${COMPRESS_CMD} > "\${_tmp}"
+        _rc=("\${PIPESTATUS[@]}")
+        set -o pipefail
+        [ "\${_rc[0]}" -eq 0 ] && [ "\${_rc[1]}" -eq 0 ] && mv -f "\${_tmp}" "\${_tar}" \
+            && echo "[bake] exporter saved: \$(du -h "\${_tar}" | cut -f1) -> \${_tar}" \
+            || { echo "[bake] WARN: exporter build failed for \${_img} (rc=\${_rc[0]}/\${_rc[1]}); skipping" >&2; rm -f "\${_tmp}"; }
+    done
+else
+    echo "[bake] WARN: Docker daemon not accessible; skipping exporter builds" >&2
+fi
+
+# --- Cache Python base images so test nodes avoid Docker Hub rate limits -------
+for _py_img in "python:3.12" "python:3.12-slim"; do
+    _py_tag="\$(printf '%s' "\${_py_img}" | tr ':/' '--')"
+    _py_tar="${AIC_IMAGE_DIR}/\${_py_tag}.tar.zst"
+    if [[ -f "\${_py_tar}" ]]; then
+        echo "[bake] python cache hit: \${_py_tar}"
+    elif docker pull "\${_py_img}" >/dev/null 2>&1; then
+        docker save "\${_py_img}" | ${COMPRESS_CMD} > "\${_py_tar}" \
+            && echo "[bake] cached \${_py_img} -> \${_py_tar}" \
+            || { echo "[bake] WARN: could not save \${_py_img}" >&2; rm -f "\${_py_tar}"; }
+    else
+        echo "[bake] WARN: could not pull \${_py_img} (rate-limited?); test nodes will pull on demand" >&2
+    fi
+done
 exit 0
 REMOTE
 )"
@@ -3761,7 +4211,8 @@ REMOTE
         --nodes=1 --ntasks=1 \
         --cpus-per-task="${AIC_BUILD_CPUS}" \
         --time="${AIC_BUILD_TIME}"
-    _verify_tarball "${lmcache_tar}" "image" "${tarball_before}"
+    _verify_tarball "${lmcache_tar}" "lmcache image" "${lmcache_before}"
+    _verify_tarball "${vllm_tar}" "vllm image" "${vllm_before}"
     log "bake complete: base=${base_tar} vllm=${vllm_tar} lmcache=${lmcache_tar}"
 }
 
@@ -3787,7 +4238,7 @@ main() {
         emulate-validate) cmd_emulate_validate ;;
         profile-capture) cmd_profile_capture ;;
         accuracy-test)   cmd_accuracy_test ;;
-        all)             cmd_build; cmd_build_exporters; cmd_load ;;
+        all)             cmd_build_split; cmd_build_exporters; cmd_load ;;
         -h|--help|help)
             sed -n '2,70p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
             ;;

@@ -106,6 +106,7 @@ RUN rm -f /usr/lib/python3.*/EXTERNALLY-MANAGED
 
 COPY patches/vllm/ /app/patches/vllm/
 COPY patches/llm-emu/ /app/patches/llm-emu/
+COPY patches/aiter/ /app/patches/aiter/
 
 # ----- 3. ROCm attention backends (AITER + FlashAttention) ----------------------
 # Skipped when VLLM_TARGET_DEVICE=empty (CPU-only emulate build: no hipcc).
@@ -135,7 +136,9 @@ RUN --mount=type=cache,target=/root/.cache/pip \
             CCACHE_DIR=/root/.cache/ccache CCACHE_MAXSIZE=25G \
             python3 setup.py bdist_wheel --dist-dir=/wheels && \
         pip3 install --no-cache-dir --no-deps /wheels/amd_aiter-*.whl && \
-        python3 -c 'import importlib.util, pathlib; spec = importlib.util.find_spec("aiter"); assert spec and spec.submodule_search_locations; print("AITER installed:", next(iter(spec.submodule_search_locations)))'; \
+        python3 -c 'import importlib.util; spec = importlib.util.find_spec("aiter"); assert spec and spec.submodule_search_locations; print("AITER installed:", next(iter(spec.submodule_search_locations)))' && \
+        PYTORCH_ROCM_ARCH="${ROCM_ARCH}" TORCH_DONT_CHECK_COMPILER_ABI=1 \
+            python3 /app/patches/aiter/01-jit-use-pytorch-rocm-arch.py; \
     fi
 
 # FlashAttention: CDNA-only (gfx9xx — MI100/MI200/MI300/MI355X).
@@ -153,9 +156,12 @@ RUN --mount=type=cache,target=/root/.cache/pip \
         git clone --depth 1 --branch "${FLASH_ATTN_REF}" \
             --recurse-submodules --shallow-submodules \
             "${FLASH_ATTN_GIT_URL}" /app/flash-attention && \
+        python3 /app/patches/vllm/02-flash-attn-deprecated-attrs.py && \
         cd /app/flash-attention && \
         GPU_ARCHS="${ROCM_ARCH}" \
             PYTORCH_ROCM_ARCH="${ROCM_ARCH}" \
+            HIPFLAGS="-Wno-deprecated-attributes" \
+            CXXFLAGS="-Wno-deprecated-attributes" \
             MAX_JOBS="${BUILD_JOBS:-$(nproc)}" \
             CCACHE_DIR=/root/.cache/ccache CCACHE_MAXSIZE=25G \
             python3 setup.py bdist_wheel --dist-dir=/wheels && \
@@ -229,10 +235,11 @@ RUN --mount=type=cache,target=/root/.cache/pip \
         VLLM_VERSION_OVERRIDE="${VLLM_REF#v}+${VLLM_TARGET_DEVICE}" \
         pip3 wheel --no-build-isolation --no-deps --no-cache-dir -w /wheels . && \
     pip3 install --no-cache-dir /wheels/vllm-*.whl && \
-    python3 -c 'import vllm; print("vLLM installed:", vllm.__version__)' && \
+    python3 -c 'import importlib.metadata as m; print("vLLM installed:", m.version("vllm"))' && \
     rm -rf /app/vllm /wheels /tmp/torch-constraints.txt && \
-    find /usr/lib/python3 /usr/local/lib/python3 -name '__pycache__' -type d \
-         -exec rm -rf {} + 2>/dev/null; true
+    { find /usr/lib/python3 /usr/local/lib/python3.12 -name '__pycache__' -type d \
+         -exec rm -rf {} + || \
+      echo "WARNING: __pycache__ cleanup failed; see find's error above" >&2; }
 
 # ----- 3b. vllm_emulator (llm-emu profile-driven emulation plugin) -----------
 ARG LLM_EMU_GIT_URL=https://github.com/AKafakA/llm-emu.git
@@ -260,8 +267,9 @@ print('vllm_emulator subpackages import OK')" && \
     cp /app/llm-emu/example_profiling_data/*.json /opt/llm-emu/profiles/ && \
     test -r "${AIC_EMULATOR_EXAMPLE_PACK}" && \
     rm -rf /app/llm-emu /app/patches /app/aiter /app/flash-attention /wheels && \
-    find /usr/lib/python3 /usr/local/lib/python3 -name '__pycache__' -type d \
-         -exec rm -rf {} + 2>/dev/null; true
+    { find /usr/lib/python3 /usr/local/lib/python3.12 -name '__pycache__' -type d \
+         -exec rm -rf {} + || \
+      echo "WARNING: __pycache__ cleanup failed; see find's error above" >&2; }
 
 # =============================================================================
 # vllm — slim runtime stage: aic-base + packages built in build_vllm
@@ -302,9 +310,9 @@ RUN --mount=type=cache,target=/root/.cache/pip \
         echo "ERROR: LMCACHE_REF is empty; build via 'make build'" >&2; exit 1; } && \
     _ver="${LMCACHE_REF#v}" && \
     pip3 install --no-cache-dir "lmcache==${_ver}" && \
-    uv pip uninstall --system \
+    { uv pip uninstall --system \
         nixl nixl-cu12 nixl-cu13 \
-        cupy-cuda12x cufile-python cuda-pathfinder 2>/dev/null || true
+        cupy-cuda12x cufile-python cuda-pathfinder 2>/dev/null || true; }
 
 # gfx1201: apply the event-IPC producer-side-sync patch to the lmcache CLIENT
 # installed above.  vLLM is the producer on the store path, so its export_event
@@ -313,9 +321,12 @@ RUN --mount=type=cache,target=/root/.cache/pip \
 # memory patches belong to the lmcache server image.  AIC_LMCACHE_SRC points the
 # patcher at the pip-installed package (site-packages), not the /app source tree.
 COPY docker/lmcache/rocm_event_ipc_patch.py /tmp/rocm_event_ipc_patch.py
+COPY docker/lmcache/diag_register_kv_caches.py /tmp/diag_register_kv_caches.py
 RUN AIC_LMCACHE_SRC="$(python3 -c 'import lmcache, os; print(os.path.dirname(os.path.dirname(lmcache.__file__)))')" \
         python3 /tmp/rocm_event_ipc_patch.py && \
-    rm /tmp/rocm_event_ipc_patch.py
+    AIC_LMCACHE_SRC="$(python3 -c 'import lmcache, os; print(os.path.dirname(os.path.dirname(lmcache.__file__)))')" \
+        python3 /tmp/diag_register_kv_caches.py && \
+    rm /tmp/rocm_event_ipc_patch.py /tmp/diag_register_kv_caches.py
 
 # ----- Runtime ENV + metadata -------------------------------------------------
 # PYTHONPATH and LD_LIBRARY_PATH (including NIXL paths) are inherited from
@@ -379,10 +390,8 @@ RUN --mount=type=bind,from=lmcache-wheels,target=/aic-wheels \
         cupy-cuda12x cufile-python cuda-pathfinder 2>/dev/null || true; } && \
     python3 -c 'import lmcache.integration.vllm.vllm_multi_process_adapter; print("lmcache MP adapter imports OK")'
 
-# Cross-container HIP IPC with the lmcache server; must match aic-lmcache's ENV.
-ENV HSA_ENABLE_IPC_MODE_LEGACY=1
-
 # For fastsafetensors' dlopen("libamdhip64.so").  Not in the shared `vllm`
-# stage: CI's emulate build swaps in a base with no ROCm.
-ENV LD_LIBRARY_PATH=/opt/rocm/lib
+# stage: CI's emulate build swaps in a base with no ROCm.  Prepend, so
+# aic-base's NIXL/UCX entries survive.
+ENV LD_LIBRARY_PATH=/opt/rocm/lib${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}
 RUN python3 -c 'import ctypes; ctypes.CDLL("libamdhip64.so")'

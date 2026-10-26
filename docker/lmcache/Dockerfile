@@ -8,7 +8,7 @@
 #
 # SPDX-License-Identifier: MIT
 #
-# AIC LMCache image: torch + torchvision + NIXL (from aic-base) + LMCache v0.5.5
+# AIC LMCache image: torch + torchvision + NIXL (from aic-base) + LMCache v0.5.6
 # (patched).
 #
 # AITER and FlashAttention live in aic-vllm — LMCache is a KV-cache
@@ -245,13 +245,16 @@ RUN --mount=type=cache,target=/root/.cache/uv \
 # No source build needed.
 
 RUN rm -rf /app/patches /app/LMCache /wheels && \
-    find /usr/lib/python3 /usr/local/lib/python3 -name '__pycache__' -type d \
-         -exec rm -rf {} + 2>/dev/null; true
+    { find /usr/lib/python3 /usr/local/lib/python3.12 -name '__pycache__' -type d \
+         -exec rm -rf {} + || \
+      echo "WARNING: __pycache__ cleanup failed; see find's error above" >&2; }
 
 # ----- 8. Runtime environment ------------------------------------------------
 # NIXL_PLUGIN_DIR, PYTHONPATH (incl. NIXL), and LD_LIBRARY_PATH are set in
 # aic-base and inherited here.  HSA_ENABLE_IPC_MODE_LEGACY is intentionally NOT
-# set — it breaks hipIpcGetMemHandle on gfx1201; cross-container IPC uses HIP VMM.
+# set: aic-vllm leaves it unset too, and the two must agree.  The default
+# (non-legacy) mode crosses containers that share a network namespace; see
+# docker-compose.yml.
 # LMCACHE_NIXL_USE_CUPY=1: activate the CuPy GPU buffer allocator so
 # librocblas/libMIOpen/etc. are never dlopened in the lmcache process.
 ENV PYTHONUNBUFFERED=1 \
