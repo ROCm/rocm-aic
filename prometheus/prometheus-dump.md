@@ -1,6 +1,6 @@
 # AIC Prometheus Metrics Reference
 
-**Generated:** 2026-09-22 09:28 UTC · **Total metrics:** 604 · **SHA:** `dd1afc7`
+**Generated:** 2026-10-27 09:46 UTC · **Total metrics:** 573 · **SHA:** `c5eb5f5`
 
 ## Component Versions
 
@@ -8,39 +8,31 @@
 |-----------|---------|
 | version | `0.1.0` |
 | rocm | `7.14.1` |
-| aiter | `v0.1.22.post1` |
-| flash-attention | `v2.8.3.post1` |
-| lmcache | `v0.5.5` |
+| lmcache | `v0.5.6` |
 | nixl | `v1.4.1` |
 | hipfile | `rocm-7.14.1` |
-| hsa-snoop | `v1.1.1` |
 
 ## Running Containers
 
 | Container | Image | Status |
 |-----------|-------|--------|
-| `aic-hsa-snoop` | `rocm-aic-ci-dd1afc7:0.1.0-rocm7.14.1-pytorch2.13-vllm0.29.0-aiter0.1.22.post1-fa2.8.3.post1-lmcache0.5.5-nixl1.4.1-hsasnoop1.1.1` | Up 16 seconds |
 | `aic-amdgpu-exporter` | `rocm/device-metrics-exporter:v1.5.2` | Up About a minute |
-| `aic-vllm-gpu0` | `rocm-aic-ci-dd1afc7:0.1.0-rocm7.14.1-pytorch2.13-vllm0.29.0-aiter0.1.22.post1-fa2.8.3.post1-lmcache0.5.5-nixl1.4.1-hsasnoop1.1.1` | Up About a minute |
-| `aic-lmcache` | `rocm-aic-ci-dd1afc7:0.1.0-rocm7.14.1-pytorch2.13-vllm0.29.0-aiter0.1.22.post1-fa2.8.3.post1-lmcache0.5.5-nixl1.4.1-hsasnoop1.1.1` | Up 2 minutes (healthy) |
-| `aic-client` | `python:3.12` | Up 2 minutes |
-| `aic-prometheus` | `prom/prometheus:v3.14.0` | Up 2 minutes |
-| `aic-grafana` | `grafana/grafana:13.2.2` | Up 2 minutes |
-| `aic-lmcache-coordinator` | `rocm-aic-ci-dd1afc7:0.1.0-rocm7.14.1-pytorch2.13-vllm0.29.0-aiter0.1.22.post1-fa2.8.3.post1-lmcache0.5.5-nixl1.4.1-hsasnoop1.1.1` | Up 2 minutes (healthy) |
-| `zealous_spence` | `rocm/atom-dev:ubuntu24.04_py3.12_pytorch_release_2.10.0_kimi_k3_agentic_0911` | Up 18 minutes |
-| `priceless_benz` | `rocm/atom-dev:ubuntu24.04_py3.12_pytorch_release_2.10.0_kimi_k3_agentic_0911` | Up 18 minutes |
-| `inspiring_chandrasekhar` | `rocm/atom-dev:ubuntu24.04_py3.12_pytorch_release_2.10.0_kimi_k3_agentic_0911` | Up 18 minutes |
-| `devil_atom_sp_0922` | `rocm/atom-dev:latest` | Up 54 minutes |
-| `buildx_buildkit_aic-cache0` | `moby/buildkit:buildx-stable-1` | Up 8 hours |
+| `aic-vllm-gpu2` | `aic-vllm:0.1.0-rocm7.14.1-pytorch2.13-vllm0.29.0-aiter0.1.22.post1-fa2.8.3.post1-lmcache0.5.6-nixl1.4.1-hsasnoop1.2.0` | Up About a minute |
+| `aic-alloy` | `grafana/alloy:v1.8.3` | Up About a minute |
+| `aic-lmcache` | `aic-lmcache:0.1.0-rocm7.14.1-pytorch2.13-vllm0.29.0-aiter0.1.22.post1-fa2.8.3.post1-lmcache0.5.6-nixl1.4.1-hsasnoop1.2.0` | Up About a minute (healthy) |
+| `aic-client` | `python:3.12` | Up About a minute |
+| `aic-loki` | `grafana/loki:3.5.0` | Up About a minute |
+| `aic-grafana` | `grafana/grafana:13.2.2` | Up About a minute |
+| `aic-prometheus` | `prom/prometheus:v3.14.0` | Up About a minute |
+| `aic-lmcache-coordinator` | `aic-lmcache:0.1.0-rocm7.14.1-pytorch2.13-vllm0.29.0-aiter0.1.22.post1-fa2.8.3.post1-lmcache0.5.6-nixl1.4.1-hsasnoop1.2.0` | Up About a minute (healthy) |
+| `buildx_buildkit_aic-local0` | `moby/buildkit:buildx-stable-1` | Up 16 minutes |
 
 ## Metrics Sources
 
-- [vllm](#vllm) — 89 metrics
-- [lmcache](#lmcache) — 25 metrics
+- [vllm](#vllm) — 91 metrics
 - [nixl](#nixl) — 19 metrics
 - [lmcache_coordinator](#lmcache-coordinator) — 7 metrics
-- [hsa_snoop](#hsa-snoop) — 7 metrics
-- [amdgpu_exporter](#amdgpu-exporter) — 132 metrics
+- [amdgpu_exporter](#amdgpu-exporter) — 131 metrics
 - [prometheus](#prometheus) — 263 metrics
 - [node_exporter](#node-exporter) — 62 metrics
 
@@ -91,6 +83,8 @@
 | `vllm:kv_block_reuse_gap_seconds` | histogram | Histogram of time gaps between consecutive KV cache block accesses. Only the most recent accesses are recorded (ring buffer). Sampled metrics (controlled by --kv-cache-metrics-sample). |
 | `vllm:kv_block_reuse_gap_seconds_created` | gauge | Histogram of time gaps between consecutive KV cache block accesses. Only the most recent accesses are recorded (ring buffer). Sampled metrics (controlled by --kv-cache-metrics-sample). |
 | `vllm:kv_cache_usage_perc` | gauge | KV-cache usage. 1 means 100 percent usage. |
+| `vllm:lmcache_mp_lookup_duration_seconds` | histogram | LMCache MP lookup latency observed by vLLM. |
+| `vllm:lmcache_mp_lookup_duration_seconds_created` | gauge | LMCache MP lookup latency observed by vLLM. |
 | `vllm:mm_cache_hits_created` | gauge | Multi-modal cache hits, in terms of number of cached items. |
 | `vllm:mm_cache_hits_total` | counter | Multi-modal cache hits, in terms of number of cached items. |
 | `vllm:mm_cache_queries_created` | gauge | Multi-modal cache queries, in terms of number of queried items. |
@@ -138,36 +132,6 @@
 | `vllm:time_to_first_token_seconds` | histogram | Histogram of time to first token in seconds. |
 | `vllm:time_to_first_token_seconds_created` | gauge | Histogram of time to first token in seconds. |
 
-## lmcache
-
-| Metric | Type | Description |
-|--------|------|-------------|
-| `lmcache_mp_active_p2p_lookup_jobs` | gauge | Number of active P2P lookup jobs |
-| `lmcache_mp_active_prefetch_jobs` | gauge | Number of active prefetch jobs |
-| `lmcache_mp_event_bus_drain_lag_seconds` | gauge | Seconds since the oldest queued event was published; 0.0 when empty.  Rising values mean the drain thread is falling behind. |
-| `lmcache_mp_event_bus_dropped_events_total` | counter | Cumulative events dropped because the EventBus queue was at max_queue_size. |
-| `lmcache_mp_event_bus_queue_depth` | gauge | Events currently queued in the EventBus. |
-| `lmcache_mp_l1_eviction_loop_ticks_total` | counter | L1 eviction-loop iterations (every cycle) |
-| `lmcache_mp_l1_memory_usage_bytes` | gauge | Bytes currently held in L1 cache |
-| `lmcache_mp_l1_usage_ratio` | gauge | L1 used/total ratio (0.0-1.0) |
-| `lmcache_mp_l2_prefetch_adapters` | gauge | Count of L2 adapters attached to the prefetch controller, tagged by ``state`` (active or draining). |
-| `lmcache_mp_l2_store_adapters` | gauge | Count of L2 adapters attached to the store controller, tagged by ``state`` (active or draining). |
-| `lmcache_mp_l2_usage_bytes` | gauge | Bytes currently held in each L2 adapter, tagged by ``l2_name`` (one observation per adapter). |
-| `lmcache_mp_prefetch_hit_chunks_total` | counter | Chunks served from cache by tier (l1=DRAM, l2=NVMe). |
-| `lmcache_mp_prefetch_miss_chunks_total` | counter | Chunks requested but not found in any cache tier. |
-| `lmcache_mp_prefetch_requests_total` | counter | Total completed prefetch lookup requests. |
-| `process_cpu_seconds_total` | counter | Total user and system CPU time spent in seconds. |
-| `process_max_fds` | gauge | Maximum number of open file descriptors. |
-| `process_open_fds` | gauge | Number of open file descriptors. |
-| `process_resident_memory_bytes` | gauge | Resident memory size in bytes. |
-| `process_start_time_seconds` | gauge | Start time of the process since unix epoch in seconds. |
-| `process_virtual_memory_bytes` | gauge | Virtual memory size in bytes. |
-| `python_gc_collections_total` | counter | Number of times this generation was collected |
-| `python_gc_objects_collected_total` | counter | Objects collected during gc |
-| `python_gc_objects_uncollectable_total` | counter | Uncollectable objects found during GC |
-| `python_info` | gauge | Python platform information |
-| `target_info` | gauge | Target metadata |
-
 ## nixl
 
 | Metric | Type | Description |
@@ -204,23 +168,10 @@
 | `lmcache_coordinator_scrape_duration_seconds` | gauge | Time in seconds to scrape the LMCache coordinator REST API |
 | `lmcache_coordinator_up` | gauge | 1 if the LMCache MP coordinator /healthz reports healthy |
 
-## hsa_snoop
-
-| Metric | Type | Description |
-|--------|------|-------------|
-| `ais_active` | gauge | 1 if at least one AIS IO operation has been observed since startup, 0 otherwise; latches at 1 |
-| `exposer_request_latencies` | summary | Latencies of serving scrape requests, in microseconds |
-| `exposer_scrapes_total` | counter | Number of times metrics were scraped |
-| `exposer_transferred_bytes_total` | counter | Transferred bytes to metrics services |
-| `hsa_active_queues` | gauge | Number of currently tracked AQL queues |
-| `hsa_sdma_present` | gauge | 1 if at least one SDMA queue has been observed on this system, 0 otherwise; always 0 on APU nodes (e.g. Strix Halo) where no discrete SDMA engine exists |
-| `hsa_snoop_up` | gauge | 1 if hsa-snoop is running and attached, 0 otherwise |
-
 ## amdgpu_exporter
 
 | Metric | Type | Description |
 |--------|------|-------------|
-| `gpu_afid_errors` | gauge | Last Occurred RAS Event associated AMD Field Identifier list |
 | `gpu_clock` | gauge | List of current GPU clock frequencies in MHz |
 | `gpu_ecc_correct_athub` | gauge | Correctable error count in ATHUB block |
 | `gpu_ecc_correct_bif` | gauge | Correctable error count in BIF block |
