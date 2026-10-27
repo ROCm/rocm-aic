@@ -116,7 +116,12 @@ KVBENCH_LOCAL_CPU_SIZE_GB ?= 0.25
 KVBENCH_READY_S           ?= 120
 
 # Non-Slurm runs land under logs/manual/ — keeps the tree root free of results/ and plots/.
-BENCH_LOGDIR      := logs/manual
+# ?= and absolute, matching LOG above.  As a relative `:=` this silently
+# ignored BENCH_LOGDIR from the environment and resolved against make's CWD,
+# so prep-dirs tried to mkdir <cwd>/logs/manual/{results,plots} -- which fails
+# wherever the tree is not writable, e.g. the 9p-mounted repo inside the
+# rocjitsu guest.  A command-line override worked; an exported one did not.
+BENCH_LOGDIR      ?= $(CURDIR)/logs/manual
 BENCH_OUT         := $(BENCH_LOGDIR)/results/cliff-$(BENCH_ARM)-$(shell date +%Y%m%d-%H%M%S).csv
 
 # ---- Build parallelism -----------------------------------------------------
@@ -128,6 +133,11 @@ BUILD_JOBS ?=
 # further down (SPUR block); empty means "no layer cache".
 export AIC_BUILDX_BUILDER ?= aic-local
 export AIC_CACHE_MODE     ?= max
+# Registry layer cache.  Takes precedence over AIC_CACHE_DIR in the bake HCL and
+# in run-build-distribute.sh, which both already honoured it -- `make build` did
+# not forward it, so CI had no way to share layers between runners without a
+# shared filesystem.  Empty means "fall back to AIC_CACHE_DIR".
+export AIC_CACHE_REF      ?=
 
 # Per-arch cache subdir slug; mirrors _arch_tag() in run-build-distribute.sh.
 # Recursive (=) on purpose: the SPUR block below may override ROCM_ARCH.

@@ -1,0 +1,118 @@
+# Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+#
+# Nightly build of the gfx1250 (rocjitsu / RDNA4-emulated GPU) image stack,
+# published to GHCR so the rocjitsu VM test can docker pull instead of
+# recompiling PyTorch + vLLM from source on every CI run.
+#
+# This drives `docker buildx bake` through `make build` rather than hand-rolled
+# buildx steps.  The hand-rolled version could not succeed, for two independent
+# reasons, and both are structural rather than typos:
+#
+#   * It forwarded no `lmcache-wheels` build context to docker/vllm/Dockerfile.
+#     That Dockerfile defaults the context to `FROM scratch` and its runtime
+#     stage then aborts with "expected one lmcache wheel in the lmcache-wheels
+#     build context", so aic-vllm could never be pushed.
+#   * It re-declared the version pins by grepping the Dockerfiles, which drifts
+#     from docker/docker-bake.hcl -- the actual single source of truth.
+#
+# Both disappear when bake owns the graph: the HCL already wires
+# `lmcache-wheels = target:lmcache-wheels` and holds every pin.
+#
+# It also publishes the WHOLE stack, not just aic-vllm.  The rocjitsu test
+# loads five images into the guest (vllm, lmcache, hsa-snoop and the two fabric
+# exporters); publishing only one left the other four to be built on the test
+# runner, which is what made a "pre-built image" run still take hours.
+#
+# Published images (all under ghcr.io/rocm/rocm-aic/):
+#   aic-vllm, aic-lmcache, aic-base, aic-hsa-snoop,
+#   aic-nvme-exporter, aic-rdma-exporter
+# each tagged with the full version tag AND the short `:gfx1250` alias that
+# mk/bench.mk's RJ_IMAGE_ALIAS pulls by default.
+name: rocm-aic - Publish gfx1250 Images
+
+on:
+  schedule:
+    # 03:00 PST = 11:00 UTC — runs after the SPUR nightly dist-build (09:00 UTC)
+    - cron: '0 11 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write   # needed to push to GHCR
+
+env:
+  REGISTRY: ghcr.io
+  # Trailing slash is required: the bake HCL concatenates this directly.
+  AIC_IMAGE_PREFIX: ghcr.io/rocm/rocm-aic/
+  AIC_IMAGE_EXTRA_TAG: gfx1250
+  # One registry cache ref for the whole bake session.  Registry cache is
+  # content-addressed and safe for the concurrent writers a single bake run
+  # produces, which is why the HCL keeps it on one ref (unlike the local-dir
+  # backend, which needs a dir per target to avoid "ref locked" races).
+  AIC_CACHE_REF: ghcr.io/rocm/rocm-aic/aic-cache:gfx1250
+  ROCM_ARCH: gfx1250
+
+jobs:
+  publish:
+    name: Bake and push the gfx1250 stack
+    runs-on: ubuntu-24.04
+    timeout-minutes: 350
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Free disk space (ROCm build needs ~60 GB)
+        run: |
+          sudo rm -rf /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL \
+                      /usr/share/dotnet /usr/local/share/powershell \
+                      /usr/share/swift /usr/local/.ghcup
+          sudo apt-get purge -y --auto-remove \
+            google-chrome-stable firefox dotnet-sdk-* \
+            libgl1-mesa-dri mono-runtime* 2>/dev/null || true
+          docker system prune -af --volumes 2>/dev/null || true
+          df -h /
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+        with:
+          driver: docker-container
+          install: true
+
+      - name: Show the resolved build graph
+        run: |
+          # Cheap, and the first thing anyone debugging a failed nightly wants:
+          # the exact tags and pins this run will push.
+          docker buildx bake -f docker/docker-bake.hcl default --print
+
+      - name: Bake and push the gfx1250 stack
+        # BAKE_OUTPUT_FLAG=--push instead of the default --load: loading through
+        # the docker-container driver round-trips every layer into the daemon,
+        # which on a 86 GB runner is both slow and the thing that fills the disk.
+        # Nothing here needs the images locally -- the rocjitsu test pulls them.
+        run: |
+          make build \
+            ROCM_ARCH=gfx1250 \
+            AIC_VERSION="$(cat VERSION)" \
+            BAKE_OUTPUT_FLAG=--push \
+            BAKE_TARGETS=default \
+            BUILD_PROGRESS=plain
+
+      - name: Report what was pushed
+        if: success()
+        run: |
+          docker buildx bake -f docker/docker-bake.hcl default --print 2>/dev/null \
+            | jq -r '.target | to_entries[] | .value.tags[]? | "pushed  " + .'
+
+      - name: Disk usage after build
+        if: always()
+        run: df -h /

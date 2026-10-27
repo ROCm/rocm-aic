@@ -11,7 +11,27 @@
 #
 # Stages:
 #   build    compile hsa-snoop from source against ROCm HSA headers
-#   runtime  minimal ROCm runtime + hsa-snoop binary only
+#   runtime  plain ubuntu + the hsa-snoop binary -- no ROCm userspace at all
+#
+# The runtime stage deliberately installs NO ROCm packages.  hsa-snoop reads
+# kernel interfaces (ftrace, KFD debugfs) rather than calling into the ROCm
+# userspace stack: its CMakeLists links only Threads, src/aql.h states it
+# "deliberately does NOT #include <hsa/hsa.h>", and `ldd` on the built binary
+# resolves to libstdc++/libgcc_s/libc/libm and nothing else.  Compose backs
+# this up -- the service gets /dev/kfd, /sys/kernel/debug and
+# /sys/kernel/tracing, not a ROCm install.
+#
+# Installing "amdrocm-runtime${MM}" here used to cost 965 MB of /opt/rocm, of
+# which 843 MB was LLVM/Clang/Flang (libMLIR 170 MB, libLLVM 128 MB,
+# libclang-cpp 86 MB, flang-23 83 MB, bbc 73 MB ...) -- a Fortran compiler in a
+# metrics sidecar.  Image: ~1.19 GB -> ~80 MB.
+#
+# Nothing working was lost.  hsa-snoop opportunistically popen()s
+# /opt/rocm/bin/rocminfo for GPU metric labels and reads /opt/rocm/.info/version
+# for a version label, but neither file was present even with the package
+# installed (it ships no rocminfo), so both paths already took their
+# fall-backs.  To get those labels, COPY rocminfo and its ldd closure from the
+# build stage -- tens of MB -- rather than reinstating the package.
 #
 # Build (from repo root):
 #   docker buildx build -f docker/hsa-snoop/Dockerfile \
@@ -22,8 +42,10 @@
 
 ARG ROCM_VERSION=7.14.1
 ARG ROCM_BUILD_IMAGE=rocm/dev-ubuntu-24.04:${ROCM_VERSION}-full
-# rocm/dev-ubuntu-24.04:7.14.x (no -full suffix) does not exist in the AMD repo.
-# Use ubuntu:24.04 + the HSA runtime library (only libhsa-runtime64.so is needed).
+# rocm/dev-ubuntu-24.04:7.14.x (no -full suffix) does not exist in the AMD repo,
+# so the runtime stage starts from plain ubuntu.  It stays plain: hsa-snoop
+# needs no ROCm userspace (see the stage notes above).  This previously read
+# "only libhsa-runtime64.so is needed" -- the binary does not link that either.
 ARG ROCM_RUNTIME_IMAGE=ubuntu:24.04
 
 # =============================================================================
@@ -58,7 +80,7 @@ RUN git clone --depth 1 --branch "${HSA_SNOOP_REF}" "${HSA_SNOOP_GIT_URL}" /app/
     strip --strip-debug /usr/local/bin/hsa-snoop
 
 # =============================================================================
-# Runtime stage — plain ROCm runtime image + binary only (~3-4 GB vs ~18 GB)
+# Runtime stage — plain ubuntu + the binary (~80 MB vs ~1.19 GB)
 # =============================================================================
 # hadolint ignore=DL3006
 FROM ${ROCM_RUNTIME_IMAGE} AS runtime
@@ -69,24 +91,35 @@ ARG ROCM_RUNTIME_IMAGE
 
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 
-# hsa-snoop needs libhsa-runtime64.so to intercept HSA AQL dispatches.
-# Copy the AMD apt signing key from the build stage (which has the -full image).
-# hadolint ignore=DL3008
-COPY --from=build /etc/apt/keyrings/amdrocm.gpg /etc/apt/keyrings/amdrocm.gpg
-COPY --from=build /etc/apt/sources.list.d/rocm.list /etc/apt/sources.list.d/amdrocm.list
+# The binary's entire link closure: libstdc++6 pulls libgcc_s, and libc/libm
+# are already in the base.  Stated explicitly rather than relying on apt having
+# dragged libstdc++6 in as its own dependency.
 # hadolint ignore=DL3008
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
     apt-get update && \
     DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-        ca-certificates && \
-    update-ca-certificates && \
-    apt-get update && \
-    _mm=$(echo "${ROCM_VERSION}" | cut -d. -f1-2) && \
-    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-        "amdrocm-runtime${_mm}"
+        libstdc++6
 
 COPY --from=build /usr/local/bin/hsa-snoop /usr/local/bin/hsa-snoop
+
+# Fail the build, not the deployment, if the binary ever grows a dependency
+# this stage does not provide -- an upstream change that starts linking the HSA
+# runtime would otherwise only show up as a sidecar crash-looping in compose.
+RUN ldd /usr/local/bin/hsa-snoop > /tmp/ldd.txt 2>&1; \
+    cat /tmp/ldd.txt; \
+    if grep -qi 'not found' /tmp/ldd.txt; then \
+        echo "ERROR: unresolved shared libraries in the slim runtime (see above)." >&2; \
+        exit 1; \
+    fi; \
+    if grep -qiE 'libhsa|librocm|libamd|/opt/rocm' /tmp/ldd.txt; then \
+        echo "ERROR: hsa-snoop now links ROCm libraries this slim runtime does not ship." >&2; \
+        echo "       COPY them from the build stage, or reinstate amdrocm-runtime here." >&2; \
+        exit 1; \
+    fi; \
+    /usr/local/bin/hsa-snoop --help >/dev/null || { \
+        echo "ERROR: hsa-snoop --help failed in the slim runtime." >&2; exit 1; }; \
+    rm -f /tmp/ldd.txt
 
 LABEL org.opencontainers.image.title="aic-hsa-snoop" \
       org.opencontainers.image.description="AMD Infinity Context: HSA AQL snooper + Prometheus exporter sidecar" \

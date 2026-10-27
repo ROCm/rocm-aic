@@ -81,6 +81,41 @@ variable "AIC_CACHE_MODE" { default = "max" }
 # Corporate CA cert injected as a BuildKit secret (id=tls_cert).  Empty = none.
 variable "TLS_CERT"       { default = "" }
 
+# Registry prefix for every image tag, e.g. "ghcr.io/rocm/rocm-aic/".  Empty
+# (the default) keeps the bare local names a developer expects from `--load`.
+# `--push` needs registry-qualified tags on EVERY tag of a target, so when this
+# is set it replaces the bare names rather than adding to them -- one
+# unqualified tag in the list fails the whole push.
+# Must include the trailing '/'.
+variable "AIC_IMAGE_PREFIX" { default = "" }
+
+# Optional short alias pushed alongside the full version tag, e.g. "gfx1250".
+# The version tag is 100+ characters and is derived from a dozen pins, so a
+# consumer that just wants "the current gfx1250 image" cannot name it without
+# recomputing the tag.  CI pushes both and pulls the alias.
+variable "AIC_IMAGE_EXTRA_TAG" { default = "" }
+
+# Tag list for an image: the version tag, plus the alias when one is set.
+# `latest` is only useful locally and would clobber across arches in a shared
+# registry, so it is dropped as soon as a prefix is in play.
+function "tags" {
+  params = [name, latest]
+  result = (AIC_IMAGE_PREFIX == ""
+    ? concat(["${name}:${IMAGE_TAG}"], (latest ? ["${name}:latest"] : []))
+    : concat(["${AIC_IMAGE_PREFIX}${name}:${IMAGE_TAG}"],
+             (AIC_IMAGE_EXTRA_TAG == "" ? [] : ["${AIC_IMAGE_PREFIX}${name}:${AIC_IMAGE_EXTRA_TAG}"])))
+}
+
+# Same, for images whose tag is a fixed string rather than the version tag
+# (the exporters' ":local", kvbench's pinned tag).
+function "fixed_tags" {
+  params = [name, tag]
+  result = (AIC_IMAGE_PREFIX == ""
+    ? ["${name}:${tag}"]
+    : concat(["${AIC_IMAGE_PREFIX}${name}:${tag}"],
+             (AIC_IMAGE_EXTRA_TAG == "" ? [] : ["${AIC_IMAGE_PREFIX}${name}:${AIC_IMAGE_EXTRA_TAG}"])))
+}
+
 # ---- Tag derivation (mirrors docker/scripts/aic-image-tag.sh) ----------------
 
 # FlashAttention is CDNA-only (gfx9xx): include it when every arch token is gfx9*
@@ -174,7 +209,7 @@ group "all" {
 target "base" {
   context    = "."
   dockerfile = "docker/base/Dockerfile"
-  tags       = ["aic-base:${IMAGE_TAG}"]
+  tags       = tags("aic-base", false)
   args = {
     ROCM_ARCH           = ROCM_ARCH
     ROCM_VERSION        = ROCM_VERSION
@@ -201,7 +236,7 @@ target "vllm" {
   # The default (runtime) stage installs aic-lmcache's wheel from the
   # lmcache-wheels context and stops without one.
   contexts   = { base = "target:base", "lmcache-wheels" = "target:lmcache-wheels" }
-  tags       = ["aic-vllm:${IMAGE_TAG}", "aic-vllm:latest"]
+  tags       = tags("aic-vllm", true)
   args = {
     ROCM_ARCH          = ROCM_ARCH
     ROCM_VERSION       = ROCM_VERSION
@@ -227,7 +262,7 @@ target "lmcache" {
   context    = "."
   dockerfile = "docker/lmcache/Dockerfile"
   contexts   = { base = "target:base" }
-  tags       = ["aic-lmcache:${IMAGE_TAG}", "aic-lmcache:latest"]
+  tags       = tags("aic-lmcache", true)
   args = {
     ROCM_ARCH       = ROCM_ARCH
     ROCM_VERSION    = ROCM_VERSION
@@ -258,7 +293,7 @@ target "lmcache-wheels" {
 target "hsa-snoop" {
   context    = "."
   dockerfile = "docker/hsa-snoop/Dockerfile"
-  tags       = ["aic-hsa-snoop:${IMAGE_TAG}", "aic-hsa-snoop:latest"]
+  tags       = tags("aic-hsa-snoop", true)
   args = {
     ROCM_VERSION     = ROCM_VERSION
     BUILD_JOBS       = BUILD_JOBS
@@ -276,7 +311,7 @@ target "hsa-snoop" {
 target "emulate" {
   inherits = ["vllm"]
   target   = "emulate"
-  tags     = ["aic-vllm-emulate:${IMAGE_TAG}"]
+  tags     = tags("aic-vllm-emulate", false)
   args = {
     VLLM_TARGET_DEVICE = "empty"
   }
@@ -285,7 +320,7 @@ target "emulate" {
 target "nvme-exporter" {
   context    = "."
   dockerfile = "docker/nvme-exporter/Dockerfile"
-  tags       = ["aic-nvme-exporter:local"]
+  tags       = fixed_tags("aic-nvme-exporter", "local")
   args = {
     NVME_EXPORTER_VERSION = NVME_EXPORTER_VERSION
   }
@@ -294,7 +329,7 @@ target "nvme-exporter" {
 target "rdma-exporter" {
   context    = "."
   dockerfile = "docker/rdma-exporter/Dockerfile"
-  tags       = ["aic-rdma-exporter:local"]
+  tags       = fixed_tags("aic-rdma-exporter", "local")
   args = {
     RDMA_EXPORTER_VERSION = RDMA_EXPORTER_VERSION
   }
@@ -303,7 +338,7 @@ target "rdma-exporter" {
 target "kvbench" {
   context    = "."
   dockerfile = "docker/kvbench/Dockerfile"
-  tags       = ["aic-kvbench:${KVBENCH_IMAGE_TAG}"]
+  tags       = fixed_tags("aic-kvbench", KVBENCH_IMAGE_TAG)
   args = {
     KVBENCH_GIT_URL = KVBENCH_GIT_URL
     KVBENCH_REF     = KVBENCH_REF
