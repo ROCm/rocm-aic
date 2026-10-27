@@ -63,7 +63,7 @@ endif
 # dist-build-base/vllm/lmcache also require the corresponding Slurm subcommands
 # (build-base, build-vllm, build-lmcache) which are implemented in the script.
 
-.PHONY: dist-build dist-build-bake dist-build-fast dist-build-emulate \
+.PHONY: dist-build dist-build-fast dist-build-emulate \
         dist-wheels dist-build-base dist-build-vllm dist-build-lmcache \
         dist-build-exporters dist-build-monitoring dist-push \
         smoke-test smoke-test-fast tiny-test tiny-test-fast \
@@ -74,9 +74,6 @@ endif
         cliff-short cliff-long-64k cliff-long-128k
 
 dist-build:
-	"$(DIST)" bake
-
-dist-build-bake:
 	"$(DIST)" bake
 
 dist-build-fast:

@@ -39,7 +39,7 @@
 #     bash .slurm/run-build-distribute.sh all
 #
 #   # Just build + save the vllm and lmcache tarballs:
-#   bash .slurm/run-build-distribute.sh build-split
+#   bash .slurm/run-build-distribute.sh bake
 #
 #   # Just load already-saved tarballs onto targets:
 #   AIC_TARGETS=<node-a>,<node-b> \
@@ -98,7 +98,9 @@
 #           stack (standalone lmcache server + vLLM LMCacheMPConnector) with a tiny
 #           model (Qwen/Qwen2.5-0.5B-Instruct) and asserts one non-empty chat
 #           completion.  Exercises the full connector path a smoke-test cannot.
-#   all     build-split, build-exporters, then load   (default)
+#   bake    Build base, then vllm + lmcache in parallel (docker buildx bake) plus
+#           the fabric exporters on AIC_BUILD_NODE; save every tarball
+#   all     bake, build-exporters, then load   (default)
 #
 # Key environment:
 #   AIC_ROCM_ARCH        gfx arch(es) baked in; ';'-list   (default: all vLLM archs)
@@ -1223,7 +1225,7 @@ cmd_build() {
             [[ "${AIC_CACHE_RESET}" == "1" ]] && _reset=",reset=true"
             _cache_args="--cache-from type=local,src=${_cdir} --cache-to type=local,dest=${_cdir},mode=${AIC_CACHE_MODE},ignore-error=true${_reset}"
             _mkdir="mkdir -p '${_cdir}'; "
-            # The same per-arch dir cmd_build_split caches aic-base in.
+            # aic-base's own per-arch cache dir.
             local _base_cdir
             _base_cdir="${AIC_CACHE_DIR%/}/$(_arch_tag)-base"
             _base_cache_args="--cache-from type=local,src=${_base_cdir} --cache-to type=local,dest=${_base_cdir},mode=${AIC_CACHE_MODE},ignore-error=true${_reset}"
@@ -1254,7 +1256,7 @@ cmd_build() {
         # the whole pipeline instead of writing a truncated tarball.
         if [[ -n "${_base_first}" ]]; then
             # The docker-container builder cannot see the host daemon's images,
-            # so hand aic-base over as an OCI layout, as cmd_build_split does.
+            # so hand aic-base over as an OCI layout, as cmd_bake does.
             # shellcheck disable=SC2016  # expanded by the job, not here
             _context_arg='--build-context "base=oci-layout://${_base_oci_dir}"'
             _base_step="$(cat <<REMOTE
@@ -1460,7 +1462,7 @@ cmd_build_base() {
 cmd_build_vllm() {
     AIC_BUILD_DOCKERFILE="vllm/Dockerfile"
     [[ -n "${AIC_BUILD_CONTEXT_LMCACHE_WHEELS:-}" ]] || \
-        die "build-vllm needs AIC_BUILD_CONTEXT_LMCACHE_WHEELS (a docker/lmcache/Dockerfile --target wheels export dir); build-split builds both"
+        die "build-vllm needs AIC_BUILD_CONTEXT_LMCACHE_WHEELS (a docker/lmcache/Dockerfile --target wheels export dir); bake builds both"
     log "build-vllm: building aic-vllm -> ${AIC_IMAGE}"
     cmd_build
 }
@@ -1470,213 +1472,6 @@ cmd_build_lmcache() {
     AIC_BUILD_DOCKERFILE="lmcache/Dockerfile"
     log "build-lmcache: building aic-lmcache -> ${AIC_IMAGE}"
     cmd_build
-}
-
-# --- build-split: build base → lmcache → vllm in a single Slurm job ----------
-# Running three separate jobs (base, vllm, lmcache) fails because vllm/lmcache
-# land on a fresh node without the base image in the local daemon.  This command
-# submits ONE job that builds base first, then lmcache and vllm using it as a
-# build context.  lmcache goes first because the vllm image installs its wheel.
-cmd_build_split() {
-    _pick_compress
-    local base_image="${AIC_BASE_IMAGE:-aic-base:${IMAGE_TAG:-latest}}"
-    local base_tarball_name
-    local saved_image="${AIC_IMAGE}"
-    AIC_IMAGE="${base_image}"
-    base_tarball_name="$(_tarball_path)"
-    AIC_IMAGE="${AIC_VLLM_IMAGE}"
-    local vllm_tarball; vllm_tarball="$(_tarball_path)"
-    AIC_IMAGE="${AIC_LMCACHE_IMAGE}"
-    local lmcache_tarball; lmcache_tarball="$(_tarball_path)"
-    AIC_IMAGE="${saved_image}"
-    local lmcache_before; lmcache_before="$(_tarball_stamp "${lmcache_tarball}")"
-    local vllm_before; vllm_before="$(_tarball_stamp "${vllm_tarball}")"
-    local vllm_latest_ref="${AIC_VLLM_IMAGE%:*}:latest"
-    local lmcache_latest_ref="${AIC_LMCACHE_IMAGE%:*}:latest"
-    local nvme_tar rdma_tar hsa_snoop_tar
-    nvme_tar="$(_exporter_tarball_path "${AIC_NVME_EXPORTER_IMAGE}")"
-    rdma_tar="$(_exporter_tarball_path "${AIC_RDMA_EXPORTER_IMAGE}")"
-    hsa_snoop_tar="$(_exporter_tarball_path "${AIC_HSA_SNOOP_IMAGE}")"
-    local _version_build_args="" _version_arg _version_value
-    printf -v _version_value '%q' "${AIC_VERSION}"
-    _version_build_args+=" --build-arg AIC_VERSION=${_version_value}"
-    for _version_arg in ROCM_VERSION PYTORCH_REF PYTORCH_SERIES TORCHVISION_REF VLLM_REF LLM_EMU_REF \
-                        LMCACHE_REF NIXL_REF HSA_SNOOP_REF AITER_REF FLASH_ATTN_REF \
-        PYTORCH_GIT_URL TORCHVISION_GIT_URL VLLM_GIT_URL LLM_EMU_GIT_URL \
-        AITER_GIT_URL FLASH_ATTN_GIT_URL LMCACHE_GIT_URL NIXL_GIT_URL HSA_SNOOP_GIT_URL; do
-        if [[ -v "${_version_arg}" ]]; then
-            printf -v _version_value '%q' "${!_version_arg}"
-            _version_build_args+=" --build-arg ${_version_arg}=${_version_value}"
-        fi
-    done
-    local _secret_arg=""
-    [[ -n "${AIC_TLS_CERT}" ]] && _secret_arg="--secret id=tls_cert,src=${AIC_TLS_CERT}"
-    local _cache_dir
-    _cache_dir="${AIC_CACHE_DIR%/}/$(_arch_tag)"
-    local _builder="${AIC_BUILDX_BUILDER}"
-    # One cache dir per image, like cmd_build's per-target subdir: a type=local
-    # cache keeps a single `latest` ref, so a shared dir ends up holding only
-    # the last build's chain and the next base build gets no hits.
-    local _cache_args_base="" _cache_args_vllm="" _cache_args_lmcache="" _cache_from_lmcache=""
-    if [[ -n "${AIC_CACHE_DIR}" ]]; then
-        local _cache_opts="mode=${AIC_CACHE_MODE:-max},ignore-error=true"
-        _cache_args_base="--cache-from type=local,src=${_cache_dir}-base --cache-to type=local,dest=${_cache_dir}-base,${_cache_opts}"
-        _cache_args_vllm="--cache-from type=local,src=${_cache_dir}-vllm --cache-to type=local,dest=${_cache_dir}-vllm,${_cache_opts}"
-        _cache_args_lmcache="--cache-from type=local,src=${_cache_dir}-lmcache --cache-to type=local,dest=${_cache_dir}-lmcache,${_cache_opts}"
-        _cache_from_lmcache="--cache-from type=local,src=${_cache_dir}-lmcache"
-    fi
-
-    local remote_script
-    remote_script="$(cat <<REMOTE
-set -euo pipefail
-command -v docker >/dev/null 2>&1 || { echo "docker not found" >&2; exit 1; }
-echo "[build-split] host=\$(hostname) docker=\$(docker --version)"
-# Scratch: node-local /tmp first (fall back to $HOME; never shared_nfs -- a
-# hard-mount NFS stall here hangs the job silently).  AIC_TMP_DIR overrides.
-_aic_tmp="${AIC_TMP_DIR:-}"
-if [[ -z "\${_aic_tmp:-}" ]]; then
-    for _d in "/tmp/aic-scratch.\${SLURM_JOB_ID:-\$\$}" "\${HOME}/.tmp-rocm-aic-cicd"; do
-        if mkdir -p "\$_d" 2>/dev/null && [[ -w "\$_d" ]]; then _aic_tmp="\$_d"; break; fi
-    done
-fi
-[[ -n "\${_aic_tmp:-}" ]] || { echo "[build-split] FATAL: no writable scratch dir (tried /tmp and \$HOME); set AIC_TMP_DIR" >&2; exit 1; }
-mkdir -p "\${_aic_tmp:-}"
-export TMPDIR="\${_aic_tmp:-}"
-cd "${AIC_DAY_DIR}"
-# Ensure the buildx builder exists
-if ! docker buildx inspect ${_builder} >/dev/null 2>&1; then
-    docker buildx create --name ${_builder} --driver docker-container --bootstrap --use
-fi
-mkdir -p "${AIC_IMAGE_DIR}"
-docker buildx prune --builder ${_builder} --force 2>/dev/null || true
-
-# --- Step 1: build aic-base, save docker tarball AND OCI layout ---------------
-# The docker-container buildx driver is isolated from the host daemon, so
-# docker-image:// build-context refs cannot be satisfied from a docker load.
-# Instead we export the base image in OCI layout format to a host directory;
-# the docker CLI reads that directory and transfers it to BuildKit as a named
-# context, which works regardless of daemon isolation.
-echo "[build-split] step 1/4: building aic-base (${base_image})"
-_base_oci_tar="\${TMPDIR}/aic-base-oci.\${SLURM_JOB_ID:-\$\$}.tar"
-_base_oci_dir="\${TMPDIR}/aic-base-oci.\${SLURM_JOB_ID:-\$\$}.d"
-trap 'rm -rf "\${_base_oci_tar}" "\${_base_oci_dir}" "\${_lmc_wheels_dir:-}"' EXIT
-rm -f "\${_base_oci_tar}" 2>/dev/null || true
-rm -rf "\${_base_oci_dir}" 2>/dev/null || true
-tmp_base="${base_tarball_name}.partial.\${SLURM_JOB_ID:-\$\$}"
-docker buildx build --builder ${_builder} --progress=plain \
-    --output "type=docker,dest=-" \
-    --output "type=oci,dest=\${_base_oci_tar}" \
-    --build-arg ROCM_ARCH="${AIC_ROCM_ARCH}" \
-    --build-arg AIC_UCX_FAST="${AIC_UCX_FAST}" \
-    ${_version_build_args} \
-    ${_secret_arg} \
-    ${_cache_args_base} \
-    -f "${AIC_DAY_DIR}/docker/base/Dockerfile" \
-    -t "${base_image}" \
-    "${AIC_DAY_DIR}" | ${COMPRESS_CMD} > "\${tmp_base}"
-mv -f "\${tmp_base}" "${base_tarball_name}"
-echo "[build-split] base saved: \$(du -h "${base_tarball_name}" | cut -f1) -> ${base_tarball_name}"
-# Unpack the OCI tar to a directory so oci-layout:// can reference it.
-mkdir -p "\${_base_oci_dir}"
-tar -xf "\${_base_oci_tar}" -C "\${_base_oci_dir}"
-rm -f "\${_base_oci_tar}"
-echo "[build-split] base OCI dir: \${_base_oci_dir} (\$(ls "\${_base_oci_dir}"))"
-
-# --- Step 2/4: build aic-lmcache from base -----------------------------------
-echo "[build-split] step 2/4: building aic-lmcache (${AIC_LMCACHE_IMAGE})"
-tmp_lmcache="${lmcache_tarball}.partial.\${SLURM_JOB_ID:-\$\$}"
-docker buildx build --builder ${_builder} --progress=plain --output type=docker,dest=- \
-    --build-arg ROCM_ARCH="${AIC_ROCM_ARCH}" \
-    --build-arg BUILD_JOBS="${BUILD_JOBS:-}" \
-    --build-arg AIC_UCX_FAST="${AIC_UCX_FAST}" \
-    ${_version_build_args} \
-    --build-context "base=oci-layout://\${_base_oci_dir}" \
-    ${_secret_arg} \
-    ${_cache_args_lmcache} \
-    -f "${AIC_DAY_DIR}/docker/lmcache/Dockerfile" \
-    -t "${AIC_LMCACHE_IMAGE}" \
-    -t "${lmcache_latest_ref}" \
-    "${AIC_DAY_DIR}" | ${COMPRESS_CMD} > "\${tmp_lmcache}"
-mv -f "\${tmp_lmcache}" "${lmcache_tarball}"
-echo "[build-split] lmcache saved: \$(du -h "${lmcache_tarball}" | cut -f1) -> ${lmcache_tarball}"
-
-# --- Step 3/4: export aic-lmcache's /wheels for the vllm image ----------------
-# Same args as step 2, so every layer is a cache hit.  No --cache-to: the
-# -lmcache dir keeps a single ref, and it should stay step 2's chain.
-echo "[build-split] step 3/4: exporting aic-lmcache wheels"
-_lmc_wheels_dir="\${TMPDIR}/aic-lmcache-wheels.\${SLURM_JOB_ID:-\$\$}.d"
-rm -rf "\${_lmc_wheels_dir}"
-docker buildx build --builder ${_builder} --progress=plain \
-    --target wheels \
-    --output "type=local,dest=\${_lmc_wheels_dir}" \
-    --build-arg ROCM_ARCH="${AIC_ROCM_ARCH}" \
-    --build-arg BUILD_JOBS="${BUILD_JOBS:-}" \
-    --build-arg AIC_UCX_FAST="${AIC_UCX_FAST}" \
-    ${_version_build_args} \
-    --build-context "base=oci-layout://\${_base_oci_dir}" \
-    ${_secret_arg} \
-    ${_cache_from_lmcache} \
-    -f "${AIC_DAY_DIR}/docker/lmcache/Dockerfile" \
-    "${AIC_DAY_DIR}"
-echo "[build-split] lmcache wheels: \$(ls "\${_lmc_wheels_dir}")"
-
-# --- Step 4/4: build aic-vllm from base + aic-lmcache's wheels ----------------
-echo "[build-split] step 4/4: building aic-vllm (${AIC_VLLM_IMAGE})"
-tmp_vllm="${vllm_tarball}.partial.\${SLURM_JOB_ID:-\$\$}"
-docker buildx build --builder ${_builder} --progress=plain \
-    --output "type=docker,dest=-" \
-    --build-arg ROCM_ARCH="${AIC_ROCM_ARCH}" \
-    --build-arg AIC_UCX_FAST="${AIC_UCX_FAST}" \
-    ${_version_build_args} \
-    --build-context "base=oci-layout://\${_base_oci_dir}" \
-    --build-context "lmcache-wheels=\${_lmc_wheels_dir}" \
-    ${_secret_arg} \
-    ${_cache_args_vllm} \
-    -f "${AIC_DAY_DIR}/docker/vllm/Dockerfile" \
-    -t "${AIC_VLLM_IMAGE}" \
-    -t "${vllm_latest_ref}" \
-    "${AIC_DAY_DIR}" | ${COMPRESS_CMD} > "\${tmp_vllm}"
-mv -f "\${tmp_vllm}" "${vllm_tarball}"
-echo "[build-split] vllm saved: \$(du -h "${vllm_tarball}" | cut -f1) -> ${vllm_tarball}"
-rm -rf "\${_base_oci_dir}" "\${_lmc_wheels_dir}"
-
-# Build exporter images in the same allocation (same node = Docker access).
-if docker info >/dev/null 2>&1; then
-    echo "[build-split] building fabric exporter images (same allocation)"
-    for _img_spec in \
-        "${AIC_NVME_EXPORTER_IMAGE}|NVME_EXPORTER_VERSION=${AIC_NVME_EXPORTER_VERSION}|${AIC_DAY_DIR}/docker/nvme-exporter|${nvme_tar}" \
-        "${AIC_RDMA_EXPORTER_IMAGE}|RDMA_EXPORTER_VERSION=${AIC_RDMA_EXPORTER_VERSION}|${AIC_DAY_DIR}/docker/rdma-exporter|${rdma_tar}" \
-        "${AIC_HSA_SNOOP_IMAGE}||${AIC_DAY_DIR}/docker/hsa-snoop|${hsa_snoop_tar}"; do
-        _img="\$(cut -d'|' -f1 <<<"\${_img_spec}")"
-        _arg="\$(cut -d'|' -f2 <<<"\${_img_spec}")"
-        _ctx="\$(cut -d'|' -f3 <<<"\${_img_spec}")"
-        _tar="\$(cut -d'|' -f4 <<<"\${_img_spec}")"
-        _tmp="\${_tar}.partial.\$\$"
-        set +o pipefail
-        docker buildx build --builder ${_builder} --output type=docker,dest=- \
-            \${_arg:+--build-arg \${_arg}} -t "\${_img}" "\${_ctx}" | ${COMPRESS_CMD} > "\${_tmp}"
-        _rc=("\${PIPESTATUS[@]}")
-        set -o pipefail
-        [ "\${_rc[0]}" -eq 0 ] && [ "\${_rc[1]}" -eq 0 ] && mv -f "\${_tmp}" "\${_tar}" \
-            && echo "[build-split] exporter saved: \$(du -h "\${_tar}" | cut -f1) -> \${_tar}" \
-            || { echo "[build-split] WARN: exporter build failed for \${_img}; skipping" >&2; rm -f "\${_tmp}"; }
-    done
-else
-    echo "[build-split] WARN: Docker daemon not accessible; skipping exporter builds" >&2
-fi
-exit 0
-REMOTE
-)"
-
-    _sbatch_run aic-build build "${remote_script}" \
-        ${AIC_BUILD_NODE:+--nodelist="${AIC_BUILD_NODE}"} \
-        ${AIC_BUILD_GPUS:+--gpus="${AIC_BUILD_GPUS}"} \
-        --nodes=1 --ntasks=1 \
-        --cpus-per-task="${AIC_BUILD_CPUS}" \
-        --time="${AIC_BUILD_TIME}"
-    _verify_tarball "${lmcache_tarball}" "lmcache image" "${lmcache_before}"
-    _verify_tarball "${vllm_tarball}" "vllm image" "${vllm_before}"
-    log "build-split complete: vllm=${vllm_tarball} lmcache=${lmcache_tarball}"
 }
 
 # --- build-exporters: build the fabric exporter images, save tarballs ---------
@@ -3976,9 +3771,9 @@ _verify_accuracy_scores() {
 # first, then vllm and lmcache build in parallel from the base OCI context.
 # Each image is exported to a per-target OCI directory then compressed to a
 # tarball; vllm and lmcache tarballs are saved concurrently using background
-# jobs.  The layer cache is shared via AIC_CACHE_DIR / AIC_CACHE_REF just like
-# cmd_build_split, but uses the per-target subdir layout bake.hcl already
-# encodes (cache_from/cache_to call cache_arch_slug + target name).
+# jobs.  The layer cache is shared via AIC_CACHE_DIR / AIC_CACHE_REF using the
+# per-target subdir layout bake.hcl encodes (cache_from/cache_to call
+# cache_arch_slug + target name).
 cmd_bake() {
     _pick_compress
     local saved_image="${AIC_IMAGE}"
@@ -4434,7 +4229,6 @@ main() {
     local sub="${1:-all}"
     case "${sub}" in
         build)           cmd_build ;;
-        build-split)     cmd_build_split ;;
         bake)            cmd_bake ;;
         wheels)          cmd_wheels ;;
         build-emulate)   cmd_build_emulate ;;
@@ -4452,11 +4246,11 @@ main() {
         emulate-validate) cmd_emulate_validate ;;
         profile-capture) cmd_profile_capture ;;
         accuracy-test)   cmd_accuracy_test ;;
-        all)             cmd_build_split; cmd_build_exporters; cmd_load ;;
+        all)             cmd_bake; cmd_build_exporters; cmd_load ;;
         -h|--help|help)
             sed -n '2,70p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
             ;;
-        *) die "unknown command '${sub}' (use: build | build-split | bake | wheels | build-emulate | build-base | build-vllm | build-lmcache | build-exporters | load | push | test | tiny-test | prometheus-dump | emulate-test | emulate-mp-test | emulate-validate | profile-capture | accuracy-test | all | help)" ;;
+        *) die "unknown command '${sub}' (use: build | bake | wheels | build-emulate | build-base | build-vllm | build-lmcache | build-exporters | load | push | test | tiny-test | prometheus-dump | emulate-test | emulate-mp-test | emulate-validate | profile-capture | accuracy-test | all | help)" ;;
     esac
 }
 

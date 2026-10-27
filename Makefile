@@ -347,7 +347,6 @@ help:
 	@echo "  (dist-build/smoke-test submit via sbatch and log to logs/<job-id>/)"
 	@echo "  make dist-build        Build base, then vllm+lmcache in parallel (docker buildx bake) + fabric"
 	@echo "                         exporters on a Slurm build node, save tarballs"
-	@echo "  make dist-build-bake   Alias for dist-build (both run the bake path)"
 	@echo "  make dist-wheels       Like 'make wheels' but on a Slurm node (what the nightly wheels CI runs)"
 	@echo "  make dist-build-fast   Single-arch dev build (AIC_FAST_ARCH=$(AIC_FAST_ARCH)) -- faster iteration"
 	@echo "  make dist-build-emulate  Build the CPU-only emulation image (no GPU kernels compiled)"
