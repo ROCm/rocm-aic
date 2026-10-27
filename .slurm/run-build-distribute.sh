@@ -1103,6 +1103,15 @@ PROLOGUE
     return "${rc}"
 }
 
+# Version pins forwarded to docker as build args (cmd_build) or bake variables
+# (cmd_bake).  Keep in sync with the `variable` defaults in docker/docker-bake.hcl.
+_AIC_VERSION_VARS=(
+    ROCM_VERSION PYTORCH_REF PYTORCH_SERIES TORCHVISION_REF VLLM_REF LLM_EMU_REF
+    LMCACHE_REF NIXL_REF HSA_SNOOP_REF AITER_REF FLASH_ATTN_REF
+    PYTORCH_GIT_URL TORCHVISION_GIT_URL VLLM_GIT_URL LLM_EMU_GIT_URL
+    AITER_GIT_URL FLASH_ATTN_GIT_URL LMCACHE_GIT_URL NIXL_GIT_URL HSA_SNOOP_GIT_URL
+)
+
 # --- build: build the image on a compile node, save tarball to shared scratch -
 cmd_build() {
     _pick_compress
@@ -1115,11 +1124,7 @@ cmd_build() {
     local _version_build_args="" _version_arg _version_value
     printf -v _version_value '%q' "${AIC_VERSION}"
     _version_build_args+=" --build-arg AIC_VERSION=${_version_value}"
-    for _version_arg in \
-        ROCM_VERSION PYTORCH_REF PYTORCH_SERIES TORCHVISION_REF VLLM_REF LLM_EMU_REF \
-        LMCACHE_REF NIXL_REF HSA_SNOOP_REF AITER_REF FLASH_ATTN_REF \
-        PYTORCH_GIT_URL TORCHVISION_GIT_URL VLLM_GIT_URL LLM_EMU_GIT_URL \
-        AITER_GIT_URL FLASH_ATTN_GIT_URL LMCACHE_GIT_URL NIXL_GIT_URL HSA_SNOOP_GIT_URL; do
+    for _version_arg in "${_AIC_VERSION_VARS[@]}"; do
         if [[ -v "${_version_arg}" ]]; then
             printf -v _version_value '%q' "${!_version_arg}"
             _version_build_args+=" --build-arg ${_version_arg}=${_version_value}"
@@ -3995,6 +4000,19 @@ cmd_bake() {
     local _secret_arg=""
     [[ -n "${AIC_TLS_CERT}" ]] && _secret_arg="--secret id=tls_cert,src=${AIC_TLS_CERT}"
 
+    # Only forward pins that are non-empty so the bake.hcl variable defaults are
+    # used for anything not explicitly overridden: an empty value overrides the
+    # HCL default and breaks scripts that require it (clone-nixl.sh: NIXL_REF).
+    # _bake_env feeds `docker buildx bake` (phase 1), _version_build_args the
+    # plain `docker buildx build` calls (phases 1.5 and 2).
+    local _bake_env="" _version_build_args="" _version_arg _version_value
+    for _version_arg in "${_AIC_VERSION_VARS[@]}"; do
+        [[ -n "${!_version_arg:-}" ]] || continue
+        printf -v _version_value '%q' "${!_version_arg}"
+        _bake_env+=" ${_version_arg}=${_version_value}"
+        _version_build_args+=" --build-arg ${_version_arg}=${_version_value}"
+    done
+
     log "bake targets   : base vllm lmcache (parallel after base)"
     log "tarballs       : ${base_tar}"
     log "               : ${vllm_tar}"
@@ -4083,23 +4101,9 @@ trap 'rm -rf "\${_base_oci_tar}" "\${_base_oci_dir}" "\${_lmc_wheels_dir:-}"' EX
 rm -f "\${_base_oci_tar}" 2>/dev/null || true
 rm -rf "\${_base_oci_dir}" 2>/dev/null || true
 tmp_base="${base_tar}.partial.\${SLURM_JOB_ID:-\$\$}"
-# Only forward version pins that are non-empty so the bake.hcl variable
-# defaults are used for anything not explicitly overridden.  An empty string
-# passed as an env var overrides the HCL default and breaks scripts that
-# require the value (e.g. clone-nixl.sh: NIXL_REF is required).
 ROCM_ARCH="${AIC_ROCM_ARCH}" \
 ${AIC_BUILD_JOBS:+BUILD_JOBS="${AIC_BUILD_JOBS}"} \
-${ROCM_VERSION:+ROCM_VERSION="${ROCM_VERSION}"} \
-${PYTORCH_REF:+PYTORCH_REF="${PYTORCH_REF}"} \
-${PYTORCH_SERIES:+PYTORCH_SERIES="${PYTORCH_SERIES}"} \
-${TORCHVISION_REF:+TORCHVISION_REF="${TORCHVISION_REF}"} \
-${VLLM_REF:+VLLM_REF="${VLLM_REF}"} \
-${LLM_EMU_REF:+LLM_EMU_REF="${LLM_EMU_REF}"} \
-${AITER_REF:+AITER_REF="${AITER_REF}"} \
-${FLASH_ATTN_REF:+FLASH_ATTN_REF="${FLASH_ATTN_REF}"} \
-${LMCACHE_REF:+LMCACHE_REF="${LMCACHE_REF}"} \
-${NIXL_REF:+NIXL_REF="${NIXL_REF}"} \
-${HSA_SNOOP_REF:+HSA_SNOOP_REF="${HSA_SNOOP_REF}"} \
+${_bake_env} \
 ${AIC_CACHE_DIR:+AIC_CACHE_DIR="${AIC_CACHE_DIR}"} \
 ${AIC_CACHE_REF:+AIC_CACHE_REF="${AIC_CACHE_REF}"} \
 BUILDKIT_STEP_LOG_MAX_SIZE=-1 \
@@ -4150,11 +4154,7 @@ docker buildx build --builder ${AIC_BUILDX_BUILDER} --progress=plain \
     --build-arg BUILD_JOBS="${AIC_BUILD_JOBS}" \
     --build-arg AIC_VERSION="${AIC_VERSION}" \
     \${_lmcw_cache_args:+\${_lmcw_cache_args}} \
-    ${ROCM_VERSION:+--build-arg ROCM_VERSION="${ROCM_VERSION}"} \
-    ${LMCACHE_REF:+--build-arg LMCACHE_REF="${LMCACHE_REF}"} \
-    ${NIXL_REF:+--build-arg NIXL_REF="${NIXL_REF}"} \
-    ${AITER_REF:+--build-arg AITER_REF="${AITER_REF}"} \
-    ${HSA_SNOOP_REF:+--build-arg HSA_SNOOP_REF="${HSA_SNOOP_REF}"} \
+    ${_version_build_args} \
     ${_secret_arg:+${_secret_arg}} \
     --target wheels \
     -f "${AIC_DAY_DIR}/docker/lmcache/Dockerfile" \
@@ -4188,12 +4188,7 @@ docker buildx build --builder ${AIC_BUILDX_BUILDER} --progress=plain \
     --build-arg AIC_UCX_FAST="${AIC_UCX_FAST}" \
     --build-arg BUILD_JOBS="${AIC_BUILD_JOBS}" \
     --build-arg AITER_PREBUILD_KERNELS="${AIC_AITER_PREBUILD_KERNELS}" \
-    ${ROCM_VERSION:+--build-arg ROCM_VERSION="${ROCM_VERSION}"} \
-    ${VLLM_REF:+--build-arg VLLM_REF="${VLLM_REF}"} \
-    ${AITER_REF:+--build-arg AITER_REF="${AITER_REF}"} \
-    ${FLASH_ATTN_REF:+--build-arg FLASH_ATTN_REF="${FLASH_ATTN_REF}"} \
-    ${LMCACHE_REF:+--build-arg LMCACHE_REF="${LMCACHE_REF}"} \
-    ${LLM_EMU_REF:+--build-arg LLM_EMU_REF="${LLM_EMU_REF}"} \
+    ${_version_build_args} \
     \${_cache_args:+\${_cache_args}} \
     ${_secret_arg:+${_secret_arg}} \
     -f "${AIC_DAY_DIR}/docker/vllm/Dockerfile" \
@@ -4222,11 +4217,7 @@ docker buildx build --builder ${AIC_BUILDX_BUILDER} --progress=plain \
     --build-arg AIC_VERSION="${AIC_VERSION}" \
     --build-arg AIC_UCX_FAST="${AIC_UCX_FAST}" \
     --build-arg BUILD_JOBS="${AIC_BUILD_JOBS}" \
-    ${ROCM_VERSION:+--build-arg ROCM_VERSION="${ROCM_VERSION}"} \
-    ${LMCACHE_REF:+--build-arg LMCACHE_REF="${LMCACHE_REF}"} \
-    ${NIXL_REF:+--build-arg NIXL_REF="${NIXL_REF}"} \
-    ${AITER_REF:+--build-arg AITER_REF="${AITER_REF}"} \
-    ${HSA_SNOOP_REF:+--build-arg HSA_SNOOP_REF="${HSA_SNOOP_REF}"} \
+    ${_version_build_args} \
     \${_lm_cache_args:+\${_lm_cache_args}} \
     ${_secret_arg:+${_secret_arg}} \
     -f "${AIC_DAY_DIR}/docker/lmcache/Dockerfile" \
