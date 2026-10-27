@@ -403,8 +403,8 @@ AIC_EMULATE_PACK_HOST="${AIC_EMULATE_PACK_HOST:-}"
 # stops before it -- so it runs the PRODUCTION images (AIC_VLLM_IMAGE /
 # AIC_LMCACHE_IMAGE).  aic-vllm also ships the llm-emu plugin, which is inert
 # unless VLLM_EMULATOR_ENABLE_ORACLE=1, so the same images cover both.
-# The emulated KV pool is really allocated here (host memory, lazily paged),
-# because the connector needs real buffers to register.  Default well under
+# The emulated KV pool is really allocated here (resident in /dev/shm from
+# startup), because the connector needs real buffers to register.  Default well under
 # AIC_EMULATE_MP_MEM rather than inheriting the pack's ~100+ GiB MI300X value.
 AIC_EMULATE_MP_KV_BYTES="${AIC_EMULATE_MP_KV_BYTES:-8589934592}"   # 8 GiB
 AIC_EMULATE_MP_MEM="${AIC_EMULATE_MP_MEM:-64G}"

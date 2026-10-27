@@ -117,9 +117,9 @@
 #   EMU_PROFILE_PACK_HOST      — host path to profile pack dir (mounted at /profiles)
 #   HF_HOME                    — host HF cache dir (default: ~/.cache/huggingface)
 #   VLLM_EMULATOR_MEMORY       — emulated KV pool, bytes.  Under `emulate-mp` this
-#                                is actually allocated (host memory, lazily paged)
-#                                because the connector needs real buffers, so cap
-#                                it to fit the node
+#                                is actually allocated, and resident in /dev/shm
+#                                from startup, because the connector needs real
+#                                buffers, so cap it to fit the node
 #   VLLM_EMULATOR_KV_BUFFERS   — 0 skips the fake KV buffers (connector goes inert)
 #   EMU_KV_TRANSFER_ARG        — vLLM --kv-transfer-config for the EMULATOR.
 #                                Deliberately not KV_TRANSFER_ARG: the Makefile
@@ -954,8 +954,8 @@ services:
   #   VLLM_MODEL                 — model to serve; should match the profile pack
   #   VLLM_EMULATOR_MEMORY       — emulated KV pool in bytes.  Matters more under
   #                                `emulate-mp`: the connector needs real buffers,
-  #                                so the pool is actually allocated (host memory,
-  #                                lazily paged).  Cap it to fit the node.
+  #                                so the pool is actually allocated (resident in
+  #                                /dev/shm from startup).  Cap it to fit the node.
   #   VLLM_EMULATOR_KV_BUFFERS   — 0 to skip the fake KV buffers entirely, which
   #                                also makes --kv-transfer-config inert.
   # ---------------------------------------------------------------------------
