@@ -9,9 +9,23 @@
 # with arch=gfx1250.  No physical GPU required; /dev/kvm is available on
 # GitHub-hosted ubuntu-24.04 runners.
 #
-# The aic-base and aic-vllm Docker builds use the GHA layer cache so that
-# warm PR runs skip multi-hour kernel compilations.  Cold runs are slow
-# (~3-4 h for aic-base + aic-vllm) but subsequent runs are fast (~10 min).
+# Three different caches are in play here, deliberately on three different
+# backends.  They are not interchangeable:
+#
+#   * The guest qcow2 disk -> actions/cache.  ~7 GB compressed, fits the 10 GB
+#     per-entry limit, and is keyed on the image tag so a pin bump misses
+#     cleanly.  ORAS pull is the fallback on a miss.
+#   * The aic-* images -> GHCR, pulled whole by RJ_IMAGE_PREFIX.  Far too big
+#     for actions/cache, and a registry gives the nightly publish job and this
+#     job a shared handle (`:gfx1250`) without either knowing the 100-char
+#     version tag.
+#   * BuildKit layers -> GHCR registry cache (AIC_CACHE_REF), only consulted on
+#     the fallback path where the images are missing and we build.
+#
+# Note what is NOT used: `type=gha` BuildKit cache.  GitHub's Actions cache is
+# a ~10 GB REPO-WIDE quota with LRU eviction, so a ROCm layer cache pushed into
+# it both fails to fit and evicts the qcow2 entry above, turning every run into
+# a cold ORAS pull as well as a cold build.  Registry cache has no such quota.
 #
 # See mk/bench.mk test-rocjitsu-local.
 name: rocm-aic - Rocjitsu VM Test
@@ -35,6 +49,7 @@ on:
 
 permissions:
   contents: read
+  packages: write   # cache-to pushes BuildKit layer cache to GHCR
 
 jobs:
   rocjitsu-test:
@@ -63,26 +78,23 @@ jobs:
           docker system prune -af --volumes 2>/dev/null || true
           df -h /
 
-      - name: Enable KVM access for runner user
-        run: |
-          # GHA ubuntu-24.04 runners have /dev/kvm but the runner user lacks
-          # write access by default.  Open it up for the duration of this job.
-          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
-            | sudo tee /etc/udev/rules.d/99-kvm4all.rules
-          sudo udevadm control --reload-rules
-          sudo udevadm trigger --name-match=kvm
-          ls -l /dev/kvm
-
       - name: Verify KVM is available and functional
         run: |
-          test -c /dev/kvm || { echo "::error::/dev/kvm missing"; exit 1; }
-          test -r /dev/kvm && test -w /dev/kvm \
-            || { echo "::error::/dev/kvm not read-write after udev rule"; exit 1; }
-          # KVM_GET_API_VERSION ioctl — a bind-mounted node can exist and still
-          # be non-functional; this proves the hypervisor is actually present.
-          python3 -c "import os, fcntl; fcntl.ioctl(os.open('/dev/kvm', os.O_RDWR), 0xAE00, 0)" \
-            || { echo "::error::/dev/kvm present but KVM_GET_API_VERSION failed"; exit 1; }
-          echo "KVM available: $(ls -l /dev/kvm)"
+          # QEMU runs inside the aic-rj-qemu container, which gets /dev/kvm via
+          # `docker run --device /dev/kvm` and runs as uid 0.  The runner user's
+          # own access to /dev/kvm is therefore irrelevant, which is why there is
+          # no udev rule here: granting it needed root, and that made the job
+          # unrunnable anywhere the user has no sudo (self-hosted and Slurm
+          # nodes).  Verified on a Slurm node where /dev/kvm was unreadable to
+          # the user and still read-write inside the container.
+          #
+          # So probe exactly where QEMU will: inside a container.  A device node
+          # can exist and still be non-functional, so issue KVM_GET_API_VERSION
+          # rather than just stat'ing it.
+          test -c /dev/kvm || { echo "::error::/dev/kvm missing on the host"; exit 1; }
+          docker run --rm --device /dev/kvm python:3.12-slim \
+            python3 -c "import os, fcntl; fcntl.ioctl(os.open('/dev/kvm', os.O_RDWR), 0xAE00, 0); print('KVM_GET_API_VERSION OK (uid', os.getuid(), ')')" \
+            || { echo "::error::/dev/kvm not usable from a container"; exit 1; }
 
       - name: Install docker compose plugin
         run: make ensure-compose
@@ -108,11 +120,16 @@ jobs:
       - name: Pull rocjitsu guest disk via ORAS (cache miss)
         if: steps.qcow2-cache.outputs.cache-hit != 'true'
         run: |
-          # Install ORAS if not present
-          which oras 2>/dev/null || {
+          # Install ORAS if not present.  Into a user-writable dir on PATH,
+          # not /usr/local/bin: that needed root, and nothing here requires a
+          # system-wide install for a single job.
+          if ! command -v oras >/dev/null 2>&1; then
+            mkdir -p "${RUNNER_TEMP}/bin"
             curl -fsSL https://github.com/oras-project/oras/releases/download/v1.2.0/oras_1.2.0_linux_amd64.tar.gz \
-              | sudo tar -xz -C /usr/local/bin oras
-          }
+              | tar -xz -C "${RUNNER_TEMP}/bin" oras
+            echo "${RUNNER_TEMP}/bin" >> "$GITHUB_PATH"
+            export PATH="${RUNNER_TEMP}/bin:$PATH"
+          fi
           REPO="sbates130272/batesste-ci-images-ubuntu-qcow2-gen-rocjitsu"
           TAG="${{ steps.qcow2-tag.outputs.tag }}-qcow2"
           mkdir -p /tmp/aic-rocjitsu-test/vm
@@ -142,58 +159,65 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Pull or build aic-vllm:gfx1250
+      - name: Pull or build the gfx1250 stack
         run: |
+          # The test loads FIVE images into the guest (vllm, lmcache, hsa-snoop
+          # and the two fabric exporters), not just aic-vllm.  Pulling one and
+          # letting the make target discover the rest missing meant a 600 s
+          # per-image tar wait followed by a compose failure, so the pull/build
+          # decision belongs to the make target, which knows the whole list.
+          #
+          # RJ_IMAGE_PREFIX makes [2/6] pull each image and retag it to the bare
+          # local name compose expects; it falls back to a local `make build`
+          # (registry-cached) when the registry has no image to offer.
           SUPPLIED="${{ inputs.rj_image_ref }}"
-          GHCR="ghcr.io/sbates130272/aic-vllm:gfx1250"
-
           if [ -n "$SUPPLIED" ]; then
             echo "Using workflow_dispatch-supplied image: $SUPPLIED"
             docker pull "$SUPPLIED"
-            docker tag "$SUPPLIED" aic-vllm:gfx1250
-
-          elif docker pull "$GHCR" 2>/dev/null; then
-            # Pre-built by the nightly publish workflow — fast path (~1 min)
-            echo "Pulled pre-built image from GHCR: $GHCR"
-            docker tag "$GHCR" aic-vllm:gfx1250
-
-          else
-            # Fall back to building from source using GHCR as registry cache.
-            # Cold build takes ~3-4 h; subsequent builds reuse cached layers.
-            echo "GHCR image not available — building from source..."
-            docker buildx create --use --name rj-builder --driver docker-container
-
-            DOCKER_BUILDKIT=1 docker buildx build \
-              --progress=plain --load \
-              --build-arg ROCM_ARCH=gfx1250 \
-              --build-arg AIC_VERSION="$(cat VERSION)" \
-              --cache-from "type=registry,ref=ghcr.io/sbates130272/aic-base-cache:gfx1250" \
-              --cache-to   "type=registry,ref=ghcr.io/sbates130272/aic-base-cache:gfx1250,mode=max" \
-              -f docker/base/Dockerfile \
-              -t aic-base:gfx1250 \
-              .
-
-            DOCKER_BUILDKIT=1 docker buildx build \
-              --progress=plain --load \
-              --build-arg ROCM_ARCH=gfx1250 \
-              --build-arg AIC_VERSION="$(cat VERSION)" \
-              --build-context base=docker-image://aic-base:gfx1250 \
-              --cache-from "type=registry,ref=ghcr.io/sbates130272/aic-vllm-cache:gfx1250" \
-              --cache-to   "type=registry,ref=ghcr.io/sbates130272/aic-vllm-cache:gfx1250,mode=max" \
-              -f docker/vllm/Dockerfile \
-              -t aic-vllm:gfx1250 \
-              .
+            # Name it exactly what [2/6] expects so it counts as already present.
+            docker tag "$SUPPLIED" \
+              "$(make --no-print-directory print-rj-image-ref ROCM_ARCH=gfx1250)"
           fi
 
       - name: Run rocjitsu VM test
         run: |
-          # Pass the pre-tagged image ref; skip internal build step.
-          # The vm/ dir is pre-populated from cache or ORAS pull so the
-          # make target will skip its own extraction step (vm-info.json present).
-          IMAGE_TAG=$(docker inspect aic-vllm:gfx1250 --format '{{index .RepoTags 0}}' 2>/dev/null \
-            || echo aic-vllm:gfx1250)
+          # The vm/ dir is pre-populated from cache or the ORAS pull above, so
+          # [3/6] skips its own extraction (vm-info.json present).
+          #
+          # RJ_IMAGE_REF is deliberately NOT overridden here.  It used to be set
+          # from `docker inspect ... .RepoTags[0]`, which is whichever tag docker
+          # happened to list first and need not be the arch-tagged name the rest
+          # of the target (and compose inside the guest) derives from
+          # _RJ_IMAGE_TAG.  Letting the Makefile name its own images keeps the
+          # host-side save list and the guest-side compose refs in agreement.
+          # RJ_PROBE_ONLY: assert everything up to and including real kernel
+          # execution, and stop before vllm-reset-test.
+          #
+          # This is not avoidance, it is arithmetic.  The emulator runs at a
+          # measured 0.14 GFLOP/s (job 68190190), so a 135M-parameter model
+          # costs ~2 s per token of prefill.  vllm_reset_test.py is sized for
+          # real hardware: 10 anchor prompts of ~3584 tokens each, plus 50
+          # flood prompts, each capped by a 120 s per-request timeout.  A
+          # single anchor prefill is ~115 minutes here and would blow that
+          # timeout by two orders of magnitude; the full workload is many
+          # hours.  Shrinking it does not rescue it either -- LMCache's
+          # eviction semantics need multi-chunk prompts (chunk_size=256
+          # tokens), so the prompts cannot go short enough to matter.
+          #
+          # What the probe arm does assert is substantial and runs in ~26 min:
+          # the gfx1250 device enumerates, 15 kernel rungs execute correctly
+          # (elementwise, reductions, GEMM, softmax, layernorm, SDPA, a Triton
+          # JIT compile+launch, and memory accounting), and the whole compose
+          # stack -- lmcache, coordinator, exporters, hsa-snoop -- comes up.
+          #
+          # Run the vLLM arm on a cluster node with a real budget instead:
+          #   sbatch --export=ALL,RJ_MAKE_ARGS="RJ_READY_RETRIES=4000" \
+          #          .slurm/run-rocjitsu-cpu.sbatch
           make test-rocjitsu-local \
-            RJ_IMAGE_REF="$IMAGE_TAG" \
+            ROCM_ARCH=gfx1250 \
+            RJ_IMAGE_PREFIX=ghcr.io/rocm/rocm-aic/ \
+            AIC_CACHE_REF=ghcr.io/rocm/rocm-aic/aic-cache:gfx1250 \
+            RJ_PROBE=1 RJ_PROBE_ONLY=1 \
             RJ_READY_S=240
 
       - name: Upload rocjitsu logs on failure
