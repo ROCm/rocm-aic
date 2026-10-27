@@ -369,15 +369,14 @@ services:
     # Own network namespace, not host: on the host one, "@hsa<pid>" would be
     # shared with every host-net container on the node, each with its own PID
     # namespace, and a PID clash breaks the export or hangs the import.  vllm's
-    # ports live here too, so publish what host-net used to expose; Prometheus
-    # still scrapes them via host-gateway (see prometheus.yml).
+    # ports live here too.  Only what host-side clients use is published:
+    # Prometheus scrapes lmcache :9091 and NIXL :19090 by name over the bridge,
+    # and a host bind of those collided with other tenants (pushgateway: 9091).
     networks: [aic-network]
     ports:
       - "${VLLM_HOST_PORT:-8000}:8000"   # vllm (network_mode: container:aic-lmcache)
       - "${LMCACHE_PORT:-6555}:${LMCACHE_PORT:-6555}"
       - "8080:8080"                      # lmcache HTTP API
-      - "9091:9091"                      # lmcache Prometheus
-      - "${NIXL_METRICS_PORT:-19090}:${NIXL_METRICS_PORT:-19090}"
     ipc: shareable
     shm_size: "${AIC_SHM_SIZE:-64gb}"
     cap_add:
