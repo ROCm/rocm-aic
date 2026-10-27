@@ -16,6 +16,7 @@
 #
 # Stages:
 #   vllm      AITER + FlashAttention + vLLM source build + llm-emu  (sections 3-3b)
+#   wheels    scratch image holding just the vLLM/AITER/FA wheels   (--target wheels)
 #   emulate   CPU-only runtime (--target emulate)                   (section 3c)
 #   runtime   default target: `vllm` + aic-lmcache's lmcache wheel  (section 3d)
 #
@@ -236,7 +237,7 @@ RUN --mount=type=cache,target=/root/.cache/pip \
         pip3 wheel --no-build-isolation --no-deps --no-cache-dir -w /wheels . && \
     pip3 install --no-cache-dir /wheels/vllm-*.whl && \
     python3 -c 'import importlib.metadata as m; print("vLLM installed:", m.version("vllm"))' && \
-    rm -rf /app/vllm /wheels /tmp/torch-constraints.txt && \
+    rm -rf /app/vllm /tmp/torch-constraints.txt && \
     { find /usr/lib/python3 /usr/local/lib/python3.12 -name '__pycache__' -type d \
          -exec rm -rf {} + || \
       echo "WARNING: __pycache__ cleanup failed; see find's error above" >&2; }
@@ -266,10 +267,20 @@ print('vllm_emulator subpackages import OK')" && \
     mkdir -p /opt/llm-emu/profiles && \
     cp /app/llm-emu/example_profiling_data/*.json /opt/llm-emu/profiles/ && \
     test -r "${AIC_EMULATOR_EXAMPLE_PACK}" && \
-    rm -rf /app/llm-emu /app/patches /app/aiter /app/flash-attention /wheels && \
+    rm -rf /app/llm-emu /app/patches /app/aiter /app/flash-attention && \
     { find /usr/lib/python3 /usr/local/lib/python3.12 -name '__pycache__' -type d \
          -exec rm -rf {} + || \
       echo "WARNING: __pycache__ cleanup failed; see find's error above" >&2; }
+
+# =============================================================================
+# wheels — scratch image holding just the vLLM, AITER and FlashAttention (CDNA
+# only) pip wheels build_vllm installed (--target wheels; the `wheels-vllm` bake
+# target).  build_vllm keeps /wheels for this: the stages below copy only
+# site-packages, uv, /opt/llm-emu and the backends env file out of it, so the
+# wheels never reach an image.
+# =============================================================================
+FROM scratch AS wheels
+COPY --from=build_vllm /wheels/ /
 
 # =============================================================================
 # vllm — slim runtime stage: aic-base + packages built in build_vllm

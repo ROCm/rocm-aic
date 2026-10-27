@@ -17,6 +17,7 @@
 #   build_torchvision torchvision built from source                   (section 2c)
 #   build_nixl        NIXL built from source (uses ROCm headers)      (section 2d)
 #   build_clr_patch   patched libamdhip64.so (IPC event ring fix)     (section 2e)
+#   wheels            scratch image holding just the nixl_rocm wheel  (--target wheels)
 #   runtime           Ubuntu 24.04 + 13 ROCm runtime pkgs + torch + NIXL (section 3)
 #
 # Build (from repo root):
@@ -263,7 +264,7 @@ RUN --mount=type=cache,target=/root/.cache/uv \
         AIC_UCX_FAST="${AIC_UCX_FAST}" \
         UV_SYSTEM_CERTS=1 \
         /tmp/nixl-scripts/build-nixl.sh && \
-    rm -rf /tmp/nixl /tmp/nixl-patches /tmp/nixl-scripts /tmp/nixl-wheels
+    rm -rf /tmp/nixl /tmp/nixl-patches /tmp/nixl-scripts
 
 # =============================================================================
 # build_clr_patch — patch libamdhip64.so to fix IPC event signal ring overflow.
@@ -321,6 +322,15 @@ RUN cmake -G Ninja \
         --parallel "${BUILD_JOBS:-$(nproc)}" && \
     ls /app/clr-build/hipamd/lib/libamdhip64.so* && \
     echo "libamdhip64.so built OK"
+
+# =============================================================================
+# wheels — scratch image holding just the nixl_rocm pip wheel (--target wheels;
+# the `wheels-nixl` bake target).  build_nixl keeps /tmp/nixl-wheels for this:
+# runtime copies only /opt/nixl and /opt/rocnixl-ucx out of that stage, so the
+# wheel never reaches the image.  Must stay above runtime, the default target.
+# =============================================================================
+FROM scratch AS wheels
+COPY --from=build_nixl /tmp/nixl-wheels/ /
 
 # =============================================================================
 # runtime — plain ROCm image + 13 ROCm runtime packages + torch + NIXL.
