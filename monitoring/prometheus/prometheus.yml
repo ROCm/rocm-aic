@@ -10,9 +10,8 @@
 #   - `make monitoring-up` (legacy cliff sbatch path): prometheus runs in the
 #     main compose file's monitoring-base profile on the same aic network.
 #
-# nvme_exporter and rdma_exporter remain host-side services (or launched via
-# the main compose exporters-fabric profile); prometheus reaches them via
-# host-gateway which resolves to the Docker host IP from within the aic network.
+# The emulators (vllm-emulator, lmcache-emulator, cpu-smoke-emulator) carry the
+# same aic-vllm / aic-lmcache aliases, so one config serves both stacks.
 #
 # Job names and ports mirror the batesste Ansible monitoring roles so the
 # same Grafana dashboards / recording rules apply.  NIXL exposes its own (beta)
@@ -40,11 +39,11 @@ scrape_configs:
   - job_name: vllm
     metrics_path: /metrics
     static_configs:
-      # vllm joins lmcache's network namespace (network_mode: container:aic-lmcache),
-      # so its :8000 is on the aic-lmcache container's bridge address.  Scraping
-      # by that name also sidesteps the container name carrying the GPU index
-      # (aic-vllm-gpu0, -gpu1, ...), which a static target cannot follow.
-      - targets: ["aic-lmcache:8000"]
+      # aic-vllm is a network alias: on the lmcache container, whose network
+      # namespace vllm joins (network_mode: container:aic-lmcache), and on the
+      # emulators.  A static target cannot follow the vllm container name, which
+      # carries the GPU index (aic-vllm-gpu0, -gpu1, ...).
+      - targets: ["aic-vllm:8000"]
 
   - job_name: lmcache
     metrics_path: /metrics
