@@ -34,6 +34,19 @@ Env overrides (all optional)
   AIC_TEST_FLOOD        Number of flood prompts    (default: 300)
   AIC_TEST_TIMEOUT      Per-request timeout (s)    (default: 120)
   AIC_TEST_SEED         RNG seed for prompt generation (default: 42)
+  AIC_TEST_ANCHOR_REPS  Preamble reps per anchor    (default: 22, ~2090 tok)
+  AIC_TEST_MAX_TOKENS   Tokens generated per request (default: 20)
+
+Cutting it down
+---------------
+ANCHORS x ANCHOR_REPS and FLOOD are the wall-clock knobs; prefill is linear
+in prompt length and decode is linear in MAX_TOKENS.  On an emulated GPU the
+defaults are many hours, so the rocjitsu target drives a reduced preset (see
+RJ_TEST_* in mk/bench.mk).  Keep ANCHOR_REPS >= 6 so prompts still span more
+than one 256-token LMCache chunk (measured: 6 reps = 541-625 tokens = 2
+chunks; 4 reps is only one), and shrink LMCACHE_L1_SIZE_GB alongside
+FLOOD so L1 still overflows -- eviction to L2 is the property under test,
+and a preset that no longer evicts passes without testing anything.
 """
 
 import json
@@ -51,12 +64,31 @@ MODEL    = os.getenv("AIC_TEST_MODEL",        "Qwen/Qwen2.5-3B-Instruct")
 N_ANCHOR = int(os.getenv("AIC_TEST_ANCHORS", "10"))
 N_FLOOD  = int(os.getenv("AIC_TEST_FLOOD",   "50"))
 TIMEOUT  = int(os.getenv("AIC_TEST_TIMEOUT", "120"))
+# Tokens generated per request.  Decode is serial, so on a slow device this is
+# a straight multiplier on every request; the test only needs the response to
+# exist, not to be long.
+MAX_TOK  = int(os.getenv("AIC_TEST_MAX_TOKENS", "20"))
 EXEC     = []  # run curl directly on the host (vllm/lmcache use network_mode:host)
 
 # chunk_size=256 tok × fp8 KV for Qwen2.5-3B ≈ 4.7 MiB/chunk; L1=1 GiB ≈ 222 chunks.
-# Each anchor uses ~14 chunks; 10 anchors = 140 chunks, leaving ~82 free L1 slots.
-# 50 flood prompts × ~14 chunks = ~700 chunks >> remaining capacity → guaranteed eviction.
-ANCHOR_REPS = 22    # repetitions of the shared preamble sentence (~3584 tokens total)
+# At the measured ~90 tok/rep for Qwen2.5-3B, a default 22-rep anchor is ~1980
+# tokens ≈ 8 chunks: 10 anchors ≈ 80 chunks, leaving ~142 free L1 slots, and 50
+# flood prompts × ~8 chunks ≈ 400 chunks >> capacity → eviction.  (These read
+# ~14 and ~700 before; that came from a 163 tok/rep estimate no tokenizer matches.)
+# Repetitions of the shared preamble sentence.  The sentence tokenizes to
+# ~95 tokens (SmolLM2-135M 97, Minueza-32M 104, Qwen2.5-3B 90), so the
+# default 22 reps is ~2090 tokens ~= 8 LMCache chunks at chunk_size=256.
+# An earlier comment here said ~163 tokens/rep and ~14 chunks; that basis
+# does not match any of those tokenizers, and the L1 sizing advice derived
+# from it was correspondingly off.
+#
+# This is the dominant cost of the whole test: prefill is linear in prompt
+# length, so on a software-emulated GPU (rocjitsu, ~0.14 GFLOP/s) a default
+# anchor is ~115 minutes for a 135M model.  Lower it to trade cache-depth
+# for wall-clock -- but keep prompts above one chunk (>=256 tokens, i.e.
+# reps >= 2), or there is nothing for LMCache to chunk and evict and the
+# test stops testing anything.
+ANCHOR_REPS = int(os.getenv("AIC_TEST_ANCHOR_REPS", "22"))
 
 _PREAMBLE_SENTENCE = (
     "You are an expert in distributed KV cache systems, GPU memory management, "
@@ -146,7 +178,7 @@ def send(prompt):
     r = post_json(f"{VLLM}/v1/chat/completions", {
         "model": MODEL,
         "messages": [{"role": "user", "content": prompt}],
-        "max_tokens": 20,
+        "max_tokens": MAX_TOK,
         "temperature": 0.0,
     })
     return r is not None and "choices" in r
@@ -223,7 +255,11 @@ def main():
 
     # ── Step 2: Flood to overflow L1 → evict anchors to L2 ──────────────────
     section(f"2. Flood {N_FLOOD} unique prompts → overflow L1, evict anchors to L2 NVMe")
-    log(f"L1 cap ≈ 222 chunks; {N_FLOOD} flood prompts × ~14 chunks >> cap → guaranteed eviction")
+    # ~95 tokens per preamble rep, measured across the tokenizers this test
+    # is run with (SmolLM2-135M ~97, Minueza-32M ~104, Qwen2.5-3B ~90).
+    _chunks = (ANCHOR_REPS * 95) // 256
+    log(f"{N_FLOOD} flood prompts × ~{_chunks} chunks "
+        f"(reps={ANCHOR_REPS}) → expect L1 overflow and eviction to L2")
     for i in range(N_FLOOD):
         send(flood_prompt(i))
         if (i + 1) % 50 == 0:
