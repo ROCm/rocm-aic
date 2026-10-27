@@ -163,7 +163,13 @@ vllm-reset-test: check-hf-token prep-dirs
 	    [ "$$r" = "200" ] && echo "vLLM healthy after $${i}s" && break; \
 	    if ! docker ps --format '{{.Names}}' 2>/dev/null | grep -qx "$$_vc"; then \
 	        echo "ERROR: $$_vc exited after $${i} polls — not waiting out the timeout" >&2; \
-	        docker logs --tail 40 "$$_vc" 2>&1 | sed 's/^/  [vllm] /' >&2; \
+	        echo "  --- last $${VLM_FAIL_LOG_LINES:-250} lines of $$_vc ---" >&2; \
+	        docker logs --tail $${VLM_FAIL_LOG_LINES:-250} "$$_vc" 2>&1 \
+	            | sed 's/^/  [vllm] /' >&2; \
+	        echo "  --- engine-core errors (the 'root cause above') ---" >&2; \
+	        docker logs "$$_vc" 2>&1 \
+	            | grep -aiE 'EngineCore|ERROR|Error:|Exception|not supported|no kernel' \
+	            | grep -av 'APIServer' | tail -25 | sed 's/^/  [cause] /' >&2; \
 	        exit 1; \
 	    fi; \
 	    [ "$$i" = "$${VLM_READY_RETRIES:-60}" ] && echo "ERROR: vLLM not healthy after vllm_reset_test timeout" >&2 && exit 1; \
