@@ -7,7 +7,8 @@
 # Triggered by pushing a v* tag (e.g. git tag v1.0.0 && git push origin v1.0.0).
 # Produces a full (non-prerelease) GitHub Release containing:
 #
-#   - LMCache + NIXL ROCm pip wheels (same `wheels` stage as the nightly)
+#   - vLLM/AITER/FlashAttention + LMCache + NIXL ROCm pip wheels (the same
+#     docker-bake.hcl `wheels` group and wheel-set check as the nightly)
 #   - Source tarball from `make export`
 #   - Full Docker image pushed to Docker Hub as rocm-aic:<tag> and rocm-aic:latest
 #
@@ -79,30 +80,27 @@ jobs:
       # ---------------------------------------------------------------------------
       # Build pip wheels
       # ---------------------------------------------------------------------------
-      - name: Build + extract wheels (target=wheels)
-        uses: docker/build-push-action@v6
+      # Build definition and version pins come from docker-bake.hcl; only the
+      # arch list, cache scope and cert vary here.
+      - name: Bake the wheels group → wheels-out/
+        uses: docker/bake-action@v6
+        env:
+          ROCM_ARCH: ${{ env.ROCM_ARCH }}
+          AIC_VERSION: ${{ steps.imgtag.outputs.aic_version }}
+          TLS_CERT: ${{ steps.cert.outputs.path }}
+          AIC_CACHE_GHA_SCOPE: aic-release
+          WHEELS_DIR: wheels-out
         with:
-          context: .
-          file: docker/lmcache/Dockerfile
-          target: wheels
-          outputs: type=local,dest=wheels
-          build-args: |
-            ROCM_ARCH=${{ env.ROCM_ARCH }}
-            AIC_VERSION=${{ steps.imgtag.outputs.aic_version }}
-          secrets: |
-            ${{ steps.cert.outputs.present == 'true' && format('tls_cert={0}', steps.cert.outputs.path) || '' }}
-          cache-from: type=gha,scope=aic
-          cache-to: type=gha,mode=max,scope=aic
+          source: .
+          files: docker/docker-bake.hcl
+          targets: wheels
 
-      - name: Verify wheels
+      - name: Collect and check wheels
         run: |
           set -euo pipefail
-          shopt -s nullglob
-          wheels=(wheels/*.whl)
-          echo "Extracted ${#wheels[@]} wheel(s):"
-          for w in "${wheels[@]}"; do echo "  - $(basename "$w") ($(du -h "$w" | cut -f1))"; done
-          ls wheels/lmcache-*.whl   >/dev/null || { echo "ERROR: no lmcache wheel"   >&2; exit 1; }
-          ls wheels/nixl*rocm*.whl  >/dev/null || { echo "ERROR: no nixl_rocm wheel" >&2; exit 1; }
+          mkdir -p wheels
+          find wheels-out -name '*.whl' -exec mv -t wheels {} +
+          bash .github/scripts/workflows/check-wheels.sh wheels "${ROCM_ARCH}"
 
       # ---------------------------------------------------------------------------
       # Build source tarball
@@ -148,15 +146,13 @@ jobs:
       - name: Compose release notes
         run: |
           set -euo pipefail
-          bash .github/scripts/workflows/render-release-notes.sh \
-            docker/base/Dockerfile \
-            docker/vllm/Dockerfile \
-            docker/lmcache/Dockerfile \
+          bash .github/scripts/workflows/render-release-notes.sh release \
             "${{ github.ref_name }}" \
             "${{ github.sha }}" \
             "${ROCM_ARCH}" \
-            "${IMAGE_NAME}" \
+            wheels \
             "${GITHUB_REPOSITORY}" \
+            "${IMAGE_NAME}" \
             > release-notes.md
           cat release-notes.md
 
