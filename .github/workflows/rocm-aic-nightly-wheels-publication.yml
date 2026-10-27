@@ -81,6 +81,12 @@ on:
         default: 'false'
         type: choice
         options: ['false', 'true']
+      publish:
+        description: 'Publish to the rolling releases (false = build + artifact only)'
+        required: false
+        default: 'true'
+        type: choice
+        options: ['true', 'false']
   issue_comment:
     types: [created]
 
@@ -172,7 +178,15 @@ jobs:
               core.setOutput('pr_number', '');
               core.setOutput('build_rdna', groups.includes('rdna') ? 'true' : 'false');
               core.setOutput('build_gfx1250', groups.includes('gfx1250') ? 'true' : 'false');
-              core.setOutput('publish', 'true');
+              // A schedule run always publishes.  A dispatch can opt out, which
+              // is the only way to exercise this workflow end-to-end from a
+              // branch: `issue_comment` always runs the DEFAULT branch's copy of
+              // a workflow file, so /run-wheels cannot test an unmerged change,
+              // and a dispatch that published would push wheels built from
+              // unmerged code to the live rolling release -- tagged, worse, at a
+              // branch SHA.
+              core.setOutput('publish',
+                context.payload.inputs?.publish === 'false' ? 'false' : 'true');
             }
 
       - name: React to comment with eyes
