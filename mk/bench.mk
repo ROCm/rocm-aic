@@ -1,11 +1,11 @@
 # Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
-# Benchmark targets: cliff, kvbench, stress, plot, emulate, profile capture.
+# Benchmark targets: cliff, kvbench, agentx, stress, plot, emulate, profile capture.
 
 .PHONY: cliff plot stress-grafana kvbench-build kvbench-up kvbench-logs kvbench-down \
         cliff-kvbench-local test-emulate-local stress-emulate-local capture-profile-local \
-        test-rocjitsu-local
+        test-rocjitsu-local agentx-build agentx-run agentx-sweep
 
 cliff: prep-dirs
 	@test -n "$(BENCH_MODEL)" || { \
@@ -64,6 +64,62 @@ kvbench-logs:
 
 kvbench-down:
 	$(COMPOSE) --profile kvbench down --remove-orphans
+
+# ── AgentX benchmark ─────────────────────────────────────────────────────────
+# Drives the inferencex-agentx-mvp aiperf scenario against a running inference
+# endpoint (vLLM or Lemonade) using real agentic coding traces.
+#
+# Required: AGENTX_MODEL (or VLLM_MODEL) — the model ID as served.
+# The endpoint defaults to http://localhost:8000; override with BENCH_ENDPOINT.
+#
+# Examples:
+#   make agentx-build
+#   make agentx-run VLLM_MODEL=Qwen/Qwen2.5-7B-Instruct
+#   make agentx-run BENCH_ENDPOINT=http://aic-vllm-gpu0:8000 VLLM_MODEL=Qwen/Qwen2.5-7B-Instruct
+#   make agentx-sweep VLLM_MODEL=Qwen/Qwen2.5-7B-Instruct AGENTX_DURATION=600
+
+AGENTX_IMAGE_NAME  ?= aic-agentx
+AGENTX_IMAGE_TAG   ?= latest
+AGENTX_IMAGE_REF   ?= $(AGENTX_IMAGE_NAME):$(AGENTX_IMAGE_TAG)
+AGENTX_MODEL       ?= $(VLLM_MODEL)
+AGENTX_CONCURRENCY ?= 2
+AGENTX_DURATION    ?= 900
+AGENTX_MAX_CONTEXT ?= 65536
+AGENTX_CACHE_BUST  ?= first_turn_prefix
+AGENTX_OTEL_URL    ?=
+
+agentx-build:
+	docker buildx bake -f docker/docker-bake.hcl agentx --load
+
+agentx-run: prep-dirs
+	@test -n "$(AGENTX_MODEL)" || { \
+		echo "ERROR: set AGENTX_MODEL or VLLM_MODEL to the served model name" >&2; exit 1; }
+	AGENTX_IMAGE="$(AGENTX_IMAGE_REF)" \
+	AGENTX_MODEL="$(AGENTX_MODEL)" \
+	AGENTX_CONCURRENCY="$(AGENTX_CONCURRENCY)" \
+	AGENTX_DURATION="$(AGENTX_DURATION)" \
+	AGENTX_MAX_CONTEXT="$(AGENTX_MAX_CONTEXT)" \
+	AGENTX_CACHE_BUST="$(AGENTX_CACHE_BUST)" \
+	AGENTX_OTEL_URL="$(AGENTX_OTEL_URL)" \
+	BENCH_ENDPOINT="$(BENCH_ENDPOINT)" \
+	HF_TOKEN="$(HF_TOKEN)" \
+	HF_HOME="$(HF_HOME)" \
+	LOG="$(LOG)" \
+		bash "$(CURDIR)/benchmarks/agentx/run_agentx.sh"
+
+agentx-sweep: prep-dirs
+	@test -n "$(AGENTX_MODEL)" || { \
+		echo "ERROR: set AGENTX_MODEL or VLLM_MODEL to the served model name" >&2; exit 1; }
+	AGENTX_IMAGE="$(AGENTX_IMAGE_REF)" \
+	AGENTX_MODEL="$(AGENTX_MODEL)" \
+	AGENTX_DURATION="$(AGENTX_DURATION)" \
+	AGENTX_MAX_CONTEXT="$(AGENTX_MAX_CONTEXT)" \
+	AGENTX_OTEL_URL="$(AGENTX_OTEL_URL)" \
+	BENCH_ENDPOINT="$(BENCH_ENDPOINT)" \
+	HF_TOKEN="$(HF_TOKEN)" \
+	HF_HOME="$(HF_HOME)" \
+	LOG="$(LOG)" \
+		bash "$(CURDIR)/benchmarks/agentx/overnight_sweep.sh"
 
 cliff-kvbench-local: ensure-compose prep-kvbench-dirs
 	@echo "=== cliff-kvbench-local: $(KVBENCH_IMAGE_REF) model=$${BENCH_MODEL:-$(KVBENCH_MODEL)} ==="

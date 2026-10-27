@@ -62,6 +62,9 @@ variable "KVBENCH_GIT_URL"       { default = "https://github.com/wvaske/llm-kv-p
 variable "KVBENCH_REF"           { default = "177cf4e7c46ece8e03a701f89b60cd3a329f45fd" }
 variable "KVBENCH_IMAGE_TAG"     { default = "177cf4e" }
 
+# AgentX benchmark client (aiperf-based, no ROCm dependency).
+variable "AIPERF_VERSION"        { default = "latest" }
+
 # ---- Build knobs (override via env) ------------------------------------------
 
 # ';'-, ','- or space-separated gfx list.  Empty means "let the Dockerfile ARG
@@ -307,5 +310,17 @@ target "kvbench" {
   args = {
     KVBENCH_GIT_URL = KVBENCH_GIT_URL
     KVBENCH_REF     = KVBENCH_REF
+  }
+}
+
+# AgentX aiperf benchmark client.  No ROCm dependency — pure benchmark driver.
+# Build: docker buildx bake -f docker/docker-bake.hcl agentx --load
+# Pin:   AIPERF_VERSION=0.5.0 docker buildx bake -f docker/docker-bake.hcl agentx --load
+target "agentx" {
+  context    = "."
+  dockerfile = "docker/agentx/Dockerfile"
+  tags       = ["aic-agentx:${AIPERF_VERSION}", "aic-agentx:latest"]
+  args = {
+    AIPERF_VERSION = AIPERF_VERSION
   }
 }
