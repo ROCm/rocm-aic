@@ -65,7 +65,8 @@ variable "KVBENCH_IMAGE_TAG"     { default = "177cf4e" }
 # ---- Build knobs (override via env) ------------------------------------------
 
 # ';'-, ','- or space-separated gfx list.  Empty means "let the Dockerfile ARG
-# default / caller decide" and omits the arch suffix from the image tag.
+# default / caller decide" and omits the arch suffix from the image tag.  The
+# Dockerfiles always receive it ';'-joined (see rocm_arch_list below).
 variable "ROCM_ARCH"      { default = "" }
 variable "BUILD_JOBS"     { default = "" }       # empty = nproc
 variable "AIC_UCX_FAST"   { default = "" }
@@ -103,6 +104,17 @@ function "tag_arch_slug" {
 function "cache_arch_slug" {
   params = [arch]
   result = join("-", regexall("[^;, ]+", arch))
+}
+
+# The ROCM_ARCH build-arg every Dockerfile receives: the same list re-joined with
+# ';' (e.g. "gfx942,gfx950" -> "gfx942;gfx950").  The Dockerfiles hand it to
+# PYTORCH_ROCM_ARCH (which torch's extension builder splits on ';' and spaces
+# only), to vLLM's CMake (';' only) and to the FlashAttention CDNA check (';'
+# only), so a ','-separated list accepted above would otherwise reach them as one
+# bogus arch.  A ';'-separated list passes through unchanged.
+function "rocm_arch_list" {
+  params = [arch]
+  result = join(";", regexall("[^;, ]+", arch))
 }
 
 # The version portion of the tag (arch-independent apart from fa inclusion).
@@ -176,7 +188,7 @@ target "base" {
   dockerfile = "docker/base/Dockerfile"
   tags       = ["aic-base:${IMAGE_TAG}"]
   args = {
-    ROCM_ARCH           = ROCM_ARCH
+    ROCM_ARCH           = rocm_arch_list(ROCM_ARCH)
     ROCM_VERSION        = ROCM_VERSION
     BUILD_JOBS          = BUILD_JOBS
     AIC_UCX_FAST        = AIC_UCX_FAST
@@ -203,7 +215,7 @@ target "vllm" {
   contexts   = { base = "target:base", "lmcache-wheels" = "target:lmcache-wheels" }
   tags       = ["aic-vllm:${IMAGE_TAG}", "aic-vllm:latest"]
   args = {
-    ROCM_ARCH          = ROCM_ARCH
+    ROCM_ARCH          = rocm_arch_list(ROCM_ARCH)
     ROCM_VERSION       = ROCM_VERSION
     BUILD_JOBS         = BUILD_JOBS
     AIC_VERSION        = AIC_VERSION
@@ -229,7 +241,7 @@ target "lmcache" {
   contexts   = { base = "target:base" }
   tags       = ["aic-lmcache:${IMAGE_TAG}", "aic-lmcache:latest"]
   args = {
-    ROCM_ARCH       = ROCM_ARCH
+    ROCM_ARCH       = rocm_arch_list(ROCM_ARCH)
     ROCM_VERSION    = ROCM_VERSION
     BUILD_JOBS      = BUILD_JOBS
     AIC_VERSION     = AIC_VERSION
