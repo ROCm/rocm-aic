@@ -2,6 +2,11 @@
 # SPDX-License-Identifier: MIT
 #
 # Benchmark targets: cliff, kvbench, stress, plot, emulate, profile capture.
+#
+# The `-local` suffix on several targets below means "runs entirely on one
+# machine", as opposed to the multi-node build in
+# .slurm/run-build-distribute.sh.  It says nothing about Slurm: these are
+# routinely run as single-node Slurm jobs via the wrappers in .slurm/.
 
 .PHONY: cliff plot stress-grafana kvbench-build kvbench-up kvbench-logs kvbench-down \
         cliff-kvbench-local test-emulate-local stress-emulate-local capture-profile-local \
@@ -291,7 +296,16 @@ capture-profile-local: prep-dirs
 	echo "Pack: $(AIC_CAPTURE_DIR)/$$pack_name"; \
 	echo "Copy it to profiles/ and add a .capture.txt sibling to use it in CI."
 
-# ---- rocjitsu VM test (local, no GPU hardware required) -------------------------
+# ---- rocjitsu VM test (single-machine, no GPU hardware required) ----------------
+#
+# On "-local": it means ONE MACHINE -- no cross-node coordination, as opposed
+# to the distributed build in .slurm/run-build-distribute.sh -- and it is the
+# same axis the sibling targets use (cliff-kvbench-local, test-emulate-local,
+# stress-emulate-local, capture-profile-local).  It does NOT mean "not under
+# Slurm".  The normal way to run this IS a Slurm job: the node is CPU-only and
+# the GPU is emulated in software, so `sbatch .slurm/run-rocjitsu-cpu.sbatch`
+# allocates a machine and this target does everything on it.  A workstation
+# with /dev/kvm works identically.
 #
 # Boots an Ubuntu guest VM under QEMU with an emulated gfx1250 GPU (rocjitsu
 # vfio-user server), builds the aic image for ROCM_ARCH=gfx1250 on the host
@@ -316,7 +330,14 @@ RJ_READY_S       ?= 300
 RJ_WORK_DIR      ?= /tmp/aic-rocjitsu-test
 # SmolLM2-135M (~270 MB fp16) fits in rocjitsu's 1 GiB VRAM budget.
 RJ_MODEL         ?= HuggingFaceTB/SmolLM2-135M-Instruct
-RJ_LMCACHE_L1_SIZE_GB ?= 0.3
+# L1 must be small enough that the cut-down flood still overflows it, or the
+# anchors are never evicted and step 4 verifies nothing.  The preset produces
+# 4 anchor + 12 flood chunks; at ~5.6 MiB per 256-token chunk for SmolLM2-135M
+# (30 layers, 3 KV heads, head_dim 64, fp16 K+V) that is ~90 MiB total, so the
+# old 0.3 GB held the entire working set and nothing could ever evict.
+# 0.03 GB ~= 5 chunks: the anchors go in, the flood pushes them out to L2.
+# Recompute this if RJ_MODEL or the RJ_TEST_* preset changes.
+RJ_LMCACHE_L1_SIZE_GB ?= 0.03
 # Number of emulated NVMe devices to attach via qemu-tool --nvme.
 RJ_NVME_COUNT    ?= 1
 RJ_NVME_MOUNT    ?= /mnt/lmcache-nvme
@@ -356,6 +377,34 @@ RJ_MAX_BATCHED_TOKENS ?= 256
 # (600 = 50 min).  A variable rather than the literal it used to be, so the
 # budget can be matched to RJ_MAX_BATCHED_TOKENS instead of guessed.
 RJ_READY_RETRIES ?= 600
+
+# Cut-down vllm_reset_test preset for the emulator.
+#
+# The stock test is sized for real hardware: 10 anchors x ~2090 tokens, 50
+# flood prompts, 20 generated tokens each, under a 120 s per-request timeout.
+# At the emulator's ~2 s/token (0.14 GFLOP/s against a 135M model) a single
+# anchor prefill is ~115 min -- it would blow that per-request timeout by two
+# orders of magnitude before the flood even starts.
+#
+# These keep the SHAPE of the test (fill L1 -> overflow -> evict to L2 ->
+# reset the GPU prefix cache -> re-read and expect L1+L2 hits) while cutting
+# the work.  Two constraints are load-bearing and must move together:
+#   * ANCHOR_REPS >= 6, so a prompt still spans more than one 256-token
+#     LMCache chunk -- measured, 6 reps is 2 chunks and 4 reps is only 1,
+#     and at one chunk there is nothing to chunk or evict;
+#   * RJ_LMCACHE_L1_SIZE_GB small enough that the reduced flood still
+#     overflows L1, or no eviction happens and the test passes vacuously.
+# The timeout rises because each request is genuinely slow here, not stuck.
+RJ_TEST_ANCHORS     ?= 2
+RJ_TEST_FLOOD       ?= 6
+# 6 reps.  Measured, not estimated: the preamble sentence tokenizes to ~97
+# tokens for SmolLM2-135M and ~104 for Minueza-32M, so 6 reps is 583-625
+# tokens = 2 full 256-token chunks.  4 reps is only 389-417 tokens -- ONE
+# chunk -- which would leave nothing for chunk-level eviction to act on and
+# pass vacuously.  Re-measure if RJ_MODEL changes; tokenizers differ.
+RJ_TEST_ANCHOR_REPS ?= 6
+RJ_TEST_MAX_TOKENS  ?= 4
+RJ_TEST_TIMEOUT     ?= 1800
 # The built image tag for RJ_ROCJITSU_ARCH (computed at make time).
 _RJ_IMAGE_TAG    := $(shell ROCM_ARCH=$(RJ_ROCJITSU_ARCH) $(_FRAMEWORK_VERSION_ENV) \
                         $(REPO_ROOT)/docker/scripts/aic-image-tag.sh)
@@ -706,6 +755,11 @@ test-rocjitsu-local: prep-dirs
 	  "export IMAGE_TAG='$(_RJ_IMAGE_TAG)' VLLM_MODEL='$(RJ_MODEL)'" \
 	  'export VLM_LOAD_FORMAT=auto VLM_MAX_MODEL_LEN=4096 VLM_GPU_MEMORY_UTILIZATION=0.85' \
 	  'export VLM_MAX_NUM_BATCHED_TOKENS=$(RJ_MAX_BATCHED_TOKENS)' \
+	  '# Cut-down reset-test preset -- see RJ_TEST_* in mk/bench.mk.' \
+	  'export AIC_TEST_ANCHORS=$(RJ_TEST_ANCHORS) AIC_TEST_FLOOD=$(RJ_TEST_FLOOD)' \
+	  'export AIC_TEST_ANCHOR_REPS=$(RJ_TEST_ANCHOR_REPS)' \
+	  'export AIC_TEST_MAX_TOKENS=$(RJ_TEST_MAX_TOKENS)' \
+	  'export AIC_TEST_TIMEOUT=$(RJ_TEST_TIMEOUT) AIC_TEST_MODEL=$(RJ_MODEL)' \
 	  'export _KC='"'"'{\"enable_jit_warmup\":false,\"enable_cutedsl_warmup\":false,\"enable_flashinfer_autotune\":false}'"'"'' \
 	  'export VLLM_EXTRA_ARGS="--num-gpu-blocks-override 50 --kernel-config $$_KC"' \
 	  'export ROCM_ARCH=$(RJ_ROCJITSU_ARCH) LMCACHE_L1_SIZE_GB=$(RJ_LMCACHE_L1_SIZE_GB)' \
