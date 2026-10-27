@@ -1069,7 +1069,10 @@ PROLOGUE
         # until the job finishes and exits with the job's exit code.
         local idfile; idfile="$(mktemp)"
         local -a _stdbuf=(); command -v stdbuf >/dev/null 2>&1 && _stdbuf=(stdbuf -oL)
-        "${_stdbuf[@]}" sbatch --parsable --wait \
+        # --no-requeue: a job that exited 0 has come back for another run
+        # anyway, burning GPU time and making sacct report PENDING for work
+        # that already succeeded.  Only here: SPUR's sbatch lacks the flag.
+        "${_stdbuf[@]}" sbatch --parsable --wait --no-requeue \
             --job-name="${jobname}" \
             --partition="${AIC_BUILD_PARTITION}" \
             ${AIC_SLURM_ACCOUNT:+--account="${AIC_SLURM_ACCOUNT}"} \
