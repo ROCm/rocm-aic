@@ -1792,12 +1792,18 @@ note "container: $(uname -srm)"
 if command -v rocminfo >/dev/null 2>&1; then
     gfx="$(timeout 60 rocminfo 2>/dev/null | grep -om1 'gfx[0-9a-z]*' || true)"
     if [ -n "${gfx}" ]; then
-        note "OK   GPU visible: ${gfx} (image built for ${EXPECT_ARCH:-?})"
         if [ -n "${EXPECT_ARCH:-}" ]; then
             case ";${EXPECT_ARCH};" in
-                *";${gfx};"*) : ;;
-                *) note "WARN GPU arch ${gfx} not in image arch set ${EXPECT_ARCH}" ;;
+                *";${gfx};"*)
+                    note "OK   GPU visible: ${gfx} (image built for ${EXPECT_ARCH})" ;;
+                *)
+                    # A WARN here still exited 0, so a gfx942;gfx950 image
+                    # "passed" on a gfx1151 APU that cannot run it.
+                    note "FAIL GPU arch ${gfx} not in image arch set ${EXPECT_ARCH}"
+                    fail=1 ;;
             esac
+        else
+            note "OK   GPU visible: ${gfx} (image arch set unknown)"
         fi
     else
         note "FAIL no GPU reported by rocminfo"; fail=1
