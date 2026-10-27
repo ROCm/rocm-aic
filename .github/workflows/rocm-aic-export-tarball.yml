@@ -33,7 +33,7 @@ jobs:
     steps:
       # Full history so `git ls-files` / `git rev-parse --short HEAD` (used by the
       # export target for the filename stamp) resolve against a real commit.
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
       - name: Build export tarball
         id: export
@@ -167,7 +167,7 @@ jobs:
           echo "All required sources present"
 
       - name: Upload tarball artifact
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: aic-export-${{ github.sha }}
           path: ${{ steps.export.outputs.tarball }}

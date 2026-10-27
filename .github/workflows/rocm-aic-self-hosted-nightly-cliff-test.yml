@@ -42,7 +42,7 @@ jobs:
       AIC_CI_STORAGE_ROOT: ${{ secrets.AIC_SHARED_NFS }}/rocm-aic
 
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
       - name: Run cliff benchmark + harvest results from SPUR
         run: |
@@ -51,7 +51,7 @@ jobs:
             "$(date -u +%Y-%m-%d)"
 
       - name: Upload cliff performance page artifact
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: cliff-perf-page-${{ github.event.workflow_run.head_sha }}
           path: cliff-page/
