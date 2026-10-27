@@ -17,7 +17,7 @@ index df7eadc..b3085a6 100644
 +            # here instead.  StubCPUDevice -- not torch.cpu -- is the module
 +            # that implements the stream/event surface callers use.
 +            # First Party
-+            from lmcache.v1.platform.cpu.stub_cpu_device import StubCPUDevice
++            from lmcache.v1.platform.devices.cpu.stub_cpu_device import StubCPUDevice
 +
 +            logger.info("DEVICE_TYPE=cpu: forcing the CPU device (StubCPUDevice)")
 +            return StubCPUDevice("cpu"), "cpu", None
