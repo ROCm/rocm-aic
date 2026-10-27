@@ -159,15 +159,19 @@ echo "[accuracy-test] allocated gpu: ROCR=${AIC_ROCR_VISIBLE} HIP=${AIC_HIP_VISI
 # because ~/.local shadows venv site-packages on these boxes.
 export PYTHONNOUSERSITE=1
 VENV="${AIC_DAY_DIR}/.venv"
-if [ ! -x "${VENV}/bin/pytest" ]; then
-    echo "[accuracy-test] creating host venv at ${VENV}"
+PYBIN="${VENV}/bin/python"
+# Probe by importing, not by testing that bin/pytest exists: a venv built under
+# another repo path or host python keeps stale shebangs and interpreter links
+# (job 68152207).  Everything below goes through ${PYBIN} -m, never a shebang.
+if ! "${PYBIN}" -c 'import pytest, lm_eval' >/dev/null 2>&1; then
+    echo "[accuracy-test] (re)creating host venv at ${VENV}"
+    rm -rf "${VENV}"
     python3 -m venv "${VENV}" || { echo "[accuracy-test] FAIL: venv creation failed" >&2; exit 1; }
-    "${VENV}/bin/pip" -q install --upgrade pip
-    "${VENV}/bin/pip" -q install -e "${AIC_DAY_DIR}[accuracy]" || {
+    "${PYBIN}" -m pip -q install --upgrade pip
+    "${PYBIN}" -m pip -q install -e "${AIC_DAY_DIR}[accuracy]" || {
         echo "[accuracy-test] FAIL: could not install the accuracy extra" >&2; exit 1; }
 fi
-PYTEST="${VENV}/bin/pytest"
-PYBIN="${VENV}/bin/python"
+PYTEST=("${PYBIN}" -m pytest)
 
 export AIC_ACCURACY_MODEL="${AIC_ACCURACY_MODEL}"
 export AIC_ACCURACY_DELTA="${AIC_ACCURACY_DELTA}"
@@ -572,7 +576,7 @@ export AIC_ACCURACY_SCORE_OUT="${AIC_LOG_DIR}/tiered-score.json"
 export AIC_ACCURACY_BASELINE_SCORE="${BASELINE_SCORE}"
 
 rc=0
-"${PYTEST}" "${AIC_DAY_DIR}/tests/accuracy" -v -rs --no-header || rc=$?
+"${PYTEST[@]}" "${AIC_DAY_DIR}/tests/accuracy" -v -rs --no-header || rc=$?
 
 # ===========================================================================
 # Phase 3: liveness -- prove the tiered arm actually tiered
@@ -795,7 +799,7 @@ export AIC_ACCURACY_REFERENCE_SCORE="${TIERED_SCORE}"
 # it would overwrite the comparand mid-comparison.
 export AIC_ACCURACY_SCORE_OUT="${AIC_LOG_DIR}/restart-score.json"
 unset AIC_ACCURACY_BASELINE_SCORE
-"${PYTEST}" "${AIC_DAY_DIR}/tests/accuracy" -v -rs --no-header \
+"${PYTEST[@]}" "${AIC_DAY_DIR}/tests/accuracy" -v -rs --no-header \
     -k 'restart' || {
     echo "[accuracy-test] FAIL: phase 4 -- score regressed after restart" >&2
     exit 1; }
