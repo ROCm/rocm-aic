@@ -312,7 +312,7 @@ _aic_expand_env_value() {
 
 # Read KEY=value lines, exporting each key that is not already set.
 _aic_load_env_file() {
-    local file="$1" line key val loaded=0
+    local file="$1" line key val loaded=0 from_file=" "
     [[ -n "${file}" && -f "${file}" ]] || return 0
     while IFS= read -r line || [[ -n "${line}" ]]; do
         line="${line%$'\r'}"
@@ -331,7 +331,12 @@ _aic_load_env_file() {
         # Presence, not emptiness: `make AIC_SLURM_ACCOUNT=` means "this
         # cluster has no account", and reading one back out of the file would
         # fail every submission.  An exported empty value is a decision.
-        [[ -n "${!key+set}" ]] && continue           # environment / CLI wins
+        # ... but a key repeated INSIDE the file takes the last assignment, as
+        # make's `include` does; otherwise the two readers disagree.
+        if [[ -n "${!key+set}" && "${from_file}" != *" ${key} "* ]]; then
+            continue                                 # environment / CLI wins
+        fi
+        from_file+="${key} "
         export "${key}=$(_aic_expand_env_value "${val}")"
         ((loaded++)) || true
     done <"${file}"
