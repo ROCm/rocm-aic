@@ -2,8 +2,8 @@
 #
 # SPDX-License-Identifier: MIT
 #
-# Nightly pip wheels for the AMD Infinity Context (AIC): source-built vLLM,
-# patched LMCache, and ROCm NIXL.
+# Nightly pip wheels for the AMD Infinity Context (AIC): source-built vLLM (+
+# its AITER and FlashAttention backends), patched LMCache, and ROCm NIXL.
 #
 # Architecture groups
 # -------------------
@@ -11,26 +11,31 @@
 # rdna  gfx1100;gfx1101;gfx1150;gfx1151;gfx1200;gfx1201         (RDNA3/4, best-effort)
 #
 # Scheduled nightly builds CDNA only (the primary hardware target).  Manual
-# dispatch can include RDNA via the include_rdna input.
+# dispatch can include RDNA via the include_rdna input.  The groups' wheels
+# carry identical filenames but different GPU code, so each group has its own
+# rolling release: cdna -> `nightly`, rdna -> `nightly-rdna`.
 #
 # Build pipeline
 # --------------
-#  warm-base-cdna  ─┐
-#                   ├─► build-wheels-cdna  ─┐
-#  warm-base-rdna  ─┘                       ├─► publish
-#                   └─► build-wheels-rdna  ─┘
+#  warm-base-cdna  ──► build-wheels-cdna  ─┐
+#                                          ├─► publish
+#  warm-base-rdna  ──► build-wheels-rdna  ─┘
 #
-# warm-base-*: builds docker/base/Dockerfile through build_torchvision (PyTorch +
-# torchvision source build) into a per-group GHA cache scope (aic-wheels-cdna /
-# aic-wheels-rdna).  Subsequent build-wheels-* jobs read from that scope and
-# skip the multi-hour PyTorch compile on warm runs.
+# Every build goes through docker/docker-bake.hcl, the single definition of the
+# build graph and version pins; the jobs pass only the arch group, the cache
+# scope and the TLS cert.
 #
-# build-wheels-*: builds docker/lmcache/Dockerfile --target wheels using the
-# warmed cache; exports .whl files as a job artifact with an _arch-*.txt
-# metadata file so the publish job can compose accurate release notes.
+# warm-base-*: bakes the `base` target (aic-base: PyTorch + torchvision + NIXL
+# source builds) into the GHA layer cache, so the build-wheels-* job that follows
+# can skip the multi-hour PyTorch compile when the cache is warm.
 #
-# publish: collects all wheel artifacts and creates/updates the rolling
-# `nightly` GitHub Release.
+# build-wheels-*: bakes the `wheels` group (one aic-base, every wheel linked
+# against its torch), checks the export against the expected wheel set
+# (.github/scripts/workflows/check-wheels.sh), and uploads it as an artifact.
+#
+# publish: re-checks each group's wheels, stages each release as a draft, and
+# only once every draft is uploaded and verified swaps them in for the live
+# releases (.github/scripts/workflows/publish-rolling-release.sh).
 #
 # Compatibility: ROCm 7.14 / Python 3.12 / x86_64, non-manylinux.
 # NIXL wheel carries libnixl + plugins/UCX; ROCm runtime is an external dep.
@@ -57,22 +62,29 @@ on:
         options: ['false', 'true']
 
 permissions:
-  contents: write   # create/update the rolling `nightly` release
+  contents: write   # create/update the rolling `nightly` releases
 
 env:
   RELEASE_TAG: nightly
+  RELEASE_TAG_RDNA: nightly-rdna
   CDNA_ARCH: 'gfx90a;gfx942;gfx950'
   RDNA_ARCH: 'gfx1100;gfx1101;gfx1150;gfx1151;gfx1200;gfx1201'
+  # GHA layer-cache scope prefix.  docker-bake.hcl appends the arch list and the
+  # target name, so a group's warm-base and build-wheels jobs share entries and
+  # the two groups never do.
+  AIC_CACHE_GHA_SCOPE: aic-wheels
+  BAKE_FILE: docker/docker-bake.hcl
 
 jobs:
   # ---------------------------------------------------------------------------
-  # Decide whether there is anything new to build.
+  # Decide whether there is anything new to build, and which groups.
   # ---------------------------------------------------------------------------
   check:
     name: Check for changes on main
     runs-on: ubuntu-24.04
     outputs:
       should_build: ${{ steps.decide.outputs.should_build }}
+      include_rdna: ${{ steps.decide.outputs.include_rdna }}
       sha: ${{ steps.head.outputs.sha }}
     steps:
       - uses: actions/checkout@v5
@@ -88,28 +100,35 @@ jobs:
         id: decide
         env:
           GH_TOKEN: ${{ github.token }}
+          HEAD_SHA: ${{ steps.head.outputs.sha }}
+          EVENT_NAME: ${{ github.event_name }}
+          FORCE: ${{ github.event.inputs.force }}
+          INCLUDE_RDNA: ${{ github.event.inputs.include_rdna }}
         run: |
           set -euo pipefail
-          head_sha='${{ steps.head.outputs.sha }}'
-          force='${{ github.event.inputs.force }}'
           last="$(gh release view "${RELEASE_TAG}" \
                     --repo "${GITHUB_REPOSITORY}" \
                     --json targetCommitish -q .targetCommitish 2>/dev/null || echo '')"
-          echo "main HEAD:        ${head_sha}"
+          echo "main HEAD:        ${HEAD_SHA}"
           echo "last nightly sha: ${last:-<none>}"
-          if [ "${force}" = "true" ] || [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+          if [ "${FORCE}" = "true" ] || [ "${EVENT_NAME}" = "workflow_dispatch" ]; then
             echo "should_build=true" >> "${GITHUB_OUTPUT}"
             echo "reason: manual/force run"
-          elif [ -z "${last}" ] || [ "${last}" != "${head_sha}" ]; then
+          elif [ -z "${last}" ] || [ "${last}" != "${HEAD_SHA}" ]; then
             echo "should_build=true" >> "${GITHUB_OUTPUT}"
             echo "reason: main changed since last nightly"
           else
             echo "should_build=false" >> "${GITHUB_OUTPUT}"
             echo "reason: no change -- skipping"
           fi
+          # RDNA is opt-in on manual dispatch only; scheduled runs are CDNA-only.
+          if [ "${EVENT_NAME}" = "workflow_dispatch" ] && [ "${INCLUDE_RDNA}" = "true" ]; then
+            echo "include_rdna=true" >> "${GITHUB_OUTPUT}"
+          else
+            echo "include_rdna=false" >> "${GITHUB_OUTPUT}"
+          fi
 
   # ---------------------------------------------------------------------------
-  # Shared step template implemented via reusable fragments.
   # The four build jobs (warm-base-cdna, warm-base-rdna, build-wheels-cdna,
   # build-wheels-rdna) are explicit jobs rather than a matrix so that the RDNA
   # jobs can have independent job-level `if:` conditions.  The matrix context
@@ -148,32 +167,23 @@ jobs:
           if [ -n "${{ secrets.CORP_CA_CERT }}" ]; then
             echo "${{ secrets.CORP_CA_CERT }}" > /tmp/corp-ca.crt
             echo "path=/tmp/corp-ca.crt" >> "${GITHUB_OUTPUT}"
-            echo "present=true" >> "${GITHUB_OUTPUT}"
-          else
-            echo "present=false" >> "${GITHUB_OUTPUT}"
           fi
 
-      - name: Build base image (PyTorch + torchvision) → populate cache
-        uses: docker/build-push-action@v6
+      - name: Bake aic-base (PyTorch + torchvision + NIXL) → populate cache
+        uses: docker/bake-action@v6
+        env:
+          ROCM_ARCH: ${{ env.CDNA_ARCH }}
+          TLS_CERT: ${{ steps.cert.outputs.path }}
         with:
-          context: .
-          file: docker/base/Dockerfile
-          push: false
-          load: false
-          build-args: ROCM_ARCH=${{ env.CDNA_ARCH }}
-          secrets: |
-            ${{ steps.cert.outputs.present == 'true' && format('tls_cert={0}', steps.cert.outputs.path) || '' }}
-          cache-from: type=gha,scope=aic-wheels-cdna
-          cache-to: type=gha,mode=max,scope=aic-wheels-cdna
+          source: .
+          files: ${{ env.BAKE_FILE }}
+          targets: base
 
   # --- RDNA base warm-up (scheduled runs excluded) ---------------------------
   warm-base-rdna:
     name: Warm base cache (rdna)
     needs: check
-    if: |
-      needs.check.outputs.should_build == 'true' &&
-      github.event_name != 'schedule' &&
-      github.event.inputs.include_rdna == 'true'
+    if: needs.check.outputs.should_build == 'true' && needs.check.outputs.include_rdna == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 360
     steps:
@@ -201,23 +211,17 @@ jobs:
           if [ -n "${{ secrets.CORP_CA_CERT }}" ]; then
             echo "${{ secrets.CORP_CA_CERT }}" > /tmp/corp-ca.crt
             echo "path=/tmp/corp-ca.crt" >> "${GITHUB_OUTPUT}"
-            echo "present=true" >> "${GITHUB_OUTPUT}"
-          else
-            echo "present=false" >> "${GITHUB_OUTPUT}"
           fi
 
-      - name: Build base image (PyTorch + torchvision) → populate cache
-        uses: docker/build-push-action@v6
+      - name: Bake aic-base (PyTorch + torchvision + NIXL) → populate cache
+        uses: docker/bake-action@v6
+        env:
+          ROCM_ARCH: ${{ env.RDNA_ARCH }}
+          TLS_CERT: ${{ steps.cert.outputs.path }}
         with:
-          context: .
-          file: docker/base/Dockerfile
-          push: false
-          load: false
-          build-args: ROCM_ARCH=${{ env.RDNA_ARCH }}
-          secrets: |
-            ${{ steps.cert.outputs.present == 'true' && format('tls_cert={0}', steps.cert.outputs.path) || '' }}
-          cache-from: type=gha,scope=aic-wheels-rdna
-          cache-to: type=gha,mode=max,scope=aic-wheels-rdna
+          source: .
+          files: ${{ env.BAKE_FILE }}
+          targets: base
 
   # --- CDNA wheel build ------------------------------------------------------
   build-wheels-cdna:
@@ -245,66 +249,45 @@ jobs:
 
       - uses: docker/setup-buildx-action@v3
 
-      - name: Read AIC version
-        id: version
-        run: |
-          aic_version="$(<VERSION)"
-          : "${aic_version:?VERSION is empty}"
-          echo "aic_version=${aic_version}" >> "${GITHUB_OUTPUT}"
-
       - name: Write corp CA cert secret
         id: cert
         run: |
           if [ -n "${{ secrets.CORP_CA_CERT }}" ]; then
             echo "${{ secrets.CORP_CA_CERT }}" > /tmp/corp-ca.crt
             echo "path=/tmp/corp-ca.crt" >> "${GITHUB_OUTPUT}"
-            echo "present=true" >> "${GITHUB_OUTPUT}"
-          else
-            echo "present=false" >> "${GITHUB_OUTPUT}"
           fi
 
-      - name: Build + extract wheels (target=wheels)
-        uses: docker/build-push-action@v6
+      - name: Bake the wheels group → wheels-out/
+        uses: docker/bake-action@v6
+        env:
+          ROCM_ARCH: ${{ env.CDNA_ARCH }}
+          TLS_CERT: ${{ steps.cert.outputs.path }}
+          WHEELS_DIR: wheels-out
         with:
-          context: .
-          file: docker/lmcache/Dockerfile
-          target: wheels
-          outputs: type=local,dest=wheels-out
-          build-args: |
-            AIC_VERSION=${{ steps.version.outputs.aic_version }}
-            ROCM_ARCH=${{ env.CDNA_ARCH }}
-          secrets: |
-            ${{ steps.cert.outputs.present == 'true' && format('tls_cert={0}', steps.cert.outputs.path) || '' }}
-          cache-from: type=gha,scope=aic-wheels-cdna
-          cache-to: type=gha,mode=max,scope=aic-wheels-cdna
+          source: .
+          files: ${{ env.BAKE_FILE }}
+          targets: wheels
 
-      - name: Verify and annotate wheels
+      - name: Collect and check wheels
         run: |
           set -euo pipefail
-          shopt -s nullglob
-          wheels=(wheels-out/*.whl)
-          echo "Extracted ${#wheels[@]} wheel(s):"
-          for w in "${wheels[@]}"; do echo "  - $(basename "$w") ($(du -h "$w" | cut -f1))"; done
-          ls wheels-out/vllm-*.whl     >/dev/null || { echo "ERROR: no vllm wheel"      >&2; exit 1; }
-          ls wheels-out/lmcache-*.whl  >/dev/null || { echo "ERROR: no lmcache wheel"   >&2; exit 1; }
-          ls wheels-out/nixl*rocm*.whl >/dev/null || { echo "ERROR: no nixl_rocm wheel" >&2; exit 1; }
-          echo "${{ env.CDNA_ARCH }}" > wheels-out/_arch-cdna.txt
+          mkdir -p dist
+          find wheels-out -name '*.whl' -exec mv -t dist {} +
+          bash .github/scripts/workflows/check-wheels.sh dist "${CDNA_ARCH}"
 
       - name: Upload wheel artifacts
         uses: actions/upload-artifact@v6
         with:
           name: wheels-cdna
-          path: wheels-out/
+          path: dist/*.whl
+          if-no-files-found: error
           retention-days: 2
 
   # --- RDNA wheel build (scheduled runs excluded) ----------------------------
   build-wheels-rdna:
     name: Build wheels (rdna)
     needs: [check, warm-base-rdna]
-    if: |
-      needs.check.outputs.should_build == 'true' &&
-      github.event_name != 'schedule' &&
-      github.event.inputs.include_rdna == 'true'
+    if: needs.check.outputs.should_build == 'true' && needs.check.outputs.include_rdna == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 360
     steps:
@@ -326,144 +309,123 @@ jobs:
 
       - uses: docker/setup-buildx-action@v3
 
-      - name: Read AIC version
-        id: version
-        run: |
-          aic_version="$(<VERSION)"
-          : "${aic_version:?VERSION is empty}"
-          echo "aic_version=${aic_version}" >> "${GITHUB_OUTPUT}"
-
       - name: Write corp CA cert secret
         id: cert
         run: |
           if [ -n "${{ secrets.CORP_CA_CERT }}" ]; then
             echo "${{ secrets.CORP_CA_CERT }}" > /tmp/corp-ca.crt
             echo "path=/tmp/corp-ca.crt" >> "${GITHUB_OUTPUT}"
-            echo "present=true" >> "${GITHUB_OUTPUT}"
-          else
-            echo "present=false" >> "${GITHUB_OUTPUT}"
           fi
 
-      - name: Build + extract wheels (target=wheels)
-        uses: docker/build-push-action@v6
+      - name: Bake the wheels group → wheels-out/
+        uses: docker/bake-action@v6
+        env:
+          ROCM_ARCH: ${{ env.RDNA_ARCH }}
+          TLS_CERT: ${{ steps.cert.outputs.path }}
+          WHEELS_DIR: wheels-out
         with:
-          context: .
-          file: docker/lmcache/Dockerfile
-          target: wheels
-          outputs: type=local,dest=wheels-out
-          build-args: |
-            AIC_VERSION=${{ steps.version.outputs.aic_version }}
-            ROCM_ARCH=${{ env.RDNA_ARCH }}
-          secrets: |
-            ${{ steps.cert.outputs.present == 'true' && format('tls_cert={0}', steps.cert.outputs.path) || '' }}
-          cache-from: type=gha,scope=aic-wheels-rdna
-          cache-to: type=gha,mode=max,scope=aic-wheels-rdna
+          source: .
+          files: ${{ env.BAKE_FILE }}
+          targets: wheels
 
-      - name: Verify and annotate wheels
+      - name: Collect and check wheels
         run: |
           set -euo pipefail
-          shopt -s nullglob
-          wheels=(wheels-out/*.whl)
-          echo "Extracted ${#wheels[@]} wheel(s):"
-          for w in "${wheels[@]}"; do echo "  - $(basename "$w") ($(du -h "$w" | cut -f1))"; done
-          ls wheels-out/vllm-*.whl     >/dev/null || { echo "ERROR: no vllm wheel"      >&2; exit 1; }
-          ls wheels-out/lmcache-*.whl  >/dev/null || { echo "ERROR: no lmcache wheel"   >&2; exit 1; }
-          ls wheels-out/nixl*rocm*.whl >/dev/null || { echo "ERROR: no nixl_rocm wheel" >&2; exit 1; }
-          echo "${{ env.RDNA_ARCH }}" > wheels-out/_arch-rdna.txt
+          mkdir -p dist
+          find wheels-out -name '*.whl' -exec mv -t dist {} +
+          bash .github/scripts/workflows/check-wheels.sh dist "${RDNA_ARCH}"
 
       - name: Upload wheel artifacts
         uses: actions/upload-artifact@v6
         with:
           name: wheels-rdna
-          path: wheels-out/
+          path: dist/*.whl
+          if-no-files-found: error
           retention-days: 2
 
   # ---------------------------------------------------------------------------
-  # Collect all wheel artifacts from built groups and publish to the rolling
-  # `nightly` GitHub Release.  Runs when CDNA succeeded (RDNA may be skipped).
+  # Publish each built group to its rolling release.  Runs only when every
+  # requested group built: the default success() guard would skip this job on
+  # every scheduled run (build-wheels-rdna is skipped there, and a skipped need
+  # skips its dependents), so the condition is spelled out instead.  A failed,
+  # or warm-base-skipped, RDNA build on an include_rdna run blocks CDNA too.
   # ---------------------------------------------------------------------------
   publish:
-    name: Publish nightly release
+    name: Publish nightly releases
     needs: [check, build-wheels-cdna, build-wheels-rdna]
-    if: needs.check.outputs.should_build == 'true' && needs.build-wheels-cdna.result == 'success'
+    if: >-
+      !cancelled() &&
+      needs.check.outputs.should_build == 'true' &&
+      needs.build-wheels-cdna.result == 'success' &&
+      (needs.check.outputs.include_rdna != 'true' || needs.build-wheels-rdna.result == 'success')
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 60
+    # Two runs swapping the same release at once would race on its tag.
+    concurrency:
+      group: ${{ github.workflow }}-publish
+      cancel-in-progress: false
+    env:
+      GH_TOKEN: ${{ github.token }}
+      SOURCE_SHA: ${{ needs.check.outputs.sha }}
+      INCLUDE_RDNA: ${{ needs.check.outputs.include_rdna }}
     steps:
       - uses: actions/checkout@v5
         with:
           ref: ${{ needs.check.outputs.sha }}
           fetch-depth: 1
 
-      - name: Download all wheel artifacts
+      - name: Download CDNA wheels
         uses: actions/download-artifact@v7
         with:
-          pattern: wheels-*
-          path: all-wheels
-          merge-multiple: true
+          name: wheels-cdna
+          path: dist/cdna
 
-      - name: List collected wheels
-        run: |
-          echo "Wheels to publish:"
-          ls -lh all-wheels/*.whl
+      - name: Download RDNA wheels
+        if: needs.check.outputs.include_rdna == 'true'
+        uses: actions/download-artifact@v7
+        with:
+          name: wheels-rdna
+          path: dist/rdna
 
-      - name: Compose release notes
+      - name: Check wheels and compose release notes
         run: |
           set -euo pipefail
-          df="docker/lmcache/Dockerfile"
-          vdf="docker/vllm/Dockerfile"
-          bdf="docker/base/Dockerfile"
-          get()  { grep -E "^ARG $1=" "$2" | head -1 | cut -d= -f2-; }
-          rocm_version="$(get ROCM_VERSION "${bdf}")"
-          vllm_ref="$(get VLLM_REF "${vdf}")"
-          lmcache_ref="$(get LMCACHE_REF "${df}")"
-          nixl_ref="$(get NIXL_REF "${df}")"
-          : "${rocm_version:?}" "${vllm_ref:?}" "${lmcache_ref:?}" "${nixl_ref:?}"
+          s=.github/scripts/workflows
+          bash "${s}/check-wheels.sh" dist/cdna "${CDNA_ARCH}"
+          bash "${s}/render-release-notes.sh" nightly "${RELEASE_TAG}" "${SOURCE_SHA}" \
+            "${CDNA_ARCH}" dist/cdna "${GITHUB_REPOSITORY}" > notes-cdna.md
+          cat notes-cdna.md
+          if [ "${INCLUDE_RDNA}" = "true" ]; then
+            bash "${s}/check-wheels.sh" dist/rdna "${RDNA_ARCH}"
+            bash "${s}/render-release-notes.sh" nightly "${RELEASE_TAG_RDNA}" "${SOURCE_SHA}" \
+              "${RDNA_ARCH}" dist/rdna "${GITHUB_REPOSITORY}" > notes-rdna.md
+            cat notes-rdna.md
+          fi
 
-          # Read arch groups from the metadata files written by each build-wheels job.
-          arch_lines=""
-          for f in all-wheels/_arch-*.txt; do
-            [ -f "$f" ] || continue
-            group="${f##*/_arch-}"; group="${group%.txt}"
-            arch="$(cat "$f")"
-            arch_lines="${arch_lines}- \`${arch}\` (${group})\n"
-          done
+      # Stage every release before promoting any, so an upload failure leaves
+      # all of them on the previous night's wheels.
+      - name: Stage releases as drafts
+        id: stage
+        run: |
+          set -euo pipefail
+          p=.github/scripts/workflows/publish-rolling-release.sh
+          cdna="$(bash "${p}" stage "${RELEASE_TAG}" "${SOURCE_SHA}" \
+            "AIC nightly wheels (CDNA)" notes-cdna.md dist/cdna)"
+          echo "cdna=${cdna}" >> "${GITHUB_OUTPUT}"
+          if [ "${INCLUDE_RDNA}" = "true" ]; then
+            rdna="$(bash "${p}" stage "${RELEASE_TAG_RDNA}" "${SOURCE_SHA}" \
+              "AIC nightly wheels (RDNA)" notes-rdna.md dist/rdna)"
+            echo "rdna=${rdna}" >> "${GITHUB_OUTPUT}"
+          fi
 
-          {
-            echo "Nightly ROCm wheels for the **AMD Infinity Context (AIC)** patched stack."
-            echo ""
-            echo "- **Source:** main @ \`${{ needs.check.outputs.sha }}\`"
-            echo "- **Built (UTC):** run ${{ github.run_id }}"
-            echo "- **GPU arch sets:**"
-            printf '%b' "${arch_lines}"
-            echo "- **Base:** rocm/dev-ubuntu-24.04:${rocm_version}-full (ROCm ${rocm_version}, Python 3.12, x86_64)"
-            echo "- **vLLM:** $(get VLLM_GIT_URL "${vdf}") @ \`${vllm_ref}\` (source build)"
-            echo "- **LMCache:** $(get LMCACHE_GIT_URL "${df}") @ \`${lmcache_ref}\` + AIC patches"
-            echo "- **NIXL:** $(get NIXL_GIT_URL "${df}") @ \`${nixl_ref}\` + nixl-rocm-ais-mt patch"
-            echo ""
-            echo "### Install"
-            echo '```bash'
-            echo "pip install \\"
-            echo "  https://github.com/${GITHUB_REPOSITORY}/releases/download/${RELEASE_TAG}/<vllm-wheel> \\"
-            echo "  https://github.com/${GITHUB_REPOSITORY}/releases/download/${RELEASE_TAG}/<lmcache-wheel> \\"
-            echo "  https://github.com/${GITHUB_REPOSITORY}/releases/download/${RELEASE_TAG}/<nixl_rocm-wheel>"
-            echo '```'
-            echo ""
-            echo "> Wheels are **not** manylinux: ROCm 7.14 + Python 3.12 + x86_64 only."
-            echo "> The \`nixl_rocm\` wheel needs libamdhip64 and hipFile (GA in ROCm 7.14) on the host."
-            echo "> See [docs/PIP_WHEELS.md](https://github.com/${GITHUB_REPOSITORY}/blob/main/docs/PIP_WHEELS.md)."
-          } > release-notes.md
-          cat release-notes.md
-
-      - name: Publish rolling nightly release
+      - name: Promote staged releases
         env:
-          GH_TOKEN: ${{ github.token }}
+          STAGED_CDNA: ${{ steps.stage.outputs.cdna }}
+          STAGED_RDNA: ${{ steps.stage.outputs.rdna }}
         run: |
           set -euo pipefail
-          gh release delete "${RELEASE_TAG}" --repo "${GITHUB_REPOSITORY}" --yes --cleanup-tag 2>/dev/null || true
-          gh release create "${RELEASE_TAG}" all-wheels/*.whl \
-            --repo "${GITHUB_REPOSITORY}" \
-            --title "AIC nightly wheels" \
-            --notes-file release-notes.md \
-            --target "${{ needs.check.outputs.sha }}" \
-            --prerelease
-          echo "Published ${RELEASE_TAG} at ${{ needs.check.outputs.sha }}"
+          p=.github/scripts/workflows/publish-rolling-release.sh
+          bash "${p}" promote "${RELEASE_TAG}" "${STAGED_CDNA}" "${SOURCE_SHA}"
+          if [ "${INCLUDE_RDNA}" = "true" ]; then
+            bash "${p}" promote "${RELEASE_TAG_RDNA}" "${STAGED_RDNA}" "${SOURCE_SHA}"
+          fi

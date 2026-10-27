@@ -362,3 +362,6 @@ WorkDir
 zst
 zstd
 banff
+ABI
+GEMM
+JIT
