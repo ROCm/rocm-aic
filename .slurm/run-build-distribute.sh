@@ -2470,10 +2470,8 @@ for _comp in version rocm pytorch vllm llm-emu aiter flash-attention lmcache nix
 done
 
 # Scrape every /metrics endpoint that may be present; skip those that are not.
-# Services on the compose bridge network (vllm, lmcache, etc.) are reached via
-# docker exec aic-client curl using compose DNS names.  Host-side exporters
-# (node_exporter, nvme_exporter, rdma_exporter, amdgpu_exporter) listen on the
-# host network and are reached directly via localhost.
+# Every service is reached via docker exec aic-client curl using its compose
+# DNS name; none of the exporters publishes a host port.
 echo "[prom-dump] scraping /metrics endpoints..."
 mkdir -p '${prom_scratch}'
 _args=""
@@ -2488,17 +2486,6 @@ _scrape_compose() {
         echo "  \${name} \${host}:\${port} — not reachable (skipped)"
     fi
 }
-# Scrape directly from the host (host-network services).
-_scrape_host() {
-    local name="\$1" port="\$2"
-    local out='${prom_scratch}'/metrics_"\${name}".txt
-    if curl -sf "http://localhost:\${port}/metrics" > "\${out}" 2>/dev/null && [ -s "\${out}" ]; then
-        echo "  \${name} localhost:\${port} — \$(grep -c '^# HELP' "\${out}") metrics"
-        _args="\${_args} --source \${name}:\${out}"
-    else
-        echo "  \${name} localhost:\${port} — not reachable (skipped)"
-    fi
-}
 _scrape_compose vllm                aic-lmcache                  8000
 _scrape_compose lmcache             aic-lmcache                  8080
 _scrape_compose nixl                aic-lmcache                  19090
@@ -2506,9 +2493,9 @@ _scrape_compose lmcache_coordinator aic-lmcache-coordinator      9301
 _scrape_compose hsa_snoop           aic-hsa-snoop                9488
 _scrape_compose amdgpu_exporter     aic-amdgpu-exporter          5000
 _scrape_compose prometheus          aic-prometheus               9090
-_scrape_host    node_exporter                                     9100
-_scrape_host    nvme_exporter                                     9998
-_scrape_host    rdma_exporter                                     9879
+_scrape_compose node_exporter       aic-node-exporter            9100
+_scrape_compose nvme_exporter       aic-nvme-exporter            9998
+_scrape_compose rdma_exporter       aic-rdma-exporter            9879
 
 # Collect running container names, images, and status for the report.
 # Write to a TSV file; metrics_to_md.py reads it via --containers-tsv.
