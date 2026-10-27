@@ -807,7 +807,7 @@ test-rocjitsu-local: prep-dirs
 	        2>&1 | sed 's/^/  [lmcache] /'; \
 	    echo "  --- vllm logs ---"; \
 	    ssh $$_ssh_flags "$$_vmuser@localhost" \
-	        "sudo docker logs aic-vllm-gpu0 2>&1 | tail -40" \
+	        "sudo docker logs aic-vllm-gpu0 2>&1 | tail -250" \
 	        2>&1 | sed 's/^/  [vllm] /'; \
 	    echo "  --- rocjitsu emulator log ---"; \
 	    docker logs --tail 40 aic-rj-rocjitsu 2>&1 | sed 's/^/  [rocjitsu] /'; \
