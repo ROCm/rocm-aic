@@ -183,9 +183,16 @@
 #                        the daemon's insecure-registries, so it is told to skip
 #                        cert verification explicitly                (default: unset)
 #
-#   AIC_TEST_CONSTRAINT  Slurm -C feature expr for the test node
-#                        (default: <site>&GFX942&NVME -- MI300X + local NVMe).
-#                        Used only when AIC_TEST_NODE is unset.
+#   AIC_TEST_CONSTRAINT  Slurm -C feature expr for the test node.  Default is
+#                        derived from AIC_ROCM_ARCH, one term per arch joined
+#                        with '|' (gfx942;gfx950 -> GFX942|GFX950), so the node
+#                        always matches what the image was built for.  Explicitly
+#                        empty means no -C at all.  Used only when AIC_TEST_NODE
+#                        is unset.
+#   AIC_TEST_SITE        site feature prepended to each term of a derived test
+#                        constraint (e.g. MARKHAM)          (default: unset)
+#   AIC_TEST_NVME        set to 1 to add &NVME to a derived test constraint; only
+#                        the cliff needs local NVMe       (default: unset)
 #   AIC_TEST_NODE        pin an exact test node via --nodelist  (default: unset)
 #   AIC_TEST_GRES        Standard-Slurm GPU GRES request for smoke/tiny tests
 #                        (default: gpu:1)
@@ -486,7 +493,25 @@ else
     AIC_BUILD_PARTITION="${AIC_BUILD_PARTITION:-defq}"
     AIC_TMP_DIR="${AIC_TMP_DIR-}"
     AIC_BUILD_CONSTRAINT="${AIC_BUILD_CONSTRAINT:-CPUONLY}"
-    AIC_TEST_CONSTRAINT="${AIC_TEST_CONSTRAINT:-GFX942&NVME}"
+    # Derive the test constraint from the arch(es) the image was built for.
+    # Multi-arch gets an OR over the covered set rather than no constraint:
+    # emitting nothing let Slurm place a gfx942;gfx950 image on a gfx1151 APU,
+    # where every kernel failed with "device kernel image is invalid".  Slurm
+    # has no negation operator; the flat `A&B|A&C` form is accepted, the
+    # bracketed `[A&B|A&C]` form is rejected.  ${VAR+set}: an explicitly empty
+    # constraint means "no -C at all".
+    if [[ -z "${AIC_TEST_CONSTRAINT+set}" ]]; then
+        _aic_terms=""
+        _aic_site="${AIC_TEST_SITE:-}"
+        _aic_site="${_aic_site#"${_aic_site%%[![:space:]]*}"}"
+        _aic_site="${_aic_site%"${_aic_site##*[![:space:]]}"}"
+        for _aic_a in ${AIC_ROCM_ARCH//;/ }; do
+            _aic_g="$(printf '%s' "${_aic_a}" | tr '[:lower:]' '[:upper:]')"
+            _aic_one="${_aic_site:+${_aic_site}&}${_aic_g}${AIC_TEST_NVME:+&NVME}"
+            _aic_terms="${_aic_terms:+${_aic_terms}|}${_aic_one}"
+        done
+        AIC_TEST_CONSTRAINT="${_aic_terms}"
+    fi
 fi
 AIC_SLURM_ACCOUNT="${AIC_SLURM_ACCOUNT:-}"
 AIC_BUILD_CPUS="${AIC_BUILD_CPUS:-32}"
