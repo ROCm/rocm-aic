@@ -1,5 +1,5 @@
 #!/bin/bash
-#SBATCH --partition=amd-spur
+#SBATCH --partition=amd-spur-v2
 #SBATCH --constraint=
 #SBATCH --gpus=1
 #SBATCH --time=01:30:00
@@ -55,11 +55,12 @@ aic_resolve_gpu_visibility \
 # --- Load image ---
 echo "--- Loading image ---"
 if ! docker image inspect "${AIC_IMAGE}" >/dev/null 2>&1; then
-    echo "Loading from tarball..."
-    _img_base="${AIC_IMAGE##*/}"; _img_base="${_img_base//:/-}"
-    _img_tar="$(ls "${AIC_IMAGE_DIR}/${_img_base}"-*.tar.* 2>/dev/null | head -1)"
-    [[ -n "${_img_tar}" ]] || { echo "ERROR: no tarball for ${AIC_IMAGE} in ${AIC_IMAGE_DIR}"; exit 1; }
-    zstd -d -c "${_img_tar}" | docker load
+    echo "Fetching from ${AIC_IMAGE_DIR}..."
+    # shellcheck source=.slurm/image-dist-lib.sh
+    source "${REPO}/.slurm/image-dist-lib.sh"
+    _img_art="$(aic_image_artifact "${AIC_IMAGE_DIR}" "$(aic_image_stem "${AIC_IMAGE}")-*")" \
+        || { echo "ERROR: no build artifact for ${AIC_IMAGE} in ${AIC_IMAGE_DIR}"; exit 1; }
+    aic_image_fetch ext-hit-test "${AIC_IMAGE}" "${_img_art}"
 fi
 echo "Image ready: ${AIC_IMAGE}"
 

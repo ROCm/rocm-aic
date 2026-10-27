@@ -167,7 +167,6 @@ AIC_SPUR_CLUSTER=1 \
     AIC_ROCM_ARCH="${ROCM_ARCH_LIST}" \
     AIC_WHEEL_DIR="${WHEEL_DIR}" \
     AIC_CACHE_DIR="${CACHE_DIR}" \
-    ${AIC_BUILD_EXCLUDE_NODES:+AIC_BUILD_EXCLUDE_NODES="${AIC_BUILD_EXCLUDE_NODES}"} \
     _err_delegate make dist-wheels
 
 echo "=== dist-wheels complete — wheels in ${WHEEL_DIR} ==="

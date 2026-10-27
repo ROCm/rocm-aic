@@ -498,56 +498,45 @@ if [[ -d "${NVME_DATA}/lmcache" ]]; then
 fi
 [[ -d "${HF_HOME}/hub" ]] || die "HF cache not found at ${HF_HOME}/hub"
 
-# --- Load images from shared tarballs when needed ----------------------------
-# Reload when the node's image is absent, when the /scratch tarball is newer than
+# --- Fetch images from shared storage when needed ----------------------------
+# The build leaves a tarball or a .ref to its registry copy (see
+# .slurm/image-dist-lib.sh).  aic_image_fetch pulls a .ref by digest, and reloads
+# a tarball only when the node's image is absent, when the tarball is newer than
 # what this node last loaded, or when AIC_FORCE_LOAD=1 -- so a rebuild is picked
-# up automatically instead of a stale cached image being reused (mirrors cmd_test
-# / cmd_push in run-build-distribute.sh).  A per-uid+image marker under /var/tmp
-# records the tarball mtime last loaded here; comparing tarball-mtime vs the
-# recorded tarball-mtime (both build-side values) avoids build/node clock skew.
+# up automatically instead of a stale cached image being reused.
 #
-#   $1=image name:tag  $2=tarball glob  $3=mode ("required" -> die if no tarball;
-#   otherwise best-effort).  Returns 0 iff the image is present afterward.
+#   $1=image name:tag  $2=what follows the image's name in its artifact's: "-*"
+#   for an arch-tagged build, "" for an exporter  $3=mode ("required" -> die if
+#   no artifact; otherwise best-effort).  Returns 0 iff the image is present
+#   afterward.
+# shellcheck source=.slurm/image-dist-lib.sh
+source "${REPO}/.slurm/image-dist-lib.sh"
 load_image_if_needed() {
-  local image="$1" glob="$2" mode="${3:-optional}"
-  local tb marker have tarm loadedm
-  tb="$(ls -t ${glob} 2>/dev/null | head -1 || true)"
-  marker="/var/tmp/aic-loaded-$(id -u)-$(printf '%s' "${image}" | tr '/:' '__').mtime"
-  have="$(docker images -q "${image}" 2>/dev/null)"
-  tarm="$(stat -c %Y "${tb}" 2>/dev/null || echo 0)"
-  loadedm="$(cat "${marker}" 2>/dev/null || echo 0)"
-  if [[ "${AIC_FORCE_LOAD:-0}" == "1" || -z "${have}" || "${tarm}" -gt "${loadedm}" ]]; then
-    if [[ -z "${tb}" ]]; then
-      [[ "${mode}" == "required" ]] && die "image ${image} absent and no tarball matching ${glob} (run the build first)"
-      [[ -n "${have}" ]] && return 0 # no tarball, but image already present
-      log "  ${image}: absent and no tarball (${glob}); skipping"
-      return 1
+  local image="$1" stem mode="${3:-optional}" art
+  stem="$(aic_image_stem "${image}")$2"
+  if ! art="$(aic_image_artifact "${AIC_IMAGE_DIR}" "${stem}")"; then
+    # No artifact, but the image is already here: use it, unless a required
+    # image was asked to be reloaded.
+    if docker image inspect "${image}" >/dev/null 2>&1 \
+      && [[ "${mode}" != "required" || "${AIC_FORCE_LOAD:-0}" != "1" ]]; then
+      return 0
     fi
-    log "loading ${image} from ${tb} (tarball=${tarm} last-loaded=${loadedm} present=$([[ -n "${have}" ]] && echo yes || echo no) force=${AIC_FORCE_LOAD:-0})"
-    case "${tb}" in
-    *.zst) zstd -dc "${tb}" | docker load ;;
-    *.gz) gzip -dc "${tb}" | docker load ;;
-    *) docker load -i "${tb}" ;;
-    esac || {
-      [[ "${mode}" == "required" ]] && die "docker load failed"
-      log "  ${image}: docker load failed"
-      return 1
-    }
-    echo "${tarm}" >"${marker}" 2>/dev/null || true
-  else
-    log "image up to date on $(hostname): ${image} (id ${have}); AIC_FORCE_LOAD=1 forces a reload"
+    [[ "${mode}" == "required" ]] && die "image ${image} absent and no build artifact ${AIC_IMAGE_DIR}/${stem} (run the build first)"
+    log "  ${image}: absent and no build artifact (${AIC_IMAGE_DIR}/${stem}); skipping"
+    return 1
   fi
-  return 0
+  aic_image_fetch cliff "${image}" "${art}" && return 0
+  [[ "${mode}" == "required" ]] && die "could not load ${image} from ${art}"
+  return 1
 }
 
 # Main inference image (required -- the whole run needs it).
-_img_base="$(printf '%s' "${AIC_IMAGE}" | tr '/:' '--')"
-load_image_if_needed "${AIC_IMAGE}" "${AIC_IMAGE_DIR}/${_img_base}-*.tar.*" required
+load_image_if_needed "${AIC_IMAGE}" "-*" required
 
 # Monitoring sidecar images.  Load from the shared NFS tarball when present so
 # compose never needs Docker Hub egress on a cold node.  Applies for all non-zero
-# AIC_EXPORTERS modes (safe and 1).  Images are named by their Docker Hub tag
-# with '/:' → '--' so they match the tarball filenames saved by dist-build.
+# AIC_EXPORTERS modes (safe and 1).  load_image_if_needed finds each by its
+# name:tag, the way dist-build names the files it saves.
 # On a node with the batesste host service the fabric containers are port-skipped
 # anyway; with neither, node-exporter's nvme/infiniband collectors still cover it
 # -- see _monitoring_run_up.
@@ -555,27 +544,23 @@ if [[ "${AIC_EXPORTERS}" != "0" ]]; then
   # nvme/rdma fabric exporters (built by run-build-distribute.sh build-exporters)
   if [[ -z "${AIC_NVME_EXPORTER_IMAGE:-}" ]]; then
     _t="aic-nvme-exporter:latest"
-    _b="$(printf '%s' "${_t}" | tr '/:' '--')"
-    load_image_if_needed "${_t}" "${AIC_IMAGE_DIR}/${_b}.tar.*" && export AIC_NVME_EXPORTER_IMAGE="${_t}"
+    load_image_if_needed "${_t}" "" && export AIC_NVME_EXPORTER_IMAGE="${_t}"
   fi
   if [[ -z "${AIC_RDMA_EXPORTER_IMAGE:-}" ]]; then
     _t="aic-rdma-exporter:latest"
-    _b="$(printf '%s' "${_t}" | tr '/:' '--')"
-    load_image_if_needed "${_t}" "${AIC_IMAGE_DIR}/${_b}.tar.*" && export AIC_RDMA_EXPORTER_IMAGE="${_t}"
+    load_image_if_needed "${_t}" "" && export AIC_RDMA_EXPORTER_IMAGE="${_t}"
   fi
   # AMD GPU device-metrics-exporter (rocm/device-metrics-exporter:v1.5.1).
   # Tarball saved to AIC_IMAGE_DIR by dist-build-exporters or manually.
   if [[ -z "${AIC_AMDGPU_EXPORTER_IMAGE:-}" ]]; then
     _t="${AIC_AMDGPU_EXPORTER_IMAGE_DEFAULT:-rocm/device-metrics-exporter:v1.5.1}"
-    _b="$(printf '%s' "${_t}" | tr '/:' '--')"
-    load_image_if_needed "${_t}" "${AIC_IMAGE_DIR}/${_b}.tar.*" && export AIC_AMDGPU_EXPORTER_IMAGE="${_t}"
+    load_image_if_needed "${_t}" "" && export AIC_AMDGPU_EXPORTER_IMAGE="${_t}"
   fi
   # Prometheus (prom/prometheus:v3.14.0).  Pre-pull avoids 10+ min Docker Hub
   # download on fresh nodes; load_image_if_needed is a no-op when already present.
   if [[ -z "${AIC_PROM_IMAGE:-}" ]]; then
     _t="prom/prometheus:v3.14.0"
-    _b="$(printf '%s' "${_t}" | tr '/:' '--')"
-    load_image_if_needed "${_t}" "${AIC_IMAGE_DIR}/${_b}.tar.*" || true
+    load_image_if_needed "${_t}" "" || true
   fi
 fi
 

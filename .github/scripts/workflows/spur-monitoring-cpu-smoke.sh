@@ -16,9 +16,9 @@ set -Eeuo pipefail
 # The generated metrics-page/index.html is copied back to the runner working
 # directory so the workflow can upload it as an artifact and deploy to gh-pages.
 #
-# Uses the rocm-aic image tarball left by spur-dist-build.sh for the same SHA
-# (same TARBALL_DIR convention).  Set AIC_SMOKE_USE_REGISTRY=1 to pull from
-# a registry instead.
+# Uses the rocm-aic image artifact (tarball or .ref) left by spur-dist-build.sh
+# for the same SHA (same TARBALL_DIR convention).  Set AIC_SMOKE_USE_REGISTRY=1
+# to pull from a registry instead.
 
 # errexit exits without saying where; report it.  Only the line number and
 # function call stack are printed, never the command text, which can carry
@@ -45,6 +45,7 @@ AIC_SHARED_NFS="${AIC_SHARED_NFS:?AIC_SHARED_NFS must be set (e.g. via GitHub re
 AIC_CI_STORAGE_ROOT="${AIC_CI_STORAGE_ROOT:-}"
 AIC_SMOKE_USE_REGISTRY="${AIC_SMOKE_USE_REGISTRY:-0}"
 AIC_SLURM_ACCOUNT="${AIC_SLURM_ACCOUNT:-}"
+AIC_SPUR_PARTITION="${AIC_SPUR_PARTITION:-amd-spur-v2}"
 REPO="https://github.com/ROCm/rocm-aic.git"
 
 _err_delegate ssh -o ServerAliveInterval=30 -o ServerAliveCountMax=4 "${AIC_SPUR_HOST}" env \
@@ -54,6 +55,7 @@ _err_delegate ssh -o ServerAliveInterval=30 -o ServerAliveCountMax=4 "${AIC_SPUR
     AIC_SHARED_NFS="${AIC_SHARED_NFS}" \
     AIC_CI_STORAGE_ROOT="${AIC_CI_STORAGE_ROOT}" \
     AIC_SLURM_ACCOUNT="${AIC_SLURM_ACCOUNT}" \
+    AIC_SPUR_PARTITION="${AIC_SPUR_PARTITION}" \
     AIC_SMOKE_USE_REGISTRY="${AIC_SMOKE_USE_REGISTRY}" \
     bash << 'REMOTE'
 # -E inherit ERR trap in functions and subshells,
@@ -155,15 +157,12 @@ mkdir -p "${METRICS_DIR}" "${AIC_METRICS_PAGE_DIR}"
 if [[ "${AIC_SMOKE_USE_REGISTRY}" == "1" ]]; then
     docker pull "${AIC_IMAGE}"
 else
-    echo "=== Loading image from ${TARBALL_DIR} ==="
-    img_base="$(printf '%s' "${AIC_IMAGE}" | tr '/:' '--')"
-    tarball="$(find "${TARBALL_DIR}" -maxdepth 1 -name "${img_base}-*.tar.zst" -o -name "${img_base}-*.tar.gz" -o -name "${img_base}-*.tar" 2>/dev/null | head -1)"
-    [[ -n "${tarball}" ]] || { echo "ERROR: no tarball for ${AIC_IMAGE} in ${TARBALL_DIR}" >&2; ls -la "${TARBALL_DIR}" >&2 || true; exit 1; }
-    case "${tarball}" in
-        *.tar.zst) zstd -dc "${tarball}" | docker load ;;
-        *.tar.gz)  gzip -dc "${tarball}" | docker load ;;
-        *.tar)     docker load -i "${tarball}" ;;
-    esac
+    echo "=== Fetching image from ${TARBALL_DIR} ==="
+    # shellcheck source=.slurm/image-dist-lib.sh
+    source "${WORKDIR}/.slurm/image-dist-lib.sh"
+    artifact="$(aic_image_artifact "${TARBALL_DIR}" "$(aic_image_stem "${AIC_IMAGE}")-*")" \
+        || { echo "ERROR: no build artifact for ${AIC_IMAGE} in ${TARBALL_DIR}" >&2; ls -la "${TARBALL_DIR}" >&2 || true; exit 1; }
+    aic_image_fetch cpu-smoke "${AIC_IMAGE}" "${artifact}"
 fi
 
 # ---------------------------------------------------------------------------
@@ -303,7 +302,7 @@ _err_delegate srun \
     --cpus-per-task=8 \
     --mem=16G \
     --time=00:30:00 \
-    --partition=amd-spur \
+    --partition="${AIC_SPUR_PARTITION}" \
     --gres= \
     --gpus=1 \
     bash "${SRUN_SCRIPT}" \

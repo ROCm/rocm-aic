@@ -60,9 +60,8 @@
 # by hand on a GPU node that has the repo:
 #
 #   AIC_DAY_DIR=/path/to/repo AIC_LOG_DIR=/tmp/acc \
-#   AIC_VLLM_IMAGE=aic-vllm:latest AIC_VLLM_TARBALL=/shared/aic-vllm-latest-gfx950.tar.zst \
-#   AIC_LMCACHE_IMAGE=aic-lmcache:latest AIC_LMCACHE_TARBALL=/shared/aic-lmcache-latest-gfx950.tar.zst \
-#   AIC_DECOMPRESS_CMD='zstd -dc' \
+#   AIC_VLLM_IMAGE=aic-vllm:latest AIC_VLLM_ARTIFACT=/shared/aic-vllm-latest-gfx950.ref \
+#   AIC_LMCACHE_IMAGE=aic-lmcache:latest AIC_LMCACHE_ARTIFACT=/shared/aic-lmcache-latest-gfx950.ref \
 #   AIC_ROCM_ARCH=gfx950 HF_HOME=/shared/hf AIC_ACCURACY_MODEL=Qwen/Qwen2.5-0.5B-Instruct \
 #   AIC_ACCURACY_DELTA=0.02 AIC_ACCURACY_READY_TIMEOUT=120 \
 #       bash .slurm/run-accuracy.sh
@@ -71,10 +70,10 @@
 #   AIC_DAY_DIR                 repo root, absolute, on storage the node can see
 #   AIC_LOG_DIR                 per-job log dir; scores and container logs land here
 #   AIC_VLLM_IMAGE              vllm image ref to load and run
-#   AIC_VLLM_TARBALL            vllm image tarball to load from
+#   AIC_VLLM_ARTIFACT           vllm image tarball, or .ref, to fetch it from
+#                               (see .slurm/image-dist-lib.sh)
 #   AIC_LMCACHE_IMAGE           lmcache image ref to load and run
-#   AIC_LMCACHE_TARBALL         lmcache image tarball to load from
-#   AIC_DECOMPRESS_CMD          matching decompressor (e.g. "zstd -dc")
+#   AIC_LMCACHE_ARTIFACT        lmcache image tarball, or .ref, to fetch it from
 #   AIC_ROCM_ARCH               arch tag forwarded to compose
 #   HF_HOME                     persistent HF cache
 #   AIC_ACCURACY_MODEL          model to serve
@@ -100,10 +99,9 @@ set -uo pipefail
 : "${AIC_DAY_DIR:?run-accuracy.sh: AIC_DAY_DIR must be set by the submitter}"
 : "${AIC_LOG_DIR:?run-accuracy.sh: AIC_LOG_DIR must be set by the submitter}"
 : "${AIC_VLLM_IMAGE:?run-accuracy.sh: AIC_VLLM_IMAGE must be set by the submitter}"
-: "${AIC_VLLM_TARBALL:?run-accuracy.sh: AIC_VLLM_TARBALL must be set by the submitter}"
+: "${AIC_VLLM_ARTIFACT:?run-accuracy.sh: AIC_VLLM_ARTIFACT must be set by the submitter}"
 : "${AIC_LMCACHE_IMAGE:?run-accuracy.sh: AIC_LMCACHE_IMAGE must be set by the submitter}"
-: "${AIC_LMCACHE_TARBALL:?run-accuracy.sh: AIC_LMCACHE_TARBALL must be set by the submitter}"
-: "${AIC_DECOMPRESS_CMD:?run-accuracy.sh: AIC_DECOMPRESS_CMD must be set by the submitter}"
+: "${AIC_LMCACHE_ARTIFACT:?run-accuracy.sh: AIC_LMCACHE_ARTIFACT must be set by the submitter}"
 : "${AIC_ROCM_ARCH:?run-accuracy.sh: AIC_ROCM_ARCH must be set by the submitter}"
 : "${HF_HOME:?run-accuracy.sh: HF_HOME must be set by the submitter}"
 : "${AIC_ACCURACY_MODEL:?run-accuracy.sh: AIC_ACCURACY_MODEL must be set by the submitter}"
@@ -113,24 +111,10 @@ set -uo pipefail
 command -v docker >/dev/null 2>&1 || { echo "$(hostname): docker not found" >&2; exit 1; }
 echo "[accuracy-test] host=$(hostname) docker=$(docker --version)"
 
-# Load each image from its shared tarball only when needed (same marker logic as
-# tiny-test): reload when forced, absent, or the tarball is newer.
-_load_image() {
-    local img="$1" tb="$2" marker tar_mtime have loaded_mtime
-    marker="/var/tmp/aic-loaded-$(id -u)-$(echo "${img}" | tr '/:' '--').mtime"
-    tar_mtime="$(stat -c %Y "${tb}" 2>/dev/null || echo 0)"
-    have="$(docker images -q "${img}")"
-    loaded_mtime="$(cat "${marker}" 2>/dev/null || echo 0)"
-    if [ "${AIC_FORCE_LOAD:-0}" = "1" ] || [ -z "${have}" ] || [ "${tar_mtime}" -gt "${loaded_mtime}" ]; then
-        echo "[accuracy-test] loading ${img} from ${tb}"
-        ${AIC_DECOMPRESS_CMD} "${tb}" | docker load >/dev/null
-        echo "${tar_mtime}" > "${marker}" 2>/dev/null || true
-    else
-        echo "[accuracy-test] ${img} up to date on $(hostname) (id ${have})"
-    fi
-}
-_load_image "${AIC_VLLM_IMAGE}"    "${AIC_VLLM_TARBALL}"
-_load_image "${AIC_LMCACHE_IMAGE}" "${AIC_LMCACHE_TARBALL}"
+# shellcheck source=.slurm/image-dist-lib.sh
+source "${AIC_DAY_DIR}/.slurm/image-dist-lib.sh"
+aic_image_fetch accuracy-test "${AIC_VLLM_IMAGE}"    "${AIC_VLLM_ARTIFACT}" || exit 1
+aic_image_fetch accuracy-test "${AIC_LMCACHE_IMAGE}" "${AIC_LMCACHE_ARTIFACT}" || exit 1
 
 cd "${AIC_DAY_DIR}" || { echo "[accuracy-test] FAIL: cannot cd to ${AIC_DAY_DIR}" >&2; exit 1; }
 # shellcheck source=/dev/null

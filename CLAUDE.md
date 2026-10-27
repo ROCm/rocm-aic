@@ -15,9 +15,12 @@ cluster's value lists all three controllers (`crs-m2m-cpu-spur-00{5,6,7}`),
 which form a Raft quorum; overriding it with a single address silently drops
 that redundancy.
 
-- **Partition:** `amd-spur`
+- **Partition:** `amd-spur-v2` (since 2026-11-03; `amd-spur` has no nodes and
+  jobs submitted to it pend forever on `PartitionConfig`). Scripts and `make`
+  read it from `AIC_SPUR_PARTITION`; use that, not the literal name
 - **No `--account` flag needed** for `srun`
-- Node naming convention: `crsuse2-m2m-NNN`
+- Node naming convention: `crsuse2-m2m-v3-NNN` (`amd-spur-v2`; older nodes
+  were `crsuse2-m2m-NNN`)
 - Controllers are *not* compute nodes and never appear in `sinfo`
 
 ## Historical ROCm 7.14 torch wheel integration issue (2026-07-20)
