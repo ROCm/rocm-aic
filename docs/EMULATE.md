@@ -413,14 +413,15 @@ A KV connector is handed vLLM's paged KV tensors once, at startup, via
 node with no VRAM.
 
 But nothing about those buffers is device-specific *from the connector's point
-of view*: they are paged byte buffers whose shape, dtype and byte count vLLM has
-already computed and put in the `KVCacheConfig`. So `vllm_emulator` synthesizes
-them in **host memory** from that config and registers those
+of view*: they are views of one paged byte buffer whose size, per-layer
+placement and layout vLLM has already computed and put in the `KVCacheConfig`.
+So `vllm_emulator` builds them in **host memory** from that config, with vLLM's
+own `allocate_kv_cache()`, and registers those
 (`patches/llm-emu/04-kv-connector-emulation.patch`). Their contents are zeros;
 their volume is real, which is what makes the measured transfer cost real.
 
 LMCache needs no persuading to accept them. Its device detection resolves to
-`StubCPUDevice`, and `lmcache/v1/platform/cpu/shm.py` migrates a CPU tensor's
+`StubCPUDevice`, and `lmcache/v1/platform/devices/cpu/shm.py` migrates a CPU tensor's
 storage into a POSIX SHM segment the mp server can map — the same server-pull
 topology as HIP IPC, with `/dev/shm` in place of the GPU. Two consequences:
 
@@ -446,9 +447,10 @@ stack. Use it as a fallback if the SHM pull path misbehaves.
 ### 6.2 Sizing
 
 Unlike the plain `emulate` profile, the KV pool here is genuinely allocated.
-`torch.zeros` on CPU is lazily backed, so untouched blocks cost no resident
-memory — but RSS grows toward the full pool as blocks get written, and a real
-MI300X pack records ~100+ GiB of `available_kv_cache_bytes`. **Set
+LMCache copies the whole backing buffer into its SHM segment at registration,
+so the full pool is resident in `lmcache-emulator`'s `/dev/shm` from startup
+(sized by `AIC_SHM_SIZE`, default 64 GiB) — and a real MI300X pack records
+~100+ GiB of `available_kv_cache_bytes`. **Set
 `VLLM_EMULATOR_MEMORY`** to something the node can hold; that also moves the
 emulated admission cliff, which is usually what you want to control anyway.
 `make emulate-mp-test` defaults to 8 GiB (`AIC_EMULATE_MP_KV_BYTES`).
@@ -515,7 +517,7 @@ added.
 | `ModuleNotFoundError: lmcache` under `emulate-mp` | you are on `:7.14-emulate`; that stage stops before LMCache — use the production image (§6) |
 | `emulate-mp` hangs with requests in `WAITING_FOR_REMOTE_KVS` | the connector's worker side is not reporting completions; check for `[EmulatorKVBuffers] registered` in the log |
 | `Creating transfer context (device_type=cuda, ...)` on a CPU node | `DEVICE_TYPE=cpu` was not honoured — LMCache patch 10 missing, or the var is empty rather than `cpu` (§6.1) |
-| Emulator RSS climbing to tens of GiB under `emulate-mp` | expected — the fake KV pool is really allocated; cap it with `VLLM_EMULATOR_MEMORY` (§6.2) |
+| Tens of GiB of `/dev/shm` in use under `emulate-mp` | expected — the fake KV pool is really allocated; cap it with `VLLM_EMULATOR_MEMORY` (§6.2) |
 | `FileExistsError: [Errno 17] File exists: '/lmcache_kv_<pid>_0'` | a stale POSIX SHM segment from a killed previous run in a still-live `aic-lmcache-emulator`: LMCache names segments after the containerised engine pid, which repeats. Recreate both containers (`up --force-recreate`, which `emulate-mp-test` does). |
 | `FileNotFoundError` for `/lmcache_kv_*` in the lmcache-emulator log | the two containers have separate `/dev/shm`s — `EMU_IPC_MODE=container:aic-lmcache-emulator` was not set (§6.1) |
 | `ConnectionError: Cannot reach the LMCache MP server` from the **plain** `emulate` profile | something exported `KV_TRANSFER_ARG` (the Makefile does, globally). The emulator reads `EMU_KV_TRANSFER_ARG` instead precisely so this cannot happen — check you are not on an older compose file. |

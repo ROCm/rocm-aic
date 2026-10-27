@@ -21,29 +21,34 @@
 #
 # 1. cuda_mock._synthesize_kv_caches / _maybe_init_kv_connector
 #    A connector does not care that KV buffers live in VRAM; it cares about
-#    their shape, dtype and byte count, all of which vLLM has already computed
-#    and put in the KVCacheConfig.  So allocate them in HOST memory from that
-#    config and register those.  Contents are zeros; volumes are real, which
-#    is what makes the measured transfer cost real.
+#    their shape, dtype, layout and byte count, all of which vLLM has already
+#    computed and put in the KVCacheConfig.  So allocate them in HOST memory
+#    from that config, with vLLM's own allocate_kv_cache() (one backing buffer,
+#    one strided view per layer in the resolved layout, as of vLLM v0.29), and
+#    register those.  Contents are zeros; volumes are real, which is what
+#    makes the measured transfer cost real.
 #
 #    Note this must NOT go through GPUModelRunner.initialize_kv_cache(): its
 #    bind_kv_cache() resolves layer names against
 #    compilation_config.static_forward_context, which is populated by Attention
 #    module construction during load_model -- stubbed out here, so that dict is
-#    empty and the real path raises.
+#    empty and the real path raises.  allocate_kv_cache() is the allocation
+#    half of that path without the binding half.
 #
 #    LMCache needs no changes to accept host buffers: with DEVICE_TYPE=cpu
 #    (see patches/lmcache/10-*.patch) its device detection resolves to
-#    StubCPUDevice, and lmcache/v1/platform/cpu/shm.py migrates a CPU tensor's
-#    storage into a POSIX SHM segment the mp server can map -- the same
-#    server-pull topology as HIP IPC, minus the GPU.  The emulator container
-#    needs `ipc: host` for that, since Docker isolates /dev/shm per container.
+#    StubCPUDevice, and lmcache/v1/platform/devices/cpu/shm.py migrates a CPU
+#    tensor's storage into a POSIX SHM segment the mp server opens by name --
+#    the same server-pull topology as HIP IPC, minus the GPU.  The two
+#    containers must therefore share an IPC namespace (one /dev/shm); see
+#    EMU_IPC_MODE in docker/docker-compose.yml.
 #
-#    Sizing: these are the full pool vLLM asked for, which on a real MI300X
-#    pack is the captured available_kv_cache_bytes (~100+ GiB).  torch.zeros on
-#    CPU is lazily backed, so untouched blocks cost no resident memory;
-#    VLLM_EMULATOR_MEMORY shrinks the emulated pool -- and the emulated cliff --
-#    to fit the node, and VLLM_EMULATOR_KV_BUFFERS=0 opts out entirely.
+#    Sizing: this is the full pool vLLM asked for, which on a real MI300X pack
+#    is the captured available_kv_cache_bytes (~100+ GiB).  LMCache copies the
+#    whole backing buffer into its SHM segment at registration, so the pool is
+#    resident in /dev/shm from startup.  VLLM_EMULATOR_MEMORY shrinks the
+#    emulated pool -- and the emulated cliff -- to fit the node, and
+#    VLLM_EMULATOR_KV_BUFFERS=0 opts out entirely.
 #
 # 2. executor_hook._kv_connector_step
 #    Reproduces the mixin's lifecycle around the emulated forward, and
@@ -74,10 +79,10 @@
 #    would now also missize every registered buffer.
 #
 diff --git a/vllm_emulator/cuda_mock.py b/vllm_emulator/cuda_mock.py
-index 05505e4..1c80c23 100644
+index 05505e4..49ee38c 100644
 --- a/vllm_emulator/cuda_mock.py
 +++ b/vllm_emulator/cuda_mock.py
-@@ -151,6 +151,155 @@ def _patch_gpu_model_runner(module):
+@@ -151,6 +151,143 @@ def _patch_gpu_model_runner(module):
          cls.get_model = _stub_get_model
  
  
@@ -104,64 +109,52 @@ index 05505e4..1c80c23 100644
 +# executor hook fakes every step's output, so the buffers are dead weight --
 +# until you want to emulate the connector too, at which point their absence is
 +# the whole problem.  There is nothing device-specific about them from the
-+# connector's point of view; they are paged byte buffers of a shape fixed by
-+# (num_blocks, block_size, num_kv_heads, head_size, kv dtype), all of which
-+# vLLM has already computed and put in the KVCacheConfig.  So synthesize them
-+# in HOST memory and register those.
++# connector's point of view; they are views of one paged byte buffer whose
++# size, per-layer placement and layout vLLM has already computed and put in
++# the KVCacheConfig.  So build them in HOST memory, with vLLM's own allocator,
++# and register those.
 +#
 +# LMCache in particular needs no changes to accept them: its device detection
-+# resolves to StubCPUDevice, and lmcache/v1/platform/cpu/shm.py migrates a CPU
-+# tensor's storage into a POSIX SHM segment so the mp server can map it --
-+# the same server-pull topology as HIP IPC on a real GPU, minus the GPU.
++# resolves to StubCPUDevice, and lmcache/v1/platform/devices/cpu/shm.py
++# migrates a CPU tensor's storage into a POSIX SHM segment so the mp server can
++# map it -- the same server-pull topology as HIP IPC on a real GPU, minus the
++# GPU.  The server opens that segment by name, so both processes must share an
++# IPC namespace (one /dev/shm).
 +#
-+# Sizing: these are the full pool vLLM asked for, which on a real MI300X pack
-+# is the captured available_kv_cache_bytes (~100+ GiB).  torch.zeros on CPU is
-+# lazily backed, so untouched blocks cost no resident memory and RSS grows
-+# only as blocks are actually written.  VLLM_EMULATOR_MEMORY shrinks the
++# Sizing: this is the full pool vLLM asked for, which on a real MI300X pack is
++# the captured available_kv_cache_bytes (~100+ GiB).  LMCache copies the whole
++# backing buffer into its SHM segment at registration, so the full pool is
++# resident in /dev/shm from startup.  VLLM_EMULATOR_MEMORY shrinks the
 +# emulated pool -- and therefore the emulated cliff -- to fit the node.
 +# VLLM_EMULATOR_KV_BUFFERS=0 opts out entirely (no connector emulation).
 +
-+def _synthesize_kv_caches(kv_cache_config) -> dict:
-+    """Build {layer_name: host tensor} matching vLLM's paged KV layout.
++def _synthesize_kv_caches(kv_cache_config, cache_config) -> dict:
++    """Build {layer_name: host tensor} exactly as vLLM's model runner would.
 +
-+    Sized from ``kv_cache_config`` rather than from the HF config: vLLM has
-+    already turned the memory budget into an exact per-tensor byte count, and
-+    that count is what the connector will move.
++    Delegates to vLLM's allocate_kv_cache on the CPU: since v0.29 a
++    KVCacheTensor is a placement (layers, layer/block strides, offset) in one
++    shared backing allocation, and each layer's tensor is a strided view into
++    it in the resolved KV cache layout.  LMCache discovers the per-layer format
++    from those views, so anything less faithful risks registering a layout the
++    real engine never produces.  The emulator platform is not ROCm, so the
++    allocator's ROCm-only GEMM workspace warmup does not run.
 +    """
 +    import torch as _t
-+    from vllm.v1.kv_cache_interface import AttentionSpec
++    from vllm.v1.worker.utils import allocate_kv_cache
 +
-+    spec_by_layer = {}
-+    for group in kv_cache_config.kv_cache_groups:
-+        for layer_name in group.layer_names:
-+            spec_by_layer[layer_name] = group.kv_cache_spec
-+
-+    kv_caches: dict = {}
-+    total_bytes = 0
-+    for tensor_cfg in kv_cache_config.kv_cache_tensors:
-+        if not tensor_cfg.shared_by:
-+            continue
-+        spec = spec_by_layer.get(tensor_cfg.shared_by[0])
-+        if not isinstance(spec, AttentionSpec):
-+            # Mamba / encoder-only / other non-attention groups: no paged KV
-+            # for a connector to move, so nothing to fake.
-+            continue
-+        page_size = spec.page_size_bytes
-+        if page_size <= 0:
-+            continue
-+        num_blocks = tensor_cfg.size // page_size
-+        if num_blocks <= 0:
-+            continue
-+        shape = (2, num_blocks, spec.block_size, spec.num_kv_heads, spec.head_size)
-+        buf = _t.zeros(shape, dtype=spec.dtype, device="cpu")
-+        total_bytes += buf.numel() * buf.element_size()
-+        for layer_name in tensor_cfg.shared_by:
-+            kv_caches[layer_name] = buf
-+
++    if not kv_cache_config.kv_cache_tensors:
++        return {}
++    kv_caches = allocate_kv_cache(
++        kv_cache_config,
++        _t.device("cpu"),
++        cache_config.get_resolved_kv_cache_layout(),
++    )
 +    if kv_caches:
-+        print(f"[EmulatorKVBuffers] synthesized {len(kv_caches)} layer buffers, "
++        total_bytes = kv_cache_config.kv_cache_tensors[0].size
++        print(f"[EmulatorKVBuffers] synthesized {len(kv_caches)} layer views of "
 +              f"{total_bytes / 1024**3:.1f} GiB of host-backed fake KV "
-+              f"(lazily paged; cap with VLLM_EMULATOR_MEMORY)")
++              f"(layout {cache_config.kv_cache_layout}; cap with "
++              f"VLLM_EMULATOR_MEMORY)")
 +    return kv_caches
 +
 +
@@ -205,7 +198,7 @@ index 05505e4..1c80c23 100644
 +        return
 +
 +    connector = get_kv_transfer_group()
-+    kv_caches = _synthesize_kv_caches(kv_cache_config)
++    kv_caches = _synthesize_kv_caches(kv_cache_config, vllm_config.cache_config)
 +    if not kv_caches:
 +        print("[EmulatorKVBuffers] no attention groups to fake; "
 +              "connector registered with no buffers")
@@ -233,7 +226,7 @@ index 05505e4..1c80c23 100644
  def _patch_gpu_worker(module):
      """Stub out model-touching gpu_worker.Worker methods. Together
      with _patch_gpu_model_runner, this prevents any model weight
-@@ -313,18 +462,25 @@ def _patch_gpu_worker(module):
+@@ -313,18 +450,25 @@ def _patch_gpu_worker(module):
          tp_size = self.parallel_config.tensor_parallel_size
          num_kv_heads_per_tp = max(1, num_kv_heads // tp_size)
          block_size = self.cache_config.block_size
@@ -261,7 +254,7 @@ index 05505e4..1c80c23 100644
          return specs
      cls.get_kv_cache_spec = _stub_get_kv_cache_spec
  
-@@ -351,8 +507,16 @@ def _patch_gpu_worker(module):
+@@ -351,8 +495,21 @@ def _patch_gpu_worker(module):
          self.kv_cache_config = kv_cache_config
          if hasattr(self, 'model_runner') and self.model_runner is not None:
              self.model_runner.kv_cache_config = kv_cache_config
@@ -272,6 +265,11 @@ index 05505e4..1c80c23 100644
 +            self.cache_config.num_gpu_blocks = kv_cache_config.num_blocks
 +        except Exception:
 +            pass
++        # Likewise the layout the engine core resolved, which the fake KV views
++        # are built in; a worker spawned after resolution only sees it here.
++        if getattr(kv_cache_config, "kv_cache_layout", None) is not None:
++            from vllm.v1.attention.backends.utils import record_kv_cache_layout
++            record_kv_cache_layout(self.cache_config, kv_cache_config.kv_cache_layout)
          print("[EmulatorCudaMock] gpu_worker.Worker.initialize_from_config "
                "→ stored kv_cache_config (no GPU alloc)")
 +        _maybe_init_kv_connector(self, kv_cache_config)
