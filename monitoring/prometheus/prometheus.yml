@@ -40,8 +40,11 @@ scrape_configs:
   - job_name: vllm
     metrics_path: /metrics
     static_configs:
-      # vllm joins lmcache's netns (HIP IPC needs it), which publishes :8000; reach via host-gateway.
-      - targets: ["host-gateway:8000"]
+      # vllm joins lmcache's network namespace (network_mode: container:aic-lmcache),
+      # so its :8000 is on the aic-lmcache container's bridge address.  Scraping
+      # by that name also sidesteps the container name carrying the GPU index
+      # (aic-vllm-gpu0, -gpu1, ...), which a static target cannot follow.
+      - targets: ["aic-lmcache:8000"]
 
   - job_name: lmcache
     metrics_path: /metrics
@@ -55,7 +58,7 @@ scrape_configs:
     static_configs:
       # lmcache serves /metrics on --prometheus-port (9091) via a dedicated thread,
       # independent of the main uvicorn server at :8080.
-      - targets: ["host-gateway:9091"]
+      - targets: ["aic-lmcache:9091"]
 
   # LMCache coordinator exporter — polls the coordinator REST API (/instances,
   # /directory/stats, /quota) and emits Prometheus text format on :9301.
@@ -73,7 +76,7 @@ scrape_configs:
   - job_name: nixl
     metrics_path: /metrics
     static_configs:
-      - targets: ["host-gateway:19090"]
+      - targets: ["aic-lmcache:19090"]
 
   # node-exporter: CPU/mem/net + NVMe I/O (diskstats/nvme collectors) and
   # RDMA/InfiniBand port counters (infiniband collector).
@@ -116,8 +119,9 @@ scrape_configs:
   # ais_tx_latency_seconds, ais_rx_io_size_bytes, ais_tx_io_size_bytes) --
   # all metric families are served on the same :9488 endpoint; SDMA metrics
   # are available from v1.1.0.
-  # hsa-snoop: host service (or monitoring compose exporters profile).
-  # Reached via host-gateway since it holds tracefs exclusively on the host.
+  # hsa-snoop: monitoring compose exporters profile.  It reads tracefs from the
+  # host through bind mounts but is itself on the aic bridge, so it is scraped
+  # by service name like everything else.
   - job_name: hsa_snoop
     metrics_path: /metrics
     static_configs:
