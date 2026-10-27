@@ -52,6 +52,10 @@
 #
 # Commands:
 #   build   Build the image on AIC_BUILD_NODE, then save the tarball to AIC_IMAGE_DIR
+#   wheels  Export the pip wheels the nightly release publishes -- vllm,
+#           amd_aiter (+ flash_attn on CDNA-only arch sets), lmcache, and the
+#           single common nixl_rocm wheel built once in aic-base -- into
+#           AIC_WHEEL_DIR (default: AIC_IMAGE_DIR/wheels).  Builds no images.
 #   build-emulate
 #           Build the CPU-only EMULATION image (Dockerfile `emulate` stage +
 #           VLLM_TARGET_DEVICE=empty): vLLM + the llm-emu plugin with no vLLM
@@ -4216,6 +4220,127 @@ REMOTE
     log "bake complete: base=${base_tar} vllm=${vllm_tar} lmcache=${lmcache_tar}"
 }
 
+# --- wheels: export the pip wheels the nightly release publishes -------------
+# Drives the bake `wheels` group on a compute node: the three scratch stages
+# holding nixl_rocm (built once in aic-base and shared by both dependents),
+# vllm/amd_aiter/flash_attn, and the patched lmcache wheel.
+#
+# Unlike cmd_bake this is a plain `docker buildx bake` with no --set/OCI-layout
+# handoff: nothing here needs an image loaded into the daemon, so the HCL's own
+# `base = "target:base"` wiring resolves the whole DAG in one session.
+#
+# Output lands in ${AIC_IMAGE_DIR}/wheels, flattened out of bake's per-target
+# subdirs (bake does not namespace a shared local dest, so each target has to
+# export to its own directory first).
+cmd_wheels() {
+    local wheel_dir="${AIC_WHEEL_DIR:-${AIC_IMAGE_DIR}/wheels}"
+
+    local _secret_arg=""
+    [[ -n "${AIC_TLS_CERT}" ]] && _secret_arg="--secret id=tls_cert,src=${AIC_TLS_CERT}"
+
+    log "wheels targets : nixl-wheels vllm-wheels lmcache-wheels-export"
+    log "arch           : ${AIC_ROCM_ARCH}"
+    log "wheel dir      : ${wheel_dir}"
+    log "cache          : ${AIC_CACHE_DIR:+(dir) ${AIC_CACHE_DIR}}${AIC_CACHE_REF:+(registry) ${AIC_CACHE_REF}}"
+
+    local remote_script
+    remote_script="$(cat <<REMOTE
+set -euo pipefail
+export BUILDKIT_STEP_LOG_MAX_SIZE=-1
+command -v docker >/dev/null 2>&1 || { echo "docker not found on \$(hostname)" >&2; exit 1; }
+docker system df >/dev/null 2>&1 \
+    || { echo "[wheels] FATAL: docker overlay snapshotter broken on \$(hostname) -- resubmit to a different node" >&2; exit 1; }
+echo "[wheels] host=\$(hostname) docker=\$(docker --version)"
+_aic_tmp="${AIC_TMP_DIR:-}"
+if [[ -z "\${_aic_tmp:-}" ]]; then
+    for _d in "/tmp/aic-scratch.\${SLURM_JOB_ID:-\$\$}" "\${HOME}/.tmp-rocm-aic-cicd"; do
+        if mkdir -p "\$_d" 2>/dev/null && [[ -w "\$_d" ]]; then _aic_tmp="\$_d"; break; fi
+    done
+fi
+[[ -n "\${_aic_tmp:-}" ]] || { echo "[wheels] FATAL: no writable scratch dir (tried /tmp and \$HOME); set AIC_TMP_DIR" >&2; exit 1; }
+export TMPDIR="\${_aic_tmp:-}"
+cd "${AIC_DAY_DIR}"
+
+_bkd_cfg=""; [[ -f "${AIC_DAY_DIR}/docker/buildkitd.toml" ]] && _bkd_cfg="--config ${AIC_DAY_DIR}/docker/buildkitd.toml"
+if ! docker buildx inspect ${AIC_BUILDX_BUILDER} >/dev/null 2>&1; then
+    echo "[wheels] creating buildx builder ${AIC_BUILDX_BUILDER} (docker-container)"
+    docker buildx create --name ${AIC_BUILDX_BUILDER} --driver docker-container \${_bkd_cfg} --bootstrap --use
+fi
+docker buildx inspect --bootstrap ${AIC_BUILDX_BUILDER} >/dev/null
+
+# Staging dir is node-local: bake writes three subdirs here, and only the
+# flattened result is copied to (shared, quota'd) ${wheel_dir}.
+_stage="\${TMPDIR}/aic-wheels.\${SLURM_JOB_ID:-\$\$}"
+trap 'rm -rf "\${_stage}"' EXIT
+rm -rf "\${_stage}"; mkdir -p "\${_stage}"
+
+# Only forward non-empty pins: an empty string passed as an env var overrides
+# the HCL default and breaks scripts that require the value (clone-nixl.sh).
+export BUILDX_BAKE_ENTITLEMENTS_FS=0
+ROCM_ARCH="${AIC_ROCM_ARCH}" \
+${ROCM_VERSION:+ROCM_VERSION="${ROCM_VERSION}"} \
+${PYTORCH_REF:+PYTORCH_REF="${PYTORCH_REF}"} \
+${PYTORCH_SERIES:+PYTORCH_SERIES="${PYTORCH_SERIES}"} \
+${TORCHVISION_REF:+TORCHVISION_REF="${TORCHVISION_REF}"} \
+${VLLM_REF:+VLLM_REF="${VLLM_REF}"} \
+${LLM_EMU_REF:+LLM_EMU_REF="${LLM_EMU_REF}"} \
+${AITER_REF:+AITER_REF="${AITER_REF}"} \
+${FLASH_ATTN_REF:+FLASH_ATTN_REF="${FLASH_ATTN_REF}"} \
+${LMCACHE_REF:+LMCACHE_REF="${LMCACHE_REF}"} \
+${NIXL_REF:+NIXL_REF="${NIXL_REF}"} \
+${HSA_SNOOP_REF:+HSA_SNOOP_REF="${HSA_SNOOP_REF}"} \
+${AIC_CACHE_DIR:+AIC_CACHE_DIR="${AIC_CACHE_DIR}"} \
+${AIC_CACHE_REF:+AIC_CACHE_REF="${AIC_CACHE_REF}"} \
+BUILDKIT_STEP_LOG_MAX_SIZE=-1 \
+AIC_CACHE_MODE="${AIC_CACHE_MODE:-max}" \
+AIC_UCX_FAST="${AIC_UCX_FAST}" \
+AIC_VERSION="${AIC_VERSION}" \
+WHEEL_DEST="\${_stage}" \
+docker buildx bake \
+    --builder ${AIC_BUILDX_BUILDER} \
+    --file "${AIC_DAY_DIR}/docker/docker-bake.hcl" \
+    --progress=plain \
+    ${_secret_arg:+${_secret_arg}} \
+    wheels
+
+# Flatten bake's per-target subdirs, then verify the three the release needs.
+for _d in nixl vllm lmcache; do
+    [[ -d "\${_stage}/\${_d}" ]] || { echo "[wheels] ERROR: bake produced no \${_d}/ export" >&2; exit 1; }
+    mv -f "\${_stage}/\${_d}"/*.whl "\${_stage}/" || { echo "[wheels] ERROR: no .whl in \${_d}/" >&2; exit 1; }
+    rmdir "\${_stage}/\${_d}"
+done
+for _pat in 'vllm-*.whl' 'lmcache-*.whl' 'nixl*rocm*.whl'; do
+    # shellcheck disable=SC2086
+    ls \${_stage}/\${_pat} >/dev/null 2>&1 \
+        || { echo "[wheels] ERROR: no wheel matching \${_pat}" >&2; ls -l "\${_stage}" >&2; exit 1; }
+done
+{
+  echo "aic_version=${AIC_VERSION}"
+  echo "rocm_arch=${AIC_ROCM_ARCH}"
+  echo "image_tag=${IMAGE_TAG:-}"
+} > "\${_stage}/MANIFEST.txt"
+
+# Publish atomically: a half-copied wheel dir on shared NFS is indistinguishable
+# from a complete one to the CI wrapper that scp's it back.
+rm -rf "${wheel_dir}.partial" "${wheel_dir}"
+mkdir -p "\$(dirname "${wheel_dir}")"
+cp -a "\${_stage}" "${wheel_dir}.partial"
+mv -f "${wheel_dir}.partial" "${wheel_dir}"
+echo "[wheels] wheels published to ${wheel_dir}:"
+ls -lh "${wheel_dir}"
+exit 0
+REMOTE
+)"
+
+    _sbatch_run aic-wheels wheels "${remote_script}" \
+        ${AIC_BUILD_NODE:+--nodelist="${AIC_BUILD_NODE}"} \
+        ${AIC_BUILD_GPUS:+--gpus="${AIC_BUILD_GPUS}"} \
+        --nodes=1 --ntasks=1 \
+        --cpus-per-task="${AIC_BUILD_CPUS}" \
+        --time="${AIC_BUILD_TIME}"
+    log "wheels complete: ${wheel_dir}"
+}
+
 # --- main --------------------------------------------------------------------
 main() {
     local sub="${1:-all}"
@@ -4223,6 +4348,7 @@ main() {
         build)           cmd_build ;;
         build-split)     cmd_build_split ;;
         bake)            cmd_bake ;;
+        wheels)          cmd_wheels ;;
         build-emulate)   cmd_build_emulate ;;
         build-base)      cmd_build_base ;;
         build-vllm)      cmd_build_vllm ;;
@@ -4242,7 +4368,7 @@ main() {
         -h|--help|help)
             sed -n '2,70p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
             ;;
-        *) die "unknown command '${sub}' (use: build | build-split | bake | build-emulate | build-base | build-vllm | build-lmcache | build-exporters | load | push | test | tiny-test | prometheus-dump | emulate-test | emulate-mp-test | emulate-validate | profile-capture | accuracy-test | all | help)" ;;
+        *) die "unknown command '${sub}' (use: build | build-split | bake | wheels | build-emulate | build-base | build-vllm | build-lmcache | build-exporters | load | push | test | tiny-test | prometheus-dump | emulate-test | emulate-mp-test | emulate-validate | profile-capture | accuracy-test | all | help)" ;;
     esac
 }
 

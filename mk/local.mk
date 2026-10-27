@@ -3,7 +3,7 @@
 #
 # Local-dev targets: build, stack lifecycle, shells, logs, venv, reset test.
 
-.PHONY: ensure-compose build up up-batch up-dev up-gds-l1 up-gds-l1-batch \
+.PHONY: ensure-compose build wheels up up-batch up-dev up-gds-l1 up-gds-l1-batch \
         down logs logs-lmcache logs-vllm ps shell-lmcache shell-vllm \
         restart-vllm restart-lmcache venv vllm-reset-test bench-serve
 
@@ -70,6 +70,63 @@ build:
 		default
 	@echo "Built aic-base/aic-vllm/aic-lmcache/aic-hsa-snoop:$(IMAGE_TAG) (vllm/lmcache/hsa-snoop also tagged :latest)"
 	@echo "Built aic-nvme-exporter:local, aic-rdma-exporter:local"
+
+# ---- Wheel export ------------------------------------------------------------
+# Bakes the `wheels` group: the three scratch stages that hold the pip wheels
+# the nightly release publishes (nixl_rocm from aic-base, vllm/amd_aiter/
+# flash_attn from aic-vllm, lmcache from aic-lmcache).  NIXL is built once in
+# aic-base and inherited by both dependents, so one nixl_rocm wheel covers the
+# whole stack.
+#
+# Each target exports to its own $(WHEEL_DEST)/<name> subdir -- bake does not
+# namespace a shared local dest -- and this flattens them back into
+# $(WHEEL_DEST) alongside a MANIFEST.txt naming the pins they were built from.
+#
+# This repeats most of aic-base and aic-vllm's work, so it is a CI/release
+# target, not a fast local one.  `make dist-wheels` runs the same bake on Slurm.
+WHEEL_DEST ?= $(REPO_ROOT)/wheels-out
+
+wheels:
+	@test -n "$(ROCM_ARCH)" || { \
+		echo "ERROR: ROCM_ARCH empty (install ROCm or set ROCM_ARCH=gfxNNNN)" >&2; exit 1; }
+	@if ! docker buildx inspect $(AIC_BUILDX_BUILDER) >/dev/null 2>&1; then \
+		echo "Creating buildx builder $(AIC_BUILDX_BUILDER) (docker-container driver)..."; \
+		docker buildx create --name $(AIC_BUILDX_BUILDER) --driver docker-container \
+			--driver-opt env.BUILDKIT_STEP_LOG_MAX_SIZE=-1 \
+			--driver-opt env.BUILDKIT_STEP_LOG_MAX_SPEED=10485760 \
+			--bootstrap; \
+	fi
+	@rm -rf "$(WHEEL_DEST)" && mkdir -p "$(WHEEL_DEST)"
+	@echo "--- wheels: nixl + vllm + lmcache (ROCM_ARCH=$(ROCM_ARCH)) -> $(WHEEL_DEST) ---"
+	BUILDX_BAKE_ENTITLEMENTS_FS=0 \
+	    ROCM_ARCH="$(ROCM_ARCH)" BUILD_JOBS="$(BUILD_JOBS)" AIC_UCX_FAST="$(AIC_UCX_FAST)" \
+	    AIC_VERSION="$(AIC_VERSION)" \
+	    AIC_CACHE_REF="$(AIC_CACHE_REF)" \
+	    AIC_CACHE_DIR="$(AIC_CACHE_DIR)" AIC_CACHE_MODE="$(AIC_CACHE_MODE)" \
+	    WHEEL_DEST="$(WHEEL_DEST)" \
+	    $(if $(strip $(TLS_CERT)),TLS_CERT="$(TLS_CERT)",) \
+	    docker buildx bake \
+		--builder $(AIC_BUILDX_BUILDER) \
+		--progress=$(BUILD_PROGRESS) \
+		-f "$(REPO_ROOT)/docker/docker-bake.hcl" \
+		wheels
+	@set -e; \
+	cd "$(WHEEL_DEST)"; \
+	for d in nixl vllm lmcache; do \
+		[ -d "$$d" ] || { echo "ERROR: bake produced no $$d/ export" >&2; exit 1; }; \
+		mv -f "$$d"/*.whl . 2>/dev/null || { echo "ERROR: no .whl in $$d/" >&2; exit 1; }; \
+		rmdir "$$d"; \
+	done; \
+	for pat in 'vllm-*.whl' 'lmcache-*.whl' 'nixl*rocm*.whl'; do \
+		ls $$pat >/dev/null 2>&1 || { echo "ERROR: no wheel matching $$pat" >&2; exit 1; }; \
+	done; \
+	{ \
+	  echo "aic_version=$(AIC_VERSION)"; \
+	  echo "rocm_arch=$(ROCM_ARCH)"; \
+	  echo "image_tag=$(IMAGE_TAG)"; \
+	} > MANIFEST.txt; \
+	echo "--- wheels in $(WHEEL_DEST) ---"; \
+	ls -lh *.whl
 
 up: ensure-compose check-hf-token prep-dirs
 	@mkdir -p "$(AIC_METRICS_DIR)"

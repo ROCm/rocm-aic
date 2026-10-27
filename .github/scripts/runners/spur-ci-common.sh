@@ -39,6 +39,18 @@ aic_ci_ssh_bash() {
         setsid --fork --wait bash
 }
 
+# aic_ci_scp_from <remote-path> <local-dir>: copy a directory produced by the
+# remote stage back to the runner workspace.  Separate from aic_ci_ssh_bash
+# because scp takes host:path rather than an env+command, and the remote path
+# is built by the caller from values it already validated.
+aic_ci_scp_from() {
+    local remote_path="${1:?remote path is required}"
+    local local_dir="${2:?local dir is required}"
+    mkdir -p "${local_dir}"
+    scp -o ServerAliveInterval=30 -o ServerAliveCountMax=4 -r \
+        "${AIC_SPUR_HOST}:${remote_path}/." "${local_dir}/"
+}
+
 _aic_ci_session_exit() {
     local rc=$?
     trap - EXIT INT TERM HUP

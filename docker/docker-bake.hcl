@@ -81,6 +81,11 @@ variable "AIC_CACHE_MODE" { default = "max" }
 # Corporate CA cert injected as a BuildKit secret (id=tls_cert).  Empty = none.
 variable "TLS_CERT"       { default = "" }
 
+# Where the `wheels` group writes.  Each wheel target gets its OWN subdir: bake
+# does not namespace a shared local dest, so three targets pointed at one
+# directory would overwrite each other's export.  `make wheels` flattens them.
+variable "WHEEL_DEST"     { default = "./wheels-out" }
+
 # ---- Tag derivation (mirrors docker/scripts/aic-image-tag.sh) ----------------
 
 # FlashAttention is CDNA-only (gfx9xx): include it when every arch token is gfx9*
@@ -169,6 +174,15 @@ group "all" {
   targets = ["base", "vllm", "lmcache", "hsa-snoop", "nvme-exporter", "rdma-exporter", "kvbench"]
 }
 
+# Everything the nightly wheels release publishes.  Exports .whl files to
+# WHEEL_DEST instead of producing images; see `make wheels`.
+#
+# NIXL appears once: it is built in aic-base and inherited by both aic-vllm and
+# aic-lmcache, so there is a single nixl_rocm wheel for the whole stack.
+group "wheels" {
+  targets = ["nixl-wheels", "vllm-wheels", "lmcache-wheels-export"]
+}
+
 # ---- Targets -----------------------------------------------------------------
 
 target "base" {
@@ -253,6 +267,43 @@ target "lmcache-wheels" {
   target   = "wheels"
   tags     = []
   cache-to = []
+}
+
+# ---- Wheel export targets ----------------------------------------------------
+# Each carries its own `output`, so they are driven WITHOUT --load/--push:
+#   WHEEL_DEST=/tmp/w docker buildx bake -f docker/docker-bake.hcl wheels
+#
+# `cache-to = []` on every one of them: a wheel target shares its whole layer
+# chain with the image target it inherits from, and two concurrent writers on
+# one local cache dir fail with "ref ... locked ... unavailable".  They read the
+# image targets' cache and leave writing it to those targets.
+
+# The common nixl_rocm wheel, built once in aic-base.
+target "nixl-wheels" {
+  inherits = ["base"]
+  target   = "nixl-wheels"
+  tags     = []
+  output   = ["type=local,dest=${WHEEL_DEST}/nixl"]
+  cache-to = []
+}
+
+# vllm + amd_aiter (+ flash_attn on CDNA-only arch sets).  It inherits vllm's
+# `lmcache-wheels` context too -- `inherits` merges context maps rather than
+# replacing them -- but that costs nothing: the group builds
+# lmcache-wheels-export from the same chain anyway, so BuildKit dedupes it.
+target "vllm-wheels" {
+  inherits = ["vllm"]
+  target   = "wheels"
+  tags     = []
+  output   = ["type=local,dest=${WHEEL_DEST}/vllm"]
+  cache-to = []
+}
+
+# The patched lmcache wheel.  Distinct from the `lmcache-wheels` target above,
+# which must stay export-free so it can serve as aic-vllm's in-session context.
+target "lmcache-wheels-export" {
+  inherits = ["lmcache-wheels"]
+  output   = ["type=local,dest=${WHEEL_DEST}/lmcache"]
 }
 
 target "hsa-snoop" {
