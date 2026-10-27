@@ -1,6 +1,9 @@
-# Nightly smoke test — runs after Dist Build, then Tiny / Accuracy / Cliff
-# run in parallel off this workflow:
-#   Dist Build -> Smoke -> [Tiny | Accuracy | Cliff]  (all parallel)
+# Nightly smoke + tiny test — runs after Dist Build.  Accuracy then Cliff follow
+# serially, each as its own workflow_run stage:
+#   Dist Build -> Smoke+Tiny -> Accuracy -> Cliff
+#
+# Staged-image ownership: the image tarball must outlive each stage and is
+# removed only by the last stage, or whichever fails first.
 #
 # workflow_run matches display names, not filenames; keep downstream
 # workflows: entries in sync with name: here.
@@ -24,3 +27,16 @@ jobs:
     steps:
       - name: Run smoke test on the SPUR head node
         run: bash /usr/local/lib/aic-ci/spur-smoke-test.sh "${{ github.event.workflow_run.head_sha }}"
+
+  tiny-test:
+    needs: smoke-test
+    runs-on: [self-hosted, rocm-aic-cicd]
+    timeout-minutes: 60
+    env:
+      AIC_SPUR_HOST: ${{ secrets.AIC_SPUR_HOST }}
+      AIC_SHARED_NFS: ${{ secrets.AIC_SHARED_NFS }}
+      AIC_CI_STORAGE_ROOT: ${{ secrets.AIC_SHARED_NFS }}/rocm-aic
+
+    steps:
+      - name: Run tiny-test on SPUR head node
+        run: KEEP_ARTIFACTS=1 bash /usr/local/lib/aic-ci/spur-tiny-test.sh "${{ github.event.workflow_run.head_sha }}"
