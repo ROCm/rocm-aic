@@ -125,6 +125,9 @@
 #                                Deliberately not KV_TRANSFER_ARG: the Makefile
 #                                exports that one globally, which would attach
 #                                the MP connector to the plain `emulate` profile
+#   EMU_IPC_MODE               — vllm-emulator's ipc mode.  `emulate-mp` needs
+#                                container:aic-lmcache-emulator (one /dev/shm
+#                                for the KV SHM segments); default shareable
 #   AIC_L2_BACKEND             — `emulate-mp` defaults to nixl_posix (NIXL stays in
 #                                the path, no GPUDirect needed); AIS_MT needs
 #                                /dev/kfd, local_disk is the NIXL-free fallback
@@ -870,15 +873,20 @@ services:
     # prometheus scrape :9091/:19090 with the same targets as the GPU stack (run
     # one stack per node, or the alias resolves to both).  Host networking bound
     # every port node-wide, where 9091 collided with other tenants.  Only the
-    # HTTP API is published, for interactive use.  shareable IPC so the POSIX SHM
-    # segments LMCache migrates the emulator's KV buffers into are visible to
-    # joining containers (avoids the spur-authz ipc:host block).
+    # HTTP API is published, for interactive use.  Owns the IPC namespace, as
+    # `lmcache` does for the GPU stack: vllm-emulator joins it under emulate-mp
+    # (EMU_IPC_MODE), because the server opens the POSIX SHM segments LMCache
+    # migrates the emulator's KV buffers into by name, and Docker gives every
+    # other container its own /dev/shm (ipc:host is blocked by spur-authz).
+    # shm_size must hold the whole emulated KV pool (VLLM_EMULATOR_MEMORY);
+    # Docker's 64 MiB default would SIGBUS the copy into it.
     networks:
       aic-network:
         aliases: [aic-lmcache]
     ports:
       - "8080:8080"                      # lmcache HTTP API
     ipc: shareable
+    shm_size: "${AIC_SHM_SIZE:-64gb}"
     cap_add:
       - SYS_PTRACE
       - IPC_LOCK
@@ -965,11 +973,12 @@ services:
         aliases: [aic-vllm]
     ports:
       - "${VLLM_HOST_PORT:-8000}:8000"
-    # No devices/cap_add block: the emulator touches no GPU.  ipc: shareable
-    # under `emulate-mp` — LMCache migrates the fake KV buffers into POSIX SHM
-    # segments for the server to map; shareable avoids the spur-authz ipc:host
-    # block while still exposing /dev/shm to joining containers.
-    ipc: shareable
+    # No devices/cap_add block: the emulator touches no GPU.  Under `emulate-mp`
+    # set EMU_IPC_MODE=container:aic-lmcache-emulator: LMCache migrates the fake
+    # KV buffers into POSIX SHM segments that the server opens by name, so both
+    # must see one /dev/shm.  container:, not service:, so the plain `emulate`
+    # profile (no lmcache-emulator) still loads; it keeps its own namespace.
+    ipc: "${EMU_IPC_MODE:-shareable}"
     # Run as the invoking user rather than root.  /hf below is a bind mount, and
     # on a cluster it is a SHARED cache: a root-owned entry there is one that
     # nobody but root can refresh or delete, because removing it needs write

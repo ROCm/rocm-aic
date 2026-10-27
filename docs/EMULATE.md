@@ -386,7 +386,8 @@ By hand:
 ```bash
 IMAGE_NAME=rocm-aic:7.14-latest DEVICE_TYPE=cpu \
   VLLM_EMULATOR_MEMORY=$((8 * 1024**3)) \
-  EMU_KV_TRANSFER_ARG="--kv-transfer-config '{\"kv_connector\":\"LMCacheMPConnector\",\"kv_role\":\"kv_both\",\"kv_connector_extra_config\":{\"lmcache.mp.host\":\"tcp://localhost\",\"lmcache.mp.port\":6555,\"lmcache.mp.mp_transfer_mode\":\"lmcache_driven\"}}'" \
+  EMU_IPC_MODE=container:aic-lmcache-emulator \
+  EMU_KV_TRANSFER_ARG="--kv-transfer-config '{\"kv_connector\":\"LMCacheMPConnector\",\"kv_role\":\"kv_both\",\"kv_connector_extra_config\":{\"lmcache.mp.host\":\"tcp://aic-lmcache-emulator\",\"lmcache.mp.port\":6555,\"lmcache.mp.mp_transfer_mode\":\"lmcache_driven\"}}'" \
   docker compose -f docker/docker-compose.yml --profile emulate-mp \
   up lmcache-emulator vllm-emulator
 ```
@@ -423,8 +424,12 @@ LMCache needs no persuading to accept them. Its device detection resolves to
 storage into a POSIX SHM segment the mp server can map — the same server-pull
 topology as HIP IPC, with `/dev/shm` in place of the GPU. Two consequences:
 
-- both emulated services need `ipc: host`, because Docker gives each container
-  its own `/dev/shm`;
+- both emulated services must share one IPC namespace, because the server
+  opens the segment by name and Docker gives each container its own
+  `/dev/shm`. `lmcache-emulator` owns it (`ipc: shareable`, `shm_size`
+  `${AIC_SHM_SIZE:-64gb}`) and `vllm-emulator` joins it with
+  `EMU_IPC_MODE=container:aic-lmcache-emulator`; `ipc: host` would also work
+  but SPUR's spur-authz blocks it;
 - `DEVICE_TYPE=cpu` is mandatory. `cuda_mock` shims `torch.cuda.is_available()`
   to `True` so vLLM's GPU code paths run, and LMCache's `CudaDeviceSpec.
   is_available()` is that same call — auto-detection would pick CUDA and then
@@ -511,5 +516,6 @@ added.
 | `emulate-mp` hangs with requests in `WAITING_FOR_REMOTE_KVS` | the connector's worker side is not reporting completions; check for `[EmulatorKVBuffers] registered` in the log |
 | `Creating transfer context (device_type=cuda, ...)` on a CPU node | `DEVICE_TYPE=cpu` was not honoured — LMCache patch 10 missing, or the var is empty rather than `cpu` (§6.1) |
 | Emulator RSS climbing to tens of GiB under `emulate-mp` | expected — the fake KV pool is really allocated; cap it with `VLLM_EMULATOR_MEMORY` (§6.2) |
-| `FileExistsError: [Errno 17] File exists: '/lmcache_kv_<pid>_0'` | stale POSIX SHM segments from a killed previous run. `ipc: host` puts them in the **host's** `/dev/shm` and LMCache names them after the containerised engine pid, which repeats. `rm -f /dev/shm/lmcache_kv_*` with no emulator container running; `emulate-mp-test` does this at both ends. |
+| `FileExistsError: [Errno 17] File exists: '/lmcache_kv_<pid>_0'` | a stale POSIX SHM segment from a killed previous run in a still-live `aic-lmcache-emulator`: LMCache names segments after the containerised engine pid, which repeats. Recreate both containers (`up --force-recreate`, which `emulate-mp-test` does). |
+| `FileNotFoundError` for `/lmcache_kv_*` in the lmcache-emulator log | the two containers have separate `/dev/shm`s — `EMU_IPC_MODE=container:aic-lmcache-emulator` was not set (§6.1) |
 | `ConnectionError: Cannot reach the LMCache MP server` from the **plain** `emulate` profile | something exported `KV_TRANSFER_ARG` (the Makefile does, globally). The emulator reads `EMU_KV_TRANSFER_ARG` instead precisely so this cannot happen — check you are not on an older compose file. |

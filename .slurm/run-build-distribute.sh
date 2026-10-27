@@ -2901,6 +2901,8 @@ fi
 # SERVER pulls from the registered buffers, here POSIX SHM instead of HIP IPC).
 export EMU_KV_TRANSFER_ARG="--kv-transfer-config '{\"kv_connector\":\"LMCacheMPConnector\",\"kv_role\":\"kv_both\",\"kv_connector_extra_config\":{\"lmcache.mp.host\":\"tcp://aic-lmcache-emulator\",\"lmcache.mp.port\":\${LMCACHE_PORT},\"lmcache.mp.mp_transfer_mode\":\"lmcache_driven\"}}'"
 export VLLM_EXTRA_ARGS="--enable-prefix-caching"
+# One /dev/shm for both: the server opens the KV SHM segments by name.
+export EMU_IPC_MODE=container:aic-lmcache-emulator
 
 compose() { docker compose -f '${AIC_DAY_DIR}/docker/docker-compose.yml' "\$@"; }
 cleanup() {
@@ -2913,36 +2915,8 @@ cleanup() {
     timeout 90 docker compose -f '${AIC_DAY_DIR}/docker/docker-compose.yml' \
         --profile emulate-mp down --remove-orphans --timeout 10 >/dev/null 2>&1 || true
     timeout 30 docker rm -f aic-vllm-emulator aic-lmcache-emulator >/dev/null 2>&1 || true
-    _clean_kv_shm
 }
 trap cleanup EXIT
-
-# LMCache migrates the emulator's KV buffers into POSIX SHM segments named
-# /lmcache_kv_<pid>_<n> (lmcache/v1/platform/cpu/shm.py).  With \`ipc: host\` --
-# which the server needs in order to map them -- those live in the HOST's
-# /dev/shm, and the pid is the containerised EngineCore's, which is the same
-# small number on every run.  A killed engine never runs its finaliser, so the
-# next run collides:  FileExistsError: [Errno 17] File exists: '/lmcache_kv_111_0'
-# Clean them at both ends, and only when no emulator container is live, so a
-# concurrent run on the same node is not sabotaged.
-_clean_kv_shm() {
-    if [ -n "\$(docker ps -q -f name=aic-vllm-emulator -f name=aic-lmcache-emulator 2>/dev/null)" ]; then
-        echo "[emulate-mp-test] emulator containers still running; leaving /dev/shm alone"
-        return 0
-    fi
-    _n="\$(ls /dev/shm/lmcache_kv_* 2>/dev/null | wc -l)"
-    if [ "\${_n}" -gt 0 ]; then
-        echo "[emulate-mp-test] removing \${_n} stale /dev/shm/lmcache_kv_* segment(s)"
-        # Through a container, not plain rm: the segments were created by the
-        # container's root, so an unprivileged host user gets EPERM.  --ipc=host
-        # is what puts the host's /dev/shm in view, the same way the emulator
-        # services see it.
-        timeout 60 docker run --rm --ipc=host --entrypoint /bin/sh \
-            '${AIC_LMCACHE_IMAGE}' -c 'rm -f /dev/shm/lmcache_kv_*' >/dev/null 2>&1 || true
-        echo "[emulate-mp-test]   remaining: \$(ls /dev/shm/lmcache_kv_* 2>/dev/null | wc -l)"
-    fi
-}
-_clean_kv_shm
 
 # Prometheus sidecar, started BEFORE the stack so it is scraping from the first
 # scrape interval (5s) rather than joining halfway through the run.  Exporters
@@ -2961,8 +2935,11 @@ start_monitoring
 # profile at all), and compose starts every profile-less service on any \`up\`,
 # so a bare \`--profile emulate-mp up\` also launches aic-vllm-gpu0 on this
 # CPU-only node.
+# --force-recreate: the KV SHM segments (/lmcache_kv_<pid>_<n>) live in
+# lmcache-emulator's IPC namespace and the containerised EngineCore pid repeats,
+# so a namespace left over from a killed run collides with FileExistsError.
 echo "[emulate-mp-test] bringing up the emulate-mp compose profile ..."
-if ! compose --profile emulate-mp up -d lmcache-emulator vllm-emulator; then
+if ! compose --profile emulate-mp up -d --force-recreate lmcache-emulator vllm-emulator; then
     echo "[emulate-mp-test] FAIL: compose up failed" >&2
     compose --profile emulate-mp logs --tail 80 --no-color 2>&1 | sed 's/^/  [mp] /'
     exit 1
