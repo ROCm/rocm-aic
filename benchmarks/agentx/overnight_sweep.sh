@@ -24,7 +24,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 MODEL="${AGENTX_MODEL:-Qwen/Qwen2.5-7B-Instruct}"
-DURATION="${AGENTX_DURATION:-900}"
+DURATION="${AGENTX_DURATION:-3600}"
 MAX_CONTEXT="${AGENTX_MAX_CONTEXT:-65536}"
 
 # Space-separated concurrency levels to sweep

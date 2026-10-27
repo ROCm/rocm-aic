@@ -66,8 +66,8 @@ kvbench-down:
 	$(COMPOSE) --profile kvbench down --remove-orphans
 
 # ── AgentX benchmark ─────────────────────────────────────────────────────────
-# Drives the inferencex-agentx-mvp aiperf scenario against a running inference
-# endpoint (vLLM or Lemonade) using real agentic coding traces.
+# Drives the AgentX benchmark against a running inference endpoint (vLLM or
+# Lemonade) using real agentic coding traces via the `agentx` CLI.
 #
 # Required: AGENTX_MODEL (or VLLM_MODEL) — the model ID as served.
 # The endpoint defaults to http://localhost:8000; override with BENCH_ENDPOINT.
@@ -76,17 +76,18 @@ kvbench-down:
 #   make agentx-build
 #   make agentx-run VLLM_MODEL=Qwen/Qwen2.5-7B-Instruct
 #   make agentx-run BENCH_ENDPOINT=http://aic-vllm-gpu0:8000 VLLM_MODEL=Qwen/Qwen2.5-7B-Instruct
-#   make agentx-sweep VLLM_MODEL=Qwen/Qwen2.5-7B-Instruct AGENTX_DURATION=600
+#   make agentx-run AGENTX_SERVER_METRICS="http://prefill:6100/metrics http://decode:6100/metrics"
+#   make agentx-sweep VLLM_MODEL=Qwen/Qwen2.5-7B-Instruct AGENTX_DURATION=3600
 
-AGENTX_IMAGE_NAME  ?= aic-agentx
-AGENTX_IMAGE_TAG   ?= latest
-AGENTX_IMAGE_REF   ?= $(AGENTX_IMAGE_NAME):$(AGENTX_IMAGE_TAG)
-AGENTX_MODEL       ?= $(VLLM_MODEL)
-AGENTX_CONCURRENCY ?= 2
-AGENTX_DURATION    ?= 900
-AGENTX_MAX_CONTEXT ?= 65536
-AGENTX_CACHE_BUST  ?= first_turn_prefix
-AGENTX_OTEL_URL    ?=
+AGENTX_IMAGE_NAME    ?= aic-agentx
+AGENTX_IMAGE_TAG     ?= latest
+AGENTX_IMAGE_REF     ?= $(AGENTX_IMAGE_NAME):$(AGENTX_IMAGE_TAG)
+AGENTX_MODEL         ?= $(VLLM_MODEL)
+AGENTX_TOKENIZER     ?= $(AGENTX_MODEL)
+AGENTX_CONCURRENCY   ?= 2
+AGENTX_DURATION      ?= 3600
+AGENTX_SERVER_METRICS ?=
+AGENTX_OTEL_URL      ?=
 
 agentx-build:
 	docker buildx bake -f docker/docker-bake.hcl agentx --load
@@ -96,10 +97,10 @@ agentx-run: prep-dirs
 		echo "ERROR: set AGENTX_MODEL or VLLM_MODEL to the served model name" >&2; exit 1; }
 	AGENTX_IMAGE="$(AGENTX_IMAGE_REF)" \
 	AGENTX_MODEL="$(AGENTX_MODEL)" \
+	AGENTX_TOKENIZER="$(AGENTX_TOKENIZER)" \
 	AGENTX_CONCURRENCY="$(AGENTX_CONCURRENCY)" \
 	AGENTX_DURATION="$(AGENTX_DURATION)" \
-	AGENTX_MAX_CONTEXT="$(AGENTX_MAX_CONTEXT)" \
-	AGENTX_CACHE_BUST="$(AGENTX_CACHE_BUST)" \
+	AGENTX_SERVER_METRICS="$(AGENTX_SERVER_METRICS)" \
 	AGENTX_OTEL_URL="$(AGENTX_OTEL_URL)" \
 	BENCH_ENDPOINT="$(BENCH_ENDPOINT)" \
 	HF_TOKEN="$(HF_TOKEN)" \
@@ -112,8 +113,9 @@ agentx-sweep: prep-dirs
 		echo "ERROR: set AGENTX_MODEL or VLLM_MODEL to the served model name" >&2; exit 1; }
 	AGENTX_IMAGE="$(AGENTX_IMAGE_REF)" \
 	AGENTX_MODEL="$(AGENTX_MODEL)" \
+	AGENTX_TOKENIZER="$(AGENTX_TOKENIZER)" \
 	AGENTX_DURATION="$(AGENTX_DURATION)" \
-	AGENTX_MAX_CONTEXT="$(AGENTX_MAX_CONTEXT)" \
+	AGENTX_SERVER_METRICS="$(AGENTX_SERVER_METRICS)" \
 	AGENTX_OTEL_URL="$(AGENTX_OTEL_URL)" \
 	BENCH_ENDPOINT="$(BENCH_ENDPOINT)" \
 	HF_TOKEN="$(HF_TOKEN)" \
