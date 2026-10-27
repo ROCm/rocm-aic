@@ -4238,7 +4238,7 @@ cmd_wheels() {
     local _secret_arg=""
     [[ -n "${AIC_TLS_CERT}" ]] && _secret_arg="--secret id=tls_cert,src=${AIC_TLS_CERT}"
 
-    log "wheels targets : nixl-wheels vllm-wheels lmcache-wheels-export"
+    log "wheels targets : wheels-nixl wheels-lmcache wheels-vllm"
     log "arch           : ${AIC_ROCM_ARCH}"
     log "wheel dir      : ${wheel_dir}"
     log "cache          : ${AIC_CACHE_DIR:+(dir) ${AIC_CACHE_DIR}}${AIC_CACHE_REF:+(registry) ${AIC_CACHE_REF}}"

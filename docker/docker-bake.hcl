@@ -202,7 +202,7 @@ group "all" {
 }
 
 # Everything the nightly wheels release publishes.  Exports .whl files to
-# WHEEL_DEST instead of producing images; see `make wheels`.
+# WHEELS_DIR instead of producing images; see `make wheels`.
 #
 # NIXL appears once: it is built in aic-base and inherited by both aic-vllm and
 # aic-lmcache, so there is a single nixl_rocm wheel for the whole stack.
