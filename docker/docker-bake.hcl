@@ -71,13 +71,20 @@ variable "ROCM_ARCH"      { default = "" }
 variable "BUILD_JOBS"     { default = "" }       # empty = nproc
 variable "AIC_UCX_FAST"   { default = "" }
 
-# Layer cache: a registry ref (AIC_CACHE_REF) takes precedence over a local dir
-# (AIC_CACHE_DIR); with both empty there is no --cache-from/--cache-to at all.
+# Layer cache: a registry ref (AIC_CACHE_REF) takes precedence over a GitHub
+# Actions cache scope prefix (AIC_CACHE_GHA_SCOPE), which takes precedence over a
+# local dir (AIC_CACHE_DIR); with all three empty there is no
+# --cache-from/--cache-to at all.
 # (AIC_CACHE_INSECURE / self-signed-registry TLS is a buildkitd-config concern
 # set when the builder is created, not here.)
-variable "AIC_CACHE_REF"  { default = "" }
-variable "AIC_CACHE_DIR"  { default = "" }
-variable "AIC_CACHE_MODE" { default = "max" }
+variable "AIC_CACHE_REF"       { default = "" }
+variable "AIC_CACHE_GHA_SCOPE" { default = "" }
+variable "AIC_CACHE_DIR"       { default = "" }
+variable "AIC_CACHE_MODE"      { default = "max" }
+
+# Where the `wheels` group writes the pip wheels: one subdirectory per wheel
+# target, relative to the directory bake runs in.
+variable "WHEELS_DIR"     { default = "wheels-out" }
 
 # Corporate CA cert injected as a BuildKit secret (id=tls_cert).  Empty = none.
 variable "TLS_CERT"       { default = "" }
@@ -145,16 +152,22 @@ variable "IMAGE_TAG" {
 # their cache *exports* race and fail with "ref ... locked ... unavailable".
 # Per-target dirs remove the contention (at the cost of storing base's layers
 # once per dependent).  Registry refs are content-addressed and handle
-# concurrent writers, so they stay on a single ref.
+# concurrent writers, so they stay on a single ref.  A GitHub Actions cache
+# scope holds one index per scope, so concurrent writers to one scope would
+# overwrite each other's: it gets the same per-arch, per-target split as the dir
+# (<scope>-<arch>-<target>), which also keeps two arch groups from sharing
+# entries.  ignore-error: a cache-service hiccup must not fail an hours-long build.
 function "cache_from" {
   params = [arch, name]
   result = AIC_CACHE_REF != "" ? ["type=registry,ref=${AIC_CACHE_REF}"] : (
-           AIC_CACHE_DIR != "" ? ["type=local,src=${AIC_CACHE_DIR}/${cache_arch_slug(arch)}/${name}"] : [])
+           AIC_CACHE_GHA_SCOPE != "" ? ["type=gha,scope=${AIC_CACHE_GHA_SCOPE}-${cache_arch_slug(arch)}-${name}"] : (
+           AIC_CACHE_DIR != "" ? ["type=local,src=${AIC_CACHE_DIR}/${cache_arch_slug(arch)}/${name}"] : []))
 }
 function "cache_to" {
   params = [arch, name]
   result = AIC_CACHE_REF != "" ? ["type=registry,ref=${AIC_CACHE_REF},mode=${AIC_CACHE_MODE}"] : (
-           AIC_CACHE_DIR != "" ? ["type=local,dest=${AIC_CACHE_DIR}/${cache_arch_slug(arch)}/${name},mode=${AIC_CACHE_MODE},ignore-error=true"] : [])
+           AIC_CACHE_GHA_SCOPE != "" ? ["type=gha,scope=${AIC_CACHE_GHA_SCOPE}-${cache_arch_slug(arch)}-${name},mode=${AIC_CACHE_MODE},ignore-error=true"] : (
+           AIC_CACHE_DIR != "" ? ["type=local,dest=${AIC_CACHE_DIR}/${cache_arch_slug(arch)}/${name},mode=${AIC_CACHE_MODE},ignore-error=true"] : []))
 }
 
 # Corporate CA secret, only when TLS_CERT is set.
@@ -179,6 +192,14 @@ group "exporters" {
 
 group "all" {
   targets = ["base", "vllm", "lmcache", "hsa-snoop", "nvme-exporter", "rdma-exporter", "kvbench"]
+}
+
+# The published pip wheels (nightly + release workflows): NIXL, LMCache, and
+# vLLM with its AITER/FlashAttention backends, exported to ${WHEELS_DIR}.  One
+# bake call builds aic-base once and links every wheel against its torch.
+#   ROCM_ARCH='gfx90a;gfx942;gfx950' docker buildx bake -f docker/docker-bake.hcl wheels
+group "wheels" {
+  targets = ["wheels-nixl", "wheels-lmcache", "wheels-vllm"]
 }
 
 # ---- Targets -----------------------------------------------------------------
@@ -265,6 +286,41 @@ target "lmcache-wheels" {
   target   = "wheels"
   tags     = []
   cache-to = []
+}
+
+# ---- Published wheel exports (the `wheels` group) ----------------------------
+# Each exports one Dockerfile's `wheels` stage to ${WHEELS_DIR}/<name>; none of
+# those stages is part of a runtime image.  wheels-lmcache is lmcache-wheels with
+# an output: lmcache-wheels itself stays output-less because aic-vllm consumes it
+# as a build context.
+#
+# Cache: wheels-lmcache/wheels-vllm read their parent image's cache as well as
+# their own (a host that already built the images reuses it) and write their own,
+# because the `wheels` group never builds aic-lmcache/aic-vllm.  wheels-nixl
+# writes none: its stages are a subset of aic-base's, which the group always
+# builds (as the `base` context of the other two) and caches under "base".
+target "wheels-nixl" {
+  inherits = ["base"]
+  target   = "wheels"
+  tags     = []
+  output   = ["type=local,dest=${WHEELS_DIR}/nixl"]
+  cache-to = []
+}
+
+target "wheels-lmcache" {
+  inherits   = ["lmcache-wheels"]
+  output     = ["type=local,dest=${WHEELS_DIR}/lmcache"]
+  cache-from = distinct(concat(cache_from(ROCM_ARCH, "lmcache"), cache_from(ROCM_ARCH, "wheels-lmcache")))
+  cache-to   = cache_to(ROCM_ARCH, "wheels-lmcache")
+}
+
+target "wheels-vllm" {
+  inherits   = ["vllm"]
+  target     = "wheels"
+  tags       = []
+  output     = ["type=local,dest=${WHEELS_DIR}/vllm"]
+  cache-from = distinct(concat(cache_from(ROCM_ARCH, "vllm"), cache_from(ROCM_ARCH, "wheels-vllm")))
+  cache-to   = cache_to(ROCM_ARCH, "wheels-vllm")
 }
 
 target "hsa-snoop" {
