@@ -369,10 +369,14 @@ services:
     # Own network namespace, not host: on the host one, "@hsa<pid>" would be
     # shared with every host-net container on the node, each with its own PID
     # namespace, and a PID clash breaks the export or hangs the import.  vllm's
-    # ports live here too.  Only what host-side clients use is published:
-    # Prometheus scrapes lmcache :9091 and NIXL :19090 by name over the bridge,
-    # and a host bind of those collided with other tenants (pushgateway: 9091).
-    networks: [aic-network]
+    # ports live here too, hence the aic-vllm alias prometheus scrapes it by
+    # (the vllm container name carries the GPU index).  Only what host-side
+    # clients use is published: Prometheus scrapes lmcache :9091 and NIXL
+    # :19090 by name over the bridge, and a host bind of those collided with
+    # other tenants (pushgateway: 9091).
+    networks:
+      aic-network:
+        aliases: [aic-vllm]
     ports:
       - "${VLLM_HOST_PORT:-8000}:8000"   # vllm (network_mode: container:aic-lmcache)
       - "${LMCACHE_PORT:-6555}:${LMCACHE_PORT:-6555}"
@@ -492,7 +496,7 @@ services:
     # Joins lmcache's IPC, PID and network namespaces; cross-container HIP IPC KV
     # registration needs all three (see the lmcache service).  Override via
     # VLLM_IPC_MODE / VLLM_PID_MODE / VLLM_NETWORK_MODE.
-    # lmcache publishes vllm's port; prometheus scrapes it via host-gateway.
+    # lmcache publishes vllm's port; prometheus scrapes it as aic-vllm:8000.
     # container:, not service:, so compose can still load the project without
     # the cache profile; a vllm-only run sets VLLM_NETWORK_MODE=host.
     network_mode: "${VLLM_NETWORK_MODE:-container:aic-lmcache}"
@@ -854,10 +858,19 @@ services:
       - emulate-mp
     image: ${LMCACHE_IMAGE_REF:-${IMAGE_REF:-${IMAGE_NAME:-rocm-aic}:latest}}
     container_name: aic-lmcache-emulator
-    # host net for ZMQ on :${LMCACHE_PORT}; shareable IPC so the POSIX SHM
-    # segments LMCache migrates the emulator's KV buffers into are visible
-    # to joining containers (avoids the spur-authz ipc:host block).
-    network_mode: host
+    # On the aic bridge, like `lmcache`: vllm-emulator reaches ZMQ on
+    # :${LMCACHE_PORT} by container name, and the aic-lmcache alias lets
+    # prometheus scrape :9091/:19090 with the same targets as the GPU stack (run
+    # one stack per node, or the alias resolves to both).  Host networking bound
+    # every port node-wide, where 9091 collided with other tenants.  Only the
+    # HTTP API is published, for interactive use.  shareable IPC so the POSIX SHM
+    # segments LMCache migrates the emulator's KV buffers into are visible to
+    # joining containers (avoids the spur-authz ipc:host block).
+    networks:
+      aic-network:
+        aliases: [aic-lmcache]
+    ports:
+      - "8080:8080"                      # lmcache HTTP API
     ipc: shareable
     cap_add:
       - SYS_PTRACE
@@ -937,9 +950,14 @@ services:
       - emulate-mp
     image: ${VLLM_IMAGE_REF:-${IMAGE_REF:-${IMAGE_NAME:-rocm-aic}:latest}}
     container_name: aic-vllm-emulator
-    # host net (like the vllm/lmcache services above) — vLLM's OpenAI API and
-    # /metrics land on host :8000 with no bridge/NAT in the way.
-    network_mode: host
+    # On the aic bridge with :8000 published, so host-side clients keep using
+    # localhost:8000.  The aic-vllm alias is prometheus' vllm target, as it is
+    # for the GPU stack.
+    networks:
+      aic-network:
+        aliases: [aic-vllm]
+    ports:
+      - "${VLLM_HOST_PORT:-8000}:8000"
     # No devices/cap_add block: the emulator touches no GPU.  ipc: shareable
     # under `emulate-mp` — LMCache migrates the fake KV buffers into POSIX SHM
     # segments for the server to map; shareable avoids the spur-authz ipc:host
@@ -1074,7 +1092,12 @@ services:
       - cpu-smoke
     image: ${VLLM_IMAGE_REF:-${IMAGE_REF:-${IMAGE_NAME:-rocm-aic}:latest}}
     container_name: aic-vllm-emulator
-    network_mode: host
+    # Bridge + published :8000 + aic-vllm alias, as vllm-emulator above.
+    networks:
+      aic-network:
+        aliases: [aic-vllm]
+    ports:
+      - "${VLLM_HOST_PORT:-8000}:8000"
     volumes:
       - ${HF_HOME:-~/.cache/huggingface}:/hf
       - ../monitoring/scripts/vllm_emulator_server.py:/app/vllm_emulator_server.py:ro
