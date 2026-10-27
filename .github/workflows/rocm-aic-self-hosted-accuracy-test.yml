@@ -7,9 +7,9 @@
 # DRAM/NVMe did not change the answers.
 #
 # Two triggers:
-#   workflow_run  — nightly: fires after Smoke Test passes as part of the
+#   workflow_run  — nightly: fires after Smoke+Tiny passes as part of the
 #                   nightly chain:
-#                     Dist Build -> Smoke -> [Tiny | Accuracy | Cliff]
+#                     Dist Build -> Smoke+Tiny -> Accuracy -> Cliff
 #   workflow_dispatch — manual: dispatched against a SHA that already has an
 #                   image tarball staged under AIC_CI_STORAGE_ROOT/images/
 #                   aic-ci-<short-sha> (i.e. a dist-build ran for the same
@@ -60,8 +60,11 @@ jobs:
       HF_TOKEN:            ${{ secrets.AIC_HF_TOKEN }}
 
     steps:
+      # Nightly (workflow_run): Cliff runs alongside and owns the final cleanup,
+      # so the image must survive.  Manual dispatch is terminal and cleans up.
       - name: Run accuracy-test on the SPUR head node
         run: |
+          KEEP_ARTIFACTS=${{ github.event_name == 'workflow_run' && '1' || '0' }} \
           bash /usr/local/lib/aic-ci/spur-accuracy-test.sh \
             "${{ github.event.workflow_run.head_sha || github.sha }}" \
             accuracy-test
