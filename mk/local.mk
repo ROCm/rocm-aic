@@ -204,8 +204,22 @@ vllm-reset-test: check-hf-token prep-dirs
 	    AIC_L2_BACKEND=$(AIC_L2_BACKEND) \
 	    $(COMPOSE_CACHE) --profile monitoring up -d
 	@echo "Waiting for vLLM to be healthy..."
-	@for i in $$(seq 1 $${VLM_READY_RETRIES:-60}); do \
-	    $(call aic_probe,aic-vllm-gpu$(GPU),8000,/health) && echo "vLLM healthy after $${i}s" && break; \
+	@_vc="aic-vllm-gpu$${GPU:-0}"; \
+	for i in $$(seq 1 $${VLM_READY_RETRIES:-60}); do \
+	    r=$$(curl -s -o /dev/null -w '%{http_code}' \
+	        http://localhost:$${VLLM_HOST_PORT:-8000}/health 2>/dev/null); \
+	    [ "$$r" = "200" ] && echo "vLLM healthy after $${i}s" && break; \
+	    if ! docker ps --format '{{.Names}}' 2>/dev/null | grep -qx "$$_vc"; then \
+	        echo "ERROR: $$_vc exited after $${i} polls — not waiting out the timeout" >&2; \
+	        echo "  --- last $${VLM_FAIL_LOG_LINES:-250} lines of $$_vc ---" >&2; \
+	        docker logs --tail $${VLM_FAIL_LOG_LINES:-250} "$$_vc" 2>&1 \
+	            | sed 's/^/  [vllm] /' >&2; \
+	        echo "  --- engine-core errors (the 'root cause above') ---" >&2; \
+	        docker logs "$$_vc" 2>&1 \
+	            | grep -aiE 'EngineCore|ERROR|Error:|Exception|not supported|no kernel' \
+	            | grep -av 'APIServer' | tail -25 | sed 's/^/  [cause] /' >&2; \
+	        exit 1; \
+	    fi; \
 	    [ "$$i" = "$${VLM_READY_RETRIES:-60}" ] && echo "ERROR: vLLM not healthy after vllm_reset_test timeout" >&2 && exit 1; \
 	    sleep 5; \
 	done
