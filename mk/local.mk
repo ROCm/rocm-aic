@@ -40,6 +40,15 @@ ensure-compose:
 # cache/secret wiring all live in the HCL; the Makefile only forwards env.
 BUILD_PROGRESS ?= auto
 
+# Which bake group to build, and where the result goes.  The defaults are the
+# local-developer case: the whole stack, loaded into the local docker daemon.
+# CI overrides them to push straight to a registry instead -- `--load` through
+# the docker-container driver round-trips every layer through the daemon, which
+# on a GitHub runner is both slow and the thing that fills the disk.
+#   make build BAKE_TARGETS=vllm BAKE_OUTPUT_FLAG=--push
+BAKE_TARGETS     ?= default
+BAKE_OUTPUT_FLAG ?= --load
+
 build:
 	@test -n "$(ROCM_ARCH)" || { \
 		echo "ERROR: ROCM_ARCH empty (install ROCm or set ROCM_ARCH=gfxNNNN)" >&2; exit 1; }
@@ -50,24 +59,27 @@ build:
 			--driver-opt env.BUILDKIT_STEP_LOG_MAX_SPEED=10485760 \
 			--bootstrap; \
 	fi
-	@if [ -n "$(strip $(AIC_CACHE_DIR))" ]; then \
+	@if [ -n "$(strip $(AIC_CACHE_REF))" ]; then \
+		echo "Layer cache: registry $(AIC_CACHE_REF) (mode $(AIC_CACHE_MODE))"; \
+	elif [ -n "$(strip $(AIC_CACHE_DIR))" ]; then \
 		mkdir -p "$(AIC_CACHE_DIR)/$(_ARCH_SLUG)"; \
 		echo "Layer cache: $(AIC_CACHE_DIR)/$(_ARCH_SLUG) (mode $(AIC_CACHE_MODE))"; \
 	else \
-		echo "Layer cache: disabled (set AIC_CACHE_DIR to enable)"; \
+		echo "Layer cache: disabled (set AIC_CACHE_REF or AIC_CACHE_DIR to enable)"; \
 	fi
 	@echo "--- build: aic-base/vllm/lmcache/hsa-snoop:$(IMAGE_TAG) + nvme/rdma-exporter:local (ROCM_ARCH=$(ROCM_ARCH)) ---"
 	BUILDX_BAKE_ENTITLEMENTS_FS=0 \
 	    ROCM_ARCH="$(ROCM_ARCH)" BUILD_JOBS="$(BUILD_JOBS)" AIC_UCX_FAST="$(AIC_UCX_FAST)" \
 	    AIC_VERSION="$(AIC_VERSION)" \
+	    AIC_CACHE_REF="$(AIC_CACHE_REF)" \
 	    AIC_CACHE_DIR="$(AIC_CACHE_DIR)" AIC_CACHE_MODE="$(AIC_CACHE_MODE)" \
 	    $(if $(strip $(TLS_CERT)),TLS_CERT="$(TLS_CERT)",) \
 	    docker buildx bake \
 		--builder $(AIC_BUILDX_BUILDER) \
 		--progress=$(BUILD_PROGRESS) \
-		--load \
+		$(BAKE_OUTPUT_FLAG) \
 		-f "$(REPO_ROOT)/docker/docker-bake.hcl" \
-		default
+		$(BAKE_TARGETS)
 	@echo "Built aic-base/aic-vllm/aic-lmcache/aic-hsa-snoop:$(IMAGE_TAG) (vllm/lmcache/hsa-snoop also tagged :latest)"
 	@echo "Built aic-nvme-exporter:local, aic-rdma-exporter:local"
 
