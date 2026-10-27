@@ -569,8 +569,12 @@ HF_HOME="${HF_HOME:-${AIC_IMAGE_DIR}/tiny-hf}"
 # the tokenizer instead of reading the shared cache.  spur-emulate-test.sh passes
 # it explicitly; give the make path the same default as everything else.
 AIC_TINY_HF_HOME="${AIC_TINY_HF_HOME:-${HF_HOME}}"
-AIC_TINY_TIME="${AIC_TINY_TIME:-00:25:00}"
+# 25 min was already tight on a cold node (the image load alone can take 20 min
+# over a parallel filesystem); the metrics scrape tipped a passed run into TIMEOUT.
+AIC_TINY_TIME="${AIC_TINY_TIME:-00:40:00}"
 AIC_TINY_CPUS="${AIC_TINY_CPUS:-8}"
+AIC_TINY_SCRAPE_S="${AIC_TINY_SCRAPE_S:-30}"     # metrics scrape window after the test; AIC_MONITORING=0 skips capture
+AIC_TINY_EXPORTERS="${AIC_TINY_EXPORTERS:-0}"   # AIC_EXPORTERS value for that capture (0 = prometheus only)
 AIC_TINY_MEM="${AIC_TINY_MEM:-32G}"
 AIC_TINY_READY_TIMEOUT="${AIC_TINY_READY_TIMEOUT:-240}"   # x5s = 20 min; must stay under AIC_TINY_TIME
 
@@ -2221,6 +2225,8 @@ cleanup() {
     timeout 60 compose --profile cache down --remove-orphans --timeout 5 >/dev/null 2>&1 || true
     for c in "\${VLLM_CONTAINER}" aic-lmcache; do timeout 30 docker rm -f "\$c" >/dev/null 2>&1 || true; done
     rm -rf /tmp/aic-tiny-nvme /tmp/aic-tiny-nfs 2>/dev/null || true
+    # Only if the capture is still up, i.e. the job died before its own stop.
+    if [ "\${_tiny_mon:-0}" = "1" ]; then stop_monitoring || true; fi
 }
 trap cleanup EXIT
 
@@ -2256,6 +2262,28 @@ if [ "\${ready}" != "1" ]; then
 fi
 echo "[tiny-test] endpoint ready; sending one chat completion ..."
 
+# --- metrics capture ---------------------------------------------------------
+# Started only now: hsa-snoop (AIC_TINY_EXPORTERS=safe) joins lmcache's PID
+# namespace, so the stack must already be up.  Prometheus only by default, and
+# not AIC_EXPORTERS, which SPUR's make forces to 'safe': this path does not load
+# the exporter image tarballs, and a missing one (aic-hsa-snoop) makes compose
+# fall back to a Docker Hub pull that fails the whole up.  Prometheus scrapes
+# lmcache and vLLM by name over the bridge, so the TSDB holds real series.  The
+# TSDB lands in the per-job log dir.  Decided at submit time: sourcing
+# monitoring-lib above already set AIC_MONITORING=1 in this shell.
+_tiny_mon='${AIC_MONITORING:-1}'
+if [ "\${_tiny_mon}" = "1" ]; then
+    export MON_COMPOSE='${AIC_DAY_DIR}/docker/docker-compose.yml'
+    export AIC_IMAGE='${AIC_LMCACHE_IMAGE}'
+    export AIC_METRICS_DIR="\${_logdir}/prometheus"
+    export AIC_EXPORTERS='${AIC_TINY_EXPORTERS}'
+    export AIC_MONITORING=1
+    mkdir -p "\${AIC_METRICS_DIR}"
+    start_monitoring
+    # start_monitoring clears AIC_MONITORING when it cannot run (no compose).
+    _tiny_mon="\${AIC_MONITORING}"
+fi
+
 # One real completion; assert a NON-EMPTY assistant content came back through the
 # LMCacheMPConnector path.
 resp="\$(docker exec "\${VLLM_CONTAINER}" python3 -c "
@@ -2266,24 +2294,37 @@ req = urllib.request.Request(
     headers={'Content-Type':'application/json'})
 print(urllib.request.urlopen(req, timeout=30).read().decode())
 " 2>&1)" || {
-    echo "[tiny-test] FAIL: completion request failed: \${resp}" >&2; exit 1; }
+    echo "[tiny-test] FAIL: completion request failed: \${resp}" >&2; resp=""; }
 echo "[tiny-test] response: \${resp}"
-if ! grep -qE '"content"[[:space:]]*:[[:space:]]*"[^"]+' <<<"\${resp}"; then
+# Every outcome falls through to the capture teardown below rather than exiting,
+# so the TSDB is summarised and retained whether or not the test passed.
+_tiny_rc=1
+if grep -qE '"content"[[:space:]]*:[[:space:]]*"[^"]+' <<<"\${resp}"; then
+    echo "[tiny-test] OK: got a non-empty completion"
+    # A completion also comes back when the connector skipped KV registration and
+    # LMCache is inert, so check that LMCache really holds vLLM's KV cache.
+    if docker exec -i "\${VLLM_CONTAINER}" python3 - '${AIC_TINY_MODEL}' \
+            < '${AIC_DAY_DIR}/.slurm/tiny-kv-roundtrip.py'; then
+        echo "[tiny-test] OK: KV round-trip through LMCacheMPConnector"
+        _tiny_rc=0
+    else
+        compose logs --no-color vllm 2>&1 | grep -E 'KV registration skipped|KV IPC unavailable|KV caches are not registered' \
+            | sed 's/^/  [vllm] /'
+    fi
+else
     echo "[tiny-test] FAIL: empty or missing completion content" >&2
-    exit 1
 fi
-echo "[tiny-test] OK: got a non-empty completion"
-
-# A completion also comes back when the connector skipped KV registration and
-# LMCache is inert, so check that LMCache really holds vLLM's KV cache.
-if ! docker exec -i "\${VLLM_CONTAINER}" python3 - '${AIC_TINY_MODEL}' \
-        < '${AIC_DAY_DIR}/.slurm/tiny-kv-roundtrip.py'; then
-    compose logs --no-color vllm 2>&1 | grep -E 'KV registration skipped|KV IPC unavailable|KV caches are not registered' \
-        | sed 's/^/  [vllm] /'
-    exit 1
+# Let prometheus scrape the served request, then retain the TSDB.  Informational:
+# never changes the exit code.
+if [ "\${_tiny_mon}" = "1" ]; then
+    echo "[tiny-test] scraping metrics for ${AIC_TINY_SCRAPE_S}s ..."
+    sleep ${AIC_TINY_SCRAPE_S}
+    monitoring_tsdb_summary || true
+    stop_monitoring || true
+    _tiny_mon=0
+    echo "[tiny-test] TSDB retained at \${AIC_METRICS_DIR}"
 fi
-echo "[tiny-test] OK: KV round-trip through LMCacheMPConnector"
-exit 0
+exit "\${_tiny_rc}"
 REMOTE
 )"
 
