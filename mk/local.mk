@@ -113,7 +113,7 @@ wheels:
 		wheels
 	@set -e; \
 	find "$(WHEELS_DIR)" -mindepth 2 -name '*.whl' -exec mv -t "$(WHEELS_DIR)" {} + ; \
-	find "$(WHEELS_DIR)" -mindepth 1 -type d -empty -delete; \
+	find "$(WHEELS_DIR)" -mindepth 1 -maxdepth 1 -type d -exec rm -rf {} + ; \
 	bash "$(REPO_ROOT)/.github/scripts/workflows/check-wheels.sh" "$(WHEELS_DIR)" "$(ROCM_ARCH)"
 
 up: ensure-compose check-hf-token prep-dirs

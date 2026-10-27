@@ -4307,14 +4307,22 @@ docker buildx bake \
 # Flatten bake's per-target subdirs, then check the set with the same
 # check-wheels.sh the nightly and release workflows run -- one definition of
 # "the published wheel set", enforced here and again before upload.
+#
+# The subdirs are removed outright rather than pruned when empty: a wheels
+# stage exports whatever else sits beside the .whl in its source directory
+# (aic-base's /wheels carries a .gitignore), which left a stray subdir in the
+# published output that -type d -empty could never match.
 find "\${_stage}" -mindepth 2 -name '*.whl' -exec mv -t "\${_stage}" {} +
-find "\${_stage}" -mindepth 1 -type d -empty -delete
+find "\${_stage}" -mindepth 1 -maxdepth 1 -type d -exec rm -rf {} +
 bash "${AIC_DAY_DIR}/.github/scripts/workflows/check-wheels.sh" \
     "\${_stage}" "${AIC_ROCM_ARCH}"
+# No image_tag here: IMAGE_TAG is not set by this script, it leaks in from the
+# Makefile, where it is derived from the HOST's detected ROCM_ARCH rather than
+# AIC_ROCM_ARCH -- so it reported gfx90a for a gfx942 build.  Nothing consumes
+# it; the arch the wheels were actually built for is rocm_arch below.
 {
   echo "aic_version=${AIC_VERSION}"
   echo "rocm_arch=${AIC_ROCM_ARCH}"
-  echo "image_tag=${IMAGE_TAG:-}"
 } > "\${_stage}/MANIFEST.txt"
 
 # Publish atomically: a half-copied wheel dir on shared NFS is indistinguishable
