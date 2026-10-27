@@ -22,7 +22,7 @@ jobs:
     name: Publish root index to GitHub Pages
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
       - name: Deploy root index to GitHub Pages
         uses: peaceiris/actions-gh-pages@v4

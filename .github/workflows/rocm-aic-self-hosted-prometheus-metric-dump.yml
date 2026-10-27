@@ -42,7 +42,7 @@ jobs:
       AIC_CI_STORAGE_ROOT: ${{ secrets.AIC_SHARED_NFS }}/rocm-aic
 
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
       - name: Run prometheus-dump on SPUR
         run: |
@@ -50,7 +50,7 @@ jobs:
           bash .github/scripts/workflows/spur-prometheus-dump.sh "${SHA}"
 
       - name: Upload prometheus-dump artifact
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: prometheus-dump-${{ github.sha }}
           path: prometheus-page/

@@ -41,10 +41,10 @@ jobs:
       AIC_EMULATE_READY_TIMEOUT: 96   # x5s = up to 8 min
 
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
       - name: Free disk space on runner
-        uses: jlumbroso/free-disk-space@v1.3.1
+        uses: jlumbroso/free-disk-space@v2.0.0
         with:
           tool-cache: true
           android: true
@@ -54,7 +54,7 @@ jobs:
           docker-images: true
           swap-storage: true
 
-      - uses: docker/setup-buildx-action@v3
+      - uses: docker/setup-buildx-action@v4
 
       - name: Read AIC_VERSION from VERSION file
         run: |
@@ -78,7 +78,7 @@ jobs:
         # export it as an OCI tar archive; the next step extracts it to a
         # directory so the docker-container buildx driver can reference it via
         # oci-layout:// (which requires a directory, not a tar file).
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
           file: docker/emulate-base.Dockerfile
@@ -92,7 +92,7 @@ jobs:
           tar -xf /tmp/aic-base-emulate.tar -C /tmp/aic-base-emulate
 
       - name: Build emulation image (no GPU kernels)
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
           file: docker/vllm/Dockerfile
@@ -215,7 +215,7 @@ jobs:
 
       - name: Upload emulator log on failure
         if: failure()
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: emulate-vllm-log
           path: ${{ runner.temp }}/logs/

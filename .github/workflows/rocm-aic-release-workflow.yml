@@ -36,12 +36,12 @@ jobs:
     timeout-minutes: 420
 
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0   # need full history so `make export` can resolve tags
 
       - name: Free disk space on runner
-        uses: jlumbroso/free-disk-space@v1.3.1
+        uses: jlumbroso/free-disk-space@v2.0.0
         with:
           tool-cache: true
           android: true
@@ -51,7 +51,7 @@ jobs:
           docker-images: true
           swap-storage: true
 
-      - uses: docker/setup-buildx-action@v3
+      - uses: docker/setup-buildx-action@v4
 
       # AIC_VERSION is a required build-arg (the Dockerfile fails the build when
       # it is empty) and feeds the OCI version labels.  Same step as rocm-aic-docker-build.yml.
@@ -80,7 +80,7 @@ jobs:
       # Build pip wheels
       # ---------------------------------------------------------------------------
       - name: Build + extract wheels (target=wheels)
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
           file: docker/lmcache/Dockerfile
@@ -126,7 +126,7 @@ jobs:
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
       - name: Build + push Docker image
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
           file: docker/lmcache/Dockerfile
