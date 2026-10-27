@@ -251,7 +251,7 @@ jobs:
       AIC_CI_STORAGE_ROOT: ${{ secrets.AIC_SHARED_NFS }}/rocm-aic
       AIC_WHEEL_OUT: ${{ github.workspace }}/wheels-cdna
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
         with:
           ref: ${{ needs.authorize.outputs.sha }}
           fetch-depth: 1
@@ -280,7 +280,7 @@ jobs:
         run: bash .github/scripts/workflows/check-wheels.sh "${AIC_WHEEL_OUT}" "${CDNA_ARCH}"
 
       - name: Upload wheel artifacts
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: wheels-cdna
           path: ${{ env.AIC_WHEEL_OUT }}/
@@ -330,7 +330,7 @@ jobs:
       AIC_CI_STORAGE_ROOT: ${{ secrets.AIC_SHARED_NFS }}/rocm-aic
       AIC_WHEEL_OUT: ${{ github.workspace }}/wheels-rdna
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
         with:
           ref: ${{ needs.authorize.outputs.sha }}
           fetch-depth: 1
@@ -346,7 +346,7 @@ jobs:
         run: bash .github/scripts/workflows/check-wheels.sh "${AIC_WHEEL_OUT}" "${RDNA_ARCH}"
 
       - name: Upload wheel artifacts
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: wheels-rdna
           path: ${{ env.AIC_WHEEL_OUT }}/
@@ -369,7 +369,7 @@ jobs:
       AIC_CI_STORAGE_ROOT: ${{ secrets.AIC_SHARED_NFS }}/rocm-aic
       AIC_WHEEL_OUT: ${{ github.workspace }}/wheels-gfx1250
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
         with:
           ref: ${{ needs.authorize.outputs.sha }}
           fetch-depth: 1
@@ -383,7 +383,7 @@ jobs:
         run: bash .github/scripts/workflows/check-wheels.sh "${AIC_WHEEL_OUT}" "${GFX1250_ARCH}"
 
       - name: Upload wheel artifacts
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: wheels-gfx1250
           path: ${{ env.AIC_WHEEL_OUT }}/
@@ -406,7 +406,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
         with:
           ref: ${{ needs.authorize.outputs.sha }}
           fetch-depth: 1
@@ -414,7 +414,7 @@ jobs:
       # NOT merge-multiple: every group ships the same wheel FILENAMES with
       # different GPU code, so merging them would silently drop a whole group.
       - name: Download wheel artifacts
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@v8
         with:
           pattern: wheels-*
           path: all-wheels
