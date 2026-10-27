@@ -364,6 +364,14 @@ RJ_PROBE_ONLY    ?= 0
 RJ_PROBE_TIMEOUT ?= 300
 # Extra flags for the probe, e.g. '--keep-going' or '--only gemm_small,triton'.
 RJ_PROBE_ARGS    ?=
+# vLLM refuses to start when --max-model-len exceeds the model's
+# max_position_embeddings, so this cannot stay hardcoded once RJ_MODEL is
+# tunable.  Minueza-32M caps at 2048 and job 68192070 died on exactly this:
+# vLLM exited in seconds with a pydantic ValidationError, and the health wait
+# then sat for its full 50 minutes watching a container that was already gone.
+# Keep <= the model's max_position_embeddings (SmolLM2-135M 8192, Minueza-32M
+# 2048).
+RJ_MAX_MODEL_LEN ?= 4096
 # vLLM's memory-profiling pass runs ONE forward pass this many tokens wide, and
 # it is the single biggest cost in getting the engine to "healthy" here.
 # compose defaults it to 4096, which nothing in this target overrode: at the
@@ -753,7 +761,7 @@ test-rocjitsu-local: prep-dirs
 	  'ls -ld $(RJ_NVME_MOUNT) /tmp/lmcache-nfs /tmp/aic-logs /tmp/hf-home || true' \
 	  'export IMAGE_NAME=$(VLLM_IMAGE_NAME) LMCACHE_IMAGE_NAME=$(LMCACHE_IMAGE_NAME)' \
 	  "export IMAGE_TAG='$(_RJ_IMAGE_TAG)' VLLM_MODEL='$(RJ_MODEL)'" \
-	  'export VLM_LOAD_FORMAT=auto VLM_MAX_MODEL_LEN=4096 VLM_GPU_MEMORY_UTILIZATION=0.85' \
+	  'export VLM_LOAD_FORMAT=auto VLM_MAX_MODEL_LEN=$(RJ_MAX_MODEL_LEN) VLM_GPU_MEMORY_UTILIZATION=0.85' \
 	  'export VLM_MAX_NUM_BATCHED_TOKENS=$(RJ_MAX_BATCHED_TOKENS)' \
 	  '# Cut-down reset-test preset -- see RJ_TEST_* in mk/bench.mk.' \
 	  'export AIC_TEST_ANCHORS=$(RJ_TEST_ANCHORS) AIC_TEST_FLOOD=$(RJ_TEST_FLOOD)' \
