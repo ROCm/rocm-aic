@@ -54,7 +54,6 @@ GPU_ARGS=(
 # Test matrix
 CONCURRENCIES=(1 2 4 8 16)
 ISLS=(512 2048 8192)
-SHARED_PREFIX_FRAC=0.875   # 7/8 of ISL shared across requests
 
 log() { echo "[$(date '+%H:%M:%S')] $*" | tee -a "${LOGDIR}/overnight.log"; }
 md_append() { echo "$*" >> "${MDFILE}"; }
