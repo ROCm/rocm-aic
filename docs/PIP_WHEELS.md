@@ -20,6 +20,21 @@ pip install \
 the same release. vLLM picks them up at runtime when they are installed; they
 are optional.
 
+## Pick the release that matches your GPU
+
+Every arch group ships wheels with **identical filenames** but different GPU
+code, so each has its own rolling release. Installing from the wrong one gives
+you a wheel that imports and then fails on the first kernel launch:
+
+| Release tag | Arch group | Hardware | Built |
+| --- | --- | --- | --- |
+| `nightly` | `gfx90a;gfx942;gfx950` | MI200 / MI300X / MI355X | every night |
+| `nightly-rdna` | `gfx1100;gfx1101;gfx1150;gfx1151;gfx1200;gfx1201` | RDNA3 / RDNA4 | on request |
+| `nightly-gfx1250` | `gfx1250` | rocjitsu-emulated GPU | on request |
+
+The on-request groups are built by dispatching the workflow with the `groups`
+input (`cdna,rdna`, `cdna,gfx1250`, or `cdna,rdna,gfx1250`).
+
 ## One NIXL for the whole stack
 
 There is a single `nixl_rocm` wheel, not one per image. NIXL is built once in
@@ -34,13 +49,10 @@ These are **not** manylinux wheels:
 - ROCm **7.14.x**, Python **3.12**, **x86_64** only. They match the
   `rocm/dev-ubuntu-24.04:7.14.1-full` base; other ROCm/Python/arch
   combos will fail to import.
-- Each wheel is compiled for one **arch group**, named in the release notes:
-  - `cdna` — `gfx90a;gfx942;gfx950` (built nightly)
-  - `rdna` — `gfx1100;gfx1101;gfx1150;gfx1151;gfx1200;gfx1201` (on request)
-
-  LMCache's HIP extension and vLLM's kernels are compiled for every arch in the
-  group. `flash_attn` is CDNA-only and is absent from the RDNA set by design;
-  vLLM falls back to Triton attention there.
+- Each wheel is compiled for one **arch group** (see the table above), named in
+  the release notes. LMCache's HIP extension and vLLM's kernels are compiled for
+  every arch in the group. `flash_attn` is CDNA-only and is absent from the RDNA
+  and gfx1250 sets by design; vLLM falls back to Triton attention there.
 - The `nixl_rocm` wheel bundles `libnixl` + the NIXL/UCX plugin `.so`s,
   but the **ROCm runtime (`libamdhip64`) and hipFile are external
   dependencies** — they must already be present on the host (they are,
@@ -57,14 +69,14 @@ image, that hold nothing but `.whl` files:
 
 | bake target | Dockerfile | wheels |
 | --- | --- | --- |
-| `nixl-wheels` | `docker/base/Dockerfile` | `nixl_rocm` |
-| `vllm-wheels` | `docker/vllm/Dockerfile` | `vllm`, `amd_aiter`, `flash_attn` |
-| `lmcache-wheels-export` | `docker/lmcache/Dockerfile` | `lmcache` |
+| `wheels-nixl` | `docker/base/Dockerfile` | `nixl_rocm` |
+| `wheels-lmcache` | `docker/lmcache/Dockerfile` | `lmcache` |
+| `wheels-vllm` | `docker/vllm/Dockerfile` | `vllm`, `amd_aiter`, `flash_attn` |
 
 Locally:
 
 ```bash
-make wheels ROCM_ARCH='gfx942;gfx950' WHEEL_DEST=./wheels-out
+make wheels ROCM_ARCH='gfx942;gfx950' WHEELS_DIR=./wheels-out
 ```
 
 On a Slurm cluster (what CI does — the PyTorch and vLLM source builds behind
@@ -74,14 +86,17 @@ these wheels do not fit in a GitHub-hosted runner's 6h job limit):
 make dist-wheels AIC_ROCM_ARCH='gfx942;gfx950'
 ```
 
-Either way the result is a flat directory of `.whl` files plus a
-`MANIFEST.txt` recording the AIC version, arch list and image tag they were
-built from.
+Either way the result is a flat directory of `.whl` files, checked by
+`.github/scripts/workflows/check-wheels.sh` — the one definition of the
+published wheel set, run on the build node and again before upload.
 
 ## Testing a change to the wheels from a PR
 
-Comment `/run-wheels` on the PR (or `/run-wheels-rdna` to build both arch
-groups). The workflow builds the PR head SHA on the SPUR cluster and
-uploads the wheels as a run artifact with 7-day retention. A PR run never
-touches the rolling `nightly` release — only scheduled runs and manual
-`workflow_dispatch` publish.
+Comment `/run-wheels` on the PR. The workflow builds the PR head SHA for the
+CDNA group on the SPUR cluster and uploads the wheels as a run artifact with
+7-day retention.
+
+A PR run never publishes: no rolling release is touched, and nothing becomes
+`pip install`-able from a URL. Only scheduled runs and manual
+`workflow_dispatch` publish. Download the artifact from the run page to test
+the wheels from a PR on a node.

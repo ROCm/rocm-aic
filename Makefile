@@ -280,7 +280,7 @@ help:
 	@echo "                           Cached per arch under <dir>/$(_ARCH_SLUG)/; mode=$(AIC_CACHE_MODE)."
 	@echo "                         AIC_BUILDX_BUILDER=$(AIC_BUILDX_BUILDER)"
 	@echo "                         TMPDIR holds a multi-GB base OCI layout — keep it off tmpfs."
-	@echo "  make wheels            Export the nightly-release pip wheels to WHEEL_DEST=$(WHEEL_DEST):"
+	@echo "  make wheels            Export the nightly-release pip wheels to WHEELS_DIR=$(WHEELS_DIR):"
 	@echo "                           vllm + amd_aiter (+ flash_attn on CDNA), lmcache, and the"
 	@echo "                           single common nixl_rocm wheel built once in aic-base."
 	@echo "                         Builds no images; see docs/PIP_WHEELS.md."

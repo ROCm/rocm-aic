@@ -279,7 +279,7 @@ print('vllm_emulator subpackages import OK')" && \
 # The `vllm` runtime stage below is FROM base and copies only dist-packages,
 # so /wheels never reaches a published image; it lives in build_vllm alone.
 #
-#   docker buildx bake -f docker/docker-bake.hcl vllm-wheels
+#   docker buildx bake -f docker/docker-bake.hcl wheels-vllm
 # =============================================================================
 FROM scratch AS wheels
 COPY --from=build_vllm /wheels /

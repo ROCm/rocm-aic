@@ -78,13 +78,14 @@ build:
 # aic-base and inherited by both dependents, so one nixl_rocm wheel covers the
 # whole stack.
 #
-# Each target exports to its own $(WHEEL_DEST)/<name> subdir -- bake does not
+# Each target exports to its own $(WHEELS_DIR)/<name> subdir -- bake does not
 # namespace a shared local dest -- and this flattens them back into
-# $(WHEEL_DEST) alongside a MANIFEST.txt naming the pins they were built from.
+# $(WHEELS_DIR), then checks the set with the same check-wheels.sh the nightly
+# and release workflows run.
 #
 # This repeats most of aic-base and aic-vllm's work, so it is a CI/release
 # target, not a fast local one.  `make dist-wheels` runs the same bake on Slurm.
-WHEEL_DEST ?= $(REPO_ROOT)/wheels-out
+WHEELS_DIR ?= $(REPO_ROOT)/wheels-out
 
 wheels:
 	@test -n "$(ROCM_ARCH)" || { \
@@ -96,14 +97,14 @@ wheels:
 			--driver-opt env.BUILDKIT_STEP_LOG_MAX_SPEED=10485760 \
 			--bootstrap; \
 	fi
-	@rm -rf "$(WHEEL_DEST)" && mkdir -p "$(WHEEL_DEST)"
-	@echo "--- wheels: nixl + vllm + lmcache (ROCM_ARCH=$(ROCM_ARCH)) -> $(WHEEL_DEST) ---"
+	@rm -rf "$(WHEELS_DIR)" && mkdir -p "$(WHEELS_DIR)"
+	@echo "--- wheels: nixl + lmcache + vllm (ROCM_ARCH=$(ROCM_ARCH)) -> $(WHEELS_DIR) ---"
 	BUILDX_BAKE_ENTITLEMENTS_FS=0 \
 	    ROCM_ARCH="$(ROCM_ARCH)" BUILD_JOBS="$(BUILD_JOBS)" AIC_UCX_FAST="$(AIC_UCX_FAST)" \
 	    AIC_VERSION="$(AIC_VERSION)" \
 	    AIC_CACHE_REF="$(AIC_CACHE_REF)" \
 	    AIC_CACHE_DIR="$(AIC_CACHE_DIR)" AIC_CACHE_MODE="$(AIC_CACHE_MODE)" \
-	    WHEEL_DEST="$(WHEEL_DEST)" \
+	    WHEELS_DIR="$(WHEELS_DIR)" \
 	    $(if $(strip $(TLS_CERT)),TLS_CERT="$(TLS_CERT)",) \
 	    docker buildx bake \
 		--builder $(AIC_BUILDX_BUILDER) \
@@ -111,22 +112,9 @@ wheels:
 		-f "$(REPO_ROOT)/docker/docker-bake.hcl" \
 		wheels
 	@set -e; \
-	cd "$(WHEEL_DEST)"; \
-	for d in nixl vllm lmcache; do \
-		[ -d "$$d" ] || { echo "ERROR: bake produced no $$d/ export" >&2; exit 1; }; \
-		mv -f "$$d"/*.whl . 2>/dev/null || { echo "ERROR: no .whl in $$d/" >&2; exit 1; }; \
-		rmdir "$$d"; \
-	done; \
-	for pat in 'vllm-*.whl' 'lmcache-*.whl' 'nixl*rocm*.whl'; do \
-		ls $$pat >/dev/null 2>&1 || { echo "ERROR: no wheel matching $$pat" >&2; exit 1; }; \
-	done; \
-	{ \
-	  echo "aic_version=$(AIC_VERSION)"; \
-	  echo "rocm_arch=$(ROCM_ARCH)"; \
-	  echo "image_tag=$(IMAGE_TAG)"; \
-	} > MANIFEST.txt; \
-	echo "--- wheels in $(WHEEL_DEST) ---"; \
-	ls -lh *.whl
+	find "$(WHEELS_DIR)" -mindepth 2 -name '*.whl' -exec mv -t "$(WHEELS_DIR)" {} + ; \
+	find "$(WHEELS_DIR)" -mindepth 1 -type d -empty -delete; \
+	bash "$(REPO_ROOT)/.github/scripts/workflows/check-wheels.sh" "$(WHEELS_DIR)" "$(ROCM_ARCH)"
 
 up: ensure-compose check-hf-token prep-dirs
 	@mkdir -p "$(AIC_METRICS_DIR)"

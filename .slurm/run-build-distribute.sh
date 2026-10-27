@@ -4295,7 +4295,7 @@ BUILDKIT_STEP_LOG_MAX_SIZE=-1 \
 AIC_CACHE_MODE="${AIC_CACHE_MODE:-max}" \
 AIC_UCX_FAST="${AIC_UCX_FAST}" \
 AIC_VERSION="${AIC_VERSION}" \
-WHEEL_DEST="\${_stage}" \
+WHEELS_DIR="\${_stage}" \
 docker buildx bake \
     --builder ${AIC_BUILDX_BUILDER} \
     --file "${AIC_DAY_DIR}/docker/docker-bake.hcl" \
@@ -4303,17 +4303,13 @@ docker buildx bake \
     ${_secret_arg:+${_secret_arg}} \
     wheels
 
-# Flatten bake's per-target subdirs, then verify the three the release needs.
-for _d in nixl vllm lmcache; do
-    [[ -d "\${_stage}/\${_d}" ]] || { echo "[wheels] ERROR: bake produced no \${_d}/ export" >&2; exit 1; }
-    mv -f "\${_stage}/\${_d}"/*.whl "\${_stage}/" || { echo "[wheels] ERROR: no .whl in \${_d}/" >&2; exit 1; }
-    rmdir "\${_stage}/\${_d}"
-done
-for _pat in 'vllm-*.whl' 'lmcache-*.whl' 'nixl*rocm*.whl'; do
-    # shellcheck disable=SC2086
-    ls \${_stage}/\${_pat} >/dev/null 2>&1 \
-        || { echo "[wheels] ERROR: no wheel matching \${_pat}" >&2; ls -l "\${_stage}" >&2; exit 1; }
-done
+# Flatten bake's per-target subdirs, then check the set with the same
+# check-wheels.sh the nightly and release workflows run -- one definition of
+# "the published wheel set", enforced here and again before upload.
+find "\${_stage}" -mindepth 2 -name '*.whl' -exec mv -t "\${_stage}" {} +
+find "\${_stage}" -mindepth 1 -type d -empty -delete
+bash "${AIC_DAY_DIR}/.github/scripts/workflows/check-wheels.sh" \
+    "\${_stage}" "${AIC_ROCM_ARCH}"
 {
   echo "aic_version=${AIC_VERSION}"
   echo "rocm_arch=${AIC_ROCM_ARCH}"

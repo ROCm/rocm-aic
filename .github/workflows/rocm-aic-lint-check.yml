@@ -29,6 +29,16 @@ jobs:
         with:
           recursive: true
 
+  # The wheel publishing workflows run only nightly or on a v* tag; resolve
+  # their bake build here (no build) so a broken target fails the PR instead.
+  wheel-bake:
+    name: Wheel bake targets resolve
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - name: Resolve the wheels group for each published arch list
+        run: bash .github/scripts/workflows/check-wheel-bake.sh
+
   htmlhint:
     name: HTMLHint
     runs-on: ubuntu-24.04
