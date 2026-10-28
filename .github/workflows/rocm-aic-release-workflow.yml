@@ -55,6 +55,7 @@ jobs:
       AIC_SPUR_HOST: ${{ secrets.AIC_SPUR_HOST }}
       AIC_SHARED_NFS: ${{ secrets.AIC_SHARED_NFS }}
       AIC_CI_STORAGE_ROOT: ${{ secrets.AIC_SHARED_NFS }}/rocm-aic
+      AIC_BUILD_EXCLUDE_NODES: ${{ vars.AIC_BUILD_EXCLUDE_NODES }}
       AIC_WHEEL_OUT: ${{ github.workspace }}/wheels
     steps:
       - uses: actions/checkout@v7
