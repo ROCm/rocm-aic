@@ -130,8 +130,10 @@
 #                         Used only when AIC_BUILD_NODE is unset.
 #   AIC_BUILD_NODE       pin an exact build node via --nodelist (overrides
 #                        AIC_BUILD_CONSTRAINT)             (default: unset)
-#   AIC_BUILD_EXCLUDE_NODES  comma-separated nodes to exclude from build
-#                        scheduling via --exclude (default: unset)
+#   AIC_BUILD_EXCLUDE_NODES  comma-separated nodes to exclude from every sbatch
+#                        submit (build, bake, wheels, test) via --exclude.
+#                        Ignored when a node is pinned; AIC_TEST_EXCLUDE_NODES
+#                        overrides it for the test jobs     (default: unset)
 #   AIC_BUILD_LOCAL      set to 1 to build on THIS host, no Slurm  (default: unset)
 #   AIC_BUILD_PARTITION  Slurm partition for build + load  (default: defq)
 #   AIC_BUILD_CPUS       --cpus-per-task for the build job (default: 32)
@@ -626,6 +628,21 @@ _sbatch_run() {
     local jobname="$1" logname="$2" body="$3"; shift 3
     command -v sbatch >/dev/null 2>&1 || die "sbatch not found; set AIC_BUILD_LOCAL=1 to build here"
 
+    # Apply AIC_BUILD_EXCLUDE_NODES to every submit so no call site has to
+    # remember it.  A pinned node (--nodelist) or a caller's own --exclude
+    # (e.g. AIC_TEST_EXCLUDE_NODES) takes precedence and suppresses the default.
+    local -a _exclude=()
+    if [[ -n "${AIC_BUILD_EXCLUDE_NODES:-}" ]]; then
+        local _o
+        _exclude=(--exclude="${AIC_BUILD_EXCLUDE_NODES}")
+        for _o in "$@"; do
+            case "${_o}" in
+                --nodelist=*|--nodelist|-w|--exclude=*|--exclude|-x) _exclude=() ;;
+            esac
+        done
+        (( ${#_exclude[@]} == 0 )) || log "${jobname}: excluding nodes ${AIC_BUILD_EXCLUDE_NODES}"
+    fi
+
     # Batch script = shebang + a prologue that creates the per-job log dir and
     # redirects everything into <logname>.out, then the caller's body.
     # AIC_DAY_DIR is absolute and on shared storage, so it resolves on the
@@ -710,6 +727,7 @@ PROLOGUE
             ${AIC_SLURM_ACCOUNT:+--account="${AIC_SLURM_ACCOUNT}"} \
             --output=/dev/null \
             "${_spur_gpu[@]}" \
+            "${_exclude[@]}" \
             "$@" \
             "${tmpscript}" 2>&1)" || { rm -f "${tmpscript}"; die "sbatch submission failed: ${submit_out}"; }
         rm -f "${tmpscript}"
@@ -915,6 +933,7 @@ PROLOGUE
             --partition="${AIC_BUILD_PARTITION}" \
             ${AIC_SLURM_ACCOUNT:+--account="${AIC_SLURM_ACCOUNT}"} \
             --output=/dev/null \
+            "${_exclude[@]}" \
             "$@" \
             <<<"${script}" >"${idfile}" &
         local sb_pid=$!
