@@ -54,7 +54,8 @@ aic_ci_ssh_bash \
     AIC_IMAGE_NAME="${AIC_IMAGE_NAME}" \
     AIC_DIST_BUILD_TARGET="${AIC_DIST_BUILD_TARGET}" \
     AIC_SHARED_NFS="${AIC_SHARED_NFS}" \
-    AIC_CI_STORAGE_ROOT="${AIC_CI_STORAGE_ROOT}" << 'REMOTE'
+    AIC_CI_STORAGE_ROOT="${AIC_CI_STORAGE_ROOT}" \
+    AIC_BUILD_EXCLUDE_NODES="${AIC_BUILD_EXCLUDE_NODES:-}" << 'REMOTE'
 # -E inherit ERR trap in functions and subshells,
 # -e exit the script upon commands failing,
 # -u to error if the script ever references a variable that is unset,

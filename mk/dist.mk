@@ -64,7 +64,7 @@ endif
 # (build-base, build-vllm, build-lmcache) which are implemented in the script.
 
 .PHONY: dist-build dist-build-bake dist-build-fast dist-build-emulate \
-        dist-build-base dist-build-vllm dist-build-lmcache \
+        dist-wheels dist-build-base dist-build-vllm dist-build-lmcache \
         dist-build-exporters dist-build-monitoring dist-push \
         smoke-test smoke-test-fast tiny-test tiny-test-fast \
         emulate-test emulate-mp-test emulate-validate profile-capture \
@@ -82,6 +82,12 @@ dist-build-bake:
 dist-build-fast:
 	@$(MAKE) --no-print-directory dist-build \
 	    AIC_ROCM_ARCH='$(AIC_FAST_ARCH)' AIC_UCX_FAST=1
+
+# Export the nightly-release pip wheels on a Slurm node.  `make wheels` runs the
+# same bake group locally; this one exists because the PyTorch + vLLM source
+# builds behind it do not fit in a GitHub-hosted runner's 6h job limit.
+dist-wheels:
+	"$(DIST)" wheels
 
 dist-build-emulate:
 	"$(DIST)" build-emulate

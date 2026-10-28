@@ -7,13 +7,24 @@
 # Triggered by pushing a v* tag (e.g. git tag v1.0.0 && git push origin v1.0.0).
 # Produces a full (non-prerelease) GitHub Release containing:
 #
-#   - LMCache + NIXL ROCm pip wheels (same `wheels` stage as the nightly)
+#   - vLLM/AITER/FlashAttention + LMCache + NIXL ROCm pip wheels (the same
+#     docker-bake.hcl `wheels` group and check-wheels.sh as the nightly)
 #   - Source tarball from `make export`
 #   - Full Docker image pushed to Docker Hub as rocm-aic:<tag> and rocm-aic:latest
+#
+# The wheels are built on the self-hosted SPUR runner, for the same reason the
+# nightly is: they come out of the PyTorch + vLLM source builds, which overrun a
+# GitHub-hosted runner's hard 6h job limit.
+#
+# KNOWN LIMITATION: the `Build + push Docker image` step below still builds the
+# full multi-arch image on a GitHub-hosted runner and has the same problem.  It
+# is untouched here -- moving the image push to SPUR or to the bake+registry
+# pattern in rocm-aic-publish-gfx1250-images.yml is separate work.
 #
 # Secrets required:
 #   CORP_CA_CERT      (optional) AMD Zscaler corp CA cert for BuildKit
 #   DOCKERHUB_USERNAME / DOCKERHUB_TOKEN  for Docker Hub push
+#   AIC_SPUR_HOST / AIC_SHARED_NFS        for the SPUR wheel build
 #
 name: rocm-aic - Release Workflow
 
@@ -27,13 +38,52 @@ permissions:
 
 env:
   IMAGE_NAME: rocm-aic
-  ROCM_ARCH: 'gfx90a;gfx942;gfx950;gfx1100;gfx1101;gfx1150;gfx1151;gfx1200;gfx1201'
+  # ','-separated: this travels through ssh to the SPUR head node, where a ';'
+  # would terminate the remote command.  Bake's rocm_arch_list() re-joins it
+  # with ';' for the Dockerfiles; check-wheels.sh splits on either.
+  ROCM_ARCH: 'gfx90a,gfx942,gfx950,gfx1100,gfx1101,gfx1150,gfx1151,gfx1200,gfx1201'
 
 jobs:
+  # ---------------------------------------------------------------------------
+  # Wheels, on SPUR.  Same script and wheel-set check as the nightly.
+  # ---------------------------------------------------------------------------
+  wheels:
+    name: Build release wheels on SPUR
+    runs-on: [self-hosted, rocm-aic-cicd]
+    timeout-minutes: 300
+    env:
+      AIC_SPUR_HOST: ${{ secrets.AIC_SPUR_HOST }}
+      AIC_SHARED_NFS: ${{ secrets.AIC_SHARED_NFS }}
+      AIC_CI_STORAGE_ROOT: ${{ secrets.AIC_SHARED_NFS }}/rocm-aic
+      AIC_BUILD_EXCLUDE_NODES: ${{ vars.AIC_BUILD_EXCLUDE_NODES }}
+      AIC_WHEEL_OUT: ${{ github.workspace }}/wheels
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 1
+
+      - name: Build wheels on the SPUR head node
+        run: |
+          bash /usr/local/lib/aic-ci/spur-wheels-build.sh \
+            "${{ github.sha }}" "${ROCM_ARCH}" release
+
+      - name: Check the wheel set
+        run: bash .github/scripts/workflows/check-wheels.sh "${AIC_WHEEL_OUT}" "${ROCM_ARCH}"
+
+      - name: Upload wheels
+        uses: actions/upload-artifact@v7
+        with:
+          name: release-wheels
+          path: ${{ env.AIC_WHEEL_OUT }}/
+          retention-days: 7
+
   release:
     name: Build + publish release ${{ github.ref_name }}
+    needs: wheels
     runs-on: ubuntu-24.04
-    timeout-minutes: 420
+    # GitHub hard-caps a hosted job at 360 minutes; the previous 420 could never
+    # take effect.  The image build below is what needs this budget.
+    timeout-minutes: 350
 
     steps:
       - uses: actions/checkout@v7
@@ -77,32 +127,18 @@ jobs:
           fi
 
       # ---------------------------------------------------------------------------
-      # Build pip wheels
+      # Collect the wheels the SPUR job built
       # ---------------------------------------------------------------------------
-      - name: Build + extract wheels (target=wheels)
-        uses: docker/build-push-action@v7
+      - name: Download release wheels
+        uses: actions/download-artifact@v8
         with:
-          context: .
-          file: docker/lmcache/Dockerfile
-          target: wheels
-          outputs: type=local,dest=wheels
-          build-args: |
-            ROCM_ARCH=${{ env.ROCM_ARCH }}
-            AIC_VERSION=${{ steps.imgtag.outputs.aic_version }}
-          secrets: |
-            ${{ steps.cert.outputs.present == 'true' && format('tls_cert={0}', steps.cert.outputs.path) || '' }}
-          cache-from: type=gha,scope=aic
-          cache-to: type=gha,mode=max,scope=aic
+          name: release-wheels
+          path: wheels
 
-      - name: Verify wheels
-        run: |
-          set -euo pipefail
-          shopt -s nullglob
-          wheels=(wheels/*.whl)
-          echo "Extracted ${#wheels[@]} wheel(s):"
-          for w in "${wheels[@]}"; do echo "  - $(basename "$w") ($(du -h "$w" | cut -f1))"; done
-          ls wheels/lmcache-*.whl   >/dev/null || { echo "ERROR: no lmcache wheel"   >&2; exit 1; }
-          ls wheels/nixl*rocm*.whl  >/dev/null || { echo "ERROR: no nixl_rocm wheel" >&2; exit 1; }
+      # Re-check here, not just on the build node: this is the last point before
+      # the wheels become public.
+      - name: Check the wheel set
+        run: bash .github/scripts/workflows/check-wheels.sh wheels "${ROCM_ARCH}"
 
       # ---------------------------------------------------------------------------
       # Build source tarball
@@ -149,14 +185,13 @@ jobs:
         run: |
           set -euo pipefail
           bash .github/scripts/workflows/render-release-notes.sh \
-            docker/base/Dockerfile \
-            docker/vllm/Dockerfile \
-            docker/lmcache/Dockerfile \
+            release \
             "${{ github.ref_name }}" \
             "${{ github.sha }}" \
             "${ROCM_ARCH}" \
-            "${IMAGE_NAME}" \
+            wheels \
             "${GITHUB_REPOSITORY}" \
+            "${IMAGE_NAME}" \
             > release-notes.md
           cat release-notes.md
 

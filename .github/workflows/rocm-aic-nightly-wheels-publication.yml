@@ -2,39 +2,65 @@
 #
 # SPDX-License-Identifier: MIT
 #
-# Nightly pip wheels for the AMD Infinity Context (AIC): source-built vLLM,
-# patched LMCache, and ROCm NIXL.
+# Nightly pip wheels for the AMD Infinity Context (AIC): source-built vLLM (+
+# its AITER and FlashAttention backends), patched LMCache, and ROCm NIXL.
 #
 # Architecture groups
 # -------------------
-# cdna  gfx90a;gfx942;gfx950   MI100 / MI200 / MI300X / MI355X  (primary target)
-# rdna  gfx1100;gfx1101;gfx1150;gfx1151;gfx1200;gfx1201         (RDNA3/4, best-effort)
+# cdna     gfx90a;gfx942;gfx950   MI200 / MI300X / MI355X   (primary target)
+# rdna     gfx1100;gfx1101;gfx1150;gfx1151;gfx1200;gfx1201   (RDNA3/4, best-effort)
+# gfx1250  gfx1250                 rocjitsu-emulated GPU     (best-effort)
 #
-# Scheduled nightly builds CDNA only (the primary hardware target).  Manual
-# dispatch can include RDNA via the include_rdna input.
+# A group's wheels carry filenames with no arch in them (`vllm-0.29.0+rocm-
+# cp312-cp312-linux_x86_64.whl` is byte-for-byte the same NAME for every group)
+# but hold different GPU code, so they can never share a release: each group
+# gets its own rolling tag -- cdna -> `nightly`, rdna -> `nightly-rdna`,
+# gfx1250 -> `nightly-gfx1250`.
 #
-# Build pipeline
-# --------------
-#  warm-base-cdna  ─┐
-#                   ├─► build-wheels-cdna  ─┐
-#  warm-base-rdna  ─┘                       ├─► publish
-#                   └─► build-wheels-rdna  ─┘
+# Scheduled runs build CDNA only (the primary hardware target).  Manual dispatch
+# adds the other groups.
 #
-# warm-base-*: builds docker/base/Dockerfile through build_torchvision (PyTorch +
-# torchvision source build) into a per-group GHA cache scope (aic-wheels-cdna /
-# aic-wheels-rdna).  Subsequent build-wheels-* jobs read from that scope and
-# skip the multi-hour PyTorch compile on warm runs.
+# Where this runs, and why
+# ------------------------
+# On the self-hosted SPUR runner, NOT on a GitHub-hosted one.  The wheels come
+# out of the same PyTorch + torchvision + vLLM + AITER source builds the images
+# do, and those do not fit in a GitHub-hosted runner's hard 6h job limit: every
+# scheduled run from 2026-10-16 to 2026-10-27 was killed at 6h inside the
+# PyTorch compile, having published nothing.  The GHA layer cache that was meant
+# to amortise it is capped at 10 GB per repo, far under this stack's layer set,
+# so it never warmed -- and a cache that only exports from a job that completes
+# could not have warmed from runs that never completed anyway.
 #
-# build-wheels-*: builds docker/lmcache/Dockerfile --target wheels using the
-# warmed cache; exports .whl files as a job artifact with an _arch-*.txt
-# metadata file so the publish job can compose accurate release notes.
+# The SPUR path builds the whole stack in 30m-2h and shares its on-NFS layer
+# cache with the nightly dist-build, so a wheels run after one is cheap.
 #
-# publish: collects all wheel artifacts and creates/updates the rolling
-# `nightly` GitHub Release.
+# What gets built
+# ---------------
+# `make dist-wheels` -> .slurm/run-build-distribute.sh wheels -> the bake
+# `wheels` group (docker/docker-bake.hcl), which exports three scratch stages:
 #
-# Compatibility: ROCm 7.14 / Python 3.12 / x86_64, non-manylinux.
-# NIXL wheel carries libnixl + plugins/UCX; ROCm runtime is an external dep.
+#   wheels-nixl     docker/base/Dockerfile     nixl_rocm
+#   wheels-lmcache  docker/lmcache/Dockerfile  lmcache
+#   wheels-vllm     docker/vllm/Dockerfile     vllm, amd_aiter, flash_attn
 #
+# NIXL is built ONCE, in aic-base, and inherited by both aic-vllm and
+# aic-lmcache -- so there is a single common nixl_rocm wheel for the whole stack
+# rather than one per image.  flash_attn is CDNA-only and is absent from the
+# other groups by design.  The set is checked by check-wheels.sh twice: on the
+# build node, and again here before upload.
+#
+# Publishing
+# ----------
+# Every group is staged as a verified draft FIRST, and only once all of them
+# are staged does any get promoted to its live tag
+# (.github/scripts/workflows/publish-rolling-release.sh).  A failed upload
+# therefore leaves every live release on the previous run's assets.
+#
+# Testing a PR
+# ------------
+# Comment `/run-wheels` on a PR.  It builds that PR head SHA for CDNA and
+# uploads the wheels as a run artifact.  A PR run NEVER touches a rolling
+# release -- only schedule and workflow_dispatch publish.
 name: rocm-aic - Nightly Wheels Publication
 
 on:
@@ -43,64 +69,161 @@ on:
     - cron: '37 6 * * *'
   workflow_dispatch:
     inputs:
-      include_rdna:
-        description: 'Also build RDNA wheels (gfx11xx/gfx12xx, adds ~3h)'
+      groups:
+        description: 'Arch groups to build'
         required: false
-        default: 'false'
+        default: 'cdna'
         type: choice
-        options: ['false', 'true']
+        options: ['cdna', 'cdna,rdna', 'cdna,gfx1250', 'cdna,rdna,gfx1250']
       force:
         description: 'Build + publish even if main has not changed'
         required: false
         default: 'false'
         type: choice
         options: ['false', 'true']
+      publish:
+        description: 'Publish to the rolling releases (false = build + artifact only)'
+        required: false
+        default: 'true'
+        type: choice
+        options: ['true', 'false']
+  issue_comment:
+    types: [created]
 
 permissions:
-  contents: write   # create/update the rolling `nightly` release
+  contents: write        # create/update the rolling `nightly*` releases
+  pull-requests: write   # react to / comment on the triggering PR comment
+  statuses: write        # commit status on the PR head
+
+# One wheels run at a time: the groups drive the same SPUR layer cache and the
+# same single self-hosted runner.  Not cancel-in-progress -- a half-way killed
+# build leaves a partial wheel dir on shared NFS.
+concurrency:
+  group: nightly-wheels-${{ github.event.issue.number || 'main' }}
+  cancel-in-progress: false
 
 env:
-  RELEASE_TAG: nightly
-  CDNA_ARCH: 'gfx90a;gfx942;gfx950'
-  RDNA_ARCH: 'gfx1100;gfx1101;gfx1150;gfx1151;gfx1200;gfx1201'
+  # Arch lists are comma-separated: they are passed through ssh, which joins its
+  # argv into a remote command string where a ';' would terminate it.  Bake's
+  # rocm_arch_list() re-joins with ';' for the Dockerfiles, and check-wheels.sh
+  # splits on either, so nothing downstream sees the comma form.
+  CDNA_ARCH: 'gfx90a,gfx942,gfx950'
+  RDNA_ARCH: 'gfx1100,gfx1101,gfx1150,gfx1151,gfx1200,gfx1201'
+  GFX1250_ARCH: 'gfx1250'
+  RELEASE_TAG_CDNA: nightly
+  RELEASE_TAG_RDNA: nightly-rdna
+  RELEASE_TAG_GFX1250: nightly-gfx1250
 
 jobs:
   # ---------------------------------------------------------------------------
-  # Decide whether there is anything new to build.
+  # Resolve what to build, from which SHA, and whether to publish.
   # ---------------------------------------------------------------------------
-  check:
-    name: Check for changes on main
+  authorize:
+    name: Resolve target and authorize
+    if: >
+      github.event_name != 'issue_comment' || (
+        github.event.issue.pull_request != null &&
+        contains(github.event.comment.body, '/run-wheels')
+      )
     runs-on: ubuntu-24.04
     outputs:
+      sha: ${{ steps.resolve.outputs.sha }}
+      pr_number: ${{ steps.resolve.outputs.pr_number }}
+      build_rdna: ${{ steps.resolve.outputs.build_rdna }}
+      build_gfx1250: ${{ steps.resolve.outputs.build_gfx1250 }}
+      publish: ${{ steps.resolve.outputs.publish }}
       should_build: ${{ steps.decide.outputs.should_build }}
-      sha: ${{ steps.head.outputs.sha }}
     steps:
-      - uses: actions/checkout@v7
+      - name: Check commenter is a maintainer or admin
+        if: github.event_name == 'issue_comment'
+        uses: actions/github-script@v9
         with:
-          ref: main
-          fetch-depth: 1
+          script: |
+            const { data } = await github.rest.repos.getCollaboratorPermissionLevel({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              username: context.actor,
+            });
+            const level = data.permission;
+            if (level !== 'admin' && level !== 'maintain' && level !== 'write') {
+              core.setFailed(`@${context.actor} does not have write/maintain/admin permission (got: ${level})`);
+            }
 
-      - name: Resolve main HEAD
-        id: head
-        run: echo "sha=$(git rev-parse HEAD)" >> "${GITHUB_OUTPUT}"
+      - name: Resolve SHA, arch groups and publish mode
+        id: resolve
+        uses: actions/github-script@v9
+        with:
+          script: |
+            if (context.eventName === 'issue_comment') {
+              const { data: pr } = await github.rest.pulls.get({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                pull_number: context.issue.number,
+              });
+              core.setOutput('sha', pr.head.sha);
+              core.setOutput('pr_number', String(context.issue.number));
+              // `/run-wheels` is the whole command: a PR test builds CDNA, the
+              // group every PR needs to know about.  Other groups go through
+              // workflow_dispatch, which is where a multi-hour run belongs.
+              core.setOutput('build_rdna', 'false');
+              core.setOutput('build_gfx1250', 'false');
+              // A PR test must never clobber a rolling release.
+              core.setOutput('publish', 'false');
+            } else {
+              // Both schedule and workflow_dispatch build main -- github.sha is
+              // already main's HEAD for either -- and both publish.
+              const groups = (context.payload.inputs?.groups || 'cdna')
+                .split(',').map(s => s.trim());
+              core.setOutput('sha', context.sha);
+              core.setOutput('pr_number', '');
+              core.setOutput('build_rdna', groups.includes('rdna') ? 'true' : 'false');
+              core.setOutput('build_gfx1250', groups.includes('gfx1250') ? 'true' : 'false');
+              // A schedule run always publishes.  A dispatch can opt out, which
+              // is the only way to exercise this workflow end-to-end from a
+              // branch: `issue_comment` always runs the DEFAULT branch's copy of
+              // a workflow file, so /run-wheels cannot test an unmerged change,
+              // and a dispatch that published would push wheels built from
+              // unmerged code to the live rolling release -- tagged, worse, at a
+              // branch SHA.
+              core.setOutput('publish',
+                context.payload.inputs?.publish === 'false' ? 'false' : 'true');
+            }
+
+      - name: React to comment with eyes
+        if: github.event_name == 'issue_comment'
+        uses: actions/github-script@v9
+        with:
+          script: |
+            await github.rest.reactions.createForIssueComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              comment_id: context.payload.comment.id,
+              content: 'eyes',
+            });
 
       - name: Compare to last published nightly
         id: decide
         env:
           GH_TOKEN: ${{ github.token }}
+          HEAD_SHA: ${{ steps.resolve.outputs.sha }}
+          FORCE: ${{ github.event.inputs.force }}
+          EVENT: ${{ github.event_name }}
+          RELEASE_TAG: ${{ env.RELEASE_TAG_CDNA }}
         run: |
           set -euo pipefail
-          head_sha='${{ steps.head.outputs.sha }}'
-          force='${{ github.event.inputs.force }}'
+          # A PR test and a manual dispatch always run; only the schedule is
+          # allowed to decide there is nothing new and skip.
+          if [ "${EVENT}" != "schedule" ] || [ "${FORCE}" = "true" ]; then
+            echo "should_build=true" >> "${GITHUB_OUTPUT}"
+            echo "reason: ${EVENT} run (force=${FORCE:-false})"
+            exit 0
+          fi
           last="$(gh release view "${RELEASE_TAG}" \
                     --repo "${GITHUB_REPOSITORY}" \
                     --json targetCommitish -q .targetCommitish 2>/dev/null || echo '')"
-          echo "main HEAD:        ${head_sha}"
+          echo "main HEAD:        ${HEAD_SHA}"
           echo "last nightly sha: ${last:-<none>}"
-          if [ "${force}" = "true" ] || [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            echo "should_build=true" >> "${GITHUB_OUTPUT}"
-            echo "reason: manual/force run"
-          elif [ -z "${last}" ] || [ "${last}" != "${head_sha}" ]; then
+          if [ -z "${last}" ] || [ "${last}" != "${HEAD_SHA}" ]; then
             echo "should_build=true" >> "${GITHUB_OUTPUT}"
             echo "reason: main changed since last nightly"
           else
@@ -109,361 +232,272 @@ jobs:
           fi
 
   # ---------------------------------------------------------------------------
-  # Shared step template implemented via reusable fragments.
-  # The four build jobs (warm-base-cdna, warm-base-rdna, build-wheels-cdna,
-  # build-wheels-rdna) are explicit jobs rather than a matrix so that the RDNA
-  # jobs can have independent job-level `if:` conditions.  The matrix context
-  # is not available in jobs.<id>.if on GitHub Actions.
+  # Build on SPUR.  One job per group rather than a matrix so each can carry its
+  # own job-level `if:` -- the matrix context is not available in jobs.<id>.if.
+  # They chain so the groups never contend for the one self-hosted runner, and
+  # so each group's aic-base warms the next one's cache.
   # ---------------------------------------------------------------------------
-
-  # --- CDNA base warm-up -----------------------------------------------------
-  warm-base-cdna:
-    name: Warm base cache (cdna)
-    needs: check
-    if: needs.check.outputs.should_build == 'true'
-    runs-on: ubuntu-24.04
-    timeout-minutes: 360
-    steps:
-      - uses: actions/checkout@v7
-        with:
-          ref: ${{ needs.check.outputs.sha }}
-          fetch-depth: 1
-
-      - name: Free disk space on runner
-        uses: jlumbroso/free-disk-space@v2.0.0
-        with:
-          tool-cache: true
-          android: true
-          dotnet: true
-          haskell: true
-          large-packages: true
-          docker-images: true
-          swap-storage: true
-
-      - uses: docker/setup-buildx-action@v4
-
-      - name: Write corp CA cert secret
-        id: cert
-        run: |
-          if [ -n "${{ secrets.CORP_CA_CERT }}" ]; then
-            echo "${{ secrets.CORP_CA_CERT }}" > /tmp/corp-ca.crt
-            echo "path=/tmp/corp-ca.crt" >> "${GITHUB_OUTPUT}"
-            echo "present=true" >> "${GITHUB_OUTPUT}"
-          else
-            echo "present=false" >> "${GITHUB_OUTPUT}"
-          fi
-
-      - name: Build base image (PyTorch + torchvision) → populate cache
-        uses: docker/build-push-action@v7
-        with:
-          context: .
-          file: docker/base/Dockerfile
-          push: false
-          load: false
-          build-args: ROCM_ARCH=${{ env.CDNA_ARCH }}
-          secrets: |
-            ${{ steps.cert.outputs.present == 'true' && format('tls_cert={0}', steps.cert.outputs.path) || '' }}
-          cache-from: type=gha,scope=aic-wheels-cdna
-          cache-to: type=gha,mode=max,scope=aic-wheels-cdna
-
-  # --- RDNA base warm-up (scheduled runs excluded) ---------------------------
-  warm-base-rdna:
-    name: Warm base cache (rdna)
-    needs: check
-    if: |
-      needs.check.outputs.should_build == 'true' &&
-      github.event_name != 'schedule' &&
-      github.event.inputs.include_rdna == 'true'
-    runs-on: ubuntu-24.04
-    timeout-minutes: 360
-    steps:
-      - uses: actions/checkout@v7
-        with:
-          ref: ${{ needs.check.outputs.sha }}
-          fetch-depth: 1
-
-      - name: Free disk space on runner
-        uses: jlumbroso/free-disk-space@v2.0.0
-        with:
-          tool-cache: true
-          android: true
-          dotnet: true
-          haskell: true
-          large-packages: true
-          docker-images: true
-          swap-storage: true
-
-      - uses: docker/setup-buildx-action@v4
-
-      - name: Write corp CA cert secret
-        id: cert
-        run: |
-          if [ -n "${{ secrets.CORP_CA_CERT }}" ]; then
-            echo "${{ secrets.CORP_CA_CERT }}" > /tmp/corp-ca.crt
-            echo "path=/tmp/corp-ca.crt" >> "${GITHUB_OUTPUT}"
-            echo "present=true" >> "${GITHUB_OUTPUT}"
-          else
-            echo "present=false" >> "${GITHUB_OUTPUT}"
-          fi
-
-      - name: Build base image (PyTorch + torchvision) → populate cache
-        uses: docker/build-push-action@v7
-        with:
-          context: .
-          file: docker/base/Dockerfile
-          push: false
-          load: false
-          build-args: ROCM_ARCH=${{ env.RDNA_ARCH }}
-          secrets: |
-            ${{ steps.cert.outputs.present == 'true' && format('tls_cert={0}', steps.cert.outputs.path) || '' }}
-          cache-from: type=gha,scope=aic-wheels-rdna
-          cache-to: type=gha,mode=max,scope=aic-wheels-rdna
-
-  # --- CDNA wheel build ------------------------------------------------------
   build-wheels-cdna:
     name: Build wheels (cdna)
-    needs: [check, warm-base-cdna]
-    if: needs.check.outputs.should_build == 'true'
-    runs-on: ubuntu-24.04
-    timeout-minutes: 360
+    needs: authorize
+    if: needs.authorize.outputs.should_build == 'true'
+    runs-on: [self-hosted, rocm-aic-cicd]
+    # The SPUR stack builds in 30m-2h warm; this covers a cold layer cache plus
+    # Slurm queue time.
+    timeout-minutes: 300
+    env:
+      AIC_SPUR_HOST: ${{ secrets.AIC_SPUR_HOST }}
+      AIC_SHARED_NFS: ${{ secrets.AIC_SHARED_NFS }}
+      AIC_CI_STORAGE_ROOT: ${{ secrets.AIC_SHARED_NFS }}/rocm-aic
+      AIC_BUILD_EXCLUDE_NODES: ${{ vars.AIC_BUILD_EXCLUDE_NODES }}
+      AIC_WHEEL_OUT: ${{ github.workspace }}/wheels-cdna
     steps:
       - uses: actions/checkout@v7
         with:
-          ref: ${{ needs.check.outputs.sha }}
+          ref: ${{ needs.authorize.outputs.sha }}
           fetch-depth: 1
 
-      - name: Free disk space on runner
-        uses: jlumbroso/free-disk-space@v2.0.0
+      - name: Set commit status to pending
+        if: needs.authorize.outputs.pr_number != ''
+        uses: actions/github-script@v9
         with:
-          tool-cache: true
-          android: true
-          dotnet: true
-          haskell: true
-          large-packages: true
-          docker-images: true
-          swap-storage: true
+          script: |
+            await github.rest.repos.createCommitStatus({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              sha: '${{ needs.authorize.outputs.sha }}',
+              state: 'pending',
+              target_url: `https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`,
+              context: 'hardware-ci / wheels-cdna',
+              description: 'Building CDNA wheels on the SPUR head node...',
+            });
 
-      - uses: docker/setup-buildx-action@v4
-
-      - name: Read AIC version
-        id: version
+      - name: Build wheels on the SPUR head node
         run: |
-          aic_version="$(<VERSION)"
-          : "${aic_version:?VERSION is empty}"
-          echo "aic_version=${aic_version}" >> "${GITHUB_OUTPUT}"
+          bash /usr/local/lib/aic-ci/spur-wheels-build.sh \
+            "${{ needs.authorize.outputs.sha }}" "${CDNA_ARCH}" cdna
 
-      - name: Write corp CA cert secret
-        id: cert
-        run: |
-          if [ -n "${{ secrets.CORP_CA_CERT }}" ]; then
-            echo "${{ secrets.CORP_CA_CERT }}" > /tmp/corp-ca.crt
-            echo "path=/tmp/corp-ca.crt" >> "${GITHUB_OUTPUT}"
-            echo "present=true" >> "${GITHUB_OUTPUT}"
-          else
-            echo "present=false" >> "${GITHUB_OUTPUT}"
-          fi
-
-      - name: Build + extract wheels (target=wheels)
-        uses: docker/build-push-action@v7
-        with:
-          context: .
-          file: docker/lmcache/Dockerfile
-          target: wheels
-          outputs: type=local,dest=wheels-out
-          build-args: |
-            AIC_VERSION=${{ steps.version.outputs.aic_version }}
-            ROCM_ARCH=${{ env.CDNA_ARCH }}
-          secrets: |
-            ${{ steps.cert.outputs.present == 'true' && format('tls_cert={0}', steps.cert.outputs.path) || '' }}
-          cache-from: type=gha,scope=aic-wheels-cdna
-          cache-to: type=gha,mode=max,scope=aic-wheels-cdna
-
-      - name: Verify and annotate wheels
-        run: |
-          set -euo pipefail
-          shopt -s nullglob
-          wheels=(wheels-out/*.whl)
-          echo "Extracted ${#wheels[@]} wheel(s):"
-          for w in "${wheels[@]}"; do echo "  - $(basename "$w") ($(du -h "$w" | cut -f1))"; done
-          ls wheels-out/vllm-*.whl     >/dev/null || { echo "ERROR: no vllm wheel"      >&2; exit 1; }
-          ls wheels-out/lmcache-*.whl  >/dev/null || { echo "ERROR: no lmcache wheel"   >&2; exit 1; }
-          ls wheels-out/nixl*rocm*.whl >/dev/null || { echo "ERROR: no nixl_rocm wheel" >&2; exit 1; }
-          echo "${{ env.CDNA_ARCH }}" > wheels-out/_arch-cdna.txt
+      - name: Check the wheel set
+        run: bash .github/scripts/workflows/check-wheels.sh "${AIC_WHEEL_OUT}" "${CDNA_ARCH}"
 
       - name: Upload wheel artifacts
         uses: actions/upload-artifact@v7
         with:
           name: wheels-cdna
-          path: wheels-out/
-          retention-days: 2
+          path: ${{ env.AIC_WHEEL_OUT }}/
+          retention-days: 7
 
-  # --- RDNA wheel build (scheduled runs excluded) ----------------------------
+      - name: Set commit status on success
+        if: success() && needs.authorize.outputs.pr_number != ''
+        uses: actions/github-script@v9
+        with:
+          script: |
+            await github.rest.repos.createCommitStatus({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              sha: '${{ needs.authorize.outputs.sha }}',
+              state: 'success',
+              target_url: `https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`,
+              context: 'hardware-ci / wheels-cdna',
+              description: 'CDNA wheels built — see run artifacts',
+            });
+
+      - name: Set commit status on failure
+        if: failure() && needs.authorize.outputs.pr_number != ''
+        uses: actions/github-script@v9
+        with:
+          script: |
+            await github.rest.repos.createCommitStatus({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              sha: '${{ needs.authorize.outputs.sha }}',
+              state: 'failure',
+              target_url: `https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`,
+              context: 'hardware-ci / wheels-cdna',
+              description: 'CDNA wheel build failed — check the run logs',
+            });
+
   build-wheels-rdna:
     name: Build wheels (rdna)
-    needs: [check, warm-base-rdna]
-    if: |
-      needs.check.outputs.should_build == 'true' &&
-      github.event_name != 'schedule' &&
-      github.event.inputs.include_rdna == 'true'
-    runs-on: ubuntu-24.04
-    timeout-minutes: 360
+    needs: [authorize, build-wheels-cdna]
+    if: >
+      needs.authorize.outputs.should_build == 'true' &&
+      needs.authorize.outputs.build_rdna == 'true'
+    runs-on: [self-hosted, rocm-aic-cicd]
+    timeout-minutes: 300
+    env:
+      AIC_SPUR_HOST: ${{ secrets.AIC_SPUR_HOST }}
+      AIC_SHARED_NFS: ${{ secrets.AIC_SHARED_NFS }}
+      AIC_CI_STORAGE_ROOT: ${{ secrets.AIC_SHARED_NFS }}/rocm-aic
+      AIC_BUILD_EXCLUDE_NODES: ${{ vars.AIC_BUILD_EXCLUDE_NODES }}
+      AIC_WHEEL_OUT: ${{ github.workspace }}/wheels-rdna
     steps:
       - uses: actions/checkout@v7
         with:
-          ref: ${{ needs.check.outputs.sha }}
+          ref: ${{ needs.authorize.outputs.sha }}
           fetch-depth: 1
 
-      - name: Free disk space on runner
-        uses: jlumbroso/free-disk-space@v2.0.0
-        with:
-          tool-cache: true
-          android: true
-          dotnet: true
-          haskell: true
-          large-packages: true
-          docker-images: true
-          swap-storage: true
-
-      - uses: docker/setup-buildx-action@v4
-
-      - name: Read AIC version
-        id: version
+      - name: Build wheels on the SPUR head node
         run: |
-          aic_version="$(<VERSION)"
-          : "${aic_version:?VERSION is empty}"
-          echo "aic_version=${aic_version}" >> "${GITHUB_OUTPUT}"
+          bash /usr/local/lib/aic-ci/spur-wheels-build.sh \
+            "${{ needs.authorize.outputs.sha }}" "${RDNA_ARCH}" rdna
 
-      - name: Write corp CA cert secret
-        id: cert
-        run: |
-          if [ -n "${{ secrets.CORP_CA_CERT }}" ]; then
-            echo "${{ secrets.CORP_CA_CERT }}" > /tmp/corp-ca.crt
-            echo "path=/tmp/corp-ca.crt" >> "${GITHUB_OUTPUT}"
-            echo "present=true" >> "${GITHUB_OUTPUT}"
-          else
-            echo "present=false" >> "${GITHUB_OUTPUT}"
-          fi
-
-      - name: Build + extract wheels (target=wheels)
-        uses: docker/build-push-action@v7
-        with:
-          context: .
-          file: docker/lmcache/Dockerfile
-          target: wheels
-          outputs: type=local,dest=wheels-out
-          build-args: |
-            AIC_VERSION=${{ steps.version.outputs.aic_version }}
-            ROCM_ARCH=${{ env.RDNA_ARCH }}
-          secrets: |
-            ${{ steps.cert.outputs.present == 'true' && format('tls_cert={0}', steps.cert.outputs.path) || '' }}
-          cache-from: type=gha,scope=aic-wheels-rdna
-          cache-to: type=gha,mode=max,scope=aic-wheels-rdna
-
-      - name: Verify and annotate wheels
-        run: |
-          set -euo pipefail
-          shopt -s nullglob
-          wheels=(wheels-out/*.whl)
-          echo "Extracted ${#wheels[@]} wheel(s):"
-          for w in "${wheels[@]}"; do echo "  - $(basename "$w") ($(du -h "$w" | cut -f1))"; done
-          ls wheels-out/vllm-*.whl     >/dev/null || { echo "ERROR: no vllm wheel"      >&2; exit 1; }
-          ls wheels-out/lmcache-*.whl  >/dev/null || { echo "ERROR: no lmcache wheel"   >&2; exit 1; }
-          ls wheels-out/nixl*rocm*.whl >/dev/null || { echo "ERROR: no nixl_rocm wheel" >&2; exit 1; }
-          echo "${{ env.RDNA_ARCH }}" > wheels-out/_arch-rdna.txt
+      # check-wheels.sh drops flash_attn from the expected set for a non-gfx9
+      # arch list by itself, matching docker/vllm/Dockerfile.
+      - name: Check the wheel set
+        run: bash .github/scripts/workflows/check-wheels.sh "${AIC_WHEEL_OUT}" "${RDNA_ARCH}"
 
       - name: Upload wheel artifacts
         uses: actions/upload-artifact@v7
         with:
           name: wheels-rdna
-          path: wheels-out/
-          retention-days: 2
+          path: ${{ env.AIC_WHEEL_OUT }}/
+          retention-days: 7
 
-  # ---------------------------------------------------------------------------
-  # Collect all wheel artifacts from built groups and publish to the rolling
-  # `nightly` GitHub Release.  Runs when CDNA succeeded (RDNA may be skipped).
-  # ---------------------------------------------------------------------------
-  publish:
-    name: Publish nightly release
-    needs: [check, build-wheels-cdna, build-wheels-rdna]
-    if: needs.check.outputs.should_build == 'true' && needs.build-wheels-cdna.result == 'success'
-    runs-on: ubuntu-24.04
-    timeout-minutes: 30
+  build-wheels-gfx1250:
+    name: Build wheels (gfx1250)
+    needs: [authorize, build-wheels-cdna, build-wheels-rdna]
+    # always(): RDNA is usually skipped, which must not skip this one.
+    if: >
+      always() &&
+      needs.authorize.outputs.should_build == 'true' &&
+      needs.authorize.outputs.build_gfx1250 == 'true' &&
+      needs.build-wheels-cdna.result == 'success'
+    runs-on: [self-hosted, rocm-aic-cicd]
+    timeout-minutes: 300
+    env:
+      AIC_SPUR_HOST: ${{ secrets.AIC_SPUR_HOST }}
+      AIC_SHARED_NFS: ${{ secrets.AIC_SHARED_NFS }}
+      AIC_CI_STORAGE_ROOT: ${{ secrets.AIC_SHARED_NFS }}/rocm-aic
+      AIC_BUILD_EXCLUDE_NODES: ${{ vars.AIC_BUILD_EXCLUDE_NODES }}
+      AIC_WHEEL_OUT: ${{ github.workspace }}/wheels-gfx1250
     steps:
       - uses: actions/checkout@v7
         with:
-          ref: ${{ needs.check.outputs.sha }}
+          ref: ${{ needs.authorize.outputs.sha }}
           fetch-depth: 1
 
-      - name: Download all wheel artifacts
+      - name: Build wheels on the SPUR head node
+        run: |
+          bash /usr/local/lib/aic-ci/spur-wheels-build.sh \
+            "${{ needs.authorize.outputs.sha }}" "${GFX1250_ARCH}" gfx1250
+
+      - name: Check the wheel set
+        run: bash .github/scripts/workflows/check-wheels.sh "${AIC_WHEEL_OUT}" "${GFX1250_ARCH}"
+
+      - name: Upload wheel artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          name: wheels-gfx1250
+          path: ${{ env.AIC_WHEEL_OUT }}/
+          retention-days: 7
+
+  # ---------------------------------------------------------------------------
+  # Publish each group to its own rolling release.  Schedule/dispatch only: a
+  # `/run-wheels` PR test stops at the uploaded artifact.
+  # ---------------------------------------------------------------------------
+  publish:
+    name: Publish nightly releases
+    needs: [authorize, build-wheels-cdna, build-wheels-rdna, build-wheels-gfx1250]
+    # always() so a skipped or failed optional group does not skip this; CDNA
+    # must have succeeded.  A failed optional group simply does not publish --
+    # its live release keeps the previous run's assets.
+    if: >
+      always() &&
+      needs.authorize.outputs.publish == 'true' &&
+      needs.build-wheels-cdna.result == 'success'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.authorize.outputs.sha }}
+          fetch-depth: 1
+
+      # NOT merge-multiple: every group ships the same wheel FILENAMES with
+      # different GPU code, so merging them would silently drop a whole group.
+      - name: Download wheel artifacts
         uses: actions/download-artifact@v8
         with:
           pattern: wheels-*
           path: all-wheels
-          merge-multiple: true
 
-      - name: List collected wheels
-        run: |
-          echo "Wheels to publish:"
-          ls -lh all-wheels/*.whl
-
-      - name: Compose release notes
-        run: |
-          set -euo pipefail
-          df="docker/lmcache/Dockerfile"
-          vdf="docker/vllm/Dockerfile"
-          bdf="docker/base/Dockerfile"
-          get()  { grep -E "^ARG $1=" "$2" | head -1 | cut -d= -f2-; }
-          rocm_version="$(get ROCM_VERSION "${bdf}")"
-          vllm_ref="$(get VLLM_REF "${vdf}")"
-          lmcache_ref="$(get LMCACHE_REF "${df}")"
-          nixl_ref="$(get NIXL_REF "${df}")"
-          : "${rocm_version:?}" "${vllm_ref:?}" "${lmcache_ref:?}" "${nixl_ref:?}"
-
-          # Read arch groups from the metadata files written by each build-wheels job.
-          arch_lines=""
-          for f in all-wheels/_arch-*.txt; do
-            [ -f "$f" ] || continue
-            group="${f##*/_arch-}"; group="${group%.txt}"
-            arch="$(cat "$f")"
-            arch_lines="${arch_lines}- \`${arch}\` (${group})\n"
-          done
-
-          {
-            echo "Nightly ROCm wheels for the **AMD Infinity Context (AIC)** patched stack."
-            echo ""
-            echo "- **Source:** main @ \`${{ needs.check.outputs.sha }}\`"
-            echo "- **Built (UTC):** run ${{ github.run_id }}"
-            echo "- **GPU arch sets:**"
-            printf '%b' "${arch_lines}"
-            echo "- **Base:** rocm/dev-ubuntu-24.04:${rocm_version}-full (ROCm ${rocm_version}, Python 3.12, x86_64)"
-            echo "- **vLLM:** $(get VLLM_GIT_URL "${vdf}") @ \`${vllm_ref}\` (source build)"
-            echo "- **LMCache:** $(get LMCACHE_GIT_URL "${df}") @ \`${lmcache_ref}\` + AIC patches"
-            echo "- **NIXL:** $(get NIXL_GIT_URL "${df}") @ \`${nixl_ref}\` + nixl-rocm-ais-mt patch"
-            echo ""
-            echo "### Install"
-            echo '```bash'
-            echo "pip install \\"
-            echo "  https://github.com/${GITHUB_REPOSITORY}/releases/download/${RELEASE_TAG}/<vllm-wheel> \\"
-            echo "  https://github.com/${GITHUB_REPOSITORY}/releases/download/${RELEASE_TAG}/<lmcache-wheel> \\"
-            echo "  https://github.com/${GITHUB_REPOSITORY}/releases/download/${RELEASE_TAG}/<nixl_rocm-wheel>"
-            echo '```'
-            echo ""
-            echo "> Wheels are **not** manylinux: ROCm 7.14 + Python 3.12 + x86_64 only."
-            echo "> The \`nixl_rocm\` wheel needs libamdhip64 and hipFile (GA in ROCm 7.14) on the host."
-            echo "> See [docs/PIP_WHEELS.md](https://github.com/${GITHUB_REPOSITORY}/blob/main/docs/PIP_WHEELS.md)."
-          } > release-notes.md
-          cat release-notes.md
-
-      - name: Publish rolling nightly release
+      - name: Stage every release as a verified draft
+        id: stage
         env:
           GH_TOKEN: ${{ github.token }}
+          HEAD_SHA: ${{ needs.authorize.outputs.sha }}
         run: |
           set -euo pipefail
-          gh release delete "${RELEASE_TAG}" --repo "${GITHUB_REPOSITORY}" --yes --cleanup-tag 2>/dev/null || true
-          gh release create "${RELEASE_TAG}" all-wheels/*.whl \
-            --repo "${GITHUB_REPOSITORY}" \
-            --title "AIC nightly wheels" \
-            --notes-file release-notes.md \
-            --target "${{ needs.check.outputs.sha }}" \
-            --prerelease
-          echo "Published ${RELEASE_TAG} at ${{ needs.check.outputs.sha }}"
+          publisher=.github/scripts/workflows/publish-rolling-release.sh
+          renderer=.github/scripts/workflows/render-release-notes.sh
+          : > staged.txt
+          for dir in all-wheels/wheels-*; do
+            [ -d "${dir}" ] || continue
+            group="${dir##*/wheels-}"
+            case "${group}" in
+              cdna)    tag="${RELEASE_TAG_CDNA}";    arch="${CDNA_ARCH}" ;;
+              rdna)    tag="${RELEASE_TAG_RDNA}";    arch="${RDNA_ARCH}" ;;
+              gfx1250) tag="${RELEASE_TAG_GFX1250}"; arch="${GFX1250_ARCH}" ;;
+              *) echo "ERROR: no release tag for group '${group}'" >&2; exit 1 ;;
+            esac
+            echo "::group::stage ${group} -> ${tag}"
+            # Re-check here, not just on the build node: this is the last point
+            # before the wheels become public.
+            bash .github/scripts/workflows/check-wheels.sh "${dir}" "${arch}"
+            bash "${renderer}" nightly "${tag}" "${HEAD_SHA}" "${arch}" \
+              "${dir}" "${GITHUB_REPOSITORY}" > "notes-${group}.md"
+            staging="$(bash "${publisher}" stage "${tag}" "${HEAD_SHA}" \
+              "AIC nightly wheels (${group})" "notes-${group}.md" "${dir}")"
+            printf '%s %s\n' "${tag}" "${staging}" >> staged.txt
+            echo "::endgroup::"
+          done
+          [ -s staged.txt ] || { echo "ERROR: nothing staged" >&2; exit 1; }
+          cat staged.txt
+
+      # Only now, with every group's assets uploaded and verified, swap them in.
+      - name: Promote the staged drafts
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HEAD_SHA: ${{ needs.authorize.outputs.sha }}
+        run: |
+          set -euo pipefail
+          publisher=.github/scripts/workflows/publish-rolling-release.sh
+          while read -r tag staging; do
+            [ -n "${tag}" ] || continue
+            bash "${publisher}" promote "${tag}" "${staging}" "${HEAD_SHA}"
+          done < staged.txt
+
+  # ---------------------------------------------------------------------------
+  # Report back on the PR that asked for a `/run-wheels` test run.
+  # ---------------------------------------------------------------------------
+  report-pr:
+    name: Report to PR
+    needs: [authorize, build-wheels-cdna]
+    if: always() && needs.authorize.outputs.pr_number != ''
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/github-script@v9
+        env:
+          CDNA_RESULT: ${{ needs.build-wheels-cdna.result }}
+          HEAD_SHA: ${{ needs.authorize.outputs.sha }}
+          PR_NUMBER: ${{ needs.authorize.outputs.pr_number }}
+        with:
+          script: |
+            const cdna = process.env.CDNA_RESULT;
+            const url = `https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            const ok = cdna === 'success';
+            const body = [
+              `**\`/run-wheels\` for \`${process.env.HEAD_SHA}\`** — cdna: ${ok ? '✅' : '❌'} ${cdna}`,
+              '',
+              ok
+                ? `Wheels are attached to [the run](${url}) as artifacts (7-day retention). No rolling release was touched.`
+                : `[View logs](${url}).`,
+            ].join('\n');
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: Number(process.env.PR_NUMBER),
+              body,
+            });

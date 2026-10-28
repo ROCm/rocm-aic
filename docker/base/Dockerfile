@@ -16,6 +16,7 @@
 #   build_pytorch     PyTorch 2.13 built from source                  (section 2b)
 #   build_torchvision torchvision built from source                   (section 2c)
 #   build_nixl        NIXL built from source (uses ROCm headers)      (section 2d)
+#   wheels            scratch image holding just the nixl_rocm wheel (--target wheels)
 #   build_clr_patch   patched libamdhip64.so (IPC event ring fix)     (section 2e)
 #   runtime           Ubuntu 24.04 + 13 ROCm runtime pkgs + torch + NIXL (section 3)
 #
@@ -258,12 +259,25 @@ RUN --mount=type=cache,target=/root/.cache/uv \
     NIXL_SRC=/tmp/nixl \
         AIS_PATH=/opt/rocm ROCM_PATH=/opt/rocm \
         NIXL_INSTALL_PREFIX=/opt/nixl \
-        NIXL_BUILD_WHEEL=1 NIXL_WHEEL_DIR=/tmp/nixl-wheels \
+        NIXL_BUILD_WHEEL=1 NIXL_WHEEL_DIR=/wheels \
         BUILD_JOBS="${BUILD_JOBS}" \
         AIC_UCX_FAST="${AIC_UCX_FAST}" \
         UV_SYSTEM_CERTS=1 \
         /tmp/nixl-scripts/build-nixl.sh && \
-    rm -rf /tmp/nixl /tmp/nixl-patches /tmp/nixl-scripts /tmp/nixl-wheels
+    rm -rf /tmp/nixl /tmp/nixl-patches /tmp/nixl-scripts
+
+# =============================================================================
+# wheels — scratch image holding just the nixl_rocm pip wheel (--target wheels;
+# the `wheels-nixl` bake target).
+#
+# NIXL is built ONCE here, in aic-base, and both aic-vllm and aic-lmcache
+# inherit the result; there is exactly one nixl_rocm wheel for the whole stack,
+# not one per image.  The `runtime` stage below copies only /opt/nixl and
+# /opt/rocnixl-ucx out of build_nixl, so the wheel never reaches the image.
+# Must stay above runtime, the default target.
+# =============================================================================
+FROM scratch AS wheels
+COPY --from=build_nixl /wheels /
 
 # =============================================================================
 # build_clr_patch — patch libamdhip64.so to fix IPC event signal ring overflow.

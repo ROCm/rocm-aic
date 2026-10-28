@@ -16,8 +16,9 @@
 #
 # Stages:
 #   vllm      AITER + FlashAttention + vLLM source build + llm-emu  (sections 3-3b)
-#   emulate   CPU-only runtime (--target emulate)                   (section 3c)
-#   runtime   default target: `vllm` + aic-lmcache's lmcache wheel  (section 3d)
+#   wheels    scratch image holding vllm/amd_aiter/flash_attn .whl  (section 3c)
+#   emulate   CPU-only runtime (--target emulate)                   (section 3d)
+#   runtime   default target: `vllm` + aic-lmcache's lmcache wheel  (section 3e)
 #
 # Build (from repo root — build context is this tree):
 #   BASE_TAG=$(ROCM_ARCH=gfx950 docker/scripts/aic-image-tag.sh docker/base/Dockerfile)
@@ -236,7 +237,7 @@ RUN --mount=type=cache,target=/root/.cache/pip \
         pip3 wheel --no-build-isolation --no-deps --no-cache-dir -w /wheels . && \
     pip3 install --no-cache-dir /wheels/vllm-*.whl && \
     python3 -c 'import importlib.metadata as m; print("vLLM installed:", m.version("vllm"))' && \
-    rm -rf /app/vllm /wheels /tmp/torch-constraints.txt && \
+    rm -rf /app/vllm /tmp/torch-constraints.txt && \
     { find /usr/lib/python3 /usr/local/lib/python3.12 -name '__pycache__' -type d \
          -exec rm -rf {} + || \
       echo "WARNING: __pycache__ cleanup failed; see find's error above" >&2; }
@@ -266,10 +267,22 @@ print('vllm_emulator subpackages import OK')" && \
     mkdir -p /opt/llm-emu/profiles && \
     cp /app/llm-emu/example_profiling_data/*.json /opt/llm-emu/profiles/ && \
     test -r "${AIC_EMULATOR_EXAMPLE_PACK}" && \
-    rm -rf /app/llm-emu /app/patches /app/aiter /app/flash-attention /wheels && \
+    rm -rf /app/llm-emu /app/patches /app/aiter /app/flash-attention && \
     { find /usr/lib/python3 /usr/local/lib/python3.12 -name '__pycache__' -type d \
          -exec rm -rf {} + || \
       echo "WARNING: __pycache__ cleanup failed; see find's error above" >&2; }
+
+# =============================================================================
+# wheels — scratch image holding just the wheels built above:
+#   vllm, amd_aiter, and (CDNA-only arch sets) flash_attn.
+#
+# The `vllm` runtime stage below is FROM base and copies only dist-packages,
+# so /wheels never reaches a published image; it lives in build_vllm alone.
+#
+#   docker buildx bake -f docker/docker-bake.hcl wheels-vllm
+# =============================================================================
+FROM scratch AS wheels
+COPY --from=build_vllm /wheels /
 
 # =============================================================================
 # vllm — slim runtime stage: aic-base + packages built in build_vllm

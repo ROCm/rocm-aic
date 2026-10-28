@@ -3,7 +3,7 @@
 #
 # Local-dev targets: build, stack lifecycle, shells, logs, venv, reset test.
 
-.PHONY: ensure-compose build up up-batch up-dev up-gds-l1 up-gds-l1-batch \
+.PHONY: ensure-compose build wheels up up-batch up-dev up-gds-l1 up-gds-l1-batch \
         down logs logs-lmcache logs-vllm ps shell-lmcache shell-vllm \
         restart-vllm restart-lmcache venv vllm-reset-test bench-serve
 
@@ -70,6 +70,51 @@ build:
 		default
 	@echo "Built aic-base/aic-vllm/aic-lmcache/aic-hsa-snoop:$(IMAGE_TAG) (vllm/lmcache/hsa-snoop also tagged :latest)"
 	@echo "Built aic-nvme-exporter:local, aic-rdma-exporter:local"
+
+# ---- Wheel export ------------------------------------------------------------
+# Bakes the `wheels` group: the three scratch stages that hold the pip wheels
+# the nightly release publishes (nixl_rocm from aic-base, vllm/amd_aiter/
+# flash_attn from aic-vllm, lmcache from aic-lmcache).  NIXL is built once in
+# aic-base and inherited by both dependents, so one nixl_rocm wheel covers the
+# whole stack.
+#
+# Each target exports to its own $(WHEELS_DIR)/<name> subdir -- bake does not
+# namespace a shared local dest -- and this flattens them back into
+# $(WHEELS_DIR), then checks the set with the same check-wheels.sh the nightly
+# and release workflows run.
+#
+# This repeats most of aic-base and aic-vllm's work, so it is a CI/release
+# target, not a fast local one.  `make dist-wheels` runs the same bake on Slurm.
+WHEELS_DIR ?= $(REPO_ROOT)/wheels-out
+
+wheels:
+	@test -n "$(ROCM_ARCH)" || { \
+		echo "ERROR: ROCM_ARCH empty (install ROCm or set ROCM_ARCH=gfxNNNN)" >&2; exit 1; }
+	@if ! docker buildx inspect $(AIC_BUILDX_BUILDER) >/dev/null 2>&1; then \
+		echo "Creating buildx builder $(AIC_BUILDX_BUILDER) (docker-container driver)..."; \
+		docker buildx create --name $(AIC_BUILDX_BUILDER) --driver docker-container \
+			--driver-opt env.BUILDKIT_STEP_LOG_MAX_SIZE=-1 \
+			--driver-opt env.BUILDKIT_STEP_LOG_MAX_SPEED=10485760 \
+			--bootstrap; \
+	fi
+	@rm -rf "$(WHEELS_DIR)" && mkdir -p "$(WHEELS_DIR)"
+	@echo "--- wheels: nixl + lmcache + vllm (ROCM_ARCH=$(ROCM_ARCH)) -> $(WHEELS_DIR) ---"
+	BUILDX_BAKE_ENTITLEMENTS_FS=0 \
+	    ROCM_ARCH="$(ROCM_ARCH)" BUILD_JOBS="$(BUILD_JOBS)" AIC_UCX_FAST="$(AIC_UCX_FAST)" \
+	    AIC_VERSION="$(AIC_VERSION)" \
+	    AIC_CACHE_REF="$(AIC_CACHE_REF)" \
+	    AIC_CACHE_DIR="$(AIC_CACHE_DIR)" AIC_CACHE_MODE="$(AIC_CACHE_MODE)" \
+	    WHEELS_DIR="$(WHEELS_DIR)" \
+	    $(if $(strip $(TLS_CERT)),TLS_CERT="$(TLS_CERT)",) \
+	    docker buildx bake \
+		--builder $(AIC_BUILDX_BUILDER) \
+		--progress=$(BUILD_PROGRESS) \
+		-f "$(REPO_ROOT)/docker/docker-bake.hcl" \
+		wheels
+	@set -e; \
+	find "$(WHEELS_DIR)" -mindepth 2 -name '*.whl' -exec mv -t "$(WHEELS_DIR)" {} + ; \
+	find "$(WHEELS_DIR)" -mindepth 1 -maxdepth 1 -type d -exec rm -rf {} + ; \
+	bash "$(REPO_ROOT)/.github/scripts/workflows/check-wheels.sh" "$(WHEELS_DIR)" "$(ROCM_ARCH)"
 
 up: ensure-compose check-hf-token prep-dirs
 	@mkdir -p "$(AIC_METRICS_DIR)"
