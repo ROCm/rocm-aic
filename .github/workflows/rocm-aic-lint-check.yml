@@ -35,7 +35,7 @@ jobs:
     name: Wheel bake targets resolve
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - name: Resolve the wheels group for each published arch list
         run: bash .github/scripts/workflows/check-wheel-bake.sh
 
