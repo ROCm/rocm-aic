@@ -56,6 +56,7 @@ _err_delegate ssh -o ServerAliveInterval=30 -o ServerAliveCountMax=4 "${AIC_SPUR
     AIC_SHARED_NFS="${AIC_SHARED_NFS}" \
     KEEP_ARTIFACTS="${KEEP_ARTIFACTS}" \
     HF_TOKEN="${HF_TOKEN:-}" \
+    AIC_BUILD_EXCLUDE_NODES="${AIC_BUILD_EXCLUDE_NODES:-}" \
     bash << 'REMOTE'
 # -E inherit ERR trap in functions and subshells,
 # -e exit the script upon commands failing,
