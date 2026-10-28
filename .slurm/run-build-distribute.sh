@@ -139,7 +139,7 @@
 #                        because the scheduler mandates a GPU request even for CPU-only
 #                        build jobs.  Set to 0 to request a zero-GPU allocation if
 #                        the scheduler ever supports it.  (default: 1 when SPUR, unset otherwise)
-#   AIC_BUILD_TIME       build job time limit              (default: 02:00:00)
+#   AIC_BUILD_TIME       build job time limit              (default: 04:00:00)
 #   AIC_LOAD_TIME        per-node load job time limit      (default: 00:30:00)
 #
 #   AIC_CACHE_DIR        base dir on shared /scratch for a file-based BuildKit
@@ -400,7 +400,7 @@ else
 fi
 AIC_SLURM_ACCOUNT="${AIC_SLURM_ACCOUNT:-}"
 AIC_BUILD_CPUS="${AIC_BUILD_CPUS:-32}"
-AIC_BUILD_TIME="${AIC_BUILD_TIME:-02:00:00}"
+AIC_BUILD_TIME="${AIC_BUILD_TIME:-04:00:00}"
 # SPUR requires a GPU request even for CPU-only build jobs.
 if [[ "${AIC_SPUR_CLUSTER}" == "1" ]]; then
     AIC_BUILD_GPUS="${AIC_BUILD_GPUS:-1}"
