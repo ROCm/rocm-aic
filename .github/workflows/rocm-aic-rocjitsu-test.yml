@@ -47,7 +47,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Free disk space (runner pre-installed software)
         run: |
@@ -100,7 +100,7 @@ jobs:
 
       - name: Cache rocjitsu guest disk (qcow2)
         id: qcow2-cache
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: /tmp/aic-rocjitsu-test/vm
           key: qcow2-${{ steps.qcow2-tag.outputs.tag }}
@@ -130,7 +130,7 @@ jobs:
           ls -lh
 
       - name: Set up Docker Buildx (for layer-cached local builds)
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@v4
         with:
           driver: docker-container
           install: true
@@ -198,7 +198,7 @@ jobs:
 
       - name: Upload rocjitsu logs on failure
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: rocjitsu-logs
           path: /tmp/aic-rocjitsu-test/

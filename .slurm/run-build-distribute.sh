@@ -52,6 +52,10 @@
 #
 # Commands:
 #   build   Build the image on AIC_BUILD_NODE, then save the tarball to AIC_IMAGE_DIR
+#   wheels  Export the pip wheels the nightly release publishes -- vllm,
+#           amd_aiter (+ flash_attn on CDNA-only arch sets), lmcache, and the
+#           single common nixl_rocm wheel built once in aic-base -- into
+#           AIC_WHEEL_DIR (default: AIC_IMAGE_DIR/wheels).  Builds no images.
 #   build-emulate
 #           Build the CPU-only EMULATION image (Dockerfile `emulate` stage +
 #           VLLM_TARGET_DEVICE=empty): vLLM + the llm-emu plugin with no vLLM
@@ -126,8 +130,10 @@
 #                         Used only when AIC_BUILD_NODE is unset.
 #   AIC_BUILD_NODE       pin an exact build node via --nodelist (overrides
 #                        AIC_BUILD_CONSTRAINT)             (default: unset)
-#   AIC_BUILD_EXCLUDE_NODES  comma-separated nodes to exclude from build
-#                        scheduling via --exclude (default: unset)
+#   AIC_BUILD_EXCLUDE_NODES  comma-separated nodes to exclude from every sbatch
+#                        submit (build, bake, wheels, test) via --exclude.
+#                        Ignored when a node is pinned; AIC_TEST_EXCLUDE_NODES
+#                        overrides it for the test jobs     (default: unset)
 #   AIC_BUILD_LOCAL      set to 1 to build on THIS host, no Slurm  (default: unset)
 #   AIC_BUILD_PARTITION  Slurm partition for build + load  (default: defq)
 #   AIC_BUILD_CPUS       --cpus-per-task for the build job (default: 32)
@@ -135,7 +141,7 @@
 #                        because the scheduler mandates a GPU request even for CPU-only
 #                        build jobs.  Set to 0 to request a zero-GPU allocation if
 #                        the scheduler ever supports it.  (default: 1 when SPUR, unset otherwise)
-#   AIC_BUILD_TIME       build job time limit              (default: 02:00:00)
+#   AIC_BUILD_TIME       build job time limit              (default: 04:00:00)
 #   AIC_LOAD_TIME        per-node load job time limit      (default: 00:30:00)
 #
 #   AIC_CACHE_DIR        base dir on shared /scratch for a file-based BuildKit
@@ -396,7 +402,7 @@ else
 fi
 AIC_SLURM_ACCOUNT="${AIC_SLURM_ACCOUNT:-}"
 AIC_BUILD_CPUS="${AIC_BUILD_CPUS:-32}"
-AIC_BUILD_TIME="${AIC_BUILD_TIME:-02:00:00}"
+AIC_BUILD_TIME="${AIC_BUILD_TIME:-04:00:00}"
 # SPUR requires a GPU request even for CPU-only build jobs.
 if [[ "${AIC_SPUR_CLUSTER}" == "1" ]]; then
     AIC_BUILD_GPUS="${AIC_BUILD_GPUS:-1}"
@@ -622,6 +628,21 @@ _sbatch_run() {
     local jobname="$1" logname="$2" body="$3"; shift 3
     command -v sbatch >/dev/null 2>&1 || die "sbatch not found; set AIC_BUILD_LOCAL=1 to build here"
 
+    # Apply AIC_BUILD_EXCLUDE_NODES to every submit so no call site has to
+    # remember it.  A pinned node (--nodelist) or a caller's own --exclude
+    # (e.g. AIC_TEST_EXCLUDE_NODES) takes precedence and suppresses the default.
+    local -a _exclude=()
+    if [[ -n "${AIC_BUILD_EXCLUDE_NODES:-}" ]]; then
+        local _o
+        _exclude=(--exclude="${AIC_BUILD_EXCLUDE_NODES}")
+        for _o in "$@"; do
+            case "${_o}" in
+                --nodelist=*|--nodelist|-w|--exclude=*|--exclude|-x) _exclude=() ;;
+            esac
+        done
+        (( ${#_exclude[@]} == 0 )) || log "${jobname}: excluding nodes ${AIC_BUILD_EXCLUDE_NODES}"
+    fi
+
     # Batch script = shebang + a prologue that creates the per-job log dir and
     # redirects everything into <logname>.out, then the caller's body.
     # AIC_DAY_DIR is absolute and on shared storage, so it resolves on the
@@ -706,6 +727,7 @@ PROLOGUE
             ${AIC_SLURM_ACCOUNT:+--account="${AIC_SLURM_ACCOUNT}"} \
             --output=/dev/null \
             "${_spur_gpu[@]}" \
+            "${_exclude[@]}" \
             "$@" \
             "${tmpscript}" 2>&1)" || { rm -f "${tmpscript}"; die "sbatch submission failed: ${submit_out}"; }
         rm -f "${tmpscript}"
@@ -911,6 +933,7 @@ PROLOGUE
             --partition="${AIC_BUILD_PARTITION}" \
             ${AIC_SLURM_ACCOUNT:+--account="${AIC_SLURM_ACCOUNT}"} \
             --output=/dev/null \
+            "${_exclude[@]}" \
             "$@" \
             <<<"${script}" >"${idfile}" &
         local sb_pid=$!
@@ -4216,6 +4239,132 @@ REMOTE
     log "bake complete: base=${base_tar} vllm=${vllm_tar} lmcache=${lmcache_tar}"
 }
 
+# --- wheels: export the pip wheels the nightly release publishes -------------
+# Drives the bake `wheels` group on a compute node: the three scratch stages
+# holding nixl_rocm (built once in aic-base and shared by both dependents),
+# vllm/amd_aiter/flash_attn, and the patched lmcache wheel.
+#
+# Unlike cmd_bake this is a plain `docker buildx bake` with no --set/OCI-layout
+# handoff: nothing here needs an image loaded into the daemon, so the HCL's own
+# `base = "target:base"` wiring resolves the whole DAG in one session.
+#
+# Output lands in ${AIC_IMAGE_DIR}/wheels, flattened out of bake's per-target
+# subdirs (bake does not namespace a shared local dest, so each target has to
+# export to its own directory first).
+cmd_wheels() {
+    local wheel_dir="${AIC_WHEEL_DIR:-${AIC_IMAGE_DIR}/wheels}"
+
+    local _secret_arg=""
+    [[ -n "${AIC_TLS_CERT}" ]] && _secret_arg="--secret id=tls_cert,src=${AIC_TLS_CERT}"
+
+    log "wheels targets : wheels-nixl wheels-lmcache wheels-vllm"
+    log "arch           : ${AIC_ROCM_ARCH}"
+    log "wheel dir      : ${wheel_dir}"
+    log "cache          : ${AIC_CACHE_DIR:+(dir) ${AIC_CACHE_DIR}}${AIC_CACHE_REF:+(registry) ${AIC_CACHE_REF}}"
+
+    local remote_script
+    remote_script="$(cat <<REMOTE
+set -euo pipefail
+export BUILDKIT_STEP_LOG_MAX_SIZE=-1
+command -v docker >/dev/null 2>&1 || { echo "docker not found on \$(hostname)" >&2; exit 1; }
+docker system df >/dev/null 2>&1 \
+    || { echo "[wheels] FATAL: docker overlay snapshotter broken on \$(hostname) -- resubmit to a different node" >&2; exit 1; }
+echo "[wheels] host=\$(hostname) docker=\$(docker --version)"
+_aic_tmp="${AIC_TMP_DIR:-}"
+if [[ -z "\${_aic_tmp:-}" ]]; then
+    for _d in "/tmp/aic-scratch.\${SLURM_JOB_ID:-\$\$}" "\${HOME}/.tmp-rocm-aic-cicd"; do
+        if mkdir -p "\$_d" 2>/dev/null && [[ -w "\$_d" ]]; then _aic_tmp="\$_d"; break; fi
+    done
+fi
+[[ -n "\${_aic_tmp:-}" ]] || { echo "[wheels] FATAL: no writable scratch dir (tried /tmp and \$HOME); set AIC_TMP_DIR" >&2; exit 1; }
+export TMPDIR="\${_aic_tmp:-}"
+cd "${AIC_DAY_DIR}"
+
+_bkd_cfg=""; [[ -f "${AIC_DAY_DIR}/docker/buildkitd.toml" ]] && _bkd_cfg="--config ${AIC_DAY_DIR}/docker/buildkitd.toml"
+if ! docker buildx inspect ${AIC_BUILDX_BUILDER} >/dev/null 2>&1; then
+    echo "[wheels] creating buildx builder ${AIC_BUILDX_BUILDER} (docker-container)"
+    docker buildx create --name ${AIC_BUILDX_BUILDER} --driver docker-container \${_bkd_cfg} --bootstrap --use
+fi
+docker buildx inspect --bootstrap ${AIC_BUILDX_BUILDER} >/dev/null
+
+# Staging dir is node-local: bake writes three subdirs here, and only the
+# flattened result is copied to (shared, quota'd) ${wheel_dir}.
+_stage="\${TMPDIR}/aic-wheels.\${SLURM_JOB_ID:-\$\$}"
+trap 'rm -rf "\${_stage}"' EXIT
+rm -rf "\${_stage}"; mkdir -p "\${_stage}"
+
+# Only forward non-empty pins: an empty string passed as an env var overrides
+# the HCL default and breaks scripts that require the value (clone-nixl.sh).
+export BUILDX_BAKE_ENTITLEMENTS_FS=0
+ROCM_ARCH="${AIC_ROCM_ARCH}" \
+${ROCM_VERSION:+ROCM_VERSION="${ROCM_VERSION}"} \
+${PYTORCH_REF:+PYTORCH_REF="${PYTORCH_REF}"} \
+${PYTORCH_SERIES:+PYTORCH_SERIES="${PYTORCH_SERIES}"} \
+${TORCHVISION_REF:+TORCHVISION_REF="${TORCHVISION_REF}"} \
+${VLLM_REF:+VLLM_REF="${VLLM_REF}"} \
+${LLM_EMU_REF:+LLM_EMU_REF="${LLM_EMU_REF}"} \
+${AITER_REF:+AITER_REF="${AITER_REF}"} \
+${FLASH_ATTN_REF:+FLASH_ATTN_REF="${FLASH_ATTN_REF}"} \
+${LMCACHE_REF:+LMCACHE_REF="${LMCACHE_REF}"} \
+${NIXL_REF:+NIXL_REF="${NIXL_REF}"} \
+${HSA_SNOOP_REF:+HSA_SNOOP_REF="${HSA_SNOOP_REF}"} \
+${AIC_CACHE_DIR:+AIC_CACHE_DIR="${AIC_CACHE_DIR}"} \
+${AIC_CACHE_REF:+AIC_CACHE_REF="${AIC_CACHE_REF}"} \
+BUILDKIT_STEP_LOG_MAX_SIZE=-1 \
+AIC_CACHE_MODE="${AIC_CACHE_MODE:-max}" \
+AIC_UCX_FAST="${AIC_UCX_FAST}" \
+AIC_VERSION="${AIC_VERSION}" \
+${BUILD_JOBS:+BUILD_JOBS="${BUILD_JOBS}"} \
+WHEELS_DIR="\${_stage}" \
+docker buildx bake \
+    --builder ${AIC_BUILDX_BUILDER} \
+    --file "${AIC_DAY_DIR}/docker/docker-bake.hcl" \
+    --progress=plain \
+    ${_secret_arg:+${_secret_arg}} \
+    wheels
+
+# Flatten bake's per-target subdirs, then check the set with the same
+# check-wheels.sh the nightly and release workflows run -- one definition of
+# "the published wheel set", enforced here and again before upload.
+#
+# The subdirs are removed outright rather than pruned when empty: a wheels
+# stage exports whatever else sits beside the .whl in its source directory
+# (aic-base's /wheels carries a .gitignore), which left a stray subdir in the
+# published output that -type d -empty could never match.
+find "\${_stage}" -mindepth 2 -name '*.whl' -exec mv -t "\${_stage}" {} +
+find "\${_stage}" -mindepth 1 -maxdepth 1 -type d -exec rm -rf {} +
+bash "${AIC_DAY_DIR}/.github/scripts/workflows/check-wheels.sh" \
+    "\${_stage}" "${AIC_ROCM_ARCH}"
+# No image_tag here: IMAGE_TAG is not set by this script, it leaks in from the
+# Makefile, where it is derived from the HOST's detected ROCM_ARCH rather than
+# AIC_ROCM_ARCH -- so it reported gfx90a for a gfx942 build.  Nothing consumes
+# it; the arch the wheels were actually built for is rocm_arch below.
+{
+  echo "aic_version=${AIC_VERSION}"
+  echo "rocm_arch=${AIC_ROCM_ARCH}"
+} > "\${_stage}/MANIFEST.txt"
+
+# Publish atomically: a half-copied wheel dir on shared NFS is indistinguishable
+# from a complete one to the CI wrapper that scp's it back.
+rm -rf "${wheel_dir}.partial" "${wheel_dir}"
+mkdir -p "\$(dirname "${wheel_dir}")"
+cp -a "\${_stage}" "${wheel_dir}.partial"
+mv -f "${wheel_dir}.partial" "${wheel_dir}"
+echo "[wheels] wheels published to ${wheel_dir}:"
+ls -lh "${wheel_dir}"
+exit 0
+REMOTE
+)"
+
+    _sbatch_run aic-wheels wheels "${remote_script}" \
+        ${AIC_BUILD_NODE:+--nodelist="${AIC_BUILD_NODE}"} \
+        ${AIC_BUILD_GPUS:+--gpus="${AIC_BUILD_GPUS}"} \
+        --nodes=1 --ntasks=1 \
+        --cpus-per-task="${AIC_BUILD_CPUS}" \
+        --time="${AIC_BUILD_TIME}"
+    log "wheels complete: ${wheel_dir}"
+}
+
 # --- main --------------------------------------------------------------------
 main() {
     local sub="${1:-all}"
@@ -4223,6 +4372,7 @@ main() {
         build)           cmd_build ;;
         build-split)     cmd_build_split ;;
         bake)            cmd_bake ;;
+        wheels)          cmd_wheels ;;
         build-emulate)   cmd_build_emulate ;;
         build-base)      cmd_build_base ;;
         build-vllm)      cmd_build_vllm ;;
@@ -4242,7 +4392,7 @@ main() {
         -h|--help|help)
             sed -n '2,70p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
             ;;
-        *) die "unknown command '${sub}' (use: build | build-split | bake | build-emulate | build-base | build-vllm | build-lmcache | build-exporters | load | push | test | tiny-test | prometheus-dump | emulate-test | emulate-mp-test | emulate-validate | profile-capture | accuracy-test | all | help)" ;;
+        *) die "unknown command '${sub}' (use: build | build-split | bake | wheels | build-emulate | build-base | build-vllm | build-lmcache | build-exporters | load | push | test | tiny-test | prometheus-dump | emulate-test | emulate-mp-test | emulate-validate | profile-capture | accuracy-test | all | help)" ;;
     esac
 }
 

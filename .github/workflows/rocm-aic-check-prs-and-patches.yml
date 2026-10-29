@@ -39,7 +39,7 @@ jobs:
     runs-on: ubuntu-24.04
 
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
       - name: Resolve vLLM ref and URL from Dockerfile
         id: meta
@@ -90,7 +90,7 @@ jobs:
     runs-on: ubuntu-24.04
 
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
       - name: Resolve LLM-Emu ref and URL from Dockerfile
         id: meta
@@ -166,7 +166,7 @@ jobs:
     runs-on: ubuntu-24.04
 
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
       - name: Resolve LMCache ref and URL from Dockerfile
         id: meta
@@ -231,7 +231,7 @@ jobs:
     runs-on: ubuntu-24.04
 
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
       - name: Resolve NIXL ref and URL from Dockerfile
         id: meta
@@ -286,7 +286,7 @@ jobs:
     runs-on: ubuntu-24.04
 
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
       - name: Resolve LLM-Emu ref from Dockerfile
         id: meta
@@ -354,7 +354,7 @@ jobs:
     name: PyTorch pin (PYTORCH_REF matches PYTORCH_SERIES)
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
       - name: Resolve PyTorch pin from Dockerfile
         id: meta

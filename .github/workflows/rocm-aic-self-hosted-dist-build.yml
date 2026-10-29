@@ -99,6 +99,7 @@ jobs:
       AIC_SPUR_HOST: ${{ secrets.AIC_SPUR_HOST }}
       AIC_SHARED_NFS: ${{ secrets.AIC_SHARED_NFS }}
       AIC_CI_STORAGE_ROOT: ${{ secrets.AIC_SHARED_NFS }}/rocm-aic
+      AIC_BUILD_EXCLUDE_NODES: ${{ vars.AIC_BUILD_EXCLUDE_NODES }}
 
     steps:
       - name: Set commit status to pending
@@ -172,6 +173,7 @@ jobs:
       AIC_SPUR_HOST: ${{ secrets.AIC_SPUR_HOST }}
       AIC_SHARED_NFS: ${{ secrets.AIC_SHARED_NFS }}
       AIC_CI_STORAGE_ROOT: ${{ secrets.AIC_SHARED_NFS }}/rocm-aic
+      AIC_BUILD_EXCLUDE_NODES: ${{ vars.AIC_BUILD_EXCLUDE_NODES }}
 
     steps:
       - name: Set commit status to pending
@@ -245,6 +247,7 @@ jobs:
       AIC_SPUR_HOST:       ${{ secrets.AIC_SPUR_HOST }}
       AIC_SHARED_NFS:      ${{ secrets.AIC_SHARED_NFS }}
       AIC_CI_STORAGE_ROOT: ${{ secrets.AIC_SHARED_NFS }}/rocm-aic
+      AIC_BUILD_EXCLUDE_NODES: ${{ vars.AIC_BUILD_EXCLUDE_NODES }}
 
     steps:
       - name: Set commit status to pending
@@ -334,6 +337,7 @@ jobs:
       AIC_SPUR_HOST:       ${{ secrets.AIC_SPUR_HOST }}
       AIC_SHARED_NFS:      ${{ secrets.AIC_SHARED_NFS }}
       AIC_CI_STORAGE_ROOT: ${{ secrets.AIC_SHARED_NFS }}/rocm-aic
+      AIC_BUILD_EXCLUDE_NODES: ${{ vars.AIC_BUILD_EXCLUDE_NODES }}
       HF_TOKEN:            ${{ secrets.AIC_HF_TOKEN }}
 
     steps:
@@ -423,7 +427,7 @@ jobs:
 
       - name: Upload accuracy logs
         if: always()
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: accuracy-logs-${{ needs.authorize.outputs.sha }}
           path: ${{ runner.temp }}/accuracy-logs/

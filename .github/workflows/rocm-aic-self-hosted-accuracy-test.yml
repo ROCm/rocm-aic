@@ -7,9 +7,9 @@
 # DRAM/NVMe did not change the answers.
 #
 # Two triggers:
-#   workflow_run  — nightly: fires after Smoke Test passes as part of the
+#   workflow_run  — nightly: fires after Smoke+Tiny passes as part of the
 #                   nightly chain:
-#                     Dist Build -> Smoke -> [Tiny | Accuracy | Cliff]
+#                     Dist Build -> Smoke+Tiny -> Accuracy -> Cliff
 #   workflow_dispatch — manual: dispatched against a SHA that already has an
 #                   image tarball staged under AIC_CI_STORAGE_ROOT/images/
 #                   aic-ci-<short-sha> (i.e. a dist-build ran for the same
@@ -57,11 +57,15 @@ jobs:
       AIC_SPUR_HOST:       ${{ secrets.AIC_SPUR_HOST }}
       AIC_SHARED_NFS:      ${{ secrets.AIC_SHARED_NFS }}
       AIC_CI_STORAGE_ROOT: ${{ secrets.AIC_SHARED_NFS }}/rocm-aic
+      AIC_BUILD_EXCLUDE_NODES: ${{ vars.AIC_BUILD_EXCLUDE_NODES }}
       HF_TOKEN:            ${{ secrets.AIC_HF_TOKEN }}
 
     steps:
+      # Nightly (workflow_run): Cliff runs alongside and owns the final cleanup,
+      # so the image must survive.  Manual dispatch is terminal and cleans up.
       - name: Run accuracy-test on the SPUR head node
         run: |
+          KEEP_ARTIFACTS=${{ github.event_name == 'workflow_run' && '1' || '0' }} \
           bash /usr/local/lib/aic-ci/spur-accuracy-test.sh \
             "${{ github.event.workflow_run.head_sha || github.sha }}" \
             accuracy-test
@@ -70,7 +74,7 @@ jobs:
       # per-arm container logs are worth having.
       - name: Upload accuracy logs
         if: always()
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: accuracy-logs-${{ github.event.workflow_run.head_sha || github.sha }}
           path: ${{ runner.temp }}/accuracy-logs/

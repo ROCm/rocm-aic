@@ -40,9 +40,10 @@ jobs:
       AIC_SPUR_HOST:       ${{ secrets.AIC_SPUR_HOST }}
       AIC_SHARED_NFS:      ${{ secrets.AIC_SHARED_NFS }}
       AIC_CI_STORAGE_ROOT: ${{ secrets.AIC_SHARED_NFS }}/rocm-aic
+      AIC_BUILD_EXCLUDE_NODES: ${{ vars.AIC_BUILD_EXCLUDE_NODES }}
 
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
       - name: Run prometheus-dump on SPUR
         run: |
@@ -50,7 +51,7 @@ jobs:
           bash .github/scripts/workflows/spur-prometheus-dump.sh "${SHA}"
 
       - name: Upload prometheus-dump artifact
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: prometheus-dump-${{ github.sha }}
           path: prometheus-page/

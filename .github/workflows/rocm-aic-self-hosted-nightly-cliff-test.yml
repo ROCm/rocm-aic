@@ -1,18 +1,18 @@
-# Nightly cliff benchmark — runs in parallel with Tiny and Accuracy after
-# Smoke passes:
-#   Dist Build -> Smoke -> [Tiny | Accuracy | Cliff]  (all parallel)
+# Nightly cliff benchmark — the last stage of the nightly chain:
+#   Dist Build -> Smoke+Tiny -> Accuracy -> Cliff
 #
 # workflow_run matches display names, not filenames; keep the upstream
-# workflows: entry in sync with rocm-aic-self-hosted-nightly-smoke-test.yml's name:.
+# workflows: entry in sync with rocm-aic-self-hosted-accuracy-test.yml's name:.
 #
 # The KV cache cliff benchmark sweeps all three arms (vram_only, kvd_v2/nvme,
 # kvd_v2/gds), generates a self-contained HTML performance-tracking page, and
 # deploys it to GitHub Pages.
 #
 # Cliff uses the dist-build tarball directly via the SHA from the triggering
-# Smoke run.  It no longer depends on Accuracy's artifacts or sequencing.
-# spur-cliff-harvest.sh owns terminal cleanup of the clone and tarball via its
-# unconditional EXIT trap.
+# Accuracy run, and runs whether Accuracy passed or failed.  It is skipped when
+# Accuracy was skipped (Smoke/Tiny failed, which already removed the tarball),
+# and when Accuracy was dispatched by hand.  spur-cliff-harvest.sh owns
+# terminal cleanup of the clone and tarball via its unconditional EXIT trap.
 #
 # Requires (all already in use by sibling nightly workflows):
 #   secrets.AIC_SPUR_HOST        — SSH target for the SPUR head node
@@ -25,7 +25,7 @@ name: rocm-aic - Self Hosted - Nightly Cliff Test
 
 on:
   workflow_run:
-    workflows: ["rocm-aic - Self Hosted - Nightly Smoke Test"]
+    workflows: ["rocm-aic - Self Hosted - Accuracy Test"]
     types: [completed]
 
 permissions:
@@ -33,7 +33,9 @@ permissions:
 
 jobs:
   cliff:
-    if: github.event.workflow_run.conclusion == 'success'
+    if: >
+      github.event.workflow_run.event == 'workflow_run' &&
+      contains(fromJSON('["success","failure"]'), github.event.workflow_run.conclusion)
     runs-on: [self-hosted, rocm-aic-cicd]
     timeout-minutes: 240
     env:
@@ -42,7 +44,7 @@ jobs:
       AIC_CI_STORAGE_ROOT: ${{ secrets.AIC_SHARED_NFS }}/rocm-aic
 
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
       - name: Run cliff benchmark + harvest results from SPUR
         run: |
@@ -51,7 +53,7 @@ jobs:
             "$(date -u +%Y-%m-%d)"
 
       - name: Upload cliff performance page artifact
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: cliff-perf-page-${{ github.event.workflow_run.head_sha }}
           path: cliff-page/

@@ -34,10 +34,10 @@ jobs:
       ROCJITSU_PAGES_DIR: rocjitsu-emulated
 
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
       - name: Free disk space on runner
-        uses: jlumbroso/free-disk-space@v1.3.1
+        uses: jlumbroso/free-disk-space@v2.0.0
         with:
           tool-cache: true
           android: true
@@ -47,7 +47,7 @@ jobs:
           docker-images: true
           swap-storage: true
 
-      - uses: docker/setup-buildx-action@v3
+      - uses: docker/setup-buildx-action@v4
 
       - name: Read AIC_VERSION from VERSION file
         run: echo "AIC_VERSION=$(cat VERSION)" >> "$GITHUB_ENV"
@@ -64,7 +64,7 @@ jobs:
           fi
 
       - name: Build minimal CPU base for emulate target
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
           file: docker/emulate-base.Dockerfile
@@ -79,7 +79,7 @@ jobs:
 
       - name: Build emulation image (no GPU kernels, with corp CA)
         if: steps.cert.outputs.present == 'true'
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
           file: docker/vllm/Dockerfile
@@ -99,7 +99,7 @@ jobs:
 
       - name: Build emulation image (no GPU kernels)
         if: steps.cert.outputs.present != 'true'
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
           file: docker/vllm/Dockerfile
@@ -201,7 +201,7 @@ jobs:
           done
 
       - name: Upload RocJITSU page artifact
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: rocjitsu-emulated-page-${{ github.run_id }}
           path: ${{ runner.temp }}/rocjitsu-page/${{ env.ROCJITSU_PAGES_DIR }}
