@@ -3646,7 +3646,7 @@ trap cleanup EXIT
 echo "[capture] starting a REAL serve with step-cycle tracing -> \${trace}"
 docker run -d --name aic-vllm-capture \
     --device /dev/kfd --device /dev/dri \
-    --network host --ipc host \
+    --ipc host \
     --cap-add CAP_SYS_ADMIN --cap-add SYS_PTRACE \
     --security-opt seccomp=unconfined \
     -v '${AIC_CAPTURE_HF_HOME}':/hf \
@@ -3674,7 +3674,9 @@ docker run -d --name aic-vllm-capture \
 
 ready=0
 for _i in \$(seq 1 ${AIC_CAPTURE_READY_TIMEOUT}); do
-    if curl -fsS http://localhost:8000/v1/models >/dev/null 2>&1; then ready=1; break; fi
+    if docker exec aic-vllm-capture python3 -c \
+        "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/v1/models', timeout=3)" \
+        >/dev/null 2>&1; then ready=1; break; fi
     if [ -z "\$(docker ps -q -f name=aic-vllm-capture)" ]; then
         echo "[capture] FAIL: the vLLM container exited during startup" >&2
         docker logs --tail 120 aic-vllm-capture 2>&1 | sed 's/^/  [vllm] /'
