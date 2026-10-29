@@ -68,7 +68,9 @@ compose --profile kvbench up --build -d kvbench client || die "compose up failed
 log "waiting for aic-kvbench to serve /v1/models"
 ready=0
 for _i in $(seq 1 "${KVBENCH_READY_TIMEOUT}"); do
-  if curl -fsS "http://127.0.0.1:${KVBENCH_HOST_PORT}/v1/models" >/dev/null 2>&1; then
+  if docker exec aic-kvbench python3 -c \
+      "import urllib.request; urllib.request.urlopen('http://127.0.0.1:${KVBENCH_PORT}/v1/models', timeout=3)" \
+      >/dev/null 2>&1; then
     ready=1
     break
   fi

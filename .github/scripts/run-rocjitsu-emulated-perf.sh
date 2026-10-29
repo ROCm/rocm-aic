@@ -52,7 +52,9 @@ compose --profile emulate up -d vllm-emulator
 
 ready=0
 for _i in $(seq 1 "${ROCJITSU_READY_TIMEOUT}"); do
-    if curl -fsS http://localhost:8000/v1/models >/dev/null 2>&1; then
+    if docker exec aic-vllm-emulator python3 -c \
+        "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/v1/models', timeout=3)" \
+        >/dev/null 2>&1; then
         ready=1
         break
     fi
