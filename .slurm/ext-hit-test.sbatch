@@ -69,10 +69,18 @@ mkdir -p "${NVME_DATA}/lmcache" "${LOGDIR}"
 # --- Cleanup stale containers ---
 docker rm -f aic-lmcache aic-vllm-gpu0 2>/dev/null || true
 
+# --- aic bridge ---
+# Compose creates this network when the stack runs; create it here if not.  It
+# is shared with compose and left in place on exit.
+docker network inspect aic >/dev/null 2>&1 || docker network create aic >/dev/null
+
 # --- Start lmcache ---
+# vLLM joins this netns below (the @hsa<pid> IPC socket is per network namespace),
+# so lmcache publishes vLLM's port: on loopback, ephemeral host port (see aic_url).
 echo "--- Starting lmcache (L1=1GB, pool=4096, POSIX) ---"
 docker run -d --name aic-lmcache \
-    --network host \
+    --network aic --network-alias aic-vllm \
+    -p "${AIC_PUBLISH_ADDR:-127.0.0.1}:${VLLM_HOST_PORT:-}:${VLLM_PORT}" \
     --ipc shareable \
     --device /dev/kfd --device /dev/dri \
     --ulimit nofile=1048576:1048576 \
@@ -99,11 +107,14 @@ LMCACHE_LOG_PID=$!
 echo "lmcache log streaming -> ${LOGDIR}/lmcache.log"
 
 # Wait for lmcache ready
-# LMCache ZMQ on LMCACHE_PORT, HTTP metrics on 8080
+# LMCache ZMQ on LMCACHE_PORT, HTTP metrics on 8080 (probed from inside the
+# container, which is how the rest of the repo probes readiness)
 LMCACHE_HTTP_PORT=8080
 echo "Waiting for lmcache HTTP on :${LMCACHE_HTTP_PORT}..."
 for i in $(seq 1 120); do
-    if curl -sf "http://localhost:${LMCACHE_HTTP_PORT}/metrics" >/dev/null 2>&1; then
+    if docker exec aic-lmcache python3 -c \
+        "import urllib.request; urllib.request.urlopen('http://127.0.0.1:${LMCACHE_HTTP_PORT}/metrics', timeout=3)" \
+        >/dev/null 2>&1; then
         echo "lmcache ready (${i}s)"; break
     fi
     [[ $i -eq 120 ]] && { echo "ERROR: lmcache never ready"; tail -30 "${LOGDIR}/lmcache.log"; exit 1; }
@@ -115,7 +126,7 @@ echo "--- Starting vLLM (VLLM_LOGGING_LEVEL=DEBUG) ---"
 KV_TRANSFER="{\"kv_connector\":\"LMCacheMPConnector\",\"kv_role\":\"kv_both\",\"kv_connector_extra_config\":{\"lmcache.mp.server_urls\":[\"tcp://localhost:${LMCACHE_PORT}\"]}}"
 
 docker run -d --name aic-vllm-gpu0 \
-    --network host \
+    --network "container:aic-lmcache" \
     --pid "container:aic-lmcache" \
     --ipc "container:aic-lmcache" \
     --device /dev/kfd --device /dev/dri \
@@ -151,7 +162,9 @@ echo "vLLM log streaming -> ${LOGDIR}/vllm.log"
 echo "Waiting for vLLM on :${VLLM_PORT} (up to 1200s)..."
 VLLM_READY=0
 for i in $(seq 1 240); do
-    if curl -sf "http://localhost:${VLLM_PORT}/health" >/dev/null 2>&1; then
+    if docker exec aic-vllm-gpu0 python3 -c \
+        "import urllib.request; urllib.request.urlopen('http://127.0.0.1:${VLLM_PORT}/health', timeout=3)" \
+        >/dev/null 2>&1; then
         VLLM_READY=1
         echo "vLLM READY after $((i*5))s"
         break
@@ -178,13 +191,13 @@ fi
 echo "=== Stack ready — running cliff: warmup-at-each-c + 1 timed iter ==="
 # --warmup-at-each-c: warms c=1 first, then runs 1 timed iter at c=1
 # This is the standard per_client flow — same as the real cliff run
-docker run --rm --network host \
+docker run --rm --network aic \
     -v "${REPO}:/work" -w /work \
     -v "${HF_HOME}:/hf" \
     -e HF_HOME=/hf -e HF_HUB_OFFLINE=1 -e TRANSFORMERS_OFFLINE=1 \
     --entrypoint python3 "${AIC_IMAGE}" \
     benchmarks/run_cliff.py \
-        --endpoint "http://localhost:${VLLM_PORT}" \
+        --endpoint "http://aic-vllm:${VLLM_PORT}" \
         --model "${VLLM_MODEL}" \
         --arm kvd_v2 --isl 20000 --shared-prefix-tokens 18000 \
         --concurrencies 1 --iters 1 --warmup-at-each-c \
@@ -192,7 +205,8 @@ docker run --rm --network host \
         --prefix-mode per_client --out "${LOGDIR}/results.csv" 2>&1 | tee "${LOGDIR}/cliff.log"
 
 echo "--- Metrics snapshot AFTER timed iter ---"
-curl -s "http://localhost:${VLLM_PORT}/metrics" \
+VLLM_URL="$(aic_url aic-vllm-gpu0 "${VLLM_PORT}")" || exit 1
+curl -s "${VLLM_URL}/metrics" \
     | grep -E "external_prefix_cache|prefix_cache|connector" \
     | tee "${LOGDIR}/metrics_after.txt"
 
