@@ -128,9 +128,8 @@ RUN --mount=type=cache,target=/root/.cache/pip \
             "pybind11==3.0.4" \
             "ninja==1.13.0" \
             "flydsl==0.2.4" && \
-        git clone --depth 1 --branch "${AITER_REF}" "${AITER_GIT_URL}" /app/aiter && \
+        git clone --depth 1 --revision "${AITER_REF}" "${AITER_GIT_URL}" --recurse-submodules /app/aiter && \
         cd /app/aiter && \
-        git submodule update --init --recursive && \
         PYTORCH_ROCM_ARCH="${ROCM_ARCH}" \
             TORCH_DONT_CHECK_COMPILER_ABI=1 \
             MAX_JOBS="${BUILD_JOBS:-$(nproc)}" \
@@ -154,7 +153,7 @@ RUN --mount=type=cache,target=/root/.cache/pip \
     if [ "${VLLM_TARGET_DEVICE}" = "empty" ]; then \
         echo "Skipping FlashAttention (VLLM_TARGET_DEVICE=empty)"; \
     elif _cdna_only "${ROCM_ARCH}"; then \
-        git clone --depth 1 --branch "${FLASH_ATTN_REF}" \
+        git clone --depth 1 --revision "${FLASH_ATTN_REF}" \
             --recurse-submodules --shallow-submodules \
             "${FLASH_ATTN_GIT_URL}" /app/flash-attention && \
         python3 /app/patches/vllm/02-flash-attn-deprecated-attrs.py && \
@@ -185,7 +184,7 @@ RUN --mount=type=cache,target=/root/.cache/pip \
 
 # ----- 3b. vLLM (built from source at pinned tag) --------------------------------
 
-RUN git clone --depth 1 --branch "${VLLM_REF}" "${VLLM_GIT_URL}" /app/vllm
+RUN git clone --depth 1 --revision "${VLLM_REF}" "${VLLM_GIT_URL}" /app/vllm
 
 # Patch setup.py so _is_hip() short-circuits on VLLM_TARGET_DEVICE=rocm at
 # build time, without probing torch.version.hip before it is installed.
@@ -248,8 +247,7 @@ ARG LLM_EMU_REF=b71c602
 ENV AIC_EMULATOR_EXAMPLE_PACK=/opt/llm-emu/profiles/A40-Q8-Qwen3-8B.json \
     AIC_EMULATOR_DEFAULT_PACK=/opt/llm-emu/profiles/MI300X-Qwen3-8B.json
 # hadolint ignore=SC3044
-RUN git clone --filter=blob:none --no-checkout "${LLM_EMU_GIT_URL}" /app/llm-emu && \
-    git -C /app/llm-emu checkout "${LLM_EMU_REF}" && \
+RUN git clone --depth 1 --revision "${LLM_EMU_REF}" "${LLM_EMU_GIT_URL}" /app/llm-emu && \
     shopt -s nullglob && \
     for patch in /app/patches/llm-emu/*.patch; do \
         if git -C /app/llm-emu apply "$patch"; then \
