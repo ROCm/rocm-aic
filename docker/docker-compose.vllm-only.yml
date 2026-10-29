@@ -1,0 +1,20 @@
+# Override for a vLLM-only run (no lmcache container, no --kv-transfer-config).
+#
+#   docker compose -f docker-compose.yml -f docker-compose.vllm-only.yml up -d vllm
+#
+# The base `vllm` service joins lmcache's network, IPC and PID namespaces, none
+# of which exist without lmcache.  This puts it on the aic bridge instead, with
+# :8000 published the way lmcache publishes it for the tiered run, so host-side
+# clients keep using localhost:8000.  Not host networking: that shares the
+# node's port space and the @hsa<pid> abstract socket namespace with every
+# other container on the node.
+services:
+  vllm:
+    network_mode: !reset null
+    pid: !reset null
+    ipc: private
+    networks:
+      aic-network:
+        aliases: [aic-vllm]
+    ports:
+      - "${VLLM_HOST_PORT:-8000}:8000"

@@ -26,10 +26,10 @@
 #   .slurm/run-build-distribute.sh     — tiny-test end-to-end serve
 #
 # The lmcache service sits behind the `cache` compose profile, so the plain
-# `vram` baseline can start `vllm` alone
-# (`VLLM_IPC_MODE=shareable VLLM_PID_MODE= VLLM_NETWORK_MODE=host docker compose
-# up vllm`) without pulling in lmcache — vllm's depends_on uses `required: false`
-# for that.  Each of the three otherwise joins lmcache's namespace.
+# `vram` baseline can start `vllm` alone without pulling in lmcache — vllm's
+# depends_on uses `required: false` for that.  Add the override file
+# (`-f docker-compose.vllm-only.yml`) to move vllm off lmcache's network, IPC and
+# PID namespaces onto the aic bridge.
 #
 # Required env:
 #   ROCM_ARCH      — e.g. gfx942
@@ -52,7 +52,8 @@
 #   VLLM_IPC_MODE          — vLLM IPC mode (default: service:lmcache)
 #   VLLM_PID_MODE          — vLLM PID mode (default: service:lmcache; empty = private)
 #   VLLM_NETWORK_MODE      — vLLM network mode (default: container:aic-lmcache)
-#                            A vllm-only run needs all three overridden (see above).
+#                            A vllm-only run should use docker-compose.vllm-only.yml
+#                            instead of overriding all three.
 #   AIC_SHM_SIZE           — private /dev/shm capacity (default: 64gb)
 #   HF_HOME                — host HF cache dir (default: ~/.cache/huggingface)
 #   LOG                    — host log dir (default: ../logs, i.e. /logs)
@@ -508,7 +509,7 @@ services:
     # VLLM_IPC_MODE / VLLM_PID_MODE / VLLM_NETWORK_MODE.
     # lmcache publishes vllm's port; prometheus scrapes it as aic-vllm:8000.
     # container:, not service:, so compose can still load the project without
-    # the cache profile; a vllm-only run sets VLLM_NETWORK_MODE=host.
+    # the cache profile; a vllm-only run adds docker-compose.vllm-only.yml.
     network_mode: "${VLLM_NETWORK_MODE:-container:aic-lmcache}"
     ipc: "${VLLM_IPC_MODE:-service:lmcache}"
     shm_size: "${AIC_SHM_SIZE:-64gb}"
