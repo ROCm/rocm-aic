@@ -311,11 +311,17 @@ _wait_ready() {
 # If a node ever fails this check, fall back to running pytest inside the client
 # container (already on aic, repo mounted), at the cost of a gsm8k download on
 # the compute node.
+# Resolved on every call: the published host port is ephemeral and changes when
+# the publishing container is recreated, so never cache this across a restart.
 _endpoint_url() {
-    curl -fsS --max-time 10 "http://127.0.0.1:8000/v1/models" >/dev/null 2>&1 || {
-        echo "[accuracy-test] FAIL: host cannot reach 127.0.0.1:8000" >&2
+    local url
+    url="$(aic_url "${VLLM_CONTAINER}" 8000)" || {
+        echo "[accuracy-test] FAIL: cannot resolve vLLM's published port" >&2
         return 1; }
-    echo "http://127.0.0.1:8000/v1"
+    curl -fsS --max-time 10 "${url}/v1/models" >/dev/null 2>&1 || {
+        echo "[accuracy-test] FAIL: host cannot reach ${url}" >&2
+        return 1; }
+    echo "${url}/v1"
 }
 
 # Apparent size: the sum of file LENGTHS.  The NIXL POSIX adapter carves the
