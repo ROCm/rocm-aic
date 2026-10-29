@@ -332,7 +332,9 @@ monitoring_tsdb_summary() {
     if ! curl -fsS --max-time 3 "${prom}/-/ready" >/dev/null 2>&1; then
         log "  WARN Prometheus not ready at ${prom}"; return 0
     fi
-    docker run --rm --network host -e PROM_URL="${prom}" \
+    # A client on the aic bridge, addressing prometheus by name (the host URL
+    # above is for this shell's curl only).
+    docker run --rm --network aic -e PROM_URL="http://aic-prometheus:9090" \
         --entrypoint python3 "${AIC_IMAGE}" -c '
 import json, os, sys, urllib.request
 prom = os.environ["PROM_URL"]
