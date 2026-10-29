@@ -10,7 +10,7 @@ monitoring-up: ensure-compose
 	@mkdir -p "$(AIC_METRICS_DIR)"
 	PROM_UID="$$(id -u)" PROM_GID="$$(id -g)" AIC_HSA_SNOOP_PID_MODE="$${AIC_HSA_SNOOP_PID_MODE:-host}" \
 		$(MON_COMPOSE) $(_MON_PROFILE) up -d
-	@echo "Prometheus up on :9090  (TSDB -> $(AIC_METRICS_DIR))"
+	@echo "Prometheus up  (TSDB -> $(AIC_METRICS_DIR)); 'make endpoints' prints its URL"
 
 monitoring-down:
 	AIC_HSA_SNOOP_PID_MODE="$${AIC_HSA_SNOOP_PID_MODE:-host}" $(MON_COMPOSE) $(_MON_PROFILE) down
