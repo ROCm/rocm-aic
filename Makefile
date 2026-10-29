@@ -132,8 +132,18 @@ BENCH_ISL         ?= 20000
 BENCH_SHARED_TOK  ?= 18000
 BENCH_CONCUR      ?= 1,2,4,8,16,32,48,64,80,100,128,160,200,250
 BENCH_ITERS       ?= 3
-BENCH_ENDPOINT    ?= http://localhost:8000
+# Empty = resolve the running vLLM's published URL (see `make endpoints`).
+BENCH_ENDPOINT    ?=
 BENCH_MODEL       ?= $(VLLM_MODEL)
+
+# Host-side URL of a published container port: $(call aic_url,<container>,<port>).
+# Prints http://addr:port, or a message and a non-zero status.  Host ports are
+# ephemeral, so resolve after `up` and again after any restart.
+aic_url = bash "$(CURDIR)/scripts/aic-endpoints.sh" url $(1) $(2)
+
+# Readiness probe from inside the container: $(call aic_probe,<container>,<port>,<path>).
+# Exits non-zero until the server answers; needs no host port.
+aic_probe = docker exec $(1) python3 -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:$(2)$(3)', timeout=3)" >/dev/null 2>&1
 
 # ---- KVBench container -----------------------------------------------------
 KVBENCH_GIT_URL           ?= https://github.com/wvaske/llm-kv-passthrough.git
@@ -437,8 +447,8 @@ help:
 	@echo "  make build BUILD_JOBS=3          # cap parallelism on low-RAM hosts"
 	@echo "  make up HF_TOKEN=hf_... NVME_DATA=/mnt/nvme NFS_DATA=/mnt/nfs"
 	@echo "  make up-gds-l1 GDS_SLAB_DATA=/mnt/nvme HF_TOKEN=hf_..."
-	@echo "  make cliff BENCH_ARM=vram_only BENCH_ENDPOINT=http://localhost:8000"
-	@echo "  make cliff BENCH_ARM=kvbench BENCH_ENDPOINT=http://localhost:8000"
+	@echo "  make cliff BENCH_ARM=vram_only                  # endpoint resolved from the running vLLM"
+	@echo "  make cliff BENCH_ARM=kvbench BENCH_ENDPOINT=<url from 'make endpoints'>"
 	@echo "  make cliff-kvbench-local KVBENCH_MODEL=llama-3.1-8b BENCH_CONCUR=1,2"
 	@echo "  make plot"
 	@echo ""
