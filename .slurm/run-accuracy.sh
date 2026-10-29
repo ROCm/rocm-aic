@@ -35,10 +35,10 @@
 # so a checksum would be a flake generator; see tests/accuracy/README.md.
 #
 # pytest runs host-side (it needs .venv and lm_eval; the image stays lean and the
-# gsm8k download stays off the compute node), reaching vLLM on 127.0.0.1:8000:
-# vLLM's own published port in the vram arm, lmcache's in the tiered arm.
-# Readiness probes use the `docker exec ... 127.0.0.1` form that the rest of the
-# repo uses.
+# gsm8k download stays off the compute node), reaching vLLM on the host port
+# Docker published for it (an ephemeral 127.0.0.1 port, found with aic_url): vLLM's
+# own in the vram arm, lmcache's in the tiered arm.  Readiness probes use the
+# `docker exec ... 127.0.0.1` form that the rest of the repo uses.
 #
 # Every scoring pass asks the full gsm8k split; there is no item cap to set.
 #

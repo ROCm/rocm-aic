@@ -75,6 +75,18 @@ See `.docs-remove/rocm-7.14-torch-wheel-integration.md` for the complete
 11-bug chain discovered during SPUR testing, including root causes and fix
 status for each.
 
+## Host ports are ephemeral (no fixed host port by default)
+
+SPUR nodes are multi-tenant, so no container binds a fixed host port. Servers
+live on the `aic` bridge (or join a bridged container's netns, as `vllm` joins
+`aic-lmcache`); containerized clients join the bridge and use aliases
+(`http://aic-vllm:8000`, `http://aic-lmcache:8080`, `http://aic-prometheus:9090`).
+Only ports with a host-side consumer are published, on `127.0.0.1` with a
+Docker-chosen port (`${AIC_PUBLISH_ADDR:-127.0.0.1}:${<SVC>_HOST_PORT:-}:<port>`).
+Host-side code never hard-codes `localhost:<port>`: use `make endpoints`, or
+source `scripts/aic-endpoints.sh` and call `aic_url <container> <port>` after the
+container is up (the port changes when it is recreated). `<SVC>_HOST_PORT` pins one.
+
 ## gfx1201 (RDNA4 / RX 9070 XT) local development notes (2026-09-03)
 
 The RX 9070 XT (Navi 48, gfx1201, 16 GB) is supported in the default multi-arch

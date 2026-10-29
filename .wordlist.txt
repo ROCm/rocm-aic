@@ -365,3 +365,6 @@ banff
 ABI
 GEMM
 JIT
+loopback
+netns
+KVBench
