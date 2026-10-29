@@ -2217,7 +2217,7 @@ cleanup() {
     done
     # vLLM shares lmcache's PID ns (for cross-container HIP IPC), which blocks docker
     # from reaping vLLM's EngineCore children -> compose down/docker rm hang.  Force-
-    # kill the stack first, then tear down (one MP stack per node under host net).
+    # kill the stack first, then tear down (one MP stack per node: fixed names).
     pkill -9 -f 'vllm.entrypoints.openai' 2>/dev/null || true
     pkill -9 -f 'EngineCore'              2>/dev/null || true
     pkill -9 -f 'lmcache server'          2>/dev/null || true
@@ -2681,7 +2681,9 @@ fi
 
 ready=0
 for _i in \$(seq 1 ${AIC_EMULATE_READY_TIMEOUT}); do
-    if curl -fsS http://localhost:8000/v1/models >/dev/null 2>&1; then ready=1; break; fi
+    if docker exec aic-vllm-emulator python3 -c \
+        "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/v1/models', timeout=3)" \
+        >/dev/null 2>&1; then ready=1; break; fi
     # Bail out early if the container died rather than waiting the full timeout.
     if [ -z "\$(docker ps -q -f name=aic-vllm-emulator)" ]; then
         echo "[emulate-test] FAIL: the emulator container exited during startup" >&2
@@ -2695,6 +2697,7 @@ if [ "\${ready}" != "1" ]; then
     compose --profile emulate logs --tail 120 --no-color vllm-emulator 2>&1 | sed 's/^/  [emu] /'
     exit 1
 fi
+_url="\$(aic_url aic-vllm-emulator 8000)" || exit 1
 echo "[emulate-test] endpoint ready; sending one chat completion ..."
 
 # The container maps no /dev/kfd or /dev/dri (see the compose service), so it
@@ -2707,7 +2710,7 @@ else
 fi
 echo "[emulate-test] /dev/kfd inside the container: \${kfd_in_container}"
 
-resp="\$(curl -fsS http://localhost:8000/v1/chat/completions \
+resp="\$(curl -fsS "\${_url}/v1/chat/completions" \
     -H 'Content-Type: application/json' \
     -d '{"model":"${AIC_EMULATE_MODEL}","messages":[{"role":"user","content":"Reply with the single word: pong"}],"max_tokens":16,"temperature":0}' 2>&1)" || {
     echo "[emulate-test] FAIL: completion request failed: \${resp}" >&2; exit 1; }
@@ -2951,7 +2954,9 @@ fi
 
 ready=0
 for _i in \$(seq 1 ${AIC_EMULATE_READY_TIMEOUT}); do
-    if curl -fsS http://localhost:8000/v1/models >/dev/null 2>&1; then ready=1; break; fi
+    if docker exec aic-vllm-emulator python3 -c \
+        "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/v1/models', timeout=3)" \
+        >/dev/null 2>&1; then ready=1; break; fi
     if [ -z "\$(docker ps -q -f name=aic-vllm-emulator)" ]; then
         echo "[emulate-mp-test] FAIL: the emulator container exited during startup" >&2
         compose --profile emulate-mp logs --tail 150 --no-color 2>&1 | sed 's/^/  [mp] /'
@@ -2966,6 +2971,8 @@ if [ "\${ready}" != "1" ]; then
 fi
 
 rc=0
+_url="\$(aic_url aic-vllm-emulator 8000)" || exit 1
+_lurl="\$(aic_url aic-lmcache-emulator 8080)" || exit 1
 if docker exec aic-vllm-emulator test -e /dev/kfd 2>/dev/null; then
     echo "[emulate-mp-test] FAIL: /dev/kfd is visible inside the emulator container" >&2; rc=1
 else
@@ -2978,7 +2985,7 @@ fi
 # collide with anything else in the cache.
 _prompt="\$(python3 -c "print('The quick brown fox jumps over the lazy dog. ' * 96)")"
 _ask() {
-    curl -fsS http://localhost:8000/v1/chat/completions \
+    curl -fsS "\${_url}/v1/chat/completions" \
         -H 'Content-Type: application/json' \
         -d "\$(python3 -c "
 import json,sys
@@ -3047,7 +3054,7 @@ if [ -n '${AIC_EMULATE_MP_BENCH}' ]; then
         fi
         # Per-point cache counters: the whole reason for a warm repeat is to see
         # these MOVE, and an end-of-run total cannot show that.
-        curl -fsS http://localhost:8080/metrics 2>/dev/null | awk -v tag="\${tag:-cold}" '
+        curl -fsS "\${_lurl}/metrics" 2>/dev/null | awk -v tag="\${tag:-cold}" '
             /^lmcache_mp_lookup_requested_tokens_total/ {req=\$NF}
             /^lmcache_mp_lookup_hit_tokens_total/       {hit=\$NF}
             /^lmcache_mp_l1_read_chunks_total/          {l1r=\$NF}
@@ -3101,7 +3108,7 @@ fi
 #    log-format-dependent evidence; fall back to the connector's own counters.
 #    :8080 -- the MP server's HTTP API -- not --prometheus-port, which opens no
 #    listener in v0.5.2 ("standalone metrics HTTP server disabled").
-if curl -fsS http://localhost:8080/metrics -o "\${_logdir}/emulate-mp-lmcache-metrics.txt" 2>/dev/null; then
+if curl -fsS "\${_lurl}/metrics" -o "\${_logdir}/emulate-mp-lmcache-metrics.txt" 2>/dev/null; then
     # 'write' matters: with AIC_EMULATE_MP_L2_BACKEND=none there is no L2 tier at
     # all, so every lmcache_mp_l2_store_* family is structurally absent and the
     # only evidence of a store is lmcache_mp_l1_write_chunks_total.  Matching just
@@ -3120,14 +3127,14 @@ if curl -fsS http://localhost:8080/metrics -o "\${_logdir}/emulate-mp-lmcache-me
         echo "[emulate-mp-test] WARN: no retrieve/hit counter moved; the warm request may have been served from vLLM's own prefix cache"
     fi
 else
-    echo "[emulate-mp-test] WARN: lmcache /metrics unreachable on :9091; skipping the data-movement check"
+    echo "[emulate-mp-test] WARN: lmcache /metrics unreachable at \${_lurl}; skipping the data-movement check"
 fi
 
 # 7. Nothing stranded.  A request parked in WAITING_FOR_REMOTE_KVS that never
 #    leaves is the exact symptom of the connector output never reaching the
 #    scheduler -- the failure mode the executor hook's connector cycle exists
 #    to prevent -- and both requests above have already returned by now.
-_waiting="\$(curl -fsS http://localhost:8000/metrics 2>/dev/null \
+_waiting="\$(curl -fsS "\${_url}/metrics" 2>/dev/null \
     | awk '/^vllm:num_requests_waiting/ {s+=\$NF} END {printf "%d", s+0}')"
 if [ "\${_waiting:-0}" -eq 0 ]; then
     echo "[emulate-mp-test] OK: no request left waiting on a remote KV load"
@@ -3144,12 +3151,14 @@ if [ "${AIC_EMULATE_MP_MONITORING}" = "1" ]; then
     # Give Prometheus a few 5s scrape intervals past the last request.
     sleep 20
     _promdir="\${_logdir}/prom-check"; mkdir -p "\${_promdir}"
-    if curl -fsS 'http://localhost:9090/api/v1/targets?state=active' \
+    _prom="\$(aic_url aic-prometheus 9090)" || exit 1
+    if curl -fsS "\${_prom}/api/v1/targets?state=active" \
             -o "\${_promdir}/targets.json" 2>/dev/null; then
-        python3 - "\${_promdir}/targets.json" '${AIC_EMULATE_MP_L2_BACKEND}' <<'PYEOF'
+        python3 - "\${_promdir}/targets.json" '${AIC_EMULATE_MP_L2_BACKEND}' "\${_prom}" <<'PYEOF'
 import json, sys, urllib.parse, urllib.request
 targets = json.load(open(sys.argv[1]))["data"]["activeTargets"]
 l2 = sys.argv[2]
+prom = sys.argv[3]
 health = {}
 for t in targets:
     job = t["labels"]["job"]
@@ -3161,7 +3170,7 @@ def series(job):
     q = urllib.parse.quote(f'count(count by (__name__)({{job="{job}"}}))')
     try:
         with urllib.request.urlopen(
-                f"http://localhost:9090/api/v1/query?query={q}", timeout=10) as r:
+                f"{prom}/api/v1/query?query={q}", timeout=10) as r:
             res = json.load(r)["data"]["result"]
         return int(float(res[0]["value"][1])) if res else 0
     except Exception as e:
@@ -3191,7 +3200,7 @@ PYEOF
         [ \$? -eq 0 ] || rc=1
         # Keep the raw exporter output next to the verdict -- when a job is up
         # but empty, this is the only thing that says why.
-        curl -fsS http://localhost:8080/metrics  -o "\${_promdir}/lmcache-metrics.txt" 2>/dev/null || true
+        curl -fsS "\${_lurl}/metrics" -o "\${_promdir}/lmcache-metrics.txt" 2>/dev/null || true
         # :19090 is not published; read it from inside the lmcache container.
         docker exec aic-lmcache-emulator curl -fsS http://localhost:19090/metrics \
             > "\${_promdir}/nixl-metrics.txt" 2>/dev/null || true
@@ -3278,7 +3287,7 @@ if nx:
               + (f", {tx / xfer:.0f} MB/s effective" if tx else ""))
 PYEOF
     else
-        echo "[emulate-mp-test] FAIL: Prometheus not answering on :9090" >&2; rc=1
+        echo "[emulate-mp-test] FAIL: Prometheus not answering at \${_prom}" >&2; rc=1
     fi
 else
     echo "[emulate-mp-test] monitoring disabled (AIC_EMULATE_MP_MONITORING=0)"
@@ -3388,7 +3397,9 @@ echo "[validate] starting the emulator with pack /profiles/${pack_file} ..."
 compose --profile emulate up -d vllm-emulator || { echo "[validate] FAIL: compose up" >&2; exit 1; }
 ready=0
 for _i in \$(seq 1 ${AIC_EMULATE_READY_TIMEOUT}); do
-    curl -fsS http://localhost:8000/v1/models >/dev/null 2>&1 && { ready=1; break; }
+    docker exec aic-vllm-emulator python3 -c \
+        "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/v1/models', timeout=3)" \
+        >/dev/null 2>&1 && { ready=1; break; }
     [ -z "\$(docker ps -q -f name=aic-vllm-emulator)" ] && break
     sleep 5
 done
