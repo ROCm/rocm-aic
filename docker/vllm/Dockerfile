@@ -92,14 +92,15 @@ ARG FLASH_ATTN_REF=v2.8.3.post1
 # git and ca-certificates are not in the -full image; install before cloning.
 # hadolint ignore=DL3008
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
-    --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt/lists \
     apt-get update && \
     DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
         cmake git ca-certificates ninja-build python3-dev
 
 # Bring torch + Python packages from aic-base so wheels link against the same torch.
-COPY --from=base /usr/local/lib/python3.12/dist-packages/ \
-                 /usr/local/lib/python3.12/dist-packages/
+RUN --mount=type=bind,from=base,source=/app/dist/,target=/app/dist/ \
+    pip3 install --break-system-packages --no-cache-dir /app/dist/*/*.whl
+
 COPY --from=base /usr/local/bin/uv  /usr/local/bin/uv
 COPY --from=base /usr/local/bin/uvx /usr/local/bin/uvx
 RUN rm -f /usr/lib/python3.*/EXTERNALLY-MANAGED
@@ -236,7 +237,7 @@ RUN --mount=type=cache,target=/root/.cache/pip \
         pip3 wheel --no-build-isolation --no-deps --no-cache-dir -w /wheels . && \
     pip3 install --no-cache-dir /wheels/vllm-*.whl && \
     python3 -c 'import importlib.metadata as m; print("vLLM installed:", m.version("vllm"))' && \
-    rm -rf /app/vllm /wheels /tmp/torch-constraints.txt && \
+    rm -rf /app/vllm /tmp/torch-constraints.txt && \
     { find /usr/lib/python3 /usr/local/lib/python3.12 -name '__pycache__' -type d \
          -exec rm -rf {} + || \
       echo "WARNING: __pycache__ cleanup failed; see find's error above" >&2; }
@@ -266,7 +267,7 @@ print('vllm_emulator subpackages import OK')" && \
     mkdir -p /opt/llm-emu/profiles && \
     cp /app/llm-emu/example_profiling_data/*.json /opt/llm-emu/profiles/ && \
     test -r "${AIC_EMULATOR_EXAMPLE_PACK}" && \
-    rm -rf /app/llm-emu /app/patches /app/aiter /app/flash-attention /wheels && \
+    rm -rf /app/llm-emu /app/patches /app/aiter /app/flash-attention && \
     { find /usr/lib/python3 /usr/local/lib/python3.12 -name '__pycache__' -type d \
          -exec rm -rf {} + || \
       echo "WARNING: __pycache__ cleanup failed; see find's error above" >&2; }
@@ -278,13 +279,17 @@ FROM base AS vllm
 
 # Copy all installed Python packages (vllm, aiter, flash_attn, llm-emu, deps)
 # from the full-ROCm build stage into the slim aic-base runtime.
-COPY --from=build_vllm /usr/local/lib/python3.12/dist-packages/ \
-                       /usr/local/lib/python3.12/dist-packages/
 COPY --from=build_vllm /usr/local/bin/uv  /usr/local/bin/uv
 COPY --from=build_vllm /usr/local/bin/uvx /usr/local/bin/uvx
 COPY --from=build_vllm /opt/llm-emu/      /opt/llm-emu/
 COPY --from=build_vllm /etc/rocm-aic-attention-backends.env \
                        /etc/rocm-aic-attention-backends.env
+
+RUN --mount=type=bind,from=build_vllm,source=/wheels/,target=/app/dist/vllm \
+    --mount=type=bind,from=base,source=/app/dist/pytorch,target=/app/dist/pytorch \
+    --mount=type=bind,from=base,source=/app/dist/vision,target=/app/dist/vision \
+    --mount=type=bind,from=base,source=/app/dist/nixl,target=/app/dist/nixl \
+    pip3 install --break-system-packages /app/dist/*/*.whl
 
 ARG VLLM_REF
 ARG AITER_REF

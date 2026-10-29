@@ -231,7 +231,7 @@ RUN --mount=type=cache,target=/root/.cache/pip \
     pip3 install --no-cache-dir cupy-rocm-7-0
 
 # Install the pre-compiled LMCache wheel from the build_lmcache_wheel stage.
-COPY --from=build_lmcache_wheel /wheels/ /wheels/
+COPY --from=build_lmcache_wheel /wheels/* /wheels/
 RUN uv pip install --system --no-cache /wheels/lmcache-*.whl && rm -rf /wheels
 
 # The `lmcache` CLI imports every subcommand eagerly, so `lmcache server` dies

@@ -181,7 +181,7 @@ RUN --mount=type=cache,target=/root/.cache/ccache \
     CMAKE_BUILD_PARALLEL_LEVEL="${BUILD_JOBS:-$(nproc)}" \
     CMAKE_PREFIX_PATH=$(python3 -c 'import sys; print(sys.prefix)') \
     PYTORCH_ROCM_ARCH=$(echo "${PYTORCH_ROCM_ARCH}" | tr ',' ' ') \
-        python3 setup.py bdist_wheel --dist-dir=/app/pytorch/dist && \
+        python3 setup.py bdist_wheel --dist-dir=/app/dist/pytorch && \
     { find /app/pytorch -mindepth 1 -maxdepth 1 ! -name 'dist' -exec rm -rf {} + || \
       echo "WARNING: PyTorch source cleanup failed; see find's error above" >&2; }
 
@@ -208,7 +208,7 @@ RUN --mount=type=cache,target=/root/.cache/pip \
     --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
     DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends libnuma-dev && \
-    pip3 install setuptools wheel packaging /app/pytorch/dist/*.whl && \
+    pip3 install setuptools wheel packaging /app/dist/pytorch/*.whl && \
     cd /app/vision && \
     USE_ROCM=1 USE_CUDA=0 \
     PYTORCH_ROCM_ARCH="${ROCM_ARCH}" \
@@ -217,7 +217,7 @@ RUN --mount=type=cache,target=/root/.cache/pip \
     CMAKE_CXX_COMPILER_LAUNCHER=ccache \
     MAX_JOBS="${BUILD_JOBS:-$(nproc)}" \
     CMAKE_BUILD_PARALLEL_LEVEL="${BUILD_JOBS:-$(nproc)}" \
-        python3 setup.py bdist_wheel --dist-dir=/app/vision/dist
+        python3 setup.py bdist_wheel --dist-dir=/app/dist/vision
 
 # =============================================================================
 # build_nixl — NIXL source build using the ROCm-full toolchain.
@@ -255,15 +255,16 @@ RUN --mount=type=cache,target=/root/.cache/uv \
             echo "ERROR: nixl patch does not apply cleanly: $patch" >&2; exit 1; \
         fi; \
     done && \
+    mkdir -p /app/dist/nixl && \
     NIXL_SRC=/tmp/nixl \
         AIS_PATH=/opt/rocm ROCM_PATH=/opt/rocm \
         NIXL_INSTALL_PREFIX=/opt/nixl \
-        NIXL_BUILD_WHEEL=1 NIXL_WHEEL_DIR=/tmp/nixl-wheels \
+        NIXL_BUILD_WHEEL=1 NIXL_WHEEL_DIR=/app/dist/nixl \
         BUILD_JOBS="${BUILD_JOBS}" \
         AIC_UCX_FAST="${AIC_UCX_FAST}" \
         UV_SYSTEM_CERTS=1 \
         /tmp/nixl-scripts/build-nixl.sh && \
-    rm -rf /tmp/nixl /tmp/nixl-patches /tmp/nixl-scripts /tmp/nixl-wheels
+    rm -rf /tmp/nixl /tmp/nixl-patches /tmp/nixl-scripts
 
 # =============================================================================
 # build_clr_patch — patch libamdhip64.so to fix IPC event signal ring overflow.
@@ -474,6 +475,8 @@ COPY --from=base /opt/rocm/include/ /opt/rocm/core-7.14/include/
 COPY --from=build_pytorch /root/.local/bin/uv  /usr/local/bin/uv
 COPY --from=build_pytorch /root/.local/bin/uvx /usr/local/bin/uvx
 
+COPY --from=build_pytorch /app/dist/pytorch/ /app/dist/pytorch/
+
 # Installed Python packages: torch + all requirements (from build_pytorch),
 # plus setuptools/wheel/packaging (from build_torchvision).
 # Does NOT include the PyTorch or torchvision source trees.
@@ -481,15 +484,17 @@ COPY --from=build_torchvision /usr/local/lib/python3.12/dist-packages/ \
                                /usr/local/lib/python3.12/dist-packages/
 COPY --from=build_torchvision /usr/local/bin/ /usr/local/bin/
 
+COPY --from=build_torchvision /app/dist/vision/ /app/dist/vision/
+
 ENV PIP_ROOT_USER_ACTION=ignore \
     UV_LINK_MODE=copy \
     UV_BREAK_SYSTEM_PACKAGES=1 \
     PIP_BREAK_SYSTEM_PACKAGES=1
 
 # torchvision wheel (built in build_torchvision but not yet installed there).
-COPY --from=build_torchvision /app/vision/dist/ /tmp/vision/
 RUN --mount=type=cache,target=/root/.cache/pip \
-    pip3 install --no-cache-dir /tmp/vision/*.whl && \
+    --mount=type=bind,from=build_torchvision,source=/app/dist/vision,target=/app/dist/vision \
+    pip3 install --no-cache-dir /app/dist/vision/*.whl && \
     rm -rf /tmp/vision && \
     { find /usr/local/lib/python3.12 -name '__pycache__' -type d \
          -exec rm -rf {} + || \
@@ -499,6 +504,8 @@ RUN --mount=type=cache,target=/root/.cache/pip \
 # ROCm-full toolchain; only the output directories are needed at runtime.
 COPY --from=build_nixl /opt/nixl/ /opt/nixl/
 COPY --from=build_nixl /opt/rocnixl-ucx/ /opt/rocnixl-ucx/
+
+COPY --from=build_nixl /app/dist/nixl/ /app/dist/nixl/
 
 # Patched libamdhip64.so: fixes IPC event signal ring overflow (ROCm#11511/#11749).
 # read_index must be wrapped with % IPC_SIGNALS_PER_EVENT (32) or the 33rd
