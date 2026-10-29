@@ -1,0 +1,187 @@
+# Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+#
+# Nightly wheel latency benchmark.
+#
+# Runs after the nightly CDNA wheels are published.  Installs them into the
+# AIC image on a real MI355X (gfx950) SPUR node and measures end-to-end
+# request latency across 4 KV-cache tiers (cold / hot-VRAM / L1-DRAM /
+# L2-disk) at 5 ISL tiers (1 100 – 35 200 tokens).  Results are published to
+# https://rocm.github.io/rocm-aic/wheel-latency/.
+#
+# Trigger: after rocm-aic - Nightly Wheels Publication succeeds.
+# Manual dispatch: workflow_dispatch (always runs against current nightly tag).
+
+name: rocm-aic - Nightly Wheel Latency Benchmark
+
+on:
+  workflow_run:
+    workflows: ["rocm-aic - Nightly Wheels Publication"]
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: 'Publish results to GitHub Pages'
+        required: false
+        default: 'true'
+        type: choice
+        options: ['true', 'false']
+
+permissions:
+  contents: write      # push to gh-pages
+  pages: write
+
+concurrency:
+  group: wheel-latency
+  cancel-in-progress: false
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Run the 4-phase latency benchmark on a SPUR MI355X node.
+  # ---------------------------------------------------------------------------
+  run-latency-bench:
+    name: Run wheel latency benchmark on SPUR
+    # Only run after a successful nightly publish, or on manual dispatch.
+    if: >
+      github.event_name == 'workflow_dispatch' ||
+      github.event.workflow_run.conclusion == 'success'
+    runs-on: [self-hosted, rocm-aic-cicd]
+    timeout-minutes: 120
+    env:
+      AIC_SPUR_HOST:        ${{ secrets.AIC_SPUR_HOST }}
+      AIC_SHARED_NFS:       ${{ secrets.AIC_SHARED_NFS }}
+      AIC_CI_STORAGE_ROOT:  ${{ secrets.AIC_SHARED_NFS }}/rocm-aic
+      NIGHTLY_TAG:          nightly
+      VLLM_MODEL:           Qwen/Qwen3-4B
+      HF_HOME:              /shared_nfs/huggingface
+
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 1
+
+      # Download the published CDNA wheels to NFS so the compute node (which
+      # has no internet access) can install them.
+      - name: Download nightly CDNA wheels to NFS
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          WHEEL_DIR="${AIC_CI_STORAGE_ROOT}/wheels-nightly"
+          mkdir -p "${WHEEL_DIR}"
+          # Fetch asset URLs from the release
+          urls=$(gh release view "${NIGHTLY_TAG}" \
+                   --repo "${GITHUB_REPOSITORY}" \
+                   --json assets \
+                   -q '.assets[].browserDownloadUrl' | grep '\.whl$')
+          for url in ${urls}; do
+            fname="$(basename "${url}" | python3 -c 'import sys,urllib.parse; print(urllib.parse.unquote(sys.stdin.read().strip()))')"
+            if [[ -f "${WHEEL_DIR}/${fname}" ]]; then
+              echo "cached: ${fname}"
+            else
+              echo "downloading: ${fname}"
+              curl -fsSL -o "${WHEEL_DIR}/${fname}" "${url}"
+            fi
+          done
+          echo "Wheels in ${WHEEL_DIR}:"
+          ls -lh "${WHEEL_DIR}"/*.whl
+
+      # Submit the latency sbatch and wait for completion.
+      - name: Submit latency benchmark to SPUR and wait
+        id: bench
+        run: |
+          set -euo pipefail
+          # Resolve the log directory (uses SLURM_JOB_ID via --chdir pattern).
+          LOG_ROOT="${AIC_CI_STORAGE_ROOT}/wheel-latency-logs"
+          mkdir -p "${LOG_ROOT}"
+
+          JOB_ID=$(sbatch \
+            --chdir="${AIC_SHARED_NFS}/stebates" \
+            --export=ALL,\
+          SLURM_SUBMIT_DIR="${GITHUB_WORKSPACE}",\
+          VLLM_MODEL="${VLLM_MODEL}",\
+          HF_HOME="${HF_HOME}",\
+          WHEEL_DIR="${AIC_CI_STORAGE_ROOT}/wheels-nightly" \
+            "${GITHUB_WORKSPACE}/.slurm/test-nightly-wheels.sbatch" \
+            | awk '{print $NF}')
+
+          echo "job_id=${JOB_ID}" >> "${GITHUB_OUTPUT}"
+          echo "Submitted SLURM job ${JOB_ID}"
+
+          # Poll until the job finishes (max 90 min).
+          for i in $(seq 1 180); do
+            state=$(squeue -j "${JOB_ID}" --format='%T' --noheader 2>/dev/null || echo "DONE")
+            if [[ "${state}" != "PENDING" && "${state}" != "RUNNING" ]]; then
+              echo "Job ${JOB_ID} finished with state: ${state}"
+              break
+            fi
+            echo "  [${i}/180] ${state} — waiting 30s..."
+            sleep 30
+          done
+
+          # Locate the log (sbatch writes to logs/<JOB_ID>/).
+          LOG_FILE=""
+          for candidate in \
+              "${AIC_SHARED_NFS}/stebates/logs/${JOB_ID}/wheel-test.out" \
+              "${LOG_ROOT}/${JOB_ID}/wheel-test.out"; do
+            [[ -f "${candidate}" ]] && LOG_FILE="${candidate}" && break
+          done
+          [[ -n "${LOG_FILE}" ]] || { echo "ERROR: log not found for job ${JOB_ID}"; exit 1; }
+          echo "log_file=${LOG_FILE}" >> "${GITHUB_OUTPUT}"
+
+          # Fail the step if the benchmark itself failed.
+          grep -q "WHEEL TEST PASSED" "${LOG_FILE}" \
+            || { echo "Benchmark FAILED — see log: ${LOG_FILE}"; cat "${LOG_FILE}" | tail -30; exit 1; }
+          echo "Benchmark PASSED."
+
+      # Render the results into an HTML page and a JSON summary.
+      - name: Render results
+        id: render
+        run: |
+          set -euo pipefail
+          OUT_DIR="${RUNNER_TEMP}/wheel-latency"
+          mkdir -p "${OUT_DIR}"
+
+          # Resolve SHA and date from the triggering workflow run or HEAD.
+          SHA="${{ github.event.workflow_run.head_sha || github.sha }}"
+          DATE=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+
+          python3 "${GITHUB_WORKSPACE}/.github/scripts/workflows/render-wheel-latency.py" \
+            "${{ steps.bench.outputs.log_file }}" \
+            "${SHA}" \
+            "${DATE}" \
+            "${OUT_DIR}/index.html"
+
+          echo "out_dir=${OUT_DIR}" >> "${GITHUB_OUTPUT}"
+          echo "sha=${SHA}" >> "${GITHUB_OUTPUT}"
+          echo "date=${DATE}" >> "${GITHUB_OUTPUT}"
+          cat "${OUT_DIR}/index.html" | head -10  # sanity preview
+
+      # Upload the rendered page as a workflow artifact (always, even on failure).
+      - name: Upload results artifact
+        if: always() && steps.render.outcome != 'skipped'
+        uses: actions/upload-artifact@v7
+        with:
+          name: wheel-latency-${{ steps.render.outputs.sha && steps.render.outputs.sha || github.sha }}
+          path: ${{ steps.render.outputs.out_dir }}/
+          retention-days: 90
+
+      # Publish to gh-pages under /wheel-latency/.
+      - name: Publish to GitHub Pages
+        if: >
+          steps.render.outcome == 'success' &&
+          (github.event_name == 'workflow_run' ||
+           github.event.inputs.publish == 'true')
+        uses: peaceiris/actions-gh-pages@v4
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir:  ${{ steps.render.outputs.out_dir }}
+          destination_dir: wheel-latency
+          publish_branch: gh-pages
+          force_orphan: false
+          keep_files: true
+          commit_message: >
+            chore: update wheel latency results
+            (${{ steps.render.outputs.sha && steps.render.outputs.sha || github.sha }},
+            ${{ steps.render.outputs.date }})
