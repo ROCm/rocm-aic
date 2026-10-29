@@ -31,7 +31,6 @@ fi
 
 KVBENCH_MODEL="${KVBENCH_MODEL:-llama-3.1-8b}"
 KVBENCH_PORT="${KVBENCH_PORT:-8000}"
-KVBENCH_HOST_PORT="${KVBENCH_HOST_PORT:-18000}"
 KVBENCH_READY_TIMEOUT="${KVBENCH_READY_TIMEOUT:-120}"
 BENCH_ISL="${BENCH_ISL:-32}"
 BENCH_SHARED_TOK="${BENCH_SHARED_TOK:-16}"
@@ -51,7 +50,7 @@ cd "${REPO}"
 source "${REPO}/monitoring/monitoring-lib.sh"
 ensure_compose || die "docker compose unavailable and could not be installed"
 
-export KVBENCH_MODEL KVBENCH_PORT KVBENCH_HOST_PORT KVBENCH_IMAGE_REF
+export KVBENCH_MODEL KVBENCH_PORT KVBENCH_IMAGE_REF
 export LOG="${LOGDIR}"
 compose() { docker compose -f "${REPO}/docker/docker-compose.yml" "$@"; }
 

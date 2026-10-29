@@ -154,7 +154,6 @@ KVBENCH_IMAGE_REF         ?= $(KVBENCH_IMAGE_NAME):$(KVBENCH_IMAGE_TAG)
 KVBENCH_MODEL             ?= llama-3.1-8b
 KVBENCH_GPU_PROFILE       ?= H100_SXM
 KVBENCH_PORT              ?= 8000
-KVBENCH_HOST_PORT         ?= 18000
 KVBENCH_CHUNK_SIZE        ?= 256
 KVBENCH_LOCAL_CPU_SIZE_GB ?= 0.25
 KVBENCH_READY_S           ?= 120
@@ -187,7 +186,7 @@ export NVME_DATA NFS_DATA
 export VLLM_MODEL TENSOR_PARALLEL_SIZE
 export VLM_GPU_MEMORY_UTILIZATION VLM_MAX_MODEL_LEN VLM_MAX_NUM_BATCHED_TOKENS VLM_BLOCK_SIZE
 export KVBENCH_GIT_URL KVBENCH_REF KVBENCH_IMAGE_REF KVBENCH_MODEL KVBENCH_GPU_PROFILE
-export KVBENCH_PORT KVBENCH_HOST_PORT KVBENCH_CHUNK_SIZE KVBENCH_LOCAL_CPU_SIZE_GB
+export KVBENCH_PORT KVBENCH_CHUNK_SIZE KVBENCH_LOCAL_CPU_SIZE_GB
 
 # Export every framework pin the caller actually overrode, so that
 # .slurm/run-build-distribute.sh and docker/scripts/aic-image-tag.sh — both of
@@ -214,11 +213,10 @@ export KV_TRANSFER_ARG
 # ---- Metrics capture (Prometheus sidecar) ----------------------------------
 AIC_METRICS_DIR  ?= $(CURDIR)/logs/prometheus
 AIC_EXPORTERS    ?= 0
-AIC_GRAFANA_PORT ?= 3000
 AIC_GRAFANA_IMAGE ?= grafana/grafana:13.2.2
 MON_COMPOSE     := $(_COMPOSE_BIN) -f "$(CURDIR)/docker/docker-compose.yml"
 _MON_PROFILE    := --profile monitoring-base $(if $(filter 1,$(AIC_EXPORTERS)),--profile exporters,)
-export AIC_METRICS_DIR AIC_GRAFANA_PORT AIC_GRAFANA_IMAGE
+export AIC_METRICS_DIR AIC_GRAFANA_IMAGE
 
 # ---- Fabric exporters (nvme_exporter / rdma_exporter) + hsa-snoop sidecar --
 NVME_EXPORTER_IMAGE   ?= aic-nvme-exporter:local
@@ -420,7 +418,10 @@ help:
 	@echo "    PROM_DUMP_OUT=$(if $(PROM_DUMP_OUT),$(PROM_DUMP_OUT),<AIC_IMAGE_DIR>/../prometheus-dump.md)"
 	@echo "    AIC_METRICS_DIR=$(AIC_METRICS_DIR)"
 	@echo "    AIC_EXPORTERS=$(AIC_EXPORTERS)  (1 = also launch node + AMD GPU exporters)"
-	@echo "    AIC_GRAFANA_PORT=$(AIC_GRAFANA_PORT)   Grafana host port (default: 3000)"
+	@echo "    Published ports (vLLM, LMCache, Prometheus, Grafana, KVBench) bind 127.0.0.1 on a free"
+	@echo "    ephemeral host port; 'make endpoints' prints them.  Pin one with VLLM_HOST_PORT,"
+	@echo "    LMCACHE_HTTP_HOST_PORT, AIC_PROM_PORT, AIC_GRAFANA_PORT or KVBENCH_HOST_PORT;"
+	@echo "    AIC_PUBLISH_ADDR=0.0.0.0 exposes them beyond loopback."
 	@echo "    AIC_GRAFANA_IMAGE=$(AIC_GRAFANA_IMAGE)"
 	@echo ""
 	@echo "Required env:"

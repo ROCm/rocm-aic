@@ -193,14 +193,7 @@ start_monitoring() {
     mkdir -p "${AIC_METRICS_DIR}" 2>/dev/null || { log "monitoring: cannot create ${AIC_METRICS_DIR}, skipping"; AIC_MONITORING=0; return 0; }
     ensure_compose || { log "monitoring: docker compose unavailable, skipping"; AIC_MONITORING=0; return 0; }
     [[ -f "${MON_COMPOSE}" ]] || { log "monitoring: ${MON_COMPOSE} not found, skipping"; AIC_MONITORING=0; return 0; }
-    # Grafana is in monitoring-base, so it always starts, and a fixed host :3000
-    # collides with whatever else the node runs there -- compose then reports
-    # the whole `up` as failed.  Use an ephemeral port; `docker port aic-grafana
-    # 3000` prints it.  Not AIC_GRAFANA_PORT: the Makefile exports that as 3000
-    # for `make up`, and sbatch carries it into every job.
-    # AIC_GRAFANA_PORT_OVERRIDE=3000 restores the fixed port here.
-    export AIC_GRAFANA_PORT="${AIC_GRAFANA_PORT_OVERRIDE:-0}"
-    log "starting metrics capture -> ${AIC_METRICS_DIR} (exporters=${AIC_EXPORTERS}, grafana port=${AIC_GRAFANA_PORT})"
+    log "starting metrics capture -> ${AIC_METRICS_DIR} (exporters=${AIC_EXPORTERS})"
     # Sweep any leftover containers from a previous run on this node so port
     # bindings don't conflict with the new compose up.
     docker rm -f "${MON_CONTAINERS[@]}" >/dev/null 2>&1 || true
