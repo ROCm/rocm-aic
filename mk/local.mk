@@ -190,27 +190,24 @@ vllm-reset-test: check-hf-token prep-dirs
 	    $(COMPOSE_CACHE) --profile monitoring up -d
 	@echo "Waiting for vLLM to be healthy..."
 	@for i in $$(seq 1 $${VLM_READY_RETRIES:-60}); do \
-	    r=$$(curl -s -o /dev/null -w '%{http_code}' \
-	        http://localhost:$${VLLM_HOST_PORT:-8000}/health 2>/dev/null); \
-	    [ "$$r" = "200" ] && echo "vLLM healthy after $${i}s" && break; \
+	    $(call aic_probe,aic-vllm-gpu$(GPU),8000,/health) && echo "vLLM healthy after $${i}s" && break; \
 	    [ "$$i" = "$${VLM_READY_RETRIES:-60}" ] && echo "ERROR: vLLM not healthy after vllm_reset_test timeout" >&2 && exit 1; \
 	    sleep 5; \
 	done
-	@echo "Clearing vLLM GPU prefix cache..."
-	@curl -s -X POST \
-	    http://localhost:8000/reset_prefix_cache \
+	@_v="$$($(call aic_url,aic-vllm-gpu$(GPU),8000))" && _l="$$($(call aic_url,aic-lmcache,8080))" || exit 1; \
+	echo "Clearing vLLM GPU prefix cache..."; \
+	curl -s -X POST "$$_v/reset_prefix_cache" \
 	    -H 'Content-Type: application/json' -d '{}' | grep -q '"success":true' \
-	    || { echo "ERROR: vLLM cache reset failed" >&2; exit 1; }
-	@echo "Clearing LMCache L1 DRAM cache..."
-	@curl -s -X POST \
-	    http://localhost:8080/cache/clear \
+	    || { echo "ERROR: vLLM cache reset failed" >&2; exit 1; }; \
+	echo "Clearing LMCache L1 DRAM cache..."; \
+	curl -s -X POST "$$_l/cache/clear" \
 	    -H 'Content-Type: application/json' \
 	    -d '{"tier":"l1","force":true}' | grep -q '"status":"ok"' \
-	    || { echo "ERROR: LMCache L1 clear failed" >&2; exit 1; }
-	@echo "Resetting LMCache Prometheus counters..."
-	@curl -s -X POST \
-	    http://localhost:8080/metrics/reset > /dev/null
-	$(PYTHON) "$(CURDIR)/benchmarks/vllm_reset_test.py"
+	    || { echo "ERROR: LMCache L1 clear failed" >&2; exit 1; }; \
+	echo "Resetting LMCache Prometheus counters..."; \
+	curl -s -X POST "$$_l/metrics/reset" > /dev/null; \
+	AIC_TEST_VLLM_URL="$$_v" AIC_TEST_LMCACHE_URL="$$_l" \
+	    $(PYTHON) "$(CURDIR)/benchmarks/vllm_reset_test.py"
 	@echo "Test complete. Run 'make down' to stop the stack."
 
 bench-serve: check-hf-token prep-dirs
@@ -219,10 +216,12 @@ bench-serve: check-hf-token prep-dirs
 	@echo "  Sessions:    $(BENCH_SESSIONS)  Max tokens/turn: $(BENCH_TOKENS)"
 	@echo "  Think-time:  $(BENCH_THINK_MIN)–$(BENCH_THINK_MAX)s  Pool: $(BENCH_POOL_SIZE)"
 	@echo "  Results:     /tmp/aic-bench-results/"
-	@curl -sf http://localhost:$${VLLM_HOST_PORT:-8000}/health >/dev/null || { \
-	    echo "ERROR: vLLM not healthy at http://localhost:$${VLLM_HOST_PORT:-8000} — run 'make up' first" >&2; exit 1; }
+	@_v="$$($(call aic_url,aic-vllm-gpu$(GPU),8000))" || { \
+	    echo "ERROR: vLLM is not published — run 'make up' first" >&2; exit 1; }; \
+	curl -sf "$$_v/health" >/dev/null || { \
+	    echo "ERROR: vLLM not healthy at $$_v — run 'make up' first" >&2; exit 1; }; \
 	$(PYTHON) "$(REPO_ROOT)/benchmarks/aic_bench_serve.py" \
-	    --base-url http://localhost:8000 \
+	    --base-url "$$_v" \
 	    --model "$(VLLM_MODEL)" \
 	    --duration $(BENCH_DURATION) \
 	    --sessions $(BENCH_SESSIONS) \
