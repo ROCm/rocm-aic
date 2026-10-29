@@ -304,9 +304,9 @@ COPY --from=build_vllm /etc/rocm-aic-attention-backends.env \
 RUN --mount=type=bind,from=build_vllm,source=/wheels/,target=/wheels-vllm \
     --mount=type=bind,from=base-wheels,source=/,target=/wheels-base \
     if [ -d /wheels-base/wheels ]; then \
-      pip3 install --break-system-packages /wheels-base/wheels/*.whl
-    fi \
-    pip3 install --break-system-packages /wheels-vllm/*.whl \
+      pip3 install --break-system-packages /wheels-base/wheels/*.whl; \
+    fi && \
+    pip3 install --break-system-packages /wheels-vllm/*.whl
 
 ARG VLLM_REF
 ARG AITER_REF
