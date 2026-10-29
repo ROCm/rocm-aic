@@ -50,6 +50,10 @@ export PATH="/usr/local/bin:${PATH}"
 # and run-build-distribute.sh each define their own prefixed log()).
 declare -F log >/dev/null 2>&1 || log() { printf '[monitoring] %s\n' "$*" >&2; }
 
+# aic_url, for the host-side Prometheus queries below.
+# shellcheck source=scripts/aic-endpoints.sh
+source "${BASH_SOURCE[0]%/*}/../scripts/aic-endpoints.sh"
+
 # --- GPU visibility resolution ------------------------------------------------
 # Resolve GPU visibility for this job and export the values the compose files and
 # `docker run` call sites interpolate:
@@ -249,25 +253,25 @@ stop_monitoring() {
 # --- Health check + TSDB summary (used by the build smoke-test) ---------------
 # curl one exporter's /metrics and report whether it serves its expected series.
 # Purely informational: prints OK/WARN and returns 0/1, never exits.
-# $1=display name  $2=port  $3=extended-regex the metrics should contain.
+# $1=display name  $2=base URL  $3=extended-regex the metrics should contain.
 _check_endpoint() {
-    local name="$1" port="$2" re="$3" body n
-    body="$(curl -fsS --max-time 3 "http://127.0.0.1:${port}/metrics" 2>/dev/null)" || {
-        log "  WARN ${name} :${port} -- /metrics not responding"; return 1; }
+    local name="$1" url="$2" re="$3" body n
+    body="$(curl -fsS --max-time 3 "${url}/metrics" 2>/dev/null)" || {
+        log "  WARN ${name} ${url} -- /metrics not responding"; return 1; }
     n="$(printf '%s\n' "${body}" | grep -cE "${re}" 2>/dev/null || true)"
     if [[ "${n:-0}" -gt 0 ]]; then
-        log "  OK   ${name} :${port} -- ${n} ${re} series"; return 0
+        log "  OK   ${name} ${url} -- ${n} ${re} series"; return 0
     fi
-    log "  WARN ${name} :${port} -- responding but no ${re} series"; return 1
+    log "  WARN ${name} ${url} -- responding but no ${re} series"; return 1
 }
 
 # Query prometheus for an exporter job's scrape status.  Returns 0 if at least
 # one instance is up=1; logs OK/WARN.  Purely informational, never exits.
 # Exporters live on aic-network only (no host port); prometheus is the proxy.
-# $1=display name  $2=prometheus job name  $3=optional series regex to spot-check
+# $1=prometheus base URL  $2=display name  $3=prometheus job name
+# $4=optional series regex to spot-check
 _check_job() {
-    local name="$1" job="$2" re="${3:-}"
-    local prom="http://127.0.0.1:${AIC_PROM_PORT:-9090}"
+    local prom="$1" name="$2" job="$3" re="${4:-}"
     local result n_up
     result="$(curl -fsS --max-time 3 \
         "${prom}/api/v1/query?query=up%7Bjob%3D%22${job}%22%7D" 2>/dev/null)" || {
@@ -304,21 +308,26 @@ print(int(r[0]['value'][1]) if r else 0)
 # aic-network only and are reached by prometheus via container name.
 monitoring_healthcheck() {
     log "exporter health check (via prometheus scrape status):"
-    # Direct check for prometheus itself (it has a host port)
-    _check_endpoint prometheus "${AIC_PROM_PORT:-9090}" '^prometheus_' || true
+    local prom
+    prom="$(aic_url aic-prometheus 9090)" || {
+        log "  WARN prometheus -- cannot resolve its published port"; return 0; }
+    # Direct check for prometheus itself
+    _check_endpoint prometheus "${prom}" '^prometheus_' || true
     # All other exporters: checked via prometheus up metric
-    _check_job node-exporter   node_exporter        || true
-    _check_job amdgpu-exporter amd_metrics_exporter || true
-    _check_job nvme-exporter   nvme_exporter        || true
-    _check_job rdma-exporter   rdma_exporter        || true
-    _check_job hsa-snoop       hsa_snoop            || true
+    _check_job "${prom}" node-exporter   node_exporter        || true
+    _check_job "${prom}" amdgpu-exporter amd_metrics_exporter || true
+    _check_job "${prom}" nvme-exporter   nvme_exporter        || true
+    _check_job "${prom}" rdma-exporter   rdma_exporter        || true
+    _check_job "${prom}" hsa-snoop       hsa_snoop            || true
 }
 
 # After a scrape window, ask Prometheus which targets are up (confirms data
 # actually landed in the TSDB) and print the TSDB path/size.  Uses the AIC
 # image's python3 to parse the query JSON (no jq on the host).  Informational.
 monitoring_tsdb_summary() {
-    local prom="http://127.0.0.1:${AIC_PROM_PORT:-9090}"
+    local prom
+    prom="$(aic_url aic-prometheus 9090)" || {
+        log "  WARN Prometheus: cannot resolve its published port"; return 0; }
     log "Prometheus scrape targets (query up):"
     if ! curl -fsS --max-time 3 "${prom}/-/ready" >/dev/null 2>&1; then
         log "  WARN Prometheus not ready at ${prom}"; return 0
