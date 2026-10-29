@@ -27,8 +27,11 @@ Usage (via make)
 
 Env overrides (all optional)
 -----------------------------
-  AIC_TEST_VLLM_URL     vLLM OpenAI-compat base URL (default: http://aic-vllm-gpu0:8000)
-  AIC_TEST_LMCACHE_URL  LMCache metrics URL       (default: http://aic-lmcache:8080)
+  AIC_TEST_VLLM_URL     vLLM OpenAI-compat base URL (default: http://localhost:8000)
+  AIC_TEST_LMCACHE_URL  LMCache metrics URL         (default: http://localhost:8080)
+                        Host ports are ephemeral, so `make vllm-reset-test` passes
+                        the URLs it resolves (see `make endpoints`); the defaults
+                        only hold if VLLM_HOST_PORT / LMCACHE_HTTP_HOST_PORT pin them.
   AIC_TEST_MODEL        Model name served by vLLM  (default: Qwen/Qwen2.5-3B-Instruct)
   AIC_TEST_ANCHORS      Number of anchor prompts   (default: 10)
   AIC_TEST_FLOOD        Number of flood prompts    (default: 300)
@@ -51,7 +54,7 @@ MODEL    = os.getenv("AIC_TEST_MODEL",        "Qwen/Qwen2.5-3B-Instruct")
 N_ANCHOR = int(os.getenv("AIC_TEST_ANCHORS", "10"))
 N_FLOOD  = int(os.getenv("AIC_TEST_FLOOD",   "50"))
 TIMEOUT  = int(os.getenv("AIC_TEST_TIMEOUT", "120"))
-EXEC     = []  # run curl directly on the host (lmcache publishes vllm's and its own ports)
+EXEC     = []  # run curl directly on the host (lmcache publishes vllm's and its own HTTP ports)
 
 # chunk_size=256 tok × fp8 KV for Qwen2.5-3B ≈ 4.7 MiB/chunk; L1=1 GiB ≈ 222 chunks.
 # Each anchor uses ~14 chunks; 10 anchors = 140 chunks, leaving ~82 free L1 slots.

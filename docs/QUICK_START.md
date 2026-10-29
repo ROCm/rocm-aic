@@ -55,19 +55,20 @@ source .venv/bin/activate
 
 ## 5. Run the cliff benchmark
 
-Run the baseline arm first, then the AIC arm against separate endpoints:
+Run the baseline arm first, then the AIC arm against separate endpoints. Host
+ports are ephemeral, so `make endpoints` prints the URL of each running service;
+`BENCH_ENDPOINT` defaults to the running vLLM's URL when you leave it out.
 
 ```bash
 # Arm A: baseline (vram_only) — must be run against a plain vLLM endpoint
 make cliff \
     BENCH_ARM=vram_only \
-    BENCH_ENDPOINT=http://localhost:8001 \
+    BENCH_ENDPOINT=<vLLM URL from 'make endpoints'> \
     BENCH_MODEL=openai/gpt-oss-120b
 
-# Arm B: AIC (kvd_v2) — run against the vllm-lmcache stack on port 8000
+# Arm B: AIC (kvd_v2) — run against the vllm-lmcache stack
 make cliff \
     BENCH_ARM=kvd_v2 \
-    BENCH_ENDPOINT=http://localhost:8000 \
     BENCH_MODEL=openai/gpt-oss-120b
 
 # Arm C: KVBench — build/start the compose KVBench container, then bench it

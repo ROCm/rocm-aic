@@ -131,7 +131,9 @@ IMAGE_NAME=rocm-aic:7.14-emulate \
   docker compose -f docker/docker-compose.yml --profile emulate up vllm-emulator
 ```
 
-Then use it like any vLLM endpoint on `:8000`. Useful env:
+Then use it like any vLLM endpoint: it listens on `:8000` on the `aic` bridge
+(`http://aic-vllm:8000`) and is published on a free `127.0.0.1` port that
+`make endpoints` prints (pin it with `VLLM_HOST_PORT`). Useful env:
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
@@ -351,13 +353,15 @@ The trace side is just an env var on a normal serve, so a pack can be captured
 anywhere the AIC image runs:
 
 ```bash
-docker run --device /dev/kfd --device /dev/dri --network host \
+docker run --device /dev/kfd --device /dev/dri \
+  -p 127.0.0.1::8000 \
   -e VLLM_EMULATOR_TRACE_STEP_CYCLE=1 \
   -e VLLM_EMULATOR_STEP_TRACE_OUTPUT=/trace/step-trace.jsonl \
   -v /some/host/dir:/trace \
   rocm-aic:7.14-latest --model <model> [normal serve flags]
 
-# ... drive real traffic through it, then:
+# ... drive real traffic through it (`docker port <container> 8000` shows the
+# host port Docker picked), then:
 docker run --rm -v /some/host/dir:/trace --entrypoint python3 rocm-aic:7.14-latest \
   -m vllm_emulator.profile.build_serving_profile_filtered \
   /trace/step-trace.jsonl /trace/pack.json

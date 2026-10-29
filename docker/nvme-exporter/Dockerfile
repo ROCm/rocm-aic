@@ -22,8 +22,9 @@
 #   docker build --build-arg NVME_EXPORTER_VERSION=3.0.0 \
 #       -t aic-nvme-exporter:3.0.0 ./docker/nvme-exporter
 #
-# Run (host networking; needs the NVMe devices + sysfs):
-#   docker run -d --name aic-nvme-exporter --network host \
+# Run (on the aic bridge, no published port: Prometheus scrapes it by name;
+# needs the NVMe devices + sysfs):
+#   docker run -d --name aic-nvme-exporter --network aic \
 #       --cap-add SYS_ADMIN -v /dev:/dev -v /sys:/sys:ro aic-nvme-exporter:local
 #   Note: --pid=host is NOT needed. nvme-cli only needs ioctl on /dev/nvme* and
 #   /sys/class/nvme reads; CAP_SYS_ADMIN suffices. Works on spur-authz clusters.
