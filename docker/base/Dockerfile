@@ -533,6 +533,14 @@ RUN _mm=$(echo "${ROCM_VERSION}" | cut -d. -f1-2) && \
     echo "/opt/rocm/core-${_mm}/lib" > /etc/ld.so.conf.d/rocm.conf && \
     ldconfig
 
+# In ROCM 7.14, rocSHMEM dynamically loads libnuma using its unversioned SONAME
+# Since we are not installing libnuma-dev package, this file does not exist.
+# This causes an error to be displayed every time pytorch python module is imported.
+# Since the library has RPATH set to $ORIGIN, we create a softlink with the right name
+# pointing to libnuma1 installed library, which avoids us patching.
+# See: https://github.com/pytorch/pytorch/issues/195670
+RUN ln -s /lib/x86_64-linux-gnu/libnuma.so.1 /usr/local/lib/python3.12/dist-packages/torch/lib/libnuma.so
+
 ENV NIXL_PLUGIN_DIR=/opt/nixl/lib/x86_64-linux-gnu/plugins \
     PYTHONPATH=/opt/rocm/core-7.14/share/amd_smi:/opt/nixl/lib/python3/dist-packages \
     LD_LIBRARY_PATH=/opt/nixl/lib/x86_64-linux-gnu:/opt/nixl/lib:/opt/rocnixl-ucx/lib:/opt/rocm/core-7.14/lib \
