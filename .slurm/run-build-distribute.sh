@@ -1460,6 +1460,22 @@ docker buildx build --builder ${_builder} --progress=plain \
     -f "${AIC_DAY_DIR}/docker/base/Dockerfile" \
     -t "${base_image}" \
     "${AIC_DAY_DIR}" | ${COMPRESS_CMD} > "\${tmp_base}"
+
+_base_wheels_dir="\${TMPDIR}/aic-base-wheels.\${SLURM_JOB_ID:-\$\$}.d"
+rm -rf "\${_base_wheels_dir}"
+docker buildx build --builder ${_builder} --progress=plain \
+    --target wheel \
+    --output "type=local,dest=\${_base_wheels_dir}" \
+    --build-arg ROCM_ARCH="${AIC_ROCM_ARCH}" \
+    --build-arg AIC_UCX_FAST="${AIC_UCX_FAST}" \
+    ${_version_build_args} \
+    ${_secret_arg} \
+    ${_cache_args_base} \
+    -f "${AIC_DAY_DIR}/docker/base/Dockerfile" \
+    -t "${base_image}" \
+    "${AIC_DAY_DIR}"
+echo "[build-split] base wheels: \$(ls "\${_base_wheels_dir}")"
+
 mv -f "\${tmp_base}" "${base_tarball_name}"
 echo "[build-split] base saved: \$(du -h "${base_tarball_name}" | cut -f1) -> ${base_tarball_name}"
 # Unpack the OCI tar to a directory so oci-layout:// can reference it.
@@ -4066,6 +4082,7 @@ docker buildx build --builder ${AIC_BUILDX_BUILDER} --progress=plain \
     --output type=docker,dest=- \
     --build-context "base=oci-layout://\${_base_oci_dir}" \
     --build-context "lmcache-wheels=\${_lmc_wheels_dir}" \
+    --build-context "base-wheels=\${_base_wheels_dir}" \
     --build-arg ROCM_ARCH="${AIC_ROCM_ARCH}" \
     --build-arg AIC_VERSION="${AIC_VERSION}" \
     --build-arg AIC_UCX_FAST="${AIC_UCX_FAST}" \
