@@ -101,8 +101,11 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
         cmake git ca-certificates ninja-build python3-dev
 
 # Bring torch + Python packages from aic-base so wheels link against the same torch.
-RUN --mount=type=bind,from=base-wheels,source=/wheels/,target=/wheels-base/ \
-    pip3 install --break-system-packages --no-cache-dir /wheels-base/*.whl
+# Note that `emulate` has no base-wheels context
+RUN --mount=type=bind,from=base-wheels,source=/,target=/wheels-base \
+    if [ -d /wheels-base/wheels ]; then \
+      pip3 install --break-system-packages /wheels-base/wheels/*.whl; \
+    fi
 
 COPY --from=base /usr/local/bin/uv  /usr/local/bin/uv
 COPY --from=base /usr/local/bin/uvx /usr/local/bin/uvx
