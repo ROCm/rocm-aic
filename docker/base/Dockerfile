@@ -260,7 +260,7 @@ RUN --mount=type=cache,target=/root/.cache/uv \
     NIXL_SRC=/tmp/nixl \
         AIS_PATH=/opt/rocm ROCM_PATH=/opt/rocm \
         NIXL_INSTALL_PREFIX=/opt/nixl \
-        NIXL_BUILD_WHEEL=1 NIXL_WHEEL_DIR=/wheels \
+        NIXL_BUILD_WHEEL=1 NIXL_WHEEL_DIR=/app/dist/nixl/ \
         BUILD_JOBS="${BUILD_JOBS}" \
         AIC_UCX_FAST="${AIC_UCX_FAST}" \
         UV_SYSTEM_CERTS=1 \
@@ -278,7 +278,10 @@ RUN --mount=type=cache,target=/root/.cache/uv \
 # Must stay above runtime, the default target.
 # =============================================================================
 FROM scratch AS wheels
-COPY --from=build_nixl /wheels /
+COPY --from=build_nixl /app/dist/nixl/ /wheels/
+COPY --from=build_pytorch /app/dist/pytorch/*.whl /wheels/
+COPY --from=build_torchvision /app/dist/vision/*.whl /wheels/
+
 
 # =============================================================================
 # build_clr_patch — patch libamdhip64.so to fix IPC event signal ring overflow.
@@ -489,16 +492,12 @@ COPY --from=base /opt/rocm/include/ /opt/rocm/core-7.14/include/
 COPY --from=build_pytorch /root/.local/bin/uv  /usr/local/bin/uv
 COPY --from=build_pytorch /root/.local/bin/uvx /usr/local/bin/uvx
 
-COPY --from=build_pytorch /app/dist/pytorch/ /app/dist/pytorch/
-
 # Installed Python packages: torch + all requirements (from build_pytorch),
 # plus setuptools/wheel/packaging (from build_torchvision).
 # Does NOT include the PyTorch or torchvision source trees.
 COPY --from=build_torchvision /usr/local/lib/python3.12/dist-packages/ \
                                /usr/local/lib/python3.12/dist-packages/
 COPY --from=build_torchvision /usr/local/bin/ /usr/local/bin/
-
-COPY --from=build_torchvision /app/dist/vision/ /app/dist/vision/
 
 ENV PIP_ROOT_USER_ACTION=ignore \
     UV_LINK_MODE=copy \
@@ -518,8 +517,6 @@ RUN --mount=type=cache,target=/root/.cache/pip \
 # ROCm-full toolchain; only the output directories are needed at runtime.
 COPY --from=build_nixl /opt/nixl/ /opt/nixl/
 COPY --from=build_nixl /opt/rocnixl-ucx/ /opt/rocnixl-ucx/
-
-COPY --from=build_nixl /app/dist/nixl/ /app/dist/nixl/
 
 # Patched libamdhip64.so: fixes IPC event signal ring overflow (ROCm#11511/#11749).
 # read_index must be wrapped with % IPC_SIGNALS_PER_EVENT (32) or the 33rd

@@ -70,6 +70,8 @@ FROM ${ROCM_BASE_IMAGE} AS base
 # vLLM that cannot load LMCacheMPConnector.  `emulate` never reads it.
 FROM scratch AS lmcache-wheels
 
+FROM scratch AS base-wheels
+
 # =============================================================================
 # build_vllm — compile AITER, FlashAttention, and vLLM against the full ROCm
 # image (which has hipcc + HIP CMake files).  Torch is COPYed in from aic-base
@@ -99,8 +101,8 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
         cmake git ca-certificates ninja-build python3-dev
 
 # Bring torch + Python packages from aic-base so wheels link against the same torch.
-RUN --mount=type=bind,from=base,source=/app/dist/,target=/app/dist/ \
-    pip3 install --break-system-packages --no-cache-dir /app/dist/*/*.whl
+RUN --mount=type=bind,from=base-wheels,source=/wheels/,target=/wheels-base/ \
+    pip3 install --break-system-packages --no-cache-dir /wheels-base/*.whl
 
 COPY --from=base /usr/local/bin/uv  /usr/local/bin/uv
 COPY --from=base /usr/local/bin/uvx /usr/local/bin/uvx
@@ -298,11 +300,9 @@ COPY --from=build_vllm /opt/llm-emu/      /opt/llm-emu/
 COPY --from=build_vllm /etc/rocm-aic-attention-backends.env \
                        /etc/rocm-aic-attention-backends.env
 
-RUN --mount=type=bind,from=build_vllm,source=/wheels/,target=/app/dist/vllm \
-    --mount=type=bind,from=base,source=/app/dist/pytorch,target=/app/dist/pytorch \
-    --mount=type=bind,from=base,source=/app/dist/vision,target=/app/dist/vision \
-    --mount=type=bind,from=base,source=/app/dist/nixl,target=/app/dist/nixl \
-    pip3 install --break-system-packages /app/dist/*/*.whl
+RUN --mount=type=bind,from=build_vllm,source=/wheels/,target=/wheels-vllm \
+    --mount=type=bind,from=base-wheels,source=/wheels/,target=/wheels-base \
+    pip3 install --break-system-packages /wheels-*/*.whl
 
 ARG VLLM_REF
 ARG AITER_REF
