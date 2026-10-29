@@ -3,7 +3,7 @@
 #
 # Infrastructure targets: monitoring, export tarball, internal helpers.
 
-.PHONY: monitoring-up monitoring-down monitoring-logs \
+.PHONY: monitoring-up monitoring-down monitoring-logs endpoints \
         export check-hf-token check-gds-slab prep-dirs prep-kvbench-dirs
 
 monitoring-up: ensure-compose
@@ -17,6 +17,11 @@ monitoring-down:
 
 monitoring-logs:
 	$(MON_COMPOSE) logs -f prometheus
+
+# Published host ports are ephemeral unless a *_HOST_PORT pins them, so ask
+# Docker where each running service landed.
+endpoints:
+	@bash "$(CURDIR)/scripts/aic-endpoints.sh" list
 
 export:
 	@git -C "$(CURDIR)" rev-parse HEAD >/dev/null 2>&1 || { \

@@ -328,6 +328,7 @@ help:
 	@echo "  make logs-lmcache      lmcache container logs only"
 	@echo "  make logs-vllm         vllm container logs only"
 	@echo "  make ps                Container status"
+	@echo "  make endpoints         Print the URL of every running service (host ports are ephemeral)"
 	@echo "  make shell-lmcache     Exec bash into lmcache container"
 	@echo "  make shell-vllm        Exec bash into vllm container"
 	@echo "  make restart-vllm      Restart vllm only (lmcache + warm KV preserved)"
