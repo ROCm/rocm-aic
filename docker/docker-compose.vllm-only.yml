@@ -4,10 +4,9 @@
 #
 # The base `vllm` service joins lmcache's network, IPC and PID namespaces, none
 # of which exist without lmcache.  This puts it on the aic bridge instead, with
-# :8000 published the way lmcache publishes it for the tiered run, so host-side
-# clients keep using localhost:8000.  Not host networking: that shares the
-# node's port space and the @hsa<pid> abstract socket namespace with every
-# other container on the node.
+# :8000 published the way lmcache publishes it for the tiered run (an ephemeral
+# loopback port; host-side clients find it with aic_url, or pin it with
+# VLLM_HOST_PORT).
 services:
   vllm:
     network_mode: !reset null
@@ -17,4 +16,4 @@ services:
       aic-network:
         aliases: [aic-vllm]
     ports:
-      - "${VLLM_HOST_PORT:-8000}:8000"
+      - "${AIC_PUBLISH_ADDR:-127.0.0.1}:${VLLM_HOST_PORT:-}:8000"
