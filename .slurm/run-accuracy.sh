@@ -36,7 +36,7 @@
 #
 # pytest runs host-side (it needs .venv and lm_eval; the image stays lean and the
 # gsm8k download stays off the compute node), reaching vLLM on 127.0.0.1:8000:
-# host networking in the vram arm, lmcache's published port in the tiered arm.
+# vLLM's own published port in the vram arm, lmcache's in the tiered arm.
 # Readiness probes use the `docker exec ... 127.0.0.1` form that the rest of the
 # repo uses.
 #
@@ -420,14 +420,12 @@ _lmc() { _metric_sum aic-lmcache http://127.0.0.1:9091/metrics "$1"; }
 # differential the whole gate exists to run -- and left a run that could only
 # fail on catastrophe.
 echo "[accuracy-test] === Phase 1: vram_only arm ==="
-# No LMCache: vllm owns its IPC ns, no KV_TRANSFER_ARG, no --profile cache.
-export VLLM_IPC_MODE=shareable
-export VLLM_PID_MODE=
-export VLLM_NETWORK_MODE=host
+# No LMCache: no KV_TRANSFER_ARG, no --profile cache.  The override puts vllm on
+# the aic bridge with its own IPC/PID namespaces instead of lmcache's.
 export KV_TRANSFER_ARG=
 export AIC_L2_BACKEND=none
 export VLM_GPU_MEMORY_UTILIZATION=0.90
-if ! compose up -d vllm; then
+if ! compose -f "${AIC_DAY_DIR}/docker/docker-compose.vllm-only.yml" up -d vllm; then
     echo "[accuracy-test] FAIL: baseline compose up failed" >&2
     compose logs --tail 60 --no-color vllm 2>&1 | sed 's/^/  [vllm] /'
     exit 1
@@ -510,9 +508,6 @@ export LMCACHE_L1_SIZE_GB=1
 # NIXL POSIX: no GPUDirect/hipFile requirement, so this runs on any node.
 export AIC_L2_BACKEND=nixl_posix
 export AIC_NIXL_BACKEND=POSIX
-export VLLM_IPC_MODE=service:lmcache
-export VLLM_PID_MODE=service:lmcache
-export VLLM_NETWORK_MODE=container:aic-lmcache
 # vLLM shares lmcache's network namespace, so lmcache is on its loopback.
 export KV_TRANSFER_ARG="--kv-transfer-config '{\"kv_connector\":\"LMCacheMPConnector\",\"kv_role\":\"kv_both\",\"kv_connector_extra_config\":{\"lmcache.mp.host\":\"tcp://localhost\",\"lmcache.mp.port\":6555}}'"
 
