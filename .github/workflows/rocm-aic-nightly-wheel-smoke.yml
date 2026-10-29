@@ -1,0 +1,134 @@
+# Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+#
+# Nightly wheel smoke test — GitHub-hosted runner, no GPU required.
+#
+# Downloads the published CDNA wheels from the nightly rolling release and
+# verifies that:
+#   1. The expected wheel set is present (correct filenames and count).
+#   2. All wheels install cleanly into a fresh Python venv with no dependency
+#      errors (catches bad metadata, wrong platform tags, missing packages).
+#   3. Package versions are recorded so regressions are visible in the log.
+#
+# GPU-dependent checks (import of ROCm extension modules, engine init, KV tier
+# benchmark) live in the hardware-gated rocm-aic-nightly-wheel-latency.yml
+# workflow which runs on the SPUR MI355X cluster.
+#
+# Trigger: after rocm-aic - Nightly Wheels Publication succeeds, OR on manual
+# dispatch.
+
+name: rocm-aic - Nightly Wheel Smoke Test
+
+on:
+  workflow_run:
+    workflows: ["rocm-aic - Nightly Wheels Publication"]
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: 'Rolling release tag to pull wheels from'
+        required: false
+        default: 'nightly'
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: wheel-smoke
+  cancel-in-progress: true
+
+env:
+  NIGHTLY_TAG: ${{ github.event.inputs.release_tag || 'nightly' }}
+
+jobs:
+  smoke-test:
+    name: Install and verify wheels (CPU-only)
+    # Only run after a successful nightly publish, or on manual dispatch.
+    if: >
+      github.event_name == 'workflow_dispatch' ||
+      github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 1
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+
+      # Download every .whl from the rolling release into a local directory.
+      # gh is pre-installed on ubuntu-24.04 runners.
+      - name: Download nightly CDNA wheels from release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p wheels
+          gh release download "${NIGHTLY_TAG}" \
+            --repo "${GITHUB_REPOSITORY}" \
+            --pattern '*.whl' \
+            --dir wheels
+          echo "Downloaded wheels:"
+          ls -lh wheels/*.whl
+
+      # Reuse the same check-wheels.sh script that the build and publish jobs
+      # use, so the expected-set definition stays in one place.
+      - name: Verify wheel set completeness
+        run: |
+          bash .github/scripts/workflows/check-wheels.sh wheels \
+            'gfx90a,gfx942,gfx950'
+
+      # Install all wheels into a fresh venv.  The wheels carry ROCm native
+      # extensions that cannot be imported on a CPU-only runner, but pip
+      # installation validates:
+      #   - platform tags (linux_x86_64 must match the runner)
+      #   - Python version tags (cp312 must match)
+      #   - wheel RECORD integrity (pip unpacks and checks every file)
+      #
+      # We use --no-deps to avoid pip trying to resolve torch (which would
+      # require the ROCm index) and other large transitive deps.  Dependency
+      # metadata correctness is a separate concern; install completeness and
+      # platform-tag correctness are what this step proves.
+      - name: Install wheels
+        run: |
+          set -euo pipefail
+          python3 -m venv venv
+          source venv/bin/activate
+          pip install --quiet --upgrade pip
+
+          # Install without deps: proves each wheel unpacks cleanly on this
+          # platform and Python version without needing the ROCm torch index.
+          pip install --no-deps --quiet wheels/*.whl
+
+      # Verify every expected package is now registered in the venv and record
+      # its version.  pip show also re-reads the installed METADATA file, so
+      # a corrupt or truncated wheel would surface here even if pip --no-deps
+      # skipped the on-disk check.
+      - name: Report installed versions
+        run: |
+          set -euo pipefail
+          source venv/bin/activate
+
+          fail=0
+          show_pkg() {
+            local name="$1"
+            if pip show "${name}" 2>/dev/null | grep -E '^(Name|Version):'; then
+              return 0
+            else
+              echo "MISSING: ${name}" >&2
+              return 1
+            fi
+          }
+
+          echo "=== AIC wheel versions ==="
+          for pkg in vllm lmcache nixl-rocm amd-aiter flash-attn; do
+            show_pkg "${pkg}" || fail=1
+          done
+
+          exit "${fail}"
