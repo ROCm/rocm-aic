@@ -259,8 +259,9 @@ AIC_VLLM_READY_TIMEOUT="${AIC_VLLM_READY_TIMEOUT:-1200}"
 # loader (e.g. when debugging load-order issues or on non-safetensor checkpoints).
 AIC_LOAD_FORMAT="${AIC_LOAD_FORMAT:-fastsafetensors}"
 
-# Every arm now serves vLLM on the compose-published :8000 (arms run sequentially,
-# each stack torn down before the next), so one endpoint port suffices.
+# Every arm serves vLLM on container port 8000 (arms run sequentially, each stack
+# torn down before the next), so one endpoint port suffices.  wait_ready probes it
+# from inside the container; the bench container uses the aic-vllm alias.
 VLLM_ENDPOINT_PORT=8000
 LMCACHE_PORT=6555
 STAMP="$(date +%Y%m%d-%H%M%S)"
@@ -580,8 +581,8 @@ if [[ "${AIC_EXPORTERS}" != "0" ]]; then
 fi
 
 # --- Benchmark client env (offline HF cache) ---------------------------------
-# The bench + plot containers run with --network host and reach the vLLM endpoint
-# at localhost:<published port>.  The inference stack itself is launched via
+# The bench container joins the aic bridge and reaches vLLM at http://aic-vllm:8000
+# (the plot container needs no network).  The inference stack itself is launched via
 # docker/docker-compose.yml (see the compose-stack setup block below), not raw
 # docker run -- all container/GPU/cap flags now live in that compose file.
 HF_ENV=(-e HF_HOME=/hf -e HF_HUB_CACHE=/hf/hub -e HF_HUB_OFFLINE=1
@@ -646,11 +647,13 @@ export VLLM_LOGGING_LEVEL="${VLLM_LOGGING_LEVEL:-WARNING}"
 AIC_GDS_SLAB_GB="${LMCACHE_L1_SIZE_GB}"
 
 # --- Helpers -----------------------------------------------------------------
-wait_ready() { # $1=port $2=timeout_s
+wait_ready() { # $1=container-port $2=timeout_s
   local port="$1" timeout="${2:-${AIC_VLLM_READY_TIMEOUT:-1200}}" waited=0
   log "waiting for vLLM on :${port} (up to ${timeout}s)"
   while ((waited < timeout)); do
-    if curl -fsS "http://localhost:${port}/v1/models" >/dev/null 2>&1; then
+    if docker exec "aic-vllm-gpu${GPU}" python3 -c \
+      "import urllib.request; urllib.request.urlopen('http://127.0.0.1:${port}/v1/models', timeout=3)" \
+      >/dev/null 2>&1; then
       log "vLLM :${port} is ready (${waited}s)"
       return 0
     fi
@@ -663,13 +666,13 @@ wait_ready() { # $1=port $2=timeout_s
 run_bench() { # $1=arm $2=endpoint_port $3=out_csv $4=extra args...
   local arm="$1" port="$2" out="$3"
   shift 3
-  log "running sweep: arm=${arm} endpoint=:${port} -> ${out}"
-  docker run --rm --network host \
+  log "running sweep: arm=${arm} endpoint=http://aic-vllm:${port} -> ${out}"
+  docker run --rm --network aic \
     -v "${REPO}":/work -w /work \
     -v "${HF_HOME}":/hf "${HF_ENV[@]}" \
     --entrypoint python3 "${AIC_IMAGE}" \
     benchmarks/run_cliff.py \
-    --endpoint "http://localhost:${port}" \
+    --endpoint "http://aic-vllm:${port}" \
     --model "${VLLM_MODEL}" \
     --arm "${arm}" \
     --isl "${BENCH_ISL}" \
@@ -701,8 +704,8 @@ stop_stack() {
   # vLLM + lmcache run in a SHARED PID namespace (required for cross-container HIP
   # IPC KV registration).  That prevents docker from reaping vLLM's EngineCore
   # children, so a plain `compose down`/`docker rm` HANGS.  Force-kill the stack's
-  # processes first (one MP stack per node: fixed container names and published
-  # ports, so scoping by process name is safe here), then tear the now-empty
+  # processes first (one MP stack per node: fixed container names, so scoping by
+  # process name is safe here), then tear the now-empty
   # containers down.
   pkill -9 -f 'vllm.entrypoints.openai' 2>/dev/null || true
   pkill -9 -f 'EngineCore' 2>/dev/null || true
@@ -735,10 +738,9 @@ run_arm_vram() {
   log "=== Arm A (vram_only): plain vLLM (no LMCache) on :${VLLM_ENDPOINT_PORT} ==="
   export KV_TRANSFER_ARG="" # no connector -> plain VRAM-prefix-cache-only vLLM
   export GDS_MODE=""
-  export VLLM_IPC_MODE=shareable # private IPC ns; no lmcache IPC ns to join
-  export VLLM_PID_MODE="" # vllm runs alone; no lmcache PID ns to join
-  export VLLM_NETWORK_MODE=host # no lmcache network ns to join
-  if ! compose up -d vllm; then
+  # No lmcache IPC/PID/network ns to join: the override file gives vllm private
+  # IPC and PID namespaces and puts it on the aic bridge.
+  if ! compose -f "${REPO}/docker/docker-compose.vllm-only.yml" up -d vllm; then
     log "Arm A: compose up vllm failed"
     stop_stack
     return 1
@@ -943,7 +945,7 @@ run_plot() { # $1=out_subdir  $2..=candidate CSV paths (absolute)
     return
   }
   mkdir -p "${PLOTS}/${sub}"
-  docker run --rm --network host -v "${REPO}":/work -w /work \
+  docker run --rm --network none -v "${REPO}":/work -w /work \
     --entrypoint python3 "${AIC_IMAGE}" \
     benchmarks/plot_cliff.py \
     --input "${inputs[@]}" \
