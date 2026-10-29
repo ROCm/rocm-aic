@@ -216,7 +216,9 @@ HF_HOME="${HF_HOME}" IMAGE_NAME="${AIC_IMAGE}" \
 # ---------------------------------------------------------------------------
 echo "=== Waiting for vLLM emulator /health ==="
 for i in $(seq 1 24); do
-    if curl -sf http://localhost:8000/health >/dev/null 2>&1; then
+    if docker exec aic-vllm-emulator python3 -c \
+        "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3)" \
+        >/dev/null 2>&1; then
         echo "vLLM emulator healthy after ~$((i * 8))s"
         break
     fi
@@ -227,6 +229,7 @@ for i in $(seq 1 24); do
     fi
     sleep 8
 done
+VLLM_URL="$(aic_url aic-vllm-emulator 8000)" || exit 1
 
 # ---------------------------------------------------------------------------
 # 5. Issue 3 LLM prompts; assert non-empty completions
@@ -238,7 +241,7 @@ PROMPTS=(
     "ROCm stands for"
 )
 for prompt in "${PROMPTS[@]}"; do
-    response=$(curl -sf http://localhost:8000/v1/completions \
+    response=$(curl -sf "${VLLM_URL}/v1/completions" \
         -H 'Content-Type: application/json' \
         -d "{\"model\":\"${VLLM_CPU_MODEL:-facebook/opt-125m}\",\"prompt\":\"${prompt}\",\"max_tokens\":20}" \
     )

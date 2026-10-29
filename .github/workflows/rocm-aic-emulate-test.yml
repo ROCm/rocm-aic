@@ -144,7 +144,9 @@ jobs:
 
           ready=0
           for _i in $(seq 1 "${AIC_EMULATE_READY_TIMEOUT}"); do
-            if curl -fsS http://localhost:8000/v1/models >/dev/null 2>&1; then ready=1; break; fi
+            if docker exec aic-vllm-emulator python3 -c \
+              "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/v1/models', timeout=3)" \
+              >/dev/null 2>&1; then ready=1; break; fi
             if [ -z "$(docker ps -q -f name=aic-vllm-emulator)" ]; then
               echo "[emulate-test] FAIL: emulator container exited during startup" >&2
               compose --profile emulate logs --tail 120 --no-color vllm-emulator 2>&1 | sed 's/^/  [emu] /'
@@ -158,6 +160,9 @@ jobs:
             exit 1
           fi
 
+          # shellcheck source=scripts/aic-endpoints.sh
+          source scripts/aic-endpoints.sh
+          url="$(aic_url aic-vllm-emulator 8000)" || exit 1
           echo "[emulate-test] endpoint ready; sending one chat completion ..."
           if docker exec aic-vllm-emulator test -e /dev/kfd 2>/dev/null; then
             kfd_in_container=yes
@@ -166,7 +171,7 @@ jobs:
           fi
           echo "[emulate-test] /dev/kfd inside container: ${kfd_in_container}"
 
-          resp="$(curl -fsS http://localhost:8000/v1/chat/completions \
+          resp="$(curl -fsS "${url}/v1/chat/completions" \
             -H 'Content-Type: application/json' \
             -d "{\"model\":\"${VLLM_MODEL}\",\"messages\":[{\"role\":\"user\",\"content\":\"Reply with the single word: pong\"}],\"max_tokens\":16,\"temperature\":0}" 2>&1)" || {
             echo "[emulate-test] FAIL: completion request failed: ${resp}" >&2; exit 1; }
