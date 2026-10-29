@@ -381,16 +381,13 @@ services:
     # shared with every host-net container on the node, each with its own PID
     # namespace, and a PID clash breaks the export or hangs the import.  vllm's
     # ports live here too, hence the aic-vllm alias prometheus scrapes it by
-    # (the vllm container name carries the GPU index).  Only what host-side
-    # clients use is published: Prometheus scrapes lmcache :9091 and NIXL
-    # :19090 by name over the bridge, and a host bind of those collided with
-    # other tenants (pushgateway: 9091).
+    # (the vllm container name carries the GPU index).  Prometheus scrapes
+    # lmcache :9091 and NIXL :19090 by name over the bridge.
     networks:
       aic-network:
         aliases: [aic-vllm]
     ports:
       - "${VLLM_HOST_PORT:-8000}:8000"   # vllm (network_mode: container:aic-lmcache)
-      - "${LMCACHE_PORT:-6555}:${LMCACHE_PORT:-6555}"
       - "8080:8080"                      # lmcache HTTP API
     ipc: shareable
     shm_size: "${AIC_SHM_SIZE:-64gb}"
@@ -471,8 +468,6 @@ services:
     image: ${LMCACHE_IMAGE_REF:-${IMAGE_REF:-${IMAGE_NAME:-rocm-aic}:latest}}
     container_name: aic-lmcache-coordinator
     networks: [aic-network]
-    ports:
-      - "${LMCACHE_COORDINATOR_PORT:-9300}:${LMCACHE_COORDINATOR_PORT:-9300}"
     restart: unless-stopped
     environment:
       - LMCACHE_DISABLE_BANNER=1
