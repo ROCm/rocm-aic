@@ -227,7 +227,7 @@ capture-profile-local: prep-dirs
 	echo "Trace -> $(AIC_CAPTURE_DIR)/$${trace_file}"; \
 	docker run -d --name aic-vllm-capture \
 	    --device /dev/kfd --device /dev/dri \
-	    --network host --ipc host \
+	    --ipc host \
 	    --cap-add CAP_SYS_ADMIN --cap-add SYS_PTRACE \
 	    --security-opt seccomp=unconfined \
 	    -v "$(AIC_CAPTURE_HF_HOME):/hf" \
@@ -252,7 +252,9 @@ capture-profile-local: prep-dirs
 	    >/dev/null || { echo "FAIL: docker run failed" >&2; exit 1; }; \
 	echo "Waiting for endpoint (weights download may take a few minutes) ..."; \
 	_ready=0; for _i in $$(seq 1 60); do \
-	    curl -fsS http://localhost:8000/v1/models >/dev/null 2>&1 && { _ready=1; break; }; \
+	    docker exec aic-vllm-capture python3 -c \
+	        "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/v1/models', timeout=3)" \
+	        >/dev/null 2>&1 && { _ready=1; break; }; \
 	    [ -z "$$(docker ps -q -f name=aic-vllm-capture)" ] && \
 	        { docker logs --tail 40 aic-vllm-capture >&2; docker rm -f aic-vllm-capture >/dev/null 2>&1; exit 1; }; \
 	    sleep 10; \
