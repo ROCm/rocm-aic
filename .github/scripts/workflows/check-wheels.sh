@@ -28,7 +28,7 @@ trap '_on_err "$?" "${PIPESTATUS[*]}" "$LINENO" "${FUNCNAME[*]-}"' ERR
 #
 #   vllm-*         docker/vllm/Dockerfile    build_vllm (VLLM_VERSION_OVERRIDE)
 #   amd_aiter-*    docker/vllm/Dockerfile    build_vllm
-#   flash_attn-*   docker/vllm/Dockerfile    build_vllm, CDNA-only arch lists
+#   flash_attn-*   docker/vllm/Dockerfile    build_vllm, arch lists with a gfx9*
 #   lmcache-*      docker/lmcache/Dockerfile build_lmcache_wheel
 #   nixl*rocm*     docker/base/Dockerfile    build_nixl (build-nixl.sh's own glob)
 EXPECTED_WHEELS=(
@@ -37,10 +37,10 @@ EXPECTED_WHEELS=(
     'lmcache-*.whl'
     'nixl*rocm*.whl'
 )
-# FlashAttention is built only when every arch is gfx9* (docker/vllm/Dockerfile;
-# the same rule as cdna_only() in docker/docker-bake.hcl, which also treats an
+# FlashAttention is built when at least one arch is gfx9* (docker/vllm/Dockerfile;
+# the same rule as has_gfx9() in docker/docker-bake.hcl, which also treats an
 # empty list as CDNA).
-CDNA_ONLY_WHEELS=(
+GFX9_WHEELS=(
     'flash_attn-*.whl'
 )
 # GitHub rejects release assets of 2 GiB or more; fail here, not after upload.
@@ -56,20 +56,26 @@ ROCM_ARCH="$2"
 
 [[ -d "${WHEEL_DIR}" ]] || { echo "check-wheels: ${WHEEL_DIR} is not a directory" >&2; exit 1; }
 
-cdna_only=1
 read -r -a _archs <<<"${ROCM_ARCH//[;,]/ }"
+# An empty list counts as CDNA, like has_gfx9() in docker/docker-bake.hcl.
+has_gfx9=0
+if [[ ${#_archs[@]} -eq 0 ]]; then
+    has_gfx9=1
+fi
 for _a in "${_archs[@]}"; do
-    [[ "${_a}" == gfx9* ]] || cdna_only=0
+    if [[ "${_a}" == gfx9* ]]; then
+        has_gfx9=1
+    fi
 done
 
 expected=("${EXPECTED_WHEELS[@]}")
-if [[ "${cdna_only}" == 1 ]]; then
-    expected+=("${CDNA_ONLY_WHEELS[@]}")
+if [[ "${has_gfx9}" == 1 ]]; then
+    expected+=("${GFX9_WHEELS[@]}")
 fi
 
 shopt -s nullglob
 present=("${WHEEL_DIR}"/*.whl)
-echo "${WHEEL_DIR}: ${#present[@]} wheel(s) for ROCM_ARCH='${ROCM_ARCH}' (CDNA-only: $([[ ${cdna_only} == 1 ]] && echo yes || echo no))"
+echo "${WHEEL_DIR}: ${#present[@]} wheel(s) for ROCM_ARCH='${ROCM_ARCH}' (FlashAttention: $([[ ${has_gfx9} == 1 ]] && echo yes || echo no))"
 
 failed=0
 declare -A matched=()

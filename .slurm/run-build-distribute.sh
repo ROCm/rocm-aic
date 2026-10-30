@@ -63,7 +63,7 @@
 #   build   Build the image on AIC_BUILD_NODE, then store it for distribution
 #           (a tarball, or a .ref to the registry copy, in AIC_IMAGE_DIR)
 #   wheels  Export the pip wheels the nightly release publishes -- vllm,
-#           amd_aiter (+ flash_attn on CDNA-only arch sets), lmcache, and the
+#           amd_aiter (+ flash_attn when an arch is gfx9*), lmcache, and the
 #           single common nixl_rocm wheel built once in aic-base -- into
 #           AIC_WHEEL_DIR (default: AIC_IMAGE_DIR/wheels).  Builds no images.
 #   build-emulate
