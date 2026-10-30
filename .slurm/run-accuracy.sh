@@ -53,8 +53,8 @@
 # cmd_accuracy_test, alongside the AIC_ACCURACY_TIME/CPUS/MEM defaults.
 #
 # That submission path BLOCKS and propagates this script's exit code, which is
-# what makes the gate usable from CI (`make accuracy-test`).  It is not the
-# fire-and-forget model run-cliff.sbatch uses.
+# what makes the gate usable from CI (`make accuracy-test`), as `make
+# cliff-submit` does for run-cliff.sbatch.
 #
 # Every value arrives as an environment variable, so the script is also runnable
 # by hand on a GPU node that has the repo:

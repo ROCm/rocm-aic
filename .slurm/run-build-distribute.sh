@@ -98,6 +98,9 @@
 #           stack (standalone lmcache server + vLLM LMCacheMPConnector) with a tiny
 #           model (Qwen/Qwen2.5-0.5B-Instruct) and asserts one non-empty chat
 #           completion.  Exercises the full connector path a smoke-test cannot.
+#   cliff   Run the KV-cache cliff benchmark (.slurm/run-cliff.sbatch) on a GPU node
+#           from the saved vllm + lmcache tarballs; blocks until the job ends.
+#           Results land in logs/<job-id>/ (see AIC_CLIFF_* below)
 #   bake    Build base, then vllm + lmcache in parallel (docker buildx bake) plus
 #           the fabric exporters on AIC_BUILD_NODE; save every tarball
 #   all     bake, build-exporters, then load   (default)
@@ -759,11 +762,12 @@ _verify_tarball() {
 # --- sbatch dispatch (mirrors run-cliff.sbatch's per-job logging) -------------
 # Submit BODY as an sbatch batch job whose output streams into
 # logs/<job-id>/<logname>.out under the tree -- the SAME per-job structure
-# run-cliff.sbatch uses for logs/<job-id>/cliff.out.  Unlike `make cliff-submit`
-# (fire-and-forget), this BLOCKS until the job finishes and returns its exit
-# code, so the chained goals `make dist-build dist-push smoke-test` still run in
-# order and stop on failure.  The job's log is live-tailed while it runs so
-# `make dist-build` / `make smoke-test` still show progress in the terminal.
+# run-cliff.sbatch uses for logs/<job-id>/cliff.out.  Like `make cliff-submit`
+# (the cliff subcommand goes through here too), this BLOCKS until the job
+# finishes and returns its exit code, so the chained goals
+# `make dist-build dist-push smoke-test` still run in order and stop on failure.
+# The job's log is live-tailed while it runs so `make dist-build` /
+# `make smoke-test` still show progress in the terminal.
 #
 #   $1    = job name       (e.g. aic-build)
 #   $2    = log basename   (build -> logs/<job-id>/build.out)
@@ -4298,6 +4302,88 @@ REMOTE
     log "wheels complete: ${wheel_dir}"
 }
 
+# --- cliff: the KV-cache cliff benchmark ------------------------------------
+# Submitter for .slurm/run-cliff.sbatch, which runs the three-arm sweep
+# (vram_only, kvd_v2/nvme, kvd_v2/gds) on one GPU node from the vllm + lmcache
+# tarballs in AIC_IMAGE_DIR.  Like tiny-test and accuracy-test it goes through
+# _sbatch_run, so it gets the node excludes, the GPU request SPUR demands, the
+# active-job file the CI wrapper cancels from, and logs/<job-id>/cliff.{out,exit}
+# -- and, unlike the old fire-and-forget `make cliff-*`, it blocks until the job
+# ends and returns the job's exit code.
+#
+# run-cliff.sbatch is exec'd by the shim below rather than submitted directly, so
+# its sweep/model knobs (BENCH_*, VLLM_MODEL, AIC_CLIFF_ARMS, LMCACHE_*, ...) reach
+# it as plain environment, exactly as before.  Job sizing therefore lives here.
+#
+#   AIC_CLIFF_JOB_NAME   Slurm job name                     (default: aic-cliff)
+#   AIC_CLIFF_TIME       time limit                         (default: 03:00:00)
+#   AIC_CLIFF_CPUS/MEM   --cpus-per-task / --mem            (default: 16 / 64G)
+#   AIC_CLIFF_GPUS       GPUs to request                    (default: 1)
+#   AIC_CLIFF_NODE       pin the job to one node            (default: any)
+#   AIC_CLIFF_CONSTRAINT Slurm -C expression, standard Slurm only; SPUR nodes
+#                        carry no feature labels            (default: none)
+AIC_CLIFF_JOB_NAME="${AIC_CLIFF_JOB_NAME:-aic-cliff}"
+AIC_CLIFF_TIME="${AIC_CLIFF_TIME:-03:00:00}"
+AIC_CLIFF_CPUS="${AIC_CLIFF_CPUS:-16}"
+AIC_CLIFF_MEM="${AIC_CLIFF_MEM:-64G}"
+AIC_CLIFF_GPUS="${AIC_CLIFF_GPUS:-1}"
+AIC_CLIFF_NODE="${AIC_CLIFF_NODE:-}"
+AIC_CLIFF_CONSTRAINT="${AIC_CLIFF_CONSTRAINT-}"
+
+cmd_cliff() {
+    # Resolve the exact tarballs here, on the login node, the way accuracy-test
+    # does, and fail before queueing for a GPU if either is missing.  Globbing
+    # <name>-*.tar.* in the job would also match an in-flight <tar>.partial.<id>
+    # and, in a directory holding several arches, pick one by mtime.
+    _pick_compress
+    local _vllm_tar _lmcache_tar
+    AIC_IMAGE="${AIC_VLLM_IMAGE}"    _vllm_tar="$(_tarball_path)"
+    AIC_IMAGE="${AIC_LMCACHE_IMAGE}" _lmcache_tar="$(_tarball_path)"
+    [[ -r "${_vllm_tar}" ]]    || die "vllm tarball not found: ${_vllm_tar} (run 'bake' first; the name carries AIC_ROCM_ARCH='${AIC_ROCM_ARCH}', so it must match the build's arch)"
+    [[ -r "${_lmcache_tar}" ]] || die "lmcache tarball not found: ${_lmcache_tar} (run 'bake' first; the name carries AIC_ROCM_ARCH='${AIC_ROCM_ARCH}', so it must match the build's arch)"
+
+    local -a _sel=() _gpu_request
+    local _where=""
+    if [[ -n "${AIC_CLIFF_NODE}" ]]; then
+        _sel=(--nodelist="${AIC_CLIFF_NODE}")
+        _where=", node ${AIC_CLIFF_NODE}"
+    elif [[ "${AIC_SPUR_CLUSTER}" != "1" && -n "${AIC_CLIFF_CONSTRAINT}" ]]; then
+        _sel=(--constraint="${AIC_CLIFF_CONSTRAINT}")
+        _where=", constraint ${AIC_CLIFF_CONSTRAINT}"
+    fi
+    if [[ "${AIC_SPUR_CLUSTER}" == "1" ]]; then
+        _gpu_request=(--gpus="${AIC_CLIFF_GPUS}")
+    else
+        _gpu_request=(--gres="gpu:${AIC_CLIFF_GPUS}")
+    fi
+    log "cliff via sbatch (partition ${AIC_BUILD_PARTITION}${_where})"
+    log "vllm: ${AIC_VLLM_IMAGE}  lmcache: ${AIC_LMCACHE_IMAGE}  images: ${AIC_IMAGE_DIR}"
+
+    # SLURM_SUBMIT_DIR is how run-cliff.sbatch finds the tree (logs/<job-id>, and
+    # the /work bind-mount of benchmarks/); pin it rather than trust the cwd the
+    # submitter happened to be in.
+    local remote_script
+    remote_script="$(cat <<REMOTE
+export SLURM_SUBMIT_DIR='${AIC_DAY_DIR}'
+export AIC_VLLM_IMAGE='${AIC_VLLM_IMAGE}'
+export AIC_LMCACHE_IMAGE='${AIC_LMCACHE_IMAGE}'
+export AIC_VLLM_TARBALL='${_vllm_tar}'
+export AIC_LMCACHE_TARBALL='${_lmcache_tar}'
+export AIC_IMAGE_DIR='${AIC_IMAGE_DIR}'
+export AIC_FORCE_LOAD='${AIC_FORCE_LOAD:-0}'
+exec bash '${AIC_DAY_DIR}/.slurm/run-cliff.sbatch'
+REMOTE
+)"
+
+    _sbatch_run "${AIC_CLIFF_JOB_NAME}" cliff "${remote_script}" \
+        "${_sel[@]}" \
+        "${_gpu_request[@]}" \
+        --nodes=1 --ntasks=1 \
+        --cpus-per-task="${AIC_CLIFF_CPUS}" --mem="${AIC_CLIFF_MEM}" \
+        --time="${AIC_CLIFF_TIME}"
+    log "cliff complete: ${AIC_DAY_DIR}/logs/${AIC_LAST_JOB_ID}/"
+}
+
 # --- main --------------------------------------------------------------------
 main() {
     local sub="${1:-all}"
@@ -4320,11 +4406,12 @@ main() {
         emulate-validate) cmd_emulate_validate ;;
         profile-capture) cmd_profile_capture ;;
         accuracy-test)   cmd_accuracy_test ;;
+        cliff)           cmd_cliff ;;
         all)             cmd_bake; cmd_build_exporters; cmd_load ;;
         -h|--help|help)
             sed -n '2,70p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
             ;;
-        *) die "unknown command '${sub}' (use: build | bake | wheels | build-emulate | build-base | build-vllm | build-lmcache | build-exporters | load | push | test | tiny-test | prometheus-dump | emulate-test | emulate-mp-test | emulate-validate | profile-capture | accuracy-test | all | help)" ;;
+        *) die "unknown command '${sub}' (use: build | bake | wheels | build-emulate | build-base | build-vllm | build-lmcache | build-exporters | load | push | test | tiny-test | prometheus-dump | emulate-test | emulate-mp-test | emulate-validate | profile-capture | accuracy-test | cliff | all | help)" ;;
     esac
 }
 
