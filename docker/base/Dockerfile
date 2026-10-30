@@ -150,8 +150,11 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
 # - used only during testing
 # - platform specific (Windows, Android, CUDA)
 # - not used when built as part of pytorch
-RUN git -c submodule.third_party/XNNPACK.update=none \
-        -c submodule.third_party/cutlass.update=none \
+# NNPACK needs python-peachpy, XNNPACK and ittapi are default-on deps; they stay.
+# cmake/PreBuildSteps.cmake aborts if ANY .gitmodules path is empty, so each
+# skipped dir gets a LICENSE stub.  Not CMakeLists.txt: a needed-but-skipped dep
+# would then fail at configure instead of silently configuring to nothing.
+RUN git -c submodule.third_party/cutlass.update=none \
         -c submodule.third_party/flash-attention.update=none \
         -c submodule.third_party/cudnn_frontend.update=none \
         -c submodule.third_party/NVTX.update=none \
@@ -159,8 +162,6 @@ RUN git -c submodule.third_party/XNNPACK.update=none \
         -c submodule.third_party/kleidiai.update=none \
         -c submodule.third_party/mimalloc.update=none \
         -c submodule."third_party/gemmlowp/gemmlowp".update=none \
-        -c submodule.third_party/python-peachpy.update=none \
-        -c submodule.third_party/ittapi.update=none \
         -c submodule."android/libs/fbjni".update=none \
         -c submodule."3rdparty/composable_kernel".update=none \
         -c submodule."external/googletest".update=none \
@@ -170,7 +171,9 @@ RUN git -c submodule.third_party/XNNPACK.update=none \
         clone --depth 1 \
               --revision "${PYTORCH_REF}" \
               --recurse-submodules \
-              "${PYTORCH_GIT_URL}" /app/pytorch
+              "${PYTORCH_GIT_URL}" /app/pytorch && \
+    git -C /app/pytorch submodule status | awk '/^-/ {print $2}' | \
+    while read -r d; do mkdir -p "/app/pytorch/$d" && touch "/app/pytorch/$d/LICENSE"; done
 
 RUN --mount=type=cache,target=/root/.cache/uv \
     cd /app/pytorch && \
