@@ -101,7 +101,17 @@ if mkdir -p "${LOGDIR}" 2>/dev/null; then
 fi
 
 _aic_tag="$(bash "${REPO}/docker/scripts/aic-image-tag.sh" 2>/dev/null || true)"
-AIC_IMAGE="${AIC_IMAGE:-${AIC_IMAGE_NAME:-rocm-aic}:${_aic_tag:-latest}}"
+# The stack is two images, aic-vllm (served) and aic-lmcache (the standalone
+# LMCache server); dist-build saves one artifact for each.  Same defaults as
+# run-build-distribute.sh, so a caller can override either name the same way.
+AIC_VLLM_IMAGE="${AIC_VLLM_IMAGE:-aic-vllm:${_aic_tag:-latest}}"
+AIC_LMCACHE_IMAGE="${AIC_LMCACHE_IMAGE:-aic-lmcache:${_aic_tag:-latest}}"
+# Image the host-side clients run from: the bench and plot containers and
+# monitoring-lib.sh's Prometheus query.  aic-lmcache is the one that carries what
+# they import -- matplotlib (only docker/lmcache/Dockerfile installs it) and
+# httpx (pulled in by the openai package from LMCache's cli.txt) -- and it is
+# already loaded for the kvd arms, so no third image is needed.
+AIC_IMAGE="${AIC_LMCACHE_IMAGE}"
 AIC_IMAGE_DIR="${AIC_IMAGE_DIR:-/scratch/${USER}/images}"
 # Model selection.  Leave VLLM_MODEL empty to auto-pick a default from the node's
 # detected GPU arch (select_default_model(), below): gpt-oss-120b (~60 GB MXFP4)
@@ -455,7 +465,7 @@ select_default_model() {
 }
 
 log "host        : $(hostname)  job=${SLURM_JOB_ID:-manual}"
-log "image       : ${AIC_IMAGE}"
+log "images      : vllm=${AIC_VLLM_IMAGE} lmcache=${AIC_LMCACHE_IMAGE}"
 select_default_model
 log "model HF_HOME: ${HF_HOME} (offline)"
 provision_storage
@@ -538,8 +548,20 @@ load_image_if_needed() {
   return 1
 }
 
-# Main inference image (required -- the whole run needs it).
-load_image_if_needed "${AIC_IMAGE}" "-*" required
+# Inference images (both required -- every arm runs vllm, and the kvd arms add the
+# lmcache server).  `run-build-distribute.sh cliff` resolves the exact artifacts
+# (<name>-<tag>-<arch>.ref or .tar.zst) and passes them as AIC_VLLM_ARTIFACT /
+# AIC_LMCACHE_ARTIFACT, as accuracy-test does.  A manual run without them falls
+# back to the newest <name>-* artifact, which cannot be made arch-aware.
+_load_stack_image() { # $1=image name:tag  $2=exact artifact, or empty
+  if [[ -n "$2" ]]; then
+    aic_image_fetch cliff "$1" "$2" || die "could not load $1 from $2"
+  else
+    load_image_if_needed "$1" "-*" required
+  fi
+}
+_load_stack_image "${AIC_VLLM_IMAGE}" "${AIC_VLLM_ARTIFACT:-}"
+_load_stack_image "${AIC_LMCACHE_IMAGE}" "${AIC_LMCACHE_ARTIFACT:-}"
 
 # Monitoring sidecar images.  Load from the shared NFS tarball when present so
 # compose never needs Docker Hub egress on a cold node.  Applies for all non-zero
@@ -603,8 +625,13 @@ compose() { docker compose -f "${COMPOSE_FILE}" "$@"; }
 
 # Knobs the compose file interpolates (already resolved above).  ROCM_ARCH is only
 # read by build.args, but compose interpolates it even on `up`, so keep it set.
-export IMAGE_REF="${AIC_IMAGE}"
-export IMAGE_NAME="${AIC_IMAGE%:*}"
+# Export the two image refs explicitly: `make cliff-*` exports its own
+# VLLM_IMAGE_REF/LMCACHE_IMAGE_REF into this job's environment, and compose reads
+# those ahead of IMAGE_REF, so the refs loaded above must override them.
+export VLLM_IMAGE_REF="${AIC_VLLM_IMAGE}"
+export LMCACHE_IMAGE_REF="${AIC_LMCACHE_IMAGE}"
+export IMAGE_REF="${AIC_LMCACHE_IMAGE}"
+export IMAGE_NAME="${AIC_LMCACHE_IMAGE%:*}"
 export ROCM_ARCH="${ROCM_ARCH:-$(detect_gpu_arch)}"
 # Resolve the GPU allocation instead of hardcoding host GPU 0.
 source "${REPO}/monitoring/monitoring-lib.sh"
