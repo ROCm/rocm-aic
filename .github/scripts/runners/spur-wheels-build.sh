@@ -173,6 +173,8 @@ AIC_SPUR_CLUSTER=1 \
 echo "=== dist-wheels complete — wheels in ${WHEEL_DIR} ==="
 ls -lh "${WHEEL_DIR}"
 REMOTE
+# The remote stage finished; a failed copy below has no remote session to cancel.
+aic_ci_remote_done
 
 echo "=== Copying wheels back to ${AIC_WHEEL_OUT} ==="
 rm -rf "${AIC_WHEEL_OUT}"

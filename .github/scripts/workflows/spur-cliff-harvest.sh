@@ -251,6 +251,9 @@ JSON
 echo "=== Cliff page written to ${CLIFF_STAGING_DIR}/cliff-page/ ==="
 wc -l "${CLIFF_STAGING_DIR}/cliff-page/index.html"
 REMOTE
+# The remote stage finished; a failure in the local steps below has no remote
+# session left to cancel.
+aic_ci_remote_done
 
 # ---------------------------------------------------------------------------
 # Copy the HTML page back to the runner working directory
