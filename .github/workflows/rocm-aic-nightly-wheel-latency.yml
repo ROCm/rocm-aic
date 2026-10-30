@@ -16,6 +16,8 @@
 name: rocm-aic - Nightly Wheel Latency Benchmark
 
 on:
+  # zizmor: ignore[dangerous-triggers] workflow_run fires on completed external
+  # workflow events only; this workflow never runs untrusted PR code.
   workflow_run:
     workflows: ["rocm-aic - Nightly Wheels Publication"]
     types: [completed]
@@ -57,7 +59,7 @@ jobs:
       HF_HOME:              /shared_nfs/huggingface
 
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7  # zizmor: ignore[unpinned-uses]
         with:
           fetch-depth: 1
 
@@ -138,17 +140,20 @@ jobs:
       # Render the results into an HTML page and a JSON summary.
       - name: Render results
         id: render
+        env:
+          # Resolved via env to avoid template-injection in the run block.
+          TRIGGER_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
+          BENCH_LOG: ${{ steps.bench.outputs.log_file }}
         run: |
           set -euo pipefail
           OUT_DIR="${RUNNER_TEMP}/wheel-latency"
           mkdir -p "${OUT_DIR}"
 
-          # Resolve SHA and date from the triggering workflow run or HEAD.
-          SHA="${{ github.event.workflow_run.head_sha || github.sha }}"
+          SHA="${TRIGGER_SHA}"
           DATE=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
 
           python3 "${GITHUB_WORKSPACE}/.github/scripts/workflows/render-wheel-latency.py" \
-            "${{ steps.bench.outputs.log_file }}" \
+            "${BENCH_LOG}" \
             "${SHA}" \
             "${DATE}" \
             "${OUT_DIR}/index.html"
@@ -161,7 +166,7 @@ jobs:
       # Upload the rendered page as a workflow artifact (always, even on failure).
       - name: Upload results artifact
         if: always() && steps.render.outcome != 'skipped'
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@v7  # zizmor: ignore[unpinned-uses]
         with:
           name: wheel-latency-${{ steps.render.outputs.sha && steps.render.outputs.sha || github.sha }}
           path: ${{ steps.render.outputs.out_dir }}/
@@ -173,7 +178,7 @@ jobs:
           steps.render.outcome == 'success' &&
           (github.event_name == 'workflow_run' ||
            github.event.inputs.publish == 'true')
-        uses: peaceiris/actions-gh-pages@v4
+        uses: peaceiris/actions-gh-pages@v4  # zizmor: ignore[unpinned-uses]
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           publish_dir:  ${{ steps.render.outputs.out_dir }}
