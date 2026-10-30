@@ -8,7 +8,8 @@ set -Eeuo pipefail
 # Runs from a workflow checkout on the self-hosted runner; SSHes to the SPUR head node (AIC_SPUR_HOST),
 # submits an srun job whose payload uses no GPU (SPUR still requires a GPU
 # request on every submission, so one is reserved and left idle), and:
-#   1. Launches node-exporter, nvme-exporter, rdma-exporter, and Prometheus
+#   1. Launches node-exporter, rdma-exporter, and Prometheus (nvme-exporter and
+#      alloy are left out: SPUR's docker authz refuses them)
 #   2. Runs the vLLM emulator (backed by the existing rocm-aic image)
 #   3. Issues 3 LLM prompts and asserts non-empty completions
 #   4. Scrapes all active /metrics endpoints and generates a metrics HTML page
@@ -172,7 +173,7 @@ mkdir -p "${HF_HOME}"
 # shellcheck source=monitoring/monitoring-lib.sh
 source "${MON_DIR}/monitoring-lib.sh"
 
-export AIC_IMAGE AIC_MONITORING=1 AIC_EXPORTERS=1 AIC_CPU_SMOKE=1
+export AIC_IMAGE AIC_MONITORING=1 AIC_EXPORTERS=1 AIC_CPU_SMOKE=1 AIC_SPUR_CLUSTER=1
 export MON_DIR MON_COMPOSE="${WORKDIR}/docker/docker-compose.yml"
 export AIC_METRICS_DIR="${METRICS_DIR}"
 
@@ -186,17 +187,16 @@ cleanup() {
 trap cleanup EXIT
 
 # ---------------------------------------------------------------------------
-# 1. Pre-build fabric exporter images (nvme + rdma) from source
+# 1. Pre-build the rdma fabric exporter image from source
 # ---------------------------------------------------------------------------
-echo "=== Building fabric exporter images ==="
+echo "=== Building fabric exporter image ==="
 docker compose -f "${MON_COMPOSE}" \
     --profile exporters-cpu \
-    build nvme-exporter rdma-exporter
-export AIC_NVME_EXPORTER_IMAGE=aic-nvme-exporter:local
+    build rdma-exporter
 export AIC_RDMA_EXPORTER_IMAGE=aic-rdma-exporter:local
 
 # ---------------------------------------------------------------------------
-# 2. Start monitoring stack (prometheus + node-exporter + nvme + rdma)
+# 2. Start monitoring stack (prometheus + node-exporter + rdma)
 # ---------------------------------------------------------------------------
 echo "=== Starting monitoring stack ==="
 export PROM_UID="$(id -u)" PROM_GID="$(id -g)"
@@ -269,7 +269,6 @@ echo "=== Scraping metrics endpoints ==="
 # exporters and Prometheus publish no host port.
 declare -A EXPORTER_URLS=(
     [node_exporter]=http://aic-node-exporter:9100
-    [nvme_exporter]=http://aic-nvme-exporter:9998
     [rdma_exporter]=http://aic-rdma-exporter:9879
     [vllm]=http://aic-vllm:8000
     [prometheus]=http://aic-prometheus:9090
