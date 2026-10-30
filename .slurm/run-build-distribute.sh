@@ -2222,7 +2222,10 @@ cleanup() {
     pkill -9 -f 'EngineCore'              2>/dev/null || true
     pkill -9 -f 'lmcache server'          2>/dev/null || true
     sleep 2
-    timeout 60 compose --profile cache down --remove-orphans --timeout 5 >/dev/null 2>&1 || true
+    # Same \`timeout\`-runs-a-program-not-a-function bug as the log capture above:
+    # this teardown silently never ran, leaving containers and the bridge network.
+    timeout 60 docker compose -f '${AIC_DAY_DIR}/docker/docker-compose.yml' \
+        --profile cache down --remove-orphans --timeout 5 >/dev/null 2>&1 || true
     for c in "\${VLLM_CONTAINER}" aic-lmcache; do timeout 30 docker rm -f "\$c" >/dev/null 2>&1 || true; done
     rm -rf /tmp/aic-tiny-nvme /tmp/aic-tiny-nfs 2>/dev/null || true
     # Only if the capture is still up, i.e. the job died before its own stop.
@@ -2452,7 +2455,8 @@ cleanup() {
     pkill -9 -f 'EngineCore'              2>/dev/null || true
     pkill -9 -f 'lmcache server'          2>/dev/null || true
     sleep 2
-    timeout 60 compose \
+    # \`timeout\` runs a program, not the compose() shell function above.
+    timeout 60 docker compose -f '${AIC_DAY_DIR}/docker/docker-compose.yml' \
         --profile cache --profile monitoring-base --profile exporters-safe \
         down --remove-orphans --timeout 5 >/dev/null 2>&1 || true
     rm -rf /tmp/aic-prom-dump-nvme /tmp/aic-prom-dump-nfs 2>/dev/null || true
