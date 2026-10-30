@@ -112,6 +112,8 @@ ARG FLASH_ATTN_REF=v2.8.3.post1
 ARG AITER_PREBUILD_KERNELS=0
 
 # git and ca-certificates are not in the -full image; install before cloning.
+# git comes from ppa:git-core because `git clone --revision` needs >= 2.49 and
+# Ubuntu 24.04 ships 2.43.
 # libnuma-dev: the ROCm base image ships libnuma.so.1 but NOT the unversioned
 # libnuma.so symlink, which lives in libnuma-dev.  rocSHMEM's NUMAWrapper
 # dlopen()s the unversioned name, so it fails and prints
@@ -125,6 +127,10 @@ ARG AITER_PREBUILD_KERNELS=0
 # hadolint ignore=DL3008
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
+    apt-get update && \
+    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+        software-properties-common && \
+    add-apt-repository ppa:git-core/ppa -y && \
     apt-get update && \
     DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
         cmake git ca-certificates ninja-build python3-dev libnuma-dev
