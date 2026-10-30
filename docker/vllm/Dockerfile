@@ -140,6 +140,10 @@ RUN --mount=type=cache,target=/root/.cache/pip \
         PYTORCH_ROCM_ARCH="${ROCM_ARCH}" TORCH_DONT_CHECK_COMPILER_ABI=1 \
             python3 /app/patches/aiter/01-jit-use-pytorch-rocm-arch.py && \
         PYTORCH_ROCM_ARCH="${ROCM_ARCH}" \
+        TORCH_DONT_CHECK_COMPILER_ABI=1 \
+        PYTHONPATH=$PWD:$PYTHONPATH \
+            python3 /app/patches/aiter/01-jit-use-pytorch-rocm-arch.py && \
+        PYTORCH_ROCM_ARCH="${ROCM_ARCH}" \
             TORCH_DONT_CHECK_COMPILER_ABI=1 \
             MAX_JOBS="${BUILD_JOBS:-$(nproc)}" \
             CCACHE_DIR=/root/.cache/ccache CCACHE_MAXSIZE=25G \
