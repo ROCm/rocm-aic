@@ -70,6 +70,8 @@ FROM ${ROCM_BASE_IMAGE} AS base
 # vLLM that cannot load LMCacheMPConnector.  `emulate` never reads it.
 FROM scratch AS lmcache-wheels
 
+FROM scratch AS base-wheels
+
 # =============================================================================
 # build_vllm — compile AITER, FlashAttention, and vLLM against the full ROCm
 # image (which has hipcc + HIP CMake files).  Torch is COPYed in from aic-base
@@ -93,14 +95,18 @@ ARG FLASH_ATTN_REF=v2.8.3.post1
 # git and ca-certificates are not in the -full image; install before cloning.
 # hadolint ignore=DL3008
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
-    --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt/lists \
     apt-get update && \
     DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
         cmake git ca-certificates ninja-build python3-dev
 
 # Bring torch + Python packages from aic-base so wheels link against the same torch.
-COPY --from=base /usr/local/lib/python3.12/dist-packages/ \
-                 /usr/local/lib/python3.12/dist-packages/
+# Note that `emulate` has no base-wheels context
+RUN --mount=type=bind,from=base-wheels,source=/,target=/wheels-base \
+    if [ -d /wheels-base/wheels ]; then \
+      pip3 install --break-system-packages /wheels-base/wheels/*.whl; \
+    fi
+
 COPY --from=base /usr/local/bin/uv  /usr/local/bin/uv
 COPY --from=base /usr/local/bin/uvx /usr/local/bin/uvx
 RUN rm -f /usr/lib/python3.*/EXTERNALLY-MANAGED
@@ -130,15 +136,19 @@ RUN --mount=type=cache,target=/root/.cache/pip \
             "flydsl==0.2.4" && \
         git clone --depth 1 --revision "${AITER_REF}" "${AITER_GIT_URL}" --recurse-submodules /app/aiter && \
         cd /app/aiter && \
+        PYTORCH_ROCM_ARCH="${ROCM_ARCH}" TORCH_DONT_CHECK_COMPILER_ABI=1 \
+            python3 /app/patches/aiter/01-jit-use-pytorch-rocm-arch.py && \
+        PYTORCH_ROCM_ARCH="${ROCM_ARCH}" \
+        TORCH_DONT_CHECK_COMPILER_ABI=1 \
+        PYTHONPATH=$PWD:$PYTHONPATH \
+            python3 /app/patches/aiter/01-jit-use-pytorch-rocm-arch.py && \
         PYTORCH_ROCM_ARCH="${ROCM_ARCH}" \
             TORCH_DONT_CHECK_COMPILER_ABI=1 \
             MAX_JOBS="${BUILD_JOBS:-$(nproc)}" \
             CCACHE_DIR=/root/.cache/ccache CCACHE_MAXSIZE=25G \
             python3 setup.py bdist_wheel --dist-dir=/wheels && \
         pip3 install --no-cache-dir --no-deps /wheels/amd_aiter-*.whl && \
-        python3 -c 'import importlib.util; spec = importlib.util.find_spec("aiter"); assert spec and spec.submodule_search_locations; print("AITER installed:", next(iter(spec.submodule_search_locations)))' && \
-        PYTORCH_ROCM_ARCH="${ROCM_ARCH}" TORCH_DONT_CHECK_COMPILER_ABI=1 \
-            python3 /app/patches/aiter/01-jit-use-pytorch-rocm-arch.py; \
+        python3 -c 'import importlib.util; spec = importlib.util.find_spec("aiter"); assert spec and spec.submodule_search_locations; print("AITER installed:", next(iter(spec.submodule_search_locations)))'; \
     fi
 
 # FlashAttention: CDNA-only (gfx9xx — MI100/MI200/MI300/MI355X).
@@ -246,6 +256,10 @@ ARG LLM_EMU_GIT_URL=https://github.com/AKafakA/llm-emu.git
 ARG LLM_EMU_REF=b71c602
 ENV AIC_EMULATOR_EXAMPLE_PACK=/opt/llm-emu/profiles/A40-Q8-Qwen3-8B.json \
     AIC_EMULATOR_DEFAULT_PACK=/opt/llm-emu/profiles/MI300X-Qwen3-8B.json
+
+RUN --mount=type=cache,target=/root/.cache/pip \
+    pip3 install build
+
 # hadolint ignore=SC3044
 RUN git clone --filter=blob:none --no-checkout "${LLM_EMU_GIT_URL}" /app/llm-emu && \
     git -C /app/llm-emu checkout "${LLM_EMU_REF}" && \
@@ -259,7 +273,8 @@ RUN git clone --filter=blob:none --no-checkout "${LLM_EMU_GIT_URL}" /app/llm-emu
             exit 1; \
         fi; \
     done && \
-    pip3 install --no-cache-dir --no-build-isolation --no-deps /app/llm-emu/ && \
+    ( cd /app/llm-emu && python3 -m build --wheel --outdir /wheels/ ) && \
+    pip3 install --no-cache-dir --no-build-isolation --no-deps /wheels/llm_emu-*.whl && \
     python3 -c "import vllm_emulator.hooks.executor_hook, vllm_emulator.oracle, \
 vllm_emulator.profile.loader, vllm_emulator.profiler.trace_profiler; \
 print('vllm_emulator subpackages import OK')" && \
@@ -290,13 +305,19 @@ FROM base AS vllm
 
 # Copy all installed Python packages (vllm, aiter, flash_attn, llm-emu, deps)
 # from the full-ROCm build stage into the slim aic-base runtime.
-COPY --from=build_vllm /usr/local/lib/python3.12/dist-packages/ \
-                       /usr/local/lib/python3.12/dist-packages/
 COPY --from=build_vllm /usr/local/bin/uv  /usr/local/bin/uv
 COPY --from=build_vllm /usr/local/bin/uvx /usr/local/bin/uvx
 COPY --from=build_vllm /opt/llm-emu/      /opt/llm-emu/
 COPY --from=build_vllm /etc/rocm-aic-attention-backends.env \
                        /etc/rocm-aic-attention-backends.env
+
+# When building emulated, the base context does not contain any pytorch wheels
+RUN --mount=type=bind,from=build_vllm,source=/wheels/,target=/wheels-vllm \
+    --mount=type=bind,from=base-wheels,source=/,target=/wheels-base \
+    if [ -d /wheels-base/wheels ]; then \
+      pip3 install --break-system-packages /wheels-base/wheels/*.whl; \
+    fi && \
+    pip3 install --break-system-packages /wheels-vllm/*.whl
 
 ARG VLLM_REF
 ARG AITER_REF

@@ -209,7 +209,7 @@ RUN --mount=type=cache,target=/root/.cache/ccache \
     CMAKE_BUILD_PARALLEL_LEVEL="${BUILD_JOBS:-$(nproc)}" \
     CMAKE_PREFIX_PATH=$(python3 -c 'import sys; print(sys.prefix)') \
     PYTORCH_ROCM_ARCH=$(echo "${PYTORCH_ROCM_ARCH}" | tr ',' ' ') \
-        python3 setup.py bdist_wheel --dist-dir=/app/pytorch/dist && \
+        python3 setup.py bdist_wheel --dist-dir=/app/dist/pytorch && \
     { find /app/pytorch -mindepth 1 -maxdepth 1 ! -name 'dist' -exec rm -rf {} + || \
       echo "WARNING: PyTorch source cleanup failed; see find's error above" >&2; }
 
@@ -236,7 +236,7 @@ RUN --mount=type=cache,target=/root/.cache/pip \
     --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
     DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends libnuma-dev && \
-    pip3 install setuptools wheel packaging /app/pytorch/dist/*.whl && \
+    pip3 install setuptools wheel packaging /app/dist/pytorch/*.whl && \
     cd /app/vision && \
     USE_ROCM=1 USE_CUDA=0 \
     PYTORCH_ROCM_ARCH="${ROCM_ARCH}" \
@@ -245,7 +245,7 @@ RUN --mount=type=cache,target=/root/.cache/pip \
     CMAKE_CXX_COMPILER_LAUNCHER=ccache \
     MAX_JOBS="${BUILD_JOBS:-$(nproc)}" \
     CMAKE_BUILD_PARALLEL_LEVEL="${BUILD_JOBS:-$(nproc)}" \
-        python3 setup.py bdist_wheel --dist-dir=/app/vision/dist
+        python3 setup.py bdist_wheel --dist-dir=/app/dist/vision
 
 # =============================================================================
 # build_nixl — NIXL source build using the ROCm-full toolchain.
@@ -283,10 +283,11 @@ RUN --mount=type=cache,target=/root/.cache/uv \
             echo "ERROR: nixl patch does not apply cleanly: $patch" >&2; exit 1; \
         fi; \
     done && \
+    mkdir -p /app/dist/nixl && \
     NIXL_SRC=/tmp/nixl \
         AIS_PATH=/opt/rocm ROCM_PATH=/opt/rocm \
         NIXL_INSTALL_PREFIX=/opt/nixl \
-        NIXL_BUILD_WHEEL=1 NIXL_WHEEL_DIR=/wheels \
+        NIXL_BUILD_WHEEL=1 NIXL_WHEEL_DIR=/app/dist/nixl/ \
         BUILD_JOBS="${BUILD_JOBS}" \
         AIC_UCX_FAST="${AIC_UCX_FAST}" \
         UV_SYSTEM_CERTS=1 \
@@ -304,7 +305,10 @@ RUN --mount=type=cache,target=/root/.cache/uv \
 # Must stay above runtime, the default target.
 # =============================================================================
 FROM scratch AS wheels
-COPY --from=build_nixl /wheels /
+COPY --from=build_nixl /app/dist/nixl/ /wheels/
+COPY --from=build_pytorch /app/dist/pytorch/*.whl /wheels/
+COPY --from=build_torchvision /app/dist/vision/*.whl /wheels/
+
 
 # =============================================================================
 # build_clr_patch — patch libamdhip64.so to fix IPC event signal ring overflow.
@@ -532,9 +536,9 @@ ENV PIP_ROOT_USER_ACTION=ignore \
     PIP_BREAK_SYSTEM_PACKAGES=1
 
 # torchvision wheel (built in build_torchvision but not yet installed there).
-COPY --from=build_torchvision /app/vision/dist/ /tmp/vision/
 RUN --mount=type=cache,target=/root/.cache/pip \
-    pip3 install --no-cache-dir /tmp/vision/*.whl && \
+    --mount=type=bind,from=build_torchvision,source=/app/dist/vision,target=/app/dist/vision \
+    pip3 install --no-cache-dir /app/dist/vision/*.whl && \
     rm -rf /tmp/vision && \
     { find /usr/local/lib/python3.12 -name '__pycache__' -type d \
          -exec rm -rf {} + || \
