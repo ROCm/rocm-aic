@@ -1,6 +1,6 @@
 # AIC Prometheus Metrics Reference
 
-**Generated:** 2026-10-28 09:31 UTC · **Total metrics:** 573 · **SHA:** `42a3975`
+**Generated:** 2026-10-30 10:25 UTC · **Total metrics:** 511 · **SHA:** `279d66b`
 
 ## Component Versions
 
@@ -17,14 +17,17 @@
 | Container | Image | Status |
 |-----------|-------|--------|
 | `aic-amdgpu-exporter` | `rocm/device-metrics-exporter:v1.5.2` | Up About a minute |
-| `aic-vllm-gpu1` | `aic-vllm:0.1.0-rocm7.14.1-pytorch2.13-vllm0.29.0-aiter0.1.22.post1-fa2.8.3.post1-lmcache0.5.6-nixl1.4.1-hsasnoop1.2.0` | Up About a minute |
-| `aic-lmcache` | `aic-lmcache:0.1.0-rocm7.14.1-pytorch2.13-vllm0.29.0-aiter0.1.22.post1-fa2.8.3.post1-lmcache0.5.6-nixl1.4.1-hsasnoop1.2.0` | Up About a minute (healthy) |
+| `aic-vllm-gpu3` | `aic-vllm:0.1.0-rocm7.14.1-pytorch2.13-vllm0.29.0-aiter0.1.22.post1-fa2.8.3.post1-lmcache0.5.6-nixl1.4.1-hsasnoop1.2.0` | Up About a minute |
 | `aic-alloy` | `grafana/alloy:v1.8.3` | Up About a minute |
+| `aic-lmcache` | `aic-lmcache:0.1.0-rocm7.14.1-pytorch2.13-vllm0.29.0-aiter0.1.22.post1-fa2.8.3.post1-lmcache0.5.6-nixl1.4.1-hsasnoop1.2.0` | Up About a minute (healthy) |
 | `aic-client` | `python:3.12` | Up About a minute |
 | `aic-loki` | `grafana/loki:3.5.0` | Up About a minute |
-| `aic-prometheus` | `prom/prometheus:v3.14.0` | Up About a minute |
 | `aic-grafana` | `grafana/grafana:13.2.2` | Up About a minute |
+| `aic-prometheus` | `prom/prometheus:v3.14.0` | Up About a minute |
 | `aic-lmcache-coordinator` | `aic-lmcache:0.1.0-rocm7.14.1-pytorch2.13-vllm0.29.0-aiter0.1.22.post1-fa2.8.3.post1-lmcache0.5.6-nixl1.4.1-hsasnoop1.2.0` | Up About a minute (healthy) |
+| `maxime-dev` | `ghcr.io/rocm/jax-base-ubu24.therock-10.1:latest` | Up 34 minutes |
+| `sft-254192-q38_r8_sft_v30` | `rocm/vllm-dev:base_custom_rocm_7.2.1_torch_triton_0330_vllm018` | Up 35 minutes |
+| `buildx_buildkit_aic-local0` | `moby/buildkit:buildx-stable-1` | Up About an hour |
 
 ## Metrics Sources
 
@@ -33,7 +36,6 @@
 - [lmcache_coordinator](#lmcache-coordinator) — 7 metrics
 - [amdgpu_exporter](#amdgpu-exporter) — 131 metrics
 - [prometheus](#prometheus) — 263 metrics
-- [node_exporter](#node-exporter) — 62 metrics
 
 ## vllm
 
@@ -570,70 +572,3 @@
 | `prometheus_web_federation_warnings_total` | counter | Total number of warnings that occurred while sending federation responses. |
 | `promhttp_metric_handler_requests_in_flight` | gauge | Current number of scrapes being served. |
 | `promhttp_metric_handler_requests_total` | counter | Total number of scrapes by HTTP status code. |
-
-## node_exporter
-
-| Metric | Type | Description |
-|--------|------|-------------|
-| `node_cpu_seconds_total` | counter | Seconds the CPUs spent in each mode. |
-| `node_disk_read_bytes_total` | counter | The total number of bytes read successfully. |
-| `node_disk_written_bytes_total` | counter | The total number of bytes written successfully. |
-| `node_filesystem_avail_bytes` | gauge | Filesystem space available to non-root users. |
-| `node_filesystem_size_bytes` | gauge | Filesystem size in bytes. |
-| `node_memory_Active_anon_bytes` | gauge | Memory information field Active_anon. |
-| `node_memory_Active_bytes` | gauge | Memory information field Active. |
-| `node_memory_Active_file_bytes` | gauge | Memory information field Active_file. |
-| `node_memory_AnonHugePages_bytes` | gauge | Memory information field AnonHugePages. |
-| `node_memory_AnonPages_bytes` | gauge | Memory information field AnonPages. |
-| `node_memory_Bounce_bytes` | gauge | Memory information field Bounce. |
-| `node_memory_Buffers_bytes` | gauge | Memory information field Buffers. |
-| `node_memory_Cached_bytes` | gauge | Memory information field Cached. |
-| `node_memory_CommitLimit_bytes` | gauge | Memory information field CommitLimit. |
-| `node_memory_Committed_AS_bytes` | gauge | Memory information field Committed_AS. |
-| `node_memory_DirectMap1G_bytes` | gauge | Memory information field DirectMap1G. |
-| `node_memory_DirectMap2M_bytes` | gauge | Memory information field DirectMap2M. |
-| `node_memory_DirectMap4k_bytes` | gauge | Memory information field DirectMap4k. |
-| `node_memory_Dirty_bytes` | gauge | Memory information field Dirty. |
-| `node_memory_FileHugePages_bytes` | gauge | Memory information field FileHugePages. |
-| `node_memory_FilePmdMapped_bytes` | gauge | Memory information field FilePmdMapped. |
-| `node_memory_HardwareCorrupted_bytes` | gauge | Memory information field HardwareCorrupted. |
-| `node_memory_HugePages_Free_bytes` | gauge | Memory information field HugePages_Free. |
-| `node_memory_HugePages_Rsvd_bytes` | gauge | Memory information field HugePages_Rsvd. |
-| `node_memory_HugePages_Surp_bytes` | gauge | Memory information field HugePages_Surp. |
-| `node_memory_HugePages_Total_bytes` | gauge | Memory information field HugePages_Total. |
-| `node_memory_Hugepagesize_bytes` | gauge | Memory information field Hugepagesize. |
-| `node_memory_Hugetlb_bytes` | gauge | Memory information field Hugetlb. |
-| `node_memory_Inactive_anon_bytes` | gauge | Memory information field Inactive_anon. |
-| `node_memory_Inactive_bytes` | gauge | Memory information field Inactive. |
-| `node_memory_Inactive_file_bytes` | gauge | Memory information field Inactive_file. |
-| `node_memory_KReclaimable_bytes` | gauge | Memory information field KReclaimable. |
-| `node_memory_KernelStack_bytes` | gauge | Memory information field KernelStack. |
-| `node_memory_Mapped_bytes` | gauge | Memory information field Mapped. |
-| `node_memory_MemAvailable_bytes` | gauge | Memory information field MemAvailable. |
-| `node_memory_MemFree_bytes` | gauge | Memory information field MemFree. |
-| `node_memory_MemTotal_bytes` | gauge | Memory information field MemTotal. |
-| `node_memory_Mlocked_bytes` | gauge | Memory information field Mlocked. |
-| `node_memory_NFS_Unstable_bytes` | gauge | Memory information field NFS_Unstable. |
-| `node_memory_PageTables_bytes` | gauge | Memory information field PageTables. |
-| `node_memory_Percpu_bytes` | gauge | Memory information field Percpu. |
-| `node_memory_SReclaimable_bytes` | gauge | Memory information field SReclaimable. |
-| `node_memory_SUnreclaim_bytes` | gauge | Memory information field SUnreclaim. |
-| `node_memory_SecPageTables_bytes` | gauge | Memory information field SecPageTables. |
-| `node_memory_ShmemHugePages_bytes` | gauge | Memory information field ShmemHugePages. |
-| `node_memory_ShmemPmdMapped_bytes` | gauge | Memory information field ShmemPmdMapped. |
-| `node_memory_Shmem_bytes` | gauge | Memory information field Shmem. |
-| `node_memory_Slab_bytes` | gauge | Memory information field Slab. |
-| `node_memory_SwapCached_bytes` | gauge | Memory information field SwapCached. |
-| `node_memory_SwapFree_bytes` | gauge | Memory information field SwapFree. |
-| `node_memory_SwapTotal_bytes` | gauge | Memory information field SwapTotal. |
-| `node_memory_Unaccepted_bytes` | gauge | Memory information field Unaccepted. |
-| `node_memory_Unevictable_bytes` | gauge | Memory information field Unevictable. |
-| `node_memory_VmallocChunk_bytes` | gauge | Memory information field VmallocChunk. |
-| `node_memory_VmallocTotal_bytes` | gauge | Memory information field VmallocTotal. |
-| `node_memory_VmallocUsed_bytes` | gauge | Memory information field VmallocUsed. |
-| `node_memory_WritebackTmp_bytes` | gauge | Memory information field WritebackTmp. |
-| `node_memory_Writeback_bytes` | gauge | Memory information field Writeback. |
-| `node_memory_Zswap_bytes` | gauge | Memory information field Zswap. |
-| `node_memory_Zswapped_bytes` | gauge | Memory information field Zswapped. |
-| `node_network_receive_bytes_total` | counter | Network device statistic receive_bytes. |
-| `node_network_transmit_bytes_total` | counter | Network device statistic transmit_bytes. |
