@@ -177,7 +177,9 @@ if [[ ! -d "${WORKDIR}" || "${ACTUAL_SHA}" != "${SHA}" ]]; then
 fi
 
 if [[ ! -d "${TARBALL_DIR}" ]]; then
-    echo "ERROR: ${TARBALL_DIR} not found — did dist-build run first?" >&2
+    echo "ERROR: ${TARBALL_DIR} not found — no dist-build staged images for this SHA," \
+        "or an earlier run already removed them (a finished cliff always does)." \
+        "For the on-demand workflow use \"Re-run all jobs\", not \"Re-run failed jobs\"." >&2
     exit 1
 fi
 
