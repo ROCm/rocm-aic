@@ -414,13 +414,31 @@ jobs:
           ref: ${{ needs.authorize.outputs.sha }}
           fetch-depth: 1
 
-      # NOT merge-multiple: every group ships the same wheel FILENAMES with
-      # different GPU code, so merging them would silently drop a whole group.
-      - name: Download wheel artifacts
+      # One download per group, by name, into its own directory.  Every group
+      # ships the same wheel FILENAMES with different GPU code, so they must
+      # never share a directory.  A `pattern:` download is not an option: when it
+      # matches exactly one artifact the action extracts straight into `path`
+      # instead of `path/<name>`, so a CDNA-only run (the scheduled default)
+      # left no `all-wheels/wheels-*` directory and staged nothing.
+      - name: Download wheel artifacts (cdna)
         uses: actions/download-artifact@v8
         with:
-          pattern: wheels-*
-          path: all-wheels
+          name: wheels-cdna
+          path: all-wheels/wheels-cdna
+
+      - name: Download wheel artifacts (rdna)
+        if: needs.build-wheels-rdna.result == 'success'
+        uses: actions/download-artifact@v8
+        with:
+          name: wheels-rdna
+          path: all-wheels/wheels-rdna
+
+      - name: Download wheel artifacts (gfx1250)
+        if: needs.build-wheels-gfx1250.result == 'success'
+        uses: actions/download-artifact@v8
+        with:
+          name: wheels-gfx1250
+          path: all-wheels/wheels-gfx1250
 
       - name: Stage every release as a verified draft
         id: stage
