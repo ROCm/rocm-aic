@@ -42,7 +42,7 @@ _KVBENCH_SBATCH_ARGS := --partition=amd-spur --constraint= --gpus=1 \
     $(if $(AIC_KVBENCH_NODE),--nodelist=$(AIC_KVBENCH_NODE),)
 _KVBENCH_SUBMIT := $(_CLIFF_STRIP) sbatch \
     $(_KVBENCH_SBATCH_ARGS) $(1) .slurm/run-kvbench-cliff.sbatch 2>&1 | \
-    tee /dev/stderr | grep -oE '[0-9]+$$' | tail -1
+    tee /dev/stderr | grep -oE '[0-9]+$$' | tail -1 | grep -E '^[0-9]+$$'
 else
 _CLIFF_SBATCH_ARGS := --constraint='$(AIC_CLIFF_CONSTRAINT)' \
     $(if $(AIC_CLIFF_NODE),--nodelist=$(AIC_CLIFF_NODE),)
