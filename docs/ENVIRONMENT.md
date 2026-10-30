@@ -38,7 +38,7 @@
 | `AIC_SPUR_PARTITION` | `amd-spur-v2` | Partition for every SPUR submit (`make` targets, `run-build-distribute.sh` unless `AIC_BUILD_PARTITION` is set). The `.slurm/*.sbatch` headers name `amd-spur-v2`; override them with `sbatch --partition` |
 | `AIC_NVME_AUTO` | `1` (cliff) | Auto-detect a dedicated local NVMe for the LMCache tiers: reuse a mounted `aic-lmcache` volume, else format+mount a raw non-root spare, else use a non-root mounted NVMe, else node-local `/tmp`. `0` forces `/tmp`; needs passwordless `sudo` to format/mount |
 | `AIC_NVME_MOUNT` | `/mnt/aic-lmcache` | Mountpoint used when auto-provisioning a spare NVMe (left mounted for reuse) |
-| `AIC_MONITORING` | `1` | Auto-start the Prometheus sidecar in cliff sbatch runs (`0` to skip) |
+| `AIC_MONITORING` | `1` | Auto-start the Prometheus sidecar in cliff runs (`0` to skip) |
 | `AIC_METRICS_DIR` | `logs/<job-id>/prometheus` (cliff) | Prometheus TSDB dir — bind-mount an NFS path here |
 | `AIC_EXPORTERS` | `1` (cliff) / `0` (make) | Also launch containerized node + AMD GPU exporters |
 
