@@ -80,6 +80,36 @@ LOGDIR_REL="logs/${SLURM_JOB_ID:-manual}"
 LOGDIR="${REPO}/${LOGDIR_REL}"
 mkdir -p "${LOGDIR}" 2>/dev/null || true
 
+# Only the explicit `exit` at the end of this script may report success.  A job
+# killed by Slurm -- scancel, time limit, node failure -- runs this trap with
+# $? == 0: job 154408 was cancelled while wedged in `docker images`, was recorded
+# as exit 0 having benchmarked nothing, and the CI gate called it a pass.  So a
+# trap that fires before the script says it finished turns a 0 into 143.
+#
+# The trap is installed now, not after monitoring-lib.sh is sourced, so that an
+# early die() (missing HF cache, failed image load) is still handled.  It subsumes
+# the later `trap stop_monitoring EXIT`: a second `trap ... EXIT` would silently
+# replace this one.
+_CLIFF_COMPLETED=0
+_on_exit() {
+  local rc=$?
+  trap - EXIT
+  if (( rc == 0 )) && (( _CLIFF_COMPLETED == 0 )); then
+    rc=143
+    echo "[cliff-job] ERROR: job ended before the benchmark completed" \
+      "(killed or interrupted); exiting ${rc}"
+  fi
+  # stop_monitoring is only defined once monitoring-lib.sh has been sourced.
+  declare -F stop_monitoring >/dev/null && { stop_monitoring || true; }
+  exit "${rc}"
+}
+trap _on_exit EXIT
+# Give Slurm's SIGTERM (and a manual interrupt) a defined exit status instead of
+# whatever $? happened to hold when the signal arrived.
+trap 'exit 143' TERM
+trap 'exit 130' INT
+trap 'exit 129' HUP
+
 _aic_tag="$(bash "${REPO}/docker/scripts/aic-image-tag.sh" 2>/dev/null || true)"
 # The stack is two images, aic-vllm (served) and aic-lmcache (the standalone
 # LMCache server); dist-build saves one tarball for each.  Same defaults as
@@ -775,8 +805,10 @@ source "${REPO}/monitoring/monitoring-lib.sh"
 # The whole stack (arms + metrics) is docker compose v2 only -- install the plugin
 # user-locally if the node lacks it (ensure_compose lives in monitoring-lib.sh).
 ensure_compose || die "docker compose unavailable and could not be installed"
-# Guarantee teardown (containers only; the NFS TSDB is retained) on any exit.
-trap stop_monitoring EXIT
+# Teardown (containers only; the NFS TSDB is retained) is guaranteed by the
+# _on_exit trap installed near the top of this script, which calls
+# stop_monitoring once it is defined.  Re-arming `trap stop_monitoring EXIT`
+# here would replace that trap and lose its exit-status handling.
 
 # =============================================================================
 # Arm A — vram_only : plain vLLM baseline, no LMCache connector
@@ -1023,4 +1055,5 @@ log "==================================================="
 # Fail the job if any arm that actually ran failed; skipped arms don't count.
 rc=0
 for k in vram_only kvd_nvme kvd_gds; do [[ "${STATUS[$k]:-skip}" == FAIL ]] && rc=1; done
+_CLIFF_COMPLETED=1
 exit "${rc}"
