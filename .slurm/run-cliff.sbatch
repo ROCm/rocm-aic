@@ -619,6 +619,10 @@ source "${REPO}/monitoring/monitoring-lib.sh"
 aic_resolve_gpu_visibility \
   || die "could not resolve the SPUR GPU allocation (refusing to default to GPU 0)"
 export GPU="${AIC_ROCR_VISIBLE%%,*}"
+# compose names the container aic-vllm-gpu${GPU}, and on SPUR the allocated GPU
+# is rarely 0 (job 150940 got GPU 3).  Derive the name instead of hardcoding
+# aic-vllm-gpu0, which silently addressed a container that does not exist.
+VLLM_CONTAINER="aic-vllm-gpu${GPU}"
 export HF_HOME NVME_DATA NFS_DATA GDS_SLAB_DATA
 export LOG="${LOGDIR}" # lmcache/vllm container logs land under the job dir
 export HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1
@@ -651,7 +655,7 @@ wait_ready() { # $1=container-port $2=timeout_s
   local port="$1" timeout="${2:-${AIC_VLLM_READY_TIMEOUT:-1200}}" waited=0
   log "waiting for vLLM on :${port} (up to ${timeout}s)"
   while ((waited < timeout)); do
-    if docker exec "aic-vllm-gpu${GPU}" python3 -c \
+    if docker exec "${VLLM_CONTAINER}" python3 -c \
       "import urllib.request; urllib.request.urlopen('http://127.0.0.1:${port}/v1/models', timeout=3)" \
       >/dev/null 2>&1; then
       log "vLLM :${port} is ready (${waited}s)"
@@ -720,7 +724,7 @@ stop_stack() {
   # never actually ran, leaving the stack's containers and bridge network behind.
   timeout 60 docker compose -f "${COMPOSE_FILE}" --profile cache down \
       --remove-orphans --timeout 5 >/dev/null 2>&1 || true
-  for c in aic-vllm-gpu0 aic-lmcache; do timeout 30 docker rm -f "${c}" >/dev/null 2>&1 || true; done
+  for c in "${VLLM_CONTAINER}" aic-lmcache; do timeout 30 docker rm -f "${c}" >/dev/null 2>&1 || true; done
 }
 
 # --- Metrics-capture sidecar (Prometheus + optional exporters) ---------------
@@ -742,7 +746,7 @@ trap stop_monitoring EXIT
 # behind the `cache` profile (skipped) and vllm's depends_on is required:false.
 VRAM_CSV="${RESULTS}/cliff-vram_only-${STAMP}.csv"
 run_arm_vram() {
-  rm_containers aic-vllm-gpu0 aic-lmcache
+  rm_containers "${VLLM_CONTAINER}" aic-lmcache
   log "=== Arm A (vram_only): plain vLLM (no LMCache) on :${VLLM_ENDPOINT_PORT} ==="
   export KV_TRANSFER_ARG="" # no connector -> plain VRAM-prefix-cache-only vLLM
   export GDS_MODE=""
@@ -797,7 +801,7 @@ YML
 run_arm_kvd() { # $1=mode(nvme|gds) $2=out_csv
   local mode="$1" out="$2"
   log "=== Arm B (kvd_v2, mode=${mode}) — LMCache MP connector ==="
-  rm_containers aic-vllm-gpu0 aic-lmcache
+  rm_containers "${VLLM_CONTAINER}" aic-lmcache
 
   # MP connector arg for vLLM (+ optional kv_load_failure_policy).  Single-quote
   # the JSON so compose's shlex splitting preserves the inner double quotes.
@@ -874,7 +878,7 @@ run_arm_kvd() { # $1=mode(nvme|gds) $2=out_csv
   docker logs -f --timestamps aic-lmcache \
     >>"${LOGDIR}/lmcache/lmcache-stream.log" 2>&1 &
   _lmcache_log_pid=$!
-  docker logs -f --timestamps aic-vllm-gpu0 \
+  docker logs -f --timestamps "${VLLM_CONTAINER}" \
     >>"${LOGDIR}/vllm/vllm-stream.log" 2>&1 &
   _vllm_log_pid=$!
 
