@@ -184,7 +184,7 @@ RUN --mount=type=cache,target=/root/.cache/pip \
 
 # ----- 3b. vLLM (built from source at pinned tag) --------------------------------
 
-RUN git clone --depth 1 --revision "${VLLM_REF}" "${VLLM_GIT_URL}" /app/vllm
+RUN git clone --depth 1 --branch "${VLLM_REF}" "${VLLM_GIT_URL}" /app/vllm
 
 # Patch setup.py so _is_hip() short-circuits on VLLM_TARGET_DEVICE=rocm at
 # build time, without probing torch.version.hip before it is installed.
