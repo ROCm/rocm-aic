@@ -116,8 +116,9 @@ bash "${CHECK_WHEELS}" "${tmp}/cdna" "${cdna}"
 bash "${CHECK_WHEELS}" "${tmp}/rdna" "${rdna}"
 # gfx1250 is not gfx9*, so it takes the no-FlashAttention set like RDNA.
 bash "${CHECK_WHEELS}" "${tmp}/rdna" "${gfx1250}"
-bash "${CHECK_WHEELS}" "${tmp}/rdna" "${release}"
-for bad in "rdna:${cdna}" "cdna:${rdna}" "cdna:${gfx1250}"; do
+# A mixed list builds FlashAttention (for its gfx9* archs) as soon as it has one.
+bash "${CHECK_WHEELS}" "${tmp}/cdna" "${release}"
+for bad in "rdna:${cdna}" "cdna:${rdna}" "cdna:${gfx1250}" "rdna:${release}"; do
     if bash "${CHECK_WHEELS}" "${tmp}/${bad%%:*}" "${bad#*:}" >/dev/null 2>&1; then
         echo "ERROR: check-wheels.sh accepted the ${bad%%:*} set for ROCM_ARCH='${bad#*:}'" >&2
         exit 1

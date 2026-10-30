@@ -99,6 +99,26 @@ jobs:
               echo "ERROR: RDNA tag: expected ${expected_rdna}, got ${rdna_tag}" >&2
               exit 1
             }
+          # Mixed override: FlashAttention included as soon as one arch is gfx9*
+          mixed_tag="$(
+            ROCM_ARCH=gfx942,gfx1201 \
+            ROCM_VERSION=8.7.6 \
+            PYTORCH_SERIES=9.9 \
+            PYTORCH_REF=release/9.9 \
+            VLLM_REF=v1.2.3 \
+            AITER_REF=v0.1.19 \
+            FLASH_ATTN_REF=0e60e394 \
+            LMCACHE_REF=v2.3.4 \
+            NIXL_REF=v3.4.5 \
+            HSA_SNOOP_REF=v4.5.6 \
+              bash docker/scripts/aic-image-tag.sh
+          )"
+          expected_mixed="${aic_version}-rocm8.7.6-pytorch9.9-vllm1.2.3-aiter0.1.19-fa0e60e394-lmcache2.3.4-nixl3.4.5-hsasnoop4.5.6-gfx942-1201"
+          [[ "${mixed_tag}" == "${expected_mixed}" ]] \
+            || {
+              echo "ERROR: mixed tag: expected ${expected_mixed}, got ${mixed_tag}" >&2
+              exit 1
+            }
           echo "Default tag: ${default_tag}"
           echo "Override tag (CDNA): ${override_tag}"
           echo "Override tag (RDNA): ${rdna_tag}"
