@@ -55,9 +55,12 @@ export LOG="${LOGDIR}"
 compose() { docker compose -f "${REPO}/docker/docker-compose.yml" "$@"; }
 
 cleanup() {
-  timeout 60 compose --profile kvbench logs --no-color --no-log-prefix kvbench client \
+  # `timeout` runs a program, not the compose() shell function.
+  timeout 60 docker compose -f "${REPO}/docker/docker-compose.yml" --profile kvbench \
+    logs --no-color --no-log-prefix kvbench client \
     > "${LOGDIR}/kvbench-compose.log" 2>&1 || true
-  timeout 60 compose --profile kvbench down --remove-orphans --timeout 10 >/dev/null 2>&1 || true
+  timeout 60 docker compose -f "${REPO}/docker/docker-compose.yml" --profile kvbench \
+    down --remove-orphans --timeout 10 >/dev/null 2>&1 || true
 }
 trap cleanup EXIT
 

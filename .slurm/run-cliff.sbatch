@@ -711,13 +711,17 @@ rm_containers() { docker rm -f "$@" >/dev/null 2>&1 || true; }
 # dir before tearing the stack down.  The compute node is ephemeral, so the logs
 # are lost otherwise -- and Prometheus captures metrics, not container stdout
 # (vLLM/LMCache/NIXL startup errors, stack traces, AIS debug lines live here).
-# `compose logs` for a service not started (e.g. lmcache on the vram arm) is a
-# harmless empty capture.  `compose down` removes containers + the bridge network.
-stop_stack() {
-  local svc c
+# Each arm's capture is named for the arm: every arm tears down the same services,
+# so a shared name left only the last arm's (empty, for vllm-only) log behind.
+# `compose down` removes containers + the bridge network.
+stop_stack() { # $1=arm  $2...=the services the arm started
+  local arm="$1" svc c
+  shift
   # Capture each service's logs before teardown (bounded).
-  for svc in vllm-only vllm lmcache; do
-    timeout 30 compose logs --no-color --no-log-prefix "${svc}" >"${LOGDIR}/container-aic-${svc}.log" 2>&1 || true
+  for svc in "$@"; do
+    # `timeout` runs a program, not the compose() shell function.
+    timeout 30 docker compose -f "${COMPOSE_FILE}" logs \
+        --no-color --no-log-prefix "${svc}" >"${LOGDIR}/container-aic-${svc}-${arm}.log" 2>&1 || true
   done
   # vLLM + lmcache run in a SHARED PID namespace (required for cross-container HIP
   # IPC KV registration).  That prevents docker from reaping vLLM's EngineCore
@@ -729,7 +733,8 @@ stop_stack() {
   pkill -9 -f 'EngineCore' 2>/dev/null || true
   pkill -9 -f 'lmcache server' 2>/dev/null || true
   sleep 2
-  timeout 60 compose --profile cache --profile vllm-only down --remove-orphans --timeout 5 >/dev/null 2>&1 || true
+  timeout 60 docker compose -f "${COMPOSE_FILE}" --profile cache --profile vllm-only \
+      down --remove-orphans --timeout 5 >/dev/null 2>&1 || true
   for c in "aic-vllm-only-gpu${GPU}" "aic-vllm-gpu${GPU}" aic-lmcache; do timeout 30 docker rm -f "${c}" >/dev/null 2>&1 || true; done
 }
 
@@ -758,18 +763,18 @@ run_arm_vram() {
   export GDS_MODE=""
   if ! compose --profile vllm-only up -d vllm-only; then
     log "Arm A: compose up vllm failed"
-    stop_stack
+    stop_stack vram_only vllm-only
     return 1
   fi
   if ! wait_ready "aic-vllm-only-gpu${GPU}" "${VLLM_ENDPOINT_PORT}"; then
     log "Arm A: server never became ready; last logs:"
     compose logs --tail 40 --no-color vllm-only 2>&1 | sed 's/^/    /'
-    stop_stack
+    stop_stack vram_only vllm-only
     return 1
   fi
   run_bench vram_only "aic-vllm-only-gpu${GPU}" "${VRAM_CSV}"
   local rc=$?
-  stop_stack
+  stop_stack vram_only vllm-only
   return $rc
 }
 
@@ -864,14 +869,14 @@ run_arm_kvd() { # $1=mode(nvme|gds) $2=out_csv
     log "kvd/${mode}: compose up failed; last logs:"
     compose logs --tail 40 --no-color lmcache 2>&1 | sed 's/^/  [lmcache] /'
     compose logs --tail 40 --no-color vllm 2>&1 | sed 's/^/  [vllm]    /'
-    stop_stack
+    stop_stack "kvd_${mode}" vllm lmcache
     return 1
   fi
   if ! wait_ready "aic-vllm-gpu${GPU}" "${VLLM_ENDPOINT_PORT}"; then
     log "kvd/${mode}: server never became ready; last logs:"
     compose logs --tail 40 --no-color lmcache 2>&1 | sed 's/^/  [lmcache] /'
     compose logs --tail 60 --no-color vllm 2>&1 | sed 's/^/  [vllm]    /'
-    stop_stack
+    stop_stack "kvd_${mode}" vllm lmcache
     return 1
   fi
   # Continuous container log streaming: capture lmcache + vllm stdout into
@@ -896,7 +901,7 @@ run_arm_kvd() { # $1=mode(nvme|gds) $2=out_csv
     --post-warmup-sleep-s "${POST_WARMUP_SLEEP_S:-300}"
   local rc=$?
   kill "${_lmcache_log_pid}" "${_vllm_log_pid}" 2>/dev/null || true
-  stop_stack
+  stop_stack "kvd_${mode}" vllm lmcache
   return $rc
 }
 
