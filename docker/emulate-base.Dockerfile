@@ -12,12 +12,24 @@ FROM python:3.12-bookworm
 # Match the SHELL used by docker/base/Dockerfile so bash-specific syntax in
 # docker/vllm/Dockerfile (shopt, arrays) works when this is the base context.
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
-RUN apt-get update && apt-get install -y --no-install-recommends \
-        cmake ninja-build git build-essential \
-    && rm -rf /var/lib/apt/lists/*
+
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
+    apt-get update && \
+    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+        software-properties-common && \
+    add-apt-repository ppa:git-core/ppa -y && \
+    apt-get update && \
+    apt-get install -y --no-install-recommends \
+        build-essential \
+        cmake \
+        git \
+        ninja-build
+
 RUN pip3 install --no-cache-dir \
         "torch~=2.13.0" torchvision \
         --index-url https://download.pytorch.org/whl/cpu
+
 # Pre-install all vLLM build-system requirements (from its pyproject.toml
 # [build-system].requires) so pip can prepare vLLM's metadata without failing
 # when resolving dependencies from inside the /app/vllm source tree.
