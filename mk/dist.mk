@@ -63,7 +63,7 @@ endif
         accuracy-test accuracy-test-fast accuracy-test-very-fast \
         install-ci-scripts prometheus-dump \
         cliff-kvbench-submit cliff-submit cliff-kvd cliff-spur-l2 cliff-spur-l2-debug \
-        cliff-short cliff-long-64k cliff-long-128k
+        cliff-short cliff-short-fast cliff-long-64k cliff-long-128k
 
 dist-build:
 	"$(DIST)" bake
@@ -232,6 +232,12 @@ cliff-short:
 	    BENCH_CONCUR="$${BENCH_CONCUR:-1}" BENCH_ITERS="$${BENCH_ITERS:-1}" \
 	    AIC_CLIFF_JOB_NAME=aic-cliff-short \
 	    $(_CLIFF_RUN)
+
+# The cliff loads the exact <name>-<tag>-<arch> tarballs, so after dist-build-fast
+# (single arch) it must resolve the same arch tag; see accuracy-test-fast.
+cliff-short-fast:
+	@$(MAKE) --no-print-directory cliff-short \
+	    AIC_ROCM_ARCH='$(AIC_FAST_ARCH)'
 
 cliff-long-64k:
 	@echo "cliff-long-64k: ISL=64000, YaRN x2 -> 65536, DRAM L1=64G, NVMe pool=262144, all 3 arms"
