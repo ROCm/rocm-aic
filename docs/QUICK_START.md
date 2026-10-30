@@ -46,14 +46,64 @@ make up-gds-l1 \
     VLLM_MODEL=openai/gpt-oss-120b
 ```
 
-## 4. Install host-side benchmark dependencies
+## 4. Ports, and running LMCache without compose
+
+`make up` puts the containers on a private docker bridge (`aic`). The ports
+below are container ports there, and the few that reach the host are published
+on `127.0.0.1` with a free port Docker picks (`make endpoints` prints them), so
+the stack never claims a fixed host port. If your environment offers only host
+networking (or you run `lmcache server` by hand), the processes share the host's
+port space and every port below must be chosen explicitly.
+
+| Port | Flag / variable | Compose default (container port) |
+| --- | --- | --- |
+| LMCache ZMQ (vLLM connector) | `--port`, `LMCACHE_PORT` | 6555 |
+| LMCache HTTP API | `--http-port` | 8080 |
+| LMCache Prometheus `/metrics` | `--prometheus-port` | 9091 |
+| NIXL telemetry (NIXL L2 only) | `NIXL_METRICS_PORT` | 19090 |
+| vLLM OpenAI API | `--port` | 8000 |
+
+> **Always pass `--prometheus-port`.** The AIC image patches LMCache to serve
+> `/metrics` from a dedicated listener on that port, and LMCache's own default
+> is **9090**. Leave it unset on a shared host and the server dies at startup
+> with `OSError: [Errno 98] Address already in use` from
+> `prometheus_client.start_http_server`, no matter what `--http-port` is.
+> `--disable-metrics` also avoids the error, but turns off every
+> `lmcache_mp_*` metric.
+
+> **Also pass `--http-host 0.0.0.0`** if anything outside the container needs
+> the HTTP API: LMCache binds it to `127.0.0.1` by default.
+
+A DRAM-only server with the same flags CI uses:
+
+```bash
+lmcache server \
+    --no-separate-object-groups \
+    --host 0.0.0.0 \
+    --http-host 0.0.0.0 \
+    --http-port 8080 \
+    --port 6555 \
+    --l1-size-gb 20 \
+    --eviction-policy LRU \
+    --max-gpu-workers 1 \
+    --worker-reap-timeout-seconds 3600 \
+    --prometheus-port 9091
+```
+
+The flags for the L2 configurations (NVMe, NFS, `nixl_posix`) are in the
+`x-lmcache-command` block of `docker/docker-compose.yml`; copy from there rather
+than reconstructing them. Point vLLM at the ZMQ port with the `lmcache.mp.port`
+entry of its `--kv-transfer-config` (the `LMCacheMPConnector` JSON in the
+`Makefile`).
+
+## 5. Install host-side benchmark dependencies
 
 ```bash
 make venv
 source .venv/bin/activate
 ```
 
-## 5. Run the cliff benchmark
+## 6. Run the cliff benchmark
 
 Run the baseline arm first, then the AIC arm against separate endpoints. Host
 ports are ephemeral, so `make endpoints` prints the URL of each running service;
@@ -79,7 +129,7 @@ make cliff-kvbench-local \
     BENCH_CONCUR=1,2
 ```
 
-## 6. Generate cliff charts
+## 7. Generate cliff charts
 
 ```bash
 make plot
