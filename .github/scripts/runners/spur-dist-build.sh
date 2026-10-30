@@ -9,6 +9,13 @@ set -Eeuo pipefail
 # the current SHA, and runs the requested dist-build target with a CI-scoped
 # image name and tarball path.  The tarball is left in place for
 # spur-smoke-test.sh; the run-attempt-scoped clone is always removed.
+#
+# AIC_REUSE_IMAGES=1 skips the build, and leaves the staged images alone, when
+# the aic-vllm and aic-lmcache tarballs for this SHA and the target's arch are
+# already staged.  The on-demand cliff workflow sets it, but its cliff stage
+# removes the staged images when it ends, pass or fail, so a re-run of that
+# workflow rebuilds.  Reuse only happens for images another flow left staged
+# (KEEP_ARTIFACTS=1) or whose cliff never ran.
 
 # errexit exits without saying where; report it.  Only the line number and
 # function call stack are printed, never the command text, which can carry
@@ -43,6 +50,7 @@ AIC_SPUR_HOST="${AIC_SPUR_HOST:?AIC_SPUR_HOST must be set (e.g. via GitHub repo 
 AIC_SPUR_HOST="${AIC_SPUR_HOST//[$'\t\r\n ']}"
 AIC_SHARED_NFS="${AIC_SHARED_NFS:?AIC_SHARED_NFS must be set (e.g. via GitHub repo variable)}"
 AIC_CI_STORAGE_ROOT="${AIC_CI_STORAGE_ROOT:-}"
+AIC_REUSE_IMAGES="${AIC_REUSE_IMAGES:-0}"
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=.github/scripts/runners/spur-ci-common.sh
 source "${SCRIPT_DIR}/spur-ci-common.sh"
@@ -55,6 +63,7 @@ aic_ci_ssh_bash \
     AIC_DIST_BUILD_TARGET="${AIC_DIST_BUILD_TARGET}" \
     AIC_SHARED_NFS="${AIC_SHARED_NFS}" \
     AIC_CI_STORAGE_ROOT="${AIC_CI_STORAGE_ROOT}" \
+    AIC_REUSE_IMAGES="${AIC_REUSE_IMAGES}" \
     AIC_BUILD_EXCLUDE_NODES="${AIC_BUILD_EXCLUDE_NODES:-}" << 'REMOTE'
 # -E inherit ERR trap in functions and subshells,
 # -e exit the script upon commands failing,
@@ -153,6 +162,43 @@ rm -rf "${WORKDIR}"
 git clone --filter=blob:none --no-single-branch "${REPO}" "${WORKDIR}"
 cd "${WORKDIR}"
 git checkout "${SHA}"
+
+# True when TARBALL_DIR already holds a complete tarball of each image the stages
+# after the build load, for the arch ${AIC_DIST_BUILD_TARGET} builds.  Names are
+# the <image>-<tag>-<arch>.tar* that _tarball_path in run-build-distribute.sh
+# writes; a tarball staged for another arch, or a *.partial.* one that a build is
+# still writing, does not count.  Whatever cannot be resolved counts as not
+# staged, which rebuilds.
+_make_var() {
+    AIC_SPUR_CLUSTER=1 make -s --no-print-directory -f Makefile -f - _aic_print \
+        AIC_PRINT_VAR="$1" <<< '_aic_print: ; @echo $($(AIC_PRINT_VAR))'
+}
+_images_staged() {
+    local arch tag name stem f found
+    case "${AIC_DIST_BUILD_TARGET}" in
+        dist-build-fast) arch="$(_make_var AIC_FAST_ARCH)" || return 1 ;;
+        *) arch="$(sed -n 's/^AIC_ROCM_ARCH="${AIC_ROCM_ARCH:-\(.*\)}"$/\1/p' \
+            .slurm/run-build-distribute.sh)" ;;
+    esac
+    [[ -n "${arch}" ]] || return 1
+    # Same derivation as _arch_tag.  The tag is the IMAGE_TAG make exports to the
+    # build, not a fresh aic-image-tag.sh run: make computes it before the SPUR
+    # ROCM_ARCH override, so it carries no arch suffix and the script would add one.
+    arch="$(printf '%s' "${arch}" | tr ';,: ' '----' | tr -s '-' | sed 's/^-//;s/-$//')"
+    tag="$(_make_var IMAGE_TAG)" || tag=""
+    for name in aic-vllm aic-lmcache; do
+        stem="${TARBALL_DIR}/${name}-${tag:-latest}-${arch}"
+        found=0
+        for f in "${stem}.tar" "${stem}.tar."*; do
+            [[ -f "${f}" && "${f}" != *.partial.* ]] && { found=1; break; }
+        done
+        (( found == 1 )) || return 1
+    done
+}
+if [[ "${AIC_REUSE_IMAGES}" == "1" ]] && _images_staged; then
+    echo "=== Reusing the images already staged in ${TARBALL_DIR}; skipping ${AIC_DIST_BUILD_TARGET} ==="
+    exit 0
+fi
 
 mkdir -p "${TARBALL_DIR}"
 
