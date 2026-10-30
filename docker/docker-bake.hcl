@@ -98,12 +98,13 @@ variable "WHEELS_DIR"     { default = "wheels-out" }
 
 # ---- Tag derivation (mirrors docker/scripts/aic-image-tag.sh) ----------------
 
-# FlashAttention is CDNA-only (gfx9xx): include it when every arch token is gfx9*
-# (an empty arch list is treated as CDNA, matching the script's conservative
-# default of including fa when the arch is unknown).
-function "cdna_only" {
+# FlashAttention is CDNA-only (gfx9xx): include it when at least one arch token
+# is gfx9*, in which case docker/vllm/Dockerfile compiles it for just those (an
+# empty arch list is treated as CDNA, matching the script's conservative default
+# of including fa when the arch is unknown).
+function "has_gfx9" {
   params = [arch]
-  result = length([for a in regexall("[^;, ]+", arch) : a if substr(a, 0, 4) != "gfx9"]) == 0
+  result = length(regexall("[^;, ]+", arch)) == 0 || length([for a in regexall("[^;, ]+", arch) : a if substr(a, 0, 4) == "gfx9"]) > 0
 }
 
 # Tag arch slug: strip the gfx prefix from each token and join with '-'
@@ -133,7 +134,7 @@ function "rocm_arch_list" {
 
 # The version portion of the tag (arch-independent apart from fa inclusion).
 variable "_TAG_BASE" {
-  default = "${AIC_VERSION}-rocm${ROCM_VERSION}-pytorch${PYTORCH_SERIES}-vllm${trimprefix(VLLM_REF, "v")}-aiter${trimprefix(AITER_REF, "v")}${cdna_only(ROCM_ARCH) ? "-fa${trimprefix(FLASH_ATTN_REF, "v")}" : ""}-lmcache${trimprefix(LMCACHE_REF, "v")}-nixl${trimprefix(NIXL_REF, "v")}-hsasnoop${trimprefix(HSA_SNOOP_REF, "v")}"
+  default = "${AIC_VERSION}-rocm${ROCM_VERSION}-pytorch${PYTORCH_SERIES}-vllm${trimprefix(VLLM_REF, "v")}-aiter${trimprefix(AITER_REF, "v")}${has_gfx9(ROCM_ARCH) ? "-fa${trimprefix(FLASH_ATTN_REF, "v")}" : ""}-lmcache${trimprefix(LMCACHE_REF, "v")}-nixl${trimprefix(NIXL_REF, "v")}-hsasnoop${trimprefix(HSA_SNOOP_REF, "v")}"
 }
 
 # Full image tag.  The arch suffix is dropped when ROCM_ARCH is empty, and

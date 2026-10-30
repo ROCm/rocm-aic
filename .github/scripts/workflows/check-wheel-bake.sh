@@ -44,7 +44,6 @@ workflow_env() {
 }
 cdna="$(workflow_env "${NIGHTLY}" CDNA_ARCH)"
 rdna="$(workflow_env "${NIGHTLY}" RDNA_ARCH)"
-gfx1250="$(workflow_env "${NIGHTLY}" GFX1250_ARCH)"
 release="$(workflow_env "${RELEASE}" ROCM_ARCH)"
 
 tmp="$(mktemp -d)"
@@ -53,7 +52,7 @@ trap 'rm -rf "${tmp}"' EXIT
 # The nightly workflow writes its arch lists ','-separated (they travel through
 # ssh to the SPUR head node, where a ';' would terminate the remote command),
 # so this also covers bake's rocm_arch_list() re-joining them with ';'.
-for arch in "${cdna}" "${rdna}" "${gfx1250}" "${release}"; do
+for arch in "${cdna}" "${rdna}" "${release}"; do
     echo "--- bake --print wheels, ROCM_ARCH='${arch}'"
     ROCM_ARCH="${arch}" docker buildx bake -f "${BAKE_FILE}" --print wheels \
         >"${tmp}/bake.json" 2>"${tmp}/bake.err" || {
@@ -114,10 +113,10 @@ fake_set "${tmp}/cdna" "${common[@]}" "${fa}"
 fake_set "${tmp}/rdna" "${common[@]}"
 bash "${CHECK_WHEELS}" "${tmp}/cdna" "${cdna}"
 bash "${CHECK_WHEELS}" "${tmp}/rdna" "${rdna}"
-# gfx1250 is not gfx9*, so it takes the no-FlashAttention set like RDNA.
-bash "${CHECK_WHEELS}" "${tmp}/rdna" "${gfx1250}"
-bash "${CHECK_WHEELS}" "${tmp}/rdna" "${release}"
-for bad in "rdna:${cdna}" "cdna:${rdna}" "cdna:${gfx1250}"; do
+# Mixed lists (cdna carries gfx1250, release carries RDNA) build FlashAttention
+# as soon as they hold a gfx9* arch.
+bash "${CHECK_WHEELS}" "${tmp}/cdna" "${release}"
+for bad in "rdna:${cdna}" "cdna:${rdna}" "rdna:${release}"; do
     if bash "${CHECK_WHEELS}" "${tmp}/${bad%%:*}" "${bad#*:}" >/dev/null 2>&1; then
         echo "ERROR: check-wheels.sh accepted the ${bad%%:*} set for ROCM_ARCH='${bad#*:}'" >&2
         exit 1
