@@ -96,7 +96,7 @@ COPY docker/lmcache/paged_cupy_memory_allocator.py \
      /app/paged_cupy_memory_allocator.py
 COPY docker/scripts/apply-github-prs.sh /usr/local/bin/apply-github-prs.sh
 
-RUN git clone --depth 1 --branch "${LMCACHE_REF}" "${LMCACHE_GIT_URL}" /app/LMCache
+RUN git clone --depth 1 --revision "${LMCACHE_REF}" "${LMCACHE_GIT_URL}" /app/LMCache
 
 RUN chmod +x /usr/local/bin/apply-github-prs.sh && \
     /usr/local/bin/apply-github-prs.sh \
@@ -184,7 +184,7 @@ COPY docker/lmcache/paged_cupy_memory_allocator.py \
      /app/paged_cupy_memory_allocator.py
 COPY docker/scripts/apply-github-prs.sh /usr/local/bin/apply-github-prs.sh
 
-RUN git clone --depth 1 --branch "${LMCACHE_REF}" "${LMCACHE_GIT_URL}" /app/LMCache
+RUN git clone --depth 1 --revision "${LMCACHE_REF}" "${LMCACHE_GIT_URL}" /app/LMCache
 
 RUN chmod +x /usr/local/bin/apply-github-prs.sh && \
     /usr/local/bin/apply-github-prs.sh \

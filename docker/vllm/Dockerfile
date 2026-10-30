@@ -128,9 +128,8 @@ RUN --mount=type=cache,target=/root/.cache/pip \
             "pybind11==3.0.4" \
             "ninja==1.13.0" \
             "flydsl==0.2.4" && \
-        git clone --depth 1 --branch "${AITER_REF}" "${AITER_GIT_URL}" /app/aiter && \
+        git clone --depth 1 --revision "${AITER_REF}" "${AITER_GIT_URL}" --recurse-submodules /app/aiter && \
         cd /app/aiter && \
-        git submodule update --init --recursive && \
         PYTORCH_ROCM_ARCH="${ROCM_ARCH}" \
             TORCH_DONT_CHECK_COMPILER_ABI=1 \
             MAX_JOBS="${BUILD_JOBS:-$(nproc)}" \
@@ -154,7 +153,7 @@ RUN --mount=type=cache,target=/root/.cache/pip \
     if [ "${VLLM_TARGET_DEVICE}" = "empty" ]; then \
         echo "Skipping FlashAttention (VLLM_TARGET_DEVICE=empty)"; \
     elif _cdna_only "${ROCM_ARCH}"; then \
-        git clone --depth 1 --branch "${FLASH_ATTN_REF}" \
+        git clone --depth 1 --revision "${FLASH_ATTN_REF}" \
             --recurse-submodules --shallow-submodules \
             "${FLASH_ATTN_GIT_URL}" /app/flash-attention && \
         python3 /app/patches/vllm/02-flash-attn-deprecated-attrs.py && \

@@ -72,6 +72,10 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     rm -f /etc/apt/apt.conf.d/docker-clean && \
     apt-get update && \
     DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+        software-properties-common && \
+    add-apt-repository ppa:git-core/ppa -y && \
+    apt-get update && \
+    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
         ca-certificates \
         ccache \
         cmake \
@@ -141,13 +145,36 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-13 130 \
         --slave /usr/bin/g++ g++ /usr/bin/g++-13
 
-RUN git clone "${PYTORCH_GIT_URL}" /app/pytorch && \
-    git -C /app/pytorch checkout "${PYTORCH_REF}"
+# Skip any submodules that are not necessary for our build
+# Some of these submodules are
+# - used only during testing
+# - platform specific (Windows, Android, CUDA)
+# - not used when built as part of pytorch
+RUN git -c submodule.third_party/XNNPACK.update=none \
+        -c submodule.third_party/cutlass.update=none \
+        -c submodule.third_party/flash-attention.update=none \
+        -c submodule.third_party/cudnn_frontend.update=none \
+        -c submodule.third_party/NVTX.update=none \
+        -c submodule.third_party/VulkanMemoryAllocator.update=none \
+        -c submodule.third_party/kleidiai.update=none \
+        -c submodule.third_party/mimalloc.update=none \
+        -c submodule."third_party/gemmlowp/gemmlowp".update=none \
+        -c submodule.third_party/python-peachpy.update=none \
+        -c submodule.third_party/ittapi.update=none \
+        -c submodule."android/libs/fbjni".update=none \
+        -c submodule."3rdparty/composable_kernel".update=none \
+        -c submodule."external/googletest".update=none \
+        -c submodule."external/hipify_torch".update=none \
+        -c submodule."libkineto/third_party/googletest".update=none \
+        -c submodule."libkineto/third_party/dynolog".update=none \
+        clone --depth 1 \
+              --revision "${PYTORCH_REF}" \
+              --recurse-submodules \
+              "${PYTORCH_GIT_URL}" /app/pytorch
 
 RUN --mount=type=cache,target=/root/.cache/uv \
     cd /app/pytorch && \
-    uv pip install --system -r requirements.txt && \
-    git submodule update --init --recursive
+    uv pip install --system -r requirements.txt
 
 COPY patches/pytorch/ /app/patches/pytorch/
 
@@ -201,7 +228,7 @@ ARG TORCHVISION_GIT_URL=https://github.com/pytorch/vision.git
 # Immutable tag.  Shallow clone, so this must be a branch or tag, not a SHA.
 ARG TORCHVISION_REF=v0.28.0
 
-RUN git clone --depth 1 --branch "${TORCHVISION_REF}" "${TORCHVISION_GIT_URL}" /app/vision
+RUN git clone --depth 1 --revision "${TORCHVISION_REF}" "${TORCHVISION_GIT_URL}" /app/vision
 
 # hadolint ignore=SC2086,DL3008
 RUN --mount=type=cache,target=/root/.cache/pip \
@@ -303,9 +330,13 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
 
 COPY patches/hip-ipc-event-ring-fix.patch /tmp/hip-ipc-event-ring-fix.patch
 
+# Note: when using --revision, tags are not available
+# git checkout command must reference HEAD instead, which is pointing to the commit in clone's --revision flag.
 RUN pip3 install --break-system-packages CppHeaderParser && \
-    git clone --filter=blob:none --no-checkout "${CLR_GIT_URL}" /app/rocm-systems && \
-    git -C /app/rocm-systems checkout "${CLR_REF}" -- projects/clr projects/hip && \
+    git clone --filter=blob:none --no-checkout --depth 1 --revision "${CLR_REF}" "${CLR_GIT_URL}" /app/rocm-systems && \
+    git -C /app/rocm-systems sparse-checkout init --cone && \
+    git -C /app/rocm-systems sparse-checkout set projects/clr projects/hip && \
+    git -C /app/rocm-systems checkout HEAD && \
     sed -i 's/const int offset = ipc_evt_.ipc_shmem_->read_index;/const int offset = ipc_evt_.ipc_shmem_->read_index % IPC_SIGNALS_PER_EVENT;/' \
         /app/rocm-systems/projects/clr/hipamd/src/hip_event_ipc.cpp && \
     grep -q "IPC_SIGNALS_PER_EVENT" /app/rocm-systems/projects/clr/hipamd/src/hip_event_ipc.cpp || \
