@@ -682,7 +682,12 @@ stop_stack() {
   local svc c
   # Capture each service's logs before teardown (bounded).
   for svc in vllm-only vllm lmcache; do
-    timeout 30 compose logs --no-color --no-log-prefix "${svc}" >"${LOGDIR}/container-aic-${svc}.log" 2>&1 || true
+    # NB: `compose` is a shell function; `timeout` execs a binary and cannot run
+    # one, so `timeout 30 compose ...` only ever wrote
+    # "timeout: failed to run command 'compose'" into the capture -- silently,
+    # via the `|| true`. Call docker directly so the logs are actually captured.
+    timeout 30 docker compose -f "${COMPOSE_FILE}" logs \
+        --no-color --no-log-prefix "${svc}" >"${LOGDIR}/container-aic-${svc}.log" 2>&1 || true
   done
   # vLLM + lmcache run in a SHARED PID namespace (required for cross-container HIP
   # IPC KV registration).  That prevents docker from reaping vLLM's EngineCore
@@ -694,7 +699,10 @@ stop_stack() {
   pkill -9 -f 'EngineCore' 2>/dev/null || true
   pkill -9 -f 'lmcache server' 2>/dev/null || true
   sleep 2
-  timeout 60 compose --profile cache --profile vllm-only down --remove-orphans --timeout 5 >/dev/null 2>&1 || true
+  # Same shell-function-under-timeout bug as the log capture above: this teardown
+  # never actually ran, leaving the stack's containers and bridge network behind.
+  timeout 60 docker compose -f "${COMPOSE_FILE}" --profile cache --profile vllm-only \
+      down --remove-orphans --timeout 5 >/dev/null 2>&1 || true
   for c in "aic-vllm-only-gpu${GPU}" "aic-vllm-gpu${GPU}" aic-lmcache; do timeout 30 docker rm -f "${c}" >/dev/null 2>&1 || true; done
 }
 
