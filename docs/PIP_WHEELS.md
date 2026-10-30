@@ -28,12 +28,11 @@ you a wheel that imports and then fails on the first kernel launch:
 
 | Release tag | Arch group | Hardware | Built |
 | --- | --- | --- | --- |
-| `nightly` | `gfx90a;gfx942;gfx950` | MI200 / MI300X / MI355X | every night |
+| `nightly` | `gfx90a;gfx942;gfx950;gfx1250` | MI200 / MI300X / MI355X, and the rocjitsu-emulated gfx1250 | every night |
 | `nightly-rdna` | `gfx1100;gfx1101;gfx1150;gfx1151;gfx1200;gfx1201` | RDNA3 / RDNA4 | on request |
-| `nightly-gfx1250` | `gfx1250` | rocjitsu-emulated GPU | on request |
 
-The on-request groups are built by dispatching the workflow with the `groups`
-input (`cdna,rdna`, `cdna,gfx1250`, or `cdna,rdna,gfx1250`).
+The on-request group is built by dispatching the workflow with the `groups`
+input set to `cdna,rdna`.
 
 ## One NIXL for the whole stack
 
@@ -51,8 +50,10 @@ These are **not** manylinux wheels:
   combos will fail to import.
 - Each wheel is compiled for one **arch group** (see the table above), named in
   the release notes. LMCache's HIP extension and vLLM's kernels are compiled for
-  every arch in the group. `flash_attn` is CDNA-only and is absent from the RDNA
-  and gfx1250 sets by design; vLLM falls back to Triton attention there.
+  every arch in the group. `flash_attn` is CDNA-only: it is compiled for the gfx9
+  archs in a group, so `nightly` carries it (without gfx1250 code) and
+  `nightly-rdna` does not; vLLM falls back to Triton attention where it is absent
+  or the GPU is not gfx9.
 - The `nixl_rocm` wheel bundles `libnixl` + the NIXL/UCX plugin `.so`s,
   but the **ROCm runtime (`libamdhip64`) and hipFile are external
   dependencies** — they must already be present on the host (they are,
