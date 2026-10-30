@@ -9,8 +9,11 @@ set -Eeuo pipefail
 # tarball left by spur-dist-build.sh, and runs a cliff benchmark.
 #
 # Usage: spur-cliff.sh <full-sha> <target>
-#   target: cliff-short  -- 1-point sweep, quick PR gate
-#           cliff-submit -- full 3-arm sweep, nightly/post-merge
+#   target: cliff-short      -- 1-point sweep, quick PR gate (all-arch image)
+#           cliff-short-fast -- cliff-short on the single-arch dist-build-fast image
+#           cliff-submit     -- full 3-arm sweep, nightly/post-merge
+# The cliff loads the exact tarballs for its arch, so the target must match the
+# build: dist-build-fast pairs with cliff-short-fast, dist-build with the others.
 #
 # `make <target>` blocks until the Slurm job ends and fails with it (see cmd_cliff
 # in run-build-distribute.sh), so this script only has to run it; the job's own
@@ -38,8 +41,8 @@ trap '_on_err "$?" "${PIPESTATUS[*]}" "$LINENO" "${FUNCNAME[*]-}"' ERR
 # Commit `make install-ci-scripts` deployed; if it predates your change, redeploy.
 echo "Installed CI scripts: $(cat "$(dirname -- "${BASH_SOURCE[0]}")/VERSION" || echo unknown)"
 
-SHA="${1:?usage: $0 <full-sha> <cliff-short|cliff-submit>}"
-TARGET="${2:?usage: $0 <full-sha> <cliff-short|cliff-submit>}"
+SHA="${1:?usage: $0 <full-sha> <cliff-short|cliff-short-fast|cliff-submit>}"
+TARGET="${2:?usage: $0 <full-sha> <cliff-short|cliff-short-fast|cliff-submit>}"
 SHORT="${SHA:0:7}"
 AIC_SPUR_HOST="${AIC_SPUR_HOST:?AIC_SPUR_HOST must be set (e.g. via GitHub repo variable)}"
 AIC_SPUR_HOST="${AIC_SPUR_HOST//[$'\t\r\n ']}"
@@ -49,8 +52,8 @@ KEEP_ARTIFACTS="${KEEP_ARTIFACTS:-0}"
 REPO="https://github.com/ROCm/rocm-aic.git"
 
 case "${TARGET}" in
-    cliff-short|cliff-submit) ;;
-    *) echo "ERROR: target must be cliff-short or cliff-submit" >&2; exit 1 ;;
+    cliff-short|cliff-short-fast|cliff-submit) ;;
+    *) echo "ERROR: target must be cliff-short, cliff-short-fast or cliff-submit" >&2; exit 1 ;;
 esac
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
