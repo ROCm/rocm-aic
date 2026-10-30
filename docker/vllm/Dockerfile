@@ -266,7 +266,8 @@ RUN git clone --filter=blob:none --no-checkout "${LLM_EMU_GIT_URL}" /app/llm-emu
             exit 1; \
         fi; \
     done && \
-    pip3 install --no-cache-dir --no-build-isolation --no-deps /app/llm-emu/ && \
+    python3 -m build --wheel --outdir /wheels/llm-emu/ && \
+    pip3 install --no-cache-dir --no-build-isolation --no-deps /wheels/llm-emu-*.whl && \
     python3 -c "import vllm_emulator.hooks.executor_hook, vllm_emulator.oracle, \
 vllm_emulator.profile.loader, vllm_emulator.profiler.trace_profiler; \
 print('vllm_emulator subpackages import OK')" && \
