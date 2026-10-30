@@ -1532,6 +1532,7 @@ docker buildx build --builder ${_builder} --progress=plain \
     ${_version_build_args} \
     --build-context "base=oci-layout://\${_base_oci_dir}" \
     --build-context "lmcache-wheels=\${_lmc_wheels_dir}" \
+    --build-context "base-wheels=\${_base_wheels_dir}" \
     ${_secret_arg} \
     ${_cache_args_vllm} \
     -f "${AIC_DAY_DIR}/docker/vllm/Dockerfile" \
@@ -4040,6 +4041,27 @@ echo "[bake] phase 1.5: building lmcache wheels for vllm context"
 # Read phase 2's lmcache cache dir, or the prune above makes this recompile
 # LMCache every run.  No --cache-to: that dir keeps a single ref, and it
 # should stay phase 2's full lmcache chain.
+
+_base_wheels_dir="\${TMPDIR}/lmcache-wheels.\${SLURM_JOB_ID:-\$\$}"
+mkdir -p "\${_base_wheels_dir}"
+BUILDKIT_STEP_LOG_MAX_SIZE=-1 \
+docker buildx build --builder ${AIC_BUILDX_BUILDER} --progress=plain \
+    --output "type=local,dest=\${_base_wheels_dir}" \
+    ${AIC_CACHE_DIR:+--cache-from type=local,src=${AIC_CACHE_DIR%/}/$(_arch_tag)/base} \
+    --build-arg ROCM_ARCH="${AIC_ROCM_ARCH}" \
+    --build-arg AIC_VERSION="${AIC_VERSION}" \
+    ${ROCM_VERSION:+--build-arg ROCM_VERSION="${ROCM_VERSION}"} \
+    ${ROCM_ARCH:+--build-arg ROCM_ARCH="${ROCM_ARCH}"} \
+    ${PYTORCH_REF:+--build-arg PYTORCH_REF="${PYTORCH_REF}"} \
+    ${TORCHVISION_REF:+--build-arg TORCHVISION_REF="${TORCHVISION_REF}"} \
+    ${NIXL_REF:+--build-arg NIXL_REF="${NIXL_REF}"} \
+    ${CLR_REF:+--build-arg CLR_REF="${CLR_REF}"} \
+    ${_secret_arg:+${_secret_arg}} \
+    --target wheels \
+    -f "${AIC_DAY_DIR}/docker/base/Dockerfile" \
+    "${AIC_DAY_DIR}"
+echo "[bake] base wheels ready: \$(ls \${_base_wheels_dir}/*.whl 2>/dev/null || echo '(none found)')"
+
 _lmc_wheels_dir="\${TMPDIR}/lmcache-wheels.\${SLURM_JOB_ID:-\$\$}"
 mkdir -p "\${_lmc_wheels_dir}"
 BUILDKIT_STEP_LOG_MAX_SIZE=-1 \
