@@ -1,3 +1,20 @@
+# On-demand cliff benchmark, driven by the PR slash command:
+#
+#   /run-cliff         dist-build-fast -> cliff-short-fast
+#
+# Self-contained: it builds the images for the SHA first (single-arch,
+# AIC_FAST_ARCH), then runs the cliff.
+#
+# Cleanup ownership: the cliff is the terminal stage and removes the clone and
+# staged images on exit, pass or fail (spur-cliff.sh; this workflow never sets
+# KEEP_ARTIFACTS); a failed build removes its own.  Retry with "Re-run all
+# jobs": "Re-run failed jobs" on the cliff job alone fails, because its images
+# are already gone.
+#
+# Requires (all already in use by sibling hardware-CI workflows):
+#   secrets.AIC_SPUR_HOST        — SSH target for the SPUR head node
+#   secrets.AIC_SHARED_NFS       — shared NFS path for image tarballs + scratch
+
 name: rocm-aic - Self Hosted - Cliff Test
 
 on:
@@ -51,13 +68,13 @@ jobs:
               });
               core.setOutput('sha', pr.head.sha);
               core.setOutput('pr_number', String(context.issue.number));
-              core.setOutput('target', 'cliff-short');
+              core.setOutput('target', 'cliff-short-fast');
               core.setOutput('should_run', 'true');
             } else {
               // workflow_dispatch
               core.setOutput('sha', context.sha);
               core.setOutput('pr_number', '');
-              core.setOutput('target', 'cliff-short');
+              core.setOutput('target', 'cliff-short-fast');
               core.setOutput('should_run', 'true');
             }
 
@@ -73,11 +90,20 @@ jobs:
               content: 'eyes',
             });
 
-  cliff:
+  # Build the single-arch images the cliff loads.
+  dist-build:
     needs: authorize
     if: needs.authorize.outputs.should_run == 'true'
+    # Serialise with the other hardware-CI workflows for the same PR: they share
+    # the staged images dir, which the terminal stage of each removes.  Job-level,
+    # not workflow-level: every PR comment starts this workflow, and a workflow
+    # that has not been authorised would otherwise enter the shared group and, as
+    # the single pending slot allows only one waiter, cancel a real /run-cliff.
+    concurrency:
+      group: hardware-ci-spur-${{ github.event.issue.number || github.sha }}
+      cancel-in-progress: false
     runs-on: [self-hosted, rocm-aic-cicd]
-    timeout-minutes: 240
+    timeout-minutes: 120
     permissions:
       pull-requests: write
       statuses: write
@@ -85,6 +111,7 @@ jobs:
       AIC_SPUR_HOST: ${{ secrets.AIC_SPUR_HOST }}
       AIC_SHARED_NFS: ${{ secrets.AIC_SHARED_NFS }}
       AIC_CI_STORAGE_ROOT: ${{ secrets.AIC_SHARED_NFS }}/rocm-aic
+      AIC_BUILD_EXCLUDE_NODES: ${{ vars.AIC_BUILD_EXCLUDE_NODES }}
 
     steps:
       - name: Set commit status to pending
@@ -97,6 +124,71 @@ jobs:
               repo: context.repo.repo,
               sha: '${{ needs.authorize.outputs.sha }}',
               state: 'pending',
+              target_url: `https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`,
+              context: 'hardware-ci / cliff',
+              description: 'Building images on the SPUR head node...',
+            });
+
+      - name: Build fast image on the SPUR head node
+        run: bash /usr/local/lib/aic-ci/spur-dist-build.sh "${{ needs.authorize.outputs.sha }}" dist-build-fast
+
+      - name: Set commit status on failure
+        if: failure() && needs.authorize.outputs.pr_number != ''
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          script: |
+            await github.rest.repos.createCommitStatus({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              sha: '${{ needs.authorize.outputs.sha }}',
+              state: 'failure',
+              target_url: `https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`,
+              context: 'hardware-ci / cliff',
+              description: 'Image build failed — check the run logs',
+            });
+
+      - name: Post failure comment on PR
+        if: failure() && needs.authorize.outputs.pr_number != ''
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          script: |
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: ${{ needs.authorize.outputs.pr_number || 0 }},
+              body: `❌ dist-build-fast failed for ${{ needs.authorize.outputs.sha }}, so the cliff did not run. [View logs](https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}).`,
+            });
+
+  cliff:
+    needs: [authorize, dist-build]
+    if: needs.authorize.outputs.should_run == 'true'
+    # Same group as dist-build above (see the note there).
+    concurrency:
+      group: hardware-ci-spur-${{ github.event.issue.number || github.sha }}
+      cancel-in-progress: false
+    runs-on: [self-hosted, rocm-aic-cicd]
+    timeout-minutes: 240
+    permissions:
+      pull-requests: write
+      statuses: write
+    env:
+      AIC_SPUR_HOST: ${{ secrets.AIC_SPUR_HOST }}
+      AIC_SHARED_NFS: ${{ secrets.AIC_SHARED_NFS }}
+      AIC_CI_STORAGE_ROOT: ${{ secrets.AIC_SHARED_NFS }}/rocm-aic
+      AIC_BUILD_EXCLUDE_NODES: ${{ vars.AIC_BUILD_EXCLUDE_NODES }}
+
+    steps:
+      - name: Set commit status to pending
+        if: needs.authorize.outputs.pr_number != ''
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          script: |
+            await github.rest.repos.createCommitStatus({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              sha: '${{ needs.authorize.outputs.sha }}',
+              state: 'pending',
+              target_url: `https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`,
               context: 'hardware-ci / cliff',
               description: 'Running cliff benchmark on the SPUR head node...',
             });
