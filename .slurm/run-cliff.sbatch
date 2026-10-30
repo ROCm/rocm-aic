@@ -4,34 +4,17 @@
 #
 # SPDX-License-Identifier: MIT
 #
-#SBATCH --job-name=aic-day-cliff
-#SBATCH --partition=defq
-# Default: a gfx942 (MI300X) node with local NVMe -- the validated tiered-cache
-# path.  To target another GFX arch, override the constraint on the sbatch
-# command line (a command-line --constraint wins over this directive), most
-# easily via the Makefile knobs:
-#   make cliff-submit AIC_CLIFF_GFX=gfx950
-#   make cliff-submit AIC_CLIFF_CONSTRAINT=<site>&GFX90A
+# Job shape (partition, GPU request, node selection, time) is NOT set here: this
+# script is run as the job body by `run-build-distribute.sh cliff`, which submits
+# it through _sbatch_run -- see cmd_cliff there, and the AIC_CLIFF_* knobs it
+# documents.  Reach it with `make cliff-submit` (or cliff-short, cliff-kvd, ...);
+# to target another GFX arch use `make cliff-submit AIC_CLIFF_GFX=gfx950`.  The
+# model is auto-selected from the node's GPU arch (big CDNA gfx942/gfx950 ->
+# gpt-oss-120b, else a small model; see select_default_model below) unless
+# VLLM_MODEL is set.  The default image already carries kernels for every arch
+# (`make dist-build` is multi-arch by default), so no rebuild is needed.
 # Non-gfx942 nodes have no local NVMe, so the nvme/gds arms drop to /tmp
-# (AIC_NVME_AUTO case 4).  The model is auto-selected from the node's GPU arch
-# (big CDNA gfx942/gfx950 -> gpt-oss-120b, else a small model; see
-# select_default_model below) unless VLLM_MODEL is set.  The default image
-# already carries kernels for every arch (`make dist-build` is multi-arch by
-# default), so no rebuild is needed.
-# Constraint: set via --constraint on the sbatch command line or via
-# AIC_CLIFF_CONSTRAINT / AIC_CLIFF_GFX in the Makefile.
-#SBATCH --constraint=GFX942&NVME
-#SBATCH --gres=gpu:1
-#SBATCH --nodes=1
-#SBATCH --ntasks=1
-#SBATCH --cpus-per-task=16
-#SBATCH --mem=64G
-#SBATCH --time=03:00:00
-# Discard Slurm's own stdout: the script re-redirects all output into
-# logs/<job-id>/cliff.out as soon as it starts (see below), so this only ever
-# sees the few lines before that redirect -- not worth a file.  (Slurm can't
-# create logs/<job-id>/ itself, hence the in-script redirect rather than %j here.)
-#SBATCH --output=/dev/null
+# (AIC_NVME_AUTO case 4).
 #
 # Run the KV-cache cliff benchmark (benchmarks/run_cliff.py) end-to-end on ONE
 # MI300X + local-NVMe node, sweeping all three arms sequentially:
@@ -49,14 +32,14 @@
 # plotted separately against the shared vram_only baseline so the NVMe-L2 and
 # GDS-L1 backends can be compared.
 #
-# Submit from the aic-day-release/ tree root:
+# Submit from the aic-day-release/ tree root (blocks until the job ends):
 #
-#   sbatch .slurm/run-cliff.sbatch
+#   make cliff-submit
 #   # pin a node:
-#   sbatch --nodelist=<node-name> .slurm/run-cliff.sbatch
+#   make cliff-submit AIC_CLIFF_NODE=<node-name>
 #   # override the sweep / model:
 #   BENCH_CONCUR=1,8,32,64,128,250 VLLM_MODEL=openai/gpt-oss-120b \
-#       sbatch .slurm/run-cliff.sbatch
+#       make cliff-submit
 #
 # Storage note: MI300X nodes typically expose 4x 3.5T Samsung NVMe -- nvme0 is
 # the OS root, and the spares (nvme1-3) are typically RAW and UNMOUNTED.  To keep the LMCache NVMe tier off
@@ -84,21 +67,18 @@ export PATH="/usr/local/bin:${PATH}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO="${SLURM_SUBMIT_DIR:-$(cd "${SCRIPT_DIR}/.." && pwd)}"
 
-# Send all output to logs/<job-id>/cliff.out under the repo.  Slurm can't create
-# the parent dir (and the job id isn't known at submit time), so we make it here
-# and redirect the whole script's stdout+stderr into it.  Slurm's own --output is
-# /dev/null, so if mkdir fails (e.g. a misresolved REPO) the few pre-redirect
-# lines are lost -- acceptable; sacct still reports the failure.
 # Everything this job produces -- cliff.out, container logs, the Prometheus TSDB,
-# the generated LMCache config, and now the benchmark CSVs + plots -- lives under
-# this one per-job dir, so the tree root stays clean (no stray results/ or plots/).
+# the generated LMCache config, and the benchmark CSVs + plots -- lives under one
+# per-job dir, so the tree root stays clean (no stray results/ or plots/).
+# `run-build-distribute.sh cliff` (via _sbatch_run) has already created it and
+# pointed this script's stdout/stderr at logs/<job-id>/cliff.out; it also records
+# our exit status in logs/<job-id>/cliff.exit, which callers gate on rather than
+# on sacct (SPUR can account a failed job as `COMPLETED` with ExitCode `-1:0`).
 # LOGDIR_REL is the same path relative to REPO: containers bind-mount REPO at /work
 # and write via this relative path (see run_bench / plot_pair).
 LOGDIR_REL="logs/${SLURM_JOB_ID:-manual}"
 LOGDIR="${REPO}/${LOGDIR_REL}"
-if mkdir -p "${LOGDIR}" 2>/dev/null; then
-  exec >>"${LOGDIR}/cliff.out" 2>&1
-fi
+mkdir -p "${LOGDIR}" 2>/dev/null || true
 
 _aic_tag="$(bash "${REPO}/docker/scripts/aic-image-tag.sh" 2>/dev/null || true)"
 # The stack is two images, aic-vllm (served) and aic-lmcache (the standalone
