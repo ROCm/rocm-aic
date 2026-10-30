@@ -87,6 +87,12 @@ ARG VLLM_REF=v0.29.0
 ARG VLLM_TARGET_DEVICE=rocm
 ARG AITER_GIT_URL=https://github.com/ROCm/aiter.git
 ARG AITER_REF=v0.1.22.post1
+# FlyDSL must be the version AITER pins (setup.py FLYDSL_VERSION).  The AITER
+# wheel is installed --no-deps, so that pin is never applied for us, and a stale
+# one only fails at first use: AITER JIT-compiles its FlyDSL kernels at runtime,
+# so a mismatch builds clean and then kills engine init.  The RUN below fails the
+# build if this drifts from the clone's pin; bump the two together.
+ARG FLYDSL_VERSION=0.3.2
 ARG FLASH_ATTN_GIT_URL=https://github.com/Dao-AILab/flash-attention.git
 ARG FLASH_ATTN_REF=v2.8.3.post1
 # AITER kernels are JIT-compiled on first use, which costs 5-10 min on every
@@ -167,10 +173,19 @@ RUN --mount=type=cache,target=/root/.cache/pip \
             "einops==0.8.2" \
             "pybind11==3.0.4" \
             "ninja==1.13.0" \
-            "flydsl==0.2.4" && \
+            "flydsl==${FLYDSL_VERSION}" && \
         git clone --depth 1 --branch "${AITER_REF}" "${AITER_GIT_URL}" /app/aiter && \
         cd /app/aiter && \
         git submodule update --init --recursive && \
+        _aiter_flydsl="$(sed -nE 's/^FLYDSL_VERSION[[:space:]]*=[[:space:]]*"flydsl==([^"]+)".*/\1/p' setup.py | head -n1)" && \
+        : "${_aiter_flydsl:=$(sed -nE 's/^flydsl==([^[:space:]#]+).*/\1/p' requirements.txt | head -n1)}" && \
+        if [ -z "${_aiter_flydsl}" ]; then \
+            echo "ERROR: no flydsl pin found in AITER ${AITER_REF} setup.py or requirements.txt; fix the guard in this RUN"; \
+            exit 1; \
+        elif [ "${_aiter_flydsl}" != "${FLYDSL_VERSION}" ]; then \
+            echo "ERROR: AITER ${AITER_REF} pins flydsl==${_aiter_flydsl} but FLYDSL_VERSION=${FLYDSL_VERSION}; bump FLYDSL_VERSION"; \
+            exit 1; \
+        fi && \
         _prebuild="${AITER_PREBUILD_KERNELS}" && \
         case "${ROCM_ARCH}" in \
             *\;*) [ "${_prebuild}" = "0" ] || \
