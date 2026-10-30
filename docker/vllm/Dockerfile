@@ -137,15 +137,15 @@ RUN --mount=type=cache,target=/root/.cache/pip \
         git clone --depth 1 --branch "${AITER_REF}" "${AITER_GIT_URL}" /app/aiter && \
         cd /app/aiter && \
         git submodule update --init --recursive && \
+        PYTORCH_ROCM_ARCH="${ROCM_ARCH}" TORCH_DONT_CHECK_COMPILER_ABI=1 \
+            python3 /app/patches/aiter/01-jit-use-pytorch-rocm-arch.py && \
         PYTORCH_ROCM_ARCH="${ROCM_ARCH}" \
             TORCH_DONT_CHECK_COMPILER_ABI=1 \
             MAX_JOBS="${BUILD_JOBS:-$(nproc)}" \
             CCACHE_DIR=/root/.cache/ccache CCACHE_MAXSIZE=25G \
             python3 setup.py bdist_wheel --dist-dir=/wheels && \
         pip3 install --no-cache-dir --no-deps /wheels/amd_aiter-*.whl && \
-        python3 -c 'import importlib.util; spec = importlib.util.find_spec("aiter"); assert spec and spec.submodule_search_locations; print("AITER installed:", next(iter(spec.submodule_search_locations)))' && \
-        PYTORCH_ROCM_ARCH="${ROCM_ARCH}" TORCH_DONT_CHECK_COMPILER_ABI=1 \
-            python3 /app/patches/aiter/01-jit-use-pytorch-rocm-arch.py; \
+        python3 -c 'import importlib.util; spec = importlib.util.find_spec("aiter"); assert spec and spec.submodule_search_locations; print("AITER installed:", next(iter(spec.submodule_search_locations)))'; \
     fi
 
 # FlashAttention: CDNA-only (gfx9xx — MI100/MI200/MI300/MI355X).
