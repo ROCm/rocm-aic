@@ -33,6 +33,7 @@
 | `AIC_ROCR_VISIBLE` | resolved GPU set | `ROCR_VISIBLE_DEVICES` for every container with `/dev/kfd`. **Absolute** host GPU IDs (e.g. `3` or `2,5`). On standard Slurm, preserves `ROCR_VISIBLE_DEVICES`, then `HIP_VISIBLE_DEVICES`, then `CUDA_VISIBLE_DEVICES`; on SPUR it comes from the controller allocation and an unresolvable allocation fails the job. |
 | `AIC_HIP_VISIBLE` | relative to `AIC_ROCR_VISIBLE` | `HIP_VISIBLE_DEVICES` and `CUDA_VISIBLE_DEVICES`. **Relative** indices `0..n-1` (e.g. `0` or `0,1`) — HIP filters the set ROCR already filtered. Set together with `AIC_ROCR_VISIBLE`. |
 | `AIC_CLIFF_GPUS` | `1` | GPUs reserved by a SPUR `make cliff-submit` (`--gpus=N`). Raise only alongside a matching `TENSOR_PARALLEL_SIZE` |
+| `AIC_DOCKER_PREFLIGHT_TIMEOUT` | `120` | Seconds each `docker info` / `docker system df` probe of the SPUR job preflight may take before the node is declared wedged and the job fails |
 | `AIC_TEST_GPUS` | `1` | GPUs reserved by SPUR `smoke-test` and `tiny-test` jobs (`--gpus=N`). Standard Slurm continues to use `AIC_TEST_GRES`. |
 | `AIC_NVME_AUTO` | `1` (cliff) | Auto-detect a dedicated local NVMe for the LMCache tiers: reuse a mounted `aic-lmcache` volume, else format+mount a raw non-root spare, else use a non-root mounted NVMe, else node-local `/tmp`. `0` forces `/tmp`; needs passwordless `sudo` to format/mount |
 | `AIC_NVME_MOUNT` | `/mnt/aic-lmcache` | Mountpoint used when auto-provisioning a spare NVMe (left mounted for reuse) |

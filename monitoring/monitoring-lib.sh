@@ -109,17 +109,36 @@ aic_resolve_gpu_visibility() {
     log "GPU allocation for job ${SLURM_JOB_ID:-<none>} (${from}): ROCR=${AIC_ROCR_VISIBLE} HIP=${AIC_HIP_VISIBLE}"
 }
 
-# Pre-flight check: detect a broken containerd overlay snapshotter before
-# wasting time loading images or creating containers.  The symptom is:
+# Pre-flight check: detect a wedged dockerd or a broken containerd overlay
+# snapshotter before wasting time loading images or creating containers.  The
+# snapshotter symptom is:
 #   "apply layer error: failed to open database file: ...metadata.db"
-# which occurs on cluster nodes where containerd lost its snapshot store.
+# which occurs on cluster nodes where containerd lost its snapshot store.  A
+# wedged dockerd instead answers nothing at all (job 154408 sat 35 minutes in a
+# `docker images -q` and held its node until the job's time limit), so each probe
+# is bounded by AIC_DOCKER_PREFLIGHT_TIMEOUT seconds (default 120).  `timeout`
+# execs a program, so this bounds the docker binary; it could not run a shell
+# function such as compose().
 # Returns non-zero (caller should exit 1) if Docker or the snapshotter is broken.
 aic_docker_preflight() {
     local host; host=$(hostname)
-    docker info >/dev/null 2>&1 \
-        || { printf '[preflight] FATAL: docker daemon unreachable on %s\n' "${host}" >&2; return 1; }
-    docker system df >/dev/null 2>&1 \
-        || { printf '[preflight] FATAL: docker overlay snapshotter broken on %s (containerd metadata.db missing?) -- resubmit to a different node\n' "${host}" >&2; return 1; }
+    local limit="${AIC_DOCKER_PREFLIGHT_TIMEOUT:-120}" rc=0
+    timeout -k 10 "${limit}" docker info >/dev/null 2>&1 || rc=$?
+    if (( rc == 124 || rc == 137 )); then
+        printf '[preflight] FATAL: docker daemon on %s did not answer docker info within %ss (wedged dockerd) -- resubmit to a different node\n' "${host}" "${limit}" >&2
+        return 1
+    elif (( rc != 0 )); then
+        printf '[preflight] FATAL: docker daemon unreachable on %s (docker info exit %s)\n' "${host}" "${rc}" >&2
+        return 1
+    fi
+    timeout -k 10 "${limit}" docker system df >/dev/null 2>&1 || rc=$?
+    if (( rc == 124 || rc == 137 )); then
+        printf '[preflight] FATAL: docker system df on %s did not answer within %ss (wedged dockerd) -- resubmit to a different node\n' "${host}" "${limit}" >&2
+        return 1
+    elif (( rc != 0 )); then
+        printf '[preflight] FATAL: docker overlay snapshotter broken on %s (containerd metadata.db missing?) -- resubmit to a different node\n' "${host}" >&2
+        return 1
+    fi
     log "docker preflight OK on ${host}"
 }
 
