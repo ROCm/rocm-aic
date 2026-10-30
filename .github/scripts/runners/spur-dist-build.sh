@@ -156,12 +156,13 @@ git checkout "${SHA}"
 
 mkdir -p "${TARBALL_DIR}"
 
+# AIC_BUILD_EXCLUDE_NODES, when set, is already in this shell's environment and so
+# reaches make unchanged.
 echo "=== Running ${AIC_DIST_BUILD_TARGET} (AIC_SPUR_CLUSTER=1, AIC_IMAGE_NAME=${AIC_IMAGE_NAME}) ==="
 AIC_SPUR_CLUSTER=1 \
     AIC_IMAGE_NAME="${AIC_IMAGE_NAME}" \
     AIC_IMAGE_DIR="${TARBALL_DIR}" \
     AIC_CACHE_DIR="${CACHE_DIR}" \
-    ${AIC_BUILD_EXCLUDE_NODES:+AIC_BUILD_EXCLUDE_NODES="${AIC_BUILD_EXCLUDE_NODES}"} \
     _err_delegate make "${AIC_DIST_BUILD_TARGET}"
 
 echo "=== ${AIC_DIST_BUILD_TARGET} complete — tarball in ${TARBALL_DIR} ==="
