@@ -40,27 +40,30 @@ _on_err() {
         "${0##*/}" "$1" "$2" "$3" "${4:+ in ${4// / <- }}" >&2 || :
 }
 trap '_on_err "$?" "${PIPESTATUS[*]}" "$LINENO" "${FUNCNAME[*]-}"' ERR
-# Run a child that reports its own failures; only the child reports.
-_err_delegate() { local _aic_err_child_reports=1; "$@"; }
 
 SHA="${1:?usage: $0 <full-sha> [run-date]}"
 RUN_DATE="${2:-$(date +%Y-%m-%d)}"
 SHORT="${SHA:0:7}"
-AIC_IMAGE_NAME="rocm-aic-ci-${SHORT}"
 AIC_SPUR_HOST="${AIC_SPUR_HOST:?AIC_SPUR_HOST must be set (e.g. via GitHub repo variable)}"
 AIC_SPUR_HOST="${AIC_SPUR_HOST//[$'\t\r\n ']}"
 AIC_SHARED_NFS="${AIC_SHARED_NFS:?AIC_SHARED_NFS must be set (e.g. via GitHub repo variable)}"
 AIC_CI_STORAGE_ROOT="${AIC_CI_STORAGE_ROOT:-}"
 REPO="https://github.com/ROCm/rocm-aic.git"
 
-_err_delegate ssh -o ServerAliveInterval=30 -o ServerAliveCountMax=4 "${AIC_SPUR_HOST}" env \
+# This script runs from the workflow checkout rather than the deployed
+# /usr/local/lib/aic-ci copy, so take the session helpers from the same checkout.
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=.github/scripts/runners/spur-ci-common.sh
+source "${SCRIPT_DIR}/../runners/spur-ci-common.sh"
+aic_ci_session_init "${SHORT}" "cliff-harvest"
+
+aic_ci_ssh_bash \
     SHA="${SHA}" \
     REPO="${REPO}" \
     RUN_DATE="${RUN_DATE}" \
-    AIC_IMAGE_NAME="${AIC_IMAGE_NAME}" \
     AIC_SHARED_NFS="${AIC_SHARED_NFS}" \
     AIC_CI_STORAGE_ROOT="${AIC_CI_STORAGE_ROOT}" \
-    bash << 'REMOTE'
+    AIC_BUILD_EXCLUDE_NODES="${AIC_BUILD_EXCLUDE_NODES:-}" << 'REMOTE'
 # -E inherit ERR trap in functions and subshells,
 # -e exit the script upon commands failing,
 # -u to error if the script ever references a variable that is unset,
@@ -72,6 +75,8 @@ set -Eeuo pipefail
 _on_err() {
     # set -E carries this trap into $(...), where errexit is off.
     [[ $- == *e* ]] || return 0
+    # The failing command was a child that reports its own failures.
+    [[ -z ${_aic_err_child_reports-} ]] || return 0
     # || : so a failed write cannot replace the exit status.
     printf '%s: command failed (exit %s, pipeline status %s) at line %s%s\n' \
         'spur-cliff-harvest.sh (remote)' "$1" "$2" "$3" "${4:+ in ${4// / <- }}" >&2 || :
@@ -80,17 +85,82 @@ trap '_on_err "$?" "${PIPESTATUS[*]}" "$LINENO" "${FUNCNAME[*]-}"' ERR
 export PATH="/usr/local/bin:${PATH}"
 
 SHORT="${SHA:0:7}"
-WORKDIR="$HOME/Projects/rocm-aic.${SHORT}"
+WORKDIR="$HOME/Projects/rocm-aic.${SHORT}.${AIC_CI_RUN_KEY}"
 CI_STORAGE_ROOT="${AIC_CI_STORAGE_ROOT:-$HOME/Projects/rocm-aic-ci}"
 TARBALL_DIR="${CI_STORAGE_ROOT}/images/aic-ci-${SHORT}"
 CLIFF_STAGING_DIR="${AIC_SHARED_NFS}/${USER}/cliff-results-${SHORT}"
+CONTROL_PREFIX="${CI_STORAGE_ROOT}/control/${SHORT}.${AIC_CI_RUN_KEY}.${AIC_CI_STAGE}"
+PID_FILE="${CONTROL_PREFIX}.pid"
+JOB_FILE="${CONTROL_PREFIX}.job"
+CANCEL_FILE="${CONTROL_PREFIX}.cancel"
+SUBMIT_LOG=""
+
+mkdir -p "${CI_STORAGE_ROOT}/control"
+printf '%s\n' "${BASHPID}" > "${PID_FILE}"
+if [[ -e "${CANCEL_FILE}" ]]; then
+    echo "CI session was cancelled before remote startup completed" >&2
+    rm -f "${PID_FILE}" "${JOB_FILE}" "${CANCEL_FILE}" 2>/dev/null || true
+    exit 143
+fi
+# A cliff holds a GPU for hours: record the Slurm job id where the wrapper's
+# cancel path can find it.
+export AIC_CI_ACTIVE_JOB_FILE="${JOB_FILE}"
+
+_best_effort_remove() {
+    rm -rf "$@" || echo "WARNING: cleanup could not fully remove: $*" >&2
+}
+
+# Keep the SPUR job logs that cleanup would otherwise delete with the worktree, so
+# a failed run can still be debugged.
+_archive_job_logs() {
+    local archive="${CI_STORAGE_ROOT}/joblogs/${SHORT}.${AIC_CI_RUN_KEY}.${AIC_CI_STAGE}"
+    local -a srcs=()
+    shopt -s nullglob
+    srcs=("${WORKDIR}"/spur-*.out)
+    shopt -u nullglob
+    [[ -d "${WORKDIR}/logs" ]] || (( ${#srcs[@]} > 0 )) || return 0
+    if ! mkdir -p "${archive}"; then
+        echo "WARNING: cannot create ${archive}; SPUR job logs will be lost" >&2
+        return 0
+    fi
+    # logs/<job-id>/ also holds the Prometheus TSDB, results and plots, which are
+    # large and not diagnostics, and this is near-full shared NFS: keep only the
+    # job's *.out/*.exit, the container-*.log files and the vllm/ and lmcache/
+    # log dirs, under the same <job-id>/ layout.
+    if [[ -d "${WORKDIR}/logs" ]]; then
+        (cd "${WORKDIR}/logs" && find . -type f -regextype posix-extended \
+            -regex './[^/]+/([^/]+\.(out|exit)|container-[^/]+\.log|(vllm|lmcache)/.+)' -print0 |
+            xargs -0 -r cp --parents -a -t "${archive}") ||
+            echo "WARNING: some SPUR job logs could not be archived to ${archive}" >&2
+    fi
+    (( ${#srcs[@]} == 0 )) || cp -a "${srcs[@]}" "${archive}/" ||
+        echo "WARNING: some SPUR job logs could not be archived to ${archive}" >&2
+    echo "=== SPUR job logs kept at $(hostname):${archive} ==="
+    # Bounded retention -- this is shared, quota'd NFS.  A failure here silently
+    # leaks quota until it breaks unrelated jobs, so report it; do not let it
+    # fail the cleanup path, which is already handling an earlier failure.
+    local prune_err="" prune_rc=0
+    prune_err=$(find "${CI_STORAGE_ROOT}/joblogs" -mindepth 1 -maxdepth 1 -type d \
+        -mtime +14 -exec rm -rf {} + 2>&1 >/dev/null) || prune_rc=$?
+    if (( prune_rc != 0 )) || [[ -n "${prune_err}" ]]; then
+        echo "WARNING: could not expire SPUR job logs older than 14d under" \
+            "${CI_STORAGE_ROOT}/joblogs (rc=${prune_rc}): ${prune_err:-no error output}" >&2
+    fi
+}
 
 cleanup() {
+    local rc=$?
+    trap - EXIT
+    (( rc == 0 )) || _archive_job_logs
     echo "=== Cleaning up WORKDIR and TARBALL_DIR ==="
-    rm -rf "${WORKDIR}" "${TARBALL_DIR}" 2>/dev/null || \
-        rm -rf "${WORKDIR}" "${TARBALL_DIR}" 2>/dev/null || true
+    _best_effort_remove "${WORKDIR}" "${TARBALL_DIR}"
+    [[ -z "${SUBMIT_LOG}" ]] || _best_effort_remove "${SUBMIT_LOG}"
     # CLIFF_STAGING_DIR is on NFS and intentionally NOT cleaned here;
     # it is removed by the runner after scp completes.
+    if (( rc == 0 )); then
+        rm -f "${PID_FILE}" "${JOB_FILE}" "${CANCEL_FILE}" 2>/dev/null || true
+    fi
+    exit "${rc}"
 }
 trap cleanup EXIT
 
@@ -112,38 +182,34 @@ if [[ ! -d "${TARBALL_DIR}" ]]; then
 fi
 
 # ---------------------------------------------------------------------------
-# Submit the cliff job and poll for completion
+# Run the cliff job
 # ---------------------------------------------------------------------------
-echo "=== Submitting cliff-submit job (AIC_IMAGE_NAME=${AIC_IMAGE_NAME}) ==="
-JOB_ID=$(AIC_SPUR_CLUSTER=1 \
-    AIC_IMAGE_NAME="${AIC_IMAGE_NAME}" \
+# `make cliff-submit` blocks until the Slurm job ends and fails with it:
+# _sbatch_run takes the job's exit file as the verdict (SPUR's accounting is not
+# trustworthy -- job 150665 died on `docker load` and still accounted as
+# COMPLETED) and falls back to a terminal sacct state, never to a bare queue
+# check.  Tee the output so it streams into the CI log as the job runs and the job
+# id, which names the results dir, can be read back afterwards.
+echo "=== Running cliff-submit ==="
+SUBMIT_LOG="$(mktemp)"
+# make reports its own failure.  A function-scoped flag (_err_delegate) cannot
+# silence this pipeline: the failure is reported from this shell after the
+# pipeline returns, when the function's local is gone.  Set it here instead; a
+# failing pipeline exits at once, so it is never left set for a later command.
+_aic_err_child_reports=1
+AIC_SPUR_CLUSTER=1 \
     AIC_IMAGE_DIR="${TARBALL_DIR}" \
-    make cliff-submit 2>&1 \
-  | grep -oE '(submitted (cliff-short|aic-cliff) job |Submitted batch job )[0-9]+' \
-  | grep -oE '[0-9]+$' | tail -1)
+    make cliff-submit 2>&1 | tee "${SUBMIT_LOG}"
+unset _aic_err_child_reports
 
+JOB_ID="$(grep -oE 'submitted [a-z0-9-]+ as job [0-9]+' "${SUBMIT_LOG}" \
+    | grep -oE '[0-9]+$' | tail -1 || true)"
+rm -f "${SUBMIT_LOG}"
 if [[ -z "${JOB_ID}" ]]; then
     echo "ERROR: could not determine Slurm job ID from make cliff-submit output" >&2
     exit 1
 fi
-
-echo "=== Cliff job ${JOB_ID} submitted — polling for completion ==="
-
-while squeue -j "${JOB_ID}" -h 2>/dev/null |
-    awk -v id="${JOB_ID}" '$1 == id { found = 1 } END { exit found ? 0 : 1 }'; do
-    sleep 30
-done
-
-STATE=$(sacct -j "${JOB_ID}" --format=State --noheader 2>/dev/null | head -1 | tr -d ' ')
-echo "=== Job ${JOB_ID} finished with state: ${STATE} ==="
-
-LOG="logs/${JOB_ID}/cliff.out"
-if [[ -f "${LOG}" ]]; then
-    echo "=== Cliff output (${LOG}) ==="
-    cat "${LOG}"
-fi
-
-[[ "${STATE}" == "COMPLETED" ]] || { echo "ERROR: job ${JOB_ID} ended in state ${STATE}" >&2; exit 1; }
+echo "=== Cliff job ${JOB_ID} finished ==="
 
 # ---------------------------------------------------------------------------
 # Copy results to NFS staging BEFORE the EXIT trap deletes WORKDIR
@@ -192,15 +258,29 @@ REMOTE
 SPUR_USER="$(ssh -o ServerAliveInterval=30 "${AIC_SPUR_HOST}" id -un)"
 REMOTE_CLIFF_STAGING_DIR="${AIC_SHARED_NFS}/${SPUR_USER}/cliff-results-${SHORT}"
 
+# Remove the NFS staging dir.  Capture ssh's stderr and report it with the exit
+# status: a leaked directory on quota'd NFS breaks unrelated jobs later.  Never
+# fails, so it can run on the failure path without hiding the error being handled.
+_remove_remote_staging() {
+    local err="" rc=0
+    err="$(ssh -o ServerAliveInterval=30 "${AIC_SPUR_HOST}" \
+        "rm -rf '${REMOTE_CLIFF_STAGING_DIR}'" 2>&1)" || rc=$?
+    (( rc == 0 )) ||
+        echo "WARNING: could not remove staging dir ${REMOTE_CLIFF_STAGING_DIR}" \
+            "on the SPUR head node (rc=${rc}): ${err:-no error output}" >&2
+}
+
 echo "=== Copying cliff page back to runner ==="
 rm -rf cliff-page
-mkdir -p cliff-page
-scp -r -o ServerAliveInterval=30 \
-    "${AIC_SPUR_HOST}:${REMOTE_CLIFF_STAGING_DIR}/cliff-page/." \
-    cliff-page/
+scp_rc=0
+aic_ci_scp_from "${REMOTE_CLIFF_STAGING_DIR}/cliff-page" cliff-page || scp_rc=$?
 
-# Clean up the NFS staging dir now that we have a local copy
-ssh -o ServerAliveInterval=30 "${AIC_SPUR_HOST}" \
-    "rm -rf '${REMOTE_CLIFF_STAGING_DIR}'" || true
+# Clean up the NFS staging dir whether or not the copy worked: the remote stage
+# is done, so nothing else will remove it.
+_remove_remote_staging
+if (( scp_rc != 0 )); then
+    echo "ERROR: could not copy the cliff page back from ${REMOTE_CLIFF_STAGING_DIR} (exit ${scp_rc})" >&2
+    exit "${scp_rc}"
+fi
 
 echo "=== Cliff harvest complete for ${SHORT} — page at cliff-page/index.html ==="
