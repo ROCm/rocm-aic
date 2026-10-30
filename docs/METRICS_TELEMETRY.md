@@ -492,6 +492,11 @@ vLLM metrics use the `vllm:` prefix and `model_name` label.
 | `exporters-safe` | amdgpu-exporter, rdma-exporter, hsa-snoop (`pid:container`) |
 | `exporters-fabric` | nvme-exporter, rdma-exporter |
 
+On SPUR (`AIC_SPUR_CLUSTER=1`) the job scripts' `start_monitoring` never starts
+alloy, hsa-snoop or nvme-exporter, whatever the mode: the cluster's Docker authz
+plugin refuses their docker-socket mount, `privileged: true` and `SYS_ADMIN`
+respectively, and one refused container would fail the whole `compose up`.
+
 ```bash
 # Exporters already on host (Ansible)
 make monitoring-up AIC_METRICS_DIR=/mnt/lmcache-nfs/metrics
@@ -520,8 +525,9 @@ dispatch metrics and AIS P2P storage counters.
 | Container PID | `container:aic-lmcache` | **SPUR default** — vLLM uses `pid:service:lmcache` so lmcache's namespace contains both processes |
 | Host PID | `host` | Non-SPUR bare nodes where `--pid=host` is permitted |
 
-> **SPUR authz note:** the SPUR cluster's Docker authz plugin blocks `--pid=host`.
-> Use `AIC_EXPORTERS=safe` to launch hsa-snoop with `pid:container`.
+> **SPUR authz note:** the SPUR cluster's Docker authz plugin blocks `--pid=host`
+> and `privileged: true`, so hsa-snoop does not run on SPUR at all; the SPUR job
+> scripts skip it.
 
 hsa-snoop holds tracefs exclusively on the host, so it is always scraped via
 `host-gateway:9488` rather than a container name.

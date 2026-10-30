@@ -2,14 +2,16 @@
 #
 # spur-authz blocks:
 #   B1: /:/host bind-mount (node-exporter rootfs)
-#   B2: /dev:/dev:rw bind-mount (nvme-exporter device access)
 #
 # Workarounds:
 #   node-exporter  -- replace /:/host with a tmpfs so the container starts;
 #                     CPU/mem/net metrics still come from /proc+/sys inside the
 #                     container, disk/fs metrics are absent.
-#   nvme-exporter  -- drop /dev entirely; nvme-cli ioctls fail but the
-#                     exporter starts and prometheus scrapes it (0 nvme_ series).
+#
+# alloy, hsa-snoop and nvme-exporter are not overridden here: no override can
+# satisfy spur-authz for them, so monitoring-lib.sh leaves them out of the
+# `compose up` instead.  An override could not drop nvme-exporter's /dev:/dev
+# bind anyway, since compose merges volumes by target path.
 #
 # Applied automatically by monitoring-lib.sh when AIC_SPUR_CLUSTER=1.
 
@@ -26,12 +28,9 @@ services:
       - --collector.textfile.directory=/prom
       - --web.listen-address=:9100
 
-  nvme-exporter:
-    volumes:
-      - /sys:/sys:ro
-
-  # hsa-snoop: pid:host is blocked by spur-authz.  In the smoke-test monitoring
-  # phase lmcache is not running, so join prometheus's PID namespace instead —
-  # container-scoped (SPUR-safe) and sufficient for the /metrics health check.
+  # hsa-snoop is never started on SPUR, but `compose config` still validates it,
+  # and its default pid (service:lmcache) fails validation when lmcache is not
+  # in the active profiles.  pid:host is blocked by spur-authz, so point it at
+  # prometheus, which is always active.
   hsa-snoop:
     pid: "service:prometheus"
