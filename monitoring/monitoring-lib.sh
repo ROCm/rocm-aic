@@ -216,9 +216,6 @@ start_monitoring() {
     # Sweep any leftover containers from a previous run on this node so port
     # bindings don't conflict with the new compose up.
     docker rm -f "${MON_CONTAINERS[@]}" >/dev/null 2>&1 || true
-    docker network inspect aic-network >/dev/null 2>&1 \
-        || docker network create aic-network >/dev/null \
-        || log "monitoring: could not create aic-network (continuing)"
     local -a profile; mapfile -t profile < <(mon_profile)
     local -a compose_files=(-f "${MON_COMPOSE}")
     # On SPUR, layer in the SPUR override (tmpfs rootfs for node-exporter,
