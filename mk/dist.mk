@@ -8,17 +8,6 @@
 # Makefile's own ?= default (i.e. origin == "file").
 _user_or = $(if $(filter file,$(origin $(1))),$(2),$($(1)))
 
-# _SPUR_SBATCH(script, extra-args): build the sbatch invocation for a given
-# .slurm script, switching between SPUR and standard Slurm.
-ifeq ($(AIC_SPUR_CLUSTER),1)
-_SPUR_SBATCH = $(_CLIFF_STRIP) sbatch \
-    $(_SPUR_COMMON_ARGS) $(2) $(1) 2>&1 | \
-    tee /dev/stderr | grep -oE '[0-9]+$$' | tail -1
-else
-_SPUR_SBATCH = $(_CLIFF_STRIP) sbatch --parsable \
-    $(2) $(1)
-endif
-
 # ---- Cliff GFX / constraint selection ----------------------------------------
 AIC_CLIFF_GFX  ?=
 AIC_CLIFF_GPUS ?= 1
@@ -30,12 +19,19 @@ AIC_CLIFF_CONSTRAINT := GFX942&NVME
 endif
 endif
 
+# The cliff runs through `run-build-distribute.sh cliff`, which submits
+# .slurm/run-cliff.sbatch via _sbatch_run (partition, GPU request, node excludes,
+# logs/<job-id>/cliff.{out,exit}) and BLOCKS until the job ends, so the recipe's
+# exit status is the job's.  The AIC_CLIFF_* values are Makefile knobs the script
+# reads as plain environment; on SPUR it ignores the constraint (no feature
+# labels there) and requests --gpus instead of a gres.
+_CLIFF_RUN = $(_CLIFF_STRIP) \
+    AIC_CLIFF_GPUS='$(AIC_CLIFF_GPUS)' AIC_CLIFF_CONSTRAINT='$(AIC_CLIFF_CONSTRAINT)' \
+    $(if $(AIC_CLIFF_NODE),AIC_CLIFF_NODE='$(AIC_CLIFF_NODE)',) \
+    $(if $(AIC_CLIFF_TIME),AIC_CLIFF_TIME='$(AIC_CLIFF_TIME)',) \
+    "$(DIST)" cliff
+
 ifeq ($(AIC_SPUR_CLUSTER),1)
-_SPUR_COMMON_ARGS := --partition=amd-spur --constraint= --gres= --gpus=$(AIC_CLIFF_GPUS) \
-    $(if $(AIC_CLIFF_NODE),--nodelist=$(AIC_CLIFF_NODE),)
-_CLIFF_SUBMIT     = $(_CLIFF_STRIP) sbatch \
-    $(_SPUR_COMMON_ARGS) $(1) .slurm/run-cliff.sbatch 2>&1 | \
-    tee /dev/stderr | grep -oE '[0-9]+$$' | tail -1
 # GPUs reserved for a SPUR kvbench submit.  The KVBench cliff drives no GPU,
 # but SPUR refuses any submission that carries no GPU request at all.
 _KVBENCH_SBATCH_ARGS := --partition=amd-spur --constraint= --gpus=1 \
@@ -44,10 +40,6 @@ _KVBENCH_SUBMIT := $(_CLIFF_STRIP) sbatch \
     $(_KVBENCH_SBATCH_ARGS) $(1) .slurm/run-kvbench-cliff.sbatch 2>&1 | \
     tee /dev/stderr | grep -oE '[0-9]+$$' | tail -1 | grep -E '^[0-9]+$$'
 else
-_CLIFF_SBATCH_ARGS := --constraint='$(AIC_CLIFF_CONSTRAINT)' \
-    $(if $(AIC_CLIFF_NODE),--nodelist=$(AIC_CLIFF_NODE),)
-_CLIFF_SUBMIT     = $(_CLIFF_STRIP) sbatch --parsable \
-    $(_CLIFF_SBATCH_ARGS) $(1) .slurm/run-cliff.sbatch
 ifdef AIC_KVBENCH_NODE
 _KVBENCH_NODE_ARG := --nodelist=$(AIC_KVBENCH_NODE)
 endif
@@ -190,23 +182,21 @@ cliff-kvbench-submit:
 	    echo "log: $(CURDIR)/logs/$$jobid/kvbench-cliff.out"
 
 cliff-submit:
-	@cd "$(CURDIR)" && jobid=$$($(call _CLIFF_SUBMIT,\
-	    $(if $(AIC_CLIFF_TIME),--time=$(AIC_CLIFF_TIME),))) && \
-	    echo "submitted cliff job $$jobid" && \
-	    echo "log: $(CURDIR)/logs/$$jobid/cliff.out"
+	@cd "$(CURDIR)" && $(_CLIFF_RUN)
 
 cliff-kvd:
-	@cd "$(CURDIR)" && jobid=$$( \
+	@echo "cliff-kvd: shared prefix, c=1,8,32,64,128,250, 2 iters"
+	@cd "$(CURDIR)" && \
 	    BENCH_PREFIX_MODE=shared \
 	    BENCH_CONCUR="$${BENCH_CONCUR:-1,8,32,64,128,250}" \
 	    BENCH_ITERS="$${BENCH_ITERS:-2}" \
-	    $(call _CLIFF_SUBMIT,--job-name=aic-cliff-kvd \
-	    --time=$(if $(AIC_CLIFF_TIME),$(AIC_CLIFF_TIME),02:00:00))) && \
-	    echo "submitted cliff-kvd job $$jobid (shared prefix, c=1,8,32,64,128,250, 2 iters)" && \
-	    echo "log: $(CURDIR)/logs/$$jobid/cliff.out"
+	    AIC_CLIFF_JOB_NAME=aic-cliff-kvd \
+	    AIC_CLIFF_TIME="$(if $(AIC_CLIFF_TIME),$(AIC_CLIFF_TIME),02:00:00)" \
+	    $(_CLIFF_RUN)
 
 cliff-spur-l2:
-	@cd "$(CURDIR)" && jobid=$$( \
+	@echo "cliff-spur-l2: util=0.40, DRAM L1=8GB, POSIX NVMe L2, per_client, Qwen2.5-3B, c=32, 2 iters, nvme only"
+	@cd "$(CURDIR)" && \
 	    BENCH_PREFIX_MODE=per_client \
 	    BENCH_CONCUR="$${BENCH_CONCUR:-32}" \
 	    BENCH_ITERS="$${BENCH_ITERS:-2}" \
@@ -215,14 +205,14 @@ cliff-spur-l2:
 	    AIC_LOCAL_CPU=true \
 	    LMCACHE_MAX_LOCAL_CPU_SIZE="$(call _user_or,LMCACHE_MAX_LOCAL_CPU_SIZE,8)" \
 	    AIC_CLIFF_ARMS="$${AIC_CLIFF_ARMS:-nvme}" \
-	    $(call _CLIFF_SUBMIT,--job-name=aic-cliff-spur-l2 \
-	    --time=$(if $(AIC_CLIFF_TIME),$(AIC_CLIFF_TIME),03:00:00))) && \
-	    echo "submitted cliff-spur-l2 job $$jobid" && \
-	    echo "  util=0.40, DRAM L1=8GB, POSIX NVMe L2, per_client, Qwen2.5-3B, c=32, 2 iters, nvme only" && \
-	    echo "log: $(CURDIR)/logs/$$jobid/cliff.out"
+	    AIC_CLIFF_JOB_NAME=aic-cliff-spur-l2 \
+	    AIC_CLIFF_TIME="$(if $(AIC_CLIFF_TIME),$(AIC_CLIFF_TIME),03:00:00)" \
+	    $(_CLIFF_RUN)
 
 cliff-spur-l2-debug:
-	@cd "$(CURDIR)" && jobid=$$( \
+	@echo "cliff-spur-l2-debug: util=0.40, DRAM L1=0.1GB (forces L2 hits at c=1), per_client, c=1, 1 iter, DEBUG logging"
+	@echo "  check container-aic-vllm.log for 'vLLM hit is' to confirm ext_hit"
+	@cd "$(CURDIR)" && \
 	    BENCH_PREFIX_MODE=per_client \
 	    BENCH_CONCUR="$${BENCH_CONCUR:-1}" \
 	    BENCH_ITERS="$${BENCH_ITERS:-1}" \
@@ -232,21 +222,20 @@ cliff-spur-l2-debug:
 	    LMCACHE_MAX_LOCAL_CPU_SIZE="$(call _user_or,LMCACHE_MAX_LOCAL_CPU_SIZE,0.1)" \
 	    AIC_CLIFF_ARMS="$${AIC_CLIFF_ARMS:-nvme}" \
 	    VLLM_LOGGING_LEVEL=DEBUG \
-	    $(call _CLIFF_SUBMIT,--job-name=aic-cliff-l2-debug \
-	    --time=$(if $(AIC_CLIFF_TIME),$(AIC_CLIFF_TIME),01:00:00))) && \
-	    echo "submitted cliff-spur-l2-debug job $$jobid" && \
-	    echo "  util=0.40, DRAM L1=0.1GB (forces L2 hits at c=1), per_client, c=1, 1 iter, DEBUG logging" && \
-	    echo "log: $(CURDIR)/logs/$$jobid/cliff.out" && \
-	    echo "  check container-aic-vllm.log for 'vLLM hit is' to confirm ext_hit"
+	    AIC_CLIFF_JOB_NAME=aic-cliff-l2-debug \
+	    AIC_CLIFF_TIME="$(if $(AIC_CLIFF_TIME),$(AIC_CLIFF_TIME),01:00:00)" \
+	    $(_CLIFF_RUN)
 
 cliff-short:
-	@cd "$(CURDIR)" && jobid=$$(BENCH_CONCUR="$${BENCH_CONCUR:-1}" BENCH_ITERS="$${BENCH_ITERS:-1}" \
-	    $(call _CLIFF_SUBMIT,--job-name=aic-cliff-short)) && \
-	    echo "submitted cliff-short job $$jobid (BENCH_CONCUR=$${BENCH_CONCUR:-1} BENCH_ITERS=$${BENCH_ITERS:-1})" && \
-	    echo "log: $(CURDIR)/logs/$$jobid/cliff.out"
+	@echo "cliff-short: BENCH_CONCUR=$${BENCH_CONCUR:-1} BENCH_ITERS=$${BENCH_ITERS:-1}"
+	@cd "$(CURDIR)" && \
+	    BENCH_CONCUR="$${BENCH_CONCUR:-1}" BENCH_ITERS="$${BENCH_ITERS:-1}" \
+	    AIC_CLIFF_JOB_NAME=aic-cliff-short \
+	    $(_CLIFF_RUN)
 
 cliff-long-64k:
-	@cd "$(CURDIR)" && jobid=$$( \
+	@echo "cliff-long-64k: ISL=64000, YaRN x2 -> 65536, DRAM L1=64G, NVMe pool=262144, all 3 arms"
+	@cd "$(CURDIR)" && \
 	    VLLM_MODEL="$${VLLM_MODEL:-Qwen/Qwen2.5-3B-Instruct}" \
 	    VLM_GPU_MEMORY_UTILIZATION="$(call _user_or,VLM_GPU_MEMORY_UTILIZATION,0.12)" \
 	    VLM_YARN_FACTOR="$${VLM_YARN_FACTOR:-2.0}" VLM_MAX_MODEL_LEN="$(call _user_or,VLM_MAX_MODEL_LEN,65536)" \
@@ -255,13 +244,13 @@ cliff-long-64k:
 	    AIC_LOCAL_CPU="$${AIC_LOCAL_CPU:-true}" LMCACHE_MAX_LOCAL_CPU_SIZE="$${LMCACHE_MAX_LOCAL_CPU_SIZE:-64}" \
 	    LMCACHE_NVME_POOL="$(call _user_or,LMCACHE_NVME_POOL,262144)" AIC_NIXL_BUFFER_SIZE="$${AIC_NIXL_BUFFER_SIZE:-8589934592}" \
 	    LMCACHE_L1_SIZE_GB="$(call _user_or,LMCACHE_L1_SIZE_GB,320)" \
-	    $(call _CLIFF_SUBMIT,--job-name=aic-cliff-long64k \
-	    --time=$(if $(AIC_CLIFF_TIME),$(AIC_CLIFF_TIME),16:00:00))) && \
-	    echo "submitted cliff-long-64k job $$jobid (ISL=64000, YaRN x2 -> 65536, DRAM L1=64G, NVMe pool=262144, all 3 arms)" && \
-	    echo "log: $(CURDIR)/logs/$$jobid/cliff.out"
+	    AIC_CLIFF_JOB_NAME=aic-cliff-long64k \
+	    AIC_CLIFF_TIME="$(if $(AIC_CLIFF_TIME),$(AIC_CLIFF_TIME),16:00:00)" \
+	    $(_CLIFF_RUN)
 
 cliff-long-128k:
-	@cd "$(CURDIR)" && jobid=$$( \
+	@echo "cliff-long-128k: ISL=128000, YaRN x4 -> 131072, DRAM L1=64G, NVMe pool=524288, all 3 arms"
+	@cd "$(CURDIR)" && \
 	    VLLM_MODEL="$${VLLM_MODEL:-Qwen/Qwen2.5-3B-Instruct}" \
 	    VLM_GPU_MEMORY_UTILIZATION="$(call _user_or,VLM_GPU_MEMORY_UTILIZATION,0.12)" \
 	    VLM_YARN_FACTOR="$${VLM_YARN_FACTOR:-4.0}" VLM_MAX_MODEL_LEN="$(call _user_or,VLM_MAX_MODEL_LEN,131072)" \
@@ -270,7 +259,6 @@ cliff-long-128k:
 	    AIC_LOCAL_CPU="$${AIC_LOCAL_CPU:-true}" LMCACHE_MAX_LOCAL_CPU_SIZE="$${LMCACHE_MAX_LOCAL_CPU_SIZE:-64}" \
 	    LMCACHE_NVME_POOL="$(call _user_or,LMCACHE_NVME_POOL,524288)" AIC_NIXL_BUFFER_SIZE="$${AIC_NIXL_BUFFER_SIZE:-8589934592}" \
 	    LMCACHE_L1_SIZE_GB="$(call _user_or,LMCACHE_L1_SIZE_GB,640)" \
-	    $(call _CLIFF_SUBMIT,--job-name=aic-cliff-long128k \
-	    --time=$(if $(AIC_CLIFF_TIME),$(AIC_CLIFF_TIME),24:00:00))) && \
-	    echo "submitted cliff-long-128k job $$jobid (ISL=128000, YaRN x4 -> 131072, DRAM L1=64G, NVMe pool=524288, all 3 arms)" && \
-	    echo "log: $(CURDIR)/logs/$$jobid/cliff.out"
+	    AIC_CLIFF_JOB_NAME=aic-cliff-long128k \
+	    AIC_CLIFF_TIME="$(if $(AIC_CLIFF_TIME),$(AIC_CLIFF_TIME),24:00:00)" \
+	    $(_CLIFF_RUN)
