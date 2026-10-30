@@ -396,6 +396,7 @@ help:
 	@echo "  make cliff-spur-l2     run the SPUR-tuned L2 cliff (waits for the job): per_client prefix, util=0.40, 8GB DRAM L1, c=1/8/32 (vram+nvme)"
 	@echo "  make cliff-spur-l2-debug  Like cliff-spur-l2 but c=1 only, tiny L1=0.1GB, DEBUG logging (diagnose ext_hit=0)"
 	@echo "  make cliff-short       run a 1-point cliff (concur=1, 1 iter) to smoke-test the flow"
+	@echo "  make cliff-short-fast  cliff-short on the single-arch image (AIC_FAST_ARCH), as built by dist-build-fast"
 	@echo "  make cliff-long-64k    run a 64k-ISL YaRN(x2) 3-arm sweep (pools sized for the working set)"
 	@echo "  make cliff-long-128k   run a 128k-ISL YaRN(x4) 3-arm sweep (extreme; big DRAM/slab pools)"
 	@echo "    Chain like the old run-this.sh:  make dist-build dist-push smoke-test"

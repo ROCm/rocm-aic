@@ -1,6 +1,6 @@
 # On-demand cliff benchmark, driven by the PR slash command:
 #
-#   /run-cliff         dist-build-fast -> cliff-short
+#   /run-cliff         dist-build-fast -> cliff-short-fast
 #
 # Self-contained: it builds the images for the SHA first (single-arch,
 # AIC_FAST_ARCH), or reuses images/aic-ci-<sha>/ when an earlier run left them
@@ -71,13 +71,13 @@ jobs:
               });
               core.setOutput('sha', pr.head.sha);
               core.setOutput('pr_number', String(context.issue.number));
-              core.setOutput('target', 'cliff-short');
+              core.setOutput('target', 'cliff-short-fast');
               core.setOutput('should_run', 'true');
             } else {
               // workflow_dispatch
               core.setOutput('sha', context.sha);
               core.setOutput('pr_number', '');
-              core.setOutput('target', 'cliff-short');
+              core.setOutput('target', 'cliff-short-fast');
               core.setOutput('should_run', 'true');
             }
 
