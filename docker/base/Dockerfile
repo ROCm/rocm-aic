@@ -150,7 +150,8 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
 # - used only during testing
 # - platform specific (Windows, Android, CUDA)
 # - not used when built as part of pytorch
-# NNPACK needs python-peachpy, XNNPACK and ittapi are default-on deps; they stay.
+# NNPACK needs python-peachpy, XNNPACK and ittapi are default-on deps; kineto's
+# ROCm build add_subdirectory()s libkineto/third_party/dynolog.  They all stay.
 # cmake/PreBuildSteps.cmake aborts if ANY .gitmodules path is empty, so each
 # skipped dir gets a LICENSE stub.  Not CMakeLists.txt: a needed-but-skipped dep
 # would then fail at configure instead of silently configuring to nothing.
@@ -167,7 +168,6 @@ RUN git -c submodule.third_party/cutlass.update=none \
         -c submodule."external/googletest".update=none \
         -c submodule."external/hipify_torch".update=none \
         -c submodule."libkineto/third_party/googletest".update=none \
-        -c submodule."libkineto/third_party/dynolog".update=none \
         clone --depth 1 \
               --revision "${PYTORCH_REF}" \
               --recurse-submodules \
