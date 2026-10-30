@@ -253,6 +253,10 @@ ARG LLM_EMU_GIT_URL=https://github.com/AKafakA/llm-emu.git
 ARG LLM_EMU_REF=b71c602
 ENV AIC_EMULATOR_EXAMPLE_PACK=/opt/llm-emu/profiles/A40-Q8-Qwen3-8B.json \
     AIC_EMULATOR_DEFAULT_PACK=/opt/llm-emu/profiles/MI300X-Qwen3-8B.json
+
+RUN --mount=type=cache,target=/root/.cache/pip \
+    pip3 install build
+
 # hadolint ignore=SC3044
 RUN git clone --filter=blob:none --no-checkout "${LLM_EMU_GIT_URL}" /app/llm-emu && \
     git -C /app/llm-emu checkout "${LLM_EMU_REF}" && \
