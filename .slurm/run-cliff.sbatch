@@ -593,13 +593,21 @@ if [[ "${AIC_EXPORTERS}" != "0" ]]; then
     _b="$(printf '%s' "${_t}" | tr '/:' '--')"
     load_image_if_needed "${_t}" "${AIC_IMAGE_DIR}/${_b}.tar.*" && export AIC_RDMA_EXPORTER_IMAGE="${_t}"
   fi
-  # AMD GPU device-metrics-exporter (rocm/device-metrics-exporter:v1.5.1).
-  # Tarball saved to AIC_IMAGE_DIR by dist-build-exporters or manually.
+  # AMD GPU device-metrics-exporter (rocm/device-metrics-exporter:v1.5.2, the tag
+  # compose and `make dist-build-monitoring` use).  Tarball saved to
+  # AIC_IMAGE_DIR by dist-build-monitoring or manually.
   if [[ -z "${AIC_AMDGPU_EXPORTER_IMAGE:-}" ]]; then
-    _t="${AIC_AMDGPU_EXPORTER_IMAGE_DEFAULT:-rocm/device-metrics-exporter:v1.5.1}"
+    _t="${AIC_AMDGPU_EXPORTER_IMAGE_DEFAULT:-rocm/device-metrics-exporter:v1.5.2}"
     _b="$(printf '%s' "${_t}" | tr '/:' '--')"
     load_image_if_needed "${_t}" "${AIC_IMAGE_DIR}/${_b}.tar.*" && export AIC_AMDGPU_EXPORTER_IMAGE="${_t}"
   fi
+  # hsa-snoop is part of the exporters-safe profile.  build-exporters saves it as
+  # AIC_HSA_SNOOP_IMAGE (default aic-hsa-snoop:latest), whereas make exports
+  # HSA_SNOOP_IMAGE=aic-hsa-snoop:<tag>, an image no build step produces here.
+  # Advertise the loaded one only when it is actually present, as the smoke-test does.
+  _t="${AIC_HSA_SNOOP_IMAGE:-aic-hsa-snoop:latest}"
+  _b="$(printf '%s' "${_t}" | tr '/:' '--')"
+  load_image_if_needed "${_t}" "${AIC_IMAGE_DIR}/${_b}.tar.*" && export HSA_SNOOP_IMAGE="${_t}"
   # Prometheus (prom/prometheus:v3.14.0).  Pre-pull avoids 10+ min Docker Hub
   # download on fresh nodes; load_image_if_needed is a no-op when already present.
   if [[ -z "${AIC_PROM_IMAGE:-}" ]]; then
