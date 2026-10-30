@@ -7,18 +7,17 @@
 #
 # Architecture groups
 # -------------------
-# cdna     gfx90a;gfx942;gfx950   MI200 / MI300X / MI355X   (primary target)
+# cdna     gfx90a;gfx942;gfx950;gfx1250   MI200 / MI300X / MI355X (primary target)
+#                                         + the rocjitsu-emulated gfx1250
 # rdna     gfx1100;gfx1101;gfx1150;gfx1151;gfx1200;gfx1201   (RDNA3/4, best-effort)
-# gfx1250  gfx1250                 rocjitsu-emulated GPU     (best-effort)
 #
 # A group's wheels carry filenames with no arch in them (`vllm-0.29.0+rocm-
 # cp312-cp312-linux_x86_64.whl` is byte-for-byte the same NAME for every group)
 # but hold different GPU code, so they can never share a release: each group
-# gets its own rolling tag -- cdna -> `nightly`, rdna -> `nightly-rdna`,
-# gfx1250 -> `nightly-gfx1250`.
+# gets its own rolling tag -- cdna -> `nightly`, rdna -> `nightly-rdna`.
 #
 # Scheduled runs build CDNA only (the primary hardware target).  Manual dispatch
-# adds the other groups.
+# adds RDNA.
 #
 # Where this runs, and why
 # ------------------------
@@ -45,9 +44,10 @@
 #
 # NIXL is built ONCE, in aic-base, and inherited by both aic-vllm and
 # aic-lmcache -- so there is a single common nixl_rocm wheel for the whole stack
-# rather than one per image.  flash_attn is CDNA-only and is absent from the
-# other groups by design.  The set is checked by check-wheels.sh twice: on the
-# build node, and again here before upload.
+# rather than one per image.  flash_attn is built for the gfx9* archs only, so
+# the cdna group has it (compiled without gfx1250) and rdna does not.  The set
+# is checked by check-wheels.sh twice: on the build node, and again here before
+# upload.
 #
 # Publishing
 # ----------
@@ -74,7 +74,7 @@ on:
         required: false
         default: 'cdna'
         type: choice
-        options: ['cdna', 'cdna,rdna', 'cdna,gfx1250', 'cdna,rdna,gfx1250']
+        options: ['cdna', 'cdna,rdna']
       force:
         description: 'Build + publish even if main has not changed'
         required: false
@@ -107,12 +107,10 @@ env:
   # argv into a remote command string where a ';' would terminate it.  Bake's
   # rocm_arch_list() re-joins with ';' for the Dockerfiles, and check-wheels.sh
   # splits on either, so nothing downstream sees the comma form.
-  CDNA_ARCH: 'gfx90a,gfx942,gfx950'
+  CDNA_ARCH: 'gfx90a,gfx942,gfx950,gfx1250'
   RDNA_ARCH: 'gfx1100,gfx1101,gfx1150,gfx1151,gfx1200,gfx1201'
-  GFX1250_ARCH: 'gfx1250'
   RELEASE_TAG_CDNA: nightly
   RELEASE_TAG_RDNA: nightly-rdna
-  RELEASE_TAG_GFX1250: nightly-gfx1250
 
 jobs:
   # ---------------------------------------------------------------------------
@@ -130,7 +128,6 @@ jobs:
       sha: ${{ steps.resolve.outputs.sha }}
       pr_number: ${{ steps.resolve.outputs.pr_number }}
       build_rdna: ${{ steps.resolve.outputs.build_rdna }}
-      build_gfx1250: ${{ steps.resolve.outputs.build_gfx1250 }}
       publish: ${{ steps.resolve.outputs.publish }}
       should_build: ${{ steps.decide.outputs.should_build }}
     steps:
@@ -166,7 +163,6 @@ jobs:
               // group every PR needs to know about.  Other groups go through
               // workflow_dispatch, which is where a multi-hour run belongs.
               core.setOutput('build_rdna', 'false');
-              core.setOutput('build_gfx1250', 'false');
               // A PR test must never clobber a rolling release.
               core.setOutput('publish', 'false');
             } else {
@@ -177,7 +173,6 @@ jobs:
               core.setOutput('sha', context.sha);
               core.setOutput('pr_number', '');
               core.setOutput('build_rdna', groups.includes('rdna') ? 'true' : 'false');
-              core.setOutput('build_gfx1250', groups.includes('gfx1250') ? 'true' : 'false');
               // A schedule run always publishes.  A dispatch can opt out, which
               // is the only way to exercise this workflow end-to-end from a
               // branch: `issue_comment` always runs the DEFAULT branch's copy of
@@ -354,51 +349,13 @@ jobs:
           path: ${{ env.AIC_WHEEL_OUT }}/
           retention-days: 7
 
-  build-wheels-gfx1250:
-    name: Build wheels (gfx1250)
-    needs: [authorize, build-wheels-cdna, build-wheels-rdna]
-    # always(): RDNA is usually skipped, which must not skip this one.
-    if: >
-      always() &&
-      needs.authorize.outputs.should_build == 'true' &&
-      needs.authorize.outputs.build_gfx1250 == 'true' &&
-      needs.build-wheels-cdna.result == 'success'
-    runs-on: [self-hosted, rocm-aic-cicd]
-    timeout-minutes: 300
-    env:
-      AIC_SPUR_HOST: ${{ secrets.AIC_SPUR_HOST }}
-      AIC_SHARED_NFS: ${{ secrets.AIC_SHARED_NFS }}
-      AIC_CI_STORAGE_ROOT: ${{ secrets.AIC_SHARED_NFS }}/rocm-aic
-      AIC_BUILD_EXCLUDE_NODES: ${{ vars.AIC_BUILD_EXCLUDE_NODES }}
-      AIC_WHEEL_OUT: ${{ github.workspace }}/wheels-gfx1250
-    steps:
-      - uses: actions/checkout@v7
-        with:
-          ref: ${{ needs.authorize.outputs.sha }}
-          fetch-depth: 1
-
-      - name: Build wheels on the SPUR head node
-        run: |
-          bash /usr/local/lib/aic-ci/spur-wheels-build.sh \
-            "${{ needs.authorize.outputs.sha }}" "${GFX1250_ARCH}" gfx1250
-
-      - name: Check the wheel set
-        run: bash .github/scripts/workflows/check-wheels.sh "${AIC_WHEEL_OUT}" "${GFX1250_ARCH}"
-
-      - name: Upload wheel artifacts
-        uses: actions/upload-artifact@v7
-        with:
-          name: wheels-gfx1250
-          path: ${{ env.AIC_WHEEL_OUT }}/
-          retention-days: 7
-
   # ---------------------------------------------------------------------------
   # Publish each group to its own rolling release.  Schedule/dispatch only: a
   # `/run-wheels` PR test stops at the uploaded artifact.
   # ---------------------------------------------------------------------------
   publish:
     name: Publish nightly releases
-    needs: [authorize, build-wheels-cdna, build-wheels-rdna, build-wheels-gfx1250]
+    needs: [authorize, build-wheels-cdna, build-wheels-rdna]
     # always() so a skipped or failed optional group does not skip this; CDNA
     # must have succeeded.  A failed optional group simply does not publish --
     # its live release keeps the previous run's assets.
@@ -433,13 +390,6 @@ jobs:
           name: wheels-rdna
           path: all-wheels/wheels-rdna
 
-      - name: Download wheel artifacts (gfx1250)
-        if: needs.build-wheels-gfx1250.result == 'success'
-        uses: actions/download-artifact@v8
-        with:
-          name: wheels-gfx1250
-          path: all-wheels/wheels-gfx1250
-
       - name: Stage every release as a verified draft
         id: stage
         env:
@@ -456,7 +406,6 @@ jobs:
             case "${group}" in
               cdna)    tag="${RELEASE_TAG_CDNA}";    arch="${CDNA_ARCH}" ;;
               rdna)    tag="${RELEASE_TAG_RDNA}";    arch="${RDNA_ARCH}" ;;
-              gfx1250) tag="${RELEASE_TAG_GFX1250}"; arch="${GFX1250_ARCH}" ;;
               *) echo "ERROR: no release tag for group '${group}'" >&2; exit 1 ;;
             esac
             echo "::group::stage ${group} -> ${tag}"

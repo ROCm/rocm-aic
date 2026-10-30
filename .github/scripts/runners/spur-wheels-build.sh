@@ -19,7 +19,7 @@ set -Eeuo pipefail
 #   arch-csv  comma-separated gfx list, e.g. gfx90a,gfx942,gfx950.  Commas, not
 #             semicolons: ssh joins its argv into a remote shell command, where
 #             a ';' would terminate it.  Converted back on the remote side.
-#   group     short label for the arch set (cdna / rdna / gfx1250).  Each group
+#   group     short label for the arch set (cdna / rdna).  Each group
 #             gets its own artifact and its own rolling release: the wheel
 #             FILENAMES are identical across groups but the GPU code is not.
 
