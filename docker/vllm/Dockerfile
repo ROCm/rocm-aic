@@ -113,7 +113,9 @@ ARG AITER_PREBUILD_KERNELS=0
 
 # git and ca-certificates are not in the -full image; install before cloning.
 # git comes from ppa:git-core because `git clone --revision` needs >= 2.49 and
-# Ubuntu 24.04 ships 2.43.
+# Ubuntu 24.04 ships 2.43.  software-properties-common drags in a dpkg-owned
+# python3-jwt that pip cannot uninstall (vllm's requirements bump PyJWT), so it
+# is purged again once the PPA is configured.
 # libnuma-dev: the ROCm base image ships libnuma.so.1 but NOT the unversioned
 # libnuma.so symlink, which lives in libnuma-dev.  rocSHMEM's NUMAWrapper
 # dlopen()s the unversioned name, so it fails and prints
@@ -133,7 +135,8 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     add-apt-repository ppa:git-core/ppa -y && \
     apt-get update && \
     DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-        cmake git ca-certificates ninja-build python3-dev libnuma-dev
+        cmake git ca-certificates ninja-build python3-dev libnuma-dev && \
+    apt-get purge -y --auto-remove software-properties-common
 
 # Bring torch + Python packages from aic-base so wheels link against the same torch.
 COPY --from=base /usr/local/lib/python3.12/dist-packages/ \
