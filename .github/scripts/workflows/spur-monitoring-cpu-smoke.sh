@@ -216,7 +216,9 @@ HF_HOME="${HF_HOME}" IMAGE_NAME="${AIC_IMAGE}" \
 # ---------------------------------------------------------------------------
 echo "=== Waiting for vLLM emulator /health ==="
 for i in $(seq 1 24); do
-    if curl -sf http://localhost:8000/health >/dev/null 2>&1; then
+    if docker exec aic-vllm-emulator python3 -c \
+        "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3)" \
+        >/dev/null 2>&1; then
         echo "vLLM emulator healthy after ~$((i * 8))s"
         break
     fi
@@ -227,6 +229,7 @@ for i in $(seq 1 24); do
     fi
     sleep 8
 done
+VLLM_URL="$(aic_url aic-vllm-emulator 8000)" || exit 1
 
 # ---------------------------------------------------------------------------
 # 5. Issue 3 LLM prompts; assert non-empty completions
@@ -238,7 +241,7 @@ PROMPTS=(
     "ROCm stands for"
 )
 for prompt in "${PROMPTS[@]}"; do
-    response=$(curl -sf http://localhost:8000/v1/completions \
+    response=$(curl -sf "${VLLM_URL}/v1/completions" \
         -H 'Content-Type: application/json' \
         -d "{\"model\":\"${VLLM_CPU_MODEL:-facebook/opt-125m}\",\"prompt\":\"${prompt}\",\"max_tokens\":20}" \
     )
@@ -264,20 +267,27 @@ monitoring_healthcheck
 # 7. Scrape all metric endpoints; generate HTML reference page
 # ---------------------------------------------------------------------------
 echo "=== Scraping metrics endpoints ==="
-declare -A EXPORTER_PORTS=(
-    [node_exporter]=9100
-    [nvme_exporter]=9998
-    [rdma_exporter]=9879
-    [vllm]=8000
-    [prometheus]=9090
+# Only vllm and prometheus publish a host port, so every target is scraped from
+# a client container on the aic bridge by name.  The AIC images carry python3
+# but no curl, so the client fetches with urllib.
+declare -A EXPORTER_URLS=(
+    [node_exporter]=http://aic-node-exporter:9100
+    [nvme_exporter]=http://aic-nvme-exporter:9998
+    [rdma_exporter]=http://aic-rdma-exporter:9879
+    [vllm]=http://aic-vllm:8000
+    [prometheus]=http://aic-prometheus:9090
 )
 METRICS_ARGS=()
-for name in "${!EXPORTER_PORTS[@]}"; do
-    port="${EXPORTER_PORTS[$name]}"
+for name in "${!EXPORTER_URLS[@]}"; do
     outfile="/tmp/metrics_${name}.txt"
-    curl -sf "http://localhost:${port}/metrics" > "${outfile}" 2>/dev/null || true
+    # Body to the file, stderr captured so a failure is reported in one line.
+    err="$(docker run --rm --network aic --entrypoint python3 "${AIC_IMAGE}" -c \
+        'import sys, urllib.request; sys.stdout.buffer.write(urllib.request.urlopen(sys.argv[1], timeout=10).read())' \
+        "${EXPORTER_URLS[$name]}/metrics" 2>&1 > "${outfile}")" || true
     if [[ -s "${outfile}" ]]; then
         METRICS_ARGS+=("--source" "${name}:${outfile}")
+    else
+        echo "WARN: no metrics scraped from ${name} (${EXPORTER_URLS[$name]}): ${err##*$'\n'}" >&2
     fi
 done
 

@@ -31,7 +31,6 @@ fi
 
 KVBENCH_MODEL="${KVBENCH_MODEL:-llama-3.1-8b}"
 KVBENCH_PORT="${KVBENCH_PORT:-8000}"
-KVBENCH_HOST_PORT="${KVBENCH_HOST_PORT:-18000}"
 KVBENCH_READY_TIMEOUT="${KVBENCH_READY_TIMEOUT:-120}"
 BENCH_ISL="${BENCH_ISL:-32}"
 BENCH_SHARED_TOK="${BENCH_SHARED_TOK:-16}"
@@ -51,7 +50,7 @@ cd "${REPO}"
 source "${REPO}/monitoring/monitoring-lib.sh"
 ensure_compose || die "docker compose unavailable and could not be installed"
 
-export KVBENCH_MODEL KVBENCH_PORT KVBENCH_HOST_PORT KVBENCH_IMAGE_REF
+export KVBENCH_MODEL KVBENCH_PORT KVBENCH_IMAGE_REF
 export LOG="${LOGDIR}"
 compose() { docker compose -f "${REPO}/docker/docker-compose.yml" "$@"; }
 
@@ -68,7 +67,9 @@ compose --profile kvbench up --build -d kvbench client || die "compose up failed
 log "waiting for aic-kvbench to serve /v1/models"
 ready=0
 for _i in $(seq 1 "${KVBENCH_READY_TIMEOUT}"); do
-  if curl -fsS "http://127.0.0.1:${KVBENCH_HOST_PORT}/v1/models" >/dev/null 2>&1; then
+  if docker exec aic-kvbench python3 -c \
+      "import urllib.request; urllib.request.urlopen('http://127.0.0.1:${KVBENCH_PORT}/v1/models', timeout=3)" \
+      >/dev/null 2>&1; then
     ready=1
     break
   fi

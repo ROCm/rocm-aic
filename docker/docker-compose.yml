@@ -26,9 +26,10 @@
 #   .slurm/run-build-distribute.sh     — tiny-test end-to-end serve
 #
 # The lmcache service sits behind the `cache` compose profile, so the plain
-# `vram` baseline can start `vllm` alone
-# (`VLLM_IPC_MODE=shareable docker compose up vllm`) without pulling in lmcache
-# — vllm's depends_on uses `required: false` for that.
+# `vram` baseline can start `vllm` alone without pulling in lmcache — vllm's
+# depends_on uses `required: false` for that.  Add the override file
+# (`-f docker-compose.vllm-only.yml`) to move vllm off lmcache's network, IPC and
+# PID namespaces onto the aic bridge.
 #
 # Required env:
 #   ROCM_ARCH      — e.g. gfx942
@@ -48,9 +49,20 @@
 #                            LocalDiskBackend via LMCACHE_CONFIG_FILE), or none (DRAM-only L1)
 #   LMCACHE_CONFIG_FILE_HOST — host path to an LMCache YAML config to mount (advanced; local_disk)
 #   KV_TRANSFER_ARG        — vLLM --kv-transfer-config arg (empty = plain vLLM baseline)
-#   VLLM_IPC_MODE          — vLLM IPC mode (default: service:lmcache; use shareable
-#                            when starting vllm without the lmcache service)
+#   VLLM_IPC_MODE          — vLLM IPC mode (default: service:lmcache)
+#   VLLM_PID_MODE          — vLLM PID mode (default: service:lmcache; empty = private)
+#   VLLM_NETWORK_MODE      — vLLM network mode (default: container:aic-lmcache)
+#                            A vllm-only run should use docker-compose.vllm-only.yml
+#                            instead of overriding all three.
 #   AIC_SHM_SIZE           — private /dev/shm capacity (default: 64gb)
+#   AIC_PUBLISH_ADDR       — host address published ports bind (default: 127.0.0.1)
+#   VLLM_HOST_PORT, LMCACHE_HTTP_HOST_PORT, KVBENCH_HOST_PORT, AIC_PROM_PORT,
+#   AIC_GRAFANA_PORT       — pin a published port on the host.  Unset (default) lets
+#                            Docker pick a free one, so nothing here can collide with
+#                            another tenant on the node; `make endpoints` prints the
+#                            URLs, and scripts use scripts/aic-endpoints.sh (aic_url).
+#                            The *container* ports are fixed (vLLM 8000, lmcache HTTP
+#                            8080, Prometheus 9090, Grafana 3000).
 #   HF_HOME                — host HF cache dir (default: ~/.cache/huggingface)
 #   LOG                    — host log dir (default: ../logs, i.e. /logs)
 #   IMAGE_REF              — full image ref name:tag (default: rocm-aic:latest;
@@ -76,7 +88,7 @@
 #   LMCACHE_COORDINATOR_URL      — base URL the MP server registers/heartbeats against
 #                                  (default: http://aic-lmcache-coordinator:9300).
 #                                  Unset to disable coordinator registration entirely.
-#   LMCACHE_COORDINATOR_PORT     — coordinator HTTP port (default: 9300); /metrics on COORDINATOR_METRICS_PORT (default: 9301).
+#   LMCACHE_COORDINATOR_PORT     — coordinator HTTP port (default: 9300, bridge only); /metrics on COORDINATOR_METRICS_PORT (default: 9301).
 #   COORDINATOR_METRICS_PORT     — Prometheus /metrics port on the coordinator container (default: 9301).
 #   LMCACHE_COORDINATOR_INSTANCE_TIMEOUT — seconds without heartbeat before instance eviction (default: 120).
 #   LMCACHE_COORDINATOR_HEALTH_INTERVAL  — seconds between heartbeat-sweep runs (default: 10).
@@ -114,14 +126,17 @@
 #   EMU_PROFILE_PACK_HOST      — host path to profile pack dir (mounted at /profiles)
 #   HF_HOME                    — host HF cache dir (default: ~/.cache/huggingface)
 #   VLLM_EMULATOR_MEMORY       — emulated KV pool, bytes.  Under `emulate-mp` this
-#                                is actually allocated (host memory, lazily paged)
-#                                because the connector needs real buffers, so cap
-#                                it to fit the node
+#                                is actually allocated, and resident in /dev/shm
+#                                from startup, because the connector needs real
+#                                buffers, so cap it to fit the node
 #   VLLM_EMULATOR_KV_BUFFERS   — 0 skips the fake KV buffers (connector goes inert)
 #   EMU_KV_TRANSFER_ARG        — vLLM --kv-transfer-config for the EMULATOR.
 #                                Deliberately not KV_TRANSFER_ARG: the Makefile
 #                                exports that one globally, which would attach
 #                                the MP connector to the plain `emulate` profile
+#   EMU_IPC_MODE               — vllm-emulator's ipc mode.  `emulate-mp` needs
+#                                container:aic-lmcache-emulator (one /dev/shm
+#                                for the KV SHM segments); default shareable
 #   AIC_L2_BACKEND             — `emulate-mp` defaults to nixl_posix (NIXL stays in
 #                                the path, no GPUDirect needed); AIS_MT needs
 #                                /dev/kfd, local_disk is the NIXL-free fallback
@@ -171,6 +186,8 @@ x-lmcache-env: &lmcache-env
 # The entrypoint script selects the L1/L2 topology from GDS_MODE +
 # AIC_L2_BACKEND.  local_disk relies on LMCACHE_CONFIG_FILE (mounted by the
 # service).
+# --http-host 0.0.0.0: LMCache binds its HTTP API (:8080) to 127.0.0.1 by
+# default, which the published port and other containers cannot reach.
 x-lmcache-command: &lmcache-command
   - |
     # Build coordinator flags once; empty when LMCACHE_COORDINATOR_URL is unset.
@@ -182,6 +199,7 @@ x-lmcache-command: &lmcache-command
       exec lmcache server \
         --no-separate-object-groups \
         --host 0.0.0.0 \
+        --http-host 0.0.0.0 \
         --http-port 8080 \
         --port "$$LMCACHE_PORT" \
         --l1-size-gb "$$LMCACHE_L1_SIZE_GB" \
@@ -198,6 +216,7 @@ x-lmcache-command: &lmcache-command
       exec lmcache server \
         --no-separate-object-groups \
         --host 0.0.0.0 \
+        --http-host 0.0.0.0 \
         --http-port 8080 \
         --port "$$LMCACHE_PORT" \
         --l1-size-gb "$$LMCACHE_L1_SIZE_GB" \
@@ -214,6 +233,7 @@ x-lmcache-command: &lmcache-command
       # a full scan.  max_capacity_gb caps total NVMe usage.
       exec lmcache server \
         --host 0.0.0.0 \
+        --http-host 0.0.0.0 \
         --http-port 8080 \
         --port "$$LMCACHE_PORT" \
         --l1-size-gb "$$LMCACHE_L1_SIZE_GB" \
@@ -233,6 +253,7 @@ x-lmcache-command: &lmcache-command
       # AIS_MT 256 MiB staging-buffer size: POSIX writes actual KV bytes per slot.
       exec lmcache server \
         --host 0.0.0.0 \
+        --http-host 0.0.0.0 \
         --http-port 8080 \
         --port "$$LMCACHE_PORT" \
         --l1-size-gb "$$LMCACHE_L1_SIZE_GB" \
@@ -250,6 +271,7 @@ x-lmcache-command: &lmcache-command
       exec lmcache server \
         --no-separate-object-groups \
         --host 0.0.0.0 \
+        --http-host 0.0.0.0 \
         --http-port 8080 \
         --port "$$LMCACHE_PORT" \
         --l1-size-gb "$$LMCACHE_L1_SIZE_GB" \
@@ -297,7 +319,7 @@ services:
     container_name: aic-kvbench
     networks: [aic-network]
     ports:
-      - "${KVBENCH_HOST_PORT:-18000}:${KVBENCH_PORT:-8000}"
+      - "${AIC_PUBLISH_ADDR:-127.0.0.1}:${KVBENCH_HOST_PORT:-}:${KVBENCH_PORT:-8000}"
     environment:
       HF_TOKEN: "${HF_TOKEN:-}"
       HF_HOME: /hf
@@ -361,25 +383,22 @@ services:
     # both (AIC_HSA_IPC_LEGACY=1 for the KFD-handle mode, which needs DKMS amdgpu).
     # AIC_LMCACHE_VMM_IPC=1 selects the HIP VMM wrapper (rocm_vmem_ipc.py), which
     # copies the KV cache at registration.  GPU *event* IPC is skipped (rocm_ipc_patch.py).
-    # Needs container-scoped shared IPC+PID namespaces: lmcache owns the shareable
-    # namespace; vllm joins it via ipc/pid: service:lmcache (see vllm service below).
-    # IPC namespace sharing is independent of network_mode — the aic bridge network
-    # provides DNS-based service discovery for prometheus without affecting IPC.
-    # lmcache owns the shareable IPC+PID namespace; vllm joins via service:lmcache.
-    # ipc:shareable + no pid:host is sufficient (see the IPC note above).
-    # spur-authz blocks pid:host on SPUR nodes.
+    # lmcache owns the shareable IPC+PID namespaces; vllm joins them via
+    # ipc/pid: service:lmcache.  pid:host would work but spur-authz blocks it.
     # Own network namespace, not host: on the host one, "@hsa<pid>" would be
     # shared with every host-net container on the node, each with its own PID
     # namespace, and a PID clash breaks the export or hangs the import.  vllm's
-    # ports live here too, so publish what host-net used to expose; Prometheus
-    # still scrapes them via host-gateway (see prometheus.yml).
-    networks: [aic-network]
+    # ports live here too, hence the aic-vllm alias prometheus scrapes it by
+    # (the vllm container name carries the GPU index).  Prometheus scrapes
+    # lmcache :9091 and NIXL :19090 by name over the bridge.
+    networks:
+      aic-network:
+        aliases: [aic-vllm]
     ports:
-      - "${VLLM_HOST_PORT:-8000}:8000"   # vllm (network_mode: container:aic-lmcache)
-      - "${LMCACHE_PORT:-6555}:${LMCACHE_PORT:-6555}"
-      - "8080:8080"                      # lmcache HTTP API
-      - "9091:9091"                      # lmcache Prometheus
-      - "${NIXL_METRICS_PORT:-19090}:${NIXL_METRICS_PORT:-19090}"
+      # vllm (network_mode: container:aic-lmcache)
+      - "${AIC_PUBLISH_ADDR:-127.0.0.1}:${VLLM_HOST_PORT:-}:8000"
+      # lmcache HTTP API
+      - "${AIC_PUBLISH_ADDR:-127.0.0.1}:${LMCACHE_HTTP_HOST_PORT:-}:8080"
     ipc: shareable
     shm_size: "${AIC_SHM_SIZE:-64gb}"
     cap_add:
@@ -459,8 +478,6 @@ services:
     image: ${LMCACHE_IMAGE_REF:-${IMAGE_REF:-${IMAGE_NAME:-rocm-aic}:latest}}
     container_name: aic-lmcache-coordinator
     networks: [aic-network]
-    ports:
-      - "${LMCACHE_COORDINATOR_PORT:-9300}:${LMCACHE_COORDINATOR_PORT:-9300}"
     restart: unless-stopped
     environment:
       - LMCACHE_DISABLE_BANNER=1
@@ -492,15 +509,12 @@ services:
     # `make build`, which supplies the torch-bearing `base` build-context.
     image: ${VLLM_IMAGE_REF:-${IMAGE_REF:-${IMAGE_NAME:-rocm-aic}:latest}}
     container_name: aic-vllm-gpu${GPU:-0}
-    # Shared IPC/PID namespaces with lmcache: required for cross-container HIP IPC
-    # KV registration (see the lmcache service).  vllm joins lmcache's shareable IPC
-    # Cross-container HIP IPC (LMCacheMPConnector) needs lmcache's network namespace
-    # (see there) plus shared IPC+PID namespaces.  Container-scoped sharing
-    # (ipc: service:lmcache, pid: service:lmcache) is sufficient and safer than
-    # ipc: host / pid: host.  Override via VLLM_IPC_MODE / VLLM_PID_MODE if needed.
-    # lmcache publishes vllm's port; prometheus scrapes it via host-gateway.
+    # Joins lmcache's IPC, PID and network namespaces; cross-container HIP IPC KV
+    # registration needs all three (see the lmcache service).  Override via
+    # VLLM_IPC_MODE / VLLM_PID_MODE / VLLM_NETWORK_MODE.
+    # lmcache publishes vllm's port; prometheus scrapes it as aic-vllm:8000.
     # container:, not service:, so compose can still load the project without
-    # the cache profile; a vllm-only run sets VLLM_NETWORK_MODE=host.
+    # the cache profile; a vllm-only run adds docker-compose.vllm-only.yml.
     network_mode: "${VLLM_NETWORK_MODE:-container:aic-lmcache}"
     ipc: "${VLLM_IPC_MODE:-service:lmcache}"
     shm_size: "${AIC_SHM_SIZE:-64gb}"
@@ -577,7 +591,6 @@ services:
         --stream-interval 20
         --async-scheduling
         --disable-access-log-for-endpoints "/health,/metrics,/v1/models,/v1/chat/completions,/v1/completions,/reset_prefix_cache"
-        ${VLM_ENFORCE_EAGER:+--enforce-eager}
         --enable-mfu-metrics
         --kv-cache-metrics
         --kv-cache-metrics-sample ${VLM_KV_CACHE_METRICS_SAMPLE:-0.05}
@@ -599,6 +612,9 @@ services:
   # pip deps are pre-installed from an explicit list matching pyproject.toml [dev] at startup.
   # ---------------------------------------------------------------------------
   client:
+    # Off the cache-only paths (tiny-test, accuracy): it would pull python:3.12
+    # and pip-install benchmark deps there for nothing.
+    profiles: [client, monitoring, monitoring-base]
     image: ${AIC_CLIENT_IMAGE:-python:3.12}
     container_name: aic-client
     networks: [aic-network]
@@ -665,7 +681,7 @@ services:
     container_name: aic-prometheus
     networks: [aic-network]
     ports:
-      - "${AIC_PROM_PORT:-9090}:${AIC_PROM_PORT:-9090}"
+      - "${AIC_PUBLISH_ADDR:-127.0.0.1}:${AIC_PROM_PORT:-}:9090"
     extra_hosts:
       - "host-gateway:host-gateway"
     user: "${PROM_UID:-65534}:${PROM_GID:-65534}"
@@ -679,7 +695,7 @@ services:
       - --storage.tsdb.path=/prometheus
       - --storage.tsdb.retention.time=${AIC_PROM_RETENTION:-90d}
       - --web.enable-lifecycle
-      - --web.listen-address=:${AIC_PROM_PORT:-9090}
+      - --web.listen-address=:9090
 
   # ---------------------------------------------------------------------------
   # l2-monitor: watches the nixl_posix_dynamic L2 directory via inotify.
@@ -786,7 +802,8 @@ services:
 
   # ---------------------------------------------------------------------------
   # grafana: pre-provisioned AIC dashboard, anonymous access, port 3000.
-  # Open http://localhost:3000 after `make up` (with --profile monitoring).
+  # `make endpoints` prints its URL after `make up` (with --profile monitoring);
+  # the host port is ephemeral unless AIC_GRAFANA_PORT pins it.
   # ---------------------------------------------------------------------------
   grafana:
     profiles: [monitoring, monitoring-base]
@@ -794,7 +811,7 @@ services:
     container_name: aic-grafana
     networks: [aic-network]
     ports:
-      - "${AIC_GRAFANA_PORT:-3000}:3000"
+      - "${AIC_PUBLISH_ADDR:-127.0.0.1}:${AIC_GRAFANA_PORT:-}:3000"
     restart: unless-stopped
     environment:
       GF_AUTH_ANONYMOUS_ENABLED: "true"
@@ -858,11 +875,24 @@ services:
       - emulate-mp
     image: ${LMCACHE_IMAGE_REF:-${IMAGE_REF:-${IMAGE_NAME:-rocm-aic}:latest}}
     container_name: aic-lmcache-emulator
-    # host net for ZMQ on :${LMCACHE_PORT}; shareable IPC so the POSIX SHM
-    # segments LMCache migrates the emulator's KV buffers into are visible
-    # to joining containers (avoids the spur-authz ipc:host block).
-    network_mode: host
+    # On the aic bridge, like `lmcache`: vllm-emulator reaches ZMQ on
+    # :${LMCACHE_PORT} by container name, and the aic-lmcache alias lets
+    # prometheus scrape :9091/:19090 with the same targets as the GPU stack (run
+    # one stack per node, or the alias resolves to both).  Owns the IPC
+    # namespace, as `lmcache` does for the GPU stack: vllm-emulator joins it
+    # under emulate-mp (EMU_IPC_MODE), because the server opens the POSIX SHM
+    # segments LMCache migrates the emulator's KV buffers into by name, and
+    # Docker gives every other container its own /dev/shm (ipc:host is blocked
+    # by spur-authz).
+    # shm_size must hold the whole emulated KV pool (VLLM_EMULATOR_MEMORY);
+    # Docker's 64 MiB default would SIGBUS the copy into it.
+    networks:
+      aic-network:
+        aliases: [aic-lmcache]
+    ports:
+      - "${AIC_PUBLISH_ADDR:-127.0.0.1}:${LMCACHE_HTTP_HOST_PORT:-}:8080"   # lmcache HTTP API
     ipc: shareable
+    shm_size: "${AIC_SHM_SIZE:-64gb}"
     cap_add:
       - SYS_PTRACE
       - IPC_LOCK
@@ -930,8 +960,8 @@ services:
   #   VLLM_MODEL                 — model to serve; should match the profile pack
   #   VLLM_EMULATOR_MEMORY       — emulated KV pool in bytes.  Matters more under
   #                                `emulate-mp`: the connector needs real buffers,
-  #                                so the pool is actually allocated (host memory,
-  #                                lazily paged).  Cap it to fit the node.
+  #                                so the pool is actually allocated (resident in
+  #                                /dev/shm from startup).  Cap it to fit the node.
   #   VLLM_EMULATOR_KV_BUFFERS   — 0 to skip the fake KV buffers entirely, which
   #                                also makes --kv-transfer-config inert.
   # ---------------------------------------------------------------------------
@@ -941,14 +971,20 @@ services:
       - emulate-mp
     image: ${VLLM_IMAGE_REF:-${IMAGE_REF:-${IMAGE_NAME:-rocm-aic}:latest}}
     container_name: aic-vllm-emulator
-    # host net (like the vllm/lmcache services above) — vLLM's OpenAI API and
-    # /metrics land on host :8000 with no bridge/NAT in the way.
-    network_mode: host
-    # No devices/cap_add block: the emulator touches no GPU.  ipc: shareable
-    # under `emulate-mp` — LMCache migrates the fake KV buffers into POSIX SHM
-    # segments for the server to map; shareable avoids the spur-authz ipc:host
-    # block while still exposing /dev/shm to joining containers.
-    ipc: shareable
+    # On the aic bridge with :8000 published on an ephemeral loopback port, which
+    # host-side clients find with aic_url.  The aic-vllm alias is prometheus' vllm
+    # target, as it is for the GPU stack.
+    networks:
+      aic-network:
+        aliases: [aic-vllm]
+    ports:
+      - "${AIC_PUBLISH_ADDR:-127.0.0.1}:${VLLM_HOST_PORT:-}:8000"
+    # No devices/cap_add block: the emulator touches no GPU.  Under `emulate-mp`
+    # set EMU_IPC_MODE=container:aic-lmcache-emulator: LMCache migrates the fake
+    # KV buffers into POSIX SHM segments that the server opens by name, so both
+    # must see one /dev/shm.  container:, not service:, so the plain `emulate`
+    # profile (no lmcache-emulator) still loads; it keeps its own namespace.
+    ipc: "${EMU_IPC_MODE:-shareable}"
     # Run as the invoking user rather than root.  /hf below is a bind mount, and
     # on a cluster it is a SHARED cache: a root-owned entry there is one that
     # nobody but root can refresh or delete, because removing it needs write
@@ -1078,7 +1114,12 @@ services:
       - cpu-smoke
     image: ${VLLM_IMAGE_REF:-${IMAGE_REF:-${IMAGE_NAME:-rocm-aic}:latest}}
     container_name: aic-vllm-emulator
-    network_mode: host
+    # Bridge + published :8000 (ephemeral) + aic-vllm alias, as vllm-emulator above.
+    networks:
+      aic-network:
+        aliases: [aic-vllm]
+    ports:
+      - "${AIC_PUBLISH_ADDR:-127.0.0.1}:${VLLM_HOST_PORT:-}:8000"
     volumes:
       - ${HF_HOME:-~/.cache/huggingface}:/hf
       - ../monitoring/scripts/vllm_emulator_server.py:/app/vllm_emulator_server.py:ro

@@ -35,10 +35,10 @@
 # so a checksum would be a flake generator; see tests/accuracy/README.md.
 #
 # pytest runs host-side (it needs .venv and lm_eval; the image stays lean and the
-# gsm8k download stays off the compute node), reaching vLLM on its `aic` bridge
-# IP.  vLLM publishes no ports, so a bridge IP -- not localhost -- is the only
-# host-side route; readiness probes use the `docker exec ... 127.0.0.1` form that
-# the rest of the repo uses.
+# gsm8k download stays off the compute node), reaching vLLM on the host port
+# Docker published for it (an ephemeral 127.0.0.1 port, found with aic_url): vLLM's
+# own in the vram arm, lmcache's in the tiered arm.  Readiness probes use the
+# `docker exec ... 127.0.0.1` form that the rest of the repo uses.
 #
 # Every scoring pass asks the full gsm8k split; there is no item cap to set.
 #
@@ -83,6 +83,12 @@
 # Optional:
 #   HF_TOKEN                    gated-model download token (default: empty)
 #   AIC_FORCE_LOAD              1 forces an image reload (default: 0)
+#   AIC_MONITORING              0 skips the Prometheus TSDB capture of the tiered
+#                               arm, written to $AIC_LOG_DIR/prometheus (default: 1)
+#   AIC_ACCURACY_SCRAPE_S       final scrape window before the capture stops
+#                               (default: 30)
+#   AIC_ACCURACY_EXPORTERS      AIC_EXPORTERS for that capture; 0 = prometheus
+#                               only (default: 0)
 #   AIC_SPUR_CLUSTER            1 takes the GPU from SPUR's job env; otherwise
 #                               from ROCR_VISIBLE_DEVICES & co, else GPU or 0
 #                               (default: 0; see aic_resolve_gpu_visibility)
@@ -153,15 +159,19 @@ echo "[accuracy-test] allocated gpu: ROCR=${AIC_ROCR_VISIBLE} HIP=${AIC_HIP_VISI
 # because ~/.local shadows venv site-packages on these boxes.
 export PYTHONNOUSERSITE=1
 VENV="${AIC_DAY_DIR}/.venv"
-if [ ! -x "${VENV}/bin/pytest" ]; then
-    echo "[accuracy-test] creating host venv at ${VENV}"
+PYBIN="${VENV}/bin/python"
+# Probe by importing, not by testing that bin/pytest exists: a venv built under
+# another repo path or host python keeps stale shebangs and interpreter links
+# (job 68152207).  Everything below goes through ${PYBIN} -m, never a shebang.
+if ! "${PYBIN}" -c 'import pytest, lm_eval' >/dev/null 2>&1; then
+    echo "[accuracy-test] (re)creating host venv at ${VENV}"
+    rm -rf "${VENV}"
     python3 -m venv "${VENV}" || { echo "[accuracy-test] FAIL: venv creation failed" >&2; exit 1; }
-    "${VENV}/bin/pip" -q install --upgrade pip
-    "${VENV}/bin/pip" -q install -e "${AIC_DAY_DIR}[accuracy]" || {
+    "${PYBIN}" -m pip -q install --upgrade pip
+    "${PYBIN}" -m pip -q install -e "${AIC_DAY_DIR}[accuracy]" || {
         echo "[accuracy-test] FAIL: could not install the accuracy extra" >&2; exit 1; }
 fi
-PYTEST="${VENV}/bin/pytest"
-PYBIN="${VENV}/bin/python"
+PYTEST=("${PYBIN}" -m pytest)
 
 export AIC_ACCURACY_MODEL="${AIC_ACCURACY_MODEL}"
 export AIC_ACCURACY_DELTA="${AIC_ACCURACY_DELTA}"
@@ -259,8 +269,19 @@ _teardown() {
     fi
     for c in "${VLLM_CONTAINER}" aic-lmcache; do timeout 30 docker rm -f "$c" >/dev/null 2>&1 || true; done
 }
+_ACC_MONITORING_UP=0
 # shellcheck disable=SC2317  # reached via the EXIT trap below, not inline
 cleanup() {
+    # Stop the capture BEFORE tearing the stack down, so the TSDB is flushed
+    # while prometheus can still scrape.  Informational: never changes the rc.
+    if [ "${_ACC_MONITORING_UP}" = "1" ]; then
+        echo "[accuracy-test] scraping metrics for ${AIC_ACCURACY_SCRAPE_S:-30}s ..."
+        sleep "${AIC_ACCURACY_SCRAPE_S:-30}"
+        monitoring_tsdb_summary || true
+        stop_monitoring || true
+        echo "[accuracy-test] TSDB retained at ${AIC_METRICS_DIR}"
+        _ACC_MONITORING_UP=0
+    fi
     _teardown final
     # Best-effort only: this trap does not run on SIGKILL, which is why the pool
     # is namespaced and both pre-cleared and reaped above.
@@ -269,8 +290,8 @@ cleanup() {
 trap cleanup EXIT
 
 # --- helpers -----------------------------------------------------------------
-# Readiness is probed from inside the container: vLLM publishes no ports, so the
-# Slurm host's loopback cannot reach it (the convention used across the repo).
+# Readiness is probed from inside the container so it does not depend on the
+# host-side port path (the convention used across the repo).
 _wait_ready() {
     local tag="$1"
     for _ in $(seq 1 "${AIC_ACCURACY_READY_TIMEOUT}"); do
@@ -287,18 +308,20 @@ _wait_ready() {
     return 1
 }
 
-# pytest is host-side but vLLM lives on the aic bridge, so hand pytest the
-# container's bridge IP.  Verified host-routable before this was relied on; if a
-# node ever fails this check the fallback is to run pytest inside the client
+# If a node ever fails this check, fall back to running pytest inside the client
 # container (already on aic, repo mounted), at the cost of a gsm8k download on
 # the compute node.
+# Resolved on every call: the published host port is ephemeral and changes when
+# the publishing container is recreated, so never cache this across a restart.
 _endpoint_url() {
-    # vLLM shares lmcache's network namespace, which publishes port 8000 on the
-    # compute node; reach it via localhost.
-    curl -fsS --max-time 10 "http://127.0.0.1:8000/v1/models" >/dev/null 2>&1 || {
-        echo "[accuracy-test] FAIL: host cannot reach 127.0.0.1:8000" >&2
+    local url
+    url="$(aic_url "${VLLM_CONTAINER}" 8000)" || {
+        echo "[accuracy-test] FAIL: cannot resolve vLLM's published port" >&2
         return 1; }
-    echo "http://127.0.0.1:8000/v1"
+    curl -fsS --max-time 10 "${url}/v1/models" >/dev/null 2>&1 || {
+        echo "[accuracy-test] FAIL: host cannot reach ${url}" >&2
+        return 1; }
+    echo "${url}/v1"
 }
 
 # Apparent size: the sum of file LENGTHS.  The NIXL POSIX adapter carves the
@@ -403,14 +426,12 @@ _lmc() { _metric_sum aic-lmcache http://127.0.0.1:9091/metrics "$1"; }
 # differential the whole gate exists to run -- and left a run that could only
 # fail on catastrophe.
 echo "[accuracy-test] === Phase 1: vram_only arm ==="
-# No LMCache: vllm owns its IPC ns, no KV_TRANSFER_ARG, no --profile cache.
-export VLLM_IPC_MODE=shareable
-export VLLM_PID_MODE=
-export VLLM_NETWORK_MODE=host
+# No LMCache: no KV_TRANSFER_ARG, no --profile cache.  The override puts vllm on
+# the aic bridge with its own IPC/PID namespaces instead of lmcache's.
 export KV_TRANSFER_ARG=
 export AIC_L2_BACKEND=none
 export VLM_GPU_MEMORY_UTILIZATION=0.90
-if ! compose up -d vllm; then
+if ! compose -f "${AIC_DAY_DIR}/docker/docker-compose.vllm-only.yml" up -d vllm; then
     echo "[accuracy-test] FAIL: baseline compose up failed" >&2
     compose logs --tail 60 --no-color vllm 2>&1 | sed 's/^/  [vllm] /'
     exit 1
@@ -493,15 +514,8 @@ export LMCACHE_L1_SIZE_GB=1
 # NIXL POSIX: no GPUDirect/hipFile requirement, so this runs on any node.
 export AIC_L2_BACKEND=nixl_posix
 export AIC_NIXL_BACKEND=POSIX
-export VLLM_IPC_MODE=service:lmcache
-export VLLM_PID_MODE=service:lmcache
-export VLLM_NETWORK_MODE=container:aic-lmcache
 # vLLM shares lmcache's network namespace, so lmcache is on its loopback.
 export KV_TRANSFER_ARG="--kv-transfer-config '{\"kv_connector\":\"LMCacheMPConnector\",\"kv_role\":\"kv_both\",\"kv_connector_extra_config\":{\"lmcache.mp.host\":\"tcp://localhost\",\"lmcache.mp.port\":6555}}'"
-# Disable CUDA graph capture for the kvd arm: LMCacheMPConnector registers KV
-# caches after vLLM's graph warmup phase, so CUDA graphs trigger
-# "KV caches are not registered" from the connector.  enforce_eager avoids this.
-export VLM_ENFORCE_EAGER=True
 
 POOL_BEFORE="$(_pool_bytes)"
 POOL_ALLOC_BEFORE="$(_pool_alloc_bytes)"
@@ -512,6 +526,26 @@ if ! compose --profile cache up -d; then
     exit 1
 fi
 _wait_ready kvd || exit 1
+
+# --- metrics capture ---------------------------------------------------------
+# Started here rather than in phase 1: hsa-snoop (AIC_ACCURACY_EXPORTERS=safe)
+# joins lmcache's PID namespace, so the tiered stack must already be up.
+# Prometheus only by default: this path does not load the exporter image
+# tarballs, and a missing one fails the whole compose up.  Prometheus scrapes
+# lmcache and vLLM by name over the bridge, so the TSDB holds real series.
+if [ "${AIC_MONITORING:-1}" = "1" ]; then
+    export MON_COMPOSE="${AIC_DAY_DIR}/docker/docker-compose.yml"
+    export AIC_IMAGE="${AIC_LMCACHE_IMAGE}"
+    export AIC_METRICS_DIR="${AIC_LOG_DIR}/prometheus"
+    # Not AIC_EXPORTERS: monitoring-lib defaults it to 1 and SPUR's make forces
+    # it to safe, and neither set of exporter images is loaded here.
+    export AIC_EXPORTERS="${AIC_ACCURACY_EXPORTERS:-0}"
+    export AIC_MONITORING=1
+    mkdir -p "${AIC_METRICS_DIR}"
+    start_monitoring
+    # start_monitoring clears AIC_MONITORING when it cannot run (no compose).
+    if [ "${AIC_MONITORING}" = "1" ]; then _ACC_MONITORING_UP=1; fi
+fi
 TIERED_URL="$(_endpoint_url)" || exit 1
 echo "[accuracy-test] tiered endpoint: ${TIERED_URL}"
 
@@ -543,7 +577,7 @@ export AIC_ACCURACY_SCORE_OUT="${AIC_LOG_DIR}/tiered-score.json"
 export AIC_ACCURACY_BASELINE_SCORE="${BASELINE_SCORE}"
 
 rc=0
-"${PYTEST}" "${AIC_DAY_DIR}/tests/accuracy" -v -rs --no-header || rc=$?
+"${PYTEST[@]}" "${AIC_DAY_DIR}/tests/accuracy" -v -rs --no-header || rc=$?
 
 # ===========================================================================
 # Phase 3: liveness -- prove the tiered arm actually tiered
@@ -766,7 +800,7 @@ export AIC_ACCURACY_REFERENCE_SCORE="${TIERED_SCORE}"
 # it would overwrite the comparand mid-comparison.
 export AIC_ACCURACY_SCORE_OUT="${AIC_LOG_DIR}/restart-score.json"
 unset AIC_ACCURACY_BASELINE_SCORE
-"${PYTEST}" "${AIC_DAY_DIR}/tests/accuracy" -v -rs --no-header \
+"${PYTEST[@]}" "${AIC_DAY_DIR}/tests/accuracy" -v -rs --no-header \
     -k 'restart' || {
     echo "[accuracy-test] FAIL: phase 4 -- score regressed after restart" >&2
     exit 1; }
