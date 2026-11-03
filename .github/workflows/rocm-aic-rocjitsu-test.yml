@@ -180,6 +180,13 @@ jobs:
           fi
 
       - name: Run rocjitsu VM test
+        env:
+          # mk/bench.mk:489 hard-fails when HF_TOKEN is empty, before anything
+          # else in the target runs -- so without this the whole job dies
+          # seconds into `make test-rocjitsu-local`, after having already paid
+          # for the qcow2 pull and the image pulls.  AIC_HF_TOKEN is the secret
+          # name the rest of this repo's workflows use.
+          HF_TOKEN: ${{ secrets.AIC_HF_TOKEN }}
         run: |
           # The vm/ dir is pre-populated from cache or the ORAS pull above, so
           # [3/6] skips its own extraction (vm-info.json present).
