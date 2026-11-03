@@ -93,6 +93,13 @@ on:
 permissions:
   contents: read
   packages: read
+  # Specifying this block at all sets every UNLISTED scope to `none`, so
+  # `actions` has to be granted explicitly.  download-artifact@v8 with `run-id`
+  # reads another run's artifacts via
+  # GET /repos/{owner}/{repo}/actions/runs/{id}/artifacts, which 403s without
+  # it.  Only the wheels_run_id path needs this, so the default (release) path
+  # would have hidden the gap until someone used the input.
+  actions: read
 
 jobs:
   wheels-test:
@@ -162,9 +169,15 @@ jobs:
         with:
           run-id: ${{ inputs.wheels_run_id }}
           github-token: ${{ github.token }}
-          pattern: wheels-*
+          # `name:`, NOT `pattern: wheels-* + merge-multiple: true`.  A wheels
+          # run uploads wheels-cdna / wheels-rdna / wheels-gfx1250, and every
+          # group's wheels have BYTE-IDENTICAL FILENAMES holding different GPU
+          # code (see docs/PIP_WHEELS.md).  Merging them into one directory
+          # would have the groups overwrite each other in nondeterministic
+          # order, and the arch guard would then pass or fail depending on
+          # which group happened to land last.
+          name: wheels-gfx1250
           path: ${{ env.WHEELS_DIR }}
-          merge-multiple: true
 
       - name: Show and arch-check the wheel set
         run: |
@@ -232,8 +245,17 @@ jobs:
         run: |
           set -euo pipefail
           docker pull "${BASE_IMAGE}"
-          docker image inspect "${BASE_IMAGE}" \
-            --format 'aic-base torch arch label: {{index .Config.Labels "ai.amd.aic.rocm"}}'
+          # aic-base carries no arch label, so there is nothing to inspect for
+          # one -- docker/base/Dockerfile's runtime stage sets no LABEL block at
+          # all.  Printing an empty label would have looked like a check while
+          # asserting nothing.  Assert something real instead: the ROCm torch is
+          # present and importable, which is the single property this whole
+          # workflow depends on aic-base for.
+          docker run --rm --entrypoint python3 "${BASE_IMAGE}" -I -c '
+          import torch
+          assert torch.version.hip, "aic-base torch is not a ROCm build"
+          print("aic-base torch", torch.__version__, "hip", torch.version.hip)
+          '
 
       - name: Build aic-vllm and aic-lmcache from the released wheels
         run: |
@@ -274,38 +296,46 @@ jobs:
       - name: Verify the installed stack (CPU-safe checks only)
         run: |
           set -euo pipefail
+          # NOTE the indentation: this Python body is indented to match the
+          # block scalar.  YAML strips the scalar's common indentation, so the
+          # shell -- and Python -- still receive it at column 0.  Writing it
+          # flush-left instead TERMINATES the `run: |` block and makes the whole
+          # workflow file unparseable ("Invalid workflow file"), which is not
+          # obvious from reading the diff.
           docker run --rm --entrypoint python3 '${{ steps.names.outputs.vllm }}' -I -c '
-import importlib.metadata as md
-import torch
+          import importlib.metadata as md
+          import torch
 
-# torch must still be aic-base s ROCm build, not a PyPI CUDA wheel pulled in
-# by dependency resolution.  This is the failure the constraint file prevents.
-assert torch.version.hip, "torch is not a ROCm build -- a CUDA wheel replaced aic-base torch"
-print("torch            ", torch.__version__)
-print("torch.version.hip", torch.version.hip)
+          # torch must still be aic-base s ROCm build, not a PyPI CUDA wheel
+          # pulled in by dependency resolution.  This is the failure the
+          # constraint file prevents.
+          assert torch.version.hip, "torch is not a ROCm build -- a CUDA wheel replaced aic-base torch"
+          print("torch            ", torch.__version__)
+          print("torch.version.hip", torch.version.hip)
 
-# Presence + version via metadata, which does not execute package __init__.
-# NOTE the DISTRIBUTION name for AITER is amd_aiter (the wheel is
-# amd_aiter-*.whl); "aiter" is only the import name and md.version("aiter")
-# raises PackageNotFoundError.
-for pkg in ("vllm", "lmcache", "amd_aiter"):
-    print(f"{pkg:<17}", md.version(pkg))
+          # Presence + version via metadata, which does not execute package
+          # __init__.  NOTE the DISTRIBUTION name for AITER is amd_aiter (the
+          # wheel is amd_aiter-*.whl); "aiter" is only the import name and
+          # md.version("aiter") raises PackageNotFoundError.
+          for pkg in ("vllm", "lmcache", "amd_aiter"):
+              print(f"{pkg:<17}", md.version(pkg))
 
-# CPU-safe: the MP adapter does not touch the device at import.  The real
-# aic-vllm build asserts this same import at build time on a CPU-only node.
-import lmcache.integration.vllm.vllm_multi_process_adapter
-print("lmcache MP adapter imports OK")
-'
+          # CPU-safe: the MP adapter does not touch the device at import.  The
+          # real aic-vllm build asserts this same import at build time on a
+          # CPU-only node.
+          import lmcache.integration.vllm.vllm_multi_process_adapter
+          print("lmcache MP adapter imports OK")
+          '
           # The vllm console script must exist -- a wheel can install the module
           # and still miss its entrypoints, which is the gap PR #197 is about.
           docker run --rm --entrypoint sh '${{ steps.names.outputs.vllm }}' -c \
             'command -v vllm && echo "vllm entrypoint OK"'
 
           docker run --rm --entrypoint python3 '${{ steps.names.outputs.lmcache }}' -I -c '
-import importlib.metadata as md
-import lmcache, cupy
-print("lmcache", md.version("lmcache"), "cupy", cupy.__version__)
-'
+          import importlib.metadata as md
+          import lmcache, cupy
+          print("lmcache", md.version("lmcache"), "cupy", cupy.__version__)
+          '
           docker run --rm --entrypoint sh '${{ steps.names.outputs.lmcache }}' -c \
             'command -v lmcache && echo "lmcache entrypoint OK"'
 
@@ -382,7 +412,16 @@ print("lmcache", md.version("lmcache"), "cupy", cupy.__version__)
         uses: actions/upload-artifact@v7
         with:
           name: gfx1250-wheels-test-logs
+          # Exclude BOTH heavy directories, not just vm/.  `shared/images/`
+          # holds a `docker save` tarball per image -- ~10 GB for this stack --
+          # and vm/ holds the decompressed qcow2 (~14 GB).  Uploading either
+          # takes longer than the test did and can exceed the artifact limit,
+          # turning a diagnosable failure into a timed-out upload with no logs
+          # at all.  Only the logs and metrics are wanted here.
           path: |
             /tmp/aic-rocjitsu-test/
-            !/tmp/aic-rocjitsu-test/vm
+            !/tmp/aic-rocjitsu-test/vm/**
+            !/tmp/aic-rocjitsu-test/shared/images/**
+            !/tmp/aic-rocjitsu-test/shared/repo/**
           retention-days: 3
+          if-no-files-found: warn

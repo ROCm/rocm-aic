@@ -41,8 +41,9 @@
 #     --build-context wheels=/path/to/downloaded/wheels \
 #     -t aic-vllm:<tag> .
 
-# hadolint ignore=DL3006
-ARG AIC_BASE_IMAGE
+# Default so a bare `docker build` resolves, and so linters do not read the
+# FROM as blank.  The workflow always passes --build-arg AIC_BASE_IMAGE.
+ARG AIC_BASE_IMAGE=ghcr.io/rocm/rocm-aic/aic-base:gfx1250
 # The wheel set downloaded from the release, as a build context.
 FROM scratch AS wheels
 
@@ -101,8 +102,8 @@ RUN --mount=type=bind,from=wheels,target=/w \
     _tv="$(python3 -c 'import torch; print(torch.__version__)')" && \
     _tvv="$(python3 -c 'import torchvision; print(torchvision.__version__)' 2>/dev/null || true)" && \
     echo "pinning to aic-base torch=${_tv} torchvision=${_tvv:-<absent>}" && \
-    { printf 'torch==%s\n' "${_tv}"; \
-      [ -n "${_tvv}" ] && printf 'torchvision==%s\n' "${_tvv}"; } > /tmp/c.txt && \
+    printf 'torch==%s\n' "${_tv}" > /tmp/c.txt && \
+    if [ -n "${_tvv}" ]; then printf 'torchvision==%s\n' "${_tvv}" >> /tmp/c.txt; fi && \
     uv pip install --system --no-cache --constraint /tmp/c.txt \
         /w/vllm-*.whl /w/amd_aiter-*.whl /w/lmcache-*.whl && \
     rm -f /tmp/c.txt && \
@@ -157,9 +158,20 @@ ENTRYPOINT ["python3", "-m", "vllm.entrypoints.openai.api_server"]
 # =============================================================================
 # lmcache — aic-base + the lmcache wheel and its non-wheel runtime deps.
 #
-# Mirrors docker/lmcache/Dockerfile's `runtime` stage.  The ROCm IPC patches are
-# NOT re-applied here: they are compiled into the lmcache wheel itself by that
-# file's build_lmcache_wheel stage, so the published wheel already carries them.
+# Mirrors docker/lmcache/Dockerfile's `runtime` stage, INCLUDING re-running
+# rocm_ipc_patch.py.  That last part is not optional, and the reason is subtle:
+# build_lmcache_wheel patches the source before `pip wheel`, so the wheel's
+# lmcache/v1/platform/base/ipc_wrapper.py DOES import `rocm_vmem_ipc` -- but
+# rocm_ipc_patch.py installs that module into SITE-PACKAGES, not into the
+# lmcache package ("so it survives the rm -rf /app/LMCache cleanup step", per
+# its own comment).  site-packages is not part of the wheel, so installing the
+# published wheel alone gives you a patched wrapper importing a module that
+# does not exist.  Verified by unzipping the published wheel: ipc_wrapper.py
+# mentions rocm_vmem_ipc, and there is no rocm_vmem_ipc.py member.
+#
+# Re-running the patcher against the installed package both installs the module
+# and no-ops the source edits it already finds applied ("SKIP (already
+# applied)").
 # =============================================================================
 # hadolint ignore=DL3006
 FROM ${AIC_BASE_IMAGE} AS lmcache
@@ -193,6 +205,14 @@ RUN --mount=type=cache,target=/root/.cache/uv \
     { uv pip uninstall --system \
         nixl nixl-cu12 nixl-cu13 \
         cupy-cuda12x cufile-python cuda-pathfinder 2>/dev/null || true; }
+
+# Install rocm_vmem_ipc into site-packages (see the stage comment above).
+COPY docker/lmcache/rocm_vmem_ipc.py /tmp/rocm_vmem_ipc.py
+COPY docker/lmcache/rocm_ipc_patch.py /tmp/rocm_ipc_patch.py
+RUN AIC_LMCACHE_SRC="$(python3 -c 'import lmcache, os; print(os.path.dirname(os.path.dirname(lmcache.__file__)))')" \
+        python3 /tmp/rocm_ipc_patch.py && \
+    rm /tmp/rocm_ipc_patch.py /tmp/rocm_vmem_ipc.py && \
+    python3 -c 'import rocm_vmem_ipc; print("rocm_vmem_ipc installed:", rocm_vmem_ipc.__file__)'
 
 # HSA_ENABLE_IPC_MODE_LEGACY is intentionally NOT set: aic-vllm leaves it unset
 # too, and the two must agree.

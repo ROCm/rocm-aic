@@ -83,6 +83,14 @@ def main(argv: list[str] | None = None) -> int:
     args = ap.parse_args(argv)
 
     failed = False
+    # Count wheels that positively carry the expected target.  Needed because
+    # "no device code found" is NOT proof of a pure-Python wheel: torch stores
+    # its device images in COMPRESSED offload bundles (CCOB), which this scanner
+    # cannot read, so torch always reports `none` even when it is full of
+    # kernels.  Treating `none` as a pass is therefore the only safe per-wheel
+    # rule -- but it means an empty, truncated or entirely wrong-arch set would
+    # sail through silently.  Requiring at least one POSITIVE match closes that.
+    matched_expected = 0
     for path in args.wheels:
         try:
             targets = wheel_targets(path)
@@ -97,13 +105,25 @@ def main(argv: list[str] | None = None) -> int:
             continue
 
         print(f"  {name:<70} {','.join(sorted(targets))}")
-        if args.expect and args.expect not in targets:
-            print(
-                f"ERROR: {name} carries device code but not for {args.expect}; "
-                f"found {sorted(targets)}",
-                file=sys.stderr,
-            )
-            failed = True
+        if args.expect:
+            if args.expect in targets:
+                matched_expected += 1
+            else:
+                print(
+                    f"ERROR: {name} carries device code but not for "
+                    f"{args.expect}; found {sorted(targets)}",
+                    file=sys.stderr,
+                )
+                failed = True
+
+    if args.expect and matched_expected == 0:
+        print(
+            f"ERROR: no wheel in this set positively carries {args.expect} "
+            "device code.  Every wheel reported 'none', which means the set is "
+            "empty, truncated, or pure-Python only -- not that it matches.",
+            file=sys.stderr,
+        )
+        failed = True
 
     if failed:
         print(
