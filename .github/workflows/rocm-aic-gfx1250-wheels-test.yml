@@ -27,10 +27,22 @@
 #
 # Which release to install
 # ------------------------
-# `wheels_release` defaults to `nightly`.  Note the transition in flight: today
-# `nightly` is CDNA-only and the gfx1250 wheels live under `nightly-gfx1250`;
-# PR #201 folds gfx1250 into the CDNA arch list so that `nightly` carries it.
-# Until that merges, dispatch this with wheels_release=nightly-gfx1250.
+# TEMPORARY DEFAULT: sbates130272/rocm-aic-wheels @ gfx1250-20261102, a public
+# scratch release, so this runs out of the box with no inputs.
+#
+# It points off-repo because no release HERE currently carries gfx1250 device
+# code that this can install:
+#   * `nightly` is CDNA-only until ROCm/rocm-aic#201 folds gfx1250 into the
+#     CDNA arch list;
+#   * `nightly-gfx1250` predates ROCm/rocm-aic#197, so it has no torch wheel and
+#     its lmcache/vllm wheels ship without their console entrypoints.
+# The scratch release was built from #197's head and has both.
+#
+# MOVE THIS BACK once #197 and #201 have landed and a nightly run has published
+# a gfx1250-bearing `nightly`: set wheels_repo back to '' (this repository) and
+# wheels_release to 'nightly'.  Leaving it pointed at a personal account is fine
+# for bring-up and wrong as a steady state -- that release is a frozen snapshot
+# one person owns, so it will silently rot while this workflow keeps passing.
 #
 # The arch guard makes that mistake cheap: tools/check-wheel-arch.py inspects
 # the clang offload-bundle entries inside each wheel and fails in seconds if the
@@ -55,16 +67,14 @@ on:
     inputs:
       wheels_repo:
         description: >-
-          owner/repo holding the release.  Defaults to this repository.  Point
-          it at a scratch repo to test a wheel set that is not published here
-          yet, e.g. sbates130272/rocm-aic-wheels.
+          owner/repo holding the release.  Empty means this repository.
         required: false
-        default: ''
+        default: 'sbates130272/rocm-aic-wheels'
         type: string
       wheels_release:
         description: 'Release tag to install wheels from'
         required: false
-        default: 'nightly'
+        default: 'gfx1250-20261102'
         type: string
       wheels_run_id:
         description: >-

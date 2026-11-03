@@ -67,7 +67,10 @@ SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 # a CUDA build that imports fine and dies at the first kernel launch.  That is
 # exactly the failure docs/PIP_WHEELS.md warns about, so it must not be
 # reachable from CI.
-# hadolint ignore=SC2015
+# SC2206: ${pat} is UNQUOTED on purpose -- it is a glob that must expand into
+# the array.  Same deliberate exception .github/scripts/workflows/check-wheels.sh
+# takes for the identical construct.
+# hadolint ignore=SC2015,SC2206
 RUN --mount=type=bind,from=wheels,target=/w \
     shopt -s nullglob && \
     for pat in 'vllm-*.whl' 'amd_aiter-*.whl' 'lmcache-*.whl' 'nixl*rocm*.whl'; do \
