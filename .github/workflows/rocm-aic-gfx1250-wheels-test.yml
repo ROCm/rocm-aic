@@ -1,0 +1,378 @@
+# Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+#
+# Install the PUBLISHED gfx1250 pip wheels and run the rocjitsu GPU test against
+# them, on a GitHub-hosted runner.
+#
+# Why this workflow exists
+# ------------------------
+# The nightly wheels release is currently an untested artifact.  It is built,
+# its FILENAMES are checked by .github/scripts/workflows/check-wheels.sh, and it
+# is uploaded -- but nothing ever installs it and launches a kernel.  A wheel
+# built for the wrong architecture, or missing a runtime dependency, is
+# published and only discovered by a downstream `pip install`.  docs/PIP_WHEELS.md
+# even documents the failure mode ("a wheel that imports and then fails on the
+# first kernel launch") without anything in CI that would catch it.
+#
+# This closes that loop: pull the release, install it, run real gfx1250 kernels.
+#
+# How it differs from rocm-aic-rocjitsu-test.yml
+# ----------------------------------------------
+# That workflow pulls the whole pre-built image stack from GHCR and is a test of
+# the IMAGES.  This one pulls only aic-base (which supplies ROCm, NIXL and the
+# source-built torch) and reconstitutes aic-vllm / aic-lmcache from ~180 MB of
+# released wheels, so it is a test of the WHEELS.  The two are complementary and
+# share the same guest VM and probe.
+#
+# Which release to install
+# ------------------------
+# `wheels_release` defaults to `nightly`.  Note the transition in flight: today
+# `nightly` is CDNA-only and the gfx1250 wheels live under `nightly-gfx1250`;
+# PR #201 folds gfx1250 into the CDNA arch list so that `nightly` carries it.
+# Until that merges, dispatch this with wheels_release=nightly-gfx1250.
+#
+# The arch guard makes that mistake cheap: tools/check-wheel-arch.py inspects
+# the clang offload-bundle entries inside each wheel and fails in seconds if the
+# set has no gfx1250 device code, rather than after an hour of VM boot.
+name: rocm-aic - gfx1250 Wheels Test
+
+# NO `schedule:` TRIGGER YET -- deliberately.
+#
+# The natural slot is ~13:00 UTC, after the nightly wheels publication (06:37)
+# and the gfx1250 image publish (11:00), both of which this consumes:
+#
+#   schedule:
+#     - cron: '23 13 * * *'
+#
+# But `wheels_release` defaults to `nightly`, and `nightly` is CDNA-only until
+# ROCm/rocm-aic#201 folds gfx1250 into the CDNA arch list.  Enabling the cron
+# now would fail the arch guard every single night, and a job that is red by
+# construction trains people to ignore it.  Add the block above once #201 has
+# merged and `nightly` actually carries gfx1250 device code.
+on:
+  workflow_dispatch:
+    inputs:
+      wheels_repo:
+        description: >-
+          owner/repo holding the release.  Defaults to this repository.  Point
+          it at a scratch repo to test a wheel set that is not published here
+          yet, e.g. sbates130272/rocm-aic-wheels.
+        required: false
+        default: ''
+        type: string
+      wheels_release:
+        description: 'Release tag to install wheels from'
+        required: false
+        default: 'nightly'
+        type: string
+      wheels_run_id:
+        description: >-
+          Install wheels from this workflow run''s artifact instead of a
+          release (takes precedence over wheels_release).  Use to test a
+          wheels build before it is published.
+        required: false
+        default: ''
+        type: string
+      base_image:
+        description: 'aic-base image supplying ROCm + torch'
+        required: false
+        default: 'ghcr.io/rocm/rocm-aic/aic-base:gfx1250'
+        type: string
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  wheels-test:
+    name: Install released gfx1250 wheels and run the rocjitsu probe
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+
+    env:
+      ROCM_ARCH: gfx1250
+      WHEELS_DIR: ${{ github.workspace }}/released-wheels
+      BASE_IMAGE: ${{ inputs.base_image || 'ghcr.io/rocm/rocm-aic/aic-base:gfx1250' }}
+      WHEELS_RELEASE: ${{ inputs.wheels_release || 'nightly' }}
+      WHEELS_REPO: ${{ inputs.wheels_repo || github.repository }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Free disk space
+        run: |
+          # aic-base plus the reconstituted images still want ~30 GB; the runner
+          # ships ~30 GB of software none of this needs.
+          sudo rm -rf /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL \
+                      /usr/share/dotnet /usr/local/share/powershell \
+                      /usr/share/swift /usr/local/.ghcup
+          sudo apt-get purge -y --auto-remove \
+            google-chrome-stable firefox dotnet-sdk-* \
+            libgl1-mesa-dri mono-runtime* 2>/dev/null || true
+          docker system prune -af --volumes 2>/dev/null || true
+          df -h /
+
+      - name: Verify KVM is available and functional
+        run: |
+          # Probe exactly where QEMU will -- inside a container, as uid 0 -- and
+          # issue a real ioctl: a /dev/kvm node can exist and be non-functional.
+          test -c /dev/kvm || { echo "::error::/dev/kvm missing on the host"; exit 1; }
+          docker run --rm --device /dev/kvm python:3.12-slim \
+            python3 -c "import os, fcntl; fcntl.ioctl(os.open('/dev/kvm', os.O_RDWR), 0xAE00, 0); print('KVM OK')" \
+            || { echo "::error::/dev/kvm not usable from a container"; exit 1; }
+
+      - name: Install docker compose plugin
+        run: make ensure-compose
+
+      # -----------------------------------------------------------------------
+      # Fetch the wheels under test.
+      # -----------------------------------------------------------------------
+      - name: Download wheels from release
+        if: inputs.wheels_run_id == ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p "${WHEELS_DIR}"
+          echo "Downloading wheels from ${WHEELS_REPO} release '${WHEELS_RELEASE}'"
+          # github.token is repo-scoped for WRITES but can still read any PUBLIC
+          # repo, which is all an external scratch source needs.  gh itself
+          # refuses to run with no token at all, so the token stays set either
+          # way; a private external source is simply not supported here.
+          gh release download "${WHEELS_RELEASE}" \
+            --repo "${WHEELS_REPO}" \
+            --pattern '*.whl' \
+            --dir "${WHEELS_DIR}"
+
+      - name: Download wheels from a run artifact
+        if: inputs.wheels_run_id != ''
+        uses: actions/download-artifact@v8
+        with:
+          run-id: ${{ inputs.wheels_run_id }}
+          github-token: ${{ github.token }}
+          pattern: wheels-*
+          path: ${{ env.WHEELS_DIR }}
+          merge-multiple: true
+
+      - name: Show and arch-check the wheel set
+        run: |
+          set -euo pipefail
+          ls -lh "${WHEELS_DIR}"/*.whl
+          # Fail in seconds on a wrong-arch set rather than after a VM boot.
+          # -I so a planted module beside the wheels cannot be imported.
+          python3 -I tools/check-wheel-arch.py "${WHEELS_DIR}"/*.whl --expect "${ROCM_ARCH}"
+
+      # -----------------------------------------------------------------------
+      # Assemble the image set the rocjitsu target expects.
+      #
+      # mk/bench.mk decides at [2/6] whether to reuse, pull or build by checking
+      # that EVERY name in RJ_LOCAL_IMAGES is already present locally.  So we
+      # build the two wheel-derived images and pull the other three under
+      # exactly those names, and the target then reuses all five -- no
+      # RJ_IMAGE_PREFIX, no fallback build, and no change to bench.mk.
+      # -----------------------------------------------------------------------
+      - name: Log in to GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Resolve the image names bench.mk expects
+        id: names
+        run: |
+          set -euo pipefail
+          # One source of truth: ask the Makefile rather than re-deriving the
+          # 100-char version tag here, which is exactly the drift the tag-drift
+          # comment in mk/bench.mk warns about.
+          mapfile -t imgs < <(make --no-print-directory print-rj-images ROCM_ARCH="${ROCM_ARCH}")
+          printf 'rocjitsu images:\n'; printf '  %s\n' "${imgs[@]}"
+          {
+            echo "vllm=${imgs[0]}"
+            echo "lmcache=${imgs[1]}"
+            echo "nvme=${imgs[2]}"
+            echo "rdma=${imgs[3]}"
+            echo "hsasnoop=${imgs[4]}"
+          } >> "${GITHUB_OUTPUT}"
+
+      - name: Pull the non-Python images from GHCR
+        run: |
+          set -euo pipefail
+          # The exporters are Go binaries and hsa-snoop is C++; none can come
+          # from a wheel, so these are still pulled whole.  They are small
+          # (~80-200 MB each), unlike aic-vllm/aic-lmcache.
+          prefix='ghcr.io/rocm/rocm-aic/'
+          for pair in \
+            "${{ steps.names.outputs.nvme }}" \
+            "${{ steps.names.outputs.rdma }}" \
+            "${{ steps.names.outputs.hsasnoop }}"; do
+              name="${pair%%:*}"
+              remote="${prefix}${name}:${ROCM_ARCH}"
+              echo "  ${remote} -> ${pair}"
+              docker pull -q "${remote}"
+              docker tag "${remote}" "${pair}"
+          done
+
+      - name: Pull aic-base
+        run: |
+          set -euo pipefail
+          docker pull "${BASE_IMAGE}"
+          docker image inspect "${BASE_IMAGE}" \
+            --format 'aic-base torch arch label: {{index .Config.Labels "ai.amd.aic.rocm"}}'
+
+      - name: Build aic-vllm and aic-lmcache from the released wheels
+        run: |
+          set -euo pipefail
+          aic_version="$(<VERSION)"
+          for target in vllm lmcache; do
+            case "${target}" in
+              vllm)    tag='${{ steps.names.outputs.vllm }}'    ;;
+              lmcache) tag='${{ steps.names.outputs.lmcache }}' ;;
+            esac
+            echo "::group::build ${target} -> ${tag}"
+            docker buildx build \
+              --file docker/wheels-test/Dockerfile \
+              --target "${target}" \
+              --build-arg AIC_BASE_IMAGE="${BASE_IMAGE}" \
+              --build-arg AIC_VERSION="${aic_version}" \
+              --build-context "wheels=${WHEELS_DIR}" \
+              --tag "${tag}" \
+              --load \
+              --progress plain \
+              .
+            echo "::endgroup::"
+          done
+          docker images --format '  {{.Repository}}:{{.Tag}}  {{.Size}}' | grep '^  aic-' | sort
+
+      # A cheap CPU-only gate before the hour-long VM path.
+      #
+      # NOTE what is deliberately NOT done here: `import vllm`.  It is not
+      # CPU-safe.  vLLM's ROCm platform detection runs at import time and calls
+      # torch.cuda.get_device_properties("cuda").gcnArchName
+      # (vllm/platforms/rocm.py), which on a machine with no GPU raises
+      # "RuntimeError: No CUDA GPUs are available".  A GitHub-hosted runner has
+      # no GPU, so importing vLLM here would fail on a perfectly good wheel.
+      # docker/vllm/Dockerfile's runtime stage carries the same warning.
+      #
+      # So this asserts only what is checkable without a device; the real
+      # import-and-run check is the rocjitsu probe below, which has /dev/kfd.
+      - name: Verify the installed stack (CPU-safe checks only)
+        run: |
+          set -euo pipefail
+          docker run --rm --entrypoint python3 '${{ steps.names.outputs.vllm }}' -I -c '
+import importlib.metadata as md
+import torch
+
+# torch must still be aic-base s ROCm build, not a PyPI CUDA wheel pulled in
+# by dependency resolution.  This is the failure the constraint file prevents.
+assert torch.version.hip, "torch is not a ROCm build -- a CUDA wheel replaced aic-base torch"
+print("torch            ", torch.__version__)
+print("torch.version.hip", torch.version.hip)
+
+# Presence + version via metadata, which does not execute package __init__.
+# NOTE the DISTRIBUTION name for AITER is amd_aiter (the wheel is
+# amd_aiter-*.whl); "aiter" is only the import name and md.version("aiter")
+# raises PackageNotFoundError.
+for pkg in ("vllm", "lmcache", "amd_aiter"):
+    print(f"{pkg:<17}", md.version(pkg))
+
+# CPU-safe: the MP adapter does not touch the device at import.  The real
+# aic-vllm build asserts this same import at build time on a CPU-only node.
+import lmcache.integration.vllm.vllm_multi_process_adapter
+print("lmcache MP adapter imports OK")
+'
+          # The vllm console script must exist -- a wheel can install the module
+          # and still miss its entrypoints, which is the gap PR #197 is about.
+          docker run --rm --entrypoint sh '${{ steps.names.outputs.vllm }}' -c \
+            'command -v vllm && echo "vllm entrypoint OK"'
+
+          docker run --rm --entrypoint python3 '${{ steps.names.outputs.lmcache }}' -I -c '
+import importlib.metadata as md
+import lmcache, cupy
+print("lmcache", md.version("lmcache"), "cupy", cupy.__version__)
+'
+          docker run --rm --entrypoint sh '${{ steps.names.outputs.lmcache }}' -c \
+            'command -v lmcache && echo "lmcache entrypoint OK"'
+
+      # -----------------------------------------------------------------------
+      # Guest disk, then the same probe the image-based rocjitsu test runs.
+      # -----------------------------------------------------------------------
+      - name: Resolve qcow2 image tag for cache key
+        id: qcow2-tag
+        run: |
+          TAG=$(grep '^RJ_QCOW2_IMAGE' mk/bench.mk | head -1 | sed 's/.*://;s/ .*//')
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
+      - name: Cache rocjitsu guest disk (qcow2)
+        id: qcow2-cache
+        uses: actions/cache@v6
+        with:
+          path: /tmp/aic-rocjitsu-test/vm
+          key: qcow2-${{ steps.qcow2-tag.outputs.tag }}
+
+      - name: Pull rocjitsu guest disk via ORAS (cache miss)
+        if: steps.qcow2-cache.outputs.cache-hit != 'true'
+        run: |
+          set -euo pipefail
+          # ORAS, not docker pull: the -qcow2 artifact is a compressed ~7 GB
+          # blob that fits the 10 GB actions/cache entry limit, where the
+          # FROM-scratch image would unpack to 14 GB.
+          if ! command -v oras >/dev/null 2>&1; then
+            mkdir -p "${RUNNER_TEMP}/bin"
+            curl -fsSL https://github.com/oras-project/oras/releases/download/v1.2.0/oras_1.2.0_linux_amd64.tar.gz \
+              | tar -xz -C "${RUNNER_TEMP}/bin" oras
+            echo "${RUNNER_TEMP}/bin" >> "$GITHUB_PATH"
+            export PATH="${RUNNER_TEMP}/bin:$PATH"
+          fi
+          REPO="sbates130272/batesste-ci-images-ubuntu-qcow2-gen-rocjitsu"
+          TAG="${{ steps.qcow2-tag.outputs.tag }}-qcow2"
+          mkdir -p /tmp/aic-rocjitsu-test/vm
+          cd /tmp/aic-rocjitsu-test/vm
+          oras pull "docker.io/$REPO:$TAG"
+          for f in *.qcow2.zst; do
+            [ -f "$f" ] && zstd -d --long=27 --rm "$f" && echo "Decompressed $f"
+          done
+          DIGEST=$(oras discover --format json "docker.io/$REPO:$TAG" \
+            | python3 -I -c "import json,sys; refs=json.load(sys.stdin).get('referrers',[]); print(refs[0]['digest'] if refs else '')" 2>/dev/null || true)
+          [ -n "$DIGEST" ] && oras pull "docker.io/$REPO@$DIGEST" && chmod 600 id_rsa 2>/dev/null || true
+          ls -lh
+
+      - name: Run the rocjitsu probe against the wheel-built stack
+        env:
+          # AIC_HF_TOKEN, not HF_TOKEN: that is the name every other workflow in
+          # this repo uses (emulate-test, accuracy-test, dist-build, ...).
+          # test-rocjitsu-local hard-fails on an empty HF_TOKEN, so the wrong
+          # secret name here is an immediate, confusing failure.
+          HF_TOKEN: ${{ secrets.AIC_HF_TOKEN }}
+        run: |
+          set -euo pipefail
+          # RJ_IMAGE_PREFIX is deliberately UNSET: all five images are already
+          # present under the names [2/6] checks, so it reuses them instead of
+          # pulling the pre-built stack over the top of what we just built.
+          #
+          # RJ_PROBE_ONLY=1 stops before the vLLM arm, for the same arithmetic
+          # reason the image-based test does: the emulator runs at ~0.14
+          # GFLOP/s, so a single anchor prefill is ~115 min.  What the probe
+          # does assert in ~26 min is substantial -- the gfx1250 device
+          # enumerates and 15 kernel rungs execute correctly, which for THIS
+          # workflow is exactly the claim under test: the released wheels
+          # contain working gfx1250 device code.
+          make test-rocjitsu-local \
+            ROCM_ARCH="${ROCM_ARCH}" \
+            RJ_PROBE=1 RJ_PROBE_ONLY=1 \
+            RJ_READY_S=240
+
+      - name: Upload logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: gfx1250-wheels-test-logs
+          path: |
+            /tmp/aic-rocjitsu-test/
+            !/tmp/aic-rocjitsu-test/vm
+          retention-days: 3
