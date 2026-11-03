@@ -2,6 +2,11 @@
 # SPDX-License-Identifier: MIT
 #
 # Benchmark targets: cliff, kvbench, stress, plot, emulate, profile capture.
+#
+# The `-local` suffix on several targets below means "runs entirely on one
+# machine", as opposed to the multi-node build in
+# .slurm/run-build-distribute.sh.  It says nothing about Slurm: these are
+# routinely run as single-node Slurm jobs via the wrappers in .slurm/.
 
 .PHONY: cliff plot stress-grafana kvbench-build kvbench-up kvbench-logs kvbench-down \
         cliff-kvbench-local test-emulate-local stress-emulate-local capture-profile-local \
@@ -291,7 +296,16 @@ capture-profile-local: prep-dirs
 	echo "Pack: $(AIC_CAPTURE_DIR)/$$pack_name"; \
 	echo "Copy it to profiles/ and add a .capture.txt sibling to use it in CI."
 
-# ---- rocjitsu VM test (local, no GPU hardware required) -------------------------
+# ---- rocjitsu VM test (single-machine, no GPU hardware required) ----------------
+#
+# On "-local": it means ONE MACHINE -- no cross-node coordination, as opposed
+# to the distributed build in .slurm/run-build-distribute.sh -- and it is the
+# same axis the sibling targets use (cliff-kvbench-local, test-emulate-local,
+# stress-emulate-local, capture-profile-local).  It does NOT mean "not under
+# Slurm".  The normal way to run this IS a Slurm job: the node is CPU-only and
+# the GPU is emulated in software, so `sbatch .slurm/run-rocjitsu-cpu.sbatch`
+# allocates a machine and this target does everything on it.  A workstation
+# with /dev/kvm works identically.
 #
 # Boots an Ubuntu guest VM under QEMU with an emulated gfx1250 GPU (rocjitsu
 # vfio-user server), builds the aic image for ROCM_ARCH=gfx1250 on the host
@@ -302,11 +316,11 @@ capture-profile-local: prep-dirs
 # Images are pulled from sbates130272/batesste-ci-images-* on Docker Hub.
 # The VM gets an emulated NVMe device (RJ_NVME_COUNT) used as lmcache L2 storage.
 
-# All three come from the same 20260929.g2bdbd16 build of batesste-ci-images,
+# All three come from the same 20261024.g9d2be1e build of batesste-ci-images,
 # so bump them as a set — a mixed set is not a tested combination.
-RJ_QEMU_IMAGE    ?= sbates130272/batesste-ci-images-ubuntu-qemu-libvfio-user-sbates-fork:20260929.g2bdbd16-qemu.d757fa6-vfu.8039244
-RJ_ROCJITSU_IMAGE ?= sbates130272/batesste-ci-images-ubuntu-rocm-rocjitsu:20260929.g2bdbd16-rocjitsu.f2d13fb
-RJ_QCOW2_IMAGE   ?= sbates130272/batesste-ci-images-ubuntu-qcow2-gen-rocjitsu:20260929.g2bdbd16-vm.resolute-rocjitsu-qm.54cc234
+RJ_QEMU_IMAGE    ?= sbates130272/batesste-ci-images-ubuntu-qemu-libvfio-user-sbates-fork:20261024.g9d2be1e-qemu.f91f120-vfu.3719c3a
+RJ_ROCJITSU_IMAGE ?= sbates130272/batesste-ci-images-ubuntu-rocm-rocjitsu:20261024.g9d2be1e-rocjitsu.98f6a72
+RJ_QCOW2_IMAGE   ?= sbates130272/batesste-ci-images-ubuntu-qcow2-gen-rocjitsu:20261024.g9d2be1e-vm.resolute-rocjitsu-qm.c079195
 RJ_ROCJITSU_ARCH ?= gfx1250
 RJ_ROCJITSU_CONFIG ?= gfx1250_mi455x.json
 RJ_VM_VCPUS      ?= 8
@@ -316,7 +330,14 @@ RJ_READY_S       ?= 300
 RJ_WORK_DIR      ?= /tmp/aic-rocjitsu-test
 # SmolLM2-135M (~270 MB fp16) fits in rocjitsu's 1 GiB VRAM budget.
 RJ_MODEL         ?= HuggingFaceTB/SmolLM2-135M-Instruct
-RJ_LMCACHE_L1_SIZE_GB ?= 0.3
+# L1 must be small enough that the cut-down flood still overflows it, or the
+# anchors are never evicted and step 4 verifies nothing.  The preset produces
+# 4 anchor + 12 flood chunks; at ~5.6 MiB per 256-token chunk for SmolLM2-135M
+# (30 layers, 3 KV heads, head_dim 64, fp16 K+V) that is ~90 MiB total, so the
+# old 0.3 GB held the entire working set and nothing could ever evict.
+# 0.03 GB ~= 5 chunks: the anchors go in, the flood pushes them out to L2.
+# Recompute this if RJ_MODEL or the RJ_TEST_* preset changes.
+RJ_LMCACHE_L1_SIZE_GB ?= 0.03
 # Number of emulated NVMe devices to attach via qemu-tool --nvme.
 RJ_NVME_COUNT    ?= 1
 RJ_NVME_MOUNT    ?= /mnt/lmcache-nvme
@@ -325,13 +346,143 @@ RJ_NVME_MOUNT    ?= /mnt/lmcache-nvme
 # masquerade as the gfx1250 one this test needs.  A rebuild is a multi-hour
 # PyTorch + vLLM compile, so set AIC_CACHE_DIR to make one incremental.
 RJ_FORCE_BUILD   ?= 0
+# ProcessGroupNCCL monitor heartbeat, seconds (torch default 480).  See the
+# note at [6d]: on a software-emulated GPU a collective can outlast the
+# default and get the process killed mid-startup.
+RJ_NCCL_HEARTBEAT_S ?= 3600
+# Kernel capability probe at [6c.1].  [6c] only enumerates the device -- it
+# never launches a kernel -- so on its own it cannot tell a slow emulator from
+# one that cannot dispatch at all.  The probe walks a ladder from hipMalloc up
+# to Triton and reports where it stops.  Off by default: it costs minutes, and
+# a normal run wants the vLLM result, not the characterisation.
+#   make test-rocjitsu-local RJ_PROBE=1 RJ_PROBE_ONLY=1
+RJ_PROBE         ?= 0
+# Stop after the probe instead of running vLLM.  Only meaningful with RJ_PROBE=1.
+RJ_PROBE_ONLY    ?= 0
+# Per-rung wall clock.  Each rung is a separate process killed at this limit,
+# so a wedged kernel costs one rung, not the whole run.
+RJ_PROBE_TIMEOUT ?= 300
+# Extra flags for the probe, e.g. '--keep-going' or '--only gemm_small,triton'.
+RJ_PROBE_ARGS    ?=
+# vLLM refuses to start when --max-model-len exceeds the model's
+# max_position_embeddings, so this cannot stay hardcoded once RJ_MODEL is
+# tunable.  Minueza-32M caps at 2048 and job 68192070 died on exactly this:
+# vLLM exited in seconds with a pydantic ValidationError, and the health wait
+# then sat for its full 50 minutes watching a container that was already gone.
+# Keep <= the model's max_position_embeddings (SmolLM2-135M 8192, Minueza-32M
+# 2048).
+RJ_MAX_MODEL_LEN ?= 4096
+# vLLM's memory-profiling pass runs ONE forward pass this many tokens wide, and
+# it is the single biggest cost in getting the engine to "healthy" here.
+# compose defaults it to 4096, which nothing in this target overrode: at the
+# emulator's measured 0.14 GFLOP/s (job 68190190) that is
+#   2 * 135e6 params * 4096 tokens / 0.14 GFLOP/s ~= 2.2 h
+# against a 50-minute health wait -- which is precisely why every run timed out
+# silently, with the pass running but nowhere near done.  256 cuts it ~16x, to
+# order-8-minutes.  Raise it only if a test needs wider batches than it profiles.
+RJ_MAX_BATCHED_TOKENS ?= 256
+# Health-wait budget for vllm-reset-test inside the guest, in 5 s ticks
+# (600 = 50 min).  A variable rather than the literal it used to be, so the
+# budget can be matched to RJ_MAX_BATCHED_TOKENS instead of guessed.
+RJ_READY_RETRIES ?= 600
+
+# Cut-down vllm_reset_test preset for the emulator.
+#
+# The stock test is sized for real hardware: 10 anchors x ~2090 tokens, 50
+# flood prompts, 20 generated tokens each, under a 120 s per-request timeout.
+# At the emulator's ~2 s/token (0.14 GFLOP/s against a 135M model) a single
+# anchor prefill is ~115 min -- it would blow that per-request timeout by two
+# orders of magnitude before the flood even starts.
+#
+# These keep the SHAPE of the test (fill L1 -> overflow -> evict to L2 ->
+# reset the GPU prefix cache -> re-read and expect L1+L2 hits) while cutting
+# the work.  Two constraints are load-bearing and must move together:
+#   * ANCHOR_REPS >= 6, so a prompt still spans more than one 256-token
+#     LMCache chunk -- measured, 6 reps is 2 chunks and 4 reps is only 1,
+#     and at one chunk there is nothing to chunk or evict;
+#   * RJ_LMCACHE_L1_SIZE_GB small enough that the reduced flood still
+#     overflows L1, or no eviction happens and the test passes vacuously.
+# The timeout rises because each request is genuinely slow here, not stuck.
+RJ_TEST_ANCHORS     ?= 2
+RJ_TEST_FLOOD       ?= 6
+# 6 reps.  Measured, not estimated: the preamble sentence tokenizes to ~97
+# tokens for SmolLM2-135M and ~104 for Minueza-32M, so 6 reps is 583-625
+# tokens = 2 full 256-token chunks.  4 reps is only 389-417 tokens -- ONE
+# chunk -- which would leave nothing for chunk-level eviction to act on and
+# pass vacuously.  Re-measure if RJ_MODEL changes; tokenizers differ.
+RJ_TEST_ANCHOR_REPS ?= 6
+RJ_TEST_MAX_TOKENS  ?= 4
+RJ_TEST_TIMEOUT     ?= 1800
 # The built image tag for RJ_ROCJITSU_ARCH (computed at make time).
 _RJ_IMAGE_TAG    := $(shell ROCM_ARCH=$(RJ_ROCJITSU_ARCH) $(_FRAMEWORK_VERSION_ENV) \
                         $(REPO_ROOT)/docker/scripts/aic-image-tag.sh)
 RJ_IMAGE_REF     ?= $(VLLM_IMAGE_NAME):$(_RJ_IMAGE_TAG)
 RJ_LMCACHE_IMAGE_REF ?= $(LMCACHE_IMAGE_NAME):$(_RJ_IMAGE_TAG)
+
+# Every locally-built image the guest needs, in ONE place.  [2/6], [4b] and [6b]
+# all iterate this: they used to carry three hand-copied lists, and the hsa-snoop
+# tag drifted between them (fixed in 519bfd9) because only two were updated.
+# Still hand-maintained against compose -- `docker compose --profile cache
+# --profile monitoring config --images` is the check when adding a service.
+#
+# hsa-snoop is named from _RJ_IMAGE_TAG, not the global HSA_SNOOP_IMAGE: that
+# one is built from IMAGE_TAG, which carries the HOST's ROCM_ARCH.  [6d] runs
+# compose in the guest with IMAGE_TAG=_RJ_IMAGE_TAG, so the two agree only when
+# the caller happens to pass ROCM_ARCH=$(RJ_ROCJITSU_ARCH) -- which the sbatch
+# and the workflow both do, hiding the mismatch everywhere else.
+RJ_HSA_SNOOP_IMAGE_REF ?= $(HSA_SNOOP_IMAGE_NAME):$(_RJ_IMAGE_TAG)
+RJ_LOCAL_IMAGES  = $(RJ_IMAGE_REF) $(RJ_LMCACHE_IMAGE_REF) \
+                   aic-nvme-exporter:local aic-rdma-exporter:local \
+                   $(RJ_HSA_SNOOP_IMAGE_REF)
+
+# Pull the stack from a registry instead of building it, then retag to the bare
+# local names compose expects.  This is how CI avoids a 3-4 h cold build: the
+# publish workflow bakes and pushes, this pulls.  Empty = build locally.
+# Set to e.g. ghcr.io/rocm/rocm-aic/ (trailing slash required).
+RJ_IMAGE_PREFIX  ?=
+# Short alias the images were pushed under (AIC_IMAGE_EXTRA_TAG at push time).
+RJ_IMAGE_ALIAS   ?= $(RJ_ROCJITSU_ARCH)
 # lmcache pip version (strip leading 'v' from LMCACHE_REF for pip install)
 _LMCACHE_VER := $(patsubst v%,%,$(LMCACHE_REF))
+
+# The arch-tagged name the target expects aic-vllm under.  CI retags a
+# workflow_dispatch-supplied image to this so [2/6] counts it as present
+# instead of pulling or rebuilding over the top of it.
+.PHONY: print-rj-image-ref print-rj-images
+print-rj-image-ref:
+	@echo '$(RJ_IMAGE_REF)'
+
+print-rj-images:
+	@for _img in $(RJ_LOCAL_IMAGES); do echo "$$_img"; done
+
+# Pull every image in RJ_LOCAL_IMAGES from RJ_IMAGE_PREFIX and retag it to the
+# bare local name compose resolves.  Separate target so [2/6] can use its exit
+# status as the "did the registry have the stack?" test and fall through to a
+# local build when it did not -- a first-ever run, or a nightly publish that
+# failed, should cost a slow build, not a hard failure.
+# All-or-nothing on purpose: a half-pulled stack would fail later, inside the
+# guest, as a confusing compose error.
+.PHONY: _rj-pull-images
+_rj-pull-images:
+	@echo "[2/6] Pulling $(RJ_ROCJITSU_ARCH) images from $(RJ_IMAGE_PREFIX) (alias :$(RJ_IMAGE_ALIAS)) ..."
+	@for _img in $(RJ_LOCAL_IMAGES); do \
+	    _name=$${_img%%:*}; \
+	    _remote="$(RJ_IMAGE_PREFIX)$$_name:$(RJ_IMAGE_ALIAS)"; \
+	    echo "        $$_remote -> $$_img"; \
+	    docker pull -q "$$_remote" >/dev/null || { \
+	        echo "  could not pull $$_remote — falling back to a local build" >&2; \
+	        exit 1; }; \
+	    docker tag "$$_remote" "$$_img"; \
+	done
+
+# prep-dirs mkdir's NVME_DATA and NFS_DATA, which default to /mnt/lmcache-*.
+# This test stores nothing on the host -- L2 lives on the VM's *emulated* NVMe
+# (RJ_NVME_COUNT), mounted at RJ_NVME_MOUNT inside the guest -- so those two
+# host paths are inert here.  Creating them needs root, which made the target
+# unrunnable as a normal user on any machine without them pre-created.
+# Target-specific variables propagate to prerequisites, so prep-dirs sees these.
+test-rocjitsu-local: NVME_DATA := $(RJ_WORK_DIR)/host-nvme-unused
+test-rocjitsu-local: NFS_DATA  := $(RJ_WORK_DIR)/host-nfs-unused
 
 test-rocjitsu-local: prep-dirs
 	@test -c /dev/kvm || { echo "ERROR: /dev/kvm not found — KVM is required" >&2; exit 1; }
@@ -341,14 +492,18 @@ test-rocjitsu-local: prep-dirs
 	@docker pull -q "$(RJ_QEMU_IMAGE)"
 	@docker pull -q "$(RJ_ROCJITSU_IMAGE)"
 	@docker pull -q "$(RJ_QCOW2_IMAGE)"
-	@if [ "$(RJ_FORCE_BUILD)" != "1" ] && \
-	    docker image inspect "$(RJ_IMAGE_REF)" >/dev/null 2>&1 && \
-	    docker image inspect "$(RJ_LMCACHE_IMAGE_REF)" >/dev/null 2>&1; then \
+	@_have=1; \
+	for _img in $(RJ_LOCAL_IMAGES); do \
+	    docker image inspect "$$_img" >/dev/null 2>&1 || { _have=0; break; }; \
+	done; \
+	if [ "$(RJ_FORCE_BUILD)" != "1" ] && [ "$$_have" = "1" ]; then \
 	    echo "[2/6] Reusing existing $(RJ_ROCJITSU_ARCH) images (RJ_FORCE_BUILD=1 to rebuild):"; \
-	    echo "        $(RJ_IMAGE_REF)"; \
-	    echo "        $(RJ_LMCACHE_IMAGE_REF)"; \
+	    for _img in $(RJ_LOCAL_IMAGES); do echo "        $$_img"; done; \
+	elif [ "$(RJ_FORCE_BUILD)" != "1" ] && [ -n "$(strip $(RJ_IMAGE_PREFIX))" ] && \
+	     $(MAKE) --no-print-directory _rj-pull-images; then \
+	    echo "[2/6] Pulled the $(RJ_ROCJITSU_ARCH) stack from $(RJ_IMAGE_PREFIX)"; \
 	else \
-	    echo "[2/6] Building $(RJ_IMAGE_REF) for ROCM_ARCH=$(RJ_ROCJITSU_ARCH) on the host ..."; \
+	    echo "[2/6] Building the $(RJ_ROCJITSU_ARCH) stack on the host ..."; \
 	    ROCM_ARCH=$(RJ_ROCJITSU_ARCH) $(MAKE) --no-print-directory build IMAGE_TAG="$(_RJ_IMAGE_TAG)"; \
 	fi
 	@echo "[3/6] Extracting guest disk and credentials ..."
@@ -369,8 +524,7 @@ test-rocjitsu-local: prep-dirs
 	    2>&1 | sed 's/^/  [fw] /'
 	@mkdir -p "$(RJ_WORK_DIR)/shared/metrics" "$(RJ_WORK_DIR)/shared/images"
 	@echo "[4b/6] Pre-saving images to shared dir (runs in background while VM boots) ..."
-	@for _img in "$(RJ_IMAGE_REF)" "$(RJ_LMCACHE_IMAGE_REF)" \
-	             "aic-nvme-exporter:local" "aic-rdma-exporter:local" "aic-hsa-snoop:local"; do \
+	@for _img in $(RJ_LOCAL_IMAGES); do \
 	    _slug=$$(echo "$$_img" | tr '/: ' '___'); \
 	    _tar="$(RJ_WORK_DIR)/shared/images/$$_slug.tar"; \
 	    _local_id=$$(docker inspect --format '{{.ID}}' "$$_img" 2>/dev/null); \
@@ -507,26 +661,7 @@ test-rocjitsu-local: prep-dirs
 	    exit 1; \
 	fi; \
 	echo "  /dev/kfd present — amdgpu bound to rocjitsu GPU"; \
-	echo "  [6a] GPU sanity check via torch.cuda ..."; \
-	_kfd_gid=$$(ssh $$_ssh_flags "$$_vmuser@localhost" "stat -c %g /dev/kfd"); \
-	_render=$$(ssh $$_ssh_flags "$$_vmuser@localhost" \
-	    "ls /dev/dri/renderD* 2>/dev/null | grep -m1 ."); \
-	echo "  kfd_gid=$$_kfd_gid render=$$_render"; \
-	_gpu_out=$$(ssh $$_ssh_flags "$$_vmuser@localhost" \
-	    "sudo docker run --rm \
-	        --device /dev/kfd $${_render:+--device $$_render} \
-	        --group-add video --group-add $$_kfd_gid \
-	        --entrypoint python3 $(RJ_IMAGE_REF) \
-	        -c 'import torch; avail=torch.cuda.is_available(); cnt=torch.cuda.device_count(); arch=torch.cuda.get_device_properties(0).gcnArchName if avail else \"none\"; print(f\"available={avail} count={cnt} arch={arch}\")'" \
-	    2>&1); \
-	echo "  $$_gpu_out"; \
-	echo "$$_gpu_out" | grep -q 'available=True' \
-	    || { echo "FAIL: torch.cuda not available in container" >&2; _rc=1; }; \
-	_arch=$$(echo "$$_gpu_out" | grep -o 'arch=[^ ]*' | cut -d= -f2); \
-	[ "$$_arch" = "gfx1250" ] \
-	    || { echo "FAIL: expected arch=gfx1250, got $$_arch" >&2; _rc=1; }; \
-	echo "  GPU check done (arch=$$_arch)"; \
-	echo "  [6b] Setting up NVMe L2 storage ..."; \
+	echo "  [6a] Setting up NVMe L2 storage ..."; \
 	_nvme=$$(ssh $$_ssh_flags "$$_vmuser@localhost" \
 	    "ls /dev/nvme*n1 2>/dev/null | head -1"); \
 	[ -n "$$_nvme" ] || { echo "FAIL: no NVMe device in VM" >&2; _rc=1; }; \
@@ -536,9 +671,8 @@ test-rocjitsu-local: prep-dirs
 	     && sudo chmod 1777 $(RJ_NVME_MOUNT)" \
 	    2>&1 | sed 's/^/  [nvme] /'; \
 	echo "  NVMe $$_nvme mounted at $(RJ_NVME_MOUNT)"; \
-	echo "  [6c] Loading images into VM (via 9p shared dir) ..."; \
-	for _img in "$(RJ_IMAGE_REF)" "$(RJ_LMCACHE_IMAGE_REF)" \
-	             "aic-nvme-exporter:local" "aic-rdma-exporter:local" "aic-hsa-snoop:local"; do \
+	echo "  [6b] Loading images into VM (via 9p shared dir) ..."; \
+	for _img in $(RJ_LOCAL_IMAGES); do \
 	    _slug=$$(echo "$$_img" | tr '/: ' '___'); \
 	    _tar="$(RJ_WORK_DIR)/shared/images/$$_slug.tar"; \
 	    _rj_tar="/rj-share/images/$$_slug.tar"; \
@@ -559,23 +693,61 @@ test-rocjitsu-local: prep-dirs
 	            2>&1 | sed 's/^/  [load] /'; \
 	    fi; \
 	done; \
-	echo "  [6c.4] Patching images with missing deps ..."; \
+	echo "  [6b.1] Patching images with missing deps ..."; \
 	ssh $$_ssh_flags "$$_vmuser@localhost" \
 	    "printf 'FROM %s\nRUN pip3 install openai -q\n' '$(RJ_LMCACHE_IMAGE_REF)' | \
 	         sudo docker build -q -t '$(RJ_LMCACHE_IMAGE_REF)' -f - /tmp 2>&1 && \
 	     printf 'FROM %s\nRUN pip3 install lmcache==$(patsubst v%,%,$(LMCACHE_REF)) -q\n' '$(RJ_IMAGE_REF)' | \
 	         sudo docker build -q -t '$(RJ_IMAGE_REF)' -f - /tmp 2>&1" \
 	    2>&1 | sed 's/^/  [patch] /'; \
-	echo "  [6c.5] Pulling public monitoring images inside VM ..."; \
+	echo "  [6b.2] Pulling public monitoring images inside VM ..."; \
 	ssh $$_ssh_flags "$$_vmuser@localhost" \
 	    "for img in prom/prometheus:v3.14.0 grafana/grafana:13.2.2 \
 	                quay.io/prometheus/node-exporter:v1.12.1 \
-	                rocm/device-metrics-exporter:v1.5.2 python:3.12; do \
+	                rocm/device-metrics-exporter:v1.5.2 python:3.12 \
+	                grafana/loki:3.5.0 grafana/alloy:v1.8.3 python:3.12-slim; do \
 	         sudo docker image inspect \$$img >/dev/null 2>&1 \
 	             && echo \"  \$$img already present\" \
 	             || { echo \"  Pulling \$$img ...\"; sudo docker pull -q \$$img; }; \
 	     done" \
 	    2>&1 | sed 's/^/  [pull] /'; \
+	echo "  [6c] GPU sanity check via torch.cuda ..."; \
+	_kfd_gid=$$(ssh $$_ssh_flags "$$_vmuser@localhost" "stat -c %g /dev/kfd"); \
+	_render=$$(ssh $$_ssh_flags "$$_vmuser@localhost" \
+	    "ls /dev/dri/renderD* 2>/dev/null | grep -m1 ."); \
+	echo "  kfd_gid=$$_kfd_gid render=$$_render"; \
+	_gpu_out=$$(ssh $$_ssh_flags "$$_vmuser@localhost" \
+	    "sudo docker run --rm \
+	        --device /dev/kfd $${_render:+--device $$_render} \
+	        --group-add video --group-add $$_kfd_gid \
+	        --entrypoint python3 $(RJ_IMAGE_REF) \
+	        -c 'import torch; avail=torch.cuda.is_available(); cnt=torch.cuda.device_count(); arch=torch.cuda.get_device_properties(0).gcnArchName if avail else \"none\"; print(f\"available={avail} count={cnt} arch={arch}\")'" \
+	    2>&1); \
+	echo "  $$_gpu_out"; \
+	echo "$$_gpu_out" | grep -q 'available=True' \
+	    || { echo "FAIL: torch.cuda not available in container" >&2; _rc=1; }; \
+	_arch=$$(echo "$$_gpu_out" | grep -o 'arch=[^ ]*' | cut -d= -f2); \
+	[ "$$_arch" = "$(RJ_ROCJITSU_ARCH)" ] \
+	    || { echo "FAIL: expected arch=$(RJ_ROCJITSU_ARCH), got $$_arch" >&2; _rc=1; }; \
+	echo "  GPU check done (arch=$$_arch)"; \
+	if [ "$(RJ_PROBE)" = "1" ]; then \
+	    echo "  [6c.1] Kernel capability probe ($(RJ_PROBE_TIMEOUT)s per rung) ..."; \
+	    ssh $$_ssh_flags "$$_vmuser@localhost" \
+	        "sudo docker run --rm \
+	            --device /dev/kfd $${_render:+--device $$_render} \
+	            --group-add video --group-add $$_kfd_gid \
+	            -v /rj-share/repo/docker/scripts:/probe:ro \
+	            -e TORCH_NCCL_HEARTBEAT_TIMEOUT_SEC=$(RJ_NCCL_HEARTBEAT_S) \
+	            --entrypoint python3 $(RJ_IMAGE_REF) \
+	            -I /probe/rocjitsu-gpu-probe.py \
+	                --timeout $(RJ_PROBE_TIMEOUT) $(RJ_PROBE_ARGS)" \
+	        2>&1 | sed 's/^/  [probe] /'; \
+	    echo "  --- rocjitsu emulator log (probe window) ---"; \
+	    docker logs --tail 40 aic-rj-rocjitsu 2>&1 | sed 's/^/  [rocjitsu] /'; \
+	fi; \
+	if [ "$(RJ_PROBE_ONLY)" = "1" ]; then \
+	    echo "  [6d] skipped (RJ_PROBE_ONLY=1)"; \
+	else \
 	echo "  [6d] Mounting shared dir via 9p and running make vllm-reset-test ..."; \
 	ssh $$_ssh_flags "$$_vmuser@localhost" \
 	    "sudo chmod 1777 /rj-share/metrics" \
@@ -583,21 +755,47 @@ test-rocjitsu-local: prep-dirs
 	printf '%s\n' \
 	  'set -e' \
 	  'mkdir -p /tmp/hf-home /tmp/aic-logs/lmcache /tmp/aic-logs/vllm /tmp/aic-logs/kvbench /tmp/aic-logs/manual/results /tmp/aic-logs/manual/plots /tmp/lmcache-nfs' \
+	  '# prep-dirs mkdir -p s NVME_DATA too.  It is a mount point created by' \
+	  '# [6a], so it exists, but report its state up front: a failure here is' \
+	  '# otherwise a bare "mkdir: Permission denied" with no path to go on.' \
+	  'ls -ld $(RJ_NVME_MOUNT) /tmp/lmcache-nfs /tmp/aic-logs /tmp/hf-home || true' \
 	  'export IMAGE_NAME=$(VLLM_IMAGE_NAME) LMCACHE_IMAGE_NAME=$(LMCACHE_IMAGE_NAME)' \
 	  "export IMAGE_TAG='$(_RJ_IMAGE_TAG)' VLLM_MODEL='$(RJ_MODEL)'" \
-	  'export VLM_LOAD_FORMAT=auto VLM_MAX_MODEL_LEN=4096 VLM_GPU_MEMORY_UTILIZATION=0.85' \
+	  'export VLM_LOAD_FORMAT=auto VLM_MAX_MODEL_LEN=$(RJ_MAX_MODEL_LEN) VLM_GPU_MEMORY_UTILIZATION=0.85' \
+	  'export VLM_MAX_NUM_BATCHED_TOKENS=$(RJ_MAX_BATCHED_TOKENS)' \
+	  '# Cut-down reset-test preset -- see RJ_TEST_* in mk/bench.mk.' \
+	  'export AIC_TEST_ANCHORS=$(RJ_TEST_ANCHORS) AIC_TEST_FLOOD=$(RJ_TEST_FLOOD)' \
+	  'export AIC_TEST_ANCHOR_REPS=$(RJ_TEST_ANCHOR_REPS)' \
+	  'export AIC_TEST_MAX_TOKENS=$(RJ_TEST_MAX_TOKENS)' \
+	  'export AIC_TEST_TIMEOUT=$(RJ_TEST_TIMEOUT) AIC_TEST_MODEL=$(RJ_MODEL)' \
 	  'export _KC='"'"'{\"enable_jit_warmup\":false,\"enable_cutedsl_warmup\":false,\"enable_flashinfer_autotune\":false}'"'"'' \
 	  'export VLLM_EXTRA_ARGS="--num-gpu-blocks-override 50 --kernel-config $$_KC"' \
 	  'export ROCM_ARCH=$(RJ_ROCJITSU_ARCH) LMCACHE_L1_SIZE_GB=$(RJ_LMCACHE_L1_SIZE_GB)' \
 	  'export AIC_L2_BACKEND=none NVME_DATA=$(RJ_NVME_MOUNT) NFS_DATA=/tmp/lmcache-nfs' \
 	  'export AIC_METRICS_DIR=/rj-share/metrics AIC_EXPORTERS=0 HF_HOME=/tmp/hf-home' \
 	  'export LOG=/tmp/aic-logs BENCH_LOGDIR=/tmp/aic-logs/manual HF_TOKEN=$(HF_TOKEN)' \
+	  '# rocjitsu emulates the GPU in software, so a collective that takes' \
+	  '# milliseconds on silicon can take many minutes.  The ProcessGroupNCCL' \
+	  '# monitor kills the process when its heartbeat stalls for' \
+	  '# TORCH_NCCL_HEARTBEAT_TIMEOUT_SEC (default 480), which is what ended' \
+	  '# run 68184413: vLLM loaded the model in 9s, enqueued a collective, and' \
+	  '# was terminated 480s later having made no visible progress.  Raised, not' \
+	  '# disabled, so a genuine hang still fails the run instead of hanging it.' \
+	  'export TORCH_NCCL_HEARTBEAT_TIMEOUT_SEC=$(RJ_NCCL_HEARTBEAT_S)' \
 	  '# vllm-reset-test: real GPU; kernel-config disables JIT warmup; weight loading ~7s/270MB on rocjitsu' \
-	  'make -C /rj-share/repo vllm-reset-test VLM_READY_RETRIES=600' \
-	  'echo vllm_reset_test_rc=$$?' \
+	  '# set -e is on, so a bare `make ...; echo rc=$$?` never reaches the echo:' \
+	  '# the script aborts on make failure and the caller only ever sees "rc=?".' \
+	  '# Run it in an if so the real status is always reported.' \
+	  'if make -C /rj-share/repo vllm-reset-test VLM_READY_RETRIES=$(RJ_READY_RETRIES); then' \
+	  '    echo vllm_reset_test_rc=0' \
+	  'else' \
+	  '    echo vllm_reset_test_rc=$$?' \
+	  'fi' \
 	  > /tmp/aic-rj-inner.sh; \
+	chmod 600 /tmp/aic-rj-inner.sh; \
 	scp -i $$_key -o StrictHostKeyChecking=no -P "$(RJ_SSH_PORT)" \
 	    /tmp/aic-rj-inner.sh "$$_vmuser@localhost:/tmp/aic-rj-inner.sh" 2>/dev/null; \
+	rm -f /tmp/aic-rj-inner.sh; \
 	ssh $$_ssh_flags "$$_vmuser@localhost" "bash /tmp/aic-rj-inner.sh 2>&1" \
 	    | tee /tmp/aic-rj-make.log | sed 's/^/  [make] /'; \
 	_make_rc=$$(grep -o 'vllm_reset_test_rc=[0-9]*' /tmp/aic-rj-make.log | cut -d= -f2); \
@@ -609,9 +807,12 @@ test-rocjitsu-local: prep-dirs
 	        2>&1 | sed 's/^/  [lmcache] /'; \
 	    echo "  --- vllm logs ---"; \
 	    ssh $$_ssh_flags "$$_vmuser@localhost" \
-	        "sudo docker logs aic-vllm-gpu0 2>&1 | tail -20" \
+	        "sudo docker logs aic-vllm-gpu0 2>&1 | tail -250" \
 	        2>&1 | sed 's/^/  [vllm] /'; \
+	    echo "  --- rocjitsu emulator log ---"; \
+	    docker logs --tail 40 aic-rj-rocjitsu 2>&1 | sed 's/^/  [rocjitsu] /'; \
 	    _rc=1; \
+	fi; \
 	fi; \
 	echo "  Cleaning up compose stack ...";\
 	ssh $$_ssh_flags "$$_vmuser@localhost" \

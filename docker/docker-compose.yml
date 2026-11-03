@@ -534,6 +534,11 @@ services:
       - VLLM_TARGET_DEVICE=rocm
       - ROCR_VISIBLE_DEVICES=${AIC_ROCR_VISIBLE:-${GPU:-0}}
       - HIP_VISIBLE_DEVICES=${AIC_HIP_VISIBLE:-0}
+      # Explicitly empty: torch's ROCm build still honours CUDA_VISIBLE_DEVICES,
+      # so a value inherited from the host would be applied on top of
+      # HIP_VISIBLE_DEVICES and select a different (or no) GPU.  Pinning it
+      # empty here leaves HIP_VISIBLE_DEVICES as the only device selector.
+      - CUDA_VISIBLE_DEVICES=
       - AMDGCN_USE_BUFFER_OPS=0
       - MIOPEN_FIND_MODE=FAST
       - MIOPEN_USER_DB_PATH=/app/miopen
