@@ -4281,17 +4281,25 @@ _reg_port="${AIC_REGISTRY_PORT:-5000}"
 _reg_name="aic-registry-\${SLURM_JOB_ID:-\$\$}-\${_reg_port}"
 _reg_data="${AIC_IMAGE_DIR}/registry"
 _lmc_wheels_dir="\${TMPDIR}/lmcache-wheels.\${SLURM_JOB_ID:-\$\$}"
-mkdir -p "\${_reg_data}" "\${_lmc_wheels_dir}"
+_bk_cache="${AIC_IMAGE_DIR}/buildkit-cache"
+mkdir -p "\${_reg_data}" "\${_lmc_wheels_dir}" \
+    "${AIC_IMAGE_DIR}/buildkit-cache/base" \
+    "${AIC_IMAGE_DIR}/buildkit-cache/vllm" \
+    "${AIC_IMAGE_DIR}/buildkit-cache/lmcache"
 docker run -d --name "\${_reg_name}" --restart=unless-stopped \
     --network host -e "REGISTRY_HTTP_ADDR=0.0.0.0:\${_reg_port}" \
     -v "\${_reg_data}:/var/lib/registry" registry:3.1.2
 trap 'docker rm -f "\${_reg_name}" 2>/dev/null || true; rm -rf "\${_lmc_wheels_dir}"' EXIT
 sleep 2
 echo "[bake] registry started on localhost:\${_reg_port}, storage: \${_reg_data}"
+echo "[bake] buildkit cache : ${AIC_IMAGE_DIR}/buildkit-cache/{base,vllm,lmcache}"
 
 # Phase 1: build aic-base and load into local daemon.
 echo "[bake] phase 1: building aic-base (${base_image})"
 docker buildx build --builder default --progress=plain --load \
+    --cache-from "type=local,src=${AIC_IMAGE_DIR}/buildkit-cache/base" \
+    --cache-from "type=registry,ref=localhost:\${_reg_port}/aic-base:latest" \
+    --cache-to "type=local,dest=${AIC_IMAGE_DIR}/buildkit-cache/base,mode=max,ignore-error=true" \
     --build-arg ROCM_ARCH="${AIC_ROCM_ARCH}" \
     --build-arg AIC_UCX_FAST="${AIC_UCX_FAST}" \
     --build-arg AIC_VERSION="${AIC_VERSION}" \
@@ -4301,6 +4309,9 @@ docker buildx build --builder default --progress=plain --load \
     -t "${base_image}" \
     "${AIC_DAY_DIR}"
 echo "[bake] base loaded into daemon"
+docker tag "${base_image}" "localhost:\${_reg_port}/aic-base:latest"
+docker push "localhost:\${_reg_port}/aic-base:latest"
+echo "[bake] pushed localhost:\${_reg_port}/aic-base:latest"
 
 # Phase 1.5: export lmcache wheels for vllm.
 echo "[bake] phase 1.5: exporting lmcache wheels"
@@ -4322,6 +4333,9 @@ echo "[bake] phase 2: building aic-vllm + aic-lmcache in parallel"
 (
 set -euo pipefail
 docker buildx build --builder default --progress=plain --load \
+    --cache-from "type=local,src=${AIC_IMAGE_DIR}/buildkit-cache/vllm" \
+    --cache-from "type=registry,ref=localhost:\${_reg_port}/aic-vllm:latest" \
+    --cache-to "type=local,dest=${AIC_IMAGE_DIR}/buildkit-cache/vllm,mode=max,ignore-error=true" \
     --build-context "base=docker-image://${base_image}" \
     --build-context "lmcache-wheels=\${_lmc_wheels_dir}" \
     --build-arg ROCM_ARCH="${AIC_ROCM_ARCH}" \
@@ -4339,6 +4353,9 @@ _vllm_pid=\$!
 (
 set -euo pipefail
 docker buildx build --builder default --progress=plain --load \
+    --cache-from "type=local,src=${AIC_IMAGE_DIR}/buildkit-cache/lmcache" \
+    --cache-from "type=registry,ref=localhost:\${_reg_port}/aic-lmcache:latest" \
+    --cache-to "type=local,dest=${AIC_IMAGE_DIR}/buildkit-cache/lmcache,mode=max,ignore-error=true" \
     --build-context "base=docker-image://${base_image}" \
     --build-arg ROCM_ARCH="${AIC_ROCM_ARCH}" \
     --build-arg AIC_VERSION="${AIC_VERSION}" \
@@ -4375,14 +4392,20 @@ if ! curl -sf "http://localhost:\${_reg_port}/v2/" >/dev/null 2>&1; then
     done
 fi
 
-# Push vllm + lmcache to per-node registry.
+# Push vllm + lmcache to per-node registry (versioned + :latest for cache-from).
 echo "[bake] pushing to localhost:\${_reg_port}"
 docker tag "${AIC_VLLM_IMAGE}"    "${_dist_vllm_ref}"
+docker tag "${AIC_VLLM_IMAGE}"    "localhost:\${_reg_port}/aic-vllm:latest"
 docker tag "${AIC_LMCACHE_IMAGE}" "${_dist_lmcache_ref}"
+docker tag "${AIC_LMCACHE_IMAGE}" "localhost:\${_reg_port}/aic-lmcache:latest"
 docker push "${_dist_vllm_ref}"
 echo "[bake] pushed ${_dist_vllm_ref}"
+docker push "localhost:\${_reg_port}/aic-vllm:latest"
+echo "[bake] pushed localhost:\${_reg_port}/aic-vllm:latest"
 docker push "${_dist_lmcache_ref}"
 echo "[bake] pushed ${_dist_lmcache_ref}"
+docker push "localhost:\${_reg_port}/aic-lmcache:latest"
+echo "[bake] pushed localhost:\${_reg_port}/aic-lmcache:latest"
 
 # Build exporter images and push to registry.
 if docker info >/dev/null 2>&1; then
