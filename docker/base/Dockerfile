@@ -146,7 +146,7 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
         --slave /usr/bin/g++ g++ /usr/bin/g++-13
 
 RUN git clone --depth 1 \
-              --revision "${PYTORCH_REF}" \
+              --branch "${PYTORCH_REF}" \
               --recurse-submodules \
               --shallow-submodules \
               --jobs "$(nproc)" \
