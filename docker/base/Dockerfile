@@ -145,12 +145,12 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-13 130 \
         --slave /usr/bin/g++ g++ /usr/bin/g++-13
 
-RUN git clone --depth 1 \
-              --branch "${PYTORCH_REF}" \
-              --recurse-submodules \
-              --shallow-submodules \
-              --jobs "$(nproc)" \
-              "${PYTORCH_GIT_URL}" /app/pytorch
+RUN git init /app/pytorch && \
+    git -C /app/pytorch remote add origin "${PYTORCH_GIT_URL}" && \
+    git -C /app/pytorch fetch --depth 1 origin "${PYTORCH_REF}" && \
+    git -C /app/pytorch -c advice.detachedHead=false checkout FETCH_HEAD && \
+    git -C /app/pytorch submodule update --init --recursive --depth 1 \
+        --jobs "$(nproc)"
 
 RUN --mount=type=cache,target=/root/.cache/uv \
     cd /app/pytorch && \
