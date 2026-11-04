@@ -1508,7 +1508,7 @@ _reg_name="aic-registry-\${SLURM_JOB_ID:-\$\$}-\${_reg_port}"
 _reg_data="${AIC_IMAGE_DIR}/registry"
 mkdir -p "\${_reg_data}"
 docker run -d --name "\${_reg_name}" --restart=unless-stopped \
-    --network host -e "REGISTRY_HTTP_ADDR=0.0.0.0:\${_reg_port}" \
+    --network host -e "REGISTRY_HTTP_ADDR=0.0.0.0:\${_reg_port}" -e "REGISTRY_DEBUG_ADDR=disabled" \
     -v "\${_reg_data}:/var/lib/registry" registry:3.1.2
 trap 'docker rm -f "\${_reg_name}" 2>/dev/null || true; rm -rf "\${_lmc_wheels_dir:-}"' EXIT
 sleep 2
@@ -1582,7 +1582,7 @@ if ! curl -sf "http://localhost:\${_reg_port}/v2/" >/dev/null 2>&1; then
     echo "[build-split] registry not responding; restarting on localhost:\${_reg_port}"
     docker rm -f "\${_reg_name}" 2>/dev/null || true
     docker run -d --name "\${_reg_name}" --restart=unless-stopped \
-        --network host -e "REGISTRY_HTTP_ADDR=0.0.0.0:\${_reg_port}" \
+        --network host -e "REGISTRY_HTTP_ADDR=0.0.0.0:\${_reg_port}" -e "REGISTRY_DEBUG_ADDR=disabled" \
         -v "\${_reg_data}:/var/lib/registry" registry:3.1.2
     sleep 2
 fi
@@ -1933,6 +1933,7 @@ _reg_name=\"aic-registry-\${SLURM_JOB_ID:-\$\$}-${_reg_port}\"
 mkdir -p \"${_reg_data}\"
 docker run -d --name \"\${_reg_name}\" --restart=unless-stopped \\
     --network host -e \"REGISTRY_HTTP_ADDR=0.0.0.0:${_reg_port}\" \\
+    -e \"REGISTRY_DEBUG_ADDR=disabled\" \\
     -v \"${_reg_data}:/var/lib/registry\" registry:3.1.2
 trap 'docker rm -f \"\${_reg_name}\" 2>/dev/null || true' EXIT
 sleep 2
@@ -2257,6 +2258,7 @@ _reg_name=\"aic-registry-\${SLURM_JOB_ID:-\$\$}-\${_reg_port}\"
 mkdir -p \"${AIC_IMAGE_DIR}/registry\"
 docker run -d --name \"\${_reg_name}\" --restart=unless-stopped \\
     --network host -e \"REGISTRY_HTTP_ADDR=0.0.0.0:\${_reg_port}\" \\
+    -e \"REGISTRY_DEBUG_ADDR=disabled\" \\
     -v \"${AIC_IMAGE_DIR}/registry:/var/lib/registry\" registry:3.1.2
 trap 'docker rm -f \"\${_reg_name}\" 2>/dev/null || true' EXIT
 sleep 2
@@ -2476,6 +2478,7 @@ _reg_name=\"aic-registry-\${SLURM_JOB_ID:-\$\$}-\${_reg_port}\"
 mkdir -p \"${AIC_IMAGE_DIR}/registry\"
 docker run -d --name \"\${_reg_name}\" --restart=unless-stopped \\
     --network host -e \"REGISTRY_HTTP_ADDR=0.0.0.0:\${_reg_port}\" \\
+    -e \"REGISTRY_DEBUG_ADDR=disabled\" \\
     -v \"${AIC_IMAGE_DIR}/registry:/var/lib/registry\" registry:3.1.2
 trap 'docker rm -f \"\${_reg_name}\" 2>/dev/null || true' EXIT
 sleep 2
@@ -4254,8 +4257,10 @@ cmd_bake() {
         # driver, no --privileged required).  Maintains cmd_bake's parallel vllm +
         # lmcache build.  AITER JIT warmup is skipped: it needs seccomp=unconfined
         # which is blocked on SPUR/Crusoe; the graceful fallback already exists.
+        local _dist_base_ref; _dist_base_ref="$(_dist_ref "${base_image}")"
         local _dist_vllm_ref; _dist_vllm_ref="$(_dist_ref "${AIC_VLLM_IMAGE}")"
         local _dist_lmcache_ref; _dist_lmcache_ref="$(_dist_ref "${AIC_LMCACHE_IMAGE}")"
+        local _base_latest="$(awk -F: '{print $1}' <<<"${base_image}"):latest"
         local _vllm_latest="${AIC_VLLM_IMAGE%:*}:latest"
         local _lmcache_latest="${AIC_LMCACHE_IMAGE%:*}:latest"
         remote_script="$(cat <<REMOTE
@@ -4281,37 +4286,38 @@ _reg_port="${AIC_REGISTRY_PORT:-5000}"
 _reg_name="aic-registry-\${SLURM_JOB_ID:-\$\$}-\${_reg_port}"
 _reg_data="${AIC_IMAGE_DIR}/registry"
 _lmc_wheels_dir="\${TMPDIR}/lmcache-wheels.\${SLURM_JOB_ID:-\$\$}"
-_bk_cache="${AIC_IMAGE_DIR}/buildkit-cache"
-mkdir -p "\${_reg_data}" "\${_lmc_wheels_dir}" \
-    "${AIC_IMAGE_DIR}/buildkit-cache/base" \
-    "${AIC_IMAGE_DIR}/buildkit-cache/vllm" \
-    "${AIC_IMAGE_DIR}/buildkit-cache/lmcache"
+mkdir -p "\${_reg_data}" "\${_lmc_wheels_dir}"
 docker run -d --name "\${_reg_name}" --restart=unless-stopped \
-    --network host -e "REGISTRY_HTTP_ADDR=0.0.0.0:\${_reg_port}" \
+    --network host -e "REGISTRY_HTTP_ADDR=0.0.0.0:\${_reg_port}" -e "REGISTRY_DEBUG_ADDR=disabled" \
     -v "\${_reg_data}:/var/lib/registry" registry:3.1.2
 trap 'docker rm -f "\${_reg_name}" 2>/dev/null || true; rm -rf "\${_lmc_wheels_dir}"' EXIT
 sleep 2
 echo "[bake] registry started on localhost:\${_reg_port}, storage: \${_reg_data}"
-echo "[bake] buildkit cache : ${AIC_IMAGE_DIR}/buildkit-cache/{base,vllm,lmcache}"
 
-# Phase 1: build aic-base and load into local daemon.
-echo "[bake] phase 1: building aic-base (${base_image})"
-docker buildx build --builder default --progress=plain --load \
-    --cache-from "type=local,src=${AIC_IMAGE_DIR}/buildkit-cache/base" \
-    --cache-from "type=registry,ref=localhost:\${_reg_port}/aic-base:latest" \
-    --cache-to "type=local,dest=${AIC_IMAGE_DIR}/buildkit-cache/base,mode=max,ignore-error=true" \
-    --build-arg ROCM_ARCH="${AIC_ROCM_ARCH}" \
-    --build-arg AIC_UCX_FAST="${AIC_UCX_FAST}" \
-    --build-arg AIC_VERSION="${AIC_VERSION}" \
-    ${_version_build_args} \
-    ${_secret_arg} \
-    -f "${AIC_DAY_DIR}/docker/base/Dockerfile" \
-    -t "${base_image}" \
-    "${AIC_DAY_DIR}"
-echo "[bake] base loaded into daemon"
-docker tag "${base_image}" "localhost:\${_reg_port}/aic-base:latest"
-docker push "localhost:\${_reg_port}/aic-base:latest"
-echo "[bake] pushed localhost:\${_reg_port}/aic-base:latest"
+# Phase 1: load aic-base from registry if already built, else build it.
+echo "[bake] phase 1: checking registry for aic-base ${base_image}..."
+if docker pull "${_dist_base_ref}" 2>/dev/null && \
+        docker tag "${_dist_base_ref}" "${base_image}" 2>/dev/null; then
+    echo "[bake] base loaded from registry (registry hit, skipping build)"
+else
+    echo "[bake] base not in registry; building from scratch"
+    docker buildx build --builder default --progress=plain --load \
+        --cache-from "type=registry,ref=localhost:\${_reg_port}/${_base_latest}" \
+        --build-arg ROCM_ARCH="${AIC_ROCM_ARCH}" \
+        --build-arg AIC_UCX_FAST="${AIC_UCX_FAST}" \
+        --build-arg AIC_VERSION="${AIC_VERSION}" \
+        ${_version_build_args} \
+        ${_secret_arg} \
+        -f "${AIC_DAY_DIR}/docker/base/Dockerfile" \
+        -t "${base_image}" \
+        "${AIC_DAY_DIR}"
+    echo "[bake] base built; pushing to registry"
+    docker tag "${base_image}" "${_dist_base_ref}"
+    docker tag "${base_image}" "localhost:\${_reg_port}/${_base_latest}"
+    docker push "${_dist_base_ref}"
+    docker push "localhost:\${_reg_port}/${_base_latest}"
+    echo "[bake] pushed ${_dist_base_ref}"
+fi
 
 # Phase 1.5: export lmcache wheels for vllm.
 echo "[bake] phase 1.5: exporting lmcache wheels"
@@ -4328,50 +4334,66 @@ docker buildx build --builder default --progress=plain \
     "${AIC_DAY_DIR}"
 echo "[bake] lmcache wheels: \$(ls \${_lmc_wheels_dir}/*.whl 2>/dev/null || echo '(none)')"
 
-# Phase 2: build vllm + lmcache in parallel, load into daemon.
-echo "[bake] phase 2: building aic-vllm + aic-lmcache in parallel"
-(
-set -euo pipefail
-docker buildx build --builder default --progress=plain --load \
-    --cache-from "type=local,src=${AIC_IMAGE_DIR}/buildkit-cache/vllm" \
-    --cache-from "type=registry,ref=localhost:\${_reg_port}/aic-vllm:latest" \
-    --cache-to "type=local,dest=${AIC_IMAGE_DIR}/buildkit-cache/vllm,mode=max,ignore-error=true" \
-    --build-context "base=docker-image://${base_image}" \
-    --build-context "lmcache-wheels=\${_lmc_wheels_dir}" \
-    --build-arg ROCM_ARCH="${AIC_ROCM_ARCH}" \
-    --build-arg AIC_VERSION="${AIC_VERSION}" \
-    --build-arg AIC_UCX_FAST="${AIC_UCX_FAST}" \
-    ${_version_build_args} \
-    ${_secret_arg} \
-    -f "${AIC_DAY_DIR}/docker/vllm/Dockerfile" \
-    -t "${AIC_VLLM_IMAGE}" -t "${_vllm_latest}" \
-    "${AIC_DAY_DIR}"
-echo "[bake] vllm loaded"
-) &
-_vllm_pid=\$!
+# Phase 2: load vllm + lmcache from registry if already built, else build in parallel.
+echo "[bake] phase 2: checking registry for aic-vllm + aic-lmcache..."
+_vllm_from_reg=0; _lmcache_from_reg=0
+if docker pull "${_dist_vllm_ref}" 2>/dev/null && \
+        docker tag "${_dist_vllm_ref}" "${AIC_VLLM_IMAGE}" 2>/dev/null && \
+        docker tag "${AIC_VLLM_IMAGE}" "${_vllm_latest}" 2>/dev/null; then
+    echo "[bake] vllm loaded from registry (skipping FlashAttention compile)"
+    _vllm_from_reg=1
+fi
+if docker pull "${_dist_lmcache_ref}" 2>/dev/null && \
+        docker tag "${_dist_lmcache_ref}" "${AIC_LMCACHE_IMAGE}" 2>/dev/null && \
+        docker tag "${AIC_LMCACHE_IMAGE}" "${_lmcache_latest}" 2>/dev/null; then
+    echo "[bake] lmcache loaded from registry (skipping build)"
+    _lmcache_from_reg=1
+fi
 
-(
-set -euo pipefail
-docker buildx build --builder default --progress=plain --load \
-    --cache-from "type=local,src=${AIC_IMAGE_DIR}/buildkit-cache/lmcache" \
-    --cache-from "type=registry,ref=localhost:\${_reg_port}/aic-lmcache:latest" \
-    --cache-to "type=local,dest=${AIC_IMAGE_DIR}/buildkit-cache/lmcache,mode=max,ignore-error=true" \
-    --build-context "base=docker-image://${base_image}" \
-    --build-arg ROCM_ARCH="${AIC_ROCM_ARCH}" \
-    --build-arg AIC_VERSION="${AIC_VERSION}" \
-    --build-arg AIC_UCX_FAST="${AIC_UCX_FAST}" \
-    ${_version_build_args} \
-    ${_secret_arg} \
-    -f "${AIC_DAY_DIR}/docker/lmcache/Dockerfile" \
-    -t "${AIC_LMCACHE_IMAGE}" -t "${_lmcache_latest}" \
-    "${AIC_DAY_DIR}"
-echo "[bake] lmcache loaded"
-) &
-_lmcache_pid=\$!
+_vllm_pid="" _lmcache_pid=""
+if (( _vllm_from_reg == 0 )); then
+    echo "[bake] building aic-vllm (registry miss)"
+    (
+    set -euo pipefail
+    docker buildx build --builder default --progress=plain --load \
+        --cache-from "type=registry,ref=localhost:\${_reg_port}/${_vllm_latest}" \
+        --build-context "base=docker-image://${base_image}" \
+        --build-context "lmcache-wheels=\${_lmc_wheels_dir}" \
+        --build-arg ROCM_ARCH="${AIC_ROCM_ARCH}" \
+        --build-arg AIC_VERSION="${AIC_VERSION}" \
+        --build-arg AIC_UCX_FAST="${AIC_UCX_FAST}" \
+        ${_version_build_args} \
+        ${_secret_arg} \
+        -f "${AIC_DAY_DIR}/docker/vllm/Dockerfile" \
+        -t "${AIC_VLLM_IMAGE}" -t "${_vllm_latest}" \
+        "${AIC_DAY_DIR}"
+    echo "[bake] vllm built"
+    ) &
+    _vllm_pid=\$!
+fi
+if (( _lmcache_from_reg == 0 )); then
+    echo "[bake] building aic-lmcache (registry miss)"
+    (
+    set -euo pipefail
+    docker buildx build --builder default --progress=plain --load \
+        --cache-from "type=registry,ref=localhost:\${_reg_port}/${_lmcache_latest}" \
+        --build-context "base=docker-image://${base_image}" \
+        --build-arg ROCM_ARCH="${AIC_ROCM_ARCH}" \
+        --build-arg AIC_VERSION="${AIC_VERSION}" \
+        --build-arg AIC_UCX_FAST="${AIC_UCX_FAST}" \
+        ${_version_build_args} \
+        ${_secret_arg} \
+        -f "${AIC_DAY_DIR}/docker/lmcache/Dockerfile" \
+        -t "${AIC_LMCACHE_IMAGE}" -t "${_lmcache_latest}" \
+        "${AIC_DAY_DIR}"
+    echo "[bake] lmcache built"
+    ) &
+    _lmcache_pid=\$!
+fi
 
 _vllm_rc=0; _lmcache_rc=0
-wait "\${_vllm_pid}"    || _vllm_rc=\$?
-wait "\${_lmcache_pid}" || _lmcache_rc=\$?
+[[ -n "\${_vllm_pid}"    ]] && { wait "\${_vllm_pid}"    || _vllm_rc=\$?; }
+[[ -n "\${_lmcache_pid}" ]] && { wait "\${_lmcache_pid}" || _lmcache_rc=\$?; }
 rm -rf "\${_lmc_wheels_dir}"
 (( _vllm_rc == 0 ))    || { echo "[bake] ERROR: vllm build failed (rc=\${_vllm_rc})" >&2; exit 1; }
 (( _lmcache_rc == 0 )) || { echo "[bake] ERROR: lmcache build failed (rc=\${_lmcache_rc})" >&2; exit 1; }
@@ -4383,7 +4405,7 @@ if ! curl -sf "http://localhost:\${_reg_port}/v2/" >/dev/null 2>&1; then
     echo "[bake] registry not responding; restarting on localhost:\${_reg_port}"
     docker rm -f "\${_reg_name}" 2>/dev/null || true
     docker run -d --name "\${_reg_name}" --restart=unless-stopped \
-        --network host -e "REGISTRY_HTTP_ADDR=0.0.0.0:\${_reg_port}" \
+        --network host -e "REGISTRY_HTTP_ADDR=0.0.0.0:\${_reg_port}" -e "REGISTRY_DEBUG_ADDR=disabled" \
         -v "\${_reg_data}:/var/lib/registry" registry:3.1.2
     for _i in 1 2 3 4 5 6 7 8 9 10; do
         sleep 1
@@ -4392,20 +4414,28 @@ if ! curl -sf "http://localhost:\${_reg_port}/v2/" >/dev/null 2>&1; then
     done
 fi
 
-# Push vllm + lmcache to per-node registry (versioned + :latest for cache-from).
-echo "[bake] pushing to localhost:\${_reg_port}"
-docker tag "${AIC_VLLM_IMAGE}"    "${_dist_vllm_ref}"
-docker tag "${AIC_VLLM_IMAGE}"    "localhost:\${_reg_port}/aic-vllm:latest"
-docker tag "${AIC_LMCACHE_IMAGE}" "${_dist_lmcache_ref}"
-docker tag "${AIC_LMCACHE_IMAGE}" "localhost:\${_reg_port}/aic-lmcache:latest"
-docker push "${_dist_vllm_ref}"
-echo "[bake] pushed ${_dist_vllm_ref}"
-docker push "localhost:\${_reg_port}/aic-vllm:latest"
-echo "[bake] pushed localhost:\${_reg_port}/aic-vllm:latest"
-docker push "${_dist_lmcache_ref}"
-echo "[bake] pushed ${_dist_lmcache_ref}"
-docker push "localhost:\${_reg_port}/aic-lmcache:latest"
-echo "[bake] pushed localhost:\${_reg_port}/aic-lmcache:latest"
+# Push newly-built images to registry (skip if loaded from registry — already there).
+echo "[bake] pushing built images to localhost:\${_reg_port}"
+if (( _vllm_from_reg == 0 )); then
+    docker tag "${AIC_VLLM_IMAGE}" "${_dist_vllm_ref}"
+    docker tag "${AIC_VLLM_IMAGE}" "localhost:\${_reg_port}/${_vllm_latest}"
+    docker push "${_dist_vllm_ref}"
+    echo "[bake] pushed ${_dist_vllm_ref}"
+    docker push "localhost:\${_reg_port}/${_vllm_latest}"
+    echo "[bake] pushed localhost:\${_reg_port}/${_vllm_latest}"
+else
+    echo "[bake] vllm already in registry; skipping push"
+fi
+if (( _lmcache_from_reg == 0 )); then
+    docker tag "${AIC_LMCACHE_IMAGE}" "${_dist_lmcache_ref}"
+    docker tag "${AIC_LMCACHE_IMAGE}" "localhost:\${_reg_port}/${_lmcache_latest}"
+    docker push "${_dist_lmcache_ref}"
+    echo "[bake] pushed ${_dist_lmcache_ref}"
+    docker push "localhost:\${_reg_port}/${_lmcache_latest}"
+    echo "[bake] pushed localhost:\${_reg_port}/${_lmcache_latest}"
+else
+    echo "[bake] lmcache already in registry; skipping push"
+fi
 
 # Build exporter images and push to registry.
 if docker info >/dev/null 2>&1; then
