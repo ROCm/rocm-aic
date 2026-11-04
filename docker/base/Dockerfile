@@ -145,29 +145,11 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-13 130 \
         --slave /usr/bin/g++ g++ /usr/bin/g++-13
 
-# Skip any submodules that are not necessary for our build
-# Some of these submodules are
-# - used only during testing
-# - platform specific (Windows, Android, CUDA)
-# - not used when built as part of pytorch
-RUN git -c submodule.third_party/XNNPACK.update=none \
-        -c submodule.third_party/cutlass.update=none \
-        -c submodule.third_party/flash-attention.update=none \
-        -c submodule.third_party/cudnn_frontend.update=none \
-        -c submodule.third_party/NVTX.update=none \
-        -c submodule.third_party/VulkanMemoryAllocator.update=none \
-        -c submodule.third_party/kleidiai.update=none \
-        -c submodule.third_party/mimalloc.update=none \
-        -c submodule.third_party/ittapi.update=none \
-        -c submodule."android/libs/fbjni".update=none \
-        -c submodule."3rdparty/composable_kernel".update=none \
-        -c submodule."external/googletest".update=none \
-        -c submodule."external/hipify_torch".update=none \
-        -c submodule."libkineto/third_party/googletest".update=none \
-        -c submodule."libkineto/third_party/dynolog".update=none \
-        clone --depth 1 \
+RUN git clone --depth 1 \
               --revision "${PYTORCH_REF}" \
               --recurse-submodules \
+              --shallow-submodules \
+              --jobs "$(nproc)" \
               "${PYTORCH_GIT_URL}" /app/pytorch
 
 RUN --mount=type=cache,target=/root/.cache/uv \
