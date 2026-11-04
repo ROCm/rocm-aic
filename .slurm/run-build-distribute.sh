@@ -1507,8 +1507,8 @@ _reg_port="${AIC_REGISTRY_PORT:-5000}"
 _reg_name="aic-registry-\${SLURM_JOB_ID:-\$\$}-\${_reg_port}"
 _reg_data="${AIC_IMAGE_DIR}/registry"
 mkdir -p "\${_reg_data}"
-docker run -d --name "\${_reg_name}" --rm \
-    --network host -e "REGISTRY_HTTP_ADDR=:\${_reg_port}" \
+docker run -d --name "\${_reg_name}" --restart=unless-stopped \
+    --network host -e "REGISTRY_HTTP_ADDR=0.0.0.0:\${_reg_port}" \
     -v "\${_reg_data}:/var/lib/registry" registry:3.1.2
 trap 'docker rm -f "\${_reg_name}" 2>/dev/null || true; rm -rf "\${_lmc_wheels_dir:-}"' EXIT
 sleep 2
@@ -1576,6 +1576,16 @@ docker buildx build --builder default --progress=plain --load \
     "${AIC_DAY_DIR}"
 echo "[build-split] vllm loaded into daemon"
 rm -rf "\${_lmc_wheels_dir}"
+
+# Ensure the per-node registry is still alive before pushing.
+if ! curl -sf "http://localhost:\${_reg_port}/v2/" >/dev/null 2>&1; then
+    echo "[build-split] registry not responding; restarting on localhost:\${_reg_port}"
+    docker rm -f "\${_reg_name}" 2>/dev/null || true
+    docker run -d --name "\${_reg_name}" --restart=unless-stopped \
+        --network host -e "REGISTRY_HTTP_ADDR=0.0.0.0:\${_reg_port}" \
+        -v "\${_reg_data}:/var/lib/registry" registry:3.1.2
+    sleep 2
+fi
 
 # Push vllm + lmcache to the per-node local registry
 echo "[build-split] pushing images to localhost:\${_reg_port}"
@@ -1921,8 +1931,8 @@ set -euo pipefail
 command -v docker >/dev/null 2>&1 || { echo \"\$(hostname): docker not found\" >&2; exit 1; }
 _reg_name=\"aic-registry-\${SLURM_JOB_ID:-\$\$}-${_reg_port}\"
 mkdir -p \"${_reg_data}\"
-docker run -d --name \"\${_reg_name}\" --rm \\
-    --network host -e \"REGISTRY_HTTP_ADDR=:${_reg_port}\" \\
+docker run -d --name \"\${_reg_name}\" --restart=unless-stopped \\
+    --network host -e \"REGISTRY_HTTP_ADDR=0.0.0.0:${_reg_port}\" \\
     -v \"${_reg_data}:/var/lib/registry\" registry:3.1.2
 trap 'docker rm -f \"\${_reg_name}\" 2>/dev/null || true' EXIT
 sleep 2
@@ -2245,8 +2255,8 @@ SMOKE
 _reg_port=\"${AIC_REGISTRY_PORT:-5000}\"
 _reg_name=\"aic-registry-\${SLURM_JOB_ID:-\$\$}-\${_reg_port}\"
 mkdir -p \"${AIC_IMAGE_DIR}/registry\"
-docker run -d --name \"\${_reg_name}\" --rm \\
-    --network host -e \"REGISTRY_HTTP_ADDR=:\${_reg_port}\" \\
+docker run -d --name \"\${_reg_name}\" --restart=unless-stopped \\
+    --network host -e \"REGISTRY_HTTP_ADDR=0.0.0.0:\${_reg_port}\" \\
     -v \"${AIC_IMAGE_DIR}/registry:/var/lib/registry\" registry:3.1.2
 trap 'docker rm -f \"\${_reg_name}\" 2>/dev/null || true' EXIT
 sleep 2
@@ -2464,8 +2474,8 @@ cmd_tiny_test() {
 _reg_port=\"${AIC_REGISTRY_PORT:-5000}\"
 _reg_name=\"aic-registry-\${SLURM_JOB_ID:-\$\$}-\${_reg_port}\"
 mkdir -p \"${AIC_IMAGE_DIR}/registry\"
-docker run -d --name \"\${_reg_name}\" --rm \\
-    --network host -e \"REGISTRY_HTTP_ADDR=:\${_reg_port}\" \\
+docker run -d --name \"\${_reg_name}\" --restart=unless-stopped \\
+    --network host -e \"REGISTRY_HTTP_ADDR=0.0.0.0:\${_reg_port}\" \\
     -v \"${AIC_IMAGE_DIR}/registry:/var/lib/registry\" registry:3.1.2
 trap 'docker rm -f \"\${_reg_name}\" 2>/dev/null || true' EXIT
 sleep 2
@@ -4272,8 +4282,8 @@ _reg_name="aic-registry-\${SLURM_JOB_ID:-\$\$}-\${_reg_port}"
 _reg_data="${AIC_IMAGE_DIR}/registry"
 _lmc_wheels_dir="\${TMPDIR}/lmcache-wheels.\${SLURM_JOB_ID:-\$\$}"
 mkdir -p "\${_reg_data}" "\${_lmc_wheels_dir}"
-docker run -d --name "\${_reg_name}" --rm \
-    --network host -e "REGISTRY_HTTP_ADDR=:\${_reg_port}" \
+docker run -d --name "\${_reg_name}" --restart=unless-stopped \
+    --network host -e "REGISTRY_HTTP_ADDR=0.0.0.0:\${_reg_port}" \
     -v "\${_reg_data}:/var/lib/registry" registry:3.1.2
 trap 'docker rm -f "\${_reg_name}" 2>/dev/null || true; rm -rf "\${_lmc_wheels_dir}"' EXIT
 sleep 2
@@ -4349,6 +4359,21 @@ rm -rf "\${_lmc_wheels_dir}"
 (( _vllm_rc == 0 ))    || { echo "[bake] ERROR: vllm build failed (rc=\${_vllm_rc})" >&2; exit 1; }
 (( _lmcache_rc == 0 )) || { echo "[bake] ERROR: lmcache build failed (rc=\${_lmcache_rc})" >&2; exit 1; }
 echo "[bake] both images loaded into daemon"
+
+# Ensure the per-node registry is still alive before pushing.
+# Long builds (FlashAttention, PyTorch) can outlast the registry container.
+if ! curl -sf "http://localhost:\${_reg_port}/v2/" >/dev/null 2>&1; then
+    echo "[bake] registry not responding; restarting on localhost:\${_reg_port}"
+    docker rm -f "\${_reg_name}" 2>/dev/null || true
+    docker run -d --name "\${_reg_name}" --restart=unless-stopped \
+        --network host -e "REGISTRY_HTTP_ADDR=0.0.0.0:\${_reg_port}" \
+        -v "\${_reg_data}:/var/lib/registry" registry:3.1.2
+    for _i in 1 2 3 4 5 6 7 8 9 10; do
+        sleep 1
+        curl -sf "http://localhost:\${_reg_port}/v2/" >/dev/null 2>&1 && break
+        echo "[bake] waiting for registry (\${_i}/10)..."
+    done
+fi
 
 # Push vllm + lmcache to per-node registry.
 echo "[bake] pushing to localhost:\${_reg_port}"
