@@ -1592,7 +1592,7 @@ if ! curl -sf "http://localhost:\${_reg_port}/v2/" >/dev/null 2>&1; then
         -v "\${_reg_data}:/var/lib/registry" \
         -v "\${_reg_cfg}:/etc/distribution/config.yml:ro" \
         registry:3.1.2
-    for _i in $(seq 1 60); do
+    for _i in \$(seq 1 60); do
         sleep 3
         curl -sf "http://localhost:\${_reg_port}/v2/" >/dev/null 2>&1 && break
         echo "[build-split] waiting for registry (\${_i}/60)..."
@@ -4446,7 +4446,7 @@ if ! curl -sf "http://localhost:\${_reg_port}/v2/" >/dev/null 2>&1; then
         -v "\${_reg_data}:/var/lib/registry" \
         -v "\${_reg_cfg}:/etc/distribution/config.yml:ro" \
         registry:3.1.2
-    for _i in $(seq 1 60); do
+    for _i in \$(seq 1 60); do
         sleep 3
         curl -sf "http://localhost:\${_reg_port}/v2/" >/dev/null 2>&1 && break
         echo "[bake] waiting for registry (\${_i}/60)..."
