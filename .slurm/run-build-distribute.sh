@@ -1503,14 +1503,20 @@ ${_split_preamble}
 # Start a per-node local registry backed by shared NFS.  registry:3.1.2 supports
 # concurrent readers against the same NFS data dir; do NOT run concurrent push jobs
 # against the same AIC_IMAGE_DIR -- use separate dirs for parallel builds.
+docker ps -aq --filter 'name=aic-registry-' | xargs -r docker rm -f 2>/dev/null || true
 _reg_port="${AIC_REGISTRY_PORT:-5000}"
 _reg_name="aic-registry-\${SLURM_JOB_ID:-\$\$}-\${_reg_port}"
 _reg_data="${AIC_IMAGE_DIR}/registry"
+_reg_cfg="\${TMPDIR}/aic-registry-cfg-\${SLURM_JOB_ID:-\$\$}.yml"
+printf 'version: 0.1\nhttp:\n  addr: 0.0.0.0:%s\nstorage:\n  filesystem:\n    rootdirectory: /var/lib/registry\n' \
+    "\${_reg_port}" > "\${_reg_cfg}"
 mkdir -p "\${_reg_data}"
 docker run -d --name "\${_reg_name}" --restart=unless-stopped \
-    --network host -e "REGISTRY_HTTP_ADDR=0.0.0.0:\${_reg_port}" -e "REGISTRY_DEBUG_ADDR=disabled" \
-    -v "\${_reg_data}:/var/lib/registry" registry:3.1.2
-trap 'docker rm -f "\${_reg_name}" 2>/dev/null || true; rm -rf "\${_lmc_wheels_dir:-}"' EXIT
+    --network host \
+    -v "\${_reg_data}:/var/lib/registry" \
+    -v "\${_reg_cfg}:/etc/distribution/config.yml:ro" \
+    registry:3.1.2
+trap 'docker rm -f "\${_reg_name}" 2>/dev/null || true; rm -rf "\${_lmc_wheels_dir:-}" "\${_reg_cfg:-}"' EXIT
 sleep 2
 echo "[build-split] registry started on localhost:\${_reg_port}, storage: \${_reg_data}"
 
@@ -1582,9 +1588,20 @@ if ! curl -sf "http://localhost:\${_reg_port}/v2/" >/dev/null 2>&1; then
     echo "[build-split] registry not responding; restarting on localhost:\${_reg_port}"
     docker rm -f "\${_reg_name}" 2>/dev/null || true
     docker run -d --name "\${_reg_name}" --restart=unless-stopped \
-        --network host -e "REGISTRY_HTTP_ADDR=0.0.0.0:\${_reg_port}" -e "REGISTRY_DEBUG_ADDR=disabled" \
-        -v "\${_reg_data}:/var/lib/registry" registry:3.1.2
-    sleep 2
+        --network host \
+        -v "\${_reg_data}:/var/lib/registry" \
+        -v "\${_reg_cfg}:/etc/distribution/config.yml:ro" \
+        registry:3.1.2
+    for _i in $(seq 1 60); do
+        sleep 3
+        curl -sf "http://localhost:\${_reg_port}/v2/" >/dev/null 2>&1 && break
+        echo "[build-split] waiting for registry (\${_i}/60)..."
+    done
+    if ! curl -sf "http://localhost:\${_reg_port}/v2/" >/dev/null 2>&1; then
+        docker logs "\${_reg_name}" 2>&1 | tail -20 >&2 || true
+        echo "[build-split] FATAL: registry did not start after 180s" >&2
+        exit 1
+    fi
 fi
 
 # Push vllm + lmcache to the per-node local registry
@@ -1929,13 +1946,17 @@ cmd_load() {
             bash -c "$(_aic_err_trap_src aic-pull)
 set -euo pipefail
 command -v docker >/dev/null 2>&1 || { echo \"\$(hostname): docker not found\" >&2; exit 1; }
+docker ps -aq --filter 'name=aic-registry-' | xargs -r docker rm -f 2>/dev/null || true
 _reg_name=\"aic-registry-\${SLURM_JOB_ID:-\$\$}-${_reg_port}\"
+_reg_cfg=\"\${TMPDIR}/aic-registry-cfg-\${SLURM_JOB_ID:-\$\$}.yml\"
+printf 'version: 0.1\nhttp:\n  addr: 0.0.0.0:${_reg_port}\nstorage:\n  filesystem:\n    rootdirectory: /var/lib/registry\n' > \"\${_reg_cfg}\"
 mkdir -p \"${_reg_data}\"
 docker run -d --name \"\${_reg_name}\" --restart=unless-stopped \\
-    --network host -e \"REGISTRY_HTTP_ADDR=0.0.0.0:${_reg_port}\" \\
-    -e \"REGISTRY_DEBUG_ADDR=disabled\" \\
-    -v \"${_reg_data}:/var/lib/registry\" registry:3.1.2
-trap 'docker rm -f \"\${_reg_name}\" 2>/dev/null || true' EXIT
+    --network host \\
+    -v \"${_reg_data}:/var/lib/registry\" \\
+    -v \"\${_reg_cfg}:/etc/distribution/config.yml:ro\" \\
+    registry:3.1.2
+trap 'docker rm -f \"\${_reg_name}\" 2>/dev/null || true; rm -f \"\${_reg_cfg:-}\"' EXIT
 sleep 2
 echo \"\$(hostname): registry started on localhost:${_reg_port}\"
 docker pull ${_dist_vllm_ref}
@@ -2253,14 +2274,18 @@ SMOKE
         local _dv; _dv="$(_dist_ref "${AIC_VLLM_IMAGE}")"
         local _dl; _dl="$(_dist_ref "${AIC_LMCACHE_IMAGE}")"
         _test_load_block="# Start a per-node local registry backed by shared NFS, then pull.
+docker ps -aq --filter 'name=aic-registry-' | xargs -r docker rm -f 2>/dev/null || true
 _reg_port=\"${AIC_REGISTRY_PORT:-5000}\"
 _reg_name=\"aic-registry-\${SLURM_JOB_ID:-\$\$}-\${_reg_port}\"
+_reg_cfg=\"\${TMPDIR}/aic-registry-cfg-\${SLURM_JOB_ID:-\$\$}.yml\"
+printf 'version: 0.1\nhttp:\n  addr: 0.0.0.0:%s\nstorage:\n  filesystem:\n    rootdirectory: /var/lib/registry\n' \"\${_reg_port}\" > \"\${_reg_cfg}\"
 mkdir -p \"${AIC_IMAGE_DIR}/registry\"
 docker run -d --name \"\${_reg_name}\" --restart=unless-stopped \\
-    --network host -e \"REGISTRY_HTTP_ADDR=0.0.0.0:\${_reg_port}\" \\
-    -e \"REGISTRY_DEBUG_ADDR=disabled\" \\
-    -v \"${AIC_IMAGE_DIR}/registry:/var/lib/registry\" registry:3.1.2
-trap 'docker rm -f \"\${_reg_name}\" 2>/dev/null || true' EXIT
+    --network host \\
+    -v \"${AIC_IMAGE_DIR}/registry:/var/lib/registry\" \\
+    -v \"\${_reg_cfg}:/etc/distribution/config.yml:ro\" \\
+    registry:3.1.2
+trap 'docker rm -f \"\${_reg_name}\" 2>/dev/null || true; rm -f \"\${_reg_cfg:-}\"' EXIT
 sleep 2
 echo \"[test] registry started on localhost:\${_reg_port}\"
 _pull_image() {
@@ -2473,14 +2498,18 @@ cmd_tiny_test() {
         local _dv; _dv="$(_dist_ref "${AIC_VLLM_IMAGE}")"
         local _dl; _dl="$(_dist_ref "${AIC_LMCACHE_IMAGE}")"
         _tiny_load_block="# Start a per-node local registry backed by shared NFS, then pull.
+docker ps -aq --filter 'name=aic-registry-' | xargs -r docker rm -f 2>/dev/null || true
 _reg_port=\"${AIC_REGISTRY_PORT:-5000}\"
 _reg_name=\"aic-registry-\${SLURM_JOB_ID:-\$\$}-\${_reg_port}\"
+_reg_cfg=\"\${TMPDIR}/aic-registry-cfg-\${SLURM_JOB_ID:-\$\$}.yml\"
+printf 'version: 0.1\nhttp:\n  addr: 0.0.0.0:%s\nstorage:\n  filesystem:\n    rootdirectory: /var/lib/registry\n' \"\${_reg_port}\" > \"\${_reg_cfg}\"
 mkdir -p \"${AIC_IMAGE_DIR}/registry\"
 docker run -d --name \"\${_reg_name}\" --restart=unless-stopped \\
-    --network host -e \"REGISTRY_HTTP_ADDR=0.0.0.0:\${_reg_port}\" \\
-    -e \"REGISTRY_DEBUG_ADDR=disabled\" \\
-    -v \"${AIC_IMAGE_DIR}/registry:/var/lib/registry\" registry:3.1.2
-trap 'docker rm -f \"\${_reg_name}\" 2>/dev/null || true' EXIT
+    --network host \\
+    -v \"${AIC_IMAGE_DIR}/registry:/var/lib/registry\" \\
+    -v \"\${_reg_cfg}:/etc/distribution/config.yml:ro\" \\
+    registry:3.1.2
+trap 'docker rm -f \"\${_reg_name}\" 2>/dev/null || true; rm -f \"\${_reg_cfg:-}\"' EXIT
 sleep 2
 echo \"[tiny-test] registry started on localhost:\${_reg_port}\"
 _pull_tiny_image() {
@@ -4282,15 +4311,23 @@ export TMPDIR="\${_aic_tmp:-}"
 cd "${AIC_DAY_DIR}"
 
 # Start per-node local registry backed by shared NFS.
+# Kill any stale aic-registry containers left by previous failed jobs on this node.
+docker ps -aq --filter 'name=aic-registry-' | xargs -r docker rm -f 2>/dev/null || true
 _reg_port="${AIC_REGISTRY_PORT:-5000}"
 _reg_name="aic-registry-\${SLURM_JOB_ID:-\$\$}-\${_reg_port}"
 _reg_data="${AIC_IMAGE_DIR}/registry"
 _lmc_wheels_dir="\${TMPDIR}/lmcache-wheels.\${SLURM_JOB_ID:-\$\$}"
+# Write a minimal registry config (no debug section → no debug server on :5001).
+_reg_cfg="\${TMPDIR}/aic-registry-cfg-\${SLURM_JOB_ID:-\$\$}.yml"
+printf 'version: 0.1\nhttp:\n  addr: 0.0.0.0:%s\nstorage:\n  filesystem:\n    rootdirectory: /var/lib/registry\n' \
+    "\${_reg_port}" > "\${_reg_cfg}"
 mkdir -p "\${_reg_data}" "\${_lmc_wheels_dir}"
 docker run -d --name "\${_reg_name}" --restart=unless-stopped \
-    --network host -e "REGISTRY_HTTP_ADDR=0.0.0.0:\${_reg_port}" -e "REGISTRY_DEBUG_ADDR=disabled" \
-    -v "\${_reg_data}:/var/lib/registry" registry:3.1.2
-trap 'docker rm -f "\${_reg_name}" 2>/dev/null || true; rm -rf "\${_lmc_wheels_dir}"' EXIT
+    --network host \
+    -v "\${_reg_data}:/var/lib/registry" \
+    -v "\${_reg_cfg}:/etc/distribution/config.yml:ro" \
+    registry:3.1.2
+trap 'docker rm -f "\${_reg_name}" 2>/dev/null || true; rm -rf "\${_lmc_wheels_dir}" "\${_reg_cfg:-}"' EXIT
 sleep 2
 echo "[bake] registry started on localhost:\${_reg_port}, storage: \${_reg_data}"
 
@@ -4405,13 +4442,20 @@ if ! curl -sf "http://localhost:\${_reg_port}/v2/" >/dev/null 2>&1; then
     echo "[bake] registry not responding; restarting on localhost:\${_reg_port}"
     docker rm -f "\${_reg_name}" 2>/dev/null || true
     docker run -d --name "\${_reg_name}" --restart=unless-stopped \
-        --network host -e "REGISTRY_HTTP_ADDR=0.0.0.0:\${_reg_port}" -e "REGISTRY_DEBUG_ADDR=disabled" \
-        -v "\${_reg_data}:/var/lib/registry" registry:3.1.2
-    for _i in 1 2 3 4 5 6 7 8 9 10; do
-        sleep 1
+        --network host \
+        -v "\${_reg_data}:/var/lib/registry" \
+        -v "\${_reg_cfg}:/etc/distribution/config.yml:ro" \
+        registry:3.1.2
+    for _i in $(seq 1 60); do
+        sleep 3
         curl -sf "http://localhost:\${_reg_port}/v2/" >/dev/null 2>&1 && break
-        echo "[bake] waiting for registry (\${_i}/10)..."
+        echo "[bake] waiting for registry (\${_i}/60)..."
     done
+    if ! curl -sf "http://localhost:\${_reg_port}/v2/" >/dev/null 2>&1; then
+        docker logs "\${_reg_name}" 2>&1 | tail -20 >&2 || true
+        echo "[bake] FATAL: registry did not start after 180s" >&2
+        exit 1
+    fi
 fi
 
 # Push newly-built images to registry (skip if loaded from registry — already there).
