@@ -208,7 +208,7 @@ ARG TORCHVISION_GIT_URL=https://github.com/pytorch/vision.git
 # Immutable tag.  Shallow clone, so this must be a branch or tag, not a SHA.
 ARG TORCHVISION_REF=v0.28.0
 
-RUN git clone --depth 1 --revision "${TORCHVISION_REF}" "${TORCHVISION_GIT_URL}" /app/vision
+RUN git clone --depth 1 --branch "${TORCHVISION_REF}" "${TORCHVISION_GIT_URL}" /app/vision
 
 # hadolint ignore=SC2086,DL3008
 RUN --mount=type=cache,target=/root/.cache/pip \
@@ -310,10 +310,8 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
 
 COPY patches/hip-ipc-event-ring-fix.patch /tmp/hip-ipc-event-ring-fix.patch
 
-# Note: when using --revision, tags are not available
-# git checkout command must reference HEAD instead, which is pointing to the commit in clone's --revision flag.
 RUN pip3 install --break-system-packages CppHeaderParser && \
-    git clone --filter=blob:none --no-checkout --depth 1 --revision "${CLR_REF}" "${CLR_GIT_URL}" /app/rocm-systems && \
+    git clone --filter=blob:none --no-checkout --depth 1 --branch "${CLR_REF}" "${CLR_GIT_URL}" /app/rocm-systems && \
     git -C /app/rocm-systems sparse-checkout init --cone && \
     git -C /app/rocm-systems sparse-checkout set projects/clr projects/hip && \
     git -C /app/rocm-systems checkout HEAD && \
