@@ -55,13 +55,15 @@
 #                            instead of overriding all three.
 #   AIC_SHM_SIZE           — private /dev/shm capacity (default: 64gb)
 #   AIC_PUBLISH_ADDR       — host address published ports bind (default: 127.0.0.1)
-#   VLLM_HOST_PORT, LMCACHE_HTTP_HOST_PORT, KVBENCH_HOST_PORT, AIC_PROM_PORT,
+#   VLLM_HOST_PORT, LMCACHE_HTTP_HOST_PORT, KVBENCH_HOST_PORT,
 #   AIC_GRAFANA_PORT       — pin a published port on the host.  Unset (default) lets
 #                            Docker pick a free one, so nothing here can collide with
 #                            another tenant on the node; `make endpoints` prints the
 #                            URLs, and scripts use scripts/aic-endpoints.sh (aic_url).
 #                            The *container* ports are fixed (vLLM 8000, lmcache HTTP
-#                            8080, Prometheus 9090, Grafana 3000).
+#                            8080, Grafana 3000).  Prometheus is not published: query
+#                            it at http://aic-prometheus:9090 from the aic bridge
+#                            (aic_fetch), or through Grafana.
 #   HF_HOME                — host HF cache dir (default: ~/.cache/huggingface)
 #   LOG                    — host log dir (default: ../logs, i.e. /logs)
 #   IMAGE_REF              — full image ref name:tag (default: rocm-aic:latest;
@@ -699,14 +701,13 @@ services:
   # TSDB written to AIC_METRICS_DIR (default: ../logs/prometheus).
   # PROM_UID/PROM_GID must be set so prometheus can write the TSDB dir;
   # `make up-monitoring` sets them automatically to the current user.
+  # No host port: Grafana and every script query it by name on the bridge.
   # ---------------------------------------------------------------------------
   prometheus:
     profiles: [monitoring, monitoring-base]
     image: ${AIC_PROM_IMAGE:-prom/prometheus:v3.14.0}
     container_name: aic-prometheus
     networks: [aic-network]
-    ports:
-      - "${AIC_PUBLISH_ADDR:-127.0.0.1}:${AIC_PROM_PORT:-}:9090"
     extra_hosts:
       - "host-gateway:host-gateway"
     user: "${PROM_UID:-65534}:${PROM_GID:-65534}"

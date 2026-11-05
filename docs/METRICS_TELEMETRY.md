@@ -9,14 +9,21 @@ live dashboarding via Grafana.
 
 The ports below are **container** ports, reachable by name on the `aic` bridge
 (for example `http://aic-lmcache:8080`). Nothing binds a fixed host port. Only
-vLLM, the LMCache HTTP API, Prometheus, Grafana and KVBench are published to the
-host, on `127.0.0.1` with a free port Docker picks at `up`; `make endpoints`
-prints the URLs, and scripts resolve them with `aic_url` from
-`scripts/aic-endpoints.sh`. Pin a port with `VLLM_HOST_PORT`,
-`LMCACHE_HTTP_HOST_PORT`, `AIC_PROM_PORT`, `AIC_GRAFANA_PORT` or
-`KVBENCH_HOST_PORT`, and bind beyond loopback with `AIC_PUBLISH_ADDR=0.0.0.0`.
+vLLM, the LMCache HTTP API, Grafana and KVBench are published to the host, on
+`127.0.0.1` with a free port Docker picks at `up`; `make endpoints` prints the
+URLs, and scripts resolve them with `aic_url` from `scripts/aic-endpoints.sh`.
+Pin a port with `VLLM_HOST_PORT`, `LMCACHE_HTTP_HOST_PORT`, `AIC_GRAFANA_PORT`
+or `KVBENCH_HOST_PORT`, and bind beyond loopback with `AIC_PUBLISH_ADDR=0.0.0.0`.
 The ephemeral port changes when its container is recreated, so look it up again
 after a restart.
+
+Prometheus is not published. Query it through Grafana (Explore), or from the
+bridge with `aic_fetch`, which sends the request from a throwaway container on
+`aic`:
+
+```bash
+scripts/aic-endpoints.sh fetch 'http://aic-prometheus:9090/api/v1/query?query=up'
+```
 
 ### Single-GPU stack (1 lmcache + 1 vLLM)
 
@@ -28,7 +35,7 @@ after a restart.
 | LMCache ZMQ connector | **6555** | TCP | `LMCacheMPConnector` vLLM↔lmcache channel; loopback of the shared namespace, never published |
 | LMCache coordinator REST API | **9300** | HTTP | `/instances`, `/directory/stats`, `/quota`; bridge only |
 | LMCache coordinator `/metrics` | **9301** | HTTP | Prometheus exporter sidecar in coordinator container |
-| Prometheus | **9090** | HTTP | TSDB written to `AIC_METRICS_DIR` |
+| Prometheus | **9090** | HTTP | TSDB written to `AIC_METRICS_DIR`; bridge only |
 | Grafana | **3000** | HTTP | `AIC_GRAFANA_PORT` pins the host port |
 | node-exporter | **9100** | HTTP | CPU/mem/disk/NVMe/InfiniBand |
 | nvme-exporter | **9998** | HTTP | NVMe SMART + health |
@@ -72,7 +79,6 @@ make endpoints   # → prints the Grafana URL to open
 | Variable | Default | Description |
 | --- | --- | --- |
 | `AIC_GRAFANA_PORT` | unset (ephemeral) | Host port Grafana is published on, `127.0.0.1` only |
-| `AIC_PROM_PORT` | unset (ephemeral) | Host port Prometheus is published on; it always listens on 9090 inside the container |
 | `AIC_GRAFANA_IMAGE` | `grafana/grafana:13.1.3` | Grafana image |
 | `AIC_PROM_IMAGE` | `prom/prometheus:v3.13.2` | Prometheus image |
 

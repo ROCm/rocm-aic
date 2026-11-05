@@ -199,7 +199,7 @@ stress-emulate-local: ensure-compose prep-dirs
 	    grep -E "^vllm:(num_requests|e2e_request_latency|request_prompt_tokens|request_generation_tokens|gpu_cache_usage|request_success|request_failure)" | \
 	    grep -v "^#" | sort | head -30
 	@echo ""
-	@echo "Stack left running ('make endpoints' prints the Prometheus URL). Use 'make down' to stop."
+	@echo "Stack left running (Prometheus at http://aic-prometheus:9090 on the aic bridge). Use 'make down' to stop."
 
 # ---- Profile capture (local, requires /dev/kfd) --------------------------------
 
