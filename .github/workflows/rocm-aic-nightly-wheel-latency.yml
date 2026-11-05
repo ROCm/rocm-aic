@@ -40,14 +40,50 @@ concurrency:
 
 jobs:
   # ---------------------------------------------------------------------------
+  # Did the triggering run publish?  It can succeed without touching the
+  # release -- a /run-wheels PR test, a publish=false dispatch, a schedule with
+  # nothing new on main -- and workflow_run does not say which jobs ran.
+  # ---------------------------------------------------------------------------
+  check-published:
+    name: Check the wheel run published
+    if: >
+      github.event_name == 'workflow_run' &&
+      github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-24.04
+    permissions:
+      actions: read
+    outputs:
+      published: ${{ steps.check.outputs.published }}
+    steps:
+      - name: Read the publish job's conclusion
+        id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ github.event.workflow_run.id }}
+        run: |
+          set -euo pipefail
+          # The publication workflow's `publish` job, matched by its name.
+          conclusion="$(gh api --paginate \
+                          "repos/${GITHUB_REPOSITORY}/actions/runs/${RUN_ID}/jobs" \
+                          -q '.jobs[] | select(.name == "Publish nightly releases") | .conclusion')"
+          echo "publish job conclusion: ${conclusion:-<not in run>}"
+          published=false
+          [[ "${conclusion}" != success ]] || published=true
+          echo "published=${published}" >> "${GITHUB_OUTPUT}"
+
+  # ---------------------------------------------------------------------------
   # Run the 4-phase latency benchmark on a SPUR MI355X node.
   # ---------------------------------------------------------------------------
   run-latency-bench:
     name: Run wheel latency benchmark on SPUR
-    # Only run after a successful nightly publish, or on manual dispatch.
+    needs: check-published
+    # Only after a run that published, or on manual dispatch (which skips
+    # check-published, hence !cancelled()).
     if: >
-      github.event_name == 'workflow_dispatch' ||
-      github.event.workflow_run.conclusion == 'success'
+      !cancelled() && (
+        github.event_name == 'workflow_dispatch' ||
+        needs.check-published.outputs.published == 'true'
+      )
     runs-on: [self-hosted, rocm-aic-cicd]
     timeout-minutes: 120
     env:

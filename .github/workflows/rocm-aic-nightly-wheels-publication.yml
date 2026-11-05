@@ -354,6 +354,7 @@ jobs:
   # `/run-wheels` PR test stops at the uploaded artifact.
   # ---------------------------------------------------------------------------
   publish:
+    # rocm-aic-nightly-wheel-latency.yml finds this job by name: rename both.
     name: Publish nightly releases
     needs: [authorize, build-wheels-cdna, build-wheels-rdna]
     # always() so a skipped or failed optional group does not skip this; CDNA
