@@ -4329,7 +4329,7 @@ docker buildx build --builder ${AIC_BUILDX_BUILDER} --progress=plain \
     --build-arg ROCM_ARCH="${AIC_ROCM_ARCH}" \
     --build-arg BUILD_JOBS="${AIC_BUILD_JOBS}" \
     --build-arg AIC_VERSION="${AIC_VERSION}" \
-    \${_basew_cache_args} \
+    \${_basew_cache_args:+\${_basew_cache_args}} \
     ${_version_build_args} \
     ${_secret_arg:+${_secret_arg}} \
     --target wheels \
@@ -4348,7 +4348,7 @@ BUILDKIT_STEP_LOG_MAX_SIZE=-1 \
 docker buildx build --builder ${AIC_BUILDX_BUILDER} --progress=plain \
     --output "type=local,dest=\${_lmc_wheels_dir}" \
     --build-context "base=oci-layout://\${_base_oci_dir}" \
-    --build-context "base-wheels=oci-layout://\${_base_wheels_dir}" \
+    --build-context "base-wheels=\${_base_wheels_dir}" \
     --build-arg ROCM_ARCH="${AIC_ROCM_ARCH}" \
     --build-arg BUILD_JOBS="${AIC_BUILD_JOBS}" \
     --build-arg AIC_VERSION="${AIC_VERSION}" \
