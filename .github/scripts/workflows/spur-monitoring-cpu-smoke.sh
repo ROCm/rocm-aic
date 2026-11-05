@@ -226,7 +226,9 @@ for i in $(seq 1 24); do
     fi
     sleep 8
 done
-VLLM_URL="$(aic_url aic-vllm-emulator 8000)" || exit 1
+# Requests go from the aic bridge, out of the image already loaded above.
+VLLM_URL=http://aic-vllm-emulator:8000
+export AIC_FETCH_IMAGE="${AIC_IMAGE}"
 
 # ---------------------------------------------------------------------------
 # 5. Issue 3 LLM prompts; assert non-empty completions
@@ -238,9 +240,8 @@ PROMPTS=(
     "ROCm stands for"
 )
 for prompt in "${PROMPTS[@]}"; do
-    response=$(curl -sf "${VLLM_URL}/v1/completions" \
-        -H 'Content-Type: application/json' \
-        -d "{\"model\":\"${VLLM_CPU_MODEL:-facebook/opt-125m}\",\"prompt\":\"${prompt}\",\"max_tokens\":20}" \
+    response=$(aic_fetch "${VLLM_URL}/v1/completions" \
+        "{\"model\":\"${VLLM_CPU_MODEL:-facebook/opt-125m}\",\"prompt\":\"${prompt}\",\"max_tokens\":20}" \
     )
     text=$(echo "${response}" | python3 -c "import sys,json; print(json.load(sys.stdin)['choices'][0]['text'])" 2>/dev/null || true)
     if [[ -z "${text}" ]]; then

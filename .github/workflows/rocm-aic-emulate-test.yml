@@ -120,6 +120,8 @@ jobs:
           AIC_CONTAINER_USER: "0:0"
           AIC_CONTAINER_USERNAME: root
           AIC_CONTAINER_HOME: /root
+          # aic_fetch sends the completion from the aic bridge, out of this image.
+          AIC_FETCH_IMAGE: ${{ env.IMAGE_REF }}
         run: |
           set -euo pipefail
           mkdir -p "${HF_HOME}" "${LOG}/vllm-emulator"
@@ -160,7 +162,7 @@ jobs:
             exit 1
           fi
 
-          url="$(aic_url aic-vllm-emulator 8000)" || exit 1
+          url=http://aic-vllm-emulator:8000
           echo "[emulate-test] endpoint ready; sending one chat completion ..."
           if docker exec aic-vllm-emulator test -e /dev/kfd 2>/dev/null; then
             kfd_in_container=yes
@@ -169,9 +171,8 @@ jobs:
           fi
           echo "[emulate-test] /dev/kfd inside container: ${kfd_in_container}"
 
-          resp="$(curl -fsS "${url}/v1/chat/completions" \
-            -H 'Content-Type: application/json' \
-            -d "{\"model\":\"${VLLM_MODEL}\",\"messages\":[{\"role\":\"user\",\"content\":\"Reply with the single word: pong\"}],\"max_tokens\":16,\"temperature\":0}" 2>&1)" || {
+          resp="$(aic_fetch "${url}/v1/chat/completions" \
+            "{\"model\":\"${VLLM_MODEL}\",\"messages\":[{\"role\":\"user\",\"content\":\"Reply with the single word: pong\"}],\"max_tokens\":16,\"temperature\":0}" 2>&1)" || {
             echo "[emulate-test] FAIL: completion request failed: ${resp}" >&2; exit 1; }
           echo "[emulate-test] response: ${resp}"
 
