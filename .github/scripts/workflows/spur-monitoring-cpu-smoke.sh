@@ -264,8 +264,8 @@ monitoring_healthcheck
 # 7. Scrape all metric endpoints; generate HTML reference page
 # ---------------------------------------------------------------------------
 echo "=== Scraping metrics endpoints ==="
-# Only vllm and prometheus publish a host port, so every target is scraped from
-# a client container on the aic bridge by name.  The AIC images carry python3
+# Every target is scraped from a client container on the aic bridge by name; the
+# exporters and Prometheus publish no host port.  The AIC images carry python3
 # but no curl, so the client fetches with urllib.
 declare -A EXPORTER_URLS=(
     [node_exporter]=http://aic-node-exporter:9100

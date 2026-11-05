@@ -3070,6 +3070,8 @@ export IMAGE_NAME='${AIC_LMCACHE_IMAGE%:*}'
 # exports its own.
 export VLLM_IMAGE_REF='${AIC_VLLM_IMAGE}'
 export LMCACHE_IMAGE_REF='${AIC_LMCACHE_IMAGE}'
+# Requests from the aic bridge (aic_fetch) run from an image already loaded.
+export AIC_FETCH_IMAGE='${AIC_LMCACHE_IMAGE}'
 export VLLM_MODEL='${AIC_EMULATE_MODEL}'
 export VLLM_EMULATOR_PROFILE_PACK='${AIC_EMULATE_PROFILE_PACK}'
 [ -n '${AIC_EMULATE_PACK_HOST}' ] && export EMU_PROFILE_PACK_HOST='${AIC_EMULATE_PACK_HOST}'
@@ -3372,12 +3374,14 @@ if [ "${AIC_EMULATE_MP_MONITORING}" = "1" ]; then
     # Give Prometheus a few 5s scrape intervals past the last request.
     sleep 20
     _promdir="\${_logdir}/prom-check"; mkdir -p "\${_promdir}"
-    _prom="\$(aic_url aic-prometheus 9090)" || exit 1
-    if curl -fsS "\${_prom}/api/v1/targets?state=active" \
-            -o "\${_promdir}/targets.json" 2>/dev/null; then
-        python3 - "\${_promdir}/targets.json" '${AIC_EMULATE_MP_L2_BACKEND}' "\${_prom}" <<'PYEOF'
+    # Prometheus publishes no host port: query it by name from the bridge.
+    _prom=http://aic-prometheus:9090
+    if aic_fetch "\${_prom}/api/v1/targets?state=active" \
+            > "\${_promdir}/targets.json" 2>/dev/null; then
+        docker run --rm -i --network aic --entrypoint python3 "\${AIC_FETCH_IMAGE}" - \
+            "\$(cat "\${_promdir}/targets.json")" '${AIC_EMULATE_MP_L2_BACKEND}' "\${_prom}" <<'PYEOF'
 import json, sys, urllib.parse, urllib.request
-targets = json.load(open(sys.argv[1]))["data"]["activeTargets"]
+targets = json.loads(sys.argv[1])["data"]["activeTargets"]
 l2 = sys.argv[2]
 prom = sys.argv[3]
 health = {}

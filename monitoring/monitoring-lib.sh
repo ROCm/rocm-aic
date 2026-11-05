@@ -50,9 +50,14 @@ export PATH="/usr/local/bin:${PATH}"
 # and run-build-distribute.sh each define their own prefixed log()).
 declare -F log >/dev/null 2>&1 || log() { printf '[monitoring] %s\n' "$*" >&2; }
 
-# aic_url, for the host-side Prometheus queries below.
+# aic_fetch, for the Prometheus queries below.
 # shellcheck source=scripts/aic-endpoints.sh
 source "${BASH_SOURCE[0]%/*}/../scripts/aic-endpoints.sh"
+
+# Prometheus publishes no host port; query it by name from the aic bridge, out
+# of the AIC image the caller already has, so no query pulls an image.
+MON_PROM_URL=http://aic-prometheus:9090
+_mon_fetch() { AIC_FETCH_IMAGE="${AIC_IMAGE}" AIC_FETCH_TIMEOUT=5 aic_fetch "$@"; }
 
 # --- GPU visibility resolution ------------------------------------------------
 # Resolve GPU visibility for this job and export the values the compose files and
@@ -244,12 +249,12 @@ stop_monitoring() {
 }
 
 # --- Health check + TSDB summary (used by the build smoke-test) ---------------
-# curl one exporter's /metrics and report whether it serves its expected series.
+# Fetch one exporter's /metrics and report whether it serves its expected series.
 # Purely informational: prints OK/WARN and returns 0/1, never exits.
 # $1=display name  $2=base URL  $3=extended-regex the metrics should contain.
 _check_endpoint() {
     local name="$1" url="$2" re="$3" body n
-    body="$(curl -fsS --max-time 3 "${url}/metrics" 2>/dev/null)" || {
+    body="$(_mon_fetch "${url}/metrics" 2>/dev/null)" || {
         log "  WARN ${name} ${url} -- /metrics not responding"; return 1; }
     n="$(printf '%s\n' "${body}" | grep -cE "${re}" 2>/dev/null || true)"
     if [[ "${n:-0}" -gt 0 ]]; then
@@ -266,7 +271,7 @@ _check_endpoint() {
 _check_job() {
     local prom="$1" name="$2" job="$3" re="${4:-}"
     local result n_up
-    result="$(curl -fsS --max-time 3 \
+    result="$(_mon_fetch \
         "${prom}/api/v1/query?query=up%7Bjob%3D%22${job}%22%7D" 2>/dev/null)" || {
         log "  WARN ${name} -- prometheus not reachable"; return 1; }
     n_up="$(printf '%s' "${result}" | python3 -c "
@@ -278,7 +283,7 @@ print(sum(1 for r in d.get('data',{}).get('result',[]) if r.get('value',['','0']
         if [[ -n "${re}" ]]; then
             # Spot-check series count from prometheus metric store
             local n_series
-            n_series="$(curl -fsS --max-time 3 \
+            n_series="$(_mon_fetch \
                 "${prom}/api/v1/query?query=count%28${re}%7Bjob%3D%22${job}%22%7D%29" \
                 2>/dev/null \
                 | python3 -c "
@@ -296,14 +301,11 @@ print(int(r[0]['value'][1]) if r else 0)
     log "  WARN ${name} (job=${job} up=0)"; return 1
 }
 
-# Check every known exporter via prometheus scrape status.
-# Prometheus is the only service with a host port (9090); all exporters are on
-# aic-network only and are reached by prometheus via container name.
+# Check every known exporter via prometheus scrape status.  Prometheus reaches
+# the exporters by container name, and this reaches prometheus the same way.
 monitoring_healthcheck() {
     log "exporter health check (via prometheus scrape status):"
-    local prom
-    prom="$(aic_url aic-prometheus 9090)" || {
-        log "  WARN prometheus -- cannot resolve its published port"; return 0; }
+    local prom="${MON_PROM_URL}"
     # Direct check for prometheus itself
     _check_endpoint prometheus "${prom}" '^prometheus_' || true
     # All other exporters: checked via prometheus up metric
@@ -318,16 +320,12 @@ monitoring_healthcheck() {
 # actually landed in the TSDB) and print the TSDB path/size.  Uses the AIC
 # image's python3 to parse the query JSON (no jq on the host).  Informational.
 monitoring_tsdb_summary() {
-    local prom
-    prom="$(aic_url aic-prometheus 9090)" || {
-        log "  WARN Prometheus: cannot resolve its published port"; return 0; }
     log "Prometheus scrape targets (query up):"
-    if ! curl -fsS --max-time 3 "${prom}/-/ready" >/dev/null 2>&1; then
-        log "  WARN Prometheus not ready at ${prom}"; return 0
+    if ! _mon_fetch "${MON_PROM_URL}/-/ready" >/dev/null 2>&1; then
+        log "  WARN Prometheus not ready at ${MON_PROM_URL}"; return 0
     fi
-    # A client on the aic bridge, addressing prometheus by name (the host URL
-    # above is for this shell's curl only).
-    docker run --rm --network aic -e PROM_URL="http://aic-prometheus:9090" \
+    # A client on the aic bridge, addressing prometheus by name.
+    docker run --rm --network aic -e PROM_URL="${MON_PROM_URL}" \
         --entrypoint python3 "${AIC_IMAGE}" -c '
 import json, os, sys, urllib.request
 prom = os.environ["PROM_URL"]
