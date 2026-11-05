@@ -116,7 +116,7 @@
 #   AIC_ROCM_ARCH        gfx arch(es) baked in; ';'-list   (default: all vLLM archs)
 #   AIC_IMAGE            full image name:tag
 #   AIC_IMAGE_NAME       image name only
-#   AIC_IMAGE_DIR        shared dir for the tarball        (default: /scratch/$USER/images)
+#   AIC_IMAGE_DIR        shared dir for the artifacts      (default: /scratch/$USER/images)
 #   AIC_TMP_DIR          build-job TMPDIR + OCI scratch    (default: auto --
 #                        node-local /tmp/aic-scratch.<job>, falling back to
 #                        $HOME/.tmp-rocm-aic-cicd; never shared_nfs)
@@ -403,7 +403,7 @@ _aic_load_env_file "${AIC_ENV_FILE}"
 AIC_ROCM_ARCH="${AIC_ROCM_ARCH:-gfx90a;gfx942;gfx950;gfx1100;gfx1101;gfx1150;gfx1151;gfx1200;gfx1201}"
 AIC_UCX_FAST="${AIC_UCX_FAST:-}"
 # Default the image ref to the version-derived tag (see docker/scripts/aic-image-tag.sh)
-# so the saved tarball, load, push, and the cliff's tarball glob all agree on the
+# so the saved artifact, load, push, and the cliff's artifact lookup all agree on the
 # same name without hardcoding a version here.  Falls back to :latest if the helper
 # can't resolve the pins.
 #
@@ -696,7 +696,7 @@ AIC_TINY_READY_TIMEOUT="${AIC_TINY_READY_TIMEOUT:-240}"   # x5s = 20 min; must s
 # --- Fabric exporter images (nvme_exporter / rdma_exporter / hsa-snoop) -------
 # Built from docker/*/Dockerfile and distributed alongside the main image so
 # bare cliff nodes can containerize them (no host-installed exporter service needed).  Names
-# must match run-cliff.sbatch's defaults so the tarballs written here are found there.
+# must match run-cliff.sbatch's defaults so the artifacts written here are found there.
 # Versions default to the Grafana-parity versions; override via AIC_NVME/RDMA_EXPORTER_VERSION.
 AIC_NVME_EXPORTER_IMAGE="${AIC_NVME_EXPORTER_IMAGE:-aic-nvme-exporter:latest}"
 AIC_RDMA_EXPORTER_IMAGE="${AIC_RDMA_EXPORTER_IMAGE:-aic-rdma-exporter:latest}"
@@ -806,41 +806,46 @@ _arch_tag() {
     printf '%s' "${AIC_ROCM_ARCH}" | tr ';,: ' '----' | tr -s '-' | sed 's/^-//;s/-$//'
 }
 
-# --- Tarball path (name:tag + arch, sanitized for a filename) ----------------
+# --- Artifact path (name:tag + arch, sanitized for a filename) ---------------
 # With AIC_DIST_BACKEND=registry the same path names the image's .ref instead.
-_tarball_path() {
+_artifact_path() {
     local base
     base="$(printf '%s' "${AIC_IMAGE}" | tr '/:' '--')"
     printf '%s/%s-%s.%s' "${AIC_IMAGE_DIR}" "${base}" "$(_arch_tag)" "${ARTIFACT_EXT}"
 }
 
-# --- Tarball path for an image other than AIC_IMAGE ($1=image name:tag) ------
-_tarball_path_for() {
+# --- Artifact path for an image other than AIC_IMAGE ($1=image name:tag) -----
+_artifact_path_for() {
     local AIC_IMAGE="$1"
-    _tarball_path
+    _artifact_path
 }
 
-# --- Exporter tarball path ($1=image name:tag) -------------------------------
+# --- Fail unless a build left its artifact ($1=what, $2=path, $3=remedy) ------
+_require_artifact() {
+    [[ -r "$2" ]] || die "$1 build artifact not found: $2 ($3)"
+}
+
+# --- Exporter artifact path ($1=image name:tag) ------------------------------
 # The exporters bake a host-CPU-arch binary (not a gfx arch), so unlike the main
-# image their tarball name carries no arch tag -- just the sanitized name:tag.
-_exporter_tarball_path() {
+# image their artifact name carries no arch tag -- just the sanitized name:tag.
+_exporter_artifact_path() {
     local base
     base="$(printf '%s' "$1" | tr '/:' '--')"
     printf '%s/%s.%s' "${AIC_IMAGE_DIR}" "${base}" "${ARTIFACT_EXT}"
 }
 
-# --- Identity stamp for a tarball, empty when it does not exist --------------
-_tarball_stamp() {
+# --- Identity stamp for an artifact, empty when it does not exist ------------
+_artifact_stamp() {
     stat -c '%i:%Y:%s' "$1" 2>/dev/null || true
 }
 
-# --- Verify a tarball THIS build produced ------------------------------------
+# --- Verify an artifact THIS build produced ----------------------------------
 # ($1=path $2=what $3=stamp from before submit $4=min bytes)
 # The build runs on a remote node and writes over NFS, so a job that reports
 # success can still leave nothing behind -- and a job whose state was misread
 # (see _sbatch_run) reports success without having finished at all.
 #
-# A re-run of a workflow could see a tarball made from an old run, so we use
+# A re-run of a workflow could see an artifact made from an old run, so we use
 # the `stat` data to verify existence.
 #
 # Cache-hit builds (BuildKit fully cached, image unchanged) legitimately do not
@@ -849,7 +854,7 @@ _tarball_stamp() {
 # the existing artifact is still valid.  Set AIC_REQUIRE_FRESH_TARBALL=1 to
 # restore strict behavior (fail if the tarball was not rewritten this run).
 # A registry build writes its .ref every time, so for a .ref that is always on.
-_verify_tarball() {
+_verify_artifact() {
     local path="$1" what="${2:-image}" before="${3:-}" min_bytes="${4:-1024}"
     local AIC_REQUIRE_FRESH_TARBALL="${AIC_REQUIRE_FRESH_TARBALL:-0}"
     if [[ "${path}" == *.ref ]]; then
@@ -859,27 +864,27 @@ _verify_tarball() {
     # NFS close-to-open consistency: the writing node's `mv` can take a moment
     # to become visible here even though the job has already exited.
     local tries=0 now
-    now="$(_tarball_stamp "${path}")"
+    now="$(_artifact_stamp "${path}")"
     until [[ -n "${now}" && "${now}" != "${before}" ]] || (( tries >= 15 )); do
         sleep 2; tries=$((tries + 1))
-        now="$(_tarball_stamp "${path}")"
+        now="$(_artifact_stamp "${path}")"
     done
     [[ -n "${now}" ]] ||
-        die "${what} build reported success but produced no tarball: ${path}"
+        die "${what} build reported success but produced no artifact: ${path}"
     if [[ "${now}" == "${before}" ]]; then
         local size="${now##*:}"
         (( size >= min_bytes )) ||
-            die "${what} tarball is implausibly small (${size} bytes, expected >= ${min_bytes}): ${path}"
+            die "${what} artifact is implausibly small (${size} bytes, expected >= ${min_bytes}): ${path}"
         if [[ "${AIC_REQUIRE_FRESH_TARBALL}" == "1" ]]; then
-            die "${what} build reported success but did not rewrite its tarball; this is an earlier run's artifact (unchanged at ${before}): ${path}"
+            die "${what} build reported success but did not rewrite its artifact; this is an earlier run's artifact (unchanged at ${before}): ${path}"
         fi
-        log "WARNING: ${what} tarball unchanged after build (BuildKit cache hit — existing artifact is current): ${path} ($(du -h "${path}" | cut -f1))"
+        log "WARNING: ${what} artifact unchanged after build (BuildKit cache hit — existing artifact is current): ${path} ($(du -h "${path}" | cut -f1))"
         return 0
     fi
     local size="${now##*:}"
     (( size >= min_bytes )) ||
-        die "${what} tarball is implausibly small (${size} bytes, expected >= ${min_bytes}): ${path}"
-    log "verified ${what} tarball: ${path} ($(du -h "${path}" | cut -f1))"
+        die "${what} artifact is implausibly small (${size} bytes, expected >= ${min_bytes}): ${path}"
+    log "verified ${what} artifact: ${path} ($(du -h "${path}" | cut -f1))"
 }
 
 # --- sbatch dispatch (mirrors run-cliff.sbatch's per-job logging) -------------
@@ -1380,9 +1385,9 @@ REMOTE
 # --- build: build the image on a compile node, save tarball to shared scratch -
 cmd_build() {
     _pick_compress
-    local tarball; tarball="$(_tarball_path)"
-    # Taken before anything is submitted; see _verify_tarball.
-    local tarball_before; tarball_before="$(_tarball_stamp "${tarball}")"
+    local artifact; artifact="$(_artifact_path)"
+    # Taken before anything is submitted; see _verify_artifact.
+    local tarball_before; tarball_before="$(_artifact_stamp "${artifact}")"
     # Alias ref (name:latest) built + saved alongside the versioned ref.
     local latest_ref="${AIC_IMAGE%:*}:latest"
     # Forward every version override for Docker tag naming.
@@ -1398,9 +1403,9 @@ cmd_build() {
 
     log "image      : ${AIC_IMAGE}  (arch ${AIC_ROCM_ARCH})"
     if [[ "${AIC_DIST_BACKEND}" == "registry" ]]; then
-        log "ref        : ${tarball}  (registry ${AIC_REGISTRY_DIR})"
+        log "ref        : ${artifact}  (registry ${AIC_REGISTRY_DIR})"
     else
-        log "tarball    : ${tarball}  (compress: ${AIC_COMPRESS})"
+        log "tarball    : ${artifact}  (compress: ${AIC_COMPRESS})"
     fi
     [[ -n "${AIC_BUILD_TARGET}" ]] && log "target     : ${AIC_BUILD_TARGET} (docker --target)"
     [[ -n "${AIC_VLLM_TARGET_DEVICE}" ]] && \
@@ -1544,11 +1549,11 @@ cmd_build() {
             # shellcheck disable=SC2016  # expanded by the job
             local _meta='${TMPDIR}/aic-build.${SLURM_JOB_ID:-$$}.meta.json'
             _out_args="$(_dist_output_args "${AIC_IMAGE}" "${_meta}")"
-            _post_out="$(_dist_store build "${tarball}" "${AIC_IMAGE}" "${_meta}" \
+            _post_out="$(_dist_store build "${artifact}" "${AIC_IMAGE}" "${_meta}" \
                 "${AIC_IMAGE}" "${latest_ref}")"
         else
             _out_args="--output type=docker,dest=- -t \"${AIC_IMAGE}\" -t \"${latest_ref}\""
-            _pre_out="tmp=\"${tarball}.partial.\$\$\""
+            _pre_out="tmp=\"${artifact}.partial.\$\$\""
             _out_pipe="| ${COMPRESS_CMD} > \"\${tmp}\""
             _post_out="$(cat <<REMOTE
 _rc=("\${PIPESTATUS[@]}")
@@ -1570,8 +1575,8 @@ if [ "\${_rc[0]}" -ne 0 ]; then
         exit 1
     fi
 fi
-mv -f "\${tmp}" "${tarball}"
-echo "[build] saved \$(du -h "${tarball}" | cut -f1) -> ${tarball}"
+mv -f "\${tmp}" "${artifact}"
+echo "[build] saved \$(du -h "${artifact}" | cut -f1) -> ${artifact}"
 REMOTE
 )"
         fi
@@ -1685,10 +1690,10 @@ ${_build_program} \
     "${AIC_DAY_DIR}"
 echo "[build] built ${AIC_IMAGE}"
 mkdir -p "${AIC_IMAGE_DIR}"
-tmp="${tarball}.partial.\$\$"
+tmp="${artifact}.partial.\$\$"
 docker save "${AIC_IMAGE}" "${latest_ref}" | ${COMPRESS_CMD} > "\${tmp}"
-mv -f "\${tmp}" "${tarball}"
-echo "[build] saved \$(du -h "${tarball}" | cut -f1) -> ${tarball}"
+mv -f "\${tmp}" "${artifact}"
+echo "[build] saved \$(du -h "${artifact}" | cut -f1) -> ${artifact}"
 REMOTE
 )"
     fi
@@ -1721,8 +1726,8 @@ ${remote_script}"
             --cpus-per-task="${AIC_BUILD_CPUS}" \
             --time="${AIC_BUILD_TIME}"
     fi
-    _verify_tarball "${tarball}" "image" "${tarball_before}"
-    log "build complete: ${tarball}"
+    _verify_artifact "${artifact}" "image" "${tarball_before}"
+    log "build complete: ${artifact}"
 }
 
 # --- build-emulate: CPU-only emulation image (no GPU kernels compiled) --------
@@ -1790,18 +1795,18 @@ cmd_build_lmcache() {
 # reachability to GitHub/Debian.
 cmd_build_exporters() {
     _pick_compress
-    local nvme_tar rdma_tar hsa_snoop_tar
-    nvme_tar="$(_exporter_tarball_path "${AIC_NVME_EXPORTER_IMAGE}")"
-    rdma_tar="$(_exporter_tarball_path "${AIC_RDMA_EXPORTER_IMAGE}")"
-    hsa_snoop_tar="$(_exporter_tarball_path "${AIC_HSA_SNOOP_IMAGE}")"
-    # Taken before anything is submitted; see _verify_tarball.
+    local nvme_art rdma_art hsa_snoop_art
+    nvme_art="$(_exporter_artifact_path "${AIC_NVME_EXPORTER_IMAGE}")"
+    rdma_art="$(_exporter_artifact_path "${AIC_RDMA_EXPORTER_IMAGE}")"
+    hsa_snoop_art="$(_exporter_artifact_path "${AIC_HSA_SNOOP_IMAGE}")"
+    # Taken before anything is submitted; see _verify_artifact.
     local nvme_before rdma_before hsa_snoop_before
-    nvme_before="$(_tarball_stamp "${nvme_tar}")"
-    rdma_before="$(_tarball_stamp "${rdma_tar}")"
-    hsa_snoop_before="$(_tarball_stamp "${hsa_snoop_tar}")"
+    nvme_before="$(_artifact_stamp "${nvme_art}")"
+    rdma_before="$(_artifact_stamp "${rdma_art}")"
+    hsa_snoop_before="$(_artifact_stamp "${hsa_snoop_art}")"
 
     log "exporter images : ${AIC_NVME_EXPORTER_IMAGE} (nvme v${AIC_NVME_EXPORTER_VERSION}), ${AIC_RDMA_EXPORTER_IMAGE} (rdma v${AIC_RDMA_EXPORTER_VERSION}), ${AIC_HSA_SNOOP_IMAGE}"
-    log "tarballs   : ${nvme_tar}, ${rdma_tar}, ${hsa_snoop_tar}  (compress: ${AIC_COMPRESS})"
+    log "artifacts  : ${nvme_art}, ${rdma_art}, ${hsa_snoop_art}  (compress: ${AIC_COMPRESS})"
 
     # A docker-container builder is required to stream a docker-format tar from
     # BuildKit unless the docker driver can (containerd image store).  Reuse/create
@@ -1842,9 +1847,9 @@ REMOTE
         # shellcheck disable=SC2016  # expanded by the job
         local _meta='${TMPDIR:-/tmp}/aic-exporter.${SLURM_JOB_ID:-$$}.meta.json'
         for _spec in \
-            "${AIC_NVME_EXPORTER_IMAGE}|NVME_EXPORTER_VERSION=${AIC_NVME_EXPORTER_VERSION}|nvme-exporter|${nvme_tar}" \
-            "${AIC_RDMA_EXPORTER_IMAGE}|RDMA_EXPORTER_VERSION=${AIC_RDMA_EXPORTER_VERSION}|rdma-exporter|${rdma_tar}" \
-            "${AIC_HSA_SNOOP_IMAGE}||hsa-snoop|${hsa_snoop_tar}"; do
+            "${AIC_NVME_EXPORTER_IMAGE}|NVME_EXPORTER_VERSION=${AIC_NVME_EXPORTER_VERSION}|nvme-exporter|${nvme_art}" \
+            "${AIC_RDMA_EXPORTER_IMAGE}|RDMA_EXPORTER_VERSION=${AIC_RDMA_EXPORTER_VERSION}|rdma-exporter|${rdma_art}" \
+            "${AIC_HSA_SNOOP_IMAGE}||hsa-snoop|${hsa_snoop_art}"; do
             IFS='|' read -r _img _arg _ctx _art <<<"${_spec}"
             remote_script+="
 docker buildx build --builder ${AIC_BUILDX_BUILDER} $(_dist_output_args "${_img}" "${_meta}") \\
@@ -1854,7 +1859,7 @@ $(_dist_store build-exporters "${_art}" "${_img}" "${_meta}" "${_img}")"
         remote_script+=$'\nexit 0'
     else
         remote_script+=$'\n'"$(cat <<REMOTE
-tmp="${nvme_tar}.partial.\$\$"
+tmp="${nvme_art}.partial.\$\$"
 set +o pipefail
 docker buildx build --builder ${AIC_BUILDX_BUILDER} --output type=docker,dest=- \
     --build-arg NVME_EXPORTER_VERSION="${AIC_NVME_EXPORTER_VERSION}" \
@@ -1867,8 +1872,8 @@ fi
 if [ "\${_rc[0]}" -ne 0 ]; then
     echo "[build-exporters] WARN: docker buildx exited \${_rc[0]} for nvme image (possible cache lock race; tarball may be valid if compressor succeeded)"
 fi
-mv -f "\${tmp}" "${nvme_tar}"
-tmp="${rdma_tar}.partial.\$\$"
+mv -f "\${tmp}" "${nvme_art}"
+tmp="${rdma_art}.partial.\$\$"
 set +o pipefail
 docker buildx build --builder ${AIC_BUILDX_BUILDER} --output type=docker,dest=- \
     --build-arg RDMA_EXPORTER_VERSION="${AIC_RDMA_EXPORTER_VERSION}" \
@@ -1881,8 +1886,8 @@ fi
 if [ "\${_rc[0]}" -ne 0 ]; then
     echo "[build-exporters] WARN: docker buildx exited \${_rc[0]} for rdma image (possible cache lock race; tarball may be valid if compressor succeeded)"
 fi
-mv -f "\${tmp}" "${rdma_tar}"
-tmp="${hsa_snoop_tar}.partial.\$\$"
+mv -f "\${tmp}" "${rdma_art}"
+tmp="${hsa_snoop_art}.partial.\$\$"
 set +o pipefail
 docker buildx build --builder ${AIC_BUILDX_BUILDER} --output type=docker,dest=- \
     -t "${AIC_HSA_SNOOP_IMAGE}" "${AIC_DAY_DIR}/docker/hsa-snoop" | ${COMPRESS_CMD} > "\${tmp}"
@@ -1894,10 +1899,10 @@ fi
 if [ "\${_rc[0]}" -ne 0 ]; then
     echo "[build-exporters] WARN: docker buildx exited \${_rc[0]} for hsa-snoop image (possible cache lock race; tarball may be valid if compressor succeeded)"
 fi
-mv -f "\${tmp}" "${hsa_snoop_tar}"
-echo "[build-exporters] saved \$(du -h "${nvme_tar}" | cut -f1) -> ${nvme_tar}"
-echo "[build-exporters] saved \$(du -h "${rdma_tar}" | cut -f1) -> ${rdma_tar}"
-echo "[build-exporters] saved \$(du -h "${hsa_snoop_tar}" | cut -f1) -> ${hsa_snoop_tar}"
+mv -f "\${tmp}" "${hsa_snoop_art}"
+echo "[build-exporters] saved \$(du -h "${nvme_art}" | cut -f1) -> ${nvme_art}"
+echo "[build-exporters] saved \$(du -h "${rdma_art}" | cut -f1) -> ${rdma_art}"
+echo "[build-exporters] saved \$(du -h "${hsa_snoop_art}" | cut -f1) -> ${hsa_snoop_art}"
 exit 0
 REMOTE
 )"
@@ -1927,13 +1932,13 @@ ${remote_script}"
             ${AIC_BUILD_GPUS:+--gpus="${AIC_BUILD_GPUS}"} \
             --time="${AIC_LOAD_TIME}"
     fi
-    _verify_tarball "${nvme_tar}" "nvme-exporter" "${nvme_before}"
-    _verify_tarball "${rdma_tar}" "rdma-exporter" "${rdma_before}"
-    _verify_tarball "${hsa_snoop_tar}" "hsa-snoop" "${hsa_snoop_before}"
-    log "exporter build complete: ${nvme_tar}, ${rdma_tar}, ${hsa_snoop_tar}"
+    _verify_artifact "${nvme_art}" "nvme-exporter" "${nvme_before}"
+    _verify_artifact "${rdma_art}" "rdma-exporter" "${rdma_before}"
+    _verify_artifact "${hsa_snoop_art}" "hsa-snoop" "${hsa_snoop_before}"
+    log "exporter build complete: ${nvme_art}, ${rdma_art}, ${hsa_snoop_art}"
 }
 
-# --- load: docker load the tarball on every target node, then verify ---------
+# --- load: fetch the images onto every target node, then verify --------------
 # NOTE: load stays on `srun` (not the sbatch/_sbatch_run path used by build/test):
 # it is a MULTI-NODE fan-out (--nodelist=<N nodes> --ntasks-per-node=1 runs the
 # docker load on every target at once), whereas an sbatch batch script runs on
@@ -1942,30 +1947,30 @@ ${remote_script}"
 # jobs that map cleanly onto run-cliff.sbatch's per-job logs/<job-id>/ structure.
 cmd_load() {
     _pick_compress
-    local vllm_tarball; vllm_tarball="$(_tarball_path_for "${AIC_VLLM_IMAGE}")"
-    local lmcache_tarball; lmcache_tarball="$(_tarball_path_for "${AIC_LMCACHE_IMAGE}")"
+    local vllm_artifact; vllm_artifact="$(_artifact_path_for "${AIC_VLLM_IMAGE}")"
+    local lmcache_artifact; lmcache_artifact="$(_artifact_path_for "${AIC_LMCACHE_IMAGE}")"
 
     [[ -n "${AIC_TARGETS}" ]] || die "set AIC_TARGETS=node1,node2,... for the load step"
     command -v srun >/dev/null 2>&1 || die "srun not found; cannot load onto remote nodes"
-    [[ -r "${vllm_tarball}" ]]    || die "vllm tarball not found: ${vllm_tarball} (run 'build' first)"
-    [[ -r "${lmcache_tarball}" ]] || die "lmcache tarball not found: ${lmcache_tarball} (run 'build' first)"
+    _require_artifact vllm "${vllm_artifact}" "run 'build' first"
+    _require_artifact lmcache "${lmcache_artifact}" "run 'build' first"
 
-    # Also ship the fabric exporter tarballs when they exist (built by
-    # 'build-exporters').  Best-effort: absent tarballs are simply skipped, so a
+    # Also ship the fabric exporter images when they exist (built by
+    # 'build-exporters').  Best-effort: absent artifacts are simply skipped, so a
     # main-image-only build still loads fine.
     local fetches="" img et
     printf -v fetches 'aic_image_fetch load %q %q\n' \
-        "${AIC_VLLM_IMAGE}" "${vllm_tarball}" "${AIC_LMCACHE_IMAGE}" "${lmcache_tarball}"
+        "${AIC_VLLM_IMAGE}" "${vllm_artifact}" "${AIC_LMCACHE_IMAGE}" "${lmcache_artifact}"
     for img in "${AIC_NVME_EXPORTER_IMAGE}" "${AIC_RDMA_EXPORTER_IMAGE}" "${AIC_HSA_SNOOP_IMAGE}"; do
-        et="$(_exporter_tarball_path "${img}")"
+        et="$(_exporter_artifact_path "${img}")"
         [[ -r "${et}" ]] || continue
         printf -v fetches '%saic_image_fetch load %q %q\n' "${fetches}" "${img}" "${et}"
-        log "  + exporter tarball: ${et}"
+        log "  + exporter artifact: ${et}"
     done
 
     local n; n="$(awk -F, '{print NF}' <<<"${AIC_TARGETS}")"
     log "loading ${AIC_VLLM_IMAGE} + ${AIC_LMCACHE_IMAGE} (+ present exporter images) onto ${n} node(s): ${AIC_TARGETS}"
-    log "tarballs: ${vllm_tarball} ${lmcache_tarball}"
+    log "artifacts: ${vllm_artifact} ${lmcache_artifact}"
 
     # Small, oversubscribable request so the load can slip in alongside running
     # GPU jobs -- docker load needs no GPU.  --overcommit is dropped on SPUR
@@ -1998,8 +2003,8 @@ ${fetches}"
 # creds come from ~/.docker/config.json on shared /home; `docker login` once.
 cmd_push() {
     _pick_compress
-    local vllm_tarball; vllm_tarball="$(_tarball_path_for "${AIC_VLLM_IMAGE}")"
-    local lmcache_tarball; lmcache_tarball="$(_tarball_path_for "${AIC_LMCACHE_IMAGE}")"
+    local vllm_artifact; vllm_artifact="$(_artifact_path_for "${AIC_VLLM_IMAGE}")"
+    local lmcache_artifact; lmcache_artifact="$(_artifact_path_for "${AIC_LMCACHE_IMAGE}")"
 
     # The stack is two images now, so one ref cannot name both; refuse rather
     # than push only half of it.
@@ -2008,12 +2013,12 @@ cmd_push() {
     [[ -n "${AIC_VLLM_PUSH_REF}" && -n "${AIC_LMCACHE_PUSH_REF}" ]] \
         || die "set AIC_VLLM_PUSH_REF and AIC_LMCACHE_PUSH_REF (registry/host/path:tag) for the push step"
     command -v srun >/dev/null 2>&1 || die "srun not found; cannot run the push job"
-    [[ -r "${vllm_tarball}" ]]    || die "vllm tarball not found: ${vllm_tarball} (run 'build' first)"
-    [[ -r "${lmcache_tarball}" ]] || die "lmcache tarball not found: ${lmcache_tarball} (run 'build' first)"
+    _require_artifact vllm "${vllm_artifact}" "run 'build' first"
+    _require_artifact lmcache "${lmcache_artifact}" "run 'build' first"
 
     log "pushing ${AIC_VLLM_IMAGE} -> ${AIC_VLLM_PUSH_REF}"
     log "pushing ${AIC_LMCACHE_IMAGE} -> ${AIC_LMCACHE_PUSH_REF}"
-    log "tarballs (load fallback): ${vllm_tarball} ${lmcache_tarball}"
+    log "fetching from: ${vllm_artifact} ${lmcache_artifact}"
 
     local remote_script
     remote_script="$(cat <<REMOTE
@@ -2023,14 +2028,14 @@ echo "[push] host=\$(hostname) docker=\$(docker --version)"
 # shellcheck source=/dev/null
 source '${AIC_DAY_DIR}/.slurm/image-dist-lib.sh'
 _push_image() {
-    local img="\$1" tarball="\$2" ref="\$3"
-    aic_image_fetch push "\${img}" "\${tarball}"
+    local img="\$1" artifact="\$2" ref="\$3"
+    aic_image_fetch push "\${img}" "\${artifact}"
     docker tag "\${img}" "\${ref}"
     docker push "\${ref}"
     echo "[push] pushed \${ref}"
 }
-_push_image '${AIC_VLLM_IMAGE}'    '${vllm_tarball}'    '${AIC_VLLM_PUSH_REF}'
-_push_image '${AIC_LMCACHE_IMAGE}' '${lmcache_tarball}' '${AIC_LMCACHE_PUSH_REF}'
+_push_image '${AIC_VLLM_IMAGE}'    '${vllm_artifact}'    '${AIC_VLLM_PUSH_REF}'
+_push_image '${AIC_LMCACHE_IMAGE}' '${lmcache_artifact}' '${AIC_LMCACHE_PUSH_REF}'
 REMOTE
 )"
 
@@ -2070,16 +2075,16 @@ ${remote_script}"
 # (and the node's AIS runtime support), not an end-to-end serve.
 cmd_test() {
     _pick_compress
-    # Compute tarball paths for both images.
+    # Compute artifact paths for both images.
     local saved_image="${AIC_IMAGE}"
     AIC_IMAGE="${AIC_VLLM_IMAGE}"
-    local vllm_tarball; vllm_tarball="$(_tarball_path)"
+    local vllm_artifact; vllm_artifact="$(_artifact_path)"
     AIC_IMAGE="${AIC_LMCACHE_IMAGE}"
-    local lmcache_tarball; lmcache_tarball="$(_tarball_path)"
+    local lmcache_artifact; lmcache_artifact="$(_artifact_path)"
     AIC_IMAGE="${saved_image}"
     command -v sbatch >/dev/null 2>&1 || die "sbatch not found; cannot run the GPU test job"
-    [[ -r "${vllm_tarball}" ]]    || die "vllm tarball not found: ${vllm_tarball} (run 'build' first)"
-    [[ -r "${lmcache_tarball}" ]] || die "lmcache tarball not found: ${lmcache_tarball} (run 'build' first)"
+    _require_artifact vllm "${vllm_artifact}" "run 'build' first"
+    _require_artifact lmcache "${lmcache_artifact}" "run 'build' first"
 
     # After the in-image checks, optionally stand up the exporter fleet +
     # Prometheus (via monitoring/monitoring-lib.sh, shared with the cliff),
@@ -2088,10 +2093,10 @@ cmd_test() {
     # change the smoke-test's exit code (the in-image checks alone govern that).
     local _smoke_exporters="${AIC_SMOKE_EXPORTERS:-1}"
     local _smoke_scrape_s="${AIC_SMOKE_SCRAPE_S:-45}"
-    local nvme_tar rdma_tar hsa_snoop_tar
-    nvme_tar="$(_exporter_tarball_path "${AIC_NVME_EXPORTER_IMAGE}")"
-    rdma_tar="$(_exporter_tarball_path "${AIC_RDMA_EXPORTER_IMAGE}")"
-    hsa_snoop_tar="$(_exporter_tarball_path "${AIC_HSA_SNOOP_IMAGE}")"
+    local nvme_art rdma_art hsa_snoop_art
+    nvme_art="$(_exporter_artifact_path "${AIC_NVME_EXPORTER_IMAGE}")"
+    rdma_art="$(_exporter_artifact_path "${AIC_RDMA_EXPORTER_IMAGE}")"
+    hsa_snoop_art="$(_exporter_artifact_path "${AIC_HSA_SNOOP_IMAGE}")"
 
     # In-container checks live in a standalone script on shared /scratch (visible
     # on the GPU node) and are bind-mounted in -- avoids nested shell quoting.
@@ -2253,8 +2258,8 @@ echo "[test] allocated gpu: ROCR=\${AIC_ROCR_VISIBLE} HIP=\${AIC_HIP_VISIBLE}"
 
 # shellcheck source=/dev/null
 source '${AIC_DAY_DIR}/.slurm/image-dist-lib.sh'
-aic_image_fetch test '${AIC_VLLM_IMAGE}'    '${vllm_tarball}'
-aic_image_fetch test '${AIC_LMCACHE_IMAGE}' '${lmcache_tarball}'
+aic_image_fetch test '${AIC_VLLM_IMAGE}'    '${vllm_artifact}'
+aic_image_fetch test '${AIC_LMCACHE_IMAGE}' '${lmcache_artifact}'
 
 # Expose the node's kernel config read-only so ais-check's P2PDMA probe can read
 # /boot/config-* or /lib/modules/*/build/.config (informational; both may be
@@ -2319,9 +2324,9 @@ if [ '${_smoke_exporters}' = "1" ]; then
     log() { printf '[test] %s\n' "\$*"; }
     # Best-effort load the fabric exporter images from /scratch, then advertise
     # them to the lib only when actually present on the node.
-    if [ -r '${nvme_tar}' ]; then aic_image_fetch test '${AIC_NVME_EXPORTER_IMAGE}' '${nvme_tar}'; fi
-    if [ -r '${rdma_tar}' ]; then aic_image_fetch test '${AIC_RDMA_EXPORTER_IMAGE}' '${rdma_tar}'; fi
-    if [ -r '${hsa_snoop_tar}' ]; then aic_image_fetch test '${AIC_HSA_SNOOP_IMAGE}' '${hsa_snoop_tar}'; fi
+    if [ -r '${nvme_art}' ]; then aic_image_fetch test '${AIC_NVME_EXPORTER_IMAGE}' '${nvme_art}'; fi
+    if [ -r '${rdma_art}' ]; then aic_image_fetch test '${AIC_RDMA_EXPORTER_IMAGE}' '${rdma_art}'; fi
+    if [ -r '${hsa_snoop_art}' ]; then aic_image_fetch test '${AIC_HSA_SNOOP_IMAGE}' '${hsa_snoop_art}'; fi
     docker image inspect '${AIC_NVME_EXPORTER_IMAGE}' >/dev/null 2>&1 && export AIC_NVME_EXPORTER_IMAGE='${AIC_NVME_EXPORTER_IMAGE}'
     docker image inspect '${AIC_RDMA_EXPORTER_IMAGE}' >/dev/null 2>&1 && export AIC_RDMA_EXPORTER_IMAGE='${AIC_RDMA_EXPORTER_IMAGE}'
     docker image inspect '${AIC_HSA_SNOOP_IMAGE}' >/dev/null 2>&1 && export HSA_SNOOP_IMAGE='${AIC_HSA_SNOOP_IMAGE}'
@@ -2383,13 +2388,13 @@ cmd_tiny_test() {
     _pick_compress
     local saved_image="${AIC_IMAGE}"
     AIC_IMAGE="${AIC_VLLM_IMAGE}"
-    local vllm_tarball; vllm_tarball="$(_tarball_path)"
+    local vllm_artifact; vllm_artifact="$(_artifact_path)"
     AIC_IMAGE="${AIC_LMCACHE_IMAGE}"
-    local lmcache_tarball; lmcache_tarball="$(_tarball_path)"
+    local lmcache_artifact; lmcache_artifact="$(_artifact_path)"
     AIC_IMAGE="${saved_image}"
     command -v sbatch >/dev/null 2>&1 || die "sbatch not found; cannot run the GPU tiny-test job"
-    [[ -r "${vllm_tarball}" ]]    || die "vllm tarball not found: ${vllm_tarball} (run 'build' first)"
-    [[ -r "${lmcache_tarball}" ]] || die "lmcache tarball not found: ${lmcache_tarball} (run 'build' first)"
+    _require_artifact vllm "${vllm_artifact}" "run 'build' first"
+    _require_artifact lmcache "${lmcache_artifact}" "run 'build' first"
 
     # Slurm has no feature-negation operator, so --exclude is the only way to
     # keep a node class out; smoke-test and accuracy-test already honour it.
@@ -2424,8 +2429,8 @@ echo "[tiny-test] allocated gpu: ROCR=\${AIC_ROCR_VISIBLE} HIP=\${AIC_HIP_VISIBL
 
 # shellcheck source=/dev/null
 source '${AIC_DAY_DIR}/.slurm/image-dist-lib.sh'
-aic_image_fetch tiny-test '${AIC_VLLM_IMAGE}'    '${vllm_tarball}' || exit 1
-aic_image_fetch tiny-test '${AIC_LMCACHE_IMAGE}' '${lmcache_tarball}' || exit 1
+aic_image_fetch tiny-test '${AIC_VLLM_IMAGE}'    '${vllm_artifact}' || exit 1
+aic_image_fetch tiny-test '${AIC_LMCACHE_IMAGE}' '${lmcache_artifact}' || exit 1
 
 cd '${AIC_DAY_DIR}'
 # docker compose v2 only -- install user-locally if the node lacks the plugin.
@@ -2522,7 +2527,7 @@ echo "[tiny-test] endpoint ready; sending one chat completion ..."
 # Started only now: hsa-snoop (AIC_TINY_EXPORTERS=safe) joins lmcache's PID
 # namespace, so the stack must already be up.  Prometheus only by default, and
 # not AIC_EXPORTERS, which SPUR's make forces to 'safe': this path does not load
-# the exporter image tarballs, and a missing one (aic-hsa-snoop) makes compose
+# the exporter images, and a missing one (aic-hsa-snoop) makes compose
 # fall back to a Docker Hub pull that fails the whole up.  Prometheus scrapes
 # lmcache and vLLM by name over the bridge, so the TSDB holds real series.  The
 # TSDB lands in the per-job log dir.  Decided at submit time: sourcing
@@ -2609,11 +2614,11 @@ REMOTE
 # Output: ${PROM_DUMP_OUT} (default: ${AIC_IMAGE_DIR}/../prometheus-dump.md)
 cmd_prometheus_dump() {
     _pick_compress
-    local vllm_tarball; vllm_tarball="$(_tarball_path_for "${AIC_VLLM_IMAGE}")"
-    local lmcache_tarball; lmcache_tarball="$(_tarball_path_for "${AIC_LMCACHE_IMAGE}")"
+    local vllm_artifact; vllm_artifact="$(_artifact_path_for "${AIC_VLLM_IMAGE}")"
+    local lmcache_artifact; lmcache_artifact="$(_artifact_path_for "${AIC_LMCACHE_IMAGE}")"
     command -v sbatch >/dev/null 2>&1 || die "sbatch not found; cannot run prometheus-dump job"
-    [[ -r "${vllm_tarball}" ]]    || die "vllm tarball not found: ${vllm_tarball} (run 'build' first)"
-    [[ -r "${lmcache_tarball}" ]] || die "lmcache tarball not found: ${lmcache_tarball} (run 'build' first)"
+    _require_artifact vllm "${vllm_artifact}" "run 'build' first"
+    _require_artifact lmcache "${lmcache_artifact}" "run 'build' first"
 
     local prom_dump_out="${PROM_DUMP_OUT:-${AIC_IMAGE_DIR%/*}/prometheus-dump.md}"
     local prom_dump_wait="${PROM_DUMP_WAIT:-15}"
@@ -2648,8 +2653,8 @@ echo "[prom-dump] allocated gpu: ROCR=\${AIC_ROCR_VISIBLE} HIP=\${AIC_HIP_VISIBL
 
 # shellcheck source=/dev/null
 source '${AIC_DAY_DIR}/.slurm/image-dist-lib.sh'
-aic_image_fetch prom-dump '${AIC_VLLM_IMAGE}'    '${vllm_tarball}' || exit 1
-aic_image_fetch prom-dump '${AIC_LMCACHE_IMAGE}' '${lmcache_tarball}' || exit 1
+aic_image_fetch prom-dump '${AIC_VLLM_IMAGE}'    '${vllm_artifact}' || exit 1
+aic_image_fetch prom-dump '${AIC_LMCACHE_IMAGE}' '${lmcache_artifact}' || exit 1
 
 cd '${AIC_DAY_DIR}'
 source '${AIC_DAY_DIR}/monitoring/monitoring-lib.sh'
@@ -2829,9 +2834,9 @@ REMOTE
 cmd_emulate_test() {
     _use_emulate_image
     _pick_compress
-    local tarball; tarball="$(_tarball_path)"
+    local artifact; artifact="$(_artifact_path)"
     command -v sbatch >/dev/null 2>&1 || die "sbatch not found; cannot run the emulate-test job"
-    [[ -r "${tarball}" ]] || die "tarball not found: ${tarball} (run 'build-emulate' first)"
+    _require_artifact emulate "${artifact}" "run 'build-emulate' first"
 
     # CPU-only node: no --gres, no GPU constraint.  AIC_EMULATE_TEST_CONSTRAINT
     # defaults to the build constraint, which already selects CPU-only nodes.
@@ -2855,7 +2860,7 @@ echo "[emulate-test] GPU devices present: \$(ls /dev/kfd /dev/dri 2>/dev/null | 
 
 # shellcheck source=/dev/null
 source '${AIC_DAY_DIR}/.slurm/image-dist-lib.sh'
-aic_image_fetch emulate-test '${AIC_IMAGE}' '${tarball}' || exit 1
+aic_image_fetch emulate-test '${AIC_IMAGE}' '${artifact}' || exit 1
 
 cd '${AIC_DAY_DIR}'
 # shellcheck source=/dev/null
@@ -3023,12 +3028,12 @@ cmd_emulate_mp_test() {
     [[ -z "${AIC_EMULATE_MP_IMAGE:-}" ]] \
         || die "AIC_EMULATE_MP_IMAGE is gone: emulate-mp-test runs the split images; set AIC_VLLM_IMAGE and AIC_LMCACHE_IMAGE instead"
     _pick_compress
-    local vllm_tarball; vllm_tarball="$(_tarball_path_for "${AIC_VLLM_IMAGE}")"
-    local lmcache_tarball; lmcache_tarball="$(_tarball_path_for "${AIC_LMCACHE_IMAGE}")"
+    local vllm_artifact; vllm_artifact="$(_artifact_path_for "${AIC_VLLM_IMAGE}")"
+    local lmcache_artifact; lmcache_artifact="$(_artifact_path_for "${AIC_LMCACHE_IMAGE}")"
     command -v sbatch >/dev/null 2>&1 || die "sbatch not found; cannot run the emulate-mp-test job"
     # The PRODUCTION images, not the emulate one: that stage stops before LMCache.
-    [[ -r "${vllm_tarball}" ]]    || die "vllm tarball not found: ${vllm_tarball} (run 'build' first)"
-    [[ -r "${lmcache_tarball}" ]] || die "lmcache tarball not found: ${lmcache_tarball} (run 'build' first)"
+    _require_artifact vllm "${vllm_artifact}" "run 'build' first"
+    _require_artifact lmcache "${lmcache_artifact}" "run 'build' first"
 
     local _constraint="${AIC_EMULATE_TEST_CONSTRAINT-${AIC_BUILD_CONSTRAINT}}"
     local -a _sel=()
@@ -3051,8 +3056,8 @@ echo "[emulate-mp-test] GPU devices present: \$(ls /dev/kfd /dev/dri 2>/dev/null
 
 # shellcheck source=/dev/null
 source '${AIC_DAY_DIR}/.slurm/image-dist-lib.sh'
-aic_image_fetch emulate-mp-test '${AIC_VLLM_IMAGE}'    '${vllm_tarball}' || exit 1
-aic_image_fetch emulate-mp-test '${AIC_LMCACHE_IMAGE}' '${lmcache_tarball}' || exit 1
+aic_image_fetch emulate-mp-test '${AIC_VLLM_IMAGE}'    '${vllm_artifact}' || exit 1
+aic_image_fetch emulate-mp-test '${AIC_LMCACHE_IMAGE}' '${lmcache_artifact}' || exit 1
 
 cd '${AIC_DAY_DIR}'
 # shellcheck source=/dev/null
@@ -3530,9 +3535,9 @@ REMOTE
 cmd_emulate_validate() {
     _use_emulate_image
     _pick_compress
-    local tarball; tarball="$(_tarball_path)"
+    local artifact; artifact="$(_artifact_path)"
     command -v sbatch >/dev/null 2>&1 || die "sbatch not found; cannot run the validate job"
-    [[ -r "${tarball}" ]] || die "tarball not found: ${tarball} (run 'build-emulate' first)"
+    _require_artifact emulate "${artifact}" "run 'build-emulate' first"
     [[ -n "${AIC_VALIDATE_PACK:-}" ]] || die "set AIC_VALIDATE_PACK=/path/to/pack.json (from 'profile-capture')"
     [[ -r "${AIC_VALIDATE_PACK}" ]] || die "pack not readable: ${AIC_VALIDATE_PACK}"
 
@@ -3568,7 +3573,7 @@ set -uo pipefail
 echo "[validate] host=\$(hostname)"
 # shellcheck source=/dev/null
 source '${AIC_DAY_DIR}/.slurm/image-dist-lib.sh'
-aic_image_fetch validate '${AIC_IMAGE}' '${tarball}' || exit 1
+aic_image_fetch validate '${AIC_IMAGE}' '${artifact}' || exit 1
 
 cd '${AIC_DAY_DIR}'
 # shellcheck source=/dev/null
@@ -3715,13 +3720,13 @@ AIC_ACCURACY_READY_TIMEOUT="${AIC_ACCURACY_READY_TIMEOUT:-120}"   # x5s = up to 
 
 cmd_accuracy_test() {
     _pick_compress
-    # Use separate bake tarballs (aic-vllm + aic-lmcache) rather than the old
-    # monolithic rocm-aic tarball.  run-accuracy.sh accepts these natively.
-    local _vllm_tar _lmcache_tar
-    AIC_IMAGE="${AIC_VLLM_IMAGE}"    _vllm_tar="$(_tarball_path)"
-    AIC_IMAGE="${AIC_LMCACHE_IMAGE}" _lmcache_tar="$(_tarball_path)"
-    [[ -r "${_vllm_tar}" ]]    || die "vllm tarball not found: ${_vllm_tar} (run 'bake' first)"
-    [[ -r "${_lmcache_tar}" ]] || die "lmcache tarball not found: ${_lmcache_tar} (run 'bake' first)"
+    # Use separate bake artifacts (aic-vllm + aic-lmcache) rather than the old
+    # monolithic rocm-aic one.  run-accuracy.sh accepts these natively.
+    local _vllm_art _lmcache_art
+    AIC_IMAGE="${AIC_VLLM_IMAGE}"    _vllm_art="$(_artifact_path)"
+    AIC_IMAGE="${AIC_LMCACHE_IMAGE}" _lmcache_art="$(_artifact_path)"
+    _require_artifact vllm "${_vllm_art}" "run 'bake' first"
+    _require_artifact lmcache "${_lmcache_art}" "run 'bake' first"
 
     local _acc_exclude="${AIC_TEST_EXCLUDE_NODES:-${AIC_BUILD_EXCLUDE_NODES:-}}"
     local -a _sel
@@ -3744,9 +3749,9 @@ aic_docker_preflight || exit 1
 export AIC_DAY_DIR='${AIC_DAY_DIR}'
 export AIC_ROCM_ARCH='${AIC_ROCM_ARCH}'
 export AIC_VLLM_IMAGE='${AIC_VLLM_IMAGE}'
-export AIC_VLLM_ARTIFACT='${_vllm_tar}'
+export AIC_VLLM_ARTIFACT='${_vllm_art}'
 export AIC_LMCACHE_IMAGE='${AIC_LMCACHE_IMAGE}'
-export AIC_LMCACHE_ARTIFACT='${_lmcache_tar}'
+export AIC_LMCACHE_ARTIFACT='${_lmcache_art}'
 export AIC_FORCE_LOAD='${AIC_FORCE_LOAD:-0}'
 export HF_HOME='${HF_HOME}'
 export HF_TOKEN='${HF_TOKEN:-}'
@@ -3789,9 +3794,9 @@ REMOTE
 cmd_profile_capture() {
     _pick_compress
     # A plain vLLM serve with tracing, no LMCache: the vllm image alone.
-    local tarball; tarball="$(_tarball_path_for "${AIC_VLLM_IMAGE}")"
+    local artifact; artifact="$(_artifact_path_for "${AIC_VLLM_IMAGE}")"
     command -v sbatch >/dev/null 2>&1 || die "sbatch not found; cannot run the capture job"
-    [[ -r "${tarball}" ]] || die "vllm tarball not found: ${tarball} (run 'build' with AIC_ROCM_ARCH=<arch> first)"
+    _require_artifact vllm "${artifact}" "run 'build' with AIC_ROCM_ARCH=<arch> first"
 
     local -a _sel=()
     if [[ -n "${AIC_CAPTURE_NODE:-}" ]]; then
@@ -3819,7 +3824,7 @@ command -v rocm_agent_enumerator >/dev/null 2>&1 && \
 source '${AIC_DAY_DIR}/.slurm/image-dist-lib.sh'
 # shellcheck source=/dev/null
 source '${AIC_DAY_DIR}/scripts/aic-endpoints.sh'
-aic_image_fetch capture '${AIC_VLLM_IMAGE}' '${tarball}' || exit 1
+aic_image_fetch capture '${AIC_VLLM_IMAGE}' '${artifact}' || exit 1
 
 # Honour Slurm's GPU allocation: with --gres=gpu:1 the scheduler exports the
 # device index it gave us, and these nodes are shared -- hard-coding device 0
@@ -4010,7 +4015,7 @@ REMOTE
 }
 
 # --- Verify the gate actually scored both arms -------------------------------
-# Same reasoning as _verify_tarball: the job runs on a remote node and a success
+# Same reasoning as _verify_artifact: the job runs on a remote node and a success
 # exit is not proof it did the work.  A gate is worse than a build here -- a
 # build that produces nothing fails later at load, whereas an accuracy gate that
 # ran nothing is indistinguishable from one that passed.  The two score files
@@ -4039,8 +4044,8 @@ _verify_accuracy_scores() {
 # Uses docker/docker-bake.hcl which encodes the dependency DAG: base is built
 # first, then vllm and lmcache build in parallel from the base OCI context.
 # Each image is exported to a per-target OCI directory then compressed to a
-# tarball; vllm and lmcache tarballs are saved concurrently using background
-# jobs.  The layer cache is shared via AIC_CACHE_DIR / AIC_CACHE_REF using the
+# tarball, or pushed to the registry; vllm and lmcache are stored concurrently
+# using background jobs.  The layer cache is shared via AIC_CACHE_DIR / AIC_CACHE_REF using the
 # per-target subdir layout bake.hcl encodes (cache_from/cache_to call
 # cache_arch_slug + target name).
 #
@@ -4064,18 +4069,18 @@ cmd_bake() {
     local saved_image="${AIC_IMAGE}"
     local base_image="${AIC_BASE_IMAGE:-aic-base:${IMAGE_TAG:-latest}}"
 
-    # Derive per-image tarball paths using the same name:tag the HCL tags each
+    # Derive per-image artifact paths using the same name:tag the HCL tags each
     # target with (aic-base, aic-vllm, aic-lmcache).
     AIC_IMAGE="${base_image}"
-    local base_tar; base_tar="$(_tarball_path)"
+    local base_art; base_art="$(_artifact_path)"
     AIC_IMAGE="${AIC_VLLM_IMAGE}"
-    local vllm_tar; vllm_tar="$(_tarball_path)"
+    local vllm_art; vllm_art="$(_artifact_path)"
     AIC_IMAGE="${AIC_LMCACHE_IMAGE}"
-    local lmcache_tar; lmcache_tar="$(_tarball_path)"
+    local lmcache_art; lmcache_art="$(_artifact_path)"
     AIC_IMAGE="${saved_image}"
 
-    local lmcache_before; lmcache_before="$(_tarball_stamp "${lmcache_tar}")"
-    local vllm_before; vllm_before="$(_tarball_stamp "${vllm_tar}")"
+    local lmcache_before; lmcache_before="$(_artifact_stamp "${lmcache_art}")"
+    local vllm_before; vllm_before="$(_artifact_stamp "${vllm_art}")"
 
     local _secret_arg=""
     [[ -n "${AIC_TLS_CERT}" ]] && _secret_arg="--secret id=tls_cert,src=${AIC_TLS_CERT}"
@@ -4094,9 +4099,9 @@ cmd_bake() {
     done
 
     log "bake targets   : base vllm lmcache (parallel after base)"
-    log "artifacts      : ${base_tar}"
-    log "               : ${vllm_tar}"
-    log "               : ${lmcache_tar}"
+    log "artifacts      : ${base_art}"
+    log "               : ${vllm_art}"
+    log "               : ${lmcache_art}"
     [[ "${AIC_DIST_BACKEND}" == "registry" ]] && log "image registry : ${AIC_REGISTRY_DIR}"
     log "cache          : ${AIC_CACHE_DIR:+(dir) ${AIC_CACHE_DIR}}${AIC_CACHE_REF:+(registry) ${AIC_CACHE_REF}}"
 
@@ -4105,11 +4110,11 @@ cmd_bake() {
     local _out _pipe _post
     local _base_out _base_pipe _base_post _vllm_out _vllm_pipe _vllm_post _lmc_out _lmc_pipe _lmc_post
     # shellcheck disable=SC2016  # expanded by the job
-    _bake_store vllm "${AIC_VLLM_IMAGE}" "${vllm_tar}" '${tmp_vllm}' \
+    _bake_store vllm "${AIC_VLLM_IMAGE}" "${vllm_art}" '${tmp_vllm}' \
         "${AIC_VLLM_IMAGE}" "${AIC_VLLM_IMAGE%:*}:latest"
     _vllm_out="${_out}" _vllm_pipe="${_pipe}" _vllm_post="${_post}"
     # shellcheck disable=SC2016
-    _bake_store lmcache "${AIC_LMCACHE_IMAGE}" "${lmcache_tar}" '${tmp_lmcache}' \
+    _bake_store lmcache "${AIC_LMCACHE_IMAGE}" "${lmcache_art}" '${tmp_lmcache}' \
         "${AIC_LMCACHE_IMAGE}" "${AIC_LMCACHE_IMAGE%:*}:latest"
     _lmc_out="${_out}" _lmc_pipe="${_pipe}" _lmc_post="${_post}"
     if [[ "${AIC_DIST_BACKEND}" == "registry" ]]; then
@@ -4117,13 +4122,13 @@ cmd_bake() {
         local _base_meta='${TMPDIR}/aic-bake-base.${SLURM_JOB_ID:-$$}.meta.json'
         _base_out="--set \"base.tags=$(_dist_push_ref "${base_image}")\" --set base.output=type=image,push=true --metadata-file \"${_base_meta}\""
         _base_pipe=""
-        _base_post="$(_dist_store bake "${base_tar}" "${base_image}" "${_base_meta}" "${base_image}")"
+        _base_post="$(_dist_store bake "${base_art}" "${base_image}" "${_base_meta}" "${base_image}")"
     else
         _base_out='--set "base.output=type=docker,dest=-"'
         _base_pipe="| ${COMPRESS_CMD} > \"\${tmp_base}\""
         _base_post="$(cat <<REMOTE
-mv -f "\${tmp_base}" "${base_tar}"
-echo "[bake] base saved: \$(du -h "${base_tar}" | cut -f1) -> ${base_tar}"
+mv -f "\${tmp_base}" "${base_art}"
+echo "[bake] base saved: \$(du -h "${base_art}" | cut -f1) -> ${base_art}"
 REMOTE
 )"
     fi
@@ -4137,7 +4142,7 @@ REMOTE
             "${AIC_RDMA_EXPORTER_IMAGE}|RDMA_EXPORTER_VERSION=${AIC_RDMA_EXPORTER_VERSION}|rdma-exporter" \
             "${AIC_HSA_SNOOP_IMAGE}||hsa-snoop"; do
             IFS='|' read -r _img _arg _ctx <<<"${_spec}"
-            _art="$(_exporter_tarball_path "${_img}")"
+            _art="$(_exporter_artifact_path "${_img}")"
             _bake_exporters+="    if docker buildx build --builder ${AIC_BUILDX_BUILDER} $(_dist_output_args "${_img}" "${_exp_meta}") \\
             ${_arg:+--build-arg \"${_arg}\" }\"${AIC_DAY_DIR}/docker/${_ctx}\"; then
         $(_dist_store bake "${_art}" "${_img}" "${_exp_meta}" "${_img}") \\
@@ -4150,9 +4155,9 @@ REMOTE
     else
         _bake_exporters="$(cat <<REMOTE
     for _img_spec in \
-        "${AIC_NVME_EXPORTER_IMAGE}|NVME_EXPORTER_VERSION=${AIC_NVME_EXPORTER_VERSION}|${AIC_DAY_DIR}/docker/nvme-exporter|$(_exporter_tarball_path "${AIC_NVME_EXPORTER_IMAGE}")" \
-        "${AIC_RDMA_EXPORTER_IMAGE}|RDMA_EXPORTER_VERSION=${AIC_RDMA_EXPORTER_VERSION}|${AIC_DAY_DIR}/docker/rdma-exporter|$(_exporter_tarball_path "${AIC_RDMA_EXPORTER_IMAGE}")" \
-        "${AIC_HSA_SNOOP_IMAGE}||${AIC_DAY_DIR}/docker/hsa-snoop|$(_exporter_tarball_path "${AIC_HSA_SNOOP_IMAGE}")"; do
+        "${AIC_NVME_EXPORTER_IMAGE}|NVME_EXPORTER_VERSION=${AIC_NVME_EXPORTER_VERSION}|${AIC_DAY_DIR}/docker/nvme-exporter|$(_exporter_artifact_path "${AIC_NVME_EXPORTER_IMAGE}")" \
+        "${AIC_RDMA_EXPORTER_IMAGE}|RDMA_EXPORTER_VERSION=${AIC_RDMA_EXPORTER_VERSION}|${AIC_DAY_DIR}/docker/rdma-exporter|$(_exporter_artifact_path "${AIC_RDMA_EXPORTER_IMAGE}")" \
+        "${AIC_HSA_SNOOP_IMAGE}||${AIC_DAY_DIR}/docker/hsa-snoop|$(_exporter_artifact_path "${AIC_HSA_SNOOP_IMAGE}")"; do
         _img="\$(cut -d'|' -f1 <<<"\${_img_spec}")"
         _arg="\$(cut -d'|' -f2 <<<"\${_img_spec}")"
         _ctx="\$(cut -d'|' -f3 <<<"\${_img_spec}")"
@@ -4262,7 +4267,7 @@ _base_oci_dir="\${TMPDIR}/aic-base-oci.\${SLURM_JOB_ID:-\$\$}.d"
 trap 'rm -rf "\${_base_oci_tar}" "\${_base_oci_dir}" "\${_lmc_wheels_dir:-}"' EXIT
 rm -f "\${_base_oci_tar}" 2>/dev/null || true
 rm -rf "\${_base_oci_dir}" 2>/dev/null || true
-tmp_base="${base_tar}.partial.\${SLURM_JOB_ID:-\$\$}"
+tmp_base="${base_art}.partial.\${SLURM_JOB_ID:-\$\$}"
 ROCM_ARCH="${AIC_ROCM_ARCH}" \
 ${AIC_BUILD_JOBS:+BUILD_JOBS="${AIC_BUILD_JOBS}"} \
 ${_bake_env} \
@@ -4322,8 +4327,8 @@ _cache_args="$(_bake_cache_args vllm)"
 
 # --- Phase 2: build vllm and lmcache in parallel via docker buildx build ------
 echo "[bake] phase 2: building aic-vllm + aic-lmcache in parallel"
-tmp_vllm="${vllm_tar}.partial.\${SLURM_JOB_ID:-\$\$}"
-tmp_lmcache="${lmcache_tar}.partial.\${SLURM_JOB_ID:-\$\$}"
+tmp_vllm="${vllm_art}.partial.\${SLURM_JOB_ID:-\$\$}"
+tmp_lmcache="${lmcache_art}.partial.\${SLURM_JOB_ID:-\$\$}"
 
 # vllm in background
 (
@@ -4421,9 +4426,9 @@ REMOTE
         --nodes=1 --ntasks=1 \
         --cpus-per-task="${AIC_BUILD_CPUS}" \
         --time="${AIC_BUILD_TIME}"
-    _verify_tarball "${lmcache_tar}" "lmcache image" "${lmcache_before}"
-    _verify_tarball "${vllm_tar}" "vllm image" "${vllm_before}"
-    log "bake complete: base=${base_tar} vllm=${vllm_tar} lmcache=${lmcache_tar}"
+    _verify_artifact "${lmcache_art}" "lmcache image" "${lmcache_before}"
+    _verify_artifact "${vllm_art}" "vllm image" "${vllm_before}"
+    log "bake complete: base=${base_art} vllm=${vllm_art} lmcache=${lmcache_art}"
 }
 
 # --- wheels: export the pip wheels the nightly release publishes -------------

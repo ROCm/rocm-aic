@@ -518,8 +518,8 @@ _wait_ready kvd || exit 1
 # --- metrics capture ---------------------------------------------------------
 # Started here rather than in phase 1: hsa-snoop (AIC_ACCURACY_EXPORTERS=safe)
 # joins lmcache's PID namespace, so the tiered stack must already be up.
-# Prometheus only by default: this path does not load the exporter image
-# tarballs, and a missing one fails the whole compose up.  Prometheus scrapes
+# Prometheus only by default: this path does not load the exporter images,
+# and a missing one fails the whole compose up.  Prometheus scrapes
 # lmcache and vLLM by name over the bridge, so the TSDB holds real series.
 if [ "${AIC_MONITORING:-1}" = "1" ]; then
     export MON_COMPOSE="${AIC_DAY_DIR}/docker/docker-compose.yml"
