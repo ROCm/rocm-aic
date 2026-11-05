@@ -206,8 +206,8 @@ docker run --rm --network aic \
         --prefix-mode per_client --out "${LOGDIR}/results.csv" 2>&1 | tee "${LOGDIR}/cliff.log"
 
 echo "--- Metrics snapshot AFTER timed iter ---"
-VLLM_URL="$(aic_url aic-vllm-gpu0 "${VLLM_PORT}")" || exit 1
-curl -s "${VLLM_URL}/metrics" \
+# From the bridge, as the cliff client above reached it.
+AIC_FETCH_IMAGE="${AIC_IMAGE}" aic_fetch "http://aic-vllm:${VLLM_PORT}/metrics" \
     | grep -E "external_prefix_cache|prefix_cache|connector" \
     | tee "${LOGDIR}/metrics_after.txt"
 

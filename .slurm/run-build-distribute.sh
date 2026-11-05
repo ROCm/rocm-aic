@@ -2871,6 +2871,8 @@ ensure_compose || { echo "[emulate-test] docker compose unavailable and could no
 export IMAGE_NAME='${AIC_IMAGE}'
 # The emulator service reads VLLM_IMAGE_REF first, and make exports its own.
 export VLLM_IMAGE_REF='${AIC_IMAGE}'
+# Requests from the aic bridge (aic_fetch) run from the image already loaded.
+export AIC_FETCH_IMAGE='${AIC_IMAGE}'
 export VLLM_MODEL='${AIC_EMULATE_MODEL}'
 export VLLM_EMULATOR_PROFILE_PACK='${AIC_EMULATE_PROFILE_PACK}'
 # Host dir of real-hardware packs, bind-mounted at /profiles by the compose
@@ -2933,7 +2935,8 @@ if [ "\${ready}" != "1" ]; then
     compose --profile emulate logs --tail 120 --no-color vllm-emulator 2>&1 | sed 's/^/  [emu] /'
     exit 1
 fi
-_url="\$(aic_url aic-vllm-emulator 8000)" || exit 1
+# Reached by name from the aic bridge; the emulator publishes no host port.
+_url=http://aic-vllm-emulator:8000
 echo "[emulate-test] endpoint ready; sending one chat completion ..."
 
 # The container maps no /dev/kfd or /dev/dri (see the compose service), so it
@@ -2946,9 +2949,8 @@ else
 fi
 echo "[emulate-test] /dev/kfd inside the container: \${kfd_in_container}"
 
-resp="\$(curl -fsS "\${_url}/v1/chat/completions" \
-    -H 'Content-Type: application/json' \
-    -d '{"model":"${AIC_EMULATE_MODEL}","messages":[{"role":"user","content":"Reply with the single word: pong"}],"max_tokens":16,"temperature":0}' 2>&1)" || {
+resp="\$(aic_fetch "\${_url}/v1/chat/completions" \
+    '{"model":"${AIC_EMULATE_MODEL}","messages":[{"role":"user","content":"Reply with the single word: pong"}],"max_tokens":16,"temperature":0}' 2>&1)" || {
     echo "[emulate-test] FAIL: completion request failed: \${resp}" >&2; exit 1; }
 echo "[emulate-test] response: \${resp}"
 
@@ -3194,8 +3196,10 @@ if [ "\${ready}" != "1" ]; then
 fi
 
 rc=0
-_url="\$(aic_url aic-vllm-emulator 8000)" || exit 1
-_lurl="\$(aic_url aic-lmcache-emulator 8080)" || exit 1
+# Both reached by name from the aic bridge (aic_fetch); neither publishes a
+# host port.
+_url=http://aic-vllm-emulator:8000
+_lurl=http://aic-lmcache-emulator:8080
 if docker exec aic-vllm-emulator test -e /dev/kfd 2>/dev/null; then
     echo "[emulate-mp-test] FAIL: /dev/kfd is visible inside the emulator container" >&2; rc=1
 else
@@ -3208,9 +3212,8 @@ fi
 # collide with anything else in the cache.
 _prompt="\$(python3 -c "print('The quick brown fox jumps over the lazy dog. ' * 96)")"
 _ask() {
-    curl -fsS "\${_url}/v1/chat/completions" \
-        -H 'Content-Type: application/json' \
-        -d "\$(python3 -c "
+    aic_fetch "\${_url}/v1/chat/completions" \
+        "\$(python3 -c "
 import json,sys
 print(json.dumps({'model': '${AIC_EMULATE_MODEL}',
                   'messages': [{'role': 'user', 'content': sys.argv[1]}],
@@ -3277,7 +3280,7 @@ if [ -n '${AIC_EMULATE_MP_BENCH}' ]; then
         fi
         # Per-point cache counters: the whole reason for a warm repeat is to see
         # these MOVE, and an end-of-run total cannot show that.
-        curl -fsS "\${_lurl}/metrics" 2>/dev/null | awk -v tag="\${tag:-cold}" '
+        aic_fetch "\${_lurl}/metrics" 2>/dev/null | awk -v tag="\${tag:-cold}" '
             /^lmcache_mp_lookup_requested_tokens_total/ {req=\$NF}
             /^lmcache_mp_lookup_hit_tokens_total/       {hit=\$NF}
             /^lmcache_mp_l1_read_chunks_total/          {l1r=\$NF}
@@ -3331,7 +3334,7 @@ fi
 #    log-format-dependent evidence; fall back to the connector's own counters.
 #    :8080 -- the MP server's HTTP API -- not --prometheus-port, which opens no
 #    listener in v0.5.2 ("standalone metrics HTTP server disabled").
-if curl -fsS "\${_lurl}/metrics" -o "\${_logdir}/emulate-mp-lmcache-metrics.txt" 2>/dev/null; then
+if aic_fetch "\${_lurl}/metrics" > "\${_logdir}/emulate-mp-lmcache-metrics.txt" 2>/dev/null; then
     # 'write' matters: with AIC_EMULATE_MP_L2_BACKEND=none there is no L2 tier at
     # all, so every lmcache_mp_l2_store_* family is structurally absent and the
     # only evidence of a store is lmcache_mp_l1_write_chunks_total.  Matching just
@@ -3357,7 +3360,7 @@ fi
 #    leaves is the exact symptom of the connector output never reaching the
 #    scheduler -- the failure mode the executor hook's connector cycle exists
 #    to prevent -- and both requests above have already returned by now.
-_waiting="\$(curl -fsS "\${_url}/metrics" 2>/dev/null \
+_waiting="\$(aic_fetch "\${_url}/metrics" 2>/dev/null \
     | awk '/^vllm:num_requests_waiting/ {s+=\$NF} END {printf "%d", s+0}')"
 if [ "\${_waiting:-0}" -eq 0 ]; then
     echo "[emulate-mp-test] OK: no request left waiting on a remote KV load"
@@ -3425,7 +3428,7 @@ PYEOF
         [ \$? -eq 0 ] || rc=1
         # Keep the raw exporter output next to the verdict -- when a job is up
         # but empty, this is the only thing that says why.
-        curl -fsS "\${_lurl}/metrics" -o "\${_promdir}/lmcache-metrics.txt" 2>/dev/null || true
+        aic_fetch "\${_lurl}/metrics" > "\${_promdir}/lmcache-metrics.txt" 2>/dev/null || true
         # :19090 is not published; read it from inside the lmcache container.
         docker exec aic-lmcache-emulator curl -fsS http://localhost:19090/metrics \
             > "\${_promdir}/nixl-metrics.txt" 2>/dev/null || true
