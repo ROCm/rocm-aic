@@ -695,7 +695,7 @@ stop_stack() {
   pkill -9 -f 'lmcache server' 2>/dev/null || true
   sleep 2
   timeout 60 compose --profile cache --profile vllm-only down --remove-orphans --timeout 5 >/dev/null 2>&1 || true
-  for c in aic-vllm-only-gpu${GPU} aic-vllm-gpu0 aic-lmcache; do timeout 30 docker rm -f "${c}" >/dev/null 2>&1 || true; done
+  for c in "aic-vllm-only-gpu${GPU}" "aic-vllm-gpu${GPU}" aic-lmcache; do timeout 30 docker rm -f "${c}" >/dev/null 2>&1 || true; done
 }
 
 # --- Metrics-capture sidecar (Prometheus + optional exporters) ---------------
@@ -717,7 +717,7 @@ trap stop_monitoring EXIT
 # bridge with its own IPC and PID namespaces (vllm proper lives in lmcache's).
 VRAM_CSV="${RESULTS}/cliff-vram_only-${STAMP}.csv"
 run_arm_vram() {
-  rm_containers "aic-vllm-only-gpu${GPU}" aic-vllm-gpu0 aic-lmcache
+  rm_containers "aic-vllm-only-gpu${GPU}" "aic-vllm-gpu${GPU}" aic-lmcache
   log "=== Arm A (vram_only): plain vLLM (no LMCache) on :${VLLM_ENDPOINT_PORT} ==="
   export KV_TRANSFER_ARG="" # no connector -> plain VRAM-prefix-cache-only vLLM
   export GDS_MODE=""
@@ -770,7 +770,7 @@ YML
 run_arm_kvd() { # $1=mode(nvme|gds) $2=out_csv
   local mode="$1" out="$2"
   log "=== Arm B (kvd_v2, mode=${mode}) — LMCache MP connector ==="
-  rm_containers aic-vllm-gpu0 aic-lmcache
+  rm_containers "aic-vllm-gpu${GPU}" aic-lmcache
 
   # MP connector arg for vLLM (+ optional kv_load_failure_policy).  Single-quote
   # the JSON so compose's shlex splitting preserves the inner double quotes.
@@ -847,7 +847,7 @@ run_arm_kvd() { # $1=mode(nvme|gds) $2=out_csv
   docker logs -f --timestamps aic-lmcache \
     >>"${LOGDIR}/lmcache/lmcache-stream.log" 2>&1 &
   _lmcache_log_pid=$!
-  docker logs -f --timestamps aic-vllm-gpu0 \
+  docker logs -f --timestamps "aic-vllm-gpu${GPU}" \
     >>"${LOGDIR}/vllm/vllm-stream.log" 2>&1 &
   _vllm_log_pid=$!
 
