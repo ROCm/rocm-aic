@@ -112,14 +112,13 @@ aic_bridge_url() {
 # aic_probe <container> <container-port> <path>
 # Succeed if <container> answers http://127.0.0.1:<port><path> from inside its
 # own network namespace, so it needs no published port.  Silent, for readiness
-# loops.  Uses the image's python3: the AIC images carry no curl.
+# loops.  The container's image needs curl.
 aic_probe() {
     if (( $# != 3 )); then
         echo "usage: aic_probe <container> <container-port> <path>" >&2
         return 2
     fi
-    docker exec "$1" python3 -c \
-        'import sys, urllib.request; urllib.request.urlopen(sys.argv[1], timeout=3)' \
+    docker exec "$1" curl -fsS --max-time 3 -o /dev/null \
         "http://127.0.0.1:$2$3" >/dev/null 2>&1
 }
 
@@ -127,37 +126,27 @@ aic_probe() {
 # Send one request from a throwaway container on the aic bridge and print the
 # response body, so the target needs no published port: address it by name
 # (http://aic-vllm:8000/v1/models).  GET, or a JSON POST when a body is given.
-# Non-zero, with the reason on stderr, on a connection failure (7) or an HTTP
-# error status (22), as `curl -fsS` would be.
+# Fails as curl does: 7 on a connection failure, 28 on a timeout, 22 on an HTTP
+# error status, whose body is still printed.
 #
-# The client runs from AIC_FETCH_IMAGE, which needs python3; set it to an image
-# already on the node (any AIC image) where a registry pull is unwelcome.
-# AIC_FETCH_TIMEOUT bounds the request in seconds (default: 60).
+# curl runs from AIC_FETCH_IMAGE; set it to an image already on the node (any
+# AIC image) where a registry pull is unwelcome.  AIC_FETCH_TIMEOUT bounds the
+# request in seconds (default: 60).
 aic_fetch() {
     if (( $# < 1 || $# > 2 )); then
         echo "usage: aic_fetch <url> [<json-body>]" >&2
         return 2
     fi
-    docker run --rm --network "${AIC_NETWORK:-aic}" \
-        -e AIC_FETCH_TIMEOUT="${AIC_FETCH_TIMEOUT:-60}" \
-        --entrypoint python3 "${AIC_FETCH_IMAGE:-python:3.12-slim}" -c '
-import os, sys, urllib.error, urllib.request
-url = sys.argv[1]
-body = sys.argv[2].encode() if len(sys.argv) > 2 else None
-req = urllib.request.Request(url, data=body)
-if body is not None:
-    req.add_header("Content-Type", "application/json")
-try:
-    with urllib.request.urlopen(req, timeout=float(os.environ["AIC_FETCH_TIMEOUT"])) as r:
-        sys.stdout.buffer.write(r.read())
-except urllib.error.HTTPError as e:
-    detail = e.read()[:500].decode(errors="replace")
-    sys.stderr.write(f"aic_fetch: {url}: HTTP {e.code}: {detail}\n")
-    sys.exit(22)
-except Exception as e:
-    sys.stderr.write(f"aic_fetch: {url}: {e}\n")
-    sys.exit(7)
-' "$@"
+    local -a run=(docker run --rm --network "${AIC_NETWORK:-aic}" --entrypoint curl)
+    local -a req=(-sS --fail-with-body --max-time "${AIC_FETCH_TIMEOUT:-60}")
+    local image="${AIC_FETCH_IMAGE:-curlimages/curl:8.23.0}"
+    if (( $# == 1 )); then
+        "${run[@]}" "${image}" "${req[@]}" "$1"
+    else
+        # On stdin, so curl cannot read a body starting with @ as a file name.
+        printf '%s' "$2" | "${run[@]}" -i "${image}" "${req[@]}" \
+            -H 'Content-Type: application/json' --data-binary @- "$1"
+    fi
 }
 
 # aic_endpoints

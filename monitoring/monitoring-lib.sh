@@ -317,29 +317,27 @@ monitoring_healthcheck() {
 }
 
 # After a scrape window, ask Prometheus which targets are up (confirms data
-# actually landed in the TSDB) and print the TSDB path/size.  Uses the AIC
-# image's python3 to parse the query JSON (no jq on the host).  Informational.
+# actually landed in the TSDB) and print the TSDB path/size.  Parses the query
+# JSON with python3 (no jq on the host).  Informational.
 monitoring_tsdb_summary() {
     log "Prometheus scrape targets (query up):"
     if ! _mon_fetch "${MON_PROM_URL}/-/ready" >/dev/null 2>&1; then
         log "  WARN Prometheus not ready at ${MON_PROM_URL}"; return 0
     fi
-    # A client on the aic bridge, addressing prometheus by name.
-    docker run --rm --network aic -e PROM_URL="${MON_PROM_URL}" \
-        --entrypoint python3 "${AIC_IMAGE}" -c '
-import json, os, sys, urllib.request
-prom = os.environ["PROM_URL"]
-try:
-    d = json.load(urllib.request.urlopen(prom + "/api/v1/query?query=up", timeout=5))
-except Exception as e:
-    print("WARN could not query up:", e); sys.exit(0)
-res = d.get("data", {}).get("result", [])
+    local result
+    if result="$(_mon_fetch "${MON_PROM_URL}/api/v1/query?query=up" 2>&1)"; then
+        printf '%s' "${result}" | python3 -c '
+import json, sys
+res = json.load(sys.stdin).get("data", {}).get("result", [])
 if not res:
     print("WARN no up series yet"); sys.exit(0)
 for r in sorted(res, key=lambda x: x["metric"].get("job", "")):
     m = r["metric"]
     print("up=%s job=%s instance=%s" % (r["value"][1], m.get("job", "?"), m.get("instance", "?")))
 ' 2>&1 | sed 's/^/    /' || log "  WARN tsdb summary query failed"
+    else
+        log "  WARN could not query up: ${result}"
+    fi
     # The vllm/lmcache/nixl jobs are the inference stack, which the exporter
     # sanity check does not start -- so up=0 for those is expected here.
     log "  note: vllm/lmcache/nixl up=0 is expected unless an inference stack is serving"
