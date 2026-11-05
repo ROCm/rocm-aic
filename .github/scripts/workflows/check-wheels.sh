@@ -36,6 +36,9 @@ EXPECTED_WHEELS=(
     'amd_aiter-*.whl'
     'lmcache-*.whl'
     'nixl*rocm*.whl'
+    'torch-*.whl'
+    'torchvision-*.whl'
+    'llm_emu-*.whl'
 )
 # FlashAttention is built only when every arch is gfx9* (docker/vllm/Dockerfile;
 # the same rule as cdna_only() in docker/docker-bake.hcl, which also treats an
