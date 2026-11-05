@@ -34,11 +34,12 @@
 # of pool files.  Which pool slot a block lands in depends on allocation order,
 # so a checksum would be a flake generator; see tests/accuracy/README.md.
 #
-# pytest runs host-side (it needs .venv and lm_eval; the image stays lean and the
-# gsm8k download stays off the compute node), reaching vLLM on the host port
-# Docker published for it (an ephemeral 127.0.0.1 port, found with aic_url): vLLM's
-# own in the vram arm, lmcache's in the tiered arm.  Readiness probes use the
-# `docker exec ... 127.0.0.1` form that the rest of the repo uses.
+# pytest and lm_eval run in a client container on the aic bridge (the vLLM image
+# plus a venv holding lm_eval, so the image stays lean), reaching vLLM by the
+# name of the container that owns its network namespace (aic_bridge_url): vLLM's
+# own in the vram arm, lmcache's in the tiered arm.  No arm publishes a host
+# port.  Readiness probes use the `docker exec ... 127.0.0.1` form that the rest
+# of the repo uses.
 #
 # Every scoring pass asks the full gsm8k split; there is no item cap to set.
 #
@@ -142,25 +143,55 @@ VLLM_TIERED_CONTAINER="aic-vllm-gpu${GPU}"
 VLLM_CONTAINER="${VLLM_BASELINE_CONTAINER}"
 echo "[accuracy-test] allocated gpu: ROCR=${AIC_ROCR_VISIBLE} HIP=${AIC_HIP_VISIBLE} containers=${VLLM_BASELINE_CONTAINER},${VLLM_TIERED_CONTAINER}"
 
-# --- host-side pytest venv ---------------------------------------------------
-# lm_eval is deliberately NOT in the image: the gsm8k download does not belong
-# on a compute node's container and the image stays lean.  PYTHONNOUSERSITE=1
-# because ~/.local shadows venv site-packages on these boxes.
-export PYTHONNOUSERSITE=1
-VENV="${AIC_DAY_DIR}/.venv"
+# --- pytest client container -------------------------------------------------
+# Scoring runs from a throwaway container on the aic bridge, so the arms need
+# no published port.  lm_eval is deliberately NOT in the image: it lives in a
+# venv on the checkout, built inside the client so its interpreter is the
+# image's, with --system-site-packages so it reuses the image's torch instead
+# of downloading another.  Its own name: the host-side dev .venv is left alone.
+#
+# Every path is mounted at its host path, so scores and logs need no
+# translation.  The client runs as this user with all of their groups, as the
+# host venv did: the checkout, logs and HF cache are shared storage that root
+# may not write (root-squash), and the HF cache is often writable only through
+# its group (SPUR's allusers), which docker drops unless re-added.
+VENV="${AIC_DAY_DIR}/.venv-accuracy"
 PYBIN="${VENV}/bin/python"
+ACC_CLIENT="aic-accuracy-client-gpu${GPU}"
+_client_args=(--rm --name "${ACC_CLIENT}"
+    --user "$(id -u):$(id -g)" -e HOME=/tmp -e PYTHONNOUSERSITE=1
+    -v "${AIC_DAY_DIR}:${AIC_DAY_DIR}" -v "${AIC_LOG_DIR}:${AIC_LOG_DIR}"
+    -v "${HF_HOME}:${HF_HOME}" -w "${AIC_DAY_DIR}"
+    -e HF_HOME -e HF_TOKEN -e HF_HUB_OFFLINE -e TRANSFORMERS_OFFLINE
+    # Passed by name, so each run sees the value exported at that moment and an
+    # unset one stays unset.
+    -e AIC_ACCURACY_MODEL -e AIC_ACCURACY_DELTA -e AIC_ACCURACY_REQUIRED
+    -e AIC_ACCURACY_LIMIT -e AIC_ACCURACY_CONCURRENT
+    -e AIC_ACCURACY_BASELINE_URL -e AIC_ACCURACY_TIERED_URL
+    -e AIC_ACCURACY_BASELINE_SCORE -e AIC_ACCURACY_REFERENCE_SCORE
+    -e AIC_ACCURACY_SCORE_OUT)
+for _gid in $(id -G); do _client_args+=(--group-add "${_gid}"); done
+# _client <docker-network> <program> [args...]
+_client() {
+    docker run "${_client_args[@]}" --network "$1" --entrypoint "$2" \
+        "${AIC_VLLM_IMAGE}" "${@:3}"
+}
+# The scoring client, on the bridge the arms are on.
+_client_py() { _client aic "${PYBIN}" "$@"; }
+
 # Probe by importing, not by testing that bin/pytest exists: a venv built under
-# another repo path or host python keeps stale shebangs and interpreter links
+# another repo path or image python keeps stale shebangs and interpreter links
 # (job 68152207).  Everything below goes through ${PYBIN} -m, never a shebang.
-if ! "${PYBIN}" -c 'import pytest, lm_eval' >/dev/null 2>&1; then
-    echo "[accuracy-test] (re)creating host venv at ${VENV}"
+# The default network, because the aic bridge does not exist until compose up.
+if ! _client bridge "${PYBIN}" -c 'import pytest, lm_eval' >/dev/null 2>&1; then
+    echo "[accuracy-test] (re)creating the client venv at ${VENV}"
     rm -rf "${VENV}"
-    python3 -m venv "${VENV}" || { echo "[accuracy-test] FAIL: venv creation failed" >&2; exit 1; }
-    "${PYBIN}" -m pip -q install --upgrade pip
-    "${PYBIN}" -m pip -q install -e "${AIC_DAY_DIR}[accuracy]" || {
+    _client bridge python3 -m venv --without-pip --system-site-packages "${VENV}" \
+        || { echo "[accuracy-test] FAIL: venv creation failed" >&2; exit 1; }
+    _client bridge "${PYBIN}" -m pip -q install -e "${AIC_DAY_DIR}[accuracy]" || {
         echo "[accuracy-test] FAIL: could not install the accuracy extra" >&2; exit 1; }
 fi
-PYTEST=("${PYBIN}" -m pytest)
+PYTEST=(_client_py -m pytest)
 
 export AIC_ACCURACY_MODEL="${AIC_ACCURACY_MODEL}"
 export AIC_ACCURACY_DELTA="${AIC_ACCURACY_DELTA}"
@@ -271,6 +302,8 @@ cleanup() {
         echo "[accuracy-test] TSDB retained at ${AIC_METRICS_DIR}"
         _ACC_MONITORING_UP=0
     fi
+    # A signal kills the docker CLI, not the scoring container it started.
+    timeout 30 docker rm -f "${ACC_CLIENT}" >/dev/null 2>&1 || true
     _teardown final
     # Best-effort only: this trap does not run on SIGKILL, which is why the pool
     # is namespaced and both pre-cleared and reaped above.
@@ -295,18 +328,17 @@ _wait_ready() {
     return 1
 }
 
-# If a node ever fails this check, fall back to running pytest inside the client
-# container (already on aic, repo mounted), at the cost of a gsm8k download on
-# the compute node.
-# Resolved on every call: the published host port is ephemeral and changes when
-# the publishing container is recreated, so never cache this across a restart.
+# The serving arm's URL as the scoring client sees it from the bridge, checked
+# over that same path.  By container name rather than the aic-vllm alias, which
+# another job's stack on this node's bridge would also answer to.
 _endpoint_url() {
     local url
-    url="$(aic_url "${VLLM_CONTAINER}" 8000)" || {
-        echo "[accuracy-test] FAIL: cannot resolve vLLM's published port" >&2
+    url="$(aic_bridge_url "${VLLM_CONTAINER}" 8000)" || {
+        echo "[accuracy-test] FAIL: cannot resolve ${VLLM_CONTAINER} on the aic bridge" >&2
         return 1; }
-    curl -fsS --max-time 10 "${url}/v1/models" >/dev/null 2>&1 || {
-        echo "[accuracy-test] FAIL: host cannot reach ${url}" >&2
+    AIC_FETCH_IMAGE="${AIC_VLLM_IMAGE}" AIC_FETCH_TIMEOUT=10 \
+        aic_fetch "${url}/v1/models" >/dev/null 2>&1 || {
+        echo "[accuracy-test] FAIL: the aic bridge cannot reach ${url}" >&2
         return 1; }
     echo "${url}/v1"
 }
@@ -426,10 +458,10 @@ fi
 _wait_ready vram_only || exit 1
 BASE_URL="$(_endpoint_url)" || exit 1
 echo "[accuracy-test] scoring baseline at ${BASE_URL}"
-"${PYBIN}" "${AIC_DAY_DIR}/tests/accuracy/score_endpoint.py" "${BASE_URL}" \
+_client_py "${AIC_DAY_DIR}/tests/accuracy/score_endpoint.py" "${BASE_URL}" \
     --out "${AIC_LOG_DIR}/baseline-score.json" || {
     echo "[accuracy-test] FAIL: baseline scoring failed" >&2; exit 1; }
-BASELINE_SCORE="$("${PYBIN}" -c "import json;print(json.load(open('${AIC_LOG_DIR}/baseline-score.json'))['score'])")"
+BASELINE_SCORE="$(python3 -c "import json;print(json.load(open('${AIC_LOG_DIR}/baseline-score.json'))['score'])")"
 echo "[accuracy-test] baseline score: ${BASELINE_SCORE}"
 
 # --- negative control: this arm must not have tiered -------------------------
@@ -741,7 +773,7 @@ fi
 # Phase 4: restart vLLM only -- LMCache keeps DRAM/NVMe state
 # ===========================================================================
 echo "[accuracy-test] === Phase 4: restart vLLM, re-score from the tier ==="
-TIERED_SCORE="$("${PYBIN}" -c "import json;print(json.load(open('${AIC_LOG_DIR}/tiered-score.json'))['score'])" 2>/dev/null)" || {
+TIERED_SCORE="$(python3 -c "import json;print(json.load(open('${AIC_LOG_DIR}/tiered-score.json'))['score'])" 2>/dev/null)" || {
     echo "[accuracy-test] FAIL: no tiered score recorded in phase 2" >&2; exit 1; }
 
 pkill -9 -f 'vllm.entrypoints.openai' 2>/dev/null || true

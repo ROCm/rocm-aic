@@ -18,32 +18,35 @@ that unexpected increased or decreases in accuracy are caught.
 
 ### Against an existing stack
 
-`lm_eval` is host-side, so you need the venv (`make venv`). Each arm's vLLM
-publishes :8000 on a loopback port Docker picks; resolve it with `aic_url`.
-The baseline arm is the `vllm-only` compose service, the tiered arm `vllm`:
+The arms publish no host port, so `lm_eval` has to run on the `aic` bridge. The
+baseline arm is the `vllm-only` compose service, the tiered arm `vllm`, which
+sits in `aic-lmcache`'s network namespace; `aic_bridge_url` names the container
+that answers for each:
 
 ```bash
 source scripts/aic-endpoints.sh
-BASELINE_URL="$(aic_url aic-vllm-only-gpu0 8000)"
-TIERED_URL="$(aic_url aic-vllm-gpu0 8000)"   # published by aic-lmcache
-curl -fsS "${TIERED_URL}/v1/models"
+BASELINE_URL="$(aic_bridge_url aic-vllm-only-gpu0 8000)"   # http://aic-vllm-only-gpu0:8000
+TIERED_URL="$(aic_bridge_url aic-vllm-gpu0 8000)"          # http://aic-lmcache:8000
+AIC_FETCH_IMAGE="${VLLM_IMAGE_REF}" aic_fetch "${TIERED_URL}/v1/models"
 ```
 
-With one arm up, the tiered-only assertions; with both, everything:
+Run pytest from the vLLM image with the repo mounted, as the driver does
+(`.slurm/run-accuracy.sh`, which also builds the `.venv-accuracy` it uses). With
+one arm up, the tiered-only assertions; with both, everything:
 
 ```bash
-PYTHONNOUSERSITE=1 AIC_ACCURACY_TIERED_URL="${TIERED_URL}/v1" \
-  .venv/bin/pytest tests/accuracy -v -k "floor or restart"
-
-PYTHONNOUSERSITE=1 \
-  AIC_ACCURACY_BASELINE_URL="${BASELINE_URL}/v1" \
-  AIC_ACCURACY_TIERED_URL="${TIERED_URL}/v1" \
-  .venv/bin/pytest tests/accuracy -v
+docker run --rm --network aic --user "$(id -u):$(id -g)" -e HOME=/tmp \
+  -e PYTHONNOUSERSITE=1 -e HF_HOME=/hf -v "${HF_HOME}:/hf" \
+  -v "$PWD:$PWD" -w "$PWD" \
+  -e AIC_ACCURACY_BASELINE_URL="${BASELINE_URL}/v1" \
+  -e AIC_ACCURACY_TIERED_URL="${TIERED_URL}/v1" \
+  --entrypoint "$PWD/.venv-accuracy/bin/python" "${VLLM_IMAGE_REF}" \
+  -m pytest tests/accuracy -v
 ```
 
-Always invoke `.venv/bin/pytest` by absolute path with `PYTHONNOUSERSITE=1`: on
-these boxes a populated `~/.local/lib/python3.*/site-packages` otherwise shadows
-the venv.
+Drop `AIC_ACCURACY_BASELINE_URL` and add `-k "floor or restart"` for a single
+tiered arm. `PYTHONNOUSERSITE=1` keeps a populated
+`~/.local/lib/python3.*/site-packages` from shadowing the venv.
 
 ### Under the driver
 
@@ -145,7 +148,8 @@ exercised.
 
 ## Adding a model to `expected.json`
 
-1. Serve it and score it: `AIC_ACCURACY_MODEL=<id> .venv/bin/pytest tests/accuracy -k floor -s`.
+1. Serve it and score it: run the `docker run ... -m pytest` command above with
+   `-e AIC_ACCURACY_MODEL=<id>` and `-k floor -s`.
    With the model absent from the table the test skips but the score is printed.
 2. Add `"<id>": <score>` under `models`, and a line under `sources` saying where
    the number came from.
