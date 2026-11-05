@@ -207,7 +207,7 @@ group "all" {
 # NIXL appears once: it is built in aic-base and inherited by both aic-vllm and
 # aic-lmcache, so there is a single nixl_rocm wheel for the whole stack.
 group "wheels" {
-  targets = ["wheels-nixl", "wheels-lmcache", "wheels-vllm"]
+  targets = ["wheels-base", "wheels-lmcache", "wheels-vllm"]
 }
 
 # ---- Targets -----------------------------------------------------------------
@@ -241,7 +241,7 @@ target "vllm" {
   dockerfile = "docker/vllm/Dockerfile"
   # The default (runtime) stage installs aic-lmcache's wheel from the
   # lmcache-wheels context and stops without one.
-  contexts   = { base = "target:base", "lmcache-wheels" = "target:lmcache-wheels" }
+  contexts   = { base = "target:base", "lmcache-wheels" = "target:lmcache-wheels", "base-wheels":  "target:base-wheels" }
   tags       = ["aic-vllm:${IMAGE_TAG}", "aic-vllm:latest"]
   args = {
     ROCM_ARCH          = rocm_arch_list(ROCM_ARCH)
@@ -267,7 +267,7 @@ target "vllm" {
 target "lmcache" {
   context    = "."
   dockerfile = "docker/lmcache/Dockerfile"
-  contexts   = { base = "target:base" }
+  contexts   = { base = "target:base", "base-wheels":  "target:base-wheels" }
   tags       = ["aic-lmcache:${IMAGE_TAG}", "aic-lmcache:latest"]
   args = {
     ROCM_ARCH       = rocm_arch_list(ROCM_ARCH)
@@ -296,6 +296,13 @@ target "lmcache-wheels" {
   cache-to = []
 }
 
+target "base-wheels" {
+  inherits = ["base"]
+  target   = "wheels"
+  tags     = []
+  cache-to = []
+}
+
 # ---- Published wheel exports (the `wheels` group) ----------------------------
 # Each exports one Dockerfile's `wheels` stage to ${WHEELS_DIR}/<name>; none of
 # those stages is part of a runtime image.  They carry their own `output`, so the
@@ -307,15 +314,12 @@ target "lmcache-wheels" {
 #
 # Cache: wheels-lmcache/wheels-vllm read their parent image's cache as well as
 # their own (a host that already built the images reuses it) and write their own,
-# because the `wheels` group never builds aic-lmcache/aic-vllm.  wheels-nixl
+# because the `wheels` group never builds aic-lmcache/aic-vllm.  wheels-base
 # writes none: its stages are a subset of aic-base's, which the group always
 # builds (as the `base` context of the other two) and caches under "base".
-target "wheels-nixl" {
-  inherits = ["base"]
-  target   = "wheels"
-  tags     = []
-  output   = ["type=local,dest=${WHEELS_DIR}/nixl"]
-  cache-to = []
+target "wheels-base" {
+  inherits = ["base-wheels"]
+  output   = ["type=local,dest=${WHEELS_DIR}/base"]
 }
 
 target "wheels-lmcache" {

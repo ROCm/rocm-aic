@@ -1441,8 +1441,12 @@ cmd_build() {
             die "building aic-base first needs the buildx path; set AIC_CACHE_DIR or AIC_CACHE_REF, or pass AIC_BUILD_CONTEXT_BASE"
         _base_first=1
     fi
-    # vllm/'s default target installs aic-lmcache's wheel from a
-    # `docker/lmcache/Dockerfile --target wheels` export directory.
+    # vllm/'s default target installs:
+    # - aic-lmcache's wheel from a `docker/lmcache/Dockerfile --target wheels` export directory.
+    # - aic-base's wheels from a `docker/base/Dockerfile --target wheels` export directory.
+    local _base_wheels_arg=""
+    [[ -n "${AIC_BUILD_CONTEXT_BASE_WHEELS:-}" ]] && \
+        _base_wheels_arg="--build-context base-wheels=${AIC_BUILD_CONTEXT_BASE_WHEELS}"
     local _lmc_wheels_arg=""
     [[ -n "${AIC_BUILD_CONTEXT_LMCACHE_WHEELS:-}" ]] && \
         _lmc_wheels_arg="--build-context lmcache-wheels=${AIC_BUILD_CONTEXT_LMCACHE_WHEELS}"
@@ -1657,6 +1661,7 @@ docker buildx build --builder ${AIC_BUILDX_BUILDER} --progress=plain ${_out_args
     ${_vllm_device_arg} \
     ${_target_arg} \
     ${_context_arg} \
+    ${_base_wheels_arg} \
     ${_lmc_wheels_arg} \
     ${_secret_arg} \
     ${_cache_args} \
@@ -1682,6 +1687,7 @@ ${_build_program} \
     ${_vllm_device_arg} \
     ${_target_arg} \
     ${_context_arg} \
+    ${_base_wheels_arg} \
     ${_lmc_wheels_arg} \
     ${_secret_arg} \
     -f "${AIC_DAY_DIR}/docker/${AIC_BUILD_DOCKERFILE:-lmcache/Dockerfile}" \
@@ -1769,6 +1775,8 @@ cmd_build_base() {
 # --- build-vllm: build the aic-vllm image (standalone, no pre-built base) ----
 cmd_build_vllm() {
     AIC_BUILD_DOCKERFILE="vllm/Dockerfile"
+    [[ -n "${AIC_BUILD_CONTEXT_BASE_WHEELS:-}" ]] || \
+        die "build-vllm needs AIC_BUILD_CONTEXT_BASE_WHEELS (a docker/base/Dockerfile --target wheels export dir); bake builds both"
     [[ -n "${AIC_BUILD_CONTEXT_LMCACHE_WHEELS:-}" ]] || \
         die "build-vllm needs AIC_BUILD_CONTEXT_LMCACHE_WHEELS (a docker/lmcache/Dockerfile --target wheels export dir); bake builds both"
     log "build-vllm: building aic-vllm -> ${AIC_IMAGE}"
@@ -1778,6 +1786,8 @@ cmd_build_vllm() {
 # --- build-lmcache: build the aic-lmcache image (standalone, no pre-built base)
 cmd_build_lmcache() {
     AIC_BUILD_DOCKERFILE="lmcache/Dockerfile"
+    [[ -n "${AIC_BUILD_CONTEXT_BASE_WHEELS:-}" ]] || \
+        die "build-vllm needs AIC_BUILD_CONTEXT_BASE_WHEELS (a docker/base/Dockerfile --target wheels export dir); bake builds both"
     log "build-lmcache: building aic-lmcache -> ${AIC_IMAGE}"
     cmd_build
 }
@@ -4308,6 +4318,25 @@ echo "[bake] phase 1.5: building lmcache wheels for vllm context"
 # Read phase 2's lmcache cache dir, or the prune above makes this recompile
 # LMCache every run.  No --cache-to: that dir keeps a single ref, and it
 # should stay phase 2's full lmcache chain.
+
+_base_wheels_dir="\${TMPDIR}/base-wheels.\${SLURM_JOB_ID:-\$\$}"
+mkdir -p "\${_base_wheels_dir}"
+
+_basew_cache_args="$(_bake_cache_args base)"
+BUILDKIT_STEP_LOG_MAX_SIZE=-1 \
+docker buildx build --builder ${AIC_BUILDX_BUILDER} --progress=plain \
+    --output "type=local,dest=\${_base_wheels_dir}" \
+    --build-arg ROCM_ARCH="${AIC_ROCM_ARCH}" \
+    --build-arg BUILD_JOBS="${AIC_BUILD_JOBS}" \
+    --build-arg AIC_VERSION="${AIC_VERSION}" \
+    \${_basew_cache_args} \
+    ${_version_build_args} \
+    ${_secret_arg:+${_secret_arg}} \
+    --target wheels \
+    -f "${AIC_DAY_DIR}/docker/base/Dockerfile" \
+    "${AIC_DAY_DIR}"
+echo "[bake] base wheels ready: \$(ls \${_base_wheels_dir}/*.whl 2>/dev/null || echo '(none found)')"
+
 _lmc_wheels_dir="\${TMPDIR}/lmcache-wheels.\${SLURM_JOB_ID:-\$\$}"
 mkdir -p "\${_lmc_wheels_dir}"
 # Share phase 2's lmcache cache dir: --target wheels and the full lmcache image
@@ -4319,6 +4348,7 @@ BUILDKIT_STEP_LOG_MAX_SIZE=-1 \
 docker buildx build --builder ${AIC_BUILDX_BUILDER} --progress=plain \
     --output "type=local,dest=\${_lmc_wheels_dir}" \
     --build-context "base=oci-layout://\${_base_oci_dir}" \
+    --build-context "base-wheels=oci-layout://\${_base_wheels_dir}" \
     --build-arg ROCM_ARCH="${AIC_ROCM_ARCH}" \
     --build-arg BUILD_JOBS="${AIC_BUILD_JOBS}" \
     --build-arg AIC_VERSION="${AIC_VERSION}" \
@@ -4346,6 +4376,7 @@ docker buildx build --builder ${AIC_BUILDX_BUILDER} --progress=plain \
     ${_vllm_out} \
     --build-context "base=oci-layout://\${_base_oci_dir}" \
     --build-context "lmcache-wheels=\${_lmc_wheels_dir}" \
+    --build-context "base-wheels=\${_base_wheels_dir}" \
     --build-arg ROCM_ARCH="${AIC_ROCM_ARCH}" \
     --build-arg AIC_VERSION="${AIC_VERSION}" \
     --build-arg AIC_UCX_FAST="${AIC_UCX_FAST}" \
