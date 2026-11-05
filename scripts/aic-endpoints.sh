@@ -4,8 +4,8 @@
 #
 # SPDX-License-Identifier: MIT
 #
-# Host-side service discovery for the AIC stack.  SOURCED by host processes
-# (make recipes, sbatch scripts, workflow steps) that must reach a container.
+# Service discovery for the AIC stack.  SOURCED by host processes (make
+# recipes, sbatch scripts, workflow steps) that must reach a container.
 # Also runnable:
 #
 #   scripts/aic-endpoints.sh url <container> <container-port>
@@ -14,22 +14,25 @@
 #   scripts/aic-endpoints.sh fetch <url> [<json-body>]
 #   scripts/aic-endpoints.sh list
 #
-# Nothing in the stack binds a fixed host port by default.  A service that has a
-# host-side consumer is published as
+# Clients reach the stack from the aic bridge, by container name: aic_fetch for
+# a single request, aic_bridge_url for the name a containerized client should
+# use.  Containers that join another's network namespace (vllm joins
+# aic-lmcache's via `network_mode: container:`) are not on the bridge
+# themselves; both follow the chain to the container that owns the namespace.
 #
-#   "${AIC_PUBLISH_ADDR:-127.0.0.1}:${<SVC>_HOST_PORT:-}:<container-port>"
+#   AIC_FETCH_IMAGE=aic-vllm:<tag> aic_fetch "$(aic_bridge_url aic-vllm-gpu0 8000)/v1/models"
 #
-# so the host port is ephemeral (Docker picks a free one) unless <SVC>_HOST_PORT
-# pins it.  Ask Docker where it landed instead of assuming a number:
+# Only Grafana, which people open in a browser, is published to the host, as
 #
-#   url="$(aic_url aic-vllm-gpu0 8000)" || exit 1
+#   "${AIC_PUBLISH_ADDR:-127.0.0.1}:${AIC_GRAFANA_PORT:-}:3000"
+#
+# so its host port is ephemeral (Docker picks a free one) unless pinned.  Ask
+# Docker where it landed instead of assuming a number:
+#
+#   url="$(aic_url aic-grafana 3000)" || exit 1
 #
 # An ephemeral port changes whenever the publishing container is recreated, so
 # resolve after `up`/restart and never cache the result across one.
-#
-# Containers that join another's network namespace (vllm joins aic-lmcache's via
-# `network_mode: container:`) publish nothing themselves; aic_url follows the
-# chain to the container that owns the namespace.
 
 # Print the container that owns <container>'s network namespace.  Fails, naming
 # the container, if it does not exist or is not running.
@@ -159,9 +162,9 @@ except Exception as e:
 
 # aic_endpoints
 # Print a URL for every published port of every running container on the aic
-# bridge, and note which containers share a bridged container's network
-# namespace (vllm shares aic-lmcache's, so vLLM's :8000 is listed on the
-# aic-lmcache row).  Nothing here knows a container name or port.
+# bridge (by default only Grafana's), and note which containers share a bridged
+# container's network namespace, whose ports would be listed on the owner's
+# row.  Nothing here knows a container name or port.
 aic_endpoints() {
     local net="${AIC_NETWORK:-aic}" ctr line cport bind addr hostport id joined ports names
     local -a owners=()

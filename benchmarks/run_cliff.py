@@ -765,7 +765,7 @@ async def amain(args: argparse.Namespace) -> int:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--endpoint", required=True,
-                        help="OpenAI-compatible endpoint, e.g. a URL from `make endpoints`")
+                        help="OpenAI-compatible endpoint on the aic bridge, e.g. http://aic-lmcache:8000")
     parser.add_argument("--model", required=True,
                         help="served model id/path expected by the endpoint")
     parser.add_argument("--tokenizer", default=None,

@@ -77,11 +77,10 @@ docker network inspect aic >/dev/null 2>&1 || docker network create aic >/dev/nu
 
 # --- Start lmcache ---
 # vLLM joins this netns below (the @hsa<pid> IPC socket is per network namespace),
-# so lmcache publishes vLLM's port: on loopback, ephemeral host port (see aic_url).
+# so it answers on lmcache's aic-vllm alias.  Nothing is published to the host.
 echo "--- Starting lmcache (L1=1GB, pool=4096, POSIX) ---"
 docker run -d --name aic-lmcache \
     --network aic --network-alias aic-vllm \
-    -p "${AIC_PUBLISH_ADDR:-127.0.0.1}:${VLLM_HOST_PORT:-}:${VLLM_PORT}" \
     --ipc shareable \
     --device /dev/kfd --device /dev/dri \
     --ulimit nofile=1048576:1048576 \

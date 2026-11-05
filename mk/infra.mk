@@ -18,8 +18,8 @@ monitoring-down:
 monitoring-logs:
 	$(MON_COMPOSE) logs -f prometheus
 
-# Published host ports are ephemeral unless a *_HOST_PORT pins them, so ask
-# Docker where each running service landed.
+# Published host ports (only Grafana's) are ephemeral unless AIC_GRAFANA_PORT
+# pins it, so ask Docker where it landed.
 endpoints:
 	@bash "$(CURDIR)/scripts/aic-endpoints.sh" list
 

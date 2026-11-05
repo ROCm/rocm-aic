@@ -8,21 +8,22 @@ live dashboarding via Grafana.
 ## Port map
 
 The ports below are **container** ports, reachable by name on the `aic` bridge
-(for example `http://aic-lmcache:8080`). Nothing binds a fixed host port. Only
-vLLM, the LMCache HTTP API, Grafana and KVBench are published to the host, on
-`127.0.0.1` with a free port Docker picks at `up`; `make endpoints` prints the
-URLs, and scripts resolve them with `aic_url` from `scripts/aic-endpoints.sh`.
-Pin a port with `VLLM_HOST_PORT`, `LMCACHE_HTTP_HOST_PORT`, `AIC_GRAFANA_PORT`
-or `KVBENCH_HOST_PORT`, and bind beyond loopback with `AIC_PUBLISH_ADDR=0.0.0.0`.
-The ephemeral port changes when its container is recreated, so look it up again
-after a restart.
+(for example `http://aic-lmcache:8080`). Nothing binds a fixed host port, and
+only Grafana is published to the host, on `127.0.0.1` with a free port Docker
+picks at `up`; `make endpoints` prints its URL. Pin it with `AIC_GRAFANA_PORT`,
+and bind beyond loopback with `AIC_PUBLISH_ADDR=0.0.0.0`. The ephemeral port
+changes when the container is recreated, so look it up again after a restart.
 
-Prometheus is not published. Query it through Grafana (Explore), or from the
-bridge with `aic_fetch`, which sends the request from a throwaway container on
-`aic`:
+Everything else is reached from a container on the bridge: the `aic-client`
+container `make up` starts, or `aic_fetch`, which sends one request from a
+throwaway container on `aic`. vLLM shares `aic-lmcache`'s network namespace, so
+it answers as `aic-lmcache:8000`; `scripts/aic-endpoints.sh bridge-url
+<container> <port>` prints that name for any container. Prometheus can also be
+queried through Grafana (Explore).
 
 ```bash
 scripts/aic-endpoints.sh fetch 'http://aic-prometheus:9090/api/v1/query?query=up'
+docker exec aic-client curl -s http://aic-lmcache:8000/v1/models
 ```
 
 ### Single-GPU stack (1 lmcache + 1 vLLM)

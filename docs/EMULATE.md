@@ -131,9 +131,10 @@ IMAGE_NAME=rocm-aic:7.14-emulate \
   docker compose -f docker/docker-compose.yml --profile emulate up vllm-emulator
 ```
 
-Then use it like any vLLM endpoint: it listens on `:8000` on the `aic` bridge
-(`http://aic-vllm:8000`) and is published on a free `127.0.0.1` port that
-`make endpoints` prints (pin it with `VLLM_HOST_PORT`). Useful env:
+Then use it like any vLLM endpoint from a container on the `aic` bridge, where
+it listens as `http://aic-vllm-emulator:8000`; nothing is published to the host.
+`scripts/aic-endpoints.sh fetch http://aic-vllm-emulator:8000/v1/models` sends
+one request from there. Useful env:
 
 | Variable | Default | Meaning |
 | --- | --- | --- |

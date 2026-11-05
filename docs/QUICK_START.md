@@ -49,9 +49,10 @@ make up-gds-l1 \
 ## 4. Ports, and running LMCache without compose
 
 `make up` puts the containers on a private docker bridge (`aic`). The ports
-below are container ports there, and the few that reach the host are published
-on `127.0.0.1` with a free port Docker picks (`make endpoints` prints them), so
-the stack never claims a fixed host port. If your environment offers only host
+below are container ports there, reached by name from other containers on the
+bridge (`aic-client`, which `make up` starts); only Grafana is published, on
+`127.0.0.1` with a free port Docker picks (`make endpoints` prints it), so the
+stack never claims a fixed host port. If your environment offers only host
 networking (or you run `lmcache server` by hand), the processes share the host's
 port space and every port below must be chosen explicitly.
 
