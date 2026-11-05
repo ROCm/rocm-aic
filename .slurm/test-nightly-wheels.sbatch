@@ -47,13 +47,16 @@ REPO="${SLURM_SUBMIT_DIR:-$(cd "${SCRIPT_DIR}/.." && pwd)}"
 LOGDIR="${REPO}/logs/${SLURM_JOB_ID:-manual-wheel-test}"
 mkdir -p "${LOGDIR}"
 exec >>"${LOGDIR}/wheel-test.out" 2>&1
+# The submitter's pass/fail signal: SPUR's sacct state and exit code are not
+# reliable, and a job killed before this point leaves no file at all.
+trap 'echo "$?" > "${LOGDIR}/wheel-test.exit"' EXIT
 
 log() { printf '[wheel-test] %s\n' "$*"; }
 die() { printf '[wheel-test] ERROR: %s\n' "$*" >&2; exit 1; }
 
 NIGHTLY_TAG="${NIGHTLY_TAG:-nightly}"
 GH_RELEASE_BASE="https://github.com/ROCm/rocm-aic/releases/download/${NIGHTLY_TAG}"
-AIC_IMAGE_DIR="${AIC_IMAGE_DIR:-/shared_nfs/${USER}/rocm-aic/images}"
+AIC_IMAGE_DIR="${AIC_IMAGE_DIR:-${AIC_SHARED_NFS:-/shared_nfs}/rocm-aic/images}"
 HF_HOME="${HF_HOME:-/shared_nfs/huggingface}"
 VLLM_MODEL="${VLLM_MODEL:-Qwen/Qwen2.5-14B-Instruct-1M}"
 SKIP_ENGINE_INIT="${SKIP_ENGINE_INIT:-0}"
@@ -61,11 +64,11 @@ SKIP_ENGINE_INIT="${SKIP_ENGINE_INIT:-0}"
 # The latest build: its tarball, or the .ref to its registry copy.
 # shellcheck source=.slurm/image-dist-lib.sh
 source "${REPO}/.slurm/image-dist-lib.sh"
-_art="$(aic_image_artifact "${AIC_IMAGE_DIR}" 'rocm-aic-*')" || _art=""
+_art="$(aic_image_artifact "${AIC_IMAGE_DIR}" 'aic-vllm-*')" || _art=""
 # Resolve the AIC image: prefer caller-set AIC_IMAGE, else take it from the
 # latest build (mirrors how run-cliff.sbatch resolves it).
 if [[ -z "${AIC_IMAGE:-}" ]]; then
-    [[ -n "${_art}" ]] || die "no rocm-aic build artifact found under ${AIC_IMAGE_DIR}"
+    [[ -n "${_art}" ]] || die "no aic-vllm build artifact found under ${AIC_IMAGE_DIR}"
     if [[ "${_art}" == *.ref ]]; then
         # The first name the build gave the image.
         read -r _ _ AIC_IMAGE _ < "${_art}" || die "cannot read ${_art}"
@@ -73,7 +76,7 @@ if [[ -z "${AIC_IMAGE:-}" ]]; then
         # Derive image name:tag from the tarball basename (mirrors run-build-distribute.sh).
         _bn="$(basename "${_art}")"
         _bn="${_bn%.tar*}"
-        AIC_IMAGE="${_bn/rocm-aic-/rocm-aic:}"
+        AIC_IMAGE="${_bn/aic-vllm-/aic-vllm:}"
     fi
 fi
 
@@ -129,6 +132,12 @@ cat >"${INNER_SCRIPT}" <<'INNER'
 #!/bin/bash
 set -uo pipefail
 fail=0
+# Server logs go to a bind mount the job copies into its log dir, so the full
+# text outlives the container.
+LOGS="${INNER_LOG_DIR:-/tmp}"
+# What every AIC deployment runs (docker-compose.yml VLM_ATTENTION_BACKEND, and
+# the cliff, accuracy and capture jobs), so these numbers compare with theirs.
+ATTN_BACKEND="${ATTN_BACKEND:-TRITON_ATTN}"
 note()  { printf '[wheel-inner] %s\n' "$*"; }
 check() {
     local d="$1"; shift
@@ -143,6 +152,9 @@ check() {
 
 note "host: $(hostname) arch: $(uname -m)"
 note "python: $(python3 --version 2>&1)"
+# The readiness probes below discard curl's stderr, so without curl a server
+# that came up would look like one that never did.
+command -v curl >/dev/null || { note "FAIL no curl in this image; rebuild it"; exit 1; }
 
 # GPU visible?
 gfx="$(rocminfo 2>/dev/null | grep -om1 'gfx[0-9a-z]*' || true)"
@@ -153,23 +165,43 @@ else
 fi
 
 # Install wheels into a fresh venv so we don't accidentally rely on the
-# image's pre-installed versions.
-note "creating venv /tmp/wheel-test-venv..."
-python3 -m venv /tmp/wheel-test-venv
+# image's pre-installed versions.  --system-site-packages carries the image's
+# PyTorch over, which isn't in the nightly release.  A venv that cannot be
+# created must stop the test: carrying on installs the wheels into the image.
+note "creating venv /tmp/wheel-test-venv (system site-packages)..."
+python3 -m venv --system-site-packages /tmp/wheel-test-venv \
+    || { note "FAIL venv"; exit 1; }
 source /tmp/wheel-test-venv/bin/activate
-
-# Carry the PyTorch install from the image into the venv (symlink site-packages
-# so we don't need to re-download PyTorch, which isn't in the nightly release).
-# We use --system-site-packages so torch, torchvision, etc. are inherited.
-note "re-creating venv with system site-packages..."
-python3 -m venv --system-site-packages /tmp/wheel-test-venv
-source /tmp/wheel-test-venv/bin/activate
+# The image puts its own NIXL on PYTHONPATH, ahead of every site-packages, and
+# its libraries and plugins on the loader path: drop them, or they shadow the
+# nixl_rocm wheel under test.
+_drop_nixl() {
+    local IFS=: p; local -a keep=()
+    for p in $1; do [[ "${p}" == /opt/nixl/* ]] || keep+=("${p}"); done
+    printf '%s' "${keep[*]}"
+}
+export PYTHONPATH="$(_drop_nixl "${PYTHONPATH:-}")"
+export LD_LIBRARY_PATH="$(_drop_nixl "${LD_LIBRARY_PATH:-}")"
+unset NIXL_PLUGIN_DIR
 
 note "installing nightly wheels from /wheels/..."
-# Allow deps so transitive requirements (e.g. triton_kernels from amd_aiter)
-# are satisfied; system site-packages satisfy torch/ROCm so nothing large is
-# re-downloaded.  Use --no-index so pip only looks at the wheel dir + system.
-pip install --quiet /wheels/*.whl || { note "FAIL pip install"; fail=1; }
+# The image already carries every one of these packages, at the same version
+# strings, so a plain install reports "already satisfied" and tests the image
+# instead of the wheels.  --ignore-installed puts them in the venv regardless;
+# --no-deps --no-index because the image supplies the dependencies and the
+# compute node has no index to reach.
+pip install --quiet --no-index --no-deps --ignore-installed /wheels/*.whl \
+    || { note "FAIL pip install"; fail=1; }
+check "wheels shadow the image" python3 -c "
+import importlib.util, pathlib, sys
+mods = ['vllm', 'aiter', 'lmcache', 'nixl_rocm']
+if list(pathlib.Path('/wheels').glob('flash_attn-*.whl')):
+    mods.append('flash_attn')
+bad = [m for m in mods
+       if not importlib.util.find_spec(m).origin.startswith(sys.prefix + '/')]
+assert not bad, f'imported from the image, not the wheels: {bad}'
+print('from', sys.prefix, ':', ' '.join(mods))
+"
 
 # Import checks
 check "torch GPU" python3 -c "
@@ -205,6 +237,7 @@ if candidates:
 
 llm = LLM(
     model=model,
+    attention_backend='${ATTN_BACKEND}',
     max_model_len=8192,
     gpu_memory_utilization=0.85,
     dtype='auto',
@@ -239,7 +272,7 @@ if [[ "${SKIP_MP_TEST:-0}" != "1" && -n "${VLLM_MODEL:-}" ]]; then
         --eviction-policy LRU \
         --max-gpu-workers 1 \
         --worker-reap-timeout-seconds 60 \
-        >/tmp/lmcache-mp.log 2>&1 &
+        >"${LOGS}/lmcache-mp.log" 2>&1 &
     LMCACHE_PID=$!
     note "  lmcache server pid=${LMCACHE_PID}"
 
@@ -253,7 +286,7 @@ if [[ "${SKIP_MP_TEST:-0}" != "1" && -n "${VLLM_MODEL:-}" ]]; then
     done
     if [[ "${_lmc_ready}" -ne 1 ]]; then
         note "FAIL lmcache server never became healthy"
-        cat /tmp/lmcache-mp.log | sed 's/^/           /' || true
+        cat "${LOGS}/lmcache-mp.log" | sed 's/^/           /' || true
         kill "${LMCACHE_PID}" 2>/dev/null || true
         fail=1
     else
@@ -263,12 +296,13 @@ if [[ "${SKIP_MP_TEST:-0}" != "1" && -n "${VLLM_MODEL:-}" ]]; then
         KV_CFG='{"kv_connector":"LMCacheMPConnector","kv_role":"kv_both","kv_connector_extra_config":{"lmcache.mp.host":"tcp://localhost","lmcache.mp.port":'"${LMCACHE_PORT}"',"lmcache.mp.heartbeat_interval":60}}'
         VLLM_LOGGING_LEVEL=WARNING python3 -m vllm.entrypoints.openai.api_server \
             --model "${model}" \
+            --attention-backend "${ATTN_BACKEND}" \
             --max-model-len 8192 \
             --gpu-memory-utilization 0.85 \
             --dtype auto \
             --port "${VLLM_PORT}" \
             --kv-transfer-config "${KV_CFG}" \
-            >/tmp/vllm-mp.log 2>&1 &
+            >"${LOGS}/vllm-mp.log" 2>&1 &
         VLLM_PID=$!
         note "  vllm pid=${VLLM_PID}"
 
@@ -283,7 +317,7 @@ if [[ "${SKIP_MP_TEST:-0}" != "1" && -n "${VLLM_MODEL:-}" ]]; then
 
         if [[ "${_vllm_ready}" -ne 1 ]]; then
             note "FAIL vllm (MP mode) never became ready"
-            tail -30 /tmp/vllm-mp.log | sed 's/^/           /' || true
+            tail -30 "${LOGS}/vllm-mp.log" | sed 's/^/           /' || true
             fail=1
         else
             note "  vllm (MP mode) ready"
@@ -730,7 +764,7 @@ PYEOF
             --l1-size-gb 128 --eviction-policy LRU --max-gpu-workers 1 \
             --worker-reap-timeout-seconds 30 \
             --l2-adapter "{\"type\":\"fs_native\",\"base_path\":\"${T_L2_DIR}\"}" \
-            >>/tmp/lmcache-tier.log 2>&1 &
+            >>"${LOGS}/lmcache-tier.log" 2>&1 &
         echo $!
     }
 
@@ -742,12 +776,13 @@ PYEOF
         VLLM_LOGGING_LEVEL=WARNING VLLM_SERVER_DEV_MODE=1 \
         python3 -m vllm.entrypoints.openai.api_server \
             --model "${t_model}" \
+            --attention-backend "${ATTN_BACKEND}" \
             --max-model-len 40960 \
             --gpu-memory-utilization 0.85 \
             --dtype auto \
             --port "${T_VLLM_PORT}" \
             --kv-transfer-config "${T_KV_CFG}" \
-            >>/tmp/vllm-tier.log 2>&1 &
+            >>"${LOGS}/vllm-tier.log" 2>&1 &
         echo $!
     }
 
@@ -757,14 +792,14 @@ PYEOF
     LMC_PID=$(start_lmc)
     if ! wait_lmc; then
         note "FAIL tier: lmcache never became ready"
-        tail -20 /tmp/lmcache-tier.log | sed 's/^/  /' || true
+        tail -20 "${LOGS}/lmcache-tier.log" | sed 's/^/  /' || true
         _tier_ok=0; fail=1
     else
         note "  tier: lmcache ready (pid=${LMC_PID})"
         VLLM_T_PID=$(start_vllm_t)
         if ! wait_vllm_t; then
             note "FAIL tier: vllm never became ready"
-            tail -30 /tmp/vllm-tier.log | sed 's/^/  /' || true
+            tail -30 "${LOGS}/vllm-tier.log" | sed 's/^/  /' || true
             _tier_ok=0; fail=1
         else
             note "  tier: vllm ready (pid=${VLLM_T_PID})"
@@ -794,7 +829,7 @@ PYEOF
                     fi
                 else
                     note "  [lmc-debug] no response on :9093 or :9090"
-                    tail -3 /tmp/lmcache-tier.log 2>/dev/null | sed 's/^/    [lmc-log] /' || true
+                    tail -3 "${LOGS}/lmcache-tier.log" 2>/dev/null | sed 's/^/    [lmc-log] /' || true
                 fi
             }
 
@@ -865,23 +900,33 @@ chmod +x "${INNER_SCRIPT}"
 # published wheels via bind-mount).
 # ---------------------------------------------------------------------------
 log "running wheel test in container ${AIC_IMAGE}..."
-GPU_IDX="${ROCR_VISIBLE_DEVICES:-${SLURM_JOB_GPUS:-0}}"
 # Job-local L2 disk dir for the tier benchmark (node-local /tmp, not NFS).
 HOST_L2_DIR="/tmp/tier-l2-${SLURM_JOB_ID:-manual}"
 mkdir -p "${HOST_L2_DIR}"
-# On SPUR, SLURM_JOB_GPUS is the allocated GPU device index.
+# The container's server logs: node-local, because root in the container
+# cannot write to root-squashed NFS.  Copied into LOGDIR afterwards.
+HOST_LOG_DIR="/tmp/wheel-test-logs-${SLURM_JOB_ID:-manual}"
+mkdir -p "${HOST_LOG_DIR}"
+# --device /dev/dri exposes every GPU on the node; these pin the container to
+# the job's allocation.
+export AIC_SPUR_CLUSTER="${AIC_SPUR_CLUSTER:-1}"
+# shellcheck source=monitoring/monitoring-lib.sh
+source "${REPO}/monitoring/monitoring-lib.sh"
+aic_resolve_gpu_visibility \
+    || die "could not resolve the GPU allocation (refusing to default to GPU 0)"
 docker run --rm \
     --device=/dev/kfd --device=/dev/dri \
     --security-opt seccomp=unconfined \
     --group-add video \
-    --cap-add CAP_SYS_ADMIN \
     --cap-add SYS_PTRACE \
     --cap-add IPC_LOCK \
     --ulimit nofile=1048576:1048576 \
     --ulimit memlock=-1:-1 \
     --ipc shareable \
     --shm-size 32g \
-    -e ROCR_VISIBLE_DEVICES="${GPU_IDX}" \
+    -e ROCR_VISIBLE_DEVICES="${AIC_ROCR_VISIBLE}" \
+    -e HIP_VISIBLE_DEVICES="${AIC_HIP_VISIBLE}" \
+    -e CUDA_VISIBLE_DEVICES="${AIC_HIP_VISIBLE}" \
     -e HF_HOME=/hf \
     -e HF_HUB_OFFLINE=1 \
     -e TRANSFORMERS_OFFLINE=1 \
@@ -898,12 +943,16 @@ docker run --rm \
     -v "${WHEEL_DIR}":/wheels:ro \
     -v "${INNER_SCRIPT}":/inner-wheel-test.sh:ro \
     -v "${HOST_L2_DIR}":/hostdisk \
+    -v "${HOST_LOG_DIR}":/joblogs \
+    -e INNER_LOG_DIR=/joblogs \
     --entrypoint bash \
     "${AIC_IMAGE}" \
     /inner-wheel-test.sh
 rc=$?
 
-log "log: ${LOGDIR}/wheel-test.out"
+cp -r "${HOST_LOG_DIR}/." "${LOGDIR}/" \
+    || log "WARNING: could not copy server logs from ${HOST_LOG_DIR}"
+log "log: ${LOGDIR}/wheel-test.out (server logs: ${LOGDIR}/*.log)"
 if [[ ${rc} -eq 0 ]]; then
     log "=== WHEEL TEST PASSED ==="
 else
