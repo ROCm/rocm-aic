@@ -16,9 +16,9 @@ set -Eeuo pipefail
 # The generated metrics-page/index.html is copied back to the runner working
 # directory so the workflow can upload it as an artifact and deploy to gh-pages.
 #
-# Uses the rocm-aic image tarball left by spur-dist-build.sh for the same SHA
-# (same TARBALL_DIR convention).  Set AIC_SMOKE_USE_REGISTRY=1 to pull from
-# a registry instead.
+# Uses the rocm-aic image artifact (tarball or .ref) left by spur-dist-build.sh
+# for the same SHA (same TARBALL_DIR convention).  Set AIC_SMOKE_USE_REGISTRY=1
+# to pull from a registry instead.
 
 # errexit exits without saying where; report it.  Only the line number and
 # function call stack are printed, never the command text, which can carry
@@ -45,6 +45,7 @@ AIC_SHARED_NFS="${AIC_SHARED_NFS:?AIC_SHARED_NFS must be set (e.g. via GitHub re
 AIC_CI_STORAGE_ROOT="${AIC_CI_STORAGE_ROOT:-}"
 AIC_SMOKE_USE_REGISTRY="${AIC_SMOKE_USE_REGISTRY:-0}"
 AIC_SLURM_ACCOUNT="${AIC_SLURM_ACCOUNT:-}"
+AIC_SPUR_PARTITION="${AIC_SPUR_PARTITION:-amd-spur-v2}"
 REPO="https://github.com/ROCm/rocm-aic.git"
 
 _err_delegate ssh -o ServerAliveInterval=30 -o ServerAliveCountMax=4 "${AIC_SPUR_HOST}" env \
@@ -54,6 +55,7 @@ _err_delegate ssh -o ServerAliveInterval=30 -o ServerAliveCountMax=4 "${AIC_SPUR
     AIC_SHARED_NFS="${AIC_SHARED_NFS}" \
     AIC_CI_STORAGE_ROOT="${AIC_CI_STORAGE_ROOT}" \
     AIC_SLURM_ACCOUNT="${AIC_SLURM_ACCOUNT}" \
+    AIC_SPUR_PARTITION="${AIC_SPUR_PARTITION}" \
     AIC_SMOKE_USE_REGISTRY="${AIC_SMOKE_USE_REGISTRY}" \
     bash << 'REMOTE'
 # -E inherit ERR trap in functions and subshells,
@@ -155,15 +157,12 @@ mkdir -p "${METRICS_DIR}" "${AIC_METRICS_PAGE_DIR}"
 if [[ "${AIC_SMOKE_USE_REGISTRY}" == "1" ]]; then
     docker pull "${AIC_IMAGE}"
 else
-    echo "=== Loading image from ${TARBALL_DIR} ==="
-    img_base="$(printf '%s' "${AIC_IMAGE}" | tr '/:' '--')"
-    tarball="$(find "${TARBALL_DIR}" -maxdepth 1 -name "${img_base}-*.tar.zst" -o -name "${img_base}-*.tar.gz" -o -name "${img_base}-*.tar" 2>/dev/null | head -1)"
-    [[ -n "${tarball}" ]] || { echo "ERROR: no tarball for ${AIC_IMAGE} in ${TARBALL_DIR}" >&2; ls -la "${TARBALL_DIR}" >&2 || true; exit 1; }
-    case "${tarball}" in
-        *.tar.zst) zstd -dc "${tarball}" | docker load ;;
-        *.tar.gz)  gzip -dc "${tarball}" | docker load ;;
-        *.tar)     docker load -i "${tarball}" ;;
-    esac
+    echo "=== Fetching image from ${TARBALL_DIR} ==="
+    # shellcheck source=.slurm/image-dist-lib.sh
+    source "${WORKDIR}/.slurm/image-dist-lib.sh"
+    artifact="$(aic_image_artifact "${TARBALL_DIR}" "$(aic_image_stem "${AIC_IMAGE}")-*")" \
+        || { echo "ERROR: no build artifact for ${AIC_IMAGE} in ${TARBALL_DIR}" >&2; ls -la "${TARBALL_DIR}" >&2 || true; exit 1; }
+    aic_image_fetch cpu-smoke "${AIC_IMAGE}" "${artifact}"
 fi
 
 # ---------------------------------------------------------------------------
@@ -216,7 +215,7 @@ HF_HOME="${HF_HOME}" IMAGE_NAME="${AIC_IMAGE}" \
 # ---------------------------------------------------------------------------
 echo "=== Waiting for vLLM emulator /health ==="
 for i in $(seq 1 24); do
-    if curl -sf http://localhost:8000/health >/dev/null 2>&1; then
+    if aic_probe aic-vllm-emulator 8000 /health; then
         echo "vLLM emulator healthy after ~$((i * 8))s"
         break
     fi
@@ -227,6 +226,9 @@ for i in $(seq 1 24); do
     fi
     sleep 8
 done
+# Requests go from the aic bridge, out of the image already loaded above.
+VLLM_URL=http://aic-vllm-emulator:8000
+export AIC_FETCH_IMAGE="${AIC_IMAGE}"
 
 # ---------------------------------------------------------------------------
 # 5. Issue 3 LLM prompts; assert non-empty completions
@@ -238,9 +240,8 @@ PROMPTS=(
     "ROCm stands for"
 )
 for prompt in "${PROMPTS[@]}"; do
-    response=$(curl -sf http://localhost:8000/v1/completions \
-        -H 'Content-Type: application/json' \
-        -d "{\"model\":\"${VLLM_CPU_MODEL:-facebook/opt-125m}\",\"prompt\":\"${prompt}\",\"max_tokens\":20}" \
+    response=$(aic_fetch "${VLLM_URL}/v1/completions" \
+        "{\"model\":\"${VLLM_CPU_MODEL:-facebook/opt-125m}\",\"prompt\":\"${prompt}\",\"max_tokens\":20}" \
     )
     text=$(echo "${response}" | python3 -c "import sys,json; print(json.load(sys.stdin)['choices'][0]['text'])" 2>/dev/null || true)
     if [[ -z "${text}" ]]; then
@@ -264,20 +265,27 @@ monitoring_healthcheck
 # 7. Scrape all metric endpoints; generate HTML reference page
 # ---------------------------------------------------------------------------
 echo "=== Scraping metrics endpoints ==="
-declare -A EXPORTER_PORTS=(
-    [node_exporter]=9100
-    [nvme_exporter]=9998
-    [rdma_exporter]=9879
-    [vllm]=8000
-    [prometheus]=9090
+# Every target is scraped from a client container on the aic bridge by name; the
+# exporters and Prometheus publish no host port.  The AIC images carry python3
+# but no curl, so the client fetches with urllib.
+declare -A EXPORTER_URLS=(
+    [node_exporter]=http://aic-node-exporter:9100
+    [nvme_exporter]=http://aic-nvme-exporter:9998
+    [rdma_exporter]=http://aic-rdma-exporter:9879
+    [vllm]=http://aic-vllm:8000
+    [prometheus]=http://aic-prometheus:9090
 )
 METRICS_ARGS=()
-for name in "${!EXPORTER_PORTS[@]}"; do
-    port="${EXPORTER_PORTS[$name]}"
+for name in "${!EXPORTER_URLS[@]}"; do
     outfile="/tmp/metrics_${name}.txt"
-    curl -sf "http://localhost:${port}/metrics" > "${outfile}" 2>/dev/null || true
+    # Body to the file, stderr captured so a failure is reported in one line.
+    err="$(docker run --rm --network aic --entrypoint python3 "${AIC_IMAGE}" -c \
+        'import sys, urllib.request; sys.stdout.buffer.write(urllib.request.urlopen(sys.argv[1], timeout=10).read())' \
+        "${EXPORTER_URLS[$name]}/metrics" 2>&1 > "${outfile}")" || true
     if [[ -s "${outfile}" ]]; then
         METRICS_ARGS+=("--source" "${name}:${outfile}")
+    else
+        echo "WARN: no metrics scraped from ${name} (${EXPORTER_URLS[$name]}): ${err##*$'\n'}" >&2
     fi
 done
 
@@ -303,7 +311,7 @@ _err_delegate srun \
     --cpus-per-task=8 \
     --mem=16G \
     --time=00:30:00 \
-    --partition=amd-spur \
+    --partition="${AIC_SPUR_PARTITION}" \
     --gres= \
     --gpus=1 \
     bash "${SRUN_SCRIPT}" \

@@ -42,10 +42,22 @@ export PATH="/usr/local/bin:${PATH}"
 : "${AIC_METRICS_DIR:=}"
 : "${MON_DIR:=}"
 : "${MON_COMPOSE:=}"
-: "${AIC_HSA_SNOOP_PID_MODE:=host}"
+# Single `=`, not `:=`: an explicitly empty value means "no PID sharing" and
+# must survive.  With `:=` it was silently rewritten to "host", so a caller
+# that deliberately opted out of PID sharing got pid:host instead.
+: "${AIC_HSA_SNOOP_PID_MODE=host}"
 # Provide a fallback logger only if the caller has not defined one (run-cliff.sbatch
 # and run-build-distribute.sh each define their own prefixed log()).
 declare -F log >/dev/null 2>&1 || log() { printf '[monitoring] %s\n' "$*" >&2; }
+
+# aic_fetch, for the Prometheus queries below.
+# shellcheck source=scripts/aic-endpoints.sh
+source "${BASH_SOURCE[0]%/*}/../scripts/aic-endpoints.sh"
+
+# Prometheus publishes no host port; query it by name from the aic bridge, out
+# of the AIC image the caller already has, so no query pulls an image.
+MON_PROM_URL=http://aic-prometheus:9090
+_mon_fetch() { AIC_FETCH_IMAGE="${AIC_IMAGE}" AIC_FETCH_TIMEOUT=5 aic_fetch "$@"; }
 
 # --- GPU visibility resolution ------------------------------------------------
 # Resolve GPU visibility for this job and export the values the compose files and
@@ -176,7 +188,8 @@ mon_profile() {  # echo the compose --profile args for the exporter fleet
 
 # Compose service container_names -- used to sweep up any leftovers from a
 # crashed run before/after a compose up/down (compose down handles the rest).
-MON_CONTAINERS=(aic-prometheus aic-node-exporter aic-amdgpu-exporter
+MON_CONTAINERS=(aic-prometheus aic-grafana aic-loki aic-alloy
+                aic-node-exporter aic-amdgpu-exporter
                 aic-nvme-exporter aic-rdma-exporter aic-hsa-snoop
                 aic-vllm-emulator)
 
@@ -203,52 +216,62 @@ start_monitoring() {
             && compose_files+=(-f "${_spur_override}") \
             || log "monitoring: WARN spur override ${_spur_override} not found"
     fi
-    AIC_METRICS_DIR="${AIC_METRICS_DIR}" PROM_UID="$(id -u)" PROM_GID="$(id -g)" \
-        IMAGE_NAME="${AIC_IMAGE}" AIC_HSA_SNOOP_PID_MODE="${AIC_HSA_SNOOP_PID_MODE}" \
-        docker compose "${compose_files[@]}" --profile monitoring-base "${profile[@]}" up -d \
+    # vllm carries no profile and client is in monitoring-base, so a bare `up`
+    # would start both; the caller owns those.  Name the services instead of
+    # relying on profiles alone.  `config` needs the same env as `up`: unset,
+    # AIC_HSA_SNOOP_PID_MODE makes hsa-snoop depend on the inactive lmcache
+    # service and the whole project fails validation.
+    local -a env=(AIC_METRICS_DIR="${AIC_METRICS_DIR}" PROM_UID="$(id -u)" PROM_GID="$(id -g)"
+                  IMAGE_NAME="${AIC_IMAGE}" AIC_HSA_SNOOP_PID_MODE="${AIC_HSA_SNOOP_PID_MODE}")
+    local -a dc=(docker compose "${compose_files[@]}" --profile monitoring-base "${profile[@]}")
+    local -a svc
+    mapfile -t svc < <(env "${env[@]}" "${dc[@]}" config --services \
+        | grep -vxE "vllm|client${AIC_MON_SKIP_SERVICES:+|${AIC_MON_SKIP_SERVICES// /|}}")
+    # An empty list would make `up` start every active service, vllm included.
+    if [[ "${#svc[@]}" -eq 0 ]]; then
+        log "monitoring: no services resolved from compose config (continuing without metrics)"
+        return 0
+    fi
+    env "${env[@]}" "${dc[@]}" up -d --no-deps "${svc[@]}" \
         || log "monitoring: compose up failed (continuing without metrics)"
 }
 
 stop_monitoring() {
     [[ "${AIC_MONITORING}" == "1" ]] || return 0
     log "stopping metrics capture (TSDB retained at ${AIC_METRICS_DIR})"
-    if have_compose && [[ -f "${MON_COMPOSE}" ]]; then
-        local -a profile; mapfile -t profile < <(mon_profile)
-        local -a compose_files=(-f "${MON_COMPOSE}")
-        [[ "${AIC_SPUR_CLUSTER:-0}" == "1" ]] && {
-            local _spur_override="${MON_COMPOSE%/*}/docker-compose.spur.yml"
-            [[ -f "${_spur_override}" ]] && compose_files+=(-f "${_spur_override}")
-        }
-        AIC_METRICS_DIR="${AIC_METRICS_DIR}" IMAGE_NAME="${AIC_IMAGE}" AIC_HSA_SNOOP_PID_MODE="${AIC_HSA_SNOOP_PID_MODE}" \
-            docker compose "${compose_files[@]}" --profile monitoring-base "${profile[@]}" down >/dev/null 2>&1 || true
-    fi
-    docker rm -f "${MON_CONTAINERS[@]}" >/dev/null 2>&1 || true
+    # Not `docker compose down`: it is project-wide, so it also stops vllm (no
+    # profile) while a test is still serving, and blocks on vLLM's unreaped
+    # EngineCore children until the job's time limit.  Removing exactly the
+    # containers start_monitoring brought up is bounded and enough.  Stop first
+    # so prometheus gets SIGTERM and closes its WAL cleanly; rm -f alone kills.
+    timeout 60 docker stop -t 10 "${MON_CONTAINERS[@]}" >/dev/null 2>&1 || true
+    timeout 60 docker rm -f "${MON_CONTAINERS[@]}" >/dev/null 2>&1 || true
 }
 
 # --- Health check + TSDB summary (used by the build smoke-test) ---------------
-# curl one exporter's /metrics and report whether it serves its expected series.
+# Fetch one exporter's /metrics and report whether it serves its expected series.
 # Purely informational: prints OK/WARN and returns 0/1, never exits.
-# $1=display name  $2=port  $3=extended-regex the metrics should contain.
+# $1=display name  $2=base URL  $3=extended-regex the metrics should contain.
 _check_endpoint() {
-    local name="$1" port="$2" re="$3" body n
-    body="$(curl -fsS --max-time 3 "http://127.0.0.1:${port}/metrics" 2>/dev/null)" || {
-        log "  WARN ${name} :${port} -- /metrics not responding"; return 1; }
+    local name="$1" url="$2" re="$3" body n
+    body="$(_mon_fetch "${url}/metrics" 2>/dev/null)" || {
+        log "  WARN ${name} ${url} -- /metrics not responding"; return 1; }
     n="$(printf '%s\n' "${body}" | grep -cE "${re}" 2>/dev/null || true)"
     if [[ "${n:-0}" -gt 0 ]]; then
-        log "  OK   ${name} :${port} -- ${n} ${re} series"; return 0
+        log "  OK   ${name} ${url} -- ${n} ${re} series"; return 0
     fi
-    log "  WARN ${name} :${port} -- responding but no ${re} series"; return 1
+    log "  WARN ${name} ${url} -- responding but no ${re} series"; return 1
 }
 
 # Query prometheus for an exporter job's scrape status.  Returns 0 if at least
 # one instance is up=1; logs OK/WARN.  Purely informational, never exits.
 # Exporters live on aic-network only (no host port); prometheus is the proxy.
-# $1=display name  $2=prometheus job name  $3=optional series regex to spot-check
+# $1=prometheus base URL  $2=display name  $3=prometheus job name
+# $4=optional series regex to spot-check
 _check_job() {
-    local name="$1" job="$2" re="${3:-}"
-    local prom="http://127.0.0.1:${AIC_PROM_PORT:-9090}"
+    local prom="$1" name="$2" job="$3" re="${4:-}"
     local result n_up
-    result="$(curl -fsS --max-time 3 \
+    result="$(_mon_fetch \
         "${prom}/api/v1/query?query=up%7Bjob%3D%22${job}%22%7D" 2>/dev/null)" || {
         log "  WARN ${name} -- prometheus not reachable"; return 1; }
     n_up="$(printf '%s' "${result}" | python3 -c "
@@ -260,7 +283,7 @@ print(sum(1 for r in d.get('data',{}).get('result',[]) if r.get('value',['','0']
         if [[ -n "${re}" ]]; then
             # Spot-check series count from prometheus metric store
             local n_series
-            n_series="$(curl -fsS --max-time 3 \
+            n_series="$(_mon_fetch \
                 "${prom}/api/v1/query?query=count%28${re}%7Bjob%3D%22${job}%22%7D%29" \
                 2>/dev/null \
                 | python3 -c "
@@ -278,31 +301,31 @@ print(int(r[0]['value'][1]) if r else 0)
     log "  WARN ${name} (job=${job} up=0)"; return 1
 }
 
-# Check every known exporter via prometheus scrape status.
-# Prometheus is the only service with a host port (9090); all exporters are on
-# aic-network only and are reached by prometheus via container name.
+# Check every known exporter via prometheus scrape status.  Prometheus reaches
+# the exporters by container name, and this reaches prometheus the same way.
 monitoring_healthcheck() {
     log "exporter health check (via prometheus scrape status):"
-    # Direct check for prometheus itself (it has a host port)
-    _check_endpoint prometheus "${AIC_PROM_PORT:-9090}" '^prometheus_' || true
+    local prom="${MON_PROM_URL}"
+    # Direct check for prometheus itself
+    _check_endpoint prometheus "${prom}" '^prometheus_' || true
     # All other exporters: checked via prometheus up metric
-    _check_job node-exporter   node_exporter        || true
-    _check_job amdgpu-exporter amd_metrics_exporter || true
-    _check_job nvme-exporter   nvme_exporter        || true
-    _check_job rdma-exporter   rdma_exporter        || true
-    _check_job hsa-snoop       hsa_snoop            || true
+    _check_job "${prom}" node-exporter   node_exporter        || true
+    _check_job "${prom}" amdgpu-exporter amd_metrics_exporter || true
+    _check_job "${prom}" nvme-exporter   nvme_exporter        || true
+    _check_job "${prom}" rdma-exporter   rdma_exporter        || true
+    _check_job "${prom}" hsa-snoop       hsa_snoop            || true
 }
 
 # After a scrape window, ask Prometheus which targets are up (confirms data
 # actually landed in the TSDB) and print the TSDB path/size.  Uses the AIC
 # image's python3 to parse the query JSON (no jq on the host).  Informational.
 monitoring_tsdb_summary() {
-    local prom="http://127.0.0.1:${AIC_PROM_PORT:-9090}"
     log "Prometheus scrape targets (query up):"
-    if ! curl -fsS --max-time 3 "${prom}/-/ready" >/dev/null 2>&1; then
-        log "  WARN Prometheus not ready at ${prom}"; return 0
+    if ! _mon_fetch "${MON_PROM_URL}/-/ready" >/dev/null 2>&1; then
+        log "  WARN Prometheus not ready at ${MON_PROM_URL}"; return 0
     fi
-    docker run --rm --network host -e PROM_URL="${prom}" \
+    # A client on the aic bridge, addressing prometheus by name.
+    docker run --rm --network aic -e PROM_URL="${MON_PROM_URL}" \
         --entrypoint python3 "${AIC_IMAGE}" -c '
 import json, os, sys, urllib.request
 prom = os.environ["PROM_URL"]

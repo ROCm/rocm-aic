@@ -31,14 +31,14 @@ endif
 endif
 
 ifeq ($(AIC_SPUR_CLUSTER),1)
-_SPUR_COMMON_ARGS := --partition=amd-spur --constraint= --gres= --gpus=$(AIC_CLIFF_GPUS) \
+_SPUR_COMMON_ARGS := --partition=$(AIC_SPUR_PARTITION) --constraint= --gres= --gpus=$(AIC_CLIFF_GPUS) \
     $(if $(AIC_CLIFF_NODE),--nodelist=$(AIC_CLIFF_NODE),)
 _CLIFF_SUBMIT     = $(_CLIFF_STRIP) sbatch \
     $(_SPUR_COMMON_ARGS) $(1) .slurm/run-cliff.sbatch 2>&1 | \
     tee /dev/stderr | grep -oE '[0-9]+$$' | tail -1
 # GPUs reserved for a SPUR kvbench submit.  The KVBench cliff drives no GPU,
 # but SPUR refuses any submission that carries no GPU request at all.
-_KVBENCH_SBATCH_ARGS := --partition=amd-spur --constraint= --gpus=1 \
+_KVBENCH_SBATCH_ARGS := --partition=$(AIC_SPUR_PARTITION) --constraint= --gpus=1 \
     $(if $(AIC_KVBENCH_NODE),--nodelist=$(AIC_KVBENCH_NODE),)
 _KVBENCH_SUBMIT := $(_CLIFF_STRIP) sbatch \
     $(_KVBENCH_SBATCH_ARGS) $(1) .slurm/run-kvbench-cliff.sbatch 2>&1 | \
@@ -63,7 +63,7 @@ endif
 # dist-build-base/vllm/lmcache also require the corresponding Slurm subcommands
 # (build-base, build-vllm, build-lmcache) which are implemented in the script.
 
-.PHONY: dist-build dist-build-bake dist-build-fast dist-build-emulate \
+.PHONY: dist-build dist-build-fast dist-build-emulate \
         dist-wheels dist-build-base dist-build-vllm dist-build-lmcache \
         dist-build-exporters dist-build-monitoring dist-push \
         smoke-test smoke-test-fast tiny-test tiny-test-fast \
@@ -74,9 +74,6 @@ endif
         cliff-short cliff-long-64k cliff-long-128k
 
 dist-build:
-	"$(DIST)" bake
-
-dist-build-bake:
 	"$(DIST)" bake
 
 dist-build-fast:

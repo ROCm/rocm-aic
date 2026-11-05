@@ -23,8 +23,9 @@
 #   docker build --build-arg RDMA_EXPORTER_VERSION=0.4.2 \
 #       -t aic-rdma-exporter:0.4.2 ./docker/rdma-exporter
 #
-# Run (host networking; needs sysfs):
-#   docker run -d --name aic-rdma-exporter --network host \
+# Run (on the aic bridge, no published port: Prometheus scrapes it by name;
+# needs sysfs):
+#   docker run -d --name aic-rdma-exporter --network aic \
 #       -v /sys:/sys:ro aic-rdma-exporter:local
 
 FROM debian:12-slim AS fetch

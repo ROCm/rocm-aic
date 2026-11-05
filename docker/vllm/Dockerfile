@@ -89,14 +89,54 @@ ARG AITER_GIT_URL=https://github.com/ROCm/aiter.git
 ARG AITER_REF=v0.1.22.post1
 ARG FLASH_ATTN_GIT_URL=https://github.com/Dao-AILab/flash-attention.git
 ARG FLASH_ATTN_REF=v2.8.3.post1
+# AITER kernels are JIT-compiled on first use, which costs 5-10 min on every
+# cold container -- and the only way to pay it at build time used to be running
+# vLLM on a real GPU after the build, which a CPU-only build node cannot do.
+# AITER's own setup.py can compile them ahead of time instead.  No GPU is
+# needed -- the arch comes from GPU_ARCHS/PYTORCH_ROCM_ARCH -- but it only
+# works for a SINGLE arch, since AITER's build-time codegen keys on one gfx.
+# Off by default so the default multi-arch image is unchanged.
+#
+# The levels are NOT ordered by cost; read them as different MHA policies:
+#   0  off -- JIT at runtime (default)
+#   1  named-variant mode: drops the generic MHA modules and adds back five
+#      specific bf16 mha_varlen_fwd instances (req_md_names in setup.py).
+#      This is the cheap one.
+#   2  everything except _bwd/_tune -- which KEEPS the whole MHA family
+#      (libmha_fwd, module_mha_fwd, module_mha_varlen_fwd).  Those three alone
+#      took >85 min of a 128-core allocation on job 68147805, because CK emits
+#      a template instance per dtype x head-dim x mask x bias x lse x dropout
+#      x skip x qscale combination -- instance fan-out, not arch fan-out.
+#   3  fmha_v3 only
+# Prefer 1 for single-arch builds; 2 only when you need the full MHA set.
+ARG AITER_PREBUILD_KERNELS=0
 
 # git and ca-certificates are not in the -full image; install before cloning.
+# git comes from ppa:git-core because `git clone --revision` needs >= 2.49 and
+# Ubuntu 24.04 ships 2.43.  software-properties-common drags in a dpkg-owned
+# python3-jwt that pip cannot uninstall (vllm's requirements bump PyJWT), so it
+# is purged again once the PPA is configured.
+# libnuma-dev: the ROCm base image ships libnuma.so.1 but NOT the unversioned
+# libnuma.so symlink, which lives in libnuma-dev.  rocSHMEM's NUMAWrapper
+# dlopen()s the unversioned name, so it fails and prints
+#   E-001h rocSHMEM Could not open libnuma. Returning  NUMAWrapper@...:48
+# once per AITER module build -- hundreds of lines of noise around the output
+# that actually matters.  -dev, not libnuma1: the runtime library is already
+# there, it is the symlink that is missing.  (This stage builds FROM the raw
+# ROCm image rather than aic-base, which is why it needs its own copy at all;
+# base/Dockerfile installs libnuma-dev for the same reason.)  It degrades
+# gracefully -- hence "Returning" -- so this is log legibility, not correctness.
 # hadolint ignore=DL3008
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
     apt-get update && \
     DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-        cmake git ca-certificates ninja-build python3-dev
+        software-properties-common && \
+    add-apt-repository ppa:git-core/ppa -y && \
+    apt-get update && \
+    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+        cmake git ca-certificates ninja-build python3-dev libnuma-dev && \
+    apt-get purge -y --auto-remove software-properties-common
 
 # Bring torch + Python packages from aic-base so wheels link against the same torch.
 COPY --from=base /usr/local/lib/python3.12/dist-packages/ \
@@ -111,6 +151,15 @@ COPY patches/aiter/ /app/patches/aiter/
 
 # ----- 3. ROCm attention backends (AITER + FlashAttention) ----------------------
 # Skipped when VLLM_TARGET_DEVICE=empty (CPU-only emulate build: no hipcc).
+#
+# On the AOT path (AITER_PREBUILD_KERNELS != 0) the RUN below exports three
+# FlyDSL knobs.  AITER_FLYDSL_AOT_TOLERATE_FAILURES=1 covers the residual
+# failures that survive patches/aiter/02's arch filter: on gfx942 those are the
+# `wint4` (INT4-weight) MoE kernels -- 51 of the 352 arch-correct jobs on job
+# 68149555, all named flydsl_moe{1,2}_abf16_wint4_bf16_*.  AITER lists them
+# under gfx942's cu_num but they do not compile for it in v0.1.22.post1.  This
+# is a narrow, named gap rather than blanket silencing: the other 6752 jobs are
+# dropped by arch before they are ever attempted.  Revisit on an AITER bump.
 RUN test -n "$ROCM_ARCH" || { echo "ERROR: ROCM_ARCH is not set"; exit 1; }
 
 # hadolint ignore=SC2039
@@ -130,15 +179,38 @@ RUN --mount=type=cache,target=/root/.cache/pip \
             "flydsl==0.2.4" && \
         git clone --depth 1 --revision "${AITER_REF}" "${AITER_GIT_URL}" --recurse-submodules /app/aiter && \
         cd /app/aiter && \
+        _prebuild="${AITER_PREBUILD_KERNELS}" && \
+        case "${ROCM_ARCH}" in \
+            *\;*) [ "${_prebuild}" = "0" ] || \
+                      echo "AITER AOT prebuild off: ROCM_ARCH='${ROCM_ARCH}' is multi-arch"; \
+                  _prebuild=0 ;; \
+        esac && \
+        echo "AITER PREBUILD_KERNELS=${_prebuild} (0 = JIT at runtime)" && \
+        _jobs="${BUILD_JOBS:-$(nproc)}" && \
+        if [ "${_prebuild}" != "0" ]; then \
+            export GPU_ARCHS="${ROCM_ARCH}"; \
+            export AITER_FLYDSL_AOT_WORKERS="${_jobs}"; \
+            export AITER_FLYDSL_AOT_TOLERATE_FAILURES=1; \
+            python3 /app/patches/aiter/02-flydsl-aot-filter-by-arch.py /app/aiter; \
+            python3 /app/patches/aiter/03-aiter-prebuild-threads.py /app/aiter; \
+            : "${AITER_PREBUILD_THREADS:=$(( _jobs / 8 ))}"; \
+            [ "${AITER_PREBUILD_THREADS}" -lt 1 ] && AITER_PREBUILD_THREADS=1; \
+            [ "${AITER_PREBUILD_THREADS}" -gt 32 ] && AITER_PREBUILD_THREADS=32; \
+            export AITER_PREBUILD_THREADS; \
+            echo "AITER CK prebuild: ${AITER_PREBUILD_THREADS} concurrent modules, ninja -j${_jobs} each"; \
+        fi && \
         PYTORCH_ROCM_ARCH="${ROCM_ARCH}" \
+            PREBUILD_KERNELS="${_prebuild}" \
             TORCH_DONT_CHECK_COMPILER_ABI=1 \
-            MAX_JOBS="${BUILD_JOBS:-$(nproc)}" \
+            MAX_JOBS="${_jobs}" \
             CCACHE_DIR=/root/.cache/ccache CCACHE_MAXSIZE=25G \
             python3 setup.py bdist_wheel --dist-dir=/wheels && \
         pip3 install --no-cache-dir --no-deps /wheels/amd_aiter-*.whl && \
         python3 -c 'import importlib.util; spec = importlib.util.find_spec("aiter"); assert spec and spec.submodule_search_locations; print("AITER installed:", next(iter(spec.submodule_search_locations)))' && \
-        PYTORCH_ROCM_ARCH="${ROCM_ARCH}" TORCH_DONT_CHECK_COMPILER_ABI=1 \
-            python3 /app/patches/aiter/01-jit-use-pytorch-rocm-arch.py; \
+        ( cd / && \
+          { GPU_ARCHS="${ROCM_ARCH}" PYTORCH_ROCM_ARCH="${ROCM_ARCH}" TORCH_DONT_CHECK_COMPILER_ABI=1 \
+                python3 -c 'import aiter' || :; } && \
+          test -f "$(python3 -c 'import importlib.util as u, os; print(os.path.join(next(iter(u.find_spec("aiter").submodule_search_locations)), "jit", "module_aiter_core.so"))')" ); \
     fi
 
 # FlashAttention: CDNA-only (gfx9xx — MI100/MI200/MI300/MI355X).
@@ -156,7 +228,6 @@ RUN --mount=type=cache,target=/root/.cache/pip \
         git clone --depth 1 --revision "${FLASH_ATTN_REF}" \
             --recurse-submodules --shallow-submodules \
             "${FLASH_ATTN_GIT_URL}" /app/flash-attention && \
-        python3 /app/patches/vllm/02-flash-attn-deprecated-attrs.py && \
         cd /app/flash-attention && \
         GPU_ARCHS="${ROCM_ARCH}" \
             PYTORCH_ROCM_ARCH="${ROCM_ARCH}" \
@@ -333,12 +404,9 @@ RUN --mount=type=cache,target=/root/.cache/pip \
 # memory patches belong to the lmcache server image.  AIC_LMCACHE_SRC points the
 # patcher at the pip-installed package (site-packages), not the /app source tree.
 COPY docker/lmcache/rocm_event_ipc_patch.py /tmp/rocm_event_ipc_patch.py
-COPY docker/lmcache/diag_register_kv_caches.py /tmp/diag_register_kv_caches.py
 RUN AIC_LMCACHE_SRC="$(python3 -c 'import lmcache, os; print(os.path.dirname(os.path.dirname(lmcache.__file__)))')" \
         python3 /tmp/rocm_event_ipc_patch.py && \
-    AIC_LMCACHE_SRC="$(python3 -c 'import lmcache, os; print(os.path.dirname(os.path.dirname(lmcache.__file__)))')" \
-        python3 /tmp/diag_register_kv_caches.py && \
-    rm /tmp/rocm_event_ipc_patch.py /tmp/diag_register_kv_caches.py
+    rm /tmp/rocm_event_ipc_patch.py
 
 # ----- Runtime ENV + metadata -------------------------------------------------
 # PYTHONPATH and LD_LIBRARY_PATH (including NIXL paths) are inherited from

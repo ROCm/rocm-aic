@@ -6,6 +6,36 @@
 # "repo root" is this directory (no dependency on any parent checkout).
 REPO_ROOT := $(CURDIR)
 
+# ---- Per-cluster environment file -------------------------------------------
+# A repo-root `.env.<cluster>` carries the settings that differ per site --
+# partition, constraint, image dir, cache dir, arch -- so they stop living on
+# the make command line.  Plain KEY=value lines, unquoted (make takes quotes
+# literally); `.slurm/run-build-distribute.sh` reads the same file.
+#
+# AIC_CLUSTER picks the file and is auto-detected from the hostname: the first
+# dash-separated token with a matching file (ctr2-alola-login-04 -> .env.alola).
+# Precedence here is `make VAR=...` > .env.<cluster> > the defaults below; in
+# the Slurm script an exported variable also beats the file.  Keep these files
+# untracked -- they describe one site and are where private paths end up.
+AIC_CLUSTER  ?= $(firstword $(foreach _t,$(SLURM_CLUSTER_NAME) \
+                    $(subst -, ,$(shell hostname -s 2>/dev/null)),\
+                    $(if $(wildcard $(REPO_ROOT)/.env.$(_t)),$(_t))))
+AIC_ENV_FILE ?= $(if $(AIC_CLUSTER),$(REPO_ROOT)/.env.$(AIC_CLUSTER))
+# Keys the file sets, so the site-specific defaults further down can tell
+# "the user chose this" from "the Makefile defaulted it".
+_AIC_ENV_KEYS := $(if $(wildcard $(AIC_ENV_FILE)),$(shell sed -n \
+    's/^[[:space:]]*\(export[[:space:]][[:space:]]*\)\{0,1\}\([A-Za-z_][A-Za-z0-9_]*\)[[:space:]]*=.*/\2/p' \
+    $(AIC_ENV_FILE)))
+-include $(AIC_ENV_FILE)
+$(foreach _k,$(_AIC_ENV_KEYS),$(eval export $(_k)))
+export AIC_CLUSTER AIC_ENV_FILE
+
+# "file" when VAR still holds a Makefile default, empty once the user has set
+# it (command line, environment, or .env.<cluster>).  `$(origin VAR)` alone
+# cannot tell the last case apart from a default -- an included makefile is
+# also origin "file" -- so the env file's keys are subtracted explicitly.
+_is_makefile_default = $(if $(filter $(1),$(_AIC_ENV_KEYS)),,$(filter file,$(origin $(1))))
+
 IMAGE_NAME       ?= rocm-aic
 VLLM_IMAGE_NAME  ?= aic-vllm
 LMCACHE_IMAGE_NAME ?= aic-lmcache
@@ -52,7 +82,11 @@ _single_quote := '
 _shell_quote = '$(subst $(_single_quote),'"'"',$(1))'
 _FRAMEWORK_VERSION_ENV := $(foreach _arg,$(_FRAMEWORK_VERSION_ARGS),$(if $(filter undefined,$(origin $(_arg))),,$(_arg)=$(call _shell_quote,$(value $(_arg)))))
 
-_IMAGE_TAG := $(shell ROCM_ARCH=$(ROCM_ARCH) $(_FRAMEWORK_VERSION_ENV) $(REPO_ROOT)/docker/scripts/aic-image-tag.sh)
+# ROCM_ARCH is shell-quoted like the framework args: an unquoted ';'-list ends
+# the command mid-assignment, the tag script never runs, and every multi-arch
+# image silently collides on :latest.  stderr stays visible so a genuine
+# tagging failure is not mistaken for "latest".
+_IMAGE_TAG := $(shell ROCM_ARCH=$(call _shell_quote,$(ROCM_ARCH)) $(_FRAMEWORK_VERSION_ENV) $(REPO_ROOT)/docker/scripts/aic-image-tag.sh)
 IMAGE_TAG  ?= $(if $(_IMAGE_TAG),$(_IMAGE_TAG),latest)
 IMAGE_REF          := $(IMAGE_NAME):$(IMAGE_TAG)
 VLLM_IMAGE_REF     := $(VLLM_IMAGE_NAME):$(IMAGE_TAG)
@@ -98,8 +132,22 @@ BENCH_ISL         ?= 20000
 BENCH_SHARED_TOK  ?= 18000
 BENCH_CONCUR      ?= 1,2,4,8,16,32,48,64,80,100,128,160,200,250
 BENCH_ITERS       ?= 3
-BENCH_ENDPOINT    ?= http://localhost:8000
+# Empty = the running tiered vLLM, by name on the aic bridge (`make cliff` runs
+# in aic-client); e.g. http://aic-vllm-only-gpu0:8000 for the vram_only arm.
+BENCH_ENDPOINT    ?=
 BENCH_MODEL       ?= $(VLLM_MODEL)
+
+# Readiness probe from inside the container: $(call aic_probe,<container>,<port>,<path>).
+# Exits non-zero until the server answers; needs no host port.
+aic_probe = bash "$(CURDIR)/scripts/aic-endpoints.sh" probe $(1) $(2) $(3)
+
+# URL of a container port as seen from the aic bridge, where containerized
+# clients (aic-client, aic_fetch) run: $(call aic_bridge_url,<container>,<port>).
+aic_bridge_url = bash "$(CURDIR)/scripts/aic-endpoints.sh" bridge-url $(1) $(2)
+
+# One request from a throwaway container on the aic bridge, printing the body:
+# $(aic_fetch) <url> [<json-body>].  Not a $(call): a JSON body has commas.
+aic_fetch = bash "$(CURDIR)/scripts/aic-endpoints.sh" fetch
 
 # ---- KVBench container -----------------------------------------------------
 KVBENCH_GIT_URL           ?= https://github.com/wvaske/llm-kv-passthrough.git
@@ -110,7 +158,6 @@ KVBENCH_IMAGE_REF         ?= $(KVBENCH_IMAGE_NAME):$(KVBENCH_IMAGE_TAG)
 KVBENCH_MODEL             ?= llama-3.1-8b
 KVBENCH_GPU_PROFILE       ?= H100_SXM
 KVBENCH_PORT              ?= 8000
-KVBENCH_HOST_PORT         ?= 18000
 KVBENCH_CHUNK_SIZE        ?= 256
 KVBENCH_LOCAL_CPU_SIZE_GB ?= 0.25
 KVBENCH_READY_S           ?= 120
@@ -143,7 +190,7 @@ export NVME_DATA NFS_DATA
 export VLLM_MODEL TENSOR_PARALLEL_SIZE
 export VLM_GPU_MEMORY_UTILIZATION VLM_MAX_MODEL_LEN VLM_MAX_NUM_BATCHED_TOKENS VLM_BLOCK_SIZE
 export KVBENCH_GIT_URL KVBENCH_REF KVBENCH_IMAGE_REF KVBENCH_MODEL KVBENCH_GPU_PROFILE
-export KVBENCH_PORT KVBENCH_HOST_PORT KVBENCH_CHUNK_SIZE KVBENCH_LOCAL_CPU_SIZE_GB
+export KVBENCH_PORT KVBENCH_CHUNK_SIZE KVBENCH_LOCAL_CPU_SIZE_GB
 
 # Export every framework pin the caller actually overrode, so that
 # .slurm/run-build-distribute.sh and docker/scripts/aic-image-tag.sh — both of
@@ -170,11 +217,10 @@ export KV_TRANSFER_ARG
 # ---- Metrics capture (Prometheus sidecar) ----------------------------------
 AIC_METRICS_DIR  ?= $(CURDIR)/logs/prometheus
 AIC_EXPORTERS    ?= 0
-AIC_GRAFANA_PORT ?= 3000
 AIC_GRAFANA_IMAGE ?= grafana/grafana:13.2.2
 MON_COMPOSE     := $(_COMPOSE_BIN) -f "$(CURDIR)/docker/docker-compose.yml"
 _MON_PROFILE    := --profile monitoring-base $(if $(filter 1,$(AIC_EXPORTERS)),--profile exporters,)
-export AIC_METRICS_DIR AIC_GRAFANA_PORT AIC_GRAFANA_IMAGE
+export AIC_METRICS_DIR AIC_GRAFANA_IMAGE
 
 # ---- Fabric exporters (nvme_exporter / rdma_exporter) + hsa-snoop sidecar --
 NVME_EXPORTER_IMAGE   ?= aic-nvme-exporter:local
@@ -208,6 +254,7 @@ AIC_SPUR_CLUSTER ?= 0
 AIC_SHARED_NFS ?=
 ifeq ($(AIC_SPUR_CLUSTER),1)
 export AIC_SPUR_CLUSTER
+export AIC_SPUR_PARTITION   ?= amd-spur-v2
 export AIC_IMAGE_DIR        ?= $(AIC_SHARED_NFS)/rocm-aic/images
 export AIC_CACHE_DIR        ?= $(AIC_SHARED_NFS)/$(USER)/buildcache
 override export NVME_DATA     := /mnt/m2m_nobackup/aic-cliff/nvme
@@ -227,23 +274,23 @@ else
 # BuildKit layer cache (e.g. a non-SPUR cluster with shared /scratch).
 export AIC_CACHE_DIR        ?=
 ifneq ($(wildcard /scratch/models/hub),)
-ifeq ($(origin HF_HOME),file)
+ifeq ($(call _is_makefile_default,HF_HOME),file)
 override export HF_HOME     := /scratch/models
 _HF_HOME_IS_DEFAULT := 1
 endif
 endif
 endif
-_HF_HOME_IS_DEFAULT ?= $(if $(filter file,$(origin HF_HOME)),1,)
+_HF_HOME_IS_DEFAULT ?= $(if $(call _is_makefile_default,HF_HOME),1,)
 
 # Strip Makefile-defaulted path vars before cliff sbatch so they don't clobber
 # the job's node-appropriate defaults.  User-set values (command-line /
-# environment) are preserved.
+# environment / .env.<cluster>) are preserved.
 _CLIFF_STRIP := env \
     $(if $(filter 0,$(AIC_SPUR_CLUSTER)),$(if $(_HF_HOME_IS_DEFAULT),-u HF_HOME)) \
-    $(if $(filter 0,$(AIC_SPUR_CLUSTER)),$(if $(filter file,$(origin NVME_DATA)),-u NVME_DATA)) \
-    $(if $(filter file,$(origin NFS_DATA)),-u NFS_DATA) \
-    $(if $(filter 0,$(AIC_SPUR_CLUSTER)),$(if $(filter file,$(origin GDS_SLAB_DATA)),-u GDS_SLAB_DATA)) \
-    $(if $(filter file,$(origin AIC_METRICS_DIR)),-u AIC_METRICS_DIR)
+    $(if $(filter 0,$(AIC_SPUR_CLUSTER)),$(if $(call _is_makefile_default,NVME_DATA),-u NVME_DATA)) \
+    $(if $(call _is_makefile_default,NFS_DATA),-u NFS_DATA) \
+    $(if $(filter 0,$(AIC_SPUR_CLUSTER)),$(if $(call _is_makefile_default,GDS_SLAB_DATA),-u GDS_SLAB_DATA)) \
+    $(if $(call _is_makefile_default,AIC_METRICS_DIR),-u AIC_METRICS_DIR)
 
 # ---- Export tarball --------------------------------------------------------
 EXPORT_PREFIX  ?= aic-release
@@ -294,6 +341,7 @@ help:
 	@echo "  make logs-lmcache      lmcache container logs only"
 	@echo "  make logs-vllm         vllm container logs only"
 	@echo "  make ps                Container status"
+	@echo "  make endpoints         Print the host URL of every published service (Grafana)"
 	@echo "  make shell-lmcache     Exec bash into lmcache container"
 	@echo "  make shell-vllm        Exec bash into vllm container"
 	@echo "  make restart-vllm      Restart vllm only (lmcache + warm KV preserved)"
@@ -315,13 +363,14 @@ help:
 	@echo ""
 	@echo "Distribute / cliff targets (Slurm; wrap .slurm/ scripts + sbatch):"
 	@echo "  (dist-build/smoke-test submit via sbatch and log to logs/<job-id>/)"
-	@echo "  make dist-build        Build image + fabric exporters on a Slurm build node, save tarballs"
-	@echo "  make dist-build-bake   Like dist-build but uses docker buildx bake: vllm+lmcache build in parallel after base"
+	@echo "  make dist-build        Build base, then vllm+lmcache in parallel (docker buildx bake) + fabric"
+	@echo "                         exporters on a Slurm build node, save tarballs"
 	@echo "  make dist-wheels       Like 'make wheels' but on a Slurm node (what the nightly wheels CI runs)"
 	@echo "  make dist-build-fast   Single-arch dev build (AIC_FAST_ARCH=$(AIC_FAST_ARCH)) -- faster iteration"
 	@echo "  make dist-build-emulate  Build the CPU-only emulation image (no GPU kernels compiled)"
 	@echo "  make dist-build-base   Build aic-base image (PyTorch + torchvision)"
-	@echo "  make dist-build-vllm   Build aic-vllm image (requires aic-base + AIC_BUILD_CONTEXT_LMCACHE_WHEELS)"
+	@echo "  make dist-build-vllm   Build aic-vllm image (requires AIC_BUILD_CONTEXT_BASE and a"
+	@echo "                         'lmcache-wheels' build context -- see docker/vllm/Dockerfile)"
 	@echo "  make dist-build-lmcache  Build aic-lmcache image (requires aic-base)"
 	@echo "  make dist-build-exporters  Build ONLY the nvme/rdma exporter images (no main rebuild)"
 	@echo "  make dist-build-monitoring Pull + save Prometheus/amdgpu-exporter to AIC_IMAGE_DIR"
@@ -374,7 +423,10 @@ help:
 	@echo "    PROM_DUMP_OUT=$(if $(PROM_DUMP_OUT),$(PROM_DUMP_OUT),<AIC_IMAGE_DIR>/../prometheus-dump.md)"
 	@echo "    AIC_METRICS_DIR=$(AIC_METRICS_DIR)"
 	@echo "    AIC_EXPORTERS=$(AIC_EXPORTERS)  (1 = also launch node + AMD GPU exporters)"
-	@echo "    AIC_GRAFANA_PORT=$(AIC_GRAFANA_PORT)   Grafana host port (default: 3000)"
+	@echo "    Only Grafana is published: 127.0.0.1 on a free ephemeral host port that"
+	@echo "    'make endpoints' prints (AIC_GRAFANA_PORT pins it, AIC_PUBLISH_ADDR=0.0.0.0"
+	@echo "    exposes it beyond loopback).  Everything else is reached by name on the aic"
+	@echo "    bridge, from aic-client or scripts/aic-endpoints.sh fetch."
 	@echo "    AIC_GRAFANA_IMAGE=$(AIC_GRAFANA_IMAGE)"
 	@echo ""
 	@echo "Required env:"
@@ -401,8 +453,8 @@ help:
 	@echo "  make build BUILD_JOBS=3          # cap parallelism on low-RAM hosts"
 	@echo "  make up HF_TOKEN=hf_... NVME_DATA=/mnt/nvme NFS_DATA=/mnt/nfs"
 	@echo "  make up-gds-l1 GDS_SLAB_DATA=/mnt/nvme HF_TOKEN=hf_..."
-	@echo "  make cliff BENCH_ARM=vram_only BENCH_ENDPOINT=http://localhost:8000"
-	@echo "  make cliff BENCH_ARM=kvbench BENCH_ENDPOINT=http://localhost:8000"
+	@echo "  make cliff BENCH_ARM=vram_only                  # endpoint resolved from the running vLLM"
+	@echo "  make cliff BENCH_ARM=kvbench BENCH_ENDPOINT=http://aic-kvbench:8000"
 	@echo "  make cliff-kvbench-local KVBENCH_MODEL=llama-3.1-8b BENCH_CONCUR=1,2"
 	@echo "  make plot"
 	@echo ""

@@ -5,7 +5,7 @@
 # SPDX-License-Identifier: MIT
 #
 #SBATCH --job-name=aic-wheel-test
-#SBATCH --partition=amd-spur
+#SBATCH --partition=amd-spur-v2
 #SBATCH --gpus=1
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
@@ -15,7 +15,7 @@
 #SBATCH --output=/dev/null
 #
 # Smoke-test the nightly pip wheels published on GitHub against a live gfx950
-# node.  Strategy: load the existing AIC tarball (which carries the matching
+# node.  Strategy: load the existing AIC image (which carries the matching
 # PyTorch + ROCm runtime), then create a fresh venv and install the nightly
 # wheels INTO that venv to verify:
 #
@@ -32,7 +32,8 @@
 # Overridable env:
 #   NIGHTLY_TAG       rolling release tag to pull wheels from (default: nightly)
 #   AIC_IMAGE         vllm+base image to load for the ROCm/PyTorch runtime
-#   AIC_IMAGE_DIR     directory holding tarball(s) (default: shared NFS images/)
+#   AIC_IMAGE_DIR     directory holding the build artifacts, tarballs or .refs
+#                     (default: shared NFS images/)
 #   VLLM_MODEL        small model for engine-init test (must be in HF_HOME)
 #   HF_HOME           offline HF cache (default: shared NFS hf/)
 #   SKIP_ENGINE_INIT  set to 1 to skip the engine init step (install+import only)
@@ -57,14 +58,23 @@ HF_HOME="${HF_HOME:-/shared_nfs/huggingface}"
 VLLM_MODEL="${VLLM_MODEL:-Qwen/Qwen2.5-14B-Instruct-1M}"
 SKIP_ENGINE_INIT="${SKIP_ENGINE_INIT:-0}"
 
-# Resolve the AIC image: prefer caller-set AIC_IMAGE, else pick the latest
-# tarball (mirrors how run-cliff.sbatch resolves it).
+# The latest build: its tarball, or the .ref to its registry copy.
+# shellcheck source=.slurm/image-dist-lib.sh
+source "${REPO}/.slurm/image-dist-lib.sh"
+_art="$(aic_image_artifact "${AIC_IMAGE_DIR}" 'rocm-aic-*')" || _art=""
+# Resolve the AIC image: prefer caller-set AIC_IMAGE, else take it from the
+# latest build (mirrors how run-cliff.sbatch resolves it).
 if [[ -z "${AIC_IMAGE:-}" ]]; then
-    _tb="$(ls -t "${AIC_IMAGE_DIR}"/rocm-aic-*.tar.zst 2>/dev/null | grep -v '\.partial\.' | head -1 || true)"
-    [[ -n "${_tb}" ]] || die "no rocm-aic tarball found under ${AIC_IMAGE_DIR}"
-    # Derive image name:tag from the tarball basename (mirrors run-build-distribute.sh).
-    _bn="$(basename "${_tb}" .tar.zst)"
-    AIC_IMAGE="${_bn/rocm-aic-/rocm-aic:}"
+    [[ -n "${_art}" ]] || die "no rocm-aic build artifact found under ${AIC_IMAGE_DIR}"
+    if [[ "${_art}" == *.ref ]]; then
+        # The first name the build gave the image.
+        read -r _ _ AIC_IMAGE _ < "${_art}" || die "cannot read ${_art}"
+    else
+        # Derive image name:tag from the tarball basename (mirrors run-build-distribute.sh).
+        _bn="$(basename "${_art}")"
+        _bn="${_bn%.tar*}"
+        AIC_IMAGE="${_bn/rocm-aic-/rocm-aic:}"
+    fi
 fi
 
 log "host        : $(hostname)  job=${SLURM_JOB_ID:-manual}"
@@ -78,11 +88,17 @@ log "HF_HOME     : ${HF_HOME}"
 # includes the arch suffix "-gfx950" but the embedded tag does not), so
 # capture the actual "Loaded image: name:tag" line and use that.
 _have="$(docker images -q "${AIC_IMAGE}" 2>/dev/null)"
-if [[ -z "${_have}" ]]; then
-    _tb="$(ls -t "${AIC_IMAGE_DIR}"/rocm-aic-*.tar.zst 2>/dev/null | grep -v '\.partial\.' | head -1 || true)"
-    [[ -n "${_tb}" ]] || die "image ${AIC_IMAGE} not loaded and no tarball found"
-    log "loading ${AIC_IMAGE} from ${_tb}..."
-    _loaded="$(zstd -dc "${_tb}" | docker load 2>&1)"
+if [[ -z "${_have}" && "${_art}" == *.ref ]]; then
+    aic_image_fetch wheel-test "${AIC_IMAGE}" "${_art}" || die "could not fetch ${AIC_IMAGE}"
+elif [[ -z "${_have}" ]]; then
+    [[ -n "${_art}" ]] || die "image ${AIC_IMAGE} not loaded and no build artifact found"
+    log "loading ${AIC_IMAGE} from ${_art}..."
+    case "${_art}" in
+        *.zst) _decompress=(zstd -dc) ;;
+        *.gz) _decompress=(gzip -dc) ;;
+        *) _decompress=(cat) ;;
+    esac
+    _loaded="$("${_decompress[@]}" "${_art}" | docker load 2>&1)"
     printf '%s\n' "${_loaded}"
     # Use the first non-latest loaded tag as AIC_IMAGE so docker run works.
     _actual="$(printf '%s\n' "${_loaded}" | grep '^Loaded image:' | grep -v ':latest' | head -1 | sed 's/^Loaded image: //')"

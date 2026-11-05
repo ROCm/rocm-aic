@@ -27,8 +27,11 @@ Usage (via make)
 
 Env overrides (all optional)
 -----------------------------
-  AIC_TEST_VLLM_URL     vLLM OpenAI-compat base URL (default: http://aic-vllm-gpu0:8000)
-  AIC_TEST_LMCACHE_URL  LMCache metrics URL       (default: http://aic-lmcache:8080)
+  AIC_TEST_VLLM_URL     vLLM OpenAI-compat base URL (default: http://aic-lmcache:8000)
+  AIC_TEST_LMCACHE_URL  LMCache metrics URL         (default: http://aic-lmcache:8080)
+                        Both are names on the aic bridge: `make vllm-reset-test`
+                        runs this in aic-client (vLLM shares aic-lmcache's network
+                        namespace, so answers on its name).
   AIC_TEST_MODEL        Model name served by vLLM  (default: Qwen/Qwen2.5-3B-Instruct)
   AIC_TEST_ANCHORS      Number of anchor prompts   (default: 10)
   AIC_TEST_FLOOD        Number of flood prompts    (default: 300)
@@ -45,13 +48,13 @@ import time
 from datetime import datetime
 
 # ── Configuration ────────────────────────────────────────────────────────────
-VLLM     = os.getenv("AIC_TEST_VLLM_URL",    "http://localhost:8000")
-LMCACHE  = os.getenv("AIC_TEST_LMCACHE_URL", "http://localhost:8080")
+VLLM     = os.getenv("AIC_TEST_VLLM_URL",    "http://aic-lmcache:8000")
+LMCACHE  = os.getenv("AIC_TEST_LMCACHE_URL", "http://aic-lmcache:8080")
 MODEL    = os.getenv("AIC_TEST_MODEL",        "Qwen/Qwen2.5-3B-Instruct")
 N_ANCHOR = int(os.getenv("AIC_TEST_ANCHORS", "10"))
 N_FLOOD  = int(os.getenv("AIC_TEST_FLOOD",   "50"))
 TIMEOUT  = int(os.getenv("AIC_TEST_TIMEOUT", "120"))
-EXEC     = []  # run curl directly on the host (vllm/lmcache use network_mode:host)
+EXEC     = []  # curl runs where this script does: aic-client, on the aic bridge
 
 # chunk_size=256 tok × fp8 KV for Qwen2.5-3B ≈ 4.7 MiB/chunk; L1=1 GiB ≈ 222 chunks.
 # Each anchor uses ~14 chunks; 10 anchors = 140 chunks, leaving ~82 free L1 slots.

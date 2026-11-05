@@ -1,5 +1,5 @@
 #!/bin/bash
-#SBATCH --partition=amd-spur
+#SBATCH --partition=amd-spur-v2
 #SBATCH --constraint=
 #SBATCH --gpus=1
 #SBATCH --time=01:30:00
@@ -55,11 +55,12 @@ aic_resolve_gpu_visibility \
 # --- Load image ---
 echo "--- Loading image ---"
 if ! docker image inspect "${AIC_IMAGE}" >/dev/null 2>&1; then
-    echo "Loading from tarball..."
-    _img_base="${AIC_IMAGE##*/}"; _img_base="${_img_base//:/-}"
-    _img_tar="$(ls "${AIC_IMAGE_DIR}/${_img_base}"-*.tar.* 2>/dev/null | head -1)"
-    [[ -n "${_img_tar}" ]] || { echo "ERROR: no tarball for ${AIC_IMAGE} in ${AIC_IMAGE_DIR}"; exit 1; }
-    zstd -d -c "${_img_tar}" | docker load
+    echo "Fetching from ${AIC_IMAGE_DIR}..."
+    # shellcheck source=.slurm/image-dist-lib.sh
+    source "${REPO}/.slurm/image-dist-lib.sh"
+    _img_art="$(aic_image_artifact "${AIC_IMAGE_DIR}" "$(aic_image_stem "${AIC_IMAGE}")-*")" \
+        || { echo "ERROR: no build artifact for ${AIC_IMAGE} in ${AIC_IMAGE_DIR}"; exit 1; }
+    aic_image_fetch ext-hit-test "${AIC_IMAGE}" "${_img_art}"
 fi
 echo "Image ready: ${AIC_IMAGE}"
 
@@ -69,10 +70,17 @@ mkdir -p "${NVME_DATA}/lmcache" "${LOGDIR}"
 # --- Cleanup stale containers ---
 docker rm -f aic-lmcache aic-vllm-gpu0 2>/dev/null || true
 
+# --- aic bridge ---
+# Compose creates this network when the stack runs; create it here if not.  It
+# is shared with compose and left in place on exit.
+docker network inspect aic >/dev/null 2>&1 || docker network create aic >/dev/null
+
 # --- Start lmcache ---
+# vLLM joins this netns below (the @hsa<pid> IPC socket is per network namespace),
+# so it answers on lmcache's aic-vllm alias.  Nothing is published to the host.
 echo "--- Starting lmcache (L1=1GB, pool=4096, POSIX) ---"
 docker run -d --name aic-lmcache \
-    --network host \
+    --network aic --network-alias aic-vllm \
     --ipc shareable \
     --device /dev/kfd --device /dev/dri \
     --ulimit nofile=1048576:1048576 \
@@ -99,11 +107,12 @@ LMCACHE_LOG_PID=$!
 echo "lmcache log streaming -> ${LOGDIR}/lmcache.log"
 
 # Wait for lmcache ready
-# LMCache ZMQ on LMCACHE_PORT, HTTP metrics on 8080
+# LMCache ZMQ on LMCACHE_PORT, HTTP metrics on 8080 (probed from inside the
+# container, which is how the rest of the repo probes readiness)
 LMCACHE_HTTP_PORT=8080
 echo "Waiting for lmcache HTTP on :${LMCACHE_HTTP_PORT}..."
 for i in $(seq 1 120); do
-    if curl -sf "http://localhost:${LMCACHE_HTTP_PORT}/metrics" >/dev/null 2>&1; then
+    if aic_probe aic-lmcache "${LMCACHE_HTTP_PORT}" /metrics; then
         echo "lmcache ready (${i}s)"; break
     fi
     [[ $i -eq 120 ]] && { echo "ERROR: lmcache never ready"; tail -30 "${LOGDIR}/lmcache.log"; exit 1; }
@@ -114,8 +123,10 @@ done
 echo "--- Starting vLLM (VLLM_LOGGING_LEVEL=DEBUG) ---"
 KV_TRANSFER="{\"kv_connector\":\"LMCacheMPConnector\",\"kv_role\":\"kv_both\",\"kv_connector_extra_config\":{\"lmcache.mp.server_urls\":[\"tcp://localhost:${LMCACHE_PORT}\"]}}"
 
+# In lmcache's namespaces for HIP IPC, as compose's vllm service is; so it is on
+# the aic bridge too, as aic-vllm, and reaches lmcache on localhost.
 docker run -d --name aic-vllm-gpu0 \
-    --network host \
+    --network "container:aic-lmcache" \
     --pid "container:aic-lmcache" \
     --ipc "container:aic-lmcache" \
     --device /dev/kfd --device /dev/dri \
@@ -151,7 +162,7 @@ echo "vLLM log streaming -> ${LOGDIR}/vllm.log"
 echo "Waiting for vLLM on :${VLLM_PORT} (up to 1200s)..."
 VLLM_READY=0
 for i in $(seq 1 240); do
-    if curl -sf "http://localhost:${VLLM_PORT}/health" >/dev/null 2>&1; then
+    if aic_probe aic-vllm-gpu0 "${VLLM_PORT}" /health; then
         VLLM_READY=1
         echo "vLLM READY after $((i*5))s"
         break
@@ -178,13 +189,15 @@ fi
 echo "=== Stack ready — running cliff: warmup-at-each-c + 1 timed iter ==="
 # --warmup-at-each-c: warms c=1 first, then runs 1 timed iter at c=1
 # This is the standard per_client flow — same as the real cliff run
-docker run --rm --network host \
+# The client is not the server: it joins the bridge, where vLLM (inside
+# lmcache's netns, above) answers to lmcache's aic-vllm alias.
+docker run --rm --network aic \
     -v "${REPO}:/work" -w /work \
     -v "${HF_HOME}:/hf" \
     -e HF_HOME=/hf -e HF_HUB_OFFLINE=1 -e TRANSFORMERS_OFFLINE=1 \
     --entrypoint python3 "${AIC_IMAGE}" \
     benchmarks/run_cliff.py \
-        --endpoint "http://localhost:${VLLM_PORT}" \
+        --endpoint "http://aic-vllm:${VLLM_PORT}" \
         --model "${VLLM_MODEL}" \
         --arm kvd_v2 --isl 20000 --shared-prefix-tokens 18000 \
         --concurrencies 1 --iters 1 --warmup-at-each-c \
@@ -192,7 +205,8 @@ docker run --rm --network host \
         --prefix-mode per_client --out "${LOGDIR}/results.csv" 2>&1 | tee "${LOGDIR}/cliff.log"
 
 echo "--- Metrics snapshot AFTER timed iter ---"
-curl -s "http://localhost:${VLLM_PORT}/metrics" \
+# From the bridge, as the cliff client above reached it.
+AIC_FETCH_IMAGE="${AIC_IMAGE}" aic_fetch "http://aic-vllm:${VLLM_PORT}/metrics" \
     | grep -E "external_prefix_cache|prefix_cache|connector" \
     | tee "${LOGDIR}/metrics_after.txt"
 

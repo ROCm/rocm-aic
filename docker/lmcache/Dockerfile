@@ -76,12 +76,21 @@ ARG LMCACHE_REF=v0.5.6
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 
 # Install git + minimal build tools (the -full ROCm image does not include them).
+# git comes from ppa:git-core because `git clone --revision` needs >= 2.49 and
+# Ubuntu 24.04 ships 2.43.  software-properties-common is purged again once the
+# PPA is configured: it drags in a dpkg-owned python3-jwt that pip cannot
+# uninstall.
 # hadolint ignore=DL3008
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
     apt-get update && \
     DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-        git ca-certificates python3-dev libnuma1
+        software-properties-common && \
+    add-apt-repository ppa:git-core/ppa -y && \
+    apt-get update && \
+    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+        git ca-certificates python3-dev libnuma1 && \
+    apt-get purge -y --auto-remove software-properties-common
 
 # Bring torch + Python packages from aic-base into this full-ROCm stage.
 # Now this stage has: ROCm -full headers + aic-base's torch.
@@ -145,7 +154,7 @@ RUN python3 /tmp/rocm_ipc_patch.py && rm /tmp/rocm_ipc_patch.py
 # Build the LMCache wheel with full ROCm headers available.
 RUN --mount=type=cache,target=/root/.cache/pip \
     mkdir -p /wheels && \
-    printf '%s\n' "${ROCM_ARCH%%,*}" > /etc/rocm_target.lst && \
+    printf '%s\n' "${ROCM_ARCH%%;*}" > /etc/rocm_target.lst && \
     cd /app/LMCache && \
     PYTORCH_ROCM_ARCH="${ROCM_ARCH}" \
         TORCH_DONT_CHECK_COMPILER_ABI=1 \
@@ -183,6 +192,18 @@ COPY patches/lmcache/ /app/patches/lmcache/
 COPY docker/lmcache/paged_cupy_memory_allocator.py \
      /app/paged_cupy_memory_allocator.py
 COPY docker/scripts/apply-github-prs.sh /usr/local/bin/apply-github-prs.sh
+
+# aic-base carries Ubuntu's git 2.43; `git clone --revision` needs >= 2.49.
+# hadolint ignore=DL3008
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
+    apt-get update && \
+    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+        software-properties-common && \
+    add-apt-repository ppa:git-core/ppa -y && \
+    apt-get update && \
+    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends git && \
+    apt-get purge -y --auto-remove software-properties-common
 
 RUN git clone --depth 1 --revision "${LMCACHE_REF}" "${LMCACHE_GIT_URL}" /app/LMCache
 

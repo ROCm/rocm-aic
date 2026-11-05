@@ -259,8 +259,9 @@ AIC_VLLM_READY_TIMEOUT="${AIC_VLLM_READY_TIMEOUT:-1200}"
 # loader (e.g. when debugging load-order issues or on non-safetensor checkpoints).
 AIC_LOAD_FORMAT="${AIC_LOAD_FORMAT:-fastsafetensors}"
 
-# Every arm now serves vLLM on the compose-published :8000 (arms run sequentially,
-# each stack torn down before the next), so one endpoint port suffices.
+# Every arm serves vLLM on container port 8000 (arms run sequentially, each stack
+# torn down before the next), so one endpoint port suffices.  wait_ready probes it
+# from inside the container; the bench container uses the aic-vllm alias.
 VLLM_ENDPOINT_PORT=8000
 LMCACHE_PORT=6555
 STAMP="$(date +%Y%m%d-%H%M%S)"
@@ -498,56 +499,45 @@ if [[ -d "${NVME_DATA}/lmcache" ]]; then
 fi
 [[ -d "${HF_HOME}/hub" ]] || die "HF cache not found at ${HF_HOME}/hub"
 
-# --- Load images from shared tarballs when needed ----------------------------
-# Reload when the node's image is absent, when the /scratch tarball is newer than
+# --- Fetch images from shared storage when needed ----------------------------
+# The build leaves a tarball or a .ref to its registry copy (see
+# .slurm/image-dist-lib.sh).  aic_image_fetch pulls a .ref by digest, and reloads
+# a tarball only when the node's image is absent, when the tarball is newer than
 # what this node last loaded, or when AIC_FORCE_LOAD=1 -- so a rebuild is picked
-# up automatically instead of a stale cached image being reused (mirrors cmd_test
-# / cmd_push in run-build-distribute.sh).  A per-uid+image marker under /var/tmp
-# records the tarball mtime last loaded here; comparing tarball-mtime vs the
-# recorded tarball-mtime (both build-side values) avoids build/node clock skew.
+# up automatically instead of a stale cached image being reused.
 #
-#   $1=image name:tag  $2=tarball glob  $3=mode ("required" -> die if no tarball;
-#   otherwise best-effort).  Returns 0 iff the image is present afterward.
+#   $1=image name:tag  $2=what follows the image's name in its artifact's: "-*"
+#   for an arch-tagged build, "" for an exporter  $3=mode ("required" -> die if
+#   no artifact; otherwise best-effort).  Returns 0 iff the image is present
+#   afterward.
+# shellcheck source=.slurm/image-dist-lib.sh
+source "${REPO}/.slurm/image-dist-lib.sh"
 load_image_if_needed() {
-  local image="$1" glob="$2" mode="${3:-optional}"
-  local tb marker have tarm loadedm
-  tb="$(ls -t ${glob} 2>/dev/null | head -1 || true)"
-  marker="/var/tmp/aic-loaded-$(id -u)-$(printf '%s' "${image}" | tr '/:' '__').mtime"
-  have="$(docker images -q "${image}" 2>/dev/null)"
-  tarm="$(stat -c %Y "${tb}" 2>/dev/null || echo 0)"
-  loadedm="$(cat "${marker}" 2>/dev/null || echo 0)"
-  if [[ "${AIC_FORCE_LOAD:-0}" == "1" || -z "${have}" || "${tarm}" -gt "${loadedm}" ]]; then
-    if [[ -z "${tb}" ]]; then
-      [[ "${mode}" == "required" ]] && die "image ${image} absent and no tarball matching ${glob} (run the build first)"
-      [[ -n "${have}" ]] && return 0 # no tarball, but image already present
-      log "  ${image}: absent and no tarball (${glob}); skipping"
-      return 1
+  local image="$1" stem mode="${3:-optional}" art
+  stem="$(aic_image_stem "${image}")$2"
+  if ! art="$(aic_image_artifact "${AIC_IMAGE_DIR}" "${stem}")"; then
+    # No artifact, but the image is already here: use it, unless a required
+    # image was asked to be reloaded.
+    if docker image inspect "${image}" >/dev/null 2>&1 \
+      && [[ "${mode}" != "required" || "${AIC_FORCE_LOAD:-0}" != "1" ]]; then
+      return 0
     fi
-    log "loading ${image} from ${tb} (tarball=${tarm} last-loaded=${loadedm} present=$([[ -n "${have}" ]] && echo yes || echo no) force=${AIC_FORCE_LOAD:-0})"
-    case "${tb}" in
-    *.zst) zstd -dc "${tb}" | docker load ;;
-    *.gz) gzip -dc "${tb}" | docker load ;;
-    *) docker load -i "${tb}" ;;
-    esac || {
-      [[ "${mode}" == "required" ]] && die "docker load failed"
-      log "  ${image}: docker load failed"
-      return 1
-    }
-    echo "${tarm}" >"${marker}" 2>/dev/null || true
-  else
-    log "image up to date on $(hostname): ${image} (id ${have}); AIC_FORCE_LOAD=1 forces a reload"
+    [[ "${mode}" == "required" ]] && die "image ${image} absent and no build artifact ${AIC_IMAGE_DIR}/${stem} (run the build first)"
+    log "  ${image}: absent and no build artifact (${AIC_IMAGE_DIR}/${stem}); skipping"
+    return 1
   fi
-  return 0
+  aic_image_fetch cliff "${image}" "${art}" && return 0
+  [[ "${mode}" == "required" ]] && die "could not load ${image} from ${art}"
+  return 1
 }
 
 # Main inference image (required -- the whole run needs it).
-_img_base="$(printf '%s' "${AIC_IMAGE}" | tr '/:' '--')"
-load_image_if_needed "${AIC_IMAGE}" "${AIC_IMAGE_DIR}/${_img_base}-*.tar.*" required
+load_image_if_needed "${AIC_IMAGE}" "-*" required
 
 # Monitoring sidecar images.  Load from the shared NFS tarball when present so
 # compose never needs Docker Hub egress on a cold node.  Applies for all non-zero
-# AIC_EXPORTERS modes (safe and 1).  Images are named by their Docker Hub tag
-# with '/:' → '--' so they match the tarball filenames saved by dist-build.
+# AIC_EXPORTERS modes (safe and 1).  load_image_if_needed finds each by its
+# name:tag, the way dist-build names the files it saves.
 # On a node with the batesste host service the fabric containers are port-skipped
 # anyway; with neither, node-exporter's nvme/infiniband collectors still cover it
 # -- see _monitoring_run_up.
@@ -555,33 +545,29 @@ if [[ "${AIC_EXPORTERS}" != "0" ]]; then
   # nvme/rdma fabric exporters (built by run-build-distribute.sh build-exporters)
   if [[ -z "${AIC_NVME_EXPORTER_IMAGE:-}" ]]; then
     _t="aic-nvme-exporter:latest"
-    _b="$(printf '%s' "${_t}" | tr '/:' '--')"
-    load_image_if_needed "${_t}" "${AIC_IMAGE_DIR}/${_b}.tar.*" && export AIC_NVME_EXPORTER_IMAGE="${_t}"
+    load_image_if_needed "${_t}" "" && export AIC_NVME_EXPORTER_IMAGE="${_t}"
   fi
   if [[ -z "${AIC_RDMA_EXPORTER_IMAGE:-}" ]]; then
     _t="aic-rdma-exporter:latest"
-    _b="$(printf '%s' "${_t}" | tr '/:' '--')"
-    load_image_if_needed "${_t}" "${AIC_IMAGE_DIR}/${_b}.tar.*" && export AIC_RDMA_EXPORTER_IMAGE="${_t}"
+    load_image_if_needed "${_t}" "" && export AIC_RDMA_EXPORTER_IMAGE="${_t}"
   fi
   # AMD GPU device-metrics-exporter (rocm/device-metrics-exporter:v1.5.1).
   # Tarball saved to AIC_IMAGE_DIR by dist-build-exporters or manually.
   if [[ -z "${AIC_AMDGPU_EXPORTER_IMAGE:-}" ]]; then
     _t="${AIC_AMDGPU_EXPORTER_IMAGE_DEFAULT:-rocm/device-metrics-exporter:v1.5.1}"
-    _b="$(printf '%s' "${_t}" | tr '/:' '--')"
-    load_image_if_needed "${_t}" "${AIC_IMAGE_DIR}/${_b}.tar.*" && export AIC_AMDGPU_EXPORTER_IMAGE="${_t}"
+    load_image_if_needed "${_t}" "" && export AIC_AMDGPU_EXPORTER_IMAGE="${_t}"
   fi
   # Prometheus (prom/prometheus:v3.14.0).  Pre-pull avoids 10+ min Docker Hub
   # download on fresh nodes; load_image_if_needed is a no-op when already present.
   if [[ -z "${AIC_PROM_IMAGE:-}" ]]; then
     _t="prom/prometheus:v3.14.0"
-    _b="$(printf '%s' "${_t}" | tr '/:' '--')"
-    load_image_if_needed "${_t}" "${AIC_IMAGE_DIR}/${_b}.tar.*" || true
+    load_image_if_needed "${_t}" "" || true
   fi
 fi
 
 # --- Benchmark client env (offline HF cache) ---------------------------------
-# The bench + plot containers run with --network host and reach the vLLM endpoint
-# at localhost:<published port>.  The inference stack itself is launched via
+# The bench container joins the aic bridge and reaches vLLM at http://aic-vllm:8000
+# (the plot container needs no network).  The inference stack itself is launched via
 # docker/docker-compose.yml (see the compose-stack setup block below), not raw
 # docker run -- all container/GPU/cap flags now live in that compose file.
 HF_ENV=(-e HF_HOME=/hf -e HF_HUB_CACHE=/hf/hub -e HF_HUB_OFFLINE=1
@@ -598,12 +584,12 @@ HF_ENV=(-e HF_HOME=/hf -e HF_HUB_CACHE=/hf/hub -e HF_HUB_OFFLINE=1
 
 # --- Compose stack (single source of truth: docker/docker-compose.yml) --------
 # Every arm drives the SAME compose file.  The plain vram baseline starts only the
-# `vllm` service (empty KV_TRANSFER_ARG; lmcache is skipped via its `cache`
-# profile, and vllm's depends_on uses required:false so it can run alone).  The
-# nvme/gds arms add `--profile cache`, so the standalone lmcache server runs and
-# vllm connects to it with LMCacheMPConnector -- i.e. LMCache MP mode on every
-# kvd arm.  Per-arm topology (GDS slab vs AIS_MT NVMe L2 vs local_disk) is
-# selected through the env exported below; the arm functions flip GDS_MODE /
+# `vllm-only` service (empty KV_TRANSFER_ARG; vllm proper runs in lmcache's
+# namespaces, and lmcache is behind the `cache` profile).  The nvme/gds arms
+# add `--profile cache`, so the standalone lmcache server runs and vllm connects
+# to it with LMCacheMPConnector -- i.e. LMCache MP mode on every kvd arm.
+# Per-arm topology (GDS slab vs AIS_MT NVMe L2 vs local_disk) is selected
+# through the env exported below; the arm functions flip GDS_MODE /
 # AIC_L2_BACKEND / LMCACHE_L1_SIZE_GB / KV_TRANSFER_ARG before `compose up`.
 COMPOSE_FILE="${REPO}/docker/docker-compose.yml"
 compose() { docker compose -f "${COMPOSE_FILE}" "$@"; }
@@ -646,11 +632,11 @@ export VLLM_LOGGING_LEVEL="${VLLM_LOGGING_LEVEL:-WARNING}"
 AIC_GDS_SLAB_GB="${LMCACHE_L1_SIZE_GB}"
 
 # --- Helpers -----------------------------------------------------------------
-wait_ready() { # $1=port $2=timeout_s
-  local port="$1" timeout="${2:-${AIC_VLLM_READY_TIMEOUT:-1200}}" waited=0
-  log "waiting for vLLM on :${port} (up to ${timeout}s)"
+wait_ready() { # $1=container $2=container-port $3=timeout_s
+  local ctr="$1" port="$2" timeout="${3:-${AIC_VLLM_READY_TIMEOUT:-1200}}" waited=0
+  log "waiting for vLLM on ${ctr}:${port} (up to ${timeout}s)"
   while ((waited < timeout)); do
-    if curl -fsS "http://localhost:${port}/v1/models" >/dev/null 2>&1; then
+    if aic_probe "${ctr}" "${port}" /v1/models; then
       log "vLLM :${port} is ready (${waited}s)"
       return 0
     fi
@@ -663,13 +649,13 @@ wait_ready() { # $1=port $2=timeout_s
 run_bench() { # $1=arm $2=endpoint_port $3=out_csv $4=extra args...
   local arm="$1" port="$2" out="$3"
   shift 3
-  log "running sweep: arm=${arm} endpoint=:${port} -> ${out}"
-  docker run --rm --network host \
+  log "running sweep: arm=${arm} endpoint=http://aic-vllm:${port} -> ${out}"
+  docker run --rm --network aic \
     -v "${REPO}":/work -w /work \
     -v "${HF_HOME}":/hf "${HF_ENV[@]}" \
     --entrypoint python3 "${AIC_IMAGE}" \
     benchmarks/run_cliff.py \
-    --endpoint "http://localhost:${port}" \
+    --endpoint "http://aic-vllm:${port}" \
     --model "${VLLM_MODEL}" \
     --arm "${arm}" \
     --isl "${BENCH_ISL}" \
@@ -695,20 +681,21 @@ rm_containers() { docker rm -f "$@" >/dev/null 2>&1 || true; }
 stop_stack() {
   local svc c
   # Capture each service's logs before teardown (bounded).
-  for svc in vllm lmcache; do
+  for svc in vllm-only vllm lmcache; do
     timeout 30 compose logs --no-color --no-log-prefix "${svc}" >"${LOGDIR}/container-aic-${svc}.log" 2>&1 || true
   done
   # vLLM + lmcache run in a SHARED PID namespace (required for cross-container HIP
   # IPC KV registration).  That prevents docker from reaping vLLM's EngineCore
   # children, so a plain `compose down`/`docker rm` HANGS.  Force-kill the stack's
-  # processes first (one MP stack per node under host networking, so scoping by
-  # process name is safe here), then tear the now-empty containers down.
+  # processes first (one MP stack per node: fixed container names, so scoping by
+  # process name is safe here), then tear the now-empty
+  # containers down.
   pkill -9 -f 'vllm.entrypoints.openai' 2>/dev/null || true
   pkill -9 -f 'EngineCore' 2>/dev/null || true
   pkill -9 -f 'lmcache server' 2>/dev/null || true
   sleep 2
-  timeout 60 compose --profile cache down --remove-orphans --timeout 5 >/dev/null 2>&1 || true
-  for c in aic-vllm-gpu0 aic-lmcache; do timeout 30 docker rm -f "${c}" >/dev/null 2>&1 || true; done
+  timeout 60 compose --profile cache --profile vllm-only down --remove-orphans --timeout 5 >/dev/null 2>&1 || true
+  for c in "aic-vllm-only-gpu${GPU}" "aic-vllm-gpu${GPU}" aic-lmcache; do timeout 30 docker rm -f "${c}" >/dev/null 2>&1 || true; done
 }
 
 # --- Metrics-capture sidecar (Prometheus + optional exporters) ---------------
@@ -726,25 +713,22 @@ trap stop_monitoring EXIT
 # =============================================================================
 # Arm A — vram_only : plain vLLM baseline, no LMCache connector
 # =============================================================================
-# `compose up vllm` with an empty KV_TRANSFER_ARG starts vLLM alone -- lmcache is
-# behind the `cache` profile (skipped) and vllm's depends_on is required:false.
+# The vllm-only service with an empty KV_TRANSFER_ARG: vLLM alone, on the aic
+# bridge with its own IPC and PID namespaces (vllm proper lives in lmcache's).
 VRAM_CSV="${RESULTS}/cliff-vram_only-${STAMP}.csv"
 run_arm_vram() {
-  rm_containers aic-vllm-gpu0 aic-lmcache
+  rm_containers "aic-vllm-only-gpu${GPU}" "aic-vllm-gpu${GPU}" aic-lmcache
   log "=== Arm A (vram_only): plain vLLM (no LMCache) on :${VLLM_ENDPOINT_PORT} ==="
   export KV_TRANSFER_ARG="" # no connector -> plain VRAM-prefix-cache-only vLLM
   export GDS_MODE=""
-  export VLLM_IPC_MODE=shareable # private IPC ns; no lmcache IPC ns to join
-  export VLLM_PID_MODE="" # vllm runs alone; no lmcache PID ns to join
-  export VLLM_NETWORK_MODE=host # no lmcache network ns to join
-  if ! compose up -d vllm; then
+  if ! compose --profile vllm-only up -d vllm-only; then
     log "Arm A: compose up vllm failed"
     stop_stack
     return 1
   fi
-  if ! wait_ready "${VLLM_ENDPOINT_PORT}"; then
+  if ! wait_ready "aic-vllm-only-gpu${GPU}" "${VLLM_ENDPOINT_PORT}"; then
     log "Arm A: server never became ready; last logs:"
-    compose logs --tail 40 --no-color vllm 2>&1 | sed 's/^/    /'
+    compose logs --tail 40 --no-color vllm-only 2>&1 | sed 's/^/    /'
     stop_stack
     return 1
   fi
@@ -786,7 +770,7 @@ YML
 run_arm_kvd() { # $1=mode(nvme|gds) $2=out_csv
   local mode="$1" out="$2"
   log "=== Arm B (kvd_v2, mode=${mode}) — LMCache MP connector ==="
-  rm_containers aic-vllm-gpu0 aic-lmcache
+  rm_containers "aic-vllm-gpu${GPU}" aic-lmcache
 
   # MP connector arg for vLLM (+ optional kv_load_failure_policy).  Single-quote
   # the JSON so compose's shlex splitting preserves the inner double quotes.
@@ -800,8 +784,6 @@ run_arm_kvd() { # $1=mode(nvme|gds) $2=out_csv
   # falsely trigger recovery. Real crashes will still be detected once vLLM stops
   # responding entirely (the ZMQ channel closes cleanly on process exit).
   local _hb="${LMCACHE_HEARTBEAT_INTERVAL:-900}"
-  # Sharing lmcache's PID/IPC namespaces does not share its network namespace;
-  # resolve the peer through the Compose network, as the interactive stack does.
   export KV_TRANSFER_ARG="--kv-transfer-config '{\"kv_connector\":\"LMCacheMPConnector\",\"kv_role\":\"kv_both\"${_fp},\"kv_connector_extra_config\":{\"lmcache.mp.host\":\"tcp://aic-lmcache\",\"lmcache.mp.port\":${LMCACHE_PORT},\"lmcache.mp.heartbeat_interval\":${_hb}}}'"
   export VLLM_IPC_MODE=service:lmcache # join lmcache IPC ns for cross-container HIP IPC
   export VLLM_PID_MODE=service:lmcache # share lmcache PID ns for cross-container HIP IPC
@@ -850,7 +832,7 @@ run_arm_kvd() { # $1=mode(nvme|gds) $2=out_csv
     stop_stack
     return 1
   fi
-  if ! wait_ready "${VLLM_ENDPOINT_PORT}"; then
+  if ! wait_ready "aic-vllm-gpu${GPU}" "${VLLM_ENDPOINT_PORT}"; then
     log "kvd/${mode}: server never became ready; last logs:"
     compose logs --tail 40 --no-color lmcache 2>&1 | sed 's/^/  [lmcache] /'
     compose logs --tail 60 --no-color vllm 2>&1 | sed 's/^/  [vllm]    /'
@@ -865,7 +847,7 @@ run_arm_kvd() { # $1=mode(nvme|gds) $2=out_csv
   docker logs -f --timestamps aic-lmcache \
     >>"${LOGDIR}/lmcache/lmcache-stream.log" 2>&1 &
   _lmcache_log_pid=$!
-  docker logs -f --timestamps aic-vllm-gpu0 \
+  docker logs -f --timestamps "aic-vllm-gpu${GPU}" \
     >>"${LOGDIR}/vllm/vllm-stream.log" 2>&1 &
   _vllm_log_pid=$!
 
@@ -944,7 +926,7 @@ run_plot() { # $1=out_subdir  $2..=candidate CSV paths (absolute)
     return
   }
   mkdir -p "${PLOTS}/${sub}"
-  docker run --rm --network host -v "${REPO}":/work -w /work \
+  docker run --rm --network none -v "${REPO}":/work -w /work \
     --entrypoint python3 "${AIC_IMAGE}" \
     benchmarks/plot_cliff.py \
     --input "${inputs[@]}" \

@@ -158,21 +158,21 @@ variable "IMAGE_TAG" {
 # and vllm/lmcache share base's layers; pointing them at one shared dir makes
 # their cache *exports* race and fail with "ref ... locked ... unavailable".
 # Per-target dirs remove the contention (at the cost of storing base's layers
-# once per dependent).  Registry refs are content-addressed and handle
-# concurrent writers, so they stay on a single ref.  A GitHub Actions cache
-# scope holds one index per scope, so concurrent writers to one scope would
-# overwrite each other's: it gets the same per-arch, per-target split as the dir
+# once per dependent).  A registry stores blobs once however many refs use
+# them, but a ref still names ONE cache manifest, so concurrent writers to one
+# ref would overwrite each other's: it gets the same per-arch, per-target split
+# (<ref>-<arch>-<target>), as does a GitHub Actions cache scope
 # (<scope>-<arch>-<target>), which also keeps two arch groups from sharing
 # entries.  ignore-error: a cache-service hiccup must not fail an hours-long build.
 function "cache_from" {
   params = [arch, name]
-  result = AIC_CACHE_REF != "" ? ["type=registry,ref=${AIC_CACHE_REF}"] : (
+  result = AIC_CACHE_REF != "" ? ["type=registry,ref=${AIC_CACHE_REF}-${cache_arch_slug(arch)}-${name}"] : (
            AIC_CACHE_GHA_SCOPE != "" ? ["type=gha,scope=${AIC_CACHE_GHA_SCOPE}-${cache_arch_slug(arch)}-${name}"] : (
            AIC_CACHE_DIR != "" ? ["type=local,src=${AIC_CACHE_DIR}/${cache_arch_slug(arch)}/${name}"] : []))
 }
 function "cache_to" {
   params = [arch, name]
-  result = AIC_CACHE_REF != "" ? ["type=registry,ref=${AIC_CACHE_REF},mode=${AIC_CACHE_MODE}"] : (
+  result = AIC_CACHE_REF != "" ? ["type=registry,ref=${AIC_CACHE_REF}-${cache_arch_slug(arch)}-${name},mode=${AIC_CACHE_MODE},ignore-error=true"] : (
            AIC_CACHE_GHA_SCOPE != "" ? ["type=gha,scope=${AIC_CACHE_GHA_SCOPE}-${cache_arch_slug(arch)}-${name},mode=${AIC_CACHE_MODE},ignore-error=true"] : (
            AIC_CACHE_DIR != "" ? ["type=local,dest=${AIC_CACHE_DIR}/${cache_arch_slug(arch)}/${name},mode=${AIC_CACHE_MODE},ignore-error=true"] : []))
 }

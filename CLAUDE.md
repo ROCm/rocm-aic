@@ -15,9 +15,12 @@ cluster's value lists all three controllers (`crs-m2m-cpu-spur-00{5,6,7}`),
 which form a Raft quorum; overriding it with a single address silently drops
 that redundancy.
 
-- **Partition:** `amd-spur`
+- **Partition:** `amd-spur-v2` (since 2026-11-03; `amd-spur` has no nodes and
+  jobs submitted to it pend forever on `PartitionConfig`). Scripts and `make`
+  read it from `AIC_SPUR_PARTITION`; use that, not the literal name
 - **No `--account` flag needed** for `srun`
-- Node naming convention: `crsuse2-m2m-NNN`
+- Node naming convention: `crsuse2-m2m-v3-NNN` (`amd-spur-v2`; older nodes
+  were `crsuse2-m2m-NNN`)
 - Controllers are *not* compute nodes and never appear in `sinfo`
 
 ## Historical ROCm 7.14 torch wheel integration issue (2026-07-20)
@@ -75,6 +78,20 @@ See `.docs-remove/rocm-7.14-torch-wheel-integration.md` for the complete
 11-bug chain discovered during SPUR testing, including root causes and fix
 status for each.
 
+## Clients run on the bridge (only Grafana is published)
+
+SPUR nodes are multi-tenant, so no container binds a fixed host port, and only
+Grafana (for browsers) is published at all: `127.0.0.1` on a Docker-chosen port
+that `make endpoints` prints. Servers live on the `aic` bridge (or join a
+bridged container's netns, as `vllm` joins `aic-lmcache`), and every client runs
+in a container there: `aic-client` for make targets, a throwaway
+`docker run --network aic` on SPUR. One-off requests from host code go through
+`aic_fetch <url> [<json-body>]` in `scripts/aic-endpoints.sh` (set
+`AIC_FETCH_IMAGE` to an image already on the node); never `curl localhost:<port>`.
+Address a stack by container name, not the shared `aic-vllm` alias, which two
+stacks on one node's bridge would both answer to: `aic_bridge_url <container>
+<port>` resolves it (`aic-vllm-gpu0` → `http://aic-lmcache:8000`).
+
 ## gfx1201 (RDNA4 / RX 9070 XT) local development notes (2026-09-03)
 
 The RX 9070 XT (Navi 48, gfx1201, 16 GB) is supported in the default multi-arch
@@ -111,8 +128,8 @@ build (`AIC_ROCM_ARCH` default includes `gfx1201`). Key differences from CDNA:
   both containers) uses those DKMS-only KFD IPC ioctls.  The default
   (non-legacy) mode does not, but vllm and lmcache must share a network
   namespace (ROCR passes the dmabuf fd over the abstract socket `@hsa<pid>`)
-  and should share the PID namespace (`network_mode: host` + `pid:
-  service:lmcache` — the compose defaults; no make override needed).
+  and should share the PID namespace (`network_mode: container:aic-lmcache` +
+  `pid: service:lmcache` — the compose defaults; no make override needed).
 
   The standard vllm-reset-test command on gfx1201 (no extra overrides):
 

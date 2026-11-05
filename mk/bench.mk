@@ -7,11 +7,27 @@
         cliff-kvbench-local test-emulate-local stress-emulate-local capture-profile-local \
         test-rocjitsu-local
 
+# Benchmarks run in aic-client (started by `make up`), on the aic bridge with
+# the repo at /repo and logs/ at /logs, so they reach vLLM by name.  Wait for
+# the benchmark deps it pip-installs at start.
+define _wait_aic_client
+@docker inspect aic-client >/dev/null 2>&1 || { \
+	echo "ERROR: aic-client container not running — start with 'make up'" >&2; exit 1; }
+@for _i in $$(seq 1 120); do \
+	docker exec aic-client python3 -c 'import openai, httpx, transformers' >/dev/null 2>&1 && break; \
+	[ "$$_i" = 120 ] && { echo "ERROR: aic-client did not finish installing benchmark deps" >&2; exit 1; }; \
+	sleep 1; \
+done
+endef
+
 cliff: prep-dirs
 	@test -n "$(BENCH_MODEL)" || { \
 		echo "ERROR: set BENCH_MODEL or VLLM_MODEL to the served model name" >&2; exit 1; }
-	$(PYTHON) "$(CURDIR)/benchmarks/run_cliff.py" \
-		--endpoint "$(BENCH_ENDPOINT)" \
+	$(_wait_aic_client)
+	_ep="$(BENCH_ENDPOINT)"; \
+	[ -n "$$_ep" ] || _ep="$$($(call aic_bridge_url,aic-vllm-gpu$(GPU),8000))" || exit 1; \
+	docker exec aic-client python3 -u benchmarks/run_cliff.py \
+		--endpoint "$$_ep" \
 		--model "$(BENCH_MODEL)" \
 		--arm "$(BENCH_ARM)" \
 		--isl "$(BENCH_ISL)" \
@@ -19,20 +35,20 @@ cliff: prep-dirs
 		--concurrencies "$(BENCH_CONCUR)" \
 		--iters "$(BENCH_ITERS)" \
 		--warmup-iters 1 \
-		--out "$(BENCH_OUT)"
+		--out "/logs/manual/results/$(notdir $(BENCH_OUT))"
 	@echo "Results written to $(BENCH_OUT)"
 
 stress-grafana: prep-dirs
 	@test -n "$(BENCH_MODEL)" || { \
 		echo "ERROR: set BENCH_MODEL or VLLM_MODEL to the served model name" >&2; exit 1; }
-	@docker inspect aic-client > /dev/null 2>&1 || { \
-		echo "ERROR: aic-client container not running — start with 'make up'" >&2; exit 1; }
-	@echo "Stressing stack for Grafana — watch http://localhost:3000  (ctrl-c to stop)"
-	@echo "  endpoint: http://aic-vllm-gpu0:8000 (via aic-client)"
-	@while true; do \
+	$(_wait_aic_client)
+	@echo "Stressing stack for Grafana — 'make endpoints' prints its URL  (ctrl-c to stop)"
+	@_ep="$$($(call aic_bridge_url,aic-vllm-gpu$(GPU),8000))" || exit 1; \
+	echo "  endpoint: $$_ep (via aic-client)"; \
+	while true; do \
 		docker exec aic-client \
 			python3 -u benchmarks/run_cliff.py \
-			--endpoint http://aic-vllm-gpu0:8000 \
+			--endpoint "$$_ep" \
 			--model "$(BENCH_MODEL)" \
 			--arm kvd_v2 \
 			--isl 1024 \
@@ -57,7 +73,7 @@ kvbench-build: ensure-compose
 
 kvbench-up: ensure-compose prep-kvbench-dirs
 	KVBENCH_IMAGE_REF="$(KVBENCH_IMAGE_REF)" $(COMPOSE) --profile kvbench up --build -d kvbench client
-	@echo "KVBench is starting on http://localhost:$(KVBENCH_HOST_PORT) and http://aic-kvbench:$(KVBENCH_PORT) inside compose"
+	@echo "KVBench is starting on http://aic-kvbench:$(KVBENCH_PORT) inside compose; benchmark it from aic-client"
 
 kvbench-logs:
 	$(COMPOSE) --profile kvbench logs -f kvbench
@@ -71,7 +87,7 @@ cliff-kvbench-local: ensure-compose prep-kvbench-dirs
 	@echo "Waiting up to $(KVBENCH_READY_S)s for KVBench /v1/models ..."
 	@_ready=0; \
 	for _i in $$(seq 1 $(KVBENCH_READY_S)); do \
-	    if curl -fsS "http://localhost:$(KVBENCH_HOST_PORT)/v1/models" >/dev/null 2>&1; then _ready=1; break; fi; \
+	    if $(call aic_probe,aic-kvbench,$(KVBENCH_PORT),/v1/models); then _ready=1; break; fi; \
 	    sleep 1; \
 	done; \
 	if [ "$$_ready" != "1" ]; then \
@@ -123,7 +139,7 @@ test-emulate-local: ensure-compose prep-dirs
 	@echo "Waiting up to $(AIC_EMULATE_READY_S)s for /health (engine fully ready) ..."
 	@_ready=0; \
 	for _i in $$(seq 1 $$(($(AIC_EMULATE_READY_S)/5))); do \
-	    if curl -fsS http://localhost:8000/health >/dev/null 2>&1; then _ready=1; break; fi; \
+	    if $(call aic_probe,aic-vllm-emulator,8000,/health); then _ready=1; break; fi; \
 	    if [ -z "$$(docker ps -q -f name=aic-vllm-emulator)" ]; then \
 	        echo "FAIL: emulator container exited during startup" >&2; \
 	        $(COMPOSE) --profile emulate logs --tail 60 vllm-emulator; \
@@ -140,9 +156,8 @@ test-emulate-local: ensure-compose prep-dirs
 	fi; \
 	sleep 5; \
 	echo "Endpoint ready — sending completion ..."; \
-	resp=$$(curl -sS http://localhost:8000/v1/completions \
-	    -H 'Content-Type: application/json' \
-	    -d '{"model":"$(AIC_EMULATE_MODEL)","prompt":"Hello","max_tokens":16,"temperature":0}' 2>&1); \
+	resp=$$($(aic_fetch) http://aic-vllm-emulator:8000/v1/completions \
+	    '{"model":"$(AIC_EMULATE_MODEL)","prompt":"Hello","max_tokens":16,"temperature":0}' 2>&1); \
 	echo "Response: $$resp"; \
 	rc=0; \
 	tokens=$$(printf '%s' "$$resp" | grep -oE '"completion_tokens"[[:space:]]*:[[:space:]]*[0-9]+' | grep -oE '[0-9]+$$'); \
@@ -175,7 +190,7 @@ stress-emulate-local: ensure-compose prep-dirs
 	    $(COMPOSE) --profile emulate --profile monitoring up -d vllm-emulator prometheus
 	@echo "Waiting for emulator endpoint ..."
 	@for _i in $$(seq 1 24); do \
-	    curl -fsS http://localhost:8000/health >/dev/null 2>&1 && break; \
+	    $(call aic_probe,aic-vllm-emulator,8000,/health) && break; \
 	    sleep 5; \
 	done
 	@echo "Running sweep: ISL=$(AIC_EMULATE_STRESS_ISL) OSL=$(AIC_EMULATE_STRESS_OSL) c=$(AIC_EMULATE_STRESS_CONCUR) x$(AIC_EMULATE_STRESS_ITERS)"
@@ -191,11 +206,11 @@ stress-emulate-local: ensure-compose prep-dirs
 	    --ignore-eos 2>&1 | tail -30
 	@echo ""
 	@echo "=== Key vLLM /metrics ==="
-	@curl -s http://localhost:8000/metrics | \
+	@$(aic_fetch) http://aic-vllm-emulator:8000/metrics | \
 	    grep -E "^vllm:(num_requests|e2e_request_latency|request_prompt_tokens|request_generation_tokens|gpu_cache_usage|request_success|request_failure)" | \
 	    grep -v "^#" | sort | head -30
 	@echo ""
-	@echo "Prometheus at http://localhost:9090 — stack left running. Use 'make down' to stop."
+	@echo "Stack left running (Prometheus at http://aic-prometheus:9090 on the aic bridge). Use 'make down' to stop."
 
 # ---- Profile capture (local, requires /dev/kfd) --------------------------------
 
@@ -223,7 +238,7 @@ capture-profile-local: prep-dirs
 	echo "Trace -> $(AIC_CAPTURE_DIR)/$${trace_file}"; \
 	docker run -d --name aic-vllm-capture \
 	    --device /dev/kfd --device /dev/dri \
-	    --network host --ipc host \
+	    --ipc host \
 	    --cap-add CAP_SYS_ADMIN --cap-add SYS_PTRACE \
 	    --security-opt seccomp=unconfined \
 	    -v "$(AIC_CAPTURE_HF_HOME):/hf" \
@@ -248,7 +263,7 @@ capture-profile-local: prep-dirs
 	    >/dev/null || { echo "FAIL: docker run failed" >&2; exit 1; }; \
 	echo "Waiting for endpoint (weights download may take a few minutes) ..."; \
 	_ready=0; for _i in $$(seq 1 60); do \
-	    curl -fsS http://localhost:8000/v1/models >/dev/null 2>&1 && { _ready=1; break; }; \
+	    $(call aic_probe,aic-vllm-capture,8000,/v1/models) && { _ready=1; break; }; \
 	    [ -z "$$(docker ps -q -f name=aic-vllm-capture)" ] && \
 	        { docker logs --tail 40 aic-vllm-capture >&2; docker rm -f aic-vllm-capture >/dev/null 2>&1; exit 1; }; \
 	    sleep 10; \
