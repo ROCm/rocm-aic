@@ -515,17 +515,36 @@ added.
 
 ## Troubleshooting
 
-| Symptom | Cause |
-| --- | --- |
-| `AssertionError: ... out of bounds for 0 devices` | the plugin loaded but its torch shims did not — usually an invalid/empty `VLLM_EMULATOR_*` value aborting `cuda_mock` import |
-| No `[ExecutorEmulatorHook] Enabled` in the log | pack path wrong or pack failed schema validation; the hook stays **disabled** and vLLM tries a real forward pass |
-| Completion content is `""` | expected — filler token, see above |
-| `Failed to import from vllm._C` warning | expected in the `empty` build; harmless because no kernel ever runs |
-| Emulated TTFT far off, TPOT fine | pack under-samples prefill; widen `AIC_CAPTURE_SWEEP` |
-| `ModuleNotFoundError: lmcache` under `emulate-mp` | you are on `:7.14-emulate`; that stage stops before LMCache — use the production image (§6) |
-| `emulate-mp` hangs with requests in `WAITING_FOR_REMOTE_KVS` | the connector's worker side is not reporting completions; check for `[EmulatorKVBuffers] registered` in the log |
-| `Creating transfer context (device_type=cuda, ...)` on a CPU node | `DEVICE_TYPE=cpu` was not honoured — LMCache patch 10 missing, or the var is empty rather than `cpu` (§6.1) |
-| Tens of GiB of `/dev/shm` in use under `emulate-mp` | expected — the fake KV pool is really allocated; cap it with `VLLM_EMULATOR_MEMORY` (§6.2) |
-| `FileExistsError: [Errno 17] File exists: '/lmcache_kv_<pid>_0'` | a stale POSIX SHM segment from a killed previous run in a still-live `aic-lmcache-emulator`: LMCache names segments after the containerised engine pid, which repeats. Recreate both containers (`up --force-recreate`, which `emulate-mp-test` does). |
-| `FileNotFoundError` for `/lmcache_kv_*` in the lmcache-emulator log | the two containers have separate `/dev/shm`s — `EMU_IPC_MODE=container:aic-lmcache-emulator` was not set (§6.1) |
-| `ConnectionError: Cannot reach the LMCache MP server` from the **plain** `emulate` profile | something exported `KV_TRANSFER_ARG` (the Makefile does, globally). The emulator reads `EMU_KV_TRANSFER_ARG` instead precisely so this cannot happen — check you are not on an older compose file. |
+- `AssertionError: ... out of bounds for 0 devices`: the plugin loaded but its
+  torch shims did not — usually an invalid/empty `VLLM_EMULATOR_*` value
+  aborting `cuda_mock` import.
+- No `[ExecutorEmulatorHook] Enabled` in the log: pack path wrong or pack failed
+  schema validation; the hook stays **disabled** and vLLM tries a real forward
+  pass.
+- Completion content is `""`: expected — filler token, see above.
+- `Failed to import from vllm._C` warning: expected in the `empty` build;
+  harmless because no kernel ever runs.
+- Emulated TTFT far off, TPOT fine: pack under-samples prefill; widen
+  `AIC_CAPTURE_SWEEP`.
+- `ModuleNotFoundError: lmcache` under `emulate-mp`: you are on `:7.14-emulate`;
+  that stage stops before LMCache — use the production image (§6).
+- `emulate-mp` hangs with requests in `WAITING_FOR_REMOTE_KVS`: the connector's
+  worker side is not reporting completions; check for
+  `[EmulatorKVBuffers] registered` in the log.
+- `Creating transfer context (device_type=cuda, ...)` on a CPU node:
+  `DEVICE_TYPE=cpu` was not honoured — LMCache patch 10 missing, or the var is
+  empty rather than `cpu` (§6.1).
+- Tens of GiB of `/dev/shm` in use under `emulate-mp`: expected — the fake KV
+  pool is really allocated; cap it with `VLLM_EMULATOR_MEMORY` (§6.2).
+- `FileExistsError: [Errno 17] File exists: '/lmcache_kv_<pid>_0'`: a stale
+  POSIX SHM segment from a killed previous run in a still-live
+  `aic-lmcache-emulator`; LMCache names segments after the containerised engine
+  pid, which repeats. Recreate both containers (`up --force-recreate`, which
+  `emulate-mp-test` does).
+- `FileNotFoundError` for `/lmcache_kv_*` in the lmcache-emulator log: the two
+  containers have separate `/dev/shm`s —
+  `EMU_IPC_MODE=container:aic-lmcache-emulator` was not set (§6.1).
+- `ConnectionError: Cannot reach the LMCache MP server` from the **plain**
+  `emulate` profile: something exported `KV_TRANSFER_ARG` (the Makefile does,
+  globally). The emulator reads `EMU_KV_TRANSFER_ARG` instead precisely so this
+  cannot happen — check you are not on an older compose file.
