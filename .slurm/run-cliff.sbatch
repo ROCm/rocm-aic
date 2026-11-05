@@ -281,7 +281,7 @@ AIC_LOAD_FORMAT="${AIC_LOAD_FORMAT:-fastsafetensors}"
 
 # Every arm serves vLLM on container port 8000 (arms run sequentially, each stack
 # torn down before the next), so one endpoint port suffices.  wait_ready probes it
-# from inside the container; the bench container uses the aic-vllm alias.
+# from inside the container; the bench container reaches it from the aic bridge.
 VLLM_ENDPOINT_PORT=8000
 LMCACHE_PORT=6555
 STAMP="$(date +%Y%m%d-%H%M%S)"
@@ -612,7 +612,7 @@ if [[ "${AIC_EXPORTERS}" != "0" ]]; then
 fi
 
 # --- Benchmark client env (offline HF cache) ---------------------------------
-# The bench container joins the aic bridge and reaches vLLM at http://aic-vllm:8000
+# The bench container joins the aic bridge and reaches vLLM by container name
 # (the plot container needs no network).  The inference stack itself is launched via
 # docker/docker-compose.yml (see the compose-stack setup block below), not raw
 # docker run -- all container/GPU/cap flags now live in that compose file.
@@ -714,16 +714,20 @@ wait_ready() { # $1=container $2=container-port $3=timeout_s
   return 1
 }
 
-run_bench() { # $1=arm $2=endpoint_port $3=out_csv $4=extra args...
-  local arm="$1" port="$2" out="$3"
+run_bench() { # $1=arm $2=vLLM container $3=out_csv $4=extra args...
+  local arm="$1" endpoint out="$3"
+  # By the name that owns the container's netns (aic-lmcache on the kvd arms),
+  # not the aic-vllm alias, which any other stack or emulator on this node's
+  # bridge also answers to.
+  endpoint="$(aic_bridge_url "$2" "${VLLM_ENDPOINT_PORT}")" || return 1
   shift 3
-  log "running sweep: arm=${arm} endpoint=http://aic-vllm:${port} -> ${out}"
+  log "running sweep: arm=${arm} endpoint=${endpoint} -> ${out}"
   docker run --rm --network aic \
     -v "${REPO}":/work -w /work \
     -v "${HF_HOME}":/hf "${HF_ENV[@]}" \
     --entrypoint python3 "${AIC_IMAGE}" \
     benchmarks/run_cliff.py \
-    --endpoint "http://aic-vllm:${port}" \
+    --endpoint "${endpoint}" \
     --model "${VLLM_MODEL}" \
     --arm "${arm}" \
     --isl "${BENCH_ISL}" \
@@ -810,7 +814,7 @@ run_arm_vram() {
     stop_stack
     return 1
   fi
-  run_bench vram_only "${VLLM_ENDPOINT_PORT}" "${VRAM_CSV}"
+  run_bench vram_only "aic-vllm-only-gpu${GPU}" "${VRAM_CSV}"
   local rc=$?
   stop_stack
   return $rc
@@ -935,7 +939,7 @@ run_arm_kvd() { # $1=mode(nvme|gds) $2=out_csv
   # warmup writes take ~450 s; 300 s gives the queue time to mostly drain so
   # iter 0 sees a warm, settled cache rather than write-queue back-pressure.
   # Override via POST_WARMUP_SLEEP_S env if a different c or worker count is used.
-  run_bench kvd_v2 "${VLLM_ENDPOINT_PORT}" "${out}" --warmup-at-each-c \
+  run_bench kvd_v2 "aic-vllm-gpu${GPU}" "${out}" --warmup-at-each-c \
     --post-warmup-sleep-s "${POST_WARMUP_SLEEP_S:-300}"
   local rc=$?
   kill "${_lmcache_log_pid}" "${_vllm_log_pid}" 2>/dev/null || true
