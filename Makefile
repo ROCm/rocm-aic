@@ -132,18 +132,22 @@ BENCH_ISL         ?= 20000
 BENCH_SHARED_TOK  ?= 18000
 BENCH_CONCUR      ?= 1,2,4,8,16,32,48,64,80,100,128,160,200,250
 BENCH_ITERS       ?= 3
-# Empty = resolve the running vLLM's published URL (see `make endpoints`).
+# Empty = the running tiered vLLM, by name on the aic bridge (`make cliff` runs
+# in aic-client); e.g. http://aic-vllm-only-gpu0:8000 for the vram_only arm.
 BENCH_ENDPOINT    ?=
 BENCH_MODEL       ?= $(VLLM_MODEL)
-
-# Host-side URL of a published container port: $(call aic_url,<container>,<port>).
-# Prints http://addr:port, or a message and a non-zero status.  Host ports are
-# ephemeral, so resolve after `up` and again after any restart.
-aic_url = bash "$(CURDIR)/scripts/aic-endpoints.sh" url $(1) $(2)
 
 # Readiness probe from inside the container: $(call aic_probe,<container>,<port>,<path>).
 # Exits non-zero until the server answers; needs no host port.
 aic_probe = bash "$(CURDIR)/scripts/aic-endpoints.sh" probe $(1) $(2) $(3)
+
+# URL of a container port as seen from the aic bridge, where containerized
+# clients (aic-client, aic_fetch) run: $(call aic_bridge_url,<container>,<port>).
+aic_bridge_url = bash "$(CURDIR)/scripts/aic-endpoints.sh" bridge-url $(1) $(2)
+
+# One request from a throwaway container on the aic bridge, printing the body:
+# $(aic_fetch) <url> [<json-body>].  Not a $(call): a JSON body has commas.
+aic_fetch = bash "$(CURDIR)/scripts/aic-endpoints.sh" fetch
 
 # ---- KVBench container -----------------------------------------------------
 KVBENCH_GIT_URL           ?= https://github.com/wvaske/llm-kv-passthrough.git
@@ -451,7 +455,7 @@ help:
 	@echo "  make up HF_TOKEN=hf_... NVME_DATA=/mnt/nvme NFS_DATA=/mnt/nfs"
 	@echo "  make up-gds-l1 GDS_SLAB_DATA=/mnt/nvme HF_TOKEN=hf_..."
 	@echo "  make cliff BENCH_ARM=vram_only                  # endpoint resolved from the running vLLM"
-	@echo "  make cliff BENCH_ARM=kvbench BENCH_ENDPOINT=<url from 'make endpoints'>"
+	@echo "  make cliff BENCH_ARM=kvbench BENCH_ENDPOINT=http://aic-kvbench:8000"
 	@echo "  make cliff-kvbench-local KVBENCH_MODEL=llama-3.1-8b BENCH_CONCUR=1,2"
 	@echo "  make plot"
 	@echo ""

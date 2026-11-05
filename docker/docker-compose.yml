@@ -635,7 +635,9 @@ services:
   # benchmarking.  The repo root is bind-mounted at /repo so run_cliff.py and
   # other benchmarks are available without rebuilding the image.
   # Use `docker exec -it aic-client bash` to get a shell, then hit
-  # vllm/lmcache by container name (e.g. http://aic-vllm-gpu0:8000).
+  # vllm/lmcache by container name (e.g. http://aic-lmcache:8000: vllm shares
+  # aic-lmcache's network namespace, so its own name does not resolve).  `make
+  # cliff`, `vllm-reset-test` and `bench-serve` run here.
   # pip deps are pre-installed from an explicit list matching pyproject.toml [dev] at startup.
   # ---------------------------------------------------------------------------
   client:

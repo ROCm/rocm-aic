@@ -96,7 +96,10 @@ than reconstructing them. Point vLLM at the ZMQ port with the `lmcache.mp.port`
 entry of its `--kv-transfer-config` (the `LMCacheMPConnector` JSON in the
 `Makefile`).
 
-## 5. Install host-side benchmark dependencies
+## 5. Install host-side plotting dependencies
+
+The benchmarks themselves run in the `aic-client` container `make up` starts;
+only `make plot` runs on the host.
 
 ```bash
 make venv
@@ -105,15 +108,16 @@ source .venv/bin/activate
 
 ## 6. Run the cliff benchmark
 
-Run the baseline arm first, then the AIC arm against separate endpoints. Host
-ports are ephemeral, so `make endpoints` prints the URL of each running service;
-`BENCH_ENDPOINT` defaults to the running vLLM's URL when you leave it out.
+Run the baseline arm first, then the AIC arm against separate endpoints.
+`make cliff` runs in `aic-client` on the `aic` bridge, so `BENCH_ENDPOINT` is a
+container name there; it defaults to the running vLLM when you leave it out.
 
 ```bash
-# Arm A: baseline (vram_only) — must be run against a plain vLLM endpoint
+# Arm A: baseline (vram_only) — must be run against a plain vLLM endpoint,
+# e.g. the vllm-only compose service
 make cliff \
     BENCH_ARM=vram_only \
-    BENCH_ENDPOINT=<vLLM URL from 'make endpoints'> \
+    BENCH_ENDPOINT=http://aic-vllm-only-gpu0:8000 \
     BENCH_MODEL=openai/gpt-oss-120b
 
 # Arm B: AIC (kvd_v2) — run against the vllm-lmcache stack

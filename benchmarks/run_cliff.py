@@ -23,10 +23,11 @@ built differently). This script runs ONE arm at a time against a
 pre-launched vLLM endpoint, then merges the two CSVs offline.
 
 Usage:
-  # Pre-launch vLLM separately in its own container.  Its host port is whatever
-  # Docker published (see `make endpoints`), not a fixed number.
+  # Pre-launch vLLM separately in its own container, and run this from a
+  # container on the aic bridge (aic-client; `make cliff` does both), where vLLM
+  # answers on the name scripts/aic-endpoints.sh bridge-url prints.
   python -u -m bench.kv_cache_cliff.run_cliff \\
-      --endpoint "$(scripts/aic-endpoints.sh url aic-vllm-gpu0 8000)" \\
+      --endpoint http://aic-vllm-only-gpu0:8000 \\
       --model /mnt/vast/john/huggingface/gpt-oss-120b \\
       --arm vram_only \\
       --isl 20000 --shared-prefix-tokens 18000 \\
@@ -36,12 +37,13 @@ Usage:
 
   # Then re-run with the kvd-attached server:
   python -u -m bench.kv_cache_cliff.run_cliff ... --arm kvd_v2 \\
+      --endpoint http://aic-lmcache:8000 \\
       --out logs/manual/results/cliff-kvd-v2.csv
 
   # Or point the same harness at a KVBench server (OpenAI-compatible API,
   # no vLLM metrics scraping):
   python -u -m bench.kv_cache_cliff.run_cliff ... --arm kvbench \\
-      --endpoint "$(scripts/aic-endpoints.sh url aic-kvbench 8000)" \\
+      --endpoint http://aic-kvbench:8000 \\
       --out logs/manual/results/cliff-kvbench.csv
 """
 
