@@ -2547,14 +2547,10 @@ fi
 
 # One real completion; assert a NON-EMPTY assistant content came back through the
 # LMCacheMPConnector path.
-resp="\$(docker exec "\${VLLM_CONTAINER}" python3 -c "
-import urllib.request, json
-req = urllib.request.Request(
-    'http://127.0.0.1:8000/v1/chat/completions',
-    data=json.dumps({'model':'${AIC_TINY_MODEL}','messages':[{'role':'user','content':'Reply with the single word: pong'}],'max_tokens':16,'temperature':0}).encode(),
-    headers={'Content-Type':'application/json'})
-print(urllib.request.urlopen(req, timeout=30).read().decode())
-" 2>&1)" || {
+resp="\$(docker exec "\${VLLM_CONTAINER}" curl -sS --fail-with-body --max-time 30 \
+    -H 'Content-Type: application/json' \
+    -d '{"model":"${AIC_TINY_MODEL}","messages":[{"role":"user","content":"Reply with the single word: pong"}],"max_tokens":16,"temperature":0}' \
+    http://127.0.0.1:8000/v1/chat/completions 2>&1)" || {
     echo "[tiny-test] FAIL: completion request failed: \${resp}" >&2; resp=""; }
 echo "[tiny-test] response: \${resp}"
 # Every outcome falls through to the capture teardown below rather than exiting,
