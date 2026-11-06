@@ -376,6 +376,11 @@ COPY --from=build_vllm /wheels /
 # =============================================================================
 FROM base AS vllm
 
+# When building emulated, the base context does not contain any pytorch wheels
+RUN --mount=type=bind,from=build_vllm,source=/wheels/,target=/wheels-vllm \
+    --mount=type=bind,from=base-wheels,source=/,target=/base-wheels \
+    find /base-wheels /wheels-vllm -type f -name "*.whl" -exec pip3 install --break-system-packages {} +
+
 # Copy all installed Python packages (vllm, aiter, flash_attn, llm-emu, deps)
 # from the full-ROCm build stage into the slim aic-base runtime.
 COPY --from=build_vllm /usr/local/lib/python3.12/dist-packages/ \
@@ -385,11 +390,6 @@ COPY --from=build_vllm /usr/local/bin/uvx /usr/local/bin/uvx
 COPY --from=build_vllm /opt/llm-emu/      /opt/llm-emu/
 COPY --from=build_vllm /etc/rocm-aic-attention-backends.env \
                        /etc/rocm-aic-attention-backends.env
-
-# When building emulated, the base context does not contain any pytorch wheels
-RUN --mount=type=bind,from=build_vllm,source=/wheels/,target=/wheels-vllm \
-    --mount=type=bind,from=base-wheels,source=/,target=/base-wheels \
-    find /base-wheels /wheels-vllm -type f -name "*.whl" -exec pip3 install --break-system-packages {} +
 
 ARG VLLM_REF
 ARG AITER_REF
