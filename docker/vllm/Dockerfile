@@ -142,10 +142,8 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
 
 # Bring torch + Python packages from aic-base so wheels link against the same torch.
 # Note that `emulate` has no base-wheels context
-RUN --mount=type=bind,from=base-wheels,source=/,target=/wheels-base \
-    if [ -d /wheels-base/wheels ]; then \
-      pip3 install --break-system-packages /wheels-base/wheels/*.whl; \
-    fi
+RUN --mount=type=bind,from=base-wheels,source=/,target=/base-wheels \
+    find /base-wheels -type f -name "*.whl" -exec pip3 install --break-system-packages {} +
 
 COPY --from=base /usr/local/bin/uv  /usr/local/bin/uv
 COPY --from=base /usr/local/bin/uvx /usr/local/bin/uvx
@@ -390,8 +388,8 @@ COPY --from=build_vllm /etc/rocm-aic-attention-backends.env \
 
 # When building emulated, the base context does not contain any pytorch wheels
 RUN --mount=type=bind,from=build_vllm,source=/wheels/,target=/wheels-vllm \
-    --mount=type=bind,from=base-wheels,source=/,target=/wheels-base \
-    find /wheels-base /wheels-vllm -type f -name "*.whl" -exec pip3 install --break-system-packages {} +
+    --mount=type=bind,from=base-wheels,source=/,target=/base-wheels \
+    find /base-wheels /wheels-vllm -type f -name "*.whl" -exec pip3 install --break-system-packages {} +
 
 ARG VLLM_REF
 ARG AITER_REF
