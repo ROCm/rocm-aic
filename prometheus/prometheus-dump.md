@@ -1,6 +1,6 @@
 # AIC Prometheus Metrics Reference
 
-**Generated:** 2026-10-30 10:25 UTC · **Total metrics:** 511 · **SHA:** `279d66b`
+**Generated:** 2026-11-06 09:21 UTC · **Total metrics:** 538 · **SHA:** `9cf459a`
 
 ## Component Versions
 
@@ -16,22 +16,25 @@
 
 | Container | Image | Status |
 |-----------|-------|--------|
+| `sandbox-f65e62000064` | `spur-superimage:2025-09-rocm-v1` | Up 56 seconds |
+| `sandbox-6b515be21e09` | `spur-superimage:2025-09-rocm-v1` | Up 56 seconds |
+| `sandbox-593aff2238ee` | `spur-superimage:2025-09-rocm-v1` | Up 56 seconds |
 | `aic-amdgpu-exporter` | `rocm/device-metrics-exporter:v1.5.2` | Up About a minute |
-| `aic-vllm-gpu3` | `aic-vllm:0.1.0-rocm7.14.1-pytorch2.13-vllm0.29.0-aiter0.1.22.post1-fa2.8.3.post1-lmcache0.5.6-nixl1.4.1-hsasnoop1.2.0` | Up About a minute |
-| `aic-alloy` | `grafana/alloy:v1.8.3` | Up About a minute |
+| `aic-vllm-gpu0` | `aic-vllm:0.1.0-rocm7.14.1-pytorch2.13-vllm0.29.0-aiter0.1.22.post1-fa2.8.3.post1-lmcache0.5.6-nixl1.4.1-hsasnoop1.2.0` | Up About a minute |
 | `aic-lmcache` | `aic-lmcache:0.1.0-rocm7.14.1-pytorch2.13-vllm0.29.0-aiter0.1.22.post1-fa2.8.3.post1-lmcache0.5.6-nixl1.4.1-hsasnoop1.2.0` | Up About a minute (healthy) |
+| `aic-alloy` | `grafana/alloy:v1.8.3` | Up About a minute |
+| `aic-lmcache-coordinator` | `aic-lmcache:0.1.0-rocm7.14.1-pytorch2.13-vllm0.29.0-aiter0.1.22.post1-fa2.8.3.post1-lmcache0.5.6-nixl1.4.1-hsasnoop1.2.0` | Up About a minute (healthy) |
 | `aic-client` | `python:3.12` | Up About a minute |
 | `aic-loki` | `grafana/loki:3.5.0` | Up About a minute |
-| `aic-grafana` | `grafana/grafana:13.2.2` | Up About a minute |
 | `aic-prometheus` | `prom/prometheus:v3.14.0` | Up About a minute |
-| `aic-lmcache-coordinator` | `aic-lmcache:0.1.0-rocm7.14.1-pytorch2.13-vllm0.29.0-aiter0.1.22.post1-fa2.8.3.post1-lmcache0.5.6-nixl1.4.1-hsasnoop1.2.0` | Up About a minute (healthy) |
-| `maxime-dev` | `ghcr.io/rocm/jax-base-ubu24.therock-10.1:latest` | Up 34 minutes |
-| `sft-254192-q38_r8_sft_v30` | `rocm/vllm-dev:base_custom_rocm_7.2.1_torch_triton_0330_vllm018` | Up 35 minutes |
-| `buildx_buildkit_aic-local0` | `moby/buildkit:buildx-stable-1` | Up About an hour |
+| `aic-grafana` | `grafana/grafana:13.2.2` | Up About a minute |
+| `spur-vllm-j270886` | `749f6f3f944f` | Up 3 minutes |
+| `spur-vllm-j270886-1` | `749f6f3f944f` | Up 3 minutes |
 
 ## Metrics Sources
 
 - [vllm](#vllm) — 91 metrics
+- [lmcache](#lmcache) — 27 metrics
 - [nixl](#nixl) — 19 metrics
 - [lmcache_coordinator](#lmcache-coordinator) — 7 metrics
 - [amdgpu_exporter](#amdgpu-exporter) — 131 metrics
@@ -132,6 +135,38 @@
 | `vllm:request_time_per_output_token_seconds_created` | gauge | Histogram of time_per_output_token_seconds per request. |
 | `vllm:time_to_first_token_seconds` | histogram | Histogram of time to first token in seconds. |
 | `vllm:time_to_first_token_seconds_created` | gauge | Histogram of time to first token in seconds. |
+
+## lmcache
+
+| Metric | Type | Description |
+|--------|------|-------------|
+| `lmcache_mp_active_p2p_lookup_jobs` | gauge | Number of active P2P lookup jobs |
+| `lmcache_mp_active_prefetch_jobs` | gauge | Number of active prefetch jobs |
+| `lmcache_mp_event_bus_drain_lag_seconds` | gauge | Seconds since the oldest queued event was published; 0.0 when empty.  Rising values mean the drain thread is falling behind. |
+| `lmcache_mp_event_bus_dropped_events_total` | counter | Cumulative events dropped because the EventBus queue was at max_queue_size. |
+| `lmcache_mp_event_bus_queue_depth` | gauge | Events currently queued in the EventBus. |
+| `lmcache_mp_kv_events_log_depth` | gauge | Cache-event records retained for subscribers and reconnects. |
+| `lmcache_mp_l1_eviction_loop_ticks_total` | counter | L1 eviction-loop iterations (every cycle) |
+| `lmcache_mp_l1_memory_usage_bytes` | gauge | Bytes currently held in L1 cache |
+| `lmcache_mp_l1_staging_bytes` | gauge | Bytes held by L1 staging objects (write-reserved, not admitted) |
+| `lmcache_mp_l1_usage_ratio` | gauge | L1 used/total ratio (0.0–1.0) |
+| `lmcache_mp_l2_prefetch_adapters` | gauge | Count of L2 adapters attached to the prefetch controller, tagged by ``state`` (active or draining). |
+| `lmcache_mp_l2_store_adapters` | gauge | Count of L2 adapters attached to the store controller, tagged by ``state`` (active or draining). |
+| `lmcache_mp_l2_usage_bytes` | gauge | Bytes currently held in each L2 adapter, tagged by ``l2_name`` (one observation per adapter). |
+| `lmcache_mp_prefetch_hit_chunks_total` | counter | Chunks served from cache by tier (l1=DRAM, l2=NVMe). |
+| `lmcache_mp_prefetch_miss_chunks_total` | counter | Chunks requested but not found in any cache tier. |
+| `lmcache_mp_prefetch_requests_total` | counter | Total completed prefetch lookup requests. |
+| `process_cpu_seconds_total` | counter | Total user and system CPU time spent in seconds. |
+| `process_max_fds` | gauge | Maximum number of open file descriptors. |
+| `process_open_fds` | gauge | Number of open file descriptors. |
+| `process_resident_memory_bytes` | gauge | Resident memory size in bytes. |
+| `process_start_time_seconds` | gauge | Start time of the process since unix epoch in seconds. |
+| `process_virtual_memory_bytes` | gauge | Virtual memory size in bytes. |
+| `python_gc_collections_total` | counter | Number of times this generation was collected |
+| `python_gc_objects_collected_total` | counter | Objects collected during gc |
+| `python_gc_objects_uncollectable_total` | counter | Uncollectable objects found during GC |
+| `python_info` | gauge | Python platform information |
+| `target_info` | gauge | Target metadata |
 
 ## nixl
 
