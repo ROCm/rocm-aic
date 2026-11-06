@@ -323,9 +323,9 @@ RUN --mount=type=cache,target=/root/.cache/uv \
 # Must stay above runtime, the default target.
 # =============================================================================
 FROM scratch AS wheels
-COPY --from=build_nixl /app/dist/nixl/ /wheels/
-COPY --from=build_pytorch /app/dist/pytorch/*.whl /wheels/
-COPY --from=build_torchvision /app/dist/vision/*.whl /wheels/
+COPY --from=build_nixl /app/dist/nixl/*.whl /
+COPY --from=build_pytorch /app/dist/pytorch/*.whl /
+COPY --from=build_torchvision /app/dist/vision/*.whl /
 
 
 # =============================================================================

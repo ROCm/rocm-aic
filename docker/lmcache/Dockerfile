@@ -146,7 +146,7 @@ RUN python3 /tmp/rocm_ipc_patch.py && rm /tmp/rocm_ipc_patch.py
 
 # Build the LMCache wheel with full ROCm headers available.
 RUN --mount=type=cache,target=/root/.cache/pip \
-    --mount=type=bind,from=base-wheels,source=/wheels,target=/wheels-base \
+    --mount=type=bind,from=base-wheels,source=/,target=/wheels-base \
     mkdir -p /wheels && \
     printf '%s\n' "${ROCM_ARCH%%,*}" > /etc/rocm_target.lst && \
     printf 'torch @ file://%s\n' /wheels-base/torch-*.whl > /tmp/build-constraints.txt && \
