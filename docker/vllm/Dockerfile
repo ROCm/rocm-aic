@@ -219,24 +219,27 @@ RUN --mount=type=cache,target=/root/.cache/pip \
           test -f "$(python3 -c 'import importlib.util as u, os; print(os.path.join(next(iter(u.find_spec("aiter").submodule_search_locations)), "jit", "module_aiter_core.so"))')" ); \
     fi
 
-# FlashAttention: CDNA-only (gfx9xx — MI100/MI200/MI300/MI355X).
+# FlashAttention: CDNA-only (gfx9xx — MI100/MI200/MI300/MI355X).  Built whenever
+# ROCM_ARCH names at least one gfx9 arch, and compiled for only those: in a mixed
+# list the other archs fall back to Triton attention.
 # Skipped when VLLM_TARGET_DEVICE=empty (CPU-only emulate build).
 # hadolint ignore=SC2039
 RUN --mount=type=cache,target=/root/.cache/pip \
     --mount=type=cache,target=/root/.cache/ccache \
-    _cdna_only() { \
-        _a=""; for _a in $(echo "$1" | tr ';' '\n'); do \
-            [ "${_a#gfx9}" != "${_a}" ] || return 1; done; return 0; }; \
+    _gfx9_archs() { \
+        _o=""; for _a in $(echo "$1" | tr ';' '\n'); do \
+            [ "${_a#gfx9}" = "${_a}" ] || _o="${_o:+${_o};}${_a}"; done; \
+        echo "${_o}"; }; \
     touch /etc/rocm-aic-attention-backends.env && \
     if [ "${VLLM_TARGET_DEVICE}" = "empty" ]; then \
         echo "Skipping FlashAttention (VLLM_TARGET_DEVICE=empty)"; \
-    elif _cdna_only "${ROCM_ARCH}"; then \
-        git clone --depth 1 --branch "${FLASH_ATTN_REF}" \
+    elif _fa_arch="$(_gfx9_archs "${ROCM_ARCH}")"; [ -n "${_fa_arch}" ]; then \
+        git clone --depth 1 --revision "${FLASH_ATTN_REF}" \
             --recurse-submodules --shallow-submodules \
             "${FLASH_ATTN_GIT_URL}" /app/flash-attention && \
         cd /app/flash-attention && \
-        GPU_ARCHS="${ROCM_ARCH}" \
-            PYTORCH_ROCM_ARCH="${ROCM_ARCH}" \
+        GPU_ARCHS="${_fa_arch}" \
+            PYTORCH_ROCM_ARCH="${_fa_arch}" \
             HIPFLAGS="-Wno-deprecated-attributes" \
             CXXFLAGS="-Wno-deprecated-attributes" \
             MAX_JOBS="${BUILD_JOBS:-$(nproc)}" \
@@ -251,7 +254,7 @@ RUN --mount=type=cache,target=/root/.cache/pip \
             python3 -c 'import flash_attn; print("FLASH_ATTN_PACKAGE=" + flash_attn.__file__)'; \
         } > /etc/rocm-aic-attention-backends.env; \
     else \
-        echo "Skipping FlashAttention: ${ROCM_ARCH} contains non-CDNA arch(es); using Triton attention" && \
+        echo "Skipping FlashAttention: ${ROCM_ARCH} contains no gfx9 arch; using Triton attention" && \
         { \
             echo "AITER_REF=${AITER_REF}"; \
             echo "FLASH_ATTN_REF="; \
