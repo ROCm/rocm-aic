@@ -391,8 +391,7 @@ COPY --from=build_vllm /etc/rocm-aic-attention-backends.env \
 # When building emulated, the base context does not contain any pytorch wheels
 RUN --mount=type=bind,from=build_vllm,source=/wheels/,target=/wheels-vllm \
     --mount=type=bind,from=base-wheels,source=/,target=/wheels-base \
-    shopt -s nullglob && \
-    pip3 install --break-system-packages /wheels-base/*.whl /wheels-vllm/*.whl
+    find /wheels-base /wheels-vllm -type f -name "*.whl" -exec pip3 install --break-system-packages {} +
 
 ARG VLLM_REF
 ARG AITER_REF
