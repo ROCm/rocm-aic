@@ -70,6 +70,8 @@ FROM ${ROCM_BASE_IMAGE} AS base
 # vLLM that cannot load LMCacheMPConnector.  `emulate` never reads it.
 FROM scratch AS lmcache-wheels
 
+FROM scratch AS base-wheels
+
 # =============================================================================
 # build_vllm — compile AITER, FlashAttention, and vLLM against the full ROCm
 # image (which has hipcc + HIP CMake files).  Torch is COPYed in from aic-base
@@ -139,8 +141,10 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     apt-get purge -y --auto-remove software-properties-common
 
 # Bring torch + Python packages from aic-base so wheels link against the same torch.
-COPY --from=base /usr/local/lib/python3.12/dist-packages/ \
-                 /usr/local/lib/python3.12/dist-packages/
+# Note that `emulate` has no base-wheels context
+RUN --mount=type=bind,from=base-wheels,source=/,target=/base-wheels \
+    find /base-wheels -type f -name "*.whl" -exec pip3 install --break-system-packages {} +
+
 COPY --from=base /usr/local/bin/uv  /usr/local/bin/uv
 COPY --from=base /usr/local/bin/uvx /usr/local/bin/uvx
 RUN rm -f /usr/lib/python3.*/EXTERNALLY-MANAGED
@@ -324,6 +328,13 @@ ARG LLM_EMU_GIT_URL=https://github.com/AKafakA/llm-emu.git
 ARG LLM_EMU_REF=b71c602
 ENV AIC_EMULATOR_EXAMPLE_PACK=/opt/llm-emu/profiles/A40-Q8-Qwen3-8B.json \
     AIC_EMULATOR_DEFAULT_PACK=/opt/llm-emu/profiles/MI300X-Qwen3-8B.json
+
+RUN --mount=type=cache,target=/root/.cache/pip \
+    pip3 install build
+
+# llm-emu was originally built for vllm 0.18
+# However, our patches make it compatible with aic's vllm version
+# Edit pyproject.toml to remove that version restriction
 # hadolint ignore=SC3044
 RUN git clone --filter=blob:none --no-checkout "${LLM_EMU_GIT_URL}" /app/llm-emu && \
     git -C /app/llm-emu checkout "${LLM_EMU_REF}" && \
@@ -337,7 +348,10 @@ RUN git clone --filter=blob:none --no-checkout "${LLM_EMU_GIT_URL}" /app/llm-emu
             exit 1; \
         fi; \
     done && \
-    pip3 install --no-cache-dir --no-build-isolation --no-deps /app/llm-emu/ && \
+    ( cd /app/llm-emu && \
+      sed -i 's/vllm==[0-9\.]\+/vllm/g' pyproject.toml && \
+      python3 -m build --no-isolation --wheel --outdir /wheels/ ) && \
+    pip3 install --no-cache-dir --no-deps /wheels/llm_emu-*.whl && \
     python3 -c "import vllm_emulator.hooks.executor_hook, vllm_emulator.oracle, \
 vllm_emulator.profile.loader, vllm_emulator.profiler.trace_profiler; \
 print('vllm_emulator subpackages import OK')" && \
@@ -365,6 +379,11 @@ COPY --from=build_vllm /wheels /
 # vllm — slim runtime stage: aic-base + packages built in build_vllm
 # =============================================================================
 FROM base AS vllm
+
+# When building emulated, the base context does not contain any pytorch wheels
+RUN --mount=type=bind,from=build_vllm,source=/wheels/,target=/wheels-vllm \
+    --mount=type=bind,from=base-wheels,source=/,target=/base-wheels \
+    find /base-wheels /wheels-vllm -type f -name "*.whl" -exec pip3 install --break-system-packages {} +
 
 # Copy all installed Python packages (vllm, aiter, flash_attn, llm-emu, deps)
 # from the full-ROCm build stage into the slim aic-base runtime.
