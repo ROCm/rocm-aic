@@ -211,7 +211,7 @@ cliff-spur-l2:
 
 cliff-spur-l2-debug:
 	@echo "cliff-spur-l2-debug: util=0.40, DRAM L1=0.1GB (forces L2 hits at c=1), per_client, c=1, 1 iter, DEBUG logging"
-	@echo "  check container-aic-vllm.log for 'vLLM hit is' to confirm ext_hit"
+	@echo "  check container-aic-vllm-kvd_nvme.log for 'vLLM hit is' to confirm ext_hit"
 	@cd "$(CURDIR)" && \
 	    BENCH_PREFIX_MODE=per_client \
 	    BENCH_CONCUR="$${BENCH_CONCUR:-1}" \
