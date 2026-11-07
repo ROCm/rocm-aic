@@ -11,17 +11,19 @@ set -Eeuo pipefail
 #
 # Runs from a workflow checkout on the self-hosted runner, which is NOT a SPUR
 # node: it has no /shared_nfs and no sbatch.  SSHes to the SPUR head node
-# (AIC_SPUR_HOST), clones the repo at the given SHA, downloads the named wheels
-# from the release to shared NFS (compute nodes have no GitHub access), submits
-# .slurm/test-nightly-wheels.sbatch and waits for it, then copies the job log
-# back to OUT_DIR for the render step.
+# (AIC_SPUR_HOST), clones the repo at the given SHA, builds the AIC images at
+# that SHA, downloads the named wheels from the release to shared NFS (compute
+# nodes have no GitHub access), submits .slurm/test-nightly-wheels.sbatch and
+# waits for it, then copies the job log back to OUT_DIR for the render step.
 #
 # Usage:
 #   bash .github/scripts/workflows/spur-wheel-latency.sh \
 #       <full-sha> <release-tag> <wheel-name-csv> <out-dir>
 #
 # Env: AIC_SPUR_HOST, AIC_SHARED_NFS, AIC_CI_STORAGE_ROOT (required);
-#      VLLM_MODEL, HF_HOME, AIC_IMAGE_DIR, AIC_BUILD_EXCLUDE_NODES (optional).
+#      VLLM_MODEL, HF_HOME, AIC_BUILD_EXCLUDE_NODES (optional);
+#      AIC_IMAGE_DIR (optional): test in the images already in this dir
+#      instead of building them.
 
 # errexit exits without saying where; report it.  Only the line number and
 # function call stack are printed, never the command text, which can carry
@@ -80,7 +82,7 @@ aic_ci_ssh_bash \
     WHEELS_CSV="${WHEELS_CSV}" \
     AIC_SHARED_NFS="${AIC_SHARED_NFS}" \
     AIC_CI_STORAGE_ROOT="${AIC_CI_STORAGE_ROOT}" \
-    AIC_IMAGE_DIR="${AIC_IMAGE_DIR:-${AIC_CI_STORAGE_ROOT}/images}" \
+    AIC_IMAGE_DIR="${AIC_IMAGE_DIR:-}" \
     VLLM_MODEL="${VLLM_MODEL:-Qwen/Qwen3-4B}" \
     HF_HOME="${HF_HOME:-${AIC_SHARED_NFS%/}/huggingface}" \
     AIC_SPUR_PARTITION="${AIC_SPUR_PARTITION:-amd-spur-v2}" \
@@ -106,6 +108,16 @@ SHORT="${SHA:0:7}"
 WORKDIR="$HOME/Projects/rocm-aic.${SHORT}.${AIC_CI_RUN_KEY}.${AIC_CI_STAGE}"
 RUN_DIR="${AIC_CI_STORAGE_ROOT}/wheel-latency/${SHORT}.${AIC_CI_RUN_KEY}"
 WHEEL_DIR="${RUN_DIR}/wheels"
+# The images the wheels are tested in.  Nothing else keeps a current set: CI
+# builds land in a per-SHA dir the nightly chain deletes, and the top-level
+# images/ holds whatever a manual build last left there -- an image older than
+# the scripts that drive it (no curl, no venv) fails the test for that alone.
+# So build this SHA's, unless the caller named a dir of prebuilt ones.
+BUILT_IMAGE_DIR=""
+if [[ -z "${AIC_IMAGE_DIR}" ]]; then
+    BUILT_IMAGE_DIR="${AIC_CI_STORAGE_ROOT}/images/aic-wheel-latency-${SHORT}.${AIC_CI_RUN_KEY}"
+    AIC_IMAGE_DIR="${BUILT_IMAGE_DIR}"
+fi
 CONTROL_PREFIX="${AIC_CI_STORAGE_ROOT}/control/${SHORT}.${AIC_CI_RUN_KEY}.${AIC_CI_STAGE}"
 PID_FILE="${CONTROL_PREFIX}.pid"
 JOB_FILE="${CONTROL_PREFIX}.job"
@@ -118,13 +130,16 @@ if [[ -e "${CANCEL_FILE}" ]]; then
     rm -f "${PID_FILE}" "${JOB_FILE}" "${CANCEL_FILE}" || :
     exit 143
 fi
+# The build records its SPUR job here, so a cancelled run can scancel it.
+export AIC_CI_ACTIVE_JOB_FILE="${JOB_FILE}"
 
 _cleanup() {
     local rc=$?
     trap - EXIT
-    echo "=== Cleaning up run-attempt worktree and wheels ==="
-    rm -rf "${WORKDIR}" "${WHEEL_DIR}" \
-        || echo "WARNING: cleanup could not fully remove ${WORKDIR} ${WHEEL_DIR}" >&2
+    echo "=== Cleaning up run-attempt worktree, wheels and built images ==="
+    # rm -rf ignores the "" an unbuilt BUILT_IMAGE_DIR expands to.
+    rm -rf "${WORKDIR}" "${WHEEL_DIR}" "${BUILT_IMAGE_DIR}" \
+        || echo "WARNING: cleanup could not fully remove ${WORKDIR} ${WHEEL_DIR} ${BUILT_IMAGE_DIR}" >&2
     (( rc != 0 )) || rm -f "${PID_FILE}" "${JOB_FILE}" "${CANCEL_FILE}" || :
     # Bounded retention for logs nobody came back for (an interrupted run).
     local prune_err="" prune_rc=0
@@ -143,6 +158,20 @@ rm -rf "${WORKDIR}"
 git clone --filter=blob:none --no-single-branch "${REPO}" "${WORKDIR}"
 git -C "${WORKDIR}" checkout "${SHA}"
 
+if [[ -n "${BUILT_IMAGE_DIR}" ]]; then
+    echo "=== Building the gfx950 AIC images at ${SHORT} into ${BUILT_IMAGE_DIR} ==="
+    mkdir -p "${BUILT_IMAGE_DIR}"
+    # The test runs on gfx950 only, and dist-build compiles every vLLM arch:
+    # the fast build is the gfx950 one.  The build cache is spur-dist-build.sh's,
+    # so CI's earlier layers are reused.
+    (cd "${WORKDIR}" && AIC_SPUR_CLUSTER=1 \
+        AIC_IMAGE_DIR="${BUILT_IMAGE_DIR}" \
+        AIC_CACHE_DIR="${AIC_SHARED_NFS%/}/${USER:-$(id -un)}/buildcache" \
+        make dist-build-fast)
+else
+    echo "=== Using the prebuilt images in ${AIC_IMAGE_DIR} ==="
+fi
+
 echo "=== Downloading ${TAG} wheels to ${WHEEL_DIR} ==="
 rm -rf "${WHEEL_DIR}"
 mkdir -p "${WHEEL_DIR}"
@@ -158,7 +187,7 @@ echo "=== Submitting the wheel latency benchmark ==="
 exclude=()
 [[ -z "${AIC_BUILD_EXCLUDE_NODES}" ]] || exclude=(--exclude="${AIC_BUILD_EXCLUDE_NODES}")
 submit_out="$(cd "${WORKDIR}" && \
-    WHEEL_DIR="${WHEEL_DIR}" NIGHTLY_TAG="${TAG}" \
+    WHEEL_DIR="${WHEEL_DIR}" NIGHTLY_TAG="${TAG}" AIC_IMAGE_DIR="${AIC_IMAGE_DIR}" \
     sbatch --chdir="${WORKDIR}" --partition="${AIC_SPUR_PARTITION}" \
         "${exclude[@]}" --export=ALL .slurm/test-nightly-wheels.sbatch 2>&1)" \
     || { echo "ERROR: sbatch failed: ${submit_out}" >&2; exit 1; }

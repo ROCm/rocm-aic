@@ -4,8 +4,9 @@
 #
 # Nightly wheel latency benchmark.
 #
-# Runs after the nightly CDNA wheels are published.  Installs them into the
-# AIC image on a real MI355X (gfx950) SPUR node and measures end-to-end
+# Runs after the nightly CDNA wheels are published.  Builds the AIC image at
+# the same commit, installs the wheels into it on a real MI355X (gfx950) SPUR
+# node and measures end-to-end
 # request latency across 4 KV-cache tiers (cold / hot-VRAM / L1-DRAM /
 # L2-disk) at 5 ISL tiers (1 100 – 35 200 tokens).  Results are published to
 # https://rocm.github.io/rocm-aic/wheel-latency/.
@@ -85,7 +86,8 @@ jobs:
         needs.check-published.outputs.published == 'true'
       )
     runs-on: [self-hosted, rocm-aic-cicd]
-    timeout-minutes: 120
+    # An image build (up to the dist-build's 120) plus the 60-minute test job.
+    timeout-minutes: 240
     env:
       AIC_SPUR_HOST:        ${{ secrets.AIC_SPUR_HOST }}
       AIC_SHARED_NFS:       ${{ secrets.AIC_SHARED_NFS }}
