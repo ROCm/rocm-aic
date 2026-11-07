@@ -114,17 +114,36 @@ aic_resolve_gpu_visibility() {
     log "GPU allocation for job ${SLURM_JOB_ID:-<none>} (${from}): ROCR=${AIC_ROCR_VISIBLE} HIP=${AIC_HIP_VISIBLE}"
 }
 
-# Pre-flight check: detect a broken containerd overlay snapshotter before
-# wasting time loading images or creating containers.  The symptom is:
+# Pre-flight check: detect a wedged dockerd or a broken containerd overlay
+# snapshotter before wasting time loading images or creating containers.  The
+# snapshotter symptom is:
 #   "apply layer error: failed to open database file: ...metadata.db"
-# which occurs on cluster nodes where containerd lost its snapshot store.
+# which occurs on cluster nodes where containerd lost its snapshot store.  A
+# wedged dockerd instead answers nothing at all (job 154408 sat 35 minutes in a
+# `docker images -q` and held its node until the job's time limit), so each probe
+# is bounded by AIC_DOCKER_PREFLIGHT_TIMEOUT seconds (default 120).  `timeout`
+# execs a program, so this bounds the docker binary; it could not run a shell
+# function such as compose().
 # Returns non-zero (caller should exit 1) if Docker or the snapshotter is broken.
 aic_docker_preflight() {
     local host; host=$(hostname)
-    docker info >/dev/null 2>&1 \
-        || { printf '[preflight] FATAL: docker daemon unreachable on %s\n' "${host}" >&2; return 1; }
-    docker system df >/dev/null 2>&1 \
-        || { printf '[preflight] FATAL: docker overlay snapshotter broken on %s (containerd metadata.db missing?) -- resubmit to a different node\n' "${host}" >&2; return 1; }
+    local limit="${AIC_DOCKER_PREFLIGHT_TIMEOUT:-120}" rc=0
+    timeout -k 10 "${limit}" docker info >/dev/null 2>&1 || rc=$?
+    if (( rc == 124 || rc == 137 )); then
+        printf '[preflight] FATAL: docker daemon on %s did not answer docker info within %ss (wedged dockerd) -- resubmit to a different node\n' "${host}" "${limit}" >&2
+        return 1
+    elif (( rc != 0 )); then
+        printf '[preflight] FATAL: docker daemon unreachable on %s (docker info exit %s)\n' "${host}" "${rc}" >&2
+        return 1
+    fi
+    timeout -k 10 "${limit}" docker system df >/dev/null 2>&1 || rc=$?
+    if (( rc == 124 || rc == 137 )); then
+        printf '[preflight] FATAL: docker system df on %s did not answer within %ss (wedged dockerd) -- resubmit to a different node\n' "${host}" "${limit}" >&2
+        return 1
+    elif (( rc != 0 )); then
+        printf '[preflight] FATAL: docker overlay snapshotter broken on %s (containerd metadata.db missing?) -- resubmit to a different node\n' "${host}" >&2
+        return 1
+    fi
     log "docker preflight OK on ${host}"
 }
 
@@ -202,19 +221,21 @@ start_monitoring() {
     # Sweep any leftover containers from a previous run on this node so port
     # bindings don't conflict with the new compose up.
     docker rm -f "${MON_CONTAINERS[@]}" >/dev/null 2>&1 || true
-    docker network inspect aic-network >/dev/null 2>&1 \
-        || docker network create aic-network >/dev/null \
-        || log "monitoring: could not create aic-network (continuing)"
     local -a profile; mapfile -t profile < <(mon_profile)
     local -a compose_files=(-f "${MON_COMPOSE}")
-    # On SPUR, layer in the SPUR override (tmpfs rootfs for node-exporter,
-    # no /dev bind for nvme-exporter) so spur-authz policies B1/B2 don't
-    # block the compose up.
+    local skip="${AIC_MON_SKIP_SERVICES:-}"
+    # On SPUR, layer in the SPUR override (tmpfs rootfs for node-exporter) so
+    # spur-authz policy B1 doesn't block the compose up.
     if [[ "${AIC_SPUR_CLUSTER:-0}" == "1" ]]; then
         local _spur_override="${MON_COMPOSE%/*}/docker-compose.spur.yml"
         [[ -f "${_spur_override}" ]] \
             && compose_files+=(-f "${_spur_override}") \
             || log "monitoring: WARN spur override ${_spur_override} not found"
+        # No override can make these acceptable to spur-authz, and one refused
+        # container fails the whole `compose up`, leaving no Prometheus at all:
+        # alloy bind-mounts the docker socket (S1), hsa-snoop is privileged (P1),
+        # nvme-exporter adds SYS_ADMIN (C1).
+        skip="${skip:+${skip} }alloy hsa-snoop nvme-exporter"
     fi
     # vllm carries no profile and client is in monitoring-base, so a bare `up`
     # would start both; the caller owns those.  Name the services instead of
@@ -226,7 +247,7 @@ start_monitoring() {
     local -a dc=(docker compose "${compose_files[@]}" --profile monitoring-base "${profile[@]}")
     local -a svc
     mapfile -t svc < <(env "${env[@]}" "${dc[@]}" config --services \
-        | grep -vxE "vllm|client${AIC_MON_SKIP_SERVICES:+|${AIC_MON_SKIP_SERVICES// /|}}")
+        | grep -vxE "vllm|client${skip:+|${skip// /|}}")
     # An empty list would make `up` start every active service, vllm included.
     if [[ "${#svc[@]}" -eq 0 ]]; then
         log "monitoring: no services resolved from compose config (continuing without metrics)"

@@ -51,11 +51,20 @@ aic_ci_scp_from() {
         "${AIC_SPUR_HOST}:${remote_path}/." "${local_dir}/"
 }
 
+# aic_ci_remote_done: call right after aic_ci_ssh_bash returns success and before
+# any local step that can still fail (an scp back, an ssh for a username).  A
+# remote stage that ran to completion has already removed its own pid/job/cancel
+# files, so there is nothing left to cancel -- and the cancel path below would
+# otherwise leave a .cancel sentinel behind that nothing ever removes.
+aic_ci_remote_done() {
+    AIC_CI_REMOTE_DONE=1
+}
+
 _aic_ci_session_exit() {
     local rc=$?
     trap - EXIT INT TERM HUP
 
-    if (( rc != 0 )); then
+    if (( rc != 0 )) && [[ "${AIC_CI_REMOTE_DONE:-0}" != "1" ]]; then
         echo "=== CI wrapper interrupted/failed; cancelling its remote session ===" >&2
         ssh -o ConnectTimeout=15 -o ServerAliveInterval=10 -o ServerAliveCountMax=2 \
             "${AIC_SPUR_HOST}" env \

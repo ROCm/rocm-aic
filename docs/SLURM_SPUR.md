@@ -2,8 +2,8 @@
 
 For local usage see [QUICK_START.md](QUICK_START.md). On a Slurm cluster the
 `dist-*` / `cliff-*` targets build/distribute the image and run the full
-three-arm sweep end-to-end (they wrap `.slurm/run-build-distribute.sh` and
-`sbatch .slurm/run-cliff.sbatch`):
+three-arm sweep end-to-end (they wrap `.slurm/run-build-distribute.sh`; its
+`cliff` command submits `.slurm/run-cliff.sbatch` and waits for the job):
 
 ```bash
 # Build the image (+ fabric exporters) on a CPU build node and save tarballs to
@@ -11,7 +11,8 @@ three-arm sweep end-to-end (they wrap `.slurm/run-build-distribute.sh` and
 make dist-build dist-push smoke-test \
   AIC_VLLM_PUSH_REF=<registry>/aic-vllm:latest AIC_LMCACHE_PUSH_REF=<registry>/aic-lmcache:latest
 
-# Submit the full sweep (vram_only + kvd_v2 nvme + kvd_v2 gds) on a GPU+NVMe node.
+# Run the full sweep (vram_only + kvd_v2 nvme + kvd_v2 gds) on a GPU+NVMe node. The
+# target blocks until the job ends and exits with its status.
 # Output lands in logs/<job-id>/. Pin a node / narrow arms / override the sweep via env:
 make cliff-submit AIC_CLIFF_NODE=<node-name>
 make cliff-submit AIC_CLIFF_ARMS=nvme BENCH_CONCUR=1,8,64

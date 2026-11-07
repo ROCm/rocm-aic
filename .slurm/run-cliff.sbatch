@@ -4,34 +4,17 @@
 #
 # SPDX-License-Identifier: MIT
 #
-#SBATCH --job-name=aic-day-cliff
-#SBATCH --partition=defq
-# Default: a gfx942 (MI300X) node with local NVMe -- the validated tiered-cache
-# path.  To target another GFX arch, override the constraint on the sbatch
-# command line (a command-line --constraint wins over this directive), most
-# easily via the Makefile knobs:
-#   make cliff-submit AIC_CLIFF_GFX=gfx950
-#   make cliff-submit AIC_CLIFF_CONSTRAINT=<site>&GFX90A
+# Job shape (partition, GPU request, node selection, time) is NOT set here: this
+# script is run as the job body by `run-build-distribute.sh cliff`, which submits
+# it through _sbatch_run -- see cmd_cliff there, and the AIC_CLIFF_* knobs it
+# documents.  Reach it with `make cliff-submit` (or cliff-short, cliff-kvd, ...);
+# to target another GFX arch use `make cliff-submit AIC_CLIFF_GFX=gfx950`.  The
+# model is auto-selected from the node's GPU arch (big CDNA gfx942/gfx950 ->
+# gpt-oss-120b, else a small model; see select_default_model below) unless
+# VLLM_MODEL is set.  The default image already carries kernels for every arch
+# (`make dist-build` is multi-arch by default), so no rebuild is needed.
 # Non-gfx942 nodes have no local NVMe, so the nvme/gds arms drop to /tmp
-# (AIC_NVME_AUTO case 4).  The model is auto-selected from the node's GPU arch
-# (big CDNA gfx942/gfx950 -> gpt-oss-120b, else a small model; see
-# select_default_model below) unless VLLM_MODEL is set.  The default image
-# already carries kernels for every arch (`make dist-build` is multi-arch by
-# default), so no rebuild is needed.
-# Constraint: set via --constraint on the sbatch command line or via
-# AIC_CLIFF_CONSTRAINT / AIC_CLIFF_GFX in the Makefile.
-#SBATCH --constraint=GFX942&NVME
-#SBATCH --gres=gpu:1
-#SBATCH --nodes=1
-#SBATCH --ntasks=1
-#SBATCH --cpus-per-task=16
-#SBATCH --mem=64G
-#SBATCH --time=03:00:00
-# Discard Slurm's own stdout: the script re-redirects all output into
-# logs/<job-id>/cliff.out as soon as it starts (see below), so this only ever
-# sees the few lines before that redirect -- not worth a file.  (Slurm can't
-# create logs/<job-id>/ itself, hence the in-script redirect rather than %j here.)
-#SBATCH --output=/dev/null
+# (AIC_NVME_AUTO case 4).
 #
 # Run the KV-cache cliff benchmark (benchmarks/run_cliff.py) end-to-end on ONE
 # MI300X + local-NVMe node, sweeping all three arms sequentially:
@@ -49,14 +32,14 @@
 # plotted separately against the shared vram_only baseline so the NVMe-L2 and
 # GDS-L1 backends can be compared.
 #
-# Submit from the aic-day-release/ tree root:
+# Submit from the aic-day-release/ tree root (blocks until the job ends):
 #
-#   sbatch .slurm/run-cliff.sbatch
+#   make cliff-submit
 #   # pin a node:
-#   sbatch --nodelist=<node-name> .slurm/run-cliff.sbatch
+#   make cliff-submit AIC_CLIFF_NODE=<node-name>
 #   # override the sweep / model:
 #   BENCH_CONCUR=1,8,32,64,128,250 VLLM_MODEL=openai/gpt-oss-120b \
-#       sbatch .slurm/run-cliff.sbatch
+#       make cliff-submit
 #
 # Storage note: MI300X nodes typically expose 4x 3.5T Samsung NVMe -- nvme0 is
 # the OS root, and the spares (nvme1-3) are typically RAW and UNMOUNTED.  To keep the LMCache NVMe tier off
@@ -84,24 +67,61 @@ export PATH="/usr/local/bin:${PATH}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO="${SLURM_SUBMIT_DIR:-$(cd "${SCRIPT_DIR}/.." && pwd)}"
 
-# Send all output to logs/<job-id>/cliff.out under the repo.  Slurm can't create
-# the parent dir (and the job id isn't known at submit time), so we make it here
-# and redirect the whole script's stdout+stderr into it.  Slurm's own --output is
-# /dev/null, so if mkdir fails (e.g. a misresolved REPO) the few pre-redirect
-# lines are lost -- acceptable; sacct still reports the failure.
 # Everything this job produces -- cliff.out, container logs, the Prometheus TSDB,
-# the generated LMCache config, and now the benchmark CSVs + plots -- lives under
-# this one per-job dir, so the tree root stays clean (no stray results/ or plots/).
+# the generated LMCache config, and the benchmark CSVs + plots -- lives under one
+# per-job dir, so the tree root stays clean (no stray results/ or plots/).
+# `run-build-distribute.sh cliff` (via _sbatch_run) has already created it and
+# pointed this script's stdout/stderr at logs/<job-id>/cliff.out; it also records
+# our exit status in logs/<job-id>/cliff.exit, which callers gate on rather than
+# on sacct (SPUR can account a failed job as `COMPLETED` with ExitCode `-1:0`).
 # LOGDIR_REL is the same path relative to REPO: containers bind-mount REPO at /work
 # and write via this relative path (see run_bench / plot_pair).
 LOGDIR_REL="logs/${SLURM_JOB_ID:-manual}"
 LOGDIR="${REPO}/${LOGDIR_REL}"
-if mkdir -p "${LOGDIR}" 2>/dev/null; then
-  exec >>"${LOGDIR}/cliff.out" 2>&1
-fi
+mkdir -p "${LOGDIR}" 2>/dev/null || true
+
+# Only the explicit `exit` at the end of this script may report success.  A job
+# killed by Slurm -- scancel, time limit, node failure -- runs this trap with
+# $? == 0: job 154408 was cancelled while wedged in `docker images`, was recorded
+# as exit 0 having benchmarked nothing, and the CI gate called it a pass.  So a
+# trap that fires before the script says it finished turns a 0 into 143.
+#
+# The trap is installed now, not after monitoring-lib.sh is sourced, so that an
+# early die() (missing HF cache, failed image load) is still handled.  It subsumes
+# the later `trap stop_monitoring EXIT`: a second `trap ... EXIT` would silently
+# replace this one.
+_CLIFF_COMPLETED=0
+_on_exit() {
+  local rc=$?
+  trap - EXIT
+  if (( rc == 0 )) && (( _CLIFF_COMPLETED == 0 )); then
+    rc=143
+    echo "[cliff-job] ERROR: job ended before the benchmark completed" \
+      "(killed or interrupted); exiting ${rc}"
+  fi
+  # stop_monitoring is only defined once monitoring-lib.sh has been sourced.
+  declare -F stop_monitoring >/dev/null && { stop_monitoring || true; }
+  exit "${rc}"
+}
+trap _on_exit EXIT
+# Give Slurm's SIGTERM (and a manual interrupt) a defined exit status instead of
+# whatever $? happened to hold when the signal arrived.
+trap 'exit 143' TERM
+trap 'exit 130' INT
+trap 'exit 129' HUP
 
 _aic_tag="$(bash "${REPO}/docker/scripts/aic-image-tag.sh" 2>/dev/null || true)"
-AIC_IMAGE="${AIC_IMAGE:-${AIC_IMAGE_NAME:-rocm-aic}:${_aic_tag:-latest}}"
+# The stack is two images, aic-vllm (served) and aic-lmcache (the standalone
+# LMCache server); dist-build saves one artifact for each.  Same defaults as
+# run-build-distribute.sh, so a caller can override either name the same way.
+AIC_VLLM_IMAGE="${AIC_VLLM_IMAGE:-aic-vllm:${_aic_tag:-latest}}"
+AIC_LMCACHE_IMAGE="${AIC_LMCACHE_IMAGE:-aic-lmcache:${_aic_tag:-latest}}"
+# Image the host-side clients run from: the bench and plot containers and
+# monitoring-lib.sh's Prometheus query.  aic-lmcache is the one that carries what
+# they import -- matplotlib (only docker/lmcache/Dockerfile installs it) and
+# httpx (pulled in by the openai package from LMCache's cli.txt) -- and it is
+# already loaded for the kvd arms, so no third image is needed.
+AIC_IMAGE="${AIC_LMCACHE_IMAGE}"
 AIC_IMAGE_DIR="${AIC_IMAGE_DIR:-/scratch/${USER}/images}"
 # Model selection.  Leave VLLM_MODEL empty to auto-pick a default from the node's
 # detected GPU arch (select_default_model(), below): gpt-oss-120b (~60 GB MXFP4)
@@ -261,7 +281,7 @@ AIC_LOAD_FORMAT="${AIC_LOAD_FORMAT:-fastsafetensors}"
 
 # Every arm serves vLLM on container port 8000 (arms run sequentially, each stack
 # torn down before the next), so one endpoint port suffices.  wait_ready probes it
-# from inside the container; the bench container uses the aic-vllm alias.
+# from inside the container; the bench container reaches it from the aic bridge.
 VLLM_ENDPOINT_PORT=8000
 LMCACHE_PORT=6555
 STAMP="$(date +%Y%m%d-%H%M%S)"
@@ -455,7 +475,7 @@ select_default_model() {
 }
 
 log "host        : $(hostname)  job=${SLURM_JOB_ID:-manual}"
-log "image       : ${AIC_IMAGE}"
+log "images      : vllm=${AIC_VLLM_IMAGE} lmcache=${AIC_LMCACHE_IMAGE}"
 select_default_model
 log "model HF_HOME: ${HF_HOME} (offline)"
 provision_storage
@@ -466,6 +486,13 @@ command -v docker >/dev/null 2>&1 || die "docker not found on $(hostname)"
 # benchmark can run benchmarks/run_cliff.py); fail early and clearly otherwise.
 [[ -f "${REPO}/benchmarks/run_cliff.py" ]] ||
   die "benchmarks/run_cliff.py not found under REPO=${REPO}; submit from the aic-day-release/ dir (SLURM_SUBMIT_DIR)"
+# A wedged dockerd answers nothing at all: job 154408 sat 35 minutes in the
+# `docker images -q` probe below, and would have held the node until the job's
+# time limit -- and CI's 4h timeout -- without logging a single line of cause.
+# The shared preflight bounds `docker info` / `docker system df` (default 120s,
+# AIC_DOCKER_PREFLIGHT_TIMEOUT), so a bad node fails fast and names itself.
+source "${REPO}/monitoring/monitoring-lib.sh"
+aic_docker_preflight || die "docker preflight failed on $(hostname); retry on another node"
 
 # Pre-create the compose log-mount dirs too, so docker doesn't auto-create them
 # as root under the per-job logs tree (the lmcache/vllm services bind-mount these).
@@ -531,8 +558,20 @@ load_image_if_needed() {
   return 1
 }
 
-# Main inference image (required -- the whole run needs it).
-load_image_if_needed "${AIC_IMAGE}" "-*" required
+# Inference images (both required -- every arm runs vllm, and the kvd arms add the
+# lmcache server).  `run-build-distribute.sh cliff` resolves the exact artifacts
+# (<name>-<tag>-<arch>.ref or .tar.zst) and passes them as AIC_VLLM_ARTIFACT /
+# AIC_LMCACHE_ARTIFACT, as accuracy-test does.  A manual run without them falls
+# back to the newest <name>-* artifact, which cannot be made arch-aware.
+_load_stack_image() { # $1=image name:tag  $2=exact artifact, or empty
+  if [[ -n "$2" ]]; then
+    aic_image_fetch cliff "$1" "$2" || die "could not load $1 from $2"
+  else
+    load_image_if_needed "$1" "-*" required
+  fi
+}
+_load_stack_image "${AIC_VLLM_IMAGE}" "${AIC_VLLM_ARTIFACT:-}"
+_load_stack_image "${AIC_LMCACHE_IMAGE}" "${AIC_LMCACHE_ARTIFACT:-}"
 
 # Monitoring sidecar images.  Load from the shared NFS tarball when present so
 # compose never needs Docker Hub egress on a cold node.  Applies for all non-zero
@@ -551,12 +590,19 @@ if [[ "${AIC_EXPORTERS}" != "0" ]]; then
     _t="aic-rdma-exporter:latest"
     load_image_if_needed "${_t}" "" && export AIC_RDMA_EXPORTER_IMAGE="${_t}"
   fi
-  # AMD GPU device-metrics-exporter (rocm/device-metrics-exporter:v1.5.1).
-  # Tarball saved to AIC_IMAGE_DIR by dist-build-exporters or manually.
+  # AMD GPU device-metrics-exporter (rocm/device-metrics-exporter:v1.5.2, the tag
+  # compose and `make dist-build-monitoring` use).  Tarball saved to
+  # AIC_IMAGE_DIR by dist-build-monitoring or manually.
   if [[ -z "${AIC_AMDGPU_EXPORTER_IMAGE:-}" ]]; then
-    _t="${AIC_AMDGPU_EXPORTER_IMAGE_DEFAULT:-rocm/device-metrics-exporter:v1.5.1}"
+    _t="${AIC_AMDGPU_EXPORTER_IMAGE_DEFAULT:-rocm/device-metrics-exporter:v1.5.2}"
     load_image_if_needed "${_t}" "" && export AIC_AMDGPU_EXPORTER_IMAGE="${_t}"
   fi
+  # hsa-snoop is part of the exporters-safe profile.  build-exporters saves it as
+  # AIC_HSA_SNOOP_IMAGE (default aic-hsa-snoop:latest), whereas make exports
+  # HSA_SNOOP_IMAGE=aic-hsa-snoop:<tag>, an image no build step produces here.
+  # Advertise the loaded one only when it is actually present, as the smoke-test does.
+  _t="${AIC_HSA_SNOOP_IMAGE:-aic-hsa-snoop:latest}"
+  load_image_if_needed "${_t}" "" && export HSA_SNOOP_IMAGE="${_t}"
   # Prometheus (prom/prometheus:v3.14.0).  Pre-pull avoids 10+ min Docker Hub
   # download on fresh nodes; load_image_if_needed is a no-op when already present.
   if [[ -z "${AIC_PROM_IMAGE:-}" ]]; then
@@ -566,7 +612,7 @@ if [[ "${AIC_EXPORTERS}" != "0" ]]; then
 fi
 
 # --- Benchmark client env (offline HF cache) ---------------------------------
-# The bench container joins the aic bridge and reaches vLLM at http://aic-vllm:8000
+# The bench container joins the aic bridge and reaches vLLM by container name
 # (the plot container needs no network).  The inference stack itself is launched via
 # docker/docker-compose.yml (see the compose-stack setup block below), not raw
 # docker run -- all container/GPU/cap flags now live in that compose file.
@@ -596,8 +642,13 @@ compose() { docker compose -f "${COMPOSE_FILE}" "$@"; }
 
 # Knobs the compose file interpolates (already resolved above).  ROCM_ARCH is only
 # read by build.args, but compose interpolates it even on `up`, so keep it set.
-export IMAGE_REF="${AIC_IMAGE}"
-export IMAGE_NAME="${AIC_IMAGE%:*}"
+# Export the two image refs explicitly: `make cliff-*` exports its own
+# VLLM_IMAGE_REF/LMCACHE_IMAGE_REF into this job's environment, and compose reads
+# those ahead of IMAGE_REF, so the refs loaded above must override them.
+export VLLM_IMAGE_REF="${AIC_VLLM_IMAGE}"
+export LMCACHE_IMAGE_REF="${AIC_LMCACHE_IMAGE}"
+export IMAGE_REF="${AIC_LMCACHE_IMAGE}"
+export IMAGE_NAME="${AIC_LMCACHE_IMAGE%:*}"
 export ROCM_ARCH="${ROCM_ARCH:-$(detect_gpu_arch)}"
 # Resolve the GPU allocation instead of hardcoding host GPU 0.
 source "${REPO}/monitoring/monitoring-lib.sh"
@@ -621,8 +672,13 @@ export NIXL_METRICS_PORT="${NIXL_METRICS_PORT:-19090}"
 export AIC_HSA_SNOOP_PID_MODE
 # RoPE override (YaRN etc.) applied to ALL arms via vLLM --hf-overrides.  Single-
 # quote the JSON so compose's shlex splitting keeps the inner double quotes.
-VLLM_EXTRA_ARGS=""
-[[ -n "${VLM_ROPE_SCALING}" ]] && VLLM_EXTRA_ARGS="--hf-overrides '{\"rope_scaling\": ${VLM_ROPE_SCALING}}'"
+# Keep a caller-supplied value: compose documents VLLM_EXTRA_ARGS as a user knob
+# ("extra vllm args appended verbatim"), and clobbering it here silently dropped
+# anything the caller passed -- there was no way to hand a cliff run a
+# model-specific flag such as --enforce-eager.
+VLLM_EXTRA_ARGS="${VLLM_EXTRA_ARGS:-}"
+[[ -n "${VLM_ROPE_SCALING}" ]] &&
+  VLLM_EXTRA_ARGS="${VLLM_EXTRA_ARGS} --hf-overrides '{\"rope_scaling\": ${VLM_ROPE_SCALING}}'"
 export VLLM_EXTRA_ARGS
 export VLLM_LOGGING_LEVEL="${VLLM_LOGGING_LEVEL:-WARNING}"
 # The MP server's --l1-size-gb is the DRAM L1 (nvme arm) OR the hipFile slab size
@@ -640,22 +696,38 @@ wait_ready() { # $1=container $2=container-port $3=timeout_s
       log "vLLM :${port} is ready (${waited}s)"
       return 0
     fi
+    # Fail fast once the container is gone.  vLLM that died during engine init
+    # is never coming back, and burning the full 1200s per arm buries the real
+    # error 20 minutes deep in the log -- e.g. job 151136, where another tenant
+    # on the node held 213 GiB of the GPU and vLLM exited immediately with
+    # "Free memory on device cuda:0 (74.53/287.98 GiB) ... less than desired
+    # GPU memory utilization (0.9, 259.19 GiB)".
+    local state
+    state="$(docker inspect -f '{{.State.Running}}' "${ctr}" 2>/dev/null || echo missing)"
+    if [[ "${state}" != "true" ]]; then
+      log "vLLM container ${ctr} is no longer running (state=${state}) after ${waited}s; not waiting out the timeout"
+      return 1
+    fi
     sleep 10
     waited=$((waited + 10))
   done
   return 1
 }
 
-run_bench() { # $1=arm $2=endpoint_port $3=out_csv $4=extra args...
-  local arm="$1" port="$2" out="$3"
+run_bench() { # $1=arm $2=vLLM container $3=out_csv $4=extra args...
+  local arm="$1" endpoint out="$3"
+  # By the name that owns the container's netns (aic-lmcache on the kvd arms),
+  # not the aic-vllm alias, which any other stack or emulator on this node's
+  # bridge also answers to.
+  endpoint="$(aic_bridge_url "$2" "${VLLM_ENDPOINT_PORT}")" || return 1
   shift 3
-  log "running sweep: arm=${arm} endpoint=http://aic-vllm:${port} -> ${out}"
+  log "running sweep: arm=${arm} endpoint=${endpoint} -> ${out}"
   docker run --rm --network aic \
     -v "${REPO}":/work -w /work \
     -v "${HF_HOME}":/hf "${HF_ENV[@]}" \
     --entrypoint python3 "${AIC_IMAGE}" \
     benchmarks/run_cliff.py \
-    --endpoint "http://aic-vllm:${port}" \
+    --endpoint "${endpoint}" \
     --model "${VLLM_MODEL}" \
     --arm "${arm}" \
     --isl "${BENCH_ISL}" \
@@ -676,13 +748,20 @@ rm_containers() { docker rm -f "$@" >/dev/null 2>&1 || true; }
 # dir before tearing the stack down.  The compute node is ephemeral, so the logs
 # are lost otherwise -- and Prometheus captures metrics, not container stdout
 # (vLLM/LMCache/NIXL startup errors, stack traces, AIS debug lines live here).
-# `compose logs` for a service not started (e.g. lmcache on the vram arm) is a
-# harmless empty capture.  `compose down` removes containers + the bridge network.
-stop_stack() {
-  local svc c
+# Each arm's capture is named for the arm: every arm tears down the same services,
+# so a shared name left only the last arm's (empty, for vllm-only) log behind.
+# `compose down` removes containers + the bridge network.
+stop_stack() { # $1=arm  $2...=the services the arm started
+  local arm="$1" svc c
+  shift
   # Capture each service's logs before teardown (bounded).
-  for svc in vllm-only vllm lmcache; do
-    timeout 30 compose logs --no-color --no-log-prefix "${svc}" >"${LOGDIR}/container-aic-${svc}.log" 2>&1 || true
+  for svc in "$@"; do
+    # NB: `compose` is a shell function; `timeout` execs a binary and cannot run
+    # one, so `timeout 30 compose ...` only ever wrote
+    # "timeout: failed to run command 'compose'" into the capture -- silently,
+    # via the `|| true`. Call docker directly so the logs are actually captured.
+    timeout 30 docker compose -f "${COMPOSE_FILE}" logs \
+        --no-color --no-log-prefix "${svc}" >"${LOGDIR}/container-aic-${svc}-${arm}.log" 2>&1 || true
   done
   # vLLM + lmcache run in a SHARED PID namespace (required for cross-container HIP
   # IPC KV registration).  That prevents docker from reaping vLLM's EngineCore
@@ -694,7 +773,10 @@ stop_stack() {
   pkill -9 -f 'EngineCore' 2>/dev/null || true
   pkill -9 -f 'lmcache server' 2>/dev/null || true
   sleep 2
-  timeout 60 compose --profile cache --profile vllm-only down --remove-orphans --timeout 5 >/dev/null 2>&1 || true
+  # Same shell-function-under-timeout bug as the log capture above: this teardown
+  # never actually ran, leaving the stack's containers and bridge network behind.
+  timeout 60 docker compose -f "${COMPOSE_FILE}" --profile cache --profile vllm-only \
+      down --remove-orphans --timeout 5 >/dev/null 2>&1 || true
   for c in "aic-vllm-only-gpu${GPU}" "aic-vllm-gpu${GPU}" aic-lmcache; do timeout 30 docker rm -f "${c}" >/dev/null 2>&1 || true; done
 }
 
@@ -707,8 +789,10 @@ source "${REPO}/monitoring/monitoring-lib.sh"
 # The whole stack (arms + metrics) is docker compose v2 only -- install the plugin
 # user-locally if the node lacks it (ensure_compose lives in monitoring-lib.sh).
 ensure_compose || die "docker compose unavailable and could not be installed"
-# Guarantee teardown (containers only; the NFS TSDB is retained) on any exit.
-trap stop_monitoring EXIT
+# Teardown (containers only; the NFS TSDB is retained) is guaranteed by the
+# _on_exit trap installed near the top of this script, which calls
+# stop_monitoring once it is defined.  Re-arming `trap stop_monitoring EXIT`
+# here would replace that trap and lose its exit-status handling.
 
 # =============================================================================
 # Arm A — vram_only : plain vLLM baseline, no LMCache connector
@@ -723,18 +807,18 @@ run_arm_vram() {
   export GDS_MODE=""
   if ! compose --profile vllm-only up -d vllm-only; then
     log "Arm A: compose up vllm failed"
-    stop_stack
+    stop_stack vram_only vllm-only
     return 1
   fi
   if ! wait_ready "aic-vllm-only-gpu${GPU}" "${VLLM_ENDPOINT_PORT}"; then
     log "Arm A: server never became ready; last logs:"
     compose logs --tail 40 --no-color vllm-only 2>&1 | sed 's/^/    /'
-    stop_stack
+    stop_stack vram_only vllm-only
     return 1
   fi
-  run_bench vram_only "${VLLM_ENDPOINT_PORT}" "${VRAM_CSV}"
+  run_bench vram_only "aic-vllm-only-gpu${GPU}" "${VRAM_CSV}"
   local rc=$?
-  stop_stack
+  stop_stack vram_only vllm-only
   return $rc
 }
 
@@ -829,14 +913,14 @@ run_arm_kvd() { # $1=mode(nvme|gds) $2=out_csv
     log "kvd/${mode}: compose up failed; last logs:"
     compose logs --tail 40 --no-color lmcache 2>&1 | sed 's/^/  [lmcache] /'
     compose logs --tail 40 --no-color vllm 2>&1 | sed 's/^/  [vllm]    /'
-    stop_stack
+    stop_stack "kvd_${mode}" vllm lmcache
     return 1
   fi
   if ! wait_ready "aic-vllm-gpu${GPU}" "${VLLM_ENDPOINT_PORT}"; then
     log "kvd/${mode}: server never became ready; last logs:"
     compose logs --tail 40 --no-color lmcache 2>&1 | sed 's/^/  [lmcache] /'
     compose logs --tail 60 --no-color vllm 2>&1 | sed 's/^/  [vllm]    /'
-    stop_stack
+    stop_stack "kvd_${mode}" vllm lmcache
     return 1
   fi
   # Continuous container log streaming: capture lmcache + vllm stdout into
@@ -857,11 +941,11 @@ run_arm_kvd() { # $1=mode(nvme|gds) $2=out_csv
   # warmup writes take ~450 s; 300 s gives the queue time to mostly drain so
   # iter 0 sees a warm, settled cache rather than write-queue back-pressure.
   # Override via POST_WARMUP_SLEEP_S env if a different c or worker count is used.
-  run_bench kvd_v2 "${VLLM_ENDPOINT_PORT}" "${out}" --warmup-at-each-c \
+  run_bench kvd_v2 "aic-vllm-gpu${GPU}" "${out}" --warmup-at-each-c \
     --post-warmup-sleep-s "${POST_WARMUP_SLEEP_S:-300}"
   local rc=$?
   kill "${_lmcache_log_pid}" "${_vllm_log_pid}" 2>/dev/null || true
-  stop_stack
+  stop_stack "kvd_${mode}" vllm lmcache
   return $rc
 }
 
@@ -953,4 +1037,5 @@ log "==================================================="
 # Fail the job if any arm that actually ran failed; skipped arms don't count.
 rc=0
 for k in vram_only kvd_nvme kvd_gds; do [[ "${STATUS[$k]:-skip}" == FAIL ]] && rc=1; done
+_CLIFF_COMPLETED=1
 exit "${rc}"
