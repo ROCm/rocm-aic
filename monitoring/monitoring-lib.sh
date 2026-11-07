@@ -224,9 +224,8 @@ start_monitoring() {
     local -a profile; mapfile -t profile < <(mon_profile)
     local -a compose_files=(-f "${MON_COMPOSE}")
     local skip="${AIC_MON_SKIP_SERVICES:-}"
-    # On SPUR, layer in the SPUR override (tmpfs rootfs for node-exporter,
-    # no /dev bind for nvme-exporter) so spur-authz policies B1/B2 don't
-    # block the compose up.
+    # On SPUR, layer in the SPUR override (tmpfs rootfs for node-exporter) so
+    # spur-authz policy B1 doesn't block the compose up.
     if [[ "${AIC_SPUR_CLUSTER:-0}" == "1" ]]; then
         local _spur_override="${MON_COMPOSE%/*}/docker-compose.spur.yml"
         [[ -f "${_spur_override}" ]] \
