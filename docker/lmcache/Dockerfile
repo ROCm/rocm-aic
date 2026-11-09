@@ -145,11 +145,14 @@ COPY docker/lmcache/rocm_ipc_patch.py /tmp/rocm_ipc_patch.py
 RUN python3 /tmp/rocm_ipc_patch.py && rm /tmp/rocm_ipc_patch.py
 
 # Build the LMCache wheel with full ROCm headers available.
+# hadolint ignore=SC2046,SC3054
 RUN --mount=type=cache,target=/root/.cache/pip \
     --mount=type=bind,from=base-wheels,source=/,target=/base-wheels \
     mkdir -p /wheels && \
     printf '%s\n' "${ROCM_ARCH%%;*}" > /etc/rocm_target.lst && \
-    printf 'torch @ file://%s\n' /base-wheels/torch-*.whl > /tmp/build-constraints.txt && \
+    (shopt -s nullglob; for f in /base-wheels/torch-*.whl; do \
+        printf 'torch @ file://%s\n' "$f" > /tmp/build-constraints.txt; \
+    done) && \
     cd /app/LMCache && \
     PYTORCH_ROCM_ARCH="${ROCM_ARCH}" \
         TORCH_DONT_CHECK_COMPILER_ABI=1 \
@@ -159,7 +162,7 @@ RUN --mount=type=cache,target=/root/.cache/pip \
         MAX_JOBS="${BUILD_JOBS:-$(nproc)}" \
         CMAKE_BUILD_PARALLEL_LEVEL="${BUILD_JOBS:-$(nproc)}" \
         python3 -m build --wheel \
-          --dependency-constraints-txt /tmp/build-constraints.txt \
+          "$(test -f /tmp/build-constraints.txt && echo --dependency-constraints-txt=/tmp/build-constraints.txt)" \
           --outdir /wheels
 
 # =============================================================================
