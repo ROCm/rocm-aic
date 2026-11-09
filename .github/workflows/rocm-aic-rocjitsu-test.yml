@@ -179,6 +179,10 @@ jobs:
             "${targets[@]}"
           docker images --format '{{.Repository}}:{{.Tag}} {{.Size}}' \
             | grep -E '^aic-(vllm|lmcache|hsa-snoop|nvme-exporter|rdma-exporter):'
+          # The images are in dockerd now.  The builder still holds every layer
+          # it imported from the cache (~75 GB, against ~15 GB of images), and
+          # the VM test's `docker save` of the images ran out of disk behind it.
+          docker buildx prune --all --force >/dev/null
           df -h /
 
       - name: Run rocjitsu VM test
