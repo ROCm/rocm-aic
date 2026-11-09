@@ -447,7 +447,7 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
 # URL tracks the base image automatically (ROCm 10.0 changed the URL).
 COPY --from=base /etc/apt/keyrings/amdrocm.gpg /etc/apt/keyrings/amdrocm.gpg
 COPY --from=base /etc/apt/sources.list.d/rocm.list /etc/apt/sources.list.d/amdrocm.list
-# hadolint ignore=DL3008,SC2046
+# hadolint ignore=SC2046,SC2086,DL3008
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
     echo "blas cache bust: ${BLAS_CACHE_BUST}" && \
