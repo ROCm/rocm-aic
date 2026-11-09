@@ -375,6 +375,13 @@ COPY --from=build_vllm /usr/local/bin/uvx /usr/local/bin/uvx
 COPY --from=build_vllm /opt/llm-emu/      /opt/llm-emu/
 COPY --from=build_vllm /etc/rocm-aic-attention-backends.env \
                        /etc/rocm-aic-attention-backends.env
+# The `vllm` command (`vllm bench serve`, ...).  Not copied: the console script
+# build_vllm's pip wrote names that stage's interpreter, which the CPU emulate
+# base does not have.  This runs vLLM's console entry point on whichever
+# python3 the image has.
+RUN printf '#!/bin/sh\nexec python3 -m vllm.entrypoints.cli.main "$@"\n' \
+        > /usr/local/bin/vllm && \
+    chmod 0755 /usr/local/bin/vllm
 
 ARG VLLM_REF
 ARG AITER_REF
