@@ -325,6 +325,9 @@ RJ_QCOW2_IMAGE   ?= sbates130272/batesste-ci-images-ubuntu-qcow2-gen-rocjitsu:20
 RJ_ROCJITSU_ARCH ?= gfx1250
 RJ_ROCJITSU_CONFIG ?= gfx1250_mi455x.json
 RJ_VM_VCPUS      ?= 8
+# Guest RAM.  With a vfio-user device qemu-tool backs all of it with a shared
+# memfd, which must fit in the QEMU container's shm (sized from this below) and
+# in the host's RAM, or QEMU dies under the guest mid-test.
 RJ_VM_MEM_MB     ?= 16384
 RJ_SSH_PORT      ?= 12222
 RJ_READY_S       ?= 300
@@ -442,7 +445,7 @@ test-rocjitsu-local:
 	docker run -d --name aic-rj-qemu \
 	    --network aic-rj-net \
 	    --device /dev/kvm \
-	    --shm-size 12g \
+	    --shm-size "$$(( $(RJ_VM_MEM_MB) + 1024 ))m" \
 	    -v "$(RJ_WORK_DIR)/vm:/output" \
 	    -v /tmp/aic-rj-vfu:/tmp/vfio-sockets:ro \
 	    -v "$(RJ_WORK_DIR)/shared:$(RJ_WORK_DIR)/shared" \
