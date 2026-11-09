@@ -331,20 +331,17 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
         cmake git ninja-build python3-dev
 
-COPY patches/hip-ipc-event-ring-fix.patch /tmp/hip-ipc-event-ring-fix.patch
+COPY patches/hip-ipc-signal-slot-index-fix.patch /tmp/hip-ipc-signal-slot-index-fix.patch
 
 # Note: when using --revision, tags are not available
 # git checkout command must reference HEAD instead, which is pointing to the commit in clone's --revision flag.
 RUN pip3 install --break-system-packages CppHeaderParser && \
     git clone --filter=blob:none --no-checkout --depth 1 --revision "${CLR_REF}" "${CLR_GIT_URL}" /app/rocm-systems && \
-    git -C /app/rocm-systems sparse-checkout init --cone && \
-    git -C /app/rocm-systems sparse-checkout set projects/clr projects/hip && \
-    git -C /app/rocm-systems checkout HEAD && \
-    sed -i 's/const int offset = ipc_evt_.ipc_shmem_->read_index;/const int offset = ipc_evt_.ipc_shmem_->read_index % IPC_SIGNALS_PER_EVENT;/' \
-        /app/rocm-systems/projects/clr/hipamd/src/hip_event_ipc.cpp && \
-    grep -q "IPC_SIGNALS_PER_EVENT" /app/rocm-systems/projects/clr/hipamd/src/hip_event_ipc.cpp || \
-    { echo "ERROR: patch did not apply"; exit 1; } && \
-    echo "Patch applied OK"
+    cd /app/rocm-systems && \
+    git sparse-checkout init --cone && \
+    git sparse-checkout set projects/clr projects/hip && \
+    git checkout HEAD && \
+    patch -p1 < /tmp/hip-ipc-signal-slot-index-fix.patch
 
 # hadolint ignore=DL3008
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
@@ -364,7 +361,8 @@ RUN cmake -G Ninja \
         -DCMAKE_PREFIX_PATH=/opt/rocm/core-7.14 \
         -DCLR_BUILD_HIP=ON \
         -DCLR_BUILD_OCL=OFF \
-        -D__HIP_ENABLE_PCH=OFF && \
+        -DROCM_KPACK_ENABLED=ON \
+        -D__HIP_ENABLE_PCH=ON && \
     cmake --build /app/clr-build --target amdhip64 \
         --parallel "${BUILD_JOBS:-$(nproc)}" && \
     ls /app/clr-build/hipamd/lib/libamdhip64.so* && \
@@ -449,7 +447,7 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
 # URL tracks the base image automatically (ROCm 10.0 changed the URL).
 COPY --from=base /etc/apt/keyrings/amdrocm.gpg /etc/apt/keyrings/amdrocm.gpg
 COPY --from=base /etc/apt/sources.list.d/rocm.list /etc/apt/sources.list.d/amdrocm.list
-# hadolint ignore=DL3008
+# hadolint ignore=DL3008,SC2046
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
     echo "blas cache bust: ${BLAS_CACHE_BUST}" && \
@@ -484,21 +482,14 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
         "amdrocm-llvm${_mm}" \
         "amdrocm-math-common${_mm}" \
         "amdrocm-hipfile${_mm}" \
-    && _mm=$(echo "${ROCM_VERSION}" | cut -d. -f1-2) \
-    && _blas_archs_installed="" \
+    && _arch_pkgs="" \
     && for _arch in $(echo "${ROCM_ARCH}" | tr ',;' '  '); do \
-        if DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-            "amdrocm-blas${_mm}-${_arch}"; then \
-            _blas_archs_installed="${_blas_archs_installed} ${_arch}"; \
-        else \
-            echo "  NOTE: no blas arch package for ${_arch} (expected for emulated arches)"; \
-        fi; \
+          _arch_pkgs="${_arch_pkgs} \
+                      amdrocm-blas${_mm}-${_arch} \
+                      amdrocm-rccl${_mm}-${_arch} \
+                      amdrocm-rand${_mm}-${_arch}"; \
        done \
-    && if [ -z "${_blas_archs_installed}" ]; then \
-        echo "  ERROR: no amdrocm-blas<mm>-<arch> device library installed for ROCM_ARCH='${ROCM_ARCH}'.  Without the per-arch TensileLibrary device libs, the first torch hipBLASLt GEMM dies with HIPBLAS_STATUS_INVALID_VALUE (hipblasLtMatmulAlgoGetHeuristic)." >&2; \
-        exit 1; \
-       fi \
-    && echo "blas arch device libraries installed: ${_blas_archs_installed}" \
+    && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends ${_arch_pkgs} \
     && update-ca-certificates
 
 RUN git config --global advice.detachedHead false

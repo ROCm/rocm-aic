@@ -1,0 +1,108 @@
+Fix IPC event signal-ring indexing in IPCEventEmulated (hip_event_ipc.cpp).
+
+read_index and write_index in ihipIpcEventShmem_t are absolute, ever-increasing
+ring counters, not slot indices.  Upstream added ihipSignalSlot() to map them
+into [0, IPC_SIGNALS_PER_EVENT) before they are used to address signal[]; this
+backports that helper and its use at all four call sites.  It closes three
+defects, not one:
+
+1. streamWait() used the counter verbatim:
+       const int offset = ipc_evt_.ipc_shmem_->read_index;
+   After 32 uses of the same IPC event handle it names signal[32], outside the
+   32 slots that createIpcEventShmemIfNeeded() pins for device access with
+   ihipHostRegister(&shmem->signal, sizeof(uint32_t) * IPC_SIGNALS_PER_EVENT).
+   The WAIT_VALUE op is then rejected with hipErrorInvalidValue -- the failure
+   LMCache MP hits on the 33rd cross-process event import.
+
+2. query() and streamWait() ignored the "nothing recorded yet" sentinel.
+   createIpcEventShmemIfNeeded() initialises read_index = -1, so a consumer
+   that queried or streamWait()ed before the producer's first record addressed
+   signal[-1] (query() applied % to a negative value; streamWait() applied
+   nothing at all) -- 4 bytes below the registered region, inside the
+   alignas(64) padding of ihipIpcEventShmem_t.  ihipSignalSlot() maps -1 to
+   slot 31, a valid zero-initialised word.  synchronize() keeps its explicit
+   `prev_read_idx >= 0` early-out, exactly as upstream has it.
+
+3. The ring-full comparisons added IPC_SIGNALS_PER_EVENT to a 32-bit counter;
+   widening with int64_t{...} removes the signed-overflow UB after ~2^31
+   records.  Note this does NOT change read_index's initialisation: -1 is
+   load-bearing for the publication CAS in enqueueRecordCommand(), which
+   expects `write_index - 1`, and for synchronize()'s guard.  Do not "fix" the
+   overflow by initialising read_index to 0.
+
+Upstream: ROCm/rocm-systems a3e8d96073 (PR #12230, "fix(clr): Adding
+%IPC_SIGNALS_PER_EVENT in IPCEventEmulated::streamWait", 2026-09-25) landed the
+step-1 one-liner; the ihipSignalSlot() refactor with steps 2 and 3 is on
+develop.  Neither is in any tagged ROCm release yet: release/therock-7.14
+(= therock-7.14.1, ca887ee), 10.0 and 10.1 are all still unpatched, and the
+oldest dated BKC carrying the fix is release/bkc/therock-10.2-20261013.  The
+PRs docker/base/Dockerfile cites, #11511 and #11749, were never merged (open
+and closed-unmerged respectively).  Drop this patch when the stack moves to a
+10.2+ base.
+
+Supersedes patches/hip-ipc-event-ring-fix.patch, which carried only the
+step-1 modulo; applying both conflicts.  Both aic-vllm and aic-lmcache must be
+rebuilt from the same aic-base: the ring indices are a cross-process protocol,
+so a patched consumer paired with an unpatched peer waits on signal[0] while
+the producer armed signal[32], which hangs instead of erroring.
+
+Apply from the rocm-systems checkout root (patch -p1), i.e. replace the
+`sed -i` in the build_clr_patch stage of docker/base/Dockerfile with:
+
+    patch -p1 -d /app/rocm-systems < /tmp/hip-ipc-signal-slot-index-fix.patch
+
+--- a/projects/clr/hipamd/src/hip_event_ipc.cpp
++++ b/projects/clr/hipamd/src/hip_event_ipc.cpp
+@@ -59,14 +59,21 @@ bool IPCEventEmulated::createIpcEventShmemIfNeeded() {
+   return status == hipSuccess;
+ }
+ 
++// Indices live in shared memory (a peer can write any value) and start at -1; % keeps the
++// sign, so map into [0, N). Arithmetic on them is done in 64 bits so it can't overflow.
++static inline int ihipSignalSlot(int idx) {
++  const int slot = idx % IPC_SIGNALS_PER_EVENT;
++  return slot < 0 ? slot + IPC_SIGNALS_PER_EVENT : slot;
++}
++
+ // ================================================================================================
+ hipError_t IPCEventEmulated::query() {
+   std::scoped_lock lock(lock_);
+   if (ipc_evt_.ipc_shmem_) {
+     const int prev_read_idx = ipc_evt_.ipc_shmem_->read_index;
+-    const int offset = prev_read_idx % IPC_SIGNALS_PER_EVENT;
++    const int offset = ihipSignalSlot(prev_read_idx);
+ 
+-    if (ipc_evt_.ipc_shmem_->read_index < prev_read_idx + IPC_SIGNALS_PER_EVENT &&
++    if (ipc_evt_.ipc_shmem_->read_index < int64_t{prev_read_idx} + IPC_SIGNALS_PER_EVENT &&
+         ipc_evt_.ipc_shmem_->signal[offset] != 0) {
+       return hipErrorNotReady;
+     }
+@@ -80,8 +87,8 @@ hipError_t IPCEventEmulated::synchronize() {
+   if (ipc_evt_.ipc_shmem_) {
+     int prev_read_idx = ipc_evt_.ipc_shmem_->read_index;
+     if (prev_read_idx >= 0) {
+-      int offset = (prev_read_idx % IPC_SIGNALS_PER_EVENT);
+-      while ((ipc_evt_.ipc_shmem_->read_index < prev_read_idx + IPC_SIGNALS_PER_EVENT) &&
++      int offset = ihipSignalSlot(prev_read_idx);
++      while ((ipc_evt_.ipc_shmem_->read_index < int64_t{prev_read_idx} + IPC_SIGNALS_PER_EVENT) &&
+              (ipc_evt_.ipc_shmem_->signal[offset] != 0)) {
+         amd::Os::sleep(1);
+       }
+@@ -93,7 +100,7 @@ hipError_t IPCEventEmulated::synchronize() {
+ // ================================================================================================
+ hipError_t IPCEventEmulated::streamWait(hip::Stream* stream, uint flags) {
+   std::scoped_lock lock(lock_);
+-  const int offset = ipc_evt_.ipc_shmem_->read_index;
++  const int offset = ihipSignalSlot(ipc_evt_.ipc_shmem_->read_index);
+   return ihipStreamOperation(
+       reinterpret_cast<hipStream_t>(stream),
+       ROCCLR_COMMAND_STREAM_WAIT_VALUE,
+@@ -121,7 +128,7 @@ hipError_t IPCEventEmulated::enqueueRecordCommand(hip::Stream* stream, amd::Comm
+   // Allocate signal slot for this event
+   auto* const shmem = ipc_evt_.ipc_shmem_;
+   const int write_index = shmem->write_index++;
+-  const int offset = write_index % IPC_SIGNALS_PER_EVENT;
++  const int offset = ihipSignalSlot(write_index);
+   auto& signal = shmem->signal[offset];
+ 
+   // Wait for signal slot to become available
