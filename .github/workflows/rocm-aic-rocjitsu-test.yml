@@ -190,16 +190,41 @@ jobs:
           HF_TOKEN: ${{ secrets.AIC_HF_TOKEN }}
           SUPPLIED: ${{ inputs.rj_image_ref }}
         run: |
+          # Guest RAM is a shared memfd QEMU allocates on this host, so it must
+          # leave the host room for dockerd, the rocjitsu server and page cache.
+          # The make target's 16 GiB default is all of a standard runner's RAM.
+          host_mb=$(awk '/^MemTotal:/ {print int($2 / 1024)}' /proc/meminfo)
+          vm_mb=$(( host_mb - 6144 ))
+          (( vm_mb <= 16384 )) || vm_mb=16384
+          echo "host RAM ${host_mb} MiB, $(nproc) CPUs -> guest RAM ${vm_mb} MiB"
           # The vm/ dir is pre-populated from cache or ORAS pull so the
           # make target will skip its own extraction step (vm-info.json present).
           make test-rocjitsu-local \
             ${SUPPLIED:+RJ_IMAGE_REF="$SUPPLIED"} \
+            RJ_VM_MEM_MB="${vm_mb}" \
             RJ_READY_S=240
 
+      # A guest that vanishes mid-test ("Connection ... closed by remote host")
+      # leaves its evidence on this host, not in the make output.
+      - name: Host diagnostics on failure
+        if: failure()
+        run: |
+          free -m
+          sudo dmesg -T | grep -iE 'oom|killed process|sigbus|qemu' | tail -30 || true
+          docker ps -a --format '{{.Names}} {{.Status}}'
+
+      # Logs only: the dir also holds the guest disk and the image tars
+      # (~23 GB), which are not diagnostics.
       - name: Upload rocjitsu logs on failure
         if: failure()
         uses: actions/upload-artifact@v7
         with:
           name: rocjitsu-logs
-          path: /tmp/aic-rocjitsu-test/
+          path: |
+            /tmp/aic-rocjitsu-test/
+            /tmp/aic-rj-make.log
+            !/tmp/aic-rocjitsu-test/shared/images/
+            !/tmp/aic-rocjitsu-test/shared/repo/
+            !/tmp/aic-rocjitsu-test/vm/**/*.qcow2*
+            !/tmp/aic-rocjitsu-test/vm/**/id_rsa*
           retention-days: 3
