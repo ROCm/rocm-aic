@@ -644,6 +644,19 @@ test-rocjitsu-local:
 	      BENCH_LOGDIR=/tmp/aic-logs/manual 2>/dev/null" \
 	    2>/dev/null || true; \
 	echo "  Cleaning up containers ..."; \
+	_qemu_state=$$(docker inspect -f 'status={{.State.Status}} exit={{.State.ExitCode}} oom={{.State.OOMKilled}}' \
+	    aic-rj-qemu 2>&1); \
+	for _c in aic-rj-qemu aic-rj-rocjitsu; do \
+	    docker logs "$$_c" > "$(RJ_WORK_DIR)/$$_c.log" 2>&1 \
+	        || echo "WARN: could not save the $$_c log" >&2; \
+	done; \
+	if [ "$${_rc:-0}" != "0" ]; then \
+	    echo "  --- QEMU container before cleanup: $$_qemu_state ---"; \
+	    echo "  --- guest serial console, last 60 lines (all: $(RJ_WORK_DIR)/aic-rj-qemu.log) ---"; \
+	    tail -60 "$(RJ_WORK_DIR)/aic-rj-qemu.log" | sed 's/^/  [console] /'; \
+	    echo "  --- rocjitsu server, last 20 lines ---"; \
+	    tail -20 "$(RJ_WORK_DIR)/aic-rj-rocjitsu.log" | sed 's/^/  [rocjitsu] /'; \
+	fi; \
 	ssh $$_ssh_flags "$$_vmuser@localhost" "sudo poweroff" 2>/dev/null || true; \
 	sleep 5; \
 	docker rm -f aic-rj-qemu aic-rj-rocjitsu >/dev/null 2>&1 || true; \
