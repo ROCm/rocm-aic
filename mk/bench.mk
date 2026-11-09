@@ -528,25 +528,6 @@ test-rocjitsu-local:
 	    exit 1; \
 	fi; \
 	echo "  /dev/kfd present — amdgpu bound to rocjitsu GPU"; \
-	echo "  [6a] GPU sanity check via torch.cuda ..."; \
-	_kfd_gid=$$(ssh $$_ssh_flags "$$_vmuser@localhost" "stat -c %g /dev/kfd"); \
-	_render=$$(ssh $$_ssh_flags "$$_vmuser@localhost" \
-	    "ls /dev/dri/renderD* 2>/dev/null | grep -m1 ."); \
-	echo "  kfd_gid=$$_kfd_gid render=$$_render"; \
-	_gpu_out=$$(ssh $$_ssh_flags "$$_vmuser@localhost" \
-	    "sudo docker run --rm \
-	        --device /dev/kfd $${_render:+--device $$_render} \
-	        --group-add video --group-add $$_kfd_gid \
-	        --entrypoint python3 $(RJ_IMAGE_REF) \
-	        -c 'import torch; avail=torch.cuda.is_available(); cnt=torch.cuda.device_count(); arch=torch.cuda.get_device_properties(0).gcnArchName if avail else \"none\"; print(f\"available={avail} count={cnt} arch={arch}\")'" \
-	    2>&1); \
-	echo "  $$_gpu_out"; \
-	echo "$$_gpu_out" | grep -q 'available=True' \
-	    || { echo "FAIL: torch.cuda not available in container" >&2; _rc=1; }; \
-	_arch=$$(echo "$$_gpu_out" | grep -o 'arch=[^ ]*' | cut -d= -f2); \
-	[ "$$_arch" = "gfx1250" ] \
-	    || { echo "FAIL: expected arch=gfx1250, got $$_arch" >&2; _rc=1; }; \
-	echo "  GPU check done (arch=$$_arch)"; \
 	echo "  [6b] Setting up NVMe L2 storage ..."; \
 	_nvme=$$(ssh $$_ssh_flags "$$_vmuser@localhost" \
 	    "ls /dev/nvme*n1 2>/dev/null | head -1"); \
@@ -586,6 +567,25 @@ test-rocjitsu-local:
 	     printf 'FROM %s\nRUN pip3 install lmcache==$(patsubst v%,%,$(LMCACHE_REF)) -q\n' '$(RJ_IMAGE_REF)' | \
 	         sudo docker build -q -t '$(RJ_IMAGE_REF)' -f - /tmp 2>&1" \
 	    2>&1 | sed 's/^/  [patch] /'; \
+	echo "  [6c.4b] GPU sanity check via torch.cuda (needs the image loaded above) ..."; \
+	_kfd_gid=$$(ssh $$_ssh_flags "$$_vmuser@localhost" "stat -c %g /dev/kfd"); \
+	_render=$$(ssh $$_ssh_flags "$$_vmuser@localhost" \
+	    "ls /dev/dri/renderD* 2>/dev/null | grep -m1 ."); \
+	echo "  kfd_gid=$$_kfd_gid render=$$_render"; \
+	_gpu_out=$$(ssh $$_ssh_flags "$$_vmuser@localhost" \
+	    "sudo docker run --rm \
+	        --device /dev/kfd $${_render:+--device $$_render} \
+	        --group-add video --group-add $$_kfd_gid \
+	        --entrypoint python3 $(RJ_IMAGE_REF) \
+	        -c 'import torch; avail=torch.cuda.is_available(); cnt=torch.cuda.device_count(); arch=torch.cuda.get_device_properties(0).gcnArchName if avail else \"none\"; print(f\"available={avail} count={cnt} arch={arch}\")'" \
+	    2>&1); \
+	echo "  $$_gpu_out"; \
+	echo "$$_gpu_out" | grep -q 'available=True' \
+	    || { echo "FAIL: torch.cuda not available in container" >&2; _rc=1; }; \
+	_arch=$$(echo "$$_gpu_out" | grep -o 'arch=[^ ]*' | cut -d= -f2); \
+	[ "$$_arch" = "gfx1250" ] \
+	    || { echo "FAIL: expected arch=gfx1250, got $$_arch" >&2; _rc=1; }; \
+	echo "  GPU check done (arch=$$_arch)"; \
 	echo "  [6c.5] Pulling public monitoring images inside VM ..."; \
 	ssh $$_ssh_flags "$$_vmuser@localhost" \
 	    "for img in prom/prometheus:v3.14.0 grafana/grafana:13.2.2 \
@@ -613,7 +613,8 @@ test-rocjitsu-local:
 	  'export AIC_METRICS_DIR=/rj-share/metrics AIC_EXPORTERS=0 HF_HOME=/tmp/hf-home' \
 	  'export LOG=/tmp/aic-logs BENCH_LOGDIR=/tmp/aic-logs/manual HF_TOKEN=$(HF_TOKEN)' \
 	  '# vllm-reset-test: real GPU; kernel-config disables JIT warmup; weight loading ~7s/270MB on rocjitsu' \
-	  'make -C /rj-share/repo vllm-reset-test VLM_READY_RETRIES=600' \
+	  '# BENCH_LOGDIR again: the Makefile sets it with :=, which ignores the environment' \
+	  'make -C /rj-share/repo vllm-reset-test VLM_READY_RETRIES=600 BENCH_LOGDIR=/tmp/aic-logs/manual' \
 	  'echo vllm_reset_test_rc=$$?' \
 	  > /tmp/aic-rj-inner.sh; \
 	scp -i $$_key -o StrictHostKeyChecking=no -P "$(RJ_SSH_PORT)" \
