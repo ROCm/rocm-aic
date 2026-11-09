@@ -3,7 +3,8 @@
 # SPDX-License-Identifier: MIT
 #
 # Nightly build of aic-vllm for gfx1250 (rocjitsu / RDNA4-emulated GPU),
-# published to GHCR so the rocjitsu VM test can docker pull instead of
+# published to GHCR.  Its layer caches (aic-base, aic-vllm, and the lmcache
+# wheels) are what let the rocjitsu VM test build its images without
 # recompiling PyTorch + vLLM from source on every CI run.
 #
 # Built through docker/docker-bake.hcl like every other image, so the version

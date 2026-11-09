@@ -4,14 +4,14 @@
 #
 # GPU-stack integration test using rocjitsu vfio-user emulation.
 # Boots an Ubuntu guest VM under QEMU-KVM with an emulated gfx1250 GPU
-# (rocjitsu vfio-user server), builds the aic-vllm image for gfx1250,
-# loads it into the guest, and asserts torch.cuda.is_available()==True
-# with arch=gfx1250.  No physical GPU required; /dev/kvm is available on
-# GitHub-hosted ubuntu-24.04 runners.
+# (rocjitsu vfio-user server), builds the aic-vllm and aic-lmcache images
+# for gfx1250, loads them into the guest, asserts torch.cuda.is_available()==True
+# with arch=gfx1250, and runs vllm-reset-test there.  No physical GPU
+# required; /dev/kvm is available on GitHub-hosted ubuntu-24.04 runners.
 #
-# The aic-base and aic-vllm Docker builds use the GHA layer cache so that
-# warm PR runs skip multi-hour kernel compilations.  Cold runs are slow
-# (~3-4 h for aic-base + aic-vllm) but subsequent runs are fast (~10 min).
+# The images are built through docker-bake.hcl, reading (not writing) the GHCR
+# layer cache rocm-aic-publish-gfx1250-image.yml keeps warm, so a warm build
+# mostly pulls layers; a cold one takes ~3-4 h.
 #
 # See mk/bench.mk test-rocjitsu-local.
 name: rocm-aic - Rocjitsu VM Test
@@ -35,6 +35,7 @@ on:
 
 permissions:
   contents: read
+  packages: read   # read the publisher's layer cache from GHCR
 
 jobs:
   rocjitsu-test:
@@ -135,65 +136,60 @@ jobs:
           driver: docker-container
           install: true
 
-      - name: Log in to GHCR (read pre-built image)
+      - name: Log in to GHCR (read the layer cache)
         uses: docker/login-action@v3
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Pull or build aic-vllm:gfx1250
+      # Every locally built image the guest's vllm-reset-test runs (its
+      # monitoring profile includes hsa-snoop and the fabric exporters).  Bake
+      # tags them exactly as test-rocjitsu-local expects (from ROCM_ARCH=gfx1250
+      # above), so the make target reuses them instead of running `make build`.
+      - name: Build the gfx1250 images the VM test runs
+        env:
+          SUPPLIED: ${{ inputs.rj_image_ref }}
+          GHCR_BASE: ghcr.io/rocm/rocm-aic/aic-base
+          GHCR_VLLM: ghcr.io/rocm/rocm-aic/aic-vllm
+          GHCR_LMCACHE: ghcr.io/rocm/rocm-aic/aic-lmcache
         run: |
-          SUPPLIED="${{ inputs.rj_image_ref }}"
-          GHCR="ghcr.io/sbates130272/aic-vllm:gfx1250"
-
+          set -euo pipefail
+          targets=(lmcache vllm hsa-snoop nvme-exporter rdma-exporter)
           if [ -n "$SUPPLIED" ]; then
-            echo "Using workflow_dispatch-supplied image: $SUPPLIED"
+            echo "Using workflow_dispatch-supplied aic-vllm image: $SUPPLIED"
             docker pull "$SUPPLIED"
-            docker tag "$SUPPLIED" aic-vllm:gfx1250
-
-          elif docker pull "$GHCR" 2>/dev/null; then
-            # Pre-built by the nightly publish workflow — fast path (~1 min)
-            echo "Pulled pre-built image from GHCR: $GHCR"
-            docker tag "$GHCR" aic-vllm:gfx1250
-
-          else
-            # Fall back to building from source using GHCR as registry cache.
-            # Cold build takes ~3-4 h; subsequent builds reuse cached layers.
-            echo "GHCR image not available — building from source..."
-            docker buildx create --use --name rj-builder --driver docker-container
-
-            DOCKER_BUILDKIT=1 docker buildx build \
-              --progress=plain --load \
-              --build-arg ROCM_ARCH=gfx1250 \
-              --build-arg AIC_VERSION="$(cat VERSION)" \
-              --cache-from "type=registry,ref=ghcr.io/sbates130272/aic-base-cache:gfx1250" \
-              --cache-to   "type=registry,ref=ghcr.io/sbates130272/aic-base-cache:gfx1250,mode=max" \
-              -f docker/base/Dockerfile \
-              -t aic-base:gfx1250 \
-              .
-
-            DOCKER_BUILDKIT=1 docker buildx build \
-              --progress=plain --load \
-              --build-arg ROCM_ARCH=gfx1250 \
-              --build-arg AIC_VERSION="$(cat VERSION)" \
-              --build-context base=docker-image://aic-base:gfx1250 \
-              --cache-from "type=registry,ref=ghcr.io/sbates130272/aic-vllm-cache:gfx1250" \
-              --cache-to   "type=registry,ref=ghcr.io/sbates130272/aic-vllm-cache:gfx1250,mode=max" \
-              -f docker/vllm/Dockerfile \
-              -t aic-vllm:gfx1250 \
-              .
+            targets=(lmcache hsa-snoop nvme-exporter rdma-exporter)
           fi
+          # lmcache's heavy stages are lmcache-wheels', which the publisher
+          # caches; its runtime stage on top is pip installs.  hsa-snoop and the
+          # exporters are small builds with no cache here.
+          AIC_VERSION="$(cat VERSION)" docker buildx bake -f docker/docker-bake.hcl \
+            --progress=plain \
+            --set "base.output=type=cacheonly" \
+            --set "base.cache-from=type=registry,ref=${GHCR_BASE}-cache:gfx1250" \
+            --set "lmcache-wheels.cache-from=type=registry,ref=${GHCR_LMCACHE}-cache:gfx1250" \
+            --set "lmcache.output=type=docker" \
+            --set "lmcache.cache-from=type=registry,ref=${GHCR_LMCACHE}-cache:gfx1250" \
+            --set "vllm.output=type=docker" \
+            --set "vllm.cache-from=type=registry,ref=${GHCR_VLLM}-cache:gfx1250" \
+            --set "hsa-snoop.output=type=docker" \
+            --set "nvme-exporter.output=type=docker" \
+            --set "rdma-exporter.output=type=docker" \
+            "${targets[@]}"
+          docker images --format '{{.Repository}}:{{.Tag}} {{.Size}}' \
+            | grep -E '^aic-(vllm|lmcache|hsa-snoop|nvme-exporter|rdma-exporter):'
+          df -h /
 
       - name: Run rocjitsu VM test
+        env:
+          HF_TOKEN: ${{ secrets.AIC_HF_TOKEN }}
+          SUPPLIED: ${{ inputs.rj_image_ref }}
         run: |
-          # Pass the pre-tagged image ref; skip internal build step.
           # The vm/ dir is pre-populated from cache or ORAS pull so the
           # make target will skip its own extraction step (vm-info.json present).
-          IMAGE_TAG=$(docker inspect aic-vllm:gfx1250 --format '{{index .RepoTags 0}}' 2>/dev/null \
-            || echo aic-vllm:gfx1250)
           make test-rocjitsu-local \
-            RJ_IMAGE_REF="$IMAGE_TAG" \
+            ${SUPPLIED:+RJ_IMAGE_REF="$SUPPLIED"} \
             RJ_READY_S=240
 
       - name: Upload rocjitsu logs on failure
