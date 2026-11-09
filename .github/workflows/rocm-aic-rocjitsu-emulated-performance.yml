@@ -13,6 +13,13 @@ on:
   schedule:
     - cron: '30 12 * * *'
   workflow_dispatch:
+    inputs:
+      publish:
+        description: 'Publish the results to GitHub Pages (false = artifact only)'
+        required: false
+        default: 'true'
+        type: choice
+        options: ['true', 'false']
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -54,6 +61,23 @@ jobs:
       - name: Read AIC_VERSION from VERSION file
         run: echo "AIC_VERSION=$(cat VERSION)" >> "$GITHUB_ENV"
 
+      # docker/vllm/Dockerfile takes its version pins (ROCM_VERSION, LMCACHE_REF,
+      # ...) as build args from docker-bake.hcl and has no default for some on
+      # purpose.  Bake cannot build this image itself: its emulate target pulls
+      # in aic-base and the lmcache wheels, a multi-hour ROCm build.  So take
+      # the args it resolves for that target and build on the CPU base below.
+      - name: Resolve the emulate build args from docker-bake.hcl
+        id: bake-args
+        env:
+          ROCM_ARCH: gfx942
+        run: |
+          set -euo pipefail
+          args="$(docker buildx bake -f docker/docker-bake.hcl --print emulate \
+                    | jq -r '.target.emulate.args | to_entries[] | "\(.key)=\(.value)"')"
+          [[ -n "${args}" ]] || { echo "::error::bake resolved no args for emulate"; exit 1; }
+          printf '%s\n' "${args}"
+          { echo 'list<<EOF'; printf '%s\n' "${args}"; echo 'EOF'; } >> "${GITHUB_OUTPUT}"
+
       - name: Write corp CA cert secret (AMD Zscaler proxy)
         id: cert
         run: |
@@ -88,10 +112,7 @@ jobs:
           target: emulate
           load: true
           tags: ${{ env.IMAGE_REF }}
-          build-args: |
-            ROCM_ARCH=gfx942
-            VLLM_TARGET_DEVICE=empty
-            AIC_VERSION=${{ env.AIC_VERSION }}
+          build-args: ${{ steps.bake-args.outputs.list }}
           build-contexts: |
             base=oci-layout:///tmp/aic-base-emulate
           secrets: |
@@ -108,10 +129,7 @@ jobs:
           target: emulate
           load: true
           tags: ${{ env.IMAGE_REF }}
-          build-args: |
-            ROCM_ARCH=gfx942
-            VLLM_TARGET_DEVICE=empty
-            AIC_VERSION=${{ env.AIC_VERSION }}
+          build-args: ${{ steps.bake-args.outputs.list }}
           build-contexts: |
             base=oci-layout:///tmp/aic-base-emulate
           cache-from: type=gha,scope=aic-emulate
@@ -132,6 +150,7 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO_URL: https://github.com/${{ github.repository }}
+          PUBLISH: ${{ github.event_name != 'workflow_dispatch' || inputs.publish == 'true' }}
         run: |
           set -euo pipefail
 
@@ -171,6 +190,11 @@ jobs:
               --workflow-path ".github/workflows/rocm-aic-rocjitsu-emulated-performance.yml" \
               --model "${ROCJITSU_MODEL}" \
               --profile-pack "${ROCJITSU_PROFILE_PACK}"
+
+            if [[ "${PUBLISH}" != true ]]; then
+              echo "publish=false: page rendered to ${stage}, not pushed"
+              exit 0
+            fi
 
             mkdir -p "${pages}/${ROCJITSU_PAGES_DIR}"
             rsync -a --delete --exclude '.git' "${stage}/${ROCJITSU_PAGES_DIR}/" "${pages}/${ROCJITSU_PAGES_DIR}/"
