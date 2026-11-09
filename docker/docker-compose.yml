@@ -346,10 +346,8 @@ services:
           --lmcache-config /tmp/lmcache.yaml
     healthcheck:
       test:
-        - CMD
-        - python3
-        - -c
-        - "import os, urllib.request; urllib.request.urlopen(f'http://127.0.0.1:{os.getenv(\"KVBENCH_PORT\", \"8000\")}/v1/models', timeout=2)"
+        - CMD-SHELL
+        - "curl -fsS --max-time 2 -o /dev/null \"http://127.0.0.1:$${KVBENCH_PORT:-8000}/v1/models\""
       interval: 10s
       timeout: 5s
       retries: 18
@@ -490,9 +488,7 @@ services:
       - ../monitoring/scripts/lmcache_coordinator_entrypoint.py:/app/entrypoint.py:ro
     entrypoint: ["python3", "/app/entrypoint.py"]
     healthcheck:
-      test:
-        - CMD-SHELL
-        - "python3 -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:${LMCACHE_COORDINATOR_PORT:-9300}/healthz', timeout=2)\""
+      test: ["CMD", "curl", "-fsS", "--max-time", "2", "-o", "/dev/null", "http://127.0.0.1:${LMCACHE_COORDINATOR_PORT:-9300}/healthz"]
       interval: 10s
       timeout: 5s
       retries: 12

@@ -266,8 +266,7 @@ monitoring_healthcheck
 # ---------------------------------------------------------------------------
 echo "=== Scraping metrics endpoints ==="
 # Every target is scraped from a client container on the aic bridge by name; the
-# exporters and Prometheus publish no host port.  The AIC images carry python3
-# but no curl, so the client fetches with urllib.
+# exporters and Prometheus publish no host port.
 declare -A EXPORTER_URLS=(
     [node_exporter]=http://aic-node-exporter:9100
     [nvme_exporter]=http://aic-nvme-exporter:9998
@@ -279,9 +278,8 @@ METRICS_ARGS=()
 for name in "${!EXPORTER_URLS[@]}"; do
     outfile="/tmp/metrics_${name}.txt"
     # Body to the file, stderr captured so a failure is reported in one line.
-    err="$(docker run --rm --network aic --entrypoint python3 "${AIC_IMAGE}" -c \
-        'import sys, urllib.request; sys.stdout.buffer.write(urllib.request.urlopen(sys.argv[1], timeout=10).read())' \
-        "${EXPORTER_URLS[$name]}/metrics" 2>&1 > "${outfile}")" || true
+    err="$(docker run --rm --network aic --entrypoint curl "${AIC_IMAGE}" \
+        -fsS --max-time 10 "${EXPORTER_URLS[$name]}/metrics" 2>&1 > "${outfile}")" || true
     if [[ -s "${outfile}" ]]; then
         METRICS_ARGS+=("--source" "${name}:${outfile}")
     else

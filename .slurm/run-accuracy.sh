@@ -186,7 +186,7 @@ _client_py() { _client aic "${PYBIN}" "$@"; }
 if ! _client bridge "${PYBIN}" -c 'import pytest, lm_eval' >/dev/null 2>&1; then
     echo "[accuracy-test] (re)creating the client venv at ${VENV}"
     rm -rf "${VENV}"
-    _client bridge python3 -m venv --without-pip --system-site-packages "${VENV}" \
+    _client bridge python3 -m venv --system-site-packages "${VENV}" \
         || { echo "[accuracy-test] FAIL: venv creation failed" >&2; exit 1; }
     _client bridge "${PYBIN}" -m pip -q install -e "${AIC_DAY_DIR}[accuracy]" || {
         echo "[accuracy-test] FAIL: could not install the accuracy extra" >&2; exit 1; }
@@ -368,8 +368,7 @@ _pool_alloc_bytes() { du -s --block-size=1 "${NVME_DATA}" 2>/dev/null | cut -f1 
 # `$(( $(_lmc ...) - BEFORE ))` callers below never see an empty operand.
 _metric_sum() {
     local container="$1" url="$2" metric="$3" body
-    body="$(docker exec "${container}" python3 -c \
-        "import urllib.request; print(urllib.request.urlopen('${url}', timeout=15).read().decode())" \
+    body="$(docker exec "${container}" curl -fsS --max-time 15 "${url}" \
         2>/dev/null)" || { echo 0; return 1; }
     printf '%s\n' "${body}" \
         | awk -v m="${metric}" '
@@ -389,8 +388,7 @@ _metric_sum() {
 # concluded "LMCache completed zero L2 chunk stores" from the resulting zeros.
 _metrics_reachable() {
     local container="$1" url="$2"
-    docker exec "${container}" python3 -c \
-        "import urllib.request; urllib.request.urlopen('${url}', timeout=15)" \
+    docker exec "${container}" curl -fsS --max-time 15 -o /dev/null "${url}" \
         >/dev/null 2>&1 && return 0
     echo "[accuracy-test] WARN: cannot scrape ${container} at ${url}" >&2
     return 1
@@ -405,8 +403,7 @@ _metrics_reachable() {
 #   2  scrape itself failed
 _metric_present() {
     local container="$1" url="$2" metric="$3" body
-    body="$(docker exec "${container}" python3 -c \
-        "import urllib.request; print(urllib.request.urlopen('${url}', timeout=15).read().decode())" \
+    body="$(docker exec "${container}" curl -fsS --max-time 15 "${url}" \
         2>/dev/null)" || return 2
     printf '%s\n' "${body}" | grep -qE "^${metric}([{ ]|\$)" && return 0
     return 1
@@ -423,8 +420,7 @@ _metric_present() {
 _dump_metrics() {
     local container="$1" url="$2" out="$3"
     # Write to stdout inside the container, redirect to host-side file.
-    docker exec "${container}" python3 -c \
-        "import urllib.request,sys; sys.stdout.write(urllib.request.urlopen('${url}',timeout=15).read().decode())" \
+    docker exec "${container}" curl -fsS --max-time 15 "${url}" \
         > "${out}" 2>/dev/null && return 0
     echo "[accuracy-test] WARN: could not dump ${container} metrics to ${out}" >&2
     return 1

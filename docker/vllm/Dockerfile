@@ -164,6 +164,10 @@ COPY patches/aiter/ /app/patches/aiter/
 # under gfx942's cu_num but they do not compile for it in v0.1.22.post1.  This
 # is a narrow, named gap rather than blanket silencing: the other 6752 jobs are
 # dropped by arch before they are ever attempted.  Revisit on an AITER bump.
+#
+# AITER versions itself from its git tag (setuptools_scm), and --revision
+# fetches no tags, so it is cloned with --branch: AITER_REF must be a tag or
+# branch, as VLLM_REF already must.
 RUN test -n "$ROCM_ARCH" || { echo "ERROR: ROCM_ARCH is not set"; exit 1; }
 
 # hadolint ignore=SC2039

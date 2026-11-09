@@ -459,7 +459,11 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     update-ca-certificates
 
 # Step 2: add AMD ROCm apt repo (requires ca-certificates for HTTPS), then
-# install the 13 runtime packages + system deps.
+# install the 13 runtime packages + system deps.  Tools among those deps serve
+# what runs inside the containers:
+#   curl          HTTP probes, scrapes and compose healthchecks
+#   make          AITER's JIT builds some kernels (paged attention) with make
+#   python3-venv  ensurepip, for `python3 -m venv`
 # Key and sources list copied from the build-time base stage so that the repo
 # URL tracks the base image automatically (ROCm 10.0 changed the URL).
 COPY --from=base /etc/apt/keyrings/amdrocm.gpg /etc/apt/keyrings/amdrocm.gpg
@@ -471,6 +475,7 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     apt-get update && \
     _mm=$(echo "${ROCM_VERSION}" | cut -d. -f1-2) && \
     DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+        curl \
         git \
         ibverbs-providers \
         libibverbs-dev \
@@ -478,10 +483,12 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
         libnuma1 \
         libopenmpi3t64 \
         liburing2 \
+        make \
         nvme-cli \
         pkg-config \
         bpftrace \
         python3-dev \
+        python3-venv \
         "amdrocm-runtime${_mm}" \
         "amdrocm-base${_mm}" \
         "amdrocm-profiler-base${_mm}" \
