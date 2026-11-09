@@ -173,16 +173,9 @@ RUN --mount=type=cache,target=/root/.cache/pip \
         echo "Skipping AITER build (VLLM_TARGET_DEVICE=empty)"; \
     else \
         mkdir -p /wheels && \
-        pip3 install --no-cache-dir \
-            "pandas==3.0.3" \
-            "psutil==7.2.2" \
-            "pyyaml==6.0.3" \
-            "einops==0.8.2" \
-            "pybind11==3.0.4" \
-            "ninja==1.13.0" \
-            "flydsl==0.2.4" && \
         git clone --depth 1 --branch "${AITER_REF}" "${AITER_GIT_URL}" --recurse-submodules /app/aiter && \
         cd /app/aiter && \
+        pip3 install --no-cache-dir -r requirements.txt && \
         _prebuild="${AITER_PREBUILD_KERNELS}" && \
         case "${ROCM_ARCH}" in \
             *\;*) [ "${_prebuild}" = "0" ] || \
@@ -476,6 +469,13 @@ RUN --mount=type=bind,from=lmcache-wheels,target=/aic-wheels \
         nixl nixl-cu12 nixl-cu13 \
         cupy-cuda12x cufile-python cuda-pathfinder 2>/dev/null || true; } && \
     python3 -c 'import lmcache.integration.vllm.vllm_multi_process_adapter; print("lmcache MP adapter imports OK")'
+
+# Install make, needed by aiter
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
+    apt-get update && \
+    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+        make
 
 # For fastsafetensors' dlopen("libamdhip64.so").  Not in the shared `vllm`
 # stage: CI's emulate build swaps in a base with no ROCm.  Prepend, so
