@@ -6,12 +6,14 @@
 # published to GHCR so the rocjitsu VM test can docker pull instead of
 # recompiling PyTorch + vLLM from source on every CI run.
 #
-# Build layers are cached in GHCR as registry cache entries, so only changed
-# layers are rebuilt on subsequent nightly runs.
+# Built through docker/docker-bake.hcl like every other image, so the version
+# pins and build contexts are the ones `make build` uses.  Build layers are
+# cached in GHCR as registry cache entries, so only changed layers are rebuilt
+# on subsequent nightly runs.
 #
 # Published image:
 #   ghcr.io/rocm/rocm-aic/aic-vllm:gfx1250
-#   ghcr.io/rocm/rocm-aic/aic-vllm:gfx1250-<sha7>
+#   ghcr.io/rocm/rocm-aic/aic-vllm:gfx1250-<sha>
 name: rocm-aic - Publish gfx1250 Image
 
 on:
@@ -19,6 +21,13 @@ on:
     # 03:00 PST = 11:00 UTC — runs after the SPUR nightly dist-build (09:00 UTC)
     - cron: '0 11 * * *'
   workflow_dispatch:
+    inputs:
+      publish:
+        description: 'Push the images to GHCR (false = build + cache only)'
+        required: false
+        default: 'true'
+        type: choice
+        options: ['true', 'false']
 
 permissions:
   contents: read
@@ -28,15 +37,14 @@ env:
   REGISTRY: ghcr.io
   IMAGE_BASE: ghcr.io/rocm/rocm-aic/aic-base
   IMAGE_VLLM: ghcr.io/rocm/rocm-aic/aic-vllm
+  IMAGE_LMCACHE: ghcr.io/rocm/rocm-aic/aic-lmcache
+  # Read by docker-bake.hcl.
   ROCM_ARCH: gfx1250
 
 jobs:
-  # Job 1: build aic-base for gfx1250 and push to GHCR.
-  # Runs on a fresh ubuntu-24.04 runner (~86 GB disk).  aic-base (PyTorch +
-  # torchvision) is the largest layer set; splitting into its own job keeps
-  # disk usage under the runner limit.
+  # Runs on a fresh ubuntu-24.04 runner (~86 GB disk).
   publish-base:
-    name: Build and push aic-base:gfx1250
+    name: Build and push aic-base and aic-vllm:gfx1250
     runs-on: ubuntu-24.04
     timeout-minutes: 300
 
@@ -65,31 +73,30 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4
 
-      - name: Build and push aic-base:gfx1250
-        uses: docker/build-push-action@v7
-        with:
-          context: .
-          file: docker/base/Dockerfile
-          push: true
-          tags: ${{ env.IMAGE_BASE }}:gfx1250
-          build-args: |
-            ROCM_ARCH=gfx1250
-            AIC_VERSION=${{ github.sha }}
-          cache-from: type=registry,ref=${{ env.IMAGE_BASE }}-cache:gfx1250
-          cache-to:   type=registry,ref=${{ env.IMAGE_BASE }}-cache:gfx1250,mode=max
-
-      - name: Build and push aic-vllm:gfx1250
-        uses: docker/build-push-action@v7
-        with:
-          context: .
-          file: docker/vllm/Dockerfile
-          push: true
-          tags: |
-            ${{ env.IMAGE_VLLM }}:gfx1250
-            ${{ env.IMAGE_VLLM }}:gfx1250-${{ github.sha }}
-          build-args: |
-            ROCM_ARCH=gfx1250
-            AIC_VERSION=${{ github.sha }}
-          build-contexts: base=docker-image://${{ env.IMAGE_BASE }}:gfx1250
-          cache-from: type=registry,ref=${{ env.IMAGE_VLLM }}-cache:gfx1250
-          cache-to:   type=registry,ref=${{ env.IMAGE_VLLM }}-cache:gfx1250,mode=max
+      # Not docker/build-push-action per Dockerfile: the split Dockerfiles take
+      # their pins as build args (docker/vllm/Dockerfile's ROCM_VERSION has no
+      # default on purpose), and aic-vllm's runtime stage needs the lmcache
+      # wheels as a build context.  Bake supplies both.  The base and vllm cache
+      # refs are the ones the per-Dockerfile steps wrote, so their layers carry
+      # over.
+      - name: Build and push aic-base and aic-vllm:gfx1250
+        env:
+          PUBLISH: ${{ github.event_name != 'workflow_dispatch' || inputs.publish == 'true' }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          output=type=registry
+          [[ "${PUBLISH}" == true ]] || output=type=cacheonly
+          AIC_VERSION="$(cat VERSION)" docker buildx bake -f docker/docker-bake.hcl \
+            --set "base.tags=${IMAGE_BASE}:gfx1250" \
+            --set "base.output=${output}" \
+            --set "base.cache-from=type=registry,ref=${IMAGE_BASE}-cache:gfx1250" \
+            --set "base.cache-to=type=registry,ref=${IMAGE_BASE}-cache:gfx1250,mode=max" \
+            --set "lmcache-wheels.cache-from=type=registry,ref=${IMAGE_LMCACHE}-cache:gfx1250" \
+            --set "lmcache-wheels.cache-to=type=registry,ref=${IMAGE_LMCACHE}-cache:gfx1250,mode=max" \
+            --set "vllm.tags=${IMAGE_VLLM}:gfx1250" \
+            --set "vllm.tags=${IMAGE_VLLM}:gfx1250-${SHA}" \
+            --set "vllm.output=${output}" \
+            --set "vllm.cache-from=type=registry,ref=${IMAGE_VLLM}-cache:gfx1250" \
+            --set "vllm.cache-to=type=registry,ref=${IMAGE_VLLM}-cache:gfx1250,mode=max" \
+            base vllm
