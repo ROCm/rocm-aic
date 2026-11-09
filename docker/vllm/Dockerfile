@@ -385,10 +385,6 @@ RUN --mount=type=bind,from=build_vllm,source=/wheels/,target=/wheels-vllm \
     --mount=type=bind,from=base-wheels,source=/,target=/base-wheels \
     find /base-wheels /wheels-vllm -type f -name "*.whl" -exec pip3 install --break-system-packages {} +
 
-# Copy all installed Python packages (vllm, aiter, flash_attn, llm-emu, deps)
-# from the full-ROCm build stage into the slim aic-base runtime.
-COPY --from=build_vllm /usr/local/lib/python3.12/dist-packages/ \
-                       /usr/local/lib/python3.12/dist-packages/
 COPY --from=build_vllm /usr/local/bin/uv  /usr/local/bin/uv
 COPY --from=build_vllm /usr/local/bin/uvx /usr/local/bin/uvx
 COPY --from=build_vllm /opt/llm-emu/      /opt/llm-emu/
