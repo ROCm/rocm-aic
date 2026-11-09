@@ -348,7 +348,9 @@ RJ_LMCACHE_IMAGE_REF ?= $(LMCACHE_IMAGE_NAME):$(_RJ_IMAGE_TAG)
 # lmcache pip version (strip leading 'v' from LMCACHE_REF for pip install)
 _LMCACHE_VER := $(patsubst v%,%,$(LMCACHE_REF))
 
-test-rocjitsu-local: prep-dirs
+# No prep-dirs: everything on the host lives under RJ_WORK_DIR, and the VM's
+# own vllm-reset-test creates its data dirs inside the guest.
+test-rocjitsu-local:
 	@test -c /dev/kvm || { echo "ERROR: /dev/kvm not found — KVM is required" >&2; exit 1; }
 	@test -n "$(HF_TOKEN)" || { echo "ERROR: HF_TOKEN is not set (needed for model download inside VM)" >&2; exit 1; }
 	@echo "=== test-rocjitsu-local: arch=$(RJ_ROCJITSU_ARCH) model=$(RJ_MODEL) image=$(RJ_IMAGE_REF) ==="
