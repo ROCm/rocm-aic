@@ -1,6 +1,6 @@
 # AIC Prometheus Metrics Reference
 
-**Generated:** 2026-11-08 09:21 UTC · **Total metrics:** 538 · **SHA:** `1daabee`
+**Generated:** 2026-11-09 09:25 UTC · **Total metrics:** 538 · **SHA:** `1daabee`
 
 ## Component Versions
 
@@ -17,15 +17,39 @@
 | Container | Image | Status |
 |-----------|-------|--------|
 | `aic-amdgpu-exporter` | `rocm/device-metrics-exporter:v1.5.2` | Up About a minute |
-| `aic-vllm-gpu6` | `aic-vllm:0.1.0-rocm7.14.1-pytorch2.13-vllm0.29.0-aiter0.1.22.post1-fa2.8.3.post1-lmcache0.5.6-nixl1.4.1-hsasnoop1.2.0` | Up About a minute |
+| `aic-vllm-gpu5` | `aic-vllm:0.1.0-rocm7.14.1-pytorch2.13-vllm0.29.0-aiter0.1.22.post1-fa2.8.3.post1-lmcache0.5.6-nixl1.4.1-hsasnoop1.2.0` | Up About a minute |
 | `aic-lmcache` | `aic-lmcache:0.1.0-rocm7.14.1-pytorch2.13-vllm0.29.0-aiter0.1.22.post1-fa2.8.3.post1-lmcache0.5.6-nixl1.4.1-hsasnoop1.2.0` | Up About a minute (healthy) |
 | `aic-alloy` | `grafana/alloy:v1.8.3` | Up About a minute |
+| `minisweagent-628689d7` | `public.ecr.aws/d3j8x8q7/swe-bench-202605:kh70nj38qyatmsmj1d5zh57j25820vrx-v1.1` | Up About a minute |
+| `minisweagent-e5206152` | `public.ecr.aws/d3j8x8q7/swe-bench-202605:kh771gpr8crkjsnt9pj81bafgs8229em-v1.1` | Up About a minute |
+| `minisweagent-53c28375` | `public.ecr.aws/d3j8x8q7/swe-bench-202605:kh71kat2v58yys3pnyybkgycax832vj2-v1.1` | Up About a minute |
+| `minisweagent-6804cfbf` | `public.ecr.aws/d3j8x8q7/swe-bench-202605:kh76dadw64v8013j689380xsg182yhfc-v1.1` | Up About a minute |
+| `minisweagent-6df1037b` | `public.ecr.aws/d3j8x8q7/swe-bench-202605:kh77y2107s6xkqyf61mj1dsm0983kmp1-v1.1` | Up About a minute |
+| `minisweagent-ad0efb27` | `public.ecr.aws/d3j8x8q7/swe-bench-202605:kh78zjag0xnxppgym5v4sshav982y8s4-v1.1` | Up About a minute |
+| `minisweagent-b136cb66` | `public.ecr.aws/d3j8x8q7/swe-bench-202605:kh7fkjmy67qny9z98mt6bj52m182ygdy-v1.1` | Up About a minute |
+| `minisweagent-c20fc518` | `public.ecr.aws/d3j8x8q7/swe-bench-202605:kh7evrvtwkk64hraqvefgx9ndd821j43-v1.1` | Up About a minute |
+| `minisweagent-7dc7a346` | `public.ecr.aws/d3j8x8q7/swe-bench-202605:kh71b98xenay7p45357036xq5x82tcdf-v1.1` | Up About a minute |
+| `minisweagent-533219fc` | `public.ecr.aws/d3j8x8q7/swe-bench-202605:kh74mb9dzz76a6zgdqmmf5mvk1833cnk-v1.1` | Up About a minute |
+| `minisweagent-ad0b728e` | `public.ecr.aws/d3j8x8q7/swe-bench-202605:kh74b2m0tjfn59vq8btqrj774s821570-v1.1` | Up About a minute |
+| `minisweagent-a88d9f36` | `public.ecr.aws/d3j8x8q7/swe-bench-202605:kh72w47mwm321wh9xj47vskc8d822e9t-v1.1` | Up About a minute |
+| `minisweagent-e5f4a8af` | `public.ecr.aws/d3j8x8q7/swe-bench-202605:kh71gkadwafw4ry4r6g37era0182qpms-v1.1` | Up About a minute |
+| `minisweagent-5225ce7d` | `public.ecr.aws/d3j8x8q7/swe-bench-202605:kh74j15mp1vrxx737y8b47tc8h832a37-v1.1` | Up About a minute |
+| `minisweagent-163ca203` | `public.ecr.aws/d3j8x8q7/swe-bench-202605:kh705e1hgmtj22pyetcmqa8ygs83bh33-v1.1` | Up About a minute |
+| `minisweagent-e9248acb` | `public.ecr.aws/d3j8x8q7/swe-bench-202605:kh75wxkjyha9441e7m9tpetb2582mn63-v1.1` | Up About a minute |
+| `minisweagent-1be69104` | `public.ecr.aws/d3j8x8q7/swe-bench-202605:kh71vrtr4b1jj5vavv6aybnvjd83pcar-v1.1` | Up About a minute |
+| `minisweagent-68cbab7a` | `public.ecr.aws/d3j8x8q7/swe-bench-202605:kh75azsnb5eqs3mf4xm0zkzha582rvcd-v1.1` | Up About a minute |
+| `minisweagent-453408e6` | `public.ecr.aws/d3j8x8q7/swe-bench-202605:kh72dq33t9djm894gqagmgpkhd82yvjv-v1.1` | Up About a minute |
+| `minisweagent-36e3ee19` | `public.ecr.aws/d3j8x8q7/swe-bench-202605:kh727w7pxd9cv476t3cxptxcg182e1e5-v1.1` | Up About a minute |
 | `aic-lmcache-coordinator` | `aic-lmcache:0.1.0-rocm7.14.1-pytorch2.13-vllm0.29.0-aiter0.1.22.post1-fa2.8.3.post1-lmcache0.5.6-nixl1.4.1-hsasnoop1.2.0` | Up About a minute (healthy) |
 | `aic-client` | `python:3.12` | Up About a minute |
 | `aic-loki` | `grafana/loki:3.5.0` | Up About a minute |
 | `aic-prometheus` | `prom/prometheus:v3.14.0` | Up About a minute |
 | `aic-grafana` | `grafana/grafana:13.2.2` | Up About a minute |
-| `lzeng-mmlu` | `lmsysorg/sglang-rocm:v0.5.22-rocm10-mi35x-20261025` | Up 4 minutes |
+| `sandbox-9f53ee09be5d` | `spur-superimage:2025-09-rocm-v1` | Up 8 minutes |
+| `sandbox-c58a3d02bd56` | `spur-superimage:2025-09-rocm-v1` | Up 8 minutes |
+| `spur-trainer-j275891` | `749f6f3f944f` | Up 8 minutes |
+| `mmx-R-275726` | `vllm/vllm-openai-rocm:nightly-cf5cea2da37d3dfed27d2e0aa3041c3e553c2d57` | Up 9 minutes |
+| `spur-vllm-j275891` | `749f6f3f944f` | Up 11 minutes |
 
 ## Metrics Sources
 
