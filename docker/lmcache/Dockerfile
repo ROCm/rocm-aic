@@ -148,7 +148,7 @@ RUN python3 /tmp/rocm_ipc_patch.py && rm /tmp/rocm_ipc_patch.py
 RUN --mount=type=cache,target=/root/.cache/pip \
     --mount=type=bind,from=base-wheels,source=/,target=/base-wheels \
     mkdir -p /wheels && \
-    printf '%s\n' "${ROCM_ARCH%%,*}" > /etc/rocm_target.lst && \
+    printf '%s\n' "${ROCM_ARCH%%;*}" > /etc/rocm_target.lst && \
     printf 'torch @ file://%s\n' /base-wheels/torch-*.whl > /tmp/build-constraints.txt && \
     cd /app/LMCache && \
     PYTORCH_ROCM_ARCH="${ROCM_ARCH}" \

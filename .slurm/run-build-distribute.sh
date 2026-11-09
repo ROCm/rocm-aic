@@ -1787,7 +1787,7 @@ cmd_build_vllm() {
 cmd_build_lmcache() {
     AIC_BUILD_DOCKERFILE="lmcache/Dockerfile"
     [[ -n "${AIC_BUILD_CONTEXT_BASE_WHEELS:-}" ]] || \
-        die "build-vllm needs AIC_BUILD_CONTEXT_BASE_WHEELS (a docker/base/Dockerfile --target wheels export dir); bake builds both"
+        die "build-lmcache needs AIC_BUILD_CONTEXT_BASE_WHEELS (a docker/base/Dockerfile --target wheels export dir); bake builds both"
     log "build-lmcache: building aic-lmcache -> ${AIC_IMAGE}"
     cmd_build
 }
