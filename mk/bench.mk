@@ -347,6 +347,13 @@ RJ_IMAGE_REF     ?= $(VLLM_IMAGE_NAME):$(_RJ_IMAGE_TAG)
 RJ_LMCACHE_IMAGE_REF ?= $(LMCACHE_IMAGE_NAME):$(_RJ_IMAGE_TAG)
 # lmcache pip version (strip leading 'v' from LMCACHE_REF for pip install)
 _LMCACHE_VER := $(patsubst v%,%,$(LMCACHE_REF))
+# The locally built images the VM's vllm-reset-test runs: it brings up the
+# monitoring profile, which includes hsa-snoop and the fabric exporters.  The
+# guest's compose names hsa-snoop by its versioned tag (HSA_SNOOP_IMAGE), as
+# `make build` tags it; nothing builds an aic-hsa-snoop:local.
+_RJ_VM_IMAGES = "$(RJ_IMAGE_REF)" "$(RJ_LMCACHE_IMAGE_REF)" \
+                "$(HSA_SNOOP_IMAGE_NAME):$(_RJ_IMAGE_TAG)" \
+                "aic-nvme-exporter:local" "aic-rdma-exporter:local"
 
 # No prep-dirs: everything on the host lives under RJ_WORK_DIR, and the VM's
 # own vllm-reset-test creates its data dirs inside the guest.
@@ -359,11 +366,9 @@ test-rocjitsu-local:
 	@docker pull -q "$(RJ_ROCJITSU_IMAGE)"
 	@docker pull -q "$(RJ_QCOW2_IMAGE)"
 	@if [ "$(RJ_FORCE_BUILD)" != "1" ] && \
-	    docker image inspect "$(RJ_IMAGE_REF)" >/dev/null 2>&1 && \
-	    docker image inspect "$(RJ_LMCACHE_IMAGE_REF)" >/dev/null 2>&1; then \
+	    docker image inspect $(_RJ_VM_IMAGES) >/dev/null 2>&1; then \
 	    echo "[2/6] Reusing existing $(RJ_ROCJITSU_ARCH) images (RJ_FORCE_BUILD=1 to rebuild):"; \
-	    echo "        $(RJ_IMAGE_REF)"; \
-	    echo "        $(RJ_LMCACHE_IMAGE_REF)"; \
+	    for _img in $(_RJ_VM_IMAGES); do echo "        $$_img"; done; \
 	else \
 	    echo "[2/6] Building $(RJ_IMAGE_REF) for ROCM_ARCH=$(RJ_ROCJITSU_ARCH) on the host ..."; \
 	    ROCM_ARCH=$(RJ_ROCJITSU_ARCH) $(MAKE) --no-print-directory build IMAGE_TAG="$(_RJ_IMAGE_TAG)"; \
@@ -386,8 +391,7 @@ test-rocjitsu-local:
 	    2>&1 | sed 's/^/  [fw] /'
 	@mkdir -p "$(RJ_WORK_DIR)/shared/metrics" "$(RJ_WORK_DIR)/shared/images"
 	@echo "[4b/6] Pre-saving images to shared dir (runs in background while VM boots) ..."
-	@for _img in "$(RJ_IMAGE_REF)" "$(RJ_LMCACHE_IMAGE_REF)" \
-	             "aic-nvme-exporter:local" "aic-rdma-exporter:local" "aic-hsa-snoop:local"; do \
+	@for _img in $(_RJ_VM_IMAGES); do \
 	    _slug=$$(echo "$$_img" | tr '/: ' '___'); \
 	    _tar="$(RJ_WORK_DIR)/shared/images/$$_slug.tar"; \
 	    _local_id=$$(docker inspect --format '{{.ID}}' "$$_img" 2>/dev/null); \
@@ -554,8 +558,7 @@ test-rocjitsu-local:
 	    2>&1 | sed 's/^/  [nvme] /'; \
 	echo "  NVMe $$_nvme mounted at $(RJ_NVME_MOUNT)"; \
 	echo "  [6c] Loading images into VM (via 9p shared dir) ..."; \
-	for _img in "$(RJ_IMAGE_REF)" "$(RJ_LMCACHE_IMAGE_REF)" \
-	             "aic-nvme-exporter:local" "aic-rdma-exporter:local" "aic-hsa-snoop:local"; do \
+	for _img in $(_RJ_VM_IMAGES); do \
 	    _slug=$$(echo "$$_img" | tr '/: ' '___'); \
 	    _tar="$(RJ_WORK_DIR)/shared/images/$$_slug.tar"; \
 	    _rj_tar="/rj-share/images/$$_slug.tar"; \
