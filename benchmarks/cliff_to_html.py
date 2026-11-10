@@ -49,6 +49,7 @@ import base64
 import csv
 import json
 import os
+import re
 import statistics
 import sys
 from pathlib import Path
@@ -86,19 +87,30 @@ def _summarise_arm(rows: list[dict]) -> dict[int, dict]:
     return result
 
 
+# Keyed by the arm part of the CSV name (cliff-<key>-<stamp>.csv), not the CSV's
+# arm column: both kvd backends write arm=kvd_v2, so only the name separates them.
 _ARM_LABELS = {
-    "vram_only": "VRAM only (no AIC)",
-    "vram_dram": "VRAM + DRAM",
-    "kvd_v2":    "AIC (NVMe/NFS via LMCache)",
-    "kvbench":   "KVBench (no vLLM)",
+    "vram_only":   "VRAM only (no AIC)",
+    "vram_dram":   "VRAM + DRAM",
+    "kvd_v2-nvme": "AIC NVMe (DRAM L1 + NVMe L2 via LMCache)",
+    "kvd_v2-gds":  "AIC GDS (hipFile NVMe slab via LMCache)",
+    "kvd_v2":      "AIC (NVMe/NFS via LMCache)",
+    "kvbench":     "KVBench (no vLLM)",
 }
+_ARM_ORDER = tuple(_ARM_LABELS)
 
 _ARM_COLORS = {
-    "vram_only": "#c0392b",
-    "vram_dram": "#e67e22",
-    "kvd_v2":    "#2980b9",
-    "kvbench":   "#16a085",
+    "vram_only":   "#c0392b",
+    "vram_dram":   "#e67e22",
+    "kvd_v2-nvme": "#2980b9",
+    "kvd_v2-gds":  "#8e44ad",
+    "kvd_v2":      "#2980b9",
+    "kvbench":     "#16a085",
 }
+
+# plots/<backend>/ subdirs run-cliff.sbatch writes; vram only when no kvd arm ran.
+_CHART_BACKENDS = ("nvme", "gds", "vram")
+_STAMP_RE = re.compile(r"^cliff-(?P<key>.+)-\d{8}-\d{6}$")
 
 
 def _peak_thr(summary: dict[int, dict]) -> float:
@@ -140,25 +152,23 @@ def _discover_run(run_dir: Path) -> dict[str, Any]:
     arms: dict[str, dict[int, dict]] = {}
     for csv_path in sorted(results_dir.glob("cliff-*.csv")) if results_dir.is_dir() else []:
         rows = _load_csv(csv_path)
-        for row in rows:
-            arm = row.get("arm", "").strip()
-            if not arm:
-                continue
-            summary = _summarise_arm(rows)
-            if arm not in arms:
-                arms[arm] = summary
-            break  # one pass per file is enough; arm is constant per CSV
+        m = _STAMP_RE.match(csv_path.stem)
+        # A name without the run stamp falls back to the CSV's own arm column.
+        key = m.group("key") if m else next(
+            (r.get("arm", "").strip() for r in rows if r.get("arm", "").strip()), "")
+        if key and key not in arms:
+            arms[key] = _summarise_arm(rows)
 
-    # charts: try nvme, then gds, then vram subdirs in that order
-    charts: dict[str, str | None] = {}
-    for sub in ("nvme", "gds", "vram"):
+    # One chart set per backend run-cliff.sbatch plotted.
+    charts: dict[str, dict[str, str | None]] = {}
+    for sub in _CHART_BACKENDS:
         sub_dir = plots_dir / sub
         if sub_dir.is_dir():
-            charts["throughput"] = _img_src(sub_dir / "cliff-throughput.png")
-            charts["p50"] = _img_src(sub_dir / "cliff-latency-p50.png")
-            charts["p95"] = _img_src(sub_dir / "cliff-latency-p95.png")
-            charts["backend"] = sub
-            break
+            charts[sub] = {
+                "throughput": _img_src(sub_dir / "cliff-throughput.png"),
+                "p50": _img_src(sub_dir / "cliff-latency-p50.png"),
+                "p95": _img_src(sub_dir / "cliff-latency-p95.png"),
+            }
 
     return {"arms": arms, "charts": charts}
 
@@ -206,7 +216,8 @@ tbody td { padding: 8px 12px; }
 .badge-na { color: var(--muted); }
 .arm-vram_only { color: #e05c4e; }
 .arm-vram_dram { color: var(--orange); }
-.arm-kvd_v2 { color: var(--accent); }
+.arm-kvd_v2, .arm-kvd_v2-nvme { color: var(--accent); }
+.arm-kvd_v2-gds { color: #b07cc6; }
 input#search { width: 100%; max-width: 400px; background: var(--surface); border: 1px solid var(--border); border-radius: 6px; color: var(--text); padding: 8px 12px; font-size: 13px; margin-bottom: 12px; outline: none; }
 input#search:focus { border-color: var(--accent); }
 """
@@ -248,7 +259,7 @@ def _build_html(
 
     # --- KPI cards ---
     kpi_cards = ""
-    for arm in ("vram_only", "vram_dram", "kvd_v2"):
+    for arm in _ARM_ORDER:
         if arm not in latest_arms:
             continue
         summary = latest_arms[arm]
@@ -266,23 +277,25 @@ def _build_html(
     if not kpi_cards:
         kpi_cards = '<div class="kpi"><div class="kpi-label">No data yet</div><div class="kpi-value">—</div></div>'
 
-    # --- Chart cards ---
-    def _chart_card(title: str, src_key: str) -> str:
-        src = latest_charts.get(src_key)
+    # --- Chart cards: one row per backend, each against the vram_only baseline ---
+    def _chart_card(title: str, src: str | None) -> str:
         inner = f'<img src="{src}" alt="{title}">' if src else '<p class="missing">Chart not available for this run</p>'
         return f'<div class="chart-card"><h3>{title}</h3>{inner}</div>'
 
-    backend = latest_charts.get("backend", "nvme")
-    charts_html = f"""
+    charts_html = ""
+    for backend, imgs in latest_charts.items():
+        charts_html += f"""
     <div class="charts">
-      {_chart_card(f"Throughput vs Concurrency ({backend} backend)", "throughput")}
-      {_chart_card(f"p50 Latency vs Concurrency ({backend} backend)", "p50")}
-      {_chart_card(f"p95 Latency vs Concurrency ({backend} backend)", "p95")}
+      {_chart_card(f"Throughput vs Concurrency ({backend} backend)", imgs.get("throughput"))}
+      {_chart_card(f"p50 Latency vs Concurrency ({backend} backend)", imgs.get("p50"))}
+      {_chart_card(f"p95 Latency vs Concurrency ({backend} backend)", imgs.get("p95"))}
     </div>"""
+    if not charts_html:
+        charts_html = '<p class="missing">No charts for this run</p>'
 
     # --- Results table (one row per arm per concurrency, latest run) ---
     rows_html = ""
-    for arm in ("vram_only", "vram_dram", "kvd_v2"):
+    for arm in _ARM_ORDER:
         if arm not in latest_arms:
             continue
         summary = latest_arms[arm]
@@ -318,7 +331,7 @@ def _build_html(
   <p class="meta">
     Last updated: {page_date} &nbsp;·&nbsp;
     Commit: {commit_link} &nbsp;·&nbsp;
-    <a href="{repo_url}/actions/workflows/aic-amd-nightly-accuracy-cliff.yml">Nightly Cliff workflow</a>
+    <a href="{repo_url}/actions/workflows/rocm-aic-self-hosted-nightly-cliff-test.yml">Nightly Cliff workflow</a>
   </p>
 
   <h2>Latest Run — Key Metrics</h2>
