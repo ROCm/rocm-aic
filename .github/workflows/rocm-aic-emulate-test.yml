@@ -59,9 +59,24 @@ jobs:
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
 
       - name: Read AIC_VERSION from VERSION file
+        run: echo "AIC_VERSION=$(cat VERSION)" >> "$GITHUB_ENV"
+
+      # docker/vllm/Dockerfile takes its version pins (ROCM_VERSION, LMCACHE_REF,
+      # ...) as build args from docker-bake.hcl and has no default for some on
+      # purpose.  Bake cannot build this image itself: its emulate target pulls
+      # in aic-base and the lmcache wheels, a multi-hour ROCm build.  So take
+      # the args it resolves for that target and build on the CPU base below.
+      - name: Resolve the emulate build args from docker-bake.hcl
+        id: bake-args
+        env:
+          ROCM_ARCH: gfx942
         run: |
-          echo "AIC_VERSION=$(cat VERSION)" >> "$GITHUB_ENV"
-          echo "LMCACHE_VERSION=$(grep -E '^ARG LMCACHE_REF=' docker/lmcache/Dockerfile | head -1 | cut -d= -f2)" >> "$GITHUB_ENV"
+          set -euo pipefail
+          args="$(docker buildx bake -f docker/docker-bake.hcl --print emulate \
+                    | jq -r '.target.emulate.args | to_entries[] | "\(.key)=\(.value)"')"
+          [[ -n "${args}" ]] || { echo "::error::bake resolved no args for emulate"; exit 1; }
+          printf '%s\n' "${args}"
+          { echo 'list<<EOF'; printf '%s\n' "${args}"; echo 'EOF'; } >> "${GITHUB_OUTPUT}"
 
       - name: Write corp CA cert secret (AMD Zscaler proxy)
         id: cert
@@ -101,12 +116,7 @@ jobs:
           target: emulate
           load: true
           tags: ${{ env.IMAGE_REF }}
-          build-args: |
-            ROCM_ARCH=gfx942
-            VLLM_TARGET_DEVICE=empty
-            AIC_VERSION=${{ env.AIC_VERSION }}
-            ROCM_VERSION=7.14.1
-            LMCACHE_REF=${{ env.LMCACHE_VERSION }}
+          build-args: ${{ steps.bake-args.outputs.list }}
           build-contexts: |
             base=oci-layout:///tmp/aic-base-emulate
           secrets: |
