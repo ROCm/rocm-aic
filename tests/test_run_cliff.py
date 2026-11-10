@@ -35,9 +35,10 @@ class _AsyncClient:
     # /reset_prefix_cache answers, in order; the last one repeats.
     reset_replies: list[bool] = [True]
     reset_calls: list[str] = []
+    init_kwargs: dict = {}
 
     def __init__(self, *args, **kwargs) -> None:
-        pass
+        type(self).init_kwargs = kwargs
 
     async def __aenter__(self):
         return self
@@ -53,6 +54,11 @@ class _AsyncClient:
         cls.reset_calls.append(url)
         n = len(cls.reset_calls) - 1
         return _JsonResponse({"success": cls.reset_replies[min(n, len(cls.reset_replies) - 1)]})
+
+
+class _Limits:
+    def __init__(self, **kwargs) -> None:
+        self.kwargs = kwargs
 
 
 class _JsonResponse:
@@ -134,7 +140,7 @@ class RequestFailureStatusTest(unittest.TestCase):
                 out=str(output),
                 append=False,
             )
-            fake_httpx = types.SimpleNamespace(AsyncClient=_AsyncClient)
+            fake_httpx = types.SimpleNamespace(AsyncClient=_AsyncClient, Limits=_Limits)
             waves = [(1.0, [_result(error)])] * iters
             if warmup_error is not None or warmup_waves > 1:
                 waves[:0] = [(1.0, [_result(warmup_error)])] * warmup_waves
@@ -200,6 +206,14 @@ class RequestFailureStatusTest(unittest.TestCase):
         self.assertEqual(len(run_ids), 3)
         self.assertEqual(len(set(run_ids)), 3)
         self.assertEqual(row["iter"], "0")
+
+    def test_client_pool_admits_the_highest_concurrency(self) -> None:
+        # httpx defaults to 100 connections, which silently capped c=128..250.
+        status, _, _ = self._run(error=None, allow_errors=False, concurrency="250")
+
+        self.assertEqual(status, 0)
+        limits = _AsyncClient.init_kwargs["limits"].kwargs
+        self.assertIsNone(limits["max_connections"])
 
     def _run_reset(self, replies: list[bool]) -> tuple[int, list[str], list[str]]:
         _AsyncClient.reset_replies = replies
@@ -305,7 +319,7 @@ class RequestFailureStatusTest(unittest.TestCase):
                 out=str(output),
                 append=False,
             )
-            fake_httpx = types.SimpleNamespace(AsyncClient=_AsyncClient)
+            fake_httpx = types.SimpleNamespace(AsyncClient=_AsyncClient, Limits=_Limits)
             wave = mock.AsyncMock(return_value=(1.0, [_result(None)]))
             snap = mock.AsyncMock(side_effect=AssertionError("metrics scrape should be skipped"))
             with (
