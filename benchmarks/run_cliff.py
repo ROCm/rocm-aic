@@ -607,7 +607,12 @@ async def amain(args: argparse.Namespace) -> int:
     write_header = not (args.append and out_path.exists())
     request_error_count = 0
 
-    async with httpx.AsyncClient(timeout=args.request_timeout) as http_client:
+    # No connection cap: httpx's default of 100 held every level above c=100 to
+    # 100 requests in flight, so c=128..250 all measured c=100.
+    limits = httpx.Limits(max_connections=None,
+                          max_keepalive_connections=max(concurrencies))
+    async with httpx.AsyncClient(timeout=args.request_timeout,
+                                 limits=limits) as http_client:
         # Ping the endpoint so we fail fast if it's not up.
         try:
             r = await http_client.get(f"{args.endpoint.rstrip('/')}/v1/models",
