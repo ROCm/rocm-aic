@@ -116,6 +116,30 @@ RUN curl -fsSL "https://astral.sh/uv/${UV_VERSION}/install.sh" | sh && \
     ln -s /root/.local/bin/uv /usr/local/bin/uv && \
     ln -s /root/.local/bin/uvx /usr/local/bin/uvx
 
+FROM base AS build_triton
+
+# =============================================================================
+# Triton source build — avoids ROCm 7.2 wheel artifacts on a ROCm 7.14 host.
+# =============================================================================
+ARG ROCM_ARCH
+ARG TRITON_GIT_URL="https://github.com/ROCm/triton.git"
+# release/internal/3.7.x as of 08/18 (picked up from vllm 0.29 Dockerfile.rocm_base)
+ARG TRITON_REF=f0b55c0
+
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
+    DEBIAN_FRONTEND=noninteractive apt-get update && \
+    apt-get install -y --no-install-recommends \
+        nlohmann-json3-dev \
+        pybind11-json-dev \
+        pybind11-dev
+
+RUN git clone --depth 1 --revision "${TRITON_REF}" "${TRITON_GIT_URL}" triton \
+
+# TRITON_OFFLINE_BUILD=1 to avoid downloading large CUDA binaries
+RUN cd triton \
+    && TRITON_OFFLINE_BUILD=1 python3 -m build --wheel --no-isolation --outdir=/app/dist/triton
+
 # =============================================================================
 # PyTorch source build — avoids ROCm 7.2 wheel artifacts on a ROCm 7.14 host.
 # =============================================================================
@@ -324,6 +348,7 @@ RUN --mount=type=cache,target=/root/.cache/uv \
 # =============================================================================
 FROM scratch AS wheels
 COPY --from=build_nixl /app/dist/nixl/*.whl /
+COPY --from=build_triton /app/dist/triton/*.whl /
 COPY --from=build_pytorch /app/dist/pytorch/*.whl /
 COPY --from=build_torchvision /app/dist/vision/*.whl /
 
