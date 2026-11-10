@@ -670,10 +670,16 @@ async def amain(args: argparse.Namespace) -> int:
                 # tier for Arm B). The measurement runs that follow
                 # then see warm cache, mirroring the LMCache slide's
                 # "ideal conditions, cache is warm" footnote.
-                if args.warmup_at_each_c:
+                # More than one wave: on a sliding-window model vLLM keeps the
+                # window blocks a hit needs only at a shared-prefix junction it
+                # learns from a second request, so a client's prefix first hits
+                # in full on its third request.
+                for w in range(args.warmup_waves_per_c if args.warmup_at_each_c else 0):
                     wall, results = await _run_one_concurrency(
                         http_client, args.endpoint, args.model,
-                        concurrency=c, run_id=20_000 + c,
+                        concurrency=c,
+                        # Distinct suffix per wave, never reused by a timed iter.
+                        run_id=20_000 + c if w == 0 else 1_000_000 * w + c,
                         isl=args.isl,
                         shared_prefix_tokens=args.shared_prefix_tokens,
                         max_tokens=args.max_tokens,
@@ -689,6 +695,7 @@ async def amain(args: argparse.Namespace) -> int:
                     )
                     if errs:
                         _ckpt(f"  c={c} per-c warmup first error: {errs[0].error}")
+                if args.warmup_at_each_c:
                     # Async-save connectors (kvd v2 chunked-fusion)
                     # return from wait_for_save before chunks land on
                     # disk; back-pressure from the warmup's tail of
@@ -826,6 +833,11 @@ def main() -> None:
                         help="warm cache at EACH concurrency level (one iter, "
                              "before timed iters); required for per_client mode "
                              "so all C unique prefixes get cached first")
+    parser.add_argument("--warmup-waves-per-c", type=int, default=1,
+                        help="warmup waves per concurrency level with "
+                             "--warmup-at-each-c (default 1).  Use 2 for a "
+                             "sliding-window model such as gpt-oss, whose "
+                             "prefixes first hit in full on a third request")
     parser.add_argument("--post-warmup-sleep-s", type=float, default=0.0,
                         help="seconds to sleep after each per-c warmup before "
                              "starting timed iters. For async-save connectors "

@@ -165,6 +165,10 @@ LMCACHE_NIXL_POSIX_SLOT_SIZE="${LMCACHE_NIXL_POSIX_SLOT_SIZE:-16777216}"
 # measuring.  The XFS LVM uses buffered I/O (page cache) so dirty pages flush
 # in seconds.  10s is ample; 300s was a conservative over-estimate.
 POST_WARMUP_SLEEP_S="${POST_WARMUP_SLEEP_S:-10}"
+# Warmup waves per concurrency level, every arm.  gpt-oss's sliding-window
+# layers make a client's prefix hit in full only on its third request, so one
+# wave left iter 0 mostly missing VRAM (job 279409: 0% hits at c=16).
+AIC_CLIFF_WARMUP_WAVES="${AIC_CLIFF_WARMUP_WAVES:-2}"
 # 1 = empty vLLM's GPU prefix cache before every timed iter of the kvd arms.
 AIC_CLIFF_RESET_PREFIX_CACHE="${AIC_CLIFF_RESET_PREFIX_CACHE:-1}"
 LMCACHE_NIXL_POSIX_POOL="${LMCACHE_NIXL_POSIX_POOL:-32768}"
@@ -774,7 +778,12 @@ run_arm_vram() {
     stop_stack vram_only vllm-only
     return 1
   fi
-  run_bench vram_only "aic-vllm-only-gpu${GPU}" "${VRAM_CSV}"
+  # The same per-c warmup as the kvd arms, so every arm starts each concurrency
+  # with its own c prefixes cached.  No prefix-cache reset: VRAM is this arm's
+  # only cache tier, and emptying it would measure pure recompute.
+  run_bench vram_only "aic-vllm-only-gpu${GPU}" "${VRAM_CSV}" --warmup-at-each-c \
+    --warmup-waves-per-c "${AIC_CLIFF_WARMUP_WAVES}" \
+    --post-warmup-sleep-s "${POST_WARMUP_SLEEP_S}"
   local rc=$?
   stop_stack vram_only vllm-only
   return $rc
@@ -904,6 +913,7 @@ run_arm_kvd() { # $1=mode(nvme|gds) $2=out_csv
   local -a _reset=()
   [[ "${AIC_CLIFF_RESET_PREFIX_CACHE}" == 1 ]] && _reset=(--reset-prefix-cache)
   run_bench kvd_v2 "aic-vllm-gpu${GPU}" "${out}" --warmup-at-each-c \
+    --warmup-waves-per-c "${AIC_CLIFF_WARMUP_WAVES}" \
     --post-warmup-sleep-s "${POST_WARMUP_SLEEP_S:-300}" "${_reset[@]}"
   local rc=$?
   kill "${_lmcache_log_pid}" "${_vllm_log_pid}" 2>/dev/null || true

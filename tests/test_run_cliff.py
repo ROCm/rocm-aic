@@ -103,6 +103,8 @@ class RequestFailureStatusTest(unittest.TestCase):
         arm: str = "vram_only",
         iters: int = 1,
         reset_prefix_cache: bool = False,
+        warmup_waves: int = 1,
+        wave_mock: list | None = None,
     ) -> tuple[int, dict[str, str], list[str]]:
         with tempfile.TemporaryDirectory() as temp_dir:
             output = Path(temp_dir) / "cliff.csv"
@@ -117,7 +119,8 @@ class RequestFailureStatusTest(unittest.TestCase):
                 concurrencies=concurrency,
                 iters=iters,
                 warmup_iters=0,
-                warmup_at_each_c=warmup_error is not None,
+                warmup_at_each_c=warmup_error is not None or warmup_waves > 1,
+                warmup_waves_per_c=warmup_waves,
                 post_warmup_sleep_s=0.0,
                 prefix_mode="shared",
                 request_timeout=1.0,
@@ -133,9 +136,11 @@ class RequestFailureStatusTest(unittest.TestCase):
             )
             fake_httpx = types.SimpleNamespace(AsyncClient=_AsyncClient)
             waves = [(1.0, [_result(error)])] * iters
-            if warmup_error is not None:
-                waves.insert(0, (1.0, [_result(warmup_error)]))
+            if warmup_error is not None or warmup_waves > 1:
+                waves[:0] = [(1.0, [_result(warmup_error)])] * warmup_waves
             wave = mock.AsyncMock(side_effect=waves)
+            if wave_mock is not None:
+                wave_mock.append(wave)
             with (
                 mock.patch.dict(sys.modules, {"httpx": fake_httpx}),
                 mock.patch.object(run_cliff, "set_active_tokenizer"),
@@ -183,6 +188,18 @@ class RequestFailureStatusTest(unittest.TestCase):
         self.assertIn(
             "  c=3 per-c warmup first error: http 500: warmup broken", messages
         )
+
+    def test_per_concurrency_warmup_sends_every_wave_before_timing(self) -> None:
+        waves: list = []
+        status, row, _ = self._run(
+            error=None, allow_errors=False, warmup_waves=2, iters=1, wave_mock=waves)
+
+        self.assertEqual(status, 0)
+        run_ids = [call.kwargs["run_id"] for call in waves[0].call_args_list]
+        # Two distinct warmup waves (distinct suffixes), then the timed iter.
+        self.assertEqual(len(run_ids), 3)
+        self.assertEqual(len(set(run_ids)), 3)
+        self.assertEqual(row["iter"], "0")
 
     def _run_reset(self, replies: list[bool]) -> tuple[int, list[str], list[str]]:
         _AsyncClient.reset_replies = replies
