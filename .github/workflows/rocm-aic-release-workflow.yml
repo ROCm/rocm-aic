@@ -18,8 +18,7 @@
 #
 # KNOWN LIMITATION: the `Build + push Docker image` step below still builds the
 # full multi-arch image on a GitHub-hosted runner and has the same problem.  It
-# is untouched here -- moving the image push to SPUR or to the bake+registry
-# pattern in rocm-aic-publish-gfx1250-images.yml is separate work.
+# is untouched here -- moving the image push to SPUR is separate work.
 #
 # Secrets required:
 #   CORP_CA_CERT      (optional) AMD Zscaler corp CA cert for BuildKit
