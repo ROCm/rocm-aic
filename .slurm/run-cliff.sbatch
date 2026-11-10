@@ -165,6 +165,8 @@ LMCACHE_NIXL_POSIX_SLOT_SIZE="${LMCACHE_NIXL_POSIX_SLOT_SIZE:-16777216}"
 # measuring.  The XFS LVM uses buffered I/O (page cache) so dirty pages flush
 # in seconds.  10s is ample; 300s was a conservative over-estimate.
 POST_WARMUP_SLEEP_S="${POST_WARMUP_SLEEP_S:-10}"
+# 1 = empty vLLM's GPU prefix cache before every timed iter of the kvd arms.
+AIC_CLIFF_RESET_PREFIX_CACHE="${AIC_CLIFF_RESET_PREFIX_CACHE:-1}"
 LMCACHE_NIXL_POSIX_POOL="${LMCACHE_NIXL_POSIX_POOL:-32768}"
 LMCACHE_MAX_GPU_WORKERS="${LMCACHE_MAX_GPU_WORKERS:-1}"
 # Cap concurrent NIXL POSIX load tasks.  At high concurrency the NIXL descriptor pool
@@ -897,8 +899,12 @@ run_arm_kvd() { # $1=mode(nvme|gds) $2=out_csv
   # warmup writes take ~450 s; 300 s gives the queue time to mostly drain so
   # iter 0 sees a warm, settled cache rather than write-queue back-pressure.
   # Override via POST_WARMUP_SLEEP_S env if a different c or worker count is used.
+  # The GPU prefix cache is emptied before each timed iter so the iter is served
+  # by this arm's LMCache tiers, not by VRAM hits the warmup or last iter left.
+  local -a _reset=()
+  [[ "${AIC_CLIFF_RESET_PREFIX_CACHE}" == 1 ]] && _reset=(--reset-prefix-cache)
   run_bench kvd_v2 "aic-vllm-gpu${GPU}" "${out}" --warmup-at-each-c \
-    --post-warmup-sleep-s "${POST_WARMUP_SLEEP_S:-300}"
+    --post-warmup-sleep-s "${POST_WARMUP_SLEEP_S:-300}" "${_reset[@]}"
   local rc=$?
   kill "${_lmcache_log_pid}" "${_vllm_log_pid}" 2>/dev/null || true
   stop_stack "kvd_${mode}" vllm lmcache
