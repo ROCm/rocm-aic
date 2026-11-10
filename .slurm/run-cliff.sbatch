@@ -954,9 +954,9 @@ if _arm_on gds; then run_arm_kvd gds "${KVD_GDS_CSV}" && STATUS[kvd_gds]=ok || S
 # present.  Any arm can be skipped: run_plot drops CSVs that don't exist and
 # plots whatever remains (plot_cliff.py already handles one-or-more arms), so a
 # single-arm run still produces a chart instead of being silently skipped.
-run_plot() { # $1=out_subdir  $2..=candidate CSV paths (absolute)
-  local sub="$1"
-  shift
+run_plot() { # $1=out_subdir  $2=kvd_v2 legend label  $3..=candidate CSV paths (absolute)
+  local sub="$1" label="$2"
+  shift 2
   local -a inputs=() csv
   for csv in "$@"; do
     [[ -s "${csv}" ]] && inputs+=("${LOGDIR_REL}/results/$(basename "${csv}")")
@@ -970,15 +970,20 @@ run_plot() { # $1=out_subdir  $2..=candidate CSV paths (absolute)
     --entrypoint python3 "${AIC_IMAGE}" \
     benchmarks/plot_cliff.py \
     --input "${inputs[@]}" \
+    --arm-labels "kvd_v2=${label}" \
     --output-dir "${LOGDIR_REL}/plots/${sub}" &&
     log "plots (${sub}) -> ${PLOTS}/${sub}" || log "plot ${sub}: failed"
 }
 # Plot each kvd backend that produced a CSV, baseline optional.  If only the
 # vram arm ran, still emit the baseline-only cliff chart.
-[[ -s "${KVD_NVME_CSV}" ]] && run_plot nvme "${VRAM_CSV}" "${KVD_NVME_CSV}"
-[[ -s "${KVD_GDS_CSV}" ]] && run_plot gds "${VRAM_CSV}" "${KVD_GDS_CSV}"
+# Both backends write arm=kvd_v2, so each plot names its own in the legend
+# (the same labels benchmarks/cliff_to_html.py uses; no commas, --arm-labels splits on them).
+[[ -s "${KVD_NVME_CSV}" ]] &&
+  run_plot nvme "AIC NVMe (DRAM L1 + NVMe L2 via LMCache)" "${VRAM_CSV}" "${KVD_NVME_CSV}"
+[[ -s "${KVD_GDS_CSV}" ]] &&
+  run_plot gds "AIC GDS (hipFile NVMe slab via LMCache)" "${VRAM_CSV}" "${KVD_GDS_CSV}"
 if [[ ! -s "${KVD_NVME_CSV}" && ! -s "${KVD_GDS_CSV}" && -s "${VRAM_CSV}" ]]; then
-  run_plot vram "${VRAM_CSV}"
+  run_plot vram "" "${VRAM_CSV}"
 fi
 
 # --- Cleanup local NVMe scratch ---------------------------------------------
