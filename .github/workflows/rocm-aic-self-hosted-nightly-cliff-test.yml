@@ -37,7 +37,9 @@ jobs:
       github.event.workflow_run.event == 'workflow_run' &&
       contains(fromJSON('["success","failure"]'), github.event.workflow_run.conclusion)
     runs-on: [self-hosted, rocm-aic-cicd]
-    timeout-minutes: 240
+    # cliff-submit gives the SPUR job 4h (the sweep ran 2h23m); this adds queue
+    # wait plus the harvest and page deploy, so the job limit is reached first.
+    timeout-minutes: 360
     env:
       AIC_SPUR_HOST:       ${{ secrets.AIC_SPUR_HOST }}
       AIC_SHARED_NFS:      ${{ secrets.AIC_SHARED_NFS }}

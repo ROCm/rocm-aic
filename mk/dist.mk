@@ -181,8 +181,23 @@ cliff-kvbench-submit:
 	    echo "submitted kvbench cliff job $$jobid" && \
 	    echo "log: $(CURDIR)/logs/$$jobid/kvbench-cliff.out"
 
+# The nightly sweep.  Sized so the VRAM cliff lands inside c=1..250 for the default
+# gpt-oss-120b on a 288 GB MI355X: util 0.40 leaves vLLM ~1.6M KV tokens, so
+# vram_only falls off between c=80 and c=128 (at 0.90 it held 8.3M and never fell).
+# Each 20K-token request stages ~472 MiB through LMCache's L1, also for L2 hits, so
+# the kvd tiers must cover c=250 or they miss with it: 160 GB of DRAM in front of
+# the nvme arm's NVMe L2, and a 256 GB slab for gds (prefixes plus the suffixes of
+# each wave, with no L2 behind it).  Jobs 279409, 279482 and 279683.
+# 4h: the full sweep ran 2h23m on a whole node (job 279891, image pull included),
+# mostly vram_only recomputing every prefix past its cliff.
 cliff-submit:
-	@cd "$(CURDIR)" && $(_CLIFF_RUN)
+	@cd "$(CURDIR)" && \
+	    AIC_CLIFF_TIME="$(if $(AIC_CLIFF_TIME),$(AIC_CLIFF_TIME),04:00:00)" \
+	    VLM_GPU_MEMORY_UTILIZATION="$(call _user_or,VLM_GPU_MEMORY_UTILIZATION,0.40)" \
+	    AIC_LOCAL_CPU="$${AIC_LOCAL_CPU:-true}" \
+	    LMCACHE_MAX_LOCAL_CPU_SIZE="$${LMCACHE_MAX_LOCAL_CPU_SIZE:-160}" \
+	    LMCACHE_L1_SIZE_GB="$(call _user_or,LMCACHE_L1_SIZE_GB,256)" \
+	    $(_CLIFF_RUN)
 
 cliff-kvd:
 	@echo "cliff-kvd: shared prefix, c=1,8,32,64,128,250, 2 iters"
