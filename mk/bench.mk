@@ -11,11 +11,11 @@
 # the repo at /repo and logs/ at /logs, so they reach vLLM by name.  Wait for
 # the benchmark deps it pip-installs at start.
 define _wait_aic_client
-@docker inspect aic-client >/dev/null 2>&1 || { \
-	echo "ERROR: aic-client container not running — start with 'make up'" >&2; exit 1; }
+@docker inspect $(AIC_STACK)-client >/dev/null 2>&1 || { \
+	echo "ERROR: $(AIC_STACK)-client container not running — start with 'make up'" >&2; exit 1; }
 @for _i in $$(seq 1 120); do \
-	docker exec aic-client python3 -c 'import openai, httpx, transformers' >/dev/null 2>&1 && break; \
-	[ "$$_i" = 120 ] && { echo "ERROR: aic-client did not finish installing benchmark deps" >&2; exit 1; }; \
+	docker exec $(AIC_STACK)-client python3 -c 'import openai, httpx, transformers' >/dev/null 2>&1 && break; \
+	[ "$$_i" = 120 ] && { echo "ERROR: $(AIC_STACK)-client did not finish installing benchmark deps" >&2; exit 1; }; \
 	sleep 1; \
 done
 endef
@@ -25,8 +25,8 @@ cliff: prep-dirs
 		echo "ERROR: set BENCH_MODEL or VLLM_MODEL to the served model name" >&2; exit 1; }
 	$(_wait_aic_client)
 	_ep="$(BENCH_ENDPOINT)"; \
-	[ -n "$$_ep" ] || _ep="$$($(call aic_bridge_url,aic-vllm-gpu$(GPU),8000))" || exit 1; \
-	docker exec aic-client python3 -u benchmarks/run_cliff.py \
+	[ -n "$$_ep" ] || _ep="$$($(call aic_bridge_url,$(AIC_STACK)-vllm-gpu$(GPU),8000))" || exit 1; \
+	docker exec $(AIC_STACK)-client python3 -u benchmarks/run_cliff.py \
 		--endpoint "$$_ep" \
 		--model "$(BENCH_MODEL)" \
 		--arm "$(BENCH_ARM)" \
@@ -43,10 +43,10 @@ stress-grafana: prep-dirs
 		echo "ERROR: set BENCH_MODEL or VLLM_MODEL to the served model name" >&2; exit 1; }
 	$(_wait_aic_client)
 	@echo "Stressing stack for Grafana — 'make endpoints' prints its URL  (ctrl-c to stop)"
-	@_ep="$$($(call aic_bridge_url,aic-vllm-gpu$(GPU),8000))" || exit 1; \
-	echo "  endpoint: $$_ep (via aic-client)"; \
+	@_ep="$$($(call aic_bridge_url,$(AIC_STACK)-vllm-gpu$(GPU),8000))" || exit 1; \
+	echo "  endpoint: $$_ep (via $(AIC_STACK)-client)"; \
 	while true; do \
-		docker exec aic-client \
+		docker exec $(AIC_STACK)-client \
 			python3 -u benchmarks/run_cliff.py \
 			--endpoint "$$_ep" \
 			--model "$(BENCH_MODEL)" \
@@ -73,7 +73,7 @@ kvbench-build: ensure-compose
 
 kvbench-up: ensure-compose prep-kvbench-dirs
 	KVBENCH_IMAGE_REF="$(KVBENCH_IMAGE_REF)" $(COMPOSE) --profile kvbench up --build -d kvbench client
-	@echo "KVBench is starting on http://aic-kvbench:$(KVBENCH_PORT) inside compose; benchmark it from aic-client"
+	@echo "KVBench is starting on http://aic-kvbench:$(KVBENCH_PORT) inside compose; benchmark it from $(AIC_STACK)-client"
 
 kvbench-logs:
 	$(COMPOSE) --profile kvbench logs -f kvbench
@@ -87,7 +87,7 @@ cliff-kvbench-local: ensure-compose prep-kvbench-dirs
 	@echo "Waiting up to $(KVBENCH_READY_S)s for KVBench /v1/models ..."
 	@_ready=0; \
 	for _i in $$(seq 1 $(KVBENCH_READY_S)); do \
-	    if $(call aic_probe,aic-kvbench,$(KVBENCH_PORT),/v1/models); then _ready=1; break; fi; \
+	    if $(call aic_probe,$(AIC_STACK)-kvbench,$(KVBENCH_PORT),/v1/models); then _ready=1; break; fi; \
 	    sleep 1; \
 	done; \
 	if [ "$$_ready" != "1" ]; then \
@@ -97,9 +97,9 @@ cliff-kvbench-local: ensure-compose prep-kvbench-dirs
 	    exit 1; \
 	fi; \
 	for _i in $$(seq 1 60); do \
-	    if docker exec aic-client python3 -c 'import openai' >/dev/null 2>&1; then break; fi; \
+	    if docker exec $(AIC_STACK)-client python3 -c 'import openai' >/dev/null 2>&1; then break; fi; \
 	    if [ "$$_i" = "60" ]; then \
-	        echo "FAIL: aic-client did not finish installing benchmark deps" >&2; \
+	        echo "FAIL: $(AIC_STACK)-client did not finish installing benchmark deps" >&2; \
 	        $(COMPOSE) logs --tail 80 client; \
 	        $(COMPOSE) --profile kvbench down --remove-orphans >/dev/null 2>&1; \
 	        exit 1; \
@@ -108,7 +108,7 @@ cliff-kvbench-local: ensure-compose prep-kvbench-dirs
 	done; \
 	out="/logs/manual/results/cliff-kvbench-$$(date +%Y%m%d-%H%M%S).csv"; \
 	echo "Running cliff benchmark through the internal compose network -> $$out"; \
-	docker exec aic-client python3 -u benchmarks/run_cliff.py \
+	docker exec $(AIC_STACK)-client python3 -u benchmarks/run_cliff.py \
 	    --endpoint "http://aic-kvbench:$(KVBENCH_PORT)" \
 	    --model "$${BENCH_MODEL:-$(KVBENCH_MODEL)}" \
 	    --arm kvbench \
@@ -139,8 +139,8 @@ test-emulate-local: ensure-compose prep-dirs
 	@echo "Waiting up to $(AIC_EMULATE_READY_S)s for /health (engine fully ready) ..."
 	@_ready=0; \
 	for _i in $$(seq 1 $$(($(AIC_EMULATE_READY_S)/5))); do \
-	    if $(call aic_probe,aic-vllm-emulator,8000,/health); then _ready=1; break; fi; \
-	    if [ -z "$$(docker ps -q -f name=aic-vllm-emulator)" ]; then \
+	    if $(call aic_probe,$(AIC_STACK)-vllm-emulator,8000,/health); then _ready=1; break; fi; \
+	    if [ -z "$$(docker ps -q -f "name=^$(AIC_STACK)-vllm-emulator$$")" ]; then \
 	        echo "FAIL: emulator container exited during startup" >&2; \
 	        $(COMPOSE) --profile emulate logs --tail 60 vllm-emulator; \
 	        $(COMPOSE) --profile emulate down --remove-orphans >/dev/null 2>&1; \
@@ -190,11 +190,11 @@ stress-emulate-local: ensure-compose prep-dirs
 	    $(COMPOSE) --profile emulate --profile monitoring up -d vllm-emulator prometheus
 	@echo "Waiting for emulator endpoint ..."
 	@for _i in $$(seq 1 24); do \
-	    $(call aic_probe,aic-vllm-emulator,8000,/health) && break; \
+	    $(call aic_probe,$(AIC_STACK)-vllm-emulator,8000,/health) && break; \
 	    sleep 5; \
 	done
 	@echo "Running sweep: ISL=$(AIC_EMULATE_STRESS_ISL) OSL=$(AIC_EMULATE_STRESS_OSL) c=$(AIC_EMULATE_STRESS_CONCUR) x$(AIC_EMULATE_STRESS_ITERS)"
-	docker exec aic-vllm-emulator vllm bench serve \
+	docker exec $(AIC_STACK)-vllm-emulator vllm bench serve \
 	    --host localhost --port 8000 \
 	    --model "$(AIC_EMULATE_MODEL)" \
 	    --dataset-name random \
@@ -236,7 +236,7 @@ capture-profile-local: prep-dirs
 	pack_name="$${model_tag}-$${stamp}.json"; \
 	echo "=== capture-profile-local: IMAGE_REF=$(IMAGE_REF) model=$(AIC_CAPTURE_MODEL) arch=$(ROCM_ARCH) ==="; \
 	echo "Trace -> $(AIC_CAPTURE_DIR)/$${trace_file}"; \
-	docker run -d --name aic-vllm-capture \
+	docker run -d --name $(AIC_STACK)-vllm-capture \
 	    --device /dev/kfd --device /dev/dri \
 	    --ipc host \
 	    --cap-add CAP_SYS_ADMIN --cap-add SYS_PTRACE \
@@ -263,12 +263,12 @@ capture-profile-local: prep-dirs
 	    >/dev/null || { echo "FAIL: docker run failed" >&2; exit 1; }; \
 	echo "Waiting for endpoint (weights download may take a few minutes) ..."; \
 	_ready=0; for _i in $$(seq 1 60); do \
-	    $(call aic_probe,aic-vllm-capture,8000,/v1/models) && { _ready=1; break; }; \
-	    [ -z "$$(docker ps -q -f name=aic-vllm-capture)" ] && \
-	        { docker logs --tail 40 aic-vllm-capture >&2; docker rm -f aic-vllm-capture >/dev/null 2>&1; exit 1; }; \
+	    $(call aic_probe,$(AIC_STACK)-vllm-capture,8000,/v1/models) && { _ready=1; break; }; \
+	    [ -z "$$(docker ps -q -f "name=^$(AIC_STACK)-vllm-capture$$")" ] && \
+	        { docker logs --tail 40 $(AIC_STACK)-vllm-capture >&2; docker rm -f $(AIC_STACK)-vllm-capture >/dev/null 2>&1; exit 1; }; \
 	    sleep 10; \
 	done; \
-	[ "$$_ready" != "1" ] && { echo "FAIL: endpoint never ready" >&2; docker rm -f aic-vllm-capture >/dev/null 2>&1; exit 1; }; \
+	[ "$$_ready" != "1" ] && { echo "FAIL: endpoint never ready" >&2; docker rm -f $(AIC_STACK)-vllm-capture >/dev/null 2>&1; exit 1; }; \
 	echo "Endpoint ready — running sweep ..."; \
 	rc=0; _seed=0; \
 	for point in $(AIC_CAPTURE_SWEEP); do \
@@ -278,7 +278,7 @@ capture-profile-local: prep-dirs
 	    conc=$$(echo "$$point" | cut -d, -f3); \
 	    np=$$(echo "$$point" | cut -d, -f4); \
 	    echo "--- isl=$$isl osl=$$osl c=$$conc n=$$np ---"; \
-	    docker exec aic-vllm-capture vllm bench serve \
+	    docker exec $(AIC_STACK)-vllm-capture vllm bench serve \
 	        --host localhost --port 8000 \
 	        --model "$(AIC_CAPTURE_MODEL)" \
 	        --dataset-name random \
@@ -291,9 +291,9 @@ capture-profile-local: prep-dirs
 	        2>&1 | sed 's/^/  [bench] /' || rc=1; \
 	done; \
 	echo "Sweep done (rc=$$rc); stopping server ..."; \
-	docker stop -t 60 aic-vllm-capture >/dev/null 2>&1 || true; \
+	docker stop -t 60 $(AIC_STACK)-vllm-capture >/dev/null 2>&1 || true; \
 	sleep 3; \
-	docker rm -f aic-vllm-capture >/dev/null 2>&1 || true; \
+	docker rm -f $(AIC_STACK)-vllm-capture >/dev/null 2>&1 || true; \
 	[ -s "$(AIC_CAPTURE_DIR)/$$trace_file" ] || { echo "FAIL: trace not written" >&2; exit 1; }; \
 	echo "Building profile pack ..."; \
 	docker run --rm \

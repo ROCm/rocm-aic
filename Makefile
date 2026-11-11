@@ -95,6 +95,12 @@ LMCACHE_IMAGE_REF  := $(LMCACHE_IMAGE_NAME):$(IMAGE_TAG)
 # ---- GPU -------------------------------------------------------------------
 GPU ?= 0
 
+# ---- Stack name ------------------------------------------------------------
+# Compose project, bridge network and container-name prefix of the stack these
+# targets drive ($(AIC_STACK)-lmcache, ...); see scripts/aic-endpoints.sh.
+AIC_STACK ?= aic
+export AIC_STACK
+
 # ---- Host storage paths ----------------------------------------------------
 NVME_DATA     ?= /mnt/lmcache-nvme
 NFS_DATA      ?= /mnt/lmcache-nfs
@@ -267,7 +273,7 @@ export LMCACHE_NIXL_POSIX_POOL         ?= 32768
 export LMCACHE_NIXL_DYNAMIC_MAX_GB     ?= 100
 export LMCACHE_NIXL_DYNAMIC_DIRECT_IO ?= false
 override export AIC_EXPORTERS            := safe
-override export AIC_HSA_SNOOP_PID_MODE  := container:aic-lmcache
+override export AIC_HSA_SNOOP_PID_MODE  := container:$(AIC_STACK)-lmcache
 else
 # Empty by default off-SPUR: a workstation has no /scratch, and an unwritable
 # cache dir is worse than none.  Set AIC_CACHE_DIR explicitly to enable the
@@ -427,7 +433,8 @@ help:
 	@echo "    Only Grafana is published: 127.0.0.1 on a free ephemeral host port that"
 	@echo "    'make endpoints' prints (AIC_GRAFANA_PORT pins it, AIC_PUBLISH_ADDR=0.0.0.0"
 	@echo "    exposes it beyond loopback).  Everything else is reached by name on the aic"
-	@echo "    bridge, from aic-client or scripts/aic-endpoints.sh fetch."
+	@echo "    bridge, from $(AIC_STACK)-client or scripts/aic-endpoints.sh fetch."
+	@echo "    AIC_STACK=$(AIC_STACK)  (compose project, network and container-name prefix)"
 	@echo "    AIC_GRAFANA_IMAGE=$(AIC_GRAFANA_IMAGE)"
 	@echo ""
 	@echo "Required env:"
