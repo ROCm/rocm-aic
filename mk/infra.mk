@@ -4,7 +4,7 @@
 # Infrastructure targets: monitoring, export tarball, internal helpers.
 
 .PHONY: endpoints env-docs env-docs-check \
-        export check-hf-token check-gds-slab prep-dirs prep-kvbench-dirs
+        export check-hf-token check-gds-slab check-stack prep-dirs prep-kvbench-dirs
 
 # docs/ENVIRONMENT.md's tables are generated from the files that own the
 # defaults; descriptions live in docs/environment-vars.txt.
@@ -40,6 +40,10 @@ check-gds-slab:
 	@if [ -z "$(GDS_SLAB_DATA)" ]; then \
 		echo "ERROR: GDS_SLAB_DATA must be set for GDS L1 mode" >&2; exit 1; \
 	fi
+
+# Refuse to bring up a stack whose AIC_STACK another checkout's stack is using.
+check-stack:
+	@bash "$(CURDIR)/scripts/aic-endpoints.sh" check-stack "$(CURDIR)/docker"
 
 prep-dirs:
 	@mkdir -p "$(NVME_DATA)" "$(NFS_DATA)" \

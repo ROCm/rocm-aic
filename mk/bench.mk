@@ -92,14 +92,14 @@ plot: prep-dirs
 		--output-dir "$(BENCH_LOGDIR)/plots/"
 	@echo "Charts written to $(BENCH_LOGDIR)/plots/"
 
-kvbench-up: ensure-compose prep-kvbench-dirs
+kvbench-up: ensure-compose check-stack prep-kvbench-dirs
 	KVBENCH_IMAGE_REF="$(KVBENCH_IMAGE_REF)" $(COMPOSE) --profile kvbench up --build -d kvbench client
 	@echo "KVBench is starting on http://aic-kvbench:$(KVBENCH_PORT) inside compose; benchmark it from $(AIC_STACK)-client"
 
 kvbench-down:
 	$(COMPOSE) --profile kvbench down --remove-orphans
 
-cliff-kvbench-local: ensure-compose prep-kvbench-dirs
+cliff-kvbench-local: ensure-compose check-stack prep-kvbench-dirs
 	@echo "=== cliff-kvbench-local: $(KVBENCH_IMAGE_REF) model=$${BENCH_MODEL:-$(KVBENCH_MODEL)} ==="
 	@KVBENCH_IMAGE_REF="$(KVBENCH_IMAGE_REF)" $(COMPOSE) --profile kvbench up --build -d kvbench client
 	@echo "Waiting up to $(KVBENCH_READY_S)s for KVBench /v1/models ..."
@@ -200,7 +200,7 @@ agent-kv-nvme-sweep:
 AIC_EMULATE_MODEL     ?= Qwen/Qwen3-8B
 AIC_EMULATE_READY_S   ?= 120
 
-test-emulate-local: ensure-compose prep-dirs
+test-emulate-local: ensure-compose check-stack prep-dirs
 	@echo "=== test-emulate-local: image=$(or $(VLLM_IMAGE_REF),<compose default>) model=$(AIC_EMULATE_MODEL) ==="
 	@mkdir -p "$(AIC_METRICS_DIR)"
 	@PROM_UID="$$(id -u)" PROM_GID="$$(id -g)" \
