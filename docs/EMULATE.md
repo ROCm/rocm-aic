@@ -395,7 +395,7 @@ KV_CFG+='"lmcache.mp.host":"tcp://aic-lmcache-emulator","lmcache.mp.port":6555,'
 KV_CFG+='"lmcache.mp.mp_transfer_mode":"lmcache_driven"}}'
 IMAGE_NAME=rocm-aic:7.14-latest DEVICE_TYPE=cpu \
   VLLM_EMULATOR_MEMORY=$((8 * 1024**3)) \
-  EMU_IPC_MODE=container:aic-lmcache-emulator \
+  EMU_IPC_MODE="container:${AIC_STACK:-aic}-lmcache-emulator" \
   EMU_KV_TRANSFER_ARG="--kv-transfer-config '${KV_CFG}'" \
   docker compose -f docker/docker-compose.yml --profile emulate-mp \
   up lmcache-emulator vllm-emulator
@@ -438,7 +438,7 @@ topology as HIP IPC, with `/dev/shm` in place of the GPU. Two consequences:
   opens the segment by name and Docker gives each container its own
   `/dev/shm`. `lmcache-emulator` owns it (`ipc: shareable`, `shm_size`
   `${AIC_SHM_SIZE:-64gb}`) and `vllm-emulator` joins it with
-  `EMU_IPC_MODE=container:aic-lmcache-emulator`; `ipc: host` would also work
+  `EMU_IPC_MODE=container:${AIC_STACK}-lmcache-emulator`; `ipc: host` would also work
   but SPUR's spur-authz blocks it;
 - `DEVICE_TYPE=cpu` is mandatory. `cuda_mock` shims `torch.cuda.is_available()`
   to `True` so vLLM's GPU code paths run, and LMCache's `CudaDeviceSpec.
@@ -539,12 +539,12 @@ added.
   pool is really allocated; cap it with `VLLM_EMULATOR_MEMORY` (§6.2).
 - `FileExistsError: [Errno 17] File exists: '/lmcache_kv_<pid>_0'`: a stale
   POSIX SHM segment from a killed previous run in a still-live
-  `aic-lmcache-emulator`; LMCache names segments after the containerised engine
+  `${AIC_STACK}-lmcache-emulator`; LMCache names segments after the containerised engine
   pid, which repeats. Recreate both containers (`up --force-recreate`, which
   `emulate-mp-test` does).
 - `FileNotFoundError` for `/lmcache_kv_*` in the lmcache-emulator log: the two
   containers have separate `/dev/shm`s —
-  `EMU_IPC_MODE=container:aic-lmcache-emulator` was not set (§6.1).
+  `EMU_IPC_MODE=container:${AIC_STACK}-lmcache-emulator` was not set (§6.1).
 - `ConnectionError: Cannot reach the LMCache MP server` from the **plain**
   `emulate` profile: something exported `KV_TRANSFER_ARG` (the Makefile does,
   globally). The emulator reads `EMU_KV_TRANSFER_ARG` instead precisely so this

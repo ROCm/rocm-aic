@@ -7,23 +7,27 @@ live dashboarding via Grafana.
 
 ## Port map
 
-The ports below are **container** ports, reachable by name on the `aic` bridge
-(for example `http://aic-lmcache:8080`). Nothing binds a fixed host port, and
+The ports below are **container** ports, reachable by name on the stack's
+bridge (for example `http://aic-lmcache:8080`). The bridge network and every
+container name carry the stack's `AIC_STACK` (`aic` by default, `aic-<job id>`
+in a Slurm job): container `${AIC_STACK}-lmcache` answers to `aic-lmcache` on
+its own stack's network, and only there. Nothing binds a fixed host port, and
 only Grafana is published to the host, on `127.0.0.1` with a free port Docker
 picks at `up`; `make endpoints` prints its URL. Pin it with `AIC_GRAFANA_PORT`,
 and bind beyond loopback with `AIC_PUBLISH_ADDR=0.0.0.0`. The ephemeral port
 changes when the container is recreated, so look it up again after a restart.
 
-Everything else is reached from a container on the bridge: the `aic-client`
-container `make up` starts, or `aic_fetch`, which sends one request from a
-throwaway container on `aic`. vLLM shares `aic-lmcache`'s network namespace, so
-it answers as `aic-lmcache:8000`; `scripts/aic-endpoints.sh bridge-url
-<container> <port>` prints that name for any container. Prometheus can also be
-queried through Grafana (Explore).
+Everything else is reached from a container on the bridge: the
+`${AIC_STACK}-client` container `make up` starts, or `aic_fetch`, which sends
+one request from a throwaway container there. vLLM shares lmcache's network
+namespace, so it answers as `aic-lmcache:8000`; `scripts/aic-endpoints.sh
+bridge-url <container> <port>` prints the name of the container that owns any
+container's namespace. Prometheus can also be queried through Grafana
+(Explore).
 
 ```bash
 scripts/aic-endpoints.sh fetch 'http://aic-prometheus:9090/api/v1/query?query=up'
-docker exec aic-client curl -s http://aic-lmcache:8000/v1/models
+docker exec "${AIC_STACK:-aic}-client" curl -s http://aic-lmcache:8000/v1/models
 ```
 
 ### Single-GPU stack (1 lmcache + 1 vLLM)
@@ -522,7 +526,7 @@ dispatch metrics and AIS P2P storage counters.
 
 | Mode | `AIC_HSA_SNOOP_PID_MODE` | When to use |
 | --- | --- | --- |
-| Container PID | `container:aic-lmcache` | **SPUR default** — vLLM uses `pid:service:lmcache` so lmcache's namespace contains both processes |
+| Container PID | `container:${AIC_STACK}-lmcache` | **SPUR default** (resolved on the node, by `monitoring-lib.sh`) — vLLM uses `pid:service:lmcache` so lmcache's namespace contains both processes |
 | Host PID | `host` | Non-SPUR bare nodes where `--pid=host` is permitted |
 
 > **SPUR authz note:** the SPUR cluster's Docker authz plugin blocks `--pid=host`
