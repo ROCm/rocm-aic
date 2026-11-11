@@ -757,9 +757,11 @@ ensure_compose || die "docker compose unavailable and could not be installed"
 # They are dockerd's, not the job's, so a scancel'd or timed-out job otherwise
 # leaves them running, vLLM still holding its GPU (job 279409).  SPUR SIGKILLs the
 # job ~4s after its SIGTERM (probe job 282335), too soon for stop_monitoring's
-# graceful `docker stop`, so this is one parallel `docker rm -f`.
+# graceful `docker stop`, so this is one parallel `docker rm -f`, and then the
+# now-empty network, which nothing else would remove.
 trap 'rm_containers "${AIC_STACK}-vllm-only-gpu${GPU}" "${AIC_STACK}-vllm-gpu${GPU}" \
-  "${AIC_STACK}-lmcache" "${AIC_STACK}-lmcache-coordinator" "${MON_CONTAINERS[@]}"' EXIT
+  "${AIC_STACK}-lmcache" "${AIC_STACK}-lmcache-coordinator" "${MON_CONTAINERS[@]}"
+  aic_release_network' EXIT
 
 # =============================================================================
 # Arm A — vram_only : plain vLLM baseline, no LMCache connector

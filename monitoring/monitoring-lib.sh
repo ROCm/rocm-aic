@@ -136,6 +136,22 @@ aic_docker_preflight() {
     log "docker preflight OK on ${host}"
 }
 
+# Every job stack has a network of its own, and the node's Docker address pools,
+# shared by every tenant, hold a limited number of bridges, so a stack must not
+# leave its network behind.  compose down removes it; a teardown that removes
+# containers by name does not, so it calls this once its containers are gone.
+aic_release_network() {
+    local n out
+    n="$(docker network inspect -f '{{len .Containers}}' "${AIC_STACK}" 2>&1)" || {
+        [[ "${n}" == *"not found"* ]] || log "WARN: cannot inspect network ${AIC_STACK}: ${n}"
+        return 0
+    }
+    [[ "${n}" == 0 ]] || return 0
+    out="$(docker network rm "${AIC_STACK}" 2>&1)" \
+        || log "WARN: cannot remove network ${AIC_STACK}: ${out}"
+    return 0
+}
+
 have_compose() { docker compose version >/dev/null 2>&1; }
 
 # Ensure the `docker compose` (v2) plugin is available.  Docker checks
@@ -257,6 +273,8 @@ stop_monitoring() {
     # so prometheus gets SIGTERM and closes its WAL cleanly; rm -f alone kills.
     timeout 60 docker stop -t 10 "${MON_CONTAINERS[@]}" >/dev/null 2>&1 || true
     timeout 60 docker rm -f "${MON_CONTAINERS[@]}" >/dev/null 2>&1 || true
+    # Often the stack's last containers; a no-op while the rest still run.
+    aic_release_network
 }
 
 # --- Health check + TSDB summary (used by the build smoke-test) ---------------

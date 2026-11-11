@@ -191,6 +191,7 @@ if [[ ${VLLM_READY} -eq 0 ]]; then
     tail -30 "${LOGDIR}/lmcache.log"
     kill ${LMCACHE_LOG_PID} ${VLLM_LOG_PID} 2>/dev/null || true
     docker rm -f "${LMCACHE_C}" "${VLLM_C}" 2>/dev/null || true
+    aic_release_network
     exit 1
 fi
 
@@ -243,4 +244,5 @@ grep -i "prefetch\|l2_hit\|lookup.*found\|LOOKUP" "${LOGDIR}/lmcache.log" | tail
 echo "=== Cleanup ==="
 kill ${LMCACHE_LOG_PID} ${VLLM_LOG_PID} 2>/dev/null || true
 docker rm -f "${LMCACHE_C}" "${VLLM_C}" 2>/dev/null || true
+aic_release_network
 echo "Logs: ${LOGDIR}/"
