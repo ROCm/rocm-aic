@@ -261,7 +261,7 @@ keeps equal to bake's.
 <!-- BEGIN generated:gpu-storage -->
 | Variable | Default | Owner | Description |
 | --- | --- | --- | --- |
-| `GPU` | `0` | `docker/docker-compose.yml` | Fallback GPU index when no scheduler allocation is resolved; also names the vLLM container (`aic-vllm-gpu<GPU>`) |
+| `GPU` | `0` | `docker/docker-compose.yml` | Fallback GPU index when no scheduler allocation is resolved; also names the vLLM container (`<stack>-vllm-gpu<GPU>`) |
 | `AIC_ROCR_VISIBLE` | `${GPU:-0}` | `docker/docker-compose.yml` | `ROCR_VISIBLE_DEVICES` for every container with `/dev/kfd`: absolute host GPU ids (`3` or `2,5`). The Slurm jobs resolve it: on standard Slurm from `ROCR_VISIBLE_DEVICES`, then `HIP_VISIBLE_DEVICES`, then `CUDA_VISIBLE_DEVICES`; on SPUR from the controller allocation, and an allocation that cannot be resolved fails the job |
 | `AIC_HIP_VISIBLE` | `0` | `docker/docker-compose.yml` | `HIP_VISIBLE_DEVICES` and `CUDA_VISIBLE_DEVICES`: indices relative to `AIC_ROCR_VISIBLE` (`0` or `0,1`). Set the two together |
 | `NVME_DATA` | `/mnt/lmcache-nvme`; `/tmp/lmcache-emulate-nvme` (`lmcache-emulator`); `/mnt/m2m_nobackup/aic-cliff/nvme` (`Makefile`, SPUR); `${AIC_LOCAL_ROOT}/nvme` (`.slurm/run-cliff.sbatch`); `/mnt/m2m_nobackup/aic-cliff-exthit/nvme` (`.slurm/ext-hit-test.sbatch`) | `docker/docker-compose.yml` | Host path of the local NVMe pool (L2a), mounted at `/data/nvme`. The cliff job picks its own under `AIC_LOCAL_ROOT` |
@@ -350,7 +350,7 @@ keeps equal to bake's.
 | `PYTORCH_HIP_ALLOC_CONF` | `expandable_segments:False` | `docker/docker-compose.yml` | PyTorch HIP allocator configuration for vLLM |
 | `VLLM_IPC_MODE` | `service:lmcache` | `docker/docker-compose.yml` | IPC namespace of the `vllm` service. It joins LMCache's; to run vLLM alone start the `vllm-only` service rather than overriding this |
 | `VLLM_PID_MODE` | `service:lmcache` (only when unset) | `docker/docker-compose.yml` | PID namespace of the `vllm` service. Empty means a private namespace |
-| `VLLM_NETWORK_MODE` | `container:aic-lmcache` | `docker/docker-compose.yml` | Network namespace of the `vllm` service. ROCR passes IPC handles over an abstract socket, so vLLM and LMCache must share one |
+| `VLLM_NETWORK_MODE` | `container:${AIC_STACK:-aic}-lmcache` | `docker/docker-compose.yml` | Network namespace of the `vllm` service. ROCR passes IPC handles over an abstract socket, so vLLM and LMCache must share one |
 | `VLM_READY_RETRIES` | `60` | `Makefile` | `make vllm-reset-test`: readiness polls, 5 s apart |
 | `VLM_FAIL_LOG_LINES` | `250` | `Makefile` | `make vllm-reset-test`: container log lines printed when the vLLM container exits before becoming ready |
 <!-- END generated:vllm -->
@@ -364,6 +364,7 @@ container name on the `aic` bridge, from the `aic-client` container (see
 <!-- BEGIN generated:network -->
 | Variable | Default | Owner | Description |
 | --- | --- | --- | --- |
+| `AIC_STACK` | `aic` | `docker/docker-compose.yml` | Stack name: the compose project, the bridge network and every container's prefix (`<stack>-lmcache`, `<stack>-vllm-gpu<GPU>`, ...), so stacks with different names share a host untouched. Set it to run a second stack by hand, and pass the same value to every later command that should reach it. On its network each container also answers to its fixed `aic-*` alias |
 | `AIC_PUBLISH_ADDR` | `127.0.0.1` | `docker/docker-compose.yml` | Host address the published Grafana port binds; `0.0.0.0` exposes it beyond loopback |
 | `AIC_GRAFANA_PORT` | (empty) | `docker/docker-compose.yml` | Pin the Grafana host port, the only published one. Unset, `make` picks the lowest free port from 3000 and keeps it across a down/up; empty, or compose run without `make`, lets Docker pick a free port. `make endpoints` prints the URL |
 | `AIC_CLIENT_IMAGE` | `aic-client:latest`; `aic-client:${AIC_VERSION}` (`.slurm/run-build-distribute.sh`); `aic-client:$(<"${REPO}/VERSION")` (`.slurm/run-cliff.sbatch`) | `docker/docker-compose.yml` | Image of the `aic-client` container and of the throwaway AgentX containers. `make` sets it to the ref bake tags (`aic-client:<AIC_VERSION>`); compose builds it from `docker/client/Dockerfile` when it is missing |
@@ -697,7 +698,7 @@ See [EMULATE.md](EMULATE.md) for the workflow these belong to.
 | `VLLM_EMULATOR_ORACLE_K` | `1` | `docker/docker-compose.yml` | Oracle neighbor count, or `auto` |
 | `EMU_PROFILE_PACK_HOST` | `/tmp` | `docker/docker-compose.yml` | Host directory mounted at `/profiles` in the emulator container |
 | `EMU_KV_TRANSFER_ARG` | (empty) | `docker/docker-compose.yml` | `--kv-transfer-config` for the emulator. Not `KV_TRANSFER_ARG`, which make exports for the real stack |
-| `EMU_IPC_MODE` | `shareable` | `docker/docker-compose.yml` | IPC mode of the emulator. `emulate-mp` needs `container:aic-lmcache-emulator` |
+| `EMU_IPC_MODE` | `shareable` | `docker/docker-compose.yml` | IPC mode of the emulator. `emulate-mp` needs `container:<stack>-lmcache-emulator` |
 | `DEVICE_TYPE` | `cpu` | `docker/docker-compose.yml` | LMCache device type in the `lmcache-emulator` service |
 | `VLLM_CPU_MODEL` | `facebook/opt-125m` | `docker/docker-compose.yml` | Model served by the `cpu-smoke-emulator` service |
 | `AIC_CONTAINER_USER` | `0:0`; `$(shell id -u):$(shell id -g)` (`Makefile`) | `docker/docker-compose.yml` | `uid:gid` containers run as (default: invoking user). Used by all GPU and emulator services and by the benchmark client (`aic-client`), which is root under plain `docker compose` |
