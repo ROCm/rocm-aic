@@ -37,6 +37,8 @@
 #   NFS_DATA       — host path to NFS-over-RDMA mount (L2b; e.g. /mnt/lmcache-nfs)
 #
 # Optional:
+#   AIC_STACK              — stack name: compose project, network and container-name
+#                            prefix (default: aic; see the networks: block below)
 #   GPU                    — fallback GPU when no SPUR allocation is resolved (default: 0).
 #   AIC_ROCR_VISIBLE       — ROCR_VISIBLE_DEVICES for every service to isolate used GPUs
 #                            to the ones allocated to use by SPUR.
@@ -50,7 +52,7 @@
 #   KV_TRANSFER_ARG        — vLLM --kv-transfer-config arg (empty = plain vLLM baseline)
 #   VLLM_IPC_MODE          — vLLM IPC mode (default: service:lmcache)
 #   VLLM_PID_MODE          — vLLM PID mode (default: service:lmcache; empty = private)
-#   VLLM_NETWORK_MODE      — vLLM network mode (default: container:aic-lmcache)
+#   VLLM_NETWORK_MODE      — vLLM network mode (default: container:${AIC_STACK}-lmcache)
 #                            A vllm-only run should start the vllm-only service
 #                            instead of overriding all three.
 #   AIC_SHM_SIZE           — private /dev/shm capacity (default: 64gb)
@@ -136,7 +138,7 @@
 #                                exports that one globally, which would attach
 #                                the MP connector to the plain `emulate` profile
 #   EMU_IPC_MODE               — vllm-emulator's ipc mode.  `emulate-mp` needs
-#                                container:aic-lmcache-emulator (one /dev/shm
+#                                container:${AIC_STACK}-lmcache-emulator (one /dev/shm
 #                                for the KV SHM segments); default shareable
 #   AIC_L2_BACKEND             — `emulate-mp` defaults to nixl_posix (NIXL stays in
 #                                the path, no GPUDirect needed); AIS_MT needs
@@ -297,9 +299,18 @@ x-lmcache-healthcheck: &lmcache-healthcheck
   retries: 18
   start_period: 30s
 
+# One stack per AIC_STACK (default aic): it names the compose project, the
+# bridge network and every container (${AIC_STACK}-lmcache, ...), so stacks with
+# different names share a Docker host without touching each other's containers,
+# DNS names or volumes.  On its own network each container also answers to its
+# fixed aic-* alias, the name prometheus.yml, Grafana and clients on the bridge
+# use; only host-side docker commands need the prefix.  scripts/aic-endpoints.sh
+# says where the name comes from.
+name: ${AIC_STACK:-aic}
+
 networks:
   aic-network:
-    name: aic
+    name: ${AIC_STACK:-aic}
 
 services:
 
@@ -318,8 +329,10 @@ services:
         KVBENCH_GIT_URL: ${KVBENCH_GIT_URL:-https://github.com/wvaske/llm-kv-passthrough.git}
         KVBENCH_REF: ${KVBENCH_REF:-177cf4e7c46ece8e03a701f89b60cd3a329f45fd}
     image: ${KVBENCH_IMAGE_REF:-aic-kvbench:177cf4e}
-    container_name: aic-kvbench
-    networks: [aic-network]
+    container_name: ${AIC_STACK:-aic}-kvbench
+    networks:
+      aic-network:
+        aliases: [aic-kvbench]
     environment:
       HF_TOKEN: "${HF_TOKEN:-}"
       HF_HOME: /hf
@@ -369,7 +382,7 @@ services:
     # back to the Dockerfile's raw-ROCm `base` stage and produce a torch-less
     # image that fails at runtime.
     image: ${LMCACHE_IMAGE_REF:-${IMAGE_REF:-${IMAGE_NAME:-rocm-aic}:latest}}
-    container_name: aic-lmcache
+    container_name: ${AIC_STACK:-aic}-lmcache
     # Cross-container HIP IPC (LMCacheMPConnector registering vLLM's KV tensors)
     # uses LMCache's stock CudaIPCWrapper (hipIpcGetMemHandle) in ROCr's default,
     # non-legacy mode: the importer fetches the dmabuf fd from the exporting
@@ -392,7 +405,7 @@ services:
     # published: clients reach vLLM as aic-lmcache:8000 from the bridge.
     networks:
       aic-network:
-        aliases: [aic-vllm]
+        aliases: [aic-lmcache, aic-vllm]
     ipc: shareable
     shm_size: "${AIC_SHM_SIZE:-64gb}"
     # No CAP_SYS_ADMIN: SPUR's docker-authz denies it (rule C1).  Cross-container
@@ -472,8 +485,10 @@ services:
     profiles:
       - cache
     image: ${LMCACHE_IMAGE_REF:-${IMAGE_REF:-${IMAGE_NAME:-rocm-aic}:latest}}
-    container_name: aic-lmcache-coordinator
-    networks: [aic-network]
+    container_name: ${AIC_STACK:-aic}-lmcache-coordinator
+    networks:
+      aic-network:
+        aliases: [aic-lmcache-coordinator]
     restart: unless-stopped
     environment:
       - LMCACHE_DISABLE_BANNER=1
@@ -502,14 +517,14 @@ services:
     # No `build:` stanza on purpose — see the lmcache service above.  Build with
     # `make build`, which supplies the torch-bearing `base` build-context.
     image: ${VLLM_IMAGE_REF:-${IMAGE_REF:-${IMAGE_NAME:-rocm-aic}:latest}}
-    container_name: aic-vllm-gpu${GPU:-0}
+    container_name: ${AIC_STACK:-aic}-vllm-gpu${GPU:-0}
     # Joins lmcache's IPC, PID and network namespaces; cross-container HIP IPC KV
     # registration needs all three (see the lmcache service).  Override via
     # VLLM_IPC_MODE / VLLM_PID_MODE / VLLM_NETWORK_MODE.
     # vllm's ports are lmcache's; prometheus scrapes it as aic-vllm:8000.
     # container:, not service:, so compose can still load the project without
     # the cache profile; a vllm-only run starts the vllm-only service below.
-    network_mode: "${VLLM_NETWORK_MODE:-container:aic-lmcache}"
+    network_mode: "${VLLM_NETWORK_MODE:-container:${AIC_STACK:-aic}-lmcache}"
     ipc: "${VLLM_IPC_MODE:-service:lmcache}"
     shm_size: "${AIC_SHM_SIZE:-64gb}"
     pid: "${VLLM_PID_MODE-service:lmcache}"
@@ -610,20 +625,20 @@ services:
   vllm-only:
     extends: vllm
     profiles: [vllm-only]
-    container_name: aic-vllm-only-gpu${GPU:-0}
+    container_name: ${AIC_STACK:-aic}-vllm-only-gpu${GPU:-0}
     network_mode: !reset null
     pid: !reset null
     ipc: private
     networks:
       aic-network:
-        aliases: [aic-vllm]
+        aliases: ["aic-vllm-only-gpu${GPU:-0}", aic-vllm]
     depends_on: !reset {}
 
   # ---------------------------------------------------------------------------
   # client: Python + curl container on the aic network for ad-hoc testing and
   # benchmarking.  The repo root is bind-mounted at /repo so run_cliff.py and
   # other benchmarks are available without rebuilding the image.
-  # Use `docker exec -it aic-client bash` to get a shell, then hit
+  # Use `docker exec -it ${AIC_STACK}-client bash` to get a shell, then hit
   # vllm/lmcache by container name (e.g. http://aic-lmcache:8000: vllm shares
   # aic-lmcache's network namespace, so its own name does not resolve).  `make
   # cliff`, `vllm-reset-test` and `bench-serve` run here.
@@ -634,8 +649,10 @@ services:
     # and pip-install benchmark deps there for nothing.
     profiles: [client, monitoring, monitoring-base]
     image: ${AIC_CLIENT_IMAGE:-python:3.12}
-    container_name: aic-client
-    networks: [aic-network]
+    container_name: ${AIC_STACK:-aic}-client
+    networks:
+      aic-network:
+        aliases: [aic-client]
     dns: ["8.8.8.8", "8.8.4.4"]
     environment:
       HF_TOKEN: "${HF_TOKEN:-}"
@@ -665,8 +682,10 @@ services:
   loki:
     profiles: [monitoring, monitoring-base]
     image: grafana/loki:3.5.0
-    container_name: aic-loki
-    networks: [aic-network]
+    container_name: ${AIC_STACK:-aic}-loki
+    networks:
+      aic-network:
+        aliases: [aic-loki]
     command: -config.file=/etc/loki/loki.yml
     volumes:
       - ../monitoring/loki/loki.yml:/etc/loki/loki.yml:ro
@@ -676,8 +695,10 @@ services:
   alloy:
     profiles: [monitoring, monitoring-base]
     image: grafana/alloy:v1.8.3
-    container_name: aic-alloy
-    networks: [aic-network]
+    container_name: ${AIC_STACK:-aic}-alloy
+    networks:
+      aic-network:
+        aliases: [aic-alloy]
     volumes:
       - ../monitoring/alloy/config.alloy:/etc/alloy/config.alloy:ro
       - /var/run/docker.sock:/var/run/docker.sock:ro
@@ -697,8 +718,10 @@ services:
   prometheus:
     profiles: [monitoring, monitoring-base]
     image: ${AIC_PROM_IMAGE:-prom/prometheus:v3.14.0}
-    container_name: aic-prometheus
-    networks: [aic-network]
+    container_name: ${AIC_STACK:-aic}-prometheus
+    networks:
+      aic-network:
+        aliases: [aic-prometheus]
     extra_hosts:
       - "host-gateway:host-gateway"
     user: "${PROM_UID:-65534}:${PROM_GID:-65534}"
@@ -723,8 +746,10 @@ services:
   l2-monitor:
     profiles: [monitoring, exporters, exporters-safe]
     image: python:3.12-slim
-    container_name: aic-l2-monitor
-    networks: [aic-network]
+    container_name: ${AIC_STACK:-aic}-l2-monitor
+    networks:
+      aic-network:
+        aliases: [aic-l2-monitor]
     restart: unless-stopped
     environment:
       AIC_L2_DIR: /data/nvme/lmcache
@@ -744,8 +769,10 @@ services:
   node-exporter:
     profiles: [monitoring, exporters, exporters-cpu, exporters-safe]
     image: ${AIC_NODE_EXPORTER_IMAGE:-quay.io/prometheus/node-exporter:v1.12.1}
-    container_name: aic-node-exporter
-    networks: [aic-network]
+    container_name: ${AIC_STACK:-aic}-node-exporter
+    networks:
+      aic-network:
+        aliases: [aic-node-exporter]
     pid: "${NODEX_PID_MODE:-}"
     restart: unless-stopped
     volumes:
@@ -766,8 +793,10 @@ services:
   amdgpu-exporter:
     profiles: [monitoring, exporters, exporters-safe]
     image: ${AIC_AMDGPU_EXPORTER_IMAGE:-rocm/device-metrics-exporter:v1.5.2}
-    container_name: aic-amdgpu-exporter
-    networks: [aic-network]
+    container_name: ${AIC_STACK:-aic}-amdgpu-exporter
+    networks:
+      aic-network:
+        aliases: [aic-amdgpu-exporter]
     restart: unless-stopped
     environment:
       - ROCR_VISIBLE_DEVICES=${AIC_ROCR_VISIBLE:-${GPU:-0}}
@@ -788,8 +817,10 @@ services:
   nvme-exporter:
     profiles: [monitoring, exporters-fabric, exporters-cpu]
     image: ${AIC_NVME_EXPORTER_IMAGE:-aic-nvme-exporter:local}
-    container_name: aic-nvme-exporter
-    networks: [aic-network]
+    container_name: ${AIC_STACK:-aic}-nvme-exporter
+    networks:
+      aic-network:
+        aliases: [aic-nvme-exporter]
     cap_add:
       - SYS_ADMIN
     restart: unless-stopped
@@ -806,8 +837,10 @@ services:
   rdma-exporter:
     profiles: [monitoring, exporters-fabric, exporters-cpu, exporters-safe]
     image: ${AIC_RDMA_EXPORTER_IMAGE:-aic-rdma-exporter:local}
-    container_name: aic-rdma-exporter
-    networks: [aic-network]
+    container_name: ${AIC_STACK:-aic}-rdma-exporter
+    networks:
+      aic-network:
+        aliases: [aic-rdma-exporter]
     restart: unless-stopped
     volumes:
       - /sys:/sys:ro
@@ -825,8 +858,10 @@ services:
   grafana:
     profiles: [monitoring, monitoring-base]
     image: ${AIC_GRAFANA_IMAGE:-grafana/grafana:13.2.2}
-    container_name: aic-grafana
-    networks: [aic-network]
+    container_name: ${AIC_STACK:-aic}-grafana
+    networks:
+      aic-network:
+        aliases: [aic-grafana]
     ports:
       - "${AIC_PUBLISH_ADDR:-127.0.0.1}:${AIC_GRAFANA_PORT:-}:3000"
     restart: unless-stopped
@@ -847,8 +882,10 @@ services:
   hsa-snoop:
     profiles: [monitoring, exporters, exporters-safe]
     image: ${HSA_SNOOP_IMAGE:-aic-hsa-snoop:local}
-    container_name: aic-hsa-snoop
-    networks: [aic-network]
+    container_name: ${AIC_STACK:-aic}-hsa-snoop
+    networks:
+      aic-network:
+        aliases: [aic-hsa-snoop]
     pid: "${AIC_HSA_SNOOP_PID_MODE-service:lmcache}"
     privileged: true
     restart: unless-stopped
@@ -898,11 +935,11 @@ services:
     profiles:
       - emulate-mp
     image: ${LMCACHE_IMAGE_REF:-${IMAGE_REF:-${IMAGE_NAME:-rocm-aic}:latest}}
-    container_name: aic-lmcache-emulator
+    container_name: ${AIC_STACK:-aic}-lmcache-emulator
     # On the aic bridge, like `lmcache`: vllm-emulator reaches ZMQ on
-    # :${LMCACHE_PORT} by container name, and the aic-lmcache alias lets
+    # :${LMCACHE_PORT} as aic-lmcache-emulator, and the aic-lmcache alias lets
     # prometheus scrape :9091/:19090 with the same targets as the GPU stack (run
-    # one stack per node, or the alias resolves to both).  Owns the IPC
+    # it under its own AIC_STACK, or the alias resolves to both).  Owns the IPC
     # namespace, as `lmcache` does for the GPU stack: vllm-emulator joins it
     # under emulate-mp (EMU_IPC_MODE), because the server opens the POSIX SHM
     # segments LMCache migrates the emulator's KV buffers into by name, and
@@ -912,7 +949,7 @@ services:
     # Docker's 64 MiB default would SIGBUS the copy into it.
     networks:
       aic-network:
-        aliases: [aic-lmcache]
+        aliases: [aic-lmcache-emulator, aic-lmcache]
     ipc: shareable
     shm_size: "${AIC_SHM_SIZE:-64gb}"
     cap_add:
@@ -992,14 +1029,14 @@ services:
       - emulate
       - emulate-mp
     image: ${VLLM_IMAGE_REF:-${IMAGE_REF:-${IMAGE_NAME:-rocm-aic}:latest}}
-    container_name: aic-vllm-emulator
+    container_name: ${AIC_STACK:-aic}-vllm-emulator
     # On the aic bridge, unpublished: clients reach it as aic-vllm-emulator:8000.
     # The aic-vllm alias is prometheus' vllm target, as it is for the GPU stack.
     networks:
       aic-network:
-        aliases: [aic-vllm]
+        aliases: [aic-vllm-emulator, aic-vllm]
     # No devices/cap_add block: the emulator touches no GPU.  Under `emulate-mp`
-    # set EMU_IPC_MODE=container:aic-lmcache-emulator: LMCache migrates the fake
+    # set EMU_IPC_MODE=container:${AIC_STACK}-lmcache-emulator: LMCache migrates the fake
     # KV buffers into POSIX SHM segments that the server opens by name, so both
     # must see one /dev/shm.  container:, not service:, so the plain `emulate`
     # profile (no lmcache-emulator) still loads; it keeps its own namespace.
@@ -1132,11 +1169,11 @@ services:
     profiles:
       - cpu-smoke
     image: ${VLLM_IMAGE_REF:-${IMAGE_REF:-${IMAGE_NAME:-rocm-aic}:latest}}
-    container_name: aic-vllm-emulator
+    container_name: ${AIC_STACK:-aic}-vllm-emulator
     # Bridge + aic-vllm alias, unpublished, as vllm-emulator above.
     networks:
       aic-network:
-        aliases: [aic-vllm]
+        aliases: [aic-vllm-emulator, aic-vllm]
     volumes:
       - ${HF_HOME:-~/.cache/huggingface}:/hf
       - ../monitoring/scripts/vllm_emulator_server.py:/app/vllm_emulator_server.py:ro

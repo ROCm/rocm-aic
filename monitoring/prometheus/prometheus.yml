@@ -4,8 +4,10 @@
 #
 # Prometheus scrape config for the  metrics-capture sidecar.
 #
-# Prometheus runs on the `aic` Docker bridge network (see docker-compose.yml),
-# so inference stack targets are reached by container name. This works for:
+# Prometheus runs on its stack's Docker bridge network (see docker-compose.yml),
+# so inference stack targets are reached by their fixed aic-* aliases, which only
+# that stack's containers answer to.  The container names carry the AIC_STACK
+# prefix instead, so this one config serves every stack. This works for:
 #   - `make up-monitoring`: all services on the aic network, names resolve via DNS
 #   - `make monitoring-up` (legacy cliff sbatch path): prometheus runs in the
 #     main compose file's monitoring-base profile on the same aic network.
@@ -40,9 +42,9 @@ scrape_configs:
     metrics_path: /metrics
     static_configs:
       # aic-vllm is a network alias: on the lmcache container, whose network
-      # namespace vllm joins (network_mode: container:aic-lmcache), and on the
-      # emulators.  A static target cannot follow the vllm container name, which
-      # carries the GPU index (aic-vllm-gpu0, -gpu1, ...).
+      # namespace vllm joins (network_mode: container:<stack>-lmcache), and on
+      # the emulators.  A static target cannot follow the vllm container name,
+      # which carries the GPU index (<stack>-vllm-gpu0, -gpu1, ...).
       - targets: ["aic-vllm:8000"]
 
   - job_name: lmcache
