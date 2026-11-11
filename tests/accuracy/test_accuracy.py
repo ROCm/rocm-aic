@@ -84,7 +84,12 @@ def _delta_slack() -> float:
     se = math.sqrt(p * (1.0 - p) / LIMIT)
     return max(DELTA, 4.0 * math.sqrt(2.0) * se)
 
-NUM_CONCURRENT = int(os.getenv("AIC_ACCURACY_CONCURRENT", "32"))
+# One request in flight.  Decoding is greedy, but which requests vLLM batches
+# together depends on when they arrive, and the batch shape picks the attention
+# and GEMM kernels, so concurrent requests get slightly different arithmetic and
+# a near-tie token can flip.  At 32, two identical servers disagreed on 747 of
+# 1319 answers; at 1 they agreed on all of them.
+NUM_CONCURRENT = int(os.getenv("AIC_ACCURACY_CONCURRENT", "1"))
 
 _BASELINE_SCORE = os.getenv("AIC_ACCURACY_BASELINE_SCORE")
 BASELINE_SCORE = float(_BASELINE_SCORE) if _BASELINE_SCORE else None

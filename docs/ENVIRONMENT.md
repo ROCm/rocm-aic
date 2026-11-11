@@ -95,7 +95,7 @@ and that variant skipped the differential — the one assertion the gate is for.
 | --- | --- | --- |
 | `AIC_ACCURACY_MODEL` | `$AIC_TINY_MODEL` | Model to score. Must match what the arms serve |
 | `AIC_ACCURACY_DELTA` | `0.02` | How far the tiered arm may fall below the baseline arm before it counts as corruption |
-| `AIC_ACCURACY_CONCURRENT` | `32` | `lm_eval` request concurrency |
+| `AIC_ACCURACY_CONCURRENT` | `1` | `lm_eval` request concurrency. Above 1, answers depend on request timing |
 | `AIC_ACCURACY_BASELINE_URL` | — | Baseline arm base URL as seen from the `aic` bridge, e.g. `http://aic-vllm-only-gpu0:8000/v1`. Only needed when running pytest by hand; the driver supplies it |
 | `AIC_ACCURACY_TIERED_URL` | — | Tiered arm base URL. Unset or unreachable endpoints skip cleanly rather than failing |
 | `AIC_ACCURACY_BASELINE_SCORE` | — | Pre-measured baseline score. The arms share the GPU, so the driver scores them sequentially and passes the first arm's number forward |
