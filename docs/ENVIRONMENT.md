@@ -556,6 +556,7 @@ tolerance.
 | `AIC_ACCURACY_BASELINE_SCORE` | (unset) | `tests/accuracy/test_accuracy.py` | Baseline score measured earlier in the job; the arms share the GPU, so they are scored one after the other |
 | `AIC_ACCURACY_REFERENCE_SCORE` | (unset) | `tests/accuracy/test_accuracy.py` | Tiered score from before the restart; enables the restart assertion |
 | `AIC_ACCURACY_SCORE_OUT` | (unset) | `tests/accuracy/test_accuracy.py` | File the measured tiered score is written to, as JSON |
+| `AIC_ACCURACY_SAMPLES_OUT` | (unset) | `tests/accuracy/test_accuracy.py` | File the tiered arm's per-question answers are written to, as JSON lines |
 <!-- END generated:accuracy -->
 
 ### rocjitsu VM test (`make test-rocjitsu-local`)

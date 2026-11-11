@@ -70,6 +70,12 @@ all three out of the harvested log archive and reports them in the job summary,
 and on the `/run-ci-accuracy` path in the PR comment. Nothing is compared across
 runs — with no golden file, a run's own numbers are the only record it leaves.
 
+Each phase also writes every question's answer as JSON lines —
+`baseline-samples.jsonl`, `tiered-samples.jsonl`, `restart-samples.jsonl` — with
+the generated text, the extracted answer, `exact_match`, and the `prompt_hash`
+lm_eval records. When two arms disagree, these say on which questions and where
+the text diverged.
+
 ## Skipping is a laptop default, not a CI one
 
 The fixtures in `conftest.py` skip when an endpoint is missing, so the package
@@ -132,6 +138,7 @@ with the Slurm job's own knobs.
 | `AIC_ACCURACY_TIERED_URL` | LMCache/NIXL arm. |
 | `AIC_ACCURACY_REFERENCE_SCORE` | Pre-restart score; enables the restart assertion. |
 | `AIC_ACCURACY_SCORE_OUT` | Write the measured tiered score here as JSON. |
+| `AIC_ACCURACY_SAMPLES_OUT` | Write the tiered arm's per-question answers here as JSON lines. |
 
 ## Thresholds
 
