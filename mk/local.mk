@@ -105,29 +105,29 @@ wheels:
 	find "$(WHEELS_DIR)" -mindepth 1 -maxdepth 1 -type d -exec rm -rf {} + ; \
 	bash "$(REPO_ROOT)/.github/scripts/workflows/check-wheels.sh" "$(WHEELS_DIR)" "$(ROCM_ARCH)"
 
-up: ensure-compose check-hf-token prep-dirs
+up: ensure-compose check-hf-token check-stack prep-dirs
 	@mkdir -p "$(AIC_METRICS_DIR)"
 	PROM_UID="$$(id -u)" PROM_GID="$$(id -g)" \
 	    $(COMPOSE_CACHE) --profile monitoring up
 
-up-batch: ensure-compose check-hf-token prep-dirs
+up-batch: ensure-compose check-hf-token check-stack prep-dirs
 	@mkdir -p "$(AIC_METRICS_DIR)"
 	PROM_UID="$$(id -u)" PROM_GID="$$(id -g)" \
 	    $(COMPOSE_CACHE) --profile monitoring up -d
 	@echo "Started. Use 'make logs' to follow or 'make down' to stop."
 
-up-dev: ensure-compose check-hf-token prep-dirs
+up-dev: ensure-compose check-hf-token check-stack prep-dirs
 	@mkdir -p "$(AIC_METRICS_DIR)"
 	PROM_UID="$$(id -u)" PROM_GID="$$(id -g)" \
 	    VLLM_EXTRA_ARGS="--enforce-eager $${VLLM_EXTRA_ARGS}" \
 	    $(COMPOSE_CACHE) --profile monitoring up -d
 	@echo "Started in dev mode (enforce-eager, no CUDA graphs). Use 'make logs' to follow."
 
-up-gds-l1: ensure-compose check-hf-token check-gds-slab prep-dirs
+up-gds-l1: ensure-compose check-hf-token check-gds-slab check-stack prep-dirs
 	@mkdir -p "$(AIC_METRICS_DIR)"
 	PROM_UID="$$(id -u)" PROM_GID="$$(id -g)" GDS_MODE=1 $(COMPOSE_CACHE) --profile monitoring up
 
-up-gds-l1-batch: ensure-compose check-hf-token check-gds-slab prep-dirs
+up-gds-l1-batch: ensure-compose check-hf-token check-gds-slab check-stack prep-dirs
 	@mkdir -p "$(AIC_METRICS_DIR)"
 	PROM_UID="$$(id -u)" PROM_GID="$$(id -g)" GDS_MODE=1 $(COMPOSE_CACHE) --profile monitoring up -d
 	@echo "Started (GDS L1 mode + monitoring). Use 'make logs' to follow or 'make down' to stop."
@@ -188,7 +188,7 @@ venv:
 ifeq ($(call _is_makefile_default,KV_TRANSFER_ARG),file)
 vllm-reset-test: export KV_TRANSFER_ARG := $(subst "lmcache.mp.lazy_offload":true,"lmcache.mp.lazy_offload":false,$(KV_TRANSFER_ARG))
 endif
-vllm-reset-test: check-hf-token prep-dirs
+vllm-reset-test: check-hf-token check-stack prep-dirs
 	@echo "Starting LMCache L1+L2 retrieval test (L1=$(if $(LMCACHE_L1_SIZE_GB),$(LMCACHE_L1_SIZE_GB)GiB,compose default)) + NIXL POSIX L2..."
 	@mkdir -p "$(AIC_METRICS_DIR)"
 	PROM_UID="$$(id -u)" PROM_GID="$$(id -g)" \
