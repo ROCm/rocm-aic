@@ -138,7 +138,7 @@ up-gds-l1-batch: ensure-compose check-hf-token check-gds-slab prep-dirs
 # It uses the same GPU as `make up`, so stop that stack first.
 up-vllm-only: ensure-compose check-hf-token prep-dirs
 	KV_TRANSFER_ARG= $(COMPOSE) --profile vllm-only --profile client up -d vllm-only client
-	@echo "Started aic-vllm-only-gpu$(GPU). Use 'make down' to stop."
+	@echo "Started $(AIC_STACK)-vllm-only-gpu$(GPU). Use 'make down' to stop."
 
 down:
 	$(COMPOSE_CACHE) --profile monitoring --profile vllm-only down
@@ -156,10 +156,10 @@ ps:
 	$(COMPOSE_CACHE) ps
 
 shell-lmcache:
-	docker exec -it aic-lmcache bash -l
+	docker exec -it $(AIC_STACK)-lmcache bash -l
 
 shell-vllm:
-	docker exec -it aic-vllm-gpu$(GPU) bash -l
+	docker exec -it $(AIC_STACK)-vllm-gpu$(GPU) bash -l
 
 restart-vllm:
 	$(COMPOSE_CACHE) restart vllm
@@ -196,7 +196,7 @@ vllm-reset-test: check-hf-token prep-dirs
 	    AIC_L2_BACKEND=$(AIC_L2_BACKEND) \
 	    $(COMPOSE_CACHE) --profile monitoring up -d
 	@echo "Waiting for vLLM to be healthy..."
-	@_vc="aic-vllm-gpu$(GPU)"; \
+	@_vc="$(AIC_STACK)-vllm-gpu$(GPU)"; \
 	for i in $$(seq 1 $(VLM_READY_RETRIES)); do \
 	    if $(call aic_probe,"$$_vc",8000,/health); then echo "vLLM healthy after $${i} polls"; break; fi; \
 	    if ! docker ps --format '{{.Names}}' 2>/dev/null | grep -qx "$$_vc"; then \
@@ -214,21 +214,21 @@ vllm-reset-test: check-hf-token prep-dirs
 	    sleep 5; \
 	done
 	$(_wait_aic_client)
-	@_v="$$($(call aic_bridge_url,aic-vllm-gpu$(GPU),8000))" && _l="$$($(call aic_bridge_url,aic-lmcache,8080))" || exit 1; \
+	@_v="$$($(call aic_bridge_url,$(AIC_STACK)-vllm-gpu$(GPU),8000))" && _l="$$($(call aic_bridge_url,$(AIC_STACK)-lmcache,8080))" || exit 1; \
 	echo "Clearing vLLM GPU prefix cache..."; \
-	docker exec aic-client curl -s -X POST "$$_v/reset_prefix_cache" \
+	docker exec $(AIC_STACK)-client curl -s -X POST "$$_v/reset_prefix_cache" \
 	    -H 'Content-Type: application/json' -d '{}' | grep -q '"success":true' \
 	    || { echo "ERROR: vLLM cache reset failed" >&2; exit 1; }; \
 	echo "Clearing LMCache L1 DRAM cache..."; \
-	docker exec aic-client curl -s -X POST "$$_l/cache/clear" \
+	docker exec $(AIC_STACK)-client curl -s -X POST "$$_l/cache/clear" \
 	    -H 'Content-Type: application/json' \
 	    -d '{"tier":"l1","force":true}' | grep -q '"status":"ok"' \
 	    || { echo "ERROR: LMCache L1 clear failed" >&2; exit 1; }; \
 	echo "Resetting LMCache Prometheus counters..."; \
-	docker exec aic-client curl -s -X POST "$$_l/metrics/reset" > /dev/null; \
+	docker exec $(AIC_STACK)-client curl -s -X POST "$$_l/metrics/reset" > /dev/null; \
 	docker exec -e AIC_TEST_VLLM_URL="$$_v" -e AIC_TEST_LMCACHE_URL="$$_l" \
 	    -e AIC_TEST_MODEL -e AIC_TEST_ANCHORS -e AIC_TEST_FLOOD \
 	    -e AIC_TEST_TIMEOUT -e AIC_TEST_SEED \
 	    -e AIC_TEST_ANCHOR_REPS -e AIC_TEST_MAX_TOKENS \
-	    aic-client aic-bench --endpoint "$$_v" reset-test
+	    $(AIC_STACK)-client aic-bench --endpoint "$$_v" reset-test
 	@echo "Test complete. Run 'make down' to stop the stack."
