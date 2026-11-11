@@ -3709,11 +3709,9 @@ REMOTE
 # inert.  Job sizing therefore lives here, on the _sbatch_run call.
 #
 #   AIC_ACCURACY_MODEL          model to serve            (default: AIC_TINY_MODEL)
-#   AIC_ACCURACY_DELTA          allowed restart score change, two-sided (default: 0.02)
 #   AIC_ACCURACY_TIME/CPUS/MEM  Slurm sizing
 #   AIC_ACCURACY_READY_TIMEOUT  x5s waits for the endpoint (default: 120)
 AIC_ACCURACY_MODEL="${AIC_ACCURACY_MODEL:-${AIC_TINY_MODEL}}"
-AIC_ACCURACY_DELTA="${AIC_ACCURACY_DELTA:-0.02}"
 # 58 min measured for the two-arm full-split run (SPUR job 6235), plus ~7 min
 # now that phase 4 re-scores the full split too -- ~65 min, so 2h is ~1.8x.
 AIC_ACCURACY_TIME="${AIC_ACCURACY_TIME:-02:00:00}"
@@ -3759,7 +3757,6 @@ export AIC_FORCE_LOAD='${AIC_FORCE_LOAD:-0}'
 export HF_HOME='${HF_HOME}'
 export HF_TOKEN='${HF_TOKEN:-}'
 export AIC_ACCURACY_MODEL='${AIC_ACCURACY_MODEL}'
-export AIC_ACCURACY_DELTA='${AIC_ACCURACY_DELTA}'
 export AIC_ACCURACY_READY_TIMEOUT='${AIC_ACCURACY_READY_TIMEOUT}'
 export AIC_MONITORING='${AIC_MONITORING:-1}'
 export AIC_ACCURACY_SCRAPE_S='${AIC_ACCURACY_SCRAPE_S:-30}'

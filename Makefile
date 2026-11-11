@@ -244,7 +244,7 @@ AIC_CI_SCRIPT_DIR := $(CURDIR)/.github/scripts/runners
 AIC_FAST_ARCH ?= gfx950
 
 # ---- accuracy-test ---------------------------------------------------------
-export AIC_ACCURACY_MODEL AIC_ACCURACY_DELTA
+export AIC_ACCURACY_MODEL
 export AIC_ACCURACY_TIME AIC_ACCURACY_CPUS AIC_ACCURACY_MEM
 export AIC_ACCURACY_READY_TIMEOUT
 export AIC_ACCURACY_LIMIT

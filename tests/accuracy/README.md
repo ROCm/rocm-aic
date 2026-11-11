@@ -9,10 +9,27 @@ answers?**
 |---|---|
 | `test_tiered_matches_baseline` | The connector or the KV store path changing the computation. Scores a VRAM-only arm and a tiered arm in the same job and asserts every answer is byte-identical. |
 | `test_tiered_above_floor` | Both arms breaking identically, which the differential cannot see. Asserts `tiered >= expected.json[MODEL] - slack`. |
-| `test_score_survives_restart` | Retrieval corruption. Driver-only: vLLM is restarted, LMCache keeps its DRAM/NVMe state, the prompts are replayed. |
+| `test_answers_survive_restart` | Retrieval corruption. Driver-only: vLLM is restarted, LMCache keeps its DRAM/NVMe state, the prompts are replayed, and every answer must match the baseline arm re-scored with its own prefix cache warm. |
 
-Both same-run comparisons to the baseline accuracy are **two-sided** to ensure
-that unexpected increased or decreases in accuracy are caught.
+Both same-run comparisons are per question and exact, so a gain is caught as
+surely as a loss.
+
+### Why the restart is compared with a cached re-score
+
+When part of a prompt is already cached, vLLM computes only the rest, and how
+much it computes decides which kernels run. That alone changes ~57% of the
+answers: the baseline arm re-scored with its GPU prefix cache warm differs from
+its own first pass on 746 of 1319 questions. So the restart pass, whose
+prefixes come from LMCache, is compared with that cached re-score instead of
+with a first pass. Both arms run with vLLM's block size equal to LMCache's
+256-token chunk, so both caches reuse the same number of tokens per prompt.
+
+The one exception is a prompt whose length is an exact multiple of 256. vLLM's
+own cache must then leave the whole last block to compute, while the connector
+loads all but the last token, so the two recompute different amounts. Those
+prompts (7 of 1319 for the default model) are left out of the restart
+comparison. On SPUR (job 282084) the other 1312 matched exactly, and 4 of the 7
+differed.
 
 ## Running it
 
@@ -44,21 +61,20 @@ docker run --rm --network aic --user "$(id -u):$(id -g)" -e HOME=/tmp \
   -m pytest tests/accuracy -v
 ```
 
-Drop `AIC_ACCURACY_BASELINE_URL` and add `-k "floor or restart"` for a single
-tiered arm. `PYTHONNOUSERSITE=1` keeps a populated
+Drop `AIC_ACCURACY_BASELINE_URL` and add `-k floor` for a single tiered arm. `PYTHONNOUSERSITE=1` keeps a populated
 `~/.local/lib/python3.*/site-packages` from shadowing the venv.
 
 ### Under the driver
 
 ```bash
-make accuracy-test        # SPUR, both arms, full split (~65 min)
+make accuracy-test        # SPUR, both arms, full split (~27 min)
 make accuracy-test-fast   # the same, AIC_ROCM_ARCH pinned to AIC_FAST_ARCH
 ```
 
-Five phases: score the VRAM-only arm and confirm it never tiered, score the
-tiered arm and run the pytest assertions, check the NVMe pool grew and the
-scored pass read back through the tier, restart vLLM and re-score, then verify
-that re-score came from cache rather than recompute.
+Five phases: score the VRAM-only arm twice (cold, then with its prefix cache
+warm) and confirm it never tiered, score the tiered arm and run the pytest
+assertions, check the NVMe pool grew and LMCache was consulted, restart vLLM and
+re-score, then verify that re-score came from cache rather than recompute.
 
 There is one gate, not a fast one and a thorough one — `accuracy-test-fast`
 differs only in the arch pin, exactly as `tiny-test-fast` differs from
@@ -70,11 +86,12 @@ all three out of the harvested log archive and reports them in the job summary,
 and on the `/run-ci-accuracy` path in the PR comment. Nothing is compared across
 runs — with no golden file, a run's own numbers are the only record it leaves.
 
-Each phase also writes every question's answer as JSON lines —
-`baseline-samples.jsonl`, `tiered-samples.jsonl`, `restart-samples.jsonl` — with
-the generated text, the extracted answer, `exact_match`, and the `prompt_hash`
-lm_eval records. When two arms disagree, these say on which questions and where
-the text diverged.
+Each pass also writes every question's answer as JSON lines —
+`baseline-samples.jsonl`, `baseline-cached-samples.jsonl`,
+`tiered-samples.jsonl`, `restart-samples.jsonl` — with the generated text, the
+extracted answer, `exact_match`, the `prompt_hash` lm_eval records, and the
+prompt's token count. When two arms disagree, these say on which questions and
+where the text diverged.
 
 ## Skipping is a laptop default, not a CI one
 
@@ -86,7 +103,7 @@ It is opt-in rather than read from `$CI` so the behavior is reproducible by hand
 
 The switch governs *reachability only*. Skips that encode "this assertion does
 not apply to this run" stay skips — a model absent from `expected.json`, or
-`AIC_ACCURACY_REFERENCE_SCORE` unset — because failing them would report a
+`AIC_ACCURACY_REFERENCE_SAMPLES` unset — because failing them would report a
 config gap as a regression.
 
 ## What the driver proves beyond the score
@@ -127,29 +144,27 @@ either never fires or fires spuriously. Every run logs them.
 | Variable | Default | Meaning |
 |---|---|---|
 | `AIC_ACCURACY_MODEL` | `Qwen/Qwen2.5-0.5B-Instruct` | Model to score. Must match what the arms are serving. |
-| `AIC_ACCURACY_DELTA` | `0.02` | Allowed restart-vs-pre-restart score change, **two-sided**. |
 | `AIC_ACCURACY_BASELINE_SAMPLES` | unset | Baseline answers from an earlier pass, as JSON lines; otherwise the baseline URL is scored. |
 | `AIC_ACCURACY_REQUIRED` | unset | `1` = an unreachable endpoint fails instead of skipping. Set by the CI driver. |
 | `AIC_ACCURACY_CONCURRENT` | `1` | `lm_eval` request concurrency. Above 1, answers depend on request timing. |
 | `AIC_ACCURACY_BASELINE_URL` | unset | VRAM-only arm, e.g. `http://172.18.0.4:8000/v1`. |
 | `AIC_ACCURACY_TIERED_URL` | unset | LMCache/NIXL arm. |
-| `AIC_ACCURACY_REFERENCE_SCORE` | unset | Pre-restart score; enables the restart assertion. |
+| `AIC_ACCURACY_REFERENCE_SAMPLES` | unset | Cached baseline re-score's answers, as JSON lines; enables the restart assertion. |
+| `AIC_ACCURACY_BLOCK_SIZE` | `256` | vLLM `--block-size` the arms ran with; the driver sets it to LMCache's chunk size. |
 | `AIC_ACCURACY_SCORE_OUT` | unset | Write the measured tiered score here as JSON. |
 | `AIC_ACCURACY_SAMPLES_OUT` | unset | Write the tiered arm's per-question answers here as JSON lines. |
 
 ## Thresholds
 
-**The baseline and tiered arms have no tolerance:** every answer must be
-byte-identical. They used to be compared by score within `DELTA = 0.02`, which
-was described as ~6σ of baseline noise. That figure came from three runs of one
+**The same-run comparisons have no tolerance:** every compared answer must be
+byte-identical. They used to compare scores within `DELTA = 0.02`, which was
+described as ~6σ of baseline noise. That figure came from three runs of one
 arm (σ = 0.0032) and left out the √2 for a difference of two arms. Measured
 across nightly runs at 32 requests in flight, one arm moved by σ ≈ 0.007 and
 the difference by σ ≈ 0.010, so 0.02 was ~2σ and failed healthy runs.
 
-`DELTA` still bounds the restart re-score against the pre-restart score.
-
 **Every phase scores the same 1319 items, and there is deliberately no item-cap
-knob.** `DELTA` and `FLOOR_RTOL = 0.05` are computed for the full set of
+knob.** `FLOOR_RTOL = 0.05` is computed for the full set of
 questions, and would have to be modified to account for smaller sample size
 if we ever scored a subset of questions. For a short local run, pass `--limit`
 to `lm_eval` in `_score()` on a scratch commit rather than reintroducing the

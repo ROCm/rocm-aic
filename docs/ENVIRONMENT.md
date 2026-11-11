@@ -94,12 +94,12 @@ and that variant skipped the differential — the one assertion the gate is for.
 | Variable | Default | Description |
 | --- | --- | --- |
 | `AIC_ACCURACY_MODEL` | `$AIC_TINY_MODEL` | Model to score. Must match what the arms serve |
-| `AIC_ACCURACY_DELTA` | `0.02` | How far the restart re-score may move from the pre-restart score, either way. The baseline and tiered answers must match exactly |
 | `AIC_ACCURACY_CONCURRENT` | `1` | `lm_eval` request concurrency. Above 1, answers depend on request timing |
 | `AIC_ACCURACY_BASELINE_URL` | — | Baseline arm base URL as seen from the `aic` bridge, e.g. `http://aic-vllm-only-gpu0:8000/v1`. Only needed when running pytest by hand; the driver supplies it |
 | `AIC_ACCURACY_TIERED_URL` | — | Tiered arm base URL. Unset or unreachable endpoints skip cleanly rather than failing |
 | `AIC_ACCURACY_BASELINE_SAMPLES` | — | Baseline arm's per-question answers (JSON lines). The arms share the GPU, so the driver scores them sequentially and passes the first arm's answers forward |
-| `AIC_ACCURACY_REFERENCE_SCORE` | — | Pre-restart tiered score; enables the restart assertion |
+| `AIC_ACCURACY_REFERENCE_SAMPLES` | — | Answers from the baseline arm re-scored with its prefix cache warm; enables the restart assertion |
+| `AIC_ACCURACY_BLOCK_SIZE` | `256` | vLLM `--block-size` the arms ran with. The driver sets it to LMCache's chunk size so both caches reuse the same prefix length |
 | `AIC_ACCURACY_SCORE_OUT` | — | Write the measured tiered score here as JSON |
 | `AIC_ACCURACY_SAMPLES_OUT` | — | Write the tiered arm's per-question answers here as JSON lines |
 | `AIC_ACCURACY_TIME` | `02:00:00` | Slurm wall-time for the accuracy job |

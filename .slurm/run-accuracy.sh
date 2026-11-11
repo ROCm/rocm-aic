@@ -14,7 +14,8 @@
 # forward to the tiered arm's pytest run via AIC_ACCURACY_BASELINE_SAMPLES.
 #
 #   Phase 1  vram_only arm: plain vLLM, no LMCache, KV never leaves VRAM.
-#            Score gsm8k, record the number, assert this arm did NOT tier, tear
+#            Score gsm8k, then score it again with the GPU prefix cache warm
+#            (phase 4's reference), assert this arm did NOT tier, tear
 #            down.  The negative control matters as much as phase 3's positive
 #            one: a baseline that quietly tiered makes the differential compare
 #            AIC against AIC, and the scores would still agree.
@@ -25,9 +26,9 @@
 #            the tier.  Without this a tiered arm that never tiered would pass
 #            the differential trivially -- vacuous rather than green.
 #   Phase 4  Restart vLLM only (LMCache keeps its DRAM/NVMe state), re-score the
-#            full split, and assert within DELTA of the phase-2 score.  The
-#            prompts are guaranteed cache hits, so this isolates
-#            retrieval-from-NVMe.
+#            full split, and assert the answers match phase 1's cached re-score,
+#            which reused the same prompt prefixes from VRAM.  The prompts are
+#            guaranteed cache hits, so this isolates retrieval-from-NVMe.
 #   Phase 5  Prove that re-score was SERVED from the tier, not recomputed.
 #
 # There is deliberately no committed golden: no reference.json, no md5 manifest
@@ -64,7 +65,7 @@
 #   AIC_VLLM_IMAGE=aic-vllm:latest AIC_VLLM_ARTIFACT=/shared/aic-vllm-latest-gfx950.ref \
 #   AIC_LMCACHE_IMAGE=aic-lmcache:latest AIC_LMCACHE_ARTIFACT=/shared/aic-lmcache-latest-gfx950.ref \
 #   AIC_ROCM_ARCH=gfx950 HF_HOME=/shared/hf AIC_ACCURACY_MODEL=Qwen/Qwen2.5-0.5B-Instruct \
-#   AIC_ACCURACY_DELTA=0.02 AIC_ACCURACY_READY_TIMEOUT=120 \
+#   AIC_ACCURACY_READY_TIMEOUT=120 \
 #       bash .slurm/run-accuracy.sh
 #
 # Required, all set by the submitter:
@@ -78,7 +79,6 @@
 #   AIC_ROCM_ARCH               arch tag forwarded to compose
 #   HF_HOME                     persistent HF cache
 #   AIC_ACCURACY_MODEL          model to serve
-#   AIC_ACCURACY_DELTA          allowed restart-vs-pre-restart score change, two-sided
 #   AIC_ACCURACY_READY_TIMEOUT  x5s waits for the endpoint
 # Optional:
 #   HF_TOKEN                    gated-model download token (default: empty)
@@ -112,7 +112,6 @@ set -uo pipefail
 : "${AIC_ROCM_ARCH:?run-accuracy.sh: AIC_ROCM_ARCH must be set by the submitter}"
 : "${HF_HOME:?run-accuracy.sh: HF_HOME must be set by the submitter}"
 : "${AIC_ACCURACY_MODEL:?run-accuracy.sh: AIC_ACCURACY_MODEL must be set by the submitter}"
-: "${AIC_ACCURACY_DELTA:?run-accuracy.sh: AIC_ACCURACY_DELTA must be set by the submitter}"
 : "${AIC_ACCURACY_READY_TIMEOUT:?run-accuracy.sh: AIC_ACCURACY_READY_TIMEOUT must be set by the submitter}"
 
 command -v docker >/dev/null 2>&1 || { echo "$(hostname): docker not found" >&2; exit 1; }
@@ -165,10 +164,11 @@ _client_args=(--rm --name "${ACC_CLIENT}"
     -e HF_HOME -e HF_TOKEN -e HF_HUB_OFFLINE -e TRANSFORMERS_OFFLINE
     # Passed by name, so each run sees the value exported at that moment and an
     # unset one stays unset.
-    -e AIC_ACCURACY_MODEL -e AIC_ACCURACY_DELTA -e AIC_ACCURACY_REQUIRED
+    -e AIC_ACCURACY_MODEL -e AIC_ACCURACY_REQUIRED
     -e AIC_ACCURACY_LIMIT -e AIC_ACCURACY_CONCURRENT
     -e AIC_ACCURACY_BASELINE_URL -e AIC_ACCURACY_TIERED_URL
-    -e AIC_ACCURACY_BASELINE_SAMPLES -e AIC_ACCURACY_REFERENCE_SCORE
+    -e AIC_ACCURACY_BASELINE_SAMPLES -e AIC_ACCURACY_REFERENCE_SAMPLES
+    -e AIC_ACCURACY_BLOCK_SIZE
     -e AIC_ACCURACY_SCORE_OUT -e AIC_ACCURACY_SAMPLES_OUT)
 for _gid in $(id -G); do _client_args+=(--group-add "${_gid}"); done
 # _client <docker-network> <program> [args...]
@@ -194,7 +194,6 @@ fi
 PYTEST=(_client_py -m pytest)
 
 export AIC_ACCURACY_MODEL="${AIC_ACCURACY_MODEL}"
-export AIC_ACCURACY_DELTA="${AIC_ACCURACY_DELTA}"
 # This is CI: an endpoint the fixtures cannot reach must fail the job, not skip
 # it green.  The fixtures default to skipping so the package stays runnable on a
 # laptop with no GPU; here we have brought the arms up ourselves and every skip
@@ -227,6 +226,12 @@ export VLM_MAX_MODEL_LEN=4096
 export VLM_MAX_NUM_BATCHED_TOKENS=4096
 export VLM_ATTENTION_BACKEND=TRITON_ATTN
 export VLM_KV_CACHE_DTYPE=auto
+# LMCache's chunk size (its server default), in both arms.  Phase 4 compares
+# prefixes reused from LMCache with prefixes reused from vLLM's own prefix cache;
+# with equal granularity both reuse the same number of tokens, and so recompute
+# the same remainder with the same kernels.
+export VLM_BLOCK_SIZE=256
+export AIC_ACCURACY_BLOCK_SIZE="${VLM_BLOCK_SIZE}"
 # The containers run as root, so the slot files they leave are root-owned and a
 # plain rm from this shell cannot remove them.  Fall back to removing the pool
 # from inside a container, and report whatever survives.
@@ -460,6 +465,26 @@ _client_py "${AIC_DAY_DIR}/tests/accuracy/score_endpoint.py" "${BASE_URL}" \
     echo "[accuracy-test] FAIL: baseline scoring failed" >&2; exit 1; }
 BASELINE_SCORE="$(python3 -c "import json;print(json.load(open('${AIC_LOG_DIR}/baseline-score.json'))['score'])")"
 echo "[accuracy-test] baseline score: ${BASELINE_SCORE}"
+
+# --- cached re-score: phase 4's reference ------------------------------------
+# The same prompts again, without resetting the prefix cache, so each prompt's
+# prefix is reused from VRAM and only the rest is computed -- what the restart
+# pass does with prefixes from LMCache.  Its answers differ from the first
+# pass's on ~57% of questions (different recompute length, different kernels),
+# which is why the first pass cannot serve as phase 4's reference.
+PC_HITS_BEFORE="$(_vllm_ext vllm:prefix_cache_hits_total)"
+echo "[accuracy-test] re-scoring baseline with the prefix cache warm"
+_client_py "${AIC_DAY_DIR}/tests/accuracy/score_endpoint.py" "${BASE_URL}" \
+    --out "${AIC_LOG_DIR}/baseline-cached-score.json" \
+    --samples-out "${AIC_LOG_DIR}/baseline-cached-samples.jsonl" || {
+    echo "[accuracy-test] FAIL: cached baseline re-score failed" >&2; exit 1; }
+PC_HITS=$(( $(_vllm_ext vllm:prefix_cache_hits_total) - PC_HITS_BEFORE ))
+echo "[accuracy-test] cached re-score reused ${PC_HITS} prompt tokens from VRAM"
+if [ "${PC_HITS}" -le 0 ]; then
+    echo "[accuracy-test] FAIL Phase 1: the cached re-score reused no prefixes, so it is not" >&2
+    echo "[accuracy-test]   the reference phase 4 needs (or vLLM's metrics were unreadable)." >&2
+    exit 1
+fi
 
 # --- negative control: this arm must not have tiered -------------------------
 # Everything above only CONFIGURES the arm to be AIC-free (AIC_L2_BACKEND=none,
@@ -771,9 +796,6 @@ fi
 # Phase 4: restart vLLM only -- LMCache keeps DRAM/NVMe state
 # ===========================================================================
 echo "[accuracy-test] === Phase 4: restart vLLM, re-score from the tier ==="
-TIERED_SCORE="$(python3 -c "import json;print(json.load(open('${AIC_LOG_DIR}/tiered-score.json'))['score'])" 2>/dev/null)" || {
-    echo "[accuracy-test] FAIL: no tiered score recorded in phase 2" >&2; exit 1; }
-
 pkill -9 -f 'vllm.entrypoints.openai' 2>/dev/null || true
 pkill -9 -f 'EngineCore'              2>/dev/null || true
 sleep 3
@@ -803,35 +825,28 @@ echo "[accuracy-test] pre-rescore counters: ext_q=${EXT_Q_BEFORE} ext_h=${EXT_H_
 
 # Same prompts against a warm tier, so the blocks SHOULD come back from
 # DRAM/NVMe rather than being recomputed.  Phase 5 checks whether they actually
-# did -- the score alone cannot tell the two apart, since a full recompute
-# produces the same answers.
-#
-# Full split, matching phase 2.  This used to re-score a 200-item prefix, which
-# meant comparing a 200-item number against a 1319-item reference: the tolerance
-# had to widen to +/-0.085 to cover the sampling noise, four times looser than
-# the gate it was meant to be.  Re-scoring everything costs ~7 min against a
-# warm cache and buys back the +/-0.02 comparison.
+# did.  The reference is phase 1's cached re-score, which reused the same
+# prefixes from VRAM; see test_answers_survive_restart.
 export AIC_ACCURACY_TIERED_URL="${TIERED_URL}"
-export AIC_ACCURACY_REFERENCE_SCORE="${TIERED_SCORE}"
-# Its own file rather than unset: the CI report wants all three numbers, and
-# tiered-score.json is the reference this phase is compared against -- reusing
-# it would overwrite the comparand mid-comparison.
+export AIC_ACCURACY_REFERENCE_SAMPLES="${AIC_LOG_DIR}/baseline-cached-samples.jsonl"
+# Their own files: the CI report wants every phase's number.
 export AIC_ACCURACY_SCORE_OUT="${AIC_LOG_DIR}/restart-score.json"
 export AIC_ACCURACY_SAMPLES_OUT="${AIC_LOG_DIR}/restart-samples.jsonl"
 unset AIC_ACCURACY_BASELINE_SAMPLES
 "${PYTEST[@]}" "${AIC_DAY_DIR}/tests/accuracy" -v -rs --no-header \
     -k 'restart' || {
-    echo "[accuracy-test] FAIL: phase 4 -- score regressed after restart" >&2
+    echo "[accuracy-test] FAIL: phase 4 -- answers changed after restart" >&2
     exit 1; }
 
 # ===========================================================================
 # Phase 5: prove the re-score was SERVED, not recomputed
 # ===========================================================================
-# Without this, phase 4 is nearly vacuous.  If the restart lost the cache
-# entirely, vLLM would recompute every prompt from scratch and produce the very
-# same answers -- phase 4 passes, and the "survives restart" claim is untested.
-# Phase 3 does not cover it either: that shows KV was WRITTEN to the pool during
-# phase 2, not that anything was READ BACK afterwards.
+# If the restart lost the cache entirely, vLLM would recompute every prompt and
+# phase 4 would fail on answers that no longer match the cached reference -- a
+# verdict that names the symptom, not the cause.  These counters name it, and
+# say which tier served the hits, which the answers cannot.  Phase 3 does not
+# cover it either: that shows KV was WRITTEN to the pool during phase 2, not
+# that anything was READ BACK afterwards.
 #
 # Two independent views must agree, since either alone has a failure mode:
 #   * vLLM's connector counters say the engine asked the tier and got blocks
