@@ -4,8 +4,8 @@
 
 """Score one endpoint and print the result as JSON.
 
-The driver runs the baseline and the AIC-equipped test sequentially, logging
-``AIC_ACCURACY_BASELINE_SCORE`` with pytest between runs.
+The driver runs the baseline and the AIC-equipped test sequentially, handing
+the baseline's answers to pytest via ``AIC_ACCURACY_BASELINE_SAMPLES``.
 """
 
 from __future__ import annotations

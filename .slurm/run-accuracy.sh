@@ -10,8 +10,8 @@
 # neither tiny-test (serves one completion) nor cliff (measures throughput) can.
 #
 # Five phases.  The two arms share a container name, a port and the GPU, so they
-# cannot coexist -- the baseline is scored, torn down, and its number carried
-# forward to the tiered arm's pytest run via AIC_ACCURACY_BASELINE_SCORE.
+# cannot coexist -- the baseline is scored, torn down, and its answers carried
+# forward to the tiered arm's pytest run via AIC_ACCURACY_BASELINE_SAMPLES.
 #
 #   Phase 1  vram_only arm: plain vLLM, no LMCache, KV never leaves VRAM.
 #            Score gsm8k, record the number, assert this arm did NOT tier, tear
@@ -78,7 +78,7 @@
 #   AIC_ROCM_ARCH               arch tag forwarded to compose
 #   HF_HOME                     persistent HF cache
 #   AIC_ACCURACY_MODEL          model to serve
-#   AIC_ACCURACY_DELTA          allowed tiered-vs-baseline gap, two-sided
+#   AIC_ACCURACY_DELTA          allowed restart-vs-pre-restart score change, two-sided
 #   AIC_ACCURACY_READY_TIMEOUT  x5s waits for the endpoint
 # Optional:
 #   HF_TOKEN                    gated-model download token (default: empty)
@@ -168,7 +168,7 @@ _client_args=(--rm --name "${ACC_CLIENT}"
     -e AIC_ACCURACY_MODEL -e AIC_ACCURACY_DELTA -e AIC_ACCURACY_REQUIRED
     -e AIC_ACCURACY_LIMIT -e AIC_ACCURACY_CONCURRENT
     -e AIC_ACCURACY_BASELINE_URL -e AIC_ACCURACY_TIERED_URL
-    -e AIC_ACCURACY_BASELINE_SCORE -e AIC_ACCURACY_REFERENCE_SCORE
+    -e AIC_ACCURACY_BASELINE_SAMPLES -e AIC_ACCURACY_REFERENCE_SCORE
     -e AIC_ACCURACY_SCORE_OUT -e AIC_ACCURACY_SAMPLES_OUT)
 for _gid in $(id -G); do _client_args+=(--group-add "${_gid}"); done
 # _client <docker-network> <program> [args...]
@@ -592,7 +592,7 @@ echo "[accuracy-test] pre-score lookup: req_tokens=${LOOKUP_REQ_BEFORE} hit_toke
 export AIC_ACCURACY_TIERED_URL="${TIERED_URL}"
 export AIC_ACCURACY_SCORE_OUT="${AIC_LOG_DIR}/tiered-score.json"
 export AIC_ACCURACY_SAMPLES_OUT="${AIC_LOG_DIR}/tiered-samples.jsonl"
-export AIC_ACCURACY_BASELINE_SCORE="${BASELINE_SCORE}"
+export AIC_ACCURACY_BASELINE_SAMPLES="${AIC_LOG_DIR}/baseline-samples.jsonl"
 
 rc=0
 "${PYTEST[@]}" "${AIC_DAY_DIR}/tests/accuracy" -v -rs --no-header || rc=$?
@@ -818,7 +818,7 @@ export AIC_ACCURACY_REFERENCE_SCORE="${TIERED_SCORE}"
 # it would overwrite the comparand mid-comparison.
 export AIC_ACCURACY_SCORE_OUT="${AIC_LOG_DIR}/restart-score.json"
 export AIC_ACCURACY_SAMPLES_OUT="${AIC_LOG_DIR}/restart-samples.jsonl"
-unset AIC_ACCURACY_BASELINE_SCORE
+unset AIC_ACCURACY_BASELINE_SAMPLES
 "${PYTEST[@]}" "${AIC_DAY_DIR}/tests/accuracy" -v -rs --no-header \
     -k 'restart' || {
     echo "[accuracy-test] FAIL: phase 4 -- score regressed after restart" >&2

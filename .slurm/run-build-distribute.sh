@@ -3709,7 +3709,7 @@ REMOTE
 # inert.  Job sizing therefore lives here, on the _sbatch_run call.
 #
 #   AIC_ACCURACY_MODEL          model to serve            (default: AIC_TINY_MODEL)
-#   AIC_ACCURACY_DELTA          allowed tiered-vs-baseline gap, two-sided (default: 0.02)
+#   AIC_ACCURACY_DELTA          allowed restart score change, two-sided (default: 0.02)
 #   AIC_ACCURACY_TIME/CPUS/MEM  Slurm sizing
 #   AIC_ACCURACY_READY_TIMEOUT  x5s waits for the endpoint (default: 120)
 AIC_ACCURACY_MODEL="${AIC_ACCURACY_MODEL:-${AIC_TINY_MODEL}}"
