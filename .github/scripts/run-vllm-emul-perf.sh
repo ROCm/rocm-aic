@@ -29,6 +29,7 @@ RESULTS_DIR="${VLLM_EMUL_OUT_DIR}/results"
 mkdir -p "${LOG_DIR}/vllm-emulator/bench" "${RESULTS_DIR}"
 # shellcheck source=scripts/aic-endpoints.sh
 source scripts/aic-endpoints.sh
+EMU_C="${AIC_STACK}-vllm-emulator"
 
 compose() {
     docker compose -f docker/docker-compose.yml "$@"
@@ -38,7 +39,7 @@ cleanup() {
     compose --profile emulate logs --no-color --no-log-prefix vllm-emulator \
         > "${LOG_DIR}/emulate-bench.log" 2>&1 || true
     compose --profile emulate down --remove-orphans --timeout 10 >/dev/null 2>&1 || true
-    docker rm -f aic-vllm-emulator >/dev/null 2>&1 || true
+    docker rm -f "${EMU_C}" >/dev/null 2>&1 || true
 }
 trap cleanup EXIT
 
@@ -54,11 +55,11 @@ compose --profile emulate up -d vllm-emulator
 
 ready=0
 for _i in $(seq 1 "${VLLM_EMUL_READY_TIMEOUT}"); do
-    if aic_probe aic-vllm-emulator 8000 /v1/models; then
+    if aic_probe "${EMU_C}" 8000 /v1/models; then
         ready=1
         break
     fi
-    if [ -z "$(docker ps -q -f name=aic-vllm-emulator)" ]; then
+    if [ -z "$(docker ps -q -f "name=^${EMU_C}$")" ]; then
         echo "[vllm-emul] FAIL: emulator container exited during startup" >&2
         compose --profile emulate logs --tail 120 --no-color vllm-emulator 2>&1 | sed 's/^/  [emu] /'
         exit 1
@@ -88,7 +89,7 @@ for point in ${VLLM_EMUL_SWEEP}; do
     nprompts="$(printf '%s' "${point}" | cut -d, -f4)"
     outfile="emu-${model_tag}-isl${isl}-osl${osl}-c${conc}.json"
     echo "[vllm-emul] bench isl=${isl} osl=${osl} concurrency=${conc} prompts=${nprompts}"
-    docker exec aic-vllm-emulator vllm bench serve \
+    docker exec "${EMU_C}" vllm bench serve \
         --host localhost --port 8000 --model "${VLLM_EMUL_MODEL}" \
         --dataset-name random \
         --random-input-len "${isl}" --random-output-len "${osl}" \
