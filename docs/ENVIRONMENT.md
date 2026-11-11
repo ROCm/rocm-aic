@@ -370,7 +370,7 @@ container name on the `aic` bridge, from the `aic-client` container (see
 | `AIC_CLIENT_IMAGE` | `aic-client:latest`; `aic-client:${AIC_VERSION}` (`.slurm/run-build-distribute.sh`); `aic-client:$(<"${REPO}/VERSION")` (`.slurm/run-cliff.sbatch`) | `docker/docker-compose.yml` | Image of the `aic-client` container and of the throwaway AgentX containers. `make` sets it to the ref bake tags (`aic-client:<AIC_VERSION>`); compose builds it from `docker/client/Dockerfile` when it is missing |
 | `AIC_FETCH_IMAGE` | `curlimages/curl:8.23.0` | `scripts/aic-endpoints.sh` | Image `aic_fetch` runs `curl` from; scripts set it to an AIC image already on the node |
 | `AIC_FETCH_TIMEOUT` | `60` | `scripts/aic-endpoints.sh` | `aic_fetch` request timeout, seconds |
-| `AIC_NETWORK` | `aic` | `scripts/aic-endpoints.sh` | Docker network `aic_fetch` and the endpoint helpers attach to |
+| `AIC_NETWORK` | `${AIC_STACK}` | `benchmarks/agentx/run_agentx.sh` | Docker network the AgentX client joins; defaults to the stack's (`AIC_STACK`). `aic_fetch` and the endpoint helpers always use the stack's |
 <!-- END generated:network -->
 
 ### Monitoring
