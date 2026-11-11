@@ -101,6 +101,7 @@ and that variant skipped the differential — the one assertion the gate is for.
 | `AIC_ACCURACY_BASELINE_SCORE` | — | Pre-measured baseline score. The arms share the GPU, so the driver scores them sequentially and passes the first arm's number forward |
 | `AIC_ACCURACY_REFERENCE_SCORE` | — | Pre-restart tiered score; enables the restart assertion |
 | `AIC_ACCURACY_SCORE_OUT` | — | Write the measured tiered score here as JSON |
+| `AIC_ACCURACY_SAMPLES_OUT` | — | Write the tiered arm's per-question answers here as JSON lines |
 | `AIC_ACCURACY_TIME` | `02:00:00` | Slurm wall-time for the accuracy job |
 | `AIC_ACCURACY_CPUS` | `8` | Slurm `--cpus-per-task` |
 | `AIC_ACCURACY_MEM` | `32G` | Slurm `--mem` |

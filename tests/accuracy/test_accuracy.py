@@ -99,6 +99,8 @@ REFERENCE_SCORE = float(_REFERENCE_SCORE) if _REFERENCE_SCORE else None
 # When set, the measured tiered score is written here as JSON so a later pytest
 # invocation (the restart phase) can be handed it via AIC_ACCURACY_REFERENCE_SCORE.
 SCORE_OUT = os.getenv("AIC_ACCURACY_SCORE_OUT")
+# When set, the tiered arm's per-question answers are written here as JSON lines.
+SAMPLES_OUT = os.getenv("AIC_ACCURACY_SAMPLES_OUT")
 
 TASK = "gsm8k"
 FILTER = "exact_match,strict-match"
@@ -127,8 +129,51 @@ def _within_delta(measured: float, reference: float, delta: float) -> bool:
     return abs(measured - reference) <= delta
 
 
-def _score(base_url: str) -> float:
+# Runs in a child process; see _score.  Takes its settings as one JSON argument.
+# With samples_out set, writes one JSON line per question: the generated text,
+# the extracted answer, and whether it was right.  prompt_hash lets a comparison
+# prove two runs were asked the same questions.
+_SCORE_SCRIPT = """
+import json, sys, lm_eval
+cfg = json.loads(sys.argv[1])
+results = lm_eval.simple_evaluate(
+    model="local-completions",
+    model_args=(
+        f"model={cfg['model']},"
+        f"base_url={cfg['url']}/completions,"
+        f"num_concurrent={cfg['concurrent']},"
+        "tokenized_requests=False,"
+        "trust_remote_code=True"
+    ),
+    tasks=cfg["task"],
+    num_fewshot=cfg["fewshot"],
+    limit=cfg["limit"],
+    random_seed=42,
+    numpy_random_seed=42,
+    torch_random_seed=42,
+    log_samples=bool(cfg["samples_out"]),
+)
+metric, filter_name = cfg["filter"].split(",")
+if cfg["samples_out"]:
+    with open(cfg["samples_out"], "w", encoding="utf-8") as fh:
+        for s in results["samples"][cfg["task"]]:
+            if s["filter"] != filter_name:
+                continue
+            fh.write(json.dumps({
+                "doc_id": s["doc_id"],
+                "prompt_hash": s["prompt_hash"],
+                "resp": s["resps"][0][0],
+                "answer": s["filtered_resps"][0],
+                "exact_match": s[metric],
+            }) + "\\n")
+print(json.dumps({"score": results["results"][cfg["task"]][cfg["filter"]]}))
+"""
+
+
+def _score(base_url: str, samples_out: str | None = None) -> float:
     """Run gsm8k against one endpoint and return its strict-match score.
+
+    With samples_out, also write each question's answer there as JSON lines.
 
     lm_eval.simple_evaluate() uses asyncio.run() internally; if called more
     than once in the same process, aiohttp's TCPConnector retains a reference
@@ -137,32 +182,14 @@ def _score(base_url: str) -> float:
     """
     import subprocess
     import sys
-    import textwrap
 
-    script = textwrap.dedent(f"""
-        import json, lm_eval
-        model_args = (
-            "model={MODEL},"
-            "base_url={base_url}/completions,"
-            "num_concurrent={NUM_CONCURRENT},"
-            "tokenized_requests=False,"
-            "trust_remote_code=True"
-        )
-        results = lm_eval.simple_evaluate(
-            model="local-completions",
-            model_args=model_args,
-            tasks="{TASK}",
-            num_fewshot={NUM_FEWSHOT},
-            limit={LIMIT!r},
-            random_seed=42,
-            numpy_random_seed=42,
-            torch_random_seed=42,
-        )
-        print(json.dumps({{"url": "{base_url}", "model": "{MODEL}",
-                           "score": results["results"]["{TASK}"]["{FILTER}"]}}))
-    """)
+    cfg = {
+        "model": MODEL, "url": base_url, "concurrent": NUM_CONCURRENT,
+        "task": TASK, "fewshot": NUM_FEWSHOT, "limit": LIMIT, "filter": FILTER,
+        "samples_out": samples_out,
+    }
     proc = subprocess.run(
-        [sys.executable, "-c", script],
+        [sys.executable, "-c", _SCORE_SCRIPT, json.dumps(cfg)],
         capture_output=True, text=True, timeout=1800,
     )
     if proc.returncode != 0:
@@ -187,7 +214,7 @@ def _score(base_url: str) -> float:
 
 @pytest.fixture(scope="session")
 def tiered_score(tiered_url: str) -> float:
-    score = _score(tiered_url)
+    score = _score(tiered_url, SAMPLES_OUT)
     print(f"\n[accuracy] tiered   {TASK} {FILTER} = {score:.4f}")
     if SCORE_OUT:
         pathlib.Path(SCORE_OUT).write_text(

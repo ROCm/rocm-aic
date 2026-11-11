@@ -169,7 +169,7 @@ _client_args=(--rm --name "${ACC_CLIENT}"
     -e AIC_ACCURACY_LIMIT -e AIC_ACCURACY_CONCURRENT
     -e AIC_ACCURACY_BASELINE_URL -e AIC_ACCURACY_TIERED_URL
     -e AIC_ACCURACY_BASELINE_SCORE -e AIC_ACCURACY_REFERENCE_SCORE
-    -e AIC_ACCURACY_SCORE_OUT)
+    -e AIC_ACCURACY_SCORE_OUT -e AIC_ACCURACY_SAMPLES_OUT)
 for _gid in $(id -G); do _client_args+=(--group-add "${_gid}"); done
 # _client <docker-network> <program> [args...]
 _client() {
@@ -455,7 +455,8 @@ _wait_ready vram_only || exit 1
 BASE_URL="$(_endpoint_url)" || exit 1
 echo "[accuracy-test] scoring baseline at ${BASE_URL}"
 _client_py "${AIC_DAY_DIR}/tests/accuracy/score_endpoint.py" "${BASE_URL}" \
-    --out "${AIC_LOG_DIR}/baseline-score.json" || {
+    --out "${AIC_LOG_DIR}/baseline-score.json" \
+    --samples-out "${AIC_LOG_DIR}/baseline-samples.jsonl" || {
     echo "[accuracy-test] FAIL: baseline scoring failed" >&2; exit 1; }
 BASELINE_SCORE="$(python3 -c "import json;print(json.load(open('${AIC_LOG_DIR}/baseline-score.json'))['score'])")"
 echo "[accuracy-test] baseline score: ${BASELINE_SCORE}"
@@ -590,6 +591,7 @@ echo "[accuracy-test] pre-score lookup: req_tokens=${LOOKUP_REQ_BEFORE} hit_toke
 
 export AIC_ACCURACY_TIERED_URL="${TIERED_URL}"
 export AIC_ACCURACY_SCORE_OUT="${AIC_LOG_DIR}/tiered-score.json"
+export AIC_ACCURACY_SAMPLES_OUT="${AIC_LOG_DIR}/tiered-samples.jsonl"
 export AIC_ACCURACY_BASELINE_SCORE="${BASELINE_SCORE}"
 
 rc=0
@@ -815,6 +817,7 @@ export AIC_ACCURACY_REFERENCE_SCORE="${TIERED_SCORE}"
 # tiered-score.json is the reference this phase is compared against -- reusing
 # it would overwrite the comparand mid-comparison.
 export AIC_ACCURACY_SCORE_OUT="${AIC_LOG_DIR}/restart-score.json"
+export AIC_ACCURACY_SAMPLES_OUT="${AIC_LOG_DIR}/restart-samples.jsonl"
 unset AIC_ACCURACY_BASELINE_SCORE
 "${PYTEST[@]}" "${AIC_DAY_DIR}/tests/accuracy" -v -rs --no-header \
     -k 'restart' || {

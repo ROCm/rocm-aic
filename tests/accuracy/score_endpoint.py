@@ -24,9 +24,10 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("url", help="base URL of the arm, e.g. http://IP:8000/v1")
     parser.add_argument("--out", help="write the JSON result here as well as stdout")
+    parser.add_argument("--samples-out", help="write each question's answer here as JSON lines")
     args = parser.parse_args()
 
-    score = _score(args.url.rstrip("/"))
+    score = _score(args.url.rstrip("/"), args.samples_out)
     payload = {"url": args.url, "model": MODEL, "score": score}
     text = json.dumps(payload)
     if args.out:
