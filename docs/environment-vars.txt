@@ -322,7 +322,7 @@ AIC_TINY_EXPORTERS: `AIC_EXPORTERS` value for that capture
 AIC_ACCURACY_MODEL: Model to score; must match what the arms serve
 AIC_ACCURACY_DELTA: Allowed gap between the tiered and baseline arms, two-sided; a larger gap counts as corruption
 AIC_ACCURACY_LIMIT: Cap on gsm8k items per arm. Unset scores the full split; `make accuracy-test-very-fast` sets `100`, and the floor is widened for a capped run
-AIC_ACCURACY_CONCURRENT: `lm_eval` request concurrency
+AIC_ACCURACY_CONCURRENT: `lm_eval` request concurrency. Above 1, answers depend on request timing
 AIC_ACCURACY_TIME: Accuracy job time limit
 AIC_ACCURACY_CPUS: `--cpus-per-task` of the accuracy job
 AIC_ACCURACY_MEM: `--mem` of the accuracy job

@@ -540,7 +540,7 @@ tolerance.
 | `AIC_ACCURACY_MODEL` | `${AIC_TINY_MODEL}`; `Qwen/Qwen2.5-0.5B-Instruct` (`tests/accuracy/test_accuracy.py`) | `.slurm/run-build-distribute.sh` | Model to score; must match what the arms serve |
 | `AIC_ACCURACY_DELTA` | `0.02` | `.slurm/run-build-distribute.sh` | Allowed gap between the tiered and baseline arms, two-sided; a larger gap counts as corruption |
 | `AIC_ACCURACY_LIMIT` | (unset) | `tests/accuracy/test_accuracy.py` | Cap on gsm8k items per arm. Unset scores the full split; `make accuracy-test-very-fast` sets `100`, and the floor is widened for a capped run |
-| `AIC_ACCURACY_CONCURRENT` | `32` | `tests/accuracy/test_accuracy.py` | `lm_eval` request concurrency |
+| `AIC_ACCURACY_CONCURRENT` | `1` | `tests/accuracy/test_accuracy.py` | `lm_eval` request concurrency. Above 1, answers depend on request timing |
 | `AIC_ACCURACY_TIME` | `02:00:00` | `.slurm/run-build-distribute.sh` | Accuracy job time limit |
 | `AIC_ACCURACY_CPUS` | `8` | `.slurm/run-build-distribute.sh` | `--cpus-per-task` of the accuracy job |
 | `AIC_ACCURACY_MEM` | `32G` | `.slurm/run-build-distribute.sh` | `--mem` of the accuracy job |

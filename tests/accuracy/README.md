@@ -127,7 +127,7 @@ with the Slurm job's own knobs.
 | `AIC_ACCURACY_MODEL` | Model to score. Must match what the arms are serving. |
 | `AIC_ACCURACY_DELTA` | Allowed tiered-vs-baseline gap, **two-sided**. |
 | `AIC_ACCURACY_REQUIRED` | `1` = an unreachable endpoint fails instead of skipping. Set by the CI driver. |
-| `AIC_ACCURACY_CONCURRENT` | `lm_eval` request concurrency. |
+| `AIC_ACCURACY_CONCURRENT` | `lm_eval` request concurrency. Above 1, answers depend on request timing. |
 | `AIC_ACCURACY_BASELINE_URL` | VRAM-only arm, e.g. `http://172.18.0.4:8000/v1`. |
 | `AIC_ACCURACY_TIERED_URL` | LMCache/NIXL arm. |
 | `AIC_ACCURACY_REFERENCE_SCORE` | Pre-restart score; enables the restart assertion. |
@@ -144,11 +144,13 @@ if we ever scored a subset of questions. For a short local run, pass `--limit`
 to `lm_eval` in `_score()` on a scratch commit rather than reintroducing the
 knob.
 
-**The tiered arm is ~70× slower to score** (48m55s vs ~40s) — that is what
-`timeout-minutes` is set from, and the single thing standing between this gate
-and a runtime short enough to gate every PR on. This is primarily caused be the
-artificially limited VRAM of the device that we set in order to force AIC to be
-exercised.
+**Each scoring pass sends one request at a time**, ~4.5 min per pass on an
+MI355X against ~1 min at 32 in flight. Concurrency is what made the arms
+disagree: vLLM batches whatever requests have arrived, the batch shape selects
+the attention and GEMM kernels, and greedy decoding turns a last-bit difference
+into a different answer whenever two tokens are nearly tied. At 32 in flight two
+identical baseline servers disagreed on 747 of 1319 answers; at 1 they agreed on
+every one.
 
 ## Adding a model to `expected.json`
 
