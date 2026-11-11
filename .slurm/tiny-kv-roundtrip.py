@@ -2,7 +2,7 @@
 """tiny-test KV round-trip: prove LMCache really holds vLLM's KV cache.
 
 Run inside the vLLM container (stdlib only):
-    docker exec -i aic-vllm-gpuN python3 - <model> < tiny-kv-roundtrip.py
+    docker exec -i "${AIC_STACK}-vllm-gpuN" python3 - <model> < tiny-kv-roundtrip.py
 
 A completion coming back proves nothing about LMCache: when the connector's
 KV registration is skipped, vLLM serves from VRAM and LMCache stays inert.  So:

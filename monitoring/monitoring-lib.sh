@@ -195,11 +195,12 @@ mon_profile() {  # echo the compose --profile args for the exporter fleet
 }
 
 # Compose service container_names -- used to sweep up any leftovers from a
-# crashed run before/after a compose up/down (compose down handles the rest).
-MON_CONTAINERS=(aic-prometheus aic-grafana aic-loki aic-alloy
-                aic-node-exporter aic-amdgpu-exporter
-                aic-nvme-exporter aic-rdma-exporter aic-hsa-snoop
-                aic-l2-monitor aic-vllm-emulator)
+# crashed run of this stack before/after a compose up/down (compose down handles
+# the rest).  The stack prefix keeps the sweep off other stacks on the node.
+MON_CONTAINERS=("${AIC_STACK}"-{prometheus,grafana,loki,alloy}
+                "${AIC_STACK}"-{node-exporter,amdgpu-exporter}
+                "${AIC_STACK}"-{nvme-exporter,rdma-exporter,hsa-snoop}
+                "${AIC_STACK}"-{l2-monitor,vllm-emulator})
 
 start_monitoring() {
     [[ "${AIC_MONITORING}" == "1" ]] || { log "monitoring disabled (AIC_MONITORING=0)"; return 0; }

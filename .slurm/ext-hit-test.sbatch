@@ -71,20 +71,24 @@ echo "Image ready: ${AIC_IMAGE}"
 # --- Prep dirs ---
 mkdir -p "${NVME_DATA}/lmcache" "${LOGDIR}"
 
+# Named like the compose stack's, under this job's AIC_STACK.
+LMCACHE_C="${AIC_STACK}-lmcache"
+VLLM_C="${AIC_STACK}-vllm-gpu0"
+
 # --- Cleanup stale containers ---
-docker rm -f aic-lmcache aic-vllm-gpu0 2>/dev/null || true
+docker rm -f "${LMCACHE_C}" "${VLLM_C}" 2>/dev/null || true
 
 # --- aic bridge ---
-# Compose creates this network when the stack runs; create it here if not.  It
-# is shared with compose and left in place on exit.
-docker network inspect aic >/dev/null 2>&1 || docker network create aic >/dev/null
+# The stack's network, which compose creates when the stack runs; create it
+# here if not.
+docker network inspect "${AIC_STACK}" >/dev/null 2>&1 || docker network create "${AIC_STACK}" >/dev/null
 
 # --- Start lmcache ---
 # vLLM joins this netns below (the @hsa<pid> IPC socket is per network namespace),
 # so it answers on lmcache's aic-vllm alias.  Nothing is published to the host.
 echo "--- Starting lmcache (L1=1GB, pool=4096, POSIX) ---"
-docker run -d --name aic-lmcache \
-    --network aic --network-alias aic-vllm \
+docker run -d --name "${LMCACHE_C}" \
+    --network "${AIC_STACK}" --network-alias aic-lmcache --network-alias aic-vllm \
     --ipc shareable \
     --device /dev/kfd --device /dev/dri \
     --ulimit nofile=1048576:1048576 \
@@ -106,7 +110,7 @@ docker run -d --name aic-lmcache \
         --l2-adapter '{\"type\":\"nixl_store\",\"backend\":\"POSIX\",\"backend_params\":{\"file_path\":\"/data/nvme/lmcache\",\"use_direct_io\":\"false\",\"file_size\":\"33554432\"},\"pool_size\":4096}'"
 
 # Stream lmcache logs immediately
-docker logs -f --timestamps aic-lmcache > "${LOGDIR}/lmcache.log" 2>&1 &
+docker logs -f --timestamps "${LMCACHE_C}" > "${LOGDIR}/lmcache.log" 2>&1 &
 LMCACHE_LOG_PID=$!
 echo "lmcache log streaming -> ${LOGDIR}/lmcache.log"
 
@@ -116,7 +120,7 @@ echo "lmcache log streaming -> ${LOGDIR}/lmcache.log"
 LMCACHE_HTTP_PORT=8080
 echo "Waiting for lmcache HTTP on :${LMCACHE_HTTP_PORT}..."
 for i in $(seq 1 120); do
-    if aic_probe aic-lmcache "${LMCACHE_HTTP_PORT}" /metrics; then
+    if aic_probe "${LMCACHE_C}" "${LMCACHE_HTTP_PORT}" /metrics; then
         echo "lmcache ready (${i}s)"; break
     fi
     [[ $i -eq 120 ]] && { echo "ERROR: lmcache never ready"; tail -30 "${LOGDIR}/lmcache.log"; exit 1; }
@@ -129,10 +133,10 @@ KV_TRANSFER="{\"kv_connector\":\"LMCacheMPConnector\",\"kv_role\":\"kv_both\",\"
 
 # In lmcache's namespaces for HIP IPC, as compose's vllm service is; so it is on
 # the aic bridge too, as aic-vllm, and reaches lmcache on localhost.
-docker run -d --name aic-vllm-gpu0 \
-    --network "container:aic-lmcache" \
-    --pid "container:aic-lmcache" \
-    --ipc "container:aic-lmcache" \
+docker run -d --name "${VLLM_C}" \
+    --network "container:${LMCACHE_C}" \
+    --pid "container:${LMCACHE_C}" \
+    --ipc "container:${LMCACHE_C}" \
     --device /dev/kfd --device /dev/dri \
     -v "${HF_HOME}:/hf" \
     -e ROCR_VISIBLE_DEVICES="${AIC_ROCR_VISIBLE}" \
@@ -158,7 +162,7 @@ docker run -d --name aic-vllm-gpu0 \
     --kv-transfer-config "${KV_TRANSFER}"
 
 # Stream vLLM logs IMMEDIATELY
-docker logs -f --timestamps aic-vllm-gpu0 > "${LOGDIR}/vllm.log" 2>&1 &
+docker logs -f --timestamps "${VLLM_C}" > "${LOGDIR}/vllm.log" 2>&1 &
 VLLM_LOG_PID=$!
 echo "vLLM log streaming -> ${LOGDIR}/vllm.log"
 
@@ -166,7 +170,7 @@ echo "vLLM log streaming -> ${LOGDIR}/vllm.log"
 echo "Waiting for vLLM on :${VLLM_PORT} (up to 1200s)..."
 VLLM_READY=0
 for i in $(seq 1 240); do
-    if aic_probe aic-vllm-gpu0 "${VLLM_PORT}" /health; then
+    if aic_probe "${VLLM_C}" "${VLLM_PORT}" /health; then
         VLLM_READY=1
         echo "vLLM READY after $((i*5))s"
         break
@@ -186,7 +190,7 @@ if [[ ${VLLM_READY} -eq 0 ]]; then
     echo "=== Last 30 lines of lmcache.log ==="
     tail -30 "${LOGDIR}/lmcache.log"
     kill ${LMCACHE_LOG_PID} ${VLLM_LOG_PID} 2>/dev/null || true
-    docker rm -f aic-lmcache aic-vllm-gpu0 2>/dev/null || true
+    docker rm -f "${LMCACHE_C}" "${VLLM_C}" 2>/dev/null || true
     exit 1
 fi
 
@@ -195,7 +199,7 @@ echo "=== Stack ready — running cliff: warmup-at-each-c + 1 timed iter ==="
 # This is the standard per_client flow — same as the real cliff run
 # The client is not the server: it joins the bridge, where vLLM (inside
 # lmcache's netns, above) answers to lmcache's aic-vllm alias.
-docker run --rm --network aic \
+docker run --rm --network "${AIC_STACK}" \
     -v "${REPO}:/work" -w /work \
     -v "${HF_HOME}:/hf" \
     -e HF_HOME=/hf -e HF_HUB_OFFLINE=1 -e TRANSFORMERS_OFFLINE=1 \
@@ -238,5 +242,5 @@ grep -i "prefetch\|l2_hit\|lookup.*found\|LOOKUP" "${LOGDIR}/lmcache.log" | tail
 
 echo "=== Cleanup ==="
 kill ${LMCACHE_LOG_PID} ${VLLM_LOG_PID} 2>/dev/null || true
-docker rm -f aic-lmcache aic-vllm-gpu0 2>/dev/null || true
+docker rm -f "${LMCACHE_C}" "${VLLM_C}" 2>/dev/null || true
 echo "Logs: ${LOGDIR}/"
