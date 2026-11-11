@@ -1,19 +1,29 @@
 // AIC Alloy config — collect Docker container logs and ship to Loki.
-// Discovers all running containers via the Docker socket, tails their
+// Discovers this stack's running containers via the Docker socket, tails their
 // stdout/stderr, and labels each stream with the container name so
 // Grafana can filter by service (aic-vllm-gpu0, aic-lmcache, etc.).
 
+// Only this stack's compose project (AIC_STACK, from the compose service): the
+// node's Docker daemon also runs other stacks and other tenants' containers.
 discovery.docker "aic_containers" {
   host = "unix:///var/run/docker.sock"
+
+  filter {
+    name   = "label"
+    values = ["com.docker.compose.project=" + sys.env("AIC_STACK")]
+  }
 }
 
-// Relabel: extract container_name (strip leading '/') and image.
+// Relabel: extract container_name (strip leading '/') and image.  The stack
+// prefix becomes the fixed aic- the dashboard queries by, so any stack's vLLM
+// is labelled aic-vllm-gpu0 rather than <stack>-vllm-gpu0.
 discovery.relabel "aic_containers" {
   targets = discovery.docker.aic_containers.targets
 
   rule {
     source_labels = ["__meta_docker_container_name"]
-    regex         = "/(.*)"
+    regex         = string.format("/%s-(.*)", sys.env("AIC_STACK"))
+    replacement   = "aic-$1"
     target_label  = "container"
   }
 
