@@ -40,8 +40,18 @@
 # "${AIC_STACK}-lmcache", never as a bare aic-lmcache.  On that network the
 # containers also answer to their fixed aic-* aliases, which is all a client on
 # the bridge (aic_fetch, a benchmark) needs.  Exported because compose reads it.
-: "${AIC_STACK:=aic}"
-export AIC_STACK
+#
+# It defaults to aic-$SLURM_JOB_ID inside a Slurm (or SPUR) job, so two jobs on
+# one node never share a name, and to aic elsewhere; set it to run a second
+# stack by hand.  AIC_STACK_DERIVED records a value this default produced, so
+# one inherited from elsewhere -- the login-node shell whose environment sbatch
+# passes on -- is recomputed for this job instead of reused.  The Makefile
+# applies the same rule.
+if [[ -z "${AIC_STACK:-}" || "${AIC_STACK}" == "${AIC_STACK_DERIVED:-}" ]]; then
+    AIC_STACK="aic${SLURM_JOB_ID:+-${SLURM_JOB_ID}}"
+    AIC_STACK_DERIVED="${AIC_STACK}"
+fi
+export AIC_STACK AIC_STACK_DERIVED
 
 # Print the container that owns <container>'s network namespace.  Fails, naming
 # the container, if it does not exist or is not running.

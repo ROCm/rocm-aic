@@ -97,9 +97,15 @@ GPU ?= 0
 
 # ---- Stack name ------------------------------------------------------------
 # Compose project, bridge network and container-name prefix of the stack these
-# targets drive ($(AIC_STACK)-lmcache, ...); see scripts/aic-endpoints.sh.
-AIC_STACK ?= aic
-export AIC_STACK
+# targets drive ($(AIC_STACK)-lmcache, ...).  The default is the one in
+# scripts/aic-endpoints.sh: aic-$(SLURM_JOB_ID) inside a Slurm job, aic
+# elsewhere, recomputed while AIC_STACK_DERIVED says it is a default, so a job
+# submitted from here derives its own instead of inheriting this one.
+ifeq ($(AIC_STACK),$(AIC_STACK_DERIVED))
+AIC_STACK := aic$(if $(SLURM_JOB_ID),-$(SLURM_JOB_ID))
+AIC_STACK_DERIVED := $(AIC_STACK)
+endif
+export AIC_STACK AIC_STACK_DERIVED
 
 # ---- Host storage paths ----------------------------------------------------
 NVME_DATA     ?= /mnt/lmcache-nvme
