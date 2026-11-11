@@ -71,7 +71,7 @@ plot: prep-dirs
 kvbench-build: ensure-compose
 	$(COMPOSE) --profile kvbench build kvbench
 
-kvbench-up: ensure-compose prep-kvbench-dirs
+kvbench-up: ensure-compose check-stack prep-kvbench-dirs
 	KVBENCH_IMAGE_REF="$(KVBENCH_IMAGE_REF)" $(COMPOSE) --profile kvbench up --build -d kvbench client
 	@echo "KVBench is starting on http://aic-kvbench:$(KVBENCH_PORT) inside compose; benchmark it from $(AIC_STACK)-client"
 
@@ -81,7 +81,7 @@ kvbench-logs:
 kvbench-down:
 	$(COMPOSE) --profile kvbench down --remove-orphans
 
-cliff-kvbench-local: ensure-compose prep-kvbench-dirs
+cliff-kvbench-local: ensure-compose check-stack prep-kvbench-dirs
 	@echo "=== cliff-kvbench-local: $(KVBENCH_IMAGE_REF) model=$${BENCH_MODEL:-$(KVBENCH_MODEL)} ==="
 	@KVBENCH_IMAGE_REF="$(KVBENCH_IMAGE_REF)" $(COMPOSE) --profile kvbench up --build -d kvbench client
 	@echo "Waiting up to $(KVBENCH_READY_S)s for KVBench /v1/models ..."
@@ -130,7 +130,7 @@ AIC_EMULATE_STRESS_ISL    ?= 512
 AIC_EMULATE_STRESS_OSL    ?= 128
 AIC_EMULATE_STRESS_ITERS  ?= 5
 
-test-emulate-local: ensure-compose prep-dirs
+test-emulate-local: ensure-compose check-stack prep-dirs
 	@echo "=== test-emulate-local: IMAGE_REF=$(IMAGE_REF) model=$(AIC_EMULATE_MODEL) ==="
 	@mkdir -p "$(AIC_METRICS_DIR)"
 	@PROM_UID="$$(id -u)" PROM_GID="$$(id -g)" \
@@ -182,7 +182,7 @@ test-emulate-local: ensure-compose prep-dirs
 	$(COMPOSE) --profile emulate down --remove-orphans >/dev/null 2>&1; \
 	[ "$$rc" -eq 0 ] && echo "=== test-emulate-local PASSED ===" || { echo "=== test-emulate-local FAILED ===" >&2; exit 1; }
 
-stress-emulate-local: ensure-compose prep-dirs
+stress-emulate-local: ensure-compose check-stack prep-dirs
 	@echo "=== stress-emulate-local: $(IMAGE_REF) model=$(AIC_EMULATE_MODEL) ==="
 	@mkdir -p "$(AIC_METRICS_DIR)"
 	IMAGE_REF="$(IMAGE_REF)" VLLM_MODEL="$(AIC_EMULATE_MODEL)" \

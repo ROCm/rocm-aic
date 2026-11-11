@@ -13,6 +13,7 @@
 #   scripts/aic-endpoints.sh probe <container> <container-port> <path>
 #   scripts/aic-endpoints.sh fetch <url> [<json-body>]
 #   scripts/aic-endpoints.sh list
+#   scripts/aic-endpoints.sh check-stack <compose-project-dir>
 #
 # Clients reach the stack from its bridge (the network named ${AIC_STACK}, see
 # below), by container name: aic_fetch for a single request, aic_bridge_url for
@@ -169,9 +170,9 @@ aic_fetch() {
 
 # aic_endpoints
 # Print a URL for every published port of every running container on the
-# stack's bridge (by default only Grafana's), and note which containers share a bridged
-# container's network namespace, whose ports would be listed on the owner's
-# row.  Nothing here knows a container name or port.
+# stack's bridge (by default only Grafana's), and note which containers share a
+# bridged container's network namespace, whose ports would be listed on the
+# owner's row.  Nothing here knows a container name or port.
 aic_endpoints() {
     local net="${AIC_STACK}" ctr line cport bind addr hostport id joined ports names
     local -a owners=()
@@ -206,14 +207,51 @@ aic_endpoints() {
     done
 }
 
+# _aic_stack_dirs <stack>
+# Print the compose project directory of every container of <stack>, once each.
+_aic_stack_dirs() {
+    docker ps -a --filter "label=com.docker.compose.project=$1" \
+        --format '{{.Label "com.docker.compose.project.working_dir"}}' | sort -u
+}
+
+# aic_stack_check <compose-project-dir>
+# Fail, suggesting a free name, if AIC_STACK names a stack started from another
+# checkout.  Compose would adopt that stack's containers as this one's and
+# recreate or remove them; a Slurm job never gets here with a name in use, but
+# two checkouts on one workstation both default to aic.  Restarting this
+# checkout's own stack is fine.
+aic_stack_check() {
+    local dir="${1:-}" dirs user name n=1
+    if (( $# != 1 )); then
+        echo "usage: aic_stack_check <compose-project-dir>" >&2
+        return 2
+    fi
+    dirs="$(_aic_stack_dirs "${AIC_STACK}")" || {
+        echo "aic_stack_check: docker ps failed" >&2
+        return 1
+    }
+    [[ -z "${dirs}" || "${dirs}" == "${dir}" ]] && return 0
+    # Compose project names are lower case.
+    user="$(id -un)"; user="${user,,}"
+    name="${AIC_STACK}-${user}"
+    while [[ -n "$(_aic_stack_dirs "${name}")" ]]; do
+        name="${AIC_STACK}-${user}$(( ++n ))"
+    done
+    echo "AIC_STACK=${AIC_STACK} is already in use by the stack started from ${dirs//$'\n'/, }." >&2
+    echo "Run this one under its own name, e.g. AIC_STACK=${name}, and pass the same" >&2
+    echo "AIC_STACK to every later command that should reach it." >&2
+    return 1
+}
+
 if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
     set -euo pipefail
     case "${1:-}" in
-        url)        shift; aic_url "$@" ;;
-        bridge-url) shift; aic_bridge_url "$@" ;;
-        probe)      shift; aic_probe "$@" ;;
-        fetch)      shift; aic_fetch "$@" ;;
-        list)       aic_endpoints ;;
-        *)          echo "usage: ${0} url <container> <container-port> | bridge-url <container> <container-port> | probe <container> <container-port> <path> | fetch <url> [<json-body>] | list" >&2; exit 2 ;;
+        url)         shift; aic_url "$@" ;;
+        bridge-url)  shift; aic_bridge_url "$@" ;;
+        probe)       shift; aic_probe "$@" ;;
+        fetch)       shift; aic_fetch "$@" ;;
+        list)        aic_endpoints ;;
+        check-stack) shift; aic_stack_check "$@" ;;
+        *)           echo "usage: ${0} url <container> <container-port> | bridge-url <container> <container-port> | probe <container> <container-port> <path> | fetch <url> [<json-body>] | list | check-stack <compose-project-dir>" >&2; exit 2 ;;
     esac
 fi
