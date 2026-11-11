@@ -538,7 +538,7 @@ tolerance.
 | Variable | Default | Owner | Description |
 | --- | --- | --- | --- |
 | `AIC_ACCURACY_MODEL` | `${AIC_TINY_MODEL}`; `Qwen/Qwen2.5-0.5B-Instruct` (`tests/accuracy/test_accuracy.py`) | `.slurm/run-build-distribute.sh` | Model to score; must match what the arms serve |
-| `AIC_ACCURACY_DELTA` | `0.02` | `.slurm/run-build-distribute.sh` | Allowed gap between the tiered and baseline arms, two-sided; a larger gap counts as corruption |
+| `AIC_ACCURACY_DELTA` | `0.02` | `.slurm/run-build-distribute.sh` | Allowed change between the pre-restart and restart scores, two-sided; a larger change counts as corruption. The two arms have no tolerance: their answers must be identical |
 | `AIC_ACCURACY_LIMIT` | (unset) | `tests/accuracy/test_accuracy.py` | Cap on gsm8k items per arm. Unset scores the full split; `make accuracy-test-very-fast` sets `100`, and the floor is widened for a capped run |
 | `AIC_ACCURACY_CONCURRENT` | `1` | `tests/accuracy/test_accuracy.py` | `lm_eval` request concurrency. Above 1, answers depend on request timing |
 | `AIC_ACCURACY_TIME` | `02:00:00` | `.slurm/run-build-distribute.sh` | Accuracy job time limit |
@@ -553,7 +553,7 @@ tolerance.
 | `AIC_ACCURACY_BASELINE_URL` | (unset) | `tests/accuracy/conftest.py` | Baseline arm base URL as seen from the `aic` bridge. Only needed when running pytest by hand; the job supplies it |
 | `AIC_ACCURACY_TIERED_URL` | (unset) | `tests/accuracy/conftest.py` | Tiered arm base URL |
 | `AIC_ACCURACY_REQUIRED` | (empty) | `tests/accuracy/conftest.py` | `1` turns an unreachable endpoint from a skip into a failure; the CI driver sets it |
-| `AIC_ACCURACY_BASELINE_SCORE` | (unset) | `tests/accuracy/test_accuracy.py` | Baseline score measured earlier in the job; the arms share the GPU, so they are scored one after the other |
+| `AIC_ACCURACY_BASELINE_SAMPLES` | (unset) | `tests/accuracy/test_accuracy.py` | Baseline arm's per-question answers (JSON lines), measured earlier in the job; the arms share the GPU, so they are scored one after the other |
 | `AIC_ACCURACY_REFERENCE_SCORE` | (unset) | `tests/accuracy/test_accuracy.py` | Tiered score from before the restart; enables the restart assertion |
 | `AIC_ACCURACY_SCORE_OUT` | (unset) | `tests/accuracy/test_accuracy.py` | File the measured tiered score is written to, as JSON |
 | `AIC_ACCURACY_SAMPLES_OUT` | (unset) | `tests/accuracy/test_accuracy.py` | File the tiered arm's per-question answers are written to, as JSON lines |

@@ -7,7 +7,7 @@ answers?**
 
 | Test | Catches |
 |---|---|
-| `test_tiered_matches_baseline` | KV corruption. Scores a VRAM-only arm and a tiered arm in the same job and asserts `\|tiered - baseline\| <= DELTA`. |
+| `test_tiered_matches_baseline` | The connector or the KV store path changing the computation. Scores a VRAM-only arm and a tiered arm in the same job and asserts every answer is byte-identical. |
 | `test_tiered_above_floor` | Both arms breaking identically, which the differential cannot see. Asserts `tiered >= expected.json[MODEL] - slack`. |
 | `test_score_survives_restart` | Retrieval corruption. Driver-only: vLLM is restarted, LMCache keeps its DRAM/NVMe state, the prompts are replayed. |
 
@@ -131,7 +131,8 @@ with the Slurm job's own knobs.
 | Variable | Meaning |
 |---|---|
 | `AIC_ACCURACY_MODEL` | Model to score. Must match what the arms are serving. |
-| `AIC_ACCURACY_DELTA` | Allowed tiered-vs-baseline gap, **two-sided**. |
+| `AIC_ACCURACY_DELTA` | Allowed restart-vs-pre-restart score change, **two-sided**. |
+| `AIC_ACCURACY_BASELINE_SAMPLES` | Baseline answers from an earlier pass, as JSON lines; otherwise the baseline URL is scored. |
 | `AIC_ACCURACY_REQUIRED` | `1` = an unreachable endpoint fails instead of skipping. Set by the CI driver. |
 | `AIC_ACCURACY_CONCURRENT` | `lm_eval` request concurrency. Above 1, answers depend on request timing. |
 | `AIC_ACCURACY_BASELINE_URL` | VRAM-only arm, e.g. `http://172.18.0.4:8000/v1`. |
@@ -142,7 +143,14 @@ with the Slurm job's own knobs.
 
 ## Thresholds
 
-`DELTA = 0.02` is ~6σ of measured baseline noise, not a guess.
+**The baseline and tiered arms have no tolerance:** every answer must be
+byte-identical. They used to be compared by score within `DELTA = 0.02`, which
+was described as ~6σ of baseline noise. That figure came from three runs of one
+arm (σ = 0.0032) and left out the √2 for a difference of two arms. Measured
+across nightly runs at 32 requests in flight, one arm moved by σ ≈ 0.007 and
+the difference by σ ≈ 0.010, so 0.02 was ~2σ and failed healthy runs.
+
+`DELTA` still bounds the restart re-score against the pre-restart score.
 
 **Every phase scores the same 1319 items, and there is deliberately no item-cap
 knob.** `DELTA` and `FLOOR_RTOL = 0.05` are computed for the full set of

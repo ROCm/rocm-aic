@@ -11,8 +11,8 @@ Adapted from vLLM's NIXL integration accuracy test:
 https://github.com/vllm-project/vllm/blob/main/tests/v1/kv_connector/nixl_integration/test_accuracy.py
 @ 1ab2801ddebe31b75dd6022c69113b610bbdc950.
 
-We assert that an A/B accuracy test of a given model produces similar results
-when using the following modes:
+We assert that a given model gives the same answer to every question when
+served in the following modes:
     baseline  — plain vLLM, KV stays in VRAM
     tiered    — the AIC stack
 
@@ -25,6 +25,7 @@ from __future__ import annotations
 import json
 import os
 import pathlib
+from typing import NamedTuple
 
 import pytest
 
@@ -91,8 +92,9 @@ def _delta_slack() -> float:
 # 1319 answers; at 1 they agreed on all of them.
 NUM_CONCURRENT = int(os.getenv("AIC_ACCURACY_CONCURRENT", "1"))
 
-_BASELINE_SCORE = os.getenv("AIC_ACCURACY_BASELINE_SCORE")
-BASELINE_SCORE = float(_BASELINE_SCORE) if _BASELINE_SCORE else None
+# The baseline arm's per-question answers, from an earlier scoring pass.  The arms
+# share the GPU, so the driver scores the baseline first and hands its answers on.
+BASELINE_SAMPLES = os.getenv("AIC_ACCURACY_BASELINE_SAMPLES")
 _REFERENCE_SCORE = os.getenv("AIC_ACCURACY_REFERENCE_SCORE")
 REFERENCE_SCORE = float(_REFERENCE_SCORE) if _REFERENCE_SCORE else None
 
@@ -127,6 +129,65 @@ def _meets_accuracy_threshold(measured: float, expected: float, rtol: float) -> 
 def _within_delta(measured: float, reference: float, delta: float) -> bool:
     """Two-sided: the reference is a same-run score over identical prompts."""
     return abs(measured - reference) <= delta
+
+
+class Arm(NamedTuple):
+    """One scoring pass: its score and its answers keyed by gsm8k doc_id."""
+
+    score: float
+    samples: dict[int, dict]
+
+
+def _load_samples(path: str | pathlib.Path) -> dict[int, dict]:
+    with open(path, encoding="utf-8") as fh:
+        return {s["doc_id"]: s for s in map(json.loads, fh)}
+
+
+def _score_of(samples: dict[int, dict]) -> float:
+    return sum(s["exact_match"] for s in samples.values()) / len(samples)
+
+
+def _diverging(measured: dict[int, dict], reference: dict[int, dict]) -> list[int]:
+    """doc_ids whose generated text differs between two passes.
+
+    Raises if the passes were not asked the same questions, since then a
+    difference in the answers would say nothing about the KV path.
+    """
+    if measured.keys() != reference.keys():
+        raise ValueError(
+            f"the passes scored different questions: {len(measured)} vs "
+            f"{len(reference)} items, {len(measured.keys() ^ reference.keys())} "
+            "doc_ids in only one of them"
+        )
+    prompts = [i for i in reference if measured[i]["prompt_hash"] != reference[i]["prompt_hash"]]
+    if prompts:
+        raise ValueError(
+            f"{len(prompts)} questions got different prompts (first doc_ids: "
+            f"{sorted(prompts)[:5]}); check the lm_eval version and few-shot seed"
+        )
+    return sorted(i for i in reference if measured[i]["resp"] != reference[i]["resp"])
+
+
+def _describe_divergence(
+    ids: list[int], measured: dict[int, dict], reference: dict[int, dict], shown: int = 5
+) -> str:
+    """Which answers changed, which way their correctness moved, and where."""
+    lost = sum(1 for i in ids if reference[i]["exact_match"] and not measured[i]["exact_match"])
+    gained = sum(1 for i in ids if measured[i]["exact_match"] and not reference[i]["exact_match"])
+    lines = [
+        f"{len(ids)} of {len(reference)} answers differ "
+        f"({lost} newly wrong, {gained} newly right)"
+    ]
+    for i in ids[:shown]:
+        a, b = reference[i]["resp"], measured[i]["resp"]
+        at = next((k for k, (x, y) in enumerate(zip(a, b)) if x != y), min(len(a), len(b)))
+        lines.append(
+            f"  doc {i}: diverges at char {at}: "
+            f"{a[max(0, at - 20):at + 40]!r} -> {b[max(0, at - 20):at + 40]!r}"
+        )
+    if len(ids) > shown:
+        lines.append(f"  ... and {len(ids) - shown} more")
+    return "\n".join(lines)
 
 
 # Runs in a child process; see _score.  Takes its settings as one JSON argument.
@@ -213,29 +274,36 @@ def _score(base_url: str, samples_out: str | None = None) -> float:
 
 
 @pytest.fixture(scope="session")
-def tiered_score(tiered_url: str) -> float:
-    score = _score(tiered_url, SAMPLES_OUT)
+def tiered(tiered_url: str, tmp_path_factory: pytest.TempPathFactory) -> Arm:
+    samples_out = SAMPLES_OUT or str(tmp_path_factory.mktemp("tiered") / "samples.jsonl")
+    score = _score(tiered_url, samples_out)
     print(f"\n[accuracy] tiered   {TASK} {FILTER} = {score:.4f}")
     if SCORE_OUT:
         pathlib.Path(SCORE_OUT).write_text(
             json.dumps({"model": MODEL, "score": score}) + "\n",
             encoding="utf-8",
         )
-    return score
+    return Arm(score, _load_samples(samples_out))
 
 
 @pytest.fixture(scope="session")
-def baseline_score(request: pytest.FixtureRequest) -> float:
-    """Baseline score, either measured by this run, or requested from results from previous run."""
-    if BASELINE_SCORE is not None:
-        print(
-            f"\n[accuracy] baseline {TASK} {FILTER} = {BASELINE_SCORE:.4f}  (supplied)"
-        )
-        return BASELINE_SCORE
+def tiered_score(tiered: Arm) -> float:
+    return tiered.score
+
+
+@pytest.fixture(scope="session")
+def baseline(request: pytest.FixtureRequest, tmp_path_factory: pytest.TempPathFactory) -> Arm:
+    """Baseline answers, either measured by this run or supplied by the driver."""
+    if BASELINE_SAMPLES:
+        samples = _load_samples(BASELINE_SAMPLES)
+        score = _score_of(samples)
+        print(f"\n[accuracy] baseline {TASK} {FILTER} = {score:.4f}  (supplied)")
+        return Arm(score, samples)
     url = request.getfixturevalue("baseline_url")
-    score = _score(url)
+    samples_out = tmp_path_factory.mktemp("baseline") / "samples.jsonl"
+    score = _score(url, str(samples_out))
     print(f"\n[accuracy] baseline {TASK} {FILTER} = {score:.4f}")
-    return score
+    return Arm(score, _load_samples(samples_out))
 
 
 # --------------------------------------------------------------------------
@@ -259,25 +327,44 @@ def test_differential_threshold_is_two_sided() -> None:
     assert not _within_delta(0.80, 0.77, 0.02)
 
 
-def test_tiered_matches_baseline(tiered_score: float, baseline_score: float) -> None:
+def test_divergence_is_reported_per_question() -> None:
+    """Guard the answer comparison. Runs anywhere, needs no endpoint."""
+    ref = {
+        0: {"prompt_hash": "p0", "resp": "#### 1", "exact_match": 1.0},
+        1: {"prompt_hash": "p1", "resp": "#### 2", "exact_match": 0.0},
+    }
+    same = {i: dict(s) for i, s in ref.items()}
+    assert _diverging(same, ref) == []
+    changed = {**same, 1: {"prompt_hash": "p1", "resp": "#### 3", "exact_match": 1.0}}
+    assert _diverging(changed, ref) == [1]
+    assert "1 newly right" in _describe_divergence([1], changed, ref)
+    with pytest.raises(ValueError, match="different prompts"):
+        _diverging({**same, 0: {**same[0], "prompt_hash": "other"}}, ref)
+    with pytest.raises(ValueError, match="different questions"):
+        _diverging({0: same[0]}, ref)
+
+
+def test_tiered_matches_baseline(tiered: Arm, baseline: Arm) -> None:
     """The differential assertion: tiering KV must not change the answers.
 
-    Two-sided. Both arms answer the same questions with the same weights, so
-    the only honest outcome is "the same score, modulo batching nondeterminism".
-    A tiered arm that beats the baseline by more than DELTA has not got smarter;
-    something about the comparison has changed — a stale supplied baseline, a
-    config drift between the phases — and that is a broken gate, not a win.
+    Compared question by question, and exactly.  With one request in flight
+    both arms run every prompt through the same kernels, so their generated
+    text is byte-identical.  Every prompt in this pass is new, so the tiered arm
+    reads no KV back from the tier; what this proves is that wiring in the
+    connector and writing KV out to LMCache leave the computation untouched.
+    Reading it back is test_score_survives_restart's job.
     """
-    tol = _delta_slack()
-    assert _within_delta(tiered_score, baseline_score, tol), (
-        f"tiered arm diverged from baseline by more than tolerance={tol:.4f}\n"
+    ids = _diverging(tiered.samples, baseline.samples)
+    assert not ids, (
+        "tiered arm's answers differ from the baseline arm's\n"
         f"  model:    {MODEL}\n"
         f"  task:     {TASK} {FILTER} ({NUM_FEWSHOT}-shot"
         + (f", limit={LIMIT}" if LIMIT else "") + ")\n"
-        f"  baseline: {baseline_score:.4f}\n"
-        f"  tiered:   {tiered_score:.4f}\n"
-        f"  delta:    {tiered_score - baseline_score:+.4f} "
-        f"(allowed: +/-{tol:.4f})"
+        f"  baseline: {baseline.score:.4f}\n"
+        f"  tiered:   {tiered.score:.4f}\n"
+        + _describe_divergence(ids, tiered.samples, baseline.samples)
+        + (f"\n  AIC_ACCURACY_CONCURRENT={NUM_CONCURRENT}: above 1, answers "
+           "depend on request timing" if NUM_CONCURRENT > 1 else "")
     )
 
 
