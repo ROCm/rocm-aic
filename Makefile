@@ -273,7 +273,10 @@ export LMCACHE_NIXL_POSIX_POOL         ?= 32768
 export LMCACHE_NIXL_DYNAMIC_MAX_GB     ?= 100
 export LMCACHE_NIXL_DYNAMIC_DIRECT_IO ?= false
 override export AIC_EXPORTERS            := safe
-override export AIC_HSA_SNOOP_PID_MODE  := container:$(AIC_STACK)-lmcache
+# spur-authz blocks pid:host.  Not exported: it names this stack's container,
+# and a job make submits has a stack of its own (monitoring-lib.sh picks the
+# same default there).
+_HSA_SNOOP_PID_DEFAULT := container:$(AIC_STACK)-lmcache
 else
 # Empty by default off-SPUR: a workstation has no /scratch, and an unwritable
 # cache dir is worse than none.  Set AIC_CACHE_DIR explicitly to enable the
@@ -287,6 +290,7 @@ endif
 endif
 endif
 _HF_HOME_IS_DEFAULT ?= $(if $(call _is_makefile_default,HF_HOME),1,)
+_HSA_SNOOP_PID_DEFAULT ?= host
 
 # Strip Makefile-defaulted path vars before cliff sbatch so they don't clobber
 # the job's node-appropriate defaults.  User-set values (command-line /

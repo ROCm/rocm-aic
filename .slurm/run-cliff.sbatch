@@ -276,10 +276,9 @@ PLOTS="${LOGDIR}/plots"
 AIC_MONITORING="${AIC_MONITORING:-1}"
 AIC_METRICS_DIR="${AIC_METRICS_DIR:-${REPO}/logs/${SLURM_JOB_ID:-manual}/prometheus}"
 AIC_EXPORTERS="${AIC_EXPORTERS:-1}"
-# hsa-snoop PID mode: 'host' (default non-SPUR) requires --pid=host which is blocked by
-# spur-authz on SPUR nodes.  'container:aic-lmcache' shares the lmcache+vLLM PID ns
-# instead -- valid because vllm uses pid:service:lmcache so both processes are visible.
-AIC_HSA_SNOOP_PID_MODE="${AIC_HSA_SNOOP_PID_MODE:-host}"
+# hsa-snoop PID mode (AIC_HSA_SNOOP_PID_MODE): monitoring-lib.sh defaults it to
+# 'host' off SPUR and to this stack's lmcache namespace on SPUR, whose authz
+# blocks --pid=host; vllm uses pid:service:lmcache, so both are visible there.
 MON_COMPOSE="${REPO}/docker/docker-compose.yml"
 MON_DIR="${REPO}/monitoring"
 
