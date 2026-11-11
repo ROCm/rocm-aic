@@ -34,7 +34,7 @@ flag (or set that variable) yourself. The one exception is `reset-test`, where
 
 The endpoint is a name on the `aic` bridge, never `localhost`: vLLM shares
 `aic-lmcache`'s network namespace, so it answers on that name. `make bench`
-resolves the endpoint of `aic-vllm-gpu$(GPU)` for you. Services next to the
+resolves the endpoint of `<stack>-vllm-gpu$(GPU)` for you. Services next to the
 endpoint are taken from its host unless a variable names them:
 
 | Variable | Default | Used by |

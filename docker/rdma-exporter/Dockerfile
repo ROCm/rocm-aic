@@ -27,10 +27,10 @@
 #   mapfile -t args < <(docker/scripts/aic-bake-env.sh --build-args rdma-exporter)
 #   docker build "${args[@]}" -t aic-rdma-exporter:local ./docker/rdma-exporter
 #
-# Run (on the aic bridge, no published port: Prometheus scrapes it by name;
-# needs sysfs):
-#   docker run -d --name aic-rdma-exporter --network aic \
-#       -v /sys:/sys:ro aic-rdma-exporter:local
+# Run (on the stack's bridge, no published port: Prometheus scrapes it by its
+# aic-rdma-exporter alias; needs sysfs):
+#   docker run -d --name "${AIC_STACK}-rdma-exporter" --network "${AIC_STACK}" \
+#       --network-alias aic-rdma-exporter -v /sys:/sys:ro aic-rdma-exporter:local
 
 FROM debian:12-slim AS fetch
 
