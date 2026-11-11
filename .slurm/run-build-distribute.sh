@@ -143,7 +143,9 @@
 #                        `registry garbage-collect --delete-untagged` on the storage
 #                        while no job is using it.  (default: registry on SPUR with
 #                        the docker driver; tarball elsewhere)
-#   AIC_REGISTRY_IMAGE   image for the registry the jobs start (default: registry:3.1.2)
+#   AIC_REGISTRY_IMAGE   image for the registry the jobs start; a node without it
+#                        loads <storage>/aic-images/<image>.tar, which the first
+#                        job to pull it writes            (default: registry:3.1.2)
 #   AIC_TARGETS          comma-separated nodes to load     (required for load/all)
 #   AIC_VLLM_PUSH_REF, AIC_LMCACHE_PUSH_REF
 #                        registry-qualified refs to push the two images to
