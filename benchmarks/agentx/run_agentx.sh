@@ -12,10 +12,11 @@
 #
 # Options:
 #   --endpoint URL         Server to benchmark, as the client container reaches
-#                          it (default: the running aic-vllm-gpu<GPU>, by name
-#                          on the docker network); a server on the docker host
-#                          is http://host.docker.internal:<port>
-#   --network NAME         Docker network the client joins (default: aic)
+#                          it (default: the running <stack>-vllm-gpu<GPU>, by
+#                          name on the docker network); a server on the docker
+#                          host is http://host.docker.internal:<port>
+#   --network NAME         Docker network the client joins (default: the
+#                          stack's, AIC_STACK)
 #   --model MODEL          Served model name (default: VLLM_MODEL, else the
 #                          model the endpoint serves)
 #   --tokenizer MODEL      Tokenizer ID (default: same as --model)
@@ -72,7 +73,7 @@ MIN_VALID_DURATION=900
 
 # ── defaults ─────────────────────────────────────────────────────────────────
 ENDPOINT="${BENCH_ENDPOINT:-}"
-NETWORK="${AIC_NETWORK:-aic}"
+NETWORK="${AIC_NETWORK:-${AIC_STACK}}"
 MODEL="${AGENTX_MODEL:-${VLLM_MODEL:-}}"
 TOKENIZER="${AGENTX_TOKENIZER:-}"
 CONCURRENCY="${AGENTX_CONCURRENCY:-2}"
@@ -91,7 +92,7 @@ HF_CACHE="${HF_HOME:-${HOME}/.cache/huggingface}"
 # docker reads a relative -v source as a volume name, not a host path.
 [[ "${HF_CACHE}" == /* ]] || HF_CACHE="${PWD}/${HF_CACHE}"
 LOG_BASE="${LOG:-${REPO_ROOT}/logs}"
-VLLM_CONTAINER="aic-vllm-gpu${GPU:-0}"
+VLLM_CONTAINER="${AIC_STACK}-vllm-gpu${GPU:-0}"
 EXTRA_ARGS=()
 if [[ -n "${AGENTX_EXTRA_ARGS:-}" ]]; then
   read -r -a EXTRA_ARGS <<< "${AGENTX_EXTRA_ARGS}"
@@ -170,10 +171,10 @@ ENDPOINT="${ENDPOINT%/}"
 # The stack's LMCache server exports Prometheus metrics on 9091; aiperf adds
 # them to the endpoint's own /metrics, which it always records.
 if [[ -z "${SERVER_METRICS}" && -z "${ENDPOINT_GIVEN}" ]]; then
-  if _lmcache="$(aic_bridge_url aic-lmcache 9091 2>/dev/null)"; then
+  if _lmcache="$(aic_bridge_url "${AIC_STACK}-lmcache" 9091 2>/dev/null)"; then
     SERVER_METRICS="${_lmcache}/metrics"
   elif [[ "${DRY_RUN}" == "true" ]]; then
-    SERVER_METRICS="http://<netns-owner-of-aic-lmcache>:9091/metrics"
+    SERVER_METRICS="http://<netns-owner-of-${AIC_STACK}-lmcache>:9091/metrics"
   fi
 fi
 SERVER_METRICS_ARGS=()
