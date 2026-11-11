@@ -2430,7 +2430,7 @@ aic_docker_preflight || exit 1
 aic_resolve_gpu_visibility \
     || { echo "[tiny-test] could not resolve the GPU allocation (refusing to default to GPU 0)" >&2; exit 1; }
 export GPU="\${AIC_ROCR_VISIBLE%%,*}"
-VLLM_CONTAINER="aic-vllm-gpu\${GPU}"
+VLLM_CONTAINER="\${AIC_STACK}-vllm-gpu\${GPU}"
 echo "[tiny-test] allocated gpu: ROCR=\${AIC_ROCR_VISIBLE} HIP=\${AIC_HIP_VISIBLE} container=\${VLLM_CONTAINER}"
 
 # shellcheck source=/dev/null
@@ -2486,7 +2486,7 @@ cleanup() {
     done
     # vLLM shares lmcache's PID ns (for cross-container HIP IPC), which blocks docker
     # from reaping vLLM's EngineCore children -> compose down/docker rm hang.  Force-
-    # kill the stack first, then tear down (one MP stack per node: fixed names).
+    # kill the stack first, then tear down.
     pkill -9 -f 'vllm.entrypoints.openai' 2>/dev/null || true
     pkill -9 -f 'EngineCore'              2>/dev/null || true
     pkill -9 -f 'lmcache server'          2>/dev/null || true
@@ -2494,7 +2494,7 @@ cleanup() {
     # \`timeout\` runs a program, not the compose() shell function above.
     timeout 60 docker compose -f '${AIC_DAY_DIR}/docker/docker-compose.yml' \
         --profile cache down --remove-orphans --timeout 5 >/dev/null 2>&1 || true
-    for c in "\${VLLM_CONTAINER}" aic-lmcache; do timeout 30 docker rm -f "\$c" >/dev/null 2>&1 || true; done
+    for c in "\${VLLM_CONTAINER}" "\${AIC_STACK}-lmcache"; do timeout 30 docker rm -f "\$c" >/dev/null 2>&1 || true; done
     rm -rf /tmp/aic-tiny-nvme /tmp/aic-tiny-nfs 2>/dev/null || true
     # Only if the capture is still up, i.e. the job died before its own stop.
     if [ "\${_tiny_mon:-0}" = "1" ]; then stop_monitoring || true; fi
@@ -2652,7 +2652,7 @@ aic_docker_preflight || exit 1
 aic_resolve_gpu_visibility \
     || { echo "[prom-dump] could not resolve GPU allocation" >&2; exit 1; }
 export GPU="\${AIC_ROCR_VISIBLE%%,*}"
-VLLM_CONTAINER="aic-vllm-gpu\${GPU}"
+VLLM_CONTAINER="\${AIC_STACK}-vllm-gpu\${GPU}"
 echo "[prom-dump] allocated gpu: ROCR=\${AIC_ROCR_VISIBLE} HIP=\${AIC_HIP_VISIBLE}"
 
 # shellcheck source=/dev/null
@@ -2692,7 +2692,7 @@ export VLLM_IPC_MODE=service:lmcache
 export VLLM_PID_MODE=service:lmcache
 export KV_TRANSFER_ARG="--kv-transfer-config '{\"kv_connector\":\"LMCacheMPConnector\",\"kv_role\":\"kv_both\",\"kv_connector_extra_config\":{\"lmcache.mp.host\":\"tcp://localhost\",\"lmcache.mp.port\":6555}}'"
 # hsa-snoop: use container PID namespace (SPUR authz blocks --pid=host).
-export AIC_HSA_SNOOP_PID_MODE=container:aic-lmcache
+export AIC_HSA_SNOOP_PID_MODE="container:\${AIC_STACK}-lmcache"
 # Monitoring metrics dir for Prometheus TSDB.
 export AIC_METRICS_DIR="\${_logdir}/prometheus"
 export PROM_UID="\$(id -u)" PROM_GID="\$(id -g)"
@@ -2733,15 +2733,15 @@ compose up -d amdgpu-exporter 2>/dev/null || echo "[prom-dump] amdgpu-exporter u
 echo "[prom-dump] waiting for vLLM on :8000 (up to \$(( ${AIC_TINY_READY_TIMEOUT} * 5 ))s) ..."
 _ok=0
 for _i in \$(seq 1 ${AIC_TINY_READY_TIMEOUT}); do
-    # vllm shares aic-lmcache's network namespace, so that name reaches it.
-    r=\$(docker exec aic-client curl -s -o /dev/null -w '%{http_code}' \
+    # vllm shares lmcache's network namespace, so its aic-lmcache alias reaches it.
+    r=\$(docker exec "\${AIC_STACK}-client" curl -s -o /dev/null -w '%{http_code}' \
         http://aic-lmcache:8000/health 2>/dev/null || true)
     [ "\$r" = "200" ] && { _ok=1; break; }
-    [ -z "\$(docker ps -q -f name="\${VLLM_CONTAINER}")" ] && break
+    [ -z "\$(docker ps -q -f "name=^\${VLLM_CONTAINER}\$")" ] && break
     sleep 5
 done
 [ "\$_ok" != "1" ] && { echo "[prom-dump] FAIL: vLLM not healthy" >&2; exit 1; }
-# hsa-snoop: start after lmcache is healthy (uses container:aic-lmcache PID ns).
+# hsa-snoop: start after lmcache is healthy (joins lmcache's PID ns).
 compose up -d hsa-snoop 2>/dev/null || echo "[prom-dump] hsa-snoop unavailable (skipping)"
 echo "[prom-dump] stack healthy — waiting ${prom_dump_wait}s for NIXL init + Prometheus scrape..."
 sleep '${prom_dump_wait}'
@@ -2764,8 +2764,8 @@ for _comp in version rocm pytorch vllm llm-emu aiter flash-attention lmcache nix
 done
 
 # Scrape every /metrics endpoint that may be present; skip those that are not.
-# Every service is reached via docker exec aic-client curl using its compose
-# DNS name; none of the exporters publishes a host port.
+# Every service is reached via docker exec <stack>-client curl using its aic-*
+# alias on the stack's network; none of the exporters publishes a host port.
 echo "[prom-dump] scraping /metrics endpoints..."
 mkdir -p '${prom_scratch}'
 _args=""
@@ -2773,7 +2773,7 @@ _args=""
 _scrape_compose() {
     local name="\$1" host="\$2" port="\$3"
     local out='${prom_scratch}'/metrics_"\${name}".txt
-    if docker exec aic-client curl -sf "http://\${host}:\${port}/metrics" > "\${out}" 2>/dev/null && [ -s "\${out}" ]; then
+    if docker exec "\${AIC_STACK}-client" curl -sf "http://\${host}:\${port}/metrics" > "\${out}" 2>/dev/null && [ -s "\${out}" ]; then
         echo "  \${name} \${host}:\${port} — \$(grep -c '^# HELP' "\${out}") metrics"
         _args="\${_args} --source \${name}:\${out}"
     else
@@ -2795,7 +2795,8 @@ _scrape_compose rdma_exporter       aic-rdma-exporter            9879
 # Write to a TSV file; metrics_to_md.py reads it via --containers-tsv.
 echo "[prom-dump] collecting container inventory..."
 _containers_file='${prom_scratch}'/containers.tsv
-docker ps --format '{{.Names}}\t{{.Image}}\t{{.Status}}' 2>/dev/null > "\${_containers_file}" || true
+docker ps --filter "label=com.docker.compose.project=\${AIC_STACK}" \
+    --format '{{.Names}}\t{{.Image}}\t{{.Status}}' 2>/dev/null > "\${_containers_file}" || true
 _container_args="--containers-tsv \${_containers_file}"
 
 echo "[prom-dump] generating markdown: ${prom_dump_out}"
@@ -2913,7 +2914,7 @@ cleanup() {
         > "\${_logdir}/emulate-vllm.log" 2>&1 || true
     timeout 60 docker compose -f '${AIC_DAY_DIR}/docker/docker-compose.yml' \
         --profile emulate down --remove-orphans --timeout 10 >/dev/null 2>&1 || true
-    timeout 30 docker rm -f aic-vllm-emulator >/dev/null 2>&1 || true
+    timeout 30 docker rm -f "\${AIC_STACK}-vllm-emulator" >/dev/null 2>&1 || true
 }
 trap cleanup EXIT
 
@@ -2926,9 +2927,9 @@ fi
 
 ready=0
 for _i in \$(seq 1 ${AIC_EMULATE_READY_TIMEOUT}); do
-    if aic_probe aic-vllm-emulator 8000 /v1/models; then ready=1; break; fi
+    if aic_probe "\${AIC_STACK}-vllm-emulator" 8000 /v1/models; then ready=1; break; fi
     # Bail out early if the container died rather than waiting the full timeout.
-    if [ -z "\$(docker ps -q -f name=aic-vllm-emulator)" ]; then
+    if [ -z "\$(docker ps -q -f "name=^\${AIC_STACK}-vllm-emulator\$")" ]; then
         echo "[emulate-test] FAIL: the emulator container exited during startup" >&2
         compose --profile emulate logs --tail 120 --no-color vllm-emulator 2>&1 | sed 's/^/  [emu] /'
         exit 1
@@ -2947,7 +2948,7 @@ echo "[emulate-test] endpoint ready; sending one chat completion ..."
 # The container maps no /dev/kfd or /dev/dri (see the compose service), so it
 # has no GPU access at all whatever the host has -- assert that, otherwise the
 # "runs without a GPU" claim rests on the node happening to have none.
-if docker exec aic-vllm-emulator test -e /dev/kfd 2>/dev/null; then
+if docker exec "\${AIC_STACK}-vllm-emulator" test -e /dev/kfd 2>/dev/null; then
     kfd_in_container=yes
 else
     kfd_in_container=no
@@ -3137,7 +3138,7 @@ fi
 export EMU_KV_TRANSFER_ARG="--kv-transfer-config '{\"kv_connector\":\"LMCacheMPConnector\",\"kv_role\":\"kv_both\",\"kv_connector_extra_config\":{\"lmcache.mp.host\":\"tcp://aic-lmcache-emulator\",\"lmcache.mp.port\":\${LMCACHE_PORT},\"lmcache.mp.mp_transfer_mode\":\"lmcache_driven\"}}'"
 export VLLM_EXTRA_ARGS="--enable-prefix-caching"
 # One /dev/shm for both: the server opens the KV SHM segments by name.
-export EMU_IPC_MODE=container:aic-lmcache-emulator
+export EMU_IPC_MODE="container:\${AIC_STACK}-lmcache-emulator"
 
 compose() { docker compose -f '${AIC_DAY_DIR}/docker/docker-compose.yml' "\$@"; }
 cleanup() {
@@ -3149,7 +3150,7 @@ cleanup() {
     stop_monitoring || true
     timeout 90 docker compose -f '${AIC_DAY_DIR}/docker/docker-compose.yml' \
         --profile emulate-mp down --remove-orphans --timeout 10 >/dev/null 2>&1 || true
-    timeout 30 docker rm -f aic-vllm-emulator aic-lmcache-emulator >/dev/null 2>&1 || true
+    timeout 30 docker rm -f "\${AIC_STACK}-vllm-emulator" "\${AIC_STACK}-lmcache-emulator" >/dev/null 2>&1 || true
 }
 trap cleanup EXIT
 
@@ -3168,7 +3169,7 @@ start_monitoring
 # Name the services explicitly.  The GPU \`vllm\` service has no \`profiles:\` key
 # (deliberately -- the vram baseline runs \`docker compose up vllm\` with no
 # profile at all), and compose starts every profile-less service on any \`up\`,
-# so a bare \`--profile emulate-mp up\` also launches aic-vllm-gpu0 on this
+# so a bare \`--profile emulate-mp up\` also launches <stack>-vllm-gpu0 on this
 # CPU-only node.
 # --force-recreate: the KV SHM segments (/lmcache_kv_<pid>_<n>) live in
 # lmcache-emulator's IPC namespace and the containerised EngineCore pid repeats,
@@ -3179,15 +3180,15 @@ if ! compose --profile emulate-mp up -d --force-recreate lmcache-emulator vllm-e
     compose --profile emulate-mp logs --tail 80 --no-color 2>&1 | sed 's/^/  [mp] /'
     exit 1
 fi
-if [ -n "\$(docker ps -q -f name=aic-vllm-gpu)" ]; then
+if [ -n "\$(docker ps -q -f "name=^\${AIC_STACK}-vllm-gpu")" ]; then
     echo "[emulate-mp-test] FAIL: the GPU vllm service was started on a CPU node" >&2
     exit 1
 fi
 
 ready=0
 for _i in \$(seq 1 ${AIC_EMULATE_READY_TIMEOUT}); do
-    if aic_probe aic-vllm-emulator 8000 /v1/models; then ready=1; break; fi
-    if [ -z "\$(docker ps -q -f name=aic-vllm-emulator)" ]; then
+    if aic_probe "\${AIC_STACK}-vllm-emulator" 8000 /v1/models; then ready=1; break; fi
+    if [ -z "\$(docker ps -q -f "name=^\${AIC_STACK}-vllm-emulator\$")" ]; then
         echo "[emulate-mp-test] FAIL: the emulator container exited during startup" >&2
         compose --profile emulate-mp logs --tail 150 --no-color 2>&1 | sed 's/^/  [mp] /'
         exit 1
@@ -3205,7 +3206,7 @@ rc=0
 # host port.
 _url=http://aic-vllm-emulator:8000
 _lurl=http://aic-lmcache-emulator:8080
-if docker exec aic-vllm-emulator test -e /dev/kfd 2>/dev/null; then
+if docker exec "\${AIC_STACK}-vllm-emulator" test -e /dev/kfd 2>/dev/null; then
     echo "[emulate-mp-test] FAIL: /dev/kfd is visible inside the emulator container" >&2; rc=1
 else
     echo "[emulate-mp-test] OK: the emulator container has no GPU device at all"
@@ -3270,7 +3271,7 @@ if [ -n '${AIC_EMULATE_MP_BENCH}' ]; then
         [ -n '${AIC_EMULATE_MP_BENCH_PREFIX}' ] && \
             _prefix_arg="--random-prefix-len ${AIC_EMULATE_MP_BENCH_PREFIX}"
         echo "[emulate-mp-test] --- bench isl=\${isl} osl=\${osl} concurrency=\${conc} prompts=\${nprompts}\${tag:+ tag=\${tag}} (seed \${seed}) ---"
-        if ! docker exec aic-vllm-emulator vllm bench serve \
+        if ! docker exec "\${AIC_STACK}-vllm-emulator" vllm bench serve \
                 --host localhost --port 8000 --model '${AIC_EMULATE_MODEL}' \
                 --dataset-name random \
                 --random-input-len "\${isl}" --random-output-len "\${osl}" \
@@ -3291,7 +3292,7 @@ if [ -n '${AIC_EMULATE_MP_BENCH}' ]; then
             /^lmcache_mp_l1_read_chunks_total/          {l1r=\$NF}
             /^lmcache_mp_l2_prefetch_hit_chunks_total/  {l2h=\$NF}
             END {printf "[emulate-mp-test]   after %-6s cum: lookup %d/%d tokens hit, L1 reads %d, L2 prefetch hits %d\n", tag, hit, req, l1r, l2h}'
-        docker exec aic-lmcache-emulator curl -fsS http://localhost:19090/metrics 2>/dev/null | awk -v tag="\${tag:-cold}" '
+        docker exec "\${AIC_STACK}-lmcache-emulator" curl -fsS http://localhost:19090/metrics 2>/dev/null | awk -v tag="\${tag:-cold}" '
             /^agent_tx_bytes_total/ {tx=\$NF} /^agent_rx_bytes_total/ {rx=\$NF}
             END {printf "[emulate-mp-test]   after %-6s cum: NIXL tx %.1f MiB, rx %.1f MiB\n", tag, tx/1048576, rx/1048576}'
     done
@@ -3386,7 +3387,7 @@ if [ "${AIC_EMULATE_MP_MONITORING}" = "1" ]; then
     _prom=http://aic-prometheus:9090
     if aic_fetch "\${_prom}/api/v1/targets?state=active" \
             > "\${_promdir}/targets.json" 2>/dev/null; then
-        docker run --rm -i --network aic --entrypoint python3 "\${AIC_FETCH_IMAGE}" - \
+        docker run --rm -i --network "\${AIC_STACK}" --entrypoint python3 "\${AIC_FETCH_IMAGE}" - \
             "\$(cat "\${_promdir}/targets.json")" '${AIC_EMULATE_MP_L2_BACKEND}' "\${_prom}" <<'PYEOF'
 import json, sys, urllib.parse, urllib.request
 targets = json.loads(sys.argv[1])["data"]["activeTargets"]
@@ -3435,7 +3436,7 @@ PYEOF
         # but empty, this is the only thing that says why.
         aic_fetch "\${_lurl}/metrics" > "\${_promdir}/lmcache-metrics.txt" 2>/dev/null || true
         # :19090 is not published; read it from inside the lmcache container.
-        docker exec aic-lmcache-emulator curl -fsS http://localhost:19090/metrics \
+        docker exec "\${AIC_STACK}-lmcache-emulator" curl -fsS http://localhost:19090/metrics \
             > "\${_promdir}/nixl-metrics.txt" 2>/dev/null || true
         for _f in lmcache nixl; do
             [ -s "\${_promdir}/\${_f}-metrics.txt" ] && \
@@ -3615,7 +3616,7 @@ cleanup() {
         > "\${_logdir}/validate-vllm.log" 2>&1 || true
     timeout 60 docker compose -f '${AIC_DAY_DIR}/docker/docker-compose.yml' \
         --profile emulate down --remove-orphans --timeout 10 >/dev/null 2>&1 || true
-    timeout 30 docker rm -f aic-vllm-emulator >/dev/null 2>&1 || true
+    timeout 30 docker rm -f "\${AIC_STACK}-vllm-emulator" >/dev/null 2>&1 || true
 }
 trap cleanup EXIT
 compose() { docker compose -f '${AIC_DAY_DIR}/docker/docker-compose.yml' "\$@"; }
@@ -3624,8 +3625,8 @@ echo "[validate] starting the emulator with pack /profiles/${pack_file} ..."
 compose --profile emulate up -d vllm-emulator || { echo "[validate] FAIL: compose up" >&2; exit 1; }
 ready=0
 for _i in \$(seq 1 ${AIC_EMULATE_READY_TIMEOUT}); do
-    aic_probe aic-vllm-emulator 8000 /v1/models && { ready=1; break; }
-    [ -z "\$(docker ps -q -f name=aic-vllm-emulator)" ] && break
+    aic_probe "\${AIC_STACK}-vllm-emulator" 8000 /v1/models && { ready=1; break; }
+    [ -z "\$(docker ps -q -f "name=^\${AIC_STACK}-vllm-emulator\$")" ] && break
     sleep 5
 done
 if [ "\${ready}" != "1" ]; then
@@ -3654,7 +3655,7 @@ for point in ${sweep}; do
     isl="\$(echo "\${point}" | cut -d, -f1)"; osl="\$(echo "\${point}" | cut -d, -f2)"
     conc="\$(echo "\${point}" | cut -d, -f3)"; nprompts="\$(echo "\${point}" | cut -d, -f4)"
     echo "[validate] --- emulated isl=\${isl} osl=\${osl} concurrency=\${conc} prompts=\${nprompts} ---"
-    docker exec aic-vllm-emulator vllm bench serve \
+    docker exec "\${AIC_STACK}-vllm-emulator" vllm bench serve \
         --host localhost --port 8000 --model '${model}' \
         --dataset-name random \
         --random-input-len "\${isl}" --random-output-len "\${osl}" \
@@ -3837,6 +3838,7 @@ source '${AIC_DAY_DIR}/.slurm/image-dist-lib.sh'
 # shellcheck source=/dev/null
 source '${AIC_DAY_DIR}/scripts/aic-endpoints.sh'
 aic_image_fetch capture '${AIC_VLLM_IMAGE}' '${artifact}' || exit 1
+CAPTURE_C="\${AIC_STACK}-vllm-capture"
 
 # Honour Slurm's GPU allocation: with --gres=gpu:1 the scheduler exports the
 # device index it gave us, and these nodes are shared -- hard-coding device 0
@@ -3856,13 +3858,13 @@ trace="/tracelocal/\${trace_name}"
 mkdir -p "\${trace_local_host}" '${AIC_CAPTURE_DIR}/bench' '${AIC_CAPTURE_HF_HOME}'
 
 cleanup() {
-    docker logs aic-vllm-capture > "\${_logdir}/capture-vllm.log" 2>&1 || true
-    docker rm -f aic-vllm-capture >/dev/null 2>&1 || true
+    docker logs "\${CAPTURE_C}" > "\${_logdir}/capture-vllm.log" 2>&1 || true
+    docker rm -f "\${CAPTURE_C}" >/dev/null 2>&1 || true
 }
 trap cleanup EXIT
 
 echo "[capture] starting a REAL serve with step-cycle tracing -> \${trace}"
-docker run -d --name aic-vllm-capture \
+docker run -d --name "\${CAPTURE_C}" \
     --device /dev/kfd --device /dev/dri \
     --ipc host \
     --cap-add CAP_SYS_ADMIN --cap-add SYS_PTRACE \
@@ -3892,17 +3894,17 @@ docker run -d --name aic-vllm-capture \
 
 ready=0
 for _i in \$(seq 1 ${AIC_CAPTURE_READY_TIMEOUT}); do
-    if aic_probe aic-vllm-capture 8000 /v1/models; then ready=1; break; fi
-    if [ -z "\$(docker ps -q -f name=aic-vllm-capture)" ]; then
+    if aic_probe "\${CAPTURE_C}" 8000 /v1/models; then ready=1; break; fi
+    if [ -z "\$(docker ps -q -f "name=^\${CAPTURE_C}\$")" ]; then
         echo "[capture] FAIL: the vLLM container exited during startup" >&2
-        docker logs --tail 120 aic-vllm-capture 2>&1 | sed 's/^/  [vllm] /'
+        docker logs --tail 120 "\${CAPTURE_C}" 2>&1 | sed 's/^/  [vllm] /'
         exit 1
     fi
     sleep 5
 done
 if [ "\${ready}" != "1" ]; then
     echo "[capture] FAIL: vLLM never became ready" >&2
-    docker logs --tail 120 aic-vllm-capture 2>&1 | sed 's/^/  [vllm] /'
+    docker logs --tail 120 "\${CAPTURE_C}" 2>&1 | sed 's/^/  [vllm] /'
     exit 1
 fi
 echo "[capture] endpoint ready; running the sweep ..."
@@ -3911,7 +3913,7 @@ echo "[capture] endpoint ready; running the sweep ..."
 # the pack would come out with gpu=unknown and no model_config.
 # Grep a FILE, not a pipe: \`grep -q\` exits on the first match, \`docker logs\`
 # then dies of SIGPIPE, and \`set -o pipefail\` turns that into a false failure.
-docker logs aic-vllm-capture > "\${_logdir}/capture-startup.log" 2>&1 || true
+docker logs "\${CAPTURE_C}" > "\${_logdir}/capture-startup.log" 2>&1 || true
 if grep -q '\[StepCycleTracer\] Header written' "\${_logdir}/capture-startup.log"; then
     grep -m1 '\[StepCycleTracer\] Header written' "\${_logdir}/capture-startup.log" | sed 's/^/[capture] /'
 else
@@ -3929,7 +3931,7 @@ for point in ${AIC_CAPTURE_SWEEP}; do
     conc="\$(echo "\${point}" | cut -d, -f3)"
     nprompts="\$(echo "\${point}" | cut -d, -f4)"
     echo "[capture] --- sweep isl=\${isl} osl=\${osl} concurrency=\${conc} prompts=\${nprompts} ---"
-    docker exec aic-vllm-capture vllm bench serve \
+    docker exec "\${CAPTURE_C}" vllm bench serve \
         --host localhost --port 8000 \
         --model '${AIC_CAPTURE_MODEL}' \
         --dataset-name random \
@@ -3946,7 +3948,7 @@ done
 # Stop the server so the tracer's buffered records are written out by the
 # shutdown path, then give the file a moment to land on shared storage.
 echo "[capture] sweep done (rc=\${sweep_rc}); stopping the server ..."
-docker stop -t 60 aic-vllm-capture >/dev/null 2>&1 || true
+docker stop -t 60 "\${CAPTURE_C}" >/dev/null 2>&1 || true
 sleep 5
 
 if [ ! -s "\${trace_local_host}/\${trace_name}" ]; then
