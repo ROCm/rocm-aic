@@ -215,13 +215,13 @@ HF_HOME="${HF_HOME}" IMAGE_NAME="${AIC_IMAGE}" \
 # ---------------------------------------------------------------------------
 echo "=== Waiting for vLLM emulator /health ==="
 for i in $(seq 1 24); do
-    if aic_probe aic-vllm-emulator 8000 /health; then
+    if aic_probe "${AIC_STACK}-vllm-emulator" 8000 /health; then
         echo "vLLM emulator healthy after ~$((i * 8))s"
         break
     fi
     if [[ "${i}" -eq 24 ]]; then
         echo "ERROR: vLLM emulator did not become healthy in time" >&2
-        docker logs aic-vllm-emulator >&2
+        docker logs "${AIC_STACK}-vllm-emulator" >&2
         exit 1
     fi
     sleep 8
@@ -277,7 +277,7 @@ METRICS_ARGS=()
 for name in "${!EXPORTER_URLS[@]}"; do
     outfile="/tmp/metrics_${name}.txt"
     # Body to the file, stderr captured so a failure is reported in one line.
-    err="$(docker run --rm --network aic --entrypoint curl "${AIC_IMAGE}" \
+    err="$(docker run --rm --network "${AIC_STACK}" --entrypoint curl "${AIC_IMAGE}" \
         -fsS --max-time 10 "${EXPORTER_URLS[$name]}/metrics" 2>&1 > "${outfile}")" || true
     if [[ -s "${outfile}" ]]; then
         METRICS_ARGS+=("--source" "${name}:${outfile}")

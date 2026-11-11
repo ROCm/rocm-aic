@@ -137,6 +137,9 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p "${HF_HOME}" "${LOG}/vllm-emulator"
+          # shellcheck source=scripts/aic-endpoints.sh
+          source scripts/aic-endpoints.sh
+          emu="${AIC_STACK}-vllm-emulator"
 
           compose() {
             docker compose -f docker/docker-compose.yml "$@"
@@ -145,7 +148,7 @@ jobs:
             compose --profile emulate logs --no-color --no-log-prefix vllm-emulator \
               > "${LOG}/emulate-vllm.log" 2>&1 || true
             compose --profile emulate down --remove-orphans --timeout 10 >/dev/null 2>&1 || true
-            docker rm -f aic-vllm-emulator >/dev/null 2>&1 || true
+            docker rm -f "${emu}" >/dev/null 2>&1 || true
           }
           trap cleanup EXIT
 
@@ -156,12 +159,10 @@ jobs:
             exit 1
           fi
 
-          # shellcheck source=scripts/aic-endpoints.sh
-          source scripts/aic-endpoints.sh
           ready=0
           for _i in $(seq 1 "${AIC_EMULATE_READY_TIMEOUT}"); do
-            if aic_probe aic-vllm-emulator 8000 /v1/models; then ready=1; break; fi
-            if [ -z "$(docker ps -q -f name=aic-vllm-emulator)" ]; then
+            if aic_probe "${emu}" 8000 /v1/models; then ready=1; break; fi
+            if [ -z "$(docker ps -q -f "name=^${emu}$")" ]; then
               echo "[emulate-test] FAIL: emulator container exited during startup" >&2
               compose --profile emulate logs --tail 120 --no-color vllm-emulator 2>&1 | sed 's/^/  [emu] /'
               exit 1
@@ -176,7 +177,7 @@ jobs:
 
           url=http://aic-vllm-emulator:8000
           echo "[emulate-test] endpoint ready; sending one chat completion ..."
-          if docker exec aic-vllm-emulator test -e /dev/kfd 2>/dev/null; then
+          if docker exec "${emu}" test -e /dev/kfd 2>/dev/null; then
             kfd_in_container=yes
           else
             kfd_in_container=no
