@@ -117,6 +117,12 @@ _SLURM_TAG_ENV := $(if $(_AIC_SLURM_IMAGE_TAG),IMAGE_TAG=$(call _shell_quote,$(_
 # ---- GPU -------------------------------------------------------------------
 GPU ?= 0
 
+# ---- Stack name ------------------------------------------------------------
+# Compose project, bridge network and container-name prefix of the stack these
+# targets drive ($(AIC_STACK)-lmcache, ...); see scripts/aic-endpoints.sh.
+AIC_STACK ?= aic
+export AIC_STACK
+
 # ---- Host storage paths ----------------------------------------------------
 NVME_DATA     ?= /mnt/lmcache-nvme
 NFS_DATA      ?= /mnt/lmcache-nfs
@@ -140,12 +146,12 @@ HF_TOKEN_FILE ?=
 export AIC_CONTAINER_USER ?= $(shell id -u):$(shell id -g)
 export RENDER_GID ?= $(shell stat -c %g /dev/kfd 2>/dev/null)
 
-# Grafana's host port: the one aic-grafana already holds, else the lowest free
-# port from 3000, so the URL is the same after every down/up.  Left to compose,
-# Docker picks a new ephemeral port on each recreate.  Empty (3000-3009 all
-# taken) falls back to that.
+# Grafana's host port: the one $(AIC_STACK)-grafana already holds, else the
+# lowest free port from 3000, so the URL is the same after every down/up.  Left
+# to compose, Docker picks a new ephemeral port on each recreate.  Empty
+# (3000-3009 all taken) falls back to that.
 ifeq ($(origin AIC_GRAFANA_PORT),undefined)
-export AIC_GRAFANA_PORT := $(shell bash "$(CURDIR)/scripts/aic-endpoints.sh" pick-port aic-grafana 3000 3000 3009 2>/dev/null)
+export AIC_GRAFANA_PORT := $(shell bash "$(CURDIR)/scripts/aic-endpoints.sh" pick-port $(AIC_STACK)-grafana 3000 3000 3009 2>/dev/null)
 endif
 
 # ---- LMCache server --------------------------------------------------------
@@ -326,7 +332,7 @@ export AIC_L2_BACKEND       ?= nixl_posix
 # spur-authz refuses pid:host, which the full exporter fleet and hsa-snoop's
 # host mode both need.
 export AIC_EXPORTERS          ?= safe
-export AIC_HSA_SNOOP_PID_MODE ?= container:aic-lmcache
+export AIC_HSA_SNOOP_PID_MODE ?= container:$(AIC_STACK)-lmcache
 else
 ifneq ($(wildcard /scratch/models/hub),)
 ifeq ($(call _is_makefile_default,HF_HOME),file)
@@ -409,8 +415,8 @@ help:
 	    'make logs-vllm' 'Follow vllm logs only' \
 	    'make ps' 'Show container status' \
 	    'make endpoints' 'Print host URL of every published service (Grafana only)' \
-	    'make shell-lmcache' 'Exec bash into aic-lmcache container' \
-	    'make shell-vllm' 'Exec bash into aic-vllm-gpu$(GPU) container' \
+	    'make shell-lmcache' 'Exec bash into $(AIC_STACK)-lmcache container' \
+	    'make shell-vllm' 'Exec bash into $(AIC_STACK)-vllm-gpu$(GPU) container' \
 	    'make restart-vllm' 'Restart vllm only (lmcache + warm KV cache preserved)' \
 	    'make restart-lmcache' 'Restart lmcache'
 	@printf '\n$(_AIC_B)$(_AIC_X)BENCHMARK (local)$(_AIC_R)\n'
@@ -511,7 +517,8 @@ list-vars:
 	    'AIC_SPUR_CLUSTER' '$(AIC_SPUR_CLUSTER)' \
 	    'AIC_SPUR_PARTITION' '$(or $(AIC_SPUR_PARTITION),<not set>)' \
 	    'AIC_SHARED_NFS' '$(or $(AIC_SHARED_NFS),<not set>)' \
-	    'AIC_IMAGE_DIR' '$(or $(AIC_IMAGE_DIR),<not set>)'
+	    'AIC_IMAGE_DIR' '$(or $(AIC_IMAGE_DIR),<not set>)' \
+	    'AIC_STACK' '$(AIC_STACK)  (compose project, network and container-name prefix)'
 	@printf '\n$(_AIC_B)$(_AIC_X)STORAGE$(_AIC_R)\n'
 	@printf '  $(_AIC_G)%-38s$(_AIC_R) %s\n' \
 	    'NVME_DATA' '$(NVME_DATA)' \
