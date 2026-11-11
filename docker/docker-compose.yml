@@ -699,6 +699,9 @@ services:
     networks:
       aic-network:
         aliases: [aic-alloy]
+    # config.alloy tails only this stack's containers.
+    environment:
+      AIC_STACK: "${AIC_STACK:-aic}"
     volumes:
       - ../monitoring/alloy/config.alloy:/etc/alloy/config.alloy:ro
       - /var/run/docker.sock:/var/run/docker.sock:ro
