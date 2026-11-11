@@ -30,6 +30,13 @@ tier and NVMe and NFS as the second. `make up-batch` runs it in the background;
 `make logs` follows the logs, `make endpoints` prints the Grafana URL, and
 `make down` stops everything.
 
+`AIC_STACK` names the stack: the compose project, its private Docker bridge and
+the prefix of every container name (`<stack>-lmcache`, ...). Inside a Slurm job
+it defaults to `aic-<job id>`, so jobs sharing a node never meet. To run a
+second stack on one host by hand, give it its own name and keep passing it,
+e.g. `make up AIC_STACK=aic-mine` and later `make down AIC_STACK=aic-mine`;
+`make up` refuses a name another checkout's stack is already using.
+
 The default NVMe tier uses
 [AMD Infinity Storage (AIS)](https://rocm.blogs.amd.com/ecosystems-and-partners/rocm-10.1-blog/README.html),
 peer-to-peer DMA between NVMe and the GPU through the

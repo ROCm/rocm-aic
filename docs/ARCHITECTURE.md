@@ -35,16 +35,20 @@ abstract socket that only works inside one network namespace. A
 
 ## Networking
 
-The containers share a private Docker bridge named `aic`, and reach each other
-by container name. No container binds a fixed host port, so several stacks can
-share a multi-tenant host:
+Each stack has a name, `AIC_STACK` (`aic-<job id>` in a Slurm job): it names
+the compose project, a private Docker bridge of the same name, and prefixes
+every container (`<stack>-lmcache`, ...). On its own bridge each container also
+answers to its name in the table above, except `vllm`, which shares lmcache's
+namespace and answers as `aic-lmcache` or `aic-vllm`. No container binds a
+fixed host port, so several stacks can share a multi-tenant host:
 
 - Only Grafana is published, on `127.0.0.1`. `make` picks the lowest free port
   from 3000; `make endpoints` prints the URL.
 - Every client runs in a container on the bridge: `aic-client` for `make`
-  targets, or a throwaway `docker run --network aic` container.
+  targets, or a throwaway `docker run --network "${AIC_STACK}"` container.
   `scripts/aic-endpoints.sh` provides `aic_fetch` (one request from the bridge)
   and `aic_bridge_url` (the URL a containerized client should use). A process
   on the host cannot reach vLLM at `localhost:8000`.
-- Address a stack by its container name, not the shared `aic-vllm` network
-  alias, which every stack on the same bridge answers to.
+- On the bridge, use the fixed aliases (`http://aic-lmcache:8000`); they
+  resolve only within their own stack. Host-side `docker` commands need the
+  prefixed container name.
