@@ -37,15 +37,10 @@ MODEL = os.getenv("AIC_ACCURACY_MODEL", "Qwen/Qwen2.5-0.5B-Instruct")
 
 # Item cap passed to lm_eval.simple_evaluate(limit=...).  None means the full
 # split.  A capped run widens the floor tolerance by 3× the binomial SE so the
-# gate remains meaningful without becoming flaky.  The differential (DELTA) is
-# left unchanged: both arms sample the same items, so the binomial term cancels.
+# gate remains meaningful without becoming flaky.  The per-question comparisons
+# need no adjustment: every pass is asked the same items.
 _LIMIT_ENV = os.getenv("AIC_ACCURACY_LIMIT")
 LIMIT: int | None = int(_LIMIT_ENV) if _LIMIT_ENV else None
-
-# If |accuracy[tiered] - accuracy[baseline]| > AIC_ACCURACY_DELTA, fail.  Two-
-# sided: the arms answer identical prompts, so an unexplained gain is the same
-# evidence of divergence as a loss.
-DELTA = float(os.getenv("AIC_ACCURACY_DELTA", "0.02"))
 
 # Slack on the absolute floor, calibrated for the full 1319-item split.  When
 # LIMIT is set the floor is widened by 3× the binomial SE so healthy capped runs
@@ -62,29 +57,6 @@ def _floor_slack(expected: float) -> float:
     return max(FLOOR_RTOL, 3.0 * se)
 
 
-def _delta_slack() -> float:
-    """Return the differential tolerance for the current LIMIT (or full split).
-
-    The baseline and tiered arms run as separate vLLM instances, so their
-    outputs differ by per-request nondeterminism even on the same prompts.
-    For the full split this is negligible (DELTA=0.02 is ~6 sigma); for a
-    capped run the expected inter-instance spread is sqrt(2)*SE per arm,
-    which must be covered by the tolerance.  We use 4 sigma so healthy
-    capped runs pass with high probability.
-    """
-    if LIMIT is None:
-        return DELTA
-    import math
-    # Approximate score for SE calculation using DELTA midpoint; the exact
-    # value is unknown at call time so use the floor from expected.json if
-    # available, otherwise a conservative p=0.5 (maximum variance).
-    try:
-        p = list(_expected_values().values())[0]
-    except Exception:
-        p = 0.5
-    se = math.sqrt(p * (1.0 - p) / LIMIT)
-    return max(DELTA, 4.0 * math.sqrt(2.0) * se)
-
 # One request in flight.  Decoding is greedy, but which requests vLLM batches
 # together depends on when they arrive, and the batch shape picks the attention
 # and GEMM kernels, so concurrent requests get slightly different arithmetic and
@@ -95,11 +67,14 @@ NUM_CONCURRENT = int(os.getenv("AIC_ACCURACY_CONCURRENT", "1"))
 # The baseline arm's per-question answers, from an earlier scoring pass.  The arms
 # share the GPU, so the driver scores the baseline first and hands its answers on.
 BASELINE_SAMPLES = os.getenv("AIC_ACCURACY_BASELINE_SAMPLES")
-_REFERENCE_SCORE = os.getenv("AIC_ACCURACY_REFERENCE_SCORE")
-REFERENCE_SCORE = float(_REFERENCE_SCORE) if _REFERENCE_SCORE else None
+# The restart pass's reference: the baseline arm re-scored with its GPU prefix
+# cache still warm, so its prompts' prefixes were reused rather than recomputed,
+# just as the restart pass reuses them from LMCache.  Enables the restart test.
+REFERENCE_SAMPLES = os.getenv("AIC_ACCURACY_REFERENCE_SAMPLES")
+# vLLM's --block-size, which the driver sets equal to LMCache's chunk size.
+BLOCK_SIZE = int(os.getenv("AIC_ACCURACY_BLOCK_SIZE", "256"))
 
-# When set, the measured tiered score is written here as JSON so a later pytest
-# invocation (the restart phase) can be handed it via AIC_ACCURACY_REFERENCE_SCORE.
+# When set, the measured tiered score is written here as JSON for the CI report.
 SCORE_OUT = os.getenv("AIC_ACCURACY_SCORE_OUT")
 # When set, the tiered arm's per-question answers are written here as JSON lines.
 SAMPLES_OUT = os.getenv("AIC_ACCURACY_SAMPLES_OUT")
@@ -121,14 +96,9 @@ def _meets_accuracy_threshold(measured: float, expected: float, rtol: float) -> 
 
     Used only for the absolute floor, where `expected` is a coarse published
     number rather than a same-run measurement, so an overshoot carries no
-    information. Same-run comparisons use `_within_delta` instead.
+    information. Same-run comparisons compare answers instead; see _diverging.
     """
     return measured >= expected - rtol
-
-
-def _within_delta(measured: float, reference: float, delta: float) -> bool:
-    """Two-sided: the reference is a same-run score over identical prompts."""
-    return abs(measured - reference) <= delta
 
 
 class Arm(NamedTuple):
@@ -193,9 +163,11 @@ def _describe_divergence(
 # Runs in a child process; see _score.  Takes its settings as one JSON argument.
 # With samples_out set, writes one JSON line per question: the generated text,
 # the extracted answer, and whether it was right.  prompt_hash lets a comparison
-# prove two runs were asked the same questions.
+# prove two runs were asked the same questions; prompt_tokens is the prompt's
+# length as vLLM counts it (same tokenizer, no special tokens added).
 _SCORE_SCRIPT = """
 import json, sys, lm_eval
+from transformers import AutoTokenizer
 cfg = json.loads(sys.argv[1])
 results = lm_eval.simple_evaluate(
     model="local-completions",
@@ -216,6 +188,7 @@ results = lm_eval.simple_evaluate(
 )
 metric, filter_name = cfg["filter"].split(",")
 if cfg["samples_out"]:
+    tok = AutoTokenizer.from_pretrained(cfg["model"])
     with open(cfg["samples_out"], "w", encoding="utf-8") as fh:
         for s in results["samples"][cfg["task"]]:
             if s["filter"] != filter_name:
@@ -223,6 +196,7 @@ if cfg["samples_out"]:
             fh.write(json.dumps({
                 "doc_id": s["doc_id"],
                 "prompt_hash": s["prompt_hash"],
+                "prompt_tokens": len(tok(s["arguments"][0][0])["input_ids"]),
                 "resp": s["resps"][0][0],
                 "answer": s["filtered_resps"][0],
                 "exact_match": s[metric],
@@ -318,15 +292,6 @@ def test_floor_threshold_is_one_sided() -> None:
     assert not _meets_accuracy_threshold(0.71, 0.77, 0.05)
 
 
-def test_differential_threshold_is_two_sided() -> None:
-    """An unexplained gain fails the differential just as a loss does."""
-    assert _within_delta(0.77, 0.77, 0.02)
-    assert _within_delta(0.76, 0.77, 0.02)
-    assert _within_delta(0.78, 0.77, 0.02)
-    assert not _within_delta(0.74, 0.77, 0.02)
-    assert not _within_delta(0.80, 0.77, 0.02)
-
-
 def test_divergence_is_reported_per_question() -> None:
     """Guard the answer comparison. Runs anywhere, needs no endpoint."""
     ref = {
@@ -352,7 +317,7 @@ def test_tiered_matches_baseline(tiered: Arm, baseline: Arm) -> None:
     text is byte-identical.  Every prompt in this pass is new, so the tiered arm
     reads no KV back from the tier; what this proves is that wiring in the
     connector and writing KV out to LMCache leave the computation untouched.
-    Reading it back is test_score_survives_restart's job.
+    Reading it back is test_answers_survive_restart's job.
     """
     ids = _diverging(tiered.samples, baseline.samples)
     assert not ids, (
@@ -389,28 +354,54 @@ def test_tiered_above_floor(tiered_score: float) -> None:
     )
 
 
-def test_score_survives_restart(tiered_score: float) -> None:
-    """Re-scoring after a vLLM restart must match the pre-restart score.
+def _comparable_after_restart(samples: dict[int, dict]) -> dict[int, dict]:
+    """The questions whose prompt prefix is reused identically from either cache.
 
-    LMCache should preserve it's cached state in DRAM/NVMe across a restart,
-    so the repeated prompts will be cache hits and fetched from the cache tier
-    rather than being recomputed.
-
-    Two-sided, for the same reason as the baseline differential: the post-restart
-    run replays the same prompts against the same weights, so a score that moves
-    in either direction means the answers changed.
-
-    Both numbers come from the full split, so DELTA applies unmodified — the
-    re-score and the reference asked exactly the same questions.
+    When a prompt's prefix is cached, vLLM recomputes only the rest, and the
+    length of that remainder decides which kernels run.  Both caches reuse
+    whole BLOCK_SIZE-token blocks and must leave at least the last token to
+    compute, so both reuse floor((n - 1) / B) * B tokens of an n-token prompt --
+    except when n is an exact multiple of B.  There vLLM's own cache has to
+    drop the whole last block, while the connector may load all but the last
+    token, so the two recompute B tokens and 1.  Those prompts (7 of 1319 for
+    the default model at B = 256) cannot be compared exactly and are left out.
     """
-    if REFERENCE_SCORE is None:
-        pytest.skip("AIC_ACCURACY_REFERENCE_SCORE unset; not a restart-phase run")
-    tol = _delta_slack()
-    assert _within_delta(tiered_score, REFERENCE_SCORE, tol), (
-        f"score changed after vLLM restart — suspect NVMe retrieval\n"
-        f"  model:         {MODEL}\n"
-        f"  pre-restart:   {REFERENCE_SCORE:.4f}\n"
-        f"  post-restart:  {tiered_score:.4f}\n"
-        f"  delta:         {tiered_score - REFERENCE_SCORE:+.4f} "
-        f"(allowed: +/-{tol:.4f})"
+    return {i: s for i, s in samples.items() if s["prompt_tokens"] % BLOCK_SIZE}
+
+
+def test_restart_reuse_rule_excludes_block_multiples() -> None:
+    """Guard the exclusion rule. Runs anywhere, needs no endpoint."""
+    samples = {
+        i: {"prompt_tokens": n}
+        for i, n in enumerate([BLOCK_SIZE - 1, BLOCK_SIZE, BLOCK_SIZE + 1, 4 * BLOCK_SIZE])
+    }
+    assert sorted(_comparable_after_restart(samples)) == [0, 2]
+
+
+def test_answers_survive_restart(tiered: Arm) -> None:
+    """KV read back from LMCache must give the answers the GPU's own cache gives.
+
+    vLLM is restarted while LMCache keeps its DRAM/NVMe state, and the same
+    prompts are re-scored, so their prefixes come back from the tier.  The
+    reference is the baseline arm re-scored with its GPU prefix cache still
+    warm: the same prefixes reused, but from VRAM.  The first pass cannot be the
+    reference, since it recomputed every prompt in full, and a different amount
+    of recomputation is enough to change the arithmetic and so ~57% of the
+    answers.  Against the cached re-score the tier must match exactly.
+    """
+    if REFERENCE_SAMPLES is None:
+        pytest.skip("AIC_ACCURACY_REFERENCE_SAMPLES unset; not a restart-phase run")
+    reference = _load_samples(REFERENCE_SAMPLES)
+    comparable = _comparable_after_restart(reference)
+    ids = [i for i in _diverging(tiered.samples, reference) if i in comparable]
+    assert not ids, (
+        "answers after the vLLM restart differ from the cached baseline re-score "
+        "-- suspect KV retrieval from the tier\n"
+        f"  model:     {MODEL}\n"
+        f"  reference: {_score_of(reference):.4f} (baseline, prefixes from VRAM)\n"
+        f"  restart:   {tiered.score:.4f} (tiered, prefixes from LMCache)\n"
+        f"  compared:  {len(comparable)} of {len(reference)} questions "
+        f"({len(reference) - len(comparable)} prompts are a multiple of {BLOCK_SIZE} "
+        "tokens long; see _comparable_after_restart)\n"
+        + _describe_divergence(ids, tiered.samples, reference)
     )

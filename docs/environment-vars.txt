@@ -320,7 +320,6 @@ AIC_TINY_EXPORTERS: `AIC_EXPORTERS` value for that capture
 
 [accuracy]
 AIC_ACCURACY_MODEL: Model to score; must match what the arms serve
-AIC_ACCURACY_DELTA: Allowed change between the pre-restart and restart scores, two-sided; a larger change counts as corruption. The two arms have no tolerance: their answers must be identical
 AIC_ACCURACY_LIMIT: Cap on gsm8k items per arm. Unset scores the full split; `make accuracy-test-very-fast` sets `100`, and the floor is widened for a capped run
 AIC_ACCURACY_CONCURRENT: `lm_eval` request concurrency. Above 1, answers depend on request timing
 AIC_ACCURACY_TIME: Accuracy job time limit
@@ -336,7 +335,8 @@ AIC_ACCURACY_BASELINE_URL: Baseline arm base URL as seen from the `aic` bridge. 
 AIC_ACCURACY_TIERED_URL: Tiered arm base URL
 AIC_ACCURACY_REQUIRED: `1` turns an unreachable endpoint from a skip into a failure; the CI driver sets it
 AIC_ACCURACY_BASELINE_SAMPLES: Baseline arm's per-question answers (JSON lines), measured earlier in the job; the arms share the GPU, so they are scored one after the other
-AIC_ACCURACY_REFERENCE_SCORE: Tiered score from before the restart; enables the restart assertion
+AIC_ACCURACY_REFERENCE_SAMPLES: Answers from the baseline arm re-scored with its prefix cache warm; enables the restart assertion
+AIC_ACCURACY_BLOCK_SIZE: vLLM `--block-size` the arms ran with. The driver sets it to LMCache's chunk size so both caches reuse the same prefix length
 AIC_ACCURACY_SCORE_OUT: File the measured tiered score is written to, as JSON
 AIC_ACCURACY_SAMPLES_OUT: File the tiered arm's per-question answers are written to, as JSON lines
 
