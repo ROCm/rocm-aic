@@ -42,17 +42,25 @@ export PATH="/usr/local/bin:${PATH}"
 : "${AIC_METRICS_DIR:=}"
 : "${MON_DIR:=}"
 : "${MON_COMPOSE:=}"
-# Single `=`, not `:=`: an explicitly empty value means "no PID sharing" and
-# must survive.  With `:=` it was silently rewritten to "host", so a caller
-# that deliberately opted out of PID sharing got pid:host instead.
-: "${AIC_HSA_SNOOP_PID_MODE=host}"
 # Provide a fallback logger only if the caller has not defined one (run-cliff.sbatch
 # and run-build-distribute.sh each define their own prefixed log()).
 declare -F log >/dev/null 2>&1 || log() { printf '[monitoring] %s\n' "$*" >&2; }
 
-# aic_fetch, for the Prometheus queries below.
+# aic_fetch, for the Prometheus queries below, and AIC_STACK.
 # shellcheck source=scripts/aic-endpoints.sh
 source "${BASH_SOURCE[0]%/*}/../scripts/aic-endpoints.sh"
+
+# Single `=`, not `:=`: an explicitly empty value means "no PID sharing" and
+# must survive.  With `:=` it was silently rewritten to "host", so a caller
+# that deliberately opted out of PID sharing got pid:host instead.  spur-authz
+# blocks pid:host, so on SPUR the default is this stack's lmcache namespace,
+# which vllm shares too.  Resolved here, on the node, because it names the
+# container: a value computed where the job was submitted names another stack.
+if [[ "${AIC_SPUR_CLUSTER:-0}" == "1" ]]; then
+    : "${AIC_HSA_SNOOP_PID_MODE=container:${AIC_STACK}-lmcache}"
+else
+    : "${AIC_HSA_SNOOP_PID_MODE=host}"
+fi
 
 # Prometheus publishes no host port; query it by name from the aic bridge, out
 # of the AIC image the caller already has, so no query pulls an image.

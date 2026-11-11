@@ -251,7 +251,15 @@ _AIC_G := \033[32m
 _AIC_D := \033[90m
 _AIC_R := \033[0m
 _COMPOSE_BIN := docker compose
-COMPOSE      := $(_FRAMEWORK_VERSION_ENV) DOCKER_BUILDKIT=1 $(_COMPOSE_BIN) -f "$(CURDIR)/docker/docker-compose.yml"
+# spur-authz refuses compose's default hsa-snoop PID mode, pid:host, so on SPUR
+# hsa-snoop joins this stack's lmcache namespace (vllm shares it).  Set per call,
+# not exported: it names this stack's container, and a job make submits runs a
+# stack of its own (monitoring-lib.sh picks the same default there).  `-`, not
+# `:-`: an explicitly empty value means a private namespace.
+ifeq ($(AIC_SPUR_CLUSTER),1)
+_HSA_SNOOP_PID_ENV := AIC_HSA_SNOOP_PID_MODE="$${AIC_HSA_SNOOP_PID_MODE-container:$(AIC_STACK)-lmcache}"
+endif
+COMPOSE      := $(_FRAMEWORK_VERSION_ENV) $(_HSA_SNOOP_PID_ENV) DOCKER_BUILDKIT=1 $(_COMPOSE_BIN) -f "$(CURDIR)/docker/docker-compose.yml"
 COMPOSE_CACHE := $(COMPOSE) --profile cache
 
 # vLLM --kv-transfer-config for the MP connector.  Leave KV_TRANSFER_ARG empty
@@ -330,9 +338,9 @@ endif
 export AIC_NVME_MOUNT       ?= /mnt/m2m_nobackup
 export AIC_L2_BACKEND       ?= nixl_posix
 # spur-authz refuses pid:host, which the full exporter fleet and hsa-snoop's
-# host mode both need.
+# host mode both need.  hsa-snoop's SPUR PID mode is set where compose runs:
+# COMPOSE above for make's own stack, monitoring-lib.sh for a job's.
 export AIC_EXPORTERS          ?= safe
-export AIC_HSA_SNOOP_PID_MODE ?= container:$(AIC_STACK)-lmcache
 else
 ifneq ($(wildcard /scratch/models/hub),)
 ifeq ($(call _is_makefile_default,HF_HOME),file)

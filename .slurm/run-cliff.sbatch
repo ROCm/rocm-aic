@@ -260,9 +260,9 @@ PLOTS="${LOGDIR}/plots"
 # AIC_EXPORTERS=1 also launches the containerized node + AMD GPU exporters (for
 # nodes without the host services); set 0 to rely on host-installed exporters
 # and avoid :9100/:5000 clashes.  monitoring/monitoring-lib.sh owns its default
-# and that of AIC_HSA_SNOOP_PID_MODE ('host', which needs --pid=host and is
-# blocked by spur-authz on SPUR; 'container:aic-lmcache' shares the lmcache+vLLM
-# PID ns instead -- valid because vllm uses pid:service:lmcache).
+# and that of AIC_HSA_SNOOP_PID_MODE: 'host' off SPUR, and on SPUR, whose authz
+# blocks --pid=host, this stack's lmcache namespace; vllm uses
+# pid:service:lmcache, so both are visible there.
 AIC_MONITORING="${AIC_MONITORING:-1}"
 AIC_METRICS_DIR="${AIC_METRICS_DIR:-${REPO}/logs/${SLURM_JOB_ID:-manual}/prometheus}"
 MON_COMPOSE="${REPO}/docker/docker-compose.yml"
