@@ -1,6 +1,6 @@
 # AIC Prometheus Metrics Reference
 
-**Generated:** 2026-11-10 09:23 UTC · **Total metrics:** 538 · **SHA:** `1daabee`
+**Generated:** 2026-11-12 09:25 UTC · **Total metrics:** 538 · **SHA:** `1daabee`
 
 ## Component Versions
 
@@ -17,7 +17,7 @@
 | Container | Image | Status |
 |-----------|-------|--------|
 | `aic-amdgpu-exporter` | `rocm/device-metrics-exporter:v1.5.2` | Up About a minute |
-| `aic-vllm-gpu0` | `aic-vllm:0.1.0-rocm7.14.1-pytorch2.13-vllm0.29.0-aiter0.1.22.post1-fa2.8.3.post1-lmcache0.5.6-nixl1.4.1-hsasnoop1.2.0` | Up About a minute |
+| `aic-vllm-gpu7` | `aic-vllm:0.1.0-rocm7.14.1-pytorch2.13-vllm0.29.0-aiter0.1.22.post1-fa2.8.3.post1-lmcache0.5.6-nixl1.4.1-hsasnoop1.2.0` | Up About a minute |
 | `aic-lmcache` | `aic-lmcache:0.1.0-rocm7.14.1-pytorch2.13-vllm0.29.0-aiter0.1.22.post1-fa2.8.3.post1-lmcache0.5.6-nixl1.4.1-hsasnoop1.2.0` | Up About a minute (healthy) |
 | `aic-alloy` | `grafana/alloy:v1.8.3` | Up About a minute |
 | `aic-lmcache-coordinator` | `aic-lmcache:0.1.0-rocm7.14.1-pytorch2.13-vllm0.29.0-aiter0.1.22.post1-fa2.8.3.post1-lmcache0.5.6-nixl1.4.1-hsasnoop1.2.0` | Up About a minute (healthy) |
