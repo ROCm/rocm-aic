@@ -504,7 +504,7 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
 # URL tracks the base image automatically (ROCm 10.0 changed the URL).
 COPY --from=base /etc/apt/keyrings/amdrocm.gpg /etc/apt/keyrings/amdrocm.gpg
 COPY --from=base /etc/apt/sources.list.d/rocm.list /etc/apt/sources.list.d/amdrocm.list
-# hadolint ignore=DL3008
+# hadolint ignore=SC2086,DL3008
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
     echo "blas cache bust: ${BLAS_CACHE_BUST}" && \
@@ -542,18 +542,13 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
         "amdrocm-sysdeps${_mm}" \
     && _arch_pkgs="" \
     && for _arch in $(echo "${ROCM_ARCH}" | tr ',;' '  '); do \
-        if DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-            "amdrocm-blas${_mm}-${_arch}"; then \
-            _blas_archs_installed="${_blas_archs_installed} ${_arch}"; \
-        else \
-            echo "  NOTE: no blas arch package for ${_arch} (expected for emulated arches)"; \
-        fi; \
+          _arch_pkgs="${_arch_pkgs} \
+                      amdrocm-blas${_mm}-${_arch} \
+                      amdrocm-rand${_mm}-${_arch} \
+                      amdrocm-rccl${_mm}-${_arch}"; \
        done \
-    && if [ -z "${_blas_archs_installed}" ]; then \
-        echo "  ERROR: no amdrocm-blas<mm>-<arch> device library installed for ROCM_ARCH='${ROCM_ARCH}'.  Without the per-arch TensileLibrary device libs, the first torch hipBLASLt GEMM dies with HIPBLAS_STATUS_INVALID_VALUE (hipblasLtMatmulAlgoGetHeuristic)." >&2; \
-        exit 1; \
-       fi \
-    && echo "blas arch device libraries installed: ${_blas_archs_installed}" \
+    && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends ${_arch_pkgs} \
+    && update-alternatives --install /opt/rocm/core core "/opt/rocm/core-${_mm}" 1375129220 \
     && update-ca-certificates
 
 RUN git config --global advice.detachedHead false
@@ -620,14 +615,6 @@ RUN uv pip uninstall --system \
 RUN _mm=$(echo "${ROCM_VERSION}" | cut -d. -f1-2) && \
     echo "/opt/rocm/core-${_mm}/lib" > /etc/ld.so.conf.d/rocm.conf && \
     ldconfig
-
-# In ROCM 7.14, rocSHMEM dynamically loads libnuma using its unversioned SONAME
-# Since we are not installing libnuma-dev package, this file does not exist.
-# This causes an error to be displayed every time pytorch python module is imported.
-# Since the library has RPATH set to $ORIGIN, we create a softlink with the right name
-# pointing to libnuma1 installed library, which avoids us patching.
-# See: https://github.com/pytorch/pytorch/issues/195670
-RUN ln -s /lib/x86_64-linux-gnu/libnuma.so.1 /usr/local/lib/python3.12/dist-packages/torch/lib/libnuma.so
 
 ENV NIXL_PLUGIN_DIR=/opt/nixl/lib/x86_64-linux-gnu/plugins \
     PYTHONPATH=/opt/rocm/core/share/amd_smi:/opt/nixl/lib/python3/dist-packages \

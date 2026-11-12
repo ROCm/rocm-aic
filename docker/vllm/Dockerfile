@@ -114,16 +114,6 @@ ARG FLASH_ATTN_REF=v2.8.3.post1
 ARG AITER_PREBUILD_KERNELS=0
 
 # git and ca-certificates are not in the -full image; install before cloning.
-# libnuma-dev: the ROCm base image ships libnuma.so.1 but NOT the unversioned
-# libnuma.so symlink, which lives in libnuma-dev.  rocSHMEM's NUMAWrapper
-# dlopen()s the unversioned name, so it fails and prints
-#   E-001h rocSHMEM Could not open libnuma. Returning  NUMAWrapper@...:48
-# once per AITER module build -- hundreds of lines of noise around the output
-# that actually matters.  -dev, not libnuma1: the runtime library is already
-# there, it is the symlink that is missing.  (This stage builds FROM the raw
-# ROCm image rather than aic-base, which is why it needs its own copy at all;
-# base/Dockerfile installs libnuma-dev for the same reason.)  It degrades
-# gracefully -- hence "Returning" -- so this is log legibility, not correctness.
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
     apt-get update && \
@@ -131,7 +121,6 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
         ca-certificates \
         cmake \
         git \
-        libnuma-dev \
         ninja-build \
         python3-dev \
         python3-pip
@@ -378,7 +367,6 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     _mm=$(echo "${ROCM_VERSION}" | cut -d. -f1-2) && \
     apt-get update && \
     DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-        "amdrocm-sysdeps${_mm}" \
         python3-pip
 
 # When building emulated, the base context does not contain any pytorch wheels
@@ -482,12 +470,9 @@ SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 # Install make, needed by aiter
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
-    _mm=$(echo "${ROCM_VERSION}" | cut -d. -f1-2) && \
     apt-get update && \
     DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-        "amdrocm-sysdeps${_mm}" \
-        make && \
-    update-alternatives --install /opt/rocm/core core "/opt/rocm/core-${_mm}" 1375129220
+        make
 
 RUN --mount=type=bind,from=lmcache-wheels,target=/aic-wheels \
     shopt -s nullglob && \
