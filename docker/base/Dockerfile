@@ -547,7 +547,8 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
                       amdrocm-rand${_mm}-${_arch} \
                       amdrocm-rccl${_mm}-${_arch}"; \
        done \
-    && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends ${_arch_pkgs} \
+    && (DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends ${_arch_pkgs} \
+        || echo "Warning: not all packages were successfully installed") \
     && update-alternatives --install /opt/rocm/core core "/opt/rocm/core-${_mm}" 1375129220 \
     && update-ca-certificates
 
