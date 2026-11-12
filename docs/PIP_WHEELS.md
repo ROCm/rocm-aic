@@ -29,7 +29,7 @@ you a wheel that imports and then fails on the first kernel launch:
 | Release tag | Arch group | Hardware | Built |
 | --- | --- | --- | --- |
 | `nightly` | `gfx90a;gfx942;gfx950;gfx1250` | MI200 / MI300X / MI355X, and the rocjitsu-emulated gfx1250 | every night |
-| `nightly-rdna` | `gfx1100;gfx1101;gfx1150;gfx1151;gfx1200;gfx1201` | RDNA3 / RDNA4 | on request |
+| `nightly-rdna` | `gfx1100;gfx1101;gfx1151;gfx1200;gfx1201` | RDNA3 / RDNA4 | on request |
 
 The on-request group is built by dispatching the workflow with the `groups`
 input set to `cdna,rdna`.
