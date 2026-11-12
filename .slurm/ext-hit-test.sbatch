@@ -54,13 +54,17 @@ aic_resolve_gpu_visibility \
 
 # --- Load image ---
 echo "--- Loading image ---"
-if ! docker image inspect "${AIC_IMAGE}" >/dev/null 2>&1; then
-    echo "Fetching from ${AIC_IMAGE_DIR}..."
-    # shellcheck source=.slurm/image-dist-lib.sh
-    source "${REPO}/.slurm/image-dist-lib.sh"
-    _img_art="$(aic_image_artifact "${AIC_IMAGE_DIR}" "$(aic_image_stem "${AIC_IMAGE}")-*")" \
-        || { echo "ERROR: no build artifact for ${AIC_IMAGE} in ${AIC_IMAGE_DIR}"; exit 1; }
+# Fetch the build's image even when its tag is already here: the tag comes from
+# the version pins, not the commit, so it can name an older build on this node.
+# An image already here is used as is only when there is no build artifact.
+# shellcheck source=.slurm/image-dist-lib.sh
+source "${REPO}/.slurm/image-dist-lib.sh"
+if _img_art="$(aic_image_artifact "${AIC_IMAGE_DIR}" "$(aic_image_stem "${AIC_IMAGE}")-*")"; then
+    echo "Fetching from ${_img_art}..."
     aic_image_fetch ext-hit-test "${AIC_IMAGE}" "${_img_art}"
+elif ! docker image inspect "${AIC_IMAGE}" >/dev/null 2>&1; then
+    echo "ERROR: ${AIC_IMAGE} is not on this node and ${AIC_IMAGE_DIR} has no build artifact for it"
+    exit 1
 fi
 echo "Image ready: ${AIC_IMAGE}"
 
