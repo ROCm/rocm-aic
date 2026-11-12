@@ -44,16 +44,20 @@ jobs:
       AIC_CI_STORAGE_ROOT: ${{ secrets.AIC_SHARED_NFS }}/rocm-aic
 
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Run cliff benchmark + harvest results from SPUR
+        env:
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
         run: |
           bash .github/scripts/workflows/spur-cliff-harvest.sh \
-            "${{ github.event.workflow_run.head_sha }}" \
+            "${HEAD_SHA}" \
             "$(date -u +%Y-%m-%d)"
 
       - name: Upload cliff performance page artifact
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: cliff-perf-page-${{ github.event.workflow_run.head_sha }}
           path: cliff-page/
@@ -61,7 +65,7 @@ jobs:
           retention-days: 90
 
       - name: Deploy cliff performance page to GitHub Pages
-        uses: peaceiris/actions-gh-pages@v4
+        uses: peaceiris/actions-gh-pages@84c30a85c19949d7eee79c4ff27748b70285e453 # v4.1.0
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           publish_dir: ./cliff-page

@@ -113,9 +113,9 @@ RUN chmod +x /usr/local/bin/apply-github-prs.sh && \
         /app/patches/lmcache.pull-requests \
         "${LMCACHE_REF}"
 
+WORKDIR /app/LMCache
 # hadolint ignore=SC3054,SC3044
-RUN cd /app/LMCache && \
-    shopt -s nullglob && \
+RUN shopt -s nullglob && \
     patches=(/app/patches/lmcache/*.patch) && \
     if [ "${#patches[@]}" -eq 0 ]; then \
         echo "ERROR: no patches found in /app/patches/lmcache/" >&2; exit 1; \
@@ -128,6 +128,7 @@ RUN cd /app/LMCache && \
             exit 1; \
         fi; \
     done
+WORKDIR /
 
 RUN --mount=type=cache,target=/root/.cache/pip \
     pip3 install --no-cache-dir grpcio-tools
@@ -152,10 +153,10 @@ COPY docker/lmcache/rocm_ipc_patch.py /tmp/rocm_ipc_patch.py
 RUN python3 /tmp/rocm_ipc_patch.py && rm /tmp/rocm_ipc_patch.py
 
 # Build the LMCache wheel with full ROCm headers available.
+WORKDIR /app/LMCache
 RUN --mount=type=cache,target=/root/.cache/pip \
     mkdir -p /wheels && \
     printf '%s\n' "${ROCM_ARCH%%;*}" > /etc/rocm_target.lst && \
-    cd /app/LMCache && \
     PYTORCH_ROCM_ARCH="${ROCM_ARCH}" \
         TORCH_DONT_CHECK_COMPILER_ABI=1 \
         CXX=hipcc \
@@ -164,6 +165,7 @@ RUN --mount=type=cache,target=/root/.cache/pip \
         MAX_JOBS="${BUILD_JOBS:-$(nproc)}" \
         CMAKE_BUILD_PARALLEL_LEVEL="${BUILD_JOBS:-$(nproc)}" \
         python3 -m pip wheel --no-build-isolation --no-deps -w /wheels .
+WORKDIR /
 
 # =============================================================================
 # Runtime build stage (FROM aic-base via --build-context base=oci-layout://...)
@@ -213,9 +215,9 @@ RUN chmod +x /usr/local/bin/apply-github-prs.sh && \
         /app/patches/lmcache.pull-requests \
         "${LMCACHE_REF}"
 
+WORKDIR /app/LMCache
 # hadolint ignore=SC3054,SC3044
-RUN cd /app/LMCache && \
-    shopt -s nullglob && \
+RUN shopt -s nullglob && \
     patches=(/app/patches/lmcache/*.patch) && \
     if [ "${#patches[@]}" -eq 0 ]; then \
         echo "ERROR: no patches found in /app/patches/lmcache/" >&2; exit 1; \
@@ -229,6 +231,7 @@ RUN cd /app/LMCache && \
             exit 1; \
         fi; \
     done
+WORKDIR /
 
 RUN --mount=type=cache,target=/root/.cache/pip \
     pip3 install --no-cache-dir grpcio-tools
@@ -308,3 +311,9 @@ COPY --from=build_lmcache_wheel /wheels /
 
 # ----- 10. Runtime image (default target) ------------------------------------
 FROM build AS runtime
+
+# Asserts that the ZMQ port vLLM connects to is bound and that the HTTP API
+# answers /metrics with a 200.  Services that run this image with another
+# entrypoint (the coordinator) override the check in compose.
+HEALTHCHECK --interval=10s --timeout=5s --start-period=30s --retries=18 \
+    CMD ["python3", "-c", "import os, socket, urllib.request as u; socket.create_connection(('127.0.0.1', int(os.getenv('LMCACHE_PORT', '6555'))), 2).close(); u.build_opener(u.ProxyHandler({})).open('http://127.0.0.1:8080/metrics', timeout=3).close()"]

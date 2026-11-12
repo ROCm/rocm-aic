@@ -175,8 +175,8 @@ RUN git -c submodule.third_party/cutlass.update=none \
     git -C /app/pytorch submodule status | awk '/^-/ {print $2}' | \
     while read -r d; do mkdir -p "/app/pytorch/$d" && touch "/app/pytorch/$d/LICENSE"; done
 
+WORKDIR /app/pytorch
 RUN --mount=type=cache,target=/root/.cache/uv \
-    cd /app/pytorch && \
     uv pip install --system -r requirements.txt
 
 COPY patches/pytorch/ /app/patches/pytorch/
@@ -203,7 +203,6 @@ ARG BUILD_JOBS=
 
 # hadolint ignore=SC2086,SC2015
 RUN --mount=type=cache,target=/root/.cache/ccache \
-    cd /app/pytorch && \
     python3 tools/amd_build/build_amd.py && \
     CCACHE_DIR=/root/.cache/ccache CCACHE_MAXSIZE=25G \
     CMAKE_C_COMPILER_LAUNCHER=ccache \
@@ -215,6 +214,7 @@ RUN --mount=type=cache,target=/root/.cache/ccache \
         python3 setup.py bdist_wheel --dist-dir=/app/pytorch/dist && \
     { find /app/pytorch -mindepth 1 -maxdepth 1 ! -name 'dist' -exec rm -rf {} + || \
       echo "WARNING: PyTorch source cleanup failed; see find's error above" >&2; }
+WORKDIR /
 
 # =============================================================================
 # torchvision source build — must compile against our source-built PyTorch.
@@ -233,6 +233,7 @@ ARG TORCHVISION_REF=v0.28.0
 
 RUN git clone --depth 1 --revision "${TORCHVISION_REF}" "${TORCHVISION_GIT_URL}" /app/vision
 
+WORKDIR /app/vision
 # hadolint ignore=SC2086,DL3008
 RUN --mount=type=cache,target=/root/.cache/pip \
     --mount=type=cache,target=/root/.cache/ccache \
@@ -240,7 +241,6 @@ RUN --mount=type=cache,target=/root/.cache/pip \
     --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
     DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends libnuma-dev && \
     pip3 install setuptools wheel packaging /app/pytorch/dist/*.whl && \
-    cd /app/vision && \
     USE_ROCM=1 USE_CUDA=0 \
     PYTORCH_ROCM_ARCH="${ROCM_ARCH}" \
     CCACHE_DIR=/root/.cache/ccache CCACHE_MAXSIZE=25G \
@@ -249,6 +249,7 @@ RUN --mount=type=cache,target=/root/.cache/pip \
     MAX_JOBS="${BUILD_JOBS:-$(nproc)}" \
     CMAKE_BUILD_PARALLEL_LEVEL="${BUILD_JOBS:-$(nproc)}" \
         python3 setup.py bdist_wheel --dist-dir=/app/vision/dist
+WORKDIR /
 
 # =============================================================================
 # build_nixl — NIXL source build using the ROCm-full toolchain.
@@ -336,12 +337,14 @@ COPY patches/hip-ipc-signal-slot-index-fix.patch /tmp/hip-ipc-signal-slot-index-
 # Note: when using --revision, tags are not available
 # git checkout command must reference HEAD instead, which is pointing to the commit in clone's --revision flag.
 RUN pip3 install --break-system-packages CppHeaderParser && \
-    git clone --filter=blob:none --no-checkout --depth 1 --revision "${CLR_REF}" "${CLR_GIT_URL}" /app/rocm-systems && \
-    cd /app/rocm-systems && \
-    git sparse-checkout init --cone && \
+    git clone --filter=blob:none --no-checkout --depth 1 --revision "${CLR_REF}" "${CLR_GIT_URL}" /app/rocm-systems
+
+WORKDIR /app/rocm-systems
+RUN git sparse-checkout init --cone && \
     git sparse-checkout set projects/clr projects/hip && \
     git checkout HEAD && \
     patch -p1 < /tmp/hip-ipc-signal-slot-index-fix.patch
+WORKDIR /
 
 # hadolint ignore=DL3008
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
@@ -578,3 +581,6 @@ ENV NIXL_PLUGIN_DIR=/opt/nixl/lib/x86_64-linux-gnu/plugins \
     LD_LIBRARY_PATH=/opt/nixl/lib/x86_64-linux-gnu:/opt/nixl/lib:/opt/rocnixl-ucx/lib:/opt/rocm/core-7.14/lib \
     ROCM_PATH=/opt/rocm/core-7.14 \
     PATH=/opt/rocm/core-7.14/bin:/opt/rocm/core-7.14/lib/llvm/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+# Build parent, not a service: downstream images define their own checks.
+HEALTHCHECK NONE
