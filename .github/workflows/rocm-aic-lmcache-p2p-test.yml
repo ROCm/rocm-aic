@@ -87,8 +87,10 @@ jobs:
 
       - name: Resolve qcow2 image tag for cache key
         id: qcow2-tag
+        env:
+          INPUT_QCOW2_IMAGE: ${{ inputs.qcow2_image }}
         run: |
-          OVERRIDE="${{ inputs.qcow2_image }}"
+          OVERRIDE="$INPUT_QCOW2_IMAGE"
           if [ -n "$OVERRIDE" ]; then
             TAG="${OVERRIDE##*:}"
           else
@@ -107,8 +109,10 @@ jobs:
 
       - name: Pull ionic guest disk (cache miss)
         if: steps.qcow2-cache.outputs.cache-hit != 'true'
+        env:
+          INPUT_QCOW2_IMAGE: ${{ inputs.qcow2_image }}
         run: |
-          OVERRIDE="${{ inputs.qcow2_image }}"
+          OVERRIDE="$INPUT_QCOW2_IMAGE"
           if [ -n "$OVERRIDE" ]; then
             IMG="$OVERRIDE"
           else
@@ -135,9 +139,12 @@ jobs:
 
       - name: Resolve image refs
         id: images
+        env:
+          INPUT_LMCACHE_IMAGE_REF: ${{ inputs.lmcache_image_ref }}
+          INPUT_VLLM_IMAGE_REF: ${{ inputs.vllm_image_ref }}
         run: |
-          LMC="${{ inputs.lmcache_image_ref }}"
-          VLLM="${{ inputs.vllm_image_ref }}"
+          LMC="$INPUT_LMCACHE_IMAGE_REF"
+          VLLM="$INPUT_VLLM_IMAGE_REF"
           # Fall back to defaults from bench.mk if not supplied via dispatch.
           # In PR/schedule runs the inputs are empty; the make target will use
           # its own defaults (LMCACHE_IMAGE_REF / IMAGE_REF from the env).
@@ -186,14 +193,14 @@ jobs:
           AIC_LMCACHE_P2P_READY_S: "480"
           # Skip the compose up step — already done above.
           AIC_LMCACHE_P2P_SKIP_COMPOSE_UP: "1"
+          AIC_LMCACHE_P2P_LMCACHE_IMAGE_REF: ${{ steps.images.outputs.lmcache_ref }}
+          AIC_LMCACHE_P2P_VLLM_IMAGE_REF: ${{ steps.images.outputs.vllm_ref }}
         run: |
           EXTRA_ARGS=""
-          if [ -n "${{ steps.images.outputs.lmcache_ref }}" ]; then
-            EXTRA_ARGS="$EXTRA_ARGS AIC_LMCACHE_P2P_LMCACHE_IMAGE_REF=${{ steps.images.outputs.lmcache_ref }}"
-          fi
-          if [ -n "${{ steps.images.outputs.vllm_ref }}" ]; then
-            EXTRA_ARGS="$EXTRA_ARGS AIC_LMCACHE_P2P_VLLM_IMAGE_REF=${{ steps.images.outputs.vllm_ref }}"
-          fi
+          [ -n "$AIC_LMCACHE_P2P_LMCACHE_IMAGE_REF" ] && \
+            EXTRA_ARGS="$EXTRA_ARGS AIC_LMCACHE_P2P_LMCACHE_IMAGE_REF=$AIC_LMCACHE_P2P_LMCACHE_IMAGE_REF"
+          [ -n "$AIC_LMCACHE_P2P_VLLM_IMAGE_REF" ] && \
+            EXTRA_ARGS="$EXTRA_ARGS AIC_LMCACHE_P2P_VLLM_IMAGE_REF=$AIC_LMCACHE_P2P_VLLM_IMAGE_REF"
           # shellcheck disable=SC2086
           make test-lmcache-p2p-local $EXTRA_ARGS
 
