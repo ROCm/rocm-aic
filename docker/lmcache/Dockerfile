@@ -78,21 +78,15 @@ ARG LMCACHE_REF=v0.5.6
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 
 # Install git + minimal build tools (the -full ROCm image does not include them).
-# git comes from ppa:git-core because `git clone --revision` needs >= 2.49 and
-# Ubuntu 24.04 ships 2.43.  software-properties-common is purged again once the
-# PPA is configured: it drags in a dpkg-owned python3-jwt that pip cannot
-# uninstall.
-# hadolint ignore=DL3008
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
     apt-get update && \
     DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-        software-properties-common && \
-    add-apt-repository ppa:git-core/ppa -y && \
-    apt-get update && \
-    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-        git ca-certificates python3-dev libnuma1 && \
-    apt-get purge -y --auto-remove software-properties-common
+        ca-certificates \
+        git \
+        libnuma1 \
+        python3-dev \
+        python3-pip
 
 RUN rm -f /usr/lib/python3.*/EXTERNALLY-MANAGED
 
@@ -187,6 +181,12 @@ ARG NIXL_REF=v1.4.1
 ARG AITER_REF=v0.1.22.post1
 ARG FLASH_ATTN_REF=v2.8.3.post1
 ARG HSA_SNOOP_REF=v1.2.0
+
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
+    apt-get update && \
+    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+      python3-pip
 
 # CuPy (ROCm): hipMalloc without ROCm compute stack (LMCACHE_NIXL_USE_CUPY=1).
 RUN --mount=type=cache,target=/root/.cache/pip \

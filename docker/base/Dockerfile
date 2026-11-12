@@ -72,10 +72,6 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     rm -f /etc/apt/apt.conf.d/docker-clean && \
     apt-get update && \
     DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-        software-properties-common && \
-    add-apt-repository ppa:git-core/ppa -y && \
-    apt-get update && \
-    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
         ca-certificates \
         ccache \
         cmake \
@@ -123,25 +119,33 @@ FROM base AS build_triton
 # =============================================================================
 ARG ROCM_ARCH
 ARG TRITON_GIT_URL="https://github.com/ROCm/triton.git"
-# release/internal/3.7.x as of 08/18 (picked up from vllm 0.29 Dockerfile.rocm_base)
-ARG TRITON_REF=f0b55c0
+# picked up from vllm 0.29 Dockerfile.rocm_base
+ARG TRITON_REF=release/internal/3.7.x
+
+RUN --mount=type=cache,target=/root/.cache/pip \
+    python3 -m pip install --break-system-packages \
+      'cmake<4.0,>=3.20' \
+      ninja \
+      'pybind11>=2.13.1'
 
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
     DEBIAN_FRONTEND=noninteractive apt-get update && \
     apt-get install -y --no-install-recommends \
-        nlohmann-json3-dev \
-        pybind11-json-dev \
-        pybind11-dev
+      python3-venv \
+      python3-build
 
-RUN git clone --depth 1 --revision "${TRITON_REF}" "${TRITON_GIT_URL}" triton \
+RUN git clone --depth 1 --branch "${TRITON_REF}" "${TRITON_GIT_URL}" /app/triton
 
 # TRITON_OFFLINE_BUILD=1 to avoid downloading large CUDA binaries
-RUN cd triton \
-    && TRITON_OFFLINE_BUILD=1 python3 -m build --wheel --no-isolation --outdir=/app/dist/triton
+# However, it depends on a specific version of llvm+mlir that is not available in Ubuntu 24.04
+RUN --mount=type=cache,target=/root/.triton/ \
+    cd /app/triton \
+    && TRITON_APPEND_CMAKE_ARGS="-DCMAKE_FIND_USE_CMAKE_ENVIRONMENT_PATH=FALSE" \
+       python3 -m build --wheel --no-isolation --outdir=/app/dist/triton
 
 # =============================================================================
-# PyTorch source build — avoids ROCm 7.2 wheel artifacts on a ROCm 7.14 host.
+# PyTorch source build — avoids ROCm 7.2 wheel artifacts on a ROCm 7.14+ host.
 # =============================================================================
 FROM base AS build_pytorch
 
@@ -165,7 +169,13 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
     DEBIAN_FRONTEND=noninteractive apt-get update && \
     apt-get install -y --no-install-recommends \
-        gcc-13 g++-13 pkg-config liblzma-dev libnuma-dev python3.12-venv && \
+        g++-13 \
+        gcc-13 \
+        liblzma-dev \
+        libnuma-dev \
+        patchelf \
+        pkg-config \
+        python3.12-venv && \
     update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-13 130 \
         --slave /usr/bin/g++ g++ /usr/bin/g++-13
 
@@ -199,11 +209,10 @@ RUN export UNUSED_SUBMODULES=(3rdparty/composable_kernel \
                               third_party/ittapi \
                               third_party/kleidiai \
                               third_party/mimalloc) && \
-    git $(for m in "${UNUSED_SUBMODULES[@]}"; do printf -- ' -c submodule."%s".update=none' "$m"; done) \
-        clone --depth 1 \
-              --revision "${PYTORCH_REF}" \
-              --recurse-submodules \
-              "${PYTORCH_GIT_URL}" /app/pytorch && \
+    git clone --filter=blob:none --no-checkout "${PYTORCH_GIT_URL}" /app/pytorch && \
+    git -C /app/pytorch checkout "${PYTORCH_REF}" && \
+    git -C /app/pytorch $(for m in "${UNUSED_SUBMODULES[@]}"; do printf -- ' -c submodule.%s.update=none' "$m"; done) \
+        submodule update --init --depth 1 --recursive && \
     for m in "${UNUSED_SUBMODULES[@]}"; do \
       git config -f /app/pytorch/.gitmodules --remove-section submodule."$m" || true; \
     done
@@ -251,7 +260,14 @@ RUN --mount=type=cache,target=/root/.cache/ccache \
     USE_ITT=0 \
     BUILD_TEST=0 \
     PYTHON_SIX_SOURCE_DIR=/usr/local/lib/python3.12/dist-packages/ \
-        python3 -m build --wheel --no-isolation --outdir=/app/dist/pytorch && \
+        python3 -m build --wheel --no-isolation --outdir=/app/pytorch/dist_tmp && \
+    _mm=$(echo "${ROCM_VERSION}" | cut -d. -f1-2) && \
+    GPU_ARCH_TYPE=rocm \
+      DESIRED_CUDA=rocm${ROCM_VERSION} \
+      GPU_ARCH_VERSION=${ROCM_VERSION} \
+      PYTORCH_ROCM_ARCH=$(echo "${PYTORCH_ROCM_ARCH}" | tr ',' ' ') \
+      ROCM_HOME=/opt/rocm/core-${_mm} \
+      python3 .ci/manywheel/repair_wheel.py /app/pytorch/dist_tmp/ /app/dist/pytorch/ && \
     { find /app/pytorch -mindepth 1 -maxdepth 1 ! -name 'dist' -exec rm -rf {} + || \
       echo "WARNING: PyTorch source cleanup failed; see find's error above" >&2; }
 
@@ -270,7 +286,7 @@ ARG TORCHVISION_GIT_URL=https://github.com/pytorch/vision.git
 # Immutable tag.  Shallow clone, so this must be a branch or tag, not a SHA.
 ARG TORCHVISION_REF=v0.28.0
 
-RUN git clone --depth 1 --revision "${TORCHVISION_REF}" "${TORCHVISION_GIT_URL}" /app/vision
+RUN git clone --depth 1 --branch "${TORCHVISION_REF}" "${TORCHVISION_GIT_URL}" /app/vision
 
 # hadolint ignore=SC2086,DL3008
 RUN --mount=type=cache,target=/root/.cache/pip \
@@ -365,7 +381,7 @@ COPY --from=build_torchvision /app/dist/vision/*.whl /
 FROM base AS build_clr_patch
 
 ARG CLR_GIT_URL=https://github.com/ROCm/rocm-systems.git
-ARG CLR_REF=therock-7.14.1
+ARG CLR_REF=therock-${ROCM_VERSION}
 ARG BUILD_JOBS=
 
 # hadolint ignore=DL3008
@@ -377,18 +393,13 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
 
 COPY patches/hip-ipc-event-ring-fix.patch /tmp/hip-ipc-event-ring-fix.patch
 
-# Note: when using --revision, tags are not available
-# git checkout command must reference HEAD instead, which is pointing to the commit in clone's --revision flag.
 RUN pip3 install --break-system-packages CppHeaderParser && \
-    git clone --filter=blob:none --no-checkout --depth 1 --revision "${CLR_REF}" "${CLR_GIT_URL}" /app/rocm-systems && \
-    git -C /app/rocm-systems sparse-checkout init --cone && \
-    git -C /app/rocm-systems sparse-checkout set projects/clr projects/hip && \
-    git -C /app/rocm-systems checkout HEAD && \
-    sed -i 's/const int offset = ipc_evt_.ipc_shmem_->read_index;/const int offset = ipc_evt_.ipc_shmem_->read_index % IPC_SIGNALS_PER_EVENT;/' \
-        /app/rocm-systems/projects/clr/hipamd/src/hip_event_ipc.cpp && \
-    grep -q "IPC_SIGNALS_PER_EVENT" /app/rocm-systems/projects/clr/hipamd/src/hip_event_ipc.cpp || \
-    { echo "ERROR: patch did not apply"; exit 1; } && \
-    echo "Patch applied OK"
+    git clone --filter=blob:none --no-checkout --depth 1 --branch "${CLR_REF}" "${CLR_GIT_URL}" /app/rocm-systems && \
+    cd /app/rocm-systems && \
+    git sparse-checkout init --cone && \
+    git sparse-checkout set projects/clr projects/hip && \
+    git checkout HEAD && \
+    patch -p1 < /tmp/hip-ipc-signal-slot-index-fix.patch
 
 # hadolint ignore=DL3008
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
@@ -400,12 +411,12 @@ RUN cmake -G Ninja \
         -S /app/rocm-systems/projects/clr \
         -B /app/clr-build \
         -DCMAKE_BUILD_TYPE=Release \
-        -DCMAKE_C_COMPILER=/opt/rocm/core-7.14/lib/llvm/bin/clang \
-        -DCMAKE_CXX_COMPILER=/opt/rocm/core-7.14/lib/llvm/bin/clang++ \
+        -DCMAKE_C_COMPILER=/opt/rocm/core/lib/llvm/bin/clang \
+        -DCMAKE_CXX_COMPILER=/opt/rocm/core/lib/llvm/bin/clang++ \
         -DHIP_COMMON_DIR=/app/rocm-systems/projects/hip \
         -DHIP_PLATFORM=amd \
-        -DROCM_PATH=/opt/rocm/core-7.14 \
-        -DCMAKE_PREFIX_PATH=/opt/rocm/core-7.14 \
+        -DROCM_PATH=/opt/rocm/core \
+        -DCMAKE_PREFIX_PATH=/opt/rocm/core \
         -DCLR_BUILD_HIP=ON \
         -DCLR_BUILD_OCL=OFF \
         -D__HIP_ENABLE_PCH=OFF && \
@@ -514,22 +525,22 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
         bpftrace \
         python3-dev \
         python3-venv \
-        "amdrocm-runtime${_mm}" \
-        "amdrocm-base${_mm}" \
-        "amdrocm-profiler-base${_mm}" \
-        "amdrocm-dnn-host${_mm}" \
-        "amdrocm-blas-host${_mm}" \
-        "amdrocm-fft-host${_mm}" \
-        "amdrocm-rand-host${_mm}" \
-        "amdrocm-rccl-host${_mm}" \
-        "amdrocm-solver-host${_mm}" \
-        "amdrocm-sparse-host${_mm}" \
         "amdrocm-amdsmi${_mm}" \
+        "amdrocm-base${_mm}" \
+        "amdrocm-blas-host${_mm}" \
+        "amdrocm-dnn-host${_mm}" \
+        "amdrocm-fft-host${_mm}" \
+        "amdrocm-hipfile${_mm}" \
         "amdrocm-llvm${_mm}" \
         "amdrocm-math-common${_mm}" \
-        "amdrocm-hipfile${_mm}" \
-    && _mm=$(echo "${ROCM_VERSION}" | cut -d. -f1-2) \
-    && _blas_archs_installed="" \
+        "amdrocm-profiler-base${_mm}" \
+        "amdrocm-rand-host${_mm}" \
+        "amdrocm-rccl-host${_mm}" \
+        "amdrocm-runtime${_mm}" \
+        "amdrocm-solver-host${_mm}" \
+        "amdrocm-sparse-host${_mm}" \
+        "amdrocm-sysdeps${_mm}" \
+    && _arch_pkgs="" \
     && for _arch in $(echo "${ROCM_ARCH}" | tr ',;' '  '); do \
         if DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
             "amdrocm-blas${_mm}-${_arch}"; then \
@@ -548,62 +559,54 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
 RUN git config --global advice.detachedHead false
 RUN rm -f /usr/lib/python3.*/EXTERNALLY-MANAGED
 
-# ROCm version info file — AITER's setup.py reads /opt/rocm/.info/version at
-# build time to determine the HIP version.  The runtime packages install the
-# ROCm toolchain but not this metadata file; create it from the ROCM_VERSION
-# build ARG so downstream Dockerfiles that compile ROCm code (vllm/AITER) work.
-# Also symlink /opt/rocm/include -> core-<mm>/include (mirrors the lib symlink),
-# copy HIP headers from the build stage (no standalone apt package for them), and
-# expose clang++/clang as c++/cc so AITER JIT can link module_aiter_core.so.
-RUN _mm=$(echo "${ROCM_VERSION}" | cut -d. -f1-2) && \
-    mkdir -p "/opt/rocm/core-${_mm}/.info" && \
-    echo "${ROCM_VERSION}" > "/opt/rocm/core-${_mm}/.info/version" && \
-    ln -sfn "core-${_mm}/lib" /opt/rocm/lib && \
-    ln -sfn "core-${_mm}/include" /opt/rocm/include && \
-    ln -sfn "/opt/rocm/core-${_mm}/lib/llvm/bin/clang++" /usr/local/bin/c++ && \
-    ln -sfn "/opt/rocm/core-${_mm}/lib/llvm/bin/clang"   /usr/local/bin/cc
+# ROCm version info — at build time, AITER's setup.py determines HIP version by
+# reading one of the following files:
+# - /opt/rocm/.info/version
+# - /opt/rocm/include/hip/hip_version.h
+# The runtime packages install the
+# ROCm toolchain but the header file are in the development package.
+#
+# Also expose clang++/clang as c++/cc so AITER JIT can link module_aiter_core.so.
+RUN ln -sfn "/opt/rocm/core/lib/llvm/bin/clang++" /usr/local/bin/c++ && \
+    ln -sfn "/opt/rocm/core/lib/llvm/bin/clang"   /usr/local/bin/cc
 
 # HIP development headers required by AITER JIT (hip/hip_runtime.h and friends).
 # No standalone headers apt package exists in the therock-10.0 runtime repo;
 # copy them from the full ROCm build image.  The /opt/rocm/include symlink above
 # makes them findable at both the versioned and canonical paths.
-COPY --from=base /opt/rocm/include/ /opt/rocm/core-7.14/include/
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
+    apt-get update && \
+    _mm=$(echo "${ROCM_VERSION}" | cut -d. -f1-2) && \
+    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+      "amdrocm-runtime-dev${_mm}"
 
 # uv — used by downstream vllm/lmcache Dockerfiles for pip operations.
 COPY --from=build_pytorch /root/.local/bin/uv  /usr/local/bin/uv
 COPY --from=build_pytorch /root/.local/bin/uvx /usr/local/bin/uvx
 
-# Installed Python packages: torch + all requirements (from build_pytorch),
-# plus setuptools/wheel/packaging (from build_torchvision).
-# Does NOT include the PyTorch or torchvision source trees.
-COPY --from=build_torchvision /usr/local/lib/python3.12/dist-packages/ \
-                               /usr/local/lib/python3.12/dist-packages/
-COPY --from=build_torchvision /usr/local/bin/ /usr/local/bin/
+# Install Python packages: torch + all requirements (from build_pytorch),
+RUN --mount=type=cache,target=/root/.cache/pip \
+    --mount=type=bind,from=build_nixl,source=/app/dist/nixl,target=/app/dist/nixl \
+    --mount=type=bind,from=build_pytorch,source=/app/dist/pytorch,target=/app/dist/pytorch \
+    --mount=type=bind,from=build_torchvision,source=/app/dist/vision,target=/app/dist/vision \
+    --mount=type=bind,from=build_triton,source=/app/dist/triton,target=/app/dist/triton \
+    uv pip install --system /app/dist/*/*.whl && \
+    { find /usr/local/lib/python3.12 -name '__pycache__' -type d \
+         -exec rm -rf {} + || \
+      echo "WARNING: __pycache__ cleanup failed; see find's error above" >&2; }
 
 ENV PIP_ROOT_USER_ACTION=ignore \
     UV_LINK_MODE=copy \
     UV_BREAK_SYSTEM_PACKAGES=1 \
     PIP_BREAK_SYSTEM_PACKAGES=1
 
-# torchvision wheel (built in build_torchvision but not yet installed there).
-RUN --mount=type=cache,target=/root/.cache/pip \
-    --mount=type=bind,from=build_torchvision,source=/app/dist/vision,target=/app/dist/vision \
-    pip3 install --no-cache-dir /app/dist/vision/*.whl && \
-    rm -rf /tmp/vision && \
-    { find /usr/local/lib/python3.12 -name '__pycache__' -type d \
-         -exec rm -rf {} + || \
-      echo "WARNING: __pycache__ cleanup failed; see find's error above" >&2; }
-
-# NIXL native libs and Python bindings — compiled in build_nixl against the
-# ROCm-full toolchain; only the output directories are needed at runtime.
-COPY --from=build_nixl /opt/nixl/ /opt/nixl/
-COPY --from=build_nixl /opt/rocnixl-ucx/ /opt/rocnixl-ucx/
-
 # Patched libamdhip64.so: fixes IPC event signal ring overflow (ROCm#11511/#11749).
 # read_index must be wrapped with % IPC_SIGNALS_PER_EVENT (32) or the 33rd
 # cross-process import of the same event handle reads past the signal array.
-COPY --from=build_clr_patch /app/clr-build/hipamd/lib/libamdhip64.so \
-                             /opt/rocm/core-7.14/lib/libamdhip64.so
+RUN --mount=type=bind,from=build_clr_patch,source=/app/clr-build/hipamd/lib,target=/clr-build/ \
+    _mm=$(echo "${ROCM_VERSION}" | cut -d. -f1-2) && \
+    cp /clr-build/libamdhip64.so "/opt/rocm/core-${_mm}/lib/libamdhip64.so"
 
 # Guard: upstream pip deps may pull CUDA-only nixl variants that would shadow
 # the source-built install from build_nixl.  Remove them if present.
@@ -627,7 +630,7 @@ RUN _mm=$(echo "${ROCM_VERSION}" | cut -d. -f1-2) && \
 RUN ln -s /lib/x86_64-linux-gnu/libnuma.so.1 /usr/local/lib/python3.12/dist-packages/torch/lib/libnuma.so
 
 ENV NIXL_PLUGIN_DIR=/opt/nixl/lib/x86_64-linux-gnu/plugins \
-    PYTHONPATH=/opt/rocm/core-7.14/share/amd_smi:/opt/nixl/lib/python3/dist-packages \
-    LD_LIBRARY_PATH=/opt/nixl/lib/x86_64-linux-gnu:/opt/nixl/lib:/opt/rocnixl-ucx/lib:/opt/rocm/core-7.14/lib \
-    ROCM_PATH=/opt/rocm/core-7.14 \
-    PATH=/opt/rocm/core-7.14/bin:/opt/rocm/core-7.14/lib/llvm/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+    PYTHONPATH=/opt/rocm/core/share/amd_smi:/opt/nixl/lib/python3/dist-packages \
+    LD_LIBRARY_PATH=/opt/nixl/lib/x86_64-linux-gnu:/opt/nixl/lib:/opt/rocnixl-ucx/lib:/opt/rocm/core/lib \
+    ROCM_PATH=/opt/rocm/core \
+    PATH=/opt/rocm/core/bin:/opt/rocm/core/lib/llvm/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin

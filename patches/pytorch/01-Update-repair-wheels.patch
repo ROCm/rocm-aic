@@ -1,0 +1,59 @@
+From 41947a140b12875a21ccca7a9871945161df0088 Mon Sep 17 00:00:00 2001
+From: Jorge Bellon Castro <jorgeb@amd.com>
+Date: Thu, 12 Nov 2026 11:07:03 +0000
+Subject: [PATCH] Update repair_wheels.py to work with ROCm deb packages
+
+Does no longer bundle .so libraries with the wheel file
+Sets RPATH to ROCm library directories
+Checked against ROCm 7.14 and 10.0
+---
+ .ci/manywheel/repair_wheel.py | 19 ++++++++++++++-----
+ 1 file changed, 14 insertions(+), 5 deletions(-)
+
+diff --git a/.ci/manywheel/repair_wheel.py b/.ci/manywheel/repair_wheel.py
+index ae964c5c6d..c1315301a6 100755
+--- a/.ci/manywheel/repair_wheel.py
++++ b/.ci/manywheel/repair_wheel.py
+@@ -25,7 +25,7 @@ from dataclasses import dataclass
+ from pathlib import Path
+ 
+ 
+-PATCHELF = "/usr/local/bin/patchelf"
++PATCHELF = "/usr/bin/patchelf"
+ 
+ 
+ @dataclass
+@@ -171,6 +171,14 @@ def rocm_os_deps() -> list[Path]:
+     ]
+ 
+ 
++def rocm_rpaths():
++    rocm_home = Path(os.environ.get("ROCM_HOME", "/opt/rocm/core"))
++    return ":".join([ f"{rocm_home}/lib",
++                      f"{rocm_home}/lib/host-math/lib",
++                      f"{rocm_home}/lib/llvm/lib",
++                      f"{rocm_home}/lib/rocm_sysdeps/lib"])
++
++
+ def find_rocm_lib(rocm_home: Path, basename: str) -> Path | None:
+     """Locate a ROCm library, falling back from lib/ to lib64/ to a wider search."""
+     for sub in ("lib", "lib64"):
+@@ -389,10 +397,11 @@ def main() -> None:
+         lib_so_rpath = f"{xpu_rpaths}:$ORIGIN"
+         force_rpath = True
+     elif is_rocm:
+-        rocm_home = Path(os.environ.get("ROCM_HOME", "/opt/rocm"))
+-        bundled_libs, aux_files = rocm_bundle(rocm_home)
+-        c_so_rpath = "$ORIGIN:$ORIGIN/lib"
+-        lib_so_rpath = "$ORIGIN"
++        rpaths = rocm_rpaths()
++        bundled_libs = []
++        aux_files = []
++        c_so_rpath = f"{rpaths}:$ORIGIN:$ORIGIN/lib"
++        lib_so_rpath = f"{rpaths}:$ORIGIN"
+         force_rpath = True
+     else:
+         c_so_rpath = "$ORIGIN:$ORIGIN/lib"
+-- 
+2.52.0
+

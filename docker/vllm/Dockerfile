@@ -114,10 +114,6 @@ ARG FLASH_ATTN_REF=v2.8.3.post1
 ARG AITER_PREBUILD_KERNELS=0
 
 # git and ca-certificates are not in the -full image; install before cloning.
-# git comes from ppa:git-core because `git clone --revision` needs >= 2.49 and
-# Ubuntu 24.04 ships 2.43.  software-properties-common drags in a dpkg-owned
-# python3-jwt that pip cannot uninstall (vllm's requirements bump PyJWT), so it
-# is purged again once the PPA is configured.
 # libnuma-dev: the ROCm base image ships libnuma.so.1 but NOT the unversioned
 # libnuma.so symlink, which lives in libnuma-dev.  rocSHMEM's NUMAWrapper
 # dlopen()s the unversioned name, so it fails and prints
@@ -128,21 +124,22 @@ ARG AITER_PREBUILD_KERNELS=0
 # ROCm image rather than aic-base, which is why it needs its own copy at all;
 # base/Dockerfile installs libnuma-dev for the same reason.)  It degrades
 # gracefully -- hence "Returning" -- so this is log legibility, not correctness.
-# hadolint ignore=DL3008
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
     apt-get update && \
     DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-        software-properties-common && \
-    add-apt-repository ppa:git-core/ppa -y && \
-    apt-get update && \
-    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-        cmake git ca-certificates ninja-build python3-dev libnuma-dev && \
-    apt-get purge -y --auto-remove software-properties-common
+        ca-certificates \
+        cmake \
+        git \
+        libnuma-dev \
+        ninja-build \
+        python3-dev \
+        python3-pip
 
 # Bring torch + Python packages from aic-base so wheels link against the same torch.
 # Note that `emulate` has no base-wheels context
-RUN --mount=type=bind,from=base-wheels,source=/,target=/base-wheels \
+RUN --mount=type=cache,target=/root/.cache/pip \
+    --mount=type=bind,from=base-wheels,source=/,target=/base-wheels \
     find /base-wheels -type f -name "*.whl" -exec pip3 install --break-system-packages {} +
 
 COPY --from=base /usr/local/bin/uv  /usr/local/bin/uv
@@ -164,10 +161,6 @@ COPY patches/aiter/ /app/patches/aiter/
 # under gfx942's cu_num but they do not compile for it in v0.1.22.post1.  This
 # is a narrow, named gap rather than blanket silencing: the other 6752 jobs are
 # dropped by arch before they are ever attempted.  Revisit on an AITER bump.
-#
-# AITER versions itself from its git tag (setuptools_scm), and --revision
-# fetches no tags, so it is cloned with --branch: AITER_REF must be a tag or
-# branch, as VLLM_REF already must.
 RUN test -n "$ROCM_ARCH" || { echo "ERROR: ROCM_ARCH is not set"; exit 1; }
 
 # hadolint ignore=SC2039
@@ -236,7 +229,7 @@ RUN --mount=type=cache,target=/root/.cache/pip \
     if [ "${VLLM_TARGET_DEVICE}" = "empty" ]; then \
         echo "Skipping FlashAttention (VLLM_TARGET_DEVICE=empty)"; \
     elif _fa_arch="$(_gfx9_archs "${ROCM_ARCH}")"; [ -n "${_fa_arch}" ]; then \
-        git clone --depth 1 --revision "${FLASH_ATTN_REF}" \
+        git clone --depth 1 --branch "${FLASH_ATTN_REF}" \
             --recurse-submodules --shallow-submodules \
             "${FLASH_ATTN_GIT_URL}" /app/flash-attention && \
         cd /app/flash-attention && \
@@ -380,6 +373,14 @@ COPY --from=build_vllm /wheels /
 # =============================================================================
 FROM base AS vllm
 
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
+    _mm=$(echo "${ROCM_VERSION}" | cut -d. -f1-2) && \
+    apt-get update && \
+    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+        "amdrocm-sysdeps${_mm}" \
+        python3-pip
+
 # When building emulated, the base context does not contain any pytorch wheels
 RUN --mount=type=bind,from=build_vllm,source=/wheels/,target=/wheels-vllm \
     --mount=type=bind,from=base-wheels,source=/,target=/base-wheels \
@@ -477,6 +478,17 @@ ENTRYPOINT ["python3", "-m", "vllm.entrypoints.openai.api_server"]
 # the smoke test when a GPU is present in the container.
 FROM vllm AS runtime
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
+
+# Install make, needed by aiter
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
+    _mm=$(echo "${ROCM_VERSION}" | cut -d. -f1-2) && \
+    apt-get update && \
+    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+        "amdrocm-sysdeps${_mm}" \
+        make && \
+    update-alternatives --install /opt/rocm/core core "/opt/rocm/core-${_mm}" 1375129220
+
 RUN --mount=type=bind,from=lmcache-wheels,target=/aic-wheels \
     shopt -s nullglob && \
     lmc=(/aic-wheels/lmcache-*.whl) && \
