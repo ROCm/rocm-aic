@@ -41,7 +41,7 @@ env:
   # ','-separated: this travels through ssh to the SPUR head node, where a ';'
   # would terminate the remote command.  Bake's rocm_arch_list() re-joins it
   # with ';' for the Dockerfiles; check-wheels.sh splits on either.
-  ROCM_ARCH: 'gfx90a,gfx942,gfx950,gfx1100,gfx1101,gfx1151,gfx1200,gfx1201'
+  ROCM_ARCH: 'gfx90a,gfx942,gfx950,gfx1151,gfx1201'
 
 jobs:
   # ---------------------------------------------------------------------------
