@@ -399,7 +399,7 @@ RUN pip3 install --break-system-packages CppHeaderParser && \
     git sparse-checkout init --cone && \
     git sparse-checkout set projects/clr projects/hip && \
     git checkout HEAD && \
-    patch -p1 < /tmp/hip-ipc-signal-slot-index-fix.patch
+    patch -p1 < /tmp/hip-ipc-event-ring-fix.patch
 
 # hadolint ignore=DL3008
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
