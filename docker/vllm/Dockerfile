@@ -369,16 +369,13 @@ COPY --from=build_vllm /usr/local/lib/python3.12/dist-packages/ \
                        /usr/local/lib/python3.12/dist-packages/
 COPY --from=build_vllm /usr/local/bin/uv  /usr/local/bin/uv
 COPY --from=build_vllm /usr/local/bin/uvx /usr/local/bin/uvx
+COPY --from=build_vllm /usr/local/bin/vllm /usr/local/bin/vllm
 COPY --from=build_vllm /opt/llm-emu/      /opt/llm-emu/
 COPY --from=build_vllm /etc/rocm-aic-attention-backends.env \
                        /etc/rocm-aic-attention-backends.env
-# The `vllm` command (`vllm bench serve`, ...).  Not copied: the console script
-# build_vllm's pip wrote names that stage's interpreter, which the CPU emulate
-# base does not have.  This runs vLLM's console entry point on whichever
-# python3 the image has.
-RUN printf '#!/bin/sh\nexec python3 -m vllm.entrypoints.cli.main "$@"\n' \
-        > /usr/local/bin/vllm && \
-    chmod 0755 /usr/local/bin/vllm
+# Normalise the shebang: pip writes an absolute interpreter path from the build
+# stage; #!/usr/bin/env python3 works on both the ROCm and CPU emulate bases.
+RUN sed -i '1s|.*|#!/usr/bin/env python3|' /usr/local/bin/vllm
 
 ARG VLLM_REF
 ARG AITER_REF
