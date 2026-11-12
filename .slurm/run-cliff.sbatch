@@ -691,7 +691,9 @@ run_bench() { # $1=arm $2=vLLM container $3=out_csv $4=extra args...
   endpoint="$(aic_bridge_url "$2" "${VLLM_ENDPOINT_PORT}")" || return 1
   shift 3
   log "running sweep: arm=${arm} endpoint=${endpoint} -> ${out}"
-  docker run --rm --network aic \
+  # --init: python as PID 1 ignores the SIGTERM docker run forwards, so on
+  # scancel this would block the EXIT trap until SPUR's SIGKILL (job 282399).
+  docker run --rm --init --network aic \
     -v "${REPO}":/work -w /work \
     -v "${HF_HOME}":/hf "${HF_ENV[@]}" \
     --entrypoint python3 "${AIC_IMAGE}" \
@@ -753,8 +755,13 @@ source "${REPO}/monitoring/monitoring-lib.sh"
 # The whole stack (arms + metrics) is docker compose v2 only -- install the plugin
 # user-locally if the node lacks it (ensure_compose lives in monitoring-lib.sh).
 ensure_compose || die "docker compose unavailable and could not be installed"
-# Guarantee teardown (containers only; the NFS TSDB is retained) on any exit.
-trap stop_monitoring EXIT
+# Remove every container this job starts, on any exit (the NFS TSDB is kept).
+# They are dockerd's, not the job's, so a scancel'd or timed-out job otherwise
+# leaves them running, vLLM still holding its GPU (job 279409).  SPUR SIGKILLs the
+# job ~4s after its SIGTERM (probe job 282335), too soon for stop_monitoring's
+# graceful `docker stop`, so this is one parallel `docker rm -f`.
+trap 'rm_containers "aic-vllm-only-gpu${GPU}" "aic-vllm-gpu${GPU}" aic-lmcache \
+  aic-lmcache-coordinator "${MON_CONTAINERS[@]}"' EXIT
 
 # =============================================================================
 # Arm A — vram_only : plain vLLM baseline, no LMCache connector
@@ -982,7 +989,7 @@ run_plot() { # $1=out_subdir  $2=kvd_v2 legend label  $3..=candidate CSV paths (
     return
   }
   mkdir -p "${PLOTS}/${sub}"
-  docker run --rm --network none -v "${REPO}":/work -w /work \
+  docker run --rm --init --network none -v "${REPO}":/work -w /work \
     --entrypoint python3 "${AIC_IMAGE}" \
     benchmarks/plot_cliff.py \
     --input "${inputs[@]}" \
