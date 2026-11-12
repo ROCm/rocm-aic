@@ -400,7 +400,7 @@ _aic_load_env_file "${AIC_ENV_FILE}"
 # independent.  NOTE: the RDNA entries (gfx11xx/gfx12xx) have no NVMe-DMA /
 # Infinity-Storage hardware -- if hipFile fails to build for them, narrow this
 # to the CDNA set "gfx90a;gfx942;gfx950".  Override via AIC_ROCM_ARCH.
-AIC_ROCM_ARCH="${AIC_ROCM_ARCH:-gfx90a;gfx942;gfx950;gfx1100;gfx1101;gfx1150;gfx1151;gfx1200;gfx1201}"
+AIC_ROCM_ARCH="${AIC_ROCM_ARCH:-gfx90a;gfx942;gfx950;gfx1100;gfx1101;gfx1151;gfx1200;gfx1201}"
 AIC_UCX_FAST="${AIC_UCX_FAST:-}"
 # Default the image ref to the version-derived tag (see docker/scripts/aic-image-tag.sh)
 # so the saved artifact, load, push, and the cliff's artifact lookup all agree on the
