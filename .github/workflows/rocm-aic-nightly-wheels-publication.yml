@@ -9,7 +9,7 @@
 # -------------------
 # cdna     gfx90a;gfx942;gfx950;gfx1250   MI200 / MI300X / MI355X (primary target)
 #                                         + the rocjitsu-emulated gfx1250
-# rdna     gfx1100;gfx1101;gfx1151;gfx1200;gfx1201   (RDNA3/4, best-effort)
+# rdna     gfx1151;gfx1201   (RDNA3/4, best-effort)
 #
 # A group's wheels carry filenames with no arch in them (`vllm-0.29.0+rocm-
 # cp312-cp312-linux_x86_64.whl` is byte-for-byte the same NAME for every group)
@@ -106,7 +106,7 @@ env:
   # rocm_arch_list() re-joins with ';' for the Dockerfiles, and check-wheels.sh
   # splits on either, so nothing downstream sees the comma form.
   CDNA_ARCH: 'gfx90a,gfx942,gfx950,gfx1250'
-  RDNA_ARCH: 'gfx1100,gfx1101,gfx1151,gfx1200,gfx1201'
+  RDNA_ARCH: 'gfx1151,gfx1201'
   RELEASE_TAG_CDNA: nightly
   RELEASE_TAG_RDNA: nightly-rdna
 
