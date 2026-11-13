@@ -120,6 +120,7 @@ hw
 IB
 infiniband
 InfiniBand
+InferenceX
 init
 inlined
 io
