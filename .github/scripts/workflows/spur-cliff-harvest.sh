@@ -227,6 +227,8 @@ mkdir -p "${CLIFF_STAGING_DIR}"
 echo "=== Copying results to ${CLIFF_STAGING_DIR} ==="
 cp -r "${RUN_DIR}/results" "${CLIFF_STAGING_DIR}/"
 [[ -d "${RUN_DIR}/plots" ]] && cp -r "${RUN_DIR}/plots" "${CLIFF_STAGING_DIR}/"
+# What each arm ran with, for the page's configuration section.
+[[ -f "${RUN_DIR}/run-config.json" ]] && cp "${RUN_DIR}/run-config.json" "${CLIFF_STAGING_DIR}/"
 
 # ---------------------------------------------------------------------------
 # Generate the HTML performance page on the head node
