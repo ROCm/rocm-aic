@@ -4,6 +4,15 @@ ais
 AIS
 AIS_MT
 AITER
+agentx
+AgentX
+agentic
+aiperf
+JSONL
+OTLP
+SemiAnalysis
+subagent
+subagents
 CPython
 FlashAttention
 amd
@@ -111,6 +120,7 @@ hw
 IB
 infiniband
 InfiniBand
+InferenceX
 init
 inlined
 io
