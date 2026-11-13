@@ -9,6 +9,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import csv
+import json
 import sys
 import tempfile
 import types
@@ -111,6 +112,7 @@ class RequestFailureStatusTest(unittest.TestCase):
         reset_prefix_cache: bool = False,
         warmup_waves: int = 1,
         wave_mock: list | None = None,
+        sidecar: list | None = None,
     ) -> tuple[int, dict[str, str], list[str]]:
         with tempfile.TemporaryDirectory() as temp_dir:
             output = Path(temp_dir) / "cliff.csv"
@@ -157,6 +159,8 @@ class RequestFailureStatusTest(unittest.TestCase):
                 status = asyncio.run(run_cliff.amain(args))
             with output.open(newline="") as handle:
                 row = next(csv.DictReader(handle), {})
+            if sidecar is not None:
+                sidecar.append(json.loads(output.with_suffix(".json").read_text()))
         messages = [call.args[0] for call in checkpoint.call_args_list]
         return status, row, messages
 
@@ -206,6 +210,16 @@ class RequestFailureStatusTest(unittest.TestCase):
         self.assertEqual(len(run_ids), 3)
         self.assertEqual(len(set(run_ids)), 3)
         self.assertEqual(row["iter"], "0")
+
+    def test_arguments_are_recorded_beside_the_csv(self) -> None:
+        sidecar: list = []
+        status, _, _ = self._run(
+            error=None, allow_errors=False, warmup_waves=2, sidecar=sidecar)
+
+        self.assertEqual(status, 0)
+        self.assertEqual(sidecar[0]["isl"], 2)
+        self.assertEqual(sidecar[0]["max_tokens"], 1)
+        self.assertEqual(sidecar[0]["warmup_waves_per_c"], 2)
 
     def test_client_pool_admits_the_highest_concurrency(self) -> None:
         # httpx defaults to 100 connections, which silently capped c=128..250.
