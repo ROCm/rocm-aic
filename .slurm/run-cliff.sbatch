@@ -746,6 +746,105 @@ stop_stack() { # $1=arm  $2...=the services the arm started
   for c in "aic-vllm-only-gpu${GPU}" "aic-vllm-gpu${GPU}" aic-lmcache; do timeout 30 docker rm -f "${c}" >/dev/null 2>&1 || true; done
 }
 
+# --- Run record (logs/<job-id>/run-config.json) ------------------------------
+# What each arm actually ran with, read back from its live containers rather than
+# from the knobs above, so the cliff page (benchmarks/cliff_to_html.py) describes
+# the run itself and cannot drift from it: vLLM's argv, the LMCache server's argv
+# (and config file, if any), the host storage behind each LMCache mount, the
+# images, and the GPU vLLM sees.  The sweep's own arguments sit beside each CSV.
+declare -A ARM_CONFIG # arm key (as in the CSV name) -> JSON object
+GPU_INFO_JSON=""      # {"name", "arch", "vram_bytes"} of vLLM's first GPU
+GPU_NAME=""
+
+_json_str() {
+  local s="${1//\\/\\\\}"
+  s="${s//\"/\\\"}"
+  s="${s//$'\t'/ }"
+  printf '"%s"' "${s//$'\n'/ }"
+}
+
+# The LMCache server's argv and the text of its LMCACHE_CONFIG_FILE.  Found by
+# scanning /proc, as the compose entrypoint is a shell that execs the server.
+_LMCACHE_PROC_PY='
+import json, os
+for pid in sorted((p for p in os.listdir("/proc") if p.isdigit()), key=int):
+    try:
+        with open(f"/proc/{pid}/cmdline", "rb") as f:
+            argv = f.read().decode().split("\0")[:-1]
+        with open(f"/proc/{pid}/environ", "rb") as f:
+            env = dict(e.split("=", 1) for e in f.read().decode().split("\0") if "=" in e)
+    except OSError:
+        continue
+    if "server" in argv and any(os.path.basename(a) == "lmcache" for a in argv[:2]):
+        cfg = env.get("LMCACHE_CONFIG_FILE")
+        text = open(cfg).read() if cfg and os.path.isfile(cfg) else None
+        print(json.dumps({"argv": argv, "config_file": text}))
+        break
+'
+_GPU_PY='
+import json, torch
+p = torch.cuda.get_device_properties(0)
+print(json.dumps({"name": p.name, "arch": p.gcnArchName.split(":")[0],
+                  "vram_bytes": p.total_memory}))
+'
+
+# {"fstype", "source", "nvme_disks"} for the filesystem holding host path $1.
+_storage_json() {
+  local src fstype nvme
+  src="$(findmnt -no SOURCE -T "$1" 2>/dev/null)"
+  src="${src%%[*}" # a bind mount reports /dev/x[/subdir]
+  fstype="$(findmnt -no FSTYPE -T "$1" 2>/dev/null)"
+  # NVMe disks under it, through any dm-crypt/LVM/stripe layers.
+  nvme="$(lsblk -snro NAME,TYPE "${src}" 2>/dev/null |
+    awk '$2 == "disk" && $1 ~ /^nvme/ { print $1 }' | sort -u | wc -l)"
+  printf '{"fstype": %s, "source": %s, "nvme_disks": %s}' \
+    "$(_json_str "${fstype}")" "$(_json_str "${src}")" "$(_json_str "${nvme}")"
+}
+
+# {"image", "image_id"} of container $1.
+_image_json() {
+  local ref="" id=""
+  IFS=$'\t' read -r ref id < <(docker inspect -f '{{.Config.Image}}{{"\t"}}{{.Image}}' "$1" 2>/dev/null)
+  printf '"image": %s, "image_id": %s' "$(_json_str "${ref}")" "$(_json_str "${id}")"
+}
+
+capture_arm_config() { # $1=arm key  $2=vLLM container  $3=LMCache container (kvd arms)
+  local key="$1" vllm="$2" lmc="${3:-}" args rec dest src sep=""
+  if [[ -z "${GPU_INFO_JSON}" ]]; then
+    GPU_INFO_JSON="$(timeout 300 docker exec "${vllm}" python3 -c "${_GPU_PY}" 2>/dev/null)" ||
+      log "WARN: could not query the GPU from ${vllm}; the page will omit its VRAM"
+    [[ "${GPU_INFO_JSON}" =~ \"name\":\ \"([^\"]*)\" ]] && GPU_NAME="${BASH_REMATCH[1]}"
+    [[ -n "${GPU_NAME}" ]] && log "gpu         : ${GPU_NAME}"
+  fi
+  args="$(docker inspect -f '{{json .Config.Cmd}}' "${vllm}" 2>/dev/null)"
+  rec="{\"vllm\": {$(_image_json "${vllm}"), \"args\": ${args:-null}}"
+  if [[ -n "${lmc}" ]]; then
+    args="$(timeout 60 docker exec "${lmc}" python3 -c "${_LMCACHE_PROC_PY}" 2>/dev/null)"
+    [[ -n "${args}" ]] || log "WARN: could not read the LMCache server's argv from ${lmc}"
+    rec+=", \"lmcache\": {$(_image_json "${lmc}"), \"process\": ${args:-null}, \"storage\": {"
+    while IFS=$'\t' read -r dest src; do
+      [[ "${dest}" == /data/* ]] || continue
+      rec+="${sep}$(_json_str "${dest}"): $(_storage_json "${src}")"
+      sep=", "
+    done < <(docker inspect -f '{{range .Mounts}}{{.Destination}}{{"\t"}}{{.Source}}{{"\n"}}{{end}}' "${lmc}" 2>/dev/null)
+    rec+="}}"
+  fi
+  ARM_CONFIG["${key}"]="${rec}}"
+}
+
+write_run_config() {
+  local key sep=""
+  {
+    printf '{\n  "gpu": %s,\n  "arms": {' "${GPU_INFO_JSON:-null}"
+    for key in vram_only kvd_v2-nvme kvd_v2-gds; do
+      [[ -n "${ARM_CONFIG[${key}]:-}" ]] || continue
+      printf '%s\n    %s: %s' "${sep}" "$(_json_str "${key}")" "${ARM_CONFIG[${key}]}"
+      sep=","
+    done
+    printf '\n  }\n}\n'
+  } >"${LOGDIR}/run-config.json"
+}
+
 # --- Metrics-capture sidecar (Prometheus + optional exporters) ---------------
 # The exporter/Prometheus stand-up, health checks, and teardown live in a shared
 # lib so the cliff sweep and the build smoke-test (run-build-distribute.sh) drive
@@ -785,6 +884,7 @@ run_arm_vram() {
     stop_stack vram_only vllm-only
     return 1
   fi
+  capture_arm_config vram_only "aic-vllm-only-gpu${GPU}"
   # The same per-c warmup as the kvd arms, so every arm starts each concurrency
   # with its own c prefixes cached.  No prefix-cache reset: VRAM is this arm's
   # only cache tier, and emptying it would measure pure recompute.
@@ -897,6 +997,7 @@ run_arm_kvd() { # $1=mode(nvme|gds) $2=out_csv
     stop_stack "kvd_${mode}" vllm lmcache
     return 1
   fi
+  capture_arm_config "kvd_v2-${mode}" "aic-vllm-gpu${GPU}" aic-lmcache
   # Continuous container log streaming: capture lmcache + vllm stdout into
   # per-run log files with timestamps throughout the arm, not just at teardown.
   # The background tail is killed by stop_stack via the containers being removed.
@@ -970,6 +1071,7 @@ log "tiers       : l2_backend=${AIC_L2_BACKEND} nixl_backend=${AIC_NIXL_BACKEND}
 if _arm_on vram; then run_arm_vram && STATUS[vram_only]=ok || STATUS[vram_only]=FAIL; else STATUS[vram_only]=skip; fi
 if _arm_on nvme; then run_arm_kvd nvme "${KVD_NVME_CSV}" && STATUS[kvd_nvme]=ok || STATUS[kvd_nvme]=FAIL; else STATUS[kvd_nvme]=skip; fi
 if _arm_on gds; then run_arm_kvd gds "${KVD_GDS_CSV}" && STATUS[kvd_gds]=ok || STATUS[kvd_gds]=FAIL; else STATUS[kvd_gds]=skip; fi
+write_run_config
 
 # --- Plot: baseline vs each kvd backend separately ---------------------------
 # Both kvd runs carry arm="kvd_v2", so each is plotted in its own output dir to
@@ -994,6 +1096,7 @@ run_plot() { # $1=out_subdir  $2=kvd_v2 legend label  $3..=candidate CSV paths (
     benchmarks/plot_cliff.py \
     --input "${inputs[@]}" \
     --arm-labels "kvd_v2=${label}" \
+    --title-suffix "${VLLM_MODEL}${GPU_NAME:+ on ${GPU_NAME}}" \
     --output-dir "${LOGDIR_REL}/plots/${sub}" &&
     log "plots (${sub}) -> ${PLOTS}/${sub}" || log "plot ${sub}: failed"
 }
