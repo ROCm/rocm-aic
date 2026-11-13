@@ -70,6 +70,8 @@ FROM ${ROCM_BASE_IMAGE} AS base
 # vLLM that cannot load LMCacheMPConnector.  `emulate` never reads it.
 FROM scratch AS lmcache-wheels
 
+FROM scratch AS base-wheels
+
 # =============================================================================
 # build_vllm — compile AITER, FlashAttention, and vLLM against the full ROCm
 # image (which has hipcc + HIP CMake files).  Torch is COPYed in from aic-base
@@ -112,35 +114,23 @@ ARG FLASH_ATTN_REF=v2.8.3.post1
 ARG AITER_PREBUILD_KERNELS=0
 
 # git and ca-certificates are not in the -full image; install before cloning.
-# git comes from ppa:git-core because `git clone --revision` needs >= 2.49 and
-# Ubuntu 24.04 ships 2.43.  software-properties-common drags in a dpkg-owned
-# python3-jwt that pip cannot uninstall (vllm's requirements bump PyJWT), so it
-# is purged again once the PPA is configured.
-# libnuma-dev: the ROCm base image ships libnuma.so.1 but NOT the unversioned
-# libnuma.so symlink, which lives in libnuma-dev.  rocSHMEM's NUMAWrapper
-# dlopen()s the unversioned name, so it fails and prints
-#   E-001h rocSHMEM Could not open libnuma. Returning  NUMAWrapper@...:48
-# once per AITER module build -- hundreds of lines of noise around the output
-# that actually matters.  -dev, not libnuma1: the runtime library is already
-# there, it is the symlink that is missing.  (This stage builds FROM the raw
-# ROCm image rather than aic-base, which is why it needs its own copy at all;
-# base/Dockerfile installs libnuma-dev for the same reason.)  It degrades
-# gracefully -- hence "Returning" -- so this is log legibility, not correctness.
-# hadolint ignore=DL3008
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
     apt-get update && \
     DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-        software-properties-common && \
-    add-apt-repository ppa:git-core/ppa -y && \
-    apt-get update && \
-    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-        cmake git ca-certificates ninja-build python3-dev libnuma-dev && \
-    apt-get purge -y --auto-remove software-properties-common
+        ca-certificates \
+        cmake \
+        git \
+        ninja-build \
+        python3-dev \
+        python3-pip
 
 # Bring torch + Python packages from aic-base so wheels link against the same torch.
-COPY --from=base /usr/local/lib/python3.12/dist-packages/ \
-                 /usr/local/lib/python3.12/dist-packages/
+# Note that `emulate` has no base-wheels context
+RUN --mount=type=cache,target=/root/.cache/pip \
+    --mount=type=bind,from=base-wheels,source=/,target=/base-wheels \
+    find /base-wheels -type f -name "*.whl" -exec pip3 install --break-system-packages {} +
+
 COPY --from=base /usr/local/bin/uv  /usr/local/bin/uv
 COPY --from=base /usr/local/bin/uvx /usr/local/bin/uvx
 RUN rm -f /usr/lib/python3.*/EXTERNALLY-MANAGED
@@ -160,10 +150,6 @@ COPY patches/aiter/ /app/patches/aiter/
 # under gfx942's cu_num but they do not compile for it in v0.1.22.post1.  This
 # is a narrow, named gap rather than blanket silencing: the other 6752 jobs are
 # dropped by arch before they are ever attempted.  Revisit on an AITER bump.
-#
-# AITER versions itself from its git tag (setuptools_scm), and --revision
-# fetches no tags, so it is cloned with --branch: AITER_REF must be a tag or
-# branch, as VLLM_REF already must.
 RUN test -n "$ROCM_ARCH" || { echo "ERROR: ROCM_ARCH is not set"; exit 1; }
 
 # WORKDIR creates /app/aiter even when the build is skipped; the clone below
@@ -229,7 +215,7 @@ RUN --mount=type=cache,target=/root/.cache/pip \
     if [ "${VLLM_TARGET_DEVICE}" = "empty" ]; then \
         echo "Skipping FlashAttention (VLLM_TARGET_DEVICE=empty)"; \
     elif _fa_arch="$(_gfx9_archs "${ROCM_ARCH}")"; [ -n "${_fa_arch}" ]; then \
-        git clone --depth 1 --revision "${FLASH_ATTN_REF}" \
+        git clone --depth 1 --branch "${FLASH_ATTN_REF}" \
             --recurse-submodules --shallow-submodules \
             "${FLASH_ATTN_GIT_URL}" . && \
         GPU_ARCHS="${_fa_arch}" \
@@ -321,6 +307,13 @@ ARG LLM_EMU_GIT_URL=https://github.com/AKafakA/llm-emu.git
 ARG LLM_EMU_REF=b71c602
 ENV AIC_EMULATOR_EXAMPLE_PACK=/opt/llm-emu/profiles/A40-Q8-Qwen3-8B.json \
     AIC_EMULATOR_DEFAULT_PACK=/opt/llm-emu/profiles/MI300X-Qwen3-8B.json
+
+RUN --mount=type=cache,target=/root/.cache/pip \
+    pip3 install build
+
+# llm-emu was originally built for vllm 0.18
+# However, our patches make it compatible with aic's vllm version
+# Edit pyproject.toml to remove that version restriction
 # hadolint ignore=SC3044
 RUN git clone --filter=blob:none --no-checkout "${LLM_EMU_GIT_URL}" /app/llm-emu && \
     git -C /app/llm-emu checkout "${LLM_EMU_REF}" && \
@@ -333,8 +326,13 @@ RUN git clone --filter=blob:none --no-checkout "${LLM_EMU_GIT_URL}" /app/llm-emu
             echo "The llm-emu pin (${LLM_EMU_REF}) likely drifted; rebase this patch against it." >&2; \
             exit 1; \
         fi; \
-    done && \
-    pip3 install --no-cache-dir --no-build-isolation --no-deps /app/llm-emu/ && \
+    done
+
+WORKDIR /app/llm-emu
+
+RUN sed -i 's/vllm==[0-9\.]\+/vllm/g' pyproject.toml && \
+    python3 -m build --no-isolation --wheel --outdir /wheels/ && \
+    pip3 install --no-cache-dir --no-deps /wheels/llm_emu-*.whl && \
     python3 -c "import vllm_emulator.hooks.executor_hook, vllm_emulator.oracle, \
 vllm_emulator.profile.loader, vllm_emulator.profiler.trace_profiler; \
 print('vllm_emulator subpackages import OK')" && \
@@ -345,6 +343,8 @@ print('vllm_emulator subpackages import OK')" && \
     { find /usr/lib/python3 /usr/local/lib/python3.12 -name '__pycache__' -type d \
          -exec rm -rf {} + || \
       echo "WARNING: __pycache__ cleanup failed; see find's error above" >&2; }
+
+WORKDIR /
 
 # =============================================================================
 # wheels — scratch image holding just the wheels built above:
@@ -363,10 +363,18 @@ COPY --from=build_vllm /wheels /
 # =============================================================================
 FROM base AS vllm
 
-# Copy all installed Python packages (vllm, aiter, flash_attn, llm-emu, deps)
-# from the full-ROCm build stage into the slim aic-base runtime.
-COPY --from=build_vllm /usr/local/lib/python3.12/dist-packages/ \
-                       /usr/local/lib/python3.12/dist-packages/
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
+    _mm=$(echo "${ROCM_VERSION}" | cut -d. -f1-2) && \
+    apt-get update && \
+    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+        python3-pip
+
+# When building emulated, the base context does not contain any pytorch wheels
+RUN --mount=type=bind,from=build_vllm,source=/wheels/,target=/wheels-vllm \
+    --mount=type=bind,from=base-wheels,source=/,target=/base-wheels \
+    find /base-wheels /wheels-vllm -type f -name "*.whl" -exec pip3 install --break-system-packages {} +
+
 COPY --from=build_vllm /usr/local/bin/uv  /usr/local/bin/uv
 COPY --from=build_vllm /usr/local/bin/uvx /usr/local/bin/uvx
 COPY --from=build_vllm /usr/local/bin/vllm /usr/local/bin/vllm
@@ -468,6 +476,14 @@ HEALTHCHECK --interval=15s --timeout=5s --start-period=60s --retries=20 \
 # the smoke test when a GPU is present in the container.
 FROM vllm AS runtime
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
+
+# Install make, needed by aiter
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
+    apt-get update && \
+    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+        make
+
 RUN --mount=type=bind,from=lmcache-wheels,target=/aic-wheels \
     shopt -s nullglob && \
     lmc=(/aic-wheels/lmcache-*.whl) && \
