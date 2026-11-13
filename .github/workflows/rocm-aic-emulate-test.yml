@@ -20,7 +20,9 @@ on:
     branches: [main]
     paths:
       - 'docker/vllm/Dockerfile'
+      - 'patches/vllm/**'
       - 'patches/llm-emu/**'
+      - 'docker/wheels-emulate/Dockerfile'
       - '.github/workflows/rocm-aic-emulate-test.yml'
   workflow_dispatch:
 

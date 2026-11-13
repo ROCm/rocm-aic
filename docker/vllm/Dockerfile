@@ -164,7 +164,8 @@ COPY patches/aiter/ /app/patches/aiter/
 # AITER versions itself from its git tag (setuptools_scm), and --revision
 # fetches no tags, so it is cloned with --branch: AITER_REF must be a tag or
 # branch, as VLLM_REF already must.
-RUN test -n "$ROCM_ARCH" || { echo "ERROR: ROCM_ARCH is not set"; exit 1; }
+RUN [ "${VLLM_TARGET_DEVICE}" = "empty" ] || \
+    test -n "$ROCM_ARCH" || { echo "ERROR: ROCM_ARCH is not set"; exit 1; }
 
 # WORKDIR creates /app/aiter even when the build is skipped; the clone below
 # targets that empty directory.
@@ -334,6 +335,8 @@ RUN git clone --filter=blob:none --no-checkout "${LLM_EMU_GIT_URL}" /app/llm-emu
             exit 1; \
         fi; \
     done && \
+    mkdir -p /wheels && \
+    pip3 wheel --no-build-isolation --no-deps -w /wheels /app/llm-emu/ && \
     pip3 install --no-cache-dir --no-build-isolation --no-deps /app/llm-emu/ && \
     python3 -c "import vllm_emulator.hooks.executor_hook, vllm_emulator.oracle, \
 vllm_emulator.profile.loader, vllm_emulator.profiler.trace_profiler; \

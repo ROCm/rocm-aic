@@ -1,0 +1,144 @@
+# Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+#
+# Build and smoke-test the CPU-only emulate wheels (emulate-wheels bake group).
+# No GPU required: docker/wheels-emulate/Dockerfile builds with
+# VLLM_TARGET_DEVICE=empty on python:3.12-bookworm and produces:
+#
+#   vllm-<ver>+empty-*.whl        (vLLM scheduler + HTTP, no GPU kernels)
+#   vllm_emulator-<ver>-*.whl     (llm-emu profile-driven emulation plugin)
+#
+# After the build, wheels are installed into a fresh venv with CPU torch from
+# pytorch.org and both packages are import-tested.
+#
+# Triggers on PRs that touch the emulate wheel build inputs.  The GHA layer
+# cache keeps warm runs well under 30 minutes.
+name: rocm-aic - Emulate Wheels Test
+
+on:
+  schedule:
+    # 04:00 PST = 12:00 UTC (offset from emulate-test to avoid runner contention)
+    - cron: '0 12 * * *'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'docker/wheels-emulate/Dockerfile'
+      - 'docker/docker-bake.hcl'
+      - 'patches/vllm/**'
+      - 'patches/llm-emu/**'
+      - '.github/workflows/rocm-aic-emulate-wheels-test.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  emulate-wheels-test:
+    name: Build and import-test the CPU-only emulate wheels
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+
+    env:
+      WHEELS_DIR: /tmp/emulate-wheels
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      - name: Read AIC_VERSION from VERSION file
+        run: echo "AIC_VERSION=$(cat VERSION)" >> "$GITHUB_ENV"
+
+      - name: Write corp CA cert secret (AMD Zscaler proxy)
+        id: cert
+        run: |
+          if [ -n "${{ secrets.CORP_CA_CERT }}" ]; then
+            echo "${{ secrets.CORP_CA_CERT }}" > /tmp/corp-ca.crt
+            echo "path=/tmp/corp-ca.crt" >> "${GITHUB_OUTPUT}"
+            echo "present=true" >> "${GITHUB_OUTPUT}"
+          else
+            echo "present=false" >> "${GITHUB_OUTPUT}"
+          fi
+
+      - name: Build emulate wheels (CPU-only, no ROCm)
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          file: docker/wheels-emulate/Dockerfile
+          target: wheels
+          outputs: type=local,dest=${{ env.WHEELS_DIR }}
+          build-args: |
+            AIC_VERSION=${{ env.AIC_VERSION }}
+          secrets: |
+            ${{ steps.cert.outputs.present == 'true' && format('tls_cert={0}', steps.cert.outputs.path) || '' }}
+          cache-from: type=gha,scope=aic-emulate-wheels
+          cache-to: type=gha,mode=max,scope=aic-emulate-wheels
+
+      - name: List built wheels
+        run: |
+          echo "Wheels in ${WHEELS_DIR}:"
+          ls -lh "${WHEELS_DIR}"/*.whl
+
+      - name: Smoke-test wheel imports in a fresh venv
+        run: |
+          set -euo pipefail
+          python3 -m venv /tmp/emulate-venv
+          source /tmp/emulate-venv/bin/activate
+
+          echo "Installing CPU torch..."
+          pip install --quiet "torch~=2.13.0" torchvision \
+            --index-url https://download.pytorch.org/whl/cpu
+
+          # Install vllm wheel first with --no-deps: avoids pip trying to resolve
+          # vllm and vllm_emulator together and hitting a conflict on the +empty
+          # local version suffix in vllm's metadata.
+          echo "Installing vllm wheel (no-deps)..."
+          pip install --quiet --no-deps "${WHEELS_DIR}"/vllm-*.whl
+
+          # vllm is now present as 0.29.0+empty; pip sees it as satisfying
+          # vllm_emulator's vllm requirement and only installs vllm_emulator's
+          # other (pure-Python) deps.
+          echo "Installing vllm_emulator wheel..."
+          pip install --quiet "${WHEELS_DIR}"/vllm_emulator-*.whl
+
+          # Install vllm's own pure-Python runtime deps from its wheel METADATA
+          # (vllm 0.29.0 is not on PyPI so we cannot pip install it for deps;
+          # read them from the installed wheel and skip GPU-specific packages).
+          echo "Installing vllm runtime deps from wheel METADATA..."
+          python3 - <<'PYDEPS'
+import importlib.metadata, subprocess, sys
+reqs = importlib.metadata.requires('vllm') or []
+skip = ('torch', 'triton', 'xformers', 'cuda', 'rocm', 'flash', 'aiter', 'extra ==')
+safe = [r.split(';')[0].strip() for r in reqs
+        if not any(s in r.lower() for s in skip)]
+if safe:
+    print('Installing vllm runtime deps:', safe)
+    subprocess.check_call([sys.executable, '-m', 'pip', 'install', '--quiet'] + safe)
+PYDEPS
+
+          echo "Testing vllm import..."
+          python3 -c "
+          import vllm
+          print('vllm', getattr(vllm, '__version__', '?'), 'OK')
+          "
+
+          echo "Testing vllm_emulator import..."
+          python3 -c "
+          import vllm_emulator
+          from vllm_emulator.hooks.executor_hook import VllmEmulatorExecutorHook
+          from vllm_emulator.oracle import Oracle
+          print('vllm_emulator', getattr(vllm_emulator, '__version__', '?'), 'OK')
+          "
+
+          echo "emulate-wheels-test: ALL IMPORTS OK"
+
+      - name: Upload wheels on failure
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: emulate-wheels-failed
+          path: ${{ env.WHEELS_DIR }}
+          retention-days: 3
