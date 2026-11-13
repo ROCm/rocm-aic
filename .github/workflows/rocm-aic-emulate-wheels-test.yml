@@ -93,7 +93,7 @@ jobs:
             --index-url https://download.pytorch.org/whl/cpu
 
           echo "Installing emulate wheels..."
-          pip install --quiet --no-deps "${WHEELS_DIR}"/*.whl
+          pip install --quiet "${WHEELS_DIR}"/*.whl
 
           echo "Testing vllm import..."
           python3 -c "
