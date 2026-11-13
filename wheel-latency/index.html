@@ -1,0 +1,74 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>AIC Wheel Latency — 2026-11-13</title>
+  <style>
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            background: #0d1117; color: #e6edf3; padding: 2rem 1.5rem; max-width: 900px; margin: auto; }
+    h1   { color: #f0f6fc; font-size: 1.6rem; margin-bottom: 0.25rem; }
+    .meta { color: #8b949e; font-size: 0.85rem; margin-bottom: 2rem; }
+    .meta a { color: #58a6ff; text-decoration: none; }
+    table { border-collapse: collapse; width: 100%; margin-bottom: 2rem; }
+    th, td { padding: 0.5rem 0.8rem; text-align: right; border: 1px solid #30363d; font-size: 0.9rem; }
+    th { background: #161b22; color: #8b949e; text-align: center; }
+    td:first-child { text-align: left; }
+    .faster  { color: #3fb950; }
+    .slower  { color: #f85149; }
+    .neutral { color: #e6edf3; }
+    .delta   { font-size: 0.78rem; opacity: 0.75; }
+    h2 { font-size: 1rem; color: #8b949e; margin: 1.5rem 0 0.4rem; text-transform: uppercase; letter-spacing: 0.05em; }
+    footer { color: #484f58; font-size: 0.8rem; margin-top: 2rem; }
+  </style>
+</head>
+<body>
+<h1>AIC Wheel Latency Benchmark</h1>
+<p class="meta">
+  Model: <strong>Qwen/Qwen3-4B</strong> &nbsp;·&nbsp;
+  Hardware: <strong>MI355X (gfx950)</strong> &nbsp;·&nbsp;
+  Wheels SHA: <a href="https://github.com/ROCm/rocm-aic/commit/3e6fe4c95e06add3a3e6d0f41cc31d4f95214ec3">3e6fe4c95e06</a> &nbsp;·&nbsp;
+  Date: <strong>2026-11-13</strong> &nbsp;·&nbsp;
+  OSL: 64 tokens &nbsp;·&nbsp; Serial (1 request at a time)
+</p>
+
+<h2>Latency by ISL tier (avg per request)</h2>
+<p style="color:#8b949e;font-size:0.82rem;margin-bottom:0.6rem">
+  Speedup vs cold prefill shown in parentheses.
+  hot = vLLM VRAM prefix cache &nbsp;|&nbsp;
+  L1 = LMCache CPU DRAM &nbsp;|&nbsp;
+  L2 = LMCache local disk (fs_native)
+</p>
+<table>
+  <thead>
+    <tr>
+      <th>ISL (tokens)</th>
+      <th>cold</th>
+      <th>hot (VRAM)</th>
+      <th>L1-DRAM</th>
+      <th>L2-disk</th>
+    </tr>
+  </thead>
+  <tbody>
+<tr><td><strong>1,100</strong></td><td>0.237s</td><td class="faster">0.217s <span class="delta">(−8%, −20 ms)</span></td><td class="faster">0.226s <span class="delta">(−5%, −11 ms)</span></td><td class="faster">0.227s <span class="delta">(−4%, −10 ms)</span></td></tr>
+<tr><td><strong>4,400</strong></td><td>0.314s</td><td class="faster">0.262s <span class="delta">(−17%, −52 ms)</span></td><td class="faster">0.288s <span class="delta">(−8%, −26 ms)</span></td><td class="faster">0.289s <span class="delta">(−8%, −25 ms)</span></td></tr>
+<tr><td><strong>8,800</strong></td><td>0.454s</td><td class="faster">0.314s <span class="delta">(−31%, −140 ms)</span></td><td class="faster">0.363s <span class="delta">(−20%, −91 ms)</span></td><td class="faster">0.363s <span class="delta">(−20%, −91 ms)</span></td></tr>
+<tr><td><strong>17,600</strong></td><td>0.872s</td><td class="faster">0.418s <span class="delta">(−52%, −454 ms)</span></td><td class="faster">0.506s <span class="delta">(−42%, −366 ms)</span></td><td class="faster">0.505s <span class="delta">(−42%, −367 ms)</span></td></tr>
+<tr><td><strong>35,200</strong></td><td>2.339s</td><td class="faster">0.636s <span class="delta">(−73%, −1703 ms)</span></td><td class="faster">0.791s <span class="delta">(−66%, −1548 ms)</span></td><td class="faster">0.791s <span class="delta">(−66%, −1548 ms)</span></td></tr>
+  </tbody>
+</table>
+
+<h2>Total wall time for all questions per phase</h2>
+<table>
+  <thead><tr><th>Phase</th><th>Total</th></tr></thead>
+  <tbody>
+<tr><td>cold</td><td>21.08s</td></tr>
+<tr><td>hot</td><td>9.23s</td></tr>
+<tr><td>L1-DRAM</td><td>10.87s</td></tr>
+<tr><td>L2-disk</td><td>10.87s</td></tr>
+  </tbody>
+</table>
+
+<footer>Generated 2026-11-13 02:27 UTC · <a href="https://github.com/ROCm/rocm-aic" style="color:#484f58">ROCm/rocm-aic</a></footer>
+</body>
+</html>
