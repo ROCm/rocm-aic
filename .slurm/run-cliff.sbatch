@@ -276,10 +276,9 @@ PLOTS="${LOGDIR}/plots"
 AIC_MONITORING="${AIC_MONITORING:-1}"
 AIC_METRICS_DIR="${AIC_METRICS_DIR:-${REPO}/logs/${SLURM_JOB_ID:-manual}/prometheus}"
 AIC_EXPORTERS="${AIC_EXPORTERS:-1}"
-# hsa-snoop PID mode: 'host' (default non-SPUR) requires --pid=host which is blocked by
-# spur-authz on SPUR nodes.  'container:aic-lmcache' shares the lmcache+vLLM PID ns
-# instead -- valid because vllm uses pid:service:lmcache so both processes are visible.
-AIC_HSA_SNOOP_PID_MODE="${AIC_HSA_SNOOP_PID_MODE:-host}"
+# hsa-snoop PID mode (AIC_HSA_SNOOP_PID_MODE): monitoring-lib.sh defaults it to
+# 'host' off SPUR and to this stack's lmcache namespace on SPUR, whose authz
+# blocks --pid=host; vllm uses pid:service:lmcache, so both are visible there.
 MON_COMPOSE="${REPO}/docker/docker-compose.yml"
 MON_DIR="${REPO}/monitoring"
 
@@ -685,15 +684,15 @@ wait_ready() { # $1=container $2=container-port $3=timeout_s
 
 run_bench() { # $1=arm $2=vLLM container $3=out_csv $4=extra args...
   local arm="$1" endpoint out="$3"
-  # By the name that owns the container's netns (aic-lmcache on the kvd arms),
-  # not the aic-vllm alias, which any other stack or emulator on this node's
-  # bridge also answers to.
+  # By the name that owns the container's netns (<stack>-lmcache on the kvd
+  # arms), not the aic-vllm alias, which an emulator on the stack's bridge also
+  # answers to.
   endpoint="$(aic_bridge_url "$2" "${VLLM_ENDPOINT_PORT}")" || return 1
   shift 3
   log "running sweep: arm=${arm} endpoint=${endpoint} -> ${out}"
   # --init: python as PID 1 ignores the SIGTERM docker run forwards, so on
   # scancel this would block the EXIT trap until SPUR's SIGKILL (job 282399).
-  docker run --rm --init --network aic \
+  docker run --rm --init --network "${AIC_STACK}" \
     -v "${REPO}":/work -w /work \
     -v "${HF_HOME}":/hf "${HF_ENV[@]}" \
     --entrypoint python3 "${AIC_IMAGE}" \
@@ -734,16 +733,15 @@ stop_stack() { # $1=arm  $2...=the services the arm started
   # vLLM + lmcache run in a SHARED PID namespace (required for cross-container HIP
   # IPC KV registration).  That prevents docker from reaping vLLM's EngineCore
   # children, so a plain `compose down`/`docker rm` HANGS.  Force-kill the stack's
-  # processes first (one MP stack per node: fixed container names, so scoping by
-  # process name is safe here), then tear the now-empty
-  # containers down.
+  # processes first, then tear the now-empty containers down.  The pkill is by
+  # process name, not stack, so it reaches whatever the job's user may signal.
   pkill -9 -f 'vllm.entrypoints.openai' 2>/dev/null || true
   pkill -9 -f 'EngineCore' 2>/dev/null || true
   pkill -9 -f 'lmcache server' 2>/dev/null || true
   sleep 2
   timeout 60 docker compose -f "${COMPOSE_FILE}" --profile cache --profile vllm-only \
       down --remove-orphans --timeout 5 >/dev/null 2>&1 || true
-  for c in "aic-vllm-only-gpu${GPU}" "aic-vllm-gpu${GPU}" aic-lmcache; do timeout 30 docker rm -f "${c}" >/dev/null 2>&1 || true; done
+  for c in "${AIC_STACK}-vllm-only-gpu${GPU}" "${AIC_STACK}-vllm-gpu${GPU}" "${AIC_STACK}-lmcache"; do timeout 30 docker rm -f "${c}" >/dev/null 2>&1 || true; done
 }
 
 # --- Metrics-capture sidecar (Prometheus + optional exporters) ---------------
@@ -759,9 +757,11 @@ ensure_compose || die "docker compose unavailable and could not be installed"
 # They are dockerd's, not the job's, so a scancel'd or timed-out job otherwise
 # leaves them running, vLLM still holding its GPU (job 279409).  SPUR SIGKILLs the
 # job ~4s after its SIGTERM (probe job 282335), too soon for stop_monitoring's
-# graceful `docker stop`, so this is one parallel `docker rm -f`.
-trap 'rm_containers "aic-vllm-only-gpu${GPU}" "aic-vllm-gpu${GPU}" aic-lmcache \
-  aic-lmcache-coordinator "${MON_CONTAINERS[@]}"' EXIT
+# graceful `docker stop`, so this is one parallel `docker rm -f`, and then the
+# now-empty network, which nothing else would remove.
+trap 'rm_containers "${AIC_STACK}-vllm-only-gpu${GPU}" "${AIC_STACK}-vllm-gpu${GPU}" \
+  "${AIC_STACK}-lmcache" "${AIC_STACK}-lmcache-coordinator" "${MON_CONTAINERS[@]}"
+  aic_release_network' EXIT
 
 # =============================================================================
 # Arm A — vram_only : plain vLLM baseline, no LMCache connector
@@ -770,7 +770,7 @@ trap 'rm_containers "aic-vllm-only-gpu${GPU}" "aic-vllm-gpu${GPU}" aic-lmcache \
 # bridge with its own IPC and PID namespaces (vllm proper lives in lmcache's).
 VRAM_CSV="${RESULTS}/cliff-vram_only-${STAMP}.csv"
 run_arm_vram() {
-  rm_containers "aic-vllm-only-gpu${GPU}" "aic-vllm-gpu${GPU}" aic-lmcache
+  rm_containers "${AIC_STACK}-vllm-only-gpu${GPU}" "${AIC_STACK}-vllm-gpu${GPU}" "${AIC_STACK}-lmcache"
   log "=== Arm A (vram_only): plain vLLM (no LMCache) on :${VLLM_ENDPOINT_PORT} ==="
   export KV_TRANSFER_ARG="" # no connector -> plain VRAM-prefix-cache-only vLLM
   export GDS_MODE=""
@@ -779,7 +779,7 @@ run_arm_vram() {
     stop_stack vram_only vllm-only
     return 1
   fi
-  if ! wait_ready "aic-vllm-only-gpu${GPU}" "${VLLM_ENDPOINT_PORT}"; then
+  if ! wait_ready "${AIC_STACK}-vllm-only-gpu${GPU}" "${VLLM_ENDPOINT_PORT}"; then
     log "Arm A: server never became ready; last logs:"
     compose logs --tail 40 --no-color vllm-only 2>&1 | sed 's/^/    /'
     stop_stack vram_only vllm-only
@@ -788,7 +788,7 @@ run_arm_vram() {
   # The same per-c warmup as the kvd arms, so every arm starts each concurrency
   # with its own c prefixes cached.  No prefix-cache reset: VRAM is this arm's
   # only cache tier, and emptying it would measure pure recompute.
-  run_bench vram_only "aic-vllm-only-gpu${GPU}" "${VRAM_CSV}" --warmup-at-each-c \
+  run_bench vram_only "${AIC_STACK}-vllm-only-gpu${GPU}" "${VRAM_CSV}" --warmup-at-each-c \
     --warmup-waves-per-c "${AIC_CLIFF_WARMUP_WAVES}" \
     --post-warmup-sleep-s "${POST_WARMUP_SLEEP_S}"
   local rc=$?
@@ -828,7 +828,7 @@ YML
 run_arm_kvd() { # $1=mode(nvme|gds) $2=out_csv
   local mode="$1" out="$2"
   log "=== Arm B (kvd_v2, mode=${mode}) — LMCache MP connector ==="
-  rm_containers "aic-vllm-gpu${GPU}" aic-lmcache
+  rm_containers "${AIC_STACK}-vllm-gpu${GPU}" "${AIC_STACK}-lmcache"
 
   # MP connector arg for vLLM (+ optional kv_load_failure_policy).  Single-quote
   # the JSON so compose's shlex splitting preserves the inner double quotes.
@@ -845,7 +845,7 @@ run_arm_kvd() { # $1=mode(nvme|gds) $2=out_csv
   export KV_TRANSFER_ARG="--kv-transfer-config '{\"kv_connector\":\"LMCacheMPConnector\",\"kv_role\":\"kv_both\"${_fp},\"kv_connector_extra_config\":{\"lmcache.mp.host\":\"tcp://aic-lmcache\",\"lmcache.mp.port\":${LMCACHE_PORT},\"lmcache.mp.heartbeat_interval\":${_hb}}}'"
   export VLLM_IPC_MODE=service:lmcache # join lmcache IPC ns for cross-container HIP IPC
   export VLLM_PID_MODE=service:lmcache # share lmcache PID ns for cross-container HIP IPC
-  export VLLM_NETWORK_MODE=container:aic-lmcache # HIP IPC's socket is per network ns
+  export VLLM_NETWORK_MODE="container:${AIC_STACK}-lmcache" # HIP IPC's socket is per network ns
 
   local _l2desc
   if [[ "${mode}" == "gds" ]]; then
@@ -890,7 +890,7 @@ run_arm_kvd() { # $1=mode(nvme|gds) $2=out_csv
     stop_stack "kvd_${mode}" vllm lmcache
     return 1
   fi
-  if ! wait_ready "aic-vllm-gpu${GPU}" "${VLLM_ENDPOINT_PORT}"; then
+  if ! wait_ready "${AIC_STACK}-vllm-gpu${GPU}" "${VLLM_ENDPOINT_PORT}"; then
     log "kvd/${mode}: server never became ready; last logs:"
     compose logs --tail 40 --no-color lmcache 2>&1 | sed 's/^/  [lmcache] /'
     compose logs --tail 60 --no-color vllm 2>&1 | sed 's/^/  [vllm]    /'
@@ -902,10 +902,10 @@ run_arm_kvd() { # $1=mode(nvme|gds) $2=out_csv
   # The background tail is killed by stop_stack via the containers being removed.
   log "streaming container logs -> ${LOGDIR}/lmcache/ and ${LOGDIR}/vllm/"
   mkdir -p "${LOGDIR}/lmcache" "${LOGDIR}/vllm"
-  docker logs -f --timestamps aic-lmcache \
+  docker logs -f --timestamps "${AIC_STACK}-lmcache" \
     >>"${LOGDIR}/lmcache/lmcache-stream.log" 2>&1 &
   _lmcache_log_pid=$!
-  docker logs -f --timestamps "aic-vllm-gpu${GPU}" \
+  docker logs -f --timestamps "${AIC_STACK}-vllm-gpu${GPU}" \
     >>"${LOGDIR}/vllm/vllm-stream.log" 2>&1 &
   _vllm_log_pid=$!
 
@@ -919,7 +919,7 @@ run_arm_kvd() { # $1=mode(nvme|gds) $2=out_csv
   # by this arm's LMCache tiers, not by VRAM hits the warmup or last iter left.
   local -a _reset=()
   [[ "${AIC_CLIFF_RESET_PREFIX_CACHE}" == 1 ]] && _reset=(--reset-prefix-cache)
-  run_bench kvd_v2 "aic-vllm-gpu${GPU}" "${out}" --warmup-at-each-c \
+  run_bench kvd_v2 "${AIC_STACK}-vllm-gpu${GPU}" "${out}" --warmup-at-each-c \
     --warmup-waves-per-c "${AIC_CLIFF_WARMUP_WAVES}" \
     --post-warmup-sleep-s "${POST_WARMUP_SLEEP_S:-300}" "${_reset[@]}"
   local rc=$?

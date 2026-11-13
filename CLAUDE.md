@@ -82,15 +82,26 @@ status for each.
 
 SPUR nodes are multi-tenant, so no container binds a fixed host port, and only
 Grafana (for browsers) is published at all: `127.0.0.1` on a Docker-chosen port
-that `make endpoints` prints. Servers live on the `aic` bridge (or join a
-bridged container's netns, as `vllm` joins `aic-lmcache`), and every client runs
-in a container there: `aic-client` for make targets, a throwaway
-`docker run --network aic` on SPUR. One-off requests from host code go through
-`aic_fetch <url> [<json-body>]` in `scripts/aic-endpoints.sh` (set
+that `make endpoints` prints. Servers live on the stack's bridge (or join a
+bridged container's netns, as `vllm` joins lmcache's), and every client runs
+in a container there: the stack's `client` for make targets, a throwaway
+`docker run --network "${AIC_STACK}"` on SPUR. One-off requests from host code
+go through `aic_fetch <url> [<json-body>]` in `scripts/aic-endpoints.sh` (set
 `AIC_FETCH_IMAGE` to an image already on the node); never `curl localhost:<port>`.
-Address a stack by container name, not the shared `aic-vllm` alias, which two
-stacks on one node's bridge would both answer to: `aic_bridge_url <container>
-<port>` resolves it (`aic-vllm-gpu0` → `http://aic-lmcache:8000`).
+`aic_bridge_url <container> <port>` gives the URL of the container that owns a
+netns (`${AIC_STACK}-vllm-gpu0` → `http://${AIC_STACK}-lmcache:8000`).
+
+## One stack per AIC_STACK
+
+`AIC_STACK` names a stack's compose project, its bridge network and every
+container (`${AIC_STACK}-lmcache`, `${AIC_STACK}-vllm-gpu0`, ...). It defaults
+to `aic-$SLURM_JOB_ID` inside a Slurm/SPUR job and to `aic` elsewhere, so two
+jobs on one node never touch each other's containers. Host-side docker commands
+(`exec`, `logs`, `rm`, `--network`, `network_mode: container:`) must use the
+prefixed name; a literal `aic-lmcache` there is right only for the `aic` stack.
+Inside the stack's network the containers also answer to their fixed `aic-*`
+aliases, which is what `prometheus.yml`, Grafana and bridge clients use, so
+those need no prefix.
 
 ## gfx1201 (RDNA4 / RX 9070 XT) local development notes (2026-09-03)
 
@@ -128,7 +139,7 @@ build (`AIC_ROCM_ARCH` default includes `gfx1201`). Key differences from CDNA:
   both containers) uses those DKMS-only KFD IPC ioctls.  The default
   (non-legacy) mode does not, but vllm and lmcache must share a network
   namespace (ROCR passes the dmabuf fd over the abstract socket `@hsa<pid>`)
-  and should share the PID namespace (`network_mode: container:aic-lmcache` +
+  and should share the PID namespace (`network_mode: container:${AIC_STACK}-lmcache` +
   `pid: service:lmcache` — the compose defaults; no make override needed).
 
   The standard vllm-reset-test command on gfx1201 (no extra overrides):

@@ -56,6 +56,13 @@ stack never claims a fixed host port. If your environment offers only host
 networking (or you run `lmcache server` by hand), the processes share the host's
 port space and every port below must be chosen explicitly.
 
+That `aic` is the stack's name, `AIC_STACK`: the compose project, the bridge,
+and the prefix of every container name. Inside a Slurm job it defaults to
+`aic-<job id>`, so jobs sharing a node never meet. To run a second stack on one
+host by hand, give it its own name and keep passing it, e.g.
+`make up AIC_STACK=aic-mine` and later `make down AIC_STACK=aic-mine`; `make up`
+refuses a name another checkout's stack is already using.
+
 | Port | Flag / variable | Compose default (container port) |
 | --- | --- | --- |
 | LMCache ZMQ (vLLM connector) | `--port`, `LMCACHE_PORT` | 6555 |

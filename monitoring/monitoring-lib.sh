@@ -42,17 +42,25 @@ export PATH="/usr/local/bin:${PATH}"
 : "${AIC_METRICS_DIR:=}"
 : "${MON_DIR:=}"
 : "${MON_COMPOSE:=}"
-# Single `=`, not `:=`: an explicitly empty value means "no PID sharing" and
-# must survive.  With `:=` it was silently rewritten to "host", so a caller
-# that deliberately opted out of PID sharing got pid:host instead.
-: "${AIC_HSA_SNOOP_PID_MODE=host}"
 # Provide a fallback logger only if the caller has not defined one (run-cliff.sbatch
 # and run-build-distribute.sh each define their own prefixed log()).
 declare -F log >/dev/null 2>&1 || log() { printf '[monitoring] %s\n' "$*" >&2; }
 
-# aic_fetch, for the Prometheus queries below.
+# aic_fetch, for the Prometheus queries below, and AIC_STACK.
 # shellcheck source=scripts/aic-endpoints.sh
 source "${BASH_SOURCE[0]%/*}/../scripts/aic-endpoints.sh"
+
+# Single `=`, not `:=`: an explicitly empty value means "no PID sharing" and
+# must survive.  With `:=` it was silently rewritten to "host", so a caller
+# that deliberately opted out of PID sharing got pid:host instead.  spur-authz
+# blocks pid:host, so on SPUR the default is this stack's lmcache namespace,
+# which vllm shares too.  Resolved here, on the node, because it names the
+# container: a value computed where the job was submitted names another stack.
+if [[ "${AIC_SPUR_CLUSTER:-0}" == "1" ]]; then
+    : "${AIC_HSA_SNOOP_PID_MODE=container:${AIC_STACK}-lmcache}"
+else
+    : "${AIC_HSA_SNOOP_PID_MODE=host}"
+fi
 
 # Prometheus publishes no host port; query it by name from the aic bridge, out
 # of the AIC image the caller already has, so no query pulls an image.
@@ -128,6 +136,22 @@ aic_docker_preflight() {
     log "docker preflight OK on ${host}"
 }
 
+# Every job stack has a network of its own, and the node's Docker address pools,
+# shared by every tenant, hold a limited number of bridges, so a stack must not
+# leave its network behind.  compose down removes it; a teardown that removes
+# containers by name does not, so it calls this once its containers are gone.
+aic_release_network() {
+    local n out
+    n="$(docker network inspect -f '{{len .Containers}}' "${AIC_STACK}" 2>&1)" || {
+        [[ "${n}" == *"not found"* ]] || log "WARN: cannot inspect network ${AIC_STACK}: ${n}"
+        return 0
+    }
+    [[ "${n}" == 0 ]] || return 0
+    out="$(docker network rm "${AIC_STACK}" 2>&1)" \
+        || log "WARN: cannot remove network ${AIC_STACK}: ${out}"
+    return 0
+}
+
 have_compose() { docker compose version >/dev/null 2>&1; }
 
 # Ensure the `docker compose` (v2) plugin is available.  Docker checks
@@ -187,11 +211,12 @@ mon_profile() {  # echo the compose --profile args for the exporter fleet
 }
 
 # Compose service container_names -- used to sweep up any leftovers from a
-# crashed run before/after a compose up/down (compose down handles the rest).
-MON_CONTAINERS=(aic-prometheus aic-grafana aic-loki aic-alloy
-                aic-node-exporter aic-amdgpu-exporter
-                aic-nvme-exporter aic-rdma-exporter aic-hsa-snoop
-                aic-l2-monitor aic-vllm-emulator)
+# crashed run of this stack before/after a compose up/down (compose down handles
+# the rest).  The stack prefix keeps the sweep off other stacks on the node.
+MON_CONTAINERS=("${AIC_STACK}"-{prometheus,grafana,loki,alloy}
+                "${AIC_STACK}"-{node-exporter,amdgpu-exporter}
+                "${AIC_STACK}"-{nvme-exporter,rdma-exporter,hsa-snoop}
+                "${AIC_STACK}"-{l2-monitor,vllm-emulator})
 
 start_monitoring() {
     [[ "${AIC_MONITORING}" == "1" ]] || { log "monitoring disabled (AIC_MONITORING=0)"; return 0; }
@@ -248,6 +273,8 @@ stop_monitoring() {
     # so prometheus gets SIGTERM and closes its WAL cleanly; rm -f alone kills.
     timeout 60 docker stop -t 10 "${MON_CONTAINERS[@]}" >/dev/null 2>&1 || true
     timeout 60 docker rm -f "${MON_CONTAINERS[@]}" >/dev/null 2>&1 || true
+    # Often the stack's last containers; a no-op while the rest still run.
+    aic_release_network
 }
 
 # --- Health check + TSDB summary (used by the build smoke-test) ---------------

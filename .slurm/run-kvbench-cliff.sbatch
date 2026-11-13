@@ -67,10 +67,10 @@ trap cleanup EXIT
 log "bringing up KVBench + client on the internal compose network"
 compose --profile kvbench up --build -d kvbench client || die "compose up failed"
 
-log "waiting for aic-kvbench to serve /v1/models"
+log "waiting for ${AIC_STACK}-kvbench to serve /v1/models"
 ready=0
 for _i in $(seq 1 "${KVBENCH_READY_TIMEOUT}"); do
-  if aic_probe aic-kvbench "${KVBENCH_PORT}" /v1/models; then
+  if aic_probe "${AIC_STACK}-kvbench" "${KVBENCH_PORT}" /v1/models; then
     ready=1
     break
   fi
@@ -81,7 +81,7 @@ done
 log "waiting for client deps to finish installing"
 client_ready=0
 for _i in $(seq 1 60); do
-  if docker exec aic-client python3 -c 'import openai' >/dev/null 2>&1; then
+  if docker exec "${AIC_STACK}-client" python3 -c 'import openai' >/dev/null 2>&1; then
     client_ready=1
     break
   fi
@@ -92,7 +92,7 @@ done
 STAMP="$(date +%Y%m%d-%H%M%S)"
 OUT="/logs/${SLURM_JOB_ID:-manual}/results/cliff-kvbench-${STAMP}.csv"
 log "running cliff benchmark -> ${OUT}"
-docker exec aic-client python3 -u benchmarks/run_cliff.py \
+docker exec "${AIC_STACK}-client" python3 -u benchmarks/run_cliff.py \
   --endpoint "http://aic-kvbench:${KVBENCH_PORT}" \
   --model "${KVBENCH_MODEL}" \
   --arm kvbench \

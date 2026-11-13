@@ -13,7 +13,8 @@
 | `GDS_MODE` | — | Set to `1` to enable GDS L1 mode |
 | `AIC_L2_BACKEND` | `nixl` | LMCache L2 backend: `nixl` (AIS_MT NVMe + POSIX NFS) or `local_disk` (native LocalDiskBackend via a mounted config) |
 | `KV_TRANSFER_ARG` | LMCacheMPConnector JSON | vLLM `--kv-transfer-config` arg; empty = plain vLLM (the cliff `vram` baseline). Wrap the JSON in single quotes |
-| `VLLM_IPC_MODE` | `service:lmcache` | vLLM IPC namespace mode. Cache-backed runs join LMCache's shareable namespace; to launch vLLM alone, start the `vllm-only` service (`--profile vllm-only up -d vllm-only`, container `aic-vllm-only-gpu<GPU>`) instead of overriding the mode |
+| `AIC_STACK` | `aic-$SLURM_JOB_ID` in a Slurm job, else `aic` | Stack name: the compose project, the bridge network and every container's prefix (`<stack>-lmcache`, `<stack>-vllm-gpu<GPU>`, ...), so stacks with different names share a host untouched. Set it to run a second stack by hand, and pass the same value to every later command that should reach it. On its network each container also answers to its fixed `aic-*` alias |
+| `VLLM_IPC_MODE` | `service:lmcache` | vLLM IPC namespace mode. Cache-backed runs join LMCache's shareable namespace; to launch vLLM alone, start the `vllm-only` service (`--profile vllm-only up -d vllm-only`, container `<stack>-vllm-only-gpu<GPU>`) instead of overriding the mode |
 | `AIC_PUBLISH_ADDR` | `127.0.0.1` | Host address the Grafana published port binds; `0.0.0.0` exposes it beyond loopback |
 | `AIC_GRAFANA_PORT` | unset (ephemeral) | Pin the Grafana host port, the only published one. Unset, Docker picks a free port; `make endpoints` prints the URL |
 | `AIC_FETCH_IMAGE` | `curlimages/curl:8.23.0` | Image `aic_fetch` runs curl from; scripts set it to an AIC image already on the node |

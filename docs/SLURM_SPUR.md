@@ -29,6 +29,23 @@ sanity-check — all **informational** (only the in-image checks affect the exit
 code). Tune with `AIC_SMOKE_EXPORTERS=0` (skip) and `AIC_SMOKE_SCRAPE_S=<secs>`
 (default 45).
 
+## Several jobs on one node
+
+Every job's stack is named `aic-<job id>` (`AIC_STACK`): its compose project,
+bridge network and container names (`aic-<job id>-lmcache`, ...), so jobs that
+land on the same node, CI or manual, never recreate or remove each other's
+containers. To look at a job's containers on its node:
+
+```bash
+docker ps --filter label=com.docker.compose.project=aic-<job id>
+docker logs aic-<job id>-vllm-gpu0
+```
+
+A job killed before its teardown (`scancel`, the time limit) leaves its
+containers running; `docker compose -p aic-<job id> down -v` removes them, its
+network and its volumes, and needs no compose file (if it hangs on vLLM's
+EngineCore, `docker rm -f` the job's containers first).
+
 ## SPUR cluster
 
 For SPUR-specific setup (controller address, partition name, storage paths)

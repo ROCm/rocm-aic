@@ -138,9 +138,10 @@ export GPU="${AIC_ROCR_VISIBLE%%,*}"
 # Each arm is its own compose service, so its own container: vllm-only for the
 # baseline, vllm (in lmcache's namespaces) for the tiered arm.  VLLM_CONTAINER
 # names the one serving now; every helper below goes through it.
-VLLM_BASELINE_CONTAINER="aic-vllm-only-gpu${GPU}"
-VLLM_TIERED_CONTAINER="aic-vllm-gpu${GPU}"
+VLLM_BASELINE_CONTAINER="${AIC_STACK}-vllm-only-gpu${GPU}"
+VLLM_TIERED_CONTAINER="${AIC_STACK}-vllm-gpu${GPU}"
 VLLM_CONTAINER="${VLLM_BASELINE_CONTAINER}"
+LMCACHE_CONTAINER="${AIC_STACK}-lmcache"
 echo "[accuracy-test] allocated gpu: ROCR=${AIC_ROCR_VISIBLE} HIP=${AIC_HIP_VISIBLE} containers=${VLLM_BASELINE_CONTAINER},${VLLM_TIERED_CONTAINER}"
 
 # --- pytest client container -------------------------------------------------
@@ -157,7 +158,7 @@ echo "[accuracy-test] allocated gpu: ROCR=${AIC_ROCR_VISIBLE} HIP=${AIC_HIP_VISI
 # its group (SPUR's allusers), which docker drops unless re-added.
 VENV="${AIC_DAY_DIR}/.venv-accuracy"
 PYBIN="${VENV}/bin/python"
-ACC_CLIENT="aic-accuracy-client-gpu${GPU}"
+ACC_CLIENT="${AIC_STACK}-accuracy-client-gpu${GPU}"
 _client_args=(--rm --name "${ACC_CLIENT}"
     --user "$(id -u):$(id -g)" -e HOME=/tmp -e PYTHONNOUSERSITE=1
     -v "${AIC_DAY_DIR}:${AIC_DAY_DIR}" -v "${AIC_LOG_DIR}:${AIC_LOG_DIR}"
@@ -177,7 +178,7 @@ _client() {
         "${AIC_VLLM_IMAGE}" "${@:3}"
 }
 # The scoring client, on the bridge the arms are on.
-_client_py() { _client aic "${PYBIN}" "$@"; }
+_client_py() { _client "${AIC_STACK}" "${PYBIN}" "$@"; }
 
 # Probe by importing, not by testing that bin/pytest exists: a venv built under
 # another repo path or image python keeps stale shebangs and interpreter links
@@ -271,7 +272,7 @@ _teardown() {
     # service per phase, and these logs are the only post-mortem for a failed arm.
     timeout 30 docker logs "${VLLM_CONTAINER}" \
         > "${AIC_LOG_DIR}/accuracy-${tag}-vllm.log" 2>&1 || true
-    timeout 30 docker logs aic-lmcache \
+    timeout 30 docker logs "${LMCACHE_CONTAINER}" \
         > "${AIC_LOG_DIR}/accuracy-${tag}-lmcache.log" 2>&1 || true
     pkill -9 -f 'vllm.entrypoints.openai' 2>/dev/null || true
     pkill -9 -f 'EngineCore'              2>/dev/null || true
@@ -285,7 +286,7 @@ _teardown() {
         echo "[accuracy-test] WARN: compose down (${tag}) failed; containers may outlive the job:" >&2
         printf '%s\n' "${out}" | tail -5 | sed 's/^/[accuracy-test]   /' >&2
     fi
-    for c in "${VLLM_BASELINE_CONTAINER}" "${VLLM_TIERED_CONTAINER}" aic-lmcache; do
+    for c in "${VLLM_BASELINE_CONTAINER}" "${VLLM_TIERED_CONTAINER}" "${LMCACHE_CONTAINER}"; do
         timeout 30 docker rm -f "$c" >/dev/null 2>&1 || true
     done
 }
@@ -329,8 +330,8 @@ _wait_ready() {
 }
 
 # The serving arm's URL as the scoring client sees it from the bridge, checked
-# over that same path.  By container name rather than the aic-vllm alias, which
-# another job's stack on this node's bridge would also answer to.
+# over that same path.  By the serving arm's container name rather than the
+# aic-vllm alias both arms carry.
 _endpoint_url() {
     local url
     url="$(aic_bridge_url "${VLLM_CONTAINER}" 8000)" || {
@@ -431,7 +432,7 @@ _dump_metrics() {
 # re-score was actually served from the tier or silently recomputed.
 _vllm_ext() { _metric_sum "${VLLM_CONTAINER}" http://127.0.0.1:8000/metrics "$1"; }
 # LMCache's own view, one tier down: which level answered.
-_lmc() { _metric_sum aic-lmcache http://127.0.0.1:9091/metrics "$1"; }
+_lmc() { _metric_sum "${LMCACHE_CONTAINER}" http://127.0.0.1:9091/metrics "$1"; }
 
 # ===========================================================================
 # Phase 1: vram_only arm -- plain vLLM, KV never leaves VRAM
@@ -477,8 +478,8 @@ echo "[accuracy-test] baseline score: ${BASELINE_SCORE}"
 # The regression being guarded against necessarily produces NONZERO queries --
 # the full split has already been scored by the time this samples.
 echo "[accuracy-test] --- Phase 1 control: confirm the baseline arm never tiered ---"
-if docker ps --format '{{.Names}}' | grep -qx aic-lmcache; then
-    echo "[accuracy-test] FAIL Phase 1: aic-lmcache is running during the baseline arm." >&2
+if docker ps --format '{{.Names}}' | grep -qxF "${LMCACHE_CONTAINER}"; then
+    echo "[accuracy-test] FAIL Phase 1: ${LMCACHE_CONTAINER} is running during the baseline arm." >&2
     echo "[accuracy-test]   The baseline is meant to be plain vLLM with KV in VRAM, so the" >&2
     echo "[accuracy-test]   tiered-vs-baseline differential would be comparing the tiered" >&2
     echo "[accuracy-test]   stack against itself and could not fail." >&2
@@ -575,7 +576,7 @@ echo "[accuracy-test] tiered endpoint: ${TIERED_URL}"
 # phase 3 decide -- do not fail now, because pytest has yet to run and the
 # differential is the most valuable thing this job produces.
 L2_METRICS_OK=1
-_metrics_reachable aic-lmcache http://127.0.0.1:9091/metrics || L2_METRICS_OK=0
+_metrics_reachable "${LMCACHE_CONTAINER}" http://127.0.0.1:9091/metrics || L2_METRICS_OK=0
 L2_STORE_SUB_REQ_BEFORE="$(_lmc lmcache_mp_l2_store_submitted_requests_total)"
 L2_STORE_DONE_REQ_BEFORE="$(_lmc lmcache_mp_l2_store_completed_requests_total)"
 L2_STORE_DONE_CHUNKS_BEFORE="$(_lmc lmcache_mp_l2_store_completed_objects_chunks_total)"
@@ -616,7 +617,7 @@ echo "[accuracy-test] === Phase 3: NVMe pool liveness ==="
 # The dump doubles as this phase's scrape-health probe: every counter gate below
 # reads the same endpoint, so if the dump could not reach it, none of them are
 # measuring anything.
-_dump_metrics aic-lmcache    http://127.0.0.1:9091/metrics "${AIC_LOG_DIR}/lmcache-metrics-phase3.prom" \
+_dump_metrics "${LMCACHE_CONTAINER}" http://127.0.0.1:9091/metrics "${AIC_LOG_DIR}/lmcache-metrics-phase3.prom" \
     || L2_METRICS_OK=0
 _dump_metrics "${VLLM_CONTAINER}"  http://127.0.0.1:8000/metrics "${AIC_LOG_DIR}/vllm-metrics-phase3.prom" || true
 POOL_AFTER="$(_pool_bytes)"
@@ -645,7 +646,7 @@ if [ "${L2_METRICS_OK}" != "1" ] && [ "${L2_STORE_DONE_CHUNKS}" -le 0 ]; then
     echo "[accuracy-test]   LMCache did nothing.  This is a fault in the gate's instrumentation" >&2
     echo "[accuracy-test]   or in the container, not evidence about the store path -- do not go" >&2
     echo "[accuracy-test]   looking for an LMCache bug on the strength of it.  Check that" >&2
-    echo "[accuracy-test]   aic-lmcache is up and serving :8080/metrics." >&2
+    echo "[accuracy-test]   ${LMCACHE_CONTAINER} is up and serving :8080/metrics." >&2
     rc=1
 elif [ "${L2_METRICS_OK}" != "1" ]; then
     # Scrape failed but counters are non-zero (read from cached Phase-2 data).
@@ -791,7 +792,7 @@ TIERED_URL="$(_endpoint_url)" || exit 1
 # endpoint produces exactly that number while proving nothing.
 RESCORE_METRICS_OK=1
 _metrics_reachable "${VLLM_CONTAINER}" http://127.0.0.1:8000/metrics || RESCORE_METRICS_OK=0
-_metrics_reachable aic-lmcache   http://127.0.0.1:9091/metrics || RESCORE_METRICS_OK=0
+_metrics_reachable "${LMCACHE_CONTAINER}" http://127.0.0.1:9091/metrics || RESCORE_METRICS_OK=0
 EXT_Q_BEFORE="$(_vllm_ext vllm:external_prefix_cache_queries_total)"
 EXT_H_BEFORE="$(_vllm_ext vllm:external_prefix_cache_hits_total)"
 L1_READ_BEFORE="$(_lmc lmcache_mp_l1_read_chunks_total)"
@@ -837,7 +838,7 @@ unset AIC_ACCURACY_BASELINE_SCORE
 #     across phase 2, hence the differencing.
 echo "[accuracy-test] === Phase 5: verify the re-score hit the cache ==="
 _metrics_reachable "${VLLM_CONTAINER}" http://127.0.0.1:8000/metrics || RESCORE_METRICS_OK=0
-_metrics_reachable aic-lmcache   http://127.0.0.1:9091/metrics || RESCORE_METRICS_OK=0
+_metrics_reachable "${LMCACHE_CONTAINER}" http://127.0.0.1:9091/metrics || RESCORE_METRICS_OK=0
 EXT_Q_AFTER="$(_vllm_ext vllm:external_prefix_cache_queries_total)"
 EXT_H_AFTER="$(_vllm_ext vllm:external_prefix_cache_hits_total)"
 L1_READ_AFTER="$(_lmc lmcache_mp_l1_read_chunks_total)"

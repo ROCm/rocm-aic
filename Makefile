@@ -95,6 +95,18 @@ LMCACHE_IMAGE_REF  := $(LMCACHE_IMAGE_NAME):$(IMAGE_TAG)
 # ---- GPU -------------------------------------------------------------------
 GPU ?= 0
 
+# ---- Stack name ------------------------------------------------------------
+# Compose project, bridge network and container-name prefix of the stack these
+# targets drive ($(AIC_STACK)-lmcache, ...).  The default is the one in
+# scripts/aic-endpoints.sh: aic-$(SLURM_JOB_ID) inside a Slurm job, aic
+# elsewhere, recomputed while AIC_STACK_DERIVED says it is a default, so a job
+# submitted from here derives its own instead of inheriting this one.
+ifeq ($(AIC_STACK),$(AIC_STACK_DERIVED))
+AIC_STACK := aic$(if $(SLURM_JOB_ID),-$(SLURM_JOB_ID))
+AIC_STACK_DERIVED := $(AIC_STACK)
+endif
+export AIC_STACK AIC_STACK_DERIVED
+
 # ---- Host storage paths ----------------------------------------------------
 NVME_DATA     ?= /mnt/lmcache-nvme
 NFS_DATA      ?= /mnt/lmcache-nfs
@@ -267,7 +279,10 @@ export LMCACHE_NIXL_POSIX_POOL         ?= 32768
 export LMCACHE_NIXL_DYNAMIC_MAX_GB     ?= 100
 export LMCACHE_NIXL_DYNAMIC_DIRECT_IO ?= false
 override export AIC_EXPORTERS            := safe
-override export AIC_HSA_SNOOP_PID_MODE  := container:aic-lmcache
+# spur-authz blocks pid:host.  Not exported: it names this stack's container,
+# and a job make submits has a stack of its own (monitoring-lib.sh picks the
+# same default there).
+_HSA_SNOOP_PID_DEFAULT := container:$(AIC_STACK)-lmcache
 else
 # Empty by default off-SPUR: a workstation has no /scratch, and an unwritable
 # cache dir is worse than none.  Set AIC_CACHE_DIR explicitly to enable the
@@ -281,6 +296,7 @@ endif
 endif
 endif
 _HF_HOME_IS_DEFAULT ?= $(if $(call _is_makefile_default,HF_HOME),1,)
+_HSA_SNOOP_PID_DEFAULT ?= host
 
 # Strip Makefile-defaulted path vars before cliff sbatch so they don't clobber
 # the job's node-appropriate defaults.  User-set values (command-line /
@@ -427,7 +443,8 @@ help:
 	@echo "    Only Grafana is published: 127.0.0.1 on a free ephemeral host port that"
 	@echo "    'make endpoints' prints (AIC_GRAFANA_PORT pins it, AIC_PUBLISH_ADDR=0.0.0.0"
 	@echo "    exposes it beyond loopback).  Everything else is reached by name on the aic"
-	@echo "    bridge, from aic-client or scripts/aic-endpoints.sh fetch."
+	@echo "    bridge, from $(AIC_STACK)-client or scripts/aic-endpoints.sh fetch."
+	@echo "    AIC_STACK=$(AIC_STACK)  (compose project, network and container-name prefix)"
 	@echo "    AIC_GRAFANA_IMAGE=$(AIC_GRAFANA_IMAGE)"
 	@echo ""
 	@echo "Required env:"

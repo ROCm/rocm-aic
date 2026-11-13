@@ -4,16 +4,16 @@
 # Infrastructure targets: monitoring, export tarball, internal helpers.
 
 .PHONY: monitoring-up monitoring-down monitoring-logs endpoints \
-        export check-hf-token check-gds-slab prep-dirs prep-kvbench-dirs
+        export check-hf-token check-gds-slab check-stack prep-dirs prep-kvbench-dirs
 
-monitoring-up: ensure-compose
+monitoring-up: ensure-compose check-stack
 	@mkdir -p "$(AIC_METRICS_DIR)"
-	PROM_UID="$$(id -u)" PROM_GID="$$(id -g)" AIC_HSA_SNOOP_PID_MODE="$${AIC_HSA_SNOOP_PID_MODE:-host}" \
+	PROM_UID="$$(id -u)" PROM_GID="$$(id -g)" AIC_HSA_SNOOP_PID_MODE="$${AIC_HSA_SNOOP_PID_MODE:-$(_HSA_SNOOP_PID_DEFAULT)}" \
 		$(MON_COMPOSE) $(_MON_PROFILE) up -d
 	@echo "Prometheus up  (TSDB -> $(AIC_METRICS_DIR)); 'make endpoints' prints Grafana's URL"
 
 monitoring-down:
-	AIC_HSA_SNOOP_PID_MODE="$${AIC_HSA_SNOOP_PID_MODE:-host}" $(MON_COMPOSE) $(_MON_PROFILE) down
+	AIC_HSA_SNOOP_PID_MODE="$${AIC_HSA_SNOOP_PID_MODE:-$(_HSA_SNOOP_PID_DEFAULT)}" $(MON_COMPOSE) $(_MON_PROFILE) down
 
 monitoring-logs:
 	$(MON_COMPOSE) logs -f prometheus
@@ -44,6 +44,10 @@ check-gds-slab:
 	@if [ -z "$(GDS_SLAB_DATA)" ]; then \
 		echo "ERROR: GDS_SLAB_DATA must be set for GDS L1 mode" >&2; exit 1; \
 	fi
+
+# Refuse to bring up a stack whose AIC_STACK another checkout's stack is using.
+check-stack:
+	@bash "$(CURDIR)/scripts/aic-endpoints.sh" check-stack "$(CURDIR)/docker"
 
 prep-dirs:
 	@mkdir -p "$(NVME_DATA)" "$(NFS_DATA)" \

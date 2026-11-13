@@ -116,29 +116,29 @@ wheels:
 	find "$(WHEELS_DIR)" -mindepth 1 -maxdepth 1 -type d -exec rm -rf {} + ; \
 	bash "$(REPO_ROOT)/.github/scripts/workflows/check-wheels.sh" "$(WHEELS_DIR)" "$(ROCM_ARCH)"
 
-up: ensure-compose check-hf-token prep-dirs
+up: ensure-compose check-hf-token check-stack prep-dirs
 	@mkdir -p "$(AIC_METRICS_DIR)"
 	PROM_UID="$$(id -u)" PROM_GID="$$(id -g)" \
 	    $(COMPOSE_CACHE) --profile monitoring up
 
-up-batch: ensure-compose check-hf-token prep-dirs
+up-batch: ensure-compose check-hf-token check-stack prep-dirs
 	@mkdir -p "$(AIC_METRICS_DIR)"
 	PROM_UID="$$(id -u)" PROM_GID="$$(id -g)" \
 	    $(COMPOSE_CACHE) --profile monitoring up -d
 	@echo "Started. Use 'make logs' to follow or 'make down' to stop."
 
-up-dev: ensure-compose check-hf-token prep-dirs
+up-dev: ensure-compose check-hf-token check-stack prep-dirs
 	@mkdir -p "$(AIC_METRICS_DIR)"
 	PROM_UID="$$(id -u)" PROM_GID="$$(id -g)" \
 	    VLLM_EXTRA_ARGS="--enforce-eager $${VLLM_EXTRA_ARGS}" \
 	    $(COMPOSE_CACHE) --profile monitoring up -d
 	@echo "Started in dev mode (enforce-eager, no CUDA graphs). Use 'make logs' to follow."
 
-up-gds-l1: ensure-compose check-hf-token check-gds-slab prep-dirs
+up-gds-l1: ensure-compose check-hf-token check-gds-slab check-stack prep-dirs
 	@mkdir -p "$(AIC_METRICS_DIR)"
 	PROM_UID="$$(id -u)" PROM_GID="$$(id -g)" GDS_MODE=1 $(COMPOSE_CACHE) --profile monitoring up
 
-up-gds-l1-batch: ensure-compose check-hf-token check-gds-slab prep-dirs
+up-gds-l1-batch: ensure-compose check-hf-token check-gds-slab check-stack prep-dirs
 	@mkdir -p "$(AIC_METRICS_DIR)"
 	PROM_UID="$$(id -u)" PROM_GID="$$(id -g)" GDS_MODE=1 $(COMPOSE_CACHE) --profile monitoring up -d
 	@echo "Started (GDS L1 mode + monitoring). Use 'make logs' to follow or 'make down' to stop."
@@ -160,10 +160,10 @@ ps:
 	$(COMPOSE_CACHE) ps
 
 shell-lmcache:
-	docker exec -it aic-lmcache bash -l
+	docker exec -it $(AIC_STACK)-lmcache bash -l
 
 shell-vllm:
-	docker exec -it aic-vllm-gpu$(GPU) bash -l
+	docker exec -it $(AIC_STACK)-vllm-gpu$(GPU) bash -l
 
 restart-vllm:
 	$(COMPOSE_CACHE) restart vllm
@@ -183,7 +183,7 @@ venv:
 # vllm-reset-test and bench-serve drive the stack from aic-client (the
 # monitoring profile starts it), on the aic bridge, so they need no published
 # port.  Its /logs is the repo's logs/.
-vllm-reset-test: check-hf-token prep-dirs
+vllm-reset-test: check-hf-token check-stack prep-dirs
 	@echo "Starting LMCache L1+L2 retrieval test (L1=$(LMCACHE_L1_SIZE_GB)GiB) + NIXL POSIX L2..."
 	@mkdir -p "$(AIC_METRICS_DIR)"
 	PROM_UID="$$(id -u)" PROM_GID="$$(id -g)" \
@@ -193,28 +193,28 @@ vllm-reset-test: check-hf-token prep-dirs
 	    $(COMPOSE_CACHE) --profile monitoring up -d
 	@echo "Waiting for vLLM to be healthy..."
 	@for i in $$(seq 1 $${VLM_READY_RETRIES:-60}); do \
-	    $(call aic_probe,aic-vllm-gpu$(GPU),8000,/health) && echo "vLLM healthy after $${i}s" && break; \
+	    $(call aic_probe,$(AIC_STACK)-vllm-gpu$(GPU),8000,/health) && echo "vLLM healthy after $${i}s" && break; \
 	    [ "$$i" = "$${VLM_READY_RETRIES:-60}" ] && echo "ERROR: vLLM not healthy after vllm_reset_test timeout" >&2 && exit 1; \
 	    sleep 5; \
 	done
-	@docker inspect aic-client >/dev/null 2>&1 || { \
-	    echo "ERROR: aic-client container not running" >&2; exit 1; }
-	@_v="$$($(call aic_bridge_url,aic-vllm-gpu$(GPU),8000))" && _l="$$($(call aic_bridge_url,aic-lmcache,8080))" || exit 1; \
+	@docker inspect $(AIC_STACK)-client >/dev/null 2>&1 || { \
+	    echo "ERROR: $(AIC_STACK)-client container not running" >&2; exit 1; }
+	@_v="$$($(call aic_bridge_url,$(AIC_STACK)-vllm-gpu$(GPU),8000))" && _l="$$($(call aic_bridge_url,$(AIC_STACK)-lmcache,8080))" || exit 1; \
 	echo "Clearing vLLM GPU prefix cache..."; \
-	docker exec aic-client curl -s -X POST "$$_v/reset_prefix_cache" \
+	docker exec $(AIC_STACK)-client curl -s -X POST "$$_v/reset_prefix_cache" \
 	    -H 'Content-Type: application/json' -d '{}' | grep -q '"success":true' \
 	    || { echo "ERROR: vLLM cache reset failed" >&2; exit 1; }; \
 	echo "Clearing LMCache L1 DRAM cache..."; \
-	docker exec aic-client curl -s -X POST "$$_l/cache/clear" \
+	docker exec $(AIC_STACK)-client curl -s -X POST "$$_l/cache/clear" \
 	    -H 'Content-Type: application/json' \
 	    -d '{"tier":"l1","force":true}' | grep -q '"status":"ok"' \
 	    || { echo "ERROR: LMCache L1 clear failed" >&2; exit 1; }; \
 	echo "Resetting LMCache Prometheus counters..."; \
-	docker exec aic-client curl -s -X POST "$$_l/metrics/reset" > /dev/null; \
+	docker exec $(AIC_STACK)-client curl -s -X POST "$$_l/metrics/reset" > /dev/null; \
 	docker exec -e AIC_TEST_VLLM_URL="$$_v" -e AIC_TEST_LMCACHE_URL="$$_l" \
 	    -e AIC_TEST_MODEL -e AIC_TEST_ANCHORS -e AIC_TEST_FLOOD \
 	    -e AIC_TEST_TIMEOUT -e AIC_TEST_SEED \
-	    aic-client python3 -u benchmarks/vllm_reset_test.py
+	    $(AIC_STACK)-client python3 -u benchmarks/vllm_reset_test.py
 	@echo "Test complete. Run 'make down' to stop the stack."
 
 bench-serve: check-hf-token prep-dirs
@@ -224,13 +224,13 @@ bench-serve: check-hf-token prep-dirs
 	@echo "  Think-time:  $(BENCH_THINK_MIN)–$(BENCH_THINK_MAX)s  Pool: $(BENCH_POOL_SIZE)"
 	@echo "  Results:     logs/manual/aic-bench-results/"
 	@mkdir -p "$(BENCH_LOGDIR)/aic-bench-results"
-	@docker inspect aic-client >/dev/null 2>&1 || { \
-	    echo "ERROR: aic-client container not running — run 'make up' first" >&2; exit 1; }
-	@_v="$$($(call aic_bridge_url,aic-vllm-gpu$(GPU),8000))" || { \
+	@docker inspect $(AIC_STACK)-client >/dev/null 2>&1 || { \
+	    echo "ERROR: $(AIC_STACK)-client container not running — run 'make up' first" >&2; exit 1; }
+	@_v="$$($(call aic_bridge_url,$(AIC_STACK)-vllm-gpu$(GPU),8000))" || { \
 	    echo "ERROR: vLLM is not running — run 'make up' first" >&2; exit 1; }; \
-	docker exec aic-client curl -sf "$$_v/health" >/dev/null || { \
+	docker exec $(AIC_STACK)-client curl -sf "$$_v/health" >/dev/null || { \
 	    echo "ERROR: vLLM not healthy at $$_v — run 'make up' first" >&2; exit 1; }; \
-	docker exec aic-client python3 -u benchmarks/aic_bench_serve.py \
+	docker exec $(AIC_STACK)-client python3 -u benchmarks/aic_bench_serve.py \
 	    --base-url "$$_v" \
 	    --model "$(VLLM_MODEL)" \
 	    --duration $(BENCH_DURATION) \
