@@ -8,7 +8,7 @@
 # leading # to activate an example:
 #
 #   CVE-2019-14697 exp:2027-01-01
-#   AVD-DS-0002
+AVD-DS-0002
 #   generic-unwanted-rule
 #
 # `exp:YYYY-MM-DD` limits a suppression to that date. After it, trivy
