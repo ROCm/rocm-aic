@@ -25,56 +25,28 @@
 # released wheels, so it is a test of the WHEELS.  The two are complementary and
 # share the same guest VM and probe.
 #
-# Which release to install
-# ------------------------
-# TEMPORARY DEFAULT: sbates130272/rocm-aic-wheels @ gfx1250-20261102, a public
-# scratch release, so this runs out of the box with no inputs.
-#
-# It points off-repo because no release HERE currently carries gfx1250 device
-# code that this can install:
-#   * `nightly` is CDNA-only until ROCm/rocm-aic#201 folds gfx1250 into the
-#     CDNA arch list;
-#   * `nightly-gfx1250` predates ROCm/rocm-aic#197, so it has no torch wheel and
-#     its lmcache/vllm wheels ship without their console entrypoints.
-# The scratch release was built from #197's head and has both.
-#
-# MOVE THIS BACK once #197 and #201 have landed and a nightly run has published
-# a gfx1250-bearing `nightly`: set wheels_repo back to '' (this repository) and
-# wheels_release to 'nightly'.  Leaving it pointed at a personal account is fine
-# for bring-up and wrong as a steady state -- that release is a frozen snapshot
-# one person owns, so it will silently rot while this workflow keeps passing.
-#
-# The arch guard makes that mistake cheap: tools/check-wheel-arch.py inspects
-# the clang offload-bundle entries inside each wheel and fails in seconds if the
-# set has no gfx1250 device code, rather than after an hour of VM boot.
+# The arch guard (tools/check-wheel-arch.py) inspects the clang offload-bundle
+# entries inside each wheel and fails in seconds if the set has no gfx1250
+# device code, rather than after an hour of VM boot.
 name: rocm-aic - gfx1250 Wheels Test
 
-# NO `schedule:` TRIGGER YET -- deliberately.
-#
-# The natural slot is ~13:00 UTC, after the nightly wheels publication (06:37)
-# and the gfx1250 image publish (11:00), both of which this consumes:
-#
-#   schedule:
-#     - cron: '23 13 * * *'
-#
-# But `wheels_release` defaults to `nightly`, and `nightly` is CDNA-only until
-# ROCm/rocm-aic#201 folds gfx1250 into the CDNA arch list.  Enabling the cron
-# now would fail the arch guard every single night, and a job that is red by
-# construction trains people to ignore it.  Add the block above once #201 has
-# merged and `nightly` actually carries gfx1250 device code.
+# Runs at 13:23 UTC daily -- after the nightly wheels publication (~06:37) and
+# the gfx1250 image publish (~11:00), both of which this consumes.
 on:
+  schedule:
+    - cron: '23 13 * * *'
   workflow_dispatch:
     inputs:
       wheels_repo:
         description: >-
           owner/repo holding the release.  Empty means this repository.
         required: false
-        default: 'sbates130272/rocm-aic-wheels'
+        default: ''
         type: string
       wheels_release:
         description: 'Release tag to install wheels from'
         required: false
-        default: 'gfx1250-20261102'
+        default: 'nightly'
         type: string
       wheels_run_id:
         description: >-
