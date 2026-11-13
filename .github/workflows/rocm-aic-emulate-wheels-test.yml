@@ -92,8 +92,32 @@ jobs:
           pip install --quiet "torch~=2.13.0" torchvision \
             --index-url https://download.pytorch.org/whl/cpu
 
-          echo "Installing emulate wheels..."
-          pip install --quiet "${WHEELS_DIR}"/*.whl
+          # Install vllm wheel first with --no-deps: avoids pip trying to resolve
+          # vllm and vllm_emulator together and hitting a conflict on the +empty
+          # local version suffix in vllm's metadata.
+          echo "Installing vllm wheel (no-deps)..."
+          pip install --quiet --no-deps "${WHEELS_DIR}"/vllm-*.whl
+
+          # vllm is now present as 0.29.0+empty; pip sees it as satisfying
+          # vllm_emulator's vllm requirement and only installs vllm_emulator's
+          # other (pure-Python) deps.
+          echo "Installing vllm_emulator wheel..."
+          pip install --quiet "${WHEELS_DIR}"/vllm_emulator-*.whl
+
+          # Install vllm's own pure-Python runtime deps from its wheel METADATA
+          # (vllm 0.29.0 is not on PyPI so we cannot pip install it for deps;
+          # read them from the installed wheel and skip GPU-specific packages).
+          echo "Installing vllm runtime deps from wheel METADATA..."
+          python3 - <<'PYDEPS'
+import importlib.metadata, subprocess, sys
+reqs = importlib.metadata.requires('vllm') or []
+skip = ('torch', 'triton', 'xformers', 'cuda', 'rocm', 'flash', 'aiter', 'extra ==')
+safe = [r.split(';')[0].strip() for r in reqs
+        if not any(s in r.lower() for s in skip)]
+if safe:
+    print('Installing vllm runtime deps:', safe)
+    subprocess.check_call([sys.executable, '-m', 'pip', 'install', '--quiet'] + safe)
+PYDEPS
 
           echo "Testing vllm import..."
           python3 -c "
