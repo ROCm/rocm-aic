@@ -143,7 +143,7 @@ WORKDIR /app/triton
 
 RUN --mount=type=cache,target=/root/.triton/ \
     TRITON_APPEND_CMAKE_ARGS="-DCMAKE_FIND_USE_CMAKE_ENVIRONMENT_PATH=FALSE" \
-       python3 -m build --wheel --no-isolation --outdir=/app/dist/triton
+       python3 -m build --wheel --no-isolation --outdir=/app/triton/dist
 
 WORKDIR /
 
@@ -269,7 +269,7 @@ RUN --mount=type=cache,target=/root/.cache/ccache \
       GPU_ARCH_VERSION=${ROCM_VERSION} \
       PYTORCH_ROCM_ARCH=$(echo "${PYTORCH_ROCM_ARCH}" | tr ',' ' ') \
       ROCM_HOME=/opt/rocm/core-${_mm} \
-      python3 .ci/manywheel/repair_wheel.py /app/pytorch/dist_tmp/ /app/dist/pytorch/ && \
+      python3 .ci/manywheel/repair_wheel.py /app/pytorch/dist_tmp/ /app/pytorch/dist/ && \
     { find /app/pytorch -mindepth 1 -maxdepth 1 ! -name 'dist' -exec rm -rf {} + || \
       echo "WARNING: PyTorch source cleanup failed; see find's error above" >&2; }
 WORKDIR /
@@ -306,7 +306,7 @@ RUN --mount=type=cache,target=/root/.cache/pip \
     CMAKE_CXX_COMPILER_LAUNCHER=ccache \
     MAX_JOBS="${BUILD_JOBS:-$(nproc)}" \
     CMAKE_BUILD_PARALLEL_LEVEL="${BUILD_JOBS:-$(nproc)}" \
-        python3 setup.py bdist_wheel --dist-dir=/app/dist/vision
+        python3 setup.py bdist_wheel --dist-dir=/app/vision/dist
 
 WORKDIR /
 
@@ -346,11 +346,11 @@ RUN --mount=type=cache,target=/root/.cache/uv \
             echo "ERROR: nixl patch does not apply cleanly: $patch" >&2; exit 1; \
         fi; \
     done && \
-    mkdir -p /app/dist/nixl && \
+    mkdir -p /app/nixl/dist && \
     NIXL_SRC=/tmp/nixl \
         AIS_PATH=/opt/rocm ROCM_PATH=/opt/rocm \
         NIXL_INSTALL_PREFIX=/opt/nixl \
-        NIXL_BUILD_WHEEL=1 NIXL_WHEEL_DIR=/app/dist/nixl/ \
+        NIXL_BUILD_WHEEL=1 NIXL_WHEEL_DIR=/app/nixl/dist/ \
         BUILD_JOBS="${BUILD_JOBS}" \
         AIC_UCX_FAST="${AIC_UCX_FAST}" \
         UV_SYSTEM_CERTS=1 \
@@ -368,10 +368,10 @@ RUN --mount=type=cache,target=/root/.cache/uv \
 # Must stay above runtime, the default target.
 # =============================================================================
 FROM scratch AS wheels
-COPY --from=build_nixl /app/dist/nixl/*.whl /
-COPY --from=build_triton /app/dist/triton/*.whl /
-COPY --from=build_pytorch /app/dist/pytorch/*.whl /
-COPY --from=build_torchvision /app/dist/vision/*.whl /
+COPY --from=build_nixl /app/nixl/dist/*.whl /
+COPY --from=build_triton /app/triton/dist/*.whl /
+COPY --from=build_pytorch /app/pytorch/dist/*.whl /
+COPY --from=build_torchvision /app/vision/dist/*.whl /
 
 
 # =============================================================================
@@ -589,11 +589,11 @@ COPY --from=build_pytorch /root/.local/bin/uvx /usr/local/bin/uvx
 
 # Install Python packages: torch + all requirements (from build_pytorch),
 RUN --mount=type=cache,target=/root/.cache/pip \
-    --mount=type=bind,from=build_nixl,source=/app/dist/nixl,target=/app/dist/nixl \
-    --mount=type=bind,from=build_pytorch,source=/app/dist/pytorch,target=/app/dist/pytorch \
-    --mount=type=bind,from=build_torchvision,source=/app/dist/vision,target=/app/dist/vision \
-    --mount=type=bind,from=build_triton,source=/app/dist/triton,target=/app/dist/triton \
-    uv pip install --system /app/dist/*/*.whl && \
+    --mount=type=bind,from=build_nixl,source=/app/nixl/dist,target=/wheel-nixl/ \
+    --mount=type=bind,from=build_pytorch,source=/app/pytorch/dist,target=/wheel-pytorch/ \
+    --mount=type=bind,from=build_torchvision,source=/app/vision/dist,target=/wheel-vision/ \
+    --mount=type=bind,from=build_triton,source=/app/triton/dist,target=/wheel-triton/ \
+    uv pip install --system /wheel-*/*.whl && \
     { find /usr/local/lib/python3.12 -name '__pycache__' -type d \
          -exec rm -rf {} + || \
       echo "WARNING: __pycache__ cleanup failed; see find's error above" >&2; }
