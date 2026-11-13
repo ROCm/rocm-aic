@@ -8,8 +8,9 @@
 # kvd_v2/gds), generates a self-contained HTML performance-tracking page, and
 # deploys it to GitHub Pages.
 #
-# Cliff uses the dist-build tarball directly via the SHA from the triggering
-# Accuracy run, and runs whether Accuracy passed or failed.  It is skipped when
+# Cliff uses the dist-build tarball directly via the SHA in the triggering
+# Accuracy run's nightly-head-sha artifact (not its head_sha, which is main's
+# tip when Accuracy was triggered), and runs whether Accuracy passed or failed.  It is skipped when
 # Accuracy was skipped (Smoke/Tiny failed, which already removed the tarball),
 # and when Accuracy was dispatched by hand.  spur-cliff-harvest.sh owns
 # terminal cleanup of the clone and tarball via its unconditional EXIT trap.
@@ -30,6 +31,7 @@ on:
 
 permissions:
   contents: write   # required to push the gh-pages branch
+  actions: read     # download Accuracy's nightly-head-sha artifact
 
 jobs:
   cliff:
@@ -51,9 +53,26 @@ jobs:
         with:
           persist-credentials: false
 
+      - name: Fetch the SHA under test from Accuracy
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: nightly-head-sha
+          path: ${{ runner.temp }}/nightly-head-sha
+          run-id: ${{ github.event.workflow_run.id }}
+          github-token: ${{ github.token }}
+
+      - name: Resolve the SHA under test
+        id: sha
+        run: |
+          sha="$(< "${RUNNER_TEMP}/nightly-head-sha/head-sha")"
+          [[ "${sha}" =~ ^[0-9a-f]{40}$ ]] || {
+            echo "::error::not a commit SHA: '${sha}'"; exit 1; }
+          echo "SHA under test: ${sha}"
+          echo "sha=${sha}" >> "${GITHUB_OUTPUT}"
+
       - name: Run cliff benchmark + harvest results from SPUR
         env:
-          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+          HEAD_SHA: ${{ steps.sha.outputs.sha }}
         run: |
           bash .github/scripts/workflows/spur-cliff-harvest.sh \
             "${HEAD_SHA}" \
@@ -62,7 +81,7 @@ jobs:
       - name: Upload cliff performance page artifact
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: cliff-perf-page-${{ github.event.workflow_run.head_sha }}
+          name: cliff-perf-page-${{ steps.sha.outputs.sha }}
           path: cliff-page/
           if-no-files-found: error
           retention-days: 90
