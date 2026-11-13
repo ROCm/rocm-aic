@@ -6,8 +6,11 @@
 """Cliff chart plotter — AIC vs non-AIC KV cache comparison.
 
 Reads one or more CSV files produced by run_cliff.py and generates:
-  1. cliff-throughput.png — total throughput (tok/s) vs concurrency, one line per arm
-  2. cliff-latency.png    — p50 and p95 latency (ms) vs concurrency, one line per arm
+  1. cliff-throughput.png  — total throughput (tok/s) vs concurrency, one line per arm
+  2. cliff-latency-p50.png, cliff-latency-p95.png
+                           — p50 and p95 latency (ms) vs concurrency, one line per arm
+  3. cliff-hit-rate.png    — share of prompt tokens served from a KV cache (vLLM's
+                             GPU prefix cache plus LMCache) vs concurrency
 
 The "cliff" is the throughput drop that occurs when the KV working set
 exceeds VRAM and the engine starts evicting + re-prefilling. AIC arms
@@ -65,8 +68,27 @@ def _arm_style(arm: str, arm_labels: dict[str, str], color_pool: list) -> dict:
 # CSV loading
 # ---------------------------------------------------------------------------
 
-def _load_csvs(paths: list[Path]) -> dict[str, dict[int, list[float]]]:
-    """Return {arm: {concurrency: [throughput_tok_s_total, ...]}}."""
+def _cached_pct(row: dict) -> float | None:
+    """Percent of prompt tokens served from a KV cache, None when unscraped.
+
+    vLLM counts both against the full prompt, and the connector is only asked
+    for what the GPU prefix cache missed, so the two hit counts add up."""
+    try:
+        queries = float(row["l1_cache_queries"])
+        hits = float(row["l1_cache_hits"])
+    except (KeyError, ValueError):
+        return None
+    if queries <= 0:
+        return None
+    try:
+        hits += float(row.get("ext_cache_hits") or 0)
+    except ValueError:
+        pass
+    return 100.0 * hits / queries
+
+
+def _load_csvs(paths: list[Path]) -> dict[str, dict[int, list[tuple]]]:
+    """Return {arm: {concurrency: [(throughput, p50_ms, p95_ms, cached_pct), ...]}}."""
     arm_data: dict[str, dict[int, list]] = {}
     for p in paths:
         with p.open(newline="") as fh:
@@ -82,19 +104,26 @@ def _load_csvs(paths: list[Path]) -> dict[str, dict[int, list[float]]]:
                     continue
                 arm_data.setdefault(arm, {})
                 arm_data[arm].setdefault(c, [])
-                arm_data[arm][c].append((thr, p50, p95))
+                arm_data[arm][c].append((thr, p50, p95, _cached_pct(row)))
     return arm_data
 
 
 def _median_series(
     arm_data: dict[str, dict[int, list]], col: int
 ) -> dict[str, tuple[list[int], list[float]]]:
-    """Collapse per-iter measurements to median. Returns {arm: (xs, ys)}."""
+    """Collapse per-iter measurements to median. Returns {arm: (xs, ys)}.
+
+    Iterations without a value in `col` are skipped, and so is an arm with none."""
     result: dict[str, tuple[list[int], list[float]]] = {}
     for arm, cmap in arm_data.items():
-        xs = sorted(cmap)
-        ys = [statistics.median(v[col] for v in cmap[x]) for x in xs]
-        result[arm] = (xs, ys)
+        xs, ys = [], []
+        for x in sorted(cmap):
+            vals = [v[col] for v in cmap[x] if v[col] is not None]
+            if vals:
+                xs.append(x)
+                ys.append(statistics.median(vals))
+        if xs:
+            result[arm] = (xs, ys)
     return result
 
 
@@ -123,6 +152,7 @@ def _plot_chart(
     title: str,
     out_path: Path,
     show_cliff: bool = False,
+    ylim: tuple[float, float] | None = None,
 ) -> None:
     try:
         import matplotlib
@@ -155,6 +185,8 @@ def _plot_chart(
     ax.set_title(title, fontsize=13, fontweight="bold")
     ax.legend(fontsize=10, framealpha=0.9)
     ax.grid(True, alpha=0.3, linestyle="--")
+    if ylim is not None:
+        ax.set_ylim(*ylim)
     ax.set_xscale("log")
     ax.xaxis.set_major_formatter(matplotlib.ticker.ScalarFormatter())
     ax.tick_params(axis="both", labelsize=10)
@@ -264,6 +296,21 @@ def main() -> None:
         out_path=out_dir / "cliff-latency-p95.png",
         show_cliff=False,
     )
+
+    # Chart 4: share of prompt tokens served from cache, where the CSVs carry
+    # the scraped counters
+    hit_series = _median_series(arm_data, col=3)
+    if hit_series:
+        _plot_chart(
+            arms=arm_order,
+            series=hit_series,
+            arm_labels=arm_labels,
+            ylabel="Prompt tokens served from cache (%)",
+            title=f"KV Cache Cliff — Cache Hit Rate vs Concurrency{suffix}",
+            out_path=out_dir / "cliff-hit-rate.png",
+            show_cliff=False,
+            ylim=(-3, 103),
+        )
 
     print(f"Done. Charts written to {out_dir}/")
 
