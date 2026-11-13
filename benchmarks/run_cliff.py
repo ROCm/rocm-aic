@@ -609,8 +609,14 @@ async def amain(args: argparse.Namespace) -> int:
 
     # No connection cap: httpx's default of 100 held every level above c=100 to
     # 100 requests in flight, so c=128..250 all measured c=100.
+    # Drop idle connections well before vLLM's server does
+    # (VLLM_HTTP_TIMEOUT_KEEP_ALIVE, 5 s).  httpx's default expiry is also 5 s,
+    # and the settle + prefix-cache reset between iters idles a wave's
+    # connections for about that long, so the next wave can reuse one the
+    # server is closing and fail with a bare ReadError.
     limits = httpx.Limits(max_connections=None,
-                          max_keepalive_connections=max(concurrencies))
+                          max_keepalive_connections=max(concurrencies),
+                          keepalive_expiry=2.0)
     async with httpx.AsyncClient(timeout=args.request_timeout,
                                  limits=limits) as http_client:
         # Ping the endpoint so we fail fast if it's not up.
