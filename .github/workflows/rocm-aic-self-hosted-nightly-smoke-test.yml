@@ -5,6 +5,10 @@
 # Staged-image ownership: the image tarball must outlive each stage and is
 # removed only by the last stage, or whichever fails first.
 #
+# The SHA under test travels down the chain as the nightly-head-sha artifact.
+# A workflow_run stage's head_sha is main's tip when that stage was triggered,
+# so from Accuracy on it names whatever merged after Dist Build started.
+#
 # workflow_run matches display names, not filenames; keep downstream
 # workflows: entries in sync with name: here.
 name: rocm-aic - Self Hosted - Nightly Smoke Test
@@ -13,6 +17,8 @@ on:
   workflow_run:
     workflows: ["rocm-aic - Self Hosted - Nightly Dist Build"]
     types: [completed]
+
+permissions: {}
 
 jobs:
   smoke-test:
@@ -26,8 +32,26 @@ jobs:
       AIC_BUILD_EXCLUDE_NODES: ${{ vars.AIC_BUILD_EXCLUDE_NODES }}
 
     steps:
+      # Dist Build is the root, so this head_sha is the SHA it built.
+      - name: Record the SHA under test
+        env:
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          mkdir -p "${RUNNER_TEMP}/nightly-head-sha"
+          printf '%s\n' "${HEAD_SHA}" > "${RUNNER_TEMP}/nightly-head-sha/head-sha"
+
+      - name: Hand the SHA under test to Accuracy
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: nightly-head-sha
+          path: ${{ runner.temp }}/nightly-head-sha/head-sha
+          if-no-files-found: error
+          retention-days: 14
+
       - name: Run smoke test on the SPUR head node
-        run: bash /usr/local/lib/aic-ci/spur-smoke-test.sh "${{ github.event.workflow_run.head_sha }}"
+        env:
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+        run: bash /usr/local/lib/aic-ci/spur-smoke-test.sh "${HEAD_SHA}"
 
   tiny-test:
     needs: smoke-test
@@ -41,4 +65,6 @@ jobs:
 
     steps:
       - name: Run tiny-test on SPUR head node
-        run: KEEP_ARTIFACTS=1 bash /usr/local/lib/aic-ci/spur-tiny-test.sh "${{ github.event.workflow_run.head_sha }}"
+        env:
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+        run: KEEP_ARTIFACTS=1 bash /usr/local/lib/aic-ci/spur-tiny-test.sh "${HEAD_SHA}"

@@ -217,8 +217,8 @@ RUN export UNUSED_SUBMODULES=(3rdparty/composable_kernel \
       git config -f /app/pytorch/.gitmodules --remove-section submodule."$m" || true; \
     done
 
+WORKDIR /app/pytorch
 RUN --mount=type=cache,target=/root/.cache/uv \
-    cd /app/pytorch && \
     uv pip install --system \
       -r requirements.txt \
       -r requirements-build.txt
@@ -247,7 +247,6 @@ ARG BUILD_JOBS=
 
 # hadolint ignore=SC2086,SC2015
 RUN --mount=type=cache,target=/root/.cache/ccache \
-    cd /app/pytorch && \
     python3 tools/amd_build/build_amd.py && \
     CCACHE_DIR=/root/.cache/ccache CCACHE_MAXSIZE=25G \
     CMAKE_C_COMPILER_LAUNCHER=ccache \
@@ -270,6 +269,7 @@ RUN --mount=type=cache,target=/root/.cache/ccache \
       python3 .ci/manywheel/repair_wheel.py /app/pytorch/dist_tmp/ /app/dist/pytorch/ && \
     { find /app/pytorch -mindepth 1 -maxdepth 1 ! -name 'dist' -exec rm -rf {} + || \
       echo "WARNING: PyTorch source cleanup failed; see find's error above" >&2; }
+WORKDIR /
 
 # =============================================================================
 # torchvision source build — must compile against our source-built PyTorch.
@@ -288,14 +288,14 @@ ARG TORCHVISION_REF=v0.28.0
 
 RUN git clone --depth 1 --branch "${TORCHVISION_REF}" "${TORCHVISION_GIT_URL}" /app/vision
 
+WORKDIR /app/vision
 # hadolint ignore=SC2086,DL3008
 RUN --mount=type=cache,target=/root/.cache/pip \
     --mount=type=cache,target=/root/.cache/ccache \
     --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
     DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends libnuma-dev && \
-    pip3 install setuptools wheel packaging /app/dist/pytorch/*.whl && \
-    cd /app/vision && \
+    pip3 install setuptools wheel packaging /app/pytorch/dist/*.whl && \
     USE_ROCM=1 USE_CUDA=0 \
     PYTORCH_ROCM_ARCH="${ROCM_ARCH}" \
     CCACHE_DIR=/root/.cache/ccache CCACHE_MAXSIZE=25G \
@@ -304,6 +304,8 @@ RUN --mount=type=cache,target=/root/.cache/pip \
     MAX_JOBS="${BUILD_JOBS:-$(nproc)}" \
     CMAKE_BUILD_PARALLEL_LEVEL="${BUILD_JOBS:-$(nproc)}" \
         python3 setup.py bdist_wheel --dist-dir=/app/dist/vision
+        python3 setup.py bdist_wheel --dist-dir=/app/vision/dist
+WORKDIR /
 
 # =============================================================================
 # build_nixl — NIXL source build using the ROCm-full toolchain.
@@ -391,15 +393,17 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
         cmake git ninja-build python3-dev
 
-COPY patches/hip-ipc-event-ring-fix.patch /tmp/hip-ipc-event-ring-fix.patch
+COPY patches/hip-ipc-signal-slot-index-fix.patch /tmp/hip-ipc-signal-slot-index-fix.patch
 
 RUN pip3 install --break-system-packages CppHeaderParser && \
-    git clone --filter=blob:none --no-checkout --depth 1 --branch "${CLR_REF}" "${CLR_GIT_URL}" /app/rocm-systems && \
-    cd /app/rocm-systems && \
-    git sparse-checkout init --cone && \
+    git clone --filter=blob:none --no-checkout --depth 1 --branch "${CLR_REF}" "${CLR_GIT_URL}" /app/rocm-systems
+
+WORKDIR /app/rocm-systems
+RUN git sparse-checkout init --cone && \
     git sparse-checkout set projects/clr projects/hip && \
     git checkout HEAD && \
-    patch -p1 < /tmp/hip-ipc-event-ring-fix.patch
+    patch -p1 < /tmp/hip-ipc-signal-slot-index-fix.patch
+WORKDIR /
 
 # hadolint ignore=DL3008
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
@@ -419,7 +423,8 @@ RUN cmake -G Ninja \
         -DCMAKE_PREFIX_PATH=/opt/rocm/core \
         -DCLR_BUILD_HIP=ON \
         -DCLR_BUILD_OCL=OFF \
-        -D__HIP_ENABLE_PCH=OFF && \
+        -DROCM_KPACK_ENABLED=ON \
+        -D__HIP_ENABLE_PCH=ON && \
     cmake --build /app/clr-build --target amdhip64 \
         --parallel "${BUILD_JOBS:-$(nproc)}" && \
     ls /app/clr-build/hipamd/lib/libamdhip64.so* && \
@@ -504,7 +509,7 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
 # URL tracks the base image automatically (ROCm 10.0 changed the URL).
 COPY --from=base /etc/apt/keyrings/amdrocm.gpg /etc/apt/keyrings/amdrocm.gpg
 COPY --from=base /etc/apt/sources.list.d/rocm.list /etc/apt/sources.list.d/amdrocm.list
-# hadolint ignore=SC2086,DL3008
+# hadolint ignore=SC2046,SC2086,DL3008
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
     echo "blas cache bust: ${BLAS_CACHE_BUST}" && \
@@ -547,9 +552,7 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
                       amdrocm-rand${_mm}-${_arch} \
                       amdrocm-rccl${_mm}-${_arch}"; \
        done \
-    && (DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends ${_arch_pkgs} \
-        || echo "Warning: not all packages were successfully installed") \
-    && update-alternatives --install /opt/rocm/core core "/opt/rocm/core-${_mm}" 1375129220 \
+    && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends ${_arch_pkgs} \
     && update-ca-certificates
 
 RUN git config --global advice.detachedHead false
@@ -622,3 +625,6 @@ ENV NIXL_PLUGIN_DIR=/opt/nixl/lib/x86_64-linux-gnu/plugins \
     LD_LIBRARY_PATH=/opt/nixl/lib/x86_64-linux-gnu:/opt/nixl/lib:/opt/rocnixl-ucx/lib:/opt/rocm/core/lib \
     ROCM_PATH=/opt/rocm/core \
     PATH=/opt/rocm/core/bin:/opt/rocm/core/lib/llvm/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+# Build parent, not a service: downstream images define their own checks.
+HEALTHCHECK NONE

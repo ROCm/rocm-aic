@@ -32,8 +32,13 @@ class _HealthyResponse:
 
 
 class _AsyncClient:
+    # /reset_prefix_cache answers, in order; the last one repeats.
+    reset_replies: list[bool] = [True]
+    reset_calls: list[str] = []
+    init_kwargs: dict = {}
+
     def __init__(self, *args, **kwargs) -> None:
-        pass
+        type(self).init_kwargs = kwargs
 
     async def __aenter__(self):
         return self
@@ -43,6 +48,17 @@ class _AsyncClient:
 
     async def get(self, *args, **kwargs) -> _HealthyResponse:
         return _HealthyResponse()
+
+    async def post(self, url: str, **kwargs) -> "_JsonResponse":
+        cls = type(self)
+        cls.reset_calls.append(url)
+        n = len(cls.reset_calls) - 1
+        return _JsonResponse({"success": cls.reset_replies[min(n, len(cls.reset_replies) - 1)]})
+
+
+class _Limits:
+    def __init__(self, **kwargs) -> None:
+        self.kwargs = kwargs
 
 
 class _JsonResponse:
@@ -91,6 +107,10 @@ class RequestFailureStatusTest(unittest.TestCase):
         warmup_error: str | None = None,
         concurrency: str = "1",
         arm: str = "vram_only",
+        iters: int = 1,
+        reset_prefix_cache: bool = False,
+        warmup_waves: int = 1,
+        wave_mock: list | None = None,
     ) -> tuple[int, dict[str, str], list[str]]:
         with tempfile.TemporaryDirectory() as temp_dir:
             output = Path(temp_dir) / "cliff.csv"
@@ -103,9 +123,10 @@ class RequestFailureStatusTest(unittest.TestCase):
                 shared_prefix_tokens=1,
                 max_tokens=1,
                 concurrencies=concurrency,
-                iters=1,
+                iters=iters,
                 warmup_iters=0,
-                warmup_at_each_c=warmup_error is not None,
+                warmup_at_each_c=warmup_error is not None or warmup_waves > 1,
+                warmup_waves_per_c=warmup_waves,
                 post_warmup_sleep_s=0.0,
                 prefix_mode="shared",
                 request_timeout=1.0,
@@ -114,14 +135,18 @@ class RequestFailureStatusTest(unittest.TestCase):
                 no_metrics=True,
                 metrics_settle_interval=0.01,
                 metrics_settle_timeout=0.0,
+                reset_prefix_cache=reset_prefix_cache,
+                reset_prefix_cache_timeout=0.05,
                 out=str(output),
                 append=False,
             )
-            fake_httpx = types.SimpleNamespace(AsyncClient=_AsyncClient)
-            waves = [(1.0, [_result(error)])]
-            if warmup_error is not None:
-                waves.insert(0, (1.0, [_result(warmup_error)]))
+            fake_httpx = types.SimpleNamespace(AsyncClient=_AsyncClient, Limits=_Limits)
+            waves = [(1.0, [_result(error)])] * iters
+            if warmup_error is not None or warmup_waves > 1:
+                waves[:0] = [(1.0, [_result(warmup_error)])] * warmup_waves
             wave = mock.AsyncMock(side_effect=waves)
+            if wave_mock is not None:
+                wave_mock.append(wave)
             with (
                 mock.patch.dict(sys.modules, {"httpx": fake_httpx}),
                 mock.patch.object(run_cliff, "set_active_tokenizer"),
@@ -131,7 +156,7 @@ class RequestFailureStatusTest(unittest.TestCase):
             ):
                 status = asyncio.run(run_cliff.amain(args))
             with output.open(newline="") as handle:
-                row = next(csv.DictReader(handle))
+                row = next(csv.DictReader(handle), {})
         messages = [call.args[0] for call in checkpoint.call_args_list]
         return status, row, messages
 
@@ -169,6 +194,51 @@ class RequestFailureStatusTest(unittest.TestCase):
         self.assertIn(
             "  c=3 per-c warmup first error: http 500: warmup broken", messages
         )
+
+    def test_per_concurrency_warmup_sends_every_wave_before_timing(self) -> None:
+        waves: list = []
+        status, row, _ = self._run(
+            error=None, allow_errors=False, warmup_waves=2, iters=1, wave_mock=waves)
+
+        self.assertEqual(status, 0)
+        run_ids = [call.kwargs["run_id"] for call in waves[0].call_args_list]
+        # Two distinct warmup waves (distinct suffixes), then the timed iter.
+        self.assertEqual(len(run_ids), 3)
+        self.assertEqual(len(set(run_ids)), 3)
+        self.assertEqual(row["iter"], "0")
+
+    def test_client_pool_admits_the_highest_concurrency(self) -> None:
+        # httpx defaults to 100 connections, which silently capped c=128..250.
+        status, _, _ = self._run(error=None, allow_errors=False, concurrency="250")
+
+        self.assertEqual(status, 0)
+        limits = _AsyncClient.init_kwargs["limits"].kwargs
+        self.assertIsNone(limits["max_connections"])
+
+    def _run_reset(self, replies: list[bool]) -> tuple[int, list[str], list[str]]:
+        _AsyncClient.reset_replies = replies
+        _AsyncClient.reset_calls = []
+        status, _, messages = self._run(
+            error=None, allow_errors=False, iters=2, reset_prefix_cache=True)
+        return status, list(_AsyncClient.reset_calls), messages
+
+    def test_reset_prefix_cache_runs_before_every_timed_iter(self) -> None:
+        status, calls, _ = self._run_reset([True])
+
+        self.assertEqual(status, 0)
+        self.assertEqual(calls, ["http://test.invalid:8000/reset_prefix_cache"] * 2)
+
+    def test_reset_prefix_cache_retries_while_blocks_are_held(self) -> None:
+        status, calls, _ = self._run_reset([False, True])
+
+        self.assertEqual(status, 0)
+        self.assertEqual(len(calls), 3)  # one retry, then one per remaining iter
+
+    def test_reset_prefix_cache_that_never_succeeds_fails_the_run(self) -> None:
+        status, _, messages = self._run_reset([False])
+
+        self.assertEqual(status, 1)
+        self.assertTrue(any(m.startswith("FAIL: prefix-cache reset") for m in messages))
 
     def test_main_propagates_benchmark_status(self) -> None:
         async def fail(_args: argparse.Namespace) -> int:
@@ -244,10 +314,12 @@ class RequestFailureStatusTest(unittest.TestCase):
                 no_metrics=False,
                 metrics_settle_interval=0.01,
                 metrics_settle_timeout=0.0,
+                reset_prefix_cache=False,
+                reset_prefix_cache_timeout=0.0,
                 out=str(output),
                 append=False,
             )
-            fake_httpx = types.SimpleNamespace(AsyncClient=_AsyncClient)
+            fake_httpx = types.SimpleNamespace(AsyncClient=_AsyncClient, Limits=_Limits)
             wave = mock.AsyncMock(return_value=(1.0, [_result(None)]))
             snap = mock.AsyncMock(side_effect=AssertionError("metrics scrape should be skipped"))
             with (

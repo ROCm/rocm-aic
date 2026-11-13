@@ -191,7 +191,7 @@ mon_profile() {  # echo the compose --profile args for the exporter fleet
 MON_CONTAINERS=(aic-prometheus aic-grafana aic-loki aic-alloy
                 aic-node-exporter aic-amdgpu-exporter
                 aic-nvme-exporter aic-rdma-exporter aic-hsa-snoop
-                aic-vllm-emulator)
+                aic-l2-monitor aic-vllm-emulator)
 
 start_monitoring() {
     [[ "${AIC_MONITORING}" == "1" ]] || { log "monitoring disabled (AIC_MONITORING=0)"; return 0; }
@@ -202,19 +202,21 @@ start_monitoring() {
     # Sweep any leftover containers from a previous run on this node so port
     # bindings don't conflict with the new compose up.
     docker rm -f "${MON_CONTAINERS[@]}" >/dev/null 2>&1 || true
-    docker network inspect aic-network >/dev/null 2>&1 \
-        || docker network create aic-network >/dev/null \
-        || log "monitoring: could not create aic-network (continuing)"
     local -a profile; mapfile -t profile < <(mon_profile)
     local -a compose_files=(-f "${MON_COMPOSE}")
-    # On SPUR, layer in the SPUR override (tmpfs rootfs for node-exporter,
-    # no /dev bind for nvme-exporter) so spur-authz policies B1/B2 don't
-    # block the compose up.
+    local skip="${AIC_MON_SKIP_SERVICES:-}"
+    # On SPUR, layer in the SPUR override (tmpfs rootfs for node-exporter) so
+    # spur-authz policy B1 doesn't block the compose up.
     if [[ "${AIC_SPUR_CLUSTER:-0}" == "1" ]]; then
         local _spur_override="${MON_COMPOSE%/*}/docker-compose.spur.yml"
         [[ -f "${_spur_override}" ]] \
             && compose_files+=(-f "${_spur_override}") \
             || log "monitoring: WARN spur override ${_spur_override} not found"
+        # No override can make these acceptable to spur-authz, and one refused
+        # container fails the whole `compose up`, leaving no Prometheus at all:
+        # alloy bind-mounts the docker socket (S1), hsa-snoop is privileged (P1),
+        # nvme-exporter adds SYS_ADMIN (C1).
+        skip="${skip:+${skip} }alloy hsa-snoop nvme-exporter"
     fi
     # vllm carries no profile and client is in monitoring-base, so a bare `up`
     # would start both; the caller owns those.  Name the services instead of
@@ -226,7 +228,7 @@ start_monitoring() {
     local -a dc=(docker compose "${compose_files[@]}" --profile monitoring-base "${profile[@]}")
     local -a svc
     mapfile -t svc < <(env "${env[@]}" "${dc[@]}" config --services \
-        | grep -vxE "vllm|client${AIC_MON_SKIP_SERVICES:+|${AIC_MON_SKIP_SERVICES// /|}}")
+        | grep -vxE "vllm|client${skip:+|${skip// /|}}")
     # An empty list would make `up` start every active service, vllm included.
     if [[ "${#svc[@]}" -eq 0 ]]; then
         log "monitoring: no services resolved from compose config (continuing without metrics)"

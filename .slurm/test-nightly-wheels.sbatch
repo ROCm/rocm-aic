@@ -66,8 +66,14 @@ SKIP_ENGINE_INIT="${SKIP_ENGINE_INIT:-0}"
 source "${REPO}/.slurm/image-dist-lib.sh"
 _art="$(aic_image_artifact "${AIC_IMAGE_DIR}" 'aic-vllm-*')" || _art=""
 # Resolve the AIC image: prefer caller-set AIC_IMAGE, else take it from the
-# latest build (mirrors how run-cliff.sbatch resolves it).
-if [[ -z "${AIC_IMAGE:-}" ]]; then
+# latest build (mirrors how run-cliff.sbatch resolves it).  A caller-set image
+# already on this node is used as is; the build's is always fetched, since its
+# tag comes from the version pins, not the commit, and so can name an older
+# build already here.
+_have=""
+if [[ -n "${AIC_IMAGE:-}" ]]; then
+    _have="$(docker images -q "${AIC_IMAGE}" 2>/dev/null)"
+else
     [[ -n "${_art}" ]] || die "no aic-vllm build artifact found under ${AIC_IMAGE_DIR}"
     if [[ "${_art}" == *.ref ]]; then
         # The first name the build gave the image.
@@ -86,11 +92,11 @@ log "base image  : ${AIC_IMAGE}"
 log "model       : ${VLLM_MODEL}"
 log "HF_HOME     : ${HF_HOME}"
 
-# Load the image if not already present.  The tag inside the tarball may
+# Load the image unless the caller's is already present.  A .ref pulls by
+# digest, reusing the layers already here.  The tag inside a tarball may
 # differ from the name derived from the tarball filename (e.g. the tarball
 # includes the arch suffix "-gfx950" but the embedded tag does not), so
 # capture the actual "Loaded image: name:tag" line and use that.
-_have="$(docker images -q "${AIC_IMAGE}" 2>/dev/null)"
 if [[ -z "${_have}" && "${_art}" == *.ref ]]; then
     aic_image_fetch wheel-test "${AIC_IMAGE}" "${_art}" || die "could not fetch ${AIC_IMAGE}"
 elif [[ -z "${_have}" ]]; then

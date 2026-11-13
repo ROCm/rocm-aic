@@ -190,6 +190,29 @@ async def _snap_cache_settled(
     return prev
 
 
+async def _reset_prefix_cache(http_client, base_url: str, timeout_s: float) -> float:
+    """Empty vLLM's GPU prefix cache (not the connector's) and return the
+    seconds it took.
+
+    vLLM answers {"success": false} while KV blocks are still held -- by
+    running requests or, with an async-save connector, by offloads still in
+    flight from the previous wave -- so poll until it succeeds.  Raises
+    RuntimeError if it never does: a timed iter on a still-warm GPU cache
+    measures VRAM hits, not the tier under test.
+    """
+    url = f"{base_url.rstrip('/')}/reset_prefix_cache"
+    start = time.monotonic()
+    while True:
+        resp = await http_client.post(url, timeout=30.0)
+        if resp.status_code != 200:
+            raise RuntimeError(f"POST {url}: http {resp.status_code}: {resp.text[:200]}")
+        if resp.json().get("success"):
+            return time.monotonic() - start
+        if time.monotonic() - start >= timeout_s:
+            raise RuntimeError(f"vLLM still holds KV blocks after {timeout_s:.0f}s")
+        await asyncio.sleep(0.5)
+
+
 def _window_rate(before: dict | None, after: dict | None,
                  kq: str, kh: str) -> tuple[str, str, str]:
     """Delta query/hit counts and hit-rate % over a [before, after]
@@ -584,7 +607,12 @@ async def amain(args: argparse.Namespace) -> int:
     write_header = not (args.append and out_path.exists())
     request_error_count = 0
 
-    async with httpx.AsyncClient(timeout=args.request_timeout) as http_client:
+    # No connection cap: httpx's default of 100 held every level above c=100 to
+    # 100 requests in flight, so c=128..250 all measured c=100.
+    limits = httpx.Limits(max_connections=None,
+                          max_keepalive_connections=max(concurrencies))
+    async with httpx.AsyncClient(timeout=args.request_timeout,
+                                 limits=limits) as http_client:
         # Ping the endpoint so we fail fast if it's not up.
         try:
             r = await http_client.get(f"{args.endpoint.rstrip('/')}/v1/models",
@@ -647,10 +675,16 @@ async def amain(args: argparse.Namespace) -> int:
                 # tier for Arm B). The measurement runs that follow
                 # then see warm cache, mirroring the LMCache slide's
                 # "ideal conditions, cache is warm" footnote.
-                if args.warmup_at_each_c:
+                # More than one wave: on a sliding-window model vLLM keeps the
+                # window blocks a hit needs only at a shared-prefix junction it
+                # learns from a second request, so a client's prefix first hits
+                # in full on its third request.
+                for w in range(args.warmup_waves_per_c if args.warmup_at_each_c else 0):
                     wall, results = await _run_one_concurrency(
                         http_client, args.endpoint, args.model,
-                        concurrency=c, run_id=20_000 + c,
+                        concurrency=c,
+                        # Distinct suffix per wave, never reused by a timed iter.
+                        run_id=20_000 + c if w == 0 else 1_000_000 * w + c,
                         isl=args.isl,
                         shared_prefix_tokens=args.shared_prefix_tokens,
                         max_tokens=args.max_tokens,
@@ -666,6 +700,7 @@ async def amain(args: argparse.Namespace) -> int:
                     )
                     if errs:
                         _ckpt(f"  c={c} per-c warmup first error: {errs[0].error}")
+                if args.warmup_at_each_c:
                     # Async-save connectors (kvd v2 chunked-fusion)
                     # return from wait_for_save before chunks land on
                     # disk; back-pressure from the warmup's tail of
@@ -683,6 +718,16 @@ async def amain(args: argparse.Namespace) -> int:
                 _ckpt(f"--- concurrency c={c} ({args.iters} iter(s)) ---")
                 point_throughputs: list[float] = []
                 for it in range(args.iters):
+                    if args.reset_prefix_cache:
+                        try:
+                            waited = await _reset_prefix_cache(
+                                http_client, args.endpoint,
+                                args.reset_prefix_cache_timeout)
+                        except Exception as exc:
+                            _ckpt(f"FAIL: prefix-cache reset before c={c} it={it}: {exc}")
+                            return 1
+                        if waited >= 1.0:
+                            _ckpt(f"  prefix-cache reset took {waited:.1f}s")
                     # Settle both snapshots so each window captures ALL of
                     # its (async-flushed) prefix-cache updates -- see
                     # _snap_cache_settled for why a bare scrape is unstable.
@@ -793,6 +838,11 @@ def main() -> None:
                         help="warm cache at EACH concurrency level (one iter, "
                              "before timed iters); required for per_client mode "
                              "so all C unique prefixes get cached first")
+    parser.add_argument("--warmup-waves-per-c", type=int, default=1,
+                        help="warmup waves per concurrency level with "
+                             "--warmup-at-each-c (default 1).  Use 2 for a "
+                             "sliding-window model such as gpt-oss, whose "
+                             "prefixes first hit in full on a third request")
     parser.add_argument("--post-warmup-sleep-s", type=float, default=0.0,
                         help="seconds to sleep after each per-c warmup before "
                              "starting timed iters. For async-save connectors "
@@ -800,6 +850,14 @@ def main() -> None:
                              "queue drain so iter 0 isn't contaminated by "
                              "in-flight writes from the warmup tail. 5-10 s "
                              "is plenty for Kimi K2.5 c<=32 workloads.")
+    parser.add_argument("--reset-prefix-cache", action="store_true",
+                        help="empty vLLM's GPU prefix cache (POST /reset_prefix_cache, "
+                             "needs VLLM_SERVER_DEV_MODE=1) before every timed iter, so "
+                             "a connector arm is measured on its external tier rather "
+                             "than on VRAM hits left by the warmup or the previous iter")
+    parser.add_argument("--reset-prefix-cache-timeout", type=float, default=120.0,
+                        help="seconds to keep retrying a reset vLLM refuses while "
+                             "KV blocks are still held (default: 120)")
     parser.add_argument("--prefix-mode", choices=["shared", "per_client"], default="shared",
                         help="shared: all clients share one prefix (cache-hit "
                              "trivial); per_client: each client gets its own "

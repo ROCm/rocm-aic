@@ -21,9 +21,11 @@
 [![Nightly Cliff](https://github.com/ROCm/rocm-aic/actions/workflows/rocm-aic-self-hosted-nightly-cliff-test.yml/badge.svg)](https://github.com/ROCm/rocm-aic/actions/workflows/rocm-aic-self-hosted-nightly-cliff-test.yml)
 [![Nightly Wheels](https://github.com/ROCm/rocm-aic/actions/workflows/rocm-aic-nightly-wheels-publication.yml/badge.svg)](https://github.com/ROCm/rocm-aic/actions/workflows/rocm-aic-nightly-wheels-publication.yml)
 [![Check PRs + Patches](https://github.com/ROCm/rocm-aic/actions/workflows/rocm-aic-check-prs-and-patches.yml/badge.svg)](https://github.com/ROCm/rocm-aic/actions/workflows/rocm-aic-check-prs-and-patches.yml)
-[![Rocjitsu VM Test](https://github.com/ROCm/rocm-aic/actions/workflows/rocm-aic-rocjitsu-test.yml/badge.svg)](https://github.com/ROCm/rocm-aic/actions/workflows/rocm-aic-rocjitsu-test.yml)
+[![vLLM Emul Test](https://github.com/ROCm/rocm-aic/actions/workflows/rocm-aic-emulate-test.yml/badge.svg)](https://github.com/ROCm/rocm-aic/actions/workflows/rocm-aic-emulate-test.yml)
+[![vLLM Emul Perf](https://github.com/ROCm/rocm-aic/actions/workflows/rocm-aic-vllm-emul-performance.yml/badge.svg)](https://github.com/ROCm/rocm-aic/actions/workflows/rocm-aic-vllm-emul-performance.yml)
 [![Metrics Reference](https://img.shields.io/badge/Prometheus-Metrics_Reference-E05D00?logo=prometheus&logoColor=white)](https://rocm.github.io/rocm-aic/prometheus/)
 [![Cliff Perf Dashboard](https://img.shields.io/badge/Cliff-Perf_Dashboard-2980b9?logo=github&logoColor=white)](https://rocm.github.io/rocm-aic/cliff/)
+[![vLLM Emul Dashboard](https://img.shields.io/badge/vLLM_Emul-Perf_Dashboard-7c3aed?logo=github&logoColor=white)](https://rocm.github.io/rocm-aic/vllm-emul-performance/)
 
 > [!CAUTION]
 > This release is an *early-access* software technology preview. Running

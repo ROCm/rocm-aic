@@ -97,3 +97,10 @@ EXPOSE 9488
 
 ENTRYPOINT ["/usr/local/bin/hsa-snoop"]
 CMD ["--all", "--prometheus", "--prometheus-port", "9488", "--mem-snoop"]
+
+# The runtime image has bash but neither curl nor python, so probe over
+# /dev/tcp.  TCP connect only: the exporter port accepting is the liveness
+# signal.  The port is the CMD default above; a CMD override that changes it
+# has to override this check too.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
+    CMD ["bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/9488"]

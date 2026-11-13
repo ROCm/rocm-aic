@@ -31,3 +31,6 @@ RUN curl -fsSL "https://astral.sh/uv/0.12.15/install.sh" | sh \
 # Symlink dist-packages -> site-packages so COPY --from=build_vllm dist-packages/ works.
 RUN ln -sf /usr/local/lib/python3.12/site-packages \
            /usr/local/lib/python3.12/dist-packages
+
+# Build parent, not a service: the emulate image defines its own check.
+HEALTHCHECK NONE

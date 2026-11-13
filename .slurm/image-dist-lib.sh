@@ -33,6 +33,7 @@ aic_registry_start() {
     AIC_REG_STORAGE="${storage}"
     mkdir -p "${storage}" \
         || { echo "[${tag}] FATAL: cannot create registry storage ${storage}" >&2; return 1; }
+    _aic_registry_image "${tag}" "${storage}" "${image}" || return 1
     docker run -d --name "${AIC_REG_NAME}" --user "$(id -u):$(id -g)" \
         -p 127.0.0.1::5000 -v "${storage}:/var/lib/registry" \
         -e REGISTRY_LOG_LEVEL=info "${image}" >/dev/null \
@@ -52,6 +53,32 @@ aic_registry_start() {
         return 1
     fi
     echo "[${tag}] registry ${AIC_REG_NAME} on 127.0.0.1:${AIC_REG_PORT}, storage ${storage}"
+}
+
+# _aic_registry_image LOGTAG STORAGE IMAGE
+# Make the registry IMAGE present in this node's dockerd without touching Docker
+# Hub when possible.
+_aic_registry_image() {
+    local tag="$1" storage="$2" image="$3" cache tmp
+    docker image inspect "${image}" >/dev/null 2>&1 && return 0
+    cache="${storage%/}/aic-images/$(aic_image_stem "${image}").tar"
+    if [[ -f "${cache}" ]]; then
+        echo "[${tag}] loading ${image} on $(hostname) from ${cache}"
+        docker load -i "${cache}" >/dev/null && return 0
+        echo "[${tag}] WARN: could not load ${cache}; pulling ${image} instead" >&2
+    fi
+    docker pull -q "${image}" >/dev/null \
+        || { echo "[${tag}] FATAL: could not pull ${image} on $(hostname), and no usable ${cache}" >&2; return 1; }
+    # The pull succeeded, so a failed save costs only the next node a pull.
+    # `docker save -o` creates the file 0600; other users share the storage.
+    tmp="${cache}.partial.$$"
+    if mkdir -p "${cache%/*}" && docker save -o "${tmp}" "${image}" \
+        && chmod 0644 "${tmp}" && mv -f "${tmp}" "${cache}"; then
+        echo "[${tag}] saved ${image} to ${cache}"
+    else
+        echo "[${tag}] WARN: could not save ${image} to ${cache}" >&2
+        rm -f "${tmp}" || echo "[${tag}] WARN: could not remove ${tmp}" >&2
+    fi
 }
 
 # aic_registry_stop LOGTAG [SHOW_LOG]

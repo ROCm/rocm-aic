@@ -104,8 +104,11 @@ RUN --mount=type=bind,source=patches/lmcache,target=/app/patches/lmcache/ \
     bash /tmp/apply-github-prs.sh \
         /app/LMCache \
         /app/patches/lmcache.pull-requests \
-        "${LMCACHE_REF}" && \
-    shopt -s nullglob && \
+        "${LMCACHE_REF}"
+
+WORKDIR /app/LMCache
+# hadolint ignore=SC3054,SC3044
+RUN shopt -s nullglob && \
     patches=(/app/patches/lmcache/*.patch) && \
     if [ "${#patches[@]}" -eq 0 ]; then \
         echo "ERROR: no patches found in /app/patches/lmcache/" >&2; exit 1; \
@@ -118,6 +121,7 @@ RUN --mount=type=bind,source=patches/lmcache,target=/app/patches/lmcache/ \
             exit 1; \
         fi; \
     done
+WORKDIR /
 
 COPY docker/lmcache/paged_cupy_memory_allocator.py \
      /app/LMCache/lmcache/v1/memory_allocators/paged_cupy_memory_allocator.py
@@ -139,7 +143,7 @@ COPY docker/lmcache/rocm_ipc_patch.py /tmp/rocm_ipc_patch.py
 RUN python3 /tmp/rocm_ipc_patch.py && rm /tmp/rocm_ipc_patch.py
 
 # Build the LMCache wheel with full ROCm headers available.
-# hadolint ignore=SC2046,SC3054
+WORKDIR /app/LMCache
 RUN --mount=type=cache,target=/root/.cache/pip \
     --mount=type=bind,from=base-wheels,source=/,target=/base-wheels \
     mkdir -p /wheels && \
@@ -158,6 +162,8 @@ RUN --mount=type=cache,target=/root/.cache/pip \
         python3 -m build --wheel \
           "$(test -f /tmp/build-constraints.txt && echo --dependency-constraints-txt=/tmp/build-constraints.txt)" \
           --outdir /wheels
+
+WORKDIR /
 
 # =============================================================================
 # Runtime build stage (FROM aic-base via --build-context base=oci-layout://...)
@@ -250,3 +256,9 @@ COPY --from=build_lmcache_wheel /wheels /
 
 # ----- 10. Runtime image (default target) ------------------------------------
 FROM build AS runtime
+
+# Asserts that the ZMQ port vLLM connects to is bound and that the HTTP API
+# answers /metrics with a 200.  Services that run this image with another
+# entrypoint (the coordinator) override the check in compose.
+HEALTHCHECK --interval=10s --timeout=5s --start-period=30s --retries=18 \
+    CMD ["python3", "-c", "import os, socket, urllib.request as u; socket.create_connection(('127.0.0.1', int(os.getenv('LMCACHE_PORT', '6555'))), 2).close(); u.build_opener(u.ProxyHandler({})).open('http://127.0.0.1:8080/metrics', timeout=3).close()"]

@@ -152,6 +152,9 @@ COPY patches/aiter/ /app/patches/aiter/
 # dropped by arch before they are ever attempted.  Revisit on an AITER bump.
 RUN test -n "$ROCM_ARCH" || { echo "ERROR: ROCM_ARCH is not set"; exit 1; }
 
+# WORKDIR creates /app/aiter even when the build is skipped; the clone below
+# targets that empty directory.
+WORKDIR /app/aiter
 # hadolint ignore=SC2039
 RUN --mount=type=cache,target=/root/.cache/pip \
     --mount=type=cache,target=/root/.cache/ccache \
@@ -159,16 +162,8 @@ RUN --mount=type=cache,target=/root/.cache/pip \
         echo "Skipping AITER build (VLLM_TARGET_DEVICE=empty)"; \
     else \
         mkdir -p /wheels && \
-        pip3 install --no-cache-dir \
-            "pandas==3.0.3" \
-            "psutil==7.2.2" \
-            "pyyaml==6.0.3" \
-            "einops==0.8.2" \
-            "pybind11==3.0.4" \
-            "ninja==1.13.0" \
-            "flydsl==0.2.4" && \
-        git clone --depth 1 --branch "${AITER_REF}" "${AITER_GIT_URL}" --recurse-submodules /app/aiter && \
-        cd /app/aiter && \
+        git clone --depth 1 --branch "${AITER_REF}" "${AITER_GIT_URL}" --recurse-submodules . && \
+        pip3 install --no-cache-dir -r requirements.txt && \
         _prebuild="${AITER_PREBUILD_KERNELS}" && \
         case "${ROCM_ARCH}" in \
             *\;*) [ "${_prebuild}" = "0" ] || \
@@ -207,6 +202,8 @@ RUN --mount=type=cache,target=/root/.cache/pip \
 # ROCM_ARCH names at least one gfx9 arch, and compiled for only those: in a mixed
 # list the other archs fall back to Triton attention.
 # Skipped when VLLM_TARGET_DEVICE=empty (CPU-only emulate build).
+# As with AITER, WORKDIR creates /app/flash-attention even when it is skipped.
+WORKDIR /app/flash-attention
 # hadolint ignore=SC2039
 RUN --mount=type=cache,target=/root/.cache/pip \
     --mount=type=cache,target=/root/.cache/ccache \
@@ -220,8 +217,7 @@ RUN --mount=type=cache,target=/root/.cache/pip \
     elif _fa_arch="$(_gfx9_archs "${ROCM_ARCH}")"; [ -n "${_fa_arch}" ]; then \
         git clone --depth 1 --branch "${FLASH_ATTN_REF}" \
             --recurse-submodules --shallow-submodules \
-            "${FLASH_ATTN_GIT_URL}" /app/flash-attention && \
-        cd /app/flash-attention && \
+            "${FLASH_ATTN_GIT_URL}" . && \
         GPU_ARCHS="${_fa_arch}" \
             PYTORCH_ROCM_ARCH="${_fa_arch}" \
             HIPFLAGS="-Wno-deprecated-attributes" \
@@ -245,6 +241,7 @@ RUN --mount=type=cache,target=/root/.cache/pip \
             python3 -c 'import importlib.util; spec = importlib.util.find_spec("aiter"); assert spec and spec.submodule_search_locations; print("AITER_PACKAGE=" + next(iter(spec.submodule_search_locations)))' 2>/dev/null || true; \
         } > /etc/rocm-aic-attention-backends.env; \
     fi
+WORKDIR /
 
 # ----- 3b. vLLM (built from source at pinned tag) --------------------------------
 
@@ -257,9 +254,9 @@ RUN sed -i 's/def _is_hip() -> bool:/def _is_hip() -> bool:\n    if VLLM_TARGET_
         grep -Fxq '    if VLLM_TARGET_DEVICE == "rocm":'
 
 # Apply every patch under patches/vllm/ in lexical order.
+WORKDIR /app/vllm
 # hadolint ignore=SC3054,SC3044,SC2098
-RUN cd /app/vllm && \
-    shopt -s nullglob && \
+RUN shopt -s nullglob && \
     patches=(/app/patches/vllm/*.patch) && \
     if [ "${#patches[@]}" -gt 0 ]; then \
         for patch in "${patches[@]}"; do \
@@ -280,7 +277,6 @@ RUN cd /app/vllm && \
 RUN --mount=type=cache,target=/root/.cache/pip \
     --mount=type=cache,target=/root/.cache/ccache \
     mkdir -p /wheels && \
-    cd /app/vllm && \
     printf 'torch>=2.13,<2.14\n' > /tmp/torch-constraints.txt && \
     if [ "${VLLM_TARGET_DEVICE}" = "empty" ]; then \
         pip3 install -r requirements/common.txt \
@@ -304,6 +300,7 @@ RUN --mount=type=cache,target=/root/.cache/pip \
     { find /usr/lib/python3 /usr/local/lib/python3.12 -name '__pycache__' -type d \
          -exec rm -rf {} + || \
       echo "WARNING: __pycache__ cleanup failed; see find's error above" >&2; }
+WORKDIR /
 
 # ----- 3b. vllm_emulator (llm-emu profile-driven emulation plugin) -----------
 ARG LLM_EMU_GIT_URL=https://github.com/AKafakA/llm-emu.git
@@ -376,9 +373,13 @@ RUN --mount=type=bind,from=build_vllm,source=/wheels/,target=/wheels-vllm \
 
 COPY --from=build_vllm /usr/local/bin/uv  /usr/local/bin/uv
 COPY --from=build_vllm /usr/local/bin/uvx /usr/local/bin/uvx
+COPY --from=build_vllm /usr/local/bin/vllm /usr/local/bin/vllm
 COPY --from=build_vllm /opt/llm-emu/      /opt/llm-emu/
 COPY --from=build_vllm /etc/rocm-aic-attention-backends.env \
                        /etc/rocm-aic-attention-backends.env
+# Normalise the shebang: pip writes an absolute interpreter path from the build
+# stage; #!/usr/bin/env python3 works on both the ROCm and CPU emulate bases.
+RUN sed -i '1s|.*|#!/usr/bin/env python3|' /usr/local/bin/vllm
 
 ARG VLLM_REF
 ARG AITER_REF
@@ -456,6 +457,11 @@ ENV PYTHONPATH=/opt/rocm/share/amd_smi
 COPY profiles/*.json /opt/llm-emu/profiles/
 ENTRYPOINT ["python3", "-m", "vllm.entrypoints.openai.api_server"]
 
+# /health is 200 only while the engine is alive (503 once it has died).  Port
+# 8000 is what the compose service serves on; the emulated model loads fast.
+HEALTHCHECK --interval=15s --timeout=5s --start-period=60s --retries=20 \
+    CMD ["curl", "-fsS", "--noproxy", "*", "-o", "/dev/null", "http://127.0.0.1:8000/health"]
+
 # ----- 3d. runtime: default target -------------------------------------------
 # vLLM's LMCacheMPConnector imports lmcache in the vLLM process, so this image
 # installs the same lmcache wheel aic-lmcache runs: one build, with its HIP
@@ -489,8 +495,21 @@ RUN --mount=type=bind,from=lmcache-wheels,target=/aic-wheels \
         cupy-cuda12x cufile-python cuda-pathfinder 2>/dev/null || true; } && \
     python3 -c 'import lmcache.integration.vllm.vllm_multi_process_adapter; print("lmcache MP adapter imports OK")'
 
+# Install make, needed by aiter
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
+    apt-get update && \
+    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+        make
+
 # For fastsafetensors' dlopen("libamdhip64.so").  Not in the shared `vllm`
 # stage: CI's emulate build swaps in a base with no ROCm.  Prepend, so
 # aic-base's NIXL/UCX entries survive.
 ENV LD_LIBRARY_PATH=/opt/rocm/lib${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}
 RUN python3 -c 'import ctypes; ctypes.CDLL("libamdhip64.so")'
+
+# Same probe as emulate.  start-period is sized for loading and compiling a
+# large model (gpt-oss-120b); the first success marks the container healthy
+# immediately, so a long period only delays unhealthy reporting.
+HEALTHCHECK --interval=30s --timeout=10s --start-period=15m --retries=5 \
+    CMD ["curl", "-fsS", "--noproxy", "*", "-o", "/dev/null", "http://127.0.0.1:8000/health"]
