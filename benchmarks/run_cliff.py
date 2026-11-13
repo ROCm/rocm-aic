@@ -602,6 +602,10 @@ async def amain(args: argparse.Namespace) -> int:
 
     out_path = Path(args.out).expanduser().resolve()
     out_path.parent.mkdir(parents=True, exist_ok=True)
+    # The arguments this sweep actually ran with, beside its CSV, so a report on
+    # the results describes the workload from the run rather than restating it.
+    out_path.with_suffix(".json").write_text(
+        json.dumps(vars(args), indent=2, sort_keys=True) + "\n")
     # Append-mode if user passes --append; default truncate.
     mode = "a" if args.append else "w"
     write_header = not (args.append and out_path.exists())
