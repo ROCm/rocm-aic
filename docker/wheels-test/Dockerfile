@@ -144,15 +144,6 @@ ENV LD_LIBRARY_PATH=/opt/rocm/lib${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}
 
 RUN python3 -c 'import ctypes; ctypes.CDLL("libamdhip64.so")'
 
-# Create a non-root user.  GPU device access (/dev/kfd, /dev/dri/renderD*) is
-# controlled by the render/video groups, not by being root; both are added here
-# so the container works with either device-access model.
-RUN groupadd -g 109 render 2>/dev/null || true && \
-    groupadd -g 44  video  2>/dev/null || true && \
-    useradd -m -u 1000 -G render,video aic
-
-USER aic
-
 ARG AIC_VERSION
 ARG AIC_BASE_IMAGE
 LABEL org.opencontainers.image.title="aic-vllm" \
@@ -230,12 +221,6 @@ ENV PYTHONUNBUFFERED=1 \
     SAFETENSORS_FAST_GPU=1 \
     HIP_FORCE_DEV_KERNARG=1 \
     LMCACHE_NIXL_USE_CUPY=1
-
-RUN groupadd -g 109 render 2>/dev/null || true && \
-    groupadd -g 44  video  2>/dev/null || true && \
-    useradd -m -u 1000 -G render,video aic
-
-USER aic
 
 ARG AIC_VERSION
 ARG AIC_BASE_IMAGE
