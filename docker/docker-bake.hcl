@@ -249,6 +249,13 @@ group "wheels" {
   targets = ["wheels-nixl", "wheels-lmcache", "wheels-vllm"]
 }
 
+# CPU-only emulate wheel set: vllm (empty device) + vllm_emulator.
+# No ROCm dependency; builds on python:3.12-bookworm for use on any x86_64 host.
+# Drive with: WHEELS_DIR=/tmp/emu docker buildx bake -f docker/docker-bake.hcl emulate-wheels
+group "emulate-wheels" {
+  targets = ["wheels-emulate"]
+}
+
 # ---- Targets -----------------------------------------------------------------
 
 target "base" {
@@ -371,6 +378,25 @@ target "wheels-vllm" {
   output     = ["type=local,dest=${WHEELS_DIR}/vllm"]
   cache-from = distinct(concat(cache_from(ROCM_ARCH, "vllm"), cache_from(ROCM_ARCH, "wheels-vllm")))
   cache-to   = cache_to(ROCM_ARCH, "wheels-vllm")
+}
+
+target "wheels-emulate" {
+  context    = "."
+  dockerfile = "docker/wheels-emulate/Dockerfile"
+  target     = "wheels"
+  tags       = []
+  output     = ["type=local,dest=${WHEELS_DIR}/emulate"]
+  args = {
+    AIC_VERSION     = AIC_VERSION
+    VLLM_GIT_URL    = VLLM_GIT_URL
+    VLLM_REF        = VLLM_REF
+    LLM_EMU_GIT_URL = LLM_EMU_GIT_URL
+    LLM_EMU_REF     = LLM_EMU_REF
+    BUILD_JOBS      = BUILD_JOBS
+  }
+  cache-from = (AIC_CACHE_DIR != "" ? ["type=local,src=${AIC_CACHE_DIR}/emulate"] : [])
+  cache-to   = (AIC_CACHE_DIR != "" ? ["type=local,dest=${AIC_CACHE_DIR}/emulate,mode=${AIC_CACHE_MODE},ignore-error=true"] : [])
+  secret     = tls_secret()
 }
 
 target "hsa-snoop" {

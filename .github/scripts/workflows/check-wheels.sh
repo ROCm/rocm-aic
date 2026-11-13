@@ -26,16 +26,18 @@ trap '_on_err "$?" "${PIPESTATUS[*]}" "$LINENO" "${FUNCNAME[*]-}"' ERR
 # exactly one wheel, and no other wheel may be present, so the release carries
 # exactly this set.  Edit this list when the `wheels` stages change.
 #
-#   vllm-*         docker/vllm/Dockerfile    build_vllm (VLLM_VERSION_OVERRIDE)
-#   amd_aiter-*    docker/vllm/Dockerfile    build_vllm
-#   flash_attn-*   docker/vllm/Dockerfile    build_vllm, arch lists with a gfx9*
-#   lmcache-*      docker/lmcache/Dockerfile build_lmcache_wheel
-#   nixl*rocm*     docker/base/Dockerfile    build_nixl (build-nixl.sh's own glob)
+#   vllm-*           docker/vllm/Dockerfile    build_vllm (VLLM_VERSION_OVERRIDE)
+#   amd_aiter-*      docker/vllm/Dockerfile    build_vllm
+#   flash_attn-*     docker/vllm/Dockerfile    build_vllm, arch lists with a gfx9*
+#   lmcache-*        docker/lmcache/Dockerfile build_lmcache_wheel
+#   nixl*rocm*       docker/base/Dockerfile    build_nixl (build-nixl.sh's own glob)
+#   vllm_emulator-*  docker/vllm/Dockerfile    build_vllm (llm-emu; pure Python)
 EXPECTED_WHEELS=(
     'vllm-*.whl'
     'amd_aiter-*.whl'
     'lmcache-*.whl'
     'nixl*rocm*.whl'
+    'vllm_emulator-*.whl'
 )
 # FlashAttention is built when at least one arch is gfx9* (docker/vllm/Dockerfile;
 # the same rule as has_gfx9() in docker/docker-bake.hcl, which also treats an

@@ -107,6 +107,7 @@ common=(
     amd_aiter-0.1.22.post1-cp312-cp312-linux_x86_64.whl
     lmcache-0.5.6-cp312-cp312-linux_x86_64.whl
     nixl_rocm-1.4.1-cp312-cp312-linux_x86_64.whl
+    vllm_emulator-0.0.1-py3-none-any.whl
 )
 fa=flash_attn-2.8.3.post1-cp312-cp312-linux_x86_64.whl
 fake_set "${tmp}/cdna" "${common[@]}" "${fa}"
