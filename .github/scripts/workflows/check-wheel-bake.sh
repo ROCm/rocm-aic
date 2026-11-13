@@ -95,6 +95,40 @@ sys.exit(1 if errors else 0)
 PY
 done
 
+echo "--- bake --print emulate-wheels"
+docker buildx bake -f "${BAKE_FILE}" --print emulate-wheels \
+    >"${tmp}/bake-emulate.json" 2>"${tmp}/bake-emulate.err" || {
+    cat "${tmp}/bake-emulate.err" >&2
+    exit 1
+}
+python3 - "${tmp}/bake-emulate.json" <<'PY'
+import json, sys
+
+with open(sys.argv[1]) as f:
+    d = json.load(f)
+errors = []
+wanted_group = ["wheels-emulate"]
+group = sorted(d["group"]["emulate-wheels"]["targets"])
+if group != wanted_group:
+    errors.append(f"emulate-wheels group is {group}, expected {wanted_group}")
+t = d["target"].get("wheels-emulate")
+if t is None:
+    errors.append("wheels-emulate: missing")
+else:
+    outs = t.get("output", [])
+    if t.get("target") != "wheels":
+        errors.append(f"wheels-emulate: builds stage {t.get('target')!r}, not wheels")
+    if len(outs) != 1 or outs[0].get("type") != "local" or not outs[0].get("dest"):
+        errors.append(f"wheels-emulate: output is {outs}, expected one type=local export")
+    df = t.get("dockerfile", "")
+    if "wheels-emulate" not in df:
+        errors.append(f"wheels-emulate: dockerfile is {df!r}, expected docker/wheels-emulate/Dockerfile")
+    print(f"  wheels-emulate: dockerfile={df} -> {outs}")
+for e in errors:
+    print(f"ERROR: {e}", file=sys.stderr)
+sys.exit(1 if errors else 0)
+PY
+
 echo "--- check-wheels.sh against fabricated wheel sets"
 fake_set() {
     local dir="$1" n
