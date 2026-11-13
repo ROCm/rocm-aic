@@ -369,9 +369,13 @@ COPY --from=build_vllm /usr/local/lib/python3.12/dist-packages/ \
                        /usr/local/lib/python3.12/dist-packages/
 COPY --from=build_vllm /usr/local/bin/uv  /usr/local/bin/uv
 COPY --from=build_vllm /usr/local/bin/uvx /usr/local/bin/uvx
+COPY --from=build_vllm /usr/local/bin/vllm /usr/local/bin/vllm
 COPY --from=build_vllm /opt/llm-emu/      /opt/llm-emu/
 COPY --from=build_vllm /etc/rocm-aic-attention-backends.env \
                        /etc/rocm-aic-attention-backends.env
+# Normalise the shebang: pip writes an absolute interpreter path from the build
+# stage; #!/usr/bin/env python3 works on both the ROCm and CPU emulate bases.
+RUN sed -i '1s|.*|#!/usr/bin/env python3|' /usr/local/bin/vllm
 
 ARG VLLM_REF
 ARG AITER_REF

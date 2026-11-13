@@ -3,7 +3,7 @@
 #
 # SPDX-License-Identifier: MIT
 
-"""Publish RocJITSU emulated benchmark history and HTML.
+"""Publish vLLM emul (llm-emu) benchmark history and HTML.
 
 Consumes one run's vLLM bench JSON files, merges them into a durable JSONL
 history, and renders a static GitHub Pages index.html.
@@ -227,7 +227,7 @@ def _build_html(history: list[dict[str, Any]]) -> str:
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>RocJITSU Emulated Performance</title>
+  <title>vLLM Emul Performance</title>
   <style>
     :root {{
       --bg: #0d1117;
@@ -271,10 +271,10 @@ def _build_html(history: list[dict[str, Any]]) -> str:
 </head>
 <body>
   <main>
-    <h1>RocJITSU Emulated Performance</h1>
+    <h1>vLLM Emul Performance</h1>
     <p class="lede">
-      Daily CPU-only replays of the current ROCm AIC emulator pack, published to GitHub Pages with durable history on <code>gh-pages</code>.
-      This is intended to track the upcoming RocJITSU performance envelope before dedicated hardware lanes are available.
+      Daily CPU-only replays of the current ROCm AIC llm-emu profile pack, published to GitHub Pages with durable history on <code>gh-pages</code>.
+      Tracks the vLLM emulator (llm-emu) performance envelope as a baseline before dedicated hardware lanes are available.
     </p>
     <p class="meta">
       Latest run: {html.escape(latest["run_date"])} · commit {latest_commit_html} · {latest_run_html}

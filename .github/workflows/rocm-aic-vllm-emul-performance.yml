@@ -2,17 +2,24 @@
 #
 # SPDX-License-Identifier: MIT
 #
-# Daily GitHub Pages publisher for the upcoming RocJITSU emulator lane.
+# Daily GitHub Pages publisher for the vLLM emul (llm-emu) performance lane.
 # Follows the rocm-ernic pattern: keep the durable performance record on
 # gh-pages, regenerate the static page from that published history, and retry
 # pushes if another publisher lands first.
 
-name: rocm-aic - RocJITSU Emulated Performance
+name: rocm-aic - vLLM Emul Performance
 
 on:
   schedule:
     - cron: '30 12 * * *'
   workflow_dispatch:
+    inputs:
+      publish:
+        description: 'Publish the results to GitHub Pages (false = artifact only)'
+        required: false
+        default: 'true'
+        type: choice
+        options: ['true', 'false']
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -27,11 +34,11 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 120
     env:
-      IMAGE_REF: rocm-aic:rocjitsu-emulated-pages
-      ROCJITSU_MODEL: Qwen/Qwen3-8B
-      ROCJITSU_PROFILE_PACK: /opt/llm-emu/profiles/MI300X-Qwen3-8B.json
-      ROCJITSU_SWEEP: 1024,128,1,12 1024,128,16,64 4096,128,8,32
-      ROCJITSU_PAGES_DIR: rocjitsu-emulated
+      IMAGE_REF: rocm-aic:vllm-emul-pages
+      VLLM_EMUL_MODEL: Qwen/Qwen3-8B
+      VLLM_EMUL_PROFILE_PACK: /opt/llm-emu/profiles/MI300X-Qwen3-8B.json
+      VLLM_EMUL_SWEEP: 1024,128,1,12 1024,128,16,64 4096,128,8,32
+      VLLM_EMUL_PAGES_DIR: vllm-emul-performance
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -53,6 +60,23 @@ jobs:
 
       - name: Read AIC_VERSION from VERSION file
         run: echo "AIC_VERSION=$(cat VERSION)" >> "$GITHUB_ENV"
+
+      # docker/vllm/Dockerfile takes its version pins (ROCM_VERSION, LMCACHE_REF,
+      # ...) as build args from docker-bake.hcl and has no default for some on
+      # purpose.  Bake cannot build this image itself: its emulate target pulls
+      # in aic-base and the lmcache wheels, a multi-hour ROCm build.  So take
+      # the args it resolves for that target and build on the CPU base below.
+      - name: Resolve the emulate build args from docker-bake.hcl
+        id: bake-args
+        env:
+          ROCM_ARCH: gfx942
+        run: |
+          set -euo pipefail
+          args="$(docker buildx bake -f docker/docker-bake.hcl --print emulate \
+                    | jq -r '.target.emulate.args | to_entries[] | "\(.key)=\(.value)"')"
+          [[ -n "${args}" ]] || { echo "::error::bake resolved no args for emulate"; exit 1; }
+          printf '%s\n' "${args}"
+          { echo 'list<<EOF'; printf '%s\n' "${args}"; echo 'EOF'; } >> "${GITHUB_OUTPUT}"
 
       - name: Write corp CA cert secret (AMD Zscaler proxy)
         id: cert
@@ -88,10 +112,7 @@ jobs:
           target: emulate
           load: true
           tags: ${{ env.IMAGE_REF }}
-          build-args: |
-            ROCM_ARCH=gfx942
-            VLLM_TARGET_DEVICE=empty
-            AIC_VERSION=${{ env.AIC_VERSION }}
+          build-args: ${{ steps.bake-args.outputs.list }}
           build-contexts: |
             base=oci-layout:///tmp/aic-base-emulate
           secrets: |
@@ -108,10 +129,7 @@ jobs:
           target: emulate
           load: true
           tags: ${{ env.IMAGE_REF }}
-          build-args: |
-            ROCM_ARCH=gfx942
-            VLLM_TARGET_DEVICE=empty
-            AIC_VERSION=${{ env.AIC_VERSION }}
+          build-args: ${{ steps.bake-args.outputs.list }}
           build-contexts: |
             base=oci-layout:///tmp/aic-base-emulate
           cache-from: type=gha,scope=aic-emulate
@@ -121,24 +139,25 @@ jobs:
         env:
           HF_TOKEN: ${{ secrets.AIC_HF_TOKEN }}
           HF_HOME: ${{ runner.temp }}/hf
-          ROCJITSU_OUT_DIR: ${{ runner.temp }}/rocjitsu-out
+          VLLM_EMUL_OUT_DIR: ${{ runner.temp }}/vllm-emul-out
           AIC_CONTAINER_USER: "0:0"
           AIC_CONTAINER_USERNAME: root
           AIC_CONTAINER_HOME: /root
         run: |
-          bash .github/scripts/run-rocjitsu-emulated-perf.sh
+          bash .github/scripts/run-vllm-emul-perf.sh
 
       - name: Render page and publish to gh-pages
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO_URL: https://github.com/${{ github.repository }}
+          PUBLISH: ${{ github.event_name != 'workflow_dispatch' || inputs.publish == 'true' }}
         run: |
           set -euo pipefail
 
           remote="https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
           pages="$(mktemp -d)"
-          stage="${RUNNER_TEMP}/rocjitsu-page"
-          history_rel="${ROCJITSU_PAGES_DIR}/history.jsonl"
+          stage="${RUNNER_TEMP}/vllm-emul-page"
+          history_rel="${VLLM_EMUL_PAGES_DIR}/history.jsonl"
 
           git config --global --add safe.directory '*' || true
           git config --global user.name "rocm-aic-ci"
@@ -157,34 +176,39 @@ jobs:
 
           for attempt in 1 2 3; do
             rm -rf "${stage}"
-            mkdir -p "${stage}/${ROCJITSU_PAGES_DIR}"
+            mkdir -p "${stage}/${VLLM_EMUL_PAGES_DIR}"
             cp "${pages}/${history_rel}" "${stage}/${history_rel}" 2>/dev/null || true
 
-            python3 .github/scripts/publish_rocjitsu_emulated_perf.py \
-              --results-dir "${RUNNER_TEMP}/rocjitsu-out/results" \
+            python3 .github/scripts/publish_vllm_emul_perf.py \
+              --results-dir "${RUNNER_TEMP}/vllm-emul-out/results" \
               --history "${stage}/${history_rel}" \
-              --output-dir "${stage}/${ROCJITSU_PAGES_DIR}" \
+              --output-dir "${stage}/${VLLM_EMUL_PAGES_DIR}" \
               --sha "${GITHUB_SHA}" \
               --run-id "${GITHUB_RUN_ID}" \
               --run-at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
               --repo-url "${REPO_URL}" \
-              --workflow-path ".github/workflows/rocm-aic-rocjitsu-emulated-performance.yml" \
-              --model "${ROCJITSU_MODEL}" \
-              --profile-pack "${ROCJITSU_PROFILE_PACK}"
+              --workflow-path ".github/workflows/rocm-aic-vllm-emul-performance.yml" \
+              --model "${VLLM_EMUL_MODEL}" \
+              --profile-pack "${VLLM_EMUL_PROFILE_PACK}"
 
-            mkdir -p "${pages}/${ROCJITSU_PAGES_DIR}"
-            rsync -a --delete --exclude '.git' "${stage}/${ROCJITSU_PAGES_DIR}/" "${pages}/${ROCJITSU_PAGES_DIR}/"
+            if [[ "${PUBLISH}" != true ]]; then
+              echo "publish=false: page rendered to ${stage}, not pushed"
+              exit 0
+            fi
+
+            mkdir -p "${pages}/${VLLM_EMUL_PAGES_DIR}"
+            rsync -a --delete --exclude '.git' "${stage}/${VLLM_EMUL_PAGES_DIR}/" "${pages}/${VLLM_EMUL_PAGES_DIR}/"
             touch "${pages}/.nojekyll"
 
-            git -C "${pages}" add "${ROCJITSU_PAGES_DIR}" .nojekyll
+            git -C "${pages}" add "${VLLM_EMUL_PAGES_DIR}" .nojekyll
             if git -C "${pages}" diff --cached --quiet; then
-              echo "rocjitsu page unchanged"
+              echo "vllm-emul page unchanged"
               exit 0
             fi
 
             git -C "${pages}" commit \
-              -m "perf: publish RocJITSU emulated metrics from ${GITHUB_SHA}" \
-              -m "Generated by rocm-aic-rocjitsu-emulated-performance.yml. [skip ci]"
+              -m "perf: publish vllm-emul metrics from ${GITHUB_SHA}" \
+              -m "Generated by rocm-aic-vllm-emul-performance.yml. [skip ci]"
 
             if git -C "${pages}" push origin HEAD:gh-pages; then
               echo "published"
@@ -202,10 +226,10 @@ jobs:
             fi
           done
 
-      - name: Upload RocJITSU page artifact
+      - name: Upload vLLM emul page artifact
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: rocjitsu-emulated-page-${{ github.run_id }}
-          path: ${{ runner.temp }}/rocjitsu-page/${{ env.ROCJITSU_PAGES_DIR }}
+          name: vllm-emul-page-${{ github.run_id }}
+          path: ${{ runner.temp }}/vllm-emul-page/${{ env.VLLM_EMUL_PAGES_DIR }}
           if-no-files-found: error
           retention-days: 30
