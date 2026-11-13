@@ -116,9 +116,10 @@
       <div class="card-icon">⛰️</div>
       <h2>Cliff Performance Dashboard</h2>
       <p>
-        Nightly KV-cache cliff benchmark results across all three storage arms:
-        VRAM-only, NVMe (GDS), and NFS-over-RDMA. Tracks throughput and
-        latency trends over time.
+        Nightly KV-cache cliff benchmark results across three arms: vLLM with
+        only its VRAM prefix cache, AIC with an LMCache DRAM L1 in front of an
+        NVMe L2, and AIC with a hipFile GDS slab on NVMe as its L1. Tracks
+        throughput and latency trends over time.
       </p>
     </a>
 
