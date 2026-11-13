@@ -98,15 +98,15 @@ COPY docker/scripts/apply-github-prs.sh /usr/local/bin/apply-github-prs.sh
 
 RUN git clone --depth 1 --branch "${LMCACHE_REF}" "${LMCACHE_GIT_URL}" /app/LMCache
 
+WORKDIR /app/LMCache
+
 RUN --mount=type=bind,source=patches/lmcache,target=/app/patches/lmcache/ \
     --mount=type=bind,source=docker/scripts/apply-github-prs.sh,target=/tmp/apply-github-prs.sh \
-    cd /app/LMCache && \
     bash /tmp/apply-github-prs.sh \
         /app/LMCache \
         /app/patches/lmcache.pull-requests \
         "${LMCACHE_REF}"
 
-WORKDIR /app/LMCache
 # hadolint ignore=SC3054,SC3044
 RUN shopt -s nullglob && \
     patches=(/app/patches/lmcache/*.patch) && \
@@ -121,6 +121,7 @@ RUN shopt -s nullglob && \
             exit 1; \
         fi; \
     done
+
 WORKDIR /
 
 COPY docker/lmcache/paged_cupy_memory_allocator.py \
@@ -151,7 +152,6 @@ RUN --mount=type=cache,target=/root/.cache/pip \
     (shopt -s nullglob; for f in /base-wheels/torch-*.whl; do \
         printf 'torch @ file://%s\n' "$f" > /tmp/build-constraints.txt; \
     done) && \
-    cd /app/LMCache && \
     PYTORCH_ROCM_ARCH="${ROCM_ARCH}" \
         TORCH_DONT_CHECK_COMPILER_ABI=1 \
         CXX=hipcc \

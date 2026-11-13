@@ -326,10 +326,12 @@ RUN git clone --filter=blob:none --no-checkout "${LLM_EMU_GIT_URL}" /app/llm-emu
             echo "The llm-emu pin (${LLM_EMU_REF}) likely drifted; rebase this patch against it." >&2; \
             exit 1; \
         fi; \
-    done && \
-    ( cd /app/llm-emu && \
-      sed -i 's/vllm==[0-9\.]\+/vllm/g' pyproject.toml && \
-      python3 -m build --no-isolation --wheel --outdir /wheels/ ) && \
+    done
+
+WORKDIR /app/llm-emu
+
+RUN sed -i 's/vllm==[0-9\.]\+/vllm/g' pyproject.toml && \
+    python3 -m build --no-isolation --wheel --outdir /wheels/ && \
     pip3 install --no-cache-dir --no-deps /wheels/llm_emu-*.whl && \
     python3 -c "import vllm_emulator.hooks.executor_hook, vllm_emulator.oracle, \
 vllm_emulator.profile.loader, vllm_emulator.profiler.trace_profiler; \
@@ -341,6 +343,8 @@ print('vllm_emulator subpackages import OK')" && \
     { find /usr/lib/python3 /usr/local/lib/python3.12 -name '__pycache__' -type d \
          -exec rm -rf {} + || \
       echo "WARNING: __pycache__ cleanup failed; see find's error above" >&2; }
+
+WORKDIR /
 
 # =============================================================================
 # wheels — scratch image holding just the wheels built above:

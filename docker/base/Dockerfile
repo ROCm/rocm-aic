@@ -139,10 +139,13 @@ RUN git clone --depth 1 --branch "${TRITON_REF}" "${TRITON_GIT_URL}" /app/triton
 
 # TRITON_OFFLINE_BUILD=1 to avoid downloading large CUDA binaries
 # However, it depends on a specific version of llvm+mlir that is not available in Ubuntu 24.04
+WORKDIR /app/triton
+
 RUN --mount=type=cache,target=/root/.triton/ \
-    cd /app/triton \
-    && TRITON_APPEND_CMAKE_ARGS="-DCMAKE_FIND_USE_CMAKE_ENVIRONMENT_PATH=FALSE" \
+    TRITON_APPEND_CMAKE_ARGS="-DCMAKE_FIND_USE_CMAKE_ENVIRONMENT_PATH=FALSE" \
        python3 -m build --wheel --no-isolation --outdir=/app/dist/triton
+
+WORKDIR /
 
 # =============================================================================
 # PyTorch source build — avoids ROCm 7.2 wheel artifacts on a ROCm 7.14+ host.
@@ -304,7 +307,7 @@ RUN --mount=type=cache,target=/root/.cache/pip \
     MAX_JOBS="${BUILD_JOBS:-$(nproc)}" \
     CMAKE_BUILD_PARALLEL_LEVEL="${BUILD_JOBS:-$(nproc)}" \
         python3 setup.py bdist_wheel --dist-dir=/app/dist/vision
-        python3 setup.py bdist_wheel --dist-dir=/app/vision/dist
+
 WORKDIR /
 
 # =============================================================================
