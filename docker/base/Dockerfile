@@ -556,7 +556,8 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
                       amdrocm-rccl${_mm}-${_arch}"; \
        done \
     && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends ${_arch_pkgs} \
-    && update-ca-certificates
+    && update-ca-certificates \
+    && update-alternatives --install /opt/rocm/core core "/opt/rocm/core-${_mm}" 1375129220
 
 RUN git config --global advice.detachedHead false
 RUN rm -f /usr/lib/python3.*/EXTERNALLY-MANAGED
@@ -597,6 +598,11 @@ RUN --mount=type=cache,target=/root/.cache/pip \
     { find /usr/local/lib/python3.12 -name '__pycache__' -type d \
          -exec rm -rf {} + || \
       echo "WARNING: __pycache__ cleanup failed; see find's error above" >&2; }
+
+# NIXL native libs and Python bindings — compiled in build_nixl against the
+# ROCm-full toolchain; only the output directories are needed at runtime.
+COPY --from=build_nixl /opt/nixl/ /opt/nixl/
+COPY --from=build_nixl /opt/rocnixl-ucx/ /opt/rocnixl-ucx/
 
 ENV PIP_ROOT_USER_ACTION=ignore \
     UV_LINK_MODE=copy \
