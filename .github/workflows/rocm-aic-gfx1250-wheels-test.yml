@@ -157,7 +157,16 @@ jobs:
           ls -lh "${WHEELS_DIR}"/*.whl
           # Fail in seconds on a wrong-arch set rather than after a VM boot.
           # -I so a planted module beside the wheels cannot be imported.
-          python3 -I tools/check-wheel-arch.py "${WHEELS_DIR}"/*.whl --expect "${ROCM_ARCH}"
+          #
+          # Every wheel but flash_attn on gfx1250: it is compiled for the gfx9*
+          # archs alone (docker/vllm/Dockerfile), since gfx1250 runs Triton
+          # attention.  Excluding the one exception keeps new wheels checked.
+          wheels=()
+          for w in "${WHEELS_DIR}"/*.whl; do
+            [[ ${ROCM_ARCH} == gfx1250 && ${w##*/} == flash_attn-* ]] && continue
+            wheels+=("${w}")
+          done
+          python3 -I tools/check-wheel-arch.py "${wheels[@]}" --expect "${ROCM_ARCH}"
 
       # -----------------------------------------------------------------------
       # Assemble the image set the rocjitsu target expects.
