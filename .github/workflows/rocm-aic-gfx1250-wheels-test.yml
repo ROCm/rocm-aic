@@ -260,7 +260,9 @@ jobs:
               .
             echo "::endgroup::"
           done
-          docker images --format '  {{.Repository}}:{{.Tag}}  {{.Size}}' | grep '^  aic-' | sort
+          # docker trims leading whitespace from --format output, so match
+          # at column 0; under pipefail a grep with no match fails the step.
+          docker images --format '{{.Repository}}:{{.Tag}}  {{.Size}}' | grep '^aic-' | sort
 
       # A cheap CPU-only gate before the hour-long VM path.
       #
