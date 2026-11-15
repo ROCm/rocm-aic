@@ -108,16 +108,19 @@ jobs:
           # (vllm 0.29.0 is not on PyPI so we cannot pip install it for deps;
           # read them from the installed wheel and skip GPU-specific packages).
           echo "Installing vllm runtime deps from wheel METADATA..."
+          # The heredoc body is indented to match this block scalar; YAML strips
+          # that indentation, so Python still sees it at column 0.  Flush-left
+          # lines would end the `run: |` block and invalidate the whole file.
           python3 - <<'PYDEPS'
-import importlib.metadata, subprocess, sys
-reqs = importlib.metadata.requires('vllm') or []
-skip = ('torch', 'triton', 'xformers', 'cuda', 'rocm', 'flash', 'aiter', 'extra ==')
-safe = [r.split(';')[0].strip() for r in reqs
-        if not any(s in r.lower() for s in skip)]
-if safe:
-    print('Installing vllm runtime deps:', safe)
-    subprocess.check_call([sys.executable, '-m', 'pip', 'install', '--quiet'] + safe)
-PYDEPS
+          import importlib.metadata, subprocess, sys
+          reqs = importlib.metadata.requires('vllm') or []
+          skip = ('torch', 'triton', 'xformers', 'cuda', 'rocm', 'flash', 'aiter', 'extra ==')
+          safe = [r.split(';')[0].strip() for r in reqs
+                  if not any(s in r.lower() for s in skip)]
+          if safe:
+              print('Installing vllm runtime deps:', safe)
+              subprocess.check_call([sys.executable, '-m', 'pip', 'install', '--quiet'] + safe)
+          PYDEPS
 
           echo "Testing vllm import..."
           python3 -c "
