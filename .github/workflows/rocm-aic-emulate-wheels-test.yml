@@ -98,11 +98,12 @@ jobs:
           echo "Installing vllm wheel (no-deps)..."
           pip install --quiet --no-deps "${WHEELS_DIR}"/vllm-*.whl
 
-          # vllm is now present as 0.29.0+empty; pip sees it as satisfying
-          # vllm_emulator's vllm requirement and only installs vllm_emulator's
-          # other (pure-Python) deps.
-          echo "Installing vllm_emulator wheel..."
-          pip install --quiet "${WHEELS_DIR}"/vllm_emulator-*.whl
+          # --no-deps: upstream llm-emu pins `vllm==0.18.1`, which the installed
+          # 0.29.0+empty does not satisfy, so a resolving install replaces vllm
+          # (and CPU torch) with the PyPI 0.18.1 CUDA build.  The pin is the
+          # wheel's only dependency; docker/vllm/Dockerfile skips it the same way.
+          echo "Installing vllm_emulator wheel (no-deps)..."
+          pip install --quiet --no-deps "${WHEELS_DIR}"/vllm_emulator-*.whl
 
           # Install vllm's own pure-Python runtime deps from its wheel METADATA
           # (vllm 0.29.0 is not on PyPI so we cannot pip install it for deps;
