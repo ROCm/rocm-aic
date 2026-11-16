@@ -187,8 +187,8 @@ def bake_sites(root: Path) -> list[Site]:
 def verify_bake(root: Path, names: set[str], literals: dict[str, str]) -> None:
     """Hold the HCL parse to what bake itself reports, where bake can say.
 
-    `--list=variables`, never `--print`: a resolved target carries
-    BLAS_CACHE_BUST, which is a timestamp.
+    `--list=variables`, not `--print`: it reports the variables themselves
+    rather than the targets they resolve into.
     """
     env = {key: value for key, value in os.environ.items() if key not in names}
     try:

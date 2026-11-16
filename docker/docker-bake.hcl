@@ -113,8 +113,9 @@ variable "AIC_UCX_FAST"   { default = "" }
 # first use; only valid for a single-arch build on a node with that GPU.
 variable "AITER_PREBUILD_KERNELS" { default = "0" }
 
-# The arch-specific ROCm BLAS layer in aic-base is rebuilt on every bake (the
-# value is a timestamp) unless this pins the cache key.
+# Cache key of the ROCm runtime-package layer in aic-base.  Change it (e.g.
+# BLAS_CACHE_BUST=$(date +%s)) to reinstall those packages; every image built
+# on aic-base is then re-assembled too.
 variable "BLAS_CACHE_BUST" { default = "" }
 
 # Layer cache: a registry ref (AIC_CACHE_REF) takes precedence over a GitHub
@@ -324,7 +325,7 @@ target "base" {
     CLR_REF             = CLR_REF
     TRITON_GIT_URL      = TRITON_GIT_URL
     TRITON_REF          = TRITON_REF
-    BLAS_CACHE_BUST     = BLAS_CACHE_BUST != "" ? BLAS_CACHE_BUST : timestamp()
+    BLAS_CACHE_BUST     = BLAS_CACHE_BUST
   }
   cache-from = cache_from(ROCM_ARCH, "base")
   cache-to   = cache_to(ROCM_ARCH, "base")

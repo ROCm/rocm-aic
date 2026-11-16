@@ -1148,9 +1148,7 @@ PROLOGUE
 # the NAME=VALUE arguments.  It also defines
 #   _aic_build_args <array> <bake target>
 # which fills <array> with that target's build args as --build-arg words, for
-# the `docker buildx build` calls.  BLAS_CACHE_BUST is dropped unless the
-# caller set it: bake's fallback is a timestamp, which would rebuild the base
-# runtime stage (and every image FROM it) on each of these raw builds.
+# the `docker buildx build` calls.
 #
 # Left alone: what a job passes per bake call (cache, TLS_CERT, WHEELS_DIR),
 # the image naming this script does itself, bake's derived tag, and ROCM_ARCH --
@@ -1180,8 +1178,6 @@ _aic_build_args() {
         || { echo "FATAL: python3 not found on build node \$(hostname): docker/scripts/aic-bake-env.sh needs it" >&2; return 1; }
     _aic_out="\$(bash '${AIC_DAY_DIR}/docker/scripts/aic-bake-env.sh' --build-args "\$2")" \\
         || { echo "FATAL: cannot resolve the build args of bake target \$2 on \$(hostname)" >&2; return 1; }
-    [[ -n "\${BLAS_CACHE_BUST:-}" ]] \\
-        || _aic_out="\$(grep -v '^--build-arg=BLAS_CACHE_BUST=' <<<"\${_aic_out}")" || :
     mapfile -t "\$1" <<<"\${_aic_out}"
 }
 REMOTE

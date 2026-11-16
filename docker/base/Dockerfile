@@ -503,10 +503,8 @@ RUN --mount=type=secret,id=tls_cert,required=false \
 # Step 1: ca-certificates must be installed before adding the HTTPS AMD repo,
 # otherwise apt-get update cannot verify the TLS connection and silently skips
 # the AMD packages.
-# BLAS_CACHE_BUST invalidates this layer whenever its value changes; bake passes
-# a timestamp (docker/docker-bake.hcl) so the arch-specific blas package is
-# installed fresh on every bake unless BLAS_CACHE_BUST is pinned there.  A raw
-# build that leaves it unset keeps the layer cached.
+# BLAS_CACHE_BUST invalidates this layer whenever its value changes, to
+# reinstall the ROCm runtime packages on demand.
 ARG BLAS_CACHE_BUST
 # hadolint ignore=DL3008
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \

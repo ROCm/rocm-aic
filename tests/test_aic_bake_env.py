@@ -182,7 +182,7 @@ class AicBakeEnvTest(unittest.TestCase):
                     [f"--build-arg={key}={value}" for key, value in sorted(args.items())],
                 )
         base = _run("--build-args", "base").stdout
-        self.assertRegex(base, r"(?m)^--build-arg=BLAS_CACHE_BUST=.+$")
+        self.assertIn("--build-arg=BLAS_CACHE_BUST=\n", base)
         emulate = _run("--build-args", "emulate").stdout
         self.assertIn("--build-arg=VLLM_TARGET_DEVICE=empty\n", emulate)
 

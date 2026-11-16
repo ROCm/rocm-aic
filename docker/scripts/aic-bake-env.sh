@@ -25,7 +25,7 @@
 #       `?=` so a value make already holds is never replaced.
 #   aic-bake-env.sh --build-args <target>
 #       One `--build-arg=KEY=VALUE` word per line for exactly that bake target's
-#       resolved args (empty ones and base's BLAS_CACHE_BUST included, as bake
+#       resolved args (empty ones included, as bake
 #       passes them), for raw `docker buildx build` callers:
 #           mapfile -t args < <(aic-bake-env.sh --build-args vllm)
 #           docker buildx build "${args[@]}" ...
@@ -41,7 +41,7 @@
 # The map behind --env/--get/--json/--make holds:
 #   - every build arg of the image targets (base vllm lmcache hsa-snoop emulate
 #     kvbench nvme-exporter rdma-exporter agentx) merged by name.
-#     BLAS_CACHE_BUST is left out (a timestamp), VLLM_TARGET_DEVICE is the vllm
+#     BLAS_CACHE_BUST is left out (a cache key, not a pin), VLLM_TARGET_DEVICE is the vllm
 #     target's (emulate overrides it to "empty"), and ROCM_ARCH is bake's
 #     ';'-joined form.  Any other arg two targets disagree on is an error.
 #   - IMAGE_TAG: the version tag shared by the stack images, without a name.

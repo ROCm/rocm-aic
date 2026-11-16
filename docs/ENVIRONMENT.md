@@ -167,7 +167,7 @@ it), whose defaults a test keeps equal to bake's.
 | `WHEELS_DIR` | `wheels-out`; `$(REPO_ROOT)/wheels-out` (`mk/local.mk`) | `docker/docker-bake.hcl` | Where the `wheels` bake group writes the pip wheels, one directory per wheel target; `make wheels` flattens them |
 | `VLLM_TARGET_DEVICE` | `rocm` | `docker/docker-bake.hcl` | vLLM build target: `rocm` compiles the GPU kernels, `empty` compiles none (the emulation image) |
 | `AIC_UCX_FAST` | (empty) | `docker/docker-bake.hcl` | `1` builds a minimal UCX; `make dist-build-fast` sets it |
-| `BLAS_CACHE_BUST` | (empty) | `docker/docker-bake.hcl` | Cache key of the arch-specific ROCm `BLAS` layer in the base image. Empty rebuilds that layer on every bake; set a fixed value to reuse it |
+| `BLAS_CACHE_BUST` | (empty) | `docker/docker-bake.hcl` | Cache key of the ROCm runtime-package layer in the base image. Change it to reinstall those packages, e.g. `BLAS_CACHE_BUST=$(date +%s) make build` |
 | `AITER_PREBUILD_KERNELS` | `0` | `docker/docker-bake.hcl` | Compile the AITER kernels into the vLLM image at build time instead of on first use. `1` most, `2` no backward/tune, `3` `fmha_v3` only. Single-arch builds only |
 | `TLS_CERT` | (empty) | `docker/docker-bake.hcl` | Corporate CA certificate passed to the build as a BuildKit secret, never stored in an image. A Slurm build falls back to `$HOME/certs/zscaler-ca.crt` when that file exists |
 | `AIC_BUILDX_BUILDER` | `aic-local` | `Makefile` | Name of the `docker-container` buildx builder used by `make build` and the Slurm build; ignored with the `docker` driver |
