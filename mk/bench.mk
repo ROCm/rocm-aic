@@ -1,15 +1,15 @@
 # Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
-# Benchmark targets: cliff, kvbench, stress, plot, emulate, profile capture.
+# Benchmark targets: cliff, kvbench, agentx, stress, plot, emulate, profile capture.
 #
 # The `-local` suffix on several targets below means "runs entirely on one
 # machine", as opposed to the multi-node build in
 # .slurm/run-build-distribute.sh.  It says nothing about Slurm: these are
 # routinely run as single-node Slurm jobs via the wrappers in .slurm/.
 
-.PHONY: cliff plot stress-grafana kvbench-build kvbench-up kvbench-logs kvbench-down \
-        cliff-kvbench-local test-emulate-local stress-emulate-local capture-profile-local \
+.PHONY: cliff plot kvbench-up kvbench-down \
+        cliff-kvbench-local test-emulate-local capture-profile-local \
         test-rocjitsu-local
 
 # Benchmarks run in aic-client (started by `make up`), on the aic bridge with
@@ -43,45 +43,15 @@ cliff: prep-dirs
 		--out "/logs/manual/results/$(notdir $(BENCH_OUT))"
 	@echo "Results written to $(BENCH_OUT)"
 
-stress-grafana: prep-dirs
-	@test -n "$(BENCH_MODEL)" || { \
-		echo "ERROR: set BENCH_MODEL or VLLM_MODEL to the served model name" >&2; exit 1; }
-	$(_wait_aic_client)
-	@echo "Stressing stack for Grafana — 'make endpoints' prints its URL  (ctrl-c to stop)"
-	@_ep="$$($(call aic_bridge_url,aic-vllm-gpu$(GPU),8000))" || exit 1; \
-	echo "  endpoint: $$_ep (via aic-client)"; \
-	while true; do \
-		docker exec aic-client \
-			python3 -u benchmarks/run_cliff.py \
-			--endpoint "$$_ep" \
-			--model "$(BENCH_MODEL)" \
-			--arm kvd_v2 \
-			--isl 1024 \
-			--shared-prefix-tokens 896 \
-			--concurrencies 1,2,4,8 \
-			--iters 5 \
-			--warmup-iters 1 \
-			--post-warmup-sleep-s 2 \
-			--out /logs/manual/results/stress-$$(date +%Y%m%d-%H%M%S).csv; \
-		echo "--- pass complete, restarting in 3s ---"; \
-		sleep 3; \
-	done
-
 plot: prep-dirs
 	$(PYTHON) "$(CURDIR)/benchmarks/plot_cliff.py" \
 		--input "$(BENCH_LOGDIR)/results/" \
 		--output-dir "$(BENCH_LOGDIR)/plots/"
 	@echo "Charts written to $(BENCH_LOGDIR)/plots/"
 
-kvbench-build: ensure-compose
-	$(COMPOSE) --profile kvbench build kvbench
-
 kvbench-up: ensure-compose prep-kvbench-dirs
 	KVBENCH_IMAGE_REF="$(KVBENCH_IMAGE_REF)" $(COMPOSE) --profile kvbench up --build -d kvbench client
 	@echo "KVBench is starting on http://aic-kvbench:$(KVBENCH_PORT) inside compose; benchmark it from aic-client"
-
-kvbench-logs:
-	$(COMPOSE) --profile kvbench logs -f kvbench
 
 kvbench-down:
 	$(COMPOSE) --profile kvbench down --remove-orphans
@@ -130,10 +100,6 @@ cliff-kvbench-local: ensure-compose prep-kvbench-dirs
 
 AIC_EMULATE_MODEL     ?= Qwen/Qwen3-8B
 AIC_EMULATE_READY_S   ?= 120
-AIC_EMULATE_STRESS_CONCUR ?= 1,4,8,16
-AIC_EMULATE_STRESS_ISL    ?= 512
-AIC_EMULATE_STRESS_OSL    ?= 128
-AIC_EMULATE_STRESS_ITERS  ?= 5
 
 test-emulate-local: ensure-compose prep-dirs
 	@echo "=== test-emulate-local: IMAGE_REF=$(IMAGE_REF) model=$(AIC_EMULATE_MODEL) ==="
@@ -186,36 +152,6 @@ test-emulate-local: ensure-compose prep-dirs
 	fi; \
 	$(COMPOSE) --profile emulate down --remove-orphans >/dev/null 2>&1; \
 	[ "$$rc" -eq 0 ] && echo "=== test-emulate-local PASSED ===" || { echo "=== test-emulate-local FAILED ===" >&2; exit 1; }
-
-stress-emulate-local: ensure-compose prep-dirs
-	@echo "=== stress-emulate-local: $(IMAGE_REF) model=$(AIC_EMULATE_MODEL) ==="
-	@mkdir -p "$(AIC_METRICS_DIR)"
-	IMAGE_REF="$(IMAGE_REF)" VLLM_MODEL="$(AIC_EMULATE_MODEL)" \
-	    PROM_UID="$$(id -u)" PROM_GID="$$(id -g)" \
-	    $(COMPOSE) --profile emulate --profile monitoring up -d vllm-emulator prometheus
-	@echo "Waiting for emulator endpoint ..."
-	@for _i in $$(seq 1 24); do \
-	    $(call aic_probe,aic-vllm-emulator,8000,/health) && break; \
-	    sleep 5; \
-	done
-	@echo "Running sweep: ISL=$(AIC_EMULATE_STRESS_ISL) OSL=$(AIC_EMULATE_STRESS_OSL) c=$(AIC_EMULATE_STRESS_CONCUR) x$(AIC_EMULATE_STRESS_ITERS)"
-	docker exec aic-vllm-emulator vllm bench serve \
-	    --host localhost --port 8000 \
-	    --model "$(AIC_EMULATE_MODEL)" \
-	    --dataset-name random \
-	    --random-input-len "$(AIC_EMULATE_STRESS_ISL)" \
-	    --random-output-len "$(AIC_EMULATE_STRESS_OSL)" \
-	    --num-prompts $$(($(AIC_EMULATE_STRESS_ITERS) * 64)) \
-	    --max-concurrency "$$(echo $(AIC_EMULATE_STRESS_CONCUR) | tr ',' '\n' | sort -rn | head -1)" \
-	    --percentile-metrics ttft,tpot,itl,e2el \
-	    --ignore-eos 2>&1 | tail -30
-	@echo ""
-	@echo "=== Key vLLM /metrics ==="
-	@$(aic_fetch) http://aic-vllm-emulator:8000/metrics | \
-	    grep -E "^vllm:(num_requests|e2e_request_latency|request_prompt_tokens|request_generation_tokens|gpu_cache_usage|request_success|request_failure)" | \
-	    grep -v "^#" | sort | head -30
-	@echo ""
-	@echo "Stack left running (Prometheus at http://aic-prometheus:9090 on the aic bridge). Use 'make down' to stop."
 
 # ---- Profile capture (local, requires /dev/kfd) --------------------------------
 

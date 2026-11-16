@@ -497,17 +497,17 @@ alloy, hsa-snoop or nvme-exporter, whatever the mode: the cluster's Docker authz
 plugin refuses their docker-socket mount, `privileged: true` and `SYS_ADMIN`
 respectively, and one refused container would fail the whole `compose up`.
 
-```bash
-# Exporters already on host (Ansible)
-make monitoring-up AIC_METRICS_DIR=/mnt/lmcache-nfs/metrics
+Monitoring is started automatically by all `up-*` targets. Use `AIC_EXPORTERS` to
+control which exporter profile is loaded (default `0` = Prometheus only):
 
+```bash
 # Safe mode (SPUR / authz-restricted)
-make monitoring-up AIC_METRICS_DIR=/mnt/lmcache-nfs/metrics AIC_EXPORTERS=safe
+make up-batch AIC_METRICS_DIR=/mnt/lmcache-nfs/metrics AIC_EXPORTERS=safe
 
 # Full fleet (bare node)
-make monitoring-up AIC_METRICS_DIR=/mnt/lmcache-nfs/metrics AIC_EXPORTERS=1
+make up-batch AIC_METRICS_DIR=/mnt/lmcache-nfs/metrics AIC_EXPORTERS=1
 
-make monitoring-down     # stop (TSDB retained)
+make down     # stop stack and monitoring (TSDB retained)
 ```
 
 ---

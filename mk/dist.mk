@@ -51,19 +51,17 @@ _KVBENCH_SUBMIT := $(_CLIFF_STRIP) sbatch --parsable \
 endif
 
 # ---- dist-build family -------------------------------------------------------
-# All nine targets are thin wrappers over run-build-distribute.sh.
-# dist-build-base/vllm/lmcache also require the corresponding Slurm subcommands
-# (build-base, build-vllm, build-lmcache) which are implemented in the script.
+# Thin wrappers over run-build-distribute.sh.
 
 .PHONY: dist-build dist-build-fast dist-build-emulate \
-        dist-wheels dist-build-base dist-build-vllm dist-build-lmcache \
+        dist-wheels \
         dist-build-exporters dist-build-monitoring dist-push \
         smoke-test smoke-test-fast tiny-test tiny-test-fast \
         emulate-test emulate-mp-test emulate-validate profile-capture \
         accuracy-test accuracy-test-fast accuracy-test-very-fast \
         install-ci-scripts prometheus-dump \
-        cliff-kvbench-submit cliff-submit cliff-kvd cliff-spur-l2 cliff-spur-l2-debug \
-        cliff-short cliff-short-fast cliff-long-64k cliff-long-128k
+        cliff-kvbench-submit cliff-submit cliff-kvd cliff-spur-l2 \
+        cliff-short cliff-short-fast
 
 dist-build:
 	"$(DIST)" bake
@@ -80,15 +78,6 @@ dist-wheels:
 
 dist-build-emulate:
 	"$(DIST)" build-emulate
-
-dist-build-base:
-	"$(DIST)" build-base
-
-dist-build-vllm:
-	"$(DIST)" build-vllm
-
-dist-build-lmcache:
-	"$(DIST)" build-lmcache
 
 dist-build-exporters:
 	"$(DIST)" build-exporters
@@ -224,23 +213,6 @@ cliff-spur-l2:
 	    AIC_CLIFF_TIME="$(if $(AIC_CLIFF_TIME),$(AIC_CLIFF_TIME),03:00:00)" \
 	    $(_CLIFF_RUN)
 
-cliff-spur-l2-debug:
-	@echo "cliff-spur-l2-debug: util=0.40, DRAM L1=0.1GB (forces L2 hits at c=1), per_client, c=1, 1 iter, DEBUG logging"
-	@echo "  check container-aic-vllm-kvd_nvme.log for 'vLLM hit is' to confirm ext_hit"
-	@cd "$(CURDIR)" && \
-	    BENCH_PREFIX_MODE=per_client \
-	    BENCH_CONCUR="$${BENCH_CONCUR:-1}" \
-	    BENCH_ITERS="$${BENCH_ITERS:-1}" \
-	    VLLM_MODEL="$${VLLM_MODEL:-Qwen/Qwen2.5-3B-Instruct}" \
-	    VLM_GPU_MEMORY_UTILIZATION="$(call _user_or,VLM_GPU_MEMORY_UTILIZATION,0.40)" \
-	    AIC_LOCAL_CPU=true \
-	    LMCACHE_MAX_LOCAL_CPU_SIZE="$(call _user_or,LMCACHE_MAX_LOCAL_CPU_SIZE,0.1)" \
-	    AIC_CLIFF_ARMS="$${AIC_CLIFF_ARMS:-nvme}" \
-	    VLLM_LOGGING_LEVEL=DEBUG \
-	    AIC_CLIFF_JOB_NAME=aic-cliff-l2-debug \
-	    AIC_CLIFF_TIME="$(if $(AIC_CLIFF_TIME),$(AIC_CLIFF_TIME),01:00:00)" \
-	    $(_CLIFF_RUN)
-
 cliff-short:
 	@echo "cliff-short: BENCH_CONCUR=$${BENCH_CONCUR:-1} BENCH_ITERS=$${BENCH_ITERS:-1}"
 	@cd "$(CURDIR)" && \
@@ -254,32 +226,3 @@ cliff-short-fast:
 	@$(MAKE) --no-print-directory cliff-short \
 	    AIC_ROCM_ARCH='$(AIC_FAST_ARCH)'
 
-cliff-long-64k:
-	@echo "cliff-long-64k: ISL=64000, YaRN x2 -> 65536, DRAM L1=64G, NVMe pool=262144, all 3 arms"
-	@cd "$(CURDIR)" && \
-	    VLLM_MODEL="$${VLLM_MODEL:-Qwen/Qwen2.5-3B-Instruct}" \
-	    VLM_GPU_MEMORY_UTILIZATION="$(call _user_or,VLM_GPU_MEMORY_UTILIZATION,0.12)" \
-	    VLM_YARN_FACTOR="$${VLM_YARN_FACTOR:-2.0}" VLM_MAX_MODEL_LEN="$(call _user_or,VLM_MAX_MODEL_LEN,65536)" \
-	    BENCH_ISL="$${BENCH_ISL:-64000}" BENCH_SHARED_TOK="$${BENCH_SHARED_TOK:-60000}" \
-	    BENCH_PREFIX_MODE="$${BENCH_PREFIX_MODE:-per_client}" BENCH_ITERS="$${BENCH_ITERS:-2}" \
-	    AIC_LOCAL_CPU="$${AIC_LOCAL_CPU:-true}" LMCACHE_MAX_LOCAL_CPU_SIZE="$${LMCACHE_MAX_LOCAL_CPU_SIZE:-64}" \
-	    LMCACHE_NVME_POOL="$(call _user_or,LMCACHE_NVME_POOL,262144)" AIC_NIXL_BUFFER_SIZE="$${AIC_NIXL_BUFFER_SIZE:-8589934592}" \
-	    LMCACHE_L1_SIZE_GB="$(call _user_or,LMCACHE_L1_SIZE_GB,320)" \
-	    AIC_CLIFF_JOB_NAME=aic-cliff-long64k \
-	    AIC_CLIFF_TIME="$(if $(AIC_CLIFF_TIME),$(AIC_CLIFF_TIME),16:00:00)" \
-	    $(_CLIFF_RUN)
-
-cliff-long-128k:
-	@echo "cliff-long-128k: ISL=128000, YaRN x4 -> 131072, DRAM L1=64G, NVMe pool=524288, all 3 arms"
-	@cd "$(CURDIR)" && \
-	    VLLM_MODEL="$${VLLM_MODEL:-Qwen/Qwen2.5-3B-Instruct}" \
-	    VLM_GPU_MEMORY_UTILIZATION="$(call _user_or,VLM_GPU_MEMORY_UTILIZATION,0.12)" \
-	    VLM_YARN_FACTOR="$${VLM_YARN_FACTOR:-4.0}" VLM_MAX_MODEL_LEN="$(call _user_or,VLM_MAX_MODEL_LEN,131072)" \
-	    BENCH_ISL="$${BENCH_ISL:-128000}" BENCH_SHARED_TOK="$${BENCH_SHARED_TOK:-126000}" \
-	    BENCH_PREFIX_MODE="$${BENCH_PREFIX_MODE:-per_client}" BENCH_ITERS="$${BENCH_ITERS:-1}" \
-	    AIC_LOCAL_CPU="$${AIC_LOCAL_CPU:-true}" LMCACHE_MAX_LOCAL_CPU_SIZE="$${LMCACHE_MAX_LOCAL_CPU_SIZE:-64}" \
-	    LMCACHE_NVME_POOL="$(call _user_or,LMCACHE_NVME_POOL,524288)" AIC_NIXL_BUFFER_SIZE="$${AIC_NIXL_BUFFER_SIZE:-8589934592}" \
-	    LMCACHE_L1_SIZE_GB="$(call _user_or,LMCACHE_L1_SIZE_GB,640)" \
-	    AIC_CLIFF_JOB_NAME=aic-cliff-long128k \
-	    AIC_CLIFF_TIME="$(if $(AIC_CLIFF_TIME),$(AIC_CLIFF_TIME),24:00:00)" \
-	    $(_CLIFF_RUN)

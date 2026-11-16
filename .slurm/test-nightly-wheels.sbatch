@@ -200,7 +200,7 @@ pip install --quiet --no-index --no-deps --ignore-installed /wheels/*.whl \
     || { note "FAIL pip install"; fail=1; }
 check "wheels shadow the image" python3 -c "
 import importlib.util, pathlib, sys
-mods = ['vllm', 'aiter', 'lmcache', 'nixl_rocm']
+mods = ['vllm', 'aiter', 'lmcache', 'nixl_rocm', 'vllm_emulator']
 if list(pathlib.Path('/wheels').glob('flash_attn-*.whl')):
     mods.append('flash_attn')
 bad = [m for m in mods
@@ -222,6 +222,12 @@ print('lmcache', getattr(lmcache, '__version__', '?'))
 "
 check "import nixl_rocm" python3 -c "import nixl_rocm; print('nixl_rocm OK')"
 check "import aiter" python3 -c "import aiter; print('aiter OK')"
+check "import vllm_emulator" python3 -c "
+import vllm_emulator
+from vllm_emulator.hooks.executor_hook import VllmEmulatorExecutorHook
+from vllm_emulator.oracle import Oracle
+print('vllm_emulator', getattr(vllm_emulator, '__version__', '?'), 'OK')
+"
 
 # Engine init: actually load the model on the GPU.  This is the key test --
 # it validates that the gfx950 GPU kernels in the wheel actually execute.

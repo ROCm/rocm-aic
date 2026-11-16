@@ -114,8 +114,8 @@ LMCACHE_NFS_POOL       ?= 1024
 # lmcache --max-gpu-workers: parallel STORE/RETRIEVE worker threads.  1 serializes
 # all clients onto one thread (AffinityThreadPool warns), so under concurrent load
 # stores back up behind L1->L2 eviction and trip vLLM's health check into degraded
-# mode.  Default 4 to sustain bench-serve / multi-client load; drop to 1 for a
-# single-client run to save GPU memory.
+# mode.  Default 4 for multi-client load; drop to 1 for a single-client run to
+# save GPU memory.
 LMCACHE_MAX_GPU_WORKERS ?= 4
 
 # ---- vLLM knobs ------------------------------------------------------------
@@ -212,6 +212,11 @@ export KVBENCH_PORT KVBENCH_CHUNK_SIZE KVBENCH_LOCAL_CPU_SIZE_GB
 $(foreach _v,$(_FRAMEWORK_ARGS),$(if $(strip $(value $(_v))),$(eval export $(_v))))
 
 comma := ,
+_AIC_B := \033[1m
+_AIC_X := \033[36m
+_AIC_G := \033[32m
+_AIC_D := \033[90m
+_AIC_R := \033[0m
 _COMPOSE_BIN := docker compose
 COMPOSE      := $(_FRAMEWORK_VERSION_ENV) DOCKER_BUILDKIT=1 $(_COMPOSE_BIN) -f "$(CURDIR)/docker/docker-compose.yml"
 COMPOSE_CACHE := $(COMPOSE) --profile cache
@@ -228,8 +233,6 @@ export KV_TRANSFER_ARG
 AIC_METRICS_DIR  ?= $(CURDIR)/logs/prometheus
 AIC_EXPORTERS    ?= 0
 AIC_GRAFANA_IMAGE ?= grafana/grafana:13.2.2
-MON_COMPOSE     := $(_COMPOSE_BIN) -f "$(CURDIR)/docker/docker-compose.yml"
-_MON_PROFILE    := --profile monitoring-base $(if $(filter 1,$(AIC_EXPORTERS)),--profile exporters,)
 export AIC_METRICS_DIR AIC_GRAFANA_IMAGE
 
 # ---- Fabric exporters (nvme_exporter / rdma_exporter) + hsa-snoop sidecar --
@@ -319,156 +322,211 @@ include mk/local.mk
 include mk/bench.mk
 include mk/dist.mk
 
-.PHONY: help
+.PHONY: help list-vars
 .DEFAULT_GOAL := help
 
 help:
-	@echo "rocm-aic aic-release — AMD Infinity Context inference stack + benchmarks"
-	@echo ""
-	@echo "Stack targets:"
-	@echo "  make ensure-compose    Install the docker compose v2 plugin if missing (user-local)"
-	@echo "  make build             Three-stage buildx build, no Slurm needed:"
-	@echo "                           1. aic-base:$(IMAGE_TAG) (torch + torchvision)"
-	@echo "                           2. $(VLLM_IMAGE_REF)"
-	@echo "                           3. $(LMCACHE_IMAGE_REF)"
-	@echo "                         Stages 2-3 inherit aic-base via an OCI build-context."
-	@echo "                         AIC_CACHE_DIR=$(if $(strip $(AIC_CACHE_DIR)),$(AIC_CACHE_DIR),<empty: no layer cache>)"
-	@echo "                           Set it to keep BuildKit layers across docker system prune."
-	@echo "                           Cached per arch under <dir>/$(_ARCH_SLUG)/; mode=$(AIC_CACHE_MODE)."
-	@echo "                         AIC_BUILDX_BUILDER=$(AIC_BUILDX_BUILDER)"
-	@echo "                         TMPDIR holds a multi-GB base OCI layout — keep it off tmpfs."
-	@echo "  make wheels            Export the nightly-release pip wheels to WHEELS_DIR=$(WHEELS_DIR):"
-	@echo "                           vllm + amd_aiter (+ flash_attn on CDNA), lmcache, and the"
-	@echo "                           single common nixl_rocm wheel built once in aic-base."
-	@echo "                         Builds no images; see docs/PIP_WHEELS.md."
-	@echo "  make up                Start lmcache + vllm (foreground, DRAM L1 + AIS_MT/NFS L2)"
-	@echo "  make up-batch          Start lmcache + vllm (background)"
-	@echo "  make up-dev            Start in dev mode: --enforce-eager skips CUDA graph capture (~60s faster, ~10% slower inference)"
-	@echo "  make up-gds-l1         Start with hipFile GDS NVMe slab as L1 (foreground)"
-	@echo "  make up-gds-l1-batch   Start with hipFile GDS NVMe slab as L1 (background)"
-	@echo "  make down              Stop and remove both containers"
-	@echo "  make logs              Follow logs from both containers"
-	@echo "  make logs-lmcache      lmcache container logs only"
-	@echo "  make logs-vllm         vllm container logs only"
-	@echo "  make ps                Container status"
-	@echo "  make endpoints         Print the host URL of every published service (Grafana)"
-	@echo "  make shell-lmcache     Exec bash into lmcache container"
-	@echo "  make shell-vllm        Exec bash into vllm container"
-	@echo "  make restart-vllm      Restart vllm only (lmcache + warm KV preserved)"
-	@echo "  make restart-lmcache   Restart lmcache only"
-	@echo ""
-	@echo "Benchmark targets:"
-	@echo "  make venv              Create/update repo-root .venv with bench+plot deps"
-	@echo "  make stress-grafana    Sustained KVD stress loop for Grafana: ISL=1024, c=1/2/4/8,"
-	@echo "                         5 iters per pass, repeats until ctrl-c — drives L1/L2 panels"
-	@echo "  make vllm-reset-test   Verify LMCache L1+L2 retrieval: small L1 (1GiB), NIXL POSIX L2,"
-	@echo "                         flood to overflow, POST /reset_prefix_cache, confirm L1+L2 hits"
-	@echo "  make cliff             Run KV-cache cliff benchmark, write CSV to $(BENCH_LOGDIR)/results/"
-	@echo "  make kvbench-build     Build the pinned KVBench image ($(KVBENCH_IMAGE_REF))"
-	@echo "  make kvbench-up        Start KVBench + client on the internal compose network"
-	@echo "  make kvbench-logs      Follow KVBench logs"
-	@echo "  make kvbench-down      Stop the KVBench compose profile"
-	@echo "  make cliff-kvbench-local  Start KVBench + client, wait for readiness, then run the kvbench cliff arm"
-	@echo "  make plot              Generate cliff PNG charts from $(BENCH_LOGDIR)/results/ CSVs"
-	@echo ""
-	@echo "Distribute / cliff targets (Slurm; wrap .slurm/ scripts + sbatch):"
-	@echo "  (dist-build/smoke-test submit via sbatch and log to logs/<job-id>/)"
-	@echo "  make dist-build        Build base, then vllm+lmcache in parallel (docker buildx bake) + fabric"
-	@echo "                         exporters on a Slurm build node, save tarballs"
-	@echo "  make dist-wheels       Like 'make wheels' but on a Slurm node (what the nightly wheels CI runs)"
-	@echo "  make dist-build-fast   Single-arch dev build (AIC_FAST_ARCH=$(AIC_FAST_ARCH)) -- faster iteration"
-	@echo "  make dist-build-emulate  Build the CPU-only emulation image (no GPU kernels compiled)"
-	@echo "  make dist-build-base   Build aic-base image (PyTorch + torchvision)"
-	@echo "  make dist-build-vllm   Build aic-vllm image (requires AIC_BUILD_CONTEXT_BASE and a"
-	@echo "                         'lmcache-wheels' build context -- see docker/vllm/Dockerfile)"
-	@echo "  make dist-build-lmcache  Build aic-lmcache image (requires aic-base)"
-	@echo "  make dist-build-exporters  Build ONLY the nvme/rdma exporter images (no main rebuild)"
-	@echo "  make dist-build-monitoring Pull + save Prometheus/amdgpu-exporter to AIC_IMAGE_DIR"
-	@echo "  make dist-push         Tag + push the built images (needs AIC_VLLM_PUSH_REF + AIC_LMCACHE_PUSH_REF)"
-	@echo "  make smoke-test        Load + smoke-test the image on a GPU+NVMe node"
-	@echo "  make smoke-test-fast   Smoke-test the single-arch dev image (AIC_FAST_ARCH=$(AIC_FAST_ARCH))"
-	@echo "  make tiny-test         End-to-end serve check (MP stack + tiny model, one completion)"
-	@echo "  make tiny-test-fast    Fast variant of tiny-test"
-	@echo "  make test-rocjitsu-local  Boot a QEMU VM with emulated gfx1250 (rocjitsu), build+load the gfx1250 image, run a test completion (requires /dev/kvm)"
-	@echo "                         '-local' = one machine, no cluster coordination — NOT 'not under Slurm'."
-	@echo "                         The usual way to run it is a Slurm job on a CPU-only node:"
-	@echo "                           sbatch .slurm/run-rocjitsu-cpu.sbatch     (the GPU is emulated in software)"
-	@echo "                         Reuses matching gfx1250 images if present; RJ_FORCE_BUILD=1 rebuilds."
-	@echo "                         Set AIC_CACHE_DIR to make a rebuild incremental."
-	@echo "  make test-emulate-local  Local emulate test (no SLURM): bring up vllm-emulator, assert completion + hook"
-	@echo "  make stress-emulate-local  Start emulator + Prometheus, run sustained sweep, print /metrics"
-	@echo "  make capture-profile-local  Local profile capture (requires /dev/kfd): real GPU serve + sweep -> pack"
-	@echo "  make emulate-test      Serve check of the emulation image on a CPU-only node (no GPU)"
-	@echo "  make emulate-mp-test   Emulation + the full LMCache MP recipe on a CPU-only node"
-	@echo "  make profile-capture   Capture an AMD profile pack from a REAL GPU serve (gfx942/gfx950)"
-	@echo "  make emulate-validate  Replay a captured pack on CPU and diff vs the real-hardware run"
-	@echo "  make accuracy-test     KV-integrity gate: differential lm_eval, two arms"
-	@echo "  make accuracy-test-fast"
-	@echo "                         The same gate, AIC_ROCM_ARCH pinned to AIC_FAST_ARCH"
-	@echo "  make accuracy-test-very-fast"
-	@echo "                         100-item cap per arm (~25 min); floor widened by 3x SE"
-	@echo "  make install-ci-scripts  Deploy .github/scripts/runners/*.sh to $(AIC_CI_LIB_DIR) (sudo if needed)"
-	@echo "  make cliff-kvbench-submit  sbatch a CPU-only KVBench cliff run (compose kvbench + client)"
-	@echo "  make cliff-submit      run the full 3-arm cliff sweep via sbatch, wait for it -> logs/<job-id>/"
-	@echo "  make cliff-kvd         run a focused KVD cliff (waits for the job): shared prefix, sparse c ladder (1,8,32,64,128,250)"
-	@echo "  make cliff-spur-l2     run the SPUR-tuned L2 cliff (waits for the job): per_client prefix, util=0.40, 8GB DRAM L1, c=1/8/32 (vram+nvme)"
-	@echo "  make cliff-spur-l2-debug  Like cliff-spur-l2 but c=1 only, tiny L1=0.1GB, DEBUG logging (diagnose ext_hit=0)"
-	@echo "  make cliff-short       run a 1-point cliff (concur=1, 1 iter) to smoke-test the flow"
-	@echo "  make cliff-short-fast  cliff-short on the single-arch image (AIC_FAST_ARCH), as built by dist-build-fast"
-	@echo "  make cliff-long-64k    run a 64k-ISL YaRN(x2) 3-arm sweep (pools sized for the working set)"
-	@echo "  make cliff-long-128k   run a 128k-ISL YaRN(x4) 3-arm sweep (extreme; big DRAM/slab pools)"
-	@echo "    Chain like the old run-this.sh:  make dist-build dist-push smoke-test"
-	@echo "    Pin a node: AIC_CLIFF_NODE=<node>   Narrow arms: AIC_CLIFF_ARMS=nvme (vram,nvme,gds)"
-	@echo "    Target another GFX: AIC_CLIFF_GFX=gfx950 (or AIC_CLIFF_CONSTRAINT=<site>&GFX90A)"
-	@echo "    Override sweep/model via env: BENCH_CONCUR=1,8,64 VLLM_MODEL=... make cliff-submit"
-	@echo "    AIC_CACHE_DIR=$(if $(strip $(AIC_CACHE_DIR)),$(AIC_CACHE_DIR),<empty: no cache>)  (shared BuildKit cache; empty disables)"
-	@echo ""
-	@echo "Export target:"
-	@echo "  make export            Tarball the working-tree sources (tracked + local edits)"
-	@echo "    Default: $(notdir $(EXPORT_TARBALL))"
-	@echo "    Override: make export EXPORT_TARBALL=/path/to/foo.tar.gz"
-	@echo ""
-	@echo "Metrics targets (Prometheus sidecar; scrapes vLLM/LMCache/exporters):"
-	@echo "  make monitoring-up     Start Prometheus, TSDB -> AIC_METRICS_DIR"
-	@echo "  make monitoring-down   Stop the metrics sidecar (TSDB retained)"
-	@echo "  make monitoring-logs   Follow Prometheus logs"
-	@echo "  make prometheus-dump   Submit SPUR job: full GPU stack → scrape all /metrics →"
-	@echo "                         Markdown reference doc on shared NFS (requires built image)"
-	@echo "    PROM_DUMP_OUT=$(if $(PROM_DUMP_OUT),$(PROM_DUMP_OUT),<AIC_IMAGE_DIR>/../prometheus-dump.md)"
-	@echo "    AIC_METRICS_DIR=$(AIC_METRICS_DIR)"
-	@echo "    AIC_EXPORTERS=$(AIC_EXPORTERS)  (1 = also launch node + AMD GPU exporters)"
-	@echo "    Only Grafana is published: 127.0.0.1 on a free ephemeral host port that"
-	@echo "    'make endpoints' prints (AIC_GRAFANA_PORT pins it, AIC_PUBLISH_ADDR=0.0.0.0"
-	@echo "    exposes it beyond loopback).  Everything else is reached by name on the aic"
-	@echo "    bridge, from aic-client or scripts/aic-endpoints.sh fetch."
-	@echo "    AIC_GRAFANA_IMAGE=$(AIC_GRAFANA_IMAGE)"
-	@echo ""
-	@echo "Required env:"
-	@echo "  HF_TOKEN       HuggingFace access token"
-	@echo "  ROCM_ARCH      GPU arch (detected: $(ROCM_ARCH))"
-	@echo ""
-	@echo "Optional build env:"
-	@echo "  TLS_CERT       Path to corporate CA cert (e.g. Zscaler); passed as a"
-	@echo "                 BuildKit secret — never baked into the image."
-	@echo "                 Example: make build TLS_CERT=/etc/ssl/certs/zscaler-ca.crt"
-	@echo "  BUILD_JOBS     Cap parallel compile jobs (default: all cores)."
-	@echo ""
-	@echo "Key storage vars (current):"
-	@echo "  NVME_DATA=$(NVME_DATA)  NFS_DATA=$(NFS_DATA)  GDS_SLAB_DATA=$(GDS_SLAB_DATA)"
-	@echo ""
-	@echo "Key LMCache vars (current):"
-	@echo "  LMCACHE_PORT=$(LMCACHE_PORT)  LMCACHE_L1_SIZE_GB=$(LMCACHE_L1_SIZE_GB) GiB"
-	@echo "  LMCACHE_MAX_GPU_WORKERS=$(LMCACHE_MAX_GPU_WORKERS)  (parallel store/retrieve threads; raise under concurrent load)"
-	@echo "  LMCACHE_NVME_POOL=$(LMCACHE_NVME_POOL)  LMCACHE_NFS_POOL=$(LMCACHE_NFS_POOL)"
-	@echo ""
-	@echo "Examples:"
-	@echo "  make build"
-	@echo "  make build ROCM_ARCH=gfx1201 AIC_CACHE_DIR=~/.cache/rocm-aic-buildx  # persistent layer cache"
-	@echo "  make build BUILD_JOBS=3          # cap parallelism on low-RAM hosts"
-	@echo "  make up HF_TOKEN=hf_... NVME_DATA=/mnt/nvme NFS_DATA=/mnt/nfs"
-	@echo "  make up-gds-l1 GDS_SLAB_DATA=/mnt/nvme HF_TOKEN=hf_..."
-	@echo "  make cliff BENCH_ARM=vram_only                  # endpoint resolved from the running vLLM"
-	@echo "  make cliff BENCH_ARM=kvbench BENCH_ENDPOINT=http://aic-kvbench:8000"
-	@echo "  make cliff-kvbench-local KVBENCH_MODEL=llama-3.1-8b BENCH_CONCUR=1,2"
-	@echo "  make plot"
-	@echo ""
+	@printf '$(_AIC_B)rocm-aic$(_AIC_R) — AMD Infinity Context inference stack + benchmarks  v$(AIC_VERSION)\n'
+	@printf '\n$(_AIC_B)$(_AIC_X)BUILD (local)$(_AIC_R)\n'
+	@printf '  $(_AIC_G)%-32s$(_AIC_R) %s\n' \
+	    'make build' 'Build aic-base → aic-vllm + aic-lmcache  (docker buildx bake)' \
+	    'make wheels' 'Export pip wheels (nixl, vllm, amd_aiter, lmcache) → WHEELS_DIR' \
+	    'make venv' 'Create/update .venv with bench+plot deps' \
+	    'make ensure-compose' 'Install docker compose v2 plugin if missing'
+	@printf '\n$(_AIC_B)$(_AIC_X)BUILD (Slurm/Spur)$(_AIC_R)\n'
+	@printf '  $(_AIC_G)%-32s$(_AIC_R) %s\n' \
+	    'make dist-build' 'Build aic-base then vllm + lmcache in parallel, save tarballs' \
+	    'make dist-build-fast' 'Single-arch (AIC_FAST_ARCH=$(AIC_FAST_ARCH)) dev build' \
+	    'make dist-build-emulate' 'Build CPU-only emulation image (no GPU kernels compiled)' \
+	    'make dist-build-exporters' 'Build only nvme/rdma exporter images (no main rebuild)' \
+	    'make dist-build-monitoring' 'Pull + save Prometheus/amdgpu-exporter to AIC_IMAGE_DIR' \
+	    'make dist-wheels' 'Export pip wheels on a Slurm node (nightly wheels CI)' \
+	    'make dist-push' 'Tag + push images (needs AIC_VLLM_PUSH_REF + AIC_LMCACHE_PUSH_REF)'
+	@printf '\n$(_AIC_B)$(_AIC_X)STACK (local)$(_AIC_R)\n'
+	@printf '  $(_AIC_G)%-32s$(_AIC_R) %s\n' \
+	    'make up' 'Start lmcache + vllm + monitoring (foreground, DRAM L1)' \
+	    'make up-batch' 'Start lmcache + vllm + monitoring (background)' \
+	    'make up-dev' 'Start in --enforce-eager mode (~60 s faster, ~10% slower inference)' \
+	    'make up-gds-l1' 'Start with hipFile GDS NVMe slab as L1 (foreground)' \
+	    'make up-gds-l1-batch' 'Start with hipFile GDS NVMe slab as L1 (background)' \
+	    'make down' 'Stop and remove all containers' \
+	    'make logs' 'Follow logs from all containers' \
+	    'make logs-lmcache' 'Follow lmcache logs only' \
+	    'make logs-vllm' 'Follow vllm logs only' \
+	    'make ps' 'Show container status' \
+	    'make endpoints' 'Print host URL of every published service (Grafana only)' \
+	    'make shell-lmcache' 'Exec bash into aic-lmcache container' \
+	    'make shell-vllm' 'Exec bash into aic-vllm-gpu$(GPU) container' \
+	    'make restart-vllm' 'Restart vllm only (lmcache + warm KV cache preserved)' \
+	    'make restart-lmcache' 'Restart lmcache'
+	@printf '\n$(_AIC_B)$(_AIC_X)BENCHMARK (local)$(_AIC_R)\n'
+	@printf '  $(_AIC_G)%-32s$(_AIC_R) %s\n' \
+	    'make vllm-reset-test' 'Verify LMCache L1+L2 KV retrieval end-to-end' \
+	    'make cliff' 'Run KV-cache cliff benchmark, write CSV to BENCH_LOGDIR/results/' \
+	    'make plot' 'Generate cliff PNG charts from BENCH_LOGDIR/results/ CSVs' \
+	    'make kvbench-up' 'Start KVBench + client on internal compose network' \
+	    'make kvbench-down' 'Stop the KVBench compose profile' \
+	    'make cliff-kvbench-local' 'Start KVBench, wait for readiness, run kvbench cliff arm'
+	@printf '\n$(_AIC_B)$(_AIC_X)EMULATE & PROFILE (local)$(_AIC_R)\n'
+	@printf '  $(_AIC_G)%-32s$(_AIC_R) %s\n' \
+	    'make test-emulate-local' 'Bring up vllm-emulator, assert completion + hook active' \
+	    'make capture-profile-local' 'Capture profile pack from real GPU serve (requires /dev/kfd)' \
+	    'make test-rocjitsu-local' 'Boot QEMU VM with emulated gfx1250, run vllm-reset-test'
+	@printf '\n$(_AIC_B)$(_AIC_X)TEST (Slurm)$(_AIC_R)\n'
+	@printf '  $(_AIC_G)%-32s$(_AIC_R) %s\n' \
+	    'make smoke-test' 'Load + smoke-test image on a GPU+NVMe Slurm node' \
+	    'make smoke-test-fast' 'Smoke-test single-arch (AIC_FAST_ARCH=$(AIC_FAST_ARCH)) image' \
+	    'make tiny-test' 'End-to-end serve check (MP stack, tiny model, one completion)' \
+	    'make tiny-test-fast' 'tiny-test pinned to AIC_FAST_ARCH' \
+	    'make emulate-test' 'Serve check on a CPU-only Slurm node (emulation image)' \
+	    'make emulate-mp-test' 'Emulation + full LMCache MP connector recipe on CPU node' \
+	    'make emulate-validate' 'Replay captured pack on CPU, diff vs real-hardware run' \
+	    'make profile-capture' 'Capture profile pack from real GPU serve on a Slurm node' \
+	    'make accuracy-test' 'KV-integrity gate: differential lm_eval, two arms' \
+	    'make accuracy-test-fast' 'accuracy-test pinned to AIC_FAST_ARCH' \
+	    'make accuracy-test-very-fast' '100-item cap per arm (~25 min); floor widened 3× SE' \
+	    'make prometheus-dump' 'Submit SPUR job: scrape all /metrics → Markdown reference doc'
+	@printf '\n$(_AIC_B)$(_AIC_X)CLIFF SWEEPS (Slurm)$(_AIC_R)\n'
+	@printf '  $(_AIC_G)%-32s$(_AIC_R) %s\n' \
+	    'make cliff-submit' 'Full 3-arm sweep (waits for job): vram+nvme+gds, c=1..250' \
+	    'make cliff-kvbench-submit' 'sbatch CPU-only KVBench cliff run' \
+	    'make cliff-kvd' 'Focused KVD cliff: shared prefix, sparse c=1,8,32,64,128,250' \
+	    'make cliff-spur-l2' 'SPUR L2 cliff: per_client, util=0.40, 8 GB DRAM L1, nvme only' \
+	    'make cliff-short' '1-point cliff (c=1, 1 iter) to smoke-test the job flow' \
+	    'make cliff-short-fast' 'cliff-short on the single-arch (AIC_FAST_ARCH) image'
+	@printf '\n$(_AIC_B)$(_AIC_X)UTILITIES$(_AIC_R)\n'
+	@printf '  $(_AIC_G)%-32s$(_AIC_R) %s\n' \
+	    'make export' 'Tarball working-tree sources (tracked + local edits)' \
+	    'make install-ci-scripts' 'Deploy .github/scripts/runners/*.sh to AIC_CI_LIB_DIR' \
+	    'make list-vars' 'Show current values of all configurable environment variables'
+	@printf '\n$(_AIC_B)$(_AIC_X)EXAMPLES$(_AIC_R)\n'
+	@printf '  %s\n' \
+	    'make build ROCM_ARCH=gfx1201 AIC_CACHE_DIR=~/.cache/aic-buildx' \
+	    'make build BUILD_JOBS=3   # cap parallelism on low-RAM hosts' \
+	    'make up VLLM_MODEL=Qwen/Qwen2.5-7B-Instruct HF_TOKEN=hf_... NVME_DATA=/mnt/nvme' \
+	    'make up-gds-l1 GDS_SLAB_DATA=/mnt/nvme HF_TOKEN=hf_...' \
+	    'make cliff BENCH_ARM=vram_only BENCH_MODEL=Qwen/Qwen2.5-7B-Instruct' \
+	    'make cliff-kvbench-local KVBENCH_MODEL=llama-3.1-8b BENCH_CONCUR=1,2' \
+	    'make dist-build dist-push smoke-test   # the nightly build chain'
+	@printf '\n'
+
+list-vars:
+	@printf '$(_AIC_B)rocm-aic environment variables$(_AIC_R)\n'
+	@printf '$(_AIC_D)Override any of these on the make command line or via .env.<cluster>$(_AIC_R)\n'
+	@printf '\n$(_AIC_B)$(_AIC_X)IMAGE / BUILD$(_AIC_R)\n'
+	@printf '  $(_AIC_G)%-38s$(_AIC_R) %s\n' \
+	    'VLLM_IMAGE_NAME' '$(VLLM_IMAGE_NAME)' \
+	    'LMCACHE_IMAGE_NAME' '$(LMCACHE_IMAGE_NAME)' \
+	    'VLLM_IMAGE_REF' '$(VLLM_IMAGE_REF)' \
+	    'LMCACHE_IMAGE_REF' '$(LMCACHE_IMAGE_REF)' \
+	    'ROCM_ARCH' '$(or $(ROCM_ARCH),<not detected>)' \
+	    'ROCM_VERSION' '$(ROCM_VERSION)' \
+	    'AIC_VERSION' '$(AIC_VERSION)' \
+	    'BUILD_JOBS' '$(or $(BUILD_JOBS),<nproc>)' \
+	    'BUILD_PROGRESS' '$(BUILD_PROGRESS)' \
+	    'BAKE_TARGETS' '$(BAKE_TARGETS)' \
+	    'BAKE_OUTPUT_FLAG' '$(BAKE_OUTPUT_FLAG)' \
+	    'AIC_FAST_ARCH' '$(AIC_FAST_ARCH)' \
+	    'WHEELS_DIR' '$(WHEELS_DIR)'
+	@printf '\n$(_AIC_B)$(_AIC_X)LAYER CACHE$(_AIC_R)\n'
+	@printf '  $(_AIC_G)%-38s$(_AIC_R) %s\n' \
+	    'AIC_BUILDX_BUILDER' '$(AIC_BUILDX_BUILDER)' \
+	    'AIC_CACHE_MODE' '$(AIC_CACHE_MODE)' \
+	    'AIC_CACHE_REF' '$(or $(AIC_CACHE_REF),<empty>)' \
+	    'AIC_CACHE_DIR' '$(or $(AIC_CACHE_DIR),<empty: no local cache>)'
+	@printf '\n$(_AIC_B)$(_AIC_X)CLUSTER / SITE$(_AIC_R)\n'
+	@printf '  $(_AIC_G)%-38s$(_AIC_R) %s\n' \
+	    'AIC_CLUSTER' '$(or $(AIC_CLUSTER),<not detected>)' \
+	    'AIC_ENV_FILE' '$(or $(AIC_ENV_FILE),<none>)' \
+	    'AIC_SPUR_CLUSTER' '$(AIC_SPUR_CLUSTER)' \
+	    'AIC_SPUR_PARTITION' '$(or $(AIC_SPUR_PARTITION),<not set>)' \
+	    'AIC_SHARED_NFS' '$(or $(AIC_SHARED_NFS),<not set>)' \
+	    'AIC_IMAGE_DIR' '$(or $(AIC_IMAGE_DIR),<not set>)'
+	@printf '\n$(_AIC_B)$(_AIC_X)STORAGE$(_AIC_R)\n'
+	@printf '  $(_AIC_G)%-38s$(_AIC_R) %s\n' \
+	    'NVME_DATA' '$(NVME_DATA)' \
+	    'NFS_DATA' '$(NFS_DATA)' \
+	    'GDS_SLAB_DATA' '$(or $(GDS_SLAB_DATA),<empty: GDS disabled>)' \
+	    'GPU' '$(GPU)'
+	@printf '\n$(_AIC_B)$(_AIC_X)HUGGING FACE$(_AIC_R)\n'
+	@printf '  $(_AIC_G)%-38s$(_AIC_R) %s\n' \
+	    'HF_HOME' '$(HF_HOME)' \
+	    'HF_TOKEN_FILE' '$(or $(HF_TOKEN_FILE),<not set>)' \
+	    'HF_TOKEN' '$(if $(HF_TOKEN),<set>,<not set>)'
+	@printf '\n$(_AIC_B)$(_AIC_X)VLLM$(_AIC_R)\n'
+	@printf '  $(_AIC_G)%-38s$(_AIC_R) %s\n' \
+	    'VLLM_MODEL' '$(or $(VLLM_MODEL),<not set>)' \
+	    'VLLM_REF' '$(or $(VLLM_REF),<bake.hcl default>)' \
+	    'TENSOR_PARALLEL_SIZE' '$(TENSOR_PARALLEL_SIZE)' \
+	    'VLM_GPU_MEMORY_UTILIZATION' '$(or $(VLM_GPU_MEMORY_UTILIZATION),<vLLM default>)' \
+	    'VLM_MAX_MODEL_LEN' '$(or $(VLM_MAX_MODEL_LEN),<vLLM default>)' \
+	    'VLM_MAX_NUM_BATCHED_TOKENS' '$(or $(VLM_MAX_NUM_BATCHED_TOKENS),<vLLM default>)' \
+	    'VLM_BLOCK_SIZE' '$(or $(VLM_BLOCK_SIZE),<vLLM default>)'
+	@printf '\n$(_AIC_B)$(_AIC_X)LMCACHE$(_AIC_R)\n'
+	@printf '  $(_AIC_G)%-38s$(_AIC_R) %s\n' \
+	    'LMCACHE_REF' '$(LMCACHE_REF)' \
+	    'LMCACHE_PORT' '$(LMCACHE_PORT)' \
+	    'LMCACHE_L1_SIZE_GB' '$(LMCACHE_L1_SIZE_GB) GiB' \
+	    'LMCACHE_MAX_GPU_WORKERS' '$(LMCACHE_MAX_GPU_WORKERS)' \
+	    'LMCACHE_NVME_POOL' '$(LMCACHE_NVME_POOL)' \
+	    'LMCACHE_NVME_SLOT_SIZE' '$(LMCACHE_NVME_SLOT_SIZE)' \
+	    'LMCACHE_NFS_POOL' '$(LMCACHE_NFS_POOL)' \
+	    'AIC_L2_BACKEND' '$(or $(AIC_L2_BACKEND),<not set>)'
+	@printf '\n$(_AIC_B)$(_AIC_X)BENCHMARK (cliff)$(_AIC_R)\n'
+	@printf '  $(_AIC_G)%-38s$(_AIC_R) %s\n' \
+	    'BENCH_ARM' '$(BENCH_ARM)' \
+	    'BENCH_ISL' '$(BENCH_ISL)' \
+	    'BENCH_SHARED_TOK' '$(BENCH_SHARED_TOK)' \
+	    'BENCH_CONCUR' '$(BENCH_CONCUR)' \
+	    'BENCH_ITERS' '$(BENCH_ITERS)' \
+	    'BENCH_ENDPOINT' '$(or $(BENCH_ENDPOINT),<running vLLM via aic bridge>)' \
+	    'BENCH_MODEL' '$(or $(BENCH_MODEL),$(or $(VLLM_MODEL),<not set>))' \
+	    'BENCH_LOGDIR' '$(BENCH_LOGDIR)'
+	@printf '\n$(_AIC_B)$(_AIC_X)EMULATE & PROFILE$(_AIC_R)\n'
+	@printf '  $(_AIC_G)%-38s$(_AIC_R) %s\n' \
+	    'AIC_EMULATE_MODEL' '$(AIC_EMULATE_MODEL)' \
+	    'AIC_EMULATE_READY_S' '$(AIC_EMULATE_READY_S) s' \
+	    'AIC_CAPTURE_MODEL' '$(AIC_CAPTURE_MODEL)' \
+	    'AIC_CAPTURE_DIR' '$(AIC_CAPTURE_DIR)' \
+	    'AIC_CAPTURE_GPU' '$(AIC_CAPTURE_GPU)' \
+	    'AIC_CAPTURE_GPU_UTIL' '$(AIC_CAPTURE_GPU_UTIL)'
+	@printf '\n$(_AIC_B)$(_AIC_X)ROCJITSU VM (test-rocjitsu-local)$(_AIC_R)\n'
+	@printf '  $(_AIC_G)%-38s$(_AIC_R) %s\n' \
+	    'RJ_ROCJITSU_ARCH' '$(RJ_ROCJITSU_ARCH)' \
+	    'RJ_MODEL' '$(RJ_MODEL)' \
+	    'RJ_IMAGE_REF' '$(RJ_IMAGE_REF)' \
+	    'RJ_IMAGE_PREFIX' '$(or $(RJ_IMAGE_PREFIX),<empty: build locally>)' \
+	    'RJ_FORCE_BUILD' '$(RJ_FORCE_BUILD)' \
+	    'RJ_VM_VCPUS / RJ_VM_MEM_MB' '$(RJ_VM_VCPUS) / $(RJ_VM_MEM_MB) MB' \
+	    'RJ_WORK_DIR' '$(RJ_WORK_DIR)' \
+	    'RJ_PROBE / RJ_PROBE_ONLY' '$(RJ_PROBE) / $(RJ_PROBE_ONLY)'
+	@printf '\n$(_AIC_B)$(_AIC_X)KVBENCH$(_AIC_R)\n'
+	@printf '  $(_AIC_G)%-38s$(_AIC_R) %s\n' \
+	    'KVBENCH_IMAGE_REF' '$(KVBENCH_IMAGE_REF)' \
+	    'KVBENCH_MODEL' '$(KVBENCH_MODEL)' \
+	    'KVBENCH_PORT' '$(KVBENCH_PORT)' \
+	    'KVBENCH_CHUNK_SIZE' '$(KVBENCH_CHUNK_SIZE)' \
+	    'KVBENCH_LOCAL_CPU_SIZE_GB' '$(KVBENCH_LOCAL_CPU_SIZE_GB) GB' \
+	    'KVBENCH_READY_S' '$(KVBENCH_READY_S) s'
+	@printf '\n$(_AIC_B)$(_AIC_X)MONITORING$(_AIC_R)\n'
+	@printf '  $(_AIC_G)%-38s$(_AIC_R) %s\n' \
+	    'AIC_METRICS_DIR' '$(AIC_METRICS_DIR)' \
+	    'AIC_EXPORTERS' '$(AIC_EXPORTERS)' \
+	    'AIC_GRAFANA_IMAGE' '$(AIC_GRAFANA_IMAGE)'
+	@printf '\n$(_AIC_B)$(_AIC_X)CLIFF (Slurm)$(_AIC_R)\n'
+	@printf '  $(_AIC_G)%-38s$(_AIC_R) %s\n' \
+	    'AIC_CLIFF_GFX' '$(or $(AIC_CLIFF_GFX),<empty>)' \
+	    'AIC_CLIFF_CONSTRAINT' '$(AIC_CLIFF_CONSTRAINT)' \
+	    'AIC_CLIFF_GPUS' '$(AIC_CLIFF_GPUS)' \
+	    'AIC_CLIFF_NODE' '$(or $(AIC_CLIFF_NODE),<any>)' \
+	    'AIC_CLIFF_TIME' '$(or $(AIC_CLIFF_TIME),<target default>)' \
+	    'AIC_CLIFF_ARMS' '$(or $(AIC_CLIFF_ARMS),all)'
+	@printf '\n$(_AIC_B)$(_AIC_X)LOGGING / EXPORT$(_AIC_R)\n'
+	@printf '  $(_AIC_G)%-38s$(_AIC_R) %s\n' \
+	    'LOG' '$(LOG)' \
+	    'PROM_DUMP_OUT' '$(or $(PROM_DUMP_OUT),<AIC_IMAGE_DIR>/../prometheus-dump.md)' \
+	    'PROM_DUMP_WAIT' '$(PROM_DUMP_WAIT) s' \
+	    'EXPORT_PREFIX' '$(EXPORT_PREFIX)' \
+	    'EXPORT_TARBALL' '$(notdir $(EXPORT_TARBALL))' \
+	    'AIC_CI_LIB_DIR' '$(AIC_CI_LIB_DIR)'
+	@printf '\n'

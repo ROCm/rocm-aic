@@ -5,16 +5,7 @@
 
 .PHONY: ensure-compose build wheels up up-batch up-dev up-gds-l1 up-gds-l1-batch \
         down logs logs-lmcache logs-vllm ps shell-lmcache shell-vllm \
-        restart-vllm restart-lmcache venv vllm-reset-test bench-serve
-
-# ---- Agentic serving benchmark -----------------------------------------------
-BENCH_DURATION   ?= 60     # minutes
-BENCH_TOKENS     ?= 256    # max output tokens per turn
-BENCH_POOL_SIZE  ?= 0      # 0 = full dataset; N = repeat within N convs (generates cache hits)
-BENCH_SESSIONS   ?= 4      # concurrent simulated user sessions
-BENCH_THINK_MIN  ?= 1.0    # min think-time between turns (seconds)
-BENCH_THINK_MAX  ?= 5.0    # max think-time between turns (seconds)
-BENCH_SEED       ?= 42     # random seed — change to select a different conversation pool
+        restart-vllm restart-lmcache venv vllm-reset-test
 
 ensure-compose:
 	@if docker compose version >/dev/null 2>&1; then \
@@ -192,9 +183,9 @@ venv:
 	@echo "venv ready at $(REPO_ROOT)/.venv"
 	@echo "Activate: source $(REPO_ROOT)/.venv/bin/activate"
 
-# vllm-reset-test and bench-serve drive the stack from aic-client (the
-# monitoring profile starts it), on the aic bridge, so they need no published
-# port.  Its /logs is the repo's logs/.
+# vllm-reset-test drives the stack from aic-client (the monitoring profile
+# starts it), on the aic bridge, so it needs no published port.
+# Its /logs is the repo's logs/.
 vllm-reset-test: check-hf-token prep-dirs
 	@echo "Starting LMCache L1+L2 retrieval test (L1=$(LMCACHE_L1_SIZE_GB)GiB) + NIXL POSIX L2..."
 	@mkdir -p "$(AIC_METRICS_DIR)"
@@ -242,29 +233,3 @@ vllm-reset-test: check-hf-token prep-dirs
 	    -e AIC_TEST_TIMEOUT -e AIC_TEST_SEED \
 	    aic-client python3 -u benchmarks/vllm_reset_test.py
 	@echo "Test complete. Run 'make down' to stop the stack."
-
-bench-serve: check-hf-token prep-dirs
-	@echo "Starting AIC multi-turn serving benchmark ($(BENCH_DURATION)min, $(BENCH_SESSIONS) sessions)..."
-	@echo "  Model:       $(VLLM_MODEL)"
-	@echo "  Sessions:    $(BENCH_SESSIONS)  Max tokens/turn: $(BENCH_TOKENS)"
-	@echo "  Think-time:  $(BENCH_THINK_MIN)–$(BENCH_THINK_MAX)s  Pool: $(BENCH_POOL_SIZE)"
-	@echo "  Results:     logs/manual/aic-bench-results/"
-	@mkdir -p "$(BENCH_LOGDIR)/aic-bench-results"
-	@docker inspect aic-client >/dev/null 2>&1 || { \
-	    echo "ERROR: aic-client container not running — run 'make up' first" >&2; exit 1; }
-	@_v="$$($(call aic_bridge_url,aic-vllm-gpu$(GPU),8000))" || { \
-	    echo "ERROR: vLLM is not running — run 'make up' first" >&2; exit 1; }; \
-	docker exec aic-client curl -sf "$$_v/health" >/dev/null || { \
-	    echo "ERROR: vLLM not healthy at $$_v — run 'make up' first" >&2; exit 1; }; \
-	docker exec aic-client python3 -u benchmarks/aic_bench_serve.py \
-	    --base-url "$$_v" \
-	    --model "$(VLLM_MODEL)" \
-	    --duration $(BENCH_DURATION) \
-	    --sessions $(BENCH_SESSIONS) \
-	    --max-tokens $(BENCH_TOKENS) \
-	    --think-min $(BENCH_THINK_MIN) \
-	    --think-max $(BENCH_THINK_MAX) \
-	    $(if $(filter-out 0,$(BENCH_POOL_SIZE)),--pool-size $(BENCH_POOL_SIZE),) \
-	    --seed $(BENCH_SEED) \
-	    --output /logs/manual/aic-bench-results
-	@echo "Benchmark complete. Run 'make down' to stop the stack."
