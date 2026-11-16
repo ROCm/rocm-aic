@@ -143,6 +143,7 @@ common=(
     nixl_rocm-1.4.1-cp312-cp312-linux_x86_64.whl
     torch-2.13.0+gitec5f3b1-cp312-cp312-linux_x86_64.whl
     torchvision-0.28.0+8fb8771-cp312-cp312-linux_x86_64.whl
+    triton-3.7.1-cp312-cp312-linux_x86_64.whl
     vllm-0.29.0+rocm-cp38-abi3-linux_x86_64.whl
 )
 fa=flash_attn-2.8.3.post1-cp312-cp312-linux_x86_64.whl
