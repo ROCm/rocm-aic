@@ -102,10 +102,10 @@ AIC_EMULATE_MODEL     ?= Qwen/Qwen3-8B
 AIC_EMULATE_READY_S   ?= 120
 
 test-emulate-local: ensure-compose prep-dirs
-	@echo "=== test-emulate-local: IMAGE_REF=$(IMAGE_REF) model=$(AIC_EMULATE_MODEL) ==="
+	@echo "=== test-emulate-local: image=$(or $(VLLM_IMAGE_REF),<compose default>) model=$(AIC_EMULATE_MODEL) ==="
 	@mkdir -p "$(AIC_METRICS_DIR)"
 	@PROM_UID="$$(id -u)" PROM_GID="$$(id -g)" \
-	    VLLM_MODEL="$(AIC_EMULATE_MODEL)" IMAGE_REF="$(IMAGE_REF)" \
+	    VLLM_MODEL="$(AIC_EMULATE_MODEL)" \
 	    $(COMPOSE) --profile emulate --profile monitoring up -d vllm-emulator prometheus
 	@echo "Waiting up to $(AIC_EMULATE_READY_S)s for /health (engine fully ready) ..."
 	@_ready=0; \
@@ -154,9 +154,12 @@ test-emulate-local: ensure-compose prep-dirs
 	[ "$$rc" -eq 0 ] && echo "=== test-emulate-local PASSED ===" || { echo "=== test-emulate-local FAILED ===" >&2; exit 1; }
 
 # ---- Profile capture (local, requires /dev/kfd) --------------------------------
+# Presets of capture-profile-local, sized for a 16 GB workstation card.  The
+# Slurm `profile-capture` job reads the same names with its own MI300X-sized
+# defaults (.slurm/run-build-distribute.sh); make does not export these, so the
+# job sees only a value the user set.
 
 AIC_CAPTURE_MODEL     ?= Qwen/Qwen2.5-3B-Instruct
-AIC_CAPTURE_HF_HOME   ?= $(HF_HOME)
 AIC_CAPTURE_DIR       ?= $(CURDIR)/profiles/captures
 AIC_CAPTURE_GPU       ?= $(GPU)
 AIC_CAPTURE_GPU_UTIL  ?= 0.85
@@ -166,23 +169,28 @@ AIC_CAPTURE_SWEEP ?= 128,16,1,12 128,16,8,64 512,64,1,8 512,64,4,32 \
                      1024,64,1,8 1024,64,4,32 1024,64,16,64 \
                      2048,64,1,6 2048,64,4,24 4096,64,1,4 4096,64,4,16
 AIC_CAPTURE_WARMUP_SKIP ?= 5
+# IMAGE_REF=<image> picks the image to capture from; the default is the
+# aic-vllm image `make build` tags for this ROCM_ARCH.
+_CAPTURE_IMAGE = $(or $(IMAGE_REF),$(VLLM_IMAGE_REF))
 
 capture-profile-local: prep-dirs
 	@test -e /dev/kfd || { echo "ERROR: /dev/kfd not found — GPU not accessible here"; exit 1; }
 	@test -n "$(ROCM_ARCH)" || { echo "ERROR: ROCM_ARCH empty" >&2; exit 1; }
+	@test -n "$(_CAPTURE_IMAGE)" || { \
+		echo "ERROR: set IMAGE_REF=<image> (docker buildx could not resolve the default)" >&2; exit 1; }
 	@mkdir -p "$(AIC_CAPTURE_DIR)/bench"
 	@stamp=$$(date +%Y%m%d-%H%M%S); \
 	model_tag=$$(echo '$(AIC_CAPTURE_MODEL)' | tr '/' '-'); \
 	trace_file="step-trace-$${model_tag}-$${stamp}.jsonl"; \
 	pack_name="$${model_tag}-$${stamp}.json"; \
-	echo "=== capture-profile-local: IMAGE_REF=$(IMAGE_REF) model=$(AIC_CAPTURE_MODEL) arch=$(ROCM_ARCH) ==="; \
+	echo "=== capture-profile-local: image=$(_CAPTURE_IMAGE) model=$(AIC_CAPTURE_MODEL) arch=$(ROCM_ARCH) ==="; \
 	echo "Trace -> $(AIC_CAPTURE_DIR)/$${trace_file}"; \
 	docker run -d --name aic-vllm-capture \
 	    --device /dev/kfd --device /dev/dri \
 	    --ipc host \
 	    --cap-add CAP_SYS_ADMIN --cap-add SYS_PTRACE \
 	    --security-opt seccomp=unconfined \
-	    -v "$(AIC_CAPTURE_HF_HOME):/hf" \
+	    -v "$(HF_HOME):/hf" \
 	    -v "$(AIC_CAPTURE_DIR):/trace" \
 	    -e HF_HOME=/hf -e HF_HUB_CACHE=/hf/hub \
 	    -e HF_TOKEN="$${HF_TOKEN:-}" -e HF_HUB_OFFLINE=0 \
@@ -192,7 +200,7 @@ capture-profile-local: prep-dirs
 	    -e PYTHONUNBUFFERED=1 \
 	    -e VLLM_EMULATOR_TRACE_STEP_CYCLE=1 \
 	    -e "VLLM_EMULATOR_STEP_TRACE_OUTPUT=/trace/$${trace_file}" \
-	    "$(IMAGE_REF)" \
+	    "$(_CAPTURE_IMAGE)" \
 	    --model "$(AIC_CAPTURE_MODEL)" \
 	    --host 0.0.0.0 --port 8000 \
 	    --max-model-len "$(AIC_CAPTURE_MAX_MODEL_LEN)" \
@@ -239,7 +247,7 @@ capture-profile-local: prep-dirs
 	echo "Building profile pack ..."; \
 	docker run --rm \
 	    -v "$(AIC_CAPTURE_DIR):/trace" \
-	    --entrypoint python3 "$(IMAGE_REF)" \
+	    --entrypoint python3 "$(_CAPTURE_IMAGE)" \
 	    -m vllm_emulator.profile.build_serving_profile_filtered \
 	    "/trace/$$trace_file" "/trace/$$pack_name" \
 	    --warmup-skip "$(AIC_CAPTURE_WARMUP_SKIP)" \
@@ -364,11 +372,19 @@ RJ_TEST_FLOOD       ?= 6
 RJ_TEST_ANCHOR_REPS ?= 6
 RJ_TEST_MAX_TOKENS  ?= 4
 RJ_TEST_TIMEOUT     ?= 1800
-# The built image tag for RJ_ROCJITSU_ARCH (computed at make time).
-_RJ_IMAGE_TAG    := $(shell ROCM_ARCH=$(RJ_ROCJITSU_ARCH) $(_FRAMEWORK_VERSION_ENV) \
-                        $(REPO_ROOT)/docker/scripts/aic-image-tag.sh)
-RJ_IMAGE_REF     ?= $(VLLM_IMAGE_NAME):$(_RJ_IMAGE_TAG)
-RJ_LMCACHE_IMAGE_REF ?= $(LMCACHE_IMAGE_NAME):$(_RJ_IMAGE_TAG)
+# What bake tags the stack for RJ_ROCJITSU_ARCH: the tag and the five image
+# refs, in the order of the --get below.  Asked of bake once, on first use, so
+# only the rocjitsu targets (and list-vars) pay for a second `bake --print`.
+# The host's IMAGE_TAG is dropped (it carries the HOST's ROCM_ARCH, and bake
+# would take it over its own derivation) and so is any registry prefix: these
+# are the bare local names compose resolves in the guest.
+_rj_bake = $(if $(_RJ_BAKE_DONE),,$(eval _RJ_BAKE := $(shell env -u IMAGE_TAG \
+    $(_FRAMEWORK_VERSION_ENV) ROCM_ARCH=$(call _shell_quote,$(RJ_ROCJITSU_ARCH)) AIC_IMAGE_PREFIX= \
+    $(REPO_ROOT)/docker/scripts/aic-bake-env.sh --get IMAGE_TAG VLLM_IMAGE_REF LMCACHE_IMAGE_REF \
+    NVME_EXPORTER_IMAGE_REF RDMA_EXPORTER_IMAGE_REF HSA_SNOOP_IMAGE_REF))$(eval _RJ_BAKE_DONE := 1))$(_RJ_BAKE)
+_RJ_IMAGE_TAG         = $(word 1,$(_rj_bake))
+RJ_IMAGE_REF         ?= $(word 2,$(_rj_bake))
+RJ_LMCACHE_IMAGE_REF ?= $(word 3,$(_rj_bake))
 
 # Every locally-built image the guest needs, in ONE place.  [2/6], [4b] and [6b]
 # all iterate this: they used to carry three hand-copied lists, and the hsa-snoop
@@ -376,14 +392,11 @@ RJ_LMCACHE_IMAGE_REF ?= $(LMCACHE_IMAGE_NAME):$(_RJ_IMAGE_TAG)
 # Still hand-maintained against compose -- `docker compose --profile cache
 # --profile monitoring config --images` is the check when adding a service.
 #
-# hsa-snoop is named from _RJ_IMAGE_TAG, not the global HSA_SNOOP_IMAGE: that
-# one is built from IMAGE_TAG, which carries the HOST's ROCM_ARCH.  [6d] runs
-# compose in the guest with IMAGE_TAG=_RJ_IMAGE_TAG, so the two agree only when
-# the caller happens to pass ROCM_ARCH=$(RJ_ROCJITSU_ARCH) -- which the sbatch
-# and the workflow both do, hiding the mismatch everywhere else.
-RJ_HSA_SNOOP_IMAGE_REF ?= $(HSA_SNOOP_IMAGE_NAME):$(_RJ_IMAGE_TAG)
+# hsa-snoop is the RJ_ROCJITSU_ARCH one, not the global HSA_SNOOP_IMAGE, which
+# carries the HOST's ROCM_ARCH; [6d] hands it to the guest's compose explicitly.
+RJ_HSA_SNOOP_IMAGE_REF ?= $(word 6,$(_rj_bake))
 RJ_LOCAL_IMAGES  = $(RJ_IMAGE_REF) $(RJ_LMCACHE_IMAGE_REF) \
-                   aic-nvme-exporter:local aic-rdma-exporter:local \
+                   $(wordlist 4,5,$(_rj_bake)) \
                    $(RJ_HSA_SNOOP_IMAGE_REF)
 
 # Pull the stack from a registry instead of building it, then retag to the bare
@@ -393,8 +406,6 @@ RJ_LOCAL_IMAGES  = $(RJ_IMAGE_REF) $(RJ_LMCACHE_IMAGE_REF) \
 RJ_IMAGE_PREFIX  ?=
 # Short alias the images were pushed under (AIC_IMAGE_EXTRA_TAG at push time).
 RJ_IMAGE_ALIAS   ?= $(RJ_ROCJITSU_ARCH)
-# lmcache pip version (strip leading 'v' from LMCACHE_REF for pip install)
-_LMCACHE_VER := $(patsubst v%,%,$(LMCACHE_REF))
 
 # The arch-tagged name the target expects aic-vllm under.  CI retags a
 # workflow_dispatch-supplied image to this so [2/6] counts it as present
@@ -438,6 +449,10 @@ test-rocjitsu-local: NFS_DATA  := $(RJ_WORK_DIR)/host-nfs-unused
 test-rocjitsu-local: prep-dirs
 	@test -c /dev/kvm || { echo "ERROR: /dev/kvm not found — KVM is required" >&2; exit 1; }
 	@test -n "$(HF_TOKEN)" || { echo "ERROR: HF_TOKEN is not set (needed for model download inside VM)" >&2; exit 1; }
+	@test -n "$(_RJ_IMAGE_TAG)" || { \
+		echo "ERROR: could not resolve the $(RJ_ROCJITSU_ARCH) image tag (docker buildx bake --print failed)" >&2; exit 1; }
+	@test -n "$(patsubst v%,%,$(strip $(LMCACHE_REF)))" || { \
+		echo "ERROR: LMCACHE_REF is unresolved: docker buildx bake is required, or pass LMCACHE_REF=<ref>" >&2; exit 1; }
 	@echo "=== test-rocjitsu-local: arch=$(RJ_ROCJITSU_ARCH) model=$(RJ_MODEL) image=$(RJ_IMAGE_REF) ==="
 	@echo "[1/6] Pulling CI images ..."
 	@docker pull -q "$(RJ_QEMU_IMAGE)"
@@ -652,10 +667,12 @@ test-rocjitsu-local: prep-dirs
 	         sudo docker build -q -t '$(RJ_IMAGE_REF)' -f - /tmp 2>&1" \
 	    2>&1 | sed 's/^/  [patch] /'; \
 	echo "  [6b.2] Pulling public monitoring images inside VM ..."; \
+	_cd="$(CURDIR)/docker/scripts/aic-compose-default.sh"; \
+	_imgs="$$("$$_cd" AIC_PROM_IMAGE) $$("$$_cd" AIC_GRAFANA_IMAGE)"; \
+	_imgs="$$_imgs $$("$$_cd" AIC_NODE_EXPORTER_IMAGE) $$("$$_cd" AIC_AMDGPU_EXPORTER_IMAGE)"; \
+	_imgs="$$_imgs $$("$$_cd" AIC_CLIENT_IMAGE)"; \
 	ssh $$_ssh_flags "$$_vmuser@localhost" \
-	    "for img in prom/prometheus:v3.14.0 grafana/grafana:13.2.2 \
-	                quay.io/prometheus/node-exporter:v1.12.1 \
-	                rocm/device-metrics-exporter:v1.5.2 python:3.12 \
+	    "for img in $$_imgs \
 	                grafana/loki:3.5.0 grafana/alloy:v1.8.3 python:3.12-slim; do \
 	         sudo docker image inspect \$$img >/dev/null 2>&1 \
 	             && echo \"  \$$img already present\" \
@@ -710,7 +727,6 @@ test-rocjitsu-local: prep-dirs
 	  '# [6a], so it exists, but report its state up front: a failure here is' \
 	  '# otherwise a bare "mkdir: Permission denied" with no path to go on.' \
 	  'ls -ld $(RJ_NVME_MOUNT) /tmp/lmcache-nfs /tmp/aic-logs /tmp/hf-home || true' \
-	  'export IMAGE_NAME=$(VLLM_IMAGE_NAME) LMCACHE_IMAGE_NAME=$(LMCACHE_IMAGE_NAME)' \
 	  "export IMAGE_TAG='$(_RJ_IMAGE_TAG)' VLLM_MODEL='$(RJ_MODEL)'" \
 	  'export VLM_LOAD_FORMAT=auto VLM_MAX_MODEL_LEN=$(RJ_MAX_MODEL_LEN) VLM_GPU_MEMORY_UTILIZATION=0.85' \
 	  'export VLM_MAX_NUM_BATCHED_TOKENS=$(RJ_MAX_BATCHED_TOKENS)' \
@@ -737,7 +753,9 @@ test-rocjitsu-local: prep-dirs
 	  '# set -e is on, so a bare `make ...; echo rc=$$?` never reaches the echo:' \
 	  '# the script aborts on make failure and the caller only ever sees "rc=?".' \
 	  '# Run it in an if so the real status is always reported.' \
-	  'if make -C /rj-share/repo vllm-reset-test VLM_READY_RETRIES=$(RJ_READY_RETRIES); then' \
+	  '# The image refs go on the command line: the guest make would otherwise' \
+	  '# ask its own docker buildx, and leaves compose on :latest without one.' \
+	  'if make -C /rj-share/repo vllm-reset-test VLM_READY_RETRIES=$(RJ_READY_RETRIES) VLLM_IMAGE_REF=$(RJ_IMAGE_REF) LMCACHE_IMAGE_REF=$(RJ_LMCACHE_IMAGE_REF) HSA_SNOOP_IMAGE=$(RJ_HSA_SNOOP_IMAGE_REF); then' \
 	  '    echo vllm_reset_test_rc=0' \
 	  'else' \
 	  '    echo vllm_reset_test_rc=$$?' \
@@ -767,8 +785,7 @@ test-rocjitsu-local: prep-dirs
 	fi; \
 	echo "  Cleaning up compose stack ...";\
 	ssh $$_ssh_flags "$$_vmuser@localhost" \
-	    "make -C /rj-share/repo down IMAGE_NAME=$(VLLM_IMAGE_NAME) \
-	      LMCACHE_IMAGE_NAME=$(LMCACHE_IMAGE_NAME) LOG=/tmp/aic-logs \
+	    "make -C /rj-share/repo down LOG=/tmp/aic-logs \
 	      BENCH_LOGDIR=/tmp/aic-logs/manual 2>/dev/null" \
 	    2>/dev/null || true; \
 	echo "  Cleaning up containers ..."; \

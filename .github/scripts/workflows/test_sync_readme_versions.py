@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import hashlib
+import os
 import re
 import shutil
 import subprocess
@@ -21,36 +22,25 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
 SCRIPT_NAME = "sync-readme-versions.py"
 
 
-class ReadmeSyncTest(unittest.TestCase):
-    # Maps each ARG name to its owning Dockerfile (relative to docker/).
-    _ARG_DOCKERFILE_REL: dict[str, str] = {
-        "ROCM_VERSION": "base/Dockerfile",
-        "ROCM_BASE_IMAGE": "base/Dockerfile",
-        "PYTORCH_REF": "base/Dockerfile",
-        "PYTORCH_SERIES": "base/Dockerfile",
-        "VLLM_REF": "vllm/Dockerfile",
-        "AITER_REF": "lmcache/Dockerfile",
-        "LMCACHE_REF": "lmcache/Dockerfile",
-        "NIXL_REF": "lmcache/Dockerfile",
-        "HSA_SNOOP_REF": "lmcache/Dockerfile",
-    }
+def _have_buildx() -> bool:
+    try:
+        return subprocess.run(
+            ["docker", "buildx", "version"], check=False, capture_output=True
+        ).returncode == 0
+    except OSError:
+        return False
 
+
+@unittest.skipUnless(_have_buildx(), "docker buildx is not available")
+class ReadmeSyncTest(unittest.TestCase):
     def setUp(self) -> None:
         self.temp_dir = tempfile.TemporaryDirectory()
         self.root = Path(self.temp_dir.name)
         (self.root / ".github" / "scripts" / "workflows").mkdir(parents=True)
-        for subdir in ("base", "vllm", "lmcache"):
-            (self.root / "docker" / subdir).mkdir(parents=True)
+        (self.root / "docker" / "scripts").mkdir(parents=True)
         shutil.copy2(Path(__file__).with_name(SCRIPT_NAME), self.script)
-        for subdir, src_name in (
-            ("base", "base/Dockerfile"),
-            ("vllm", "vllm/Dockerfile"),
-            ("lmcache", "lmcache/Dockerfile"),
-        ):
-            shutil.copy2(
-                REPO_ROOT / "docker" / src_name,
-                self.root / "docker" / subdir / "Dockerfile",
-            )
+        for rel in ("docker/docker-bake.hcl", "docker/scripts/aic-bake-env.sh", "VERSION"):
+            shutil.copy2(REPO_ROOT / rel, self.root / rel)
         shutil.copy2(REPO_ROOT / "README.md", self.readme)
         shutil.copytree(REPO_ROOT / "patches", self.root / "patches")
 
@@ -61,51 +51,42 @@ class ReadmeSyncTest(unittest.TestCase):
     def script(self) -> Path:
         return self.root / ".github" / "scripts" / "workflows" / SCRIPT_NAME
 
-    def _dockerfile_for_arg(self, name: str) -> Path:
-        rel = self._ARG_DOCKERFILE_REL.get(name, "lmcache/Dockerfile")
-        return self.root / "docker" / rel
-
     @property
-    def dockerfile(self) -> Path:
-        # Backward compat: tests that call self.dockerfile directly get lmcache/Dockerfile
-        # (which holds most ARGs).  Tests that need a specific Dockerfile use _dockerfile_for_arg.
-        return self.root / "docker" / "lmcache" / "Dockerfile"
+    def bake_file(self) -> Path:
+        return self.root / "docker" / "docker-bake.hcl"
 
     @property
     def readme(self) -> Path:
         return self.root / "README.md"
 
-    def run_sync(self, mode: str) -> subprocess.CompletedProcess[str]:
+    def run_sync(
+        self, mode: str, env: dict[str, str] | None = None
+    ) -> subprocess.CompletedProcess[str]:
         return subprocess.run(
             [sys.executable, str(self.script), mode],
             cwd=self.root,
             check=False,
             capture_output=True,
             text=True,
+            env={**os.environ, **(env or {})},
         )
 
-    def replace_dockerfile(self, old: str, new: str, name: str = "") -> None:
-        df = self._dockerfile_for_arg(name) if name else self.dockerfile
-        text = df.read_text(encoding="utf-8")
-        self.assertIn(old, text)
-        df.write_text(text.replace(old, new, 1), encoding="utf-8")
-
-    def docker_arg(self, name: str) -> tuple[str, str]:
-        df = self._dockerfile_for_arg(name)
+    def bake_default(self, name: str) -> tuple[str, str]:
         pattern = re.compile(
-            rf"^[ \t]*(?i:ARG)[ \t]+{re.escape(name)}=(.*)$",
+            rf'^variable "{re.escape(name)}"[ \t]*\{{[ \t]*default = "(.*)"[ \t]*\}}$',
             re.MULTILINE,
         )
-        matches = list(pattern.finditer(df.read_text(encoding="utf-8")))
-        self.assertEqual(len(matches), 1, f"fixture must have exactly one ARG {name}=")
-        return matches[0].group(0), matches[0].group(1).strip()
+        matches = list(pattern.finditer(self.bake_file.read_text(encoding="utf-8")))
+        self.assertEqual(len(matches), 1, f"fixture must have exactly one {name} default")
+        return matches[0].group(0), matches[0].group(1)
 
-    def set_docker_arg(self, name: str, value: str, *, keyword: str = "ARG") -> None:
-        line, _ = self.docker_arg(name)
-        df = self._dockerfile_for_arg(name)
-        text = df.read_text(encoding="utf-8")
-        self.assertIn(line, text)
-        df.write_text(text.replace(line, f"{keyword} {name}={value}", 1), encoding="utf-8")
+    def set_bake_default(self, name: str, value: str) -> None:
+        line, _ = self.bake_default(name)
+        text = self.bake_file.read_text(encoding="utf-8")
+        self.bake_file.write_text(
+            text.replace(line, f'variable "{name}" {{ default = "{value}" }}', 1),
+            encoding="utf-8",
+        )
 
     def replace_readme(self, old: str, new: str) -> None:
         text = self.readme.read_text(encoding="utf-8")
@@ -152,9 +133,9 @@ class ReadmeSyncTest(unittest.TestCase):
         self.assertEqual(self.readme_hash(), before)
 
     def test_stale_readme_prints_diff_and_repair_command(self) -> None:
-        _, current = self.docker_arg("VLLM_REF")
+        _, current = self.bake_default("VLLM_REF")
         stale_ref = f"{current}-fixture-stale"
-        self.set_docker_arg("VLLM_REF", stale_ref)
+        self.set_bake_default("VLLM_REF", stale_ref)
         before = self.readme_hash()
         result = self.run_sync("--check")
         self.assertEqual(result.returncode, 1)
@@ -179,11 +160,11 @@ class ReadmeSyncTest(unittest.TestCase):
             "HSA_SNOOP_REF": "v98.76.57-fixture",
         }
         for name, value in new_values.items():
-            _, current = self.docker_arg(name)
+            _, current = self.bake_default(name)
             if current == value:
                 value = value.replace("98", "97", 1)
                 new_values[name] = value
-            self.set_docker_arg(name, value)
+            self.set_bake_default(name, value)
 
         first = self.run_sync("--write")
         self.assertEqual(first.returncode, 0, first.stderr)
@@ -223,42 +204,22 @@ class ReadmeSyncTest(unittest.TestCase):
         self.assertEqual(second.returncode, 0, second.stderr)
         self.assertEqual(self.readme_hash(), first_hash)
 
-    def test_duplicate_missing_and_empty_args_fail_without_write(self) -> None:
-        line, value = self.docker_arg("VLLM_REF")
-        vllm_df = self._dockerfile_for_arg("VLLM_REF")
-        cases = (
-            (
-                line,
-                f"{line}\nARG VLLM_REF={value}-duplicate",
-                "found 2 default(s)",
-            ),
-            (line, "", "found 0 default(s)"),
-            (line, "ARG VLLM_REF=", "0 non-empty"),
-        )
-        for old, new, expected in cases:
-            with self.subTest(expected=expected):
-                original = vllm_df.read_text(encoding="utf-8")
-                self.replace_dockerfile(old, new, name="VLLM_REF")
-                self.assert_write_fails_without_change(expected)
-                vllm_df.write_text(original, encoding="utf-8")
+    def test_empty_pin_fails_without_write(self) -> None:
+        self.set_bake_default("VLLM_REF", "")
+        self.assert_write_fails_without_change("bake resolved no value for VLLM_REF")
 
-    def test_arg_keyword_is_case_insensitive(self) -> None:
-        _, value = self.docker_arg("VLLM_REF")
-        self.set_docker_arg("VLLM_REF", value, keyword="arg")
-        result = self.run_sync("--check")
+    def test_unparseable_bake_file_fails_without_write(self) -> None:
+        with self.bake_file.open("a", encoding="utf-8") as bake:
+            bake.write('variable "FIXTURE_BROKEN" {\n')
+        self.assert_write_fails_without_change("aic-bake-env.sh --json failed")
+
+    def test_environment_override_does_not_change_the_readme(self) -> None:
+        _, current = self.bake_default("VLLM_REF")
+        result = self.run_sync("--check", env={"VLLM_REF": f"{current}-fixture-env"})
         self.assertEqual(result.returncode, 0, result.stderr)
 
-    def test_arg_continuation_is_rejected_without_write(self) -> None:
-        line, _ = self.docker_arg("VLLM_REF")
-        self.replace_dockerfile(line, "ARG VLLM_REF=fixture.\\\ncontinued", name="VLLM_REF")
-        self.assert_write_fails_without_change("must use a single-line default")
-
-    def test_unresolved_base_image_variable_is_rejected(self) -> None:
-        self.set_docker_arg("ROCM_BASE_IMAGE", "example.invalid/${UNRESOLVED}:tag")
-        self.assert_write_fails_without_change("contains an unresolved variable")
-
     def test_unsupported_base_image_contract_is_rejected(self) -> None:
-        self.set_docker_arg(
+        self.set_bake_default(
             "ROCM_BASE_IMAGE",
             "rocm/dev-ubuntu-22.04:${ROCM_VERSION}-full",
         )
@@ -290,11 +251,11 @@ class ReadmeSyncTest(unittest.TestCase):
         )
         for arg_name, badge_name, color, base_url, ref, escaped_ref in cases:
             with self.subTest(arg_name=arg_name):
-                _, current = self.docker_arg(arg_name)
+                _, current = self.bake_default(arg_name)
                 if current == ref:
                     ref = f"{ref}-alt"
                     escaped_ref = f"{escaped_ref}--alt"
-                self.set_docker_arg(arg_name, ref)
+                self.set_bake_default(arg_name, ref)
                 result = self.run_sync("--write")
                 self.assertEqual(result.returncode, 0, result.stderr)
                 rendered = self.readme.read_text(encoding="utf-8")
@@ -311,8 +272,8 @@ class ReadmeSyncTest(unittest.TestCase):
                 self.assertEqual(self.run_sync("--check").returncode, 0)
 
     def test_patch_metadata_is_derived(self) -> None:
-        _, vllm_ref = self.docker_arg("VLLM_REF")
-        _, lmcache_ref = self.docker_arg("LMCACHE_REF")
+        _, vllm_ref = self.bake_default("VLLM_REF")
+        _, lmcache_ref = self.bake_default("LMCACHE_REF")
         vllm_patch = self.add_unique_patch("vllm", "zz-readme-sync-fixture.patch")
         lmcache_patch = self.add_unique_patch("lmcache", "zz-readme-sync-fixture.patch")
         nixl_patch = self.add_unique_patch("nixl", "zz-readme-sync-fixture.patch")

@@ -20,6 +20,9 @@ on:
     branches: [main]
     paths:
       - 'docker/vllm/Dockerfile'
+      - 'docker/emulate-base.Dockerfile'
+      - 'docker/docker-bake.hcl'
+      - 'docker/scripts/aic-bake-env.sh'
       - 'patches/vllm/**'
       - 'patches/llm-emu/**'
       - 'docker/wheels-emulate/Dockerfile'
@@ -36,8 +39,8 @@ jobs:
     timeout-minutes: 90
 
     env:
-      IMAGE_NAME: rocm-aic
-      IMAGE_REF: rocm-aic:emulate-test
+      # The name compose's vllm-emulator service reads.
+      VLLM_IMAGE_REF: rocm-aic:emulate-test
       VLLM_MODEL: Qwen/Qwen3-8B
       VLLM_EMULATOR_PROFILE_PACK: /opt/llm-emu/profiles/MI300X-Qwen3-8B.json
       AIC_EMULATE_READY_TIMEOUT: 96   # x5s = up to 8 min
@@ -64,8 +67,8 @@ jobs:
         run: echo "AIC_VERSION=$(cat VERSION)" >> "$GITHUB_ENV"
 
       # docker/vllm/Dockerfile takes its version pins (ROCM_VERSION, LMCACHE_REF,
-      # ...) as build args from docker-bake.hcl and has no default for some on
-      # purpose.  Bake cannot build this image itself: its emulate target pulls
+      # ...) as build args from docker-bake.hcl and has no defaults of its own.
+      # Bake cannot build this image itself: its emulate target pulls
       # in aic-base and the lmcache wheels, a multi-hour ROCm build.  So take
       # the args it resolves for that target and build on the CPU base below.
       - name: Resolve the emulate build args from docker-bake.hcl
@@ -74,11 +77,14 @@ jobs:
           ROCM_ARCH: gfx942
         run: |
           set -euo pipefail
-          args="$(docker buildx bake -f docker/docker-bake.hcl --print emulate \
-                    | jq -r '.target.emulate.args | to_entries[] | "\(.key)=\(.value)"')"
+          args="$(docker/scripts/aic-bake-env.sh --build-args emulate | sed 's/^--build-arg=//')"
           [[ -n "${args}" ]] || { echo "::error::bake resolved no args for emulate"; exit 1; }
           printf '%s\n' "${args}"
           { echo 'list<<EOF'; printf '%s\n' "${args}"; echo 'EOF'; } >> "${GITHUB_OUTPUT}"
+          # docker/emulate-base.Dockerfile stands in for aic-base: same torch series and uv.
+          { read -r series; read -r uv; } < <(docker/scripts/aic-bake-env.sh --get PYTORCH_SERIES UV_VERSION)
+          [[ -n "${series}" && -n "${uv}" ]] || { echo "::error::bake resolved no PYTORCH_SERIES/UV_VERSION"; exit 1; }
+          { echo 'base<<EOF'; echo "PYTORCH_SERIES=${series}"; echo "UV_VERSION=${uv}"; echo 'EOF'; } >> "${GITHUB_OUTPUT}"
 
       - name: Write corp CA cert secret (AMD Zscaler proxy)
         id: cert
@@ -86,6 +92,7 @@ jobs:
           if [ -n "${{ secrets.CORP_CA_CERT }}" ]; then
             echo "${{ secrets.CORP_CA_CERT }}" > /tmp/corp-ca.crt
             echo "present=true" >> "${GITHUB_OUTPUT}"
+            echo "path=/tmp/corp-ca.crt" >> "${GITHUB_OUTPUT}"
           else
             echo "present=false" >> "${GITHUB_OUTPUT}"
           fi
@@ -101,6 +108,7 @@ jobs:
         with:
           context: .
           file: docker/emulate-base.Dockerfile
+          build-args: ${{ steps.bake-args.outputs.base }}
           outputs: type=oci,dest=/tmp/aic-base-emulate.tar
           cache-from: type=gha,scope=aic-emulate-base
           cache-to: type=gha,mode=max,scope=aic-emulate-base
@@ -117,7 +125,7 @@ jobs:
           file: docker/vllm/Dockerfile
           target: emulate
           load: true
-          tags: ${{ env.IMAGE_REF }}
+          tags: ${{ env.VLLM_IMAGE_REF }}
           build-args: ${{ steps.bake-args.outputs.list }}
           build-contexts: |
             base=oci-layout:///tmp/aic-base-emulate
@@ -135,7 +143,7 @@ jobs:
           AIC_CONTAINER_USERNAME: root
           AIC_CONTAINER_HOME: /root
           # aic_fetch sends the completion from the aic bridge, out of this image.
-          AIC_FETCH_IMAGE: ${{ env.IMAGE_REF }}
+          AIC_FETCH_IMAGE: ${{ env.VLLM_IMAGE_REF }}
         run: |
           set -euo pipefail
           mkdir -p "${HF_HOME}" "${LOG}/vllm-emulator"

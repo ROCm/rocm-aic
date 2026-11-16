@@ -16,11 +16,15 @@
 # Multi-arch: TARGETARCH is set automatically by `docker buildx` (amd64/arm64);
 # it maps directly onto the release asset suffix.
 #
-# Build (from repository root):
-#   docker build -t aic-nvme-exporter:local ./docker/nvme-exporter
+# Build (from repository root).  docker/docker-bake.hcl is the only owner of
+# NVME_EXPORTER_VERSION; there is no default here and the build stops without it:
+#   docker buildx bake -f docker/docker-bake.hcl nvme-exporter --load
 #   # or pin a version:
-#   docker build --build-arg NVME_EXPORTER_VERSION=3.0.0 \
-#       -t aic-nvme-exporter:3.0.0 ./docker/nvme-exporter
+#   NVME_EXPORTER_VERSION=<version> docker buildx bake \
+#       -f docker/docker-bake.hcl nvme-exporter --load
+#   # or a raw build with bake's resolved args:
+#   mapfile -t args < <(docker/scripts/aic-bake-env.sh --build-args nvme-exporter)
+#   docker build "${args[@]}" -t aic-nvme-exporter:local ./docker/nvme-exporter
 #
 # Run (on the aic bridge, no published port: Prometheus scrapes it by name;
 # needs the NVMe devices + sysfs):
@@ -31,12 +35,12 @@
 
 FROM debian:12-slim AS fetch
 
-# Matches the nvme_exporter_setup role's "latest" at authoring time (v3.0.0).
-ARG NVME_EXPORTER_VERSION=3.0.0
+ARG NVME_EXPORTER_VERSION
 # Provided by buildx; default keeps a plain `docker build` working on x86_64.
 ARG TARGETARCH=amd64
 
 RUN set -eux; \
+    : "${NVME_EXPORTER_VERSION:?unset: build through docker/docker-bake.hcl}"; \
     apt-get update; \
     apt-get install -y --no-install-recommends ca-certificates curl; \
     url="https://github.com/E4-Computer-Engineering/nvme-exporter/releases/download/v${NVME_EXPORTER_VERSION}/nvme_exporter_${NVME_EXPORTER_VERSION}_linux_${TARGETARCH}.tar.gz"; \

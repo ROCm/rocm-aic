@@ -17,24 +17,32 @@
 #   build   compile vllm (empty device) + build llm_emu wheel
 #   wheels  scratch image holding just the .whl files
 #
-# Build:
+# Build args: docker/docker-bake.hcl is the only owner of every pin and URL, so
+# no ARG here has a default and the build stage stops when one is unset.
+# Build through bake (from repo root):
 #   WHEELS_DIR=/tmp/emulate-wheels docker buildx bake \
 #     -f docker/docker-bake.hcl wheels-emulate
 #
-# Or standalone:
-#   docker buildx build -f docker/wheels-emulate/Dockerfile \
+# or hand bake's resolved args to a raw build:
+#   mapfile -t args < <(docker/scripts/aic-bake-env.sh --build-args wheels-emulate)
+#   docker buildx build "${args[@]}" -f docker/wheels-emulate/Dockerfile \
 #     --target wheels --output type=local,dest=/tmp/emulate-wheels .
 #
 FROM python:3.12-bookworm AS build
 
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 
-ARG VLLM_GIT_URL=https://github.com/vllm-project/vllm.git
-ARG VLLM_REF=v0.29.0
-ARG LLM_EMU_GIT_URL=https://github.com/AKafakA/llm-emu.git
-ARG LLM_EMU_REF=b71c602
-ARG BUILD_JOBS=
-ARG AIC_VERSION=
+ARG VLLM_GIT_URL
+ARG VLLM_REF
+ARG LLM_EMU_GIT_URL
+ARG LLM_EMU_REF
+ARG PYTORCH_SERIES
+ARG BUILD_JOBS
+RUN : "${VLLM_GIT_URL:?unset: build through docker/docker-bake.hcl}" \
+      "${VLLM_REF:?unset: build through docker/docker-bake.hcl}" \
+      "${LLM_EMU_GIT_URL:?unset: build through docker/docker-bake.hcl}" \
+      "${LLM_EMU_REF:?unset: build through docker/docker-bake.hcl}" \
+      "${PYTORCH_SERIES:?unset: build through docker/docker-bake.hcl}"
 
 # Build tools: cmake + ninja for vllm's CMake extension (even with empty device,
 # vllm's setup.py drives cmake for Pybind11 wrappers).
@@ -46,7 +54,7 @@ RUN apt-get update && \
 
 # CPU torch — the same series as the ROCm build so the wheel ABI matches.
 RUN pip3 install --no-cache-dir \
-        "torch~=2.13.0" torchvision \
+        "torch~=${PYTORCH_SERIES}.0" torchvision \
         --index-url https://download.pytorch.org/whl/cpu
 
 # vllm [build-system] requires.
@@ -82,7 +90,7 @@ RUN shopt -s nullglob && \
 RUN --mount=type=cache,target=/root/.cache/pip \
     --mount=type=cache,target=/root/.cache/ccache \
     mkdir -p /wheels && \
-    printf 'torch>=2.13,<2.14\n' > /tmp/torch-constraints.txt && \
+    printf 'torch~=%s.0\n' "${PYTORCH_SERIES}" > /tmp/torch-constraints.txt && \
     pip3 install -r requirements/common.txt \
         -r requirements/build/rust.txt \
         --constraint /tmp/torch-constraints.txt && \

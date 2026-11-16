@@ -31,12 +31,13 @@ fi
 
 KVBENCH_MODEL="${KVBENCH_MODEL:-llama-3.1-8b}"
 KVBENCH_PORT="${KVBENCH_PORT:-8000}"
-KVBENCH_READY_TIMEOUT="${KVBENCH_READY_TIMEOUT:-120}"
+# KVBENCH_READY_TIMEOUT is the deprecated name.
+KVBENCH_READY_S="${KVBENCH_READY_S:-${KVBENCH_READY_TIMEOUT:-120}}"
+# Smoke-sized presets of this job; run_cliff.py defaults to the full cliff sweep.
 BENCH_ISL="${BENCH_ISL:-32}"
 BENCH_SHARED_TOK="${BENCH_SHARED_TOK:-16}"
 BENCH_CONCUR="${BENCH_CONCUR:-1,2}"
 BENCH_ITERS="${BENCH_ITERS:-1}"
-KVBENCH_IMAGE_REF="${KVBENCH_IMAGE_REF:-aic-kvbench:177cf4e}"
 
 log() { printf '[%(%F %T)T] %s\n' -1 "$*"; }
 die() { log "FATAL: $*"; exit 1; }
@@ -50,7 +51,7 @@ cd "${REPO}"
 source "${REPO}/monitoring/monitoring-lib.sh"
 ensure_compose || die "docker compose unavailable and could not be installed"
 
-export KVBENCH_MODEL KVBENCH_PORT KVBENCH_IMAGE_REF
+export KVBENCH_MODEL KVBENCH_PORT
 export LOG="${LOGDIR}"
 compose() { docker compose -f "${REPO}/docker/docker-compose.yml" "$@"; }
 
@@ -69,7 +70,7 @@ compose --profile kvbench up --build -d kvbench client || die "compose up failed
 
 log "waiting for aic-kvbench to serve /v1/models"
 ready=0
-for _i in $(seq 1 "${KVBENCH_READY_TIMEOUT}"); do
+for _i in $(seq 1 "${KVBENCH_READY_S}"); do
   if aic_probe aic-kvbench "${KVBENCH_PORT}" /v1/models; then
     ready=1
     break

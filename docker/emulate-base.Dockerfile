@@ -12,11 +12,17 @@ FROM python:3.12-bookworm
 # Match the SHELL used by docker/base/Dockerfile so bash-specific syntax in
 # docker/vllm/Dockerfile (shopt, arrays) works when this is the base context.
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
+# docker/docker-bake.hcl owns both; the workflows pass them from
+#   docker/scripts/aic-bake-env.sh --get PYTORCH_SERIES UV_VERSION
+ARG PYTORCH_SERIES
+ARG UV_VERSION
+RUN : "${PYTORCH_SERIES:?unset: pass it from docker/scripts/aic-bake-env.sh --get PYTORCH_SERIES UV_VERSION}" \
+      "${UV_VERSION:?unset: pass it from docker/scripts/aic-bake-env.sh --get PYTORCH_SERIES UV_VERSION}"
 RUN apt-get update && apt-get install -y --no-install-recommends \
         cmake ninja-build git build-essential \
     && rm -rf /var/lib/apt/lists/*
 RUN pip3 install --no-cache-dir \
-        "torch~=2.13.0" torchvision \
+        "torch~=${PYTORCH_SERIES}.0" torchvision \
         --index-url https://download.pytorch.org/whl/cpu
 # Pre-install all vLLM build-system requirements (from its pyproject.toml
 # [build-system].requires) so pip can prepare vLLM's metadata without failing
@@ -24,7 +30,7 @@ RUN pip3 install --no-cache-dir \
 RUN pip3 install --no-cache-dir \
         setuptools "setuptools-scm>=8" setuptools-rust wheel build
 # Install uv + uvx so COPY --from=base /usr/local/bin/uv[x] in vllm/Dockerfile succeeds.
-RUN curl -fsSL "https://astral.sh/uv/0.12.15/install.sh" | sh \
+RUN curl -fsSL "https://astral.sh/uv/${UV_VERSION}/install.sh" | sh \
     && ln -s /root/.local/bin/uv  /usr/local/bin/uv \
     && ln -s /root/.local/bin/uvx /usr/local/bin/uvx
 # python:3.12-bookworm uses site-packages; the ROCm Ubuntu base uses dist-packages.

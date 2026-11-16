@@ -14,9 +14,9 @@ Metrics emitted:
 """
 import os, sys, time, threading, collections, struct, fcntl, ctypes
 
-L2_DIR      = os.environ.get("AIC_L2_DIR", "/data/nvme/lmcache")
-PROM_FILE   = os.environ.get("AIC_PROM_FILE", "/prom/aic_l2_monitor.prom")
-INTERVAL    = int(os.environ.get("AIC_PROM_INTERVAL", "15"))
+L2_DIR      = os.environ["AIC_L2_DIR"]
+PROM_FILE   = os.environ["AIC_PROM_FILE"]
+INTERVAL    = int(os.environ["AIC_PROM_INTERVAL"])
 
 # Per-file read counters (filename → count)
 _read_counts: dict[str, int] = collections.defaultdict(int)

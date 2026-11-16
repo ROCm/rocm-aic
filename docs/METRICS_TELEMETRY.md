@@ -77,11 +77,10 @@ make up HF_TOKEN=hf_... NVME_DATA=/mnt/lmcache-nvme NFS_DATA=/mnt/lmcache-nfs \
 make endpoints   # → prints the Grafana URL to open
 ```
 
-| Variable | Default | Description |
-| --- | --- | --- |
-| `AIC_GRAFANA_PORT` | unset (ephemeral) | Host port Grafana is published on, `127.0.0.1` only |
-| `AIC_GRAFANA_IMAGE` | `grafana/grafana:13.1.3` | Grafana image |
-| `AIC_PROM_IMAGE` | `prom/prometheus:v3.13.2` | Prometheus image |
+`AIC_GRAFANA_PORT`, `AIC_PUBLISH_ADDR` and the image pins (`AIC_GRAFANA_IMAGE`,
+`AIC_PROM_IMAGE`, the exporter images) are listed with their defaults in
+[ENVIRONMENT.md](ENVIRONMENT.md#monitoring); `docker/docker-compose.yml` owns
+them.
 
 The **AIC Overview** dashboard covers eleven rows:
 
@@ -114,13 +113,13 @@ load; the 15 s interval prevents gaps in time-series panels.
 | --- | --- | --- |
 | `vllm` | `aic-vllm-gpu0:8000`, `:8001` | 15 s (global) |
 | `lmcache` | `aic-lmcache:8080` | 15 s (global) |
-| `lmcache_coordinator` | `aic-coordinator-exporter:9301` | 15 s (global) |
+| `lmcache_coordinator` | `aic-lmcache-coordinator:9301` | 15 s (global) |
 | `nixl` | `aic-lmcache:19090` | 15 s (global) |
 | `node_exporter` | `aic-node-exporter:9100` | 15 s (global) |
 | `nvme_exporter` | `aic-nvme-exporter:9998` | 15 s (global) |
 | `rdma_exporter` | `aic-rdma-exporter:9879` | 15 s (global) |
 | `amd_metrics_exporter` | `aic-amdgpu-exporter:5000`, `:5050` | 15 s (global) |
-| `hsa_snoop` | `host-gateway:9488` | 15 s (global) |
+| `hsa_snoop` | `aic-hsa-snoop:9488` | 15 s (global) |
 
 ---
 
@@ -190,9 +189,10 @@ OTel exporter on first observation.
 | `ais_rx_latency_seconds` | histogram | AIS receive latency |
 | `ais_tx_latency_seconds` | histogram | AIS transmit latency |
 
-> hsa-snoop holds tracefs exclusively on the host. It runs as a host-side
-> service or via the `exporters` monitoring compose profile. Prometheus
-> reaches it at `host-gateway:9488`.
+> hsa-snoop holds tracefs exclusively on the host. It runs via the
+> `exporters` monitoring compose profile, reading tracefs through bind
+> mounts, and sits on the `aic` bridge: Prometheus reaches it by container
+> name at `aic-hsa-snoop:9488`.
 
 ### `lmcache` — LMCache MP server (`:8080`)
 
@@ -497,15 +497,13 @@ alloy, hsa-snoop or nvme-exporter, whatever the mode: the cluster's Docker authz
 plugin refuses their docker-socket mount, `privileged: true` and `SYS_ADMIN`
 respectively, and one refused container would fail the whole `compose up`.
 
-Monitoring is started automatically by all `up-*` targets. Use `AIC_EXPORTERS` to
-control which exporter profile is loaded (default `0` = Prometheus only):
+`AIC_EXPORTERS` is read by the Slurm jobs (`monitoring/monitoring-lib.sh`), which
+turn it into the profiles above. The local `up-*` targets do not read it: they
+always start the `monitoring` profile, which holds Prometheus, Grafana and
+every exporter.
 
 ```bash
-# Safe mode (SPUR / authz-restricted)
-make up-batch AIC_METRICS_DIR=/mnt/lmcache-nfs/metrics AIC_EXPORTERS=safe
-
-# Full fleet (bare node)
-make up-batch AIC_METRICS_DIR=/mnt/lmcache-nfs/metrics AIC_EXPORTERS=1
+make up-batch AIC_METRICS_DIR=/mnt/lmcache-nfs/metrics
 
 make down     # stop stack and monitoring (TSDB retained)
 ```
@@ -529,8 +527,9 @@ dispatch metrics and AIS P2P storage counters.
 > and `privileged: true`, so hsa-snoop does not run on SPUR at all; the SPUR job
 > scripts skip it.
 
-hsa-snoop holds tracefs exclusively on the host, so it is always scraped via
-`host-gateway:9488` rather than a container name.
+hsa-snoop reads the host's tracefs through bind mounts but is itself on the
+`aic` bridge, so Prometheus scrapes it by container name
+(`aic-hsa-snoop:9488`) like every other exporter.
 
 ---
 
@@ -540,17 +539,21 @@ Normally host services (Ansible roles). Container images are built from the
 same upstream release binaries when host exporters are absent:
 
 ```bash
-# Build both fabric-exporter images
-make monitoring-build-exporters
+# Build both fabric-exporter images locally (bake group `exporters`, tagged :local)
+make build BAKE_TARGETS=exporters
 
 # Run via exporters-fabric compose profile
-AIC_METRICS_DIR=/mnt/lmcache-nfs/metrics \
-  docker compose -f docker/docker-compose.yml \
-    --profile exporters --profile exporters-fabric up -d
+docker compose -f docker/docker-compose.yml \
+  --profile exporters-fabric up -d nvme-exporter rdma-exporter
 ```
 
+`make dist-build-exporters` builds the same images on a Slurm build node but
+tags them `:latest`; to run those with compose, set
+`AIC_NVME_EXPORTER_IMAGE=aic-nvme-exporter:latest` and
+`AIC_RDMA_EXPORTER_IMAGE=aic-rdma-exporter:latest` on the compose command.
+
 > **Note:** these images pull `debian:12-slim` from Docker Hub at build time;
-> the build node needs registry egress. Skip with `AIC_BUILD_EXPORTERS=0`.
+> the build node needs registry egress.
 > `make dist-build` treats failure as a non-fatal warning.
 
 ---

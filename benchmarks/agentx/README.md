@@ -77,15 +77,16 @@ The `aic-agentx` image is a thin `python:3.12-slim` container with `aiperf`
 (which installs the `agentx` CLI) installed. No ROCm runtime.
 
 ```bash
-# Via bake (recommended):
+# Via bake (from repo root):
 docker buildx bake -f docker/docker-bake.hcl agentx --load
 
-# Standalone (from repo root):
-DOCKER_BUILDKIT=1 docker build \
+# Raw build with the args bake resolves (the Dockerfile has no defaults):
+mapfile -t args < <(docker/scripts/aic-bake-env.sh --build-args agentx)
+docker buildx build "${args[@]}" \
   -f docker/agentx/Dockerfile \
   -t aic-agentx:latest \
   .
 ```
 
-Pin a specific aiperf version with `--build-arg AIPERF_VERSION=0.5.0` or
-the `AIPERF_VERSION` bake variable.
+Pin a specific aiperf version with the `AIPERF_VERSION` bake variable, e.g.
+`AIPERF_VERSION=0.5.0 docker buildx bake -f docker/docker-bake.hcl agentx --load`.

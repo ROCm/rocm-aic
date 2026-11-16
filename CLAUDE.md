@@ -51,8 +51,9 @@ that the vLLM ROCm-platform import and engine startup remain healthy.
    (MI355X) specifically; gfx942 nodes have not been fully tested but the
    hipErrorInvalidImage issue is resolved with `AIC_ROCM_ARCH=gfx942`.
 
-2. **Use the current vLLM ROCm pin** — `docker/vllm/Dockerfile` pins
-   `VLLM_REF=v0.29.0`; retain this unless SPUR validation proves a different
+2. **Use the current vLLM ROCm pin** — `docker/docker-bake.hcl` pins
+   `VLLM_REF=v0.29.0` (it owns every build pin; see `docs/ENVIRONMENT.md`);
+   retain this unless SPUR validation proves a different
    version is needed.
 
 3. **Upgrade vLLM further** — only after validating the current `v0.29.0`
@@ -99,7 +100,7 @@ build (`AIC_ROCM_ARCH` default includes `gfx1201`). Key differences from CDNA:
 
 - **Triton**: `torch 2.13.0+rocm7.2` from pytorch.org works on gfx1201 without
   the Triton 3.7.1 incompatibility that affects gfx950 on older KFD. The current
-  Dockerfile pin is correct; do not switch back to `repo.amd.com` for gfx1201.
+  bake pin is correct; do not switch back to `repo.amd.com` for gfx1201.
 - **NIXL AIS_MT**: hipFile P2PDMA is CDNA-only; use `AIC_L2_BACKEND=nixl_posix`
   on gfx1201 nodes (the SPUR default already does this).
 - **VFIO**: the GPU is typically VFIO-passed to a VM on workstations. Rebind to

@@ -48,6 +48,36 @@ jobs:
       - name: Resolve the wheels group for each published arch list
         run: bash .github/scripts/workflows/check-wheel-bake.sh
 
+  # docker/docker-bake.hcl owns every build default; this fails when the
+  # AIC_VERSION literal drifts from VERSION or a Dockerfile grows its own
+  # default for an arg bake supplies.
+  bake-env:
+    name: Bake defaults are the single source
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Test aic-bake-env.sh, the VERSION literal and Dockerfile ARG ownership
+        run: python3 -m unittest -v tests.test_aic_bake_env
+
+  # docs/ENVIRONMENT.md's variable tables are generated from the files that own
+  # the defaults; this fails when a default changed without `make env-docs`, or
+  # a variable was added to code with no entry in docs/environment-vars.txt.
+  env-reference:
+    name: Environment variable reference is in sync
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Check docs/ENVIRONMENT.md against the defaults in code
+        run: python3 scripts/gen-env-reference.py --check
+      - name: Test the generator
+        run: python3 -m unittest -v tests.test_gen_env_reference
+      - name: Test that no layer re-declares a compose runtime default
+        run: python3 -m unittest -v tests.test_runtime_defaults
+
   htmlhint:
     name: HTMLHint
     runs-on: ubuntu-24.04
@@ -67,11 +97,11 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: Resolve LLM-Emu ref from Dockerfile
+      - name: Resolve LLM-Emu ref from bake
         id: meta
         run: |
-          ref="$(grep -E '^ARG LLM_EMU_REF=' docker/vllm/Dockerfile | head -1 | cut -d= -f2-)"
-          url="$(grep -E '^ARG LLM_EMU_GIT_URL=' docker/vllm/Dockerfile | head -1 | cut -d= -f2-)"
+          ref="$(docker/scripts/aic-bake-env.sh --get LLM_EMU_REF)"
+          url="$(docker/scripts/aic-bake-env.sh --get LLM_EMU_GIT_URL)"
           echo "ref=${ref}" >> "${GITHUB_OUTPUT}"
           echo "url=${url}" >> "${GITHUB_OUTPUT}"
       - name: Install vllm_emulator plugin (no deps — no torch needed)

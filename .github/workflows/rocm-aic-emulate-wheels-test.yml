@@ -2,7 +2,8 @@
 #
 # SPDX-License-Identifier: MIT
 #
-# Build and smoke-test the CPU-only emulate wheels (emulate-wheels bake group).
+# Build and smoke-test the CPU-only emulate wheels, with the args of the
+# emulate-wheels bake group's target.
 # No GPU required: docker/wheels-emulate/Dockerfile builds with
 # VLLM_TARGET_DEVICE=empty on python:3.12-bookworm and produces:
 #
@@ -26,6 +27,7 @@ on:
     paths:
       - 'docker/wheels-emulate/Dockerfile'
       - 'docker/docker-bake.hcl'
+      - 'docker/scripts/aic-bake-env.sh'
       - 'patches/vllm/**'
       - 'patches/llm-emu/**'
       - '.github/workflows/rocm-aic-emulate-wheels-test.yml'
@@ -50,8 +52,18 @@ jobs:
 
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
 
-      - name: Read AIC_VERSION from VERSION file
-        run: echo "AIC_VERSION=$(cat VERSION)" >> "$GITHUB_ENV"
+      # docker-bake.hcl owns the pins; build with what its wheels-emulate target
+      # resolves, and test against the torch series it pins.
+      - name: Resolve the wheels-emulate build args from docker-bake.hcl
+        id: bake-args
+        run: |
+          set -euo pipefail
+          args="$(docker/scripts/aic-bake-env.sh --build-args wheels-emulate | sed 's/^--build-arg=//')"
+          [[ -n "${args}" ]] || { echo "::error::bake resolved no args for wheels-emulate"; exit 1; }
+          printf '%s\n' "${args}"
+          { echo 'list<<EOF'; printf '%s\n' "${args}"; echo 'EOF'; } >> "${GITHUB_OUTPUT}"
+          series="$(docker/scripts/aic-bake-env.sh --get PYTORCH_SERIES)"
+          echo "pytorch_series=${series}" >> "${GITHUB_OUTPUT}"
 
       - name: Write corp CA cert secret (AMD Zscaler proxy)
         id: cert
@@ -71,8 +83,7 @@ jobs:
           file: docker/wheels-emulate/Dockerfile
           target: wheels
           outputs: type=local,dest=${{ env.WHEELS_DIR }}
-          build-args: |
-            AIC_VERSION=${{ env.AIC_VERSION }}
+          build-args: ${{ steps.bake-args.outputs.list }}
           secrets: |
             ${{ steps.cert.outputs.present == 'true' && format('tls_cert={0}', steps.cert.outputs.path) || '' }}
           cache-from: type=gha,scope=aic-emulate-wheels
@@ -84,13 +95,15 @@ jobs:
           ls -lh "${WHEELS_DIR}"/*.whl
 
       - name: Smoke-test wheel imports in a fresh venv
+        env:
+          PYTORCH_SERIES: ${{ steps.bake-args.outputs.pytorch_series }}
         run: |
           set -euo pipefail
           python3 -m venv /tmp/emulate-venv
           source /tmp/emulate-venv/bin/activate
 
           echo "Installing CPU torch..."
-          pip install --quiet "torch~=2.13.0" torchvision \
+          pip install --quiet "torch~=${PYTORCH_SERIES}.0" torchvision \
             --index-url https://download.pytorch.org/whl/cpu
 
           # Install vllm wheel first with --no-deps: avoids pip trying to resolve

@@ -17,11 +17,15 @@
 # Multi-arch: TARGETARCH is set automatically by `docker buildx` (amd64/arm64);
 # it maps directly onto the release asset suffix.
 #
-# Build (from repository root):
-#   docker build -t aic-rdma-exporter:local ./docker/rdma-exporter
+# Build (from repository root).  docker/docker-bake.hcl is the only owner of
+# RDMA_EXPORTER_VERSION; there is no default here and the build stops without it:
+#   docker buildx bake -f docker/docker-bake.hcl rdma-exporter --load
 #   # or pin a version:
-#   docker build --build-arg RDMA_EXPORTER_VERSION=0.4.2 \
-#       -t aic-rdma-exporter:0.4.2 ./docker/rdma-exporter
+#   RDMA_EXPORTER_VERSION=<version> docker buildx bake \
+#       -f docker/docker-bake.hcl rdma-exporter --load
+#   # or a raw build with bake's resolved args:
+#   mapfile -t args < <(docker/scripts/aic-bake-env.sh --build-args rdma-exporter)
+#   docker build "${args[@]}" -t aic-rdma-exporter:local ./docker/rdma-exporter
 #
 # Run (on the aic bridge, no published port: Prometheus scrapes it by name;
 # needs sysfs):
@@ -30,11 +34,12 @@
 
 FROM debian:12-slim AS fetch
 
-ARG RDMA_EXPORTER_VERSION=0.7.3
+ARG RDMA_EXPORTER_VERSION
 # Provided by buildx; default keeps a plain `docker build` working on x86_64.
 ARG TARGETARCH=amd64
 
 RUN set -eux; \
+    : "${RDMA_EXPORTER_VERSION:?unset: build through docker/docker-bake.hcl}"; \
     apt-get update; \
     apt-get install -y --no-install-recommends ca-certificates curl; \
     url="https://github.com/yuuki/rdma_exporter/releases/download/v${RDMA_EXPORTER_VERSION}/rdma_exporter_${RDMA_EXPORTER_VERSION}_linux_${TARGETARCH}.tar.gz"; \

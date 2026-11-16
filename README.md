@@ -89,9 +89,12 @@ See [docs/METRICS_TELEMETRY.md](docs/METRICS_TELEMETRY.md) for the full
 Prometheus scrape config, exporter details, NIXL telemetry, hsa-snoop, and
 NFS caveats.
 
-## Key Environment Variables
+## Environment Variables
 
-See [docs/ENVIRONMENT.md](docs/ENVIRONMENT.md) for the full reference.
+[docs/ENVIRONMENT.md](docs/ENVIRONMENT.md) is the reference for the variables:
+each default, the file that owns it, and what it does. The tables there are
+generated from code (`make env-docs`); `make list-vars` prints the values a
+`make` run would use on this host.
 
 ## License
 

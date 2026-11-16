@@ -205,8 +205,6 @@ export AIC_ACCURACY_REQUIRED=1
 # --- shared compose env ------------------------------------------------------
 export VLLM_IMAGE_REF="${AIC_VLLM_IMAGE}"
 export LMCACHE_IMAGE_REF="${AIC_LMCACHE_IMAGE}"
-export IMAGE_REF="${AIC_LMCACHE_IMAGE}"
-export IMAGE_NAME="${AIC_LMCACHE_IMAGE%:*}"
 export ROCM_ARCH="${AIC_ROCM_ARCH}"
 export VLLM_MODEL="${AIC_ACCURACY_MODEL}"
 export HF_HOME="${HF_HOME}"
@@ -553,7 +551,7 @@ if [ "${AIC_MONITORING:-1}" = "1" ]; then
     export MON_COMPOSE="${AIC_DAY_DIR}/docker/docker-compose.yml"
     export AIC_IMAGE="${AIC_LMCACHE_IMAGE}"
     export AIC_METRICS_DIR="${AIC_LOG_DIR}/prometheus"
-    # Not AIC_EXPORTERS: monitoring-lib defaults it to 1 and SPUR's make forces
+    # Not AIC_EXPORTERS: monitoring-lib defaults it to 1 and SPUR's make defaults
     # it to safe, and neither set of exporter images is loaded here.
     export AIC_EXPORTERS="${AIC_ACCURACY_EXPORTERS:-0}"
     export AIC_MONITORING=1

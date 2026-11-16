@@ -3,8 +3,16 @@
 #
 # Infrastructure targets: monitoring, export tarball, internal helpers.
 
-.PHONY: endpoints \
+.PHONY: endpoints env-docs env-docs-check \
         export check-hf-token check-gds-slab prep-dirs prep-kvbench-dirs
+
+# docs/ENVIRONMENT.md's tables are generated from the files that own the
+# defaults; descriptions live in docs/environment-vars.txt.
+env-docs:
+	@$(PYTHON) "$(CURDIR)/scripts/gen-env-reference.py" --write
+
+env-docs-check:
+	@$(PYTHON) "$(CURDIR)/scripts/gen-env-reference.py" --check
 
 # Published host ports (only Grafana's) are ephemeral unless AIC_GRAFANA_PORT
 # pins it, so ask Docker where it landed.

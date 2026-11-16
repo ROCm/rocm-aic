@@ -106,15 +106,16 @@ jobs:
 
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
 
-      # AIC_VERSION is a required build-arg (the Dockerfile fails the build when
-      # it is empty) and feeds the OCI version labels.  Same step as rocm-aic-docker-build.yml.
-      - name: Read AIC version
-        id: imgtag
+      # docker-bake.hcl owns every build input; the Dockerfile has no defaults
+      # and stops without them.  Same step as rocm-aic-docker-build.yml.
+      - name: Resolve the lmcache build args from docker-bake.hcl
+        id: bake-args
         run: |
           set -euo pipefail
-          aic_version="$(< VERSION)"
-          : "${aic_version:?VERSION is missing or empty}"
-          echo "aic_version=${aic_version}" >> "${GITHUB_OUTPUT}"
+          args="$(docker/scripts/aic-bake-env.sh --build-args lmcache | sed 's/^--build-arg=//')"
+          [[ -n "${args}" ]] || { echo "::error::bake resolved no args for lmcache"; exit 1; }
+          printf '%s\n' "${args}"
+          { echo 'list<<EOF'; printf '%s\n' "${args}"; echo 'EOF'; } >> "${GITHUB_OUTPUT}"
 
       # Corp CA cert (AMD Zscaler) as a BuildKit secret, only if set.
       # Never written into any image layer.  Same pattern as rocm-aic-docker-build.yml.
@@ -173,9 +174,7 @@ jobs:
           tags: |
             ${{ env.IMAGE_NAME }}:${{ github.ref_name }}
             ${{ env.IMAGE_NAME }}:latest
-          build-args: |
-            ROCM_ARCH=${{ env.ROCM_ARCH }}
-            AIC_VERSION=${{ steps.imgtag.outputs.aic_version }}
+          build-args: ${{ steps.bake-args.outputs.list }}
           secrets: |
             ${{ steps.cert.outputs.present == 'true' && format('tls_cert={0}', steps.cert.outputs.path) || '' }}
           cache-from: type=gha,scope=aic

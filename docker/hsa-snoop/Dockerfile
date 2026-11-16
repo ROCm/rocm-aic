@@ -1,3 +1,6 @@
+# check=skip=InvalidDefaultArgInFrom
+# The FROM images are build args with no default here (docker/docker-bake.hcl
+# owns them), so they are blank at lint time.
 # Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
 #
 # SPDX-License-Identifier: MIT
@@ -33,20 +36,27 @@
 # fall-backs.  To get those labels, COPY rocminfo and its ldd closure from the
 # build stage -- tens of MB -- rather than reinstating the package.
 #
-# Build (from repo root):
-#   docker buildx build -f docker/hsa-snoop/Dockerfile \
-#     -t aic-hsa-snoop:local .
+# Build args: docker/docker-bake.hcl is the only owner of every pin, URL and
+# base image, so no ARG here has a default and each stage stops when one is
+# unset.  Build through bake (from repo root):
+#   docker buildx bake -f docker/docker-bake.hcl hsa-snoop --load
+#
+# or hand bake's resolved args to a raw build:
+#   mapfile -t args < <(docker/scripts/aic-bake-env.sh --build-args hsa-snoop)
+#   docker buildx build "${args[@]}" -f docker/hsa-snoop/Dockerfile \
+#     -t aic-hsa-snoop:dev .
 #
 # Or via make:
-#   make build-exporters
+#   make build                  (bake's hsa-snoop target; tags aic-hsa-snoop:latest)
+#   make dist-build-exporters   (Slurm)
 
-ARG ROCM_VERSION=7.14.1
-ARG ROCM_BUILD_IMAGE=rocm/dev-ubuntu-24.04:${ROCM_VERSION}-full
-# rocm/dev-ubuntu-24.04:7.14.x (no -full suffix) does not exist in the AMD repo,
-# so the runtime stage starts from plain ubuntu.  It stays plain: hsa-snoop
-# needs no ROCm userspace (see the stage notes above).  This previously read
-# "only libhsa-runtime64.so is needed" -- the binary does not link that either.
-ARG ROCM_RUNTIME_IMAGE=ubuntu:24.04
+# An unset image arg stops the build at its FROM:
+#   base name (${ROCM_BUILD_IMAGE}) should not be blank
+ARG ROCM_BUILD_IMAGE
+# AMD publishes no non-full rocm/dev-ubuntu-24.04 image for 7.14.x, so the
+# runtime stage starts from plain ubuntu.  It stays plain: hsa-snoop needs no
+# ROCm userspace (see the stage notes above).
+ARG ROCM_RUNTIME_IMAGE
 
 # =============================================================================
 # Build stage — needs ROCm HSA headers and cmake/ninja
@@ -54,11 +64,14 @@ ARG ROCM_RUNTIME_IMAGE=ubuntu:24.04
 # hadolint ignore=DL3006
 FROM ${ROCM_BUILD_IMAGE} AS build
 
-ARG HSA_SNOOP_GIT_URL=https://github.com/sbates130272/hsa-snoop.git
-ARG HSA_SNOOP_REF=v1.2.0
-ARG BUILD_JOBS=
+ARG HSA_SNOOP_GIT_URL
+ARG HSA_SNOOP_REF
+ARG BUILD_JOBS
 
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
+
+RUN : "${HSA_SNOOP_GIT_URL:?unset: build through docker/docker-bake.hcl}" \
+      "${HSA_SNOOP_REF:?unset: build through docker/docker-bake.hcl}"
 
 # hadolint ignore=DL3008
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
@@ -85,11 +98,15 @@ RUN git clone --depth 1 --branch "${HSA_SNOOP_REF}" "${HSA_SNOOP_GIT_URL}" /app/
 # hadolint ignore=DL3006
 FROM ${ROCM_RUNTIME_IMAGE} AS runtime
 
-ARG HSA_SNOOP_REF=v1.2.0
+ARG HSA_SNOOP_REF
 ARG ROCM_VERSION
 ARG ROCM_RUNTIME_IMAGE
 
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
+
+# Both are image labels.
+RUN : "${HSA_SNOOP_REF:?unset: build through docker/docker-bake.hcl}" \
+      "${ROCM_VERSION:?unset: build through docker/docker-bake.hcl}"
 
 # The binary's entire link closure: libstdc++6 pulls libgcc_s, and libc/libm
 # are already in the base.  Stated explicitly rather than relying on apt having

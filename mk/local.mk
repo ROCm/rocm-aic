@@ -8,19 +8,9 @@
         restart-vllm restart-lmcache venv vllm-reset-test
 
 ensure-compose:
-	@if docker compose version >/dev/null 2>&1; then \
-		echo "docker compose present: $$(docker compose version --short 2>/dev/null)"; \
-	else \
-		echo "docker compose plugin missing; installing $(COMPOSE_PLUGIN_VERSION) -> ~/.docker/cli-plugins"; \
-		mkdir -p "$$HOME/.docker/cli-plugins" && \
-		arch="$$(uname -m)" && \
-		curl -fsSL "https://github.com/docker/compose/releases/download/$(COMPOSE_PLUGIN_VERSION)/docker-compose-linux-$$arch" \
-			-o "$$HOME/.docker/cli-plugins/docker-compose" && \
-		chmod +x "$$HOME/.docker/cli-plugins/docker-compose" && \
-		docker compose version >/dev/null 2>&1 || { \
-			echo "ERROR: docker compose still unavailable after install" >&2; exit 1; }; \
-		echo "installed: $$(docker compose version --short 2>/dev/null)"; \
-	fi
+	@bash -c 'source "$(CURDIR)/monitoring/monitoring-lib.sh" && ensure_compose' || { \
+		echo "ERROR: docker compose unavailable and could not be installed" >&2; exit 1; }
+	@echo "docker compose present: $$(docker compose version --short 2>/dev/null)"
 
 # Build aic-base, then aic-vllm + aic-lmcache (which sit on top of it) and the
 # aic-hsa-snoop sidecar, in one `docker buildx bake` pass.  The build graph lives
@@ -28,8 +18,25 @@ ensure-compose:
 # in-session aic-base into vllm/lmcache directly, so the old per-stage buildx
 # calls + OCI-layout export/untar handoff (needed to cross the docker-container
 # builder's daemon isolation) are gone.  Version pins, the image tag and the
-# cache/secret wiring all live in the HCL; the Makefile only forwards env.
+# cache/secret wiring all live in the HCL.  Bake reads its variables from the
+# environment, which already carries everything make exports (ROCM_ARCH,
+# AIC_VERSION, IMAGE_TAG) and every knob the user set, so the recipes pass none.
 BUILD_PROGRESS ?= auto
+
+define _bake_preflight
+@test -n "$(ROCM_ARCH)" || { \
+	echo "ERROR: ROCM_ARCH empty (install ROCm or set ROCM_ARCH=gfxNNNN)" >&2; exit 1; }
+@if ! docker buildx inspect $(AIC_BUILDX_BUILDER) >/dev/null 2>&1; then \
+	echo "Creating buildx builder $(AIC_BUILDX_BUILDER) (docker-container driver)..."; \
+	docker buildx create --name $(AIC_BUILDX_BUILDER) --driver docker-container \
+		--driver-opt env.BUILDKIT_STEP_LOG_MAX_SIZE=-1 \
+		--driver-opt env.BUILDKIT_STEP_LOG_MAX_SPEED=10485760 \
+		--bootstrap; \
+fi
+endef
+
+# " (mode X)" only when the user chose one; bake owns the default.
+_cache_mode_note = $(if $(strip $(AIC_CACHE_MODE)), (mode $(AIC_CACHE_MODE)))
 
 # Which bake group to build, and where the result goes.  The defaults are the
 # local-developer case: the whole stack, loaded into the local docker daemon.
@@ -41,30 +48,17 @@ BAKE_TARGETS     ?= default
 BAKE_OUTPUT_FLAG ?= --load
 
 build:
-	@test -n "$(ROCM_ARCH)" || { \
-		echo "ERROR: ROCM_ARCH empty (install ROCm or set ROCM_ARCH=gfxNNNN)" >&2; exit 1; }
-	@if ! docker buildx inspect $(AIC_BUILDX_BUILDER) >/dev/null 2>&1; then \
-		echo "Creating buildx builder $(AIC_BUILDX_BUILDER) (docker-container driver)..."; \
-		docker buildx create --name $(AIC_BUILDX_BUILDER) --driver docker-container \
-			--driver-opt env.BUILDKIT_STEP_LOG_MAX_SIZE=-1 \
-			--driver-opt env.BUILDKIT_STEP_LOG_MAX_SPEED=10485760 \
-			--bootstrap; \
-	fi
+	$(_bake_preflight)
 	@if [ -n "$(strip $(AIC_CACHE_REF))" ]; then \
-		echo "Layer cache: registry $(AIC_CACHE_REF) (mode $(AIC_CACHE_MODE))"; \
+		echo "Layer cache: registry $(AIC_CACHE_REF)$(_cache_mode_note)"; \
 	elif [ -n "$(strip $(AIC_CACHE_DIR))" ]; then \
 		mkdir -p "$(AIC_CACHE_DIR)/$(_ARCH_SLUG)"; \
-		echo "Layer cache: $(AIC_CACHE_DIR)/$(_ARCH_SLUG) (mode $(AIC_CACHE_MODE))"; \
+		echo "Layer cache: $(AIC_CACHE_DIR)/$(_ARCH_SLUG)$(_cache_mode_note)"; \
 	else \
 		echo "Layer cache: disabled (set AIC_CACHE_REF or AIC_CACHE_DIR to enable)"; \
 	fi
 	@echo "--- build: aic-base/vllm/lmcache/hsa-snoop:$(IMAGE_TAG) + nvme/rdma-exporter:local (ROCM_ARCH=$(ROCM_ARCH)) ---"
 	BUILDX_BAKE_ENTITLEMENTS_FS=0 \
-	    ROCM_ARCH="$(ROCM_ARCH)" BUILD_JOBS="$(BUILD_JOBS)" AIC_UCX_FAST="$(AIC_UCX_FAST)" \
-	    AIC_VERSION="$(AIC_VERSION)" \
-	    AIC_CACHE_REF="$(AIC_CACHE_REF)" \
-	    AIC_CACHE_DIR="$(AIC_CACHE_DIR)" AIC_CACHE_MODE="$(AIC_CACHE_MODE)" \
-	    $(if $(strip $(TLS_CERT)),TLS_CERT="$(TLS_CERT)",) \
 	    docker buildx bake \
 		--builder $(AIC_BUILDX_BUILDER) \
 		--progress=$(BUILD_PROGRESS) \
@@ -88,27 +82,17 @@ build:
 #
 # This repeats most of aic-base and aic-vllm's work, so it is a CI/release
 # target, not a fast local one.  `make dist-wheels` runs the same bake on Slurm.
+#
+# Absolute, unlike bake's own relative default: the recipe below deletes and
+# re-creates this directory, so it must not depend on the working directory.
 WHEELS_DIR ?= $(REPO_ROOT)/wheels-out
 
 wheels:
-	@test -n "$(ROCM_ARCH)" || { \
-		echo "ERROR: ROCM_ARCH empty (install ROCm or set ROCM_ARCH=gfxNNNN)" >&2; exit 1; }
-	@if ! docker buildx inspect $(AIC_BUILDX_BUILDER) >/dev/null 2>&1; then \
-		echo "Creating buildx builder $(AIC_BUILDX_BUILDER) (docker-container driver)..."; \
-		docker buildx create --name $(AIC_BUILDX_BUILDER) --driver docker-container \
-			--driver-opt env.BUILDKIT_STEP_LOG_MAX_SIZE=-1 \
-			--driver-opt env.BUILDKIT_STEP_LOG_MAX_SPEED=10485760 \
-			--bootstrap; \
-	fi
+	$(_bake_preflight)
 	@rm -rf "$(WHEELS_DIR)" && mkdir -p "$(WHEELS_DIR)"
 	@echo "--- wheels: nixl + lmcache + vllm (ROCM_ARCH=$(ROCM_ARCH)) -> $(WHEELS_DIR) ---"
 	BUILDX_BAKE_ENTITLEMENTS_FS=0 \
-	    ROCM_ARCH="$(ROCM_ARCH)" BUILD_JOBS="$(BUILD_JOBS)" AIC_UCX_FAST="$(AIC_UCX_FAST)" \
-	    AIC_VERSION="$(AIC_VERSION)" \
-	    AIC_CACHE_REF="$(AIC_CACHE_REF)" \
-	    AIC_CACHE_DIR="$(AIC_CACHE_DIR)" AIC_CACHE_MODE="$(AIC_CACHE_MODE)" \
 	    WHEELS_DIR="$(WHEELS_DIR)" \
-	    $(if $(strip $(TLS_CERT)),TLS_CERT="$(TLS_CERT)",) \
 	    docker buildx bake \
 		--builder $(AIC_BUILDX_BUILDER) \
 		--progress=$(BUILD_PROGRESS) \
@@ -187,23 +171,20 @@ venv:
 # starts it), on the aic bridge, so it needs no published port.
 # Its /logs is the repo's logs/.
 vllm-reset-test: check-hf-token prep-dirs
-	@echo "Starting LMCache L1+L2 retrieval test (L1=$(LMCACHE_L1_SIZE_GB)GiB) + NIXL POSIX L2..."
+	@echo "Starting LMCache L1+L2 retrieval test (L1=$(if $(LMCACHE_L1_SIZE_GB),$(LMCACHE_L1_SIZE_GB)GiB,compose default)) + NIXL POSIX L2..."
 	@mkdir -p "$(AIC_METRICS_DIR)"
 	PROM_UID="$$(id -u)" PROM_GID="$$(id -g)" \
-	    LMCACHE_L1_SIZE_GB=$(LMCACHE_L1_SIZE_GB) \
 	    VLLM_EXTRA_ARGS="--enforce-eager $${VLLM_EXTRA_ARGS}" \
 	    AIC_L2_BACKEND=$(AIC_L2_BACKEND) \
 	    $(COMPOSE_CACHE) --profile monitoring up -d
 	@echo "Waiting for vLLM to be healthy..."
-	@_vc="aic-vllm-gpu$${GPU:-0}"; \
-	for i in $$(seq 1 $${VLM_READY_RETRIES:-60}); do \
-	    r=$$(curl -s -o /dev/null -w '%{http_code}' \
-	        http://localhost:$${VLLM_HOST_PORT:-8000}/health 2>/dev/null); \
-	    [ "$$r" = "200" ] && echo "vLLM healthy after $${i}s" && break; \
+	@_vc="aic-vllm-gpu$(GPU)"; \
+	for i in $$(seq 1 $(VLM_READY_RETRIES)); do \
+	    if $(call aic_probe,"$$_vc",8000,/health); then echo "vLLM healthy after $${i} polls"; break; fi; \
 	    if ! docker ps --format '{{.Names}}' 2>/dev/null | grep -qx "$$_vc"; then \
 	        echo "ERROR: $$_vc exited after $${i} polls — not waiting out the timeout" >&2; \
-	        echo "  --- last $${VLM_FAIL_LOG_LINES:-250} lines of $$_vc ---" >&2; \
-	        docker logs --tail $${VLM_FAIL_LOG_LINES:-250} "$$_vc" 2>&1 \
+	        echo "  --- last $(VLM_FAIL_LOG_LINES) lines of $$_vc ---" >&2; \
+	        docker logs --tail $(VLM_FAIL_LOG_LINES) "$$_vc" 2>&1 \
 	            | sed 's/^/  [vllm] /' >&2; \
 	        echo "  --- engine-core errors (the 'root cause above') ---" >&2; \
 	        docker logs "$$_vc" 2>&1 \
@@ -211,7 +192,7 @@ vllm-reset-test: check-hf-token prep-dirs
 	            | grep -av 'APIServer' | tail -25 | sed 's/^/  [cause] /' >&2; \
 	        exit 1; \
 	    fi; \
-	    [ "$$i" = "$${VLM_READY_RETRIES:-60}" ] && echo "ERROR: vLLM not healthy after vllm_reset_test timeout" >&2 && exit 1; \
+	    [ "$$i" = "$(VLM_READY_RETRIES)" ] && echo "ERROR: vLLM not healthy after vllm_reset_test timeout" >&2 && exit 1; \
 	    sleep 5; \
 	done
 	@docker inspect aic-client >/dev/null 2>&1 || { \
@@ -231,5 +212,6 @@ vllm-reset-test: check-hf-token prep-dirs
 	docker exec -e AIC_TEST_VLLM_URL="$$_v" -e AIC_TEST_LMCACHE_URL="$$_l" \
 	    -e AIC_TEST_MODEL -e AIC_TEST_ANCHORS -e AIC_TEST_FLOOD \
 	    -e AIC_TEST_TIMEOUT -e AIC_TEST_SEED \
+	    -e AIC_TEST_ANCHOR_REPS -e AIC_TEST_MAX_TOKENS \
 	    aic-client python3 -u benchmarks/vllm_reset_test.py
 	@echo "Test complete. Run 'make down' to stop the stack."

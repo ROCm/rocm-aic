@@ -6,7 +6,7 @@ set -euo pipefail
 # SPDX-License-Identifier: MIT
 #
 # Build-time contract:
-#   - IMAGE_REF points at a locally-loaded emulate image
+#   - VLLM_IMAGE_REF points at a locally-loaded emulate image
 #   - docker compose is available
 #   - VLLM_EMUL_OUT_DIR is a writable host directory
 #
@@ -15,7 +15,7 @@ set -euo pipefail
 #   - runs a fixed vllm bench serve sweep against the emulator
 #   - copies the resulting emu-*.json files into $VLLM_EMUL_OUT_DIR/results
 
-IMAGE_REF="${IMAGE_REF:?IMAGE_REF must be set}"
+VLLM_IMAGE_REF="${VLLM_IMAGE_REF:?VLLM_IMAGE_REF must be set}"
 VLLM_EMUL_OUT_DIR="${VLLM_EMUL_OUT_DIR:?VLLM_EMUL_OUT_DIR must be set}"
 VLLM_EMUL_MODEL="${VLLM_EMUL_MODEL:-Qwen/Qwen3-8B}"
 VLLM_EMUL_PROFILE_PACK="${VLLM_EMUL_PROFILE_PACK:-/opt/llm-emu/profiles/MI300X-Qwen3-8B.json}"
@@ -42,7 +42,7 @@ cleanup() {
 }
 trap cleanup EXIT
 
-export IMAGE_REF
+export VLLM_IMAGE_REF
 export VLLM_MODEL="${VLLM_EMUL_MODEL}"
 export VLLM_EMULATOR_PROFILE_PACK="${VLLM_EMUL_PROFILE_PACK}"
 export VLLM_EMULATOR_ORACLE_K="${VLLM_EMUL_ORACLE_K}"

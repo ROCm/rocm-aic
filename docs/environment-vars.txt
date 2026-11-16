@@ -1,0 +1,491 @@
+# Descriptions for the generated tables in docs/ENVIRONMENT.md.
+#
+# scripts/gen-env-reference.py reads the defaults and owners from code and the
+# text from here.  `make env-docs` regenerates the tables; `make env-docs-check`
+# (and the lint workflow) fails when a variable found in code has no entry.
+#
+#   [section]           one table, between the `generated:<section>` markers
+#   NAME: description   one row; rows keep this order.  Markdown; write '|' as '\|'.
+#     continuation      an indented line continues the description
+#   [ignore]            variables that are found in code but are not documented
+#
+# Never write a default here: the generator prints the one in code.
+
+[image]
+IMAGE_TAG: Version tag shared by the stack images, derived from `AIC_VERSION`, the pins and `ROCM_ARCH`. Set it to override the derivation; without `docker buildx` make falls back to `latest`
+AIC_VERSION: AIC release. The repo-root `VERSION` file owns it (make and `aic-bake-env.sh` export it from there); the bake literal is the fallback for a bare `docker buildx bake`
+AIC_IMAGE_PREFIX: Registry prefix for every image tag, with its trailing `/` (e.g. `ghcr.io/rocm/rocm-aic/`). Empty keeps the bare local names
+AIC_IMAGE_EXTRA_TAG: Short alias pushed next to the version tag (e.g. `gfx1250`); only used with `AIC_IMAGE_PREFIX`
+VLLM_IMAGE_REF: Full `name:tag` of the vLLM image compose starts. `make` exports the version-tagged ref bake resolves; the default is the `:latest` alias a local bake adds
+LMCACHE_IMAGE_REF: Full `name:tag` of the LMCache image compose starts; resolved the same way as `VLLM_IMAGE_REF`
+HSA_SNOOP_IMAGE: Full `name:tag` of the hsa-snoop image compose starts
+KVBENCH_IMAGE_REF: Full `name:tag` of the KVBench image; bake tags it `aic-kvbench:<KVBENCH_IMAGE_TAG>`
+KVBENCH_IMAGE_TAG: Tag of the KVBench image, the short `KVBENCH_REF`
+AIC_VLLM_IMAGE: Slurm scripts: `name:tag` of the vLLM image to build, store and run. The tag is the one bake derives
+AIC_LMCACHE_IMAGE: Slurm scripts: `name:tag` of the LMCache image
+AIC_HSA_SNOOP_IMAGE: Slurm scripts: `name:tag` of the hsa-snoop image built by `build-exporters` and loaded by the cliff job
+AIC_BASE_IMAGE: Slurm scripts: `name:tag` the `bake` command stores the base image under
+AIC_IMAGE: Slurm scripts: a complete `name:tag` for the single-image paths, used verbatim; wins over `AIC_IMAGE_NAME`. The monitoring library runs its Prometheus queries from it
+AIC_IMAGE_NAME: Slurm scripts: image name only; the version-derived tag is appended
+AIC_EMULATE_IMAGE: `name:tag` of the CPU-only emulation image built by `make dist-build-emulate`
+IMAGE_NAME: Name part of the default `AIC_EMULATE_IMAGE`
+IMAGE_TAG_EMULATE: Tag part of the default `AIC_EMULATE_IMAGE`
+
+[rocm]
+ROCM_VERSION: ROCm release the images are built on
+ROCM_ARCH: GPU arch of this host's stack: a `;`-, `,`- or space-separated `gfx` list. `make` fills it from `rocm_agent_enumerator` when unset and forces `gfx950` on SPUR; empty omits the arch suffix from the image tag
+AIC_ROCM_ARCH: Arch list a Slurm build compiles for and a Slurm test expects (`;`-separated). Separate from `ROCM_ARCH` on purpose: the default covers every supported arch, so one image runs on any of them
+AIC_FAST_ARCH: The single arch of the `-fast` make targets (`dist-build-fast`, `smoke-test-fast`, ...)
+ROCM_BASE_IMAGE: Full ROCm development image the source builds run on
+ROCM_RUNTIME_IMAGE: Image the shipped images start from
+
+[pins]
+PYTORCH_REF: `ROCm/pytorch` commit built from source. A SHA, because the 2.13 series has no tag
+PYTORCH_SERIES: Display only: the torch series in the image tag, README and release notes, and the CPU torch the emulate builds install. Bump with `PYTORCH_REF`
+TORCHVISION_REF: Ref of torchvision built against that PyTorch
+VLLM_REF: vLLM ref
+LLM_EMU_REF: llm-emu ref (the emulation plugin)
+AITER_REF: ROCm AITER ref installed into every image; override only together with a validated `FLASH_ATTN_REF`
+FLASH_ATTN_REF: FlashAttention ref, built for the CDNA (`gfx9*`) arches only
+LMCACHE_REF: LMCache ref
+NIXL_REF: NIXL ref
+HSA_SNOOP_REF: hsa-snoop ref
+CLR_REF: `ROCm/rocm-systems` ref the patched `libamdhip64` in the base image is built from; follows `ROCM_VERSION`
+TRITON_REF: Triton ref source-built into the base image
+UV_VERSION: `uv` release used by the image builds
+NVME_EXPORTER_VERSION: `nvme_exporter` release packaged into the NVMe exporter image
+RDMA_EXPORTER_VERSION: `rdma_exporter` release packaged into the RDMA exporter image
+KVBENCH_REF: KVBench commit
+KVBENCH_LMCACHE_VERSION: LMCache release (from `PyPI`) installed into the KVBench image. Not `LMCACHE_REF`: KVBench pins its own compatible range
+AIPERF_VERSION: `aiperf` version installed into the AgentX client image
+
+[urls]
+PYTORCH_GIT_URL: PyTorch source repository; override to build from a fork
+TORCHVISION_GIT_URL: Source repository of torchvision
+VLLM_GIT_URL: vLLM source repository
+LLM_EMU_GIT_URL: llm-emu source repository
+AITER_GIT_URL: AITER source repository
+FLASH_ATTN_GIT_URL: FlashAttention source repository
+LMCACHE_GIT_URL: LMCache source repository
+NIXL_GIT_URL: NIXL source repository
+HSA_SNOOP_GIT_URL: hsa-snoop source repository
+CLR_GIT_URL: Source repository of the patched `libamdhip64`
+TRITON_GIT_URL: Source repository of Triton
+KVBENCH_GIT_URL: KVBench source repository
+
+[build]
+BUILD_JOBS: Cap on parallel compile jobs. Empty means `nproc`; a Slurm build defaults it to `AIC_BUILD_CPUS`
+BUILD_PROGRESS: `docker buildx bake --progress` mode for `make build` (`auto`, `plain`, `tty`)
+BAKE_TARGETS: Bake targets `make build` builds
+BAKE_OUTPUT_FLAG: Output flag `make build` passes to bake (`--load`, `--push`)
+WHEELS_DIR: Where the `wheels` bake group writes the pip wheels, one directory per wheel target; `make wheels` flattens them
+VLLM_TARGET_DEVICE: vLLM build target: `rocm` compiles the GPU kernels, `empty` compiles none (the emulation image)
+AIC_UCX_FAST: `1` builds a minimal UCX; `make dist-build-fast` sets it
+BLAS_CACHE_BUST: Cache key of the arch-specific ROCm `BLAS` layer in the base image. Empty rebuilds that layer on every bake; set a fixed value to reuse it
+AITER_PREBUILD_KERNELS: Compile the AITER kernels into the vLLM image at build time instead of on first use. `1` most, `2` no backward/tune, `3` `fmha_v3` only. Single-arch builds only
+TLS_CERT: Corporate CA certificate passed to the build as a BuildKit secret, never stored in an image. A Slurm build falls back to `$HOME/certs/zscaler-ca.crt` when that file exists
+AIC_BUILDX_BUILDER: Name of the `docker-container` buildx builder used by `make build` and the Slurm build; ignored with the `docker` driver
+AIC_CACHE_REF: Registry ref for a shared BuildKit layer cache, stored as `<ref>-<arch>-<image>`. Takes precedence over `AIC_CACHE_GHA_SCOPE` and `AIC_CACHE_DIR`; needs `docker login`
+AIC_CACHE_GHA_SCOPE: GitHub Actions cache scope prefix, for small GitHub-hosted builds only (the Actions cache is far smaller than this stack's layers)
+AIC_CACHE_DIR: Directory for a file-based BuildKit layer cache, one directory per arch. With all three cache variables empty the build uses no cache
+AIC_CACHE_MODE: BuildKit `--cache-to` mode: `min` or `max`
+
+[slurm-build]
+AIC_IMAGE_DIR: Shared directory the built image artifacts (tarballs or registry refs) are stored in and loaded from. The first default applies on SPUR, the alternate elsewhere
+AIC_TARGETS: Comma-separated nodes the `load` and `all` commands load the images onto
+AIC_DIST_BACKEND: How a build hands its images to the jobs that run them: `tarball` (`docker save` into `AIC_IMAGE_DIR`) or `registry` (a registry's storage on shared NFS plus a digest ref, so layers are stored once and a node fetches only what it lacks). `registry` needs `AIC_BUILDX_DRIVER=docker` and is the default on SPUR with that driver; `tarball` elsewhere. Nothing removes the images finished runs leave behind: run `registry garbage-collect --delete-untagged` on the storage while no job uses it
+AIC_REGISTRY_IMAGE: Image of the registry the jobs start for `AIC_DIST_BACKEND=registry` and `AIC_CACHE_BACKEND=registry`. A node without it loads `<storage>/aic-images/<image>.tar`, which the first job to pull it writes
+AIC_CACHE_BACKEND: Format `AIC_CACHE_DIR` is kept in: `local` (a BuildKit local cache) or `registry` (a registry's storage under `<dir>/registry`, served by a container the build job starts and removes). `registry` needs `AIC_BUILDX_DRIVER=docker` and is the default on SPUR with that driver; `local` elsewhere. Nothing removes superseded blobs from a registry: run `registry garbage-collect` while no build uses the directory
+AIC_CACHE_RESET: `1` passes `reset=true` to a local `--cache-to`, so superseded blobs are dropped; needs buildx 0.35.0 or newer
+AIC_CACHE_INSECURE: `1` when `AIC_CACHE_REF` presents a certificate the `docker-container` builder does not trust: it is told to skip verification
+AIC_BUILDX_DRIVER: `docker-container` (a builder the script creates on the build node) or `docker` (BuildKit inside the daemon, which needs the `containerd` image store). With `docker` no builder is created or pruned and `docker/buildkitd.toml` cannot be applied, so step logs are clipped. `docker` is the default on SPUR, where the privileged builder container is denied; `docker-container` elsewhere
+AIC_BUILDX_PRUNE: `1` prunes the builder's node-local cache after a `bake`; the next build compiles everything again
+AIC_BUILD_PARTITION: Slurm partition for the build and load jobs. `AIC_SPUR_PARTITION` on SPUR, `defq` elsewhere
+AIC_BUILD_CONSTRAINT: Slurm `-C` expression for the build node, used when `AIC_BUILD_NODE` is unset. Empty on SPUR, where nodes carry no feature labels; `CPUONLY` elsewhere
+AIC_BUILD_NODE: Pin the build node with `--nodelist`; overrides `AIC_BUILD_CONSTRAINT`
+AIC_BUILD_EXCLUDE_NODES: Comma-separated nodes excluded from every submit. Ignored when a node is pinned
+AIC_BUILD_LOCAL: `1` builds on this host, with no Slurm job
+AIC_BUILD_CPUS: `--cpus-per-task` of the build job
+AIC_BUILD_MEM: `--mem` of the build job; empty leaves it to the partition default
+AIC_BUILD_GPUS: `--gpus` of the build job. SPUR refuses a submit with no GPU request, so it defaults to `1` there; unset elsewhere
+AIC_BUILD_TIME: Build job time limit
+AIC_LOAD_TIME: Per-node load job time limit
+AIC_TMP_DIR: Build-job `TMPDIR` and OCI scratch. Empty picks node-local `/tmp/aic-scratch.<job>`, then `$HOME/.tmp-rocm-aic-cicd`; never shared NFS
+AIC_COMPRESS: Tarball compression: `zstd`, `gzip` or `none`. Empty picks `zstd` when available, else `gzip`
+AIC_BUILD_TARGET: Dockerfile stage the single-image `build` command stops at (`emulate` for the emulation image)
+AIC_BUILD_DOCKERFILE: Dockerfile (relative to `docker/`) the single-image `build` command builds
+AIC_BUILD_CONTEXT_BASE: Pre-built base image handed to that build as its `base` stage
+AIC_BUILD_BASE_FIRST: `1` builds the base image first, in the same job, instead
+AIC_BUILD_CONTEXT_BASE_WHEELS: Directory of exported base wheels handed to that build as its `base-wheels` context
+AIC_BUILD_CONTEXT_LMCACHE_WHEELS: Directory of exported LMCache wheels handed to that build as its `lmcache-wheels` context
+AIC_VLLM_TARGET_DEVICE: Slurm name for bake's `VLLM_TARGET_DEVICE` in the single-image build
+AIC_EMULATE_VLLM_DEVICE: `VLLM_TARGET_DEVICE` for `build-emulate`; empty takes the emulate target's `empty`
+AIC_AITER_PREBUILD_KERNELS: Slurm name for bake's `AITER_PREBUILD_KERNELS`; needs a single-arch `AIC_ROCM_ARCH`
+AIC_WHEEL_DIR: Where the `wheels` command exports the pip wheels
+AIC_VLLM_PUSH_REF: Registry-qualified ref `make dist-push` pushes the vLLM image to. Both push refs are required
+AIC_LMCACHE_PUSH_REF: Registry-qualified ref `make dist-push` pushes the LMCache image to
+AIC_FORCE_LOAD: `1` reloads an image from its tarball even when the node's copy is current. By default a node reloads only when the tarball is newer than what it last loaded
+AIC_REQUIRE_FRESH_TARBALL: `1` fails a build whose tarball was not rewritten, instead of warning
+AIC_JOB_LOG_TAIL: Lines of the job log printed when a submitted job fails
+AIC_SLURM_ACCOUNT: Slurm `--account` for every submit; not needed on SPUR
+
+[site]
+AIC_CLUSTER: Selects the per-cluster environment file `.env.<cluster>` in the repo root. Auto-detected: the first dash-separated token of the host name with a matching file
+AIC_ENV_FILE: Path of that file, overriding the `AIC_CLUSTER` lookup. Plain unquoted `KEY=value` lines
+AIC_SPUR_CLUSTER: `1` on a SPUR controller: selects the SPUR site defaults shown in these tables and the SPUR submit path. SPUR's `sbatch` has no `--parsable`, `--wait` or `--overcommit`, so jobs are submitted from a file and watched with `squeue`
+AIC_SPUR_PARTITION: Partition for every SPUR submit. Use the variable, not the literal name
+AIC_SHARED_NFS: Root of the shared NFS on SPUR, under which the image, cache and Hugging Face directories default
+AIC_SPUR_RPC_RETRIES: Consecutive `squeue` failures tolerated while watching a job (10 s apart) before giving up
+AIC_CI_LIB_DIR: Where `make install-ci-scripts` installs the self-hosted runner scripts
+AIC_CI_STORAGE_ROOT: Root of the CI checkouts on the SPUR login node
+AIC_CI_ACTIVE_JOB_FILE: CI runners: file the id of the job being watched is written to, so a cancelled workflow can cancel it
+
+[gpu-storage]
+GPU: Fallback GPU index when no scheduler allocation is resolved; also names the vLLM container (`aic-vllm-gpu<GPU>`)
+AIC_ROCR_VISIBLE: `ROCR_VISIBLE_DEVICES` for every container with `/dev/kfd`: absolute host GPU ids (`3` or `2,5`). The Slurm jobs resolve it: on standard Slurm from `ROCR_VISIBLE_DEVICES`, then `HIP_VISIBLE_DEVICES`, then `CUDA_VISIBLE_DEVICES`; on SPUR from the controller allocation, and an allocation that cannot be resolved fails the job
+AIC_HIP_VISIBLE: `HIP_VISIBLE_DEVICES` and `CUDA_VISIBLE_DEVICES`: indices relative to `AIC_ROCR_VISIBLE` (`0` or `0,1`). Set the two together
+NVME_DATA: Host path of the local NVMe pool (L2a), mounted at `/data/nvme`. The cliff job picks its own under `AIC_LOCAL_ROOT`
+NFS_DATA: Host path of the NFS-over-RDMA pool (L2b), mounted at `/data/nfs`
+GDS_SLAB_DATA: Host path of the hipFile slab file; required with `GDS_MODE=1`
+GDS_MODE: `1` uses the hipFile NVMe slab as L1 instead of DRAM (`make up-gds-l1`)
+AIC_SHM_SIZE: Size of the private `/dev/shm` shared by LMCache and vLLM; raise it when the L1 request is larger
+
+[hf-logging]
+HF_TOKEN: Hugging Face access token. Required to download gated models; not needed for an offline cache
+HF_TOKEN_FILE: File holding the token, read by make when `HF_TOKEN` is unset
+HF_HOME: Host Hugging Face cache directory mounted into the containers. `make` uses `/scratch/models` when that exists; each Slurm job has its own default
+HF_HUB_OFFLINE: `1` blocks Hugging Face Hub network access
+TRANSFORMERS_OFFLINE: `1` puts Transformers in offline mode
+LOG: Host log directory
+TZ: Time zone of every container
+
+[lmcache]
+LMCACHE_PORT: ZMQ listen port of the LMCache MP server
+LMCACHE_L1_SIZE_GB: L1 cap in GiB: DRAM in the standard mode, slab size in GDS mode
+AIC_L2_BACKEND: L2 backend: `nixl` (AIS_MT NVMe plus POSIX NFS), `nixl_posix`, `nixl_posix_dynamic`, `local_disk` (LMCache's own disk backend through a mounted config) or `none`. `nixl_posix` is the SPUR and emulation default
+AIC_NIXL_BACKEND: NIXL plugin of the `nixl` backend: `AIS_MT` (hipFile, P2PDMA) or `POSIX`
+AIC_NIXL_USE_DIRECT_IO: `O_DIRECT` for the AIS_MT NVMe pool. The POSIX plugin always uses buffered I/O
+LMCACHE_NVME_POOL: NIXL pool slots of the NVMe adapter
+LMCACHE_NVME_SLOT_SIZE: File size per NVMe pool slot, bytes (256 MiB)
+LMCACHE_NFS_POOL: NIXL pool slots of the NFS adapter
+LMCACHE_NIXL_POSIX_SLOT_SIZE: Size of each POSIX pool file, bytes (16 MiB). L2 capacity is pool x this size; a multiple of 4 KiB
+LMCACHE_NIXL_POSIX_POOL: Pool slots of the POSIX backend
+LMCACHE_NIXL_DYNAMIC_MAX_GB: NVMe capacity cap in GB for `nixl_posix_dynamic`
+LMCACHE_NIXL_DYNAMIC_DIRECT_IO: `O_DIRECT` for `nixl_posix_dynamic`
+LMCACHE_MAX_GPU_WORKERS: `--max-gpu-workers`, the parallel store and retrieve workers. `1` puts every client on one thread and backs stores up under concurrent load; use it only for a single-client run, to save GPU memory
+LMCACHE_WORKER_REAP_TIMEOUT: `--worker-reap-timeout-seconds`
+LMCACHE_L2_PREFETCH_MAX_IN_FLIGHT: `--l2-prefetch-max-in-flight`, concurrent L2 load tasks. The cliff job raises it
+LMCACHE_CHUNK_SIZE: Tokens per KV chunk; the MP server and the coordinator must agree
+LMCACHE_CONFIG_FILE_HOST: Host path of an LMCache config file to mount (`local_disk` and advanced tuning)
+LMCACHE_CONFIG_FILE: In-container path of that config; set only when one is mounted
+NIXL_TELEMETRY_ENABLE: NIXL's own Prometheus exporter on `:19090`. Set it empty to disable
+NIXL_TELEMETRY_EXPORTER: NIXL telemetry exporter type
+AIC_HSA_IPC_LEGACY: `1` sets `HSA_ENABLE_IPC_MODE_LEGACY=1` in both containers: the KFD-handle IPC mode, which needs the DKMS `amdgpu` module
+AIC_LMCACHE_VMM_IPC: `1` selects the HIP VMM wrapper for cross-container memory handles
+
+[coordinator]
+LMCACHE_COORDINATOR_URL: Base URL the MP server registers and heartbeats against. Set it empty to run without a coordinator
+LMCACHE_COORDINATOR_INSTANCE_TIMEOUT: Seconds without a heartbeat before an instance is evicted
+LMCACHE_COORDINATOR_HEALTH_INTERVAL: Seconds between heartbeat sweeps
+LMCACHE_COORDINATOR_EVICTION_INTERVAL: Seconds between L2 eviction checks
+LMCACHE_COORDINATOR_KEEPALIVE: HTTP keep-alive timeout, seconds
+
+[vllm]
+VLLM_MODEL: Model to serve. The cliff job picks one by arch when it is empty (`AIC_MODEL_BIG`, `AIC_MODEL_SMALL`)
+TENSOR_PARALLEL_SIZE: `--tensor-parallel-size`
+VLM_GPU_MEMORY_UTILIZATION: `--gpu-memory-utilization`
+VLM_MAX_MODEL_LEN: `--max-model-len`
+VLM_MAX_NUM_BATCHED_TOKENS: `--max-num-batched-tokens`
+VLM_BLOCK_SIZE: `--block-size`; match it to the model and connector cache geometry
+VLM_LOAD_FORMAT: `--load-format`. `fastsafetensors` is CDNA-only; use `auto` on RDNA
+VLM_ATTENTION_BACKEND: `--attention-backend`. `TRITON_ATTN` is the one that supports KV connectors
+VLM_KV_CACHE_DTYPE: `--kv-cache-dtype`; `auto` for arches without native `fp8`
+VLM_KV_CACHE_METRICS_SAMPLE: Fraction of KV blocks sampled for the residency histograms
+KV_TRANSFER_ARG: vLLM `--kv-transfer-config` argument. `make` sets the `LMCacheMPConnector` JSON; empty is a plain vLLM (the cliff `vram` baseline). Single-quote the JSON
+VLLM_EXTRA_ARGS: Extra `vllm serve` arguments appended verbatim; single-quote embedded JSON
+VLLM_LOGGING_LEVEL: vLLM log level
+VLLM_SERVER_DEV_MODE: `1` enables vLLM's development endpoints, which the tests use to reset the GPU prefix cache
+AIC_ROCM_USE_AITER: `VLLM_ROCM_USE_AITER`: the AITER unified attention a KV connector needs. `0` for arches without AITER support
+PYTORCH_ALLOC_CONF: Passed through to vLLM. A no-op on ROCm; see `PYTORCH_HIP_ALLOC_CONF`
+PYTORCH_HIP_ALLOC_CONF: PyTorch HIP allocator configuration for vLLM
+VLLM_IPC_MODE: IPC namespace of the `vllm` service. It joins LMCache's; to run vLLM alone start the `vllm-only` service rather than overriding this
+VLLM_PID_MODE: PID namespace of the `vllm` service. Empty means a private namespace
+VLLM_NETWORK_MODE: Network namespace of the `vllm` service. ROCR passes IPC handles over an abstract socket, so vLLM and LMCache must share one
+VLM_READY_RETRIES: `make vllm-reset-test`: readiness polls, 5 s apart
+VLM_FAIL_LOG_LINES: `make vllm-reset-test`: container log lines printed when the vLLM container exits before becoming ready
+
+[network]
+AIC_PUBLISH_ADDR: Host address the published Grafana port binds; `0.0.0.0` exposes it beyond loopback
+AIC_GRAFANA_PORT: Pin the Grafana host port, the only published one. Empty lets Docker pick a free port; `make endpoints` prints the URL
+AIC_CLIENT_IMAGE: Image of the `aic-client` container make targets run their clients in
+AIC_FETCH_IMAGE: Image `aic_fetch` runs `curl` from; scripts set it to an AIC image already on the node
+AIC_FETCH_TIMEOUT: `aic_fetch` request timeout, seconds
+AIC_NETWORK: Docker network `aic_fetch` and the endpoint helpers attach to
+
+[monitoring]
+AIC_MONITORING: Slurm jobs: `1` starts the Prometheus sidecar, `0` skips it
+AIC_EXPORTERS: Slurm jobs: `1` also starts the containerized exporter fleet, `0` is Prometheus only, `safe` is the subset SPUR permits. `make` exports `safe` on SPUR; the local make targets pick exporters with compose profiles instead
+AIC_METRICS_DIR: Prometheus TSDB directory. The cliff job writes it under its own log directory
+AIC_PROM_IMAGE: Prometheus image
+AIC_PROM_RETENTION: Prometheus TSDB retention
+PROM_UID: User id Prometheus runs as, so it can write the TSDB directory; make passes the caller's
+PROM_GID: Group id Prometheus runs as
+AIC_GRAFANA_IMAGE: Grafana image
+AIC_NODE_EXPORTER_IMAGE: Node exporter image
+AIC_AMDGPU_EXPORTER_IMAGE: AMD GPU metrics exporter image
+AIC_NVME_EXPORTER_IMAGE: NVMe exporter image. A local bake tags it `:local`; the Slurm build stores it as `:latest`
+AIC_RDMA_EXPORTER_IMAGE: RDMA exporter image; tagged like the NVMe one
+AIC_HSA_SNOOP_PID_MODE: PID namespace of the hsa-snoop container. Empty means private. The monitoring library defaults it to `host`; SPUR refuses that, so make sets `container:aic-lmcache` there
+NODEX_PID_MODE: PID namespace of the node exporter; `host` gives per-process CPU statistics where the site permits it
+AIC_CPU_SMOKE: `1` starts the CPU-only exporter subset (the monitoring smoke test on a node with no GPU)
+AIC_MON_SKIP_SERVICES: Space-separated compose services the monitoring library leaves out
+COMPOSE_PLUGIN_VERSION: `docker compose` plugin version installed by `make ensure-compose` and the Slurm jobs when the plugin is missing
+PROM_DUMP_OUT: Output path of `make prometheus-dump`
+PROM_DUMP_WAIT: `make prometheus-dump`: seconds between the stack coming up and the scrape
+
+[bench]
+BENCH_ARM: Arm `make cliff` runs: `kvd_v2` or `vram_only`
+BENCH_ISL: Input sequence length, tokens. `make cliff` sets it; the Slurm cliff job leaves the sweep shape to `benchmarks/run_cliff.py` unless it is set
+BENCH_SHARED_TOK: Shared-prefix length, tokens
+BENCH_CONCUR: Concurrency ladder. The `cliff-kvd`, `cliff-spur-l2` and `cliff-short` targets each preset a shorter one
+BENCH_ITERS: Iterations per concurrency point
+BENCH_ENDPOINT: vLLM endpoint as seen from the `aic` bridge. Empty resolves to the running tiered vLLM. `benchmarks/agentx/run_agentx.sh` reads the same name with its own default
+BENCH_MODEL: Model name in the benchmark requests
+BENCH_PREFIX_MODE: Prefix sharing in the Slurm cliff job: `per_client` or `shared`. `make cliff-kvd` presets `shared`
+BENCH_LOGDIR: Where non-Slurm runs write results and plots
+
+[kvbench]
+KVBENCH_MODEL: KVBench model profile
+KVBENCH_GPU_PROFILE: KVBench hardware timing profile
+KVBENCH_PORT: KVBench container port
+KVBENCH_CHUNK_SIZE: KV chunk size, tokens
+KVBENCH_LOCAL_CPU_SIZE_GB: Local CPU cache size in the KVBench LMCache config, GB
+KVBENCH_READY_S: Seconds `make cliff-kvbench-local` and `.slurm/run-kvbench-cliff.sbatch` wait for KVBench to answer
+AIC_KVBENCH_NODE: `make cliff-kvbench-submit`: pin the node
+AIC_KVBENCH_CONSTRAINT: `make cliff-kvbench-submit`: Slurm `-C` expression (standard Slurm only)
+AIC_KVBENCH_TIME: `make cliff-kvbench-submit`: job time limit
+
+[cliff]
+AIC_CLIFF_ARMS: Comma list of arms to run: `vram`, `nvme`, `gds`. `make cliff-spur-l2` presets `nvme`
+AIC_CLIFF_NODE: Pin the cliff node with `--nodelist`
+AIC_CLIFF_GFX: Shorthand for a one-arch `AIC_CLIFF_CONSTRAINT` (`gfx950`)
+AIC_CLIFF_CONSTRAINT: Slurm `-C` expression for the cliff node, standard Slurm only. Defaults to `AIC_CLIFF_GFX` in upper case, else `GFX942&NVME`; `none` submits without a constraint
+AIC_CLIFF_GPUS: GPUs a SPUR cliff submit reserves (`--gpus`). Raise it only with a matching `TENSOR_PARALLEL_SIZE`
+AIC_CLIFF_TIME: Cliff job time limit. The make cliff targets each preset their own
+AIC_CLIFF_CPUS: `--cpus-per-task` of the cliff job
+AIC_CLIFF_MEM: `--mem` of the cliff job
+AIC_CLIFF_JOB_NAME: Slurm job name; the make cliff targets each set their own
+AIC_MODEL_BIG: Model the cliff job serves on the large-memory CDNA arches when `VLLM_MODEL` is empty. Must already be in `HF_HOME`
+AIC_MODEL_SMALL: Model it serves on every other arch
+AIC_NVME_AUTO: `1` finds a dedicated local NVMe for the LMCache tiers: a mounted `aic-lmcache` volume, else a raw spare it formats and mounts, else a mounted non-root NVMe, else node-local `/tmp`. `0` forces `/tmp`. Formatting needs passwordless `sudo`
+AIC_NVME_MOUNT: Mount point used when a spare NVMe is provisioned; left mounted for reuse
+AIC_NVME_LABEL: Label of the filesystem that marks a volume as provisioned by the cliff job
+AIC_LOCAL_ROOT: Node-local root of the tier directories when `NVME_DATA`, `NFS_DATA` and `GDS_SLAB_DATA` are not set
+AIC_LOCAL_CPU: `true` puts an LMCache DRAM L1 in front of the NVMe L2 in the `nvme` arm
+LMCACHE_MAX_LOCAL_CPU_SIZE: Size of that DRAM L1, GB
+AIC_LOCAL_DISK_SIZE_GB: `local_disk` backend: maximum disk size, GB
+AIC_L2_ODIRECT: `local_disk` backend: `true` uses `O_DIRECT`, `false` goes through the page cache
+AIC_KV_LOAD_FAILURE_POLICY: vLLM `kv_load_failure_policy` for the connector arms: `recompute` or `fail`. Empty leaves vLLM's default
+POST_WARMUP_SLEEP_S: Seconds to wait after each warm-up wave so asynchronous L2 writes land before the timed iterations
+AIC_CLIFF_WARMUP_WAVES: Warm-up waves per concurrency level
+AIC_CLIFF_RESET_PREFIX_CACHE: `1` empties vLLM's GPU prefix cache before every timed iteration of the connector arms
+VLM_ROPE_SCALING: Raw JSON for the model's `rope_scaling`, applied to every arm; raise `VLM_MAX_MODEL_LEN` to match
+VLM_YARN_FACTOR: Shortcut that builds a `yarn` `rope_scaling` with this factor
+VLM_YARN_ORIG_LEN: Native context length that shortcut assumes
+AIC_VLLM_READY_TIMEOUT: Seconds the cliff job waits for a vLLM endpoint; raise it for large models on slow storage
+LMCACHE_HEARTBEAT_INTERVAL: Seconds between the cliff job's LMCache status lines
+AIC_VLLM_ARTIFACT: Stored vLLM image artifact a job loads, when it is not the one derived from `AIC_VLLM_IMAGE` and `AIC_IMAGE_DIR`
+AIC_LMCACHE_ARTIFACT: Stored LMCache image artifact, likewise
+
+[slurm-test]
+AIC_TEST_NODE: Pin the test node with `--nodelist`
+AIC_TEST_CONSTRAINT: Slurm `-C` expression for the test node. Derived from `AIC_ROCM_ARCH` when unset, one term per arch joined with `\|`; explicitly empty means none
+AIC_TEST_SITE: Site feature put in front of each term of a derived constraint
+AIC_TEST_NVME: `1` adds `&NVME` to a derived test constraint
+AIC_TEST_EXCLUDE_NODES: Nodes excluded from the test submits; defaults to `AIC_BUILD_EXCLUDE_NODES`
+AIC_TEST_GRES: Standard Slurm GPU request of the smoke and tiny tests
+AIC_TEST_GPUS: SPUR GPU request of the smoke and tiny tests (`--gpus`)
+AIC_TEST_TIME: Smoke-test time limit
+AIC_TEST_CPUS: `--cpus-per-task` of the smoke test
+AIC_TEST_MEM: `--mem` of the smoke test
+AIC_SMOKE_EXPORTERS: `1` also starts the exporter fleet and Prometheus after the in-image checks and health-checks every `/metrics` endpoint. Informational: it never changes the exit code
+AIC_SMOKE_SCRAPE_S: Seconds Prometheus scrapes before that health check
+AIC_TINY_MODEL: Model `make tiny-test` serves
+AIC_TINY_TIME: Tiny-test time limit
+AIC_TINY_CPUS: `--cpus-per-task` of the tiny test
+AIC_TINY_MEM: `--mem` of the tiny test
+AIC_TINY_READY_TIMEOUT: Readiness attempts, 5 s apart; keep the total under `AIC_TINY_TIME`
+AIC_TINY_SCRAPE_S: Seconds of metrics scraped after the test
+AIC_TINY_EXPORTERS: `AIC_EXPORTERS` value for that capture
+
+[accuracy]
+AIC_ACCURACY_MODEL: Model to score; must match what the arms serve
+AIC_ACCURACY_DELTA: Allowed gap between the tiered and baseline arms, two-sided; a larger gap counts as corruption
+AIC_ACCURACY_LIMIT: Cap on gsm8k items per arm. Unset scores the full split; `make accuracy-test-very-fast` sets `100`, and the floor is widened for a capped run
+AIC_ACCURACY_CONCURRENT: `lm_eval` request concurrency
+AIC_ACCURACY_TIME: Accuracy job time limit
+AIC_ACCURACY_CPUS: `--cpus-per-task` of the accuracy job
+AIC_ACCURACY_MEM: `--mem` of the accuracy job
+AIC_ACCURACY_READY_TIMEOUT: Endpoint readiness attempts, 5 s apart
+AIC_ACCURACY_SCRAPE_S: Seconds of metrics scraped after the test
+AIC_ACCURACY_EXPORTERS: `AIC_EXPORTERS` value for that capture
+AIC_ACCURACY_POOL_ROOT: Node-local root of the job's NVMe and NFS pool directories
+AIC_ACCURACY_MIN_HIT_PCT: Minimum cache hit percentage the tiered arm must report; empty disables the check
+AIC_ACCURACY_ALLOW_L1_ONLY: `1` accepts a run in which nothing was read back from L2
+AIC_ACCURACY_BASELINE_URL: Baseline arm base URL as seen from the `aic` bridge. Only needed when running pytest by hand; the job supplies it
+AIC_ACCURACY_TIERED_URL: Tiered arm base URL
+AIC_ACCURACY_REQUIRED: `1` turns an unreachable endpoint from a skip into a failure; the CI driver sets it
+AIC_ACCURACY_BASELINE_SCORE: Baseline score measured earlier in the job; the arms share the GPU, so they are scored one after the other
+AIC_ACCURACY_REFERENCE_SCORE: Tiered score from before the restart; enables the restart assertion
+AIC_ACCURACY_SCORE_OUT: File the measured tiered score is written to, as JSON
+
+[emulate]
+VLLM_EMULATOR_PROFILE_PACK: Profile pack to replay: an in-image path, or `/profiles/<pack>.json` with `EMU_PROFILE_PACK_HOST`
+VLLM_EMULATOR_MODE: `realtime` sleeps for the predicted latency; `accelerated` resolves at once
+VLLM_EMULATOR_ORACLE_K: Oracle neighbor count, or `auto`
+EMU_PROFILE_PACK_HOST: Host directory mounted at `/profiles` in the emulator container
+EMU_KV_TRANSFER_ARG: `--kv-transfer-config` for the emulator. Not `KV_TRANSFER_ARG`, which make exports for the real stack
+EMU_IPC_MODE: IPC mode of the emulator. `emulate-mp` needs `container:aic-lmcache-emulator`
+DEVICE_TYPE: LMCache device type in the `lmcache-emulator` service
+VLLM_CPU_MODEL: Model served by the `cpu-smoke-emulator` service
+AIC_CONTAINER_USER: `uid:gid` the emulator container runs as, for clusters whose shared model cache is not writable by root
+AIC_CONTAINER_HOME: `HOME` inside that container
+AIC_CONTAINER_USERNAME: User name reported inside that container
+AIC_EMULATE_MODEL: Model the emulation tests serve
+AIC_EMULATE_READY_S: `make test-emulate-local`: seconds to wait for the emulator
+AIC_EMULATE_ARCH: `ROCM_ARCH` of the emulation build; it only selects which PyTorch the base is built for
+AIC_EMULATE_PROFILE_PACK: Pack `make emulate-test` replays
+AIC_EMULATE_PACK_HOST: Host directory of packs to mount for `make emulate-test` and `make emulate-validate`
+AIC_EMULATE_TEST_NODE: Pin the node of the CPU-only emulation jobs
+AIC_EMULATE_TEST_CONSTRAINT: Slurm `-C` expression of the CPU-only emulation jobs
+AIC_EMULATE_TIME: Emulate-test time limit
+AIC_EMULATE_CPUS: `--cpus-per-task` of the emulate test
+AIC_EMULATE_MEM: `--mem` of the emulate test
+AIC_EMULATE_READY_TIMEOUT: Readiness attempts, 5 s apart
+AIC_EMULATE_MP_KV_BYTES: `make emulate-mp-test`: emulated KV pool, bytes. It is really allocated, so size it to the node
+AIC_EMULATE_MP_L1_GB: `make emulate-mp-test`: LMCache L1 size, GiB
+AIC_EMULATE_MP_L2_BACKEND: `make emulate-mp-test`: `AIC_L2_BACKEND` of the emulated stack
+AIC_EMULATE_MP_NIXL_POOL: `make emulate-mp-test`: POSIX pool slots
+AIC_EMULATE_MP_DATA: `make emulate-mp-test`: host directory of the emulated tier volumes
+AIC_EMULATE_MP_MONITORING: `make emulate-mp-test`: `1` starts the Prometheus sidecar
+AIC_EMULATE_MP_BENCH: `make emulate-mp-test`: optional `input_len,output_len,concurrency,num_prompts` sweep run after the cold and warm pair
+AIC_EMULATE_MP_BENCH_PREFIX: `make emulate-mp-test`: shared-prefix length for that sweep; empty means every prompt is unique
+AIC_EMULATE_MP_TIME: Emulate-mp-test time limit
+AIC_EMULATE_MP_CPUS: `--cpus-per-task` of the emulate-mp test
+AIC_EMULATE_MP_MEM: `--mem` of the emulate-mp test
+VLLM_EMUL_MODEL: CI emulation performance job: model served
+VLLM_EMUL_PROFILE_PACK: CI emulation performance job: pack replayed
+VLLM_EMUL_SWEEP: CI emulation performance job: benchmark points
+VLLM_EMUL_READY_TIMEOUT: CI emulation performance job: readiness attempts, 5 s apart
+VLLM_EMUL_ORACLE_K: CI emulation performance job: `VLLM_EMULATOR_ORACLE_K`
+VLLM_EMUL_OUT_DIR: CI emulation performance job: output directory
+
+[capture]
+AIC_CAPTURE_MODEL: Model served during a profile capture
+AIC_CAPTURE_SWEEP: `input_len,output_len,concurrency,num_prompts` points driving the capture
+AIC_CAPTURE_DIR: Where the pack, trace, provenance and benchmark results land
+AIC_CAPTURE_HF_HOME: Hugging Face cache of the Slurm capture job; it holds real weights
+AIC_CAPTURE_GPU: GPU index used by the capture
+IMAGE_REF: `make capture-profile-local`: image to capture from; when empty, the `VLLM_IMAGE_REF` bake resolves for this `ROCM_ARCH`
+AIC_CAPTURE_GPU_UTIL: `--gpu-memory-utilization` of the capture serve
+AIC_CAPTURE_MAX_MODEL_LEN: `--max-model-len` of the capture serve; stored in the pack
+AIC_CAPTURE_MAX_BATCHED_TOKENS: `--max-num-batched-tokens` of the capture serve
+AIC_CAPTURE_EXTRA_ARGS: Extra serve flags for the capture; must match `AIC_VALIDATE_EXTRA_ARGS`
+AIC_CAPTURE_WARMUP_SKIP: `make capture-profile-local`: warm-up steps dropped when the pack is built
+AIC_CAPTURE_CONSTRAINT: Slurm `-C` expression of the capture job
+AIC_CAPTURE_NODE: Pin the capture node
+AIC_CAPTURE_TIME: Capture job time limit
+AIC_CAPTURE_CPUS: `--cpus-per-task` of the capture job
+AIC_CAPTURE_MEM: `--mem` of the capture job
+AIC_CAPTURE_READY_TIMEOUT: Readiness attempts, 5 s apart; the weights download counts
+AIC_VALIDATE_PACK: Pack `make emulate-validate` scores; required
+AIC_VALIDATE_MODEL: Model served for the replay
+AIC_VALIDATE_SWEEP: Benchmark points replayed for the comparison against real hardware
+AIC_VALIDATE_REAL_DIR: Real-hardware benchmark results to compare against; defaults to `bench` next to the pack
+AIC_VALIDATE_MAX_MODEL_LEN: `--max-model-len` of the replay
+AIC_VALIDATE_MAX_BATCHED_TOKENS: `--max-num-batched-tokens` of the replay
+AIC_VALIDATE_EXTRA_ARGS: Extra serve flags for the replay; must match the capture
+AIC_VALIDATE_ORACLE_K: `VLLM_EMULATOR_ORACLE_K` of the replay
+
+[rocjitsu]
+RJ_QEMU_IMAGE: `qemu` container image. The three images come from one build; bump them as a set
+RJ_ROCJITSU_IMAGE: rocjitsu emulator container image
+RJ_QCOW2_IMAGE: Guest disk container image
+RJ_ROCJITSU_ARCH: Emulated GPU arch
+RJ_ROCJITSU_CONFIG: rocjitsu device configuration file
+RJ_VM_VCPUS: Guest CPUs
+RJ_VM_MEM_MB: Guest memory, MiB
+RJ_SSH_PORT: Host port forwarded to the guest's SSH
+RJ_READY_S: Seconds to wait for the guest's SSH
+RJ_WORK_DIR: Host working directory
+RJ_MODEL: Model served in the guest; it must fit the emulator's 1 GiB of GPU memory
+RJ_LMCACHE_L1_SIZE_GB: LMCache L1 size in the guest. Small on purpose, so the cut-down test still overflows it
+RJ_NVME_COUNT: Emulated NVMe devices attached to the guest
+RJ_NVME_MOUNT: NVMe mount point in the guest
+RJ_FORCE_BUILD: `1` rebuilds the images even when arch-matching ones exist
+RJ_IMAGE_PREFIX: Registry prefix to pull the stack from instead of building it, with its trailing `/`
+RJ_IMAGE_ALIAS: Short alias the images were pushed under
+RJ_IMAGE_REF: vLLM image for the emulated arch, as bake tags it
+RJ_LMCACHE_IMAGE_REF: LMCache image for the emulated arch
+RJ_HSA_SNOOP_IMAGE_REF: hsa-snoop image for the emulated arch
+RJ_NCCL_HEARTBEAT_S: `NCCL` process-group heartbeat, seconds; long, because an emulated collective is slow
+RJ_PROBE: `1` runs the kernel capability probe before vLLM
+RJ_PROBE_ONLY: `1` stops after the probe
+RJ_PROBE_TIMEOUT: Seconds allowed per probe step
+RJ_PROBE_ARGS: Extra probe flags
+RJ_MAX_MODEL_LEN: `--max-model-len` in the guest; keep it within the model's limit
+RJ_MAX_BATCHED_TOKENS: `--max-num-batched-tokens` in the guest; it sets the cost of vLLM's startup profiling pass
+RJ_READY_RETRIES: Readiness polls of the reset test in the guest, 5 s apart
+RJ_TEST_ANCHORS: `AIC_TEST_ANCHORS` of the cut-down reset test
+RJ_TEST_FLOOD: `AIC_TEST_FLOOD` of the cut-down reset test
+RJ_TEST_ANCHOR_REPS: `AIC_TEST_ANCHOR_REPS` of the cut-down reset test; at least 6, so a prompt spans two chunks
+RJ_TEST_MAX_TOKENS: `AIC_TEST_MAX_TOKENS` of the cut-down reset test
+RJ_TEST_TIMEOUT: `AIC_TEST_TIMEOUT` of the cut-down reset test
+
+[reset-test]
+AIC_TEST_VLLM_URL: vLLM base URL, as seen from the `aic` bridge
+AIC_TEST_LMCACHE_URL: LMCache HTTP API base URL
+AIC_TEST_MODEL: Model name in the requests
+AIC_TEST_ANCHORS: Anchor prompts stored first and read back at the end
+AIC_TEST_FLOOD: Flood prompts that push the anchors out of L1
+AIC_TEST_ANCHOR_REPS: Repetitions of the preamble sentence per anchor; sets the prompt length
+AIC_TEST_MAX_TOKENS: Tokens generated per request
+AIC_TEST_TIMEOUT: Per-request timeout, seconds
+AIC_TEST_SEED: Random seed of the prompt set
+
+[slurm-other]
+NIGHTLY_TAG: `.slurm/test-nightly-wheels.sbatch`: release tag of the wheels under test
+WHEEL_DIR: `.slurm/test-nightly-wheels.sbatch`: directory holding those wheels
+SKIP_ENGINE_INIT: `.slurm/test-nightly-wheels.sbatch`: `1` skips loading the model on the GPU
+SKIP_MP_TEST: `.slurm/test-nightly-wheels.sbatch`: `1` skips the LMCache MP-mode test
+SKIP_TIER_BENCH: `.slurm/test-nightly-wheels.sbatch`: `1` skips the tier benchmark
+ATTN_BACKEND: `.slurm/test-nightly-wheels.sbatch`: vLLM attention backend of the wheel test
+VLLM_PORT: `.slurm/ext-hit-test.sbatch`: vLLM port inside the test's network namespace
+
+[misc]
+EXPORT_PREFIX: Name prefix of the `make export` tarball
+EXPORT_TARBALL: Full path of the `make export` tarball
+
+[ignore]
+AIC_TLS_CERT: deprecated alias, listed in the hand-written table
+AIC_ATTENTION_BACKEND: deprecated alias, listed in the hand-written table
+AIC_KV_CACHE_DTYPE: deprecated alias, listed in the hand-written table
+KVBENCH_READY_TIMEOUT: deprecated alias, listed in the hand-written table
+AIC_PUSH_REF: removed; the script only names it to reject it
+AIC_EMULATE_MP_IMAGE: removed; the script only names it to reject it
+AIC_DAY_DIR: repo root, set by the submitting script
+AIC_LOG_DIR: job log directory, set by the submitting script
+AIC_REG_NAME: set by image-dist-lib.sh for its own cleanup
+AIC_REGISTRY_DIR: derived by run-build-distribute.sh from AIC_CACHE_DIR or AIC_IMAGE_DIR
+MON_DIR: set by the script that sources monitoring-lib.sh
+MON_COMPOSE: set by the script that sources monitoring-lib.sh
+EXPECT_ARCH: passed by the smoke test to its in-container script
+NIXL_PLUGIN_DIR: in-image path probed by the smoke test
+AIS_KFD_SYMBOL: kernel symbol probed by the smoke test
+INNER_LOG_DIR: in-container path set by test-nightly-wheels.sbatch
+ROCR_VISIBLE_DEVICES: runtime variable; AIC_ROCR_VISIBLE is the one to set
+HIP_VISIBLE_DEVICES: runtime variable; AIC_HIP_VISIBLE is the one to set
+CUDA_VISIBLE_DEVICES: runtime variable; AIC_HIP_VISIBLE is the one to set
+TMPDIR: standard variable
+PYTHONPATH: standard variable
+LD_LIBRARY_PATH: standard variable

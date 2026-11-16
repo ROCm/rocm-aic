@@ -9,14 +9,14 @@
 # same process.  A single python:3.12-slim container replaces the two heavy
 # rocm-aic containers that were previously used.
 #
-# Env vars (all optional):
-#   LMCACHE_COORDINATOR_PORT        coordinator HTTP port (default: 9300)
-#   COORDINATOR_METRICS_PORT        /metrics port (default: 9301)
-#   LMCACHE_COORDINATOR_INSTANCE_TIMEOUT   seconds before stale instance eviction (default: 120)
-#   LMCACHE_COORDINATOR_HEALTH_INTERVAL    health-check sweep interval (default: 10)
-#   LMCACHE_COORDINATOR_EVICTION_INTERVAL  L2 eviction sweep interval (default: 5)
-#   LMCACHE_COORDINATOR_KEEPALIVE          uvicorn keep-alive timeout (default: 65)
-#   LMCACHE_CHUNK_SIZE                     tokens per KV chunk (default: 256)
+# Env vars (docker/docker-compose.yml sets every one and owns the defaults):
+#   LMCACHE_COORDINATOR_PORT        coordinator HTTP port
+#   COORDINATOR_METRICS_PORT        /metrics port
+#   LMCACHE_COORDINATOR_INSTANCE_TIMEOUT   seconds before stale instance eviction
+#   LMCACHE_COORDINATOR_HEALTH_INTERVAL    health-check sweep interval
+#   LMCACHE_COORDINATOR_EVICTION_INTERVAL  L2 eviction sweep interval
+#   LMCACHE_COORDINATOR_KEEPALIVE          uvicorn keep-alive timeout
+#   LMCACHE_CHUNK_SIZE                     tokens per KV chunk
 #   LMCACHE_DISABLE_BANNER                 set to 1 to suppress the lmcache banner
 
 import http.server
@@ -34,8 +34,8 @@ logging.basicConfig(
 )
 log = logging.getLogger("coordinator")
 
-COORD_PORT = int(os.environ.get("LMCACHE_COORDINATOR_PORT", "9300"))
-METRICS_PORT = int(os.environ.get("COORDINATOR_METRICS_PORT", "9301"))
+COORD_PORT = int(os.environ["LMCACHE_COORDINATOR_PORT"])
+METRICS_PORT = int(os.environ["COORDINATOR_METRICS_PORT"])
 COORD_URL = f"http://127.0.0.1:{COORD_PORT}"
 
 
@@ -177,11 +177,11 @@ def run_coordinator():
     cfg = MPCoordinatorConfig(
         host="0.0.0.0",
         port=COORD_PORT,
-        instance_timeout=float(os.environ.get("LMCACHE_COORDINATOR_INSTANCE_TIMEOUT", "120")),
-        health_check_interval=float(os.environ.get("LMCACHE_COORDINATOR_HEALTH_INTERVAL", "10")),
-        eviction_check_interval=float(os.environ.get("LMCACHE_COORDINATOR_EVICTION_INTERVAL", "5")),
-        chunk_size=int(os.environ.get("LMCACHE_CHUNK_SIZE", "256")),
-        timeout_keep_alive=int(os.environ.get("LMCACHE_COORDINATOR_KEEPALIVE", "65")),
+        instance_timeout=float(os.environ["LMCACHE_COORDINATOR_INSTANCE_TIMEOUT"]),
+        health_check_interval=float(os.environ["LMCACHE_COORDINATOR_HEALTH_INTERVAL"]),
+        eviction_check_interval=float(os.environ["LMCACHE_COORDINATOR_EVICTION_INTERVAL"]),
+        chunk_size=int(os.environ["LMCACHE_CHUNK_SIZE"]),
+        timeout_keep_alive=int(os.environ["LMCACHE_COORDINATOR_KEEPALIVE"]),
     )
     app = create_app(cfg)
     log.info("Starting LMCache coordinator on :%d", COORD_PORT)

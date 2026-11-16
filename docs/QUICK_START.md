@@ -61,7 +61,7 @@ port space and every port below must be chosen explicitly.
 | LMCache ZMQ (vLLM connector) | `--port`, `LMCACHE_PORT` | 6555 |
 | LMCache HTTP API | `--http-port` | 8080 |
 | LMCache Prometheus `/metrics` | `--prometheus-port` | 9091 |
-| NIXL telemetry (NIXL L2 only) | `NIXL_METRICS_PORT` | 19090 |
+| NIXL telemetry (NIXL L2 only) | `NIXL_TELEMETRY_PROMETHEUS_PORT` | 19090 |
 | vLLM OpenAI API | `--port` | 8000 |
 
 > **Always pass `--prometheus-port`.** The AIC image patches LMCache to serve

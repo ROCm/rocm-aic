@@ -71,7 +71,7 @@ TIMEOUT  = int(os.getenv("AIC_TEST_TIMEOUT", "120"))
 # a straight multiplier on every request; the test only needs the response to
 # exist, not to be long.
 MAX_TOK  = int(os.getenv("AIC_TEST_MAX_TOKENS", "20"))
-EXEC     = []  # run curl directly on the host (vllm/lmcache use network_mode:host)
+EXEC     = []  # curl runs where the test does: in aic-client, on the aic bridge
 
 # chunk_size=256 tok × fp8 KV for Qwen2.5-3B ≈ 4.7 MiB/chunk; L1=1 GiB ≈ 222 chunks.
 # At the measured ~90 tok/rep for Qwen2.5-3B, a default 22-rep anchor is ~1980

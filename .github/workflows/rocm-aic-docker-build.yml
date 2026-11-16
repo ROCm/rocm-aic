@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: MIT
 #
 # Full Docker build for the AMD Infinity Context (AIC) stack (~60-90 min cold).
-# Triggered manually — the base image (rocm/dev-ubuntu-24.04:7.14.0-full,
+# Triggered manually — the base image (rocm/dev-ubuntu-24.04:<ROCM_VERSION>-full,
 # ~7 GB) plus vLLM source build + LMCache + NIXL source builds exceed
 # GitHub-hosted runner disk on cold runs without the GHA layer cache.
 #
@@ -74,10 +74,18 @@ jobs:
         id: imgtag
         run: |
           set -euo pipefail
-          aic_version="$(< VERSION)"
-          : "${aic_version:?VERSION is missing or empty}"
           echo "tag=$(bash docker/scripts/aic-image-tag.sh)" >> "${GITHUB_OUTPUT}"
-          echo "aic_version=${aic_version}" >> "${GITHUB_OUTPUT}"
+
+      # docker-bake.hcl owns every build input; the Dockerfile has no defaults
+      # and stops without them.
+      - name: Resolve the lmcache build args from docker-bake.hcl
+        id: bake-args
+        run: |
+          set -euo pipefail
+          args="$(docker/scripts/aic-bake-env.sh --build-args lmcache | sed 's/^--build-arg=//')"
+          [[ -n "${args}" ]] || { echo "::error::bake resolved no args for lmcache"; exit 1; }
+          printf '%s\n' "${args}"
+          { echo 'list<<EOF'; printf '%s\n' "${args}"; echo 'EOF'; } >> "${GITHUB_OUTPUT}"
 
       # Write the corp CA cert secret to a temp file so it can be passed as a
       # BuildKit secret (--secret id=tls_cert). The secret is never written into
@@ -106,9 +114,7 @@ jobs:
             ${{ env.IMAGE_NAME }}:${{ github.sha }}
             ${{ env.IMAGE_NAME }}:${{ steps.imgtag.outputs.tag }}
             ${{ env.IMAGE_NAME }}:latest
-          build-args: |
-            ROCM_ARCH=${{ env.ROCM_ARCH }}
-            AIC_VERSION=${{ steps.imgtag.outputs.aic_version }}
+          build-args: ${{ steps.bake-args.outputs.list }}
           secrets: |
             ${{ steps.cert.outputs.present == 'true' && format('tls_cert={0}', steps.cert.outputs.path) || '' }}
           cache-from: type=gha,scope=aic
