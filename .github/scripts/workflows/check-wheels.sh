@@ -37,6 +37,9 @@ EXPECTED_WHEELS=(
     'amd_aiter-*.whl'
     'lmcache-*.whl'
     'nixl*rocm*.whl'
+    'torch-*.whl'
+    'torchvision-*.whl'
+    'llm_emu-*.whl'
     'vllm_emulator-*.whl'
 )
 # FlashAttention is built when at least one arch is gfx9* (docker/vllm/Dockerfile;

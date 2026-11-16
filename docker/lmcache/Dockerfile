@@ -57,6 +57,8 @@ ARG ROCM_BASE_IMAGE=rocm/dev-ubuntu-24.04:${ROCM_VERSION}-full
 # hadolint ignore=DL3006
 FROM ${ROCM_BASE_IMAGE} AS base
 
+FROM scratch AS base-wheels
+
 # =============================================================================
 # build_lmcache_wheel — compile the LMCache HIP extension with the FULL ROCm
 # toolchain (ROCM_BASE_IMAGE = -full, not the slim aic-base runtime).
@@ -76,44 +78,35 @@ ARG LMCACHE_REF=v0.5.6
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 
 # Install git + minimal build tools (the -full ROCm image does not include them).
-# git comes from ppa:git-core because `git clone --revision` needs >= 2.49 and
-# Ubuntu 24.04 ships 2.43.  software-properties-common is purged again once the
-# PPA is configured: it drags in a dpkg-owned python3-jwt that pip cannot
-# uninstall.
-# hadolint ignore=DL3008
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
     apt-get update && \
     DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-        software-properties-common && \
-    add-apt-repository ppa:git-core/ppa -y && \
-    apt-get update && \
-    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-        git ca-certificates python3-dev libnuma1 && \
-    apt-get purge -y --auto-remove software-properties-common
+        ca-certificates \
+        git \
+        libnuma1 \
+        python3-dev \
+        python3-pip
 
-# Bring torch + Python packages from aic-base into this full-ROCm stage.
-# Now this stage has: ROCm -full headers + aic-base's torch.
-COPY --from=base /usr/local/lib/python3.12/dist-packages/ \
-                 /usr/local/lib/python3.12/dist-packages/
-COPY --from=base /usr/local/bin/uv  /usr/local/bin/uv
-COPY --from=base /usr/local/bin/uvx /usr/local/bin/uvx
 RUN rm -f /usr/lib/python3.*/EXTERNALLY-MANAGED
 
+RUN --mount=type=cache,target=/root/.cache/pip \
+      pip3 install --break-system-packages build
+
 COPY patches/lmcache/ /app/patches/lmcache/
-COPY docker/lmcache/paged_cupy_memory_allocator.py \
-     /app/paged_cupy_memory_allocator.py
 COPY docker/scripts/apply-github-prs.sh /usr/local/bin/apply-github-prs.sh
 
-RUN git clone --depth 1 --revision "${LMCACHE_REF}" "${LMCACHE_GIT_URL}" /app/LMCache
+RUN git clone --depth 1 --branch "${LMCACHE_REF}" "${LMCACHE_GIT_URL}" /app/LMCache
 
-RUN chmod +x /usr/local/bin/apply-github-prs.sh && \
-    /usr/local/bin/apply-github-prs.sh \
+WORKDIR /app/LMCache
+
+RUN --mount=type=bind,source=patches/lmcache,target=/app/patches/lmcache/ \
+    --mount=type=bind,source=docker/scripts/apply-github-prs.sh,target=/tmp/apply-github-prs.sh \
+    bash /tmp/apply-github-prs.sh \
         /app/LMCache \
         /app/patches/lmcache.pull-requests \
         "${LMCACHE_REF}"
 
-WORKDIR /app/LMCache
 # hadolint ignore=SC3054,SC3044
 RUN shopt -s nullglob && \
     patches=(/app/patches/lmcache/*.patch) && \
@@ -128,13 +121,11 @@ RUN shopt -s nullglob && \
             exit 1; \
         fi; \
     done
+
 WORKDIR /
 
-RUN --mount=type=cache,target=/root/.cache/pip \
-    pip3 install --no-cache-dir grpcio-tools
-
-RUN cp /app/paged_cupy_memory_allocator.py \
-       /app/LMCache/lmcache/v1/memory_allocators/paged_cupy_memory_allocator.py
+COPY docker/lmcache/paged_cupy_memory_allocator.py \
+     /app/LMCache/lmcache/v1/memory_allocators/paged_cupy_memory_allocator.py
 
 # Apply ROCm IPC patches.
 # Fix 1: IPC event livelock — skip event IPC on ROCm (futures.py).
@@ -155,8 +146,12 @@ RUN python3 /tmp/rocm_ipc_patch.py && rm /tmp/rocm_ipc_patch.py
 # Build the LMCache wheel with full ROCm headers available.
 WORKDIR /app/LMCache
 RUN --mount=type=cache,target=/root/.cache/pip \
+    --mount=type=bind,from=base-wheels,source=/,target=/base-wheels \
     mkdir -p /wheels && \
     printf '%s\n' "${ROCM_ARCH%%;*}" > /etc/rocm_target.lst && \
+    (shopt -s nullglob; for f in /base-wheels/torch-*.whl; do \
+        printf 'torch @ file://%s\n' "$f" > /tmp/build-constraints.txt; \
+    done) && \
     PYTORCH_ROCM_ARCH="${ROCM_ARCH}" \
         TORCH_DONT_CHECK_COMPILER_ABI=1 \
         CXX=hipcc \
@@ -164,7 +159,10 @@ RUN --mount=type=cache,target=/root/.cache/pip \
         ROCM_TARGET_LST=/etc/rocm_target.lst \
         MAX_JOBS="${BUILD_JOBS:-$(nproc)}" \
         CMAKE_BUILD_PARALLEL_LEVEL="${BUILD_JOBS:-$(nproc)}" \
-        python3 -m pip wheel --no-build-isolation --no-deps -w /wheels .
+        python3 -m build --wheel \
+          "$(test -f /tmp/build-constraints.txt && echo --dependency-constraints-txt=/tmp/build-constraints.txt)" \
+          --outdir /wheels
+
 WORKDIR /
 
 # =============================================================================
@@ -190,86 +188,33 @@ ARG AITER_REF=v0.1.22.post1
 ARG FLASH_ATTN_REF=v2.8.3.post1
 ARG HSA_SNOOP_REF=v1.2.0
 
-COPY patches/lmcache/ /app/patches/lmcache/
-COPY docker/lmcache/paged_cupy_memory_allocator.py \
-     /app/paged_cupy_memory_allocator.py
-COPY docker/scripts/apply-github-prs.sh /usr/local/bin/apply-github-prs.sh
-
-# aic-base carries Ubuntu's git 2.43; `git clone --revision` needs >= 2.49.
-# hadolint ignore=DL3008
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
     apt-get update && \
     DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-        software-properties-common && \
-    add-apt-repository ppa:git-core/ppa -y && \
-    apt-get update && \
-    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends git && \
-    apt-get purge -y --auto-remove software-properties-common
-
-RUN git clone --depth 1 --revision "${LMCACHE_REF}" "${LMCACHE_GIT_URL}" /app/LMCache
-
-RUN chmod +x /usr/local/bin/apply-github-prs.sh && \
-    /usr/local/bin/apply-github-prs.sh \
-        /app/LMCache \
-        /app/patches/lmcache.pull-requests \
-        "${LMCACHE_REF}"
-
-WORKDIR /app/LMCache
-# hadolint ignore=SC3054,SC3044
-RUN shopt -s nullglob && \
-    patches=(/app/patches/lmcache/*.patch) && \
-    if [ "${#patches[@]}" -eq 0 ]; then \
-        echo "ERROR: no patches found in /app/patches/lmcache/" >&2; exit 1; \
-    fi && \
-    for patch in "${patches[@]}"; do \
-        if git apply "$patch"; then \
-            echo "Applied: $patch"; \
-        else \
-            echo "ERROR: LMCache patch does not apply cleanly: $patch" >&2; \
-            echo "The LMCache pin (${LMCACHE_REF}) likely drifted; rebase this patch against it." >&2; \
-            exit 1; \
-        fi; \
-    done
-WORKDIR /
-
-RUN --mount=type=cache,target=/root/.cache/pip \
-    pip3 install --no-cache-dir grpcio-tools
-
-RUN cp /app/paged_cupy_memory_allocator.py \
-       /app/LMCache/lmcache/v1/memory_allocators/paged_cupy_memory_allocator.py
-
-# Apply ROCm IPC patches (same as build_lmcache_wheel stage above).
-COPY docker/lmcache/rocm_vmem_ipc.py /tmp/rocm_vmem_ipc.py
-COPY docker/lmcache/rocm_ipc_patch.py /tmp/rocm_ipc_patch.py
-# hadolint ignore=SC2015
-RUN sed -i \
-    "s/        if event_bytes:/        if event_bytes and not __import__('torch').version.hip:/" \
-    /app/LMCache/lmcache/v1/multiprocess/futures.py && \
-    grep -q "version.hip" /app/LMCache/lmcache/v1/multiprocess/futures.py || \
-    { echo "ERROR: ROCm IPC livelock patch did not apply"; exit 1; }
-RUN python3 /tmp/rocm_ipc_patch.py && rm /tmp/rocm_ipc_patch.py
+      python3-pip
 
 # CuPy (ROCm): hipMalloc without ROCm compute stack (LMCACHE_NIXL_USE_CUPY=1).
 RUN --mount=type=cache,target=/root/.cache/pip \
-    pip3 install --no-cache-dir cupy-rocm-7-0
+    pip3 install --no-cache-dir \
+      grpcio-tools \
+      cupy-rocm-7-0
 
 # Install the pre-compiled LMCache wheel from the build_lmcache_wheel stage.
-COPY --from=build_lmcache_wheel /wheels/ /wheels/
-RUN uv pip install --system --no-cache /wheels/lmcache-*.whl && rm -rf /wheels
+RUN --mount=type=cache,target=/root/.cache/uv \
+    --mount=type=bind,from=build_lmcache_wheel,source=/wheels/,target=/wheels/ \
+    uv pip install --system --no-cache /wheels/lmcache-*.whl
 
 # The `lmcache` CLI imports every subcommand eagerly, so `lmcache server` dies
 # without the bench subcommands' openai.  Upstream lists those deps only in
 # requirements/cli.txt (the lmcache-cli package), not in this wheel's metadata.
 RUN --mount=type=cache,target=/root/.cache/uv \
+    --mount=type=bind,from=build_lmcache_wheel,source=/app/LMCache/,target=/app/LMCache/ \
     uv pip install --system -r /app/LMCache/requirements/cli.txt "matplotlib>=3.8,<4"
-
 
 # ----- 6. hipFile — provided by the ROCm 7.14 base image (GA since 7.14) ------
 # No source build needed.
-
-RUN rm -rf /app/patches /app/LMCache /wheels && \
-    { find /usr/lib/python3 /usr/local/lib/python3.12 -name '__pycache__' -type d \
+RUN { find /usr/lib/python3 /usr/local/lib/python3.12 -name '__pycache__' -type d \
          -exec rm -rf {} + || \
       echo "WARNING: __pycache__ cleanup failed; see find's error above" >&2; }
 
