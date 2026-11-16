@@ -1,6 +1,6 @@
 # AIC Prometheus Metrics Reference
 
-**Generated:** 2026-11-14 10:41 UTC · **Total metrics:** 538 · **SHA:** `4775418`
+**Generated:** 2026-11-16 09:25 UTC · **Total metrics:** 538 · **SHA:** `4775418`
 
 ## Component Versions
 
@@ -17,15 +17,16 @@
 | Container | Image | Status |
 |-----------|-------|--------|
 | `aic-amdgpu-exporter` | `rocm/device-metrics-exporter:v1.5.2` | Up About a minute |
-| `aic-vllm-gpu1` | `aic-vllm:0.1.0-rocm7.14.1-pytorch2.13-vllm0.29.0-aiter0.1.22.post1-fa2.8.3.post1-lmcache0.5.6-nixl1.4.1-hsasnoop1.2.0` | Up About a minute (healthy) |
+| `aic-vllm-gpu0` | `aic-vllm:0.1.0-rocm7.14.1-pytorch2.13-vllm0.29.0-aiter0.1.22.post1-fa2.8.3.post1-lmcache0.5.6-nixl1.4.1-hsasnoop1.2.0` | Up About a minute (healthy) |
 | `aic-lmcache` | `aic-lmcache:0.1.0-rocm7.14.1-pytorch2.13-vllm0.29.0-aiter0.1.22.post1-fa2.8.3.post1-lmcache0.5.6-nixl1.4.1-hsasnoop1.2.0` | Up About a minute (healthy) |
 | `aic-alloy` | `grafana/alloy:v1.8.3` | Up About a minute |
 | `aic-lmcache-coordinator` | `aic-lmcache:0.1.0-rocm7.14.1-pytorch2.13-vllm0.29.0-aiter0.1.22.post1-fa2.8.3.post1-lmcache0.5.6-nixl1.4.1-hsasnoop1.2.0` | Up About a minute (healthy) |
 | `aic-client` | `python:3.12` | Up About a minute |
+| `aic-loki` | `grafana/loki:3.5.0` | Up About a minute |
 | `aic-prometheus` | `prom/prometheus:v3.14.0` | Up About a minute |
 | `aic-grafana` | `grafana/grafana:13.2.2` | Up About a minute |
-| `aic-loki` | `grafana/loki:3.5.0` | Up About a minute |
-| `localhet-onegpu-288173` | `72065dfc0b87` | Up 13 minutes |
+| `swe-copilot-astropy-astropy-14182` | `swebench/sweb.eval.x86_64.astropy_1776_astropy-14182:latest` | Up 7 hours |
+| `crusoe-amd-exporter` | `rocm/device-metrics-exporter:v1.5.0` | Up 9 days (unhealthy) |
 
 ## Metrics Sources
 
