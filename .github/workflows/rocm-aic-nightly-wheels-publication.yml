@@ -38,7 +38,7 @@
 # `make dist-wheels` -> .slurm/run-build-distribute.sh wheels -> the bake
 # `wheels` group (docker/docker-bake.hcl), which exports three scratch stages:
 #
-#   wheels-base     docker/base/Dockerfile     nixl_rocm, torch, torchvision, triton
+#   wheels-nixl     docker/base/Dockerfile     nixl_rocm
 #   wheels-lmcache  docker/lmcache/Dockerfile  lmcache
 #   wheels-vllm     docker/vllm/Dockerfile     vllm, amd_aiter, flash_attn
 #

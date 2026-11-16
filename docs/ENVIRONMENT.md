@@ -138,7 +138,7 @@ it), whose defaults a test keeps equal to bake's.
 
 ### Source repositories
 
-<!-- BEGIN generated:urls -->
+<!-- BEGIN generated:repositories -->
 | Variable | Default | Owner | Description |
 | --- | --- | --- | --- |
 | `PYTORCH_GIT_URL` | `https://github.com/ROCm/pytorch.git` | `docker/docker-bake.hcl` | PyTorch source repository; override to build from a fork |
@@ -153,7 +153,7 @@ it), whose defaults a test keeps equal to bake's.
 | `CLR_GIT_URL` | `https://github.com/ROCm/rocm-systems.git` | `docker/docker-bake.hcl` | Source repository of the patched `libamdhip64` |
 | `TRITON_GIT_URL` | `https://github.com/ROCm/triton.git` | `docker/docker-bake.hcl` | Source repository of Triton |
 | `KVBENCH_GIT_URL` | `https://github.com/wvaske/llm-kv-passthrough.git` | `docker/docker-bake.hcl` | KVBench source repository |
-<!-- END generated:urls -->
+<!-- END generated:repositories -->
 
 ### Build controls and layer cache
 

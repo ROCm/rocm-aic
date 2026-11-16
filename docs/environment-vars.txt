@@ -59,7 +59,7 @@ KVBENCH_REF: KVBench commit
 KVBENCH_LMCACHE_VERSION: LMCache release (from `PyPI`) installed into the KVBench image. Not `LMCACHE_REF`: KVBench pins its own compatible range
 AIPERF_VERSION: `aiperf` version installed into the AgentX client image
 
-[urls]
+[repositories]
 PYTORCH_GIT_URL: PyTorch source repository; override to build from a fork
 TORCHVISION_GIT_URL: Source repository of torchvision
 VLLM_GIT_URL: vLLM source repository
