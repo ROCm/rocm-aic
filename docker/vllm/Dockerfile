@@ -504,12 +504,21 @@ RUN --mount=type=bind,from=lmcache-wheels,target=/aic-wheels \
         cupy-cuda12x cufile-python cuda-pathfinder 2>/dev/null || true; } && \
     python3 -c 'import lmcache.integration.vllm.vllm_multi_process_adapter; print("lmcache MP adapter imports OK")'
 
-# Install make, needed by aiter
+# Install make and other packages needed by aiter to build kernels JIT
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
     apt-get update && \
+    _mm=$(echo "${ROCM_VERSION}" | cut -d. -f1-2) && \
     DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-        make
+        make \
+        "amdrocm-blas-dev${_mm}" \
+        "amdrocm-ccl-dev${_mm}" \
+        "amdrocm-hipblas-common-dev${_mm}" \
+        "amdrocm-solver-dev${_mm}" \
+        "amdrocm-sparse-dev${_mm}"
+
+RUN --mount=type=cache,target=/root/.cache/pip \
+    uv pip install --system amdsmi
 
 # For fastsafetensors' dlopen("libamdhip64.so").  Not in the shared `vllm`
 # stage: CI's emulate build swaps in a base with no ROCm.  Prepend, so
