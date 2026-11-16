@@ -144,7 +144,6 @@ common=(
     torch-2.13.0+gitec5f3b1-cp312-cp312-linux_x86_64.whl
     torchvision-0.28.0+8fb8771-cp312-cp312-linux_x86_64.whl
     vllm-0.29.0+rocm-cp38-abi3-linux_x86_64.whl
-    vllm_emulator-0.0.1-py3-none-any.whl
 )
 fa=flash_attn-2.8.3.post1-cp312-cp312-linux_x86_64.whl
 fake_set "${tmp}/cdna" "${common[@]}" "${fa}"

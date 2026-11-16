@@ -7,7 +7,8 @@
 # VLLM_TARGET_DEVICE=empty on python:3.12-bookworm and produces:
 #
 #   vllm-<ver>+empty-*.whl        (vLLM scheduler + HTTP, no GPU kernels)
-#   vllm_emulator-<ver>-*.whl     (llm-emu profile-driven emulation plugin)
+#   llm_emu-<ver>-*.whl           (llm-emu profile-driven emulation plugin,
+#                                  imported as vllm_emulator)
 #
 # After the build, wheels are installed into a fresh venv with CPU torch from
 # pytorch.org and both packages are import-tested.
@@ -103,7 +104,7 @@ jobs:
           # (and CPU torch) with the PyPI 0.18.1 CUDA build.  The pin is the
           # wheel's only dependency; docker/vllm/Dockerfile skips it the same way.
           echo "Installing vllm_emulator wheel (no-deps)..."
-          pip install --quiet --no-deps "${WHEELS_DIR}"/vllm_emulator-*.whl
+          pip install --quiet --no-deps "${WHEELS_DIR}"/llm_emu-*.whl
 
           # Install vllm's own pure-Python runtime deps from its wheel METADATA
           # (vllm 0.29.0 is not on PyPI so we cannot pip install it for deps;

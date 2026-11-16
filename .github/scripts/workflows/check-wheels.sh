@@ -31,7 +31,8 @@ trap '_on_err "$?" "${PIPESTATUS[*]}" "$LINENO" "${FUNCNAME[*]-}"' ERR
 #   flash_attn-*     docker/vllm/Dockerfile    build_vllm, arch lists with a gfx9*
 #   lmcache-*        docker/lmcache/Dockerfile build_lmcache_wheel
 #   nixl*rocm*       docker/base/Dockerfile    build_nixl (build-nixl.sh's own glob)
-#   vllm_emulator-*  docker/vllm/Dockerfile    build_vllm (llm-emu; pure Python)
+#   llm_emu-*        docker/vllm/Dockerfile    build_vllm (llm-emu, imported as
+#                                              vllm_emulator; pure Python)
 EXPECTED_WHEELS=(
     'vllm-*.whl'
     'amd_aiter-*.whl'
@@ -40,7 +41,6 @@ EXPECTED_WHEELS=(
     'torch-*.whl'
     'torchvision-*.whl'
     'llm_emu-*.whl'
-    'vllm_emulator-*.whl'
 )
 # FlashAttention is built when at least one arch is gfx9* (docker/vllm/Dockerfile;
 # the same rule as has_gfx9() in docker/docker-bake.hcl, which also treats an
