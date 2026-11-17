@@ -7,7 +7,8 @@
 # VLLM_TARGET_DEVICE=empty on python:3.12-bookworm and produces:
 #
 #   vllm-<ver>+empty-*.whl        (vLLM scheduler + HTTP, no GPU kernels)
-#   vllm_emulator-<ver>-*.whl     (llm-emu profile-driven emulation plugin)
+#   llm_emu-<ver>-*.whl           (llm-emu profile-driven emulation plugin,
+#                                  imported as vllm_emulator)
 #
 # After the build, wheels are installed into a fresh venv with CPU torch from
 # pytorch.org and both packages are import-tested.
@@ -98,26 +99,30 @@ jobs:
           echo "Installing vllm wheel (no-deps)..."
           pip install --quiet --no-deps "${WHEELS_DIR}"/vllm-*.whl
 
-          # vllm is now present as 0.29.0+empty; pip sees it as satisfying
-          # vllm_emulator's vllm requirement and only installs vllm_emulator's
-          # other (pure-Python) deps.
-          echo "Installing vllm_emulator wheel..."
-          pip install --quiet "${WHEELS_DIR}"/vllm_emulator-*.whl
+          # --no-deps: upstream llm-emu pins `vllm==0.18.1`, which the installed
+          # 0.29.0+empty does not satisfy, so a resolving install replaces vllm
+          # (and CPU torch) with the PyPI 0.18.1 CUDA build.  The pin is the
+          # wheel's only dependency; docker/vllm/Dockerfile skips it the same way.
+          echo "Installing vllm_emulator wheel (no-deps)..."
+          pip install --quiet --no-deps "${WHEELS_DIR}"/llm_emu-*.whl
 
           # Install vllm's own pure-Python runtime deps from its wheel METADATA
           # (vllm 0.29.0 is not on PyPI so we cannot pip install it for deps;
           # read them from the installed wheel and skip GPU-specific packages).
           echo "Installing vllm runtime deps from wheel METADATA..."
+          # The heredoc body is indented to match this block scalar; YAML strips
+          # that indentation, so Python still sees it at column 0.  Flush-left
+          # lines would end the `run: |` block and invalidate the whole file.
           python3 - <<'PYDEPS'
-import importlib.metadata, subprocess, sys
-reqs = importlib.metadata.requires('vllm') or []
-skip = ('torch', 'triton', 'xformers', 'cuda', 'rocm', 'flash', 'aiter', 'extra ==')
-safe = [r.split(';')[0].strip() for r in reqs
-        if not any(s in r.lower() for s in skip)]
-if safe:
-    print('Installing vllm runtime deps:', safe)
-    subprocess.check_call([sys.executable, '-m', 'pip', 'install', '--quiet'] + safe)
-PYDEPS
+          import importlib.metadata, subprocess, sys
+          reqs = importlib.metadata.requires('vllm') or []
+          skip = ('torch', 'triton', 'xformers', 'cuda', 'rocm', 'flash', 'aiter', 'extra ==')
+          safe = [r.split(';')[0].strip() for r in reqs
+                  if not any(s in r.lower() for s in skip)]
+          if safe:
+              print('Installing vllm runtime deps:', safe)
+              subprocess.check_call([sys.executable, '-m', 'pip', 'install', '--quiet'] + safe)
+          PYDEPS
 
           echo "Testing vllm import..."
           python3 -c "
@@ -128,8 +133,8 @@ PYDEPS
           echo "Testing vllm_emulator import..."
           python3 -c "
           import vllm_emulator
-          from vllm_emulator.hooks.executor_hook import VllmEmulatorExecutorHook
-          from vllm_emulator.oracle import Oracle
+          from vllm_emulator.hooks.executor_hook import ExecutorEmulatorHook
+          from vllm_emulator.oracle import ProfileGpuCostOracle
           print('vllm_emulator', getattr(vllm_emulator, '__version__', '?'), 'OK')
           "
 

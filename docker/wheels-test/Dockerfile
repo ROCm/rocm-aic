@@ -125,12 +125,9 @@ RUN { uv pip uninstall --system \
 # docker/vllm/Dockerfile's `vllm` stage.  vLLM is the producer on the store
 # path, so its export_event must synchronize locally.
 COPY docker/lmcache/rocm_event_ipc_patch.py /tmp/rocm_event_ipc_patch.py
-COPY docker/lmcache/diag_register_kv_caches.py /tmp/diag_register_kv_caches.py
 RUN AIC_LMCACHE_SRC="$(python3 -c 'import lmcache, os; print(os.path.dirname(os.path.dirname(lmcache.__file__)))')" \
         python3 /tmp/rocm_event_ipc_patch.py && \
-    AIC_LMCACHE_SRC="$(python3 -c 'import lmcache, os; print(os.path.dirname(os.path.dirname(lmcache.__file__)))')" \
-        python3 /tmp/diag_register_kv_caches.py && \
-    rm /tmp/rocm_event_ipc_patch.py /tmp/diag_register_kv_caches.py
+    rm /tmp/rocm_event_ipc_patch.py
 
 # PYTHONPATH and LD_LIBRARY_PATH (including the NIXL entries) are inherited from
 # aic-base; do not redefine them or those entries are lost.  LD_LIBRARY_PATH is

@@ -6,14 +6,15 @@
 # pip-installable wheels without any ROCm or GPU dependency:
 #
 #   vllm-<ver>+empty-cp312-cp312-linux_x86_64.whl  (vLLM scheduler + HTTP, no GPU kernels)
-#   vllm_emulator-<ver>-py3-none-any.whl            (llm-emu profile-driven emulation plugin)
+#   llm_emu-<ver>-py3-none-any.whl                  (llm-emu profile-driven emulation plugin,
+#                                                    imported as vllm_emulator)
 #
 # These two wheels, combined with a CPU torch from pytorch.org/whl/cpu, are
 # sufficient to run the emulate-mode vLLM server on any x86_64 Linux host
 # without installing ROCm.
 #
 # Stages:
-#   build   compile vllm (empty device) + build vllm_emulator wheel
+#   build   compile vllm (empty device) + build llm_emu wheel
 #   wheels  scratch image holding just the .whl files
 #
 # Build:

@@ -224,8 +224,8 @@ check "import nixl_rocm" python3 -c "import nixl_rocm; print('nixl_rocm OK')"
 check "import aiter" python3 -c "import aiter; print('aiter OK')"
 check "import vllm_emulator" python3 -c "
 import vllm_emulator
-from vllm_emulator.hooks.executor_hook import VllmEmulatorExecutorHook
-from vllm_emulator.oracle import Oracle
+from vllm_emulator.hooks.executor_hook import ExecutorEmulatorHook
+from vllm_emulator.oracle import ProfileGpuCostOracle
 print('vllm_emulator', getattr(vllm_emulator, '__version__', '?'), 'OK')
 "
 
