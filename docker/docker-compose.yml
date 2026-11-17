@@ -30,117 +30,48 @@
 # the `vllm-only` service instead (profile `vllm-only`): the same vLLM on the aic
 # bridge with namespaces of its own.
 #
-# Required env:
-#   ROCM_ARCH      — e.g. gfx942
-#   HF_TOKEN       — HuggingFace access token
-#   NVME_DATA      — host path to local NVMe mount (L2a AIS_MT pool; e.g. /mnt/lmcache-nvme)
-#   NFS_DATA       — host path to NFS-over-RDMA mount (L2b; e.g. /mnt/lmcache-nfs)
+# Variables: docs/ENVIRONMENT.md lists every `${VAR:-default}` below with its
+# default and description; it is generated from this file (`make env-docs`), so
+# the defaults are not repeated here.  This file owns the container-runtime
+# defaults: make and the Slurm scripts pass on only what the user set.  It
+# builds nothing but kvbench, so the build inputs (ROCM_VERSION, the *_REF pins)
+# are docker/docker-bake.hcl's and have no effect here.
 #
-# Optional:
-#   GPU                    — fallback GPU when no SPUR allocation is resolved (default: 0).
-#   AIC_ROCR_VISIBLE       — ROCR_VISIBLE_DEVICES for every service to isolate used GPUs
-#                            to the ones allocated to use by SPUR.
-#   AIC_HIP_VISIBLE        — HIP_VISIBLE_DEVICES.  RELATIVE
-#                            indices ( e.g., 0..n-1).
-#   GDS_MODE               — set to 1 to enable hipFile NVMe slab as L1 (requires GDS_SLAB_DATA)
-#   GDS_SLAB_DATA          — host path for the hipFile slab file (required when GDS_MODE=1)
-#   AIC_L2_BACKEND         — nixl (default AIS_MT + POSIX L2), local_disk (native
-#                            LocalDiskBackend via LMCACHE_CONFIG_FILE), or none (DRAM-only L1)
-#   LMCACHE_CONFIG_FILE_HOST — host path to an LMCache YAML config to mount (advanced; local_disk)
-#   KV_TRANSFER_ARG        — vLLM --kv-transfer-config arg (empty = plain vLLM baseline)
-#   VLLM_IPC_MODE          — vLLM IPC mode (default: service:lmcache)
-#   VLLM_PID_MODE          — vLLM PID mode (default: service:lmcache; empty = private)
-#   VLLM_NETWORK_MODE      — vLLM network mode (default: container:aic-lmcache)
-#                            A vllm-only run should start the vllm-only service
-#                            instead of overriding all three.
-#   AIC_SHM_SIZE           — private /dev/shm capacity (default: 64gb)
-#   AIC_PUBLISH_ADDR       — host address Grafana's published port binds (default:
-#                            127.0.0.1)
-#   AIC_GRAFANA_PORT       — pin Grafana's host port.  Unset (default) lets Docker pick
-#                            a free one, so it cannot collide with another tenant on
-#                            the node; `make endpoints` prints the URL.
-#                            Grafana is the only published service: everything else
-#                            is reached by name on the aic bridge, from a container
-#                            (aic-client, or scripts/aic-endpoints.sh's aic_fetch),
-#                            e.g. http://aic-lmcache:8000 for vLLM, :8080 for the
-#                            lmcache HTTP API, http://aic-prometheus:9090.
-#   HF_HOME                — host HF cache dir (default: ~/.cache/huggingface)
-#   LOG                    — host log dir (default: ../logs, i.e. /logs)
-#   IMAGE_REF              — full image ref name:tag (default: rocm-aic:latest;
-#                            `make` sets it to the version-derived tag)
-#   IMAGE_NAME             — image name when IMAGE_REF is unset (default: rocm-aic)
-#   AIC_VERSION            — AIC release from the root VERSION file
-#   ROCM_VERSION           — ROCm release used by the default base image
-#   PYTORCH_REF, VLLM_REF, LLM_EMU_REF, AITER_REF, FLASH_ATTN_REF, LMCACHE_REF, NIXL_REF, HSA_SNOOP_REF
-#                          — optional framework version build-arg overrides
-#   VLLM_MODEL             — model to serve
-#   LMCACHE_PORT           — lmcache ZMQ listen port (default: 6555)
-#   LMCACHE_L1_SIZE_GB     — L1 cap in GiB (DRAM mode) or slab size (GDS mode, default: 20)
-#   LMCACHE_NVME_POOL      — nixl pool slots for NVMe adapter (default: 4096)
-#   LMCACHE_NVME_SLOT_SIZE — nixl file size per slot in bytes (default: 256 MiB)
-#   LMCACHE_NFS_POOL       — nixl pool slots for NFS adapter (default: 1024)
-#   AIC_NIXL_BACKEND             — NIXL plugin for the nixl arm: AIS_MT (default, hipFile P2PDMA) or
-#                                  POSIX (first-class POSIX plugin, cpu buffer, no GPUDirect required)
-#   AIC_NIXL_USE_DIRECT_IO       — O_DIRECT for the AIS_MT NVMe L2 (default: true). POSIX always uses buffered I/O.
-#   LMCACHE_NIXL_POSIX_SLOT_SIZE — slot file size in bytes for the POSIX backend (default: 16 MiB).
-#                                  Should match actual KV chunk bytes; smaller than AIS_MT's 256 MiB.
-#   LMCACHE_NIXL_POSIX_POOL      — pool slot count for the POSIX backend (default: 32768).
-#   LMCACHE_MAX_GPU_WORKERS      — lmcache --max-gpu-workers for parallel STORE/RETRIEVE (default: 1).
-#   LMCACHE_COORDINATOR_URL      — base URL the MP server registers/heartbeats against
-#                                  (default: http://aic-lmcache-coordinator:9300).
-#                                  Unset to disable coordinator registration entirely.
-#   LMCACHE_COORDINATOR_PORT     — coordinator HTTP port (default: 9300, bridge only); /metrics on COORDINATOR_METRICS_PORT (default: 9301).
-#   COORDINATOR_METRICS_PORT     — Prometheus /metrics port on the coordinator container (default: 9301).
-#   LMCACHE_COORDINATOR_INSTANCE_TIMEOUT — seconds without heartbeat before instance eviction (default: 120).
-#   LMCACHE_COORDINATOR_HEALTH_INTERVAL  — seconds between heartbeat-sweep runs (default: 10).
-#   LMCACHE_COORDINATOR_EVICTION_INTERVAL — seconds between L2 eviction-check runs (default: 5).
-#   LMCACHE_COORDINATOR_KEEPALIVE — uvicorn keep-alive timeout in seconds (default: 65).
-#   LMCACHE_CHUNK_SIZE           — tokens per KV chunk; must match MP server and coordinator (default: 256).
-#   VLM_GPU_MEMORY_UTILIZATION — vllm --gpu-memory-utilization (default: 0.90)
-#   VLM_MAX_MODEL_LEN          — vllm --max-model-len (default: 32768)
-#   VLM_MAX_NUM_BATCHED_TOKENS — vllm --max-num-batched-tokens (default: 4096)
-#   VLM_BLOCK_SIZE             — vllm --block-size (default: 64)
-#   VLM_ATTENTION_BACKEND      — vllm --attention-backend (default: TRITON_ATTN)
-#   VLM_KV_CACHE_DTYPE         — vllm --kv-cache-dtype (default: fp8)
-#   VLM_KV_CACHE_METRICS_SAMPLE — fraction of KV blocks sampled for residency histograms (default: 0.05)
-#   VLLM_EXTRA_ARGS            — extra vllm args appended verbatim (e.g. --hf-overrides ...)
-#   TENSOR_PARALLEL_SIZE       — vllm --tensor-parallel-size (default: 1)
+# Needed for a real run: HF_TOKEN (gated models), and NVME_DATA / NFS_DATA
+# pointing at the host mounts for the L2a (AIS_MT NVMe) and L2b (NFS-over-RDMA)
+# pools.  GDS_SLAB_DATA is required when GDS_MODE=1.
 #
-# Emulation mode (profile-driven, no GPU required — needs the `emulate` image):
-#   IMAGE_NAME=rocm-aic:7.14-emulate docker compose --profile emulate up vllm-emulator
+# Images: VLLM_IMAGE_REF and LMCACHE_IMAGE_REF are full name:tag refs.
+# docker/docker-bake.hcl names and tags both; `make` exports the version-tagged
+# refs bake resolves, and the defaults are the :latest aliases a local bake adds.
 #
-# Emulation + the full LMCache MP recipe (still no GPU, but needs an image with
-# LMCache in it, i.e. the production one — the `emulate` stage stops before it):
-#   IMAGE_NAME=rocm-aic:7.14-latest docker compose --profile emulate-mp \
-#     up lmcache-emulator vllm-emulator
+# GPU selection: AIC_ROCR_VISIBLE is ROCR_VISIBLE_DEVICES for every service
+# (absolute host GPU ids, from the scheduler allocation); AIC_HIP_VISIBLE is
+# HIP_VISIBLE_DEVICES, RELATIVE indices (0..n-1) into that set.  GPU is the
+# fallback when no allocation is resolved.
+#
+# Namespaces: VLLM_IPC_MODE, VLLM_PID_MODE (empty = private) and
+# VLLM_NETWORK_MODE default to lmcache's namespaces.  A vllm-only run should
+# start the vllm-only service instead of overriding all three.
+#
+# Ports: Grafana is the only published service, on AIC_PUBLISH_ADDR (loopback
+# by default) and AIC_GRAFANA_PORT.  Unset, Docker picks a free port, so it
+# cannot collide with another tenant on the node; `make endpoints` prints the
+# URL.  Everything else is reached by name on the aic bridge, from a container
+# (aic-client, or scripts/aic-endpoints.sh's aic_fetch), e.g.
+# http://aic-lmcache:8000 for vLLM, :8080 for the lmcache HTTP API,
+# http://aic-prometheus:9090.
+#
+# Emulation mode (profile-driven, no GPU required -- needs the `emulate` image):
+#   VLLM_IMAGE_REF=rocm-aic:7.14-emulate docker compose --profile emulate up vllm-emulator
+#
+# Emulation + the full LMCache MP recipe (still no GPU, but needs the production
+# images -- the `emulate` stage stops before LMCache; the defaults are those):
+#   docker compose --profile emulate-mp up lmcache-emulator vllm-emulator
 # The KV tensors the connector registers are synthesized in HOST memory by
 # vllm_emulator (patches/llm-emu/04-kv-connector-emulation.patch): zeros, but
 # the shape, dtype and byte count vLLM computed, so LMCache moves real volumes.
-#
-# Optional env (emulation mode):
-#   VLLM_MODEL                 — model to serve; should match the profile pack
-#                                (default: Qwen/Qwen3-8B, matching the baked-in pack)
-#   VLLM_EMULATOR_PROFILE_PACK — container path to the profile pack JSON
-#                                (default: the A40/Qwen3-8B example baked into the image)
-#   VLLM_EMULATOR_MODE         — realtime (default, wall-clock sleep) or accelerated (instant)
-#   VLLM_EMULATOR_ORACLE_K     — kNN neighbor count or "auto" (default: 1)
-#   EMU_PROFILE_PACK_HOST      — host path to profile pack dir (mounted at /profiles)
-#   HF_HOME                    — host HF cache dir (default: ~/.cache/huggingface)
-#   VLLM_EMULATOR_MEMORY       — emulated KV pool, bytes.  Under `emulate-mp` this
-#                                is actually allocated, and resident in /dev/shm
-#                                from startup, because the connector needs real
-#                                buffers, so cap it to fit the node
-#   VLLM_EMULATOR_KV_BUFFERS   — 0 skips the fake KV buffers (connector goes inert)
-#   EMU_KV_TRANSFER_ARG        — vLLM --kv-transfer-config for the EMULATOR.
-#                                Deliberately not KV_TRANSFER_ARG: the Makefile
-#                                exports that one globally, which would attach
-#                                the MP connector to the plain `emulate` profile
-#   EMU_IPC_MODE               — vllm-emulator's ipc mode.  `emulate-mp` needs
-#                                container:aic-lmcache-emulator (one /dev/shm
-#                                for the KV SHM segments); default shareable
-#   AIC_L2_BACKEND             — `emulate-mp` defaults to nixl_posix (NIXL stays in
-#                                the path, no GPUDirect needed); AIS_MT needs
-#                                /dev/kfd, local_disk is the NIXL-free fallback
+# The emulator services document their own variables where they are defined.
 
 # ---------------------------------------------------------------------------
 # Shared fragments.  The lmcache server is launched by two services -- `lmcache`
@@ -169,7 +100,8 @@ x-lmcache-env: &lmcache-env
   AIC_NIXL_BACKEND: "${AIC_NIXL_BACKEND:-AIS_MT}"
   LMCACHE_NIXL_POSIX_SLOT_SIZE: "${LMCACHE_NIXL_POSIX_SLOT_SIZE:-16777216}"
   LMCACHE_NIXL_POSIX_POOL: "${LMCACHE_NIXL_POSIX_POOL:-32768}"
-  LMCACHE_MAX_GPU_WORKERS: "${LMCACHE_MAX_GPU_WORKERS:-1}"
+  LMCACHE_MAX_GPU_WORKERS: "${LMCACHE_MAX_GPU_WORKERS:-4}"
+  LMCACHE_WORKER_REAP_TIMEOUT: "${LMCACHE_WORKER_REAP_TIMEOUT:-3600}"
   LMCACHE_L2_PREFETCH_MAX_IN_FLIGHT: "${LMCACHE_L2_PREFETCH_MAX_IN_FLIGHT:-4}"
   # Only set when a real config file is mounted (local_disk / advanced tuning).
   LMCACHE_CONFIG_FILE: "${LMCACHE_CONFIG_FILE:-}"
@@ -180,7 +112,7 @@ x-lmcache-env: &lmcache-env
   # a no-op fallback if absent.  Set NIXL_TELEMETRY_ENABLE= to disable.
   NIXL_TELEMETRY_ENABLE: "${NIXL_TELEMETRY_ENABLE-y}"
   NIXL_TELEMETRY_EXPORTER: "${NIXL_TELEMETRY_EXPORTER:-prometheus}"
-  NIXL_TELEMETRY_PROMETHEUS_PORT: "${NIXL_METRICS_PORT:-19090}"
+  NIXL_TELEMETRY_PROMETHEUS_PORT: "19090"
   PYTHONHASHSEED: "0"
   TZ: "${TZ:-America/Edmonton}"
 
@@ -191,7 +123,7 @@ x-lmcache-env: &lmcache-env
 # default, which other containers cannot reach.
 x-lmcache-command: &lmcache-command
   - |
-    # Build coordinator flags once; empty when LMCACHE_COORDINATOR_URL is unset.
+    # Build coordinator flags once; empty when LMCACHE_COORDINATOR_URL is empty.
     _COORD_FLAGS=""
     if [ -n "$${LMCACHE_COORDINATOR_URL:-}" ]; then
       _COORD_FLAGS="--coordinator-url $$LMCACHE_COORDINATOR_URL --coordinator-event-reporting"
@@ -205,8 +137,8 @@ x-lmcache-command: &lmcache-command
         --port "$$LMCACHE_PORT" \
         --l1-size-gb "$$LMCACHE_L1_SIZE_GB" \
         --eviction-policy LRU \
-        --max-gpu-workers "$${LMCACHE_MAX_GPU_WORKERS:-1}" \
-        --worker-reap-timeout-seconds "$${LMCACHE_WORKER_REAP_TIMEOUT:-3600}" \
+        --max-gpu-workers "$$LMCACHE_MAX_GPU_WORKERS" \
+        --worker-reap-timeout-seconds "$$LMCACHE_WORKER_REAP_TIMEOUT" \
         --prometheus-port 9091 \
         --gds-l1-path /data/slab \
         $$_COORD_FLAGS
@@ -222,8 +154,8 @@ x-lmcache-command: &lmcache-command
         --port "$$LMCACHE_PORT" \
         --l1-size-gb "$$LMCACHE_L1_SIZE_GB" \
         --eviction-policy LRU \
-        --max-gpu-workers "$${LMCACHE_MAX_GPU_WORKERS:-1}" \
-        --worker-reap-timeout-seconds "$${LMCACHE_WORKER_REAP_TIMEOUT:-3600}" \
+        --max-gpu-workers "$$LMCACHE_MAX_GPU_WORKERS" \
+        --worker-reap-timeout-seconds "$$LMCACHE_WORKER_REAP_TIMEOUT" \
         --prometheus-port 9091 \
         $$_COORD_FLAGS
     elif [ "$$AIC_L2_BACKEND" = "nixl_posix_dynamic" ]; then
@@ -239,19 +171,21 @@ x-lmcache-command: &lmcache-command
         --port "$$LMCACHE_PORT" \
         --l1-size-gb "$$LMCACHE_L1_SIZE_GB" \
         --eviction-policy LRU \
-        --max-gpu-workers "$${LMCACHE_MAX_GPU_WORKERS:-4}" \
-        --l2-prefetch-max-in-flight "$${LMCACHE_L2_PREFETCH_MAX_IN_FLIGHT:-4}" \
-        --worker-reap-timeout-seconds "$${LMCACHE_WORKER_REAP_TIMEOUT:-3600}" \
+        --max-gpu-workers "$$LMCACHE_MAX_GPU_WORKERS" \
+        --l2-prefetch-max-in-flight "$$LMCACHE_L2_PREFETCH_MAX_IN_FLIGHT" \
+        --worker-reap-timeout-seconds "$$LMCACHE_WORKER_REAP_TIMEOUT" \
         --prometheus-port 9091 \
-        --l2-adapter "{\"type\":\"nixl_store_dynamic\",\"backend\":\"POSIX\",\"backend_params\":{\"file_path\":\"/data/nvme/lmcache\",\"use_direct_io\":\"${LMCACHE_NIXL_DYNAMIC_DIRECT_IO:-false}\",\"max_capacity_gb\":\"$${LMCACHE_NIXL_DYNAMIC_MAX_GB:-100}\"}}" \
+        --l2-adapter "{\"type\":\"nixl_store_dynamic\",\"backend\":\"POSIX\",\"backend_params\":{\"file_path\":\"/data/nvme/lmcache\",\"use_direct_io\":\"${LMCACHE_NIXL_DYNAMIC_DIRECT_IO:-false}\",\"max_capacity_gb\":\"${LMCACHE_NIXL_DYNAMIC_MAX_GB:-100}\"}}" \
         $$_COORD_FLAGS
-    elif [ "$${AIC_NIXL_BACKEND:-AIS_MT}" = "POSIX" ] || [ "$$AIC_L2_BACKEND" = "nixl_posix" ]; then
+    elif [ "$$AIC_NIXL_BACKEND" = "POSIX" ] || [ "$$AIC_L2_BACKEND" = "nixl_posix" ]; then
       # NIXL first-class POSIX plugin (cpu staging buffer, no hipFileBufRegister).
       # Use for nodes where GPUDirect P2PDMA is unavailable (e.g. XFS LVM, or a
       # CPU-only emulation node with no /dev/kfd at all).
       # No NFS L2b — single POSIX NVMe L2 with buffered I/O.
-      # Uses LMCACHE_NIXL_POSIX_SLOT_SIZE (32 MiB default) rather than the
-      # AIS_MT 256 MiB staging-buffer size: POSIX writes actual KV bytes per slot.
+      # LMCACHE_NIXL_POSIX_SLOT_SIZE is the size of each pool file.  The adapter
+      # pages every file at the L1 alignment and a chunk may span files, so
+      # pool x slot size is the L2 capacity (32768 x 16 MiB = 512 GiB), not a
+      # per-chunk limit.
       exec lmcache server \
         --host 0.0.0.0 \
         --http-host 0.0.0.0 \
@@ -259,9 +193,9 @@ x-lmcache-command: &lmcache-command
         --port "$$LMCACHE_PORT" \
         --l1-size-gb "$$LMCACHE_L1_SIZE_GB" \
         --eviction-policy LRU \
-        --max-gpu-workers "$${LMCACHE_MAX_GPU_WORKERS:-1}" \
-        --l2-prefetch-max-in-flight "$${LMCACHE_L2_PREFETCH_MAX_IN_FLIGHT:-4}" \
-        --worker-reap-timeout-seconds "$${LMCACHE_WORKER_REAP_TIMEOUT:-3600}" \
+        --max-gpu-workers "$$LMCACHE_MAX_GPU_WORKERS" \
+        --l2-prefetch-max-in-flight "$$LMCACHE_L2_PREFETCH_MAX_IN_FLIGHT" \
+        --worker-reap-timeout-seconds "$$LMCACHE_WORKER_REAP_TIMEOUT" \
         --prometheus-port 9091 \
         --l2-adapter "{\"type\":\"nixl_store\",\"backend\":\"POSIX\",\"backend_params\":{\"file_path\":\"/data/nvme/lmcache\",\"use_direct_io\":\"false\",\"file_size\":\"$$LMCACHE_NIXL_POSIX_SLOT_SIZE\"},\"pool_size\":$$LMCACHE_NIXL_POSIX_POOL}" \
         $$_COORD_FLAGS
@@ -277,8 +211,8 @@ x-lmcache-command: &lmcache-command
         --port "$$LMCACHE_PORT" \
         --l1-size-gb "$$LMCACHE_L1_SIZE_GB" \
         --eviction-policy LRU \
-        --max-gpu-workers "$${LMCACHE_MAX_GPU_WORKERS:-1}" \
-        --worker-reap-timeout-seconds "$${LMCACHE_WORKER_REAP_TIMEOUT:-3600}" \
+        --max-gpu-workers "$$LMCACHE_MAX_GPU_WORKERS" \
+        --worker-reap-timeout-seconds "$$LMCACHE_WORKER_REAP_TIMEOUT" \
         --prometheus-port 9091 \
         --l2-adapter "{\"type\":\"nixl_store\",\"backend\":\"AIS_MT\",\"backend_params\":{\"file_path\":\"/data/nvme/lmcache\",\"use_direct_io\":\"$$AIC_NIXL_USE_DIRECT_IO\",\"file_size\":\"$$LMCACHE_NVME_SLOT_SIZE\"},\"pool_size\":$$LMCACHE_NVME_POOL}" \
         --l2-adapter "{\"type\":\"nixl_store\",\"backend\":\"POSIX\",\"backend_params\":{\"file_path\":\"/data/nfs/lmcache\",\"use_direct_io\":\"false\"},\"pool_size\":$$LMCACHE_NFS_POOL}" \
@@ -291,7 +225,7 @@ x-lmcache-healthcheck: &lmcache-healthcheck
     - CMD
     - python3
     - -c
-    - "import os, socket, urllib.request as u; socket.create_connection(('127.0.0.1', int(os.getenv('LMCACHE_PORT', '6555'))), 2).close(); u.build_opener(u.ProxyHandler({})).open('http://127.0.0.1:8080/metrics', timeout=3).close()"
+    - "import os, socket, urllib.request as u; socket.create_connection(('127.0.0.1', int(os.environ['LMCACHE_PORT'])), 2).close(); u.build_opener(u.ProxyHandler({})).open('http://127.0.0.1:8080/metrics', timeout=3).close()"
   interval: 10s
   timeout: 5s
   retries: 18
@@ -317,6 +251,7 @@ services:
       args:
         KVBENCH_GIT_URL: ${KVBENCH_GIT_URL:-https://github.com/wvaske/llm-kv-passthrough.git}
         KVBENCH_REF: ${KVBENCH_REF:-177cf4e7c46ece8e03a701f89b60cd3a329f45fd}
+        KVBENCH_LMCACHE_VERSION: ${KVBENCH_LMCACHE_VERSION:-0.5.6}
     image: ${KVBENCH_IMAGE_REF:-aic-kvbench:177cf4e}
     container_name: aic-kvbench
     networks: [aic-network]
@@ -348,7 +283,7 @@ services:
     healthcheck:
       test:
         - CMD-SHELL
-        - "curl -fsS --max-time 2 -o /dev/null \"http://127.0.0.1:$${KVBENCH_PORT:-8000}/v1/models\""
+        - "curl -fsS --max-time 2 -o /dev/null \"http://127.0.0.1:$$KVBENCH_PORT/v1/models\""
       interval: 10s
       timeout: 5s
       retries: 18
@@ -368,7 +303,7 @@ services:
     # express that context, so a `docker compose build` here would silently fall
     # back to the Dockerfile's raw-ROCm `base` stage and produce a torch-less
     # image that fails at runtime.
-    image: ${LMCACHE_IMAGE_REF:-${IMAGE_REF:-${IMAGE_NAME:-rocm-aic}:latest}}
+    image: ${LMCACHE_IMAGE_REF:-aic-lmcache:latest}
     container_name: aic-lmcache
     # Cross-container HIP IPC (LMCacheMPConnector registering vLLM's KV tensors)
     # uses LMCache's stock CudaIPCWrapper (hipIpcGetMemHandle) in ROCr's default,
@@ -446,8 +381,8 @@ services:
       TZ: "${TZ:-America/Edmonton}"
       # Coordinator registration: the MP server registers, heartbeats, and
       # deregisters against the coordinator so it can track which blocks are held.
-      # Unset LMCACHE_COORDINATOR_URL to run without coordinator (standalone mode).
-      LMCACHE_COORDINATOR_URL: "${LMCACHE_COORDINATOR_URL:-http://aic-lmcache-coordinator:9300}"
+      # Set LMCACHE_COORDINATOR_URL empty to run without coordinator (standalone mode).
+      LMCACHE_COORDINATOR_URL: "${LMCACHE_COORDINATOR_URL-http://aic-lmcache-coordinator:9300}"
       # ROCm VMEM IPC sidecar socket path (shared with vllm via aic-ipc volume)
       AIC_IPC_SOCK: /tmp/aic-ipc/fds.sock
     entrypoint: ["/bin/bash", "-o", "pipefail", "-c"]
@@ -455,7 +390,7 @@ services:
     depends_on:
       lmcache-coordinator:
         condition: service_healthy
-        # required:false so standalone runs (LMCACHE_COORDINATOR_URL unset) don't
+        # required:false so standalone runs (LMCACHE_COORDINATOR_URL empty) don't
         # block if the coordinator is somehow skipped from the active profile.
         required: false
     healthcheck: *lmcache-healthcheck
@@ -471,14 +406,14 @@ services:
   lmcache-coordinator:
     profiles:
       - cache
-    image: ${LMCACHE_IMAGE_REF:-${IMAGE_REF:-${IMAGE_NAME:-rocm-aic}:latest}}
+    image: ${LMCACHE_IMAGE_REF:-aic-lmcache:latest}
     container_name: aic-lmcache-coordinator
     networks: [aic-network]
     restart: unless-stopped
     environment:
       - LMCACHE_DISABLE_BANNER=1
-      - LMCACHE_COORDINATOR_PORT=${LMCACHE_COORDINATOR_PORT:-9300}
-      - COORDINATOR_METRICS_PORT=${COORDINATOR_METRICS_PORT:-9301}
+      - LMCACHE_COORDINATOR_PORT=9300
+      - COORDINATOR_METRICS_PORT=9301
       - LMCACHE_COORDINATOR_INSTANCE_TIMEOUT=${LMCACHE_COORDINATOR_INSTANCE_TIMEOUT:-120}
       - LMCACHE_COORDINATOR_HEALTH_INTERVAL=${LMCACHE_COORDINATOR_HEALTH_INTERVAL:-10}
       - LMCACHE_COORDINATOR_EVICTION_INTERVAL=${LMCACHE_COORDINATOR_EVICTION_INTERVAL:-5}
@@ -489,7 +424,7 @@ services:
       - ../monitoring/scripts/lmcache_coordinator_entrypoint.py:/app/entrypoint.py:ro
     entrypoint: ["python3", "/app/entrypoint.py"]
     healthcheck:
-      test: ["CMD", "curl", "-fsS", "--max-time", "2", "-o", "/dev/null", "http://127.0.0.1:${LMCACHE_COORDINATOR_PORT:-9300}/healthz"]
+      test: ["CMD", "curl", "-fsS", "--max-time", "2", "-o", "/dev/null", "http://127.0.0.1:9300/healthz"]
       interval: 10s
       timeout: 5s
       retries: 12
@@ -501,7 +436,7 @@ services:
   vllm:
     # No `build:` stanza on purpose — see the lmcache service above.  Build with
     # `make build`, which supplies the torch-bearing `base` build-context.
-    image: ${VLLM_IMAGE_REF:-${IMAGE_REF:-${IMAGE_NAME:-rocm-aic}:latest}}
+    image: ${VLLM_IMAGE_REF:-aic-vllm:latest}
     container_name: aic-vllm-gpu${GPU:-0}
     # Joins lmcache's IPC, PID and network namespaces; cross-container HIP IPC KV
     # registration needs all three (see the lmcache service).  Override via
@@ -736,7 +671,7 @@ services:
       AIC_PROM_FILE: /prom/aic_l2_monitor.prom
       AIC_PROM_INTERVAL: "15"
     volumes:
-      - ${NVME_DATA:-/tmp/aic-nvme}:/data/nvme:ro
+      - ${NVME_DATA:-/mnt/lmcache-nvme}:/data/nvme:ro
       - aic-prom-textfile:/prom
       - ./l2-monitor/l2_monitor.py:/app/l2_monitor.py:ro
     entrypoint: ["python3", "-u", "/app/l2_monitor.py"]
@@ -787,7 +722,7 @@ services:
   # ---------------------------------------------------------------------------
   # nvme-exporter: NVMe Prometheus exporter on :9998.
   # Behind the `monitoring` profile.  Requires a pre-built image:
-  #   make monitoring-build-exporters
+  #   make build BAKE_TARGETS=exporters
   # CAP_SYS_ADMIN + /dev bind-mount for nvme-cli ioctl; no host networking needed.
   # ---------------------------------------------------------------------------
   nvme-exporter:
@@ -805,7 +740,7 @@ services:
   # ---------------------------------------------------------------------------
   # rdma-exporter: RDMA/RoCE sysfs Prometheus exporter on :9879.
   # Behind the `monitoring` profile.  Requires a pre-built image:
-  #   make monitoring-build-exporters
+  #   make build BAKE_TARGETS=exporters
   # Reads RDMA stats from sysfs only; no host networking or extra caps needed.
   # ---------------------------------------------------------------------------
   rdma-exporter:
@@ -851,7 +786,7 @@ services:
   # ---------------------------------------------------------------------------
   hsa-snoop:
     profiles: [monitoring, exporters, exporters-safe]
-    image: ${HSA_SNOOP_IMAGE:-aic-hsa-snoop:local}
+    image: ${HSA_SNOOP_IMAGE:-aic-hsa-snoop:latest}
     container_name: aic-hsa-snoop
     networks: [aic-network]
     pid: "${AIC_HSA_SNOOP_PID_MODE-service:lmcache}"
@@ -866,10 +801,9 @@ services:
     volumes:
       - /sys/kernel/debug:/sys/kernel/debug
       - /sys/kernel/tracing:/sys/kernel/tracing
-    command: ["--all", "--prometheus", "--prometheus-port", "${HSA_SNOOP_PORT:-9488}", "--mem-snoop"]
-    # The image's check assumes the default port; follow HSA_SNOOP_PORT.
+    command: ["--all", "--prometheus", "--prometheus-port", "9488", "--mem-snoop"]
     healthcheck:
-      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/${HSA_SNOOP_PORT:-9488}"]
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/9488"]
       interval: 30s
       timeout: 5s
       retries: 3
@@ -902,7 +836,7 @@ services:
   lmcache-emulator:
     profiles:
       - emulate-mp
-    image: ${LMCACHE_IMAGE_REF:-${IMAGE_REF:-${IMAGE_NAME:-rocm-aic}:latest}}
+    image: ${LMCACHE_IMAGE_REF:-aic-lmcache:latest}
     container_name: aic-lmcache-emulator
     # On the aic bridge, like `lmcache`: vllm-emulator reaches ZMQ on
     # :${LMCACHE_PORT} by container name, and the aic-lmcache alias lets
@@ -933,6 +867,8 @@ services:
         soft: -1
         hard: -1
     volumes:
+      # Not lmcache's /mnt defaults: a CPU-only emulation node has no dedicated
+      # NVMe or NFS mount, so a bare `emulate-mp` run keeps its pools under /tmp.
       - ${NVME_DATA:-/tmp/lmcache-emulate-nvme}:/data/nvme
       - ${NFS_DATA:-/tmp/lmcache-emulate-nfs}:/data/nfs
       - ${GDS_SLAB_DATA:-/tmp/gds-slab-unused}:/data/slab
@@ -962,15 +898,14 @@ services:
   # download and no VRAM/RAM for parameters.
   #
   # Usage (image built with `--target emulate`, see docker/vllm/Dockerfile):
-  #   docker compose --profile emulate up vllm-emulator
+  #   VLLM_IMAGE_REF=<emulate image> docker compose --profile emulate up vllm-emulator
   #
   # The `emulate-mp` profile runs the SAME service with the full LMCache MP
   # recipe attached — see the KV_TRANSFER_ARG block below and `make
-  # emulate-mp-test`.  That profile needs an image with LMCache in it, i.e. the
-  # production image, NOT :7.14-emulate (whose build stops before LMCache):
+  # emulate-mp-test`.  That profile needs the production images (the defaults),
+  # NOT :7.14-emulate (whose build stops before LMCache):
   #
-  #   IMAGE_NAME=rocm-aic:7.14-latest docker compose --profile emulate-mp \
-  #     up lmcache-emulator vllm-emulator
+  #   docker compose --profile emulate-mp up lmcache-emulator vllm-emulator
   # Name both services: the GPU `vllm` service has no profile (so the vram
   # baseline can run it alone), and compose starts every profile-less service on
   # any `up` -- a bare `--profile emulate-mp up` also launches it.
@@ -996,7 +931,7 @@ services:
     profiles:
       - emulate
       - emulate-mp
-    image: ${VLLM_IMAGE_REF:-${IMAGE_REF:-${IMAGE_NAME:-rocm-aic}:latest}}
+    image: ${VLLM_IMAGE_REF:-aic-vllm:latest}
     container_name: aic-vllm-emulator
     # On the aic bridge, unpublished: clients reach it as aic-vllm-emulator:8000.
     # The aic-vllm alias is prometheus' vllm target, as it is for the GPU stack.
@@ -1136,7 +1071,7 @@ services:
   cpu-smoke-emulator:
     profiles:
       - cpu-smoke
-    image: ${VLLM_IMAGE_REF:-${IMAGE_REF:-${IMAGE_NAME:-rocm-aic}:latest}}
+    image: ${VLLM_IMAGE_REF:-aic-vllm:latest}
     container_name: aic-vllm-emulator
     # Bridge + aic-vllm alias, unpublished, as vllm-emulator above.
     networks:

@@ -16,6 +16,8 @@ on:
       - 'docker/base/Dockerfile'
       - 'docker/vllm/Dockerfile'
       - 'docker/lmcache/Dockerfile'
+      - 'docker/docker-bake.hcl'
+      - 'docker/scripts/aic-bake-env.sh'
       - 'docker/scripts/apply-github-prs.sh'
       - 'patches/**'
       - '.github/workflows/rocm-aic-check-prs-and-patches.yml'
@@ -25,6 +27,8 @@ on:
       - 'docker/base/Dockerfile'
       - 'docker/vllm/Dockerfile'
       - 'docker/lmcache/Dockerfile'
+      - 'docker/docker-bake.hcl'
+      - 'docker/scripts/aic-bake-env.sh'
       - 'docker/scripts/apply-github-prs.sh'
       - 'patches/**'
       - '.github/workflows/rocm-aic-check-prs-and-patches.yml'
@@ -43,14 +47,14 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Resolve vLLM ref and URL from Dockerfile
+      - name: Resolve vLLM ref and URL from bake
         id: meta
         run: |
           set -euo pipefail
-          ref="$(grep -E '^ARG VLLM_REF=' docker/vllm/Dockerfile | head -1 | cut -d= -f2-)"
-          url="$(grep -E '^ARG VLLM_GIT_URL=' docker/vllm/Dockerfile | head -1 | cut -d= -f2-)"
-          test -n "${ref}" || { echo "VLLM_REF not set in Dockerfile"; exit 1; }
-          test -n "${url}" || { echo "VLLM_GIT_URL not set in Dockerfile"; exit 1; }
+          ref="$(docker/scripts/aic-bake-env.sh --get VLLM_REF)"
+          url="$(docker/scripts/aic-bake-env.sh --get VLLM_GIT_URL)"
+          test -n "${ref}" || { echo "VLLM_REF is empty in docker/docker-bake.hcl"; exit 1; }
+          test -n "${url}" || { echo "VLLM_GIT_URL is empty in docker/docker-bake.hcl"; exit 1; }
           echo "ref=${ref}" >> "${GITHUB_OUTPUT}"
           echo "url=${url}" >> "${GITHUB_OUTPUT}"
           echo "vLLM: ${url} @ ${ref}"
@@ -96,14 +100,14 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Resolve LLM-Emu ref and URL from Dockerfile
+      - name: Resolve LLM-Emu ref and URL from bake
         id: meta
         run: |
           set -euo pipefail
-          ref="$(grep -E '^ARG LLM_EMU_REF=' docker/vllm/Dockerfile | head -1 | cut -d= -f2-)"
-          url="$(grep -E '^ARG LLM_EMU_GIT_URL=' docker/vllm/Dockerfile | head -1 | cut -d= -f2-)"
-          test -n "${ref}" || { echo "LLM_EMU_REF not set in Dockerfile"; exit 1; }
-          test -n "${url}" || { echo "LLM_EMU_GIT_URL not set in Dockerfile"; exit 1; }
+          ref="$(docker/scripts/aic-bake-env.sh --get LLM_EMU_REF)"
+          url="$(docker/scripts/aic-bake-env.sh --get LLM_EMU_GIT_URL)"
+          test -n "${ref}" || { echo "LLM_EMU_REF is empty in docker/docker-bake.hcl"; exit 1; }
+          test -n "${url}" || { echo "LLM_EMU_GIT_URL is empty in docker/docker-bake.hcl"; exit 1; }
           echo "ref=${ref}" >> "${GITHUB_OUTPUT}"
           echo "url=${url}" >> "${GITHUB_OUTPUT}"
           echo "LLM-Emu: ${url} @ ${ref}"
@@ -174,14 +178,14 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Resolve LMCache ref and URL from Dockerfile
+      - name: Resolve LMCache ref and URL from bake
         id: meta
         run: |
           set -euo pipefail
-          ref="$(grep -E '^ARG LMCACHE_REF=' docker/lmcache/Dockerfile | head -1 | cut -d= -f2-)"
-          url="$(grep -E '^ARG LMCACHE_GIT_URL=' docker/lmcache/Dockerfile | head -1 | cut -d= -f2-)"
-          test -n "${ref}" || { echo "LMCACHE_REF not set in Dockerfile"; exit 1; }
-          test -n "${url}" || { echo "LMCACHE_GIT_URL not set in Dockerfile"; exit 1; }
+          ref="$(docker/scripts/aic-bake-env.sh --get LMCACHE_REF)"
+          url="$(docker/scripts/aic-bake-env.sh --get LMCACHE_GIT_URL)"
+          test -n "${ref}" || { echo "LMCACHE_REF is empty in docker/docker-bake.hcl"; exit 1; }
+          test -n "${url}" || { echo "LMCACHE_GIT_URL is empty in docker/docker-bake.hcl"; exit 1; }
           echo "ref=${ref}" >> "${GITHUB_OUTPUT}"
           echo "url=${url}" >> "${GITHUB_OUTPUT}"
           echo "LMCache: ${url} @ ${ref}"
@@ -241,14 +245,14 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Resolve NIXL ref and URL from Dockerfile
+      - name: Resolve NIXL ref and URL from bake
         id: meta
         run: |
           set -euo pipefail
-          ref="$(grep -E '^ARG NIXL_REF=' docker/lmcache/Dockerfile | head -1 | cut -d= -f2-)"
-          url="$(grep -E '^ARG NIXL_GIT_URL=' docker/lmcache/Dockerfile | head -1 | cut -d= -f2-)"
-          test -n "${ref}" || { echo "NIXL_REF not set in Dockerfile"; exit 1; }
-          test -n "${url}" || { echo "NIXL_GIT_URL not set in Dockerfile"; exit 1; }
+          ref="$(docker/scripts/aic-bake-env.sh --get NIXL_REF)"
+          url="$(docker/scripts/aic-bake-env.sh --get NIXL_GIT_URL)"
+          test -n "${ref}" || { echo "NIXL_REF is empty in docker/docker-bake.hcl"; exit 1; }
+          test -n "${url}" || { echo "NIXL_GIT_URL is empty in docker/docker-bake.hcl"; exit 1; }
           echo "ref=${ref}" >> "${GITHUB_OUTPUT}"
           echo "url=${url}" >> "${GITHUB_OUTPUT}"
           echo "NIXL: ${url} @ ${ref}"
@@ -298,12 +302,12 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Resolve LLM-Emu ref from Dockerfile
+      - name: Resolve LLM-Emu ref from bake
         id: meta
         run: |
           set -euo pipefail
-          ref="$(grep -E '^ARG LLM_EMU_REF=' docker/vllm/Dockerfile | head -1 | cut -d= -f2-)"
-          url="$(grep -E '^ARG LLM_EMU_GIT_URL=' docker/vllm/Dockerfile | head -1 | cut -d= -f2-)"
+          ref="$(docker/scripts/aic-bake-env.sh --get LLM_EMU_REF)"
+          url="$(docker/scripts/aic-bake-env.sh --get LLM_EMU_GIT_URL)"
           echo "ref=${ref}" >> "${GITHUB_OUTPUT}"
           echo "url=${url}" >> "${GITHUB_OUTPUT}"
 
@@ -368,14 +372,14 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Resolve PyTorch pin from Dockerfile
+      - name: Resolve PyTorch pin from bake
         id: meta
         run: |
           set -euo pipefail
-          df=docker/base/Dockerfile
-          ref="$(grep -E '^ARG PYTORCH_REF=' "${df}" | head -1 | cut -d= -f2-)"
-          series="$(grep -E '^ARG PYTORCH_SERIES=' "${df}" | head -1 | cut -d= -f2-)"
-          url="$(grep -E '^ARG PYTORCH_GIT_URL=' "${df}" | head -1 | cut -d= -f2-)"
+          df=docker/docker-bake.hcl
+          ref="$(docker/scripts/aic-bake-env.sh --get PYTORCH_REF)"
+          series="$(docker/scripts/aic-bake-env.sh --get PYTORCH_SERIES)"
+          url="$(docker/scripts/aic-bake-env.sh --get PYTORCH_GIT_URL)"
           test -n "${ref}" || { echo "::error::PYTORCH_REF not set in ${df}"; exit 1; }
           test -n "${series}" || { echo "::error::PYTORCH_SERIES not set in ${df}"; exit 1; }
           test -n "${url}" || { echo "::error::PYTORCH_GIT_URL not set in ${df}"; exit 1; }
@@ -411,7 +415,7 @@ jobs:
             *)
               echo "::error::PYTORCH_SERIES=${SERIES} does not match version.txt"\
                    "${version} at PYTORCH_REF=${REF}. Update PYTORCH_SERIES in"\
-                   "docker/base/Dockerfile to match the pinned commit (it feeds"\
+                   "docker/docker-bake.hcl to match the pinned commit (it feeds"\
                    "the image tag and the README)."
               exit 1
               ;;

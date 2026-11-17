@@ -175,6 +175,7 @@ jobs:
           tarball_contents="$(tar tzf "${tarball}")"
           for f in Makefile README.md VERSION pyproject.toml \
                    docker/scripts/aic-image-tag.sh \
+                   docker/scripts/aic-bake-env.sh \
                    benchmarks/run_cliff.py benchmarks/plot_cliff.py; do
             echo "${tarball_contents}" | grep -q "${f}" \
               || { echo "ERROR: expected ${f} missing from tarball" >&2; exit 1; }

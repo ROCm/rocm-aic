@@ -1,14 +1,11 @@
 # check=skip=InvalidDefaultArgInFrom
-# ROCM_VERSION deliberately carries no default here -- docker/base/Dockerfile
-# is its single source of truth and the Makefile forwards it to every build.
-# That leaves the fallback ROCM_BASE_IMAGE default unresolvable at lint time,
-# which is harmless: the `base` stage is always replaced by the base
-# build-context supplied by `make build`.
+# ROCM_BASE_IMAGE is a build arg with no default here (docker/docker-bake.hcl
+# owns it), so the FROM lines are blank at lint time.
 # Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
 #
 # SPDX-License-Identifier: MIT
 #
-# AIC LMCache image: torch + torchvision + NIXL (from aic-base) + LMCache v0.5.6
+# AIC LMCache image: torch + torchvision + NIXL (from aic-base) + LMCache
 # (patched).
 #
 # AITER and FlashAttention live in aic-vllm — LMCache is a KV-cache
@@ -31,29 +28,31 @@
 #   wheels    scratch image holding just /wheels                             (section 9)
 #   runtime   default target, aliases `build`
 #
-# Build (from repo root — build context is this tree):
-#   BASE_TAG=$(ROCM_ARCH=gfx950 docker/scripts/aic-image-tag.sh docker/base/Dockerfile)
-#   DOCKER_BUILDKIT=1 docker buildx build \
-#     --build-arg ROCM_ARCH=gfx950 \
-#     --build-context base=docker-image://aic-base:${BASE_TAG} \
-#     -f docker/lmcache/Dockerfile \
-#     -t aic-lmcache:${BASE_TAG} \
-#     .
+# Build args: docker/docker-bake.hcl is the only owner of every pin, URL and
+# base image, so no ARG here has a default and each consuming stage stops when
+# one is unset.  Build through bake (from repo root), which also wires in
+# aic-base and its wheels:
+#   ROCM_ARCH=gfx950 docker buildx bake -f docker/docker-bake.hcl lmcache --load
+#
+# or hand bake's resolved args to a raw build against an aic-base built earlier
+# (base-wheels is the `--target wheels` export of docker/base/Dockerfile):
+#   mapfile -t args < <(ROCM_ARCH=gfx950 docker/scripts/aic-bake-env.sh --build-args lmcache)
+#   docker buildx build "${args[@]}" \
+#     --build-context base=docker-image://aic-base:<tag> \
+#     --build-context base-wheels=/tmp/aic-base-wheels \
+#     -f docker/lmcache/Dockerfile -t aic-lmcache:dev .
 #
 # Or via make:
-#   make dist-build-lmcache ROCM_ARCH=gfx950
+#   make build ROCM_ARCH=gfx950            (local)
+#   make dist-build AIC_ROCM_ARCH=gfx950   (Slurm)
 
 # =============================================================================
-# Fallback base stage: used when no --build-context base= is provided (e.g.
-# when building this Dockerfile standalone without a pre-built aic-base image).
-# When --build-context base=docker-image://aic-base:<TAG> IS supplied, BuildKit
+# Fallback base stage: used when no --build-context base= is provided.  When
+# --build-context base=docker-image://aic-base:<TAG> IS supplied, BuildKit
 # overrides this stage with the pre-built image and skips this FROM entirely.
-# Single source of truth: ARG ROCM_VERSION in docker/base/Dockerfile.
-# The Makefile reads it from there and forwards it to every build, so this
-# carries no default and must not be given one -- a second literal here is
-# exactly the drift this removes.
-ARG ROCM_VERSION
-ARG ROCM_BASE_IMAGE=rocm/dev-ubuntu-24.04:${ROCM_VERSION}-full
+# build_lmcache_wheel always starts from ROCM_BASE_IMAGE.  Unset, the build
+# stops at the FROM: base name (${ROCM_BASE_IMAGE}) should not be blank
+ARG ROCM_BASE_IMAGE
 # hadolint ignore=DL3006
 FROM ${ROCM_BASE_IMAGE} AS base
 
@@ -71,11 +70,14 @@ FROM scratch AS base-wheels
 FROM ${ROCM_BASE_IMAGE} AS build_lmcache_wheel
 
 ARG ROCM_ARCH
-ARG BUILD_JOBS=
-ARG LMCACHE_GIT_URL=https://github.com/LMCache/LMCache.git
-ARG LMCACHE_REF=v0.5.6
+ARG BUILD_JOBS
+ARG LMCACHE_GIT_URL
+ARG LMCACHE_REF
 
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
+
+RUN : "${LMCACHE_GIT_URL:?unset: build through docker/docker-bake.hcl}" \
+      "${LMCACHE_REF:?unset: build through docker/docker-bake.hcl}"
 
 # Install git + minimal build tools (the -full ROCm image does not include them).
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
@@ -173,20 +175,14 @@ WORKDIR /
 FROM base AS build
 
 ARG ROCM_ARCH
-ARG BUILD_JOBS=
-ARG LMCACHE_GIT_URL=https://github.com/LMCache/LMCache.git
-# LMCACHE_REF has a default in build_lmcache_wheel; redeclare here without
-# a default so it is forwarded from the outer ARG (single source of truth).
+ARG BUILD_JOBS
+ARG LMCACHE_GIT_URL
 ARG LMCACHE_REF
-
-# NIXL_REF/NIXL_GIT_URL carried for the image label and CI patch checks.
-ARG NIXL_GIT_URL=https://github.com/ai-dynamo/nixl.git
-ARG NIXL_REF=v1.4.1
-
-# ARGs carried for the README version-sync check only.
-ARG AITER_REF=v0.1.22.post1
-ARG FLASH_ATTN_REF=v2.8.3.post1
-ARG HSA_SNOOP_REF=v1.2.0
+# For the image label; NIXL itself comes from aic-base.
+ARG NIXL_REF
+RUN : "${LMCACHE_GIT_URL:?unset: build through docker/docker-bake.hcl}" \
+      "${LMCACHE_REF:?unset: build through docker/docker-bake.hcl}" \
+      "${NIXL_REF:?unset: build through docker/docker-bake.hcl}"
 
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
@@ -235,7 +231,9 @@ ENV PYTHONUNBUFFERED=1 \
 ARG AIC_VERSION
 ARG ROCM_BASE_IMAGE
 ARG ROCM_VERSION
-RUN test -n "$AIC_VERSION" || { echo "ERROR: AIC_VERSION is not set (read it from VERSION)"; exit 1; }
+RUN : "${AIC_VERSION:?unset: build through docker/docker-bake.hcl}" \
+      "${ROCM_VERSION:?unset: build through docker/docker-bake.hcl}" \
+      "${ROCM_BASE_IMAGE:?unset: build through docker/docker-bake.hcl}"
 LABEL org.opencontainers.image.title="aic-lmcache" \
       org.opencontainers.image.description="AMD Infinity Context: ROCm LMCache tiered-cache service" \
       org.opencontainers.image.version="${AIC_VERSION}" \

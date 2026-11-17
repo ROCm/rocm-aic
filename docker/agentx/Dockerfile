@@ -15,19 +15,14 @@
 # variables (REQUESTS_CA_BUNDLE, SSL_CERT_FILE, NO_PROXY, etc.) passed by
 # the caller — no certs are baked into the image.
 #
-# Build (from repo root):
-#   DOCKER_BUILDKIT=1 docker buildx build \
-#     -f docker/agentx/Dockerfile \
-#     -t aic-agentx:latest \
-#     .
-#
-# Or via make:
-#   make agentx-build
-#
-# Or via bake:
+# Build (from repo root).  docker/docker-bake.hcl is the only owner of
+# AIPERF_VERSION; there is no default here and the build stops without it:
 #   docker buildx bake -f docker/docker-bake.hcl agentx --load
-
-ARG AIPERF_VERSION=latest
+#
+# or a raw build with bake's resolved args:
+#   mapfile -t args < <(docker/scripts/aic-bake-env.sh --build-args agentx)
+#   docker buildx build "${args[@]}" -f docker/agentx/Dockerfile \
+#     -t aic-agentx:latest .
 
 FROM python:3.12-slim
 
@@ -44,7 +39,8 @@ RUN apt-get update \
 
 # Install aiperf with OTEL support.  When AIPERF_VERSION=latest the constraint
 # is unconstrained; pin it (e.g. AIPERF_VERSION=0.4.2) for reproducible builds.
-RUN if [ "${AIPERF_VERSION}" = "latest" ]; then \
+RUN : "${AIPERF_VERSION:?unset: build through docker/docker-bake.hcl}" && \
+    if [ "${AIPERF_VERSION}" = "latest" ]; then \
       pip install 'aiperf[otel]'; \
     else \
       pip install "aiperf[otel]==${AIPERF_VERSION}"; \

@@ -30,7 +30,7 @@
 #   AIC_EXPORTERS     -- 1 to also launch the exporter fleet (0 = Prometheus only).
 #   AIC_MONITORING    -- 1 to enable start_monitoring/stop_monitoring at all.
 #   Optional: AIC_PROM_IMAGE/PORT/RETENTION, AIC_{NODE,AMDGPU,NVME,RDMA}_EXPORTER_IMAGE,
-#             AIC_{NVME,RDMA}_EXPORTER_ARGS, {NVME,RDMA}_EXPORTER_PORT, HSA_SNOOP_PORT,
+#             AIC_{NVME,RDMA}_EXPORTER_ARGS, {NVME,RDMA}_EXPORTER_PORT,
 #             AIC_HSA_SNOOP_PID_MODE.
 
 export PATH="/usr/local/bin:${PATH}"
@@ -224,7 +224,7 @@ start_monitoring() {
     # AIC_HSA_SNOOP_PID_MODE makes hsa-snoop depend on the inactive lmcache
     # service and the whole project fails validation.
     local -a env=(AIC_METRICS_DIR="${AIC_METRICS_DIR}" PROM_UID="$(id -u)" PROM_GID="$(id -g)"
-                  IMAGE_NAME="${AIC_IMAGE}" AIC_HSA_SNOOP_PID_MODE="${AIC_HSA_SNOOP_PID_MODE}")
+                  AIC_HSA_SNOOP_PID_MODE="${AIC_HSA_SNOOP_PID_MODE}")
     local -a dc=(docker compose "${compose_files[@]}" --profile monitoring-base "${profile[@]}")
     local -a svc
     mapfile -t svc < <(env "${env[@]}" "${dc[@]}" config --services \

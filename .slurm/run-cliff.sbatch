@@ -116,22 +116,26 @@ AIC_NVME_LABEL="${AIC_NVME_LABEL:-aic-lmcache}"      # ext4 label to recognize/r
 _AIC_NVME_DATA_PINNED="${NVME_DATA:+1}"
 _AIC_LOCAL_ROOT_PINNED="${AIC_LOCAL_ROOT:+1}"
 
-# Benchmark sweep knobs (defaults mirror the Makefile `cliff` target).
-BENCH_ISL="${BENCH_ISL:-20000}"
-BENCH_SHARED_TOK="${BENCH_SHARED_TOK:-18000}"
-BENCH_CONCUR="${BENCH_CONCUR:-1,2,4,8,16,32,48,64,80,100,128,160,200,250}"
-BENCH_ITERS="${BENCH_ITERS:-3}"
+# Benchmark sweep knobs.  benchmarks/run_cliff.py owns the defaults of the
+# sweep shape (ISL, shared prefix, concurrency ladder, iters): each is passed
+# on only when set.  The prefix mode is a cliff preset over its `shared`.
+BENCH_ISL="${BENCH_ISL:-}"
+BENCH_SHARED_TOK="${BENCH_SHARED_TOK:-}"
+BENCH_CONCUR="${BENCH_CONCUR:-}"
+BENCH_ITERS="${BENCH_ITERS:-}"
 BENCH_PREFIX_MODE="${BENCH_PREFIX_MODE:-per_client}" # per_client => a real cliff
 
 # Arm selector: comma list of arms to run (vram, nvme, gds).  Default all three;
 # narrow it for a quick check, e.g. `make cliff-submit AIC_CLIFF_ARMS=nvme`.
 AIC_CLIFF_ARMS="${AIC_CLIFF_ARMS:-vram,nvme,gds}"
 
-# vLLM knobs.
-TENSOR_PARALLEL_SIZE="${TENSOR_PARALLEL_SIZE:-1}"
-VLM_GPU_MEMORY_UTILIZATION="${VLM_GPU_MEMORY_UTILIZATION:-0.90}"
+# vLLM and LMCache knobs.  docker/docker-compose.yml owns the defaults of the
+# ones this script only passes through (TENSOR_PARALLEL_SIZE,
+# VLM_GPU_MEMORY_UTILIZATION, VLM_MAX_NUM_BATCHED_TOKENS, AIC_NIXL_USE_DIRECT_IO,
+# LMCACHE_NVME_SLOT_SIZE, LMCACHE_NIXL_POSIX_SLOT_SIZE, LMCACHE_MAX_GPU_WORKERS,
+# LMCACHE_WORKER_REAP_TIMEOUT): a value in the environment reaches compose as is.  The
+# defaults kept below are for values the script itself reads.
 VLM_MAX_MODEL_LEN="${VLM_MAX_MODEL_LEN:-32768}"
-VLM_MAX_NUM_BATCHED_TOKENS="${VLM_MAX_NUM_BATCHED_TOKENS:-4096}"
 # Optional RoPE context extension (YaRN etc.) for long-ISL runs.  Only RoPE-based
 # models support this; ALiBi/absolute-position models will error or ignore it.
 # Two ways to set it (applied to ALL arms via vLLM --hf-overrides):
@@ -152,11 +156,10 @@ fi
 # knob (built in the compose-stack setup block below).  Empty => no scaling.
 LMCACHE_L1_SIZE_GB="${LMCACHE_L1_SIZE_GB:-20}"
 LMCACHE_NVME_POOL="${LMCACHE_NVME_POOL:-4096}"
-# POSIX-specific slot size and pool (separate from AIS_MT's 256 MiB staging buffer).
-# file_size for POSIX = actual KV chunk bytes (~9 MiB for gpt-oss-120b fp8 chunk_size=256);
-# 16 MiB gives headroom.  Pool must cover c×chunks: 250×71=17,750 -> default 32768.
-# Parallel POSIX writers: default 1 GPU worker serializes all POSIX writes on ZMQ.
-LMCACHE_NIXL_POSIX_SLOT_SIZE="${LMCACHE_NIXL_POSIX_SLOT_SIZE:-16777216}"
+# POSIX-specific pool (separate from AIS_MT's 256 MiB staging buffer).  L2
+# capacity is pool x compose's 16 MiB LMCACHE_NIXL_POSIX_SLOT_SIZE = 512 GiB;
+# the c=250 sweep stores 250×71=17,750 chunks of ~9 MiB (gpt-oss-120b fp8,
+# chunk_size=256), about 160 GiB.
 # Post-warmup drain sleep: time in seconds to wait after the per-c warmup wave
 # before starting timed iters.  Must be long enough for async POSIX writes to
 # land on disk so iter 0 sees a warm, unsaturated cache.  Default 300 s is sized
@@ -172,13 +175,17 @@ AIC_CLIFF_WARMUP_WAVES="${AIC_CLIFF_WARMUP_WAVES:-2}"
 # 1 = empty vLLM's GPU prefix cache before every timed iter of the kvd arms.
 AIC_CLIFF_RESET_PREFIX_CACHE="${AIC_CLIFF_RESET_PREFIX_CACHE:-1}"
 LMCACHE_NIXL_POSIX_POOL="${LMCACHE_NIXL_POSIX_POOL:-32768}"
-LMCACHE_MAX_GPU_WORKERS="${LMCACHE_MAX_GPU_WORKERS:-1}"
-# Cap concurrent NIXL POSIX load tasks.  At high concurrency the NIXL descriptor pool
-# exhausts and makeXferReq throws NIXL_ERR_INVALID_PARAM; limiting in-flight prefetches
-# to 4 keeps the pool from saturating while still overlapping L2 reads.
-# Raise prefetch in-flight: with _xfer_handle_lock (patch 09) the NIXL descriptor
-# pool is protected, so more concurrent reads are safe.  At 4 in-flight and c=32
-# it takes ~200s to prefetch all chunks; at 32 in-flight it should take ~25s.
+# For the tier logs only; compose owns both defaults.
+if [[ -n "${LMCACHE_NIXL_POSIX_SLOT_SIZE:-}" ]]; then
+  _posix_knobs_log="slot_size=$((LMCACHE_NIXL_POSIX_SLOT_SIZE / 1048576))MiB"
+else
+  _posix_knobs_log="slot_size=compose default"
+fi
+_posix_knobs_log+=" workers=${LMCACHE_MAX_GPU_WORKERS:-<compose default>}"
+# Cliff preset, deliberately above compose's default of 4 concurrent NIXL POSIX
+# load tasks.  With _xfer_handle_lock (patch 09) the NIXL descriptor pool is
+# protected, so more concurrent reads are safe.  At 4 in-flight and c=32 it
+# takes ~200s to prefetch all chunks; at 32 in-flight it should take ~25s.
 LMCACHE_L2_PREFETCH_MAX_IN_FLIGHT="${LMCACHE_L2_PREFETCH_MAX_IN_FLIGHT:-32}"
 # CPU DRAM (L1) tier for the nvme arm.  Default 'false' = KV flows GPU VRAM
 # staging -> NVMe (no host DRAM tier).  Set AIC_LOCAL_CPU=true to add an LMCache
@@ -192,33 +199,13 @@ LMCACHE_MAX_LOCAL_CPU_SIZE="${LMCACHE_MAX_LOCAL_CPU_SIZE:-40}"
 # DRAM L1 / NIXL staging pressure at high concurrency) instead of erroring.
 # Empty -> omit the field entirely (vLLM's own default applies).
 AIC_KV_LOAD_FAILURE_POLICY="${AIC_KV_LOAD_FAILURE_POLICY:-}"
-# hipFile GDS compat fallback.  Default 'false' fails loudly if true GPU-direct
-# (P2PDMA) registration is unavailable -- so kvd arms measure real GDS.  Set to
-# 'true' to allow hipFile's staged/bounce-buffer fallback when hipFileBufRegister
-# fails (err 5013) on a node where GDS is not fully enabled -- lets the AIS_MT /
-# GDS arms run, but NOT as true GPU-direct.
-HIPFILE_ALLOW_COMPAT_MODE="${HIPFILE_ALLOW_COMPAT_MODE:-false}"
-# VRAM NIXL staging buffer for the AIS_MT nvme arm (bytes).  MUST be a GPU (cuda)
-# buffer so hipFileBufRegister succeeds -- registering a host/DRAM buffer returns
-# err 5013.  512 MiB default (mirrors recipies/vllm-lmcache-nixl).
-AIC_NIXL_BUFFER_SIZE="${AIC_NIXL_BUFFER_SIZE:-536870912}"
-# NIXL AIS_MT staging-buffer device: 'cuda' -> VRAM buffer -> hipFileBufRegister
-# succeeds -> TRUE GDS (GPU-direct) reads/writes.  'cpu' -> DRAM buffer ->
-# registration fails (err 5013) -> with HIPFILE_ALLOW_COMPAT_MODE=true this falls
-# back to hipFile COMPAT mode = POSIX pread/pwrite through a host bounce buffer
-# (i.e. NVMe L2 over POSIX, not GDS).  Use cpu+allow-compat to A/B POSIX vs GDS.
-AIC_NIXL_BUFFER_DEVICE="${AIC_NIXL_BUFFER_DEVICE:-cuda}"
-# O_DIRECT for the NIXL NVMe L2.  true mirrors the GDS path; set false if the POSIX
-# (compat) path errors on unaligned direct I/O.
-AIC_NIXL_USE_DIRECT_IO="${AIC_NIXL_USE_DIRECT_IO:-true}"
-# nvme-arm L2 backend selector: 'nixl' (default) -> NIXL AIS_MT (GDS or POSIX/compat
-# per AIC_NIXL_BUFFER_DEVICE).  'local_disk' -> LMCache's NATIVE POSIX LocalDiskBackend
+# nvme-arm L2 backend selector: 'nixl' (default) -> NIXL AIS_MT.  'local_disk' -> LMCache's NATIVE POSIX LocalDiskBackend
 # (one .pt file per chunk, no NIXL) -- a real indexed persistent tier that coexists
 # with the DRAM L1.  Lets us A/B native-POSIX-disk vs NIXL for the L2.
 AIC_L2_BACKEND="${AIC_L2_BACKEND:-nixl}"
-# When AIC_L2_BACKEND=nixl(_posix): which NIXL plugin.  AIS_MT = hipFile (GDS w/ cuda
-# buffer, or POSIX/compat w/ cpu buffer).  POSIX = NIXL's FIRST-CLASS POSIX plugin
-# (requires cpu buffer).  AIC_L2_BACKEND=nixl_posix forces POSIX + cpu buffer below.
+# When AIC_L2_BACKEND=nixl(_posix): which NIXL plugin.  AIS_MT = hipFile.
+# POSIX = NIXL's FIRST-CLASS POSIX plugin.  AIC_L2_BACKEND=nixl_posix forces
+# POSIX below.
 AIC_NIXL_BACKEND="${AIC_NIXL_BACKEND:-AIS_MT}"
 # local_disk L2 knobs (only used when AIC_L2_BACKEND=local_disk):
 AIC_LOCAL_DISK_SIZE_GB="${AIC_LOCAL_DISK_SIZE_GB:-320}" # max_local_disk_size (GB)
@@ -226,10 +213,9 @@ AIC_LOCAL_DISK_SIZE_GB="${AIC_LOCAL_DISK_SIZE_GB:-320}" # max_local_disk_size (G
 # second tier); true -> O_DIRECT (bypass page cache, needs block-aligned chunks).
 AIC_L2_ODIRECT="${AIC_L2_ODIRECT:-false}"
 # nixl_posix is shorthand for the NIXL first-class POSIX plugin: normalize it here (at
-# top level) to POSIX + cpu buffer so the tiers log and the config writer agree.
+# top level) to POSIX so the tiers log and the config writer agree.
 if [[ "${AIC_L2_BACKEND}" == nixl_posix ]]; then
   AIC_NIXL_BACKEND=POSIX
-  AIC_NIXL_BUFFER_DEVICE=cpu
 fi
 # Attention backend for all arms.  On vLLM 0.25 the ROCm backends (ROCM_ATTN,
 # ROCM_AITER_UNIFIED_ATTN) report supports_kv_connector()=False, so the kvd arms
@@ -237,29 +223,27 @@ fi
 # requires a full-attention model (VLLM_MODEL): a sliding-window/hybrid model like
 # gpt-oss can't unify its KV-cache specs under a connector on 0.25.  Same backend
 # on all arms keeps baseline (vram) and kvd comparable.
-AIC_ATTENTION_BACKEND="${AIC_ATTENTION_BACKEND:-TRITON_ATTN}"
+# docker/docker-compose.yml owns the default (TRITON_ATTN); AIC_ATTENTION_BACKEND
+# is the deprecated name.
+VLM_ATTENTION_BACKEND="${VLM_ATTENTION_BACKEND:-${AIC_ATTENTION_BACKEND:-}}"
 # KV-cache dtype + AITER are MI300/MI350 (CDNA3+) features: fp8 KV cache and the
 # ROCm AITER kernels fail vLLM engine init on MI100/MI210 (no native fp8) and on
-# RDNA.  Defaults reproduce the release config (fp8 + aiter) for gfx942/gfx950;
-# for older/consumer arches pass AIC_KV_CACHE_DTYPE=auto AIC_ROCM_USE_AITER=0.
-AIC_KV_CACHE_DTYPE="${AIC_KV_CACHE_DTYPE:-fp8}"
+# RDNA.  Defaults reproduce the release config (compose's fp8 + aiter) for
+# gfx942/gfx950; for older/consumer arches pass VLM_KV_CACHE_DTYPE=auto
+# AIC_ROCM_USE_AITER=0.  AIC_KV_CACHE_DTYPE is the deprecated name.
+VLM_KV_CACHE_DTYPE="${VLM_KV_CACHE_DTYPE:-${AIC_KV_CACHE_DTYPE:-}}"
 AIC_ROCM_USE_AITER="${AIC_ROCM_USE_AITER:-1}"
 # How long wait_ready() polls a vLLM endpoint before giving up.  Large models
 # (e.g. Qwen2.5-72B, ~145 GB) can spend >18 min just loading weights off a busy
 # NFS HF cache, exceeding the 1200 s default -> spurious "never became ready".
 # Raise for big models / slow shared storage.
 AIC_VLLM_READY_TIMEOUT="${AIC_VLLM_READY_TIMEOUT:-1200}"
-# Model load format.  'fastsafetensors' (default) parallelises weight loading
-# across ranks for faster startup; falls back to 'safetensors' if the model
-# lacks safetensor shards.  Set AIC_LOAD_FORMAT=safetensors to use the serial
-# loader (e.g. when debugging load-order issues or on non-safetensor checkpoints).
-AIC_LOAD_FORMAT="${AIC_LOAD_FORMAT:-fastsafetensors}"
 
 # Every arm serves vLLM on container port 8000 (arms run sequentially, each stack
 # torn down before the next), so one endpoint port suffices.  wait_ready probes it
 # from inside the container; the bench container reaches it from the aic bridge.
 VLLM_ENDPOINT_PORT=8000
-LMCACHE_PORT=6555
+LMCACHE_PORT="${LMCACHE_PORT:-6555}"
 STAMP="$(date +%Y%m%d-%H%M%S)"
 # CSVs and plots go under the per-job logs dir so the run is self-contained and
 # the tree root needs no results/ or plots/ dirs.
@@ -272,14 +256,12 @@ PLOTS="${LOGDIR}/plots"
 # "manual" off-Slurm); override with an NFS path to explore the run afterward.
 # AIC_EXPORTERS=1 also launches the containerized node + AMD GPU exporters (for
 # nodes without the host services); set 0 to rely on host-installed exporters
-# and avoid :9100/:5000 clashes.
+# and avoid :9100/:5000 clashes.  monitoring/monitoring-lib.sh owns its default
+# and that of AIC_HSA_SNOOP_PID_MODE ('host', which needs --pid=host and is
+# blocked by spur-authz on SPUR; 'container:aic-lmcache' shares the lmcache+vLLM
+# PID ns instead -- valid because vllm uses pid:service:lmcache).
 AIC_MONITORING="${AIC_MONITORING:-1}"
 AIC_METRICS_DIR="${AIC_METRICS_DIR:-${REPO}/logs/${SLURM_JOB_ID:-manual}/prometheus}"
-AIC_EXPORTERS="${AIC_EXPORTERS:-1}"
-# hsa-snoop PID mode: 'host' (default non-SPUR) requires --pid=host which is blocked by
-# spur-authz on SPUR nodes.  'container:aic-lmcache' shares the lmcache+vLLM PID ns
-# instead -- valid because vllm uses pid:service:lmcache so both processes are visible.
-AIC_HSA_SNOOP_PID_MODE="${AIC_HSA_SNOOP_PID_MODE:-host}"
 MON_COMPOSE="${REPO}/docker/docker-compose.yml"
 MON_DIR="${REPO}/monitoring"
 
@@ -549,7 +531,7 @@ _load_stack_image "${AIC_LMCACHE_IMAGE}" "${AIC_LMCACHE_ARTIFACT:-}"
 # On a node with the batesste host service the fabric containers are port-skipped
 # anyway; with neither, node-exporter's nvme/infiniband collectors still cover it
 # -- see _monitoring_run_up.
-if [[ "${AIC_EXPORTERS}" != "0" ]]; then
+if [[ "${AIC_EXPORTERS:-}" != "0" ]]; then
   # nvme/rdma fabric exporters (built by run-build-distribute.sh build-exporters)
   if [[ -z "${AIC_NVME_EXPORTER_IMAGE:-}" ]]; then
     _t="aic-nvme-exporter:latest"
@@ -559,12 +541,12 @@ if [[ "${AIC_EXPORTERS}" != "0" ]]; then
     _t="aic-rdma-exporter:latest"
     load_image_if_needed "${_t}" "" && export AIC_RDMA_EXPORTER_IMAGE="${_t}"
   fi
-  # AMD GPU device-metrics-exporter (rocm/device-metrics-exporter:v1.5.2, the tag
-  # compose and `make dist-build-monitoring` use).  Tarball saved to
-  # AIC_IMAGE_DIR by dist-build-monitoring or manually.
+  # AMD GPU device-metrics-exporter, at the tag compose pins (the one `make
+  # dist-build-monitoring` saves).  Tarball saved to AIC_IMAGE_DIR by
+  # dist-build-monitoring or manually.
   if [[ -z "${AIC_AMDGPU_EXPORTER_IMAGE:-}" ]]; then
-    _t="${AIC_AMDGPU_EXPORTER_IMAGE_DEFAULT:-rocm/device-metrics-exporter:v1.5.2}"
-    load_image_if_needed "${_t}" "" && export AIC_AMDGPU_EXPORTER_IMAGE="${_t}"
+    _t="$(bash "${REPO}/docker/scripts/aic-compose-default.sh" AIC_AMDGPU_EXPORTER_IMAGE)" \
+      && load_image_if_needed "${_t}" "" && export AIC_AMDGPU_EXPORTER_IMAGE="${_t}"
   fi
   # hsa-snoop is part of the exporters-safe profile.  build-exporters saves it as
   # AIC_HSA_SNOOP_IMAGE (default aic-hsa-snoop:latest), whereas make exports
@@ -572,11 +554,11 @@ if [[ "${AIC_EXPORTERS}" != "0" ]]; then
   # Advertise the loaded one only when it is actually present, as the smoke-test does.
   _t="${AIC_HSA_SNOOP_IMAGE:-aic-hsa-snoop:latest}"
   load_image_if_needed "${_t}" "" && export HSA_SNOOP_IMAGE="${_t}"
-  # Prometheus (prom/prometheus:v3.14.0).  Pre-pull avoids 10+ min Docker Hub
+  # Prometheus, at the tag compose pins.  Pre-pull avoids 10+ min Docker Hub
   # download on fresh nodes; load_image_if_needed is a no-op when already present.
   if [[ -z "${AIC_PROM_IMAGE:-}" ]]; then
-    _t="prom/prometheus:v3.14.0"
-    load_image_if_needed "${_t}" "" || true
+    _t="$(bash "${REPO}/docker/scripts/aic-compose-default.sh" AIC_PROM_IMAGE)" \
+      && load_image_if_needed "${_t}" "" || true
   fi
 fi
 
@@ -612,12 +594,10 @@ compose() { docker compose -f "${COMPOSE_FILE}" "$@"; }
 # Knobs the compose file interpolates (already resolved above).  ROCM_ARCH is only
 # read by build.args, but compose interpolates it even on `up`, so keep it set.
 # Export the two image refs explicitly: `make cliff-*` exports its own
-# VLLM_IMAGE_REF/LMCACHE_IMAGE_REF into this job's environment, and compose reads
-# those ahead of IMAGE_REF, so the refs loaded above must override them.
+# VLLM_IMAGE_REF/LMCACHE_IMAGE_REF into this job's environment, so the refs
+# loaded above must override them.
 export VLLM_IMAGE_REF="${AIC_VLLM_IMAGE}"
 export LMCACHE_IMAGE_REF="${AIC_LMCACHE_IMAGE}"
-export IMAGE_REF="${AIC_LMCACHE_IMAGE}"
-export IMAGE_NAME="${AIC_LMCACHE_IMAGE%:*}"
 export ROCM_ARCH="${ROCM_ARCH:-$(detect_gpu_arch)}"
 # Resolve the GPU allocation instead of hardcoding host GPU 0.
 source "${REPO}/monitoring/monitoring-lib.sh"
@@ -627,17 +607,12 @@ export GPU="${AIC_ROCR_VISIBLE%%,*}"
 export HF_HOME NVME_DATA NFS_DATA GDS_SLAB_DATA
 export LOG="${LOGDIR}" # lmcache/vllm container logs land under the job dir
 export HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1
-export VLLM_MODEL TENSOR_PARALLEL_SIZE
-export VLM_GPU_MEMORY_UTILIZATION VLM_MAX_MODEL_LEN VLM_MAX_NUM_BATCHED_TOKENS
-export VLM_ATTENTION_BACKEND="${AIC_ATTENTION_BACKEND}"
-export VLM_KV_CACHE_DTYPE="${AIC_KV_CACHE_DTYPE}"
+export VLLM_MODEL VLM_MAX_MODEL_LEN
+export VLM_ATTENTION_BACKEND VLM_KV_CACHE_DTYPE
 export AIC_ROCM_USE_AITER
 export LMCACHE_PORT LMCACHE_NVME_POOL LMCACHE_NFS_POOL
-export LMCACHE_NVME_SLOT_SIZE="${LMCACHE_NVME_SLOT_SIZE:-268435456}"
-export AIC_NIXL_USE_DIRECT_IO
 export AIC_NIXL_BACKEND
-export LMCACHE_NIXL_POSIX_SLOT_SIZE LMCACHE_NIXL_POSIX_POOL LMCACHE_MAX_GPU_WORKERS LMCACHE_L2_PREFETCH_MAX_IN_FLIGHT
-export NIXL_METRICS_PORT="${NIXL_METRICS_PORT:-19090}"
+export LMCACHE_NIXL_POSIX_POOL LMCACHE_L2_PREFETCH_MAX_IN_FLIGHT
 export AIC_HSA_SNOOP_PID_MODE
 # RoPE override (YaRN etc.) applied to ALL arms via vLLM --hf-overrides.  Single-
 # quote the JSON so compose's shlex splitting keeps the inner double quotes.
@@ -649,6 +624,7 @@ VLLM_EXTRA_ARGS="${VLLM_EXTRA_ARGS:-}"
 [[ -n "${VLM_ROPE_SCALING}" ]] &&
   VLLM_EXTRA_ARGS="${VLLM_EXTRA_ARGS} --hf-overrides '{\"rope_scaling\": ${VLM_ROPE_SCALING}}'"
 export VLLM_EXTRA_ARGS
+# Cliff preset, quieter than compose's INFO: a sweep logs every request.
 export VLLM_LOGGING_LEVEL="${VLLM_LOGGING_LEVEL:-WARNING}"
 # The MP server's --l1-size-gb is the DRAM L1 (nvme arm) OR the hipFile slab size
 # (gds arm).  The cliff sizes these from two different knobs, so preserve the
@@ -691,6 +667,11 @@ run_bench() { # $1=arm $2=vLLM container $3=out_csv $4=extra args...
   endpoint="$(aic_bridge_url "$2" "${VLLM_ENDPOINT_PORT}")" || return 1
   shift 3
   log "running sweep: arm=${arm} endpoint=${endpoint} -> ${out}"
+  local -a shape=()
+  [[ -n "${BENCH_ISL}" ]] && shape+=(--isl "${BENCH_ISL}")
+  [[ -n "${BENCH_SHARED_TOK}" ]] && shape+=(--shared-prefix-tokens "${BENCH_SHARED_TOK}")
+  [[ -n "${BENCH_CONCUR}" ]] && shape+=(--concurrencies "${BENCH_CONCUR}")
+  [[ -n "${BENCH_ITERS}" ]] && shape+=(--iters "${BENCH_ITERS}")
   # --init: python as PID 1 ignores the SIGTERM docker run forwards, so on
   # scancel this would block the EXIT trap until SPUR's SIGKILL (job 282399).
   docker run --rm --init --network aic \
@@ -701,10 +682,7 @@ run_bench() { # $1=arm $2=vLLM container $3=out_csv $4=extra args...
     --endpoint "${endpoint}" \
     --model "${VLLM_MODEL}" \
     --arm "${arm}" \
-    --isl "${BENCH_ISL}" \
-    --shared-prefix-tokens "${BENCH_SHARED_TOK}" \
-    --concurrencies "${BENCH_CONCUR}" \
-    --iters "${BENCH_ITERS}" \
+    ${shape[@]+"${shape[@]}"} \
     --prefix-mode "${BENCH_PREFIX_MODE}" \
     --warmup-iters 1 \
     --out "${LOGDIR_REL}/results/$(basename "${out}")" "$@"
@@ -750,7 +728,8 @@ stop_stack() { # $1=arm  $2...=the services the arm started
 # The exporter/Prometheus stand-up, health checks, and teardown live in a shared
 # lib so the cliff sweep and the build smoke-test (run-build-distribute.sh) drive
 # metrics identically.  The lib's functions read log(), AIC_IMAGE, MON_DIR,
-# AIC_METRICS_DIR, MON_COMPOSE, AIC_EXPORTERS, AIC_MONITORING -- all defined above.
+# AIC_METRICS_DIR, MON_COMPOSE, AIC_MONITORING -- all defined above (the lib
+# defaults AIC_EXPORTERS).
 source "${REPO}/monitoring/monitoring-lib.sh"
 # The whole stack (arms + metrics) is docker compose v2 only -- install the plugin
 # user-locally if the node lacks it (ensure_compose lives in monitoring-lib.sh).
@@ -873,7 +852,7 @@ run_arm_kvd() { # $1=mode(nvme|gds) $2=out_csv
     else
       unset LMCACHE_CONFIG_FILE LMCACHE_CONFIG_FILE_HOST
       if [[ "${AIC_NIXL_BACKEND}" == "POSIX" ]]; then
-        _l2desc="NIXL POSIX NVMe L2 (DRAM L1 ${LMCACHE_L1_SIZE_GB}GB, pool ${LMCACHE_NIXL_POSIX_POOL}, slot $(( LMCACHE_NIXL_POSIX_SLOT_SIZE / 1048576 ))MiB, workers=${LMCACHE_MAX_GPU_WORKERS})"
+        _l2desc="NIXL POSIX NVMe L2 (DRAM L1 ${LMCACHE_L1_SIZE_GB}GB, pool ${LMCACHE_NIXL_POSIX_POOL}, ${_posix_knobs_log})"
       else
         _l2desc="NIXL AIS_MT NVMe L2 + POSIX L2b (DRAM L1 ${LMCACHE_L1_SIZE_GB}GB, pool ${LMCACHE_NVME_POOL})"
       fi
@@ -910,18 +889,16 @@ run_arm_kvd() { # $1=mode(nvme|gds) $2=out_csv
   _vllm_log_pid=$!
 
   # Per-c warmup + drain: required for per_client mode and async-save kvd.
-  # post-warmup-sleep must cover the full POSIX write queue drain time for the
-  # current concurrency.  With workers=1 (serialised) and c=32 per-client,
-  # warmup writes take ~450 s; 300 s gives the queue time to mostly drain so
-  # iter 0 sees a warm, settled cache rather than write-queue back-pressure.
-  # Override via POST_WARMUP_SLEEP_S env if a different c or worker count is used.
+  # post-warmup-sleep (POST_WARMUP_SLEEP_S, defaulted above) must cover the POSIX
+  # write queue drain time for the current concurrency, so iter 0 sees a warm,
+  # settled cache rather than write-queue back-pressure.
   # The GPU prefix cache is emptied before each timed iter so the iter is served
   # by this arm's LMCache tiers, not by VRAM hits the warmup or last iter left.
   local -a _reset=()
   [[ "${AIC_CLIFF_RESET_PREFIX_CACHE}" == 1 ]] && _reset=(--reset-prefix-cache)
   run_bench kvd_v2 "aic-vllm-gpu${GPU}" "${out}" --warmup-at-each-c \
     --warmup-waves-per-c "${AIC_CLIFF_WARMUP_WAVES}" \
-    --post-warmup-sleep-s "${POST_WARMUP_SLEEP_S:-300}" "${_reset[@]}"
+    --post-warmup-sleep-s "${POST_WARMUP_SLEEP_S}" "${_reset[@]}"
   local rc=$?
   kill "${_lmcache_log_pid}" "${_vllm_log_pid}" 2>/dev/null || true
   stop_stack "kvd_${mode}" vllm lmcache
@@ -938,10 +915,11 @@ declare -A STATUS
 # Pre-pull the Prometheus image so start_monitoring doesn't block on a Docker Hub
 # download (prom/prometheus is ~75 MB; on a cold node this adds 10+ minutes before
 # the first arm starts).  docker pull is a no-op when the image is already present.
-_prom_img="${AIC_PROM_IMAGE:-prom/prometheus:v3.14.0}"
-log "pre-pulling ${_prom_img} (no-op if cached)..."
-docker pull "${_prom_img}" >/dev/null 2>&1 && log "  ${_prom_img}: ready" \
-    || log "  WARN: pull failed for ${_prom_img} (will try again at compose up)"
+if _prom_img="${AIC_PROM_IMAGE:-$(bash "${REPO}/docker/scripts/aic-compose-default.sh" AIC_PROM_IMAGE)}"; then
+  log "pre-pulling ${_prom_img} (no-op if cached)..."
+  docker pull "${_prom_img}" >/dev/null 2>&1 && log "  ${_prom_img}: ready" \
+      || log "  WARN: pull failed for ${_prom_img} (will try again at compose up)"
+fi
 
 # Bring up the Prometheus metrics-capture sidecar before the first arm so it
 # scrapes the whole sweep; torn down via the EXIT trap (TSDB retained on NFS).
@@ -953,7 +931,7 @@ for _a in ${AIC_CLIFF_ARMS//,/ }; do
   case "${_a}" in vram | nvme | gds) ;; *) die "unknown arm '${_a}' in AIC_CLIFF_ARMS (valid: vram,nvme,gds)" ;; esac
 done
 log "arms        : ${AIC_CLIFF_ARMS}"
-log "isl/prefix  : ISL=${BENCH_ISL} shared=${BENCH_SHARED_TOK} max_model_len=${VLM_MAX_MODEL_LEN}${VLM_ROPE_SCALING:+ rope_scaling=${VLM_ROPE_SCALING}}"
+log "isl/prefix  : ISL=${BENCH_ISL:-run_cliff.py default} shared=${BENCH_SHARED_TOK:-run_cliff.py default} max_model_len=${VLM_MAX_MODEL_LEN}${VLM_ROPE_SCALING:+ rope_scaling=${VLM_ROPE_SCALING}}"
 # Tier sizing — echo the EFFECTIVE values so a mis-propagated override is visible.
 # LMCACHE_NVME_POOL is a SLOT count (~4.5 MiB/slot for Qwen2.5-3B); 4096 slots ≈ 18 GiB
 # is far too small for long-ISL working sets (a silent 4096 caused the c>=32 cliff
@@ -961,7 +939,7 @@ log "isl/prefix  : ISL=${BENCH_ISL} shared=${BENCH_SHARED_TOK} max_model_len=${V
 # In MP mode the DRAM L1 is --l1-size-gb (nvme arm: max_local_cpu_size when
 # local_cpu=true, else the default) and the slab is --l1-size-gb (gds arm).
 if [[ "${AIC_NIXL_BACKEND}" == "POSIX" ]]; then
-  _nvme_pool_log="${LMCACHE_NIXL_POSIX_POOL} slots slot_size=$((LMCACHE_NIXL_POSIX_SLOT_SIZE / 1048576))MiB workers=${LMCACHE_MAX_GPU_WORKERS}"
+  _nvme_pool_log="${LMCACHE_NIXL_POSIX_POOL} slots ${_posix_knobs_log}"
 else
   _nvme_pool_log="${LMCACHE_NVME_POOL} slots (~$((LMCACHE_NVME_POOL * 45 / 10 / 1024)) GiB)"
 fi

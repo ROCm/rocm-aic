@@ -1,5 +1,8 @@
 FROM python:3.12-slim
 
+# docker/docker-bake.hcl owns these.  The defaults stay only because compose
+# also builds this image (`up --build`) and passes its own; they must equal
+# bake's, which tests/test_aic_bake_env.py checks.
 ARG KVBENCH_GIT_URL=https://github.com/wvaske/llm-kv-passthrough.git
 ARG KVBENCH_REF=177cf4e7c46ece8e03a701f89b60cd3a329f45fd
 # kvbench's [lmcache] extra is `~=0.5.1`; 0.5.7 removed lmcache.v1.cache_engine.

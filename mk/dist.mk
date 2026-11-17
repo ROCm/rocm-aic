@@ -3,33 +3,21 @@
 #
 # Distributed / Slurm targets: build, test, emulate, profile, accuracy, cliff.
 
-# _user_or(VAR, default): use the user-supplied value when the var came from the
-# command line or environment; fall back to `default` when it came from the
-# Makefile's own ?= default (i.e. origin == "file").
-_user_or = $(if $(filter file,$(origin $(1))),$(2),$($(1)))
-
-# ---- Cliff GFX / constraint selection ----------------------------------------
-AIC_CLIFF_GFX  ?=
-AIC_CLIFF_GPUS ?= 1
-ifeq ($(strip $(AIC_CLIFF_CONSTRAINT)),)
-ifneq ($(strip $(AIC_CLIFF_GFX)),)
-AIC_CLIFF_CONSTRAINT := $(shell echo '$(AIC_CLIFF_GFX)' | tr '[:lower:]' '[:upper:]')
-else
-AIC_CLIFF_CONSTRAINT := GFX942&NVME
-endif
-endif
-
 # The cliff runs through `run-build-distribute.sh cliff`, which submits
 # .slurm/run-cliff.sbatch via _sbatch_run (partition, GPU request, node excludes,
 # logs/<job-id>/cliff.{out,exit}) and BLOCKS until the job ends, so the recipe's
-# exit status is the job's.  The AIC_CLIFF_* values are Makefile knobs the script
-# reads as plain environment; on SPUR it ignores the constraint (no feature
-# labels there) and requests --gpus instead of a gres.
-_CLIFF_RUN = $(_CLIFF_STRIP) \
-    AIC_CLIFF_GPUS='$(AIC_CLIFF_GPUS)' AIC_CLIFF_CONSTRAINT='$(AIC_CLIFF_CONSTRAINT)' \
-    $(if $(AIC_CLIFF_NODE),AIC_CLIFF_NODE='$(AIC_CLIFF_NODE)',) \
-    $(if $(AIC_CLIFF_TIME),AIC_CLIFF_TIME='$(AIC_CLIFF_TIME)',) \
-    "$(DIST)" cliff
+# exit status is the job's.  That script owns the job-sizing defaults
+# (AIC_CLIFF_GPUS, AIC_CLIFF_CONSTRAINT and its AIC_CLIFF_GFX shorthand, ...);
+# a value the user set reaches it through the environment.
+#
+# The cliff targets below are presets over run-cliff.sbatch's own defaults, and
+# a preset yields to a value the user set (command line, environment or
+# .env.<cluster>).  Knobs make holds no default for are written
+# `$(or $(VAR),preset)`.  BENCH_CONCUR and BENCH_ITERS cannot be: make has
+# non-empty defaults for the local `make cliff` (never exported, so the job does
+# not see them), and `$(or)` would split a comma list.  Those two keep the shell
+# form `$${VAR:-preset}`, which sees exactly the user-set values.
+_CLIFF_RUN = $(_CLIFF_STRIP) "$(DIST)" cliff
 
 ifeq ($(AIC_SPUR_CLUSTER),1)
 # GPUs reserved for a SPUR kvbench submit.  The KVBench cliff drives no GPU,
@@ -64,7 +52,7 @@ endif
         cliff-short cliff-short-fast
 
 dist-build:
-	"$(DIST)" bake
+	$(DIST_RUN) bake
 
 dist-build-fast:
 	@$(MAKE) --no-print-directory dist-build \
@@ -74,23 +62,23 @@ dist-build-fast:
 # same bake group locally; this one exists because the PyTorch + vLLM source
 # builds behind it do not fit in a GitHub-hosted runner's 6h job limit.
 dist-wheels:
-	"$(DIST)" wheels
+	$(DIST_RUN) wheels
 
 dist-build-emulate:
-	"$(DIST)" build-emulate
+	$(DIST_RUN) build-emulate
 
 dist-build-exporters:
-	"$(DIST)" build-exporters
+	$(DIST_RUN) build-exporters
 
 dist-build-monitoring:
 	@set -e; \
-	for img in \
-	    "prom/prometheus:v3.14.0" \
-	    "rocm/device-metrics-exporter:v1.5.2" \
-	; do \
+	_default="$(CURDIR)/docker/scripts/aic-compose-default.sh"; \
+	_prom="$$("$$_default" AIC_PROM_IMAGE)"; \
+	_amdgpu="$$("$$_default" AIC_AMDGPU_EXPORTER_IMAGE)"; \
+	for img in "$$_prom" "$$_amdgpu"; do \
 	    tag="$$(printf '%s' "$$img" | tr '/:' '--').tar.zst"; \
 	    dest="$(AIC_IMAGE_DIR)/$$tag"; \
-	    if [ ! -f "$$dest" ]; then \
+	    if [ ! -f "$$dest" ] || [ "$${AIC_FORCE_LOAD:-0}" = 1 ]; then \
 	        echo "Pulling $$img and saving to $$dest ..."; \
 	        docker pull "$$img"; \
 	        docker save "$$img" | zstd -T0 -q > "$$dest"; \
@@ -101,36 +89,36 @@ dist-build-monitoring:
 	done
 
 dist-push:
-	"$(DIST)" push
+	$(DIST_RUN) push
 
 smoke-test:
-	"$(DIST)" test
+	$(DIST_RUN) test
 
 smoke-test-fast:
 	@$(MAKE) --no-print-directory smoke-test \
 	    AIC_ROCM_ARCH='$(AIC_FAST_ARCH)' AIC_SMOKE_EXPORTERS=0
 
 tiny-test:
-	"$(DIST)" tiny-test
+	$(DIST_RUN) tiny-test
 
 tiny-test-fast:
 	@$(MAKE) --no-print-directory tiny-test \
 	    AIC_ROCM_ARCH='$(AIC_FAST_ARCH)'
 
 profile-capture:
-	"$(DIST)" profile-capture
+	$(DIST_RUN) profile-capture
 
 emulate-validate:
-	"$(DIST)" emulate-validate
+	$(DIST_RUN) emulate-validate
 
 emulate-test:
-	"$(DIST)" emulate-test
+	$(DIST_RUN) emulate-test
 
 emulate-mp-test:
-	"$(DIST)" emulate-mp-test
+	$(DIST_RUN) emulate-mp-test
 
 accuracy-test: check-hf-token
-	"$(DIST)" accuracy-test
+	$(DIST_RUN) accuracy-test
 
 accuracy-test-fast:
 	@$(MAKE) --no-print-directory accuracy-test \
@@ -160,7 +148,7 @@ install-ci-scripts:
 	echo "CI runner scripts deployed to $$dst"
 
 prometheus-dump:
-	"$(DIST)" prometheus-dump
+	$(DIST_RUN) prometheus-dump
 
 # ---- Cliff submit targets ----------------------------------------------------
 
@@ -181,11 +169,11 @@ cliff-kvbench-submit:
 # mostly vram_only recomputing every prefix past its cliff.
 cliff-submit:
 	@cd "$(CURDIR)" && \
-	    AIC_CLIFF_TIME="$(if $(AIC_CLIFF_TIME),$(AIC_CLIFF_TIME),04:00:00)" \
-	    VLM_GPU_MEMORY_UTILIZATION="$(call _user_or,VLM_GPU_MEMORY_UTILIZATION,0.40)" \
-	    AIC_LOCAL_CPU="$${AIC_LOCAL_CPU:-true}" \
-	    LMCACHE_MAX_LOCAL_CPU_SIZE="$${LMCACHE_MAX_LOCAL_CPU_SIZE:-160}" \
-	    LMCACHE_L1_SIZE_GB="$(call _user_or,LMCACHE_L1_SIZE_GB,256)" \
+	    AIC_CLIFF_TIME="$(or $(AIC_CLIFF_TIME),04:00:00)" \
+	    VLM_GPU_MEMORY_UTILIZATION="$(or $(VLM_GPU_MEMORY_UTILIZATION),0.40)" \
+	    AIC_LOCAL_CPU="$(or $(AIC_LOCAL_CPU),true)" \
+	    LMCACHE_MAX_LOCAL_CPU_SIZE="$(or $(LMCACHE_MAX_LOCAL_CPU_SIZE),160)" \
+	    LMCACHE_L1_SIZE_GB="$(or $(LMCACHE_L1_SIZE_GB),256)" \
 	    $(_CLIFF_RUN)
 
 cliff-kvd:
@@ -195,7 +183,7 @@ cliff-kvd:
 	    BENCH_CONCUR="$${BENCH_CONCUR:-1,8,32,64,128,250}" \
 	    BENCH_ITERS="$${BENCH_ITERS:-2}" \
 	    AIC_CLIFF_JOB_NAME=aic-cliff-kvd \
-	    AIC_CLIFF_TIME="$(if $(AIC_CLIFF_TIME),$(AIC_CLIFF_TIME),02:00:00)" \
+	    AIC_CLIFF_TIME="$(or $(AIC_CLIFF_TIME),02:00:00)" \
 	    $(_CLIFF_RUN)
 
 cliff-spur-l2:
@@ -204,13 +192,13 @@ cliff-spur-l2:
 	    BENCH_PREFIX_MODE=per_client \
 	    BENCH_CONCUR="$${BENCH_CONCUR:-32}" \
 	    BENCH_ITERS="$${BENCH_ITERS:-2}" \
-	    VLLM_MODEL="$${VLLM_MODEL:-Qwen/Qwen2.5-3B-Instruct}" \
-	    VLM_GPU_MEMORY_UTILIZATION="$(call _user_or,VLM_GPU_MEMORY_UTILIZATION,0.40)" \
+	    VLLM_MODEL="$(or $(VLLM_MODEL),Qwen/Qwen2.5-3B-Instruct)" \
+	    VLM_GPU_MEMORY_UTILIZATION="$(or $(VLM_GPU_MEMORY_UTILIZATION),0.40)" \
 	    AIC_LOCAL_CPU=true \
-	    LMCACHE_MAX_LOCAL_CPU_SIZE="$(call _user_or,LMCACHE_MAX_LOCAL_CPU_SIZE,8)" \
-	    AIC_CLIFF_ARMS="$${AIC_CLIFF_ARMS:-nvme}" \
+	    LMCACHE_MAX_LOCAL_CPU_SIZE="$(or $(LMCACHE_MAX_LOCAL_CPU_SIZE),8)" \
+	    AIC_CLIFF_ARMS="$(or $(AIC_CLIFF_ARMS),nvme)" \
 	    AIC_CLIFF_JOB_NAME=aic-cliff-spur-l2 \
-	    AIC_CLIFF_TIME="$(if $(AIC_CLIFF_TIME),$(AIC_CLIFF_TIME),03:00:00)" \
+	    AIC_CLIFF_TIME="$(or $(AIC_CLIFF_TIME),03:00:00)" \
 	    $(_CLIFF_RUN)
 
 cliff-short:

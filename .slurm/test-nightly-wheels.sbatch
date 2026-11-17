@@ -5,7 +5,6 @@
 # SPDX-License-Identifier: MIT
 #
 #SBATCH --job-name=aic-wheel-test
-#SBATCH --partition=amd-spur-v2
 #SBATCH --gpus=1
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
@@ -28,6 +27,9 @@
 # The test deliberately does NOT run the full cliff benchmark -- this is a
 # quick (< 20 min) install+import+engine-init check to validate the wheel
 # artifacts before directing users to pip install them.
+#
+# No partition is pinned here: submit with --partition="${AIC_SPUR_PARTITION}",
+# as .github/scripts/workflows/spur-wheel-latency.sh does.
 #
 # Overridable env:
 #   NIGHTLY_TAG       rolling release tag to pull wheels from (default: nightly)
@@ -57,7 +59,7 @@ die() { printf '[wheel-test] ERROR: %s\n' "$*" >&2; exit 1; }
 NIGHTLY_TAG="${NIGHTLY_TAG:-nightly}"
 GH_RELEASE_BASE="https://github.com/ROCm/rocm-aic/releases/download/${NIGHTLY_TAG}"
 AIC_IMAGE_DIR="${AIC_IMAGE_DIR:-${AIC_SHARED_NFS:-/shared_nfs}/rocm-aic/images}"
-HF_HOME="${HF_HOME:-/shared_nfs/huggingface}"
+HF_HOME="${HF_HOME:-${AIC_SHARED_NFS:-/shared_nfs}/huggingface}"
 VLLM_MODEL="${VLLM_MODEL:-Qwen/Qwen2.5-14B-Instruct-1M}"
 SKIP_ENGINE_INIT="${SKIP_ENGINE_INIT:-0}"
 
@@ -269,7 +271,7 @@ if [[ "${SKIP_MP_TEST:-0}" != "1" && -n "${VLLM_MODEL:-}" ]]; then
 
     # Resolve model path (same as engine-init above).
     model="${VLLM_MODEL}"
-    cache_root="${HF_HOME:-/hf}/hub"
+    cache_root="${HF_HOME}/hub"
     snap=$(ls -d "${cache_root}/models--$(echo "${model}" | tr '/' '-')"/snapshots/*/ 2>/dev/null | sort | tail -1)
     [[ -n "${snap}" ]] && model="${snap}"
     note "MP test: lmcache server + vLLM LMCacheMPConnector (model=${model})"
@@ -374,7 +376,7 @@ if [[ "${SKIP_TIER_BENCH:-0}" != "1" && -n "${VLLM_MODEL:-}" ]]; then
 
     # Resolve model path (same logic as MP test above).
     t_model="${VLLM_MODEL}"
-    t_cache="${HF_HOME:-/hf}/hub"
+    t_cache="${HF_HOME}/hub"
     t_snap=$(ls -d "${t_cache}/models--$(echo "${t_model}" | tr '/' '-')"/snapshots/*/ 2>/dev/null | sort | tail -1)
     [[ -n "${t_snap}" ]] && t_model="${t_snap}"
     note "tier bench: model=${t_model}"

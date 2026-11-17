@@ -127,25 +127,26 @@ failure mode is a silent fall-through to real execution:
 By hand, on any host with docker:
 
 ```bash
-IMAGE_NAME=rocm-aic:7.14-emulate \
+VLLM_IMAGE_REF=rocm-aic:7.14-emulate \
   docker compose -f docker/docker-compose.yml --profile emulate up vllm-emulator
 ```
 
 Then use it like any vLLM endpoint from a container on the `aic` bridge, where
 it listens as `http://aic-vllm-emulator:8000`; nothing is published to the host.
 `scripts/aic-endpoints.sh fetch http://aic-vllm-emulator:8000/v1/models` sends
-one request from there. Useful env:
+one request from there. Useful env (defaults are in
+[ENVIRONMENT.md](ENVIRONMENT.md#emulation-mode-and-profile-capture)):
 
-| Variable | Default | Meaning |
-| --- | --- | --- |
-| `VLLM_MODEL` | `Qwen/Qwen3-8B` | model to serve; should match the pack |
-| `VLLM_EMULATOR_PROFILE_PACK` | `/opt/llm-emu/profiles/MI300X-Qwen3-8B.json` | pack to replay |
-| `EMU_PROFILE_PACK_HOST` | `/tmp` | host dir mounted at `/profiles` for packs not in the image |
-| `VLLM_EMULATOR_MODE` | `realtime` | `realtime` sleeps for the predicted latency; `accelerated` resolves instantly |
-| `VLLM_EMULATOR_ORACLE_K` | `1` | oracle neighbor count (`auto` for adaptive) |
-| `VLLM_EMULATOR_MEMORY` | from pack | override the emulated device memory, bytes |
-| `VLLM_EMULATOR_KV_BUFFERS` | `1` | `0` skips the fake KV buffers, making a KV connector inert (§6) |
-| `VLLM_EMULATOR_DEBUG` | — | `1` logs every oracle lookup |
+| Variable | Meaning |
+| --- | --- |
+| `VLLM_MODEL` | model to serve; should match the pack |
+| `VLLM_EMULATOR_PROFILE_PACK` | pack to replay |
+| `EMU_PROFILE_PACK_HOST` | host dir mounted at `/profiles` for packs not in the image |
+| `VLLM_EMULATOR_MODE` | `realtime` sleeps for the predicted latency; `accelerated` resolves instantly |
+| `VLLM_EMULATOR_ORACLE_K` | oracle neighbor count (`auto` for adaptive) |
+| `VLLM_EMULATOR_MEMORY` | override the emulated device memory, bytes; from the pack when unset |
+| `VLLM_EMULATOR_KV_BUFFERS` | `0` skips the fake KV buffers, making a KV connector inert (§6); default `1` |
+| `VLLM_EMULATOR_DEBUG` | `1` logs every oracle lookup |
 
 > [!NOTE]
 > Pass optional `VLLM_EMULATOR_*` variables only when you mean them. An **empty**
@@ -393,7 +394,7 @@ KV_CFG='{"kv_connector":"LMCacheMPConnector","kv_role":"kv_both",'
 KV_CFG+='"kv_connector_extra_config":{'
 KV_CFG+='"lmcache.mp.host":"tcp://aic-lmcache-emulator","lmcache.mp.port":6555,'
 KV_CFG+='"lmcache.mp.mp_transfer_mode":"lmcache_driven"}}'
-IMAGE_NAME=rocm-aic:7.14-latest DEVICE_TYPE=cpu \
+VLLM_IMAGE_REF=aic-vllm:latest LMCACHE_IMAGE_REF=aic-lmcache:latest DEVICE_TYPE=cpu \
   VLLM_EMULATOR_MEMORY=$((8 * 1024**3)) \
   EMU_IPC_MODE=container:aic-lmcache-emulator \
   EMU_KV_TRANSFER_ARG="--kv-transfer-config '${KV_CFG}'" \

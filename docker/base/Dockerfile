@@ -1,8 +1,11 @@
+# check=skip=InvalidDefaultArgInFrom
+# The FROM images are build args with no default here (docker/docker-bake.hcl
+# owns them), so they are blank at lint time.
 # Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
 #
 # SPDX-License-Identifier: MIT
 #
-# AIC base image: Ubuntu 24.04 + ROCm 7.14.1 + PyTorch (source) + torchvision (source)
+# AIC base image: Ubuntu 24.04 + ROCm + PyTorch (source) + torchvision (source)
 # + NIXL (KV-transfer transport).
 #
 # This is the shared foundation consumed by docker/vllm/Dockerfile and
@@ -20,30 +23,33 @@
 #   build_clr_patch   patched libamdhip64.so (IPC event ring fix)     (section 2e)
 #   runtime           Ubuntu 24.04 + 13 ROCm runtime pkgs + torch + NIXL (section 3)
 #
-# Build (from repo root):
-#   DOCKER_BUILDKIT=1 docker build \
-#     --build-arg ROCM_ARCH=gfx950 \
-#     -f docker/base/Dockerfile \
-#     -t aic-base:$(docker/scripts/aic-image-tag.sh) \
-#     .
+# Build args: docker/docker-bake.hcl is the only owner of every pin, URL and
+# base image, so no ARG here has a default and each consuming stage stops when
+# one is unset.  Build through bake (from repo root):
+#   ROCM_ARCH=gfx950 docker buildx bake -f docker/docker-bake.hcl base --load
+#
+# or hand bake's resolved args to a raw build:
+#   mapfile -t args < <(ROCM_ARCH=gfx950 docker/scripts/aic-bake-env.sh --build-args base)
+#   docker buildx build "${args[@]}" -f docker/base/Dockerfile -t aic-base:dev .
 #
 # Or via make:
-#   make dist-build-base ROCM_ARCH=gfx950
+#   make build ROCM_ARCH=gfx950         (local)
+#   make dist-build AIC_ROCM_ARCH=gfx950   (Slurm)
 
-ARG ROCM_VERSION=7.14.1
+# An unset image arg stops the build at its FROM:
+#   base name (${ROCM_BASE_IMAGE}) should not be blank
 # Build base: full ROCm toolchain (compiler, headers, math libs) for source builds.
-ARG ROCM_BASE_IMAGE=rocm/dev-ubuntu-24.04:${ROCM_VERSION}-full
-# Runtime base: plain Ubuntu 24.04 + AMD apt repo + 13 ROCm runtime packages.
-# rocm/dev-ubuntu-24.04:7.14.1 (no -full suffix) does not exist for 7.14.x —
-# AMD only publishes the -full variant for this release series.  Ubuntu 24.04
-# is used instead; the AMD apt signing key is COPYed from the base stage.
-ARG ROCM_RUNTIME_IMAGE=ubuntu:24.04
+ARG ROCM_BASE_IMAGE
+# Runtime base: plain Ubuntu + AMD apt repo + 13 ROCm runtime packages.  AMD
+# publishes only the -full variant of rocm/dev-ubuntu-24.04 for the 7.14.x
+# series, so the runtime stage starts from Ubuntu instead; the AMD apt signing
+# key is COPYed from the base stage.
+ARG ROCM_RUNTIME_IMAGE
 
 # Empty default for the `pip-wheels` build context.  A caller that passes
 # --build-context pip-wheels=<dir> overrides this stage exactly as before.
 FROM scratch AS pip-wheels
 
-# ROCM_BASE_IMAGE has a tagged default but remains overridable by callers.
 # hadolint ignore=DL3006
 FROM ${ROCM_BASE_IMAGE} AS base
 
@@ -107,8 +113,9 @@ ENV PIP_ROOT_USER_ACTION=ignore \
     PIP_BREAK_SYSTEM_PACKAGES=1
 
 # ----- 2. uv (fast Python package manager) -----------------------------------
-ARG UV_VERSION=0.12.15
-RUN curl -fsSL "https://astral.sh/uv/${UV_VERSION}/install.sh" | sh && \
+ARG UV_VERSION
+RUN : "${UV_VERSION:?unset: build through docker/docker-bake.hcl}" && \
+    curl -fsSL "https://astral.sh/uv/${UV_VERSION}/install.sh" | sh && \
     ln -s /root/.local/bin/uv /usr/local/bin/uv && \
     ln -s /root/.local/bin/uvx /usr/local/bin/uvx
 
@@ -118,9 +125,10 @@ FROM base AS build_triton
 # Triton source build — avoids ROCm 7.2 wheel artifacts on a ROCm 7.14 host.
 # =============================================================================
 ARG ROCM_ARCH
-ARG TRITON_GIT_URL="https://github.com/ROCm/triton.git"
-# picked up from vllm 0.29 Dockerfile.rocm_base
-ARG TRITON_REF=release/internal/3.7.x
+ARG TRITON_GIT_URL
+ARG TRITON_REF
+RUN : "${TRITON_GIT_URL:?unset: build through docker/docker-bake.hcl}" \
+      "${TRITON_REF:?unset: build through docker/docker-bake.hcl}"
 
 RUN --mount=type=cache,target=/root/.cache/pip \
     python3 -m pip install --break-system-packages \
@@ -153,18 +161,15 @@ WORKDIR /
 FROM base AS build_pytorch
 
 ARG ROCM_ARCH
-ARG PYTORCH_GIT_URL=https://github.com/ROCm/pytorch.git
-# Immutable commit pin.  ROCm/pytorch publishes no tag for the 2.13 series, so
-# a SHA is the only reproducible ref available; it is cloned then checked out,
-# so a branch or tag would work here too.  Pinned to ec5f3b1 rather than the
-# current head of release/2.13 (8e0af7fa) because a later commit updated
-# third_party/composable_kernel in a way that breaks gfx1250 multi-arch builds
-# (CK_BUFFER_RESOURCE_3RD_DWORD undeclared).  See patches/pytorch/01-ck-gfx1250-*.
-ARG PYTORCH_REF=ec5f3b1effb14f0e36b66bab4db1c9b49b278f82
-# Display only: the human-readable torch series carried in the image tag and
-# the README, since a bare SHA says nothing about which torch this is.  Bump
-# alongside PYTORCH_REF whenever the series changes.
-ARG PYTORCH_SERIES=2.13
+ARG PYTORCH_GIT_URL
+# Cloned then checked out, so a SHA, branch or tag all work.
+ARG PYTORCH_REF
+# Not read by the build.  Declared because bake's base target carries it: the
+# release notes and aic-bake-env.sh read the torch series from that target.
+ARG PYTORCH_SERIES
+RUN : "${PYTORCH_GIT_URL:?unset: build through docker/docker-bake.hcl}" \
+      "${PYTORCH_REF:?unset: build through docker/docker-bake.hcl}" \
+      "${ROCM_VERSION:?unset: build through docker/docker-bake.hcl}"
 
 # torch 2.13 emits float->__bf16 libcalls absent from gcc-11; build with gcc-13.
 # hadolint ignore=DL3008
@@ -246,7 +251,7 @@ ENV PYTORCH_ROCM_ARCH=${ROCM_ARCH}
 # every core; the heavier translation units peak well above 1 GB each, so on a
 # host with less RAM than ~2 GB per core this exhausts memory and can hard-hang
 # the machine.  Empty means "all cores", matching docker/lmcache/Dockerfile.
-ARG BUILD_JOBS=
+ARG BUILD_JOBS
 
 # hadolint ignore=SC2086,SC2015
 RUN --mount=type=cache,target=/root/.cache/ccache \
@@ -284,10 +289,12 @@ FROM build_pytorch AS build_torchvision
 
 ARG ROCM_ARCH
 # Re-declared: ARG does not carry across a FROM.
-ARG BUILD_JOBS=
-ARG TORCHVISION_GIT_URL=https://github.com/pytorch/vision.git
-# Immutable tag.  Shallow clone, so this must be a branch or tag, not a SHA.
-ARG TORCHVISION_REF=v0.28.0
+ARG BUILD_JOBS
+ARG TORCHVISION_GIT_URL
+# Shallow clone, so this must be a branch or tag, not a SHA.
+ARG TORCHVISION_REF
+RUN : "${TORCHVISION_GIT_URL:?unset: build through docker/docker-bake.hcl}" \
+      "${TORCHVISION_REF:?unset: build through docker/docker-bake.hcl}"
 
 RUN git clone --depth 1 --branch "${TORCHVISION_REF}" "${TORCHVISION_GIT_URL}" /app/vision
 
@@ -317,10 +324,12 @@ WORKDIR /
 # =============================================================================
 FROM base AS build_nixl
 
-ARG NIXL_GIT_URL=https://github.com/ai-dynamo/nixl.git
-ARG NIXL_REF=v1.4.1
-ARG BUILD_JOBS=
-ARG AIC_UCX_FAST=
+ARG NIXL_GIT_URL
+ARG NIXL_REF
+ARG BUILD_JOBS
+ARG AIC_UCX_FAST
+RUN : "${NIXL_GIT_URL:?unset: build through docker/docker-bake.hcl}" \
+      "${NIXL_REF:?unset: build through docker/docker-bake.hcl}"
 
 # numpy is required by NIXL's Python bindings at install time.
 RUN --mount=type=cache,target=/root/.cache/uv \
@@ -385,9 +394,11 @@ COPY --from=build_torchvision /app/vision/dist/*.whl /
 # =============================================================================
 FROM base AS build_clr_patch
 
-ARG CLR_GIT_URL=https://github.com/ROCm/rocm-systems.git
-ARG CLR_REF=therock-${ROCM_VERSION}
-ARG BUILD_JOBS=
+ARG CLR_GIT_URL
+ARG CLR_REF
+ARG BUILD_JOBS
+RUN : "${CLR_GIT_URL:?unset: build through docker/docker-bake.hcl}" \
+      "${CLR_REF:?unset: build through docker/docker-bake.hcl}"
 
 # hadolint ignore=DL3008
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
@@ -474,6 +485,8 @@ ARG ROCM_ARCH
 
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 
+RUN : "${ROCM_VERSION:?unset: build through docker/docker-bake.hcl}"
+
 # Corporate CA cert (needed for pip at runtime if behind a corporate proxy).
 RUN --mount=type=secret,id=tls_cert,required=false \
     if [ -f /run/secrets/tls_cert ] && [ -s /run/secrets/tls_cert ]; then \
@@ -490,9 +503,9 @@ RUN --mount=type=secret,id=tls_cert,required=false \
 # Step 1: ca-certificates must be installed before adding the HTTPS AMD repo,
 # otherwise apt-get update cannot verify the TLS connection and silently skips
 # the AMD packages.
-# BLAS_CACHE_BUST invalidates this layer on every `make build` (minute-precision
-# timestamp) so the arch-specific blas package is always installed fresh.
-ARG BLAS_CACHE_BUST=1
+# BLAS_CACHE_BUST invalidates this layer whenever its value changes, to
+# reinstall the ROCm runtime packages on demand.
+ARG BLAS_CACHE_BUST
 # hadolint ignore=DL3008
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
@@ -622,9 +635,9 @@ RUN uv pip uninstall --system \
         nixl nixl-cu12 nixl-cu13 \
         cupy-cuda12x cufile-python cuda-pathfinder 2>/dev/null || true
 
-# The AMD packages install to /opt/rocm/core-7.14/ (not /opt/rocm/ directly).
-# The -full image creates symlinks; with explicit packages we must use the
-# versioned path.  ROCM_VERSION_MM is 7.14 derived from 7.14.1.
+# The AMD packages install to /opt/rocm/core-<major.minor>/ (not /opt/rocm/
+# directly).  The -full image creates symlinks; with explicit packages we must
+# use the versioned path, derived from ROCM_VERSION (7.14.1 -> core-7.14).
 RUN _mm=$(echo "${ROCM_VERSION}" | cut -d. -f1-2) && \
     echo "/opt/rocm/core-${_mm}/lib" > /etc/ld.so.conf.d/rocm.conf && \
     ldconfig

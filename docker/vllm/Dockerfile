@@ -1,15 +1,12 @@
 # check=skip=InvalidDefaultArgInFrom
-# ROCM_VERSION deliberately carries no default here -- docker/base/Dockerfile
-# is its single source of truth and the Makefile forwards it to every build.
-# That leaves the fallback ROCM_BASE_IMAGE default unresolvable at lint time,
-# which is harmless: the `base` stage is always replaced by the base
-# build-context supplied by `make build`.
+# ROCM_BASE_IMAGE is a build arg with no default here (docker/docker-bake.hcl
+# owns it), so the FROM lines are blank at lint time.
 # Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
 #
 # SPDX-License-Identifier: MIT
 #
 # AIC vLLM image: torch + torchvision + NIXL (from aic-base) + AITER +
-# FlashAttention + vLLM v0.29.0 + llm-emu plugin.
+# FlashAttention + vLLM + llm-emu plugin.
 #
 # Consumed by the `vllm` compose service.  Shares aic-base with aic-lmcache, but
 # its default target needs aic-lmcache's wheels, so build aic-lmcache first.
@@ -20,47 +17,43 @@
 #   emulate   CPU-only runtime (--target emulate)                   (section 3d)
 #   runtime   default target: `vllm` + aic-lmcache's lmcache wheel  (section 3e)
 #
-# Build (from repo root — build context is this tree):
-#   BASE_TAG=$(ROCM_ARCH=gfx950 docker/scripts/aic-image-tag.sh docker/base/Dockerfile)
-#   DOCKER_BUILDKIT=1 docker buildx build \
-#     --build-arg ROCM_ARCH=gfx950 \
-#     --build-context base=docker-image://aic-base:${BASE_TAG} \
+# Build args: docker/docker-bake.hcl is the only owner of every pin, URL and
+# base image, so no ARG here has a default and each consuming stage stops when
+# one is unset.  Build through bake (from repo root), which also wires in
+# aic-base, its wheels and the lmcache wheels:
+#   ROCM_ARCH=gfx950 docker buildx bake -f docker/docker-bake.hcl vllm --load
+#   ROCM_ARCH=gfx950 docker buildx bake -f docker/docker-bake.hcl emulate --load
+#
+# or hand bake's resolved args to a raw build against images built earlier:
+#   export ROCM_ARCH=gfx950
+#   mapfile -t basew_args < <(docker/scripts/aic-bake-env.sh --build-args base-wheels)
+#   docker buildx build "${basew_args[@]}" \
+#     -f docker/base/Dockerfile --target wheels \
+#     --output type=local,dest=/tmp/aic-base-wheels .
+#   mapfile -t lmc_args < <(docker/scripts/aic-bake-env.sh --build-args lmcache-wheels)
+#   docker buildx build "${lmc_args[@]}" \
+#     --build-context base=docker-image://aic-base:<tag> \
+#     --build-context base-wheels=/tmp/aic-base-wheels \
 #     -f docker/lmcache/Dockerfile --target wheels \
-#     --output type=local,dest=/tmp/aic-lmcache-wheels \
-#     .
-#   DOCKER_BUILDKIT=1 docker buildx build \
-#     --build-arg ROCM_ARCH=gfx950 \
-#     --build-context base=docker-image://aic-base:${BASE_TAG} \
+#     --output type=local,dest=/tmp/aic-lmcache-wheels .
+#   mapfile -t args < <(docker/scripts/aic-bake-env.sh --build-args vllm)
+#   docker buildx build "${args[@]}" \
+#     --build-context base=docker-image://aic-base:<tag> \
+#     --build-context base-wheels=/tmp/aic-base-wheels \
 #     --build-context lmcache-wheels=/tmp/aic-lmcache-wheels \
-#     -f docker/vllm/Dockerfile \
-#     -t aic-vllm:${BASE_TAG} \
-#     .
+#     -f docker/vllm/Dockerfile -t aic-vllm:dev .
+# (`--build-args emulate` plus `--target emulate` for the CPU-only image.)
 #
 # Or via make:
-#   make dist-build-vllm ROCM_ARCH=gfx950
-#
-# Emulation-only (no GPU kernels):
-#   DOCKER_BUILDKIT=1 docker buildx build \
-#     --target emulate \
-#     --build-arg VLLM_TARGET_DEVICE=empty \
-#     --build-context base=docker-image://aic-base:${BASE_TAG} \
-#     -f docker/vllm/Dockerfile \
-#     -t aic-vllm:emulate .
+#   make build ROCM_ARCH=gfx950            (local)
+#   make dist-build AIC_ROCM_ARCH=gfx950   (Slurm)
 
-# Fallback base stage: used when no --build-context base= is provided (e.g.
-# when building this Dockerfile standalone without a pre-built aic-base image).
-# When --build-context base=docker-image://aic-base:<TAG> IS supplied, BuildKit
+# Fallback base stage: used when no --build-context base= is provided.  When
+# --build-context base=docker-image://aic-base:<TAG> IS supplied, BuildKit
 # overrides this stage with the pre-built image and skips this FROM entirely.
-# Single source of truth: ARG ROCM_VERSION in docker/base/Dockerfile.
-# The Makefile reads it from there and forwards it to every build, so this
-# carries no default and must not be given one -- a second literal here is
-# exactly the drift this removes.
-ARG ROCM_VERSION
-# ROCM_BASE_IMAGE is overridden by --build-context base=oci-layout://... (make build)
-# or by --build-arg ROCM_BASE_IMAGE=<ref> (dist build).  The default intentionally
-# references the -full image so standalone builds still work; pass the named
-# build-context to avoid pulling it.
-ARG ROCM_BASE_IMAGE=rocm/dev-ubuntu-24.04:${ROCM_VERSION}-full
+# build_vllm always starts from ROCM_BASE_IMAGE.  Unset, the build stops at the
+# FROM: base name (${ROCM_BASE_IMAGE}) should not be blank
+ARG ROCM_BASE_IMAGE
 # hadolint ignore=DL3006
 FROM ${ROCM_BASE_IMAGE} AS base
 
@@ -83,24 +76,25 @@ FROM ${ROCM_BASE_IMAGE} AS build_vllm
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 
 ARG ROCM_ARCH
-ARG BUILD_JOBS=
-ARG VLLM_GIT_URL=https://github.com/vllm-project/vllm.git
-ARG VLLM_REF=v0.29.0
-ARG VLLM_TARGET_DEVICE=rocm
-ARG AITER_GIT_URL=https://github.com/ROCm/aiter.git
-ARG AITER_REF=v0.1.22.post1
-ARG FLASH_ATTN_GIT_URL=https://github.com/Dao-AILab/flash-attention.git
-ARG FLASH_ATTN_REF=v2.8.3.post1
+ARG BUILD_JOBS
+ARG VLLM_GIT_URL
+ARG VLLM_REF
+ARG VLLM_TARGET_DEVICE
+ARG AITER_GIT_URL
+ARG AITER_REF
+ARG FLASH_ATTN_GIT_URL
+ARG FLASH_ATTN_REF
 # AITER kernels are JIT-compiled on first use, which costs 5-10 min on every
 # cold container -- and the only way to pay it at build time used to be running
 # vLLM on a real GPU after the build, which a CPU-only build node cannot do.
 # AITER's own setup.py can compile them ahead of time instead.  No GPU is
 # needed -- the arch comes from GPU_ARCHS/PYTORCH_ROCM_ARCH -- but it only
 # works for a SINGLE arch, since AITER's build-time codegen keys on one gfx.
-# Off by default so the default multi-arch image is unchanged.
+# Off by default (docker/docker-bake.hcl) so the default multi-arch image is
+# unchanged.
 #
 # The levels are NOT ordered by cost; read them as different MHA policies:
-#   0  off -- JIT at runtime (default)
+#   0  off -- JIT at runtime
 #   1  named-variant mode: drops the generic MHA modules and adds back five
 #      specific bf16 mha_varlen_fwd instances (req_md_names in setup.py).
 #      This is the cheap one.
@@ -111,7 +105,15 @@ ARG FLASH_ATTN_REF=v2.8.3.post1
 #      x skip x qscale combination -- instance fan-out, not arch fan-out.
 #   3  fmha_v3 only
 # Prefer 1 for single-arch builds; 2 only when you need the full MHA set.
-ARG AITER_PREBUILD_KERNELS=0
+ARG AITER_PREBUILD_KERNELS
+RUN : "${VLLM_GIT_URL:?unset: build through docker/docker-bake.hcl}" \
+      "${VLLM_REF:?unset: build through docker/docker-bake.hcl}" \
+      "${VLLM_TARGET_DEVICE:?unset: build through docker/docker-bake.hcl}" \
+      "${AITER_GIT_URL:?unset: build through docker/docker-bake.hcl}" \
+      "${AITER_REF:?unset: build through docker/docker-bake.hcl}" \
+      "${FLASH_ATTN_GIT_URL:?unset: build through docker/docker-bake.hcl}" \
+      "${FLASH_ATTN_REF:?unset: build through docker/docker-bake.hcl}" \
+      "${AITER_PREBUILD_KERNELS:?unset: build through docker/docker-bake.hcl}"
 
 # git and ca-certificates are not in the -full image; install before cloning.
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
@@ -278,11 +280,13 @@ RUN shopt -s nullglob && \
 # --no-build-isolation means nothing installs vLLM's [build-system].requires.
 # rocm.txt lists setuptools-rust/-scm itself; common.txt does not, so the
 # `empty` path adds build/rust.txt for them.
+ARG PYTORCH_SERIES
 # hadolint ignore=SC2098
 RUN --mount=type=cache,target=/root/.cache/pip \
     --mount=type=cache,target=/root/.cache/ccache \
+    : "${PYTORCH_SERIES:?unset: build through docker/docker-bake.hcl}" && \
     mkdir -p /wheels && \
-    printf 'torch>=2.13,<2.14\n' > /tmp/torch-constraints.txt && \
+    printf 'torch~=%s.0\n' "${PYTORCH_SERIES}" > /tmp/torch-constraints.txt && \
     if [ "${VLLM_TARGET_DEVICE}" = "empty" ]; then \
         pip3 install -r requirements/common.txt \
             -r requirements/build/rust.txt \
@@ -308,8 +312,8 @@ RUN --mount=type=cache,target=/root/.cache/pip \
 WORKDIR /
 
 # ----- 3b. vllm_emulator (llm-emu profile-driven emulation plugin) -----------
-ARG LLM_EMU_GIT_URL=https://github.com/AKafakA/llm-emu.git
-ARG LLM_EMU_REF=b71c602
+ARG LLM_EMU_GIT_URL
+ARG LLM_EMU_REF
 ENV AIC_EMULATOR_EXAMPLE_PACK=/opt/llm-emu/profiles/A40-Q8-Qwen3-8B.json \
     AIC_EMULATOR_DEFAULT_PACK=/opt/llm-emu/profiles/MI300X-Qwen3-8B.json
 
@@ -320,7 +324,9 @@ RUN --mount=type=cache,target=/root/.cache/pip \
 # However, our patches make it compatible with aic's vllm version
 # Edit pyproject.toml to remove that version restriction
 # hadolint ignore=SC3044
-RUN git clone --filter=blob:none --no-checkout "${LLM_EMU_GIT_URL}" /app/llm-emu && \
+RUN : "${LLM_EMU_GIT_URL:?unset: build through docker/docker-bake.hcl}" \
+      "${LLM_EMU_REF:?unset: build through docker/docker-bake.hcl}" && \
+    git clone --filter=blob:none --no-checkout "${LLM_EMU_GIT_URL}" /app/llm-emu && \
     git -C /app/llm-emu checkout "${LLM_EMU_REF}" && \
     shopt -s nullglob && \
     for patch in /app/patches/llm-emu/*.patch; do \
@@ -404,14 +410,12 @@ ENV AIC_EMULATOR_EXAMPLE_PACK=/opt/llm-emu/profiles/A40-Q8-Qwen3-8B.json \
 # msgpack payloads with no version negotiation, so a mismatched pair misroutes
 # calls rather than failing cleanly.
 #
-# Single source of truth: ARG LMCACHE_REF in docker/lmcache/Dockerfile.  The
-# Makefile reads it there and forwards it here, so this carries no default and
-# must not be given one.  No build isolation needed: torch is already here.
+# docker/docker-bake.hcl owns LMCACHE_REF and passes it to both builds, so this
+# carries no default and must not be given one.  No build isolation needed:
+# torch is already here.
 ARG LMCACHE_REF
-# hadolint ignore=SC2015
 RUN --mount=type=cache,target=/root/.cache/pip \
-    test -n "${LMCACHE_REF}" || { \
-        echo "ERROR: LMCACHE_REF is empty; build via 'make build'" >&2; exit 1; } && \
+    : "${LMCACHE_REF:?unset: build through docker/docker-bake.hcl}" && \
     _ver="${LMCACHE_REF#v}" && \
     pip3 install --no-cache-dir "lmcache==${_ver}" && \
     { uv pip uninstall --system \
@@ -444,7 +448,9 @@ RUN test -r "${AIC_EMULATOR_DEFAULT_PACK}" || \
 ARG AIC_VERSION
 ARG ROCM_BASE_IMAGE
 ARG ROCM_VERSION
-RUN test -n "$AIC_VERSION" || { echo "ERROR: AIC_VERSION is not set (read it from VERSION)"; exit 1; }
+RUN : "${AIC_VERSION:?unset: build through docker/docker-bake.hcl}" \
+      "${ROCM_VERSION:?unset: build through docker/docker-bake.hcl}" \
+      "${ROCM_BASE_IMAGE:?unset: build through docker/docker-bake.hcl}"
 LABEL org.opencontainers.image.title="aic-vllm" \
       org.opencontainers.image.description="AMD Infinity Context: ROCm vLLM inference service" \
       org.opencontainers.image.version="${AIC_VERSION}" \

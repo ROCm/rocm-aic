@@ -36,61 +36,83 @@ export AIC_CLUSTER AIC_ENV_FILE
 # also origin "file" -- so the env file's keys are subtracted explicitly.
 _is_makefile_default = $(if $(filter $(1),$(_AIC_ENV_KEYS)),,$(filter file,$(origin $(1))))
 
-IMAGE_NAME       ?= rocm-aic
-VLLM_IMAGE_NAME  ?= aic-vllm
-LMCACHE_IMAGE_NAME ?= aic-lmcache
 override AIC_VERSION := $(strip $(file <$(REPO_ROOT)/VERSION))
 
-# Detect ROCM_ARCH early (before _IMAGE_TAG) so the tag script can decide
-# whether to include FlashAttention (CDNA-only).  Command-line overrides win.
+# ROCM_ARCH is the arch of this host's stack: the user's value, else the probed
+# GPU, and always gfx950 on SPUR.  It is settled here, ahead of the bake query
+# below, because the image tag carries it.  (The arch set a Slurm build compiles
+# for is a separate variable, AIC_ROCM_ARCH.)
+AIC_SPUR_CLUSTER ?= 0
 _ROCM_ARCH_DETECTED := $(shell rocm_agent_enumerator 2>/dev/null | grep -E '^gfx' | head -1)
 ROCM_ARCH := $(if $(strip $(ROCM_ARCH)),$(strip $(ROCM_ARCH)),$(_ROCM_ARCH_DETECTED))
-
-# ROCM_VERSION has a single source of truth: the ARG in docker/base/Dockerfile.
-# It is read from there and forwarded to all three image builds, so the vllm and
-# lmcache images cannot drift from the base they are built on.  Must be defined
-# before _FRAMEWORK_VERSION_ENV below, which bakes it into the image tag.
-# Simply-expanded (:=) on purpose: _FRAMEWORK_VERSION_ENV uses
-# $(value ROCM_VERSION), which would otherwise hand on the literal $(shell ...)
-# text instead of the version string.
-ifeq ($(origin ROCM_VERSION),undefined)
-ROCM_VERSION := $(shell sed -n 's/^ARG ROCM_VERSION=//p' $(REPO_ROOT)/docker/base/Dockerfile | head -1)
-endif
-
-# LMCACHE_REF likewise: docker/lmcache/Dockerfile owns the pin (it is what the
-# image tag and the CI pin check read), and it is forwarded to the vllm build
-# too.  The vllm image installs the lmcache client that provides
-# LMCacheMPConnector, and the MP wire protocol has no version negotiation, so
-# client and server must come from the same release.  Also feeds _LMCACHE_VER
-# in mk/bench.mk.  Simply-expanded for the same reason as ROCM_VERSION.
-ifeq ($(origin LMCACHE_REF),undefined)
-LMCACHE_REF := $(shell sed -n 's/^ARG LMCACHE_REF=//p' $(REPO_ROOT)/docker/lmcache/Dockerfile | head -1)
+ifeq ($(AIC_SPUR_CLUSTER),1)
+_SPUR_ARCH_FORCED := $(if $(strip $(ROCM_ARCH)),,1)
+override ROCM_ARCH := gfx950
 endif
 
 # PyTorch, vLLM, and all deps are source-built; PYTORCH_REF, VLLM_REF, and
 # LLM_EMU_REF are the key version knobs.  hipFile ships in the ROCm base image.
 _FRAMEWORK_VERSION_ARGS := AIC_VERSION ROCM_VERSION PYTORCH_REF PYTORCH_SERIES TORCHVISION_REF VLLM_REF LLM_EMU_REF AITER_REF FLASH_ATTN_REF LMCACHE_REF NIXL_REF HSA_SNOOP_REF
-# Repository URLs for the same frameworks.  Forwarded exactly like the version
-# pins so a build can be pointed at a fork without editing a Dockerfile; the
-# Dockerfile ARGs remain the source of truth for the defaults.  These do not
-# affect the image tag, so they stay out of _FRAMEWORK_VERSION_ENV.
-_FRAMEWORK_URL_ARGS := PYTORCH_GIT_URL TORCHVISION_GIT_URL VLLM_GIT_URL LLM_EMU_GIT_URL \
-                       AITER_GIT_URL FLASH_ATTN_GIT_URL LMCACHE_GIT_URL NIXL_GIT_URL HSA_SNOOP_GIT_URL
-_FRAMEWORK_ARGS := $(_FRAMEWORK_VERSION_ARGS) $(_FRAMEWORK_URL_ARGS)
+# Only the pins that shape the image tag are listed: make hands them to its own
+# bake query.  Every other bake variable (the *_GIT_URLs, UV_VERSION, ...)
+# reaches bake and the Slurm script through the environment, as any variable set
+# on the command line, in the environment or in .env.<cluster> does.
 
+empty :=
+space := $(empty) $(empty)
+define _newline
+
+
+endef
 _single_quote := '
 _shell_quote = '$(subst $(_single_quote),'"'"',$(1))'
-_FRAMEWORK_VERSION_ENV := $(foreach _arg,$(_FRAMEWORK_VERSION_ARGS),$(if $(filter undefined,$(origin $(_arg))),,$(_arg)=$(call _shell_quote,$(value $(_arg)))))
+# The listed variables make already holds, as shell assignments.  Passed
+# explicitly because command-line variables only reach $(shell) on make >= 4.4.
+_shell_env = $(foreach _arg,$(1),$(if $(filter undefined,$(origin $(_arg))),,$(_arg)=$(call _shell_quote,$(value $(_arg)))))
+_framework_version_env = $(call _shell_env,$(_FRAMEWORK_VERSION_ARGS))
 
-# ROCM_ARCH is shell-quoted like the framework args: an unquoted ';'-list ends
-# the command mid-assignment, the tag script never runs, and every multi-arch
-# image silently collides on :latest.  stderr stays visible so a genuine
-# tagging failure is not mistaken for "latest".
-_IMAGE_TAG := $(shell ROCM_ARCH=$(call _shell_quote,$(ROCM_ARCH)) $(_FRAMEWORK_VERSION_ENV) $(REPO_ROOT)/docker/scripts/aic-image-tag.sh)
-IMAGE_TAG  ?= $(if $(_IMAGE_TAG),$(_IMAGE_TAG),latest)
-IMAGE_REF          := $(IMAGE_NAME):$(IMAGE_TAG)
-VLLM_IMAGE_REF     := $(VLLM_IMAGE_NAME):$(IMAGE_TAG)
-LMCACHE_IMAGE_REF  := $(LMCACHE_IMAGE_NAME):$(IMAGE_TAG)
+# docker/docker-bake.hcl owns every pin, the tag format and the image names.
+# One `bake --print` per make run (via aic-bake-env.sh) resolves what make
+# itself consumes, from the same inputs a later `make build` hands to bake, so
+# the refs exported to compose are the strings bake tags.  The stack refs are
+# assigned with `:=` (an inherited environment value is a parent make's, for
+# possibly another arch); the rest keep `?=`.  Inputs are shell-quoted: an
+# unquoted ';'-list in ROCM_ARCH would end the command mid-assignment.  stderr
+# stays visible so a genuine failure is not mistaken for "latest".
+_BAKE_INPUTS      := ROCM_ARCH IMAGE_TAG AIC_IMAGE_PREFIX KVBENCH_REF KVBENCH_IMAGE_TAG $(_FRAMEWORK_VERSION_ARGS)
+_BAKE_KEYS_STACK  := VLLM_IMAGE_REF LMCACHE_IMAGE_REF HSA_SNOOP_IMAGE_REF
+_BAKE_KEYS        := IMAGE_TAG ROCM_VERSION LMCACHE_REF KVBENCH_GIT_URL KVBENCH_REF KVBENCH_IMAGE_REF
+_IMAGE_TAG_ORIGIN := $(origin IMAGE_TAG)
+_AIC_BAKE_MK := $(shell $(call _shell_env,$(_BAKE_INPUTS)) \
+    $(REPO_ROOT)/docker/scripts/aic-bake-env.sh --make | sed -n -E \
+    -e 's/^($(subst $(space),|,$(_BAKE_KEYS_STACK))) \?= (.*)$$/\1 := \2@NL@/p' \
+    -e 's/^($(subst $(space),|,$(_BAKE_KEYS))) \?= .*$$/&@NL@/p')
+$(eval $(subst @NL@ ,$(_newline),$(_AIC_BAKE_MK) ))
+# Without docker buildx (a Slurm login node submitting `make dist-build`) the
+# helper prints nothing: the image refs stay unset so compose falls back to its
+# own :latest defaults.  The Slurm build jobs resolve their pins from bake on
+# the build node.
+IMAGE_TAG ?= latest
+_FRAMEWORK_VERSION_ENV := $(_framework_version_env)
+# Without docker buildx IMAGE_TAG cannot shape the compose refs (bake owns the
+# image names), so a user's IMAGE_TAG would silently start the :latest images.
+ifeq ($(MAKELEVEL)$(filter undefined,$(_IMAGE_TAG_ORIGIN))$(strip $(VLLM_IMAGE_REF)),0)
+ifneq ($(filter-out help list-vars dist-% cliff-%,$(or $(MAKECMDGOALS),help)),)
+$(warning IMAGE_TAG=$(IMAGE_TAG) does not select the compose images here (docker buildx bake unavailable); pass VLLM_IMAGE_REF, LMCACHE_IMAGE_REF and HSA_SNOOP_IMAGE instead)
+endif
+endif
+# The Slurm scripts name images and artifacts by the tag, and derive it
+# themselves (no arch suffix) when run directly from a login node.  Hand them
+# that same tag rather than one carrying the SPUR arch make forced above, so
+# both entry points find each other's artifacts.  Settled by the top-level make;
+# a sub-make inherits IMAGE_TAG and ROCM_ARCH and could not tell.
+ifeq ($(MAKELEVEL),0)
+_AIC_SLURM_IMAGE_TAG := $(if $(and $(_SPUR_ARCH_FORCED),$(filter undefined,$(_IMAGE_TAG_ORIGIN))),$(patsubst %-gfx950,%,$(IMAGE_TAG)))
+else ifeq ($(origin IMAGE_TAG),command line)
+_AIC_SLURM_IMAGE_TAG :=
+endif
+export _AIC_SLURM_IMAGE_TAG
+_SLURM_TAG_ENV := $(if $(_AIC_SLURM_IMAGE_TAG),IMAGE_TAG=$(call _shell_quote,$(_AIC_SLURM_IMAGE_TAG)))
 
 # ---- GPU -------------------------------------------------------------------
 GPU ?= 0
@@ -105,26 +127,32 @@ LOG           ?= $(CURDIR)/logs
 HF_HOME       ?= $(HOME)/.cache/huggingface
 HF_TOKEN_FILE ?=
 
+# ---- Container-runtime knobs -----------------------------------------------
+# docker/docker-compose.yml owns the defaults of every knob left empty here.
+# Make gives them none and does not re-export them: a value set on the command
+# line, in the environment or in .env.<cluster> reaches compose and the Slurm
+# scripts through the environment, and an unset one leaves compose's default in
+# force.  The few with a value are the ones a recipe expands itself.
+
 # ---- LMCache server --------------------------------------------------------
-LMCACHE_PORT           ?= 6555
-LMCACHE_L1_SIZE_GB     ?= 20
-LMCACHE_NVME_POOL      ?= 4096
-LMCACHE_NVME_SLOT_SIZE ?= 268435456
-LMCACHE_NFS_POOL       ?= 1024
-# lmcache --max-gpu-workers: parallel STORE/RETRIEVE worker threads.  1 serializes
-# all clients onto one thread (AffinityThreadPool warns), so under concurrent load
-# stores back up behind L1->L2 eviction and trip vLLM's health check into degraded
-# mode.  Default 4 for multi-client load; drop to 1 for a single-client run to
-# save GPU memory.
-LMCACHE_MAX_GPU_WORKERS ?= 4
+LMCACHE_PORT            ?= 6555
+LMCACHE_L1_SIZE_GB      ?=
+LMCACHE_NVME_POOL       ?=
+LMCACHE_NVME_SLOT_SIZE  ?=
+LMCACHE_NFS_POOL        ?=
+LMCACHE_MAX_GPU_WORKERS ?=
 
 # ---- vLLM knobs ------------------------------------------------------------
 VLLM_MODEL                  ?=
-TENSOR_PARALLEL_SIZE        ?= 1
+TENSOR_PARALLEL_SIZE        ?=
 VLM_GPU_MEMORY_UTILIZATION  ?=
 VLM_MAX_MODEL_LEN           ?=
 VLM_MAX_NUM_BATCHED_TOKENS  ?=
 VLM_BLOCK_SIZE              ?=
+# vllm-reset-test: health polls (5 s apart) before giving up, and how much of
+# the vLLM log to print when the container dies first.
+VLM_READY_RETRIES           ?= 60
+VLM_FAIL_LOG_LINES          ?= 250
 
 # ---- Benchmark knobs -------------------------------------------------------
 BENCH_ARM         ?= kvd_v2
@@ -150,16 +178,12 @@ aic_bridge_url = bash "$(CURDIR)/scripts/aic-endpoints.sh" bridge-url $(1) $(2)
 aic_fetch = bash "$(CURDIR)/scripts/aic-endpoints.sh" fetch
 
 # ---- KVBench container -----------------------------------------------------
-KVBENCH_GIT_URL           ?= https://github.com/wvaske/llm-kv-passthrough.git
-KVBENCH_REF               ?= 177cf4e7c46ece8e03a701f89b60cd3a329f45fd
-KVBENCH_IMAGE_NAME        ?= aic-kvbench
-KVBENCH_IMAGE_TAG         ?= 177cf4e
-KVBENCH_IMAGE_REF         ?= $(KVBENCH_IMAGE_NAME):$(KVBENCH_IMAGE_TAG)
+# KVBENCH_GIT_URL, KVBENCH_REF and KVBENCH_IMAGE_REF come from bake (above).
 KVBENCH_MODEL             ?= llama-3.1-8b
-KVBENCH_GPU_PROFILE       ?= H100_SXM
+KVBENCH_GPU_PROFILE       ?=
 KVBENCH_PORT              ?= 8000
-KVBENCH_CHUNK_SIZE        ?= 256
-KVBENCH_LOCAL_CPU_SIZE_GB ?= 0.25
+KVBENCH_CHUNK_SIZE        ?=
+KVBENCH_LOCAL_CPU_SIZE_GB ?=
 KVBENCH_READY_S           ?= 120
 
 # Non-Slurm runs land under logs/manual/ — keeps the tree root free of results/ and plots/.
@@ -171,45 +195,34 @@ KVBENCH_READY_S           ?= 120
 BENCH_LOGDIR      ?= $(CURDIR)/logs/manual
 BENCH_OUT         := $(BENCH_LOGDIR)/results/cliff-$(BENCH_ARM)-$(shell date +%Y%m%d-%H%M%S).csv
 
-# ---- Build parallelism -----------------------------------------------------
-BUILD_JOBS ?=
-
 # ---- BuildKit builder + layer cache ----------------------------------------
-# One builder name and one cache dir cover both the local `build` target and the
-# distributed build in .slurm/run-build-distribute.sh.  AIC_CACHE_DIR is set
-# further down (SPUR block); empty means "no layer cache".
+# One builder name covers both the local `build` target and the distributed
+# build in .slurm/run-build-distribute.sh.
+#
+# docker/docker-bake.hcl owns the defaults of the build knobs BUILD_JOBS,
+# AIC_UCX_FAST, AIC_CACHE_MODE, AIC_CACHE_REF, AIC_CACHE_DIR and TLS_CERT, so
+# make gives them none: a value set on the command line, in the environment or
+# in .env.<cluster> reaches bake and the Slurm script through the environment,
+# and an unset one leaves each to its own default.  (The one exception is the
+# SPUR site default for AIC_CACHE_DIR further down.)
 export AIC_BUILDX_BUILDER ?= aic-local
-export AIC_CACHE_MODE     ?= max
-# Registry layer cache.  Takes precedence over AIC_CACHE_DIR in the bake HCL and
-# in run-build-distribute.sh, which both already honoured it -- `make build` did
-# not forward it, so CI had no way to share layers between runners without a
-# shared filesystem.  Empty means "fall back to AIC_CACHE_DIR".
-export AIC_CACHE_REF      ?=
+
+# AIC_TLS_CERT is the deprecated name of TLS_CERT; accepted for one release.
+ifeq ($(strip $(TLS_CERT)),)
+ifneq ($(strip $(AIC_TLS_CERT)),)
+export TLS_CERT := $(AIC_TLS_CERT)
+endif
+endif
 
 # Per-arch cache subdir slug; mirrors _arch_tag() in run-build-distribute.sh.
-# Recursive (=) on purpose: the SPUR block below may override ROCM_ARCH.
-empty :=
-space := $(empty) $(empty)
 _ARCH_SLUG = $(subst $(comma),-,$(subst ;,-,$(subst $(space),-,$(ROCM_ARCH))))
 
-export AIC_VERSION ROCM_ARCH GPU GDS_SLAB_DATA LOG HF_HOME HF_TOKEN IMAGE_NAME IMAGE_REF IMAGE_TAG BUILD_JOBS
-export VLLM_IMAGE_NAME VLLM_IMAGE_REF LMCACHE_IMAGE_NAME LMCACHE_IMAGE_REF
-export LMCACHE_PORT LMCACHE_L1_SIZE_GB LMCACHE_NVME_POOL LMCACHE_NVME_SLOT_SIZE LMCACHE_NFS_POOL
-export LMCACHE_MAX_GPU_WORKERS
+export AIC_VERSION ROCM_ARCH GPU GDS_SLAB_DATA LOG HF_HOME HF_TOKEN IMAGE_TAG
+export LMCACHE_PORT
 export NVME_DATA NFS_DATA
-export VLLM_MODEL TENSOR_PARALLEL_SIZE
+export VLLM_MODEL
 export VLM_GPU_MEMORY_UTILIZATION VLM_MAX_MODEL_LEN VLM_MAX_NUM_BATCHED_TOKENS VLM_BLOCK_SIZE
-export KVBENCH_GIT_URL KVBENCH_REF KVBENCH_IMAGE_REF KVBENCH_MODEL KVBENCH_GPU_PROFILE
-export KVBENCH_PORT KVBENCH_CHUNK_SIZE KVBENCH_LOCAL_CPU_SIZE_GB
-
-# Export every framework pin the caller actually overrode, so that
-# .slurm/run-build-distribute.sh and docker/scripts/aic-image-tag.sh — both of
-# which test `[[ -v NAME ]]` — see it.  Never export an empty value: an empty
-# build arg overrides the pinned Dockerfile default rather than falling back to
-# it (an empty AITER_REF, for example, produces an invalid AITER release URL).
-# The Dockerfile ARGs remain the single source of truth for the pins themselves;
-# this only forwards deliberate overrides.
-$(foreach _v,$(_FRAMEWORK_ARGS),$(if $(strip $(value $(_v))),$(eval export $(_v))))
+export KVBENCH_MODEL KVBENCH_PORT
 
 comma := ,
 _AIC_B := \033[1m
@@ -221,8 +234,6 @@ _COMPOSE_BIN := docker compose
 COMPOSE      := $(_FRAMEWORK_VERSION_ENV) DOCKER_BUILDKIT=1 $(_COMPOSE_BIN) -f "$(CURDIR)/docker/docker-compose.yml"
 COMPOSE_CACHE := $(COMPOSE) --profile cache
 
-COMPOSE_PLUGIN_VERSION ?= v5.5.1
-
 # vLLM --kv-transfer-config for the MP connector.  Leave KV_TRANSFER_ARG empty
 # for a plain (baseline) vLLM.
 _MP_CONNECTOR_JSON := {"kv_connector":"LMCacheMPConnector","kv_role":"kv_both","kv_connector_extra_config":{"lmcache.mp.host":"tcp://localhost","lmcache.mp.port":$(LMCACHE_PORT),"lmcache.mp.lazy_offload":true,"lmcache.mp.lazy_offload_policy":"EVICTION_AWARE","lmcache.mp.lazy_offload_max_deferral_seconds":30.0,"lmcache.mp.save_decode_cache":true}}
@@ -230,25 +241,25 @@ KV_TRANSFER_ARG    ?= --kv-transfer-config '$(_MP_CONNECTOR_JSON)'
 export KV_TRANSFER_ARG
 
 # ---- Metrics capture (Prometheus sidecar) ----------------------------------
+# AIC_EXPORTERS belongs to monitoring/monitoring-lib.sh (the Slurm jobs); the
+# local targets pick their exporters with compose profiles.  The Grafana image
+# pin is compose's.
 AIC_METRICS_DIR  ?= $(CURDIR)/logs/prometheus
-AIC_EXPORTERS    ?= 0
-AIC_GRAFANA_IMAGE ?= grafana/grafana:13.2.2
-export AIC_METRICS_DIR AIC_GRAFANA_IMAGE
+export AIC_METRICS_DIR
 
-# ---- Fabric exporters (nvme_exporter / rdma_exporter) + hsa-snoop sidecar --
-NVME_EXPORTER_IMAGE   ?= aic-nvme-exporter:local
-RDMA_EXPORTER_IMAGE   ?= aic-rdma-exporter:local
-HSA_SNOOP_IMAGE_NAME  ?= aic-hsa-snoop
-HSA_SNOOP_IMAGE_REF   := $(HSA_SNOOP_IMAGE_NAME):$(IMAGE_TAG)
+# ---- Image refs for compose ------------------------------------------------
+# HSA_SNOOP_IMAGE is the name compose reads; bake's tag is its default.
 HSA_SNOOP_IMAGE       ?= $(HSA_SNOOP_IMAGE_REF)
-export HSA_SNOOP_IMAGE_NAME HSA_SNOOP_IMAGE_REF HSA_SNOOP_IMAGE
-NVME_EXPORTER_VERSION ?= 3.0.0
-RDMA_EXPORTER_VERSION ?= 0.7.3
+# What bake resolved, exported only when it did: an empty KVBENCH_REF in the
+# environment would replace bake's own default in a Slurm-side build.
+$(foreach _v,VLLM_IMAGE_REF LMCACHE_IMAGE_REF HSA_SNOOP_IMAGE KVBENCH_IMAGE_REF KVBENCH_GIT_URL KVBENCH_REF,\
+    $(if $(strip $($(_v))),$(eval export $(_v))))
 
 PYTHON := $(if $(wildcard $(REPO_ROOT)/.venv/bin/python3),$(REPO_ROOT)/.venv/bin/python3,python3)
 
 # ---- Distribute / cliff (Slurm) --------------------------------------------
 DIST := $(CURDIR)/.slurm/run-build-distribute.sh
+DIST_RUN = $(_SLURM_TAG_ENV) "$(DIST)"
 
 # ---- Self-hosted CI runner scripts -----------------------------------------
 AIC_CI_LIB_DIR    ?= /usr/local/lib/aic-ci
@@ -262,30 +273,32 @@ export AIC_ACCURACY_TIME AIC_ACCURACY_CPUS AIC_ACCURACY_MEM
 export AIC_ACCURACY_READY_TIMEOUT
 export AIC_ACCURACY_LIMIT
 
-# ---- SPUR cluster overrides ------------------------------------------------
-AIC_SPUR_CLUSTER ?= 0
-AIC_SHARED_NFS ?=
+# ---- SPUR site defaults ----------------------------------------------------
+# Tracked, because every SPUR user needs them, but defaults all the same: a
+# value from the command line, the environment or .env.<cluster> wins.  The
+# three paths make already defaulted above take the _is_makefile_default guard
+# (`?=` is a no-op on a variable that is already defined).
 ifeq ($(AIC_SPUR_CLUSTER),1)
+AIC_SHARED_NFS ?= /shared_nfs
 export AIC_SPUR_CLUSTER
 export AIC_SPUR_PARTITION   ?= amd-spur-v2
 export AIC_IMAGE_DIR        ?= $(AIC_SHARED_NFS)/rocm-aic/images
 export AIC_CACHE_DIR        ?= $(AIC_SHARED_NFS)/$(USER)/buildcache
-override export NVME_DATA     := /mnt/m2m_nobackup/aic-cliff/nvme
-override export GDS_SLAB_DATA := /mnt/m2m_nobackup/aic-cliff/slab
-override export HF_HOME       := $(AIC_SHARED_NFS)/huggingface
-override export ROCM_ARCH     := gfx950
-export AIC_L2_BACKEND         ?= nixl_posix
-export LMCACHE_NIXL_POSIX_SLOT_SIZE    ?= 33554432
-export LMCACHE_NIXL_POSIX_POOL         ?= 32768
-export LMCACHE_NIXL_DYNAMIC_MAX_GB     ?= 100
-export LMCACHE_NIXL_DYNAMIC_DIRECT_IO ?= false
-override export AIC_EXPORTERS            := safe
-override export AIC_HSA_SNOOP_PID_MODE  := container:aic-lmcache
+ifeq ($(call _is_makefile_default,NVME_DATA),file)
+export NVME_DATA := /mnt/m2m_nobackup/aic-cliff/nvme
+endif
+ifeq ($(call _is_makefile_default,GDS_SLAB_DATA),file)
+export GDS_SLAB_DATA := /mnt/m2m_nobackup/aic-cliff/slab
+endif
+ifeq ($(call _is_makefile_default,HF_HOME),file)
+export HF_HOME := $(AIC_SHARED_NFS)/huggingface
+endif
+export AIC_L2_BACKEND       ?= nixl_posix
+# spur-authz refuses pid:host, which the full exporter fleet and hsa-snoop's
+# host mode both need.
+export AIC_EXPORTERS          ?= safe
+export AIC_HSA_SNOOP_PID_MODE ?= container:aic-lmcache
 else
-# Empty by default off-SPUR: a workstation has no /scratch, and an unwritable
-# cache dir is worse than none.  Set AIC_CACHE_DIR explicitly to enable the
-# BuildKit layer cache (e.g. a non-SPUR cluster with shared /scratch).
-export AIC_CACHE_DIR        ?=
 ifneq ($(wildcard /scratch/models/hub),)
 ifeq ($(call _is_makefile_default,HF_HOME),file)
 override export HF_HOME     := /scratch/models
@@ -297,13 +310,26 @@ _HF_HOME_IS_DEFAULT ?= $(if $(call _is_makefile_default,HF_HOME),1,)
 
 # Strip Makefile-defaulted path vars before cliff sbatch so they don't clobber
 # the job's node-appropriate defaults.  User-set values (command-line /
-# environment / .env.<cluster>) are preserved.
+# environment / .env.<cluster>) are preserved, and so are the SPUR site
+# defaults above, which are the node-appropriate paths there.
+#
+# A recursive $(MAKE) (the *-fast targets) receives the parent's defaults as
+# environment values, so the top-level make settles the list and hands it down;
+# a sub-make keeps a name only while it still holds that inherited value.
+ifeq ($(MAKELEVEL),0)
+_AIC_DEFAULTED := $(strip $(if $(_HF_HOME_IS_DEFAULT),HF_HOME) \
+    $(foreach v,NVME_DATA NFS_DATA GDS_SLAB_DATA AIC_METRICS_DIR,$(if $(call _is_makefile_default,$(v)),$(v))))
+else
+_AIC_DEFAULTED := $(strip $(foreach v,$(_AIC_DEFAULTED),$(if $(filter environment,$(origin $(v))),$(v))))
+endif
+export _AIC_DEFAULTED
 _CLIFF_STRIP := env \
-    $(if $(filter 0,$(AIC_SPUR_CLUSTER)),$(if $(_HF_HOME_IS_DEFAULT),-u HF_HOME)) \
-    $(if $(filter 0,$(AIC_SPUR_CLUSTER)),$(if $(call _is_makefile_default,NVME_DATA),-u NVME_DATA)) \
-    $(if $(call _is_makefile_default,NFS_DATA),-u NFS_DATA) \
-    $(if $(filter 0,$(AIC_SPUR_CLUSTER)),$(if $(call _is_makefile_default,GDS_SLAB_DATA),-u GDS_SLAB_DATA)) \
-    $(if $(call _is_makefile_default,AIC_METRICS_DIR),-u AIC_METRICS_DIR)
+    $(if $(filter 0,$(AIC_SPUR_CLUSTER)),$(if $(filter HF_HOME,$(_AIC_DEFAULTED)),-u HF_HOME)) \
+    $(if $(filter 0,$(AIC_SPUR_CLUSTER)),$(if $(filter NVME_DATA,$(_AIC_DEFAULTED)),-u NVME_DATA)) \
+    $(if $(filter NFS_DATA,$(_AIC_DEFAULTED)),-u NFS_DATA) \
+    $(if $(filter 0,$(AIC_SPUR_CLUSTER)),$(if $(filter GDS_SLAB_DATA,$(_AIC_DEFAULTED)),-u GDS_SLAB_DATA)) \
+    $(if $(filter AIC_METRICS_DIR,$(_AIC_DEFAULTED)),-u AIC_METRICS_DIR) \
+    $(_SLURM_TAG_ENV)
 
 # ---- Export tarball --------------------------------------------------------
 EXPORT_PREFIX  ?= aic-release
@@ -311,10 +337,6 @@ _GIT_SHORT_REV := $(shell git -C "$(CURDIR)" rev-parse --short HEAD 2>/dev/null 
 _GIT_DIRTY     := $(if $(shell git -C "$(CURDIR)" status --porcelain -- . 2>/dev/null),-dirty,)
 _GEN_DATE      := $(shell date +%Y%m%d)
 EXPORT_TARBALL ?= $(CURDIR)/$(EXPORT_PREFIX)-$(_GEN_DATE)-$(_GIT_SHORT_REV)$(_GIT_DIRTY).tar.gz
-
-# ---- PROM_DUMP knobs (consumed by mk/dist.mk prometheus-dump) ---------------
-PROM_DUMP_OUT  ?=
-PROM_DUMP_WAIT ?= 15
 
 # ---- Sub-makefiles ----------------------------------------------------------
 include mk/infra.mk
@@ -398,7 +420,8 @@ help:
 	@printf '  $(_AIC_G)%-32s$(_AIC_R) %s\n' \
 	    'make export' 'Tarball working-tree sources (tracked + local edits)' \
 	    'make install-ci-scripts' 'Deploy .github/scripts/runners/*.sh to AIC_CI_LIB_DIR' \
-	    'make list-vars' 'Show current values of all configurable environment variables'
+	    'make list-vars' 'Show the values make would use (reference: docs/ENVIRONMENT.md)' \
+	    'make env-docs' 'Regenerate the variable tables in docs/ENVIRONMENT.md'
 	@printf '\n$(_AIC_B)$(_AIC_X)EXAMPLES$(_AIC_R)\n'
 	@printf '  %s\n' \
 	    'make build ROCM_ARCH=gfx1201 AIC_CACHE_DIR=~/.cache/aic-buildx' \
@@ -410,19 +433,24 @@ help:
 	    'make dist-build dist-push smoke-test   # the nightly build chain'
 	@printf '\n'
 
+# The value make holds, else the default compose would apply (read from compose,
+# so list-vars cannot disagree with it).
+_or_compose_default = $(or $($(1)),<compose default: $(or $(shell "$(REPO_ROOT)/docker/scripts/aic-compose-default.sh" $(1) 2>/dev/null),?)>)
+
 list-vars:
 	@printf '$(_AIC_B)rocm-aic environment variables$(_AIC_R)\n'
 	@printf '$(_AIC_D)Override any of these on the make command line or via .env.<cluster>$(_AIC_R)\n'
+	@printf '$(_AIC_D)Defaults, owners and descriptions: docs/ENVIRONMENT.md$(_AIC_R)\n'
 	@printf '\n$(_AIC_B)$(_AIC_X)IMAGE / BUILD$(_AIC_R)\n'
 	@printf '  $(_AIC_G)%-38s$(_AIC_R) %s\n' \
-	    'VLLM_IMAGE_NAME' '$(VLLM_IMAGE_NAME)' \
-	    'LMCACHE_IMAGE_NAME' '$(LMCACHE_IMAGE_NAME)' \
-	    'VLLM_IMAGE_REF' '$(VLLM_IMAGE_REF)' \
-	    'LMCACHE_IMAGE_REF' '$(LMCACHE_IMAGE_REF)' \
+	    'IMAGE_TAG' '$(IMAGE_TAG)' \
+	    'VLLM_IMAGE_REF' '$(call _or_compose_default,VLLM_IMAGE_REF)' \
+	    'LMCACHE_IMAGE_REF' '$(call _or_compose_default,LMCACHE_IMAGE_REF)' \
+	    'HSA_SNOOP_IMAGE' '$(call _or_compose_default,HSA_SNOOP_IMAGE)' \
 	    'ROCM_ARCH' '$(or $(ROCM_ARCH),<not detected>)' \
 	    'ROCM_VERSION' '$(ROCM_VERSION)' \
 	    'AIC_VERSION' '$(AIC_VERSION)' \
-	    'BUILD_JOBS' '$(or $(BUILD_JOBS),<nproc>)' \
+	    'BUILD_JOBS' '$(or $(BUILD_JOBS),<bake default: nproc>)' \
 	    'BUILD_PROGRESS' '$(BUILD_PROGRESS)' \
 	    'BAKE_TARGETS' '$(BAKE_TARGETS)' \
 	    'BAKE_OUTPUT_FLAG' '$(BAKE_OUTPUT_FLAG)' \
@@ -431,9 +459,10 @@ list-vars:
 	@printf '\n$(_AIC_B)$(_AIC_X)LAYER CACHE$(_AIC_R)\n'
 	@printf '  $(_AIC_G)%-38s$(_AIC_R) %s\n' \
 	    'AIC_BUILDX_BUILDER' '$(AIC_BUILDX_BUILDER)' \
-	    'AIC_CACHE_MODE' '$(AIC_CACHE_MODE)' \
+	    'AIC_CACHE_MODE' '$(or $(AIC_CACHE_MODE),<bake default>)' \
 	    'AIC_CACHE_REF' '$(or $(AIC_CACHE_REF),<empty>)' \
-	    'AIC_CACHE_DIR' '$(or $(AIC_CACHE_DIR),<empty: no local cache>)'
+	    'AIC_CACHE_DIR' '$(or $(AIC_CACHE_DIR),<empty: no local cache>)' \
+	    'TLS_CERT' '$(or $(TLS_CERT),<none>)'
 	@printf '\n$(_AIC_B)$(_AIC_X)CLUSTER / SITE$(_AIC_R)\n'
 	@printf '  $(_AIC_G)%-38s$(_AIC_R) %s\n' \
 	    'AIC_CLUSTER' '$(or $(AIC_CLUSTER),<not detected>)' \
@@ -455,23 +484,25 @@ list-vars:
 	    'HF_TOKEN' '$(if $(HF_TOKEN),<set>,<not set>)'
 	@printf '\n$(_AIC_B)$(_AIC_X)VLLM$(_AIC_R)\n'
 	@printf '  $(_AIC_G)%-38s$(_AIC_R) %s\n' \
-	    'VLLM_MODEL' '$(or $(VLLM_MODEL),<not set>)' \
-	    'VLLM_REF' '$(or $(VLLM_REF),<bake.hcl default>)' \
-	    'TENSOR_PARALLEL_SIZE' '$(TENSOR_PARALLEL_SIZE)' \
-	    'VLM_GPU_MEMORY_UTILIZATION' '$(or $(VLM_GPU_MEMORY_UTILIZATION),<vLLM default>)' \
-	    'VLM_MAX_MODEL_LEN' '$(or $(VLM_MAX_MODEL_LEN),<vLLM default>)' \
-	    'VLM_MAX_NUM_BATCHED_TOKENS' '$(or $(VLM_MAX_NUM_BATCHED_TOKENS),<vLLM default>)' \
-	    'VLM_BLOCK_SIZE' '$(or $(VLM_BLOCK_SIZE),<vLLM default>)'
+	    'VLLM_MODEL' '$(call _or_compose_default,VLLM_MODEL)' \
+	    'VLLM_REF' '$(or $(VLLM_REF),<bake default>)' \
+	    'TENSOR_PARALLEL_SIZE' '$(call _or_compose_default,TENSOR_PARALLEL_SIZE)' \
+	    'VLM_GPU_MEMORY_UTILIZATION' '$(call _or_compose_default,VLM_GPU_MEMORY_UTILIZATION)' \
+	    'VLM_MAX_MODEL_LEN' '$(call _or_compose_default,VLM_MAX_MODEL_LEN)' \
+	    'VLM_MAX_NUM_BATCHED_TOKENS' '$(call _or_compose_default,VLM_MAX_NUM_BATCHED_TOKENS)' \
+	    'VLM_BLOCK_SIZE' '$(call _or_compose_default,VLM_BLOCK_SIZE)' \
+	    'VLM_READY_RETRIES' '$(VLM_READY_RETRIES) x 5 s' \
+	    'VLM_FAIL_LOG_LINES' '$(VLM_FAIL_LOG_LINES)'
 	@printf '\n$(_AIC_B)$(_AIC_X)LMCACHE$(_AIC_R)\n'
 	@printf '  $(_AIC_G)%-38s$(_AIC_R) %s\n' \
 	    'LMCACHE_REF' '$(LMCACHE_REF)' \
 	    'LMCACHE_PORT' '$(LMCACHE_PORT)' \
-	    'LMCACHE_L1_SIZE_GB' '$(LMCACHE_L1_SIZE_GB) GiB' \
-	    'LMCACHE_MAX_GPU_WORKERS' '$(LMCACHE_MAX_GPU_WORKERS)' \
-	    'LMCACHE_NVME_POOL' '$(LMCACHE_NVME_POOL)' \
-	    'LMCACHE_NVME_SLOT_SIZE' '$(LMCACHE_NVME_SLOT_SIZE)' \
-	    'LMCACHE_NFS_POOL' '$(LMCACHE_NFS_POOL)' \
-	    'AIC_L2_BACKEND' '$(or $(AIC_L2_BACKEND),<not set>)'
+	    'LMCACHE_L1_SIZE_GB' '$(call _or_compose_default,LMCACHE_L1_SIZE_GB) GiB' \
+	    'LMCACHE_MAX_GPU_WORKERS' '$(call _or_compose_default,LMCACHE_MAX_GPU_WORKERS)' \
+	    'LMCACHE_NVME_POOL' '$(call _or_compose_default,LMCACHE_NVME_POOL)' \
+	    'LMCACHE_NVME_SLOT_SIZE' '$(call _or_compose_default,LMCACHE_NVME_SLOT_SIZE)' \
+	    'LMCACHE_NFS_POOL' '$(call _or_compose_default,LMCACHE_NFS_POOL)' \
+	    'AIC_L2_BACKEND' '$(call _or_compose_default,AIC_L2_BACKEND)'
 	@printf '\n$(_AIC_B)$(_AIC_X)BENCHMARK (cliff)$(_AIC_R)\n'
 	@printf '  $(_AIC_G)%-38s$(_AIC_R) %s\n' \
 	    'BENCH_ARM' '$(BENCH_ARM)' \
@@ -482,7 +513,7 @@ list-vars:
 	    'BENCH_ENDPOINT' '$(or $(BENCH_ENDPOINT),<running vLLM via aic bridge>)' \
 	    'BENCH_MODEL' '$(or $(BENCH_MODEL),$(or $(VLLM_MODEL),<not set>))' \
 	    'BENCH_LOGDIR' '$(BENCH_LOGDIR)'
-	@printf '\n$(_AIC_B)$(_AIC_X)EMULATE & PROFILE$(_AIC_R)\n'
+	@printf '\n$(_AIC_B)$(_AIC_X)EMULATE & PROFILE (local targets; the Slurm jobs have their own defaults)$(_AIC_R)\n'
 	@printf '  $(_AIC_G)%-38s$(_AIC_R) %s\n' \
 	    'AIC_EMULATE_MODEL' '$(AIC_EMULATE_MODEL)' \
 	    'AIC_EMULATE_READY_S' '$(AIC_EMULATE_READY_S) s' \
@@ -502,30 +533,31 @@ list-vars:
 	    'RJ_PROBE / RJ_PROBE_ONLY' '$(RJ_PROBE) / $(RJ_PROBE_ONLY)'
 	@printf '\n$(_AIC_B)$(_AIC_X)KVBENCH$(_AIC_R)\n'
 	@printf '  $(_AIC_G)%-38s$(_AIC_R) %s\n' \
-	    'KVBENCH_IMAGE_REF' '$(KVBENCH_IMAGE_REF)' \
+	    'KVBENCH_IMAGE_REF' '$(call _or_compose_default,KVBENCH_IMAGE_REF)' \
 	    'KVBENCH_MODEL' '$(KVBENCH_MODEL)' \
 	    'KVBENCH_PORT' '$(KVBENCH_PORT)' \
-	    'KVBENCH_CHUNK_SIZE' '$(KVBENCH_CHUNK_SIZE)' \
-	    'KVBENCH_LOCAL_CPU_SIZE_GB' '$(KVBENCH_LOCAL_CPU_SIZE_GB) GB' \
+	    'KVBENCH_GPU_PROFILE' '$(call _or_compose_default,KVBENCH_GPU_PROFILE)' \
+	    'KVBENCH_CHUNK_SIZE' '$(call _or_compose_default,KVBENCH_CHUNK_SIZE)' \
+	    'KVBENCH_LOCAL_CPU_SIZE_GB' '$(call _or_compose_default,KVBENCH_LOCAL_CPU_SIZE_GB) GB' \
 	    'KVBENCH_READY_S' '$(KVBENCH_READY_S) s'
 	@printf '\n$(_AIC_B)$(_AIC_X)MONITORING$(_AIC_R)\n'
 	@printf '  $(_AIC_G)%-38s$(_AIC_R) %s\n' \
 	    'AIC_METRICS_DIR' '$(AIC_METRICS_DIR)' \
-	    'AIC_EXPORTERS' '$(AIC_EXPORTERS)' \
-	    'AIC_GRAFANA_IMAGE' '$(AIC_GRAFANA_IMAGE)'
+	    'AIC_EXPORTERS' '$(or $(AIC_EXPORTERS),<monitoring-lib.sh default>)' \
+	    'AIC_GRAFANA_IMAGE' '$(call _or_compose_default,AIC_GRAFANA_IMAGE)'
 	@printf '\n$(_AIC_B)$(_AIC_X)CLIFF (Slurm)$(_AIC_R)\n'
 	@printf '  $(_AIC_G)%-38s$(_AIC_R) %s\n' \
 	    'AIC_CLIFF_GFX' '$(or $(AIC_CLIFF_GFX),<empty>)' \
-	    'AIC_CLIFF_CONSTRAINT' '$(AIC_CLIFF_CONSTRAINT)' \
-	    'AIC_CLIFF_GPUS' '$(AIC_CLIFF_GPUS)' \
+	    'AIC_CLIFF_CONSTRAINT' '$(or $(AIC_CLIFF_CONSTRAINT),<run-build-distribute.sh default>)' \
+	    'AIC_CLIFF_GPUS' '$(or $(AIC_CLIFF_GPUS),<run-build-distribute.sh default>)' \
 	    'AIC_CLIFF_NODE' '$(or $(AIC_CLIFF_NODE),<any>)' \
 	    'AIC_CLIFF_TIME' '$(or $(AIC_CLIFF_TIME),<target default>)' \
-	    'AIC_CLIFF_ARMS' '$(or $(AIC_CLIFF_ARMS),all)'
+	    'AIC_CLIFF_ARMS' '$(or $(AIC_CLIFF_ARMS),<target default>)'
 	@printf '\n$(_AIC_B)$(_AIC_X)LOGGING / EXPORT$(_AIC_R)\n'
 	@printf '  $(_AIC_G)%-38s$(_AIC_R) %s\n' \
 	    'LOG' '$(LOG)' \
-	    'PROM_DUMP_OUT' '$(or $(PROM_DUMP_OUT),<AIC_IMAGE_DIR>/../prometheus-dump.md)' \
-	    'PROM_DUMP_WAIT' '$(PROM_DUMP_WAIT) s' \
+	    'PROM_DUMP_OUT' '$(or $(PROM_DUMP_OUT),<run-build-distribute.sh default>)' \
+	    'PROM_DUMP_WAIT' '$(if $(PROM_DUMP_WAIT),$(PROM_DUMP_WAIT) s,<run-build-distribute.sh default>)' \
 	    'EXPORT_PREFIX' '$(EXPORT_PREFIX)' \
 	    'EXPORT_TARBALL' '$(notdir $(EXPORT_TARBALL))' \
 	    'AIC_CI_LIB_DIR' '$(AIC_CI_LIB_DIR)'

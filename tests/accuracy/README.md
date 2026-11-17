@@ -118,16 +118,20 @@ either never fires or fires spuriously. Every run logs them.
 
 ## Configuration
 
-| Variable | Default | Meaning |
-|---|---|---|
-| `AIC_ACCURACY_MODEL` | `Qwen/Qwen2.5-0.5B-Instruct` | Model to score. Must match what the arms are serving. |
-| `AIC_ACCURACY_DELTA` | `0.02` | Allowed tiered-vs-baseline gap, **two-sided**. |
-| `AIC_ACCURACY_REQUIRED` | unset | `1` = an unreachable endpoint fails instead of skipping. Set by the CI driver. |
-| `AIC_ACCURACY_CONCURRENT` | `32` | `lm_eval` request concurrency. |
-| `AIC_ACCURACY_BASELINE_URL` | unset | VRAM-only arm, e.g. `http://172.18.0.4:8000/v1`. |
-| `AIC_ACCURACY_TIERED_URL` | unset | LMCache/NIXL arm. |
-| `AIC_ACCURACY_REFERENCE_SCORE` | unset | Pre-restart score; enables the restart assertion. |
-| `AIC_ACCURACY_SCORE_OUT` | unset | Write the measured tiered score here as JSON. |
+Defaults are in
+[docs/ENVIRONMENT.md](../../docs/ENVIRONMENT.md#accuracy-test-make-accuracy-test),
+with the Slurm job's own knobs.
+
+| Variable | Meaning |
+|---|---|
+| `AIC_ACCURACY_MODEL` | Model to score. Must match what the arms are serving. |
+| `AIC_ACCURACY_DELTA` | Allowed tiered-vs-baseline gap, **two-sided**. |
+| `AIC_ACCURACY_REQUIRED` | `1` = an unreachable endpoint fails instead of skipping. Set by the CI driver. |
+| `AIC_ACCURACY_CONCURRENT` | `lm_eval` request concurrency. |
+| `AIC_ACCURACY_BASELINE_URL` | VRAM-only arm, e.g. `http://172.18.0.4:8000/v1`. |
+| `AIC_ACCURACY_TIERED_URL` | LMCache/NIXL arm. |
+| `AIC_ACCURACY_REFERENCE_SCORE` | Pre-restart score; enables the restart assertion. |
+| `AIC_ACCURACY_SCORE_OUT` | Write the measured tiered score here as JSON. |
 
 ## Thresholds
 

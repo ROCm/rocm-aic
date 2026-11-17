@@ -1,5 +1,5 @@
 #!/bin/bash
-#SBATCH --partition=amd-spur-v2
+# No partition is pinned here: submit with --partition="${AIC_SPUR_PARTITION}".
 #SBATCH --constraint=
 #SBATCH --gpus=1
 #SBATCH --time=01:30:00
@@ -44,6 +44,7 @@ NVME_DATA="${NVME_DATA:-/mnt/m2m_nobackup/aic-cliff-exthit/nvme}"
 VLLM_MODEL="${VLLM_MODEL:-Qwen/Qwen2.5-3B-Instruct}"
 LMCACHE_PORT="${LMCACHE_PORT:-6555}"
 VLLM_PORT="${VLLM_PORT:-8000}"
+_slot="${LMCACHE_NIXL_POSIX_SLOT_SIZE:-$(bash "${REPO}/docker/scripts/aic-compose-default.sh" LMCACHE_NIXL_POSIX_SLOT_SIZE)}"
 
 # --- GPU visibility ---
 export AIC_SPUR_CLUSTER="${AIC_SPUR_CLUSTER:-1}"
@@ -103,7 +104,7 @@ docker run -d --name aic-lmcache \
         --max-gpu-workers 1 \
         --worker-reap-timeout-seconds 3600 \
         --l2-prefetch-max-in-flight 32 \
-        --l2-adapter '{\"type\":\"nixl_store\",\"backend\":\"POSIX\",\"backend_params\":{\"file_path\":\"/data/nvme/lmcache\",\"use_direct_io\":\"false\",\"file_size\":\"33554432\"},\"pool_size\":4096}'"
+        --l2-adapter '{\"type\":\"nixl_store\",\"backend\":\"POSIX\",\"backend_params\":{\"file_path\":\"/data/nvme/lmcache\",\"use_direct_io\":\"false\",\"file_size\":\"${_slot}\"},\"pool_size\":4096}'"
 
 # Stream lmcache logs immediately
 docker logs -f --timestamps aic-lmcache > "${LOGDIR}/lmcache.log" 2>&1 &

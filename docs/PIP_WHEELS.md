@@ -70,7 +70,7 @@ image, that hold nothing but `.whl` files:
 
 | bake target | Dockerfile | wheels |
 | --- | --- | --- |
-| `wheels-nixl` | `docker/base/Dockerfile` | `nixl_rocm` |
+| `wheels-base` | `docker/base/Dockerfile` | `nixl_rocm`, `torch`, `torchvision`, `triton` |
 | `wheels-lmcache` | `docker/lmcache/Dockerfile` | `lmcache` |
 | `wheels-vllm` | `docker/vllm/Dockerfile` | `vllm`, `amd_aiter`, `flash_attn` |
 

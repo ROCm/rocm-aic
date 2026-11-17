@@ -22,10 +22,9 @@ _on_err() {
 trap '_on_err "$?" "${PIPESTATUS[*]}" "$LINENO" "${FUNCNAME[*]-}"' ERR
 
 # Release notes for a pip-wheel release (the rolling nightly or a v* release),
-# printed to stdout.  Version pins come from `docker buildx bake --print wheels`
-# -- docker/docker-bake.hcl is authoritative, the Dockerfile ARG defaults are
-# only standalone fallbacks -- and the install command lists the wheels actually
-# being published.
+# printed to stdout.  Version pins and the build image come from
+# `docker buildx bake --print wheels` -- docker/docker-bake.hcl owns them -- and
+# the install command lists the wheels actually being published.
 # This script runs directly from a workflow checkout; it is not installed on a runner.
 if [[ $# -lt 6 || $# -gt 7 ]]; then
     echo "usage: $0 <nightly|release> <tag> <source-sha> <gpu-arch> <wheel-dir> <repository> [<image-name>]" >&2
@@ -56,7 +55,6 @@ done
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 BAKE_FILE="${REPO_ROOT}/docker/docker-bake.hcl"
-BASE_DOCKERFILE="${REPO_ROOT}/docker/base/Dockerfile"
 
 shopt -s nullglob
 wheels=("${WHEEL_DIR}"/*.whl)
@@ -97,7 +95,7 @@ while IFS='=' read -r key value; do
     pin["${key}"]="${value}"
 done <<<"${pins}"
 
-for key in ROCM_VERSION PYTORCH_GIT_URL PYTORCH_REF PYTORCH_SERIES VLLM_GIT_URL VLLM_REF \
+for key in ROCM_VERSION ROCM_BASE_IMAGE PYTORCH_GIT_URL PYTORCH_REF PYTORCH_SERIES VLLM_GIT_URL VLLM_REF \
     AITER_GIT_URL AITER_REF FLASH_ATTN_GIT_URL FLASH_ATTN_REF LMCACHE_GIT_URL LMCACHE_REF \
     NIXL_GIT_URL NIXL_REF; do
     [[ -n "${pin[${key}]:-}" ]] || {
@@ -106,18 +104,7 @@ for key in ROCM_VERSION PYTORCH_GIT_URL PYTORCH_REF PYTORCH_SERIES VLLM_GIT_URL 
     }
 done
 rocm_version="${pin[ROCM_VERSION]}"
-
-# The build image is not a bake variable; it is base's ROCM_BASE_IMAGE default.
-rocm_base_image="$(awk -v prefix="ARG ROCM_BASE_IMAGE=" '
-    index($0, prefix) == 1 { print substr($0, length(prefix) + 1); exit }
-' "${BASE_DOCKERFILE}")"
-rocm_base_image="${rocm_base_image//\$\{ROCM_VERSION\}/${rocm_version}}"
-case "${rocm_base_image}" in
-    '' | *\$\{*)
-        echo "release notes: cannot resolve ROCM_BASE_IMAGE from ${BASE_DOCKERFILE} ('${rocm_base_image}')" >&2
-        exit 1
-        ;;
-esac
+rocm_base_image="${pin[ROCM_BASE_IMAGE]}"
 
 has_flash_attn=0
 for w in "${wheels[@]}"; do

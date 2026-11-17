@@ -9,37 +9,31 @@ from __future__ import annotations
 
 import argparse
 import difflib
+import json
 import os
 import re
+import subprocess
 import sys
 from pathlib import Path
 from urllib.parse import quote
 
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
-# After the Dockerfile split, each service has its own Dockerfile.
-# ROCM_VERSION and PYTORCH_REF live in base/; VLLM_REF in vllm/;
-# AITER_REF, LMCACHE_REF, NIXL_REF, HSA_SNOOP_REF in lmcache/.
-# For README sync we probe each Dockerfile for its own ARGs.
-BASE_DOCKERFILE = REPO_ROOT / "docker" / "base" / "Dockerfile"
-VLLM_DOCKERFILE = REPO_ROOT / "docker" / "vllm" / "Dockerfile"
-LMCACHE_DOCKERFILE = REPO_ROOT / "docker" / "lmcache" / "Dockerfile"
-# Canonical Dockerfile used for REQUIRED_ARGS validation (the one that holds most ARGs).
-DOCKERFILE = LMCACHE_DOCKERFILE
+# docker/docker-bake.hcl owns every pin; aic-bake-env.sh prints what it resolves.
+BAKE_FILE = REPO_ROOT / "docker" / "docker-bake.hcl"
+BAKE_ENV = REPO_ROOT / "docker" / "scripts" / "aic-bake-env.sh"
 README = REPO_ROOT / "README.md"
-# Maps each required ARG name to the Dockerfile that owns it.
-_ARG_DOCKERFILE: dict[str, "Path"] = {
-    "ROCM_VERSION": BASE_DOCKERFILE,
-    "ROCM_BASE_IMAGE": BASE_DOCKERFILE,
-    "PYTORCH_REF": BASE_DOCKERFILE,
-    "PYTORCH_SERIES": BASE_DOCKERFILE,
-    "VLLM_REF": VLLM_DOCKERFILE,
-    "AITER_REF": LMCACHE_DOCKERFILE,
-    "LMCACHE_REF": LMCACHE_DOCKERFILE,
-    "NIXL_REF": LMCACHE_DOCKERFILE,
-    "HSA_SNOOP_REF": LMCACHE_DOCKERFILE,
-}
-REQUIRED_ARGS = tuple(_ARG_DOCKERFILE.keys())
+REQUIRED_ARGS = (
+    "ROCM_VERSION",
+    "ROCM_BASE_IMAGE",
+    "PYTORCH_REF",
+    "PYTORCH_SERIES",
+    "VLLM_REF",
+    "AITER_REF",
+    "LMCACHE_REF",
+    "NIXL_REF",
+    "HSA_SNOOP_REF",
+)
 
 
 class SyncError(Exception):
@@ -64,37 +58,31 @@ def report_error(path: Path, message: str) -> None:
         print(f"::error file={relative(path)}::{annotation}", file=sys.stderr)
 
 
-def docker_arg_defaults(text: str) -> dict[str, str]:
-    # text is unused — each ARG is now read from its owning Dockerfile directly.
-    values: dict[str, str] = {}
-    _texts: dict["Path", str] = {}
-    for name in REQUIRED_ARGS:
-        df = _ARG_DOCKERFILE[name]
-        if df not in _texts:
-            _texts[df] = df.read_text(encoding="utf-8")
-        df_text = _texts[df]
-        pattern = re.compile(
-            rf"^[ \t]*(?i:ARG)[ \t]+{re.escape(name)}=(.*)$",
-            re.MULTILINE,
+def bake_values() -> dict[str, str]:
+    # The README documents the repo's defaults, not this shell's overrides.
+    env = {key: value for key, value in os.environ.items() if key not in REQUIRED_ARGS}
+    try:
+        result = subprocess.run(
+            ["bash", str(BAKE_ENV), "--json"],
+            check=False,
+            capture_output=True,
+            text=True,
+            env=env,
         )
-        defaults = [match.group(1).strip() for match in pattern.finditer(df_text)]
-        if len(defaults) != 1 or not defaults[0]:
-            nonempty = sum(bool(value) for value in defaults)
-            raise SyncError(
-                df,
-                f"expected exactly one non-empty ARG {name}= default; "
-                f"found {len(defaults)} default(s), {nonempty} non-empty",
-            )
-        if defaults[0].endswith(("\\", "`")):
-            raise SyncError(
-                df,
-                f"ARG {name}= must use a single-line default; continuations are unsupported",
-            )
-        values[name] = defaults[0]
+    except OSError as error:
+        raise SyncError(BAKE_ENV, f"cannot run aic-bake-env.sh: {error}") from error
+    if result.returncode != 0:
+        raise SyncError(BAKE_FILE, f"aic-bake-env.sh --json failed: {result.stderr.strip()}")
+    resolved = json.loads(result.stdout)
+    values: dict[str, str] = {}
+    for name in REQUIRED_ARGS:
+        if not resolved.get(name):
+            raise SyncError(BAKE_FILE, f"bake resolved no value for {name}")
+        values[name] = resolved[name]
     return values
 
 
-def ensure_table_safe(label: str, value: str, path: Path = DOCKERFILE) -> None:
+def ensure_table_safe(label: str, value: str, path: Path = BAKE_FILE) -> None:
     if any(character in value for character in ("`", "|", "\r", "\n", "$")):
         raise SyncError(path, f"{label} contains unsupported README characters: {value!r}")
 
@@ -134,20 +122,17 @@ def replace_one(
     return text[: matches[0].start()] + replacement + text[matches[0].end() :]
 
 
-def render_readme(dockerfile_text: str, readme_text: str) -> tuple[str, list[str]]:
-    values = docker_arg_defaults(dockerfile_text)
+def render_readme(readme_text: str) -> tuple[str, list[str]]:
+    values = bake_values()
     rocm = values["ROCM_VERSION"]
     if not re.fullmatch(r"[0-9]+\.[0-9]+(?:\.[0-9]+)?(?:[-+][0-9A-Za-z.]+)?", rocm):
-        raise SyncError(DOCKERFILE, f"ROCM_VERSION is not a supported release version: {rocm!r}")
+        raise SyncError(BAKE_FILE, f"ROCM_VERSION is not a supported release version: {rocm!r}")
 
-    rocm_base = values["ROCM_BASE_IMAGE"].replace("${ROCM_VERSION}", rocm)
-    rocm_base = re.sub(r"\$ROCM_VERSION(?![A-Za-z0-9_])", rocm, rocm_base)
-    if "$" in rocm_base:
-        raise SyncError(DOCKERFILE, f"ROCM_BASE_IMAGE contains an unresolved variable: {rocm_base!r}")
+    rocm_base = values["ROCM_BASE_IMAGE"]
     expected_rocm_base = f"rocm/dev-ubuntu-24.04:{rocm}-full"
     if rocm_base != expected_rocm_base:
         raise SyncError(
-            DOCKERFILE,
+            BAKE_FILE,
             "ROCM_BASE_IMAGE must match the README Ubuntu 24.04/Python 3.12 contract: "
             f"expected {expected_rocm_base!r}, found {rocm_base!r}",
         )
@@ -156,7 +141,7 @@ def render_readme(dockerfile_text: str, readme_text: str) -> tuple[str, list[str
         if name == "ROCM_BASE_IMAGE":
             continue
         ensure_table_safe(name, value)
-    ensure_table_safe("resolved ROCM_BASE_IMAGE", rocm_base)
+    ensure_table_safe("ROCM_BASE_IMAGE", rocm_base)
 
     vllm_patches = patch_files(REPO_ROOT / "patches" / "vllm", required=False)
     lmcache_patches = patch_files(REPO_ROOT / "patches" / "lmcache", required=True)
@@ -263,10 +248,8 @@ def render_readme(dockerfile_text: str, readme_text: str) -> tuple[str, list[str
 
 
 def check_or_write(write: bool) -> int:
-    # docker_arg_defaults() now reads each ARG from its owning Dockerfile directly;
-    # the dockerfile_text argument is kept for compatibility but is not used.
     readme_text = README.read_text(encoding="utf-8")
-    rendered, changed = render_readme("", readme_text)
+    rendered, changed = render_readme(readme_text)
 
     if rendered == readme_text:
         print("README component metadata is in sync.")

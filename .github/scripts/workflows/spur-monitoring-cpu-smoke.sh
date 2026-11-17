@@ -106,8 +106,8 @@ fi
 cd "${WORKDIR}"
 git checkout "${SHA}"
 
-# Now that the tree is checked out, derive the version tag from the Dockerfile
-# pins so this stage names the image exactly as spur-dist-build.sh did.  Falling
+# Now that the tree is checked out, derive the version tag from the
+# docker/docker-bake.hcl pins so this stage names the image exactly as spur-dist-build.sh did.  Falling
 # back to :latest matches run-build-distribute.sh when the helper cannot resolve.
 _aic_tag="$(bash "${WORKDIR}/docker/scripts/aic-image-tag.sh" || true)"
 AIC_IMAGE="${AIC_IMAGE_NAME}:${_aic_tag:-latest}"
@@ -179,7 +179,7 @@ export AIC_METRICS_DIR="${METRICS_DIR}"
 
 cleanup() {
     echo "=== Stopping all containers ==="
-    IMAGE_NAME="${AIC_IMAGE}" \
+    VLLM_IMAGE_REF="${AIC_IMAGE}" \
         docker compose -f "${EMULATOR_COMPOSE}" ${EMULATOR_PROFILE} down --remove-orphans 2>/dev/null || true
     stop_monitoring
     rm -rf "${METRICS_DIR}"
@@ -206,7 +206,7 @@ start_monitoring
 # 3. Start vLLM emulator via its compose file
 # ---------------------------------------------------------------------------
 echo "=== Starting vLLM emulator (8000) ==="
-HF_HOME="${HF_HOME}" IMAGE_NAME="${AIC_IMAGE}" \
+HF_HOME="${HF_HOME}" VLLM_IMAGE_REF="${AIC_IMAGE}" \
     VLLM_CPU_MODEL="${VLLM_CPU_MODEL:-facebook/opt-125m}" \
     docker compose -f "${EMULATOR_COMPOSE}" ${EMULATOR_PROFILE} up -d cpu-smoke-emulator
 
