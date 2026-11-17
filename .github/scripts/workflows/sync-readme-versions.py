@@ -166,8 +166,8 @@ def render_readme(readme_text: str) -> tuple[str, list[str]]:
     updates = (
         (
             "ROCm badge",
-            r"^\[!\[ROCm\]\(https://img\.shields\.io/badge/ROCm-[^\s/)]+-green\.svg\)\]\(https://rocm\.docs\.amd\.com\)$",
-            f"[![ROCm](https://img.shields.io/badge/ROCm-{shield_value(rocm)}-green.svg)](https://rocm.docs.amd.com)",
+            r"^\[!\[ROCm\]\(https://img\.shields\.io/badge/ROCm-[^\s/)]+-green\.svg\)\]\(https://rocm\.docs\.amd\.com(?:/en/docs-[^\s)]+/)?\)$",
+            f"[![ROCm](https://img.shields.io/badge/ROCm-{shield_value(rocm)}-green.svg)](https://rocm.docs.amd.com/en/docs-{rocm}/)",
         ),
         (
             "PyTorch badge",
@@ -181,23 +181,23 @@ def render_readme(readme_text: str) -> tuple[str, list[str]]:
         ),
         (
             "vLLM badge",
-            r"^\[!\[vLLM\]\(https://img\.shields\.io/badge/vLLM-[^\s/)]+-blue\.svg\)\]\(https://github\.com/vllm-project/vllm\)$",
-            f"[![vLLM](https://img.shields.io/badge/vLLM-{shield_value(vllm)}-blue.svg)](https://github.com/vllm-project/vllm)",
+            r"^\[!\[vLLM\]\(https://img\.shields\.io/badge/vLLM-[^\s/)]+-blue\.svg\)\]\(https://github\.com/vllm-project/vllm(?:/tree/[^\s)]+)?\)$",
+            f"[![vLLM](https://img.shields.io/badge/vLLM-{shield_value(vllm)}-blue.svg)](https://github.com/vllm-project/vllm/tree/{vllm})",
         ),
         (
             "LMCache badge",
-            r"^\[!\[LMCache\]\(https://img\.shields\.io/badge/LMCache-[^\s/)]+-blue\.svg\)\]\(https://github\.com/LMCache/LMCache\)$",
-            f"[![LMCache](https://img.shields.io/badge/LMCache-{shield_value(lmcache)}-blue.svg)](https://github.com/LMCache/LMCache)",
+            r"^\[!\[LMCache\]\(https://img\.shields\.io/badge/LMCache-[^\s/)]+-blue\.svg\)\]\(https://github\.com/LMCache/LMCache(?:/tree/[^\s)]+)?\)$",
+            f"[![LMCache](https://img.shields.io/badge/LMCache-{shield_value(lmcache)}-blue.svg)](https://github.com/LMCache/LMCache/tree/{lmcache})",
         ),
         (
             "NIXL badge",
-            r"^\[!\[NIXL\]\(https://img\.shields\.io/badge/NIXL-[^\s/)]+-blue\.svg\)\]\(https://github\.com/ai-dynamo/nixl\)$",
-            f"[![NIXL](https://img.shields.io/badge/NIXL-{shield_value(nixl)}-blue.svg)](https://github.com/ai-dynamo/nixl)",
+            r"^\[!\[NIXL\]\(https://img\.shields\.io/badge/NIXL-[^\s/)]+-blue\.svg\)\]\(https://github\.com/ai-dynamo/nixl(?:/tree/[^\s)]+)?\)$",
+            f"[![NIXL](https://img.shields.io/badge/NIXL-{shield_value(nixl)}-blue.svg)](https://github.com/ai-dynamo/nixl/tree/{nixl})",
         ),
         (
             "hsa-snoop badge",
-            r"^\[!\[hsa-snoop\]\(https://img\.shields\.io/badge/hsa--snoop-[^\s/)]+-blue\.svg\)\]\(https://github\.com/sbates130272/hsa-snoop\)$",
-            f"[![hsa-snoop](https://img.shields.io/badge/hsa--snoop-{shield_value(hsa)}-blue.svg)](https://github.com/sbates130272/hsa-snoop)",
+            r"^\[!\[hsa-snoop\]\(https://img\.shields\.io/badge/hsa--snoop-[^\s/)]+-blue\.svg\)\]\(https://github\.com/sbates130272/hsa-snoop(?:/tree/[^\s)]+)?\)$",
+            f"[![hsa-snoop](https://img.shields.io/badge/hsa--snoop-{shield_value(hsa)}-blue.svg)](https://github.com/sbates130272/hsa-snoop/tree/{hsa})",
         ),
         (
             "base image row",
