@@ -171,6 +171,14 @@ class ReadmeSyncTest(unittest.TestCase):
         rendered = self.readme.read_text(encoding="utf-8")
         self.assertIn(f"ROCm-{new_values['ROCM_VERSION']}-green.svg", rendered)
         self.assertIn(
+            f"(https://rocm.docs.amd.com/en/docs-{new_values['ROCM_VERSION']}/)",
+            rendered,
+        )
+        self.assertIn(
+            f"(https://github.com/vllm-project/vllm/tree/{new_values['VLLM_REF']})",
+            rendered,
+        )
+        self.assertIn(
             f"[![PyTorch](https://img.shields.io/badge/PyTorch-98.76%20%289876543%29-ee4c2c.svg)]"
             f"(https://github.com/ROCm/pytorch/tree/{new_values['PYTORCH_REF']})",
             rendered,
@@ -236,7 +244,7 @@ class ReadmeSyncTest(unittest.TestCase):
                 "VLLM_REF",
                 "vLLM",
                 "blue",
-                "https://github.com/vllm-project/vllm",
+                "https://github.com/vllm-project/vllm/tree/",
                 "release/rocm-test_branch-fixture",
                 "release%2Frocm--test__branch--fixture",
             ),
