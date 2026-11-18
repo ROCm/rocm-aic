@@ -4081,7 +4081,7 @@ _bkd_cfg=""; [[ -f "${AIC_DAY_DIR}/docker/buildkitd.toml" ]] && _bkd_cfg="--conf
 # actually changed.  The old test was \`[[ -n "\${_bkd_cfg}" ]]\`, which is true
 # whenever docker/buildkitd.toml exists -- i.e. always -- so every bake tore the
 # builder down and built a new one.  That discards all of BuildKit's
-# \`--mount=type=cache\` state: ccache, the uv cache and the apt cache, which are
+# \`--mount=type=cache\` state: ccache, the pip cache and the apt cache, which are
 # exactly what makes a torch or AITER recompile cheap.  The config's hash is
 # recorded beside the builder so the comparison is against what it was really
 # created with, not against whether a file happens to exist.
@@ -4096,7 +4096,7 @@ if docker buildx inspect ${AIC_BUILDX_BUILDER} >/dev/null 2>&1; then
         echo "[bake] buildkitd config changed -- recreating builder (cache mounts will be cold)"
         docker buildx rm ${AIC_BUILDX_BUILDER} >/dev/null 2>&1 || true
     else
-        echo "[bake] reusing builder ${AIC_BUILDX_BUILDER} (ccache/uv/apt cache mounts preserved)"
+        echo "[bake] reusing builder ${AIC_BUILDX_BUILDER} (ccache/pip/apt cache mounts preserved)"
     fi
 fi
 if ! docker buildx inspect ${AIC_BUILDX_BUILDER} >/dev/null 2>&1; then

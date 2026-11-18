@@ -343,6 +343,19 @@ class DockerfileArgOwnershipTest(unittest.TestCase):
         self.assertEqual(problems, [])
 
     @unittest.skipUnless(_have_buildx(), "docker buildx is not available")
+    def test_bake_passes_every_arg_a_dockerfile_guards(self) -> None:
+        targets = _bake_targets(
+            "all", "wheels", "emulate-wheels", "emulate", "agentx", "lmcache-wheels"
+        )
+        problems = []
+        for name, target in sorted(targets.items()):
+            text = (REPO_ROOT / target["dockerfile"]).read_text(encoding="utf-8")
+            guarded = set(re.findall(r"\$\{([A-Z][A-Z0-9_]*):\?unset: build through", text))
+            for arg in sorted(guarded - set(target.get("args", {}))):
+                problems.append(f"{target['dockerfile']} guards {arg}; bake target {name} does not pass it")
+        self.assertEqual(problems, [])
+
+    @unittest.skipUnless(_have_buildx(), "docker buildx is not available")
     def test_kept_defaults_equal_bake(self) -> None:
         args = _bake_targets("kvbench")["kvbench"]["args"]
         defaults = dict(_args(REPO_ROOT / KEEPS_DEFAULTS))

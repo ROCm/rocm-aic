@@ -129,7 +129,7 @@ WORKDIR /
 # Apply the ROCm event-IPC edit to the LMCache source before the wheel is
 # built: event IPC is replaced by a producer-side sync (hipIpcOpenEventHandle
 # is broken on gfx1201 — see tests/ipc/).  docker/vllm/Dockerfile runs the same
-# script on the PyPI LMCache client of its `vllm` stage.  The script exits
+# script on the PyPI LMCache client of its `emulate` stage.  The script exits
 # non-zero if an anchor is missing.
 COPY docker/lmcache/rocm_event_ipc_patch.py /tmp/rocm_event_ipc_patch.py
 RUN AIC_LMCACHE_SRC=/app/LMCache python3 /tmp/rocm_event_ipc_patch.py && \
@@ -167,46 +167,70 @@ WORKDIR /
 # =============================================================================
 FROM base AS build
 
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
+
 ARG ROCM_ARCH
 ARG BUILD_JOBS
 ARG LMCACHE_GIT_URL
 ARG LMCACHE_REF
+ARG CUPY_VERSION
 # For the image label; NIXL itself comes from aic-base.
 ARG NIXL_REF
 RUN : "${LMCACHE_GIT_URL:?unset: build through docker/docker-bake.hcl}" \
       "${LMCACHE_REF:?unset: build through docker/docker-bake.hcl}" \
+      "${CUPY_VERSION:?unset: build through docker/docker-bake.hcl}" \
       "${NIXL_REF:?unset: build through docker/docker-bake.hcl}"
 
-RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
-    --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
-    apt-get update && \
-    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-      python3-pip
-
-# CuPy (ROCm): LMCache's MP server imports cupy.  No grpcio-tools: the wheel
-# ships its generated gRPC stubs, and an unpinned one wants a newer grpcio and
-# protobuf than LMCache allows.
+# LMCache (the wheel from build_lmcache_wheel) and CuPy for ROCm, which its MP
+# server imports, in one RUN so that nothing removed below reaches a layer.
+# pip3 comes from aic-base.  No grpcio-tools: the wheel ships its generated
+# gRPC stubs, and an unpinned one wants a newer grpcio and protobuf than
+# LMCache allows.
+#
+# - The constraint file pins what aic-base installed (torch, numpy,
+#   setuptools, ...), so a requirement that would replace one of them stops
+#   the build instead of leaving a second copy in this layer.
+# - aic-base's packaging is Debian-owned (no RECORD), so pip cannot upgrade it
+#   in place and setuptools_scm needs a newer one; a pip-owned copy goes in
+#   first, as docker/vllm/Dockerfile does.
+# - requirements/cli.txt (openai, matplotlib) is not installed: `lmcache
+#   server` no longer imports the bench subcommands' openai, which the gate at
+#   the end re-checks on every LMCACHE_REF bump.  `lmcache bench` and the
+#   cache-simulator plots do not work in this image.
+# - The uninstalled packages are wheel requirements that neither the MP server
+#   nor the coordinator imports.
+# - DEVICE_TYPE=cpu keeps the import gates off GPU detection.
+# - No bytecode is shipped (as before, when a later RUN deleted it), so a
+#   container whose user cannot write to dist-packages compiles on every
+#   start instead of only the first.  The closing find removes what the gates
+#   wrote anyway: a child process that drops the environment, numba's cache
+#   directories.
+# - llvm-strip is the ROCm toolchain's, from aic-base.  --strip-unneeded keeps
+#   .dynsym and cupy's .hip_fatbin device code.
 RUN --mount=type=cache,target=/root/.cache/pip \
-    pip3 install --no-cache-dir \
-      cupy-rocm-7-0
-
-# Install the pre-compiled LMCache wheel from the build_lmcache_wheel stage.
-RUN --mount=type=cache,target=/root/.cache/uv \
     --mount=type=bind,from=build_lmcache_wheel,source=/wheels/,target=/wheels/ \
-    uv pip install --system --no-cache /wheels/lmcache-*.whl
-
-# The `lmcache` CLI imports every subcommand eagerly, so `lmcache server` dies
-# without the bench subcommands' openai.  Upstream lists those deps only in
-# requirements/cli.txt (the lmcache-cli package), not in this wheel's metadata.
-RUN --mount=type=cache,target=/root/.cache/uv \
-    --mount=type=bind,from=build_lmcache_wheel,source=/app/LMCache/,target=/app/LMCache/ \
-    uv pip install --system -r /app/LMCache/requirements/cli.txt "matplotlib>=3.8,<4"
+    export PYTHONDONTWRITEBYTECODE=1 DEVICE_TYPE=cpu && \
+    DP="$(echo /usr/local/lib/python3.*/dist-packages)" && \
+    pip3 install --break-system-packages --no-compile --ignore-installed packaging && \
+    pip3 list --path "${DP}" --format=freeze > /tmp/base-pins.txt && \
+    pip3 install --break-system-packages --no-compile \
+      -c /tmp/base-pins.txt \
+      /wheels/lmcache-*.whl \
+      "cupy-rocm-7-0==${CUPY_VERSION}" && \
+    rm /tmp/base-pins.txt && \
+    pip3 uninstall -y --break-system-packages \
+      transformers tokenizers hf-xet regex safetensors redis \
+      pytest pluggy iniconfig && \
+    find "${DP}/cupy" "${DP}/cupy_backends" "${DP}/cupyx" "${DP}/llvmlite" \
+         "${DP}/lmcache" "${DP}/nvtx" "${DP}/numba" "${DP}/cryptography" \
+         -type f -name '*.so*' -exec llvm-strip --strip-unneeded {} + && \
+    llvm-readelf -S "${DP}"/cupy/cuda/cub.*.so | grep -c '\.hip_fatbin' > /dev/null && \
+    lmcache server --help > /dev/null && \
+    python3 -c 'import lmcache.cuda_ops, lmcache.lmcache_fs, lmcache.lmcache_native, lmcache.lmcache_redis; import lmcache.v1.mp_coordinator.app' && \
+    find "${DP}" -name __pycache__ -type d -exec rm -rf {} +
 
 # ----- 6. hipFile — provided by the ROCm base image (GA since ROCm 7.14) ------
 # No source build needed.
-RUN { find /usr/lib/python3 /usr/local/lib/python3.* -name '__pycache__' -type d \
-         -exec rm -rf {} + || \
-      echo "WARNING: __pycache__ cleanup failed; see find's error above" >&2; }
 
 # ----- 8. Runtime environment ------------------------------------------------
 # NIXL_PLUGIN_DIR, PYTHONPATH (incl. NIXL), and LD_LIBRARY_PATH are set in
@@ -235,11 +259,11 @@ LABEL org.opencontainers.image.title="aic-lmcache" \
       ai.amd.aic.nixl="${NIXL_REF}" \
       ai.amd.aic.hipfile="rocm-${ROCM_VERSION}"
 
-ENTRYPOINT ["python3", "-m", "lmcache.server"]
+ENTRYPOINT ["lmcache", "server"]
 
 # ----- 9. Wheel export stage -------------------------------------------------
-# Copy from build_lmcache_wheel (not build): the build stage deletes /wheels
-# after installing it to keep the runtime image lean.
+# Copy from build_lmcache_wheel (not build): the build stage only bind-mounts
+# /wheels for the install, to keep the runtime image lean.
 FROM scratch AS wheels
 COPY --from=build_lmcache_wheel /wheels /
 
