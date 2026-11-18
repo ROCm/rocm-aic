@@ -571,8 +571,8 @@ dispatch metrics and AIS P2P storage counters.
 
 | Mode | `AIC_HSA_SNOOP_PID_MODE` | When to use |
 | --- | --- | --- |
-| Container PID | `container:aic-lmcache` | **SPUR default** — vLLM uses `pid:service:lmcache` so lmcache's namespace contains both processes |
-| Host PID | `host` | Non-SPUR bare nodes where `--pid=host` is permitted |
+| Host PID | `host` | **Default.** The only mode that exports kernel-launch, duration and SDMA metrics: the amdgpu kprobe reports host PIDs and hsa-snoop reads each ring through `/proc/<pid>` |
+| Container PID | `container:aic-lmcache` | Where `--pid=host` is refused (the SPUR make default). Queues are listed (`hsa_queue_info`, `hsa_active_queues`) but no dispatch is ever counted |
 
 > **SPUR authz note:** the SPUR cluster's Docker authz plugin blocks `--pid=host`
 > and `privileged: true`, so hsa-snoop does not run on SPUR at all; the SPUR job

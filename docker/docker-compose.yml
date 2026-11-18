@@ -795,15 +795,17 @@ services:
       - grafana-data:/var/lib/grafana
 
   # hsa-snoop: HSA AQL queue/dispatch snooper + Prometheus exporter on :9488.
-  # Runs privileged in the lmcache PID namespace so it sees both vLLM and LMCache
-  # GPU processes without needing host PID. Requires tracefs on the host.
+  # Runs privileged in the host PID namespace: the amdgpu kprobe reports host
+  # PIDs, and hsa-snoop reads each ring through /proc/<pid>, so in any other
+  # namespace it lists the queues but never sees a dispatch. Requires tracefs
+  # on the host.
   # ---------------------------------------------------------------------------
   hsa-snoop:
     profiles: [monitoring, exporters, exporters-safe]
     image: ${HSA_SNOOP_IMAGE:-aic-hsa-snoop:latest}
     container_name: aic-hsa-snoop
     networks: [aic-network]
-    pid: "${AIC_HSA_SNOOP_PID_MODE-service:lmcache}"
+    pid: "${AIC_HSA_SNOOP_PID_MODE-host}"
     privileged: true
     restart: unless-stopped
     environment:

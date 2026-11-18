@@ -236,7 +236,7 @@ AIC_NODE_EXPORTER_IMAGE: Node exporter image
 AIC_AMDGPU_EXPORTER_IMAGE: AMD GPU metrics exporter image
 AIC_NVME_EXPORTER_IMAGE: NVMe exporter image. A local bake tags it `:local`; the Slurm build stores it as `:latest`
 AIC_RDMA_EXPORTER_IMAGE: RDMA exporter image; tagged like the NVMe one
-AIC_HSA_SNOOP_PID_MODE: PID namespace of the hsa-snoop container. Empty means private. The monitoring library defaults it to `host`; SPUR refuses that, so make sets `container:aic-lmcache` there
+AIC_HSA_SNOOP_PID_MODE: PID namespace of the hsa-snoop container. Empty means private. Only `host` yields kernel-launch and SDMA metrics, because the kprobe reports host PIDs; SPUR refuses that, so make sets `container:aic-lmcache` there, which exports queue counts only
 NODEX_PID_MODE: PID namespace of the node exporter; `host` gives per-process CPU statistics where the site permits it
 AIC_CPU_SMOKE: `1` starts the CPU-only exporter subset (the monitoring smoke test on a node with no GPU)
 AIC_MON_SKIP_SERVICES: Space-separated compose services the monitoring library leaves out
