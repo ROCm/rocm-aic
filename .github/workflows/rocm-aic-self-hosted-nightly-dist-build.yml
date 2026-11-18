@@ -9,7 +9,7 @@ on:
 jobs:
   dist-build:
     runs-on: [self-hosted, rocm-aic-cicd]
-    timeout-minutes: 120
+    timeout-minutes: 180
     permissions:
       statuses: write
     env:
