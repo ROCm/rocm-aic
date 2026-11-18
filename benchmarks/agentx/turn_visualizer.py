@@ -1,12 +1,17 @@
 #!/usr/bin/env python3
+# Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+
 """AgentX turn visualizer.
 
-Reads an aiperf JSONL results file and renders an interactive HTML timeline
+Reads the per-request export of an AgentX run (`profile_export.jsonl` in the
+run directory, aiperf 0.13.0) and renders an interactive HTML timeline
 showing per-turn latencies, agent depth (parent/child subagent fan-out), and
 per-conversation flow.
 
 Usage:
-    python3 turn_visualizer.py <results.jsonl> [--output turns.html] [--max-convs 50]
+    python3 turn_visualizer.py <run dir>/profile_export.jsonl [--output turns.html] [--max-convs 50]
 """
 
 from __future__ import annotations
@@ -19,8 +24,14 @@ from pathlib import Path
 
 
 def _load_records(jsonl_path: Path) -> list[dict]:
+    """Read aiperf's per-request export (profile_export.jsonl).
+
+    aiperf 0.13.0 writes one object per request: `metadata` identifies it
+    (conversation, session, turn index, agent depth, phase, timestamps) and
+    `metrics` holds `{"value": ..., "unit": ...}` measurements.
+    """
     records: list[dict] = []
-    with open(jsonl_path) as f:
+    with open(jsonl_path, encoding="utf-8") as f:
         for lineno, line in enumerate(f, 1):
             line = line.strip()
             if not line:
@@ -30,52 +41,55 @@ def _load_records(jsonl_path: Path) -> list[dict]:
             except json.JSONDecodeError as exc:
                 print(f"WARNING: skipping malformed line {lineno}: {exc}", file=sys.stderr)
                 continue
-            if not isinstance(obj, dict):
+            if not isinstance(obj, dict) or not isinstance(obj.get("metadata"), dict):
                 continue
-            # Accept all phases so warmup turns are visible too, but mark them
-            meta = obj.get("metadata", {})
-            phase = meta.get("benchmark_phase", "unknown")
-            metrics = obj.get("metrics", obj)  # fallback: top-level fields
-            error = obj.get("error")
+            meta = obj["metadata"]
+            metrics = obj.get("metrics") or {}
+            # Warmup turns are kept, and drawn in their own colour.
             records.append({
-                "phase": phase,
-                "conversation_id": metrics.get("conversation_id") or meta.get("conversation_id", "?"),
-                "x_correlation_id": metrics.get("x_correlation_id") or meta.get("x_correlation_id", "?"),
-                "turn_index": int(metrics.get("turn_index", 0)),
-                "num_turns": int(metrics.get("num_turns", 1)),
-                "agent_depth": int(metrics.get("agent_depth", 0)),
-                "parent_correlation_id": metrics.get("parent_correlation_id"),
-                "ttft_ms": _ns_to_ms(_val(metrics.get("time_to_first_token") or metrics.get("ttft_ns"))),
-                "itl_ms": _ns_to_ms(_val(metrics.get("inter_token_latency") or metrics.get("itl_ns"))),
-                "request_latency_ms": _ms_val(metrics.get("request_latency") or metrics.get("request_latency_ns")),
-                "issued_at_ns": _val(metrics.get("issued_at_ns")),
+                "phase": meta.get("benchmark_phase", "unknown"),
+                "conversation_id": meta.get("conversation_id") or "?",
+                "x_correlation_id": meta.get("x_correlation_id") or "?",
+                "turn_index": int(meta.get("turn_index") or 0),
+                "agent_depth": int(meta.get("agent_depth") or 0),
+                "parent_correlation_id": meta.get("parent_correlation_id"),
+                "source_kind": meta.get("source_kind"),
+                "ttft_ms": _ms(metrics.get("time_to_first_token")),
+                "itl_ms": _ms(metrics.get("inter_token_latency")),
+                "request_latency_ms": _ms(metrics.get("request_latency")),
+                "issued_at_ns": meta.get("credit_issued_ns") or meta.get("request_start_ns"),
                 "output_tokens": _val(metrics.get("output_sequence_length")),
                 "input_tokens": _val(metrics.get("input_sequence_length")),
-                "error": error,
+                "error": obj.get("error"),
             })
+    # The export has no turn count: the last index seen in a session stands in.
+    last_turn: dict[str, int] = defaultdict(int)
+    for r in records:
+        last_turn[r["x_correlation_id"]] = max(last_turn[r["x_correlation_id"]], r["turn_index"])
+    for r in records:
+        r["last_turn"] = last_turn[r["x_correlation_id"]]
     return records
 
 
 def _val(v):
-    """Unwrap {"value": x, "unit": y} dicts or return raw value."""
+    """Unwrap a {"value": x, "unit": y} metric, or return a bare value."""
     if isinstance(v, dict):
         return v.get("value")
     return v
 
-def _ms_val(v):
-    """Return milliseconds from a metric that may already be in ms or be ns."""
-    raw = _val(v)
-    if raw is None:
-        return None
-    # if unit says ms, return directly; otherwise assume ns
-    if isinstance(v, dict) and v.get("unit") == "ms":
-        return round(float(raw), 2)
-    return round(float(raw) / 1_000_000, 2)
 
-def _ns_to_ms(v: int | float | None) -> float | None:
-    if v is None:
+_TO_MS = {"ns": 1e-6, "us": 1e-3, "ms": 1.0, "s": 1e3, "sec": 1e3}
+
+
+def _ms(v) -> float | None:
+    """Milliseconds from a metric, by its unit; a bare number is taken as ms."""
+    raw = _val(v)
+    if not isinstance(raw, (int, float)):
         return None
-    return round(float(v) / 1_000_000, 2)
+    unit = v.get("unit", "ms") if isinstance(v, dict) else "ms"
+    if unit not in _TO_MS:
+        return None
+    return round(float(raw) * _TO_MS[unit], 2)
 
 
 def _build_html(records: list[dict], max_convs: int) -> str:
@@ -132,11 +146,12 @@ def _build_html(records: list[dict], max_convs: int) -> str:
                 hover = (
                     f"conv={conv_id[:16]}<br>"
                     f"corr={corr_id[:16]}<br>"
-                    f"turn={turn_idx}/{t['num_turns']-1}<br>"
+                    f"turn={turn_idx} (last seen {t['last_turn']})<br>"
                     f"depth={depth}<br>"
                     f"phase={phase}<br>"
                     f"latency={latency} ms<br>"
                     f"ttft={ttft} ms<br>"
+                    f"itl={t['itl_ms']} ms<br>"
                     f"output_tokens={out_tok}<br>"
                     f"input_tokens={in_tok}"
                 )
@@ -255,7 +270,7 @@ def _build_html(records: list[dict], max_convs: int) -> str:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Visualize AgentX aiperf turn data as HTML")
-    parser.add_argument("jsonl", type=Path, help="aiperf JSONL results file")
+    parser.add_argument("jsonl", type=Path, help="profile_export.jsonl of an AgentX run")
     parser.add_argument("--output", "-o", type=Path, default=None,
                         help="Output HTML file (default: <jsonl>.html)")
     parser.add_argument("--max-convs", type=int, default=60,
@@ -274,7 +289,7 @@ def main() -> None:
 
     out = args.output or args.jsonl.with_suffix(".html")
     html = _build_html(records, args.max_convs)
-    out.write_text(html)
+    out.write_text(html, encoding="utf-8")
     print(f"Written: {out}", file=sys.stderr)
 
 

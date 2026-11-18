@@ -3,57 +3,70 @@
 #
 # SPDX-License-Identifier: MIT
 #
-# Overnight AgentX concurrency sweep.
-#
-# Runs run_agentx.sh at each concurrency level in AGENTX_CONCURRENCIES,
-# collecting results in separate timestamped subdirectories.  The inference
-# server and monitoring stack must already be running.
+# AgentX concurrency sweep: one run_agentx.sh run per concurrency level in
+# AGENTX_CONCURRENCIES, each in its own subdirectory of one sweep directory
+# (<LOG>/agentx/sweep_<timestamp>/c<N>/).  The stack must already be running.
 #
 # Usage:
 #   nohup ./benchmarks/agentx/overnight_sweep.sh > /tmp/agentx-sweep.log 2>&1 &
 #
 # Or via make:
-#   make agentx-sweep VLLM_MODEL=Qwen/Qwen2.5-7B-Instruct
+#   make agentx-sweep
 #
-# Environment: inherits everything run_agentx.sh reads (BENCH_ENDPOINT,
-# AGENTX_MODEL, AGENTX_DURATION, AGENTX_MAX_CONTEXT, AGENTX_OTEL_URL,
-# AGENTX_IMAGE, HF_TOKEN, HF_HOME, LOG).
+# Options are run_agentx.sh's and are passed to every run (--dry-run prints the
+# commands).  The sweep sets --concurrency and --output-dir itself.
+#
+# Environment:
+#   AGENTX_CONCURRENCIES  Space-separated concurrency levels (default: 1 2 4)
+#   LOG                   Log root (default: <repo>/logs)
+#   everything run_agentx.sh reads: the endpoint, model, duration, context
+#   limit, dataset or corpus, seed and image apply to every level.
 
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 
-MODEL="${AGENTX_MODEL:-Qwen/Qwen2.5-7B-Instruct}"
-DURATION="${AGENTX_DURATION:-3600}"
-MAX_CONTEXT="${AGENTX_MAX_CONTEXT:-65536}"
+CONCURRENCIES="${AGENTX_CONCURRENCIES:-1 2 4}"
+SWEEP_DIR="${LOG:-${REPO_ROOT}/logs}/agentx/sweep_$(date +%Y%m%dT%H%M%S)"
+# Lets the server's KV cache settle between levels.
+PAUSE_S=30
 
-# Space-separated concurrency levels to sweep
-AGENTX_CONCURRENCIES="${AGENTX_CONCURRENCIES:-1 2 4}"
+DRY_RUN="false"
+for _arg in "$@"; do
+  [[ "${_arg}" != "--dry-run" ]] || DRY_RUN="true"
+done
 
-echo "=== AgentX Overnight Sweep — $(date) ==="
-echo "Model:         ${MODEL}"
-echo "Duration:      ${DURATION}s"
-echo "Max context:   ${MAX_CONTEXT} tokens"
-echo "Concurrencies: ${AGENTX_CONCURRENCIES}"
+echo "=== AgentX sweep — $(date) ==="
+echo "Concurrencies: ${CONCURRENCIES}"
+echo "Sweep dir:     ${SWEEP_DIR}"
 echo ""
 
-# shellcheck disable=SC2086  # word-splitting of AGENTX_CONCURRENCIES is intentional
-for C in ${AGENTX_CONCURRENCIES}; do
+_first="true"
+_failed=()
+# shellcheck disable=SC2086  # a space-separated list, split on purpose
+for C in ${CONCURRENCIES}; do
+  if [[ "${_first}" != "true" && "${DRY_RUN}" != "true" ]]; then
+    sleep "${PAUSE_S}"
+  fi
+  _first="false"
   echo "────────────────────────────────────────"
   echo "concurrency=${C}  $(date)"
   echo ""
 
-  AGENTX_CONCURRENCY="${C}" \
-  AGENTX_MODEL="${MODEL}" \
-  AGENTX_DURATION="${DURATION}" \
-  AGENTX_MAX_CONTEXT="${MAX_CONTEXT}" \
-    bash "${SCRIPT_DIR}/run_agentx.sh"
-
+  # A failed level does not end the sweep: the remaining ones still run.
+  if bash "${SCRIPT_DIR}/run_agentx.sh" --concurrency "${C}" --output-dir "${SWEEP_DIR}/c${C}" "$@"; then
+    echo "Completed concurrency=${C} at $(date)"
+  else
+    echo "FAILED concurrency=${C} at $(date)" >&2
+    _failed+=("${C}")
+  fi
   echo ""
-  echo "Completed concurrency=${C} at $(date)"
-  # Brief pause to let the inference server KV cache settle between runs
-  sleep 30
 done
 
-echo ""
 echo "=== Sweep complete — $(date) ==="
+if (( ${#_failed[@]} )); then
+  echo "Failed concurrency levels: ${_failed[*]}" >&2
+  exit 1
+fi
+echo "Results: ${SWEEP_DIR}"
