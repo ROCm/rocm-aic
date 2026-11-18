@@ -137,7 +137,7 @@ aic_fetch() {
         echo "usage: aic_fetch <url> [<json-body>]" >&2
         return 2
     fi
-    local -a run=(docker run --rm --network "${AIC_NETWORK:-aic}" --entrypoint curl)
+    local -a run=(docker run --rm --user "$(id -u):$(id -g)" --network "${AIC_NETWORK:-aic}" --entrypoint curl)
     local -a req=(-sS --fail-with-body --max-time "${AIC_FETCH_TIMEOUT:-60}")
     local image="${AIC_FETCH_IMAGE:-curlimages/curl:8.23.0}"
     if (( $# == 1 )); then

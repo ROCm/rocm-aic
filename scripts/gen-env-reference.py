@@ -56,6 +56,9 @@ SHELL_FILES = (
     ".slurm/image-dist-lib.sh",
     ".github/scripts/run-vllm-emul-perf.sh",
     ".github/scripts/runners/spur-ci-common.sh",
+    "benchmarks/agentx/run_agentx.sh",
+    "benchmarks/agentx/scaled_corpus.sh",
+    "benchmarks/agentx/overnight_sweep.sh",
 )
 PYTHON_FILES = (
     "benchmarks/vllm_reset_test.py",
