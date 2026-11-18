@@ -132,9 +132,10 @@ HF_TOKEN_FILE ?=
 # Make gives them none and does not re-export them: a value set on the command
 # line, in the environment or in .env.<cluster> reaches compose and the Slurm
 # scripts through the environment, and an unset one leaves compose's default in
-# force.  The few with a value are the ones a recipe expands itself.
+# force.  The few with a value are the ones a recipe expands itself, and
+# AIC_CONTAINER_USER, exported because compose's own default is root.
 
-AIC_CONTAINER_USER ?= $(shell id -u):$(shell id -g)
+export AIC_CONTAINER_USER ?= $(shell id -u):$(shell id -g)
 
 # ---- LMCache server --------------------------------------------------------
 LMCACHE_PORT            ?= 6555
