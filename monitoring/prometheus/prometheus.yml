@@ -60,7 +60,7 @@ scrape_configs:
       - targets: ["aic-lmcache:9091"]
 
   # LMCache coordinator exporter — polls the coordinator REST API (/instances,
-  # /directory/stats, /quota) and emits Prometheus text format on :9301.
+  # /directory/stats, /status, /quota) and emits Prometheus text format on :9301.
   # Exposes: lmcache_coordinator_up, _instances_registered, _directory_keys_total,
   # _directory_placements_total, _instance_l1_keys, _instance_seq_gap,
   # _quota_usage_bytes, _quota_limit_bytes, _scrape_duration_seconds.

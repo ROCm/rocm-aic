@@ -77,10 +77,10 @@ Two images can serve in emulation mode:
 
 ```bash
 # Emulation-only image: no vLLM GPU kernels; builds aic-base first
-make dist-build-emulate        # -> rocm-aic:7.14-emulate
+make dist-build-emulate        # -> rocm-aic:10.1-emulate
 
 # The normal production image also works (it ships the plugin)
-make dist-build                # -> rocm-aic:7.14-latest
+make dist-build                # -> rocm-aic:10.1-latest
 ```
 
 `make dist-build-emulate` builds the Dockerfile's `emulate` stage with
@@ -96,10 +96,10 @@ make dist-build                # -> rocm-aic:7.14-latest
 
 > [!WARNING]
 > An `empty` image has no `vllm._C` and cannot run a real forward pass. Never
-> deploy `:7.14-emulate` to a GPU node.
+> deploy `:10.1-emulate` to a GPU node.
 
 The image is tagged separately (`AIC_EMULATE_IMAGE`, default
-`rocm-aic:7.14-emulate`) and gets its own tarball, so it can never overwrite the
+`rocm-aic:10.1-emulate`) and gets its own tarball, so it can never overwrite the
 GPU image. `ROCM_ARCH` still has to be a valid gfx (`AIC_EMULATE_ARCH`, default
 `gfx942`) because aic-base builds PyTorch for it — nothing in the image runs on
 a GPU.
@@ -110,7 +110,7 @@ On a Slurm CPU node, with assertions:
 
 ```bash
 make emulate-test                        # emulation image
-AIC_EMULATE_IMAGE=rocm-aic:7.14-latest \
+AIC_EMULATE_IMAGE=rocm-aic:10.1-latest \
   AIC_EMULATE_ARCH=gfx942 make emulate-test   # production image
 ```
 
@@ -127,7 +127,7 @@ failure mode is a silent fall-through to real execution:
 By hand, on any host with docker:
 
 ```bash
-VLLM_IMAGE_REF=rocm-aic:7.14-emulate \
+VLLM_IMAGE_REF=rocm-aic:10.1-emulate \
   docker compose -f docker/docker-compose.yml --profile emulate up vllm-emulator
 ```
 
@@ -360,11 +360,11 @@ docker run --device /dev/kfd --device /dev/dri \
   -e VLLM_EMULATOR_TRACE_STEP_CYCLE=1 \
   -e VLLM_EMULATOR_STEP_TRACE_OUTPUT=/trace/step-trace.jsonl \
   -v /some/host/dir:/trace \
-  rocm-aic:7.14-latest --model <model> [normal serve flags]
+  rocm-aic:10.1-latest --model <model> [normal serve flags]
 
 # ... drive real traffic through it (`docker port <container> 8000` shows the
 # host port Docker picked), then:
-docker run --rm -v /some/host/dir:/trace --entrypoint python3 rocm-aic:7.14-latest \
+docker run --rm -v /some/host/dir:/trace --entrypoint python3 rocm-aic:10.1-latest \
   -m vllm_emulator.profile.build_serving_profile_filtered \
   /trace/step-trace.jsonl /trace/pack.json
 ```
@@ -393,6 +393,7 @@ By hand:
 KV_CFG='{"kv_connector":"LMCacheMPConnector","kv_role":"kv_both",'
 KV_CFG+='"kv_connector_extra_config":{'
 KV_CFG+='"lmcache.mp.host":"tcp://aic-lmcache-emulator","lmcache.mp.port":6555,'
+KV_CFG+='"lmcache.mp.use_vmm_api":false,'
 KV_CFG+='"lmcache.mp.mp_transfer_mode":"lmcache_driven"}}'
 VLLM_IMAGE_REF=aic-vllm:latest LMCACHE_IMAGE_REF=aic-lmcache:latest DEVICE_TYPE=cpu \
   VLLM_EMULATOR_MEMORY=$((8 * 1024**3)) \
@@ -411,7 +412,7 @@ VLLM_IMAGE_REF=aic-vllm:latest LMCACHE_IMAGE_REF=aic-lmcache:latest DEVICE_TYPE=
 > server that profile never starts.
 
 > [!IMPORTANT]
-> `emulate-mp` runs on the **production** image, not `:7.14-emulate`. The
+> `emulate-mp` runs on the **production** image, not `:10.1-emulate`. The
 > `emulate` Dockerfile stage stops before LMCache, so the connector import fails
 > there. The production image ships the emulator plugin too, and the plugin is
 > inert without `VLLM_EMULATOR_ENABLE_ORACLE=1`, so one image covers both.
@@ -528,7 +529,7 @@ added.
   harmless because no kernel ever runs.
 - Emulated TTFT far off, TPOT fine: pack under-samples prefill; widen
   `AIC_CAPTURE_SWEEP`.
-- `ModuleNotFoundError: lmcache` under `emulate-mp`: you are on `:7.14-emulate`;
+- `ModuleNotFoundError: lmcache` under `emulate-mp`: you are on `:10.1-emulate`;
   that stage stops before LMCache — use the production image (§6).
 - `emulate-mp` hangs with requests in `WAITING_FOR_REMOTE_KVS`: the connector's
   worker side is not reporting completions; check for

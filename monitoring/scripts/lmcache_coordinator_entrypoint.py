@@ -99,15 +99,23 @@ def collect_metrics() -> str:
         gauge("lmcache_coordinator_directory_placements_total",
               dir_stats.get("num_placements", 0),
               help_text="Total placements across all tracked keys")
-        inst_stats = dir_stats.get("instances", {})
-        if inst_stats:
+        l1_keys = dir_stats.get("l1_keys_by_instance") or {}
+        if l1_keys:
             lines.append("# HELP lmcache_coordinator_instance_l1_keys L1 keys reported per instance")
             lines.append("# TYPE lmcache_coordinator_instance_l1_keys gauge")
-            lines.append("# HELP lmcache_coordinator_instance_seq_gap 1 if an event-stream gap was detected")
-            lines.append("# TYPE lmcache_coordinator_instance_seq_gap gauge")
-            for iid, s in inst_stats.items():
-                lines.append(f'lmcache_coordinator_instance_l1_keys{{instance_id="{iid}"}} {s.get("num_l1_keys", 0)}')
-                lines.append(f'lmcache_coordinator_instance_seq_gap{{instance_id="{iid}"}} {1 if s.get("gap_detected") else 0}')
+            for iid, n in l1_keys.items():
+                lines.append(f'lmcache_coordinator_instance_l1_keys{{instance_id="{iid}"}} {n}')
+
+    # The per-server stream cursor lives on the ingest gate, which only /status
+    # (LMCache >= v0.5.8) exposes; without it the gap flag has no source and is
+    # left unexported rather than reported as 0.
+    status = _fetch_json("/status")
+    streams = ((status or {}).get("ingest") or {}).get("streams") or {}
+    if streams:
+        lines.append("# HELP lmcache_coordinator_instance_seq_gap 1 while the coordinator knows it is missing part of this instance's event stream")
+        lines.append("# TYPE lmcache_coordinator_instance_seq_gap gauge")
+        for iid, s in streams.items():
+            lines.append(f'lmcache_coordinator_instance_seq_gap{{instance_id="{iid}"}} {1 if s.get("gap_detected") else 0}')
 
     quota_list = _fetch_json("/quota?tier=l2")
     if quota_list is not None:

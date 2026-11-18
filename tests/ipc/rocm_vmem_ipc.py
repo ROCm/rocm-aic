@@ -1,6 +1,10 @@
 #!/usr/bin/env python3
 """ROCm VMEM IPC — zero-copy cross-container KV buffer sharing via HIP VMM.
 
+Test helper only: tests/ipc/mem_*.py use the _load_hip/_vmem_* functions.  The
+RocmVmemIPCWrapper below was an opt-in LMCache IPC wrapper
+that the images no longer install; the notes that follow describe that design.
+
 Replaces hipIpcGetMemHandle/hipIpcOpenMemHandle (ROCR socket scoped to process
 namespace, cannot cross Docker container boundaries) with:
 
@@ -34,8 +38,7 @@ Receiver (lmcache server, LMCacheDrivenTransferModule.__init__):
 Sidecar socket
 --------------
 Path: AIC_IPC_SOCK env (default /tmp/aic-ipc/fds.sock).
-Mount the parent dir into both containers:
-  docker-compose: volumes: [aic-ipc:/tmp/aic-ipc]
+Mount the parent dir into both containers (a shared volume at /tmp/aic-ipc).
 Container flags: --device=/dev/kfd --device=/dev/dri --ipc=host
 """
 from __future__ import annotations
@@ -532,25 +535,3 @@ class _FdReceiverServer:
             os.unlink(self._path)
         except FileNotFoundError:
             pass
-
-
-# ---------------------------------------------------------------------------
-# Patch entry point — called by rocm_ipc_patch.py
-# ---------------------------------------------------------------------------
-
-def patch_lmcache_server(lmcache_base: str = "/app/LMCache") -> None:
-    """Monkey-patch LMCacheDrivenTransferModule to start the fd receiver."""
-    import importlib
-    mod = importlib.import_module(
-        "lmcache.v1.multiprocess.modules.lmcache_driven_transfer"
-    )
-    OrigModule = mod.LMCacheDrivenTransferModule
-    orig_init = OrigModule.__init__
-
-    def patched_init(self, ctx):
-        orig_init(self, ctx)
-        if __import__("torch").version.hip:
-            RocmVmemIPCWrapper.init_receiver()
-
-    OrigModule.__init__ = patched_init
-    print("[rocm_vmem_ipc] LMCacheDrivenTransferModule.__init__ patched (ROCm receiver)", flush=True)

@@ -170,7 +170,8 @@ class ReadmeSyncTest(unittest.TestCase):
         first = self.run_sync("--write")
         self.assertEqual(first.returncode, 0, first.stderr)
         rendered = self.readme.read_text(encoding="utf-8")
-        self.assertIn(f"ROCm-{new_values['ROCM_VERSION']}-green.svg", rendered)
+        rocm_short = ".".join(new_values["ROCM_VERSION"].split(".")[:2])
+        self.assertIn(f"ROCm-{rocm_short}-green.svg", rendered)
         self.assertIn(
             f"(https://rocm.docs.amd.com/en/docs-{new_values['ROCM_VERSION']}/)",
             rendered,
@@ -180,7 +181,7 @@ class ReadmeSyncTest(unittest.TestCase):
             rendered,
         )
         self.assertIn(
-            f"[![PyTorch](https://img.shields.io/badge/PyTorch-98.76%20%289876543%29-ee4c2c.svg)]"
+            f"[![PyTorch](https://img.shields.io/badge/PyTorch-{new_values['PYTORCH_SERIES']}-blue.svg)]"
             f"(https://github.com/ROCm/pytorch/tree/{new_values['PYTORCH_REF']})",
             rendered,
         )
@@ -208,8 +209,6 @@ class ReadmeSyncTest(unittest.TestCase):
             f"(https://github.com/ROCm/pytorch/tree/{new_values['PYTORCH_REF']})",
             rendered,
         )
-        rocm_short = ".".join(new_values["ROCM_VERSION"].split(".")[:2])
-        self.assertIn(f"ROCm {rocm_short} base image | GA in ROCm 7.14", rendered)
         first_hash = self.readme_hash()
 
         check = self.run_sync("--check")
@@ -235,10 +234,10 @@ class ReadmeSyncTest(unittest.TestCase):
     def test_unsupported_base_image_contract_is_rejected(self) -> None:
         self.set_bake_default(
             "ROCM_BASE_IMAGE",
-            "rocm/dev-ubuntu-22.04:${ROCM_VERSION}-full",
+            "rocm/dev-ubuntu-24.04:${ROCM_VERSION}-full",
         )
         self.assert_write_fails_without_change(
-            "must match the README Ubuntu 24.04/Python 3.12 contract"
+            "must match the README Ubuntu 26.04/Python 3.14 contract"
         )
 
     def test_flash_attn_write_updates_row(self) -> None:

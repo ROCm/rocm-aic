@@ -14,7 +14,6 @@ services:
     volumes:
       - ./ipc-vol:/ipc
       - .:/tests:ro
-      - ../../docker/lmcache:/vmem:ro
 
   mem-consumer:
     image: ${AIC_IMG:-aic-vllm:latest}
@@ -29,4 +28,3 @@ services:
     volumes:
       - ./ipc-vol:/ipc
       - .:/tests:ro
-      - ../../docker/lmcache:/vmem:ro

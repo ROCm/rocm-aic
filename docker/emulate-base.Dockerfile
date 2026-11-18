@@ -6,9 +6,13 @@
 # Used by .github/workflows/rocm-aic-emulate-test.yml instead of the full
 # ROCm+PyTorch aic-base image (which takes hours to build on a GitHub runner).
 #
-# Provides Python 3.12, the build tools vLLM's source compilation needs, and
+# Provides Python 3.14, the build tools vLLM's source compilation needs, and
 # a CPU-only PyTorch wheel from pytorch.org/whl/cpu.
-FROM python:3.12-bookworm
+#
+# The Python minor must equal ROCM_BASE_IMAGE's (Ubuntu 26.04: 3.14).  The
+# build_vllm stage builds the vLLM wheel on that image and tags it for its
+# interpreter (cp314), and the `vllm` stage pip-installs it onto this base.
+FROM python:3.14-bookworm
 # Match the SHELL used by docker/base/Dockerfile so bash-specific syntax in
 # docker/vllm/Dockerfile (shopt, arrays) works when this is the base context.
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
@@ -33,10 +37,10 @@ RUN pip3 install --no-cache-dir \
 RUN curl -fsSL "https://astral.sh/uv/${UV_VERSION}/install.sh" | sh \
     && ln -s /root/.local/bin/uv  /usr/local/bin/uv \
     && ln -s /root/.local/bin/uvx /usr/local/bin/uvx
-# python:3.12-bookworm uses site-packages; the ROCm Ubuntu base uses dist-packages.
+# python:3.14-bookworm uses site-packages; the ROCm Ubuntu base uses dist-packages.
 # Symlink dist-packages -> site-packages so COPY --from=build_vllm dist-packages/ works.
-RUN ln -sf /usr/local/lib/python3.12/site-packages \
-           /usr/local/lib/python3.12/dist-packages
+RUN ln -sf /usr/local/lib/python3.14/site-packages \
+           /usr/local/lib/python3.14/dist-packages
 
 # Build parent, not a service: the emulate image defines its own check.
 HEALTHCHECK NONE

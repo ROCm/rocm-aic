@@ -158,8 +158,9 @@ LMCACHE_L1_SIZE_GB="${LMCACHE_L1_SIZE_GB:-20}"
 LMCACHE_NVME_POOL="${LMCACHE_NVME_POOL:-4096}"
 # POSIX-specific pool (separate from AIS_MT's 256 MiB staging buffer).  L2
 # capacity is pool x compose's 16 MiB LMCACHE_NIXL_POSIX_SLOT_SIZE = 512 GiB;
-# the c=250 sweep stores 250×71=17,750 chunks of ~9 MiB (gpt-oss-120b fp8,
-# chunk_size=256), about 160 GiB.
+# the c=250 sweep stores 250×71=17,750 chunks of ~18 MiB (gpt-oss-120b at the
+# default kv-cache-dtype auto = bf16, chunk_size=256), about 320 GiB; half
+# that with VLM_KV_CACHE_DTYPE=fp8.
 # Post-warmup drain sleep: time in seconds to wait after the per-c warmup wave
 # before starting timed iters.  Must be long enough for async POSIX writes to
 # land on disk so iter 0 sees a warm, unsaturated cache.  Default 300 s is sized
@@ -226,11 +227,13 @@ fi
 # docker/docker-compose.yml owns the default (TRITON_ATTN); AIC_ATTENTION_BACKEND
 # is the deprecated name.
 VLM_ATTENTION_BACKEND="${VLM_ATTENTION_BACKEND:-${AIC_ATTENTION_BACKEND:-}}"
-# KV-cache dtype + AITER are MI300/MI350 (CDNA3+) features: fp8 KV cache and the
-# ROCm AITER kernels fail vLLM engine init on MI100/MI210 (no native fp8) and on
-# RDNA.  Defaults reproduce the release config (compose's fp8 + aiter) for
-# gfx942/gfx950; for older/consumer arches pass VLM_KV_CACHE_DTYPE=auto
-# AIC_ROCM_USE_AITER=0.  AIC_KV_CACHE_DTYPE is the deprecated name.
+# fp8 KV cache + AITER are MI300/MI350 (CDNA3+) features: both fail vLLM engine
+# init on MI100/MI210 (no native fp8); on RDNA AITER fails and fp8 gave
+# repeated-token glitches (Qwen2.5-3B, gfx1201).  Defaults are the release
+# config (compose's kv-cache-dtype auto, + aiter) for gfx942/gfx950; for
+# older/consumer arches pass AIC_ROCM_USE_AITER=0.  VLM_KV_CACHE_DTYPE=fp8
+# roughly doubles the KV cache (cliff results before the default moved from
+# fp8 to auto were measured with it).  AIC_KV_CACHE_DTYPE is the deprecated name.
 VLM_KV_CACHE_DTYPE="${VLM_KV_CACHE_DTYPE:-${AIC_KV_CACHE_DTYPE:-}}"
 AIC_ROCM_USE_AITER="${AIC_ROCM_USE_AITER:-1}"
 # How long wait_ready() polls a vLLM endpoint before giving up.  Large models
@@ -821,7 +824,7 @@ run_arm_kvd() { # $1=mode(nvme|gds) $2=out_csv
   # falsely trigger recovery. Real crashes will still be detected once vLLM stops
   # responding entirely (the ZMQ channel closes cleanly on process exit).
   local _hb="${LMCACHE_HEARTBEAT_INTERVAL:-900}"
-  export KV_TRANSFER_ARG="--kv-transfer-config '{\"kv_connector\":\"LMCacheMPConnector\",\"kv_role\":\"kv_both\"${_fp},\"kv_connector_extra_config\":{\"lmcache.mp.host\":\"tcp://aic-lmcache\",\"lmcache.mp.port\":${LMCACHE_PORT},\"lmcache.mp.heartbeat_interval\":${_hb}}}'"
+  export KV_TRANSFER_ARG="--kv-transfer-config '{\"kv_connector\":\"LMCacheMPConnector\",\"kv_role\":\"kv_both\"${_fp},\"kv_connector_extra_config\":{\"lmcache.mp.host\":\"tcp://aic-lmcache\",\"lmcache.mp.port\":${LMCACHE_PORT},\"lmcache.mp.use_vmm_api\":false,\"lmcache.mp.heartbeat_interval\":${_hb}}}'"
   export VLLM_IPC_MODE=service:lmcache # join lmcache IPC ns for cross-container HIP IPC
   export VLLM_PID_MODE=service:lmcache # share lmcache PID ns for cross-container HIP IPC
   export VLLM_NETWORK_MODE=container:aic-lmcache # HIP IPC's socket is per network ns

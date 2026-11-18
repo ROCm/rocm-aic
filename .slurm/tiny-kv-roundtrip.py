@@ -92,7 +92,7 @@ print(f"[kv-roundtrip] external prefix-cache hits: +{gained:.0f} tokens")
 
 if gained <= 0:
     sys.exit("[kv-roundtrip] FAIL: no external prefix-cache hits; LMCache "
-             "never served the prefix (KV registration skipped?)")
+             "never served the prefix (KV caches not registered?)")
 if SECRET not in second:
     sys.exit("[kv-roundtrip] FAIL: LMCache served the prefix but the answer "
              "lost the code; the KV it returned is not what vLLM computed")

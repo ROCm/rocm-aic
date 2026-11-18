@@ -126,7 +126,7 @@ done
 
 # --- Start vLLM with DEBUG logging ---
 echo "--- Starting vLLM (VLLM_LOGGING_LEVEL=DEBUG) ---"
-KV_TRANSFER="{\"kv_connector\":\"LMCacheMPConnector\",\"kv_role\":\"kv_both\",\"kv_connector_extra_config\":{\"lmcache.mp.server_urls\":[\"tcp://localhost:${LMCACHE_PORT}\"]}}"
+KV_TRANSFER="{\"kv_connector\":\"LMCacheMPConnector\",\"kv_role\":\"kv_both\",\"kv_connector_extra_config\":{\"lmcache.mp.server_urls\":[\"tcp://localhost:${LMCACHE_PORT}\"],\"lmcache.mp.use_vmm_api\":false}}"
 
 # In lmcache's namespaces for HIP IPC, as compose's vllm service is; so it is on
 # the aic bridge too, as aic-vllm, and reaches lmcache on localhost.

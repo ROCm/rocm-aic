@@ -2004,7 +2004,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "sum(rate(lmcache_mp_l2_prefetch_hit_chunks_total[$__rate_interval]))",
+          "expr": "sum(rate(lmcache_mp_l2_prefetch_load_completed_chunks_total[$__rate_interval]))",
           "legendFormat": "prefetch hits/s"
         },
         {
@@ -3761,7 +3761,7 @@
         "type": "prometheus",
         "uid": "${datasource}"
       },
-      "description": "Rates of LMCache internal operations. prefetch requests = cache lookup operations initiated by vLLM; L2 store submitted = KV chunks being written to NVMe; L2 load submitted = NVMe prefetch reads back to L1.",
+      "description": "Rates of LMCache internal operations. lookups = every cache lookup vLLM sends (lmcache_mp_lookups_requests_total), whether or not it starts an L2 prefetch; L2 store submitted = KV chunks being written to NVMe; L2 load submitted = NVMe prefetch reads back to L1.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -3795,8 +3795,8 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "sum(rate(lmcache_mp_prefetch_requests_total{job=\"lmcache\"}[$__rate_interval]))",
-          "legendFormat": "prefetch lookups/s",
+          "expr": "sum(rate(lmcache_mp_lookups_requests_total{job=\"lmcache\"}[$__rate_interval]))",
+          "legendFormat": "lookups/s",
           "refId": "A"
         },
         {
@@ -4895,7 +4895,7 @@
         "type": "prometheus",
         "uid": "${datasource}"
       },
-      "description": "Sum across all instances of lmcache_coordinator_instance_seq_gap. Non-zero means at least one MP server had an event-stream sequence gap \u2014 the key directory may have missed some placements.",
+      "description": "Sum across all instances of lmcache_coordinator_instance_seq_gap, which the exporter reads from the coordinator's /status (ingest.streams[].gap_detected; LMCache >= v0.5.8). Non-zero means at least one MP server had an event-stream sequence gap \u2014 the key directory may have missed some placements. An instance has no series until its first event batch, and none at all on a coordinator without /status; 0 is shown in both cases.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -5398,7 +5398,7 @@
         "type": "prometheus",
         "uid": "${datasource}"
       },
-      "description": "L1 allocation failures (lmcache_mp_l1_allocation_failure_total) indicate L1 is full and chunks are being dropped rather than stored \u2014 increase L1 size. Eviction loop triggered (lmcache_mp_l1_eviction_loop_triggered_total) shows when LRU eviction fires above the watermark.",
+      "description": "L1 allocation failures (lmcache_mp_l1_allocation_failure_chunks_total) indicate L1 is full and chunks are being dropped rather than stored \u2014 increase L1 size. Eviction loop triggered (lmcache_mp_l1_eviction_loop_triggered_total) shows when LRU eviction fires above the watermark.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -5668,7 +5668,7 @@
     {
       "type": "stat",
       "title": "L1 Read Failures",
-      "description": "Cumulative lmcache_mp_l1_read_failure_total \u2014 L1 reserve_read failures indicating L1 memory contention. Should be 0; non-zero means L1 is undersized for the current workload.",
+      "description": "Cumulative lmcache_mp_l1_read_failure_chunks_total (summed over during/reason/model_name; absent until the first failure, shown as 0) \u2014 L1 reserve_read failures indicating L1 memory contention. Should be 0; non-zero means L1 is undersized for the current workload.",
       "id": 9920,
       "gridPos": {
         "x": 0,
@@ -5682,7 +5682,7 @@
       },
       "targets": [
         {
-          "expr": "(lmcache_mp_l1_read_failure_total) or vector(0)",
+          "expr": "sum(lmcache_mp_l1_read_failure_chunks_total) or vector(0)",
           "legendFormat": "L1 read failures",
           "refId": "A",
           "datasource": {
@@ -5726,7 +5726,7 @@
     {
       "type": "stat",
       "title": "L2 Prefetch Failures",
-      "description": "Cumulative lmcache_mp_l2_prefetch_failure_total \u2014 keys that failed to load from L2 during prefetch. Non-zero indicates L2 adapter errors or NVMe connectivity issues.",
+      "description": "Cumulative lmcache_mp_l2_prefetch_failure_chunks_total (summed over reason/model_name; absent until the first failure, shown as 0) \u2014 keys that failed to load from L2 during prefetch. Non-zero indicates L2 adapter errors or NVMe connectivity issues.",
       "id": 9921,
       "gridPos": {
         "x": 6,
@@ -5740,7 +5740,7 @@
       },
       "targets": [
         {
-          "expr": "(lmcache_mp_l2_prefetch_failure_total) or vector(0)",
+          "expr": "sum(lmcache_mp_l2_prefetch_failure_chunks_total) or vector(0)",
           "legendFormat": "L2 prefetch failures",
           "refId": "A",
           "datasource": {
@@ -5798,7 +5798,7 @@
       },
       "targets": [
         {
-          "expr": "rate(lmcache_mp_l2_evicted_objects_total[$__rate_interval])",
+          "expr": "sum(rate(lmcache_mp_l2_evicted_objects_chunks_total[$__rate_interval])) or vector(0)",
           "legendFormat": "L2 evictions/s",
           "refId": "A",
           "datasource": {

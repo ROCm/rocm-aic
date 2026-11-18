@@ -9,8 +9,8 @@ Install them into a matching ROCm environment:
 ```bash
 pip install \
   https://github.com/ROCm/rocm-aic/releases/download/nightly/vllm-<ver>-cp312-cp312-linux_x86_64.whl \
-  https://github.com/ROCm/rocm-aic/releases/download/nightly/lmcache-<ver>-cp312-cp312-linux_x86_64.whl \
-  https://github.com/ROCm/rocm-aic/releases/download/nightly/nixl_rocm-<ver>-cp312-cp312-linux_x86_64.whl
+  https://github.com/ROCm/rocm-aic/releases/download/nightly/lmcache-<ver>-cp314-cp314-linux_x86_64.whl \
+  https://github.com/ROCm/rocm-aic/releases/download/nightly/nixl_rocm-<ver>-cp314-cp314-linux_x86_64.whl
 ```
 
 (Grab the exact filenames from the
@@ -45,8 +45,8 @@ same artifact both images run.
 
 These are **not** manylinux wheels:
 
-- ROCm **7.14.x**, Python **3.12**, **x86_64** only. They match the
-  `rocm/dev-ubuntu-24.04:7.14.1-full` base; other ROCm/Python/arch
+- ROCm **10.1**, Python **3.14**, **x86_64** only. They match the
+  `rocm/dev-ubuntu-26.04:10.1.0-full` base; other ROCm/Python/arch
   combos will fail to import.
 - Each wheel is compiled for one **arch group** (see the table above), named in
   the release notes. LMCache's HIP extension and vLLM's kernels are compiled for

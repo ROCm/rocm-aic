@@ -203,7 +203,7 @@ class AicBakeEnvTest(unittest.TestCase):
         )
         self.assertEqual(values["VLLM_REF"], "v9.9.9")
         self.assertEqual(values["ROCM_ARCH"], "gfx942;gfx950")
-        self.assertEqual(values["ROCM_BASE_IMAGE"], "rocm/dev-ubuntu-24.04:9.8.7-full")
+        self.assertEqual(values["ROCM_BASE_IMAGE"], "rocm/dev-ubuntu-26.04:9.8.7-full")
         self.assertEqual(values["BUILD_JOBS"], "")
         self.assertIn("-rocm9.8.7-", values["IMAGE_TAG"])
         self.assertIn("-vllm9.9.9-", values["IMAGE_TAG"])

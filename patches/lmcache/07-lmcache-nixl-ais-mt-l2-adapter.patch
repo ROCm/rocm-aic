@@ -1,6 +1,8 @@
+diff --git a/lmcache/v1/distributed/l2_adapters/nixl_store_l2_adapter.py b/lmcache/v1/distributed/l2_adapters/nixl_store_l2_adapter.py
+index 0e04d918..a28ac7c5 100644
 --- a/lmcache/v1/distributed/l2_adapters/nixl_store_l2_adapter.py
 +++ b/lmcache/v1/distributed/l2_adapters/nixl_store_l2_adapter.py
-@@ -933,12 +933,13 @@
+@@ -939,12 +939,13 @@ _VALID_NIXL_BACKENDS = (
      "GDS",
      "GDS_MT",
      "POSIX",
@@ -15,9 +17,11 @@
  
  
  class NixlStoreL2AdapterConfig(L2AdapterConfigBase):
+diff --git a/tests/v1/distributed/test_nixl_store_l2_adapter.py b/tests/v1/distributed/test_nixl_store_l2_adapter.py
+index 3836e78f..04a29468 100644
 --- a/tests/v1/distributed/test_nixl_store_l2_adapter.py
 +++ b/tests/v1/distributed/test_nixl_store_l2_adapter.py
-@@ -40,12 +40,24 @@
+@@ -39,12 +39,24 @@ from lmcache.v1.distributed.internal_api import (  # noqa: E402
      L1MemoryDesc,
      L2AdapterListener,
  )

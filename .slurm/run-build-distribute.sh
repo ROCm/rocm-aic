@@ -70,7 +70,7 @@
 #           Build the CPU-only EMULATION image (Dockerfile `emulate` stage +
 #           VLLM_TARGET_DEVICE=empty): vLLM + the llm-emu plugin with no vLLM
 #           GPU kernels, on an aic-base the same job builds first.
-#           Tagged AIC_EMULATE_IMAGE (default rocm-aic:7.14-emulate) with its
+#           Tagged AIC_EMULATE_IMAGE (default rocm-aic:10.1-emulate) with its
 #           own tarball, so it never overwrites the real GPU image.
 #   emulate-test
 #           End-to-end serve check of that image on a CPU-ONLY node: brings up
@@ -288,7 +288,7 @@ AIC_VLLM_TARGET_DEVICE="${AIC_VLLM_TARGET_DEVICE:-}"
 # AIC_EMULATE_VLLM_DEVICE), so vLLM compiles no GPU kernels.  It still sits on
 # aic-base, whose PyTorch is built for the arch below; that build is cached per
 # arch, but the first one is not quick.  Nothing in this image runs on a GPU.
-AIC_EMULATE_IMAGE="${AIC_EMULATE_IMAGE:-${IMAGE_NAME:-rocm-aic}:${IMAGE_TAG_EMULATE:-7.14-emulate}}"
+AIC_EMULATE_IMAGE="${AIC_EMULATE_IMAGE:-${IMAGE_NAME:-rocm-aic}:${IMAGE_TAG_EMULATE:-10.1-emulate}}"
 AIC_EMULATE_ARCH="${AIC_EMULATE_ARCH:-gfx942}"
 AIC_EMULATE_VLLM_DEVICE="${AIC_EMULATE_VLLM_DEVICE:-}"
 AIC_EMULATE_MODEL="${AIC_EMULATE_MODEL:-Qwen/Qwen3-8B}"
@@ -2362,7 +2362,7 @@ export AIC_L2_BACKEND=none
 export VLLM_IPC_MODE=service:lmcache
 export VLLM_PID_MODE=service:lmcache
 # vLLM shares lmcache's network namespace, so lmcache is on its loopback.
-export KV_TRANSFER_ARG="--kv-transfer-config '{\"kv_connector\":\"LMCacheMPConnector\",\"kv_role\":\"kv_both\",\"kv_connector_extra_config\":{\"lmcache.mp.host\":\"tcp://localhost\",\"lmcache.mp.port\":\${LMCACHE_PORT:-6555}}}'"
+export KV_TRANSFER_ARG="--kv-transfer-config '{\"kv_connector\":\"LMCacheMPConnector\",\"kv_role\":\"kv_both\",\"kv_connector_extra_config\":{\"lmcache.mp.host\":\"tcp://localhost\",\"lmcache.mp.port\":\${LMCACHE_PORT:-6555},\"lmcache.mp.use_vmm_api\":false}}'"
 mkdir -p "\${HF_HOME}" /tmp/aic-tiny-nvme /tmp/aic-tiny-nfs
 
 compose() { docker compose -f '${AIC_DAY_DIR}/docker/docker-compose.yml' "\$@"; }
@@ -2457,14 +2457,14 @@ echo "[tiny-test] response: \${resp}"
 _tiny_rc=1
 if grep -qE '"content"[[:space:]]*:[[:space:]]*"[^"]+' <<<"\${resp}"; then
     echo "[tiny-test] OK: got a non-empty completion"
-    # A completion also comes back when the connector skipped KV registration and
-    # LMCache is inert, so check that LMCache really holds vLLM's KV cache.
+    # A completion also comes back when LMCache holds none of vLLM's KV cache,
+    # so check that it really does.
     if docker exec -i "\${VLLM_CONTAINER}" python3 - '${AIC_TINY_MODEL}' \
             < '${AIC_DAY_DIR}/.slurm/tiny-kv-roundtrip.py'; then
         echo "[tiny-test] OK: KV round-trip through LMCacheMPConnector"
         _tiny_rc=0
     else
-        compose logs --no-color vllm 2>&1 | grep -E 'KV registration skipped|KV IPC unavailable|KV caches are not registered' \
+        compose logs --no-color vllm 2>&1 | grep -E 'KV caches are not registered' \
             | sed 's/^/  [vllm] /'
     fi
 else
@@ -2579,7 +2579,7 @@ export LMCACHE_NIXL_POSIX_POOL=128
 export LMCACHE_MAX_GPU_WORKERS=1
 export VLLM_IPC_MODE=service:lmcache
 export VLLM_PID_MODE=service:lmcache
-export KV_TRANSFER_ARG="--kv-transfer-config '{\"kv_connector\":\"LMCacheMPConnector\",\"kv_role\":\"kv_both\",\"kv_connector_extra_config\":{\"lmcache.mp.host\":\"tcp://localhost\",\"lmcache.mp.port\":\${LMCACHE_PORT:-6555}}}'"
+export KV_TRANSFER_ARG="--kv-transfer-config '{\"kv_connector\":\"LMCacheMPConnector\",\"kv_role\":\"kv_both\",\"kv_connector_extra_config\":{\"lmcache.mp.host\":\"tcp://localhost\",\"lmcache.mp.port\":\${LMCACHE_PORT:-6555},\"lmcache.mp.use_vmm_api\":false}}'"
 # hsa-snoop: use container PID namespace (SPUR authz blocks --pid=host).
 export AIC_HSA_SNOOP_PID_MODE=container:aic-lmcache
 # Monitoring metrics dir for Prometheus TSDB.
@@ -3021,7 +3021,7 @@ fi
 # tensor.device.type and host-memory KV falls to engine_driven, which moves the
 # copy into the vLLM worker.  lmcache_driven keeps the shipped topology (the
 # SERVER pulls from the registered buffers, here POSIX SHM instead of HIP IPC).
-export EMU_KV_TRANSFER_ARG="--kv-transfer-config '{\"kv_connector\":\"LMCacheMPConnector\",\"kv_role\":\"kv_both\",\"kv_connector_extra_config\":{\"lmcache.mp.host\":\"tcp://aic-lmcache-emulator\",\"lmcache.mp.port\":\${LMCACHE_PORT},\"lmcache.mp.mp_transfer_mode\":\"lmcache_driven\"}}'"
+export EMU_KV_TRANSFER_ARG="--kv-transfer-config '{\"kv_connector\":\"LMCacheMPConnector\",\"kv_role\":\"kv_both\",\"kv_connector_extra_config\":{\"lmcache.mp.host\":\"tcp://aic-lmcache-emulator\",\"lmcache.mp.port\":\${LMCACHE_PORT},\"lmcache.mp.use_vmm_api\":false,\"lmcache.mp.mp_transfer_mode\":\"lmcache_driven\"}}'"
 export VLLM_EXTRA_ARGS="--enable-prefix-caching"
 # One /dev/shm for both: the server opens the KV SHM segments by name.
 export EMU_IPC_MODE=container:aic-lmcache-emulator
@@ -3176,7 +3176,7 @@ if [ -n '${AIC_EMULATE_MP_BENCH}' ]; then
             /^lmcache_mp_lookup_requested_tokens_total/ {req=\$NF}
             /^lmcache_mp_lookup_hit_tokens_total/       {hit=\$NF}
             /^lmcache_mp_l1_read_chunks_total/          {l1r=\$NF}
-            /^lmcache_mp_l2_prefetch_hit_chunks_total/  {l2h=\$NF}
+            /^lmcache_mp_l2_prefetch_load_completed_chunks_total/  {l2h=\$NF}
             END {printf "[emulate-mp-test]   after %-6s cum: lookup %d/%d tokens hit, L1 reads %d, L2 prefetch hits %d\n", tag, hit, req, l1r, l2h}'
         docker exec aic-lmcache-emulator curl -fsS http://localhost:19090/metrics 2>/dev/null | awk -v tag="\${tag:-cold}" '
             /^agent_tx_bytes_total/ {tx=\$NF} /^agent_rx_bytes_total/ {rx=\$NF}
@@ -3370,7 +3370,7 @@ print(f"[emulate-mp-test]   L1          {g(lm, 'lmcache_mp_l1_write_chunks_total
       f"{g(lm, 'lmcache_mp_l1_eviction_loop_ticks_total'):.0f} eviction-loop ticks")
 print(f"[emulate-mp-test]   L2          {g(lm, 'lmcache_mp_l2_store_completed_objects_chunks_total'):.0f}/"
       f"{g(lm, 'lmcache_mp_l2_store_submitted_objects_chunks_total'):.0f} chunks stored (completed/submitted), "
-      f"{g(lm, 'lmcache_mp_l2_prefetch_hit_chunks_total'):.0f}/"
+      f"{g(lm, 'lmcache_mp_l2_prefetch_load_completed_chunks_total'):.0f}/"
       f"{g(lm, 'lmcache_mp_l2_prefetch_lookup_objects_chunks_total'):.0f} prefetch hits, "
       f"{mib(g(lm, 'lmcache_mp_l2_usage_bytes'))} on the backend")
 # All four throughput histograms exist; the LOAD pair is what a cache is judged

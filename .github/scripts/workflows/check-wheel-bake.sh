@@ -137,16 +137,16 @@ fake_set() {
     for n in "$@"; do : >"${dir}/${n}"; done
 }
 common=(
-    amd_aiter-0.1.22.post1-cp312-cp312-linux_x86_64.whl
+    amd_aiter-0.1.29.post1-cp312-cp312-linux_x86_64.whl
     llm_emu-0.1.0-py3-none-any.whl
-    lmcache-0.5.6-cp312-cp312-linux_x86_64.whl
-    nixl_rocm-1.4.1-cp312-cp312-linux_x86_64.whl
-    torch-2.13.0+gitec5f3b1-cp312-cp312-linux_x86_64.whl
-    torchvision-0.28.0+8fb8771-cp312-cp312-linux_x86_64.whl
-    triton-3.7.1-cp312-cp312-linux_x86_64.whl
-    vllm-0.29.0+rocm-cp38-abi3-linux_x86_64.whl
+    lmcache-0.5.8rc1-cp312-cp312-linux_x86_64.whl
+    nixl_rocm-1.5.2-cp312-cp312-linux_x86_64.whl
+    torch-2.15.0+gitabecaa8-cp312-cp312-linux_x86_64.whl
+    torchvision-0.29.2+git0000000-cp312-cp312-linux_x86_64.whl
+    triton-3.8.0+git669b31a-cp312-cp312-linux_x86_64.whl
+    vllm-0.34.0+rocm-cp38-abi3-linux_x86_64.whl
 )
-fa=flash_attn-2.8.3.post1-cp312-cp312-linux_x86_64.whl
+fa=flash_attn-0e60e394-cp312-cp312-linux_x86_64.whl
 fake_set "${tmp}/cdna" "${common[@]}" "${fa}"
 fake_set "${tmp}/rdna" "${common[@]}"
 bash "${CHECK_WHEELS}" "${tmp}/cdna" "${cdna}"

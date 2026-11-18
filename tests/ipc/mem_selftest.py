@@ -7,11 +7,11 @@ export/import pair the LMCache memory path relies on. Run under both
 HSA_ENABLE_IPC_MODE_LEGACY settings to confirm whether LEGACY breaks it
 (the claim: LEGACY replaces the dmabuf path at runtime).
 
-Reuses the VMM helpers from docker/lmcache/rocm_vmem_ipc.py (mounted at /vmem).
+Reuses the VMM helpers from rocm_vmem_ipc.py in this directory.
 """
 import os, sys, ctypes
 
-sys.path.insert(0, "/vmem")
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import rocm_vmem_ipc as R   # noqa: E402
 
 LEG = os.environ.get("HSA_ENABLE_IPC_MODE_LEGACY", "<unset>")

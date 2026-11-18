@@ -1,28 +1,28 @@
 # ROCm AMD Infinity Context
 
 [![MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://github.com/ROCm/rocm-aic/blob/main/LICENSE.md)
-[![Platform](https://img.shields.io/badge/platform-linux-lightgrey.svg)](README.md)
-[![ROCm](https://img.shields.io/badge/ROCm-7.14.1-green.svg)](https://rocm.docs.amd.com/en/docs-7.14.1/)
-[![PyTorch](https://img.shields.io/badge/PyTorch-2.13%20%28ec5f3b1%29-ee4c2c.svg)](https://github.com/ROCm/pytorch/tree/ec5f3b1effb14f0e36b66bab4db1c9b49b278f82)
-[![AITER](https://img.shields.io/badge/AITER-v0.1.22.post1-blue.svg)](https://github.com/ROCm/aiter/tree/v0.1.22.post1)
-[![vLLM](https://img.shields.io/badge/vLLM-v0.29.0-blue.svg)](https://github.com/vllm-project/vllm/tree/v0.29.0)
-[![LMCache](https://img.shields.io/badge/LMCache-v0.5.6-blue.svg)](https://github.com/LMCache/LMCache/tree/v0.5.6)
-[![NIXL](https://img.shields.io/badge/NIXL-v1.4.1-blue.svg)](https://github.com/ai-dynamo/nixl/tree/v1.4.1)
-[![hsa-snoop](https://img.shields.io/badge/hsa--snoop-v1.2.0-blue.svg)](https://github.com/sbates130272/hsa-snoop/tree/v1.2.0)
-[![rocjitsu](https://img.shields.io/badge/rocjitsu-98f6a72-red.svg)](https://github.com/ROCm/rocm-systems/commit/98f6a72dcc49a5f809593deacbe5c9df89cde3b3)
-[![qemu-vfu](https://img.shields.io/badge/qemu--vfu-f91f120-red.svg)](https://github.com/sbates130272/qemu/commit/f91f12068854848cdb248f2a4636ddfe41f3283b)
-[![rocjitsu-guest](https://img.shields.io/badge/guest-resolute%2Fc079195-red.svg)](https://github.com/sbates130272/qemu-minimal/commit/c0791954aec508bfd3f26d11d6960f279d4b175a)
-[![Spelling](https://github.com/ROCm/rocm-aic/actions/workflows/rocm-aic-spell-check.yml/badge.svg)](https://github.com/ROCm/rocm-aic/actions/workflows/rocm-aic-spell-check.yml)
-[![Lint](https://github.com/ROCm/rocm-aic/actions/workflows/rocm-aic-lint-check.yml/badge.svg)](https://github.com/ROCm/rocm-aic/actions/workflows/rocm-aic-lint-check.yml)
-[![Export Tarball](https://github.com/ROCm/rocm-aic/actions/workflows/rocm-aic-export-tarball.yml/badge.svg)](https://github.com/ROCm/rocm-aic/actions/workflows/rocm-aic-export-tarball.yml)
-[![Nightly Dist Build](https://github.com/ROCm/rocm-aic/actions/workflows/rocm-aic-self-hosted-nightly-dist-build.yml/badge.svg)](https://github.com/ROCm/rocm-aic/actions/workflows/rocm-aic-self-hosted-nightly-dist-build.yml)
-[![Nightly Smoke + Tiny Test](https://github.com/ROCm/rocm-aic/actions/workflows/rocm-aic-self-hosted-nightly-smoke-test.yml/badge.svg)](https://github.com/ROCm/rocm-aic/actions/workflows/rocm-aic-self-hosted-nightly-smoke-test.yml)
-[![Nightly Accuracy Test](https://github.com/ROCm/rocm-aic/actions/workflows/rocm-aic-self-hosted-accuracy-test.yml/badge.svg)](https://github.com/ROCm/rocm-aic/actions/workflows/rocm-aic-self-hosted-accuracy-test.yml)
-[![Nightly Cliff](https://github.com/ROCm/rocm-aic/actions/workflows/rocm-aic-self-hosted-nightly-cliff-test.yml/badge.svg)](https://github.com/ROCm/rocm-aic/actions/workflows/rocm-aic-self-hosted-nightly-cliff-test.yml)
-[![Nightly Wheels](https://github.com/ROCm/rocm-aic/actions/workflows/rocm-aic-nightly-wheels-publication.yml/badge.svg)](https://github.com/ROCm/rocm-aic/actions/workflows/rocm-aic-nightly-wheels-publication.yml)
-[![Check PRs + Patches](https://github.com/ROCm/rocm-aic/actions/workflows/rocm-aic-check-prs-and-patches.yml/badge.svg)](https://github.com/ROCm/rocm-aic/actions/workflows/rocm-aic-check-prs-and-patches.yml)
-[![vLLM Emul Test](https://github.com/ROCm/rocm-aic/actions/workflows/rocm-aic-emulate-test.yml/badge.svg)](https://github.com/ROCm/rocm-aic/actions/workflows/rocm-aic-emulate-test.yml)
-[![vLLM Emul Perf](https://github.com/ROCm/rocm-aic/actions/workflows/rocm-aic-vllm-emul-performance.yml/badge.svg)](https://github.com/ROCm/rocm-aic/actions/workflows/rocm-aic-vllm-emul-performance.yml)
+[![Platform](https://img.shields.io/badge/Platform-Linux-lightgrey.svg)](README.md)
+[![ROCm](https://img.shields.io/badge/ROCm-10.1-green.svg)](https://rocm.docs.amd.com/en/docs-10.1.0/)
+[![PyTorch](https://img.shields.io/badge/PyTorch-2.15-blue.svg)](https://github.com/ROCm/pytorch/tree/abecaa87238d2d43d2641a22d89a51de185779b2)
+[![AITER](https://img.shields.io/badge/AITER-v0.1.29.post1-blue.svg)](https://github.com/ROCm/aiter/tree/v0.1.29.post1)
+[![vLLM](https://img.shields.io/badge/vLLM-v0.34.0-blue.svg)](https://github.com/vllm-project/vllm/tree/v0.34.0)
+[![LMCache](https://img.shields.io/badge/LMCache-v0.5.8rc1-blue.svg)](https://github.com/LMCache/LMCache/tree/v0.5.8rc1)
+[![NIXL](https://img.shields.io/badge/NIXL-v1.5.2-blue.svg)](https://github.com/ai-dynamo/nixl/tree/v1.5.2)
+[![HSA-Snoop](https://img.shields.io/badge/HSA--Snoop-v1.6.0-blue.svg)](https://github.com/sbates130272/hsa-snoop/tree/v1.6.0)
+[![Rocjitsu](https://img.shields.io/badge/Rocjitsu-98f6a72-blue.svg)](https://github.com/ROCm/rocm-systems/commit/98f6a72dcc49a5f809593deacbe5c9df89cde3b3)
+[![Qemu-Vfu](https://img.shields.io/badge/Qemu--Vfu-f91f120-blue.svg)](https://github.com/sbates130272/qemu/commit/f91f12068854848cdb248f2a4636ddfe41f3283b)
+[![Rocjitsu Guest](https://img.shields.io/badge/Rocjitsu_Guest-resolute%2Fc079195-blue.svg)](https://github.com/sbates130272/qemu-minimal/commit/c0791954aec508bfd3f26d11d6960f279d4b175a)
+[![Spelling](https://img.shields.io/github/actions/workflow/status/ROCm/rocm-aic/rocm-aic-spell-check.yml?label=Spelling)](https://github.com/ROCm/rocm-aic/actions/workflows/rocm-aic-spell-check.yml)
+[![Lint](https://img.shields.io/github/actions/workflow/status/ROCm/rocm-aic/rocm-aic-lint-check.yml?label=Lint)](https://github.com/ROCm/rocm-aic/actions/workflows/rocm-aic-lint-check.yml)
+[![Export Tarball](https://img.shields.io/github/actions/workflow/status/ROCm/rocm-aic/rocm-aic-export-tarball.yml?label=Export+Tarball)](https://github.com/ROCm/rocm-aic/actions/workflows/rocm-aic-export-tarball.yml)
+[![Nightly Dist Build](https://img.shields.io/github/actions/workflow/status/ROCm/rocm-aic/rocm-aic-self-hosted-nightly-dist-build.yml?label=Nightly+Dist+Build)](https://github.com/ROCm/rocm-aic/actions/workflows/rocm-aic-self-hosted-nightly-dist-build.yml)
+[![Nightly Smoke + Tiny Test](https://img.shields.io/github/actions/workflow/status/ROCm/rocm-aic/rocm-aic-self-hosted-nightly-smoke-test.yml?label=Nightly+Smoke+%2B+Tiny+Test)](https://github.com/ROCm/rocm-aic/actions/workflows/rocm-aic-self-hosted-nightly-smoke-test.yml)
+[![Nightly Accuracy Test](https://img.shields.io/github/actions/workflow/status/ROCm/rocm-aic/rocm-aic-self-hosted-accuracy-test.yml?label=Nightly+Accuracy+Test)](https://github.com/ROCm/rocm-aic/actions/workflows/rocm-aic-self-hosted-accuracy-test.yml)
+[![Nightly Cliff](https://img.shields.io/github/actions/workflow/status/ROCm/rocm-aic/rocm-aic-self-hosted-nightly-cliff-test.yml?label=Nightly+Cliff)](https://github.com/ROCm/rocm-aic/actions/workflows/rocm-aic-self-hosted-nightly-cliff-test.yml)
+[![Nightly Wheels](https://img.shields.io/github/actions/workflow/status/ROCm/rocm-aic/rocm-aic-nightly-wheels-publication.yml?label=Nightly+Wheels)](https://github.com/ROCm/rocm-aic/actions/workflows/rocm-aic-nightly-wheels-publication.yml)
+[![Check PRs + Patches](https://img.shields.io/github/actions/workflow/status/ROCm/rocm-aic/rocm-aic-check-prs-and-patches.yml?label=Check+PRs+%2B+Patches)](https://github.com/ROCm/rocm-aic/actions/workflows/rocm-aic-check-prs-and-patches.yml)
+[![vLLM Emul Test](https://img.shields.io/github/actions/workflow/status/ROCm/rocm-aic/rocm-aic-emulate-test.yml?label=vLLM+Emul+Test)](https://github.com/ROCm/rocm-aic/actions/workflows/rocm-aic-emulate-test.yml)
+[![vLLM Emul Perf](https://img.shields.io/github/actions/workflow/status/ROCm/rocm-aic/rocm-aic-vllm-emul-performance.yml?label=vLLM+Emul+Perf)](https://github.com/ROCm/rocm-aic/actions/workflows/rocm-aic-vllm-emul-performance.yml)
 [![Metrics Reference](https://img.shields.io/badge/Prometheus-Metrics_Reference-E05D00?logo=prometheus&logoColor=white)](https://rocm.github.io/rocm-aic/prometheus/)
 [![Cliff Perf Dashboard](https://img.shields.io/badge/Cliff-Perf_Dashboard-2980b9?logo=github&logoColor=white)](https://rocm.github.io/rocm-aic/cliff/)
 [![vLLM Emul Dashboard](https://img.shields.io/badge/vLLM_Emul-Perf_Dashboard-7c3aed?logo=github&logoColor=white)](https://rocm.github.io/rocm-aic/vllm-emul-performance/)
@@ -48,15 +48,24 @@ platform.
 
 | Component | Source | Ref |
 | --- | --- | --- |
-| Base OS | `rocm/dev-ubuntu-24.04:7.14.1-full` | Ubuntu 24.04, ROCm 7.14, Python 3.12 |
-| PyTorch | `ROCm/pytorch` (source build) | `2.13 (ec5f3b1)` |
-| vLLM | `github.com/vllm-project/vllm` (source build) | `v0.29.0` + 3 AMD patches |
-| AITER | `ROCm/aiter` (source build) | `v0.1.22.post1` (vLLM ROCm-validated) |
-| FlashAttention | `Dao-AILab/flash-attention` (source build) | `v2.8.3.post1` |
-| LMCache | `LMCache/LMCache` (upstream) | `v0.5.6` + 16 AMD patches |
-| NIXL | `ai-dynamo/nixl` (upstream) | `v1.4.1` + `nixl-rocm-ais-mt.patch` |
-| hsa-snoop | `sbates130272/hsa-snoop` (source build) | `v1.2.0` |
-| hipFile | ROCm 7.14 base image | GA in ROCm 7.14 — no separate source build |
+| Base OS | `rocm/dev-ubuntu-26.04:10.1.0-full` | Ubuntu 26.04, ROCm 10.1, Python 3.14 |
+| PyTorch | `ROCm/pytorch` (source build) | `2.15 (abecaa8)` |
+| Triton | `ROCm/triton` (source build) | `release/internal/3.8.x` (669b31ac, vLLM v0.34.0 validated) |
+| vLLM | `github.com/vllm-project/vllm` (source build) | `v0.34.0` + 2 AMD patches |
+| AITER | `ROCm/aiter` (source build) | `v0.1.29.post1` |
+| FlashAttention | `Dao-AILab/flash-attention` (source build) | `0e60e394` |
+| LMCache | `LMCache/LMCache` (upstream) | `v0.5.8rc1` + 6 AMD patches |
+| NIXL | `ai-dynamo/nixl` (upstream) | `v1.5.2` + `nixl-rocm-ais-mt.patch` |
+| HSA Snoop | `sbates130272/hsa-snoop` (source build) | `v1.6.0` |
+
+`aic-vllm` runs OpenTelemetry 1.40.0, below the 1.45.1 that vLLM v0.34.0
+declares: LMCache v0.5.8rc1 caps it there, and the vLLM process loads the
+LMCache client. The image build checks that vLLM's tracing exporters still
+import; `pip check` in the image reports the conflict.
+
+The vLLM `--kv-transfer-config` must carry `"lmcache.mp.use_vmm_api": false`
+(the `Makefile` JSON does). Without it LMCache v0.5.8rc1 asks vLLM for
+fd-exported KV memory, which vLLM v0.34.0 refuses on ROCm at startup.
 
 ## Pip Nightly Wheels
 

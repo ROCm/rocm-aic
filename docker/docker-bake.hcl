@@ -41,38 +41,40 @@
 # standalone `docker buildx bake` and tests/test_aic_bake_env.py keeps it equal.
 variable "AIC_VERSION"   { default = "0.1.0" }
 
-variable "ROCM_VERSION"      { default = "7.14.1" }
-# ROCm/pytorch publishes no tag for the 2.13 series, so a SHA is the only
-# reproducible ref.  ec5f3b1 rather than the head of release/2.13 (8e0af7fa): a
-# later commit updated third_party/composable_kernel in a way that breaks
-# gfx1250 multi-arch builds (CK_BUFFER_RESOURCE_3RD_DWORD undeclared).  See
-# patches/pytorch/01-ck-gfx1250-*.
-variable "PYTORCH_REF"       { default = "ec5f3b1effb14f0e36b66bab4db1c9b49b278f82" }
+variable "ROCM_VERSION"      { default = "10.1.0" }
+# ROCm/pytorch publishes no tag for the 2.15 series, so a SHA is the only
+# reproducible ref.  abecaa8 is the head of release/2.15 as of 2026-11-17.
+variable "PYTORCH_REF"       { default = "abecaa87238d2d43d2641a22d89a51de185779b2" }
 # Display only: the torch series in the image tag, README and release notes (a
 # bare SHA says nothing about which torch this is), and the CPU torch the
 # emulate builds install.  Bump alongside PYTORCH_REF.
-variable "PYTORCH_SERIES"    { default = "2.13" }
-variable "TORCHVISION_REF"   { default = "v0.28.0" }
-variable "VLLM_REF"          { default = "v0.29.0" }
+variable "PYTORCH_SERIES"    { default = "2.15" }
+variable "TORCHVISION_REF"   { default = "v0.29.2" }
+variable "VLLM_REF"          { default = "v0.34.0" }
 variable "VLLM_TARGET_DEVICE" { default = "rocm" }
 variable "LLM_EMU_REF"       { default = "b71c602" }
-variable "AITER_REF"         { default = "v0.1.22.post1" }
-variable "FLASH_ATTN_REF"    { default = "v2.8.3.post1" }
-variable "LMCACHE_REF"       { default = "v0.5.6" }
-variable "NIXL_REF"          { default = "v1.4.1" }
-variable "HSA_SNOOP_REF"     { default = "v1.2.0" }
+variable "AITER_REF"         { default = "v0.1.29.post1" }
+variable "FLASH_ATTN_REF"    { default = "0e60e394" }
+variable "LMCACHE_REF"       { default = "v0.5.8rc1" }
+variable "NIXL_REF"          { default = "v1.5.2" }
+# UCX is NIXL's transport.  v1.22.0 is the latest stable release; upstream NIXL
+# v1.5.2 CI builds against the pre-release v1.23.x branch.
+variable "UCX_REF"           { default = "v1.22.0" }
+variable "HSA_SNOOP_REF"     { default = "v1.6.0" }
 
 # Base images.  ROCM_BASE_IMAGE is the full ROCm toolchain the source builds
 # run on; ROCM_RUNTIME_IMAGE is what the shipped images start from.
-variable "ROCM_BASE_IMAGE"    { default = "rocm/dev-ubuntu-24.04:${ROCM_VERSION}-full" }
-variable "ROCM_RUNTIME_IMAGE" { default = "ubuntu:24.04" }
+variable "ROCM_BASE_IMAGE"    { default = "rocm/dev-ubuntu-26.04:${ROCM_VERSION}-full" }
+variable "ROCM_RUNTIME_IMAGE" { default = "ubuntu:26.04" }
 
 variable "UV_VERSION"         { default = "0.12.15" }
 
-# Source of the patched libamdhip64 built into aic-base.
-variable "CLR_REF"            { default = "therock-${ROCM_VERSION}" }
-# Triton is source-built for aic-base; the ref follows vLLM's Dockerfile.rocm_base.
-variable "TRITON_REF"         { default = "release/internal/3.7.x" }
+# Source of the patched libamdhip64 built into aic-base.  A literal, not derived
+# from ROCM_VERSION: the 10.1 branch is release/therock-10.1, with no patch level.
+variable "CLR_REF"            { default = "release/therock-10.1" }
+# Triton is source-built for aic-base; the ref follows vLLM's Dockerfile.rocm_base
+# (v0.34.0; branch head 669b31ac when pinned).
+variable "TRITON_REF"         { default = "release/internal/3.8.x" }
 
 # Repository URLs — forwarded like the pins so a build can be pointed at a fork.
 variable "PYTORCH_GIT_URL"     { default = "https://github.com/ROCm/pytorch.git" }
@@ -83,6 +85,7 @@ variable "AITER_GIT_URL"       { default = "https://github.com/ROCm/aiter.git" }
 variable "FLASH_ATTN_GIT_URL"  { default = "https://github.com/Dao-AILab/flash-attention.git" }
 variable "LMCACHE_GIT_URL"     { default = "https://github.com/LMCache/LMCache.git" }
 variable "NIXL_GIT_URL"        { default = "https://github.com/ai-dynamo/nixl.git" }
+variable "UCX_GIT_URL"         { default = "https://github.com/openucx/ucx.git" }
 variable "HSA_SNOOP_GIT_URL"   { default = "https://github.com/sbates130272/hsa-snoop.git" }
 variable "CLR_GIT_URL"         { default = "https://github.com/ROCm/rocm-systems.git" }
 variable "TRITON_GIT_URL"      { default = "https://github.com/ROCm/triton.git" }
@@ -321,6 +324,8 @@ target "base" {
     TORCHVISION_REF     = TORCHVISION_REF
     NIXL_GIT_URL        = NIXL_GIT_URL
     NIXL_REF            = NIXL_REF
+    UCX_GIT_URL         = UCX_GIT_URL
+    UCX_REF             = UCX_REF
     CLR_GIT_URL         = CLR_GIT_URL
     CLR_REF             = CLR_REF
     TRITON_GIT_URL      = TRITON_GIT_URL
