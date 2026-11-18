@@ -138,14 +138,14 @@ jobs:
           dollar='$'
 
           current="$(bash "${renderer}" "${args[@]}")"
-          printf '%s\n' "${current}" | grep -Eq "^- \*\*Build base:\*\* [^${dollar}]+ \(ROCm [^,]+, Python 3\.12, x86_64\)$"
+          printf '%s\n' "${current}" | grep -Eq "^- \*\*Build base:\*\* [^${dollar}]+ \(ROCm [^,]+, Python 3\.14, x86_64\)$"
           printf '%s\n' "${current}" | grep -Eq "^- \*\*LMCache:\*\* .+ @ ${markdown_tick}[^${markdown_tick}]+${markdown_tick} \+ AIC patches$"
           printf '%s\n' "${current}" | grep -Eq "^- \*\*NIXL:\*\* .+ @ ${markdown_tick}[^${markdown_tick}]+${markdown_tick} \+ nixl-rocm-ais-mt patch$"
           printf '%s\n' "${current}" | grep -Fq "https://github.com/ROCm/rocm-aic/releases/download/v-test/lmcache-0.5.6-cp312-cp312-linux_x86_64.whl"
 
           # Pins come from docker-bake.hcl, so a bake variable override must show up.
           full="$(ROCM_VERSION=7.14.0 LMCACHE_REF=v0.5.4 bash "${renderer}" "${args[@]}")"
-          printf '%s\n' "${full}" | grep -F -- '- **Build base:** rocm/dev-ubuntu-24.04:7.14.0-full (ROCm 7.14.0, Python 3.12, x86_64)'
+          printf '%s\n' "${full}" | grep -F -- '- **Build base:** rocm/dev-ubuntu-26.04:7.14.0-full (ROCm 7.14.0, Python 3.14, x86_64)'
           printf '%s\n' "${full}" | grep -F -- "- **LMCache:** https://github.com/LMCache/LMCache.git @ ${markdown_tick}v0.5.4${markdown_tick} + AIC patches"
 
           if NIXL_REF='' bash "${renderer}" "${args[@]}" >/dev/null 2>&1; then

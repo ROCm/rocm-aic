@@ -217,6 +217,7 @@ LMCache uses OpenTelemetry with a Prometheus fallback at `--http-port`
 | `lmcache_mp_l1_read_chunks_total` | counter | *lazy* KV chunks read from L1 |
 | `lmcache_mp_l1_evicted_chunks_total` | counter | *lazy* L1 chunks evicted (to L2 or dropped) |
 | `lmcache_mp_l1_allocation_failure_chunks_total` | counter | *lazy* Chunks dropped because L1 was full and no L2 available |
+| `lmcache_mp_l1_read_failure_chunks_total` | counter | *lazy* L1 `reserve_read` failures after a lookup; `during`, `reason`, `model_name` labels. Absent in a healthy run |
 | `lmcache_mp_l1_eviction_loop_ticks_total` | counter | L1 LRU eviction loop iterations |
 | `lmcache_mp_l1_eviction_loop_triggered_total` | counter | *lazy* Times eviction fired above the watermark |
 | `lmcache_mp_l1_chunk_lifetime_seconds` | histogram | *lazy* Time a chunk spends in L1 |
@@ -256,21 +257,26 @@ LMCache uses OpenTelemetry with a Prometheus fallback at `--http-port`
 | `lmcache_mp_l2_prefetch_adapters` | gauge | L2 prefetch adapters by `state` |
 | `lmcache_mp_l2_prefetch_lookup_requests_total` | counter | *lazy* L2 prefetch lookups attempted |
 | `lmcache_mp_l2_prefetch_lookup_objects_chunks_total` | counter | *lazy* Chunks looked up in L2 |
-| `lmcache_mp_l2_prefetch_hit_chunks_total` | counter | *lazy* Chunks successfully retrieved from L2 |
 | `lmcache_mp_l2_prefetch_load_submitted_requests_total` | counter | *lazy* L2 load tasks submitted |
 | `lmcache_mp_l2_prefetch_load_submitted_objects_chunks_total` | counter | *lazy* Chunks submitted for load |
-| `lmcache_mp_l2_prefetch_load_completed_chunks_total` | counter | *lazy* Chunks successfully loaded from L2 |
+| `lmcache_mp_l2_prefetch_load_completed_chunks_total` | counter | *lazy* Chunks successfully loaded from L2 (the "prefetch hits"; there is no `l2_prefetch_hit` counter) |
+| `lmcache_mp_l2_prefetch_failure_chunks_total` | counter | *lazy* Chunks expected in L2 that failed to load into L1; `reason` (`l1_oom`, `l1_contended`, `not_found`) and `model_name` labels. Absent in a healthy run |
 | `lmcache_mp_l2_load_completed_requests_total` | counter | *lazy* L2 load requests completed |
 | `lmcache_mp_l2_load_throughput_GB_per_second` | histogram | *lazy* L2 load throughput (GB/s) |
 | `lmcache_mp_active_prefetch_jobs` | gauge | Active prefetch jobs |
 
-#### Prefetch hit/miss (combined L1+L2)
+#### Lookup hit/miss (combined L1+L2)
+
+Upstream counters, labelled `cache_salt` and `model_name`; sum across label
+sets. There is no miss counter: missed chunks are
+`(lmcache_mp_lookup_requested_tokens_total - lmcache_mp_lookup_hit_tokens_total)`
+divided by the chunk size (256).
 
 | Metric | Type | Description |
 | --- | --- | --- |
-| `lmcache_mp_prefetch_hit_chunks_total` | counter | *lazy* Cache hits by `tier` label (`l1` or `l2`) |
-| `lmcache_mp_prefetch_miss_chunks_total` | counter | *lazy* Cache misses |
-| `lmcache_mp_prefetch_requests_total` | counter | *lazy* Total prefetch lookup requests |
+| `lmcache_mp_lookup_hit_l1_keys_total` | counter | *lazy* Chunks a lookup found in L1 |
+| `lmcache_mp_lookup_hit_l2_keys_total` | counter | *lazy* Chunks a lookup found in L2 |
+| `lmcache_mp_lookups_requests_total` | counter | *lazy* Lookup requests, including those that start no prefetch |
 | `lmcache_mp_active_p2p_lookup_jobs` | gauge | Active P2P (cross-instance) lookup jobs |
 
 #### Reuse gap / effectiveness
@@ -301,8 +307,8 @@ metrics use `job="lmcache_coordinator"`.
 | `lmcache_coordinator_instance_info` | gauge | Per-instance metadata (labels: `instance_id`, `ip`, `http_port`) |
 | `lmcache_coordinator_directory_keys_total` | gauge | Unique KV chunk keys with at least one placement |
 | `lmcache_coordinator_directory_placements_total` | gauge | Total placements across all keys and backends |
-| `lmcache_coordinator_instance_l1_keys` | gauge | L1 keys reported per instance via event stream |
-| `lmcache_coordinator_instance_seq_gap` | gauge | 1 if a sequence gap was detected in the instance's event stream |
+| `lmcache_coordinator_instance_l1_keys` | gauge | L1 keys reported per instance via event stream (`/directory/stats` `l1_keys_by_instance`) |
+| `lmcache_coordinator_instance_seq_gap` | gauge | 1 while the coordinator knows it is missing part of the instance's event stream (`/status` `ingest.streams[].gap_detected`, LMCache ≥ v0.5.8); no series until the instance's first event batch, or when `/status` is unavailable |
 | `lmcache_coordinator_quota_usage_bytes_total` | gauge | Total L2 byte usage tracked across all cache salts |
 | `lmcache_coordinator_quota_usage_bytes` | gauge | L2 byte usage per `cache_salt` |
 | `lmcache_coordinator_quota_limit_bytes` | gauge | L2 quota limit per `cache_salt`; −1 = unlimited |
@@ -463,7 +469,6 @@ vLLM metrics use the `vllm:` prefix and `model_name` label.
 | `vllm:estimated_flops_per_gpu_total` | counter | Estimated FLOPs per GPU (for MFU calculation) |
 | `vllm:estimated_read_bytes_per_gpu_total` | counter | Estimated memory read bytes per GPU |
 | `vllm:estimated_write_bytes_per_gpu_total` | counter | Estimated memory write bytes per GPU |
-| `vllm:model_weights_memory_bytes` | gauge | GPU memory used by model weights (static after load) |
 
 #### Misc
 

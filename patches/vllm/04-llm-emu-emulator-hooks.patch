@@ -1,4 +1,4 @@
-# Wire the LLM-Emu emulator (github.com/AKafakA/llm-emu) into vLLM v0.26.0.
+# Wire the LLM-Emu emulator (github.com/AKafakA/llm-emu) into vLLM v0.34.0.
 #
 # Two independent, env-gated features -- both no-ops when their env var is
 # unset, so a normal GPU serve is bit-identical to stock vLLM:
@@ -26,23 +26,30 @@
 # instrumentation in run_busy_loop() and the cosmetic scheduler.py hunk are
 # deliberately dropped (paper-benchmark scaffolding, no emulator function).
 #
+# Rebased onto v0.34.0, which waits for a step's output through
+# EngineCore._wait_for_output() rather than future.result() (the hook's plain
+# Futures have no poll()/wait_briefly(), so EngineCoreProc's override falls
+# straight through to result()), feeds a watchdog at the top of
+# _process_engine_step(), and replaced the `is_ec_consumer` test in
+# step_with_batch_queue() with `not self.is_mm_encoder_only`.
+#
 # The empty-batch guards delegate to EngineCore._emulator_produced_nothing()
 # rather than testing total_num_scheduled_tokens directly, and
 # step_with_batch_queue() decides `model_executed` from the hook.
 #
-# Async scheduling is ON BY DEFAULT in v0.26.0 (SchedulerConfig.async_scheduling
+# Async scheduling is ON BY DEFAULT (SchedulerConfig.async_scheduling
 # defaults to None -> auto -> True unless something opts out), so the batch-queue
 # path is the ordinary emulation path.  There, `model_executed` decides whether
 # sample_tokens() is called -- and the hook, like a real worker, splits its work
 # across execute_model() (returns a resolved None, parks a future) and
 # sample_tokens() (hands the future back).
 #
-# Upstream answers that question with `total_num_scheduled_tokens > 0`, under an
-# `is_ec_consumer` test that is True for ordinary engines too (it is
-# `ec_transfer_config is None or ...`).  That is wrong for a zero-token step,
+# Upstream answers that question with `total_num_scheduled_tokens > 0`, under a
+# `not self.is_mm_encoder_only` test that is True for ordinary engines too (every
+# engine that runs a language model).  That is wrong for a zero-token step,
 # which the emulator still claims: with a KV connector it must poll for finished
 # transfers, exactly as GPUModelRunner.execute_model calls
-# kv_connector_no_forward() for the same batch.  Marked not-executed, that step
+# kv_connector.no_forward() for the same batch.  Marked not-executed, that step
 # never reaches sample_tokens(), its parked future is stranded, the resolved None
 # is read as the model output, and the engine dies with "RuntimeError: unexpected
 # error" on the first idle step after a request completes.  Measured, not
@@ -59,13 +66,13 @@
 # try/TypeError so an older vllm_emulator build still works.
 #
 diff --git a/vllm/v1/engine/core.py b/vllm/v1/engine/core.py
-index 476f53d..5c6f54a 100644
+index 0d68457f..0b499ff5 100644
 --- a/vllm/v1/engine/core.py
 +++ b/vllm/v1/engine/core.py
-@@ -228,6 +228,58 @@ class EngineCore:
- 
+@@ -258,6 +258,58 @@ class EngineCore:
+
          self.aborts_queue = queue.Queue[list[str]]()
- 
+
 +        # --- LLM-Emu emulation hooks (opt-in via env, inert otherwise) ------
 +        # VLLM_EMULATOR_ENABLE_ORACLE=1 makes the executor short-circuit the
 +        # forward pass with a timer-resolved fake output (see
@@ -119,12 +126,12 @@ index 476f53d..5c6f54a 100644
 +                )
 +
          self._idle_state_callbacks: list[Callable] = []
- 
+
          # Mark the startup heap as static so that it's ignored by GC.
-@@ -573,6 +625,36 @@ class EngineCore:
+@@ -710,6 +762,36 @@ class EngineCore:
          Overridden by the DP engine core; never throttles otherwise."""
          return False
- 
+
 +    def _emulator_has_pending_output(self) -> bool:
 +        """Whether the LLM-Emu hook parked an output for the current step.
 +
@@ -141,7 +148,7 @@ index 476f53d..5c6f54a 100644
 +        A zero-token batch is usually a no-op, but not with a KV connector:
 +        every request may be parked in WAITING_FOR_REMOTE_KVS on an async load,
 +        and only a step that polls the connector can un-park them (vLLM's own
-+        GPUModelRunner.kv_connector_no_forward() case). The hook still runs
++        GPUModelRunner kv_connector.no_forward() case). The hook still runs
 +        that poll and leaves a pending sample future, so bailing out on token
 +        count alone both deadlocks the load and strands the future, which
 +        desynchronises the following step. Ask the hook instead.
@@ -157,8 +164,8 @@ index 476f53d..5c6f54a 100644
 +
      def step(self) -> tuple[dict[int, EngineCoreOutputs], bool]:
          """Schedule, execute, and make output.
- 
-@@ -585,6 +667,8 @@ class EngineCore:
+
+@@ -721,6 +803,8 @@ class EngineCore:
          if not self.scheduler.has_requests():
              return {}, False
          scheduler_output = self.scheduler.schedule(self._should_throttle_prefills())
@@ -167,9 +174,9 @@ index 476f53d..5c6f54a 100644
          future = self.model_executor.execute_model(scheduler_output, non_block=True)
          grammar_output = self.scheduler.get_grammar_bitmask(scheduler_output)
          with (
-@@ -593,7 +677,12 @@ class EngineCore:
+@@ -729,7 +813,12 @@ class EngineCore:
          ):
-             model_output = future.result()
+             model_output = self._wait_for_output(future)
              if model_output is None:
 +                if self._emulator_produced_nothing(scheduler_output):
 +                    # Emulation mode: an empty batch produces no fake output.
@@ -177,10 +184,10 @@ index 476f53d..5c6f54a 100644
                  model_output = self.model_executor.sample_tokens(grammar_output)
 +                if self._emulator_enabled and model_output is None:
 +                    return {}, False
- 
+
          # Before processing the model output, process any aborts that happened
          # during the model execution.
-@@ -643,11 +732,37 @@ class EngineCore:
+@@ -783,11 +872,38 @@ class EngineCore:
          deferred_scheduler_output = None
          if self.scheduler.has_requests():
              scheduler_output = self.scheduler.schedule(self._should_throttle_prefills())
@@ -190,7 +197,7 @@ index 476f53d..5c6f54a 100644
                  exec_future = self.model_executor.execute_model(
                      scheduler_output, non_block=True
                  )
--            if self.is_ec_consumer:
+-            if not self.is_mm_encoder_only:
 +            if self._emulator_enabled:
 +                # Emulation mode. The hook splits its work across
 +                # execute_model() / sample_tokens() exactly as a real worker
@@ -199,10 +206,11 @@ index 476f53d..5c6f54a 100644
 +                # model executed?" is precisely "did the hook park an output?",
 +                # asked right after execute_model(), when it has just decided.
 +                #
-+                # This MUST come before the is_ec_consumer branch, not after.
-+                # That branch is taken by ordinary engines too -- is_ec_consumer
-+                # is True whenever ec_transfer_config is None, which is the
-+                # default -- and it answers `total_num_scheduled_tokens > 0`.
++                # This MUST come before the is_mm_encoder_only branch, not
++                # after. That branch is taken by ordinary engines too -- it is
++                # `not self.is_mm_encoder_only`, True for every engine that
++                # runs a language model -- and it answers
++                # `total_num_scheduled_tokens > 0`.
 +                # A zero-token step, which the hook still claims because with a
 +                # KV connector it has to poll for finished transfers, would then
 +                # be marked not-executed: sample_tokens() is never called, the
@@ -211,17 +219,17 @@ index 476f53d..5c6f54a 100644
 +                # "RuntimeError: unexpected error" -- reliably, on the first
 +                # idle step after a request completes.
 +                #
-+                # Async scheduling is ON BY DEFAULT in v0.26.0
++                # Async scheduling is ON BY DEFAULT
 +                # (SchedulerConfig.async_scheduling=None -> auto -> True), so
 +                # this is the ordinary emulation path, not a corner case.
 +                model_executed = self._emulator_has_pending_output()
-+            elif self.is_ec_consumer:
++            elif not self.is_mm_encoder_only:
                  model_executed = scheduler_output.total_num_scheduled_tokens > 0
- 
+
              if self.is_pooling_model or not model_executed:
-@@ -692,6 +807,9 @@ class EngineCore:
+@@ -832,6 +948,9 @@ class EngineCore:
          ):
-             model_output = future.result()
+             model_output = self._wait_for_output(future)
              if model_output is None:
 +                if self._emulator_produced_nothing(scheduler_output):
 +                    # Emulation mode: an empty batch produces no fake output.
@@ -229,10 +237,10 @@ index 476f53d..5c6f54a 100644
                  # None from sample_tokens() implies that the original execute_model()
                  # call failed - raise that exception.
                  exec_model_fut.result()
-@@ -1399,6 +1517,11 @@ class EngineCoreProc(EngineCore):
-     def _process_engine_step(self) -> bool:
+@@ -1856,6 +1975,11 @@ class EngineCoreProc(EngineCore):
          """Called only when there are unfinished local requests."""
- 
+         get_watch_dog().feed()
+
 +        # Optional: time the full step cycle for emulator profile capture
 +        # (VLLM_EMULATOR_TRACE_STEP_CYCLE=1).  None -> no overhead at all.
 +        step_tracer = self._emulator_step_tracer
@@ -241,20 +249,20 @@ index 476f53d..5c6f54a 100644
          # Step the engine core.
          outputs, model_executed = self.step_fn()
          # Put EngineCoreOutputs into the output queue.
-@@ -1407,6 +1530,9 @@ class EngineCoreProc(EngineCore):
+@@ -1864,6 +1988,9 @@ class EngineCoreProc(EngineCore):
          # Post-step hook.
          self.post_step(model_executed)
- 
+
 +        if step_tracer is not None and model_executed:
 +            self._record_emulator_step(step_tracer, step_t0)
 +
          # If no model execution happened but there is still scheduler work
          # (e.g. WAITING_FOR_REMOTE_KVS or delayed KV connector frees), yield
          # the GIL briefly to allow background transfer threads to make progress.
-@@ -1415,6 +1541,33 @@ class EngineCoreProc(EngineCore):
- 
+@@ -1872,6 +1999,33 @@ class EngineCoreProc(EngineCore):
+
          return model_executed
- 
+
 +    def _record_emulator_step(self, step_tracer, step_t0: float) -> None:
 +        """Record one step-latency sample for emulator profile capture.
 +
@@ -286,10 +294,10 @@ index 476f53d..5c6f54a 100644
          while self._idle_state_callbacks:
              callback = self._idle_state_callbacks.pop()
 diff --git a/vllm/v1/executor/uniproc_executor.py b/vllm/v1/executor/uniproc_executor.py
-index 3bac65b..7fac42e 100644
+index 229879c0..663a9579 100644
 --- a/vllm/v1/executor/uniproc_executor.py
 +++ b/vllm/v1/executor/uniproc_executor.py
-@@ -45,6 +45,46 @@ class AsyncOutputFuture(Future):
+@@ -51,6 +51,46 @@ class AsyncOutputFuture(Future):
  class UniProcExecutor(Executor):
      def _init_executor(self) -> None:
          """Initialize the worker and load the model."""
@@ -336,7 +344,7 @@ index 3bac65b..7fac42e 100644
          self.driver_worker = WorkerWrapperBase(rpc_rank=0)
          distributed_init_method, rank, local_rank = self._distributed_args()
          kwargs = dict(
-@@ -108,6 +148,18 @@ class UniProcExecutor(Executor):
+@@ -119,6 +159,18 @@ class UniProcExecutor(Executor):
      def execute_model(  # type: ignore[override]
          self, scheduler_output: SchedulerOutput, non_block: bool = False
      ) -> ModelRunnerOutput | None | Future[ModelRunnerOutput | None]:
@@ -355,7 +363,7 @@ index 3bac65b..7fac42e 100644
          output = self.collective_rpc(
              "execute_model",
              args=(scheduler_output,),
-@@ -123,6 +175,19 @@ class UniProcExecutor(Executor):
+@@ -134,6 +186,19 @@ class UniProcExecutor(Executor):
      def sample_tokens(  # type: ignore[override]
          self, grammar_output: GrammarOutput | None, non_block: bool = False
      ) -> ModelRunnerOutput | None | Future[ModelRunnerOutput | None]:
@@ -375,12 +383,12 @@ index 3bac65b..7fac42e 100644
          return self.collective_rpc(
              "sample_tokens",
              args=(grammar_output,),
-@@ -141,6 +206,8 @@ class UniProcExecutor(Executor):
+@@ -152,6 +217,8 @@ class UniProcExecutor(Executor):
      def shutdown(self) -> None:
          if worker := self.driver_worker:
              worker.shutdown()
 +        if self._emulator_executor_hook is not None:
 +            self._emulator_executor_hook.shutdown()
- 
+
      @classmethod
      def supports_async_scheduling(cls) -> bool:

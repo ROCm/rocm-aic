@@ -126,26 +126,18 @@ RUN shopt -s nullglob && \
 
 WORKDIR /
 
-COPY docker/lmcache/paged_cupy_memory_allocator.py \
-     /app/LMCache/lmcache/v1/memory_allocators/paged_cupy_memory_allocator.py
+# Apply the ROCm event-IPC edit to the LMCache source before the wheel is
+# built: event IPC is replaced by a producer-side sync (hipIpcOpenEventHandle
+# is broken on gfx1201 — see tests/ipc/).  docker/vllm/Dockerfile runs the same
+# script on the PyPI LMCache client of its `vllm` stage.  The script exits
+# non-zero if an anchor is missing.
+COPY docker/lmcache/rocm_event_ipc_patch.py /tmp/rocm_event_ipc_patch.py
+RUN AIC_LMCACHE_SRC=/app/LMCache python3 /tmp/rocm_event_ipc_patch.py && \
+    rm /tmp/rocm_event_ipc_patch.py
 
-# Apply ROCm IPC patches.
-# Fix 1: IPC event livelock — skip event IPC on ROCm (futures.py).
-# hadolint ignore=SC2015
-RUN sed -i \
-    "s/        if event_bytes:/        if event_bytes and not __import__('torch').version.hip:/" \
-    /app/LMCache/lmcache/v1/multiprocess/futures.py && \
-    grep -q "version.hip" /app/LMCache/lmcache/v1/multiprocess/futures.py || \
-    { echo "ERROR: ROCm IPC livelock patch did not apply"; exit 1; }
-# Fix 2: ROCm VMEM IPC — cross-container zero-copy via hipMemCreate +
-# hipMemExportToShareableHandle + SCM_RIGHTS Unix socket fd passing.
-# rocm_vmem_ipc.py is the wrapper implementation; rocm_ipc_patch.py installs
-# it into the LMCache source tree and patches ipc_wrapper.wrap() to use it.
-COPY docker/lmcache/rocm_vmem_ipc.py /tmp/rocm_vmem_ipc.py
-COPY docker/lmcache/rocm_ipc_patch.py /tmp/rocm_ipc_patch.py
-RUN python3 /tmp/rocm_ipc_patch.py && rm /tmp/rocm_ipc_patch.py
-
-# Build the LMCache wheel with full ROCm headers available.
+# Build the LMCache wheel with full ROCm headers available.  LMCache pins an
+# exact torch in [build-system].requires; relax it so the constraint to the
+# base image's torch wheel can be satisfied.
 WORKDIR /app/LMCache
 RUN --mount=type=cache,target=/root/.cache/pip \
     --mount=type=bind,from=base-wheels,source=/,target=/base-wheels \
@@ -154,6 +146,7 @@ RUN --mount=type=cache,target=/root/.cache/pip \
     (shopt -s nullglob; for f in /base-wheels/torch-*.whl; do \
         printf 'torch @ file://%s\n' "$f" > /tmp/build-constraints.txt; \
     done) && \
+    sed -i -E 's/"torch==[0-9.]+"/"torch"/' pyproject.toml && grep -q '"torch",' pyproject.toml && \
     PYTORCH_ROCM_ARCH="${ROCM_ARCH}" \
         TORCH_DONT_CHECK_COMPILER_ABI=1 \
         CXX=hipcc \
@@ -190,10 +183,11 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
       python3-pip
 
-# CuPy (ROCm): hipMalloc without ROCm compute stack (LMCACHE_NIXL_USE_CUPY=1).
+# CuPy (ROCm): LMCache's MP server imports cupy.  No grpcio-tools: the wheel
+# ships its generated gRPC stubs, and an unpinned one wants a newer grpcio and
+# protobuf than LMCache allows.
 RUN --mount=type=cache,target=/root/.cache/pip \
     pip3 install --no-cache-dir \
-      grpcio-tools \
       cupy-rocm-7-0
 
 # Install the pre-compiled LMCache wheel from the build_lmcache_wheel stage.
@@ -208,9 +202,9 @@ RUN --mount=type=cache,target=/root/.cache/uv \
     --mount=type=bind,from=build_lmcache_wheel,source=/app/LMCache/,target=/app/LMCache/ \
     uv pip install --system -r /app/LMCache/requirements/cli.txt "matplotlib>=3.8,<4"
 
-# ----- 6. hipFile — provided by the ROCm 7.14 base image (GA since 7.14) ------
+# ----- 6. hipFile — provided by the ROCm base image (GA since ROCm 7.14) ------
 # No source build needed.
-RUN { find /usr/lib/python3 /usr/local/lib/python3.12 -name '__pycache__' -type d \
+RUN { find /usr/lib/python3 /usr/local/lib/python3.* -name '__pycache__' -type d \
          -exec rm -rf {} + || \
       echo "WARNING: __pycache__ cleanup failed; see find's error above" >&2; }
 
@@ -220,13 +214,10 @@ RUN { find /usr/lib/python3 /usr/local/lib/python3.12 -name '__pycache__' -type 
 # set: aic-vllm leaves it unset too, and the two must agree.  The default
 # (non-legacy) mode crosses containers that share a network namespace; see
 # docker-compose.yml.
-# LMCACHE_NIXL_USE_CUPY=1: activate the CuPy GPU buffer allocator so
-# librocblas/libMIOpen/etc. are never dlopened in the lmcache process.
 ENV PYTHONUNBUFFERED=1 \
     PYTHONHASHSEED=0 \
     SAFETENSORS_FAST_GPU=1 \
-    HIP_FORCE_DEV_KERNARG=1 \
-    LMCACHE_NIXL_USE_CUPY=1
+    HIP_FORCE_DEV_KERNARG=1
 
 ARG AIC_VERSION
 ARG ROCM_BASE_IMAGE

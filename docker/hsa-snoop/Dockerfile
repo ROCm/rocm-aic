@@ -53,7 +53,7 @@
 # An unset image arg stops the build at its FROM:
 #   base name (${ROCM_BUILD_IMAGE}) should not be blank
 ARG ROCM_BUILD_IMAGE
-# AMD publishes no non-full rocm/dev-ubuntu-24.04 image for 7.14.x, so the
+# AMD publishes no non-full rocm/dev-ubuntu-26.04:${ROCM_VERSION} image, so the
 # runtime stage starts from plain ubuntu.  It stays plain: hsa-snoop needs no
 # ROCm userspace (see the stage notes above).
 ARG ROCM_RUNTIME_IMAGE

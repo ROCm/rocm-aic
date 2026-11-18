@@ -307,7 +307,7 @@ if [[ "${SKIP_MP_TEST:-0}" != "1" && -n "${VLLM_MODEL:-}" ]]; then
         note "  lmcache server healthy"
 
         # Start vLLM server with LMCacheMPConnector.
-        KV_CFG='{"kv_connector":"LMCacheMPConnector","kv_role":"kv_both","kv_connector_extra_config":{"lmcache.mp.host":"tcp://localhost","lmcache.mp.port":'"${LMCACHE_PORT}"',"lmcache.mp.heartbeat_interval":60}}'
+        KV_CFG='{"kv_connector":"LMCacheMPConnector","kv_role":"kv_both","kv_connector_extra_config":{"lmcache.mp.host":"tcp://localhost","lmcache.mp.port":'"${LMCACHE_PORT}"',"lmcache.mp.use_vmm_api":false,"lmcache.mp.heartbeat_interval":60}}'
         VLLM_LOGGING_LEVEL=WARNING python3 -m vllm.entrypoints.openai.api_server \
             --model "${model}" \
             --attention-backend "${ATTN_BACKEND}" \
@@ -783,7 +783,7 @@ PYEOF
     }
 
     # Start vLLM with MP connector.
-    T_KV_CFG='{"kv_connector":"LMCacheMPConnector","kv_role":"kv_both","kv_connector_extra_config":{"lmcache.mp.host":"tcp://localhost","lmcache.mp.port":'"${T_LMC_PORT}"',"lmcache.mp.heartbeat_interval":60}}'
+    T_KV_CFG='{"kv_connector":"LMCacheMPConnector","kv_role":"kv_both","kv_connector_extra_config":{"lmcache.mp.host":"tcp://localhost","lmcache.mp.port":'"${T_LMC_PORT}"',"lmcache.mp.use_vmm_api":false,"lmcache.mp.heartbeat_interval":60}}'
     start_vllm_t() {
         # VLLM_SERVER_DEV_MODE=1 enables POST /reset_prefix_cache so we can clear
         # the VRAM prefix cache between phases without restarting the process.

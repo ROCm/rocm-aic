@@ -23,6 +23,46 @@ that redundancy.
   were `crsuse2-m2m-NNN`)
 - Controllers are *not* compute nodes and never appear in `sinfo`
 
+## Current stack (2026-11-17)
+
+`docker/docker-bake.hcl` owns every build pin (see `docs/ENVIRONMENT.md`); the
+Dockerfiles carry bare `ARG`s with no defaults. Current pins: base image
+`rocm/dev-ubuntu-26.04:10.1.0-full` (ROCm 10.1.0, Ubuntu 26.04, Python 3.14),
+PyTorch source-built from `ROCm/pytorch@release/2.15`, torchvision `v0.29.2`,
+Triton `release/internal/3.8.x`, vLLM `v0.34.0`, LMCache `v0.5.8rc1`, NIXL
+`v1.5.2` on UCX `v1.22.0`, AITER `v0.1.29.post1`, hsa-snoop `v1.6.0`. KVBench
+stays on LMCache 0.5.6. Validate changes on an MI355X before modifying the
+stack; as of this date the new stack has only been served on gfx1201.
+
+- **The LMCache connector config must set `"lmcache.mp.use_vmm_api": false`.**
+  LMCache v0.5.8rc1 asks vLLM for fd-exported (VMM) KV memory by default, and
+  vLLM v0.34.0 refuses that on ROCm at startup (LMCache issue #6620). Every
+  connector JSON in the repo carries the key; a hand-written
+  `--kv-transfer-config` needs it too. Upstream's ROCm VMM path (LMCache #6626,
+  vLLM #67577) is not in these tags.
+- **Judge KV offload by counters, not log wording.** Use prompts of several
+  256-token chunks, restart only vLLM (`make restart-vllm`), and check
+  `lmcache_mp_num_finished_stores_total` and
+  `vllm:external_prefix_cache_hits_total`. `Session ... has no lookup ipc key,
+  skipping touch` is normal for a prompt under one chunk, a repeat against a
+  warm vLLM shows no LMCache activity, and the store line now reads
+  `Stored N of M requested tokens`.
+- **Lazy offload** (`lazy_offload: true` in the Makefile's `_MP_CONNECTOR_JSON`)
+  defers a store until vLLM is about to evict the blocks, or about 30 s have
+  passed and another request arrives. An idle engine does not flush, and
+  `/reset_prefix_cache` or a vLLM restart drops whatever is pending.
+  `make vllm-reset-test` therefore runs with lazy offload off, unless you set
+  `KV_TRANSFER_ARG` yourself.
+- **The KV cache dtype defaults to `auto`** (`VLM_KV_CACHE_DTYPE`). `fp8` gave
+  repeated-token glitches with Qwen2.5-3B on gfx1201. `fp8` holds about twice
+  the KV tokens, so cliff results from before this change are not comparable.
+- **LMCache hit and miss counts come from upstream counters**
+  (`lmcache_mp_lookup_hit_l1_keys_total`, `lmcache_mp_lookup_hit_l2_keys_total`,
+  requested minus hit tokens for misses); the carried prefetch-counter patch
+  was dropped.
+- `POST /reset_prefix_cache` still needs `VLLM_SERVER_DEV_MODE=1` (the compose
+  default); `?reset_external=true` also clears LMCache.
+
 ## Historical ROCm 7.14 torch wheel integration issue (2026-07-20)
 
 The Dockerfile was temporarily updated to use AMD's native ROCm 7.14 wheel index
@@ -34,13 +74,14 @@ vLLM's engine core fails to start on gfx950 nodes — Triton kernel calls
 failed because Triton was disabled at startup due to circular import side-effects
 in vLLM's platform detection code.
 
-The stack now uses PyTorch source-built from `ROCm/pytorch@release/2.13` against
-the ROCm 7.14.1 base image, with vLLM `v0.29.0`, LMCache `v0.5.6`, AITER
-`v0.1.22.post1`, and NIXL `v1.4.1`. The single `docker/Dockerfile` was split into
-three independent Dockerfiles (`docker/base/`, `docker/vllm/`, `docker/lmcache/`)
-enabling parallel builds. Validate changes on an MI355X before modifying the stack.
+The fix was to source-build PyTorch (then `ROCm/pytorch@release/2.13` on the
+ROCm 7.14.1 base image, with vLLM `v0.29.0`, LMCache `v0.5.6`, AITER
+`v0.1.22.post1` and NIXL `v1.4.1`) and to split the single `docker/Dockerfile`
+into three independent Dockerfiles (`docker/base/`, `docker/vllm/`,
+`docker/lmcache/`) enabling parallel builds. The pins have since moved; see
+"Current stack" above.
 
-vLLM v0.29.0 no longer calls `logger.warning_once()` from
+vLLM v0.29.0 stopped calling `logger.warning_once()` from
 `vllm.platforms.rocm._get_gcn_arch()` when the amdsmi probe fails, so the old
 ROCm-AIC circular-import patch was retired. The SPUR validation must confirm
 that the vLLM ROCm-platform import and engine startup remain healthy.
@@ -52,12 +93,12 @@ that the vLLM ROCm-platform import and engine startup remain healthy.
    hipErrorInvalidImage issue is resolved with `AIC_ROCM_ARCH=gfx942`.
 
 2. **Use the current vLLM ROCm pin** — `docker/docker-bake.hcl` pins
-   `VLLM_REF=v0.29.0` (it owns every build pin; see `docs/ENVIRONMENT.md`);
-   retain this unless SPUR validation proves a different
-   version is needed.
+   `VLLM_REF` (`v0.29.0` at the time, `v0.34.0` now; it owns every build pin,
+   see `docs/ENVIRONMENT.md`); retain this unless SPUR validation proves a
+   different version is needed.
 
-3. **Upgrade vLLM further** — only after validating the current `v0.29.0`
-   stack; newer vLLM versions may require additional patch rework.
+3. **Upgrade vLLM further** — only after validating the current pin on SPUR;
+   newer vLLM versions may require additional patch rework.
 
 ### SPUR cluster submission quirks
 
@@ -98,9 +139,9 @@ stacks on one node's bridge would both answer to: `aic_bridge_url <container>
 The RX 9070 XT (Navi 48, gfx1201, 16 GB) is supported in the default multi-arch
 build (`AIC_ROCM_ARCH` default includes `gfx1201`). Key differences from CDNA:
 
-- **Triton**: `torch 2.13.0+rocm7.2` from pytorch.org works on gfx1201 without
-  the Triton 3.7.1 incompatibility that affects gfx950 on older KFD. The current
-  bake pin is correct; do not switch back to `repo.amd.com` for gfx1201.
+- **PyTorch and Triton**: both are source-built in `aic-base` (torch 2.15,
+  Triton 3.8) and work on gfx1201; serving was validated on this node on
+  2026-11-17. Do not switch to wheels from `repo.amd.com` for gfx1201.
 - **NIXL AIS_MT**: hipFile P2PDMA is CDNA-only; use `AIC_L2_BACKEND=nixl_posix`
   on gfx1201 nodes (the SPUR default already does this).
 - **VFIO**: the GPU is typically VFIO-passed to a VM on workstations. Rebind to
@@ -132,7 +173,13 @@ build (`AIC_ROCM_ARCH` default includes `gfx1201`). Key differences from CDNA:
   and should share the PID namespace (`network_mode: container:aic-lmcache` +
   `pid: service:lmcache` — the compose defaults; no make override needed).
 
-  The standard vllm-reset-test command on gfx1201 (no extra overrides):
+  Validated 2026-11-17 on ROCm 10.1 with amdgpu-dkms 7.1.9: in the default
+  (non-legacy) mode with those shared namespaces, stock HIP memory-handle IPC
+  registers, stores and retrieves KV across the two containers, so the AIC
+  VMM/SCM_RIGHTS workaround was removed. Cross-process HIP *event* handles are
+  still bypassed (`docker/lmcache/rocm_event_ipc_patch.py`).
+
+  The standard vllm-reset-test command on gfx1201:
 
   ```bash
   make vllm-reset-test \
@@ -141,16 +188,25 @@ build (`AIC_ROCM_ARCH` default includes `gfx1201`). Key differences from CDNA:
     AIC_L2_BACKEND=nixl_posix \
     NVME_DATA=/mnt/lmcache-nvme/aic-nvme \
     VLM_LOAD_FORMAT=auto \
-    LMCACHE_L1_SIZE_GB=2
+    LMCACHE_L1_SIZE_GB=2 \
+    VLM_GPU_MEMORY_UTILIZATION=0.74
   ```
 
   Additional gfx1201 requirements:
+  - `VLM_GPU_MEMORY_UTILIZATION=0.74` on this 16 GB card — vLLM v0.34.0 holds
+    about 4 GiB before it measures free memory, so the default 0.90 fails at
+    startup with "Free memory on device ... is less than desired GPU memory
+    utilization". The reset test (which adds `--enforce-eager`) then gets a KV
+    cache of about 152,000 tokens; with CUDA graphs it is far smaller.
   - `VLM_LOAD_FORMAT=auto` — fastsafetensors GDS is CDNA-only.
   - `LMCACHE_L1_SIZE_GB=2` for this 16 GB node — default 20 GiB L1 prevents
     eviction to L2 in the reset test.
   - HF_TOKEN is picked up from the environment; no HF_TOKEN_FILE needed.
   - Mount the 1.8 TB WD Black NVMe (`/dev/nvme1n1`) before running:
-    `sudo mount /dev/nvme1n1 /mnt/lmcache-nvme`
+    `sudo mount /dev/nvme1n1 /mnt/lmcache-nvme`. (On snoc-thinkstation as of
+    2026-11-18 that drive is mounted at `/mnt/kv-nvme` instead, and
+    `/mnt/lmcache-nvme/aic-nvme` is a directory on the root NVMe; the reset
+    test passes that way.)
   - NVMe device names may shift after `modprobe -r/modprobe amdgpu` cycles;
     verify with `lsblk` before mounting.
 

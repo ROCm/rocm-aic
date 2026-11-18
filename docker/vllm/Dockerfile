@@ -129,8 +129,11 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
 
 # Bring torch + Python packages from aic-base so wheels link against the same torch.
 # Note that `emulate` has no base-wheels context
+# The Debian-installed packaging has no RECORD, so pip cannot upgrade it in
+# place when the wheels need a newer one; install a pip-owned copy first.
 RUN --mount=type=cache,target=/root/.cache/pip \
     --mount=type=bind,from=base-wheels,source=/,target=/base-wheels \
+    pip3 install --break-system-packages --ignore-installed packaging && \
     find /base-wheels -type f -name "*.whl" -exec pip3 install --break-system-packages {} +
 
 COPY --from=base /usr/local/bin/uv  /usr/local/bin/uv
@@ -144,14 +147,26 @@ COPY patches/aiter/ /app/patches/aiter/
 # ----- 3. ROCm attention backends (AITER + FlashAttention) ----------------------
 # Skipped when VLLM_TARGET_DEVICE=empty (CPU-only emulate build: no hipcc).
 #
-# On the AOT path (AITER_PREBUILD_KERNELS != 0) the RUN below exports three
-# FlyDSL knobs.  AITER_FLYDSL_AOT_TOLERATE_FAILURES=1 covers the residual
-# failures that survive patches/aiter/02's arch filter: on gfx942 those are the
+# On the AOT path (AITER_PREBUILD_KERNELS != 0) the RUN below exports two
+# FlyDSL knobs.  GPU_ARCHS is what AITER (since v0.1.29) filters the AOT job
+# list by; patches/aiter/02 adds the escape hatch on the AOT failure
+# assertion.  Both patches/aiter scripts exit non-zero if their anchor is
+# missing.  AITER_FLYDSL_AOT_TOLERATE_FAILURES=1 covers the residual
+# failures that survive the arch filter: on gfx942 those were the
 # `wint4` (INT4-weight) MoE kernels -- 51 of the 352 arch-correct jobs on job
 # 68149555, all named flydsl_moe{1,2}_abf16_wint4_bf16_*.  AITER lists them
-# under gfx942's cu_num but they do not compile for it in v0.1.22.post1.  This
-# is a narrow, named gap rather than blanket silencing: the other 6752 jobs are
-# dropped by arch before they are ever attempted.  Revisit on an AITER bump.
+# under gfx942's cu_num but they did not compile for it in v0.1.22.post1.  Not
+# re-measured on v0.1.29.post1: revisit whether it is still needed.
+#
+# The AOT worker count has no knob of its own any more
+# (AITER_FLYDSL_AOT_WORKERS is gone in v0.1.29): setup.py adopts MAX_JOBS as
+# AITER_MAX_JOBS, and AITER further caps it at 80% of the CPUs and by free
+# memory.
+#
+# AITER_USE_SYSTEM_TRITON=1: without it AITER's setup.py uninstalls the
+# source-built Triton from base-wheels and pip-installs triton==3.8.0 from
+# pypi.amd.com (and swallows a failed install, leaving no Triton at all).  It
+# only takes effect when a triton dist is installed, hence the check before it.
 #
 # AITER versions itself from its git tag (setuptools_scm), and --revision
 # fetches no tags, so it is cloned with --branch: AITER_REF must be a tag or
@@ -181,17 +196,18 @@ RUN --mount=type=cache,target=/root/.cache/pip \
         _jobs="${BUILD_JOBS:-$(nproc)}" && \
         if [ "${_prebuild}" != "0" ]; then \
             export GPU_ARCHS="${ROCM_ARCH}"; \
-            export AITER_FLYDSL_AOT_WORKERS="${_jobs}"; \
             export AITER_FLYDSL_AOT_TOLERATE_FAILURES=1; \
-            python3 /app/patches/aiter/02-flydsl-aot-filter-by-arch.py /app/aiter; \
-            python3 /app/patches/aiter/03-aiter-prebuild-threads.py /app/aiter; \
+            python3 /app/patches/aiter/02-flydsl-aot-tolerate-failures.py /app/aiter || exit 1; \
+            python3 /app/patches/aiter/03-aiter-prebuild-threads.py /app/aiter || exit 1; \
             : "${AITER_PREBUILD_THREADS:=$(( _jobs / 8 ))}"; \
             [ "${AITER_PREBUILD_THREADS}" -lt 1 ] && AITER_PREBUILD_THREADS=1; \
             [ "${AITER_PREBUILD_THREADS}" -gt 32 ] && AITER_PREBUILD_THREADS=32; \
             export AITER_PREBUILD_THREADS; \
-            echo "AITER CK prebuild: ${AITER_PREBUILD_THREADS} concurrent modules, ninja -j${_jobs} each"; \
+            echo "AITER CK prebuild: ${AITER_PREBUILD_THREADS} concurrent modules, ninja up to -j${_jobs} each"; \
         fi && \
-        PYTORCH_ROCM_ARCH="${ROCM_ARCH}" \
+        python3 -c 'import importlib.metadata as m; print("Triton kept for AITER build:", m.version("triton"))' && \
+        AITER_USE_SYSTEM_TRITON=1 \
+            PYTORCH_ROCM_ARCH="${ROCM_ARCH}" \
             PREBUILD_KERNELS="${_prebuild}" \
             TORCH_DONT_CHECK_COMPILER_ABI=1 \
             MAX_JOBS="${_jobs}" \
@@ -222,9 +238,9 @@ RUN --mount=type=cache,target=/root/.cache/pip \
     if [ "${VLLM_TARGET_DEVICE}" = "empty" ]; then \
         echo "Skipping FlashAttention (VLLM_TARGET_DEVICE=empty)"; \
     elif _fa_arch="$(_gfx9_archs "${ROCM_ARCH}")"; [ -n "${_fa_arch}" ]; then \
-        git clone --depth 1 --branch "${FLASH_ATTN_REF}" \
-            --recurse-submodules --shallow-submodules \
-            "${FLASH_ATTN_GIT_URL}" . && \
+        git clone --filter=blob:none --no-checkout "${FLASH_ATTN_GIT_URL}" . && \
+        git checkout "${FLASH_ATTN_REF}" && \
+        git submodule update --init --recursive --depth 1 && \
         GPU_ARCHS="${_fa_arch}" \
             PYTORCH_ROCM_ARCH="${_fa_arch}" \
             HIPFLAGS="-Wno-deprecated-attributes" \
@@ -256,9 +272,12 @@ RUN git clone --depth 1 --branch "${VLLM_REF}" "${VLLM_GIT_URL}" /app/vllm
 
 # Patch setup.py so _is_hip() short-circuits on VLLM_TARGET_DEVICE=rocm at
 # build time, without probing torch.version.hip before it is installed.
+# amd-quark (quantization tooling) has no release for Python 3.14; drop the pin.
 RUN sed -i 's/def _is_hip() -> bool:/def _is_hip() -> bool:\n    if VLLM_TARGET_DEVICE == "rocm":\n        return True/' /app/vllm/setup.py && \
     grep -A2 '^def _is_hip() -> bool:$' /app/vllm/setup.py | \
-        grep -Fxq '    if VLLM_TARGET_DEVICE == "rocm":'
+        grep -Fxq '    if VLLM_TARGET_DEVICE == "rocm":' && \
+    sed -i '/^amd-quark==/d' /app/vllm/requirements/rocm.txt && \
+    ! grep -q '^amd-quark' /app/vllm/requirements/rocm.txt
 
 # Apply every patch under patches/vllm/ in lexical order.
 WORKDIR /app/vllm
@@ -280,6 +299,7 @@ RUN shopt -s nullglob && \
 # --no-build-isolation means nothing installs vLLM's [build-system].requires.
 # rocm.txt lists setuptools-rust/-scm itself; common.txt does not, so the
 # `empty` path adds build/rust.txt for them.
+# The constraint keeps pip from swapping the ROCm torch for a PyPI build.
 ARG PYTORCH_SERIES
 # hadolint ignore=SC2098
 RUN --mount=type=cache,target=/root/.cache/pip \
@@ -306,7 +326,7 @@ RUN --mount=type=cache,target=/root/.cache/pip \
     pip3 install --no-cache-dir /wheels/vllm-*.whl && \
     python3 -c 'import importlib.metadata as m; print("vLLM installed:", m.version("vllm"))' && \
     rm -rf /app/vllm /tmp/torch-constraints.txt && \
-    { find /usr/lib/python3 /usr/local/lib/python3.12 -name '__pycache__' -type d \
+    { find /usr/lib/python3 /usr/local/lib/python3.* -name '__pycache__' -type d \
          -exec rm -rf {} + || \
       echo "WARNING: __pycache__ cleanup failed; see find's error above" >&2; }
 WORKDIR /
@@ -323,6 +343,10 @@ RUN --mount=type=cache,target=/root/.cache/pip \
 # llm-emu was originally built for vllm 0.18
 # However, our patches make it compatible with aic's vllm version
 # Edit pyproject.toml to remove that version restriction
+#
+# The second check below builds the hook's fake ModelRunnerOutput against the
+# installed vLLM (on the emulator platform, so it needs no GPU): at v0.34.0 the
+# imports alone passed while the first scheduled step raised TypeError.
 # hadolint ignore=SC3044
 RUN : "${LLM_EMU_GIT_URL:?unset: build through docker/docker-bake.hcl}" \
       "${LLM_EMU_REF:?unset: build through docker/docker-bake.hcl}" && \
@@ -347,11 +371,18 @@ RUN sed -i 's/vllm==[0-9\.]\+/vllm/g' pyproject.toml && \
     python3 -c "import vllm_emulator.hooks.executor_hook, vllm_emulator.oracle, \
 vllm_emulator.profile.loader, vllm_emulator.profiler.trace_profiler; \
 print('vllm_emulator subpackages import OK')" && \
+    VLLM_EMULATOR_ENABLE_ORACLE=1 python3 -c "import importlib.util as u, types; \
+from vllm_emulator.hooks.executor_hook import ExecutorEmulatorHook as H; \
+assert u.find_spec('vllm.v1.worker.gpu.model_runner') or u.find_spec('vllm.v1.worker.gpu_model_runner'), 'vLLM model-runner module moved'; \
+h = H.__new__(H); h._filler_token_id = 0; \
+o = h._create_fake_output(types.SimpleNamespace(num_scheduled_tokens={'r': 1}, scheduled_new_reqs=[])); \
+assert o.req_ids == ['r'] and o.sampled_token_ids == [[0]], o; \
+print('vllm_emulator fake ModelRunnerOutput OK')" && \
     mkdir -p /opt/llm-emu/profiles && \
     cp /app/llm-emu/example_profiling_data/*.json /opt/llm-emu/profiles/ && \
     test -r "${AIC_EMULATOR_EXAMPLE_PACK}" && \
     rm -rf /app/llm-emu /app/patches /app/aiter /app/flash-attention && \
-    { find /usr/lib/python3 /usr/local/lib/python3.12 -name '__pycache__' -type d \
+    { find /usr/lib/python3 /usr/local/lib/python3.* -name '__pycache__' -type d \
          -exec rm -rf {} + || \
       echo "WARNING: __pycache__ cleanup failed; see find's error above" >&2; }
 
@@ -384,6 +415,7 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
 # When building emulated, the base context does not contain any pytorch wheels
 RUN --mount=type=bind,from=build_vllm,source=/wheels/,target=/wheels-vllm \
     --mount=type=bind,from=base-wheels,source=/,target=/base-wheels \
+    pip3 install --break-system-packages --ignore-installed packaging && \
     find /base-wheels /wheels-vllm -type f -name "*.whl" -exec pip3 install --break-system-packages {} +
 
 COPY --from=build_vllm /usr/local/bin/uv  /usr/local/bin/uv
@@ -413,6 +445,18 @@ ENV AIC_EMULATOR_EXAMPLE_PACK=/opt/llm-emu/profiles/A40-Q8-Qwen3-8B.json \
 # docker/docker-bake.hcl owns LMCACHE_REF and passes it to both builds, so this
 # carries no default and must not be given one.  No build isolation needed:
 # torch is already here.
+#
+# The PyPI wheel is the CUDA 13 build: it pulls cupy-cuda13x and cuda-python,
+# dropped below.  cupy-cuda13x must go here, before `runtime` installs
+# cupy-rocm-7-0 into the same `cupy` package directory.
+#
+# LMCache caps opentelemetry-api at 1.40.0 (and prometheus_client at 0.24.1)
+# while vLLM v0.34.0 asks for opentelemetry >= 1.45.1, so pip downgrades the
+# opentelemetry set here and reports the conflict.  LMCache's metrics export
+# breaks on the newer set; vLLM only uses opentelemetry for optional tracing.
+# The two 0.66b2 distributions belong to the newer set and are left orphaned
+# by the downgrade, so they go too; the last line fails the build if vLLM's
+# tracing module cannot load its exporters on the downgraded set.
 ARG LMCACHE_REF
 RUN --mount=type=cache,target=/root/.cache/pip \
     : "${LMCACHE_REF:?unset: build through docker/docker-bake.hcl}" && \
@@ -420,14 +464,20 @@ RUN --mount=type=cache,target=/root/.cache/pip \
     pip3 install --no-cache-dir "lmcache==${_ver}" && \
     { uv pip uninstall --system \
         nixl nixl-cu12 nixl-cu13 \
-        cupy-cuda12x cufile-python cuda-pathfinder 2>/dev/null || true; }
+        cupy-cuda12x cupy-cuda13x cuda-python cuda-bindings cuda-core \
+        cufile-python cuda-pathfinder \
+        opentelemetry-exporter-otlp-common \
+        opentelemetry-exporter-http-transport 2>/dev/null || true; } && \
+    python3 -c 'import opentelemetry.exporter.otlp.proto.grpc.trace_exporter, opentelemetry.exporter.otlp.proto.http.trace_exporter, vllm.tracing.otel as o; assert o.is_otel_available(), "vLLM tracing cannot load opentelemetry"; print("vLLM tracing imports OK on opentelemetry", __import__("importlib.metadata").metadata.version("opentelemetry-api"))'
 
 # gfx1201: apply the event-IPC producer-side-sync patch to the lmcache CLIENT
 # installed above.  vLLM is the producer on the store path, so its export_event
 # must synchronize locally + emit b"" (hipIpcOpenEventHandle is broken on
-# gfx1201 — see tests/ipc/).  Only the event patch is applied here; the VMM
-# memory patches belong to the lmcache server image.  AIC_LMCACHE_SRC points the
-# patcher at the pip-installed package (site-packages), not the /app source tree.
+# gfx1201 — see tests/ipc/), and its import_event must never open the server's
+# handle.  The lmcache image runs the same script on its source tree before
+# building the wheel.  AIC_LMCACHE_SRC points the patcher at the pip-installed
+# package (site-packages), not the /app source tree; it exits non-zero if an
+# anchor is missing.
 COPY docker/lmcache/rocm_event_ipc_patch.py /tmp/rocm_event_ipc_patch.py
 RUN AIC_LMCACHE_SRC="$(python3 -c 'import lmcache, os; print(os.path.dirname(os.path.dirname(lmcache.__file__)))')" \
         python3 /tmp/rocm_event_ipc_patch.py && \
@@ -507,7 +557,8 @@ RUN --mount=type=bind,from=lmcache-wheels,target=/aic-wheels \
     uv pip install --system --no-cache "${lmc[@]}" && \
     { uv pip uninstall --system \
         nixl nixl-cu12 nixl-cu13 \
-        cupy-cuda12x cufile-python cuda-pathfinder 2>/dev/null || true; } && \
+        cufile-python cuda-pathfinder 2>/dev/null || true; } && \
+    python3 -c 'import importlib.metadata as m; d = sorted(x.name for x in m.distributions() if x.name.startswith("cupy")); assert d == ["cupy-rocm-7-0"], f"expected only cupy-rocm-7-0, found {d}"' && \
     python3 -c 'import lmcache.integration.vllm.vllm_multi_process_adapter; print("lmcache MP adapter imports OK")'
 
 # Install make and other packages needed by aiter to build kernels JIT

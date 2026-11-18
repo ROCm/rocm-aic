@@ -28,7 +28,7 @@ Fix: add _xfer_handle_lock (threading.Lock) in __init__ and hold it in
 both handle-creation helpers. Lock scope covers only makeXferReq(), not
 the subsequent async DMA transfer, so in-flight transfers stay parallel.
 
-Applies after patches 01-08.
+Applies after patch 07.
 ---
 --- a/lmcache/v1/distributed/l2_adapters/nixl_store_l2_adapter.py
 +++ b/lmcache/v1/distributed/l2_adapters/nixl_store_l2_adapter.py

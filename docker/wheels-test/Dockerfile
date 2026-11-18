@@ -155,20 +155,13 @@ ENTRYPOINT ["python3", "-m", "vllm.entrypoints.openai.api_server"]
 # =============================================================================
 # lmcache — aic-base + the lmcache wheel and its non-wheel runtime deps.
 #
-# Mirrors docker/lmcache/Dockerfile's `runtime` stage, INCLUDING re-running
-# rocm_ipc_patch.py.  That last part is not optional, and the reason is subtle:
-# build_lmcache_wheel patches the source before `pip wheel`, so the wheel's
-# lmcache/v1/platform/base/ipc_wrapper.py DOES import `rocm_vmem_ipc` -- but
-# rocm_ipc_patch.py installs that module into SITE-PACKAGES, not into the
-# lmcache package ("so it survives the rm -rf /app/LMCache cleanup step", per
-# its own comment).  site-packages is not part of the wheel, so installing the
-# published wheel alone gives you a patched wrapper importing a module that
-# does not exist.  Verified by unzipping the published wheel: ipc_wrapper.py
-# mentions rocm_vmem_ipc, and there is no rocm_vmem_ipc.py member.
-#
-# Re-running the patcher against the installed package both installs the module
-# and no-ops the source edits it already finds applied ("SKIP (already
-# applied)").
+# Mirrors docker/lmcache/Dockerfile's `runtime` stage.  build_lmcache_wheel
+# runs rocm_event_ipc_patch.py on the source before `pip wheel`, so the
+# published wheel already carries the event-IPC edit and needs nothing beside
+# it in site-packages.  The patcher is re-run against the installed package
+# anyway: it reports "SKIP (already applied)" for a wheel built that way,
+# applies the edit to one that was not, and fails the build if it can do
+# neither.
 # =============================================================================
 # hadolint ignore=DL3006
 FROM ${AIC_BASE_IMAGE} AS lmcache
@@ -194,8 +187,7 @@ RUN --mount=type=bind,from=wheels,target=/w \
 # This is the same gap mk/bench.mk's [6b.1] hot-patch works around in the guest;
 # installing it here is what lets that hot-patch become a no-op.
 #
-# cupy-rocm-7-0 activates the CuPy GPU buffer allocator (LMCACHE_NIXL_USE_CUPY=1
-# below) so librocblas/libMIOpen are never dlopened in the lmcache process.
+# cupy-rocm-7-0: LMCache's MP server imports cupy.
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv pip install --system --no-cache \
         openai "matplotlib>=3.8,<4" cupy-rocm-7-0 && \
@@ -203,21 +195,18 @@ RUN --mount=type=cache,target=/root/.cache/uv \
         nixl nixl-cu12 nixl-cu13 \
         cupy-cuda12x cufile-python cuda-pathfinder 2>/dev/null || true; }
 
-# Install rocm_vmem_ipc into site-packages (see the stage comment above).
-COPY docker/lmcache/rocm_vmem_ipc.py /tmp/rocm_vmem_ipc.py
-COPY docker/lmcache/rocm_ipc_patch.py /tmp/rocm_ipc_patch.py
+# Confirm (or apply) the ROCm event-IPC edit; see the stage comment above.
+COPY docker/lmcache/rocm_event_ipc_patch.py /tmp/rocm_event_ipc_patch.py
 RUN AIC_LMCACHE_SRC="$(python3 -c 'import lmcache, os; print(os.path.dirname(os.path.dirname(lmcache.__file__)))')" \
-        python3 /tmp/rocm_ipc_patch.py && \
-    rm /tmp/rocm_ipc_patch.py /tmp/rocm_vmem_ipc.py && \
-    python3 -c 'import rocm_vmem_ipc; print("rocm_vmem_ipc installed:", rocm_vmem_ipc.__file__)'
+        python3 /tmp/rocm_event_ipc_patch.py && \
+    rm /tmp/rocm_event_ipc_patch.py
 
 # HSA_ENABLE_IPC_MODE_LEGACY is intentionally NOT set: aic-vllm leaves it unset
 # too, and the two must agree.
 ENV PYTHONUNBUFFERED=1 \
     PYTHONHASHSEED=0 \
     SAFETENSORS_FAST_GPU=1 \
-    HIP_FORCE_DEV_KERNARG=1 \
-    LMCACHE_NIXL_USE_CUPY=1
+    HIP_FORCE_DEV_KERNARG=1
 
 ARG AIC_VERSION
 ARG AIC_BASE_IMAGE

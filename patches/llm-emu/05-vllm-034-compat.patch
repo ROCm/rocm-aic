@@ -1,0 +1,321 @@
+# Make the llm-emu plugin run against vLLM v0.34.0.
+#
+# The plugin targets vLLM 0.18.1 upstream and patches 01-04 carried it to
+# v0.29.0.  Its patches still applied and its modules still imported at
+# v0.34.0, so the build was green, but an emulated serve died on the first
+# request and had lost its model-runner stubs before that.  Each item below is
+# a vLLM internal that moved, with what it broke.  Every change keeps the older
+# code path beside the new one; that older path was not re-run on v0.29.0.
+#
+# 1. ModelRunnerOutput.req_id_to_index  (hooks/executor_hook.py)
+#    v0.34.0 removed the field; the scheduler derives the index from req_ids.
+#    The hook still passed it, so the first scheduled step raised
+#      TypeError: ModelRunnerOutput.__init__() got an unexpected keyword
+#      argument 'req_id_to_index'
+#    inside execute_model(), which kills the engine core (EngineDeadError, HTTP
+#    500 on every request).  Pass it only when the dataclass has it.
+#
+# 2. vllm.v1.worker.gpu_model_runner is gone  (cuda_mock.py)
+#    v0.34.0 has one model runner, vllm.v1.worker.gpu.model_runner, built by
+#    Worker._make_model_runner().  The import hook that stubs
+#    GPUModelRunner.load_model/profile_run/_dummy_run/get_model was armed for
+#    the old module name and never fired, and the init_device fallback imported
+#    the old module too, so it fell through to the do-nothing _StubRunner.  Arm
+#    the hook for both module names and build the fallback runner through the
+#    worker's factory when it has one.
+#
+# 3. Worker.init_device never completed  (platform.py, cuda_mock.py)
+#    By the v0.29.0 source it did not complete there either -- set_random_seed()
+#    calls current_platform.manual_seed_all(), which EmulatorPlatform did not
+#    implement -- and emulation worked because the fallback in (2) rebuilt the
+#    runner after the distributed groups were already up.  At v0.34.0 three
+#    things stand between it and a real, fully initialised worker:
+#      - Platform.manual_seed_all() raises NotImplementedError: implement it.
+#      - MemorySnapshot unpacks torch.accelerator.get_memory_info(), which the
+#        catch-all accelerator shim answered with None: return (free, total).
+#      - Worker._maybe_get_memory_pool_context() resolves a sleep-mode
+#        allocator by platform and raises for anything that is not CUDA-alike,
+#        XPU or CPU: the emulator allocates nothing, so use no pool.
+#    With these init_device runs to the end and the fallback is not taken.  The
+#    fallback message now names the exception type, since the ones that reach
+#    it (NotImplementedError, AssertionError) usually carry no text.
+#
+# 4. KV connector cycle  (hooks/executor_hook.py)
+#    The worker-side connector lifecycle the hook reproduces moved from
+#    KVConnectorModelRunnerMixin to ActiveKVConnector
+#    (vllm/v1/worker/gpu/kv_connector.py) and grew: handle_preemptions() before
+#    bind, finish_forward() after the forward, and get_transfer_results() in
+#    place of get_finished(), which also reports failed receives
+#    (KVConnectorOutput.failed_recving, read by the scheduler).  Follow that
+#    order, falling back to get_finished() where the newer call is absent.
+#
+# 5. CacheConfig.gpu_memory_utilization may be None  (cuda_mock.py,
+#    profiler/trace_profiler.py)
+#    v0.34.0 leaves it unset unless the flag is given and exposes the effective
+#    value as resolved_gpu_memory_utilization.  The heuristic KV-pool estimate
+#    (packs without available_kv_cache_bytes) did float(None), and a captured
+#    trace header recorded null.  Read the resolved value.
+#
+# 6. Worker.initialize_from_config  (cuda_mock.py)
+#    The real method now also copies hash_block_size and
+#    cache_hit_alignment_tokens from the KVCacheConfig onto the worker's cache
+#    config; the stub that replaces it does the same.
+#
+diff --git a/vllm_emulator/cuda_mock.py b/vllm_emulator/cuda_mock.py
+index 49ee38c..8522999 100644
+--- a/vllm_emulator/cuda_mock.py
++++ b/vllm_emulator/cuda_mock.py
+@@ -318,15 +318,26 @@ def _patch_gpu_worker(module):
+         try:
+             _orig_init_device(self)
+         except Exception as e:
+-            print(f"[EmulatorCudaMock] gpu_worker.init_device fallback: {e}")
++            # Name the exception type: several of the ones seen here
++            # (NotImplementedError from a Platform method the emulator
++            # platform lacks, a bare AssertionError) have an empty message.
++            print(f"[EmulatorCudaMock] gpu_worker.init_device fallback: "
++                  f"{type(e).__name__}: {e}")
+             try:
+-                from vllm.v1.worker.gpu_model_runner import GPUModelRunner
+-                self.model_runner = GPUModelRunner(
+-                    vllm_config=self.vllm_config, device=self.device)
++                # vLLM >= 0.34 has one model runner, built by the worker's
++                # own factory (vllm.v1.worker.gpu.model_runner); the module
++                # the older releases import it from is gone.
++                make_runner = getattr(self, "_make_model_runner", None)
++                if make_runner is not None:
++                    self.model_runner = make_runner()
++                else:
++                    from vllm.v1.worker.gpu_model_runner import GPUModelRunner
++                    self.model_runner = GPUModelRunner(
++                        vllm_config=self.vllm_config, device=self.device)
+                 print("[EmulatorCudaMock] built model_runner manually post-fallback")
+             except Exception as e2:
+-                print(f"[EmulatorCudaMock] model_runner manual build failed: {e2}; "
+-                      f"installing stub")
++                print(f"[EmulatorCudaMock] model_runner manual build failed: "
++                      f"{type(e2).__name__}: {e2}; installing stub")
+                 # Stub: provide every method the engine might call on
+                 # model_runner as a no-op. Skip-everything proxy.
+                 class _StubRunner:
+@@ -336,6 +347,19 @@ def _patch_gpu_worker(module):
+                 self.model_runner = _StubRunner()
+     cls.init_device = _patched_init_device
+ 
++    # vLLM >= 0.34 wraps the model-runner build (and the weight load and KV
++    # allocation stubbed below) in a sleep-mode allocator pool, and resolves
++    # the allocator by platform: CUDA-alike, XPU and CPU are handled, anything
++    # else raises "Sleep mode allocator is not available on platform
++    # EmulatorPlatform".  The emulator allocates nothing on a device, so there
++    # is nothing to pool.
++    if hasattr(cls, '_maybe_get_memory_pool_context'):
++        from contextlib import nullcontext
++
++        def _no_memory_pool_context(self, tag=None):
++            return nullcontext()
++        cls._maybe_get_memory_pool_context = _no_memory_pool_context
++
+     def _noop_load_model(self, *a, **kw):
+         print("[EmulatorCudaMock] gpu_worker.Worker.load_model SKIPPED "
+               "(emulator drives latency from profile pack)")
+@@ -414,7 +438,12 @@ def _patch_gpu_worker(module):
+         else:
+             total = 80 * 1024**3
+             src = "default-80GB (no profile loaded)"
+-        util = float(getattr(self.cache_config, "gpu_memory_utilization", 0.9))
++        # vLLM >= 0.34: gpu_memory_utilization is None unless the flag was
++        # given, and the effective value is resolved_gpu_memory_utilization.
++        util = getattr(self.cache_config, "resolved_gpu_memory_utilization", None)
++        if util is None:
++            util = getattr(self.cache_config, "gpu_memory_utilization", None)
++        util = float(util) if util is not None else 0.9
+         requested = int(total * util)
+         weights = _estimate_weights_bytes(self.model_config)
+         activations = 1 * 1024**3
+@@ -507,6 +536,12 @@ def _patch_gpu_worker(module):
+         if getattr(kv_cache_config, "kv_cache_layout", None) is not None:
+             from vllm.v1.attention.backends.utils import record_kv_cache_layout
+             record_kv_cache_layout(self.cache_config, kv_cache_config.kv_cache_layout)
++        # vLLM >= 0.34 also adopts the engine core's prefix-cache granularity
++        # here, for the same reason.
++        for _attr in ("hash_block_size", "cache_hit_alignment_tokens"):
++            if hasattr(kv_cache_config, _attr):
++                setattr(self.cache_config, _attr,
++                        getattr(kv_cache_config, _attr))
+         print("[EmulatorCudaMock] gpu_worker.Worker.initialize_from_config "
+               "→ stored kv_cache_config (no GPU alloc)")
+         _maybe_init_kv_connector(self, kv_cache_config)
+@@ -835,6 +870,10 @@ def install():
+         def _noop_factory(name, _mem=fake_memory):
+             lname = name.lower()
+             def _noop(*a, **kw):
++                # torch.accelerator.get_memory_info() -> (free, total), which
++                # vLLM >= 0.34's MemorySnapshot unpacks in Worker.init_device.
++                if 'memory_info' in lname:
++                    return (_mem, _mem)
+                 if 'memory_stats' in lname or 'stats' in lname:
+                     return {}
+                 if 'memory' in lname and any(s in lname for s in
+@@ -904,11 +943,17 @@ def install_model_stubs():
+         return False
+     print("[EmulatorModelStubs] Installing model-load stubs "
+           "(no weights, no profile_run; hook+oracle drive latency)")
+-    _install_module_patcher(
+-        'vllm.v1.worker.gpu_model_runner',
+-        _patch_gpu_model_runner,
+-        'GPUModelRunner (synchronize_input_prep+load_model+profile_run)',
+-    )
++    # The model runner moved: vllm.v1.worker.gpu_model_runner up to v0.29,
++    # vllm.v1.worker.gpu.model_runner (the only runner) since v0.34.  Arm
++    # both; a patcher for a module that is never imported never fires.
++    for _target in ('vllm.v1.worker.gpu_model_runner',
++                    'vllm.v1.worker.gpu.model_runner'):
++        _install_module_patcher(
++            _target,
++            _patch_gpu_model_runner,
++            f'GPUModelRunner [{_target}] '
++            '(synchronize_input_prep+load_model+profile_run)',
++        )
+     _install_module_patcher(
+         'vllm.v1.worker.gpu_worker',
+         _patch_gpu_worker,
+diff --git a/vllm_emulator/hooks/executor_hook.py b/vllm_emulator/hooks/executor_hook.py
+index be52fb0..5190aac 100644
+--- a/vllm_emulator/hooks/executor_hook.py
++++ b/vllm_emulator/hooks/executor_hook.py
+@@ -9,6 +9,7 @@ the output directly (sync engine).
+ from __future__ import annotations
+ 
+ import contextlib
++import functools
+ import os
+ import threading
+ import time
+@@ -32,6 +33,20 @@ EMULATOR_MODE_ACCELERATED = "accelerated"
+ _MODE_ALIASES = {"online": EMULATOR_MODE_REALTIME}
+ 
+ 
++@functools.cache
++def _model_runner_output_takes_req_index() -> bool:
++    """Whether this vLLM's ModelRunnerOutput still has req_id_to_index.
++
++    vLLM v0.34 dropped the field (the scheduler derives the index from
++    req_ids); v0.29 and older require it.
++    """
++    import dataclasses
++
++    from vllm.v1.outputs import ModelRunnerOutput
++    return any(f.name == "req_id_to_index"
++               for f in dataclasses.fields(ModelRunnerOutput))
++
++
+ class ExecutorEmulatorHook:
+     """Executor-level emulator hook.
+ 
+@@ -186,17 +201,34 @@ class ExecutorEmulatorHook:
+         holder: list = [None]
+         output = KVConnectorOutput()
+         connector = get_kv_transfer_group()
++        metadata = scheduler_output.kv_connector_metadata
+         with set_forward_context(None, self._vllm_config):
+-            connector.bind_connector_metadata(
+-                scheduler_output.kv_connector_metadata)
++            # The order is ActiveKVConnector.pre_forward / finish_forward /
++            # post_forward (vllm/v1/worker/gpu/kv_connector.py), which is what
++            # the model runner drives since vLLM v0.34.  Calls an older
++            # connector API lacks are skipped, leaving the v0.29 sequence.
++            handle_preemptions = getattr(connector, "handle_preemptions", None)
++            if handle_preemptions is not None:
++                handle_preemptions(metadata)
++            connector.bind_connector_metadata(metadata)
+             connector.start_load_kv(get_forward_context())
+             try:
+                 yield holder
+             finally:
++                finish_forward = getattr(connector, "finish_forward", None)
++                if finish_forward is not None:
++                    finish_forward()
+                 connector.wait_for_save()
+-                (output.finished_sending,
+-                 output.finished_recving) = connector.get_finished(
+-                     scheduler_output.finished_req_ids)
++                get_results = getattr(connector, "get_transfer_results", None)
++                if get_results is not None:
++                    results = get_results(scheduler_output.finished_req_ids)
++                    output.finished_sending = results.finished_sending or None
++                    output.finished_recving = results.finished_recving or None
++                    output.failed_recving = results.failed_recving
++                else:
++                    (output.finished_sending,
++                     output.finished_recving) = connector.get_finished(
++                         scheduler_output.finished_req_ids)
+                 output.invalid_block_ids = \
+                     connector.get_block_ids_with_load_errors()
+                 output.kv_connector_stats = connector.get_kv_connector_stats()
+@@ -357,8 +389,6 @@ class ExecutorEmulatorHook:
+             else:
+                 sampled_token_ids.append([self._filler_token_id])
+ 
+-        req_id_to_index = {rid: idx for idx, rid in enumerate(req_ids)}
+-
+         num_with_tokens = sum(1 for toks in sampled_token_ids if toks)
+         if num_with_tokens > 0:
+             from vllm.v1.outputs import LogprobsLists
+@@ -371,14 +401,17 @@ class ExecutorEmulatorHook:
+         else:
+             logprobs = None
+ 
+-        return ModelRunnerOutput(
++        kwargs = dict(
+             req_ids=req_ids,
+-            req_id_to_index=req_id_to_index,
+             sampled_token_ids=sampled_token_ids,
+             logprobs=logprobs,
+             prompt_logprobs_dict={},
+             pooler_output=[None] * len(req_ids),
+         )
++        if _model_runner_output_takes_req_index():
++            kwargs["req_id_to_index"] = {
++                rid: idx for idx, rid in enumerate(req_ids)}
++        return ModelRunnerOutput(**kwargs)
+ 
+     def shutdown(self):
+         pass
+diff --git a/vllm_emulator/platform.py b/vllm_emulator/platform.py
+index 8fff140..3136906 100644
+--- a/vllm_emulator/platform.py
++++ b/vllm_emulator/platform.py
+@@ -81,6 +81,13 @@ class EmulatorPlatform(Platform):
+     def set_device(cls, device: torch.device) -> None:
+         pass
+ 
++    @classmethod
++    def manual_seed_all(cls, seed: int) -> None:
++        # Worker.init_device seeds through the platform (set_random_seed);
++        # the base class raises NotImplementedError.  There is no device RNG
++        # to seed: torch.manual_seed has already run.
++        pass
++
+     @classmethod
+     def get_current_memory_usage(cls, device=None) -> float:
+         return 0.0
+diff --git a/vllm_emulator/profiler/trace_profiler.py b/vllm_emulator/profiler/trace_profiler.py
+index bad19cb..7dd6f3f 100644
+--- a/vllm_emulator/profiler/trace_profiler.py
++++ b/vllm_emulator/profiler/trace_profiler.py
+@@ -121,8 +121,13 @@ class StepCycleTracer:
+                 vllm_config.cache_config.enable_prefix_caching)
+             header["kv_cache_dtype"] = str(vllm_config.cache_config.cache_dtype)
+             header["num_gpu_blocks"] = vllm_config.cache_config.num_gpu_blocks
+-            header["gpu_memory_utilization"] = (
+-                vllm_config.cache_config.gpu_memory_utilization)
++            # vLLM >= 0.34 leaves gpu_memory_utilization None unless the
++            # flag was given; record the value the engine actually used.
++            cache_config = vllm_config.cache_config
++            util = getattr(cache_config, "resolved_gpu_memory_utilization", None)
++            if util is None:
++                util = cache_config.gpu_memory_utilization
++            header["gpu_memory_utilization"] = util
+             header["async_scheduling"] = bool(
+                 getattr(vllm_config.scheduler_config, "async_scheduling", False))
+         except Exception as e:

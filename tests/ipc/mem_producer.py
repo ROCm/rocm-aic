@@ -3,7 +3,7 @@
 dmabuf fd, and hand it to the consumer container via SCM_RIGHTS over a Unix
 socket on the shared /ipc volume."""
 import os, sys, ctypes, socket, time
-sys.path.insert(0, "/vmem")
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import rocm_vmem_ipc as R   # noqa: E402
 
 SIZE, H2D = 1 << 20, 1

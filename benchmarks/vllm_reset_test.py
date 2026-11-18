@@ -72,10 +72,13 @@ TIMEOUT  = int(os.getenv("AIC_TEST_TIMEOUT", "120"))
 # exist, not to be long.
 MAX_TOK  = int(os.getenv("AIC_TEST_MAX_TOKENS", "20"))
 EXEC     = []  # curl runs where the test does: in aic-client, on the aic bridge
+CHUNK_TOKENS = 256  # LMCache chunk size
 
-# chunk_size=256 tok × fp8 KV for Qwen2.5-3B ≈ 4.7 MiB/chunk; L1=1 GiB ≈ 222 chunks.
+# chunk_size=256 tok × bf16 KV (--kv-cache-dtype auto) for Qwen2.5-3B ≈ 9.0
+# MiB/chunk (measured: 417 chunks = 3.67 GiB); L1=1 GiB ≈ 113 chunks.  fp8
+# halves the chunk and doubles those counts.
 # At the measured ~90 tok/rep for Qwen2.5-3B, a default 22-rep anchor is ~1980
-# tokens ≈ 8 chunks: 10 anchors ≈ 80 chunks, leaving ~142 free L1 slots, and 50
+# tokens ≈ 8 chunks: 10 anchors ≈ 80 chunks, leaving ~33 free L1 slots, and 50
 # flood prompts × ~8 chunks ≈ 400 chunks >> capacity → eviction.  (These read
 # ~14 and ~700 before; that came from a 163 tok/rep estimate no tokenizer matches.)
 # Repetitions of the shared preamble sentence.  The sentence tokenizes to
@@ -97,7 +100,7 @@ _PREAMBLE_SENTENCE = (
     "You are an expert in distributed KV cache systems, GPU memory management, "
     "NVMe storage tiering, NIXL transfer protocols, Prometheus observability, "
     "HIP IPC shared memory, LMCache multi-process mode, vLLM prefix caching, "
-    "ROCm 7.14 internals, RDMA over Converged Ethernet (RoCE), and Docker "
+    "ROCm 10.1 internals, RDMA over Converged Ethernet (RoCE), and Docker "
     "networking with named bridge networks. The following is a detailed technical "
     "document covering all of these topics in depth. "
 )
@@ -147,24 +150,36 @@ def get_text(url):
 # ── Metric helpers ────────────────────────────────────────────────────────────
 def lm_snap():
     raw = get_text(f"{LMCACHE}/metrics")
-    m = {}
+    # Family totals.  LMCache's lookup counters carry {cache_salt, model_name}
+    # labels and do not exist until the first lookup, so they are summed across
+    # label sets and read as 0 when absent.
+    # The L1 gauges carry {backend, l1_tag}: bytes add up across L1 pools, a
+    # fill ratio does not, so the fullest pool (the one nearest eviction) is
+    # reported instead.
+    fam = {}
+    fam_max = {}
     for line in raw.splitlines():
         if line.startswith("#"):
             continue
-        parts = line.split()
-        if len(parts) == 2:
-            try:
-                m[parts[0]] = float(parts[1])
-            except ValueError:
-                pass
+        series, _, value = line.rpartition(" ")
+        try:
+            name = series.split("{", 1)[0]
+            v = float(value)
+        except ValueError:
+            continue
+        fam[name] = fam.get(name, 0.0) + v
+        fam_max[name] = max(fam_max.get(name, v), v)
+    # LMCache exports no miss counter: missed tokens over the chunk size.
+    miss_tokens = (fam.get("lmcache_mp_lookup_requested_tokens_total", 0)
+                   - fam.get("lmcache_mp_lookup_hit_tokens_total", 0))
     return {
-        "l1_bytes":   m.get("lmcache_mp_l1_memory_usage_bytes", 0),
-        "l1_ratio":   m.get("lmcache_mp_l1_usage_ratio", 0),
-        "l2_bytes":   m.get('lmcache_mp_l2_usage_bytes{l2_name="nixl_store"}', 0),
-        "l1_hits":    int(m.get('lmcache_mp_prefetch_hit_chunks_total{tier="l1"}', 0)),
-        "l2_hits":    int(m.get('lmcache_mp_prefetch_hit_chunks_total{tier="l2"}', 0)),
-        "l2_stored":  int(m.get("lmcache_mp_l2_store_completed_objects_total", 0)),
-        "misses":     int(m.get("lmcache_mp_prefetch_miss_chunks_total", 0)),
+        "l1_bytes":   fam.get("lmcache_mp_l1_memory_usage_bytes", 0),
+        "l1_ratio":   fam_max.get("lmcache_mp_l1_usage_ratio", 0),
+        "l2_bytes":   fam.get("lmcache_mp_l2_usage_bytes", 0),
+        "l1_hits":    int(fam.get("lmcache_mp_lookup_hit_l1_keys_total", 0)),
+        "l2_hits":    int(fam.get("lmcache_mp_lookup_hit_l2_keys_total", 0)),
+        "l2_stored":  int(fam.get("lmcache_mp_l2_store_completed_objects_chunks_total", 0)),
+        "misses":     int(miss_tokens // CHUNK_TOKENS),
     }
 
 def vllm_gpu_hits():

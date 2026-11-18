@@ -5,7 +5,7 @@
 #
 # SPDX-License-Identifier: MIT
 #
-# AIC base image: Ubuntu 24.04 + ROCm + PyTorch (source) + torchvision (source)
+# AIC base image: Ubuntu 26.04 + ROCm + PyTorch (source) + torchvision (source)
 # + NIXL (KV-transfer transport).
 #
 # This is the shared foundation consumed by docker/vllm/Dockerfile and
@@ -16,12 +16,12 @@
 # Stages:
 #   pip-wheels        scratch stub for --build-context pip-wheels override
 #   base              ROCm-full base + system deps + uv               (sections 0-2)
-#   build_pytorch     PyTorch 2.13 built from source                  (section 2b)
+#   build_pytorch     PyTorch built from source                       (section 2b)
 #   build_torchvision torchvision built from source                   (section 2c)
 #   build_nixl        NIXL built from source (uses ROCm headers)      (section 2d)
 #   wheels            scratch image holding just the nixl_rocm wheel (--target wheels)
 #   build_clr_patch   patched libamdhip64.so (IPC event ring fix)     (section 2e)
-#   runtime           Ubuntu 24.04 + 13 ROCm runtime pkgs + torch + NIXL (section 3)
+#   runtime           Ubuntu 26.04 + 13 ROCm runtime pkgs + torch + NIXL (section 3)
 #
 # Build args: docker/docker-bake.hcl is the only owner of every pin, URL and
 # base image, so no ARG here has a default and each consuming stage stops when
@@ -41,9 +41,9 @@
 # Build base: full ROCm toolchain (compiler, headers, math libs) for source builds.
 ARG ROCM_BASE_IMAGE
 # Runtime base: plain Ubuntu + AMD apt repo + 13 ROCm runtime packages.  AMD
-# publishes only the -full variant of rocm/dev-ubuntu-24.04 for the 7.14.x
-# series, so the runtime stage starts from Ubuntu instead; the AMD apt signing
-# key is COPYed from the base stage.
+# publishes only the -full variant of rocm/dev-ubuntu-26.04, so the runtime
+# stage starts from Ubuntu instead; the AMD apt signing key is COPYed from the
+# base stage.
 ARG ROCM_RUNTIME_IMAGE
 
 # Empty default for the `pip-wheels` build context.  A caller that passes
@@ -90,7 +90,6 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
         ibverbs-providers \
         libmount-dev \
         libmsgpack-dev \
-        libopenmpi3t64 \
         libsqlite3-dev \
         ninja-build \
         nvme-cli \
@@ -98,10 +97,11 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
         python3-dev \
         bpftrace \
     && update-ca-certificates && \
-    # libdrm-dev pulls in old libhsa-runtime64-1/libhsakmt1 (ROCm 5.7 era) which
-    # break hipIpcGetMemHandle.  Remove them so the ROCm 7.14 runtime is the only one.
+    # Ubuntu 26.04 packages its own ROCm 7.1 (pulled in by libucx0/libopenmpi40)
+    # with the same sonames as ROCm 10.1; it breaks hipIpcGetMemHandle.  Nothing
+    # above pulls it in today; the purge guards against a future dependency.
     { DEBIAN_FRONTEND=noninteractive apt-get remove -y --purge \
-        libhsa-runtime64-1 libhsakmt1 2>/dev/null || true; }
+        libhsa-runtime64-1 libhsakmt1 libamdhip64-7 libamd-comgr3 2>/dev/null || true; }
 
 RUN git config --global advice.detachedHead false
 
@@ -122,7 +122,7 @@ RUN : "${UV_VERSION:?unset: build through docker/docker-bake.hcl}" && \
 FROM base AS build_triton
 
 # =============================================================================
-# Triton source build — avoids ROCm 7.2 wheel artifacts on a ROCm 7.14 host.
+# Triton source build — source pin matches the ROCm 10.1 / vLLM-validated ref.
 # =============================================================================
 ARG ROCM_ARCH
 ARG TRITON_GIT_URL
@@ -130,11 +130,13 @@ ARG TRITON_REF
 RUN : "${TRITON_GIT_URL:?unset: build through docker/docker-bake.hcl}" \
       "${TRITON_REF:?unset: build through docker/docker-bake.hcl}"
 
+# Triton's [build-system].requires pins cmake==4.0 and --no-isolation enforces it.
 RUN --mount=type=cache,target=/root/.cache/pip \
     python3 -m pip install --break-system-packages \
-      'cmake<4.0,>=3.20' \
+      'cmake==4.0' \
       ninja \
-      'pybind11>=2.13.1'
+      'pybind11>=2.13.1' \
+      setuptools
 
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
@@ -146,7 +148,7 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
 RUN git clone --depth 1 --branch "${TRITON_REF}" "${TRITON_GIT_URL}" /app/triton
 
 # TRITON_OFFLINE_BUILD=1 to avoid downloading large CUDA binaries
-# However, it depends on a specific version of llvm+mlir that is not available in Ubuntu 24.04
+# However, it depends on a specific version of llvm+mlir that is not available in Ubuntu 26.04
 WORKDIR /app/triton
 
 RUN --mount=type=cache,target=/root/.triton/ \
@@ -156,7 +158,7 @@ RUN --mount=type=cache,target=/root/.triton/ \
 WORKDIR /
 
 # =============================================================================
-# PyTorch source build — avoids ROCm 7.2 wheel artifacts on a ROCm 7.14+ host.
+# PyTorch source build — no upstream wheel for this SHA; source pin is authoritative.
 # =============================================================================
 FROM base AS build_pytorch
 
@@ -183,7 +185,7 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
         libnuma-dev \
         patchelf \
         pkg-config \
-        python3.12-venv && \
+        python3-venv && \
     update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-13 130 \
         --slave /usr/bin/g++ g++ /usr/bin/g++-13
 
@@ -229,7 +231,8 @@ WORKDIR /app/pytorch
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv pip install --system \
       -r requirements.txt \
-      -r requirements-build.txt
+      -r requirements-build.txt \
+      auditwheel==6.4.2
 
 COPY patches/pytorch/ /app/patches/pytorch/
 
@@ -244,6 +247,14 @@ RUN if compgen -G "/app/patches/pytorch/*.patch" > /dev/null; then \
                 echo "ERROR: patch does not apply cleanly: $p" >&2; exit 1; }; \
         done; \
     fi
+
+# The wheel backend (scikit-build-core) rejects pyproject.toml unless every
+# project.license-files entry exists; the submodules skipped above take theirs
+# with them, so stand in a placeholder for each missing one.
+RUN python3 -c 'import pathlib, tomllib; \
+    missing = [p for p in map(pathlib.Path, tomllib.loads(pathlib.Path("pyproject.toml").read_text())["project"]["license-files"]) if not p.exists()]; \
+    [(p.parent.mkdir(parents=True, exist_ok=True), p.write_text("Submodule not checked out for this build.\n")) for p in missing]; \
+    print("placeholder license files:", *missing, sep="\n  ")'
 
 ENV PYTORCH_ROCM_ARCH=${ROCM_ARCH}
 
@@ -266,7 +277,7 @@ RUN --mount=type=cache,target=/root/.cache/ccache \
     CMAKE_POLICY_VERSION_MINIMUM=3.5 \
     USE_ITT=0 \
     BUILD_TEST=0 \
-    PYTHON_SIX_SOURCE_DIR=/usr/local/lib/python3.12/dist-packages/ \
+    PYTHON_SIX_SOURCE_DIR=$(python3 -c "import sys; v=sys.version_info; print(f'/usr/local/lib/python{v.major}.{v.minor}/dist-packages/')") \
         python3 -m build --wheel --no-isolation --outdir=/app/pytorch/dist_tmp && \
     _mm=$(echo "${ROCM_VERSION}" | cut -d. -f1-2) && \
     GPU_ARCH_TYPE=rocm \
@@ -274,16 +285,15 @@ RUN --mount=type=cache,target=/root/.cache/ccache \
       GPU_ARCH_VERSION=${ROCM_VERSION} \
       PYTORCH_ROCM_ARCH=$(echo "${PYTORCH_ROCM_ARCH}" | tr ',' ' ') \
       ROCM_HOME=/opt/rocm/core-${_mm} \
-      python3 .ci/manywheel/repair_wheel.py /app/pytorch/dist_tmp/ /app/pytorch/dist/ && \
+      python3 .ci/wheel/linux/repair_wheel.py /app/pytorch/dist_tmp/ /app/pytorch/dist/ && \
     { find /app/pytorch -mindepth 1 -maxdepth 1 ! -name 'dist' -exec rm -rf {} + || \
       echo "WARNING: PyTorch source cleanup failed; see find's error above" >&2; }
 WORKDIR /
 
 # =============================================================================
 # torchvision source build — must compile against our source-built PyTorch.
-# Pin TORCHVISION_REF to the release matching PyTorch 2.13 (v0.28.x series).
-# NOTE: v0.29.0 requires torch::stable::permute which is not present in
-# ROCm/pytorch@release/2.13; stay on v0.28.0 until the ROCm fork advances.
+# pytorch/vision has no v0.30 tag yet (the series that pairs with torch 2.15),
+# so TORCHVISION_REF is the newest release tag.
 # =============================================================================
 FROM build_pytorch AS build_torchvision
 
@@ -294,11 +304,16 @@ ARG TORCHVISION_GIT_URL
 # Shallow clone, so this must be a branch or tag, not a SHA.
 ARG TORCHVISION_REF
 RUN : "${TORCHVISION_GIT_URL:?unset: build through docker/docker-bake.hcl}" \
-      "${TORCHVISION_REF:?unset: build through docker/docker-bake.hcl}"
+      "${TORCHVISION_REF:?unset: build through docker/docker-bake.hcl}" \
+      "${ROCM_ARCH:?empty: torchvision compiles its HIP ops per arch, set ROCM_ARCH}"
 
 RUN git clone --depth 1 --branch "${TORCHVISION_REF}" "${TORCHVISION_GIT_URL}" /app/vision
 
 WORKDIR /app/vision
+# FORCE_CUDA=1 (as TheRock builds it): a BuildKit RUN has no GPU, so setup.py
+# would otherwise skip the HIP ops and link each hipified twin beside its
+# original (pytorch/vision#9740).  The last line fails the build unless the
+# wheel carries HIP device code for every arch in ROCM_ARCH.
 # hadolint ignore=SC2086,DL3008
 RUN --mount=type=cache,target=/root/.cache/pip \
     --mount=type=cache,target=/root/.cache/ccache \
@@ -307,13 +322,15 @@ RUN --mount=type=cache,target=/root/.cache/pip \
     DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends libnuma-dev && \
     pip3 install setuptools wheel packaging /app/pytorch/dist/*.whl && \
     USE_ROCM=1 USE_CUDA=0 \
+    FORCE_CUDA=1 TORCHVISION_USE_NVJPEG=0 \
     PYTORCH_ROCM_ARCH="${ROCM_ARCH}" \
     CCACHE_DIR=/root/.cache/ccache CCACHE_MAXSIZE=25G \
     CMAKE_C_COMPILER_LAUNCHER=ccache \
     CMAKE_CXX_COMPILER_LAUNCHER=ccache \
     MAX_JOBS="${BUILD_JOBS:-$(nproc)}" \
     CMAKE_BUILD_PARALLEL_LEVEL="${BUILD_JOBS:-$(nproc)}" \
-        python3 setup.py bdist_wheel --dist-dir=/app/vision/dist
+        python3 setup.py bdist_wheel --dist-dir=/app/vision/dist && \
+    python3 -c "import glob, zipfile; so = zipfile.ZipFile(glob.glob('/app/vision/dist/torchvision-*.whl')[0]).read('torchvision/_C_stable.so'); missing = [a for a in '${ROCM_ARCH}'.split(';') if ('amdhsa--' + a).encode() not in so]; assert b'hipLaunchKernel' in so and not missing, f'torchvision HIP ops missing for {missing}'"
 
 WORKDIR /
 
@@ -324,23 +341,96 @@ WORKDIR /
 # =============================================================================
 FROM base AS build_nixl
 
-ARG NIXL_GIT_URL
-ARG NIXL_REF
+ARG UCX_GIT_URL
+ARG UCX_REF
 ARG BUILD_JOBS
 ARG AIC_UCX_FAST
-RUN : "${NIXL_GIT_URL:?unset: build through docker/docker-bake.hcl}" \
-      "${NIXL_REF:?unset: build through docker/docker-bake.hcl}"
+RUN : "${UCX_GIT_URL:?unset: build through docker/docker-bake.hcl}" \
+      "${UCX_REF:?unset: build through docker/docker-bake.hcl}"
+
+# hadolint ignore=DL3008
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
+    apt-get update && \
+    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+        autoconf \
+        automake \
+        build-essential \
+        ca-certificates \
+        cmake \
+        git \
+        libaio-dev \
+        libibverbs-dev \
+        libltdl-dev \
+        libnuma-dev \
+        librdmacm-dev \
+        libtool \
+        liburing-dev \
+        pkg-config \
+        rdma-core
 
 # numpy is required by NIXL's Python bindings at install time.
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv pip install --system numpy numba
 
-COPY docker/scripts /tmp/nixl-scripts
+RUN --mount=type=cache,target=/root/.cache/pip \
+    python3 -m pip install meson meson-python ninja patchelf pybind11 tomlkit
+
+# UCX (NIXL's transport) in its own layer: a NIXL ref or patch change must not
+# rebuild it.  The source and build trees are removed in the layer they are
+# created in.
+# hadolint ignore=SC3054,SC3030,SC3024
+RUN set -eu; \
+    git clone --depth 1 --branch "${UCX_REF}" "${UCX_GIT_URL}" /tmp/ucx-src; \
+    cd /tmp/ucx-src; \
+    ./autogen.sh; \
+    mkdir build; \
+    cd build; \
+    ucx_configure_flags=( \
+        --prefix=/opt/rocnixl-ucx \
+        --enable-shared \
+        --disable-static \
+        --disable-doxygen-doc \
+        --enable-devel-headers \
+        --with-rocm=/opt/rocm \
+        --with-verbs \
+        --with-dm \
+        --enable-mt \
+    ); \
+    # AIC_UCX_FAST=1 trades UCX features for compile time (dist-build-fast).
+    if [ "${AIC_UCX_FAST:-0}" = "1" ]; then \
+        ucx_configure_flags+=( \
+            --disable-logging \
+            --disable-debug \
+            --disable-assertions \
+            --disable-params-check \
+            --without-knem \
+            --without-xpmem \
+            --without-ugni \
+            --without-java \
+        ); \
+    else \
+        ucx_configure_flags+=(--enable-optimizations); \
+    fi; \
+    ../configure "${ucx_configure_flags[@]}"; \
+    make -j"${BUILD_JOBS:-$(nproc)}"; \
+    make install; \
+    ldconfig; \
+    /opt/rocnixl-ucx/bin/ucx_info -v; \
+    rm -rf /tmp/ucx-src
+
+# Declared after the UCX layer so they stay out of its cache key.
+ARG NIXL_GIT_URL
+ARG NIXL_REF
+RUN : "${NIXL_GIT_URL:?unset: build through docker/docker-bake.hcl}" \
+      "${NIXL_REF:?unset: build through docker/docker-bake.hcl}"
+
+COPY docker/scripts/clone-nixl.sh /tmp/nixl-scripts/clone-nixl.sh
 COPY patches/nixl/ /tmp/nixl-patches/
+# NIXL_REQUIRE_ROCM=1 makes clone-nixl.sh reject a ref without the wheel_variant
+# meson option.
 # hadolint ignore=SC3054,SC3044
-RUN --mount=type=cache,target=/root/.cache/uv \
-    --mount=type=cache,target=/root/.cache/pip \
-    chmod +x /tmp/nixl-scripts/*.sh && \
+RUN chmod +x /tmp/nixl-scripts/clone-nixl.sh && \
     NIXL_GIT_URL="${NIXL_GIT_URL}" NIXL_REF="${NIXL_REF}" NIXL_REQUIRE_ROCM=1 \
         NIXL_DEST=/tmp/nixl /tmp/nixl-scripts/clone-nixl.sh && \
     shopt -s nullglob && \
@@ -355,16 +445,94 @@ RUN --mount=type=cache,target=/root/.cache/uv \
             echo "ERROR: nixl patch does not apply cleanly: $patch" >&2; exit 1; \
         fi; \
     done && \
-    mkdir -p /app/nixl/dist && \
-    NIXL_SRC=/tmp/nixl \
-        AIS_PATH=/opt/rocm ROCM_PATH=/opt/rocm \
-        NIXL_INSTALL_PREFIX=/opt/nixl \
-        NIXL_BUILD_WHEEL=1 NIXL_WHEEL_DIR=/app/nixl/dist/ \
-        BUILD_JOBS="${BUILD_JOBS}" \
-        AIC_UCX_FAST="${AIC_UCX_FAST}" \
-        UV_SYSTEM_CERTS=1 \
-        /tmp/nixl-scripts/build-nixl.sh && \
-    rm -rf /tmp/nixl /tmp/nixl-patches /tmp/nixl-scripts
+    rm -rf /tmp/nixl-patches /tmp/nixl-scripts
+
+# NIXL build, mandatory-plugin checks and the nixl-rocm wheel.  The patched
+# checkout has native HIP + the AIS_MT plugin (nixl-rocm-ais-mt.patch).
+# hadolint ignore=SC3054,SC3030,SC3060
+RUN --mount=type=cache,target=/root/.cache/uv \
+    --mount=type=cache,target=/root/.cache/pip \
+    set -eu; \
+    jobs="${BUILD_JOBS:-$(nproc)}"; \
+    prefix=/opt/nixl; \
+    libdir="${prefix}/lib/x86_64-linux-gnu"; \
+    py_site="${prefix}/lib/python3/dist-packages"; \
+    export PKG_CONFIG_PATH="/opt/rocnixl-ucx/lib/pkgconfig:${PKG_CONFIG_PATH:-}"; \
+    export LD_LIBRARY_PATH="${libdir}:${prefix}/lib:/opt/rocnixl-ucx/lib:${LD_LIBRARY_PATH:-}"; \
+    meson_args=( \
+        -Dwheel_variant=rocm \
+        -Drocm_ais_path=/opt/rocm \
+        -Ducx_path=/opt/rocnixl-ucx \
+        -Ddisable_gds_backend=true \
+        -Dbuild_tests=false \
+        -Dbuild_examples=false \
+        -Ddisable_plugins=OBJ,AZURE_BLOB \
+    ); \
+    cd /tmp/nixl; \
+    meson setup build --prefix="${prefix}" "${meson_args[@]}"; \
+    ninja -C build -j"${jobs}"; \
+    ninja -C build install; \
+    ldconfig; \
+    python3 -m pip uninstall -y nixl nixl-cu12 nixl-cu13 2>/dev/null || true; \
+    # Meson installs the bindings as nixl_rocm.  The upstream meta wheel depends
+    # on nixl-rocm on PyPI and its __init__.py only probes CUDA backends, so pip
+    # install of the meta wheel or the repo-root pyproject.toml is wrong on
+    # ROCm; nixl_rocm_shim.py (copied in below) provides `import nixl` instead.
+    if [ ! -d "${py_site}/nixl_rocm" ]; then \
+        echo "ERROR: ${py_site}/nixl_rocm not found after meson install" >&2; exit 1; \
+    fi; \
+    plugin_dir="${libdir}/plugins"; \
+    if [ ! -d "${plugin_dir}" ]; then plugin_dir="${prefix}/lib/nixl/plugins"; fi; \
+    # AIS_MT (LMCache's l2-adapter backend) is mandatory; its absence means
+    # hipFile was not found at NIXL build time.
+    ais_plugin="$(find build -name libplugin_AIS_MT.so -print -quit)"; \
+    if [ -z "${ais_plugin}" ]; then \
+        echo "ERROR: libplugin_AIS_MT.so not built (hipFile missing at NIXL build time?)" >&2; exit 1; \
+    fi; \
+    echo "PASS: ${ais_plugin}"; \
+    # The Prometheus telemetry exporter is mandatory too.  NIXL builds it only
+    # when its prometheus-cpp CMake subproject resolves.
+    prom_plugin="$(find build -name libtelemetry_exporter_prometheus.so -print -quit)"; \
+    if [ -z "${prom_plugin}" ]; then \
+        echo "ERROR: prometheus telemetry exporter plugin NOT built (prometheus-cpp subproject unavailable at NIXL build time); this build is not permitted without it" >&2; exit 1; \
+    fi; \
+    echo "PASS: prometheus telemetry exporter plugin: ${prom_plugin}"; \
+    # The plugin loads the prometheus-cpp/civetweb shared libs of the CMake
+    # subproject at runtime.  NIXL refs whose `ninja install` leaves them in the
+    # build tree need them copied to a dir on the runtime LD_LIBRARY_PATH
+    # (v1.5.2 installs them itself, as libcore/libpull).
+    install -Dm0755 "${prom_plugin}" "${plugin_dir}/$(basename "${prom_plugin}")"; \
+    find build \( -name 'libprometheus-cpp*.so*' -o -name 'libcivetweb*.so*' \) \
+        -exec install -Dm0755 -t "${libdir}" {} +; \
+    ldconfig; \
+    # A plugin that cannot resolve its shared libs is as good as absent.
+    if ldd "${plugin_dir}/$(basename "${prom_plugin}")" | grep "not found" >&2; then \
+        echo "ERROR: prometheus telemetry plugin has unresolved shared libs" >&2; exit 1; \
+    fi; \
+    # Wheel: same meson args minus --prefix, which meson-python manages.  It is
+    # named nixl-rocm (upstream's pyproject defaults to nixl-cu12) and bundles
+    # libnixl + the NIXL plugins/UCX libs; the ROCm runtime stays external.
+    # CXX must not be hipcc here: meson would use it as the host C++ compiler
+    # and hipcc fails meson's compiler sanity check.
+    if [ -x contrib/tomlutil.py ]; then \
+        ./contrib/tomlutil.py --wheel-name nixl-rocm pyproject.toml; \
+    fi; \
+    mkdir -p /app/nixl/dist; \
+    env -u CXX ROCM_PATH=/opt/rocm UV_SYSTEM_CERTS=1 \
+        uv build --wheel --no-build-isolation --out-dir /app/nixl/dist \
+            "${meson_args[@]/#/-Csetup-args=}" "-Ccompile-args=-j${jobs}"; \
+    nixl_whl="$(find /app/nixl/dist -maxdepth 1 -name 'nixl*rocm*.whl' -print -quit)"; \
+    if [ -z "${nixl_whl}" ]; then \
+        echo "ERROR: no nixl*rocm*.whl in /app/nixl/dist" >&2; exit 1; \
+    fi; \
+    echo "PASS: NIXL wheel built -> ${nixl_whl}"; \
+    rm -rf /tmp/nixl
+
+COPY docker/base/nixl_rocm_shim.py /opt/nixl/lib/python3/dist-packages/nixl/__init__.py
+RUN PYTHONPATH=/opt/nixl/lib/python3/dist-packages \
+    NIXL_PLUGIN_DIR=/opt/nixl/lib/x86_64-linux-gnu/plugins \
+    LD_LIBRARY_PATH=/opt/nixl/lib/x86_64-linux-gnu:/opt/nixl/lib:/opt/rocnixl-ucx/lib \
+        python3 -c "import nixl; print('nixl import OK:', nixl.__file__)"
 
 # =============================================================================
 # wheels — scratch image holding just the nixl_rocm pip wheel (--target wheels;
@@ -447,9 +615,9 @@ RUN cmake -G Ninja \
 # =============================================================================
 # runtime — plain ROCm image + 13 ROCm runtime packages + torch + NIXL.
 #
-# Starts FROM ubuntu:24.04 instead of the -full ROCm image (~18 GB).  AMD
+# Starts FROM ubuntu:26.04 instead of the -full ROCm image (~18 GB).  AMD
 # stopped publishing a lightweight runtime image (no -full suffix) for Ubuntu
-# 24.04 after ROCm 7.2.x, so we build from plain Ubuntu and add only the 13
+# 26.04; we build from plain Ubuntu and add only the 13
 # ROCm packages that torch actually dlopens at process start (~2 GB), confirmed
 # by /proc/self/maps audit with a live GPU.  ~15 GB of -full content excluded.
 #
@@ -488,17 +656,19 @@ SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 RUN : "${ROCM_VERSION:?unset: build through docker/docker-bake.hcl}"
 
 # Corporate CA cert (needed for pip at runtime if behind a corporate proxy).
+# ubuntu:26.04 has no ca-certificates yet; the next RUN installs it and runs
+# update-ca-certificates, which picks this file up.
 RUN --mount=type=secret,id=tls_cert,required=false \
     if [ -f /run/secrets/tls_cert ] && [ -s /run/secrets/tls_cert ]; then \
-        cp /run/secrets/tls_cert /usr/local/share/ca-certificates/corp-ca.crt && \
-        update-ca-certificates; \
+        mkdir -p /usr/local/share/ca-certificates && \
+        cp /run/secrets/tls_cert /usr/local/share/ca-certificates/corp-ca.crt; \
     fi
 
 # AMD stopped publishing the lightweight runtime image (no -full suffix) for
-# Ubuntu 24.04 after ROCm 7.2.x.  Use ubuntu:24.04 as the base and add the
+# Ubuntu 26.04.  Use ubuntu:26.04 as the base and add the
 # AMD apt repo using the signing key COPYed from the build-time base stage
 # (which already has it from the -full image — no network fetch needed).
-# Version-specific package names are computed from ROCM_VERSION (7.14.1 → "7.14").
+# Version-specific package names are computed from ROCM_VERSION (10.1.0 → "10.1").
 # hadolint ignore=DL3008
 # Step 1: ca-certificates must be installed before adding the HTTPS AMD repo,
 # otherwise apt-get update cannot verify the TLS connection and silently skips
@@ -537,8 +707,9 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
         ibverbs-providers \
         libibverbs-dev \
         libaio1t64 \
+        libgomp1 \
         libnuma1 \
-        libopenmpi3t64 \
+        librdmacm1t64 \
         liburing2 \
         make \
         nvme-cli \
@@ -608,7 +779,7 @@ RUN --mount=type=cache,target=/root/.cache/pip \
     --mount=type=bind,from=build_torchvision,source=/app/vision/dist,target=/wheel-vision/ \
     --mount=type=bind,from=build_triton,source=/app/triton/dist,target=/wheel-triton/ \
     uv pip install --system /wheel-*/*.whl && \
-    { find /usr/local/lib/python3.12 -name '__pycache__' -type d \
+    { find /usr/local/lib/python3.* -name '__pycache__' -type d \
          -exec rm -rf {} + || \
       echo "WARNING: __pycache__ cleanup failed; see find's error above" >&2; }
 
@@ -637,7 +808,7 @@ RUN uv pip uninstall --system \
 
 # The AMD packages install to /opt/rocm/core-<major.minor>/ (not /opt/rocm/
 # directly).  The -full image creates symlinks; with explicit packages we must
-# use the versioned path, derived from ROCM_VERSION (7.14.1 -> core-7.14).
+# use the versioned path, derived from ROCM_VERSION (10.1.0 -> core-10.1).
 RUN _mm=$(echo "${ROCM_VERSION}" | cut -d. -f1-2) && \
     echo "/opt/rocm/core-${_mm}/lib" > /etc/ld.so.conf.d/rocm.conf && \
     ldconfig

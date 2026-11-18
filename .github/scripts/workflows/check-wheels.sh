@@ -30,7 +30,7 @@ trap '_on_err "$?" "${PIPESTATUS[*]}" "$LINENO" "${FUNCNAME[*]-}"' ERR
 #   amd_aiter-*      docker/vllm/Dockerfile    build_vllm
 #   flash_attn-*     docker/vllm/Dockerfile    build_vllm, arch lists with a gfx9*
 #   lmcache-*        docker/lmcache/Dockerfile build_lmcache_wheel
-#   nixl*rocm*       docker/base/Dockerfile    build_nixl (build-nixl.sh's own glob)
+#   nixl*rocm*       docker/base/Dockerfile    build_nixl (the stage's own glob)
 #   triton-*         docker/base/Dockerfile    build_triton
 #   torch-*          docker/base/Dockerfile    build_pytorch
 #   torchvision-*    docker/base/Dockerfile    build_torchvision

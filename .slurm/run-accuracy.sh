@@ -533,7 +533,7 @@ export LMCACHE_L1_SIZE_GB=1
 export AIC_L2_BACKEND=nixl_posix
 export AIC_NIXL_BACKEND=POSIX
 # vLLM shares lmcache's network namespace, so lmcache is on its loopback.
-export KV_TRANSFER_ARG="--kv-transfer-config '{\"kv_connector\":\"LMCacheMPConnector\",\"kv_role\":\"kv_both\",\"kv_connector_extra_config\":{\"lmcache.mp.host\":\"tcp://localhost\",\"lmcache.mp.port\":6555}}'"
+export KV_TRANSFER_ARG="--kv-transfer-config '{\"kv_connector\":\"LMCacheMPConnector\",\"kv_role\":\"kv_both\",\"kv_connector_extra_config\":{\"lmcache.mp.host\":\"tcp://localhost\",\"lmcache.mp.port\":6555,\"lmcache.mp.use_vmm_api\":false}}'"
 
 POOL_BEFORE="$(_pool_bytes)"
 POOL_ALLOC_BEFORE="$(_pool_alloc_bytes)"
@@ -797,7 +797,7 @@ _metrics_reachable aic-lmcache   http://127.0.0.1:9091/metrics || RESCORE_METRIC
 EXT_Q_BEFORE="$(_vllm_ext vllm:external_prefix_cache_queries_total)"
 EXT_H_BEFORE="$(_vllm_ext vllm:external_prefix_cache_hits_total)"
 L1_READ_BEFORE="$(_lmc lmcache_mp_l1_read_chunks_total)"
-L2_HIT_BEFORE="$(_lmc lmcache_mp_l2_prefetch_hit_chunks_total)"
+L2_HIT_BEFORE="$(_lmc lmcache_mp_lookup_hit_l2_keys_total)"
 L2_LOAD_BEFORE="$(_lmc lmcache_mp_l2_prefetch_load_completed_chunks_total)"
 echo "[accuracy-test] pre-rescore counters: ext_q=${EXT_Q_BEFORE} ext_h=${EXT_H_BEFORE} l1_read=${L1_READ_BEFORE} l2_hit=${L2_HIT_BEFORE} l2_load=${L2_LOAD_BEFORE}"
 
@@ -843,7 +843,7 @@ _metrics_reachable aic-lmcache   http://127.0.0.1:9091/metrics || RESCORE_METRIC
 EXT_Q_AFTER="$(_vllm_ext vllm:external_prefix_cache_queries_total)"
 EXT_H_AFTER="$(_vllm_ext vllm:external_prefix_cache_hits_total)"
 L1_READ_AFTER="$(_lmc lmcache_mp_l1_read_chunks_total)"
-L2_HIT_AFTER="$(_lmc lmcache_mp_l2_prefetch_hit_chunks_total)"
+L2_HIT_AFTER="$(_lmc lmcache_mp_lookup_hit_l2_keys_total)"
 L2_LOAD_AFTER="$(_lmc lmcache_mp_l2_prefetch_load_completed_chunks_total)"
 
 EXT_Q=$(( EXT_Q_AFTER - EXT_Q_BEFORE ))

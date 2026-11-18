@@ -129,11 +129,11 @@ def render_readme(readme_text: str) -> tuple[str, list[str]]:
         raise SyncError(BAKE_FILE, f"ROCM_VERSION is not a supported release version: {rocm!r}")
 
     rocm_base = values["ROCM_BASE_IMAGE"]
-    expected_rocm_base = f"rocm/dev-ubuntu-24.04:{rocm}-full"
+    expected_rocm_base = f"rocm/dev-ubuntu-26.04:{rocm}-full"
     if rocm_base != expected_rocm_base:
         raise SyncError(
             BAKE_FILE,
-            "ROCM_BASE_IMAGE must match the README Ubuntu 24.04/Python 3.12 contract: "
+            "ROCM_BASE_IMAGE must match the README Ubuntu 26.04/Python 3.14 contract: "
             f"expected {expected_rocm_base!r}, found {rocm_base!r}",
         )
 
@@ -151,11 +151,11 @@ def render_readme(readme_text: str) -> tuple[str, list[str]]:
     nixl_patch_summary = " + ".join(f"`{patch.name}`" for patch in nixl_patches)
     rocm_short = ".".join(rocm.split(".")[:2])
     # PYTORCH_REF is the immutable commit built; PYTORCH_SERIES is the readable
-    # series.  Links point at the commit, labels show "<series> (<short sha>)"
-    # so the README stays legible without hiding what was actually built.
+    # series.  Links point at the commit; the shield shows the series only for
+    # brevity, while the table row also carries the short SHA for traceability.
     pytorch_ref = values["PYTORCH_REF"]
     pytorch_series = values["PYTORCH_SERIES"]
-    pytorch = f"{pytorch_series} ({pytorch_ref[:7]})"
+    pytorch = f"{pytorch_series} ({pytorch_ref[:7]})"  # table row: "2.15 (abecaa8)"
     vllm = values["VLLM_REF"]
     aiter = values["AITER_REF"]
     lmcache = values["LMCACHE_REF"]
@@ -167,12 +167,12 @@ def render_readme(readme_text: str) -> tuple[str, list[str]]:
         (
             "ROCm badge",
             r"^\[!\[ROCm\]\(https://img\.shields\.io/badge/ROCm-[^\s/)]+-green\.svg\)\]\(https://rocm\.docs\.amd\.com\)$",
-            f"[![ROCm](https://img.shields.io/badge/ROCm-{shield_value(rocm)}-green.svg)](https://rocm.docs.amd.com)",
+            f"[![ROCm](https://img.shields.io/badge/ROCm-{shield_value(rocm_short)}-green.svg)](https://rocm.docs.amd.com)",
         ),
         (
             "PyTorch badge",
-            r"^\[!\[PyTorch\]\(https://img\.shields\.io/badge/PyTorch-[^\s/)]+-ee4c2c\.svg\)\]\(https://github\.com/ROCm/pytorch/tree/[^\s)]+\)$",
-            f"[![PyTorch](https://img.shields.io/badge/PyTorch-{shield_value(pytorch)}-ee4c2c.svg)](https://github.com/ROCm/pytorch/tree/{pytorch_ref})",
+            r"^\[!\[PyTorch\]\(https://img\.shields\.io/badge/PyTorch-[^\s/)]+-blue\.svg\)\]\(https://github\.com/ROCm/pytorch/tree/[^\s)]+\)$",
+            f"[![PyTorch](https://img.shields.io/badge/PyTorch-{shield_value(pytorch_series)}-blue.svg)](https://github.com/ROCm/pytorch/tree/{pytorch_ref})",
         ),
         (
             "AITER badge",
@@ -195,14 +195,14 @@ def render_readme(readme_text: str) -> tuple[str, list[str]]:
             f"[![NIXL](https://img.shields.io/badge/NIXL-{shield_value(nixl)}-blue.svg)](https://github.com/ai-dynamo/nixl)",
         ),
         (
-            "hsa-snoop badge",
-            r"^\[!\[hsa-snoop\]\(https://img\.shields\.io/badge/hsa--snoop-[^\s/)]+-blue\.svg\)\]\(https://github\.com/sbates130272/hsa-snoop\)$",
-            f"[![hsa-snoop](https://img.shields.io/badge/hsa--snoop-{shield_value(hsa)}-blue.svg)](https://github.com/sbates130272/hsa-snoop)",
+            "HSA-Snoop badge",
+            r"^\[!\[HSA-Snoop\]\(https://img\.shields\.io/badge/HSA--Snoop-[^\s/)]+-blue\.svg\)\]\(https://github\.com/sbates130272/hsa-snoop\)$",
+            f"[![HSA-Snoop](https://img.shields.io/badge/HSA--Snoop-{shield_value(hsa)}-blue.svg)](https://github.com/sbates130272/hsa-snoop)",
         ),
         (
             "base image row",
-            r"^\| Base OS \| `[^`]+` \| Ubuntu 24\.04, ROCm [^ |]+, Python 3\.12 \|$",
-            f"| Base OS | `{rocm_base}` | Ubuntu 24.04, ROCm {rocm_short}, Python 3.12 |",
+            r"^\| Base OS \| `[^`]+` \| Ubuntu 26\.04, ROCm [^ |]+, Python 3\.14 \|$",
+            f"| Base OS | `{rocm_base}` | Ubuntu 26.04, ROCm {rocm_short}, Python 3.14 |",
         ),
         (
             "PyTorch row",
@@ -216,8 +216,8 @@ def render_readme(readme_text: str) -> tuple[str, list[str]]:
         ),
         (
             "AITER row",
-            r"^\| AITER \| `ROCm/aiter` \(source build\) \| `[^`]+` \(vLLM ROCm-validated\) \|$",
-            f"| AITER | `ROCm/aiter` (source build) | `{aiter}` (vLLM ROCm-validated) |",
+            r"^\| AITER \| `ROCm/aiter` \(source build\) \| `[^`]+` \|$",
+            f"| AITER | `ROCm/aiter` (source build) | `{aiter}` |",
         ),
         (
             "LMCache row",
@@ -230,14 +230,9 @@ def render_readme(readme_text: str) -> tuple[str, list[str]]:
             f"| NIXL | `ai-dynamo/nixl` (upstream) | `{nixl}` + {nixl_patch_summary} |",
         ),
         (
-            "hsa-snoop row",
-            r"^\| hsa-snoop \| `sbates130272/hsa-snoop` \(source build\) \| `[^`]+` \|$",
-            f"| hsa-snoop | `sbates130272/hsa-snoop` (source build) | `{hsa}` |",
-        ),
-        (
-            "hipFile row",
-            r"^\| hipFile \| ROCm [^ |]+ base image \| GA in ROCm 7\.14 \N{EM DASH} no separate source build \|$",
-            f"| hipFile | ROCm {rocm_short} base image | GA in ROCm 7.14 \N{EM DASH} no separate source build |",
+            "HSA Snoop row",
+            r"^\| HSA Snoop \| `sbates130272/hsa-snoop` \(source build\) \| `[^`]+` \|$",
+            f"| HSA Snoop | `sbates130272/hsa-snoop` (source build) | `{hsa}` |",
         ),
     )
 

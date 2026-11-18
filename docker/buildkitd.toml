@@ -3,3 +3,14 @@
 # so verbose steps (FlashAttention/CK kernel compilation) are fully visible.
 [log]
   max-size = -1
+
+# BuildKit's default cap on its own layer store is min(100 GB, 60% of disk).
+# One generation of this stack (a ~31 GB ROCm base image plus the PyTorch,
+# vLLM and LMCache build layers) does not fit beside the previous one, so the
+# base image was evicted and re-pulled on every build.  minFreeSpace still
+# bounds the store on a small disk.
+[worker.oci]
+  gc = true
+  reservedSpace = "10GB"
+  maxUsedSpace = "300GB"
+  minFreeSpace = "20%"

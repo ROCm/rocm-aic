@@ -40,7 +40,7 @@ ROCM_BASE_IMAGE: Full ROCm development image the source builds run on
 ROCM_RUNTIME_IMAGE: Image the shipped images start from
 
 [pins]
-PYTORCH_REF: `ROCm/pytorch` commit built from source. A SHA, because the 2.13 series has no tag
+PYTORCH_REF: `ROCm/pytorch` commit built from source. A SHA, because the 2.15 series has no tag
 PYTORCH_SERIES: Display only: the torch series in the image tag, README and release notes, and the CPU torch the emulate builds install. Bump with `PYTORCH_REF`
 TORCHVISION_REF: Ref of torchvision built against that PyTorch
 VLLM_REF: vLLM ref
@@ -49,8 +49,9 @@ AITER_REF: ROCm AITER ref installed into every image; override only together wit
 FLASH_ATTN_REF: FlashAttention ref, built for the CDNA (`gfx9*`) arches only
 LMCACHE_REF: LMCache ref
 NIXL_REF: NIXL ref
+UCX_REF: UCX ref (NIXL's transport) source-built into the base image
 HSA_SNOOP_REF: hsa-snoop ref
-CLR_REF: `ROCm/rocm-systems` ref the patched `libamdhip64` in the base image is built from; follows `ROCM_VERSION`
+CLR_REF: `ROCm/rocm-systems` ref the patched `libamdhip64` in the base image is built from; bump it together with `ROCM_VERSION`
 TRITON_REF: Triton ref source-built into the base image
 UV_VERSION: `uv` release used by the image builds
 NVME_EXPORTER_VERSION: `nvme_exporter` release packaged into the NVMe exporter image
@@ -68,6 +69,7 @@ AITER_GIT_URL: AITER source repository
 FLASH_ATTN_GIT_URL: FlashAttention source repository
 LMCACHE_GIT_URL: LMCache source repository
 NIXL_GIT_URL: NIXL source repository
+UCX_GIT_URL: UCX source repository
 HSA_SNOOP_GIT_URL: hsa-snoop source repository
 CLR_GIT_URL: Source repository of the patched `libamdhip64`
 TRITON_GIT_URL: Source repository of Triton
@@ -181,7 +183,6 @@ LMCACHE_CONFIG_FILE: In-container path of that config; set only when one is moun
 NIXL_TELEMETRY_ENABLE: NIXL's own Prometheus exporter on `:19090`. Set it empty to disable
 NIXL_TELEMETRY_EXPORTER: NIXL telemetry exporter type
 AIC_HSA_IPC_LEGACY: `1` sets `HSA_ENABLE_IPC_MODE_LEGACY=1` in both containers: the KFD-handle IPC mode, which needs the DKMS `amdgpu` module
-AIC_LMCACHE_VMM_IPC: `1` selects the HIP VMM wrapper for cross-container memory handles
 
 [coordinator]
 LMCACHE_COORDINATOR_URL: Base URL the MP server registers and heartbeats against. Set it empty to run without a coordinator
@@ -199,7 +200,7 @@ VLM_MAX_NUM_BATCHED_TOKENS: `--max-num-batched-tokens`
 VLM_BLOCK_SIZE: `--block-size`; match it to the model and connector cache geometry
 VLM_LOAD_FORMAT: `--load-format`. `fastsafetensors` is CDNA-only; use `auto` on RDNA
 VLM_ATTENTION_BACKEND: `--attention-backend`. `TRITON_ATTN` is the one that supports KV connectors
-VLM_KV_CACHE_DTYPE: `--kv-cache-dtype`; `auto` for arches without native `fp8`
+VLM_KV_CACHE_DTYPE: `--kv-cache-dtype`. `auto` stores KV in the model dtype; `fp8` roughly doubles KV capacity where the arch has native `fp8`, but gave repeated-token glitches with Qwen2.5-3B on gfx1201
 VLM_KV_CACHE_METRICS_SAMPLE: Fraction of KV blocks sampled for the residency histograms
 KV_TRANSFER_ARG: vLLM `--kv-transfer-config` argument. `make` sets the `LMCacheMPConnector` JSON; empty is a plain vLLM (the cliff `vram` baseline). Single-quote the JSON
 VLLM_EXTRA_ARGS: Extra `vllm serve` arguments appended verbatim; single-quote embedded JSON

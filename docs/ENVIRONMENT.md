@@ -93,9 +93,9 @@ it), whose defaults a test keeps equal to bake's.
 | `AIC_BASE_IMAGE` | `aic-base:${IMAGE_TAG:-latest}` | `.slurm/run-build-distribute.sh` | Slurm scripts: `name:tag` the `bake` command stores the base image under |
 | `AIC_IMAGE` | `${AIC_IMAGE_NAME:-rocm-aic}:${_aic_tag:-latest}`; `rocm-aic:latest` (`monitoring/monitoring-lib.sh`) | `.slurm/run-build-distribute.sh` | Slurm scripts: a complete `name:tag` for the single-image paths, used verbatim; wins over `AIC_IMAGE_NAME`. The monitoring library runs its Prometheus queries from it |
 | `AIC_IMAGE_NAME` | `rocm-aic` | `.slurm/run-build-distribute.sh` | Slurm scripts: image name only; the version-derived tag is appended |
-| `AIC_EMULATE_IMAGE` | `${IMAGE_NAME:-rocm-aic}:${IMAGE_TAG_EMULATE:-7.14-emulate}` | `.slurm/run-build-distribute.sh` | `name:tag` of the CPU-only emulation image built by `make dist-build-emulate` |
+| `AIC_EMULATE_IMAGE` | `${IMAGE_NAME:-rocm-aic}:${IMAGE_TAG_EMULATE:-10.1-emulate}` | `.slurm/run-build-distribute.sh` | `name:tag` of the CPU-only emulation image built by `make dist-build-emulate` |
 | `IMAGE_NAME` | `rocm-aic` | `.slurm/run-build-distribute.sh` | Name part of the default `AIC_EMULATE_IMAGE` |
-| `IMAGE_TAG_EMULATE` | `7.14-emulate` | `.slurm/run-build-distribute.sh` | Tag part of the default `AIC_EMULATE_IMAGE` |
+| `IMAGE_TAG_EMULATE` | `10.1-emulate` | `.slurm/run-build-distribute.sh` | Tag part of the default `AIC_EMULATE_IMAGE` |
 <!-- END generated:image -->
 
 ### ROCm and GPU target
@@ -103,12 +103,12 @@ it), whose defaults a test keeps equal to bake's.
 <!-- BEGIN generated:rocm -->
 | Variable | Default | Owner | Description |
 | --- | --- | --- | --- |
-| `ROCM_VERSION` | `7.14.1` | `docker/docker-bake.hcl` | ROCm release the images are built on |
+| `ROCM_VERSION` | `10.1.0` | `docker/docker-bake.hcl` | ROCm release the images are built on |
 | `ROCM_ARCH` | (empty); `gfx950` (`Makefile`, SPUR); `$(detect_gpu_arch)` (`.slurm/run-cliff.sbatch`) | `docker/docker-bake.hcl` | GPU arch of this host's stack: a `;`-, `,`- or space-separated `gfx` list. `make` fills it from `rocm_agent_enumerator` when unset and forces `gfx950` on SPUR; empty omits the arch suffix from the image tag |
 | `AIC_ROCM_ARCH` | `gfx90a;gfx942;gfx950;gfx1151;gfx1201` | `.slurm/run-build-distribute.sh` | Arch list a Slurm build compiles for and a Slurm test expects (`;`-separated). Separate from `ROCM_ARCH` on purpose: the default covers every supported arch, so one image runs on any of them |
 | `AIC_FAST_ARCH` | `gfx950` | `Makefile` | The single arch of the `-fast` make targets (`dist-build-fast`, `smoke-test-fast`, ...) |
-| `ROCM_BASE_IMAGE` | `rocm/dev-ubuntu-24.04:${ROCM_VERSION}-full` | `docker/docker-bake.hcl` | Full ROCm development image the source builds run on |
-| `ROCM_RUNTIME_IMAGE` | `ubuntu:24.04` | `docker/docker-bake.hcl` | Image the shipped images start from |
+| `ROCM_BASE_IMAGE` | `rocm/dev-ubuntu-26.04:${ROCM_VERSION}-full` | `docker/docker-bake.hcl` | Full ROCm development image the source builds run on |
+| `ROCM_RUNTIME_IMAGE` | `ubuntu:26.04` | `docker/docker-bake.hcl` | Image the shipped images start from |
 <!-- END generated:rocm -->
 
 ### Version pins
@@ -116,18 +116,19 @@ it), whose defaults a test keeps equal to bake's.
 <!-- BEGIN generated:pins -->
 | Variable | Default | Owner | Description |
 | --- | --- | --- | --- |
-| `PYTORCH_REF` | `ec5f3b1effb14f0e36b66bab4db1c9b49b278f82` | `docker/docker-bake.hcl` | `ROCm/pytorch` commit built from source. A SHA, because the 2.13 series has no tag |
-| `PYTORCH_SERIES` | `2.13` | `docker/docker-bake.hcl` | Display only: the torch series in the image tag, README and release notes, and the CPU torch the emulate builds install. Bump with `PYTORCH_REF` |
-| `TORCHVISION_REF` | `v0.28.0` | `docker/docker-bake.hcl` | Ref of torchvision built against that PyTorch |
-| `VLLM_REF` | `v0.29.0` | `docker/docker-bake.hcl` | vLLM ref |
+| `PYTORCH_REF` | `abecaa87238d2d43d2641a22d89a51de185779b2` | `docker/docker-bake.hcl` | `ROCm/pytorch` commit built from source. A SHA, because the 2.15 series has no tag |
+| `PYTORCH_SERIES` | `2.15` | `docker/docker-bake.hcl` | Display only: the torch series in the image tag, README and release notes, and the CPU torch the emulate builds install. Bump with `PYTORCH_REF` |
+| `TORCHVISION_REF` | `v0.29.2` | `docker/docker-bake.hcl` | Ref of torchvision built against that PyTorch |
+| `VLLM_REF` | `v0.34.0` | `docker/docker-bake.hcl` | vLLM ref |
 | `LLM_EMU_REF` | `b71c602` | `docker/docker-bake.hcl` | llm-emu ref (the emulation plugin) |
-| `AITER_REF` | `v0.1.22.post1` | `docker/docker-bake.hcl` | ROCm AITER ref installed into every image; override only together with a validated `FLASH_ATTN_REF` |
-| `FLASH_ATTN_REF` | `v2.8.3.post1` | `docker/docker-bake.hcl` | FlashAttention ref, built for the CDNA (`gfx9*`) arches only |
-| `LMCACHE_REF` | `v0.5.6` | `docker/docker-bake.hcl` | LMCache ref |
-| `NIXL_REF` | `v1.4.1` | `docker/docker-bake.hcl` | NIXL ref |
-| `HSA_SNOOP_REF` | `v1.2.0` | `docker/docker-bake.hcl` | hsa-snoop ref |
-| `CLR_REF` | `therock-${ROCM_VERSION}` | `docker/docker-bake.hcl` | `ROCm/rocm-systems` ref the patched `libamdhip64` in the base image is built from; follows `ROCM_VERSION` |
-| `TRITON_REF` | `release/internal/3.7.x` | `docker/docker-bake.hcl` | Triton ref source-built into the base image |
+| `AITER_REF` | `v0.1.29.post1` | `docker/docker-bake.hcl` | ROCm AITER ref installed into every image; override only together with a validated `FLASH_ATTN_REF` |
+| `FLASH_ATTN_REF` | `0e60e394` | `docker/docker-bake.hcl` | FlashAttention ref, built for the CDNA (`gfx9*`) arches only |
+| `LMCACHE_REF` | `v0.5.8rc1` | `docker/docker-bake.hcl` | LMCache ref |
+| `NIXL_REF` | `v1.5.2` | `docker/docker-bake.hcl` | NIXL ref |
+| `UCX_REF` | `v1.22.0` | `docker/docker-bake.hcl` | UCX ref (NIXL's transport) source-built into the base image |
+| `HSA_SNOOP_REF` | `v1.6.0` | `docker/docker-bake.hcl` | hsa-snoop ref |
+| `CLR_REF` | `release/therock-10.1` | `docker/docker-bake.hcl` | `ROCm/rocm-systems` ref the patched `libamdhip64` in the base image is built from; bump it together with `ROCM_VERSION` |
+| `TRITON_REF` | `release/internal/3.8.x` | `docker/docker-bake.hcl` | Triton ref source-built into the base image |
 | `UV_VERSION` | `0.12.15` | `docker/docker-bake.hcl` | `uv` release used by the image builds |
 | `NVME_EXPORTER_VERSION` | `3.0.0` | `docker/docker-bake.hcl` | `nvme_exporter` release packaged into the NVMe exporter image |
 | `RDMA_EXPORTER_VERSION` | `0.7.5` | `docker/docker-bake.hcl` | `rdma_exporter` release packaged into the RDMA exporter image |
@@ -149,6 +150,7 @@ it), whose defaults a test keeps equal to bake's.
 | `FLASH_ATTN_GIT_URL` | `https://github.com/Dao-AILab/flash-attention.git` | `docker/docker-bake.hcl` | FlashAttention source repository |
 | `LMCACHE_GIT_URL` | `https://github.com/LMCache/LMCache.git` | `docker/docker-bake.hcl` | LMCache source repository |
 | `NIXL_GIT_URL` | `https://github.com/ai-dynamo/nixl.git` | `docker/docker-bake.hcl` | NIXL source repository |
+| `UCX_GIT_URL` | `https://github.com/openucx/ucx.git` | `docker/docker-bake.hcl` | UCX source repository |
 | `HSA_SNOOP_GIT_URL` | `https://github.com/sbates130272/hsa-snoop.git` | `docker/docker-bake.hcl` | hsa-snoop source repository |
 | `CLR_GIT_URL` | `https://github.com/ROCm/rocm-systems.git` | `docker/docker-bake.hcl` | Source repository of the patched `libamdhip64` |
 | `TRITON_GIT_URL` | `https://github.com/ROCm/triton.git` | `docker/docker-bake.hcl` | Source repository of Triton |
@@ -297,7 +299,6 @@ it), whose defaults a test keeps equal to bake's.
 | `NIXL_TELEMETRY_ENABLE` | `y` (only when unset) | `docker/docker-compose.yml` | NIXL's own Prometheus exporter on `:19090`. Set it empty to disable |
 | `NIXL_TELEMETRY_EXPORTER` | `prometheus` | `docker/docker-compose.yml` | NIXL telemetry exporter type |
 | `AIC_HSA_IPC_LEGACY` | (empty) | `docker/docker-compose.yml` | `1` sets `HSA_ENABLE_IPC_MODE_LEGACY=1` in both containers: the KFD-handle IPC mode, which needs the DKMS `amdgpu` module |
-| `AIC_LMCACHE_VMM_IPC` | `0` | `docker/docker-compose.yml` | `1` selects the HIP VMM wrapper for cross-container memory handles |
 <!-- END generated:lmcache -->
 
 ### LMCache coordinator
@@ -325,7 +326,7 @@ it), whose defaults a test keeps equal to bake's.
 | `VLM_BLOCK_SIZE` | `64` | `docker/docker-compose.yml` | `--block-size`; match it to the model and connector cache geometry |
 | `VLM_LOAD_FORMAT` | `fastsafetensors` | `docker/docker-compose.yml` | `--load-format`. `fastsafetensors` is CDNA-only; use `auto` on RDNA |
 | `VLM_ATTENTION_BACKEND` | `TRITON_ATTN` | `docker/docker-compose.yml` | `--attention-backend`. `TRITON_ATTN` is the one that supports KV connectors |
-| `VLM_KV_CACHE_DTYPE` | `fp8` | `docker/docker-compose.yml` | `--kv-cache-dtype`; `auto` for arches without native `fp8` |
+| `VLM_KV_CACHE_DTYPE` | `auto` | `docker/docker-compose.yml` | `--kv-cache-dtype`. `auto` stores KV in the model dtype; `fp8` roughly doubles KV capacity where the arch has native `fp8`, but gave repeated-token glitches with Qwen2.5-3B on gfx1201 |
 | `VLM_KV_CACHE_METRICS_SAMPLE` | `0.05` | `docker/docker-compose.yml` | Fraction of KV blocks sampled for the residency histograms |
 | `KV_TRANSFER_ARG` | (empty); `--kv-transfer-config '$(_MP_CONNECTOR_JSON)'` (`Makefile`) | `docker/docker-compose.yml` | vLLM `--kv-transfer-config` argument. `make` sets the `LMCacheMPConnector` JSON; empty is a plain vLLM (the cliff `vram` baseline). Single-quote the JSON |
 | `VLLM_EXTRA_ARGS` | (empty) | `docker/docker-compose.yml` | Extra `vllm serve` arguments appended verbatim; single-quote embedded JSON |
@@ -388,12 +389,10 @@ See [METRICS_TELEMETRY.md](METRICS_TELEMETRY.md).
 ### Fixed by compose
 
 These are set to a literal in `docker/docker-compose.yml` and are not
-user-settable. The readers require them, except `rocm_vmem_ipc.py`, which
-keeps a fallback for running outside compose.
+user-settable. The readers require them.
 
 | Variable | Value | Read by |
 | --- | --- | --- |
-| `AIC_IPC_SOCK` | `/tmp/aic-ipc/fds.sock` | `docker/lmcache/rocm_vmem_ipc.py` |
 | `AIC_L2_DIR`, `AIC_PROM_FILE`, `AIC_PROM_INTERVAL` | see the `l2-monitor` service | `docker/l2-monitor/l2_monitor.py` |
 | `LMCACHE_COORDINATOR_PORT`, `COORDINATOR_METRICS_PORT` | `9300`, `9301` | `monitoring/scripts/lmcache_coordinator_entrypoint.py` |
 | `LMCACHE_DISABLE_BANNER` | `1` | `monitoring/scripts/lmcache_coordinator_entrypoint.py` |
