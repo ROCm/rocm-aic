@@ -86,15 +86,15 @@ The **AIC Overview** dashboard covers eleven rows:
 
 | Row | Key panels |
 | --- | --- |
-| **Summary** | Cumulative token counters (input, output, computed, L1/L2 hits), TTFT/TPOT, total tokens/s, cache hit rates |
+| **Summary** | Cumulative token counters (input, output, computed, LMCache L1/L2 hits), TTFT/TPOT, total tokens/s, cache hit rates (any cache, LMCache L1, LMCache L2) |
 | **GPU** | VRAM %, power, clocks, temperatures, GFX/UMC/MMA activity, PCIe / xGMI fabric speed |
-| **vLLM** | Throughput, TTFT/ITL/E2E latency p50+p95, KV cache usage %, prefix cache hit rate, preemptions |
-| **LMCache** | L1 usage gauge, L1/L2 chunk rates, L0→L1 throughput, reuse gap, in-flight L2 stores |
+| **vLLM** | Throughput, TTFT/ITL/E2E latency p50+p95, prompt tokens by source, requests waiting on a KV fetch by stage, KV cache usage %, prefix cache hit rate, preemptions (rate and per finished request) |
+| **LMCache** | L1 usage gauge, L1/L2 chunk rates, token hit rate L1/L2, prompt tokens by cache tier (stacked), share of prompt tokens served from any cache, L0→L1 throughput, reuse gap, in-flight L2 stores |
 | **NIXL / L2** | TX/RX throughput (B/s), average transfer latency (µs/req) |
 | **NVMe** | Throughput, IOPS, latency, capacity used, IO pressure (PSI) |
 | **Node / RDMA** | CPU load, memory, filesystem space, IB/RoCE port throughput |
 | **hsa-snoop** | Kernel launch rate by kernel/process, duration histogram, SDMA throughput |
-| **LMCache Coordinator** | Up/down status, registered instances, key directory size, event stream gaps, L2 quota |
+| **LMCache Coordinator** | Up/down status, registered instances, event stream gaps, L1 keys per instance, key directory size, L2 quota |
 | **LMCache — Extended** | L0→L1 load throughput, L2 in-flight queue depth, chunk reuse gap, HTTP latency |
 | **LMCache — Adapter & Transport Health** | L2 adapter state (active/draining), NIXL transfer latency, L1 allocation failures |
 
@@ -290,10 +290,35 @@ divided by the chunk size (256).
 
 | Metric | Type | Description |
 | --- | --- | --- |
-| `lmcache_mp_lookup_requested_tokens_total` | counter | *lazy* Tokens requested from cache |
-| `lmcache_mp_lookup_hit_tokens_total` | counter | *lazy* Tokens served from cache |
+| `lmcache_mp_lookup_requested_tokens_total` | counter | *lazy* Tokens submitted for lookup: chunk-aligned, and excluding the prefix vLLM's GPU prefix cache already held |
+| `lmcache_mp_lookup_hit_tokens_total` | counter | *lazy* Of those, tokens LMCache found (L1 + L2, contiguous prefix only) |
+| `lmcache_mp_lookup_hit_l1_tokens_total` | counter | *lazy* Of `lookup_hit`: tokens L1 (DRAM) could serve on its own |
+| `lmcache_mp_lookup_hit_l2_tokens_total` | counter | *lazy* Of `lookup_hit`: tokens L2 added beyond the prefix L1 could serve; `l1 + l2 == lookup_hit` |
+| `lmcache_mp_lookup_prompt_tokens_total` | counter | *lazy* Whole prompt length of each looked-up request (request-level denominator) |
+| `lmcache_mp_lookup_request_hit_tokens_total` | counter | *lazy* Prefix of the prompt served by vLLM's GPU prefix cache or by LMCache, whichever reached further (request-level numerator) |
 | `lmcache_mp_num_chunks_loaded_total` | counter | *lazy* Total chunks loaded back to GPU |
 | `lmcache_mp_inflight_load_memory_usage_bytes` | gauge | Memory held by in-flight load operations |
+
+All six lookup token counters move on the same event (one per lookup), so
+they can be subtracted. The **Prompt Tokens by Cache Tier** panel stacks,
+as rates:
+
+| Series | Expression |
+| --- | --- |
+| LMCache L1 | `lookup_hit_l1_tokens` |
+| LMCache L2 | `lookup_hit_l2_tokens` |
+| vLLM GPU prefix cache | `lookup_request_hit_tokens − lookup_hit_tokens` |
+| Not cached (computed by prefill) | `lookup_prompt_tokens − lookup_request_hit_tokens` |
+
+Per event `lookup_hit ≤ lookup_request_hit ≤ lookup_prompt`, so no term is
+negative, and the four add up to the prompt token rate.
+`lookup_request_hit_tokens / lookup_prompt_tokens` is the share of prompt
+tokens served from any cache (**Prompt Tokens Served from Any Cache**), and
+`lookup_hit_l{1,2}_tokens / lookup_prompt_tokens` are the Summary row's
+**LMCache L1 / L2 Hit Rate**. LMCache counts whole 256-token chunks and
+credits itself with the chunk that straddles the end of vLLM's GPU hit, so
+its split differs from vLLM's `prompt_tokens_by_source` by up to one chunk
+per request.
 
 ### `lmcache_coordinator` — MP coordinator exporter (`:9301`)
 
@@ -419,7 +444,9 @@ vLLM metrics use the `vllm:` prefix and `model_name` label.
 | `vllm:num_requests_running` | gauge | Requests in active model batches |
 | `vllm:num_requests_waiting` | gauge | Requests waiting to be scheduled |
 | `vllm:num_requests_waiting_by_reason` | gauge | Waiting requests by reason (`capacity`, …) |
+| `vllm:num_requests_kv_fetch_by_stage` | gauge | Waiting requests by async KV load `stage`: `waiting_to_start` (load from LMCache not started), `in_progress` (started, not reported finished), `completed_waiting` (KV loaded, not running yet). Sustained non-zero `in_progress` while LMCache retrieves have stopped means requests are stuck loading KV |
 | `vllm:num_preemptions_total` | counter | Preemption events |
+| `vllm:request_num_preemptions` | histogram | Times each finished request was preempted. The first bucket is `le="1"`, which mixes zero and one preemption, so use `_sum / _count` (mean preemptions per finished request), not a percentile |
 
 #### Token accounting
 
@@ -427,8 +454,27 @@ vLLM metrics use the `vllm:` prefix and `model_name` label.
 | --- | --- | --- |
 | `vllm:prompt_tokens_total` | counter | Prefill tokens processed |
 | `vllm:generation_tokens_total` | counter | Generation tokens produced |
-| `vllm:prompt_tokens_by_source_total` | counter | Prefill tokens by `source` label: `local_compute`, `local_cache_hit`, `external_kv_transfer` |
+| `vllm:prompt_tokens_by_source_total` | counter | Prompt tokens by `source` label (see below): `local_compute`, `local_cache_hit`, `external_kv_transfer` |
 | `vllm:prompt_tokens_cached_total` | counter | Cached prompt tokens (local + external) |
+| `vllm:prompt_tokens_cached_by_source_total` | counter | Cached prompt tokens by the tier that supplied them; `source` is `device`, `host`, `disk`, `p2p` or `external_unspecified` |
+
+What the `source` values of `vllm:prompt_tokens_by_source_total` mean:
+
+| `source` | Meaning | Equals |
+| --- | --- | --- |
+| `local_compute` | Computed by prefill on the GPU; no cache held them | |
+| `local_cache_hit` | vLLM's own GPU prefix cache (KV blocks still in VRAM). **Not** LMCache L1 | `vllm:prefix_cache_hits_total` |
+| `external_kv_transfer` | KV loaded from LMCache, L1 and L2 together. **Not** L2 alone | `vllm:external_prefix_cache_hits_total` |
+
+vLLM cannot see LMCache's tiers. The L1 / L2 split comes from LMCache's own
+`lmcache_mp_lookup_hit_l1_tokens_total` and
+`lmcache_mp_lookup_hit_l2_tokens_total` ([Token-level lookup](#token-level-lookup)),
+which is what the dashboard's L1 / L2 panels plot.
+
+`vllm:prompt_tokens_cached_by_source_total` has no panel: with LMCache every
+external hit lands in `source="external_unspecified"` and the GPU prefix
+cache in `source="device"`, so it repeats the two cache series of
+**Prompt Tokens by Source**.
 
 #### Latency histograms
 

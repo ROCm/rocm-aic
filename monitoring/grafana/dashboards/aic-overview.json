@@ -144,11 +144,11 @@
       },
       "gridPos": {
         "x": 0,
-        "y": 38,
+        "y": 37,
         "w": 8,
         "h": 8
       },
-      "id": 1,
+      "id": 7,
       "title": "GPU VRAM Used %",
       "options": {
         "tooltip": {
@@ -189,11 +189,11 @@
       },
       "gridPos": {
         "x": 8,
-        "y": 38,
+        "y": 37,
         "w": 16,
         "h": 8
       },
-      "id": 2,
+      "id": 8,
       "title": "GPU VRAM Used (MB)",
       "options": {
         "tooltip": {
@@ -367,7 +367,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 61
+        "y": 45
       },
       "id": 300,
       "title": "Summary",
@@ -396,7 +396,7 @@
         "h": 4,
         "w": 4,
         "x": 0,
-        "y": 62
+        "y": 46
       },
       "id": 301,
       "title": "Total Prompts",
@@ -447,7 +447,7 @@
         "h": 4,
         "w": 4,
         "x": 4,
-        "y": 62
+        "y": 46
       },
       "id": 302,
       "title": "Total Input Tokens",
@@ -498,7 +498,7 @@
         "h": 4,
         "w": 4,
         "x": 8,
-        "y": 62
+        "y": 46
       },
       "id": 303,
       "title": "Total Output Tokens",
@@ -549,7 +549,7 @@
         "h": 4,
         "w": 4,
         "x": 12,
-        "y": 62
+        "y": 46
       },
       "id": 304,
       "title": "Tokens Computed (prefill)",
@@ -582,7 +582,7 @@
         "type": "prometheus",
         "uid": "${datasource}"
       },
-      "description": "Cumulative prompt tokens served from the LMCache DRAM L1 cache. These bypassed GPU prefill entirely via the local_cache_hit path.",
+      "description": "Cumulative prompt tokens LMCache served from its DRAM L1 tier, from LMCache's own counter lmcache_mp_lookup_hit_l1_tokens_total. vLLM cannot tell L1 from L2: its source=\"external_kv_transfer\" is every LMCache hit, and source=\"local_cache_hit\" is vLLM's own GPU prefix cache, not L1.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -600,7 +600,7 @@
         "h": 4,
         "w": 4,
         "x": 16,
-        "y": 62
+        "y": 46
       },
       "id": 305,
       "title": "Tokens from LMCache L1",
@@ -621,7 +621,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "sum(max_over_time(vllm:prompt_tokens_by_source_total{source=\"local_cache_hit\"}[$__range]))",
+          "expr": "sum(max_over_time(lmcache_mp_lookup_hit_l1_tokens_total[$__range])) or vector(0)",
           "legendFormat": "",
           "instant": true
         }
@@ -633,7 +633,7 @@
         "type": "prometheus",
         "uid": "${datasource}"
       },
-      "description": "Cumulative prompt tokens served via external KV transfer from the LMCache L2 NVMe store (NIXL POSIX or AIS_MT). Non-zero confirms the L1\u2192NVMe\u2192GPU round-trip is working.",
+      "description": "Cumulative prompt tokens LMCache had to bring back from its L2 store (NVMe / NFS) beyond what L1 held, from LMCache's own counter lmcache_mp_lookup_hit_l2_tokens_total. Non-zero confirms the L1\u2192L2\u2192L1\u2192GPU round-trip is working. L1 + L2 is every LMCache hit, which vLLM reports as source=\"external_kv_transfer\".",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -651,7 +651,7 @@
         "h": 4,
         "w": 4,
         "x": 20,
-        "y": 62
+        "y": 46
       },
       "id": 306,
       "title": "Tokens from LMCache L2",
@@ -672,7 +672,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "sum(max_over_time(vllm:prompt_tokens_by_source_total{source=\"external_kv_transfer\"}[$__range]))",
+          "expr": "sum(max_over_time(lmcache_mp_lookup_hit_l2_tokens_total[$__range])) or vector(0)",
           "legendFormat": "",
           "instant": true
         }
@@ -703,7 +703,7 @@
         "h": 4,
         "w": 4,
         "x": 0,
-        "y": 66
+        "y": 50
       },
       "id": 307,
       "title": "Avg TTFT",
@@ -754,7 +754,7 @@
         "h": 4,
         "w": 4,
         "x": 4,
-        "y": 66
+        "y": 50
       },
       "id": 308,
       "title": "Avg TPOT",
@@ -804,7 +804,7 @@
         "h": 4,
         "w": 4,
         "x": 8,
-        "y": 66
+        "y": 50
       },
       "id": 309,
       "title": "Total Tokens/s",
@@ -836,7 +836,7 @@
         "type": "prometheus",
         "uid": "${datasource}"
       },
-      "description": "Fraction of prompt tokens served from any cache tier (L1 + L2) vs total prompt tokens. = (local_cache_hit + external_kv_transfer) / prompt_tokens_total. 100% means zero prefill compute needed.",
+      "description": "Fraction of prompt tokens served from any cache vs total prompt tokens, from vLLM's counters: (local_cache_hit + external_kv_transfer) / prompt_tokens_total. local_cache_hit is vLLM's own GPU prefix cache; external_kv_transfer is LMCache (L1 and L2 together). 100% means zero prefill compute needed.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -855,7 +855,7 @@
         "h": 4,
         "w": 4,
         "x": 12,
-        "y": 66
+        "y": 50
       },
       "id": 310,
       "title": "Cache Hit Rate",
@@ -887,7 +887,7 @@
         "type": "prometheus",
         "uid": "${datasource}"
       },
-      "description": "Fraction of prompt tokens served from LMCache L1 DRAM vs total prompt tokens. A high L1 rate means the DRAM cache is large enough to absorb most reuse without touching NVMe.",
+      "description": "Fraction of prompt tokens LMCache served from its DRAM L1 tier: lmcache_mp_lookup_hit_l1_tokens_total / lmcache_mp_lookup_prompt_tokens_total. A high L1 rate means the DRAM cache absorbs most reuse without touching L2. Tokens vLLM's own GPU prefix cache already held are not LMCache hits and are not counted here.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -906,10 +906,10 @@
         "h": 4,
         "w": 4,
         "x": 16,
-        "y": 66
+        "y": 50
       },
       "id": 311,
-      "title": "L1 Hit Rate",
+      "title": "LMCache L1 Hit Rate",
       "options": {
         "reduceOptions": {
           "calcs": [
@@ -927,7 +927,8 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "sum(rate(vllm:prompt_tokens_by_source_total{source=\"local_cache_hit\"}[$__rate_interval])) / sum(rate(vllm:prompt_tokens_total[$__rate_interval]))",
+          "expr": "sum(rate(lmcache_mp_lookup_hit_l1_tokens_total[$__rate_interval])) / sum(rate(lmcache_mp_lookup_prompt_tokens_total[$__rate_interval]))",
+          "interval": "30s",
           "legendFormat": ""
         }
       ],
@@ -938,7 +939,7 @@
         "type": "prometheus",
         "uid": "${datasource}"
       },
-      "description": "Fraction of prompt tokens served from LMCache L2 NVMe vs total prompt tokens. Non-zero confirms L2 reads are reaching vLLM. Low values vs L1 hit rate are expected (L1 absorbs most reuse; L2 handles overflow).",
+      "description": "Fraction of prompt tokens LMCache had to load from its L2 store (NVMe / NFS): lmcache_mp_lookup_hit_l2_tokens_total / lmcache_mp_lookup_prompt_tokens_total. Non-zero confirms L2 reads are reaching vLLM. Low values vs the L1 hit rate are expected while L1 is large enough (L2 handles overflow).",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -957,10 +958,10 @@
         "h": 4,
         "w": 4,
         "x": 20,
-        "y": 66
+        "y": 50
       },
       "id": 312,
-      "title": "L2 Hit Rate",
+      "title": "LMCache L2 Hit Rate",
       "options": {
         "reduceOptions": {
           "calcs": [
@@ -978,7 +979,8 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "sum(rate(vllm:prompt_tokens_by_source_total{source=\"external_kv_transfer\"}[$__rate_interval])) / sum(rate(vllm:prompt_tokens_total[$__rate_interval]))",
+          "expr": "sum(rate(lmcache_mp_lookup_hit_l2_tokens_total[$__rate_interval])) / sum(rate(lmcache_mp_lookup_prompt_tokens_total[$__rate_interval]))",
+          "interval": "30s",
           "legendFormat": ""
         }
       ],
@@ -988,7 +990,7 @@
       "collapsed": false,
       "gridPos": {
         "x": 0,
-        "y": 74,
+        "y": 62,
         "w": 24,
         "h": 1
       },
@@ -1016,7 +1018,7 @@
       },
       "gridPos": {
         "x": 0,
-        "y": 75,
+        "y": 63,
         "w": 4,
         "h": 4
       },
@@ -1067,7 +1069,7 @@
       },
       "gridPos": {
         "x": 4,
-        "y": 75,
+        "y": 63,
         "w": 20,
         "h": 4
       },
@@ -1117,7 +1119,7 @@
       },
       "gridPos": {
         "x": 0,
-        "y": 79,
+        "y": 67,
         "w": 4,
         "h": 4
       },
@@ -1168,7 +1170,7 @@
       },
       "gridPos": {
         "x": 4,
-        "y": 79,
+        "y": 67,
         "w": 20,
         "h": 4
       },
@@ -1202,7 +1204,7 @@
       "collapsed": false,
       "gridPos": {
         "x": 0,
-        "y": 91,
+        "y": 79,
         "w": 24,
         "h": 1
       },
@@ -1231,7 +1233,7 @@
       },
       "gridPos": {
         "x": 0,
-        "y": 96,
+        "y": 84,
         "w": 8,
         "h": 8
       },
@@ -1276,7 +1278,7 @@
       },
       "gridPos": {
         "x": 8,
-        "y": 96,
+        "y": 84,
         "w": 8,
         "h": 8
       },
@@ -1329,7 +1331,7 @@
       },
       "gridPos": {
         "x": 16,
-        "y": 96,
+        "y": 84,
         "w": 8,
         "h": 8
       },
@@ -1347,7 +1349,7 @@
             "uid": "${datasource}"
           },
           "expr": "sum(rate(vllm:prompt_tokens_by_source_total{source=\"local_cache_hit\"}[$__rate_interval]))",
-          "legendFormat": "L1 cache hit"
+          "legendFormat": "GPU prefix cache hit"
         },
         {
           "datasource": {
@@ -1355,7 +1357,7 @@
             "uid": "${datasource}"
           },
           "expr": "sum(rate(vllm:prompt_tokens_by_source_total{source=\"external_kv_transfer\"}[$__rate_interval]))",
-          "legendFormat": "L2 transfer"
+          "legendFormat": "LMCache transfer (L1 + L2)"
         },
         {
           "datasource": {
@@ -1367,7 +1369,7 @@
         }
       ],
       "type": "timeseries",
-      "description": "Prompt tokens broken down by how they were served each second: local_cache_hit (GPU prefix cache), external_kv_transfer (LMCache L2 fetch), and local_compute (full prefill). A healthy AIC run shows local_cache_hit or external_kv_transfer dominating."
+      "description": "Prompt tokens per second by how vLLM obtained them: local_cache_hit (vLLM's own GPU prefix cache), external_kv_transfer (KV loaded from LMCache, L1 and L2 together) and local_compute (full prefill). vLLM cannot see LMCache's tiers; the L1 / L2 split is in the LMCache row. A healthy AIC run shows the two cache series dominating."
     },
     {
       "datasource": {
@@ -1390,8 +1392,8 @@
       },
       "gridPos": {
         "x": 0,
-        "y": 104,
-        "w": 12,
+        "y": 92,
+        "w": 8,
         "h": 4
       },
       "id": 13,
@@ -1427,6 +1429,7 @@
         "type": "prometheus",
         "uid": "${datasource}"
       },
+      "description": "Waiting requests by async KV load stage: waiting_to_start (needs a KV load from LMCache that has not started), in_progress (load started, not yet reported finished), completed_waiting (KV loaded, request not running yet). Sustained non-zero in_progress while LMCache retrieves have stopped means requests are stuck loading KV.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -1442,9 +1445,59 @@
         "overrides": []
       },
       "gridPos": {
-        "x": 12,
-        "y": 104,
-        "w": 12,
+        "x": 8,
+        "y": 92,
+        "w": 8,
+        "h": 4
+      },
+      "id": 437,
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum by (stage) (vllm:num_requests_kv_fetch_by_stage)",
+          "legendFormat": "{{stage}}",
+          "refId": "A"
+        }
+      ],
+      "title": "Requests Waiting on KV Fetch (by stage)",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "lineWidth": 1,
+            "fillOpacity": 10,
+            "spanNulls": true
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "x": 16,
+        "y": 92,
+        "w": 8,
         "h": 4
       },
       "id": 14,
@@ -1473,13 +1526,13 @@
         }
       ],
       "type": "timeseries",
-      "description": "Rate of external prefix cache lookups vs confirmed hits. A high query rate with zero hits means the LMCache L2 is not returning blocks in time (check NIXL RX panel)."
+      "description": "Rate of external (LMCache) prefix cache lookups vs confirmed hits, in tokens. Hits are every LMCache hit, L1 and L2 together. A high query rate with zero hits means LMCache is not returning KV for the prompts being sent (check the LMCache row)."
     },
     {
       "collapsed": false,
       "gridPos": {
         "x": 0,
-        "y": 108,
+        "y": 96,
         "w": 24,
         "h": 1
       },
@@ -1522,7 +1575,7 @@
       },
       "gridPos": {
         "x": 0,
-        "y": 109,
+        "y": 97,
         "w": 4,
         "h": 8
       },
@@ -1571,7 +1624,7 @@
       },
       "gridPos": {
         "x": 4,
-        "y": 109,
+        "y": 97,
         "w": 4,
         "h": 8
       },
@@ -1621,7 +1674,7 @@
       },
       "gridPos": {
         "x": 0,
-        "y": 113,
+        "y": 105,
         "w": 24,
         "h": 4
       },
@@ -1672,7 +1725,7 @@
       },
       "gridPos": {
         "x": 8,
-        "y": 109,
+        "y": 97,
         "w": 8,
         "h": 8
       },
@@ -1690,6 +1743,7 @@
             "uid": "${datasource}"
           },
           "expr": "sum(rate(lmcache_mp_l1_write_chunks_total[$__rate_interval]))",
+          "interval": "30s",
           "legendFormat": "writes/s"
         },
         {
@@ -1698,6 +1752,7 @@
             "uid": "${datasource}"
           },
           "expr": "sum(rate(lmcache_mp_l1_read_chunks_total[$__rate_interval]))",
+          "interval": "30s",
           "legendFormat": "reads/s"
         }
       ],
@@ -1725,7 +1780,7 @@
       },
       "gridPos": {
         "x": 16,
-        "y": 109,
+        "y": 97,
         "w": 8,
         "h": 8
       },
@@ -1743,6 +1798,7 @@
             "uid": "${datasource}"
           },
           "expr": "sum(rate(lmcache_mp_l2_store_submitted_requests_total[$__rate_interval]))",
+          "interval": "30s",
           "legendFormat": "submitted/s"
         },
         {
@@ -1751,6 +1807,7 @@
             "uid": "${datasource}"
           },
           "expr": "sum(rate(lmcache_mp_l2_store_completed_requests_total[$__rate_interval]))",
+          "interval": "30s",
           "legendFormat": "completed/s"
         }
       ],
@@ -1779,7 +1836,7 @@
       },
       "gridPos": {
         "x": 0,
-        "y": 117,
+        "y": 109,
         "w": 12,
         "h": 8
       },
@@ -1824,7 +1881,7 @@
       },
       "gridPos": {
         "x": 12,
-        "y": 117,
+        "y": 109,
         "w": 12,
         "h": 8
       },
@@ -1859,7 +1916,7 @@
       "collapsed": false,
       "gridPos": {
         "x": 0,
-        "y": 125,
+        "y": 133,
         "w": 24,
         "h": 1
       },
@@ -1888,7 +1945,7 @@
       },
       "gridPos": {
         "x": 0,
-        "y": 126,
+        "y": 134,
         "w": 8,
         "h": 8
       },
@@ -1934,7 +1991,7 @@
       },
       "gridPos": {
         "x": 8,
-        "y": 126,
+        "y": 134,
         "w": 8,
         "h": 8
       },
@@ -1979,7 +2036,7 @@
       },
       "gridPos": {
         "x": 16,
-        "y": 126,
+        "y": 134,
         "w": 8,
         "h": 8
       },
@@ -1997,6 +2054,7 @@
             "uid": "${datasource}"
           },
           "expr": "sum(rate(lmcache_mp_l2_prefetch_lookup_objects_chunks_total[$__rate_interval]))",
+          "interval": "30s",
           "legendFormat": "prefetch lookups/s"
         },
         {
@@ -2005,6 +2063,7 @@
             "uid": "${datasource}"
           },
           "expr": "sum(rate(lmcache_mp_l2_prefetch_load_completed_chunks_total[$__rate_interval]))",
+          "interval": "30s",
           "legendFormat": "prefetch hits/s"
         },
         {
@@ -2023,7 +2082,7 @@
       "collapsed": false,
       "gridPos": {
         "x": 0,
-        "y": 134,
+        "y": 142,
         "w": 24,
         "h": 1
       },
@@ -2052,7 +2111,7 @@
       },
       "gridPos": {
         "x": 0,
-        "y": 135,
+        "y": 143,
         "w": 8,
         "h": 8
       },
@@ -2105,7 +2164,7 @@
       },
       "gridPos": {
         "x": 8,
-        "y": 135,
+        "y": 143,
         "w": 8,
         "h": 8
       },
@@ -2158,7 +2217,7 @@
       },
       "gridPos": {
         "x": 16,
-        "y": 135,
+        "y": 143,
         "w": 8,
         "h": 8
       },
@@ -2196,7 +2255,7 @@
       "collapsed": false,
       "gridPos": {
         "x": 0,
-        "y": 143,
+        "y": 151,
         "w": 24,
         "h": 1
       },
@@ -2210,7 +2269,7 @@
       "id": 9902,
       "gridPos": {
         "x": 0,
-        "y": 144,
+        "y": 152,
         "w": 4,
         "h": 4
       },
@@ -2266,7 +2325,7 @@
       "id": 9903,
       "gridPos": {
         "x": 4,
-        "y": 144,
+        "y": 152,
         "w": 4,
         "h": 4
       },
@@ -2322,7 +2381,7 @@
       "id": 9904,
       "gridPos": {
         "x": 8,
-        "y": 144,
+        "y": 152,
         "w": 4,
         "h": 4
       },
@@ -2378,7 +2437,7 @@
       "id": 9905,
       "gridPos": {
         "x": 12,
-        "y": 144,
+        "y": 152,
         "w": 12,
         "h": 4
       },
@@ -2429,7 +2488,7 @@
       "id": 9906,
       "gridPos": {
         "x": 0,
-        "y": 148,
+        "y": 156,
         "w": 24,
         "h": 8
       },
@@ -2468,7 +2527,7 @@
       "collapsed": false,
       "gridPos": {
         "x": 0,
-        "y": 160,
+        "y": 164,
         "w": 24,
         "h": 1
       },
@@ -2497,7 +2556,7 @@
       },
       "gridPos": {
         "x": 0,
-        "y": 161,
+        "y": 165,
         "w": 8,
         "h": 8
       },
@@ -2541,7 +2600,7 @@
       },
       "gridPos": {
         "x": 8,
-        "y": 161,
+        "y": 165,
         "w": 4,
         "h": 4
       },
@@ -2591,7 +2650,7 @@
       },
       "gridPos": {
         "x": 12,
-        "y": 161,
+        "y": 165,
         "w": 4,
         "h": 4
       },
@@ -2642,7 +2701,7 @@
       },
       "gridPos": {
         "x": 16,
-        "y": 161,
+        "y": 165,
         "w": 8,
         "h": 8
       },
@@ -2695,7 +2754,7 @@
       },
       "gridPos": {
         "x": 0,
-        "y": 165,
+        "y": 173,
         "w": 24,
         "h": 4
       },
@@ -2733,7 +2792,7 @@
       "collapsed": false,
       "gridPos": {
         "x": 0,
-        "y": 169,
+        "y": 177,
         "w": 24,
         "h": 1
       },
@@ -2763,7 +2822,7 @@
       },
       "gridPos": {
         "x": 0,
-        "y": 170,
+        "y": 178,
         "w": 12,
         "h": 8
       },
@@ -2808,7 +2867,7 @@
       },
       "gridPos": {
         "x": 12,
-        "y": 170,
+        "y": 178,
         "w": 6,
         "h": 8
       },
@@ -2853,7 +2912,7 @@
       },
       "gridPos": {
         "x": 18,
-        "y": 170,
+        "y": 178,
         "w": 6,
         "h": 4
       },
@@ -2906,7 +2965,7 @@
       },
       "gridPos": {
         "x": 0,
-        "y": 174,
+        "y": 186,
         "w": 24,
         "h": 4
       },
@@ -2951,7 +3010,7 @@
       },
       "gridPos": {
         "x": 0,
-        "y": 178,
+        "y": 190,
         "w": 12,
         "h": 8
       },
@@ -3004,7 +3063,7 @@
       },
       "gridPos": {
         "x": 12,
-        "y": 178,
+        "y": 190,
         "w": 6,
         "h": 8
       },
@@ -3049,7 +3108,7 @@
       },
       "gridPos": {
         "x": 18,
-        "y": 178,
+        "y": 190,
         "w": 6,
         "h": 8
       },
@@ -3104,7 +3163,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 83
+        "y": 71
       },
       "id": 70,
       "title": "GPU Compute / Memory / Matrix Activity (%)",
@@ -3165,7 +3224,7 @@
         "h": 8,
         "w": 6,
         "x": 12,
-        "y": 83
+        "y": 71
       },
       "id": 71,
       "title": "GPU Temperatures (\u00b0C)",
@@ -3218,7 +3277,7 @@
         "h": 8,
         "w": 6,
         "x": 18,
-        "y": 83
+        "y": 71
       },
       "id": 72,
       "title": "PCIe Speed / xGMI Fabric (GT/s)",
@@ -3261,7 +3320,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 186
+        "y": 198
       },
       "id": 200,
       "title": "vLLM \u2014 Extended",
@@ -3291,7 +3350,7 @@
         "h": 8,
         "w": 8,
         "x": 0,
-        "y": 187
+        "y": 199
       },
       "id": 80,
       "title": "GPU KV Cache Usage %",
@@ -3336,7 +3395,7 @@
         "h": 8,
         "w": 8,
         "x": 8,
-        "y": 187
+        "y": 199
       },
       "id": 81,
       "title": "E2E Request Latency p50 / p95 (s)",
@@ -3389,7 +3448,7 @@
         "h": 8,
         "w": 8,
         "x": 16,
-        "y": 187
+        "y": 199
       },
       "id": 82,
       "title": "Inter-Token Latency p50 / p95 (s)",
@@ -3440,9 +3499,9 @@
       },
       "gridPos": {
         "h": 8,
-        "w": 8,
+        "w": 6,
         "x": 0,
-        "y": 195
+        "y": 207
       },
       "id": 83,
       "title": "GPU Prefix Cache Hit Rate",
@@ -3493,9 +3552,9 @@
       },
       "gridPos": {
         "h": 8,
-        "w": 8,
-        "x": 8,
-        "y": 195
+        "w": 6,
+        "x": 6,
+        "y": 207
       },
       "id": 84,
       "title": "Preemptions & Queue Time p95",
@@ -3529,6 +3588,57 @@
         "type": "prometheus",
         "uid": "${datasource}"
       },
+      "description": "Mean number of times a request that finished in the window had been preempted: vllm:request_num_preemptions sum / count. The histogram's first bucket (le=1) mixes zero and one preemption, so a quantile cannot tell them apart; the mean can. 0 is healthy; a rising value means the GPU KV cache is too small for the concurrency. No data while no request finishes.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "lineWidth": 1,
+            "fillOpacity": 10,
+            "spanNulls": true
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 207,
+        "w": 6,
+        "h": 8
+      },
+      "id": 438,
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum(rate(vllm:request_num_preemptions_sum[$__rate_interval])) / sum(rate(vllm:request_num_preemptions_count[$__rate_interval]))",
+          "legendFormat": "preemptions / request",
+          "refId": "A"
+        }
+      ],
+      "title": "Preemptions per Finished Request",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
       "description": "vLLM's estimated FLOP rate and read/write memory bandwidth per GPU per second. Provides a rough GPU efficiency signal \u2014 compare against theoretical peak to estimate MFU (model FLOP utilisation). Both are estimates derived from the attention and GEMM kernel shapes.",
       "fieldConfig": {
         "defaults": {
@@ -3546,9 +3656,9 @@
       },
       "gridPos": {
         "h": 8,
-        "w": 8,
-        "x": 16,
-        "y": 195
+        "w": 6,
+        "x": 18,
+        "y": 207
       },
       "id": 85,
       "title": "Estimated GPU FLOP & Memory Bandwidth Rate",
@@ -3591,7 +3701,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 233
+        "y": 244
       },
       "id": 201,
       "title": "LMCache \u2014 Extended",
@@ -3621,7 +3731,7 @@
         "h": 8,
         "w": 8,
         "x": 0,
-        "y": 234
+        "y": 245
       },
       "id": 90,
       "title": "L1\u2192GPU Load Throughput (GB/s)",
@@ -3637,6 +3747,7 @@
             "uid": "${datasource}"
           },
           "expr": "histogram_quantile(0.5, sum by (le) (rate(lmcache_mp_l0_l1_load_throughput_GB_per_second_bucket[$__rate_interval])))",
+          "interval": "30s",
           "legendFormat": "load p50 GB/s"
         },
         {
@@ -3645,6 +3756,7 @@
             "uid": "${datasource}"
           },
           "expr": "histogram_quantile(0.95, sum by (le) (rate(lmcache_mp_l0_l1_load_throughput_GB_per_second_bucket[$__rate_interval])))",
+          "interval": "30s",
           "legendFormat": "load p95 GB/s"
         },
         {
@@ -3653,6 +3765,7 @@
             "uid": "${datasource}"
           },
           "expr": "histogram_quantile(0.5, sum by (le) (rate(lmcache_mp_l0_l1_store_throughput_GB_per_second_bucket[$__rate_interval])))",
+          "interval": "30s",
           "legendFormat": "store p50 GB/s"
         }
       ],
@@ -3682,7 +3795,7 @@
         "h": 8,
         "w": 8,
         "x": 8,
-        "y": 234
+        "y": 245
       },
       "id": 91,
       "title": "L2 In-Flight Store Queue Depth",
@@ -3727,7 +3840,7 @@
         "h": 8,
         "w": 8,
         "x": 16,
-        "y": 234
+        "y": 245
       },
       "id": 92,
       "title": "Chunk Reuse Gap (s) \u2014 Cache Effectiveness",
@@ -3743,6 +3856,7 @@
             "uid": "${datasource}"
           },
           "expr": "histogram_quantile(0.5, sum by (le) (rate(lmcache_mp_l1_chunk_reuse_gap_seconds_bucket[$__rate_interval])))",
+          "interval": "30s",
           "legendFormat": "p50 reuse gap"
         },
         {
@@ -3751,6 +3865,7 @@
             "uid": "${datasource}"
           },
           "expr": "histogram_quantile(0.95, sum by (le) (rate(lmcache_mp_l1_chunk_reuse_gap_seconds_bucket[$__rate_interval])))",
+          "interval": "30s",
           "legendFormat": "p95 reuse gap"
         }
       ],
@@ -3780,7 +3895,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 242
+        "y": 253
       },
       "id": 93,
       "title": "LMCache Operation Rate",
@@ -3796,6 +3911,7 @@
             "uid": "${datasource}"
           },
           "expr": "sum(rate(lmcache_mp_lookups_requests_total{job=\"lmcache\"}[$__rate_interval]))",
+          "interval": "30s",
           "legendFormat": "lookups/s",
           "refId": "A"
         },
@@ -3805,6 +3921,7 @@
             "uid": "${datasource}"
           },
           "expr": "sum(rate(lmcache_mp_l2_store_submitted_requests_total{job=\"lmcache\"}[$__rate_interval]))",
+          "interval": "30s",
           "legendFormat": "L2 store submitted/s",
           "refId": "B"
         },
@@ -3814,6 +3931,7 @@
             "uid": "${datasource}"
           },
           "expr": "sum(rate(lmcache_mp_l2_prefetch_load_submitted_requests_total{job=\"lmcache\"}[$__rate_interval]))",
+          "interval": "30s",
           "legendFormat": "L2 load submitted/s",
           "refId": "C"
         }
@@ -3844,7 +3962,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 242
+        "y": 253
       },
       "id": 94,
       "title": "LMCache L0\u2192L1 Throughput (GB/s)",
@@ -3860,6 +3978,7 @@
             "uid": "${datasource}"
           },
           "expr": "histogram_quantile(0.5, sum by (le) (rate(lmcache_mp_l0_l1_store_throughput_GB_per_second_bucket{job=\"lmcache\"}[$__rate_interval])))",
+          "interval": "30s",
           "legendFormat": "store p50 (GB/s)",
           "refId": "A"
         },
@@ -3869,6 +3988,7 @@
             "uid": "${datasource}"
           },
           "expr": "histogram_quantile(0.5, sum by (le) (rate(lmcache_mp_l0_l1_load_throughput_GB_per_second_bucket{job=\"lmcache\"}[$__rate_interval])))",
+          "interval": "30s",
           "legendFormat": "load p50 (GB/s)",
           "refId": "B"
         }
@@ -3881,7 +4001,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 259
+        "y": 285
       },
       "id": 202,
       "title": "Node \u2014 Extended",
@@ -3911,7 +4031,7 @@
         "h": 8,
         "w": 8,
         "x": 0,
-        "y": 260
+        "y": 286
       },
       "id": 95,
       "title": "System Load (1m / 5m / 15m)",
@@ -3972,7 +4092,7 @@
         "h": 8,
         "w": 8,
         "x": 8,
-        "y": 260
+        "y": 286
       },
       "id": 96,
       "title": "NVMe Capacity Used (bytes)",
@@ -4025,7 +4145,7 @@
         "h": 8,
         "w": 8,
         "x": 16,
-        "y": 260
+        "y": 286
       },
       "id": 97,
       "title": "IO Pressure (PSI stalled seconds rate)",
@@ -4078,7 +4198,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 268
+        "y": 294
       },
       "id": 98,
       "title": "InfiniBand / RoCE Port Throughput (B/s)",
@@ -4131,7 +4251,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 268
+        "y": 294
       },
       "id": 99,
       "title": "Filesystem Available Space",
@@ -4158,7 +4278,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 211
+        "y": 223
       },
       "id": 203,
       "title": "vLLM \u2014 ISL / OSL (Input & Output Sequence Length)",
@@ -4188,7 +4308,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 212
+        "y": 224
       },
       "id": 110,
       "title": "ISL Distribution (prompt tokens) \u2014 p50 / p95 / p99",
@@ -4249,7 +4369,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 212
+        "y": 224
       },
       "id": 111,
       "title": "OSL Distribution (generation tokens) \u2014 p50 / p95 / p99",
@@ -4309,7 +4429,7 @@
         "h": 4,
         "w": 6,
         "x": 0,
-        "y": 220
+        "y": 232
       },
       "id": 112,
       "title": "Average ISL (prompt tokens)",
@@ -4359,7 +4479,7 @@
         "h": 4,
         "w": 6,
         "x": 6,
-        "y": 220
+        "y": 232
       },
       "id": 113,
       "title": "Average OSL (generation tokens)",
@@ -4409,7 +4529,7 @@
         "h": 4,
         "w": 6,
         "x": 12,
-        "y": 220
+        "y": 232
       },
       "id": 114,
       "title": "ISL p99 (prompt tokens)",
@@ -4459,7 +4579,7 @@
         "h": 4,
         "w": 6,
         "x": 18,
-        "y": 220
+        "y": 232
       },
       "id": 115,
       "title": "OSL p99 (generation tokens)",
@@ -4510,7 +4630,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 224
+        "y": 236
       },
       "id": 116,
       "title": "Average ISL vs OSL over time",
@@ -4563,7 +4683,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 224
+        "y": 236
       },
       "id": 117,
       "title": "Request Rate & Total Tokens/s",
@@ -4615,7 +4735,7 @@
         "h": 4,
         "w": 4,
         "x": 0,
-        "y": 70
+        "y": 54
       },
       "id": 313,
       "title": "Avg GPU VRAM Used",
@@ -4666,7 +4786,7 @@
         "h": 4,
         "w": 4,
         "x": 4,
-        "y": 70
+        "y": 54
       },
       "id": 314,
       "title": "Avg LMCache L1 Used",
@@ -4717,7 +4837,7 @@
         "h": 4,
         "w": 4,
         "x": 8,
-        "y": 70
+        "y": 54
       },
       "id": 315,
       "title": "Avg LMCache L2 Used",
@@ -4751,7 +4871,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 276
+        "y": 302
       },
       "id": 400,
       "title": "LMCache Coordinator",
@@ -4806,7 +4926,7 @@
         "h": 4,
         "w": 4,
         "x": 0,
-        "y": 277
+        "y": 303
       },
       "id": 401,
       "options": {
@@ -4862,7 +4982,7 @@
         "h": 4,
         "w": 4,
         "x": 4,
-        "y": 277
+        "y": 303
       },
       "id": 402,
       "options": {
@@ -4934,7 +5054,7 @@
         "h": 4,
         "w": 4,
         "x": 8,
-        "y": 277
+        "y": 303
       },
       "id": 403,
       "options": {
@@ -4967,6 +5087,62 @@
         "type": "prometheus",
         "uid": "${datasource}"
       },
+      "description": "L1 keys each LMCache MP server instance currently holds, as the coordinator's key directory sees them through the event stream (/directory/stats l1_keys_by_instance). One value per instance_id. Drops to 0 when an instance restarts or its L1 is cleared; a value that never moves while the instance is storing means the coordinator is not receiving its events.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "blue",
+                "value": null
+              }
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 12,
+        "y": 303
+      },
+      "id": 441,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "textMode": "auto"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum by (instance_id) (lmcache_coordinator_instance_l1_keys{job=\"lmcache_coordinator\"})",
+          "legendFormat": "{{instance_id}}",
+          "refId": "A"
+        }
+      ],
+      "title": "L1 Keys per Instance",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
       "description": "Keys with at least one placement tracked in the coordinator key directory. Growth indicates active KV block advertising from MP servers.",
       "fieldConfig": {
         "defaults": {
@@ -4986,7 +5162,7 @@
         "h": 8,
         "w": 8,
         "x": 0,
-        "y": 281
+        "y": 307
       },
       "id": 404,
       "options": {
@@ -5046,7 +5222,7 @@
         "h": 8,
         "w": 8,
         "x": 8,
-        "y": 281
+        "y": 307
       },
       "id": 405,
       "options": {
@@ -5097,7 +5273,7 @@
         "h": 8,
         "w": 8,
         "x": 16,
-        "y": 281
+        "y": 307
       },
       "id": 406,
       "options": {
@@ -5155,9 +5331,9 @@
       },
       "gridPos": {
         "h": 4,
-        "w": 12,
-        "x": 12,
-        "y": 277
+        "w": 6,
+        "x": 18,
+        "y": 303
       },
       "id": 407,
       "options": {
@@ -5189,7 +5365,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 289
+        "y": 315
       },
       "id": 408,
       "title": "LMCache \u2014 Adapter & Transport Health",
@@ -5281,7 +5457,7 @@
         "h": 6,
         "w": 8,
         "x": 0,
-        "y": 290
+        "y": 316
       },
       "id": 409,
       "options": {
@@ -5358,7 +5534,7 @@
         "h": 6,
         "w": 8,
         "x": 8,
-        "y": 290
+        "y": 316
       },
       "id": 410,
       "options": {
@@ -5433,7 +5609,7 @@
         "h": 6,
         "w": 8,
         "x": 16,
-        "y": 290
+        "y": 316
       },
       "id": 411,
       "options": {
@@ -5452,6 +5628,7 @@
             "uid": "${datasource}"
           },
           "expr": "(sum(rate(lmcache_mp_l1_allocation_failure_chunks_total{job=\"lmcache\"}[$__rate_interval])) or vector(0))",
+          "interval": "30s",
           "legendFormat": "L1 alloc failures/s",
           "refId": "A"
         },
@@ -5461,6 +5638,7 @@
             "uid": "${datasource}"
           },
           "expr": "(sum(rate(lmcache_mp_l1_eviction_loop_triggered_total{job=\"lmcache\"}[$__rate_interval])) or vector(0))",
+          "interval": "30s",
           "legendFormat": "eviction triggered/s",
           "refId": "B"
         }
@@ -5498,7 +5676,7 @@
         "h": 4,
         "w": 4,
         "x": 12,
-        "y": 70
+        "y": 54
       },
       "id": 412,
       "options": {
@@ -5580,7 +5758,7 @@
         "h": 4,
         "w": 4,
         "x": 16,
-        "y": 70
+        "y": 54
       },
       "id": 413,
       "options": {
@@ -5637,7 +5815,7 @@
         "h": 4,
         "w": 4,
         "x": 20,
-        "y": 70
+        "y": 54
       },
       "id": 414,
       "options": {
@@ -5657,7 +5835,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "clamp_min(sum(lmcache_mp_l2_store_completed_objects_chunks_total{job=\"lmcache\"}) - sum(lmcache_mp_l2_store_completed_objects_chunks_total{job=\"lmcache\"} or vector(0)), 0)",
+          "expr": "clamp_min(sum(lmcache_mp_l2_store_completed_objects_chunks_total{job=\"lmcache\"}) - (sum(lmcache_mp_l2_evicted_objects_chunks_total{job=\"lmcache\"}) or vector(0)), 0)",
           "instant": true,
           "legendFormat": ""
         }
@@ -5672,7 +5850,7 @@
       "id": 9920,
       "gridPos": {
         "x": 0,
-        "y": 296,
+        "y": 322,
         "w": 6,
         "h": 4
       },
@@ -5730,7 +5908,7 @@
       "id": 9921,
       "gridPos": {
         "x": 6,
-        "y": 296,
+        "y": 322,
         "w": 6,
         "h": 4
       },
@@ -5788,7 +5966,7 @@
       "id": 9922,
       "gridPos": {
         "x": 12,
-        "y": 296,
+        "y": 322,
         "w": 12,
         "h": 4
       },
@@ -5799,6 +5977,7 @@
       "targets": [
         {
           "expr": "sum(rate(lmcache_mp_l2_evicted_objects_chunks_total[$__rate_interval])) or vector(0)",
+          "interval": "30s",
           "legendFormat": "L2 evictions/s",
           "refId": "A",
           "datasource": {
@@ -5828,7 +6007,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 300
+        "y": 326
       },
       "id": 415,
       "title": "KV Block Residency (vLLM + LMCache L0)",
@@ -5858,7 +6037,7 @@
         "h": 8,
         "w": 8,
         "x": 0,
-        "y": 301
+        "y": 327
       },
       "id": 416,
       "options": {
@@ -5895,6 +6074,7 @@
             "uid": "${datasource}"
           },
           "expr": "histogram_quantile(0.5, sum by (le) (rate(lmcache_mp_l0_block_lifetime_seconds_bucket{job=\"lmcache\"}[$__rate_interval])))",
+          "interval": "30s",
           "legendFormat": "lmcache L0 p50",
           "refId": "C"
         },
@@ -5904,6 +6084,7 @@
             "uid": "${datasource}"
           },
           "expr": "histogram_quantile(0.95, sum by (le) (rate(lmcache_mp_l0_block_lifetime_seconds_bucket{job=\"lmcache\"}[$__rate_interval])))",
+          "interval": "30s",
           "legendFormat": "lmcache L0 p95",
           "refId": "D"
         }
@@ -5935,7 +6116,7 @@
         "h": 8,
         "w": 8,
         "x": 8,
-        "y": 301
+        "y": 327
       },
       "id": 417,
       "options": {
@@ -5972,6 +6153,7 @@
             "uid": "${datasource}"
           },
           "expr": "histogram_quantile(0.5, sum by (le) (rate(lmcache_mp_l0_block_idle_before_evict_seconds_bucket{job=\"lmcache\"}[$__rate_interval])))",
+          "interval": "30s",
           "legendFormat": "lmcache L0 p50",
           "refId": "C"
         },
@@ -5981,6 +6163,7 @@
             "uid": "${datasource}"
           },
           "expr": "histogram_quantile(0.95, sum by (le) (rate(lmcache_mp_l0_block_idle_before_evict_seconds_bucket{job=\"lmcache\"}[$__rate_interval])))",
+          "interval": "30s",
           "legendFormat": "lmcache L0 p95",
           "refId": "D"
         }
@@ -6012,7 +6195,7 @@
         "h": 8,
         "w": 8,
         "x": 16,
-        "y": 301
+        "y": 327
       },
       "id": 418,
       "options": {
@@ -6049,6 +6232,7 @@
             "uid": "${datasource}"
           },
           "expr": "histogram_quantile(0.5, sum by (le) (rate(lmcache_mp_l1_chunk_reuse_gap_seconds_bucket{job=\"lmcache\"}[$__rate_interval])))",
+          "interval": "30s",
           "legendFormat": "lmcache L1 chunk p50",
           "refId": "C"
         },
@@ -6058,6 +6242,7 @@
             "uid": "${datasource}"
           },
           "expr": "histogram_quantile(0.95, sum by (le) (rate(lmcache_mp_l1_chunk_reuse_gap_seconds_bucket{job=\"lmcache\"}[$__rate_interval])))",
+          "interval": "30s",
           "legendFormat": "lmcache L1 chunk p95",
           "refId": "D"
         }
@@ -6090,7 +6275,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 309
+        "y": 335
       },
       "id": 419,
       "options": {
@@ -6109,6 +6294,7 @@
             "uid": "${datasource}"
           },
           "expr": "histogram_quantile(0.5, sum by (le) (rate(lmcache_mp_l0_l1_store_throughput_GB_per_second_bucket{job=\"lmcache\"}[$__rate_interval]))) * 1e9",
+          "interval": "30s",
           "legendFormat": "store p50 (B/s)",
           "refId": "A"
         },
@@ -6118,6 +6304,7 @@
             "uid": "${datasource}"
           },
           "expr": "histogram_quantile(0.5, sum by (le) (rate(lmcache_mp_l0_l1_load_throughput_GB_per_second_bucket{job=\"lmcache\"}[$__rate_interval]))) * 1e9",
+          "interval": "30s",
           "legendFormat": "load p50 (B/s)",
           "refId": "B"
         }
@@ -6151,7 +6338,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 309
+        "y": 335
       },
       "id": 420,
       "options": {
@@ -6183,7 +6370,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 317
+        "y": 343
       },
       "id": 421,
       "title": "Engine & Event Bus Health",
@@ -6230,7 +6417,7 @@
         "h": 4,
         "w": 4,
         "x": 0,
-        "y": 318
+        "y": 344
       },
       "id": 422,
       "options": {
@@ -6271,7 +6458,7 @@
         "h": 4,
         "w": 6,
         "x": 4,
-        "y": 318
+        "y": 344
       },
       "id": 423,
       "options": {
@@ -6329,7 +6516,7 @@
         "h": 4,
         "w": 5,
         "x": 10,
-        "y": 318
+        "y": 344
       },
       "id": 424,
       "options": {
@@ -6383,7 +6570,7 @@
         "h": 4,
         "w": 5,
         "x": 15,
-        "y": 318
+        "y": 344
       },
       "id": 425,
       "options": {
@@ -6402,6 +6589,7 @@
             "uid": "${datasource}"
           },
           "expr": "rate(lmcache_mp_event_bus_dropped_events_total[$__rate_interval])",
+          "interval": "30s",
           "legendFormat": "Dropped/s",
           "refId": "A"
         }
@@ -6424,7 +6612,7 @@
         "h": 4,
         "w": 4,
         "x": 20,
-        "y": 318
+        "y": 344
       },
       "id": 426,
       "options": {
@@ -6456,7 +6644,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 322
+        "y": 348
       },
       "id": 427,
       "title": "GPU Activity (hsa-snoop)",
@@ -6480,7 +6668,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 323
+        "y": 349
       },
       "id": 428,
       "options": {
@@ -6541,7 +6729,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 323
+        "y": 349
       },
       "id": 429,
       "options": {
@@ -6610,7 +6798,7 @@
         "h": 4,
         "w": 24,
         "x": 0,
-        "y": 92
+        "y": 80
       },
       "id": 435,
       "options": {
@@ -6646,7 +6834,7 @@
       "id": 9910,
       "gridPos": {
         "x": 0,
-        "y": 250,
+        "y": 269,
         "w": 12,
         "h": 8
       },
@@ -6657,6 +6845,7 @@
       "targets": [
         {
           "expr": "rate(lmcache_mp_lookup_hit_l1_keys_total[$__rate_interval])",
+          "interval": "30s",
           "legendFormat": "L1 chunk hits/s",
           "refId": "A",
           "datasource": {
@@ -6666,6 +6855,7 @@
         },
         {
           "expr": "rate(lmcache_mp_lookup_hit_l2_keys_total[$__rate_interval])",
+          "interval": "30s",
           "legendFormat": "L2 chunk hits/s",
           "refId": "B",
           "datasource": {
@@ -6697,7 +6887,7 @@
       "id": 9911,
       "gridPos": {
         "x": 12,
-        "y": 250,
+        "y": 269,
         "w": 12,
         "h": 8
       },
@@ -6708,6 +6898,7 @@
       "targets": [
         {
           "expr": "histogram_quantile(0.5, sum by (le) (rate(lmcache_mp_real_reuse_gap_objects_bucket[$__rate_interval])))",
+          "interval": "30s",
           "legendFormat": "p50 chunks/lookup",
           "refId": "A",
           "datasource": {
@@ -6717,6 +6908,7 @@
         },
         {
           "expr": "histogram_quantile(0.95, sum by (le) (rate(lmcache_mp_real_reuse_gap_objects_bucket[$__rate_interval])))",
+          "interval": "30s",
           "legendFormat": "p95 chunks/lookup",
           "refId": "B",
           "datasource": {
@@ -6748,7 +6940,7 @@
       "id": 9950,
       "gridPos": {
         "x": 0,
-        "y": 125,
+        "y": 117,
         "w": 12,
         "h": 8
       },
@@ -6759,6 +6951,7 @@
       "targets": [
         {
           "expr": "rate(lmcache_mp_lookup_hit_l1_tokens_total[$__rate_interval])",
+          "interval": "30s",
           "legendFormat": "L1 tokens/s",
           "refId": "A",
           "datasource": {
@@ -6768,6 +6961,7 @@
         },
         {
           "expr": "rate(lmcache_mp_lookup_hit_l2_tokens_total[$__rate_interval])",
+          "interval": "30s",
           "legendFormat": "L2 tokens/s",
           "refId": "B",
           "datasource": {
@@ -6777,6 +6971,7 @@
         },
         {
           "expr": "rate(lmcache_mp_lookup_requested_tokens_total[$__rate_interval])",
+          "interval": "30s",
           "legendFormat": "Total requested/s",
           "refId": "C",
           "datasource": {
@@ -6802,6 +6997,147 @@
       }
     },
     {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "description": "Where each prompt token came from, per second, from LMCache's lookup counters (one event per looked-up request, so the four series add up to the prompt token rate). LMCache L1 / L2: lookup_hit_l1 / lookup_hit_l2. vLLM GPU prefix cache: lookup_request_hit \u2212 lookup_hit (what the engine's own prefix cache served that LMCache did not). Not cached: lookup_prompt \u2212 lookup_request_hit (prefilled on the GPU). LMCache counts in whole 256-token chunks, so its share can differ from vLLM's prompt_tokens_by_source by up to one chunk per request.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "lineWidth": 1,
+            "fillOpacity": 40,
+            "spanNulls": true,
+            "stacking": {
+              "group": "A",
+              "mode": "normal"
+            }
+          },
+          "unit": "short",
+          "min": 0
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 117,
+        "w": 12,
+        "h": 8
+      },
+      "id": 439,
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum(rate(lmcache_mp_lookup_hit_l1_tokens_total[$__rate_interval]))",
+          "interval": "30s",
+          "legendFormat": "LMCache L1 tokens/s",
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum(rate(lmcache_mp_lookup_hit_l2_tokens_total[$__rate_interval]))",
+          "interval": "30s",
+          "legendFormat": "LMCache L2 tokens/s",
+          "refId": "B"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum(rate(lmcache_mp_lookup_request_hit_tokens_total[$__rate_interval])) - sum(rate(lmcache_mp_lookup_hit_tokens_total[$__rate_interval]))",
+          "interval": "30s",
+          "legendFormat": "vLLM GPU prefix cache tokens/s",
+          "refId": "C"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum(rate(lmcache_mp_lookup_prompt_tokens_total[$__rate_interval])) - sum(rate(lmcache_mp_lookup_request_hit_tokens_total[$__rate_interval]))",
+          "interval": "30s",
+          "legendFormat": "Not cached tokens/s",
+          "refId": "D"
+        }
+      ],
+      "title": "Prompt Tokens by Cache Tier (stacked)",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "description": "Share of prompt tokens that did not need prefill because vLLM's GPU prefix cache or LMCache (L1 or L2) already held them: lmcache_mp_lookup_request_hit_tokens_total / lmcache_mp_lookup_prompt_tokens_total. Request-level, whole prompt as denominator. No data while no lookups arrive.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "lineWidth": 1,
+            "fillOpacity": 10,
+            "spanNulls": true
+          },
+          "unit": "percentunit",
+          "min": 0,
+          "max": 1
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 125,
+        "w": 12,
+        "h": 8
+      },
+      "id": 440,
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum(rate(lmcache_mp_lookup_request_hit_tokens_total[$__rate_interval])) / sum(rate(lmcache_mp_lookup_prompt_tokens_total[$__rate_interval]))",
+          "interval": "30s",
+          "legendFormat": "served from cache",
+          "refId": "A"
+        }
+      ],
+      "title": "Prompt Tokens Served from Any Cache (share)",
+      "type": "timeseries"
+    },
+    {
       "type": "timeseries",
       "title": "Lookup Early Exit & Store Submit/Finish",
       "description": "early_exit{reason=empty_chunk_hashes} = lookups skipped because prompt < 1 chunk. Store submit/finish rate shows L2 write pipeline activity.",
@@ -6819,6 +7155,7 @@
       "targets": [
         {
           "expr": "rate(lmcache_mp_lookup_early_exit_requests_total[$__rate_interval])",
+          "interval": "30s",
           "legendFormat": "Early exits/s (empty chunks)",
           "refId": "A",
           "datasource": {
@@ -6828,6 +7165,7 @@
         },
         {
           "expr": "rate(lmcache_mp_num_submitted_stores_total[$__rate_interval])",
+          "interval": "30s",
           "legendFormat": "Stores submitted/s",
           "refId": "B",
           "datasource": {
@@ -6837,6 +7175,7 @@
         },
         {
           "expr": "rate(lmcache_mp_num_finished_stores_total[$__rate_interval])",
+          "interval": "30s",
           "legendFormat": "Stores finished/s",
           "refId": "C",
           "datasource": {
@@ -6868,7 +7207,7 @@
       "id": 9952,
       "gridPos": {
         "x": 0,
-        "y": 242,
+        "y": 261,
         "w": 12,
         "h": 8
       },
@@ -6928,7 +7267,7 @@
       "id": 9953,
       "gridPos": {
         "x": 12,
-        "y": 242,
+        "y": 261,
         "w": 12,
         "h": 8
       },
@@ -6979,7 +7318,7 @@
       "id": 9954,
       "gridPos": {
         "x": 0,
-        "y": 250,
+        "y": 277,
         "w": 24,
         "h": 8
       },
@@ -6990,6 +7329,7 @@
       "targets": [
         {
           "expr": "histogram_quantile(0.5, sum by (le) (rate(lmcache_mp_transfer_staging_throughput_GB_per_second_bucket[$__rate_interval])))",
+          "interval": "30s",
           "legendFormat": "p50 GB/s",
           "refId": "A",
           "datasource": {
@@ -6999,6 +7339,7 @@
         },
         {
           "expr": "histogram_quantile(0.95, sum by (le) (rate(lmcache_mp_transfer_staging_throughput_GB_per_second_bucket[$__rate_interval])))",
+          "interval": "30s",
           "legendFormat": "p95 GB/s",
           "refId": "B",
           "datasource": {
@@ -7008,6 +7349,7 @@
         },
         {
           "expr": "histogram_quantile(0.99, sum by (le) (rate(lmcache_mp_transfer_staging_throughput_GB_per_second_bucket[$__rate_interval])))",
+          "interval": "30s",
           "legendFormat": "p99 GB/s",
           "refId": "C",
           "datasource": {
@@ -7039,7 +7381,7 @@
       "id": 9955,
       "gridPos": {
         "x": 0,
-        "y": 203,
+        "y": 215,
         "w": 8,
         "h": 8
       },
@@ -7099,7 +7441,7 @@
       "id": 9956,
       "gridPos": {
         "x": 8,
-        "y": 203,
+        "y": 215,
         "w": 8,
         "h": 8
       },
@@ -7159,7 +7501,7 @@
       "id": 9957,
       "gridPos": {
         "x": 16,
-        "y": 203,
+        "y": 215,
         "w": 8,
         "h": 8
       },
@@ -7219,7 +7561,7 @@
       "id": 9958,
       "gridPos": {
         "x": 0,
-        "y": 70,
+        "y": 58,
         "w": 4,
         "h": 4
       },
@@ -7281,7 +7623,7 @@
       "id": 9959,
       "gridPos": {
         "x": 4,
-        "y": 70,
+        "y": 58,
         "w": 4,
         "h": 4
       },
@@ -7339,7 +7681,7 @@
       "id": 9960,
       "gridPos": {
         "x": 8,
-        "y": 70,
+        "y": 58,
         "w": 4,
         "h": 4
       },
@@ -7393,7 +7735,7 @@
       "id": 9961,
       "gridPos": {
         "x": 12,
-        "y": 70,
+        "y": 58,
         "w": 4,
         "h": 4
       },

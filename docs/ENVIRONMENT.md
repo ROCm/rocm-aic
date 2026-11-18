@@ -29,6 +29,7 @@ default), the tables show it next to the owner's.
 | Runtime | `docker/docker-compose.yml` | Container runtime defaults: what the services are started with |
 | Make | `Makefile`, `mk/*.mk` | Variables a make recipe expands itself (host paths, ports it probes, benchmark and test knobs of the local targets) |
 | Slurm | `.slurm/*`, `monitoring/monitoring-lib.sh` | Slurm resources (time, CPUs, memory, constraints) and the procedure of each job |
+| AgentX | `benchmarks/agentx/*.sh` | The `AGENTX_*` knobs of the AgentX benchmark; the scripts also run without make |
 | Site | `.env.<cluster>` (not tracked in git) | Values that differ per cluster: partition, constraint, image and cache directories |
 
 Precedence under `make`, highest first: the command line (`make VAR=value`),
@@ -125,16 +126,16 @@ it), whose defaults a test keeps equal to bake's.
 | `FLASH_ATTN_REF` | `0e60e394` | `docker/docker-bake.hcl` | FlashAttention ref, built for the CDNA (`gfx9*`) arches only |
 | `LMCACHE_REF` | `v0.5.8rc1` | `docker/docker-bake.hcl` | LMCache ref |
 | `NIXL_REF` | `v1.5.2` | `docker/docker-bake.hcl` | NIXL ref |
+| `CUPY_VERSION` | `14.2.0` | `docker/docker-bake.hcl` | `cupy-rocm-7-0` release installed into `aic-lmcache` and `aic-vllm` |
 | `UCX_REF` | `v1.22.0` | `docker/docker-bake.hcl` | UCX ref (NIXL's transport) source-built into the base image |
 | `HSA_SNOOP_REF` | `v1.6.0` | `docker/docker-bake.hcl` | hsa-snoop ref |
 | `CLR_REF` | `release/therock-10.1` | `docker/docker-bake.hcl` | `ROCm/rocm-systems` ref the patched `libamdhip64` in the base image is built from; bump it together with `ROCM_VERSION` |
 | `TRITON_REF` | `release/internal/3.8.x` | `docker/docker-bake.hcl` | Triton ref source-built into the base image |
-| `UV_VERSION` | `0.12.15` | `docker/docker-bake.hcl` | `uv` release used by the image builds |
 | `NVME_EXPORTER_VERSION` | `3.0.0` | `docker/docker-bake.hcl` | `nvme_exporter` release packaged into the NVMe exporter image |
 | `RDMA_EXPORTER_VERSION` | `0.7.5` | `docker/docker-bake.hcl` | `rdma_exporter` release packaged into the RDMA exporter image |
 | `KVBENCH_REF` | `177cf4e7c46ece8e03a701f89b60cd3a329f45fd` | `docker/docker-bake.hcl` | KVBench commit |
 | `KVBENCH_LMCACHE_VERSION` | `0.5.6` | `docker/docker-bake.hcl` | LMCache release (from `PyPI`) installed into the KVBench image. Not `LMCACHE_REF`: KVBench pins its own compatible range |
-| `AIPERF_VERSION` | `latest` | `docker/docker-bake.hcl` | `aiperf` version installed into the AgentX client image |
+| `AIPERF_VERSION` | `0.13.0` | `docker/docker-bake.hcl` | `aiperf` version installed into the AgentX client image |
 <!-- END generated:pins -->
 
 ### Source repositories
@@ -266,10 +267,10 @@ it), whose defaults a test keeps equal to bake's.
 | --- | --- | --- | --- |
 | `HF_TOKEN` | (empty) | `docker/docker-compose.yml` | Hugging Face access token. Required to download gated models; not needed for an offline cache |
 | `HF_TOKEN_FILE` | (empty) | `Makefile` | File holding the token, read by make when `HF_TOKEN` is unset |
-| `HF_HOME` | `~/.cache/huggingface`; `$(HOME)/.cache/huggingface` (`Makefile`); `$(AIC_SHARED_NFS)/huggingface` (`Makefile`, SPUR); `${AIC_IMAGE_DIR}/tiny-hf` (`.slurm/run-build-distribute.sh`); `/scratch/${USER}/vllm-lmcache-hipfile/hf` (`.slurm/run-cliff.sbatch`); `${AIC_SHARED_NFS}/huggingface` (`.slurm/ext-hit-test.sbatch`); `${AIC_SHARED_NFS:-/shared_nfs}/huggingface` (`.slurm/test-nightly-wheels.sbatch`); `${RUNNER_TEMP:-/tmp}/hf` (`.github/scripts/run-vllm-emul-perf.sh`) | `docker/docker-compose.yml` | Host Hugging Face cache directory mounted into the containers. `make` uses `/scratch/models` when that exists; each Slurm job has its own default |
+| `HF_HOME` | `~/.cache/huggingface`; `$(HOME)/.cache/huggingface` (`Makefile`); `$(AIC_SHARED_NFS)/huggingface` (`Makefile`, SPUR); `${AIC_IMAGE_DIR}/tiny-hf` (`.slurm/run-build-distribute.sh`); `/scratch/${USER}/vllm-lmcache-hipfile/hf` (`.slurm/run-cliff.sbatch`); `${AIC_SHARED_NFS}/huggingface` (`.slurm/ext-hit-test.sbatch`); `${AIC_SHARED_NFS:-/shared_nfs}/huggingface` (`.slurm/test-nightly-wheels.sbatch`); `${RUNNER_TEMP:-/tmp}/hf` (`.github/scripts/run-vllm-emul-perf.sh`); `${HOME}/.cache/huggingface` (`benchmarks/agentx/run_agentx.sh`) | `docker/docker-compose.yml` | Host Hugging Face cache directory mounted into the containers. `make` uses `/scratch/models` when that exists; each Slurm job has its own default |
 | `HF_HUB_OFFLINE` | `0` | `docker/docker-compose.yml` | `1` blocks Hugging Face Hub network access |
 | `TRANSFORMERS_OFFLINE` | `0` | `docker/docker-compose.yml` | `1` puts Transformers in offline mode |
-| `LOG` | `../logs`; `$(CURDIR)/logs` (`Makefile`) | `docker/docker-compose.yml` | Host log directory |
+| `LOG` | `../logs`; `$(CURDIR)/logs` (`Makefile`); `${REPO_ROOT}/logs` (`benchmarks/agentx/run_agentx.sh`) | `docker/docker-compose.yml` | Host log directory |
 | `TZ` | `America/Edmonton` | `docker/docker-compose.yml` | Time zone of every container |
 <!-- END generated:hf-logging -->
 
@@ -409,7 +410,7 @@ user-settable. The readers require them.
 | `BENCH_SHARED_TOK` | `18000`; `16` (`.slurm/run-kvbench-cliff.sbatch`) | `Makefile` | Shared-prefix length, tokens |
 | `BENCH_CONCUR` | `1,2,4,8,16,32,48,64,80,100,128,160,200,250`; `1,2` (`.slurm/run-kvbench-cliff.sbatch`) | `Makefile` | Concurrency ladder. The `cliff-kvd`, `cliff-spur-l2` and `cliff-short` targets each preset a shorter one |
 | `BENCH_ITERS` | `3`; `1` (`.slurm/run-kvbench-cliff.sbatch`) | `Makefile` | Iterations per concurrency point |
-| `BENCH_ENDPOINT` | (empty) | `Makefile` | vLLM endpoint as seen from the `aic` bridge. Empty resolves to the running tiered vLLM. `benchmarks/agentx/run_agentx.sh` reads the same name with its own default |
+| `BENCH_ENDPOINT` | (empty) | `Makefile` | vLLM endpoint as seen from the `aic` bridge. Empty resolves to the running tiered vLLM. The AgentX targets read it too |
 | `BENCH_MODEL` | `$(VLLM_MODEL)` | `Makefile` | Model name in the benchmark requests |
 | `BENCH_PREFIX_MODE` | `per_client` | `.slurm/run-cliff.sbatch` | Prefix sharing in the Slurm cliff job: `per_client` or `shared`. `make cliff-kvd` presets `shared` |
 | `BENCH_LOGDIR` | `$(CURDIR)/logs/manual` | `Makefile` | Where non-Slurm runs write results and plots |
@@ -472,8 +473,33 @@ user-settable. The readers require them.
 
 ### AgentX
 
-The `AGENTX_*` variables are documented with the benchmark, in
+`make agentx-run`, `agentx-sweep` and `agentx-corpus`; the scripts in
+`benchmarks/agentx/` own the defaults and read the same names when run
+directly. They also read `BENCH_ENDPOINT`, `AIC_NETWORK`, `GPU`, `LOG`,
+`HF_HOME` and `HF_TOKEN`. See
 [`benchmarks/agentx/README.md`](../benchmarks/agentx/README.md).
+
+<!-- BEGIN generated:agentx -->
+| Variable | Default | Owner | Description |
+| --- | --- | --- | --- |
+| `AGENTX_IMAGE_REF` | `aic-agentx:latest` | `benchmarks/agentx/run_agentx.sh` | Full `name:tag` of the `aiperf` client image. `make` exports the ref bake tags (`aic-agentx:<AIPERF_VERSION>`); the default is the `:latest` alias a local bake adds |
+| `AGENTX_MODEL` | `${VLLM_MODEL:-}` | `benchmarks/agentx/run_agentx.sh` | Served model name in the requests. Empty takes the model the endpoint reports |
+| `AGENTX_TOKENIZER` | (empty) | `benchmarks/agentx/run_agentx.sh` | Hugging Face tokenizer `aiperf` counts tokens with. Empty means the model |
+| `AGENTX_CONCURRENCY` | `2` | `benchmarks/agentx/run_agentx.sh` | Trajectories replayed at once by `make agentx-run`. Each is one recorded agent session, subagent fan-out included |
+| `AGENTX_CONCURRENCIES` | `1 2 4` | `benchmarks/agentx/overnight_sweep.sh` | Space-separated concurrency levels `make agentx-sweep` runs in turn |
+| `AGENTX_DURATION` | `1800` | `benchmarks/agentx/run_agentx.sh` | Benchmark duration, seconds. Under 900 the scenario's lock is overridden and the run is not a valid AgentX submission |
+| `AGENTX_MAX_CONTEXT` | (empty) | `benchmarks/agentx/run_agentx.sh` | Traces whose peak prompt plus output exceeds this many tokens are dropped. Empty takes the served model's `max_model_len` |
+| `AGENTX_DATASET` | `semianalysis_cc_traces_weka_062126` | `benchmarks/agentx/run_agentx.sh` | `aiperf` public dataset alias that is replayed when no local corpus is given |
+| `AGENTX_CORPUS` | (empty) | `benchmarks/agentx/run_agentx.sh` | Local `weka-trace` directory to replay instead of `AGENTX_DATASET`. Not a valid AgentX submission |
+| `AGENTX_CORPUS_SCALE` | `8` | `benchmarks/agentx/scaled_corpus.sh` | Divisor of the scaled corpus: every token count of the source traces is divided by it. `make agentx-corpus` generates that corpus. `make agentx-run` leaves it empty, which replays `AGENTX_DATASET` as recorded; when set, it replays the scaled corpus, generating it first if needed. A scaled corpus is an AgentX-shaped workload, not the AgentX benchmark |
+| `AGENTX_CORPUS_DATASET` | `semianalysisai/cc-traces-weka-062126` | `benchmarks/agentx/scaled_corpus.sh` | Hugging Face dataset repo the scaled corpus is derived from |
+| `AGENTX_CORPUS_CACHE` | `${HOME}/.cache/aic-agentx` | `benchmarks/agentx/scaled_corpus.sh` | Directory holding the scaled corpora, one directory per dataset and divisor |
+| `AGENTX_SEED` | `42` | `benchmarks/agentx/run_agentx.sh` | `aiperf` random seed: trajectory order and start offsets |
+| `AGENTX_SLICE_DURATION` | `30` | `benchmarks/agentx/run_agentx.sh` | Width of the time slices in the `aiperf` export, seconds |
+| `AGENTX_SERVER_METRICS` | (empty) | `benchmarks/agentx/run_agentx.sh` | Space-separated Prometheus `/metrics` URLs `aiperf` records besides the endpoint's own. Empty means the stack's LMCache metrics port on the `aic` bridge, or nothing when `BENCH_ENDPOINT` is set; `none` disables it |
+| `AGENTX_EXTRA_ARGS` | (empty) | `benchmarks/agentx/run_agentx.sh` | Space-separated arguments appended to `aiperf profile` |
+| `AGENTX_ARGS` | (empty) | `mk/bench.mk` | Options `make agentx-run` and `make agentx-sweep` pass to `benchmarks/agentx/run_agentx.sh`, e.g. `--dry-run` |
+<!-- END generated:agentx -->
 
 ## Tests
 
@@ -627,8 +653,9 @@ See [EMULATE.md](EMULATE.md) for the workflow these belong to.
 | `EMU_IPC_MODE` | `shareable` | `docker/docker-compose.yml` | IPC mode of the emulator. `emulate-mp` needs `container:aic-lmcache-emulator` |
 | `DEVICE_TYPE` | `cpu` | `docker/docker-compose.yml` | LMCache device type in the `lmcache-emulator` service |
 | `VLLM_CPU_MODEL` | `facebook/opt-125m` | `docker/docker-compose.yml` | Model served by the `cpu-smoke-emulator` service |
-| `AIC_CONTAINER_USER` | `0:0` | `docker/docker-compose.yml` | `uid:gid` the emulator container runs as, for clusters whose shared model cache is not writable by root |
-| `AIC_CONTAINER_HOME` | `/root` | `docker/docker-compose.yml` | `HOME` inside that container |
+| `AIC_CONTAINER_USER` | `0:0`; `$(shell id -u):$(shell id -g)` (`Makefile`) | `docker/docker-compose.yml` | `uid:gid` containers run as (default: invoking user). Used by all GPU and emulator services |
+| `RENDER_GID` | `993` | `docker/docker-compose.yml` | Host render group id added as a supplementary group to lmcache and vllm containers (default: 993) |
+| `AIC_CONTAINER_HOME` | `/tmp` | `docker/docker-compose.yml` | `HOME` inside that container |
 | `AIC_CONTAINER_USERNAME` | `root` | `docker/docker-compose.yml` | User name reported inside that container |
 | `AIC_EMULATE_MODEL` | `Qwen/Qwen3-8B` | `mk/bench.mk` | Model the emulation tests serve |
 | `AIC_EMULATE_READY_S` | `120` | `mk/bench.mk` | `make test-emulate-local`: seconds to wait for the emulator |

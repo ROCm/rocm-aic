@@ -198,6 +198,11 @@ build (`AIC_ROCM_ARCH` default includes `gfx1201`). Key differences from CDNA:
     startup with "Free memory on device ... is less than desired GPU memory
     utilization". The reset test (which adds `--enforce-eager`) then gets a KV
     cache of about 152,000 tokens; with CUDA graphs it is far smaller.
+    0.74 only holds for short prompts: prompts of several thousand tokens
+    (AgentX, 2026-11-18) ran the engine out of memory at 0.74, and with CUDA
+    graphs a 32,768-token context does not fit at all. For those use
+    `make up-dev` (eager) with `VLM_GPU_MEMORY_UTILIZATION=0.68`, which gives
+    a KV cache of about 124,000 tokens.
   - `VLM_LOAD_FORMAT=auto` — fastsafetensors GDS is CDNA-only.
   - `LMCACHE_L1_SIZE_GB=2` for this 16 GB node — default 20 GiB L1 prevents
     eviction to L2 in the reset test.
