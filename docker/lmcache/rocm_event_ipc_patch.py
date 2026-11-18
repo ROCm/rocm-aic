@@ -23,7 +23,7 @@ retrieve) need it, so every LMCache that ships in an AIC image is patched by
 this script:
   docker/lmcache/Dockerfile      the source tree, before the wheel is built
                                  (the wheel the default aic-vllm also installs)
-  docker/vllm/Dockerfile         the PyPI client of the `vllm` stage
+  docker/vllm/Dockerfile         the PyPI client of the `emulate` stage
   docker/wheels-test/Dockerfile  the installed package, in both images
 
 AIC_LMCACHE_SRC is the directory that CONTAINS `lmcache/`: a source checkout

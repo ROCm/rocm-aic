@@ -15,7 +15,7 @@
 #
 # Stages:
 #   pip-wheels        scratch stub for --build-context pip-wheels override
-#   base              ROCm-full base + system deps + uv               (sections 0-2)
+#   base              ROCm-full base + system deps                    (sections 0-1)
 #   build_pytorch     PyTorch built from source                       (section 2b)
 #   build_torchvision torchvision built from source                   (section 2c)
 #   build_nixl        NIXL built from source (uses ROCm headers)      (section 2d)
@@ -108,16 +108,7 @@ RUN git config --global advice.detachedHead false
 RUN rm -f /usr/lib/python3.*/EXTERNALLY-MANAGED
 
 ENV PIP_ROOT_USER_ACTION=ignore \
-    UV_LINK_MODE=copy \
-    UV_BREAK_SYSTEM_PACKAGES=1 \
     PIP_BREAK_SYSTEM_PACKAGES=1
-
-# ----- 2. uv (fast Python package manager) -----------------------------------
-ARG UV_VERSION
-RUN : "${UV_VERSION:?unset: build through docker/docker-bake.hcl}" && \
-    curl -fsSL "https://astral.sh/uv/${UV_VERSION}/install.sh" | sh && \
-    ln -s /root/.local/bin/uv /usr/local/bin/uv && \
-    ln -s /root/.local/bin/uvx /usr/local/bin/uvx
 
 FROM base AS build_triton
 
@@ -156,6 +147,33 @@ RUN --mount=type=cache,target=/root/.triton/ \
        python3 -m build --wheel --no-isolation --outdir=/app/triton/dist
 
 WORKDIR /
+
+# Slim the wheel itself (unpack, edit, repack so RECORD stays valid), so the
+# `wheels` target and every downstream install get the small one; kept apart
+# from the build above so a change here does not recompile Triton.
+#   - libtriton.so/libproton.so carry ~700 MB of DWARF and .symtab;
+#   - backends/nvidia/{bin,lib,include} (ptxas, nvdisasm, cupti, CUDA headers)
+#     and the instrumentation test library are never used on ROCm.  The nvidia
+#     backend's .py files stay: `import triton` imports triton.backends.nvidia.
+# hadolint ignore=SC2086
+RUN --mount=type=cache,target=/root/.cache/pip \
+    python3 -m pip install wheel && \
+    python3 -m wheel unpack -d /tmp/whl /app/triton/dist/triton-*.whl && \
+    d=$(echo /tmp/whl/triton-*) && \
+    /opt/rocm/core/lib/llvm/bin/llvm-strip --strip-unneeded \
+        "${d}/triton/_C/libtriton.so" "${d}/triton/_C/libproton.so" && \
+    rm -rf "${d}/triton/backends/nvidia/bin" \
+           "${d}/triton/backends/nvidia/lib" \
+           "${d}/triton/backends/nvidia/include" \
+           "${d}/triton/instrumentation/libGPUInstrumentationTestLib.so" && \
+    if /opt/rocm/core/lib/llvm/bin/llvm-readelf -S "${d}/triton/_C/libtriton.so" | grep -F '.debug_'; then \
+        echo "ERROR: libtriton.so still carries debug sections" >&2; exit 1; \
+    fi && \
+    test -f "${d}/triton/backends/nvidia/compiler.py" && \
+    rm /app/triton/dist/triton-*.whl && \
+    python3 -m wheel pack -d /app/triton/dist "${d}" && \
+    rm -rf /tmp/whl && \
+    ls -l /app/triton/dist
 
 # =============================================================================
 # PyTorch source build — no upstream wheel for this SHA; source pin is authoritative.
@@ -228,11 +246,22 @@ RUN export UNUSED_SUBMODULES=(3rdparty/composable_kernel \
     done
 
 WORKDIR /app/pytorch
-RUN --mount=type=cache,target=/root/.cache/uv \
-    uv pip install --system \
+# PyTorch pins exact versions of pip, wheel and packaging.  Where the image's
+# copies are Debian-owned (no RECORD) pip cannot upgrade them in place, so
+# --ignore-installed puts pip-owned copies in /usr/local, which shadows
+# /usr/lib/python3/dist-packages.  The check stops the build if that flag left
+# two versions of one distribution in /usr/local.  `build[uv]` is the only
+# thing that would bring uv in; plain `build` is all `python3 -m build` needs.
+RUN --mount=type=cache,target=/root/.cache/pip \
+    sed -i 's/^build\[uv\]/build/' requirements.txt requirements-build.txt && \
+    python3 -m pip install --ignore-installed \
       -r requirements.txt \
       -r requirements-build.txt \
-      auditwheel==6.4.2
+      auditwheel==6.4.2 && \
+    python3 -c 'import collections, importlib.metadata as m, re, sysconfig; \
+    n = collections.Counter(re.sub("[-_.]+", "-", d.metadata["Name"] or "").lower() for d in m.distributions(path=[sysconfig.get_path("purelib")])); \
+    dup = sorted(k for k, v in n.items() if v > 1); \
+    assert not dup, f"two versions installed side by side: {dup}"'
 
 COPY patches/pytorch/ /app/patches/pytorch/
 
@@ -289,6 +318,24 @@ RUN --mount=type=cache,target=/root/.cache/ccache \
     { find /app/pytorch -mindepth 1 -maxdepth 1 ! -name 'dist' -exec rm -rf {} + || \
       echo "WARNING: PyTorch source cleanup failed; see find's error above" >&2; }
 WORKDIR /
+
+# Slim the wheel as for Triton, in its own layer so a change here does not
+# rebuild PyTorch: libtorch_{cpu,hip,python}.so ship unstripped (.symtab only,
+# no DWARF) and torch/bin/protoc* is a build tool.
+# hadolint ignore=SC2086
+RUN --mount=type=cache,target=/root/.cache/pip \
+    python3 -m pip install wheel && \
+    python3 -m wheel unpack -d /tmp/whl /app/pytorch/dist/torch-*.whl && \
+    d=$(echo /tmp/whl/torch-*) && \
+    /opt/rocm/core/lib/llvm/bin/llvm-strip --strip-unneeded \
+        "${d}/torch/lib/libtorch_cpu.so" \
+        "${d}/torch/lib/libtorch_hip.so" \
+        "${d}/torch/lib/libtorch_python.so" && \
+    rm -f "${d}"/torch/bin/protoc* && \
+    rm /app/pytorch/dist/torch-*.whl && \
+    python3 -m wheel pack -d /app/pytorch/dist "${d}" && \
+    rm -rf /tmp/whl && \
+    ls -l /app/pytorch/dist
 
 # =============================================================================
 # torchvision source build — must compile against our source-built PyTorch.
@@ -370,8 +417,8 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
         rdma-core
 
 # numpy is required by NIXL's Python bindings at install time.
-RUN --mount=type=cache,target=/root/.cache/uv \
-    uv pip install --system numpy numba
+RUN --mount=type=cache,target=/root/.cache/pip \
+    python3 -m pip install numpy numba
 
 RUN --mount=type=cache,target=/root/.cache/pip \
     python3 -m pip install meson meson-python ninja patchelf pybind11 tomlkit
@@ -415,6 +462,14 @@ RUN set -eu; \
     ../configure "${ucx_configure_flags[@]}"; \
     make -j"${BUILD_JOBS:-$(nproc)}"; \
     make install; \
+    # UCX is built with -g.  Stripped here, before NIXL links and bundles it.
+    # Non-ELF executables (scripts) make llvm-strip fail, hence the `|| true`;
+    # the check below is what catches a strip that did nothing.
+    find /opt/rocnixl-ucx -type f \( -name '*.so' -o -name '*.so.*' -o -perm -111 \) \
+        -exec sh -c '/opt/rocm/core/lib/llvm/bin/llvm-strip --strip-unneeded "$1" 2>/dev/null || true' _ {} \; ; \
+    if /opt/rocm/core/lib/llvm/bin/llvm-readelf -S /opt/rocnixl-ucx/lib/libucp.so | grep -F '.debug_'; then \
+        echo "ERROR: libucp.so still carries debug sections" >&2; exit 1; \
+    fi; \
     ldconfig; \
     /opt/rocnixl-ucx/bin/ucx_info -v; \
     rm -rf /tmp/ucx-src
@@ -450,8 +505,7 @@ RUN chmod +x /tmp/nixl-scripts/clone-nixl.sh && \
 # NIXL build, mandatory-plugin checks and the nixl-rocm wheel.  The patched
 # checkout has native HIP + the AIS_MT plugin (nixl-rocm-ais-mt.patch).
 # hadolint ignore=SC3054,SC3030,SC3060
-RUN --mount=type=cache,target=/root/.cache/uv \
-    --mount=type=cache,target=/root/.cache/pip \
+RUN --mount=type=cache,target=/root/.cache/pip \
     set -eu; \
     jobs="${BUILD_JOBS:-$(nproc)}"; \
     prefix=/opt/nixl; \
@@ -509,6 +563,8 @@ RUN --mount=type=cache,target=/root/.cache/uv \
     if ldd "${plugin_dir}/$(basename "${prom_plugin}")" | grep "not found" >&2; then \
         echo "ERROR: prometheus telemetry plugin has unresolved shared libs" >&2; exit 1; \
     fi; \
+    find "${prefix}" -type f \( -name '*.so' -o -name '*.so.*' -o -perm -111 \) \
+        -exec sh -c '/opt/rocm/core/lib/llvm/bin/llvm-strip --strip-unneeded "$1" 2>/dev/null || true' _ {} \; ; \
     # Wheel: same meson args minus --prefix, which meson-python manages.  It is
     # named nixl-rocm (upstream's pyproject defaults to nixl-cu12) and bundles
     # libnixl + the NIXL plugins/UCX libs; the ROCm runtime stays external.
@@ -518,9 +574,11 @@ RUN --mount=type=cache,target=/root/.cache/uv \
         ./contrib/tomlutil.py --wheel-name nixl-rocm pyproject.toml; \
     fi; \
     mkdir -p /app/nixl/dist; \
-    env -u CXX ROCM_PATH=/opt/rocm UV_SYSTEM_CERTS=1 \
-        uv build --wheel --no-build-isolation --out-dir /app/nixl/dist \
-            "${meson_args[@]/#/-Csetup-args=}" "-Ccompile-args=-j${jobs}"; \
+    # No --check-build-dependencies: upstream's [build-system].requires pins
+    # torch==2.11.*, which must not be enforced.
+    env -u CXX ROCM_PATH=/opt/rocm \
+        python3 -m pip wheel --no-build-isolation --no-deps --wheel-dir /app/nixl/dist \
+            "${meson_args[@]/#/-Csetup-args=}" "-Ccompile-args=-j${jobs}" .; \
     nixl_whl="$(find /app/nixl/dist -maxdepth 1 -name 'nixl*rocm*.whl' -print -quit)"; \
     if [ -z "${nixl_whl}" ]; then \
         echo "ERROR: no nixl*rocm*.whl in /app/nixl/dist" >&2; exit 1; \
@@ -691,8 +749,35 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
 #   curl          HTTP probes, scrapes and compose healthchecks
 #   make          AITER's JIT builds some kernels (paged attention) with make
 #   python3-venv  ensurepip, for `python3 -m venv`
+#   python3-pip   the one pip for the stack: aic-vllm and aic-lmcache inherit it
+#                 for their own installs, and it stays in the images (the
+#                 rocjitsu VM test and the accuracy job pip-install in them)
 # Key and sources list copied from the build-time base stage so that the repo
 # URL tracks the base image automatically (ROCm 10.0 changed the URL).
+#
+# amdrocm-runtime-dev carries the HIP development headers AITER's JIT needs
+# (hip/hip_runtime.h and friends), but Depends on amdrocm-llvm-dev: 2 GB of
+# LLVM static archives and C++ API headers nothing here links.  An empty
+# package of the same name and version, installed first and held, satisfies
+# that dependency instead, here and for the amdrocm-*-dev packages aic-vllm
+# installs on top.
+#
+# Everything this RUN deletes or strips was installed by it: done in a later
+# RUN, the bytes would stay in this layer.  dpkg still lists the files.
+#   - LLVM: the flang and MLIR toolchains, clang-tidy and the refactoring
+#     tools, the tblgen tools, and compiler-rt's sanitizer, fuzzer, profile and
+#     xray runtimes (-fsanitize and -fprofile-generate no longer link).
+#     clang, lld, libLLVM, libclang-cpp, builtins and crtbegin/crtend stay.
+#   - rocprofiler Python bindings for interpreters other than the image's,
+#     static archives, test and sample trees, the VA-API video driver.
+#   - symbol tables of the largest ROCm libraries (--strip-unneeded keeps
+#     .dynsym).  libhsa-runtime64 and libhipfile are left alone so uprobe
+#     tracing of the HSA and hipFile paths can still resolve their symbols
+#     (hsa-snoop itself uses a kernel kprobe); libamdhip64 is not stripped
+#     either, though it ships without a .symtab.
+#   - the packaged libamdhip64 is emptied: the patched build is copied over it
+#     in a RUN of its own below, so this layer need not carry the original and
+#     a CLR_REF or patch change does not re-run this RUN.
 COPY --from=base /etc/apt/keyrings/amdrocm.gpg /etc/apt/keyrings/amdrocm.gpg
 COPY --from=base /etc/apt/sources.list.d/rocm.list /etc/apt/sources.list.d/amdrocm.list
 # hadolint ignore=SC2046,SC2086,DL3008
@@ -701,21 +786,30 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     echo "blas cache bust: ${BLAS_CACHE_BUST}" && \
     apt-get update && \
     _mm=$(echo "${ROCM_VERSION}" | cut -d. -f1-2) && \
+    R="/opt/rocm/core-${_mm}" && L="${R}/lib/llvm" && \
+    _stub_ver=$(apt-cache policy "amdrocm-llvm-dev${_mm}" | awk '$1 == "Candidate:" {print $2}') && \
+    if [ -z "${_stub_ver}" ] || [ "${_stub_ver}" = "(none)" ]; then \
+        echo "ERROR: no apt candidate for amdrocm-llvm-dev${_mm}" >&2; exit 1; \
+    fi && \
+    mkdir -p /tmp/llvm-dev-stub/DEBIAN && \
+    printf 'Package: %s\nVersion: %s\nArchitecture: amd64\nMaintainer: rocm-aic\nDescription: empty stand-in for the LLVM static libraries and headers\n' \
+        "amdrocm-llvm-dev${_mm}" "${_stub_ver}" > /tmp/llvm-dev-stub/DEBIAN/control && \
+    dpkg-deb -b /tmp/llvm-dev-stub /tmp/llvm-dev-stub.deb && \
+    dpkg -i /tmp/llvm-dev-stub.deb && \
+    apt-mark hold "amdrocm-llvm-dev${_mm}" && \
+    rm -rf /tmp/llvm-dev-stub /tmp/llvm-dev-stub.deb && \
     DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
         curl \
         git \
         ibverbs-providers \
-        libibverbs-dev \
         libaio1t64 \
         libgomp1 \
         libnuma1 \
         librdmacm1t64 \
         liburing2 \
         make \
-        nvme-cli \
-        pkg-config \
-        bpftrace \
         python3-dev \
+        python3-pip \
         python3-venv \
         "amdrocm-amdsmi${_mm}" \
         "amdrocm-base${_mm}" \
@@ -729,6 +823,7 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
         "amdrocm-rand-host${_mm}" \
         "amdrocm-rccl-host${_mm}" \
         "amdrocm-runtime${_mm}" \
+        "amdrocm-runtime-dev${_mm}" \
         "amdrocm-solver-host${_mm}" \
         "amdrocm-sparse-host${_mm}" \
         "amdrocm-sysdeps${_mm}" \
@@ -741,10 +836,50 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
        done \
     && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends ${_arch_pkgs} \
     && update-ca-certificates \
-    && update-alternatives --install /opt/rocm/core core "/opt/rocm/core-${_mm}" 1375129220
+    && update-alternatives --install /opt/rocm/core core "${R}" 1375129220 \
+    && rm -f /usr/lib/python3.*/EXTERNALLY-MANAGED \
+    && test -f "${R}/include/hip/hip_runtime.h" \
+    && if [ -e "${L}/lib/libLLVMCore.a" ]; then \
+           echo "ERROR: the real amdrocm-llvm-dev${_mm} was installed over the stub" >&2; exit 1; \
+       fi \
+    && (cd "${L}/bin" && rm -f \
+            flang* amdflang bbc fir-* tco f18-parse-demo mlir-* \
+            clang-tidy run-clang-tidy clang-doc clang-change-namespace clang-move \
+            find-all-symbols clang-include-cleaner clang-include-fixer clang-query \
+            clang-reorder-fields clang-apply-replacements modularize pp-trace \
+            llvm-tblgen clang-tblgen tblgen-to-irdl tblgen-lsp-server \
+            yaml-bench llvm-test-mustache-spec) \
+    && rm -f "${L}"/lib/libMLIR*.so* "${L}"/lib/libmlir_*.so* \
+    && rm -rf "${L}"/lib/clang/*/finclude \
+    && find "${L}/lib/clang" -type f \( -name 'libflang_rt*' \
+            -o -name 'libclang_rt.*san*' -o -name 'libclang_rt.fuzzer*' \
+            -o -name 'libclang_rt.memprof*' -o -name 'libclang_rt.xray*' \
+            -o -name 'libclang_rt.scudo*' -o -name 'libclang_rt.profile*' \
+            -o -name 'libclang_rt.stats*' -o -name 'libclang_rt.safestack*' \
+            -o -name 'libclang_rt.cfi*' -o -name 'libclang_rt.ctx_profile*' \
+            -o -name 'libclang_rt.dd-*' \) -delete \
+    && _py=$(python3 -c 'import sys; print("python%d.%d" % sys.version_info[:2])') \
+    && for d in "${R}"/lib/python3.*; do \
+           if [ "$(basename "${d}")" != "${_py}" ]; then rm -rf "${d}"; fi; \
+       done \
+    && rm -rf "${R}/lib/libamd_smi_static.a" "${R}/lib/libamdsminic.a" \
+              "${R}/share/amd_smi/tests" "${R}/share/amd_smi/example" \
+              "${R}/share/roctracer/test" \
+              "${R}/share/rocprofiler-sdk/tests" "${R}/share/rocprofiler-sdk/samples" \
+              "${R}"/lib/rocm_sysdeps/lib/librocm_sysdeps_gallium_drv_video.so* \
+              "${R}"/lib/rocm_sysdeps/lib/*.a \
+              /usr/lib/python3.*/config-*/libpython3.*.a \
+    && find "${R}/lib" "${L}/lib" -maxdepth 1 -type f \( \
+            -name 'librocroller.so.*' -o -name 'librocsparse.so.*' \
+            -o -name 'librocrand.so.*' -o -name 'librocsolver.so.*' \
+            -o -name 'librocblas.so.*' -o -name 'librocprofiler-sdk.so.*' \
+            -o -name 'libLLVM.so.*' -o -name 'libclang-cpp.so.*' \) \
+            -exec "${L}/bin/llvm-strip" --strip-unneeded {} + \
+    && test -s "${R}/lib/libamdhip64.so" \
+    && : > "$(readlink -f "${R}/lib/libamdhip64.so")" \
+    && "${L}/bin/clang++" --version
 
 RUN git config --global advice.detachedHead false
-RUN rm -f /usr/lib/python3.*/EXTERNALLY-MANAGED
 
 # ROCm version info — at build time, AITER's setup.py determines HIP version by
 # reading one of the following files:
@@ -757,54 +892,55 @@ RUN rm -f /usr/lib/python3.*/EXTERNALLY-MANAGED
 RUN ln -sfn "/opt/rocm/core/lib/llvm/bin/clang++" /usr/local/bin/c++ && \
     ln -sfn "/opt/rocm/core/lib/llvm/bin/clang"   /usr/local/bin/cc
 
-# HIP development headers required by AITER JIT (hip/hip_runtime.h and friends).
-# No standalone headers apt package exists in the therock-10.0 runtime repo;
-# copy them from the full ROCm build image.  The /opt/rocm/include symlink above
-# makes them findable at both the versioned and canonical paths.
-RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
-    --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
-    apt-get update && \
-    _mm=$(echo "${ROCM_VERSION}" | cut -d. -f1-2) && \
-    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-      "amdrocm-runtime-dev${_mm}"
+ENV PIP_ROOT_USER_ACTION=ignore \
+    PIP_BREAK_SYSTEM_PACKAGES=1
 
-# uv — used by downstream vllm/lmcache Dockerfiles for pip operations.
-COPY --from=build_pytorch /root/.local/bin/uv  /usr/local/bin/uv
-COPY --from=build_pytorch /root/.local/bin/uvx /usr/local/bin/uvx
-
-# Install Python packages: torch + all requirements (from build_pytorch),
+# torch, torchvision, triton and nixl-rocm with their dependencies.  numpy and
+# setuptools are capped to what vLLM resolves to (numba needs numpy < 2.5, vLLM
+# setuptools < 80), so aic-vllm does not add second copies over these.
+#
+# --no-compile: no bytecode in the layer.  A root container compiles into its
+# own writable layer on first import; a non-root one (the emulator services,
+# the accuracy client) cannot write to dist-packages and pays the uncached
+# import on every start.
+#
+# The uninstall guards against upstream deps pulling CUDA-only nixl variants
+# that would shadow the source-built install from build_nixl.
+#
+# The torch wheel carries libaotriton_v2.so twice (a wheel cannot hold a
+# symlink); link the duplicate back, in the RUN that installs it.
 RUN --mount=type=cache,target=/root/.cache/pip \
     --mount=type=bind,from=build_nixl,source=/app/nixl/dist,target=/wheel-nixl/ \
     --mount=type=bind,from=build_pytorch,source=/app/pytorch/dist,target=/wheel-pytorch/ \
     --mount=type=bind,from=build_torchvision,source=/app/vision/dist,target=/wheel-vision/ \
     --mount=type=bind,from=build_triton,source=/app/triton/dist,target=/wheel-triton/ \
-    uv pip install --system /wheel-*/*.whl && \
+    pip3 install --no-compile /wheel-*/*.whl 'numpy<2.5' 'setuptools>=78.1.1,<80' && \
+    pip3 uninstall -y \
+        nixl nixl-cu12 nixl-cu13 \
+        cupy-cuda12x cufile-python cuda-pathfinder && \
+    _tl=$(python3 -c 'import sysconfig; print(sysconfig.get_path("platlib"))')/torch/lib && \
+    for f in "${_tl}"/libaotriton_v2.so.*; do \
+        if [ -f "${f}" ] && [ ! -L "${_tl}/libaotriton_v2.so" ] && cmp -s "${f}" "${_tl}/libaotriton_v2.so"; then \
+            ln -sf "$(basename "${f}")" "${_tl}/libaotriton_v2.so"; \
+        fi; \
+    done && \
     { find /usr/local/lib/python3.* -name '__pycache__' -type d \
          -exec rm -rf {} + || \
       echo "WARNING: __pycache__ cleanup failed; see find's error above" >&2; }
+
+# Patched libamdhip64.so, from build_clr_patch: fixes the IPC event signal ring
+# overflow (ROCm#11511/#11749).  read_index must be wrapped with
+# % IPC_SIGNALS_PER_EVENT (32) or the 33rd cross-process import of the same
+# event handle reads past the signal array.  Fills the file emptied above.
+RUN --mount=type=bind,from=build_clr_patch,source=/app/clr-build/hipamd/lib,target=/clr-build/ \
+    _mm=$(echo "${ROCM_VERSION}" | cut -d. -f1-2) && \
+    cp /clr-build/libamdhip64.so "/opt/rocm/core-${_mm}/lib/libamdhip64.so" && \
+    test -s "/opt/rocm/core-${_mm}/lib/libamdhip64.so"
 
 # NIXL native libs and Python bindings — compiled in build_nixl against the
 # ROCm-full toolchain; only the output directories are needed at runtime.
 COPY --from=build_nixl /opt/nixl/ /opt/nixl/
 COPY --from=build_nixl /opt/rocnixl-ucx/ /opt/rocnixl-ucx/
-
-ENV PIP_ROOT_USER_ACTION=ignore \
-    UV_LINK_MODE=copy \
-    UV_BREAK_SYSTEM_PACKAGES=1 \
-    PIP_BREAK_SYSTEM_PACKAGES=1
-
-# Patched libamdhip64.so: fixes IPC event signal ring overflow (ROCm#11511/#11749).
-# read_index must be wrapped with % IPC_SIGNALS_PER_EVENT (32) or the 33rd
-# cross-process import of the same event handle reads past the signal array.
-RUN --mount=type=bind,from=build_clr_patch,source=/app/clr-build/hipamd/lib,target=/clr-build/ \
-    _mm=$(echo "${ROCM_VERSION}" | cut -d. -f1-2) && \
-    cp /clr-build/libamdhip64.so "/opt/rocm/core-${_mm}/lib/libamdhip64.so"
-
-# Guard: upstream pip deps may pull CUDA-only nixl variants that would shadow
-# the source-built install from build_nixl.  Remove them if present.
-RUN uv pip uninstall --system \
-        nixl nixl-cu12 nixl-cu13 \
-        cupy-cuda12x cufile-python cuda-pathfinder 2>/dev/null || true
 
 # The AMD packages install to /opt/rocm/core-<major.minor>/ (not /opt/rocm/
 # directly).  The -full image creates symlinks; with explicit packages we must
@@ -818,6 +954,17 @@ ENV NIXL_PLUGIN_DIR=/opt/nixl/lib/x86_64-linux-gnu/plugins \
     LD_LIBRARY_PATH=/opt/nixl/lib/x86_64-linux-gnu:/opt/nixl/lib:/opt/rocnixl-ucx/lib:/opt/rocm/core/lib \
     ROCM_PATH=/opt/rocm/core \
     PATH=/opt/rocm/core/bin:/opt/rocm/core/lib/llvm/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+# CPU-only checks of what the slimming above could break: hipcc still compiles
+# device code with the pruned LLVM and without amdrocm-llvm-dev, and the Python
+# stack imports from the repacked wheels.
+RUN _arch=$(echo "${ROCM_ARCH}" | tr ',;' '  ' | awk '{print $1}') && \
+    printf '#include <hip/hip_runtime.h>\n__global__ void k(float* a, int n) { int i = blockIdx.x * blockDim.x + threadIdx.x; if (i < n) a[i] += 1.0f; }\n' > /tmp/k.hip && \
+    hipcc -x hip ${_arch:+--offload-arch="${_arch}"} -O3 -fPIC -shared /tmp/k.hip -o /tmp/k.so && \
+    rm -f /tmp/k.hip /tmp/k.so && \
+    PYTHONDONTWRITEBYTECODE=1 python3 -c 'import nixl, numpy, setuptools, torch, torchvision, triton; \
+    print("torch", torch.__version__, "torchvision", torchvision.__version__, "triton", triton.__version__, "numpy", numpy.__version__, "setuptools", setuptools.__version__)' && \
+    pip3 --version
 
 # Build parent, not a service: downstream images define their own checks.
 HEALTHCHECK NONE

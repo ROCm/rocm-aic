@@ -57,6 +57,8 @@ variable "AITER_REF"         { default = "v0.1.29.post1" }
 variable "FLASH_ATTN_REF"    { default = "0e60e394" }
 variable "LMCACHE_REF"       { default = "v0.5.8rc1" }
 variable "NIXL_REF"          { default = "v1.5.2" }
+# cupy-rocm-7-0 on both ends of the HIP IPC path (aic-lmcache and aic-vllm).
+variable "CUPY_VERSION"      { default = "14.2.0" }
 # UCX is NIXL's transport.  v1.22.0 is the latest stable release; upstream NIXL
 # v1.5.2 CI builds against the pre-release v1.23.x branch.
 variable "UCX_REF"           { default = "v1.22.0" }
@@ -66,8 +68,6 @@ variable "HSA_SNOOP_REF"     { default = "v1.6.0" }
 # run on; ROCM_RUNTIME_IMAGE is what the shipped images start from.
 variable "ROCM_BASE_IMAGE"    { default = "rocm/dev-ubuntu-26.04:${ROCM_VERSION}-full" }
 variable "ROCM_RUNTIME_IMAGE" { default = "ubuntu:26.04" }
-
-variable "UV_VERSION"         { default = "0.12.15" }
 
 # Source of the patched libamdhip64 built into aic-base.  A literal, not derived
 # from ROCM_VERSION: the 10.1 branch is release/therock-10.1, with no patch level.
@@ -100,8 +100,9 @@ variable "KVBENCH_IMAGE_TAG"     { default = substr(KVBENCH_REF, 0, 7) }
 # removed lmcache.v1.cache_engine, so this does not follow LMCACHE_REF.
 variable "KVBENCH_LMCACHE_VERSION" { default = "0.5.6" }
 
-# AgentX benchmark client (aiperf-based, no ROCm dependency).
-variable "AIPERF_VERSION"        { default = "latest" }
+# AgentX benchmark client (aiperf, no ROCm dependency).  Pinned to the release
+# benchmarks/agentx/ was run against: its flags and record layout move.
+variable "AIPERF_VERSION"        { default = "0.13.0" }
 
 # ---- Build knobs (override via env) ------------------------------------------
 
@@ -314,7 +315,6 @@ target "base" {
     ROCM_VERSION        = ROCM_VERSION
     ROCM_BASE_IMAGE     = ROCM_BASE_IMAGE
     ROCM_RUNTIME_IMAGE  = ROCM_RUNTIME_IMAGE
-    UV_VERSION          = UV_VERSION
     BUILD_JOBS          = BUILD_JOBS
     AIC_UCX_FAST        = AIC_UCX_FAST
     PYTORCH_GIT_URL     = PYTORCH_GIT_URL
@@ -361,6 +361,7 @@ target "vllm" {
     LLM_EMU_GIT_URL    = LLM_EMU_GIT_URL
     LLM_EMU_REF        = LLM_EMU_REF
     LMCACHE_REF        = LMCACHE_REF
+    CUPY_VERSION       = CUPY_VERSION
     PYTORCH_SERIES     = PYTORCH_SERIES
   }
   cache-from = cache_from(ROCM_ARCH, "vllm")
@@ -381,6 +382,7 @@ target "lmcache" {
     AIC_VERSION     = AIC_VERSION
     LMCACHE_GIT_URL = LMCACHE_GIT_URL
     LMCACHE_REF     = LMCACHE_REF
+    CUPY_VERSION    = CUPY_VERSION
     NIXL_REF        = NIXL_REF
   }
   cache-from = cache_from(ROCM_ARCH, "lmcache")
@@ -524,11 +526,11 @@ target "kvbench" {
 
 # AgentX aiperf benchmark client.  No ROCm dependency — pure benchmark driver.
 # Build: docker buildx bake -f docker/docker-bake.hcl agentx --load
-# Pin:   AIPERF_VERSION=0.5.0 docker buildx bake -f docker/docker-bake.hcl agentx --load
+# Other release: AIPERF_VERSION=<version> docker buildx bake -f docker/docker-bake.hcl agentx --load
 target "agentx" {
   context    = "."
   dockerfile = "docker/agentx/Dockerfile"
-  # :latest only locally, as in tags(); AIPERF_VERSION defaults to "latest".
+  # :latest only locally, as in tags().
   tags       = distinct(concat(fixed_tags("aic-agentx", AIPERF_VERSION),
                                AIC_IMAGE_PREFIX == "" ? ["aic-agentx:latest"] : []))
   args = {
