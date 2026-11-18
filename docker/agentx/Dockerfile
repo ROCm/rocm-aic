@@ -2,14 +2,15 @@
 #
 # SPDX-License-Identifier: MIT
 #
-# aic-agentx: aiperf-based AgentX benchmark runner.
+# aic-agentx: aiperf, the client of the AgentX benchmark.
 #
-# Runs the AgentX MVP scenario (inferencex-agentx-mvp) against a Lemonade or
-# vLLM endpoint and exports OTEL metrics to the AIC monitoring stack.
+# benchmarks/agentx/run_agentx.sh runs `aiperf profile --scenario
+# inferencex-agentx-mvp` from it against an OpenAI-compatible endpoint, on the
+# stack's docker network.
 #
 # This image is intentionally thin (python:3.12-slim + aiperf).  It does NOT
-# include ROCm or a GPU runtime — it is a pure benchmark driver that runs
-# alongside the inference stack, not on the GPU node.
+# include ROCm or a GPU runtime — it is a pure benchmark driver that needs
+# only network access to the endpoint.
 #
 # TLS/proxy configuration is handled entirely at runtime via environment
 # variables (REQUESTS_CA_BUNDLE, SSL_CERT_FILE, NO_PROXY, etc.) passed by
@@ -37,8 +38,9 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates curl \
     && rm -rf /var/lib/apt/lists/*
 
-# Install aiperf with OTEL support.  When AIPERF_VERSION=latest the constraint
-# is unconstrained; pin it (e.g. AIPERF_VERSION=0.4.2) for reproducible builds.
+# The otel extra adds aiperf's OTLP metrics exporter (--otel-url); the AIC
+# monitoring stack has no OTLP receiver, so nothing here uses it by default.
+# AIPERF_VERSION=latest installs whatever PyPI serves on the day of the build.
 RUN : "${AIPERF_VERSION:?unset: build through docker/docker-bake.hcl}" && \
     if [ "${AIPERF_VERSION}" = "latest" ]; then \
       pip install 'aiperf[otel]'; \
@@ -46,11 +48,12 @@ RUN : "${AIPERF_VERSION:?unset: build through docker/docker-bake.hcl}" && \
       pip install "aiperf[otel]==${AIPERF_VERSION}"; \
     fi
 
-# Bind-mount the host HF cache at runtime so tokenizer snapshots are reused
-# without downloading them inside the container.
+# Bind-mount the host HF cache at runtime so the tokenizer and the trace
+# dataset are reused instead of downloaded on every run.
 ENV HF_HOME=/hf_cache
 ENV AIPERF_DATASET_CONFIGURATION_TIMEOUT=1800
 ENV AIPERF_SERVICE_PROFILE_CONFIGURE_TIMEOUT=1800
 
+# aiperf is the only console script the package installs.
 WORKDIR /results
-ENTRYPOINT ["agentx"]
+ENTRYPOINT ["aiperf"]
