@@ -172,9 +172,13 @@ _client_args=(--rm --name "${ACC_CLIENT}"
     -e AIC_ACCURACY_SCORE_OUT)
 for _gid in $(id -G); do _client_args+=(--group-add "${_gid}"); done
 # _client <docker-network> <program> [args...]
+#
+# umask 002: docker's default 022 makes `datasets` create its builder lock in the
+# shared HF cache as 0644, which caps the tree's allusers ACL and leaves every
+# other user's gsm8k load failing with EACCES.  0664 keeps the group write bit.
 _client() {
-    docker run "${_client_args[@]}" --network "$1" --entrypoint "$2" \
-        "${AIC_VLLM_IMAGE}" "${@:3}"
+    docker run "${_client_args[@]}" --network "$1" --entrypoint sh \
+        "${AIC_VLLM_IMAGE}" -c 'umask 002; exec "$@"' sh "${@:2}"
 }
 # The scoring client, on the bridge the arms are on.
 _client_py() { _client aic "${PYBIN}" "$@"; }
