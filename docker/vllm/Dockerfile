@@ -605,6 +605,7 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
         make
 
+# hadolint ignore=SC3054,SC3044
 RUN --mount=type=cache,target=/root/.cache/pip \
     --mount=type=bind,from=lmcache-wheels,target=/aic-wheels \
     shopt -s nullglob && \
