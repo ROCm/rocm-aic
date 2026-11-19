@@ -63,8 +63,9 @@ variable "CUPY_VERSION"      { default = "14.2.0" }
 # v1.5.2 CI builds against the pre-release v1.23.x branch.
 variable "UCX_REF"           { default = "v1.22.0" }
 # Unreleased commit on feat/cpu-deload: v1.6.0 stalls its ring poller under
-# --mem-snoop and counts a few percent of launches.  Move to the tag once cut.
-variable "HSA_SNOOP_REF"     { default = "cef62f97" }
+# --mem-snoop and cannot read the queue rings of a ROCm 10.2 process.  Move to
+# the tag once cut.
+variable "HSA_SNOOP_REF"     { default = "8fd57e92" }
 
 # Base images.  ROCM_BASE_IMAGE is the full ROCm toolchain the source builds
 # run on; ROCM_RUNTIME_IMAGE is what the shipped images start from.

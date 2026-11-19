@@ -30,7 +30,7 @@ Dockerfiles carry bare `ARG`s with no defaults. Current pins: base image
 `rocm/dev-ubuntu-26.04:10.2.0-full` (ROCm 10.2.0, Ubuntu 26.04, Python 3.14),
 PyTorch source-built from `ROCm/pytorch@release/2.15`, torchvision `v0.29.2`,
 Triton `release/internal/3.8.x`, vLLM `v0.34.0`, LMCache `v0.5.8rc1`, NIXL
-`v1.5.2` on UCX `v1.22.0`, AITER `v0.1.29.post1`, hsa-snoop `cef62f97`
+`v1.5.2` on UCX `v1.22.0`, AITER `v0.1.29.post1`, hsa-snoop `8fd57e92`
 (unreleased, `feat/cpu-deload`). KVBench
 stays on LMCache 0.5.6. Validate changes on an MI355X before modifying the
 stack; as of this date the new stack has only been served on gfx1201.
