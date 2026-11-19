@@ -153,6 +153,7 @@ lookups
 LRU
 mailcap
 Makefile
+Makefile's
 manylinux
 md
 mem
@@ -167,6 +168,7 @@ Mountpoint
 mV
 NamedTuple
 namespace
+namespaces
 Navi
 nfs
 NFS
@@ -194,6 +196,7 @@ PCIe
 PDMA
 pid
 PID
+PIDs
 png
 posix
 POSIX
@@ -211,6 +214,7 @@ pytorch
 quartile
 Qwen
 Radeon
+rc
 rdma
 RDMA
 RDNA
@@ -241,6 +245,7 @@ Slurm
 snoc
 SoC
 SPUR's
+subdirectory
 sublicense
 subpackage
 subpackages

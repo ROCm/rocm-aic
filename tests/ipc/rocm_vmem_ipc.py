@@ -519,7 +519,8 @@ class _FdReceiverServer:
             pass
         srv = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         srv.bind(self._path)
-        os.chmod(self._path, 0o777)
+        # The peer container may run under another uid.
+        os.chmod(self._path, 0o777)  # nosec B103
         srv.listen(8)
         self._srv = srv
 

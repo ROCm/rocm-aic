@@ -224,6 +224,8 @@ RUN --mount=type=cache,target=/root/.cache/pip \
 # list the other archs fall back to Triton attention.
 # Skipped when VLLM_TARGET_DEVICE=empty (CPU-only emulate build).
 # As with AITER, WORKDIR creates /app/flash-attention even when it is skipped.
+# torch 2.13+ headers need C++20; this pin predates the upstream switch
+# (Dao-AILab/flash-attention#2899), which is the same flag change.
 WORKDIR /app/flash-attention
 # hadolint ignore=SC2039
 RUN --mount=type=cache,target=/root/.cache/pip \
@@ -239,6 +241,8 @@ RUN --mount=type=cache,target=/root/.cache/pip \
         git clone --filter=blob:none --no-checkout "${FLASH_ATTN_GIT_URL}" . && \
         git checkout "${FLASH_ATTN_REF}" && \
         git submodule update --init --recursive --depth 1 && \
+        sed -i 's/-std=c++17/-std=c++20/g' setup.py && \
+        grep -q -- '-std=c++20' setup.py && \
         GPU_ARCHS="${_fa_arch}" \
             PYTORCH_ROCM_ARCH="${_fa_arch}" \
             HIPFLAGS="-Wno-deprecated-attributes" \
