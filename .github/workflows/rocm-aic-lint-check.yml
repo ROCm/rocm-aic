@@ -139,8 +139,10 @@ jobs:
           #   template-job-rule / target-job-rule: fixed job names per scrape
           #     target; a $job dropdown would break all panel queries.
           #   template-instance-rule / target-instance-rule: same — AIC-specific.
-          #   target-counter-agg-rule: summary row shows cumulative totals via
-          #     max_over_time(), not rate() — intentional design.
+          #   target-counter-agg-rule: live-chunk panels subtract raw counters
+          #     — intentional design.
+          # 'Lazy Offload Pending' is a Loki query in a stat panel, which the
+          #   linter parses as PromQL.
           # Run linter and fail only on findings not in our exclusion list.
           # dashboard-linter v0.2.0 does not honour 'disabled: true' for all
           # rules in --strict mode, so we filter the output manually.
@@ -155,4 +157,5 @@ jobs:
             | grep -v 'counter metric.*is not aggregated' \
             | grep -v 'has missing title or description' \
             | grep -v 'invalid templated label' \
+            | grep -v "panel 'Lazy Offload Pending'.*invalid PromQL" \
             && exit 1 || exit 0

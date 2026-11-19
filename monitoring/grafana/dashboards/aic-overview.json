@@ -15,7 +15,20 @@
     }
   ],
   "annotations": {
-    "list": []
+    "list": [
+      {
+        "name": "Restarts",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "${datasource}"
+        },
+        "enable": true,
+        "iconColor": "orange",
+        "expr": "process_start_time_seconds{job=~\"prometheus|vllm|lmcache\"} unless (last_over_time(process_start_time_seconds[1h] offset 1m) == process_start_time_seconds)",
+        "titleFormat": "{{job}} started",
+        "step": "30s"
+      }
+    ]
   },
   "description": "AMD Infinity Context \u2014 GPU, vLLM, LMCache, NIXL/L2, NVMe, Node",
   "editable": false,
@@ -32,32 +45,305 @@
         "x": 0,
         "y": 0
       },
-      "id": 436,
-      "panels": [],
-      "title": "Agent Conversations",
+      "id": 9970,
+      "title": "KV Offload Verdict",
       "type": "row"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "description": "Whether Prometheus can scrape each exporter. An empty panel elsewhere with its target DOWN here means the exporter is gone, not idle.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "unit": "short",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "green",
+                "value": 1
+              }
+            ]
+          },
+          "mappings": [
+            {
+              "type": "value",
+              "options": {
+                "1": {
+                  "text": "UP"
+                },
+                "0": {
+                  "text": "DOWN"
+                }
+              }
+            }
+          ]
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 3,
+        "w": 24,
+        "x": 0,
+        "y": 1
+      },
+      "id": 9971,
+      "title": "Scrape Targets",
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "orientation": "auto",
+        "textMode": "value_and_name",
+        "colorMode": "background",
+        "graphMode": "none"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "min by (job) (up)",
+          "legendFormat": "{{job}}",
+          "instant": true
+        }
+      ],
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "description": "Share of prompt tokens served from any cache (GPU prefix cache or LMCache) over the selected time range.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "unit": "percentunit",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "blue",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 0,
+        "y": 4
+      },
+      "id": 9972,
+      "title": "Prompt Tokens From Cache",
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "orientation": "auto",
+        "textMode": "value",
+        "colorMode": "background",
+        "graphMode": "none"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum(increase(vllm:prompt_tokens_cached_total[$__range])) / (sum(increase(vllm:prompt_tokens_total[$__range])) > 0)",
+          "legendFormat": "",
+          "instant": true
+        }
+      ],
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "description": "Tokens vLLM reused from LMCache divided by tokens it asked LMCache for, over the selected time range. Zero is normal while the GPU prefix cache has not evicted anything.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "unit": "percentunit",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "blue",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 4,
+        "y": 4
+      },
+      "id": 9973,
+      "title": "LMCache Hit Ratio (vLLM view)",
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "orientation": "auto",
+        "textMode": "value",
+        "colorMode": "background",
+        "graphMode": "none"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum(increase(vllm:external_prefix_cache_hits_total[$__range])) / (sum(increase(vllm:external_prefix_cache_queries_total[$__range])) > 0)",
+          "legendFormat": "",
+          "instant": true
+        }
+      ],
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "description": "Finished LMCache store and retrieve requests since LMCache started.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "unit": "short",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "blue",
+                "value": null
+              }
+            ]
+          },
+          "decimals": 0
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 8,
+        "y": 4
+      },
+      "id": 9974,
+      "title": "LMCache Stores / Retrieves",
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "orientation": "auto",
+        "textMode": "value_and_name",
+        "colorMode": "background",
+        "graphMode": "none"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum(lmcache_mp_num_finished_stores_total) or vector(0)",
+          "legendFormat": "stores",
+          "instant": true
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum(lmcache_mp_num_finished_retrieves_total) or vector(0)",
+          "legendFormat": "retrieves",
+          "instant": true
+        }
+      ],
+      "type": "stat"
     },
     {
       "datasource": {
         "type": "loki",
         "uid": "loki"
       },
-      "gridPos": {
-        "h": 12,
-        "w": 24,
-        "x": 0,
-        "y": 1
+      "description": "Stores vLLM has admitted but not yet sent to LMCache, read from the vLLM log. A vLLM restart or /reset_prefix_cache drops them. Shows the last value vLLM logged in the selected range.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "unit": "short",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "blue",
+                "value": null
+              }
+            ]
+          },
+          "decimals": 0,
+          "noValue": "n/a"
+        },
+        "overrides": []
       },
-      "id": 434,
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 12,
+        "y": 4
+      },
+      "id": 9975,
+      "title": "Lazy Offload Pending",
       "options": {
-        "dedupStrategy": "none",
-        "enableLogDetails": true,
-        "prettifyLogMessage": false,
-        "showCommonLabels": false,
-        "showLabels": false,
-        "showTime": true,
-        "sortOrder": "Descending",
-        "wrapLogMessage": true
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "orientation": "auto",
+        "textMode": "value",
+        "colorMode": "background",
+        "graphMode": "none"
       },
       "targets": [
         {
@@ -65,14 +351,385 @@
             "type": "loki",
             "uid": "loki"
           },
-          "editorMode": "code",
-          "expr": "{job=\"aic_bench\"}",
-          "queryType": "range",
-          "refId": "A"
+          "expr": "max(last_over_time({container=~\"aic-vllm-gpu.*\"} |= \"Lazy offload counters\" | regexp \"pending=(?P<pending>[0-9]+)\" | unwrap pending [$__auto]))",
+          "legendFormat": "pending",
+          "queryType": "range"
         }
       ],
-      "title": "Conversations \u2014 USER prompt + ASSISTANT response",
-      "type": "logs"
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "description": "NIXL transfer errors of any status over the selected time range. Approximate: extrapolated by up to one scrape interval.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "unit": "short",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 1
+              }
+            ]
+          },
+          "decimals": 0
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 16,
+        "y": 4
+      },
+      "id": 9976,
+      "title": "NIXL Errors",
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "orientation": "auto",
+        "textMode": "value",
+        "colorMode": "background",
+        "graphMode": "none"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum(increase(agent_errors_total{job=\"nixl\"}[$__range])) or vector(0)",
+          "legendFormat": "",
+          "instant": true
+        }
+      ],
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "description": "Least free VRAM across the selected GPUs.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "unit": "mbytes",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 256
+              },
+              {
+                "color": "green",
+                "value": 1024
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 20,
+        "y": 4
+      },
+      "id": 9977,
+      "title": "GPU Free VRAM",
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "orientation": "auto",
+        "textMode": "value",
+        "colorMode": "background",
+        "graphMode": "none"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "min(gpu_free_vram{gpu_id=~\"$gpu_id\"})",
+          "legendFormat": "",
+          "instant": true
+        }
+      ],
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "description": "Where each prompt token came from: computed on the GPU, the GPU prefix cache, or KV transferred from LMCache.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "lineWidth": 1,
+            "fillOpacity": 10,
+            "spanNulls": false,
+            "drawStyle": "line",
+            "showPoints": "never",
+            "stacking": {
+              "mode": "normal",
+              "group": "A"
+            }
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 6,
+        "x": 0,
+        "y": 8
+      },
+      "id": 9978,
+      "title": "Prompt Tokens by Source (tokens/s)",
+      "options": {
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum(rate(vllm:prompt_tokens_by_source_total{source=\"local_cache_hit\"}[$__rate_interval]))",
+          "legendFormat": "GPU prefix cache hit"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum(rate(vllm:prompt_tokens_by_source_total{source=\"external_kv_transfer\"}[$__rate_interval]))",
+          "legendFormat": "LMCache transfer (L1 + L2)"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum(rate(vllm:prompt_tokens_by_source_total{source=\"local_compute\"}[$__rate_interval]))",
+          "legendFormat": "computed"
+        }
+      ],
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "description": "Which tier supplied cached prompt tokens. The L1 / L2 split comes from LMCache's own counters, because vLLM reports every LMCache hit as one source.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "lineWidth": 1,
+            "fillOpacity": 10,
+            "spanNulls": false,
+            "drawStyle": "line",
+            "showPoints": "never",
+            "stacking": {
+              "mode": "normal",
+              "group": "A"
+            }
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 6,
+        "x": 6,
+        "y": 8
+      },
+      "id": 9979,
+      "title": "Cached Tokens by Tier (tokens/s)",
+      "options": {
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum(rate(vllm:prompt_tokens_by_source_total{source=\"local_cache_hit\"}[$__rate_interval]))",
+          "legendFormat": "GPU prefix cache"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum(rate(lmcache_mp_lookup_hit_l1_tokens_total[$__rate_interval]))",
+          "legendFormat": "LMCache L1 (DRAM)",
+          "interval": "30s"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum(rate(lmcache_mp_lookup_hit_l2_tokens_total[$__rate_interval]))",
+          "legendFormat": "LMCache L2 (NVMe / NFS)",
+          "interval": "30s"
+        }
+      ],
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "description": "Mean per-task throughput between LMCache DRAM (L1) and the L2 store.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "lineWidth": 1,
+            "fillOpacity": 10,
+            "spanNulls": false,
+            "drawStyle": "line",
+            "showPoints": "never"
+          },
+          "unit": "GBs"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 6,
+        "x": 12,
+        "y": 8
+      },
+      "id": 9980,
+      "title": "L2 Store / Load Throughput (mean)",
+      "options": {
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum(rate(lmcache_mp_l2_store_throughput_GB_per_second_sum[$__rate_interval])) / (sum(rate(lmcache_mp_l2_store_throughput_GB_per_second_count[$__rate_interval])) > 0)",
+          "legendFormat": "store (L1 to L2)",
+          "interval": "30s"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum(rate(lmcache_mp_l2_load_throughput_GB_per_second_sum[$__rate_interval])) / (sum(rate(lmcache_mp_l2_load_throughput_GB_per_second_count[$__rate_interval])) > 0)",
+          "legendFormat": "load (L2 to L1)",
+          "interval": "30s"
+        }
+      ],
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "description": "Per-transfer latency of NIXL reads and writes to L2.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "lineWidth": 1,
+            "fillOpacity": 10,
+            "spanNulls": false,
+            "drawStyle": "line",
+            "showPoints": "never"
+          },
+          "unit": "\u00b5s"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 6,
+        "x": 18,
+        "y": 8
+      },
+      "id": 9981,
+      "title": "NIXL Transfer Latency",
+      "options": {
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "histogram_quantile(0.5, sum by (le) (rate(agent_xfer_time_us_bucket{job=\"nixl\"}[$__rate_interval])))",
+          "legendFormat": "p50"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(agent_xfer_time_us_bucket{job=\"nixl\"}[$__rate_interval])))",
+          "legendFormat": "p95"
+        }
+      ],
+      "type": "timeseries"
     },
     {
       "collapsed": false,
@@ -80,7 +737,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 13
+        "y": 16
       },
       "id": 1,
       "title": "Container Logs",
@@ -95,7 +752,7 @@
         "h": 10,
         "w": 24,
         "x": 0,
-        "y": 14
+        "y": 17
       },
       "id": 2,
       "options": {
@@ -136,7 +793,9 @@
           "custom": {
             "lineWidth": 1,
             "fillOpacity": 10,
-            "spanNulls": true
+            "spanNulls": true,
+            "drawStyle": "line",
+            "showPoints": "never"
           },
           "unit": "percent"
         },
@@ -144,7 +803,7 @@
       },
       "gridPos": {
         "x": 0,
-        "y": 37,
+        "y": 40,
         "w": 8,
         "h": 8
       },
@@ -181,15 +840,17 @@
           "custom": {
             "lineWidth": 1,
             "fillOpacity": 10,
-            "spanNulls": true
+            "spanNulls": true,
+            "drawStyle": "line",
+            "showPoints": "never"
           },
-          "unit": "decmbytes"
+          "unit": "mbytes"
         },
         "overrides": []
       },
       "gridPos": {
         "x": 8,
-        "y": 37,
+        "y": 40,
         "w": 16,
         "h": 8
       },
@@ -227,7 +888,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 24
+        "y": 27
       },
       "id": 430,
       "title": "vLLM Serving Traffic (Loki)",
@@ -242,7 +903,7 @@
         "h": 12,
         "w": 16,
         "x": 0,
-        "y": 25
+        "y": 28
       },
       "id": 431,
       "options": {
@@ -279,7 +940,7 @@
         "h": 6,
         "w": 8,
         "x": 16,
-        "y": 25
+        "y": 28
       },
       "id": 432,
       "options": {
@@ -336,7 +997,7 @@
         "h": 6,
         "w": 8,
         "x": 16,
-        "y": 31
+        "y": 34
       },
       "id": 433,
       "options": {
@@ -353,7 +1014,7 @@
             "uid": "loki"
           },
           "editorMode": "code",
-          "expr": "{container=\"aic-lmcache\"} |~ \"ERROR|WARN|store|retrieve|evict|L1|L2|chunk\"",
+          "expr": "{container=\"aic-lmcache\"} |~ \"(?i)error|warn|stored|retriev|evict|watermark\"",
           "queryType": "range",
           "refId": "A"
         }
@@ -367,7 +1028,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 45
+        "y": 48
       },
       "id": 300,
       "title": "Summary",
@@ -378,7 +1039,7 @@
         "type": "prometheus",
         "uid": "${datasource}"
       },
-      "description": "Cumulative completed inference requests since last metrics reset (all finish reasons: stop, length, abort, error).",
+      "description": "Total completed inference requests (all finish reasons: stop, length, abort, error). Counted over the selected time range, across restarts. Approximate: extrapolated by up to one scrape interval.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -388,7 +1049,8 @@
             "lineWidth": 1,
             "fillOpacity": 10
           },
-          "unit": "short"
+          "unit": "short",
+          "decimals": 0
         },
         "overrides": []
       },
@@ -396,7 +1058,7 @@
         "h": 4,
         "w": 4,
         "x": 0,
-        "y": 46
+        "y": 49
       },
       "id": 301,
       "title": "Total Prompts",
@@ -417,7 +1079,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "sum(max_over_time(vllm:request_success_total[$__range]))",
+          "expr": "sum(increase(vllm:request_success_total[$__range]))",
           "legendFormat": "",
           "instant": true
         }
@@ -429,7 +1091,7 @@
         "type": "prometheus",
         "uid": "${datasource}"
       },
-      "description": "Cumulative prompt tokens processed since last metrics reset. Includes tokens served from GPU prefix cache, LMCache L1, LMCache L2, and full compute.",
+      "description": "Total prompt tokens processed. Includes tokens served from GPU prefix cache, LMCache L1, LMCache L2, and full compute. Counted over the selected time range, across restarts. Approximate: extrapolated by up to one scrape interval.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -439,7 +1101,8 @@
             "lineWidth": 1,
             "fillOpacity": 10
           },
-          "unit": "short"
+          "unit": "short",
+          "decimals": 0
         },
         "overrides": []
       },
@@ -447,7 +1110,7 @@
         "h": 4,
         "w": 4,
         "x": 4,
-        "y": 46
+        "y": 49
       },
       "id": 302,
       "title": "Total Input Tokens",
@@ -468,7 +1131,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "sum(max_over_time(vllm:prompt_tokens_total[$__range]))",
+          "expr": "sum(increase(vllm:prompt_tokens_total[$__range]))",
           "legendFormat": "",
           "instant": true
         }
@@ -480,7 +1143,7 @@
         "type": "prometheus",
         "uid": "${datasource}"
       },
-      "description": "Cumulative generation (decode) tokens produced since last metrics reset.",
+      "description": "Total generation (decode) tokens produced. Counted over the selected time range, across restarts. Approximate: extrapolated by up to one scrape interval.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -490,7 +1153,8 @@
             "lineWidth": 1,
             "fillOpacity": 10
           },
-          "unit": "short"
+          "unit": "short",
+          "decimals": 0
         },
         "overrides": []
       },
@@ -498,7 +1162,7 @@
         "h": 4,
         "w": 4,
         "x": 8,
-        "y": 46
+        "y": 49
       },
       "id": 303,
       "title": "Total Output Tokens",
@@ -519,7 +1183,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "sum(max_over_time(vllm:generation_tokens_total[$__range]))",
+          "expr": "sum(increase(vllm:generation_tokens_total[$__range]))",
           "legendFormat": "",
           "instant": true
         }
@@ -531,7 +1195,7 @@
         "type": "prometheus",
         "uid": "${datasource}"
       },
-      "description": "Cumulative prompt tokens that required full GPU prefill \u2014 no cache hit at any tier. The expensive path; high values relative to total input tokens means low cache effectiveness.",
+      "description": "Total prompt tokens that required full GPU prefill \u2014 no cache hit at any tier. The expensive path; high values relative to total input tokens means low cache effectiveness. Counted over the selected time range, across restarts. Approximate: extrapolated by up to one scrape interval.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -541,7 +1205,8 @@
             "lineWidth": 1,
             "fillOpacity": 10
           },
-          "unit": "short"
+          "unit": "short",
+          "decimals": 0
         },
         "overrides": []
       },
@@ -549,7 +1214,7 @@
         "h": 4,
         "w": 4,
         "x": 12,
-        "y": 46
+        "y": 49
       },
       "id": 304,
       "title": "Tokens Computed (prefill)",
@@ -570,7 +1235,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "sum(max_over_time(vllm:prompt_tokens_by_source_total{source=\"local_compute\"}[$__range]))",
+          "expr": "sum(increase(vllm:prompt_tokens_by_source_total{source=\"local_compute\"}[$__range]))",
           "legendFormat": "",
           "instant": true
         }
@@ -582,7 +1247,7 @@
         "type": "prometheus",
         "uid": "${datasource}"
       },
-      "description": "Cumulative prompt tokens LMCache served from its DRAM L1 tier, from LMCache's own counter lmcache_mp_lookup_hit_l1_tokens_total. vLLM cannot tell L1 from L2: its source=\"external_kv_transfer\" is every LMCache hit, and source=\"local_cache_hit\" is vLLM's own GPU prefix cache, not L1.",
+      "description": "Total prompt tokens LMCache served from its DRAM L1 tier, from LMCache's own counter lmcache_mp_lookup_hit_l1_tokens_total. vLLM cannot tell L1 from L2: its source=\"external_kv_transfer\" is every LMCache hit, and source=\"local_cache_hit\" is vLLM's own GPU prefix cache, not L1. Counted over the selected time range, across restarts. Approximate: extrapolated by up to one scrape interval.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -592,7 +1257,8 @@
             "lineWidth": 1,
             "fillOpacity": 10
           },
-          "unit": "short"
+          "unit": "short",
+          "decimals": 0
         },
         "overrides": []
       },
@@ -600,7 +1266,7 @@
         "h": 4,
         "w": 4,
         "x": 16,
-        "y": 46
+        "y": 49
       },
       "id": 305,
       "title": "Tokens from LMCache L1",
@@ -621,7 +1287,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "sum(max_over_time(lmcache_mp_lookup_hit_l1_tokens_total[$__range])) or vector(0)",
+          "expr": "sum(increase(lmcache_mp_lookup_hit_l1_tokens_total[$__range])) or vector(0)",
           "legendFormat": "",
           "instant": true
         }
@@ -633,7 +1299,7 @@
         "type": "prometheus",
         "uid": "${datasource}"
       },
-      "description": "Cumulative prompt tokens LMCache had to bring back from its L2 store (NVMe / NFS) beyond what L1 held, from LMCache's own counter lmcache_mp_lookup_hit_l2_tokens_total. Non-zero confirms the L1\u2192L2\u2192L1\u2192GPU round-trip is working. L1 + L2 is every LMCache hit, which vLLM reports as source=\"external_kv_transfer\".",
+      "description": "Total prompt tokens LMCache had to bring back from its L2 store (NVMe / NFS) beyond what L1 held, from LMCache's own counter lmcache_mp_lookup_hit_l2_tokens_total. Non-zero confirms the L1\u2192L2\u2192L1\u2192GPU round-trip is working. L1 + L2 is every LMCache hit, which vLLM reports as source=\"external_kv_transfer\". Counted over the selected time range, across restarts. Approximate: extrapolated by up to one scrape interval.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -643,7 +1309,8 @@
             "lineWidth": 1,
             "fillOpacity": 10
           },
-          "unit": "short"
+          "unit": "short",
+          "decimals": 0
         },
         "overrides": []
       },
@@ -651,7 +1318,7 @@
         "h": 4,
         "w": 4,
         "x": 20,
-        "y": 46
+        "y": 49
       },
       "id": 306,
       "title": "Tokens from LMCache L2",
@@ -672,7 +1339,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "sum(max_over_time(lmcache_mp_lookup_hit_l2_tokens_total[$__range])) or vector(0)",
+          "expr": "sum(increase(lmcache_mp_lookup_hit_l2_tokens_total[$__range])) or vector(0)",
           "legendFormat": "",
           "instant": true
         }
@@ -703,7 +1370,7 @@
         "h": 4,
         "w": 4,
         "x": 0,
-        "y": 50
+        "y": 53
       },
       "id": 307,
       "title": "Avg TTFT",
@@ -724,7 +1391,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "sum(rate(vllm:time_to_first_token_seconds_sum[$__rate_interval])) / sum(rate(vllm:time_to_first_token_seconds_count[$__rate_interval]))",
+          "expr": "sum(rate(vllm:time_to_first_token_seconds_sum[$__rate_interval])) / (sum(rate(vllm:time_to_first_token_seconds_count[$__rate_interval])) > 0)",
           "legendFormat": ""
         }
       ],
@@ -754,7 +1421,7 @@
         "h": 4,
         "w": 4,
         "x": 4,
-        "y": 50
+        "y": 53
       },
       "id": 308,
       "title": "Avg TPOT",
@@ -775,7 +1442,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "sum(rate(vllm:inter_token_latency_seconds_sum[$__rate_interval])) / sum(rate(vllm:inter_token_latency_seconds_count[$__rate_interval]))",
+          "expr": "sum(rate(vllm:inter_token_latency_seconds_sum[$__rate_interval])) / (sum(rate(vllm:inter_token_latency_seconds_count[$__rate_interval])) > 0)",
           "legendFormat": ""
         }
       ],
@@ -804,7 +1471,7 @@
         "h": 4,
         "w": 4,
         "x": 8,
-        "y": 50
+        "y": 53
       },
       "id": 309,
       "title": "Total Tokens/s",
@@ -855,7 +1522,7 @@
         "h": 4,
         "w": 4,
         "x": 12,
-        "y": 50
+        "y": 53
       },
       "id": 310,
       "title": "Cache Hit Rate",
@@ -876,7 +1543,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "(sum(rate(vllm:prompt_tokens_by_source_total{source=\"local_cache_hit\"}[$__rate_interval])) + sum(rate(vllm:prompt_tokens_by_source_total{source=\"external_kv_transfer\"}[$__rate_interval]))) / sum(rate(vllm:prompt_tokens_total[$__rate_interval]))",
+          "expr": "(sum(rate(vllm:prompt_tokens_by_source_total{source=\"local_cache_hit\"}[$__rate_interval])) + sum(rate(vllm:prompt_tokens_by_source_total{source=\"external_kv_transfer\"}[$__rate_interval]))) / (sum(rate(vllm:prompt_tokens_total[$__rate_interval])) > 0)",
           "legendFormat": ""
         }
       ],
@@ -906,7 +1573,7 @@
         "h": 4,
         "w": 4,
         "x": 16,
-        "y": 50
+        "y": 53
       },
       "id": 311,
       "title": "LMCache L1 Hit Rate",
@@ -927,7 +1594,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "sum(rate(lmcache_mp_lookup_hit_l1_tokens_total[$__rate_interval])) / sum(rate(lmcache_mp_lookup_prompt_tokens_total[$__rate_interval]))",
+          "expr": "sum(rate(lmcache_mp_lookup_hit_l1_tokens_total[$__rate_interval])) / (sum(rate(lmcache_mp_lookup_prompt_tokens_total[$__rate_interval])) > 0)",
           "interval": "30s",
           "legendFormat": ""
         }
@@ -958,7 +1625,7 @@
         "h": 4,
         "w": 4,
         "x": 20,
-        "y": 50
+        "y": 53
       },
       "id": 312,
       "title": "LMCache L2 Hit Rate",
@@ -979,7 +1646,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "sum(rate(lmcache_mp_lookup_hit_l2_tokens_total[$__rate_interval])) / sum(rate(lmcache_mp_lookup_prompt_tokens_total[$__rate_interval]))",
+          "expr": "sum(rate(lmcache_mp_lookup_hit_l2_tokens_total[$__rate_interval])) / (sum(rate(lmcache_mp_lookup_prompt_tokens_total[$__rate_interval])) > 0)",
           "interval": "30s",
           "legendFormat": ""
         }
@@ -990,7 +1657,7 @@
       "collapsed": false,
       "gridPos": {
         "x": 0,
-        "y": 62,
+        "y": 65,
         "w": 24,
         "h": 1
       },
@@ -1018,7 +1685,7 @@
       },
       "gridPos": {
         "x": 0,
-        "y": 63,
+        "y": 66,
         "w": 4,
         "h": 4
       },
@@ -1069,7 +1736,7 @@
       },
       "gridPos": {
         "x": 4,
-        "y": 63,
+        "y": 66,
         "w": 20,
         "h": 4
       },
@@ -1119,7 +1786,7 @@
       },
       "gridPos": {
         "x": 0,
-        "y": 67,
+        "y": 70,
         "w": 4,
         "h": 4
       },
@@ -1170,7 +1837,7 @@
       },
       "gridPos": {
         "x": 4,
-        "y": 67,
+        "y": 70,
         "w": 20,
         "h": 4
       },
@@ -1204,7 +1871,7 @@
       "collapsed": false,
       "gridPos": {
         "x": 0,
-        "y": 79,
+        "y": 82,
         "w": 24,
         "h": 1
       },
@@ -1225,7 +1892,9 @@
           "custom": {
             "lineWidth": 1,
             "fillOpacity": 10,
-            "spanNulls": true
+            "spanNulls": true,
+            "drawStyle": "line",
+            "showPoints": "never"
           },
           "unit": "reqps"
         },
@@ -1233,7 +1902,7 @@
       },
       "gridPos": {
         "x": 0,
-        "y": 84,
+        "y": 87,
         "w": 8,
         "h": 8
       },
@@ -1270,7 +1939,9 @@
           "custom": {
             "lineWidth": 1,
             "fillOpacity": 10,
-            "spanNulls": true
+            "spanNulls": true,
+            "drawStyle": "line",
+            "showPoints": "never"
           },
           "unit": "s"
         },
@@ -1278,7 +1949,7 @@
       },
       "gridPos": {
         "x": 8,
-        "y": 84,
+        "y": 87,
         "w": 8,
         "h": 8
       },
@@ -1323,7 +1994,9 @@
           "custom": {
             "lineWidth": 1,
             "fillOpacity": 10,
-            "spanNulls": true
+            "spanNulls": true,
+            "drawStyle": "line",
+            "showPoints": "never"
           },
           "unit": "short"
         },
@@ -1331,7 +2004,7 @@
       },
       "gridPos": {
         "x": 16,
-        "y": 84,
+        "y": 87,
         "w": 8,
         "h": 8
       },
@@ -1384,7 +2057,9 @@
           "custom": {
             "lineWidth": 1,
             "fillOpacity": 10,
-            "spanNulls": true
+            "spanNulls": true,
+            "drawStyle": "line",
+            "showPoints": "never"
           },
           "unit": "short"
         },
@@ -1392,7 +2067,7 @@
       },
       "gridPos": {
         "x": 0,
-        "y": 92,
+        "y": 95,
         "w": 8,
         "h": 4
       },
@@ -1438,7 +2113,9 @@
           "custom": {
             "lineWidth": 1,
             "fillOpacity": 10,
-            "spanNulls": true
+            "spanNulls": true,
+            "drawStyle": "line",
+            "showPoints": "never"
           },
           "unit": "short"
         },
@@ -1446,7 +2123,7 @@
       },
       "gridPos": {
         "x": 8,
-        "y": 92,
+        "y": 95,
         "w": 8,
         "h": 4
       },
@@ -1488,7 +2165,9 @@
           "custom": {
             "lineWidth": 1,
             "fillOpacity": 10,
-            "spanNulls": true
+            "spanNulls": true,
+            "drawStyle": "line",
+            "showPoints": "never"
           },
           "unit": "short"
         },
@@ -1496,7 +2175,7 @@
       },
       "gridPos": {
         "x": 16,
-        "y": 92,
+        "y": 95,
         "w": 8,
         "h": 4
       },
@@ -1532,7 +2211,7 @@
       "collapsed": false,
       "gridPos": {
         "x": 0,
-        "y": 96,
+        "y": 99,
         "w": 24,
         "h": 1
       },
@@ -1575,7 +2254,7 @@
       },
       "gridPos": {
         "x": 0,
-        "y": 97,
+        "y": 100,
         "w": 4,
         "h": 8
       },
@@ -1624,7 +2303,7 @@
       },
       "gridPos": {
         "x": 4,
-        "y": 97,
+        "y": 100,
         "w": 4,
         "h": 8
       },
@@ -1674,7 +2353,7 @@
       },
       "gridPos": {
         "x": 0,
-        "y": 105,
+        "y": 108,
         "w": 24,
         "h": 4
       },
@@ -1717,7 +2396,9 @@
           "custom": {
             "lineWidth": 1,
             "fillOpacity": 10,
-            "spanNulls": true
+            "spanNulls": true,
+            "drawStyle": "line",
+            "showPoints": "never"
           },
           "unit": "short"
         },
@@ -1725,7 +2406,7 @@
       },
       "gridPos": {
         "x": 8,
-        "y": 97,
+        "y": 100,
         "w": 8,
         "h": 8
       },
@@ -1772,7 +2453,9 @@
           "custom": {
             "lineWidth": 1,
             "fillOpacity": 10,
-            "spanNulls": true
+            "spanNulls": true,
+            "drawStyle": "line",
+            "showPoints": "never"
           },
           "unit": "short"
         },
@@ -1780,7 +2463,7 @@
       },
       "gridPos": {
         "x": 16,
-        "y": 97,
+        "y": 100,
         "w": 8,
         "h": 8
       },
@@ -1819,7 +2502,7 @@
         "type": "prometheus",
         "uid": "${datasource}"
       },
-      "description": "Net KV chunks added to the LMCache DRAM L1 over the selected time range (writes minus evictions). Rising during warmup, near-zero when L1 is full and evictions balance writes. A negative value means more evictions than writes \u2014 L1 is being drained (e.g. post-reset).",
+      "description": "KV chunks currently held in the LMCache DRAM L1: chunks written minus chunks evicted since the LMCache process started. Rises during warmup and goes flat when L1 is full and evictions balance writes.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -1828,7 +2511,9 @@
           "custom": {
             "lineWidth": 1,
             "fillOpacity": 10,
-            "spanNulls": true
+            "spanNulls": true,
+            "drawStyle": "line",
+            "showPoints": "never"
           },
           "unit": "short"
         },
@@ -1836,7 +2521,7 @@
       },
       "gridPos": {
         "x": 0,
-        "y": 109,
+        "y": 112,
         "w": 12,
         "h": 8
       },
@@ -1853,8 +2538,8 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "sum(increase(lmcache_mp_l1_write_chunks_total[$__range])) - (sum(increase(lmcache_mp_l1_evicted_chunks_total[$__range])) or vector(0))",
-          "legendFormat": "L1 chunks (net)"
+          "expr": "sum(lmcache_mp_l1_write_chunks_total) - (sum(lmcache_mp_l1_evicted_chunks_total) or vector(0))",
+          "legendFormat": "L1 live chunks"
         }
       ],
       "type": "timeseries"
@@ -1873,7 +2558,9 @@
           "custom": {
             "lineWidth": 1,
             "fillOpacity": 10,
-            "spanNulls": true
+            "spanNulls": true,
+            "drawStyle": "line",
+            "showPoints": "never"
           },
           "unit": "short"
         },
@@ -1881,7 +2568,7 @@
       },
       "gridPos": {
         "x": 12,
-        "y": 109,
+        "y": 112,
         "w": 12,
         "h": 8
       },
@@ -1916,7 +2603,7 @@
       "collapsed": false,
       "gridPos": {
         "x": 0,
-        "y": 133,
+        "y": 136,
         "w": 24,
         "h": 1
       },
@@ -1937,7 +2624,9 @@
           "custom": {
             "lineWidth": 1,
             "fillOpacity": 10,
-            "spanNulls": true
+            "spanNulls": true,
+            "drawStyle": "line",
+            "showPoints": "never"
           },
           "unit": "Bps"
         },
@@ -1945,7 +2634,7 @@
       },
       "gridPos": {
         "x": 0,
-        "y": 134,
+        "y": 137,
         "w": 8,
         "h": 8
       },
@@ -1983,7 +2672,9 @@
           "custom": {
             "lineWidth": 2,
             "fillOpacity": 20,
-            "spanNulls": true
+            "spanNulls": true,
+            "drawStyle": "line",
+            "showPoints": "never"
           },
           "unit": "Bps"
         },
@@ -1991,7 +2682,7 @@
       },
       "gridPos": {
         "x": 8,
-        "y": 134,
+        "y": 137,
         "w": 8,
         "h": 8
       },
@@ -2028,7 +2719,9 @@
           "custom": {
             "lineWidth": 1,
             "fillOpacity": 10,
-            "spanNulls": true
+            "spanNulls": true,
+            "drawStyle": "line",
+            "showPoints": "never"
           },
           "unit": "short"
         },
@@ -2036,7 +2729,7 @@
       },
       "gridPos": {
         "x": 16,
-        "y": 134,
+        "y": 137,
         "w": 8,
         "h": 8
       },
@@ -2082,7 +2775,7 @@
       "collapsed": false,
       "gridPos": {
         "x": 0,
-        "y": 142,
+        "y": 145,
         "w": 24,
         "h": 1
       },
@@ -2103,7 +2796,9 @@
           "custom": {
             "lineWidth": 1,
             "fillOpacity": 10,
-            "spanNulls": true
+            "spanNulls": true,
+            "drawStyle": "line",
+            "showPoints": "never"
           },
           "unit": "Bps"
         },
@@ -2111,7 +2806,7 @@
       },
       "gridPos": {
         "x": 0,
-        "y": 143,
+        "y": 146,
         "w": 8,
         "h": 8
       },
@@ -2156,7 +2851,9 @@
           "custom": {
             "lineWidth": 1,
             "fillOpacity": 10,
-            "spanNulls": true
+            "spanNulls": true,
+            "drawStyle": "line",
+            "showPoints": "never"
           },
           "unit": "iops"
         },
@@ -2164,7 +2861,7 @@
       },
       "gridPos": {
         "x": 8,
-        "y": 143,
+        "y": 146,
         "w": 8,
         "h": 8
       },
@@ -2209,7 +2906,9 @@
           "custom": {
             "lineWidth": 1,
             "fillOpacity": 10,
-            "spanNulls": true
+            "spanNulls": true,
+            "drawStyle": "line",
+            "showPoints": "never"
           },
           "unit": "ms"
         },
@@ -2217,7 +2916,7 @@
       },
       "gridPos": {
         "x": 16,
-        "y": 143,
+        "y": 146,
         "w": 8,
         "h": 8
       },
@@ -2234,7 +2933,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "1000 * rate(node_disk_read_time_seconds_total{device=~\"$nvme_device\"}[$__rate_interval]) / clamp_min(rate(node_disk_reads_completed_total{device=~\"$nvme_device\"}[$__rate_interval]), 1)",
+          "expr": "1000 * rate(node_disk_read_time_seconds_total{device=~\"$nvme_device\"}[$__rate_interval]) / (rate(node_disk_reads_completed_total{device=~\"$nvme_device\"}[$__rate_interval]) > 0)",
           "legendFormat": "read lat {{device}}"
         },
         {
@@ -2242,7 +2941,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "1000 * rate(node_disk_write_time_seconds_total{device=~\"$nvme_device\"}[$__rate_interval]) / clamp_min(rate(node_disk_writes_completed_total{device=~\"$nvme_device\"}[$__rate_interval]), 1)",
+          "expr": "1000 * rate(node_disk_write_time_seconds_total{device=~\"$nvme_device\"}[$__rate_interval]) / (rate(node_disk_writes_completed_total{device=~\"$nvme_device\"}[$__rate_interval]) > 0)",
           "legendFormat": "write lat {{device}}"
         }
       ],
@@ -2255,7 +2954,7 @@
       "collapsed": false,
       "gridPos": {
         "x": 0,
-        "y": 151,
+        "y": 154,
         "w": 24,
         "h": 1
       },
@@ -2269,7 +2968,7 @@
       "id": 9902,
       "gridPos": {
         "x": 0,
-        "y": 152,
+        "y": 155,
         "w": 4,
         "h": 4
       },
@@ -2325,7 +3024,7 @@
       "id": 9903,
       "gridPos": {
         "x": 4,
-        "y": 152,
+        "y": 155,
         "w": 4,
         "h": 4
       },
@@ -2381,7 +3080,7 @@
       "id": 9904,
       "gridPos": {
         "x": 8,
-        "y": 152,
+        "y": 155,
         "w": 4,
         "h": 4
       },
@@ -2437,7 +3136,7 @@
       "id": 9905,
       "gridPos": {
         "x": 12,
-        "y": 152,
+        "y": 155,
         "w": 12,
         "h": 4
       },
@@ -2467,7 +3166,11 @@
       ],
       "fieldConfig": {
         "defaults": {
-          "unit": "short"
+          "unit": "short",
+          "custom": {
+            "drawStyle": "line",
+            "showPoints": "never"
+          }
         },
         "overrides": []
       },
@@ -2488,7 +3191,7 @@
       "id": 9906,
       "gridPos": {
         "x": 0,
-        "y": 156,
+        "y": 159,
         "w": 24,
         "h": 8
       },
@@ -2509,7 +3212,11 @@
       ],
       "fieldConfig": {
         "defaults": {
-          "unit": "short"
+          "unit": "short",
+          "custom": {
+            "drawStyle": "line",
+            "showPoints": "never"
+          }
         },
         "overrides": []
       },
@@ -2527,7 +3234,7 @@
       "collapsed": false,
       "gridPos": {
         "x": 0,
-        "y": 164,
+        "y": 167,
         "w": 24,
         "h": 1
       },
@@ -2548,7 +3255,9 @@
           "custom": {
             "lineWidth": 1,
             "fillOpacity": 10,
-            "spanNulls": true
+            "spanNulls": true,
+            "drawStyle": "line",
+            "showPoints": "never"
           },
           "unit": "percentunit"
         },
@@ -2556,7 +3265,7 @@
       },
       "gridPos": {
         "x": 0,
-        "y": 165,
+        "y": 168,
         "w": 8,
         "h": 8
       },
@@ -2600,7 +3309,7 @@
       },
       "gridPos": {
         "x": 8,
-        "y": 165,
+        "y": 168,
         "w": 4,
         "h": 4
       },
@@ -2650,7 +3359,7 @@
       },
       "gridPos": {
         "x": 12,
-        "y": 165,
+        "y": 168,
         "w": 4,
         "h": 4
       },
@@ -2693,7 +3402,9 @@
           "custom": {
             "lineWidth": 1,
             "fillOpacity": 10,
-            "spanNulls": true
+            "spanNulls": true,
+            "drawStyle": "line",
+            "showPoints": "never"
           },
           "unit": "Bps"
         },
@@ -2701,7 +3412,7 @@
       },
       "gridPos": {
         "x": 16,
-        "y": 165,
+        "y": 168,
         "w": 8,
         "h": 8
       },
@@ -2746,20 +3457,22 @@
           "custom": {
             "lineWidth": 1,
             "fillOpacity": 10,
-            "spanNulls": true
+            "spanNulls": true,
+            "drawStyle": "line",
+            "showPoints": "never"
           },
-          "unit": "bytes"
+          "unit": "Bps"
         },
         "overrides": []
       },
       "gridPos": {
         "x": 0,
-        "y": 173,
+        "y": 176,
         "w": 24,
         "h": 4
       },
       "id": 54,
-      "title": "hsa-snoop AIS Storage (rate)",
+      "title": "hsa-snoop AIS Storage (B/s)",
       "options": {
         "tooltip": {
           "mode": "multi"
@@ -2767,8 +3480,8 @@
       },
       "targets": [
         {
-          "expr": "rate(rocm_aic_kfd_ais_rw_operations{rw=\"write\"}[$__rate_interval])",
-          "legendFormat": "AIS writes/s",
+          "expr": "sum(rate(ais_tx_bytes_total{job=\"hsa_snoop\"}[$__rate_interval]))",
+          "legendFormat": "AIS tx",
           "refId": "A",
           "datasource": {
             "type": "prometheus",
@@ -2776,8 +3489,8 @@
           }
         },
         {
-          "expr": "rate(rocm_aic_kfd_ais_rw_operations{rw=\"read\"}[$__rate_interval])",
-          "legendFormat": "AIS reads/s",
+          "expr": "sum(rate(ais_rx_bytes_total{job=\"hsa_snoop\"}[$__rate_interval]))",
+          "legendFormat": "AIS rx",
           "refId": "B",
           "datasource": {
             "type": "prometheus",
@@ -2786,13 +3499,13 @@
         }
       ],
       "type": "timeseries",
-      "description": "hsa-snoop AIS (AMD Infinity Storage) P2P byte throughput. TX = GPU writes to NVMe via hipFile P2PDMA; RX = NVMe reads back to GPU. Only non-zero when hsa-snoop is running with the AIS_MT NIXL backend active (not POSIX backend)."
+      "description": "AIS P2P DMA bytes seen by hsa-snoop. Empty in this stack: the compose command does not pass --ais-snoop to hsa-snoop, and AIS needs a CDNA node on the AIS_MT L2 backend."
     },
     {
       "collapsed": false,
       "gridPos": {
         "x": 0,
-        "y": 177,
+        "y": 180,
         "w": 24,
         "h": 1
       },
@@ -2814,7 +3527,9 @@
           "custom": {
             "lineWidth": 1,
             "fillOpacity": 10,
-            "spanNulls": true
+            "spanNulls": true,
+            "drawStyle": "line",
+            "showPoints": "never"
           },
           "unit": "ops"
         },
@@ -2822,7 +3537,7 @@
       },
       "gridPos": {
         "x": 0,
-        "y": 178,
+        "y": 181,
         "w": 12,
         "h": 8
       },
@@ -2859,7 +3574,9 @@
           "custom": {
             "lineWidth": 1,
             "fillOpacity": 10,
-            "spanNulls": true
+            "spanNulls": true,
+            "drawStyle": "line",
+            "showPoints": "never"
           },
           "unit": "ops"
         },
@@ -2867,7 +3584,7 @@
       },
       "gridPos": {
         "x": 12,
-        "y": 178,
+        "y": 181,
         "w": 6,
         "h": 8
       },
@@ -2904,7 +3621,9 @@
           "custom": {
             "lineWidth": 1,
             "fillOpacity": 10,
-            "spanNulls": true
+            "spanNulls": true,
+            "drawStyle": "line",
+            "showPoints": "never"
           },
           "unit": "short"
         },
@@ -2912,7 +3631,7 @@
       },
       "gridPos": {
         "x": 18,
-        "y": 178,
+        "y": 181,
         "w": 6,
         "h": 4
       },
@@ -2957,7 +3676,9 @@
           "custom": {
             "lineWidth": 1,
             "fillOpacity": 10,
-            "spanNulls": true
+            "spanNulls": true,
+            "drawStyle": "line",
+            "showPoints": "never"
           },
           "unit": "ops"
         },
@@ -2965,7 +3686,7 @@
       },
       "gridPos": {
         "x": 0,
-        "y": 186,
+        "y": 189,
         "w": 24,
         "h": 4
       },
@@ -3002,7 +3723,9 @@
           "custom": {
             "lineWidth": 1,
             "fillOpacity": 10,
-            "spanNulls": true
+            "spanNulls": true,
+            "drawStyle": "line",
+            "showPoints": "never"
           },
           "unit": "ms"
         },
@@ -3010,7 +3733,7 @@
       },
       "gridPos": {
         "x": 0,
-        "y": 190,
+        "y": 193,
         "w": 12,
         "h": 8
       },
@@ -3055,7 +3778,9 @@
           "custom": {
             "lineWidth": 1,
             "fillOpacity": 10,
-            "spanNulls": true
+            "spanNulls": true,
+            "drawStyle": "line",
+            "showPoints": "never"
           },
           "unit": "Bps"
         },
@@ -3063,7 +3788,7 @@
       },
       "gridPos": {
         "x": 12,
-        "y": 190,
+        "y": 193,
         "w": 6,
         "h": 8
       },
@@ -3100,7 +3825,9 @@
           "custom": {
             "lineWidth": 1,
             "fillOpacity": 10,
-            "spanNulls": true
+            "spanNulls": true,
+            "drawStyle": "line",
+            "showPoints": "never"
           },
           "unit": "ops"
         },
@@ -3108,7 +3835,7 @@
       },
       "gridPos": {
         "x": 18,
-        "y": 190,
+        "y": 193,
         "w": 6,
         "h": 8
       },
@@ -3153,7 +3880,9 @@
           "custom": {
             "lineWidth": 1,
             "fillOpacity": 10,
-            "spanNulls": true
+            "spanNulls": true,
+            "drawStyle": "line",
+            "showPoints": "never"
           },
           "unit": "percent"
         },
@@ -3163,7 +3892,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 71
+        "y": 74
       },
       "id": 70,
       "title": "GPU Compute / Memory / Matrix Activity (%)",
@@ -3214,7 +3943,9 @@
           "custom": {
             "lineWidth": 1,
             "fillOpacity": 10,
-            "spanNulls": true
+            "spanNulls": true,
+            "drawStyle": "line",
+            "showPoints": "never"
           },
           "unit": "celsius"
         },
@@ -3224,7 +3955,7 @@
         "h": 8,
         "w": 6,
         "x": 12,
-        "y": 71
+        "y": 74
       },
       "id": 71,
       "title": "GPU Temperatures (\u00b0C)",
@@ -3267,7 +3998,9 @@
           "custom": {
             "lineWidth": 1,
             "fillOpacity": 10,
-            "spanNulls": true
+            "spanNulls": true,
+            "drawStyle": "line",
+            "showPoints": "never"
           },
           "unit": "short"
         },
@@ -3277,7 +4010,7 @@
         "h": 8,
         "w": 6,
         "x": 18,
-        "y": 71
+        "y": 74
       },
       "id": 72,
       "title": "PCIe Speed / xGMI Fabric (GT/s)",
@@ -3320,7 +4053,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 198
+        "y": 201
       },
       "id": 200,
       "title": "vLLM \u2014 Extended",
@@ -3340,9 +4073,13 @@
           "custom": {
             "lineWidth": 1,
             "fillOpacity": 10,
-            "spanNulls": true
+            "spanNulls": true,
+            "drawStyle": "line",
+            "showPoints": "never"
           },
-          "unit": "percent"
+          "unit": "percentunit",
+          "min": 0,
+          "max": 1
         },
         "overrides": []
       },
@@ -3350,7 +4087,7 @@
         "h": 8,
         "w": 8,
         "x": 0,
-        "y": 199
+        "y": 202
       },
       "id": 80,
       "title": "GPU KV Cache Usage %",
@@ -3365,8 +4102,8 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "sum(vllm:kv_cache_usage_perc)",
-          "legendFormat": "KV cache %"
+          "expr": "max by (instance, engine) (vllm:kv_cache_usage_perc)",
+          "legendFormat": "{{instance}} engine {{engine}}"
         }
       ],
       "type": "timeseries"
@@ -3385,7 +4122,9 @@
           "custom": {
             "lineWidth": 1,
             "fillOpacity": 10,
-            "spanNulls": true
+            "spanNulls": true,
+            "drawStyle": "line",
+            "showPoints": "never"
           },
           "unit": "s"
         },
@@ -3395,7 +4134,7 @@
         "h": 8,
         "w": 8,
         "x": 8,
-        "y": 199
+        "y": 202
       },
       "id": 81,
       "title": "E2E Request Latency p50 / p95 (s)",
@@ -3438,7 +4177,9 @@
           "custom": {
             "lineWidth": 1,
             "fillOpacity": 10,
-            "spanNulls": true
+            "spanNulls": true,
+            "drawStyle": "line",
+            "showPoints": "never"
           },
           "unit": "s"
         },
@@ -3448,7 +4189,7 @@
         "h": 8,
         "w": 8,
         "x": 16,
-        "y": 199
+        "y": 202
       },
       "id": 82,
       "title": "Inter-Token Latency p50 / p95 (s)",
@@ -3491,7 +4232,9 @@
           "custom": {
             "lineWidth": 1,
             "fillOpacity": 10,
-            "spanNulls": true
+            "spanNulls": true,
+            "drawStyle": "line",
+            "showPoints": "never"
           },
           "unit": "short"
         },
@@ -3501,7 +4244,7 @@
         "h": 8,
         "w": 6,
         "x": 0,
-        "y": 207
+        "y": 210
       },
       "id": 83,
       "title": "GPU Prefix Cache Hit Rate",
@@ -3535,7 +4278,7 @@
         "type": "prometheus",
         "uid": "${datasource}"
       },
-      "description": "Request preemptions (KV cache evictions of in-flight requests \u2014 should be near zero) and p95 queue wait time. Rising preemptions mean the GPU KV cache is full and requests are being re-scheduled, causing latency spikes. Tune --gpu-memory-utilization or request rate.",
+      "description": "Preemption rate (left axis) and mean time a request waits in the queue (right axis). The mean is used because the histogram's first bucket is 0.3 s, which pins any quantile below that.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -3544,20 +4287,39 @@
           "custom": {
             "lineWidth": 1,
             "fillOpacity": 10,
-            "spanNulls": true
+            "spanNulls": true,
+            "drawStyle": "line",
+            "showPoints": "never"
           },
           "unit": "short"
         },
-        "overrides": []
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "queue time mean"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "s"
+              },
+              {
+                "id": "custom.axisPlacement",
+                "value": "right"
+              }
+            ]
+          }
+        ]
       },
       "gridPos": {
         "h": 8,
         "w": 6,
         "x": 6,
-        "y": 207
+        "y": 210
       },
       "id": 84,
-      "title": "Preemptions & Queue Time p95",
+      "title": "Preemptions & Mean Queue Time",
       "options": {
         "tooltip": {
           "mode": "multi"
@@ -3577,8 +4339,8 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "histogram_quantile(0.95, sum by (le) (rate(vllm:request_queue_time_seconds_bucket[$__rate_interval])))",
-          "legendFormat": "queue time p95 (s)"
+          "expr": "sum(rate(vllm:request_queue_time_seconds_sum[$__rate_interval])) / (sum(rate(vllm:request_queue_time_seconds_count[$__rate_interval])) > 0)",
+          "legendFormat": "queue time mean"
         }
       ],
       "type": "timeseries"
@@ -3597,7 +4359,9 @@
           "custom": {
             "lineWidth": 1,
             "fillOpacity": 10,
-            "spanNulls": true
+            "spanNulls": true,
+            "drawStyle": "line",
+            "showPoints": "never"
           },
           "unit": "short"
         },
@@ -3605,7 +4369,7 @@
       },
       "gridPos": {
         "x": 12,
-        "y": 207,
+        "y": 210,
         "w": 6,
         "h": 8
       },
@@ -3648,7 +4412,9 @@
           "custom": {
             "lineWidth": 1,
             "fillOpacity": 10,
-            "spanNulls": true
+            "spanNulls": true,
+            "drawStyle": "line",
+            "showPoints": "never"
           },
           "unit": "short"
         },
@@ -3658,7 +4424,7 @@
         "h": 8,
         "w": 6,
         "x": 18,
-        "y": 207
+        "y": 210
       },
       "id": 85,
       "title": "Estimated GPU FLOP & Memory Bandwidth Rate",
@@ -3701,7 +4467,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 244
+        "y": 247
       },
       "id": 201,
       "title": "LMCache \u2014 Extended",
@@ -3721,7 +4487,9 @@
           "custom": {
             "lineWidth": 1,
             "fillOpacity": 10,
-            "spanNulls": true
+            "spanNulls": true,
+            "drawStyle": "line",
+            "showPoints": "never"
           },
           "unit": "GBs"
         },
@@ -3731,7 +4499,7 @@
         "h": 8,
         "w": 8,
         "x": 0,
-        "y": 245
+        "y": 248
       },
       "id": 90,
       "title": "L1\u2192GPU Load Throughput (GB/s)",
@@ -3785,7 +4553,9 @@
           "custom": {
             "lineWidth": 1,
             "fillOpacity": 10,
-            "spanNulls": true
+            "spanNulls": true,
+            "drawStyle": "line",
+            "showPoints": "never"
           },
           "unit": "short"
         },
@@ -3795,7 +4565,7 @@
         "h": 8,
         "w": 8,
         "x": 8,
-        "y": 245
+        "y": 248
       },
       "id": 91,
       "title": "L2 In-Flight Store Queue Depth",
@@ -3830,7 +4600,9 @@
           "custom": {
             "lineWidth": 1,
             "fillOpacity": 10,
-            "spanNulls": true
+            "spanNulls": true,
+            "drawStyle": "line",
+            "showPoints": "never"
           },
           "unit": "s"
         },
@@ -3840,7 +4612,7 @@
         "h": 8,
         "w": 8,
         "x": 16,
-        "y": 245
+        "y": 248
       },
       "id": 92,
       "title": "Chunk Reuse Gap (s) \u2014 Cache Effectiveness",
@@ -3885,7 +4657,9 @@
           "custom": {
             "lineWidth": 1,
             "fillOpacity": 10,
-            "spanNulls": true
+            "spanNulls": true,
+            "drawStyle": "line",
+            "showPoints": "never"
           },
           "unit": "short"
         },
@@ -3895,7 +4669,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 253
+        "y": 256
       },
       "id": 93,
       "title": "LMCache Operation Rate",
@@ -3952,9 +4726,11 @@
           "custom": {
             "lineWidth": 1,
             "fillOpacity": 10,
-            "spanNulls": true
+            "spanNulls": true,
+            "drawStyle": "line",
+            "showPoints": "never"
           },
-          "unit": "Bps"
+          "unit": "GBs"
         },
         "overrides": []
       },
@@ -3962,10 +4738,10 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 253
+        "y": 256
       },
       "id": 94,
-      "title": "LMCache L0\u2192L1 Throughput (GB/s)",
+      "title": "LMCache L0\u2192L1 Throughput",
       "options": {
         "tooltip": {
           "mode": "multi"
@@ -3979,7 +4755,7 @@
           },
           "expr": "histogram_quantile(0.5, sum by (le) (rate(lmcache_mp_l0_l1_store_throughput_GB_per_second_bucket{job=\"lmcache\"}[$__rate_interval])))",
           "interval": "30s",
-          "legendFormat": "store p50 (GB/s)",
+          "legendFormat": "store p50",
           "refId": "A"
         },
         {
@@ -3989,7 +4765,7 @@
           },
           "expr": "histogram_quantile(0.5, sum by (le) (rate(lmcache_mp_l0_l1_load_throughput_GB_per_second_bucket{job=\"lmcache\"}[$__rate_interval])))",
           "interval": "30s",
-          "legendFormat": "load p50 (GB/s)",
+          "legendFormat": "load p50",
           "refId": "B"
         }
       ],
@@ -4001,7 +4777,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 285
+        "y": 288
       },
       "id": 202,
       "title": "Node \u2014 Extended",
@@ -4021,7 +4797,9 @@
           "custom": {
             "lineWidth": 1,
             "fillOpacity": 10,
-            "spanNulls": true
+            "spanNulls": true,
+            "drawStyle": "line",
+            "showPoints": "never"
           },
           "unit": "short"
         },
@@ -4031,7 +4809,7 @@
         "h": 8,
         "w": 8,
         "x": 0,
-        "y": 286
+        "y": 289
       },
       "id": 95,
       "title": "System Load (1m / 5m / 15m)",
@@ -4082,7 +4860,9 @@
           "custom": {
             "lineWidth": 1,
             "fillOpacity": 10,
-            "spanNulls": true
+            "spanNulls": true,
+            "drawStyle": "line",
+            "showPoints": "never"
           },
           "unit": "bytes"
         },
@@ -4092,7 +4872,7 @@
         "h": 8,
         "w": 8,
         "x": 8,
-        "y": 286
+        "y": 289
       },
       "id": 96,
       "title": "NVMe Capacity Used (bytes)",
@@ -4135,7 +4915,9 @@
           "custom": {
             "lineWidth": 1,
             "fillOpacity": 10,
-            "spanNulls": true
+            "spanNulls": true,
+            "drawStyle": "line",
+            "showPoints": "never"
           },
           "unit": "percentunit"
         },
@@ -4145,7 +4927,7 @@
         "h": 8,
         "w": 8,
         "x": 16,
-        "y": 286
+        "y": 289
       },
       "id": 97,
       "title": "IO Pressure (PSI stalled seconds rate)",
@@ -4188,7 +4970,9 @@
           "custom": {
             "lineWidth": 1,
             "fillOpacity": 10,
-            "spanNulls": true
+            "spanNulls": true,
+            "drawStyle": "line",
+            "showPoints": "never"
           },
           "unit": "Bps"
         },
@@ -4198,7 +4982,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 294
+        "y": 297
       },
       "id": 98,
       "title": "InfiniBand / RoCE Port Throughput (B/s)",
@@ -4241,7 +5025,9 @@
           "custom": {
             "lineWidth": 1,
             "fillOpacity": 10,
-            "spanNulls": true
+            "spanNulls": true,
+            "drawStyle": "line",
+            "showPoints": "never"
           },
           "unit": "bytes"
         },
@@ -4251,7 +5037,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 294
+        "y": 297
       },
       "id": 99,
       "title": "Filesystem Available Space",
@@ -4278,7 +5064,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 223
+        "y": 226
       },
       "id": 203,
       "title": "vLLM \u2014 ISL / OSL (Input & Output Sequence Length)",
@@ -4298,7 +5084,9 @@
           "custom": {
             "lineWidth": 1,
             "fillOpacity": 10,
-            "spanNulls": true
+            "spanNulls": true,
+            "drawStyle": "line",
+            "showPoints": "never"
           },
           "unit": "none"
         },
@@ -4308,7 +5096,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 224
+        "y": 227
       },
       "id": 110,
       "title": "ISL Distribution (prompt tokens) \u2014 p50 / p95 / p99",
@@ -4359,7 +5147,9 @@
           "custom": {
             "lineWidth": 1,
             "fillOpacity": 10,
-            "spanNulls": true
+            "spanNulls": true,
+            "drawStyle": "line",
+            "showPoints": "never"
           },
           "unit": "none"
         },
@@ -4369,7 +5159,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 224
+        "y": 227
       },
       "id": 111,
       "title": "OSL Distribution (generation tokens) \u2014 p50 / p95 / p99",
@@ -4429,7 +5219,7 @@
         "h": 4,
         "w": 6,
         "x": 0,
-        "y": 232
+        "y": 235
       },
       "id": 112,
       "title": "Average ISL (prompt tokens)",
@@ -4479,7 +5269,7 @@
         "h": 4,
         "w": 6,
         "x": 6,
-        "y": 232
+        "y": 235
       },
       "id": 113,
       "title": "Average OSL (generation tokens)",
@@ -4529,7 +5319,7 @@
         "h": 4,
         "w": 6,
         "x": 12,
-        "y": 232
+        "y": 235
       },
       "id": 114,
       "title": "ISL p99 (prompt tokens)",
@@ -4579,7 +5369,7 @@
         "h": 4,
         "w": 6,
         "x": 18,
-        "y": 232
+        "y": 235
       },
       "id": 115,
       "title": "OSL p99 (generation tokens)",
@@ -4620,7 +5410,9 @@
           "custom": {
             "lineWidth": 1,
             "fillOpacity": 10,
-            "spanNulls": true
+            "spanNulls": true,
+            "drawStyle": "line",
+            "showPoints": "never"
           },
           "unit": "none"
         },
@@ -4630,7 +5422,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 236
+        "y": 239
       },
       "id": 116,
       "title": "Average ISL vs OSL over time",
@@ -4673,7 +5465,9 @@
           "custom": {
             "lineWidth": 1,
             "fillOpacity": 10,
-            "spanNulls": true
+            "spanNulls": true,
+            "drawStyle": "line",
+            "showPoints": "never"
           },
           "unit": "none"
         },
@@ -4683,7 +5477,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 236
+        "y": 239
       },
       "id": 117,
       "title": "Request Rate & Total Tokens/s",
@@ -4735,7 +5529,7 @@
         "h": 4,
         "w": 4,
         "x": 0,
-        "y": 54
+        "y": 57
       },
       "id": 313,
       "title": "Avg GPU VRAM Used",
@@ -4786,7 +5580,7 @@
         "h": 4,
         "w": 4,
         "x": 4,
-        "y": 54
+        "y": 57
       },
       "id": 314,
       "title": "Avg LMCache L1 Used",
@@ -4837,7 +5631,7 @@
         "h": 4,
         "w": 4,
         "x": 8,
-        "y": 54
+        "y": 57
       },
       "id": 315,
       "title": "Avg LMCache L2 Used",
@@ -4871,7 +5665,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 302
+        "y": 305
       },
       "id": 400,
       "title": "LMCache Coordinator",
@@ -4926,7 +5720,7 @@
         "h": 4,
         "w": 4,
         "x": 0,
-        "y": 303
+        "y": 306
       },
       "id": 401,
       "options": {
@@ -4982,7 +5776,7 @@
         "h": 4,
         "w": 4,
         "x": 4,
-        "y": 303
+        "y": 306
       },
       "id": 402,
       "options": {
@@ -5054,7 +5848,7 @@
         "h": 4,
         "w": 4,
         "x": 8,
-        "y": 303
+        "y": 306
       },
       "id": 403,
       "options": {
@@ -5110,7 +5904,7 @@
         "h": 4,
         "w": 6,
         "x": 12,
-        "y": 303
+        "y": 306
       },
       "id": 441,
       "options": {
@@ -5152,7 +5946,9 @@
           "custom": {
             "lineWidth": 2,
             "fillOpacity": 10,
-            "spanNulls": true
+            "spanNulls": true,
+            "drawStyle": "line",
+            "showPoints": "never"
           },
           "unit": "short"
         },
@@ -5162,7 +5958,7 @@
         "h": 8,
         "w": 8,
         "x": 0,
-        "y": 307
+        "y": 310
       },
       "id": 404,
       "options": {
@@ -5212,7 +6008,9 @@
           "custom": {
             "lineWidth": 2,
             "fillOpacity": 10,
-            "spanNulls": true
+            "spanNulls": true,
+            "drawStyle": "line",
+            "showPoints": "never"
           },
           "unit": "short"
         },
@@ -5222,7 +6020,7 @@
         "h": 8,
         "w": 8,
         "x": 8,
-        "y": 307
+        "y": 310
       },
       "id": 405,
       "options": {
@@ -5263,7 +6061,9 @@
           "custom": {
             "lineWidth": 2,
             "fillOpacity": 10,
-            "spanNulls": true
+            "spanNulls": true,
+            "drawStyle": "line",
+            "showPoints": "never"
           },
           "unit": "short"
         },
@@ -5273,7 +6073,7 @@
         "h": 8,
         "w": 8,
         "x": 16,
-        "y": 307
+        "y": 310
       },
       "id": 406,
       "options": {
@@ -5323,7 +6123,9 @@
           "custom": {
             "lineWidth": 1,
             "fillOpacity": 5,
-            "spanNulls": true
+            "spanNulls": true,
+            "drawStyle": "line",
+            "showPoints": "never"
           },
           "unit": "s"
         },
@@ -5333,7 +6135,7 @@
         "h": 4,
         "w": 6,
         "x": 18,
-        "y": 303
+        "y": 306
       },
       "id": 407,
       "options": {
@@ -5365,7 +6167,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 315
+        "y": 318
       },
       "id": 408,
       "title": "LMCache \u2014 Adapter & Transport Health",
@@ -5385,7 +6187,9 @@
           "custom": {
             "lineWidth": 2,
             "fillOpacity": 15,
-            "spanNulls": true
+            "spanNulls": true,
+            "drawStyle": "line",
+            "showPoints": "never"
           },
           "unit": "short",
           "min": 0
@@ -5457,7 +6261,7 @@
         "h": 6,
         "w": 8,
         "x": 0,
-        "y": 316
+        "y": 319
       },
       "id": 409,
       "options": {
@@ -5524,7 +6328,9 @@
           "custom": {
             "lineWidth": 2,
             "fillOpacity": 10,
-            "spanNulls": true
+            "spanNulls": true,
+            "drawStyle": "line",
+            "showPoints": "never"
           },
           "unit": "\u00b5s"
         },
@@ -5534,7 +6340,7 @@
         "h": 6,
         "w": 8,
         "x": 8,
-        "y": 316
+        "y": 319
       },
       "id": 410,
       "options": {
@@ -5583,7 +6389,9 @@
           "custom": {
             "lineWidth": 2,
             "fillOpacity": 10,
-            "spanNulls": true
+            "spanNulls": true,
+            "drawStyle": "line",
+            "showPoints": "never"
           },
           "unit": "ops"
         },
@@ -5609,7 +6417,7 @@
         "h": 6,
         "w": 8,
         "x": 16,
-        "y": 316
+        "y": 319
       },
       "id": 411,
       "options": {
@@ -5676,7 +6484,7 @@
         "h": 4,
         "w": 4,
         "x": 12,
-        "y": 54
+        "y": 57
       },
       "id": 412,
       "options": {
@@ -5758,7 +6566,7 @@
         "h": 4,
         "w": 4,
         "x": 16,
-        "y": 54
+        "y": 57
       },
       "id": 413,
       "options": {
@@ -5815,7 +6623,7 @@
         "h": 4,
         "w": 4,
         "x": 20,
-        "y": 54
+        "y": 57
       },
       "id": 414,
       "options": {
@@ -5850,7 +6658,7 @@
       "id": 9920,
       "gridPos": {
         "x": 0,
-        "y": 322,
+        "y": 325,
         "w": 6,
         "h": 4
       },
@@ -5908,7 +6716,7 @@
       "id": 9921,
       "gridPos": {
         "x": 6,
-        "y": 322,
+        "y": 325,
         "w": 6,
         "h": 4
       },
@@ -5966,7 +6774,7 @@
       "id": 9922,
       "gridPos": {
         "x": 12,
-        "y": 322,
+        "y": 325,
         "w": 12,
         "h": 4
       },
@@ -5988,7 +6796,11 @@
       ],
       "fieldConfig": {
         "defaults": {
-          "unit": "ops"
+          "unit": "ops",
+          "custom": {
+            "drawStyle": "line",
+            "showPoints": "never"
+          }
         },
         "overrides": []
       },
@@ -6007,7 +6819,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 326
+        "y": 329
       },
       "id": 415,
       "title": "KV Block Residency (vLLM + LMCache L0)",
@@ -6027,7 +6839,9 @@
           "custom": {
             "lineWidth": 2,
             "fillOpacity": 8,
-            "spanNulls": true
+            "spanNulls": true,
+            "drawStyle": "line",
+            "showPoints": "never"
           },
           "unit": "s"
         },
@@ -6037,7 +6851,7 @@
         "h": 8,
         "w": 8,
         "x": 0,
-        "y": 327
+        "y": 330
       },
       "id": 416,
       "options": {
@@ -6106,7 +6920,9 @@
           "custom": {
             "lineWidth": 2,
             "fillOpacity": 8,
-            "spanNulls": true
+            "spanNulls": true,
+            "drawStyle": "line",
+            "showPoints": "never"
           },
           "unit": "s"
         },
@@ -6116,7 +6932,7 @@
         "h": 8,
         "w": 8,
         "x": 8,
-        "y": 327
+        "y": 330
       },
       "id": 417,
       "options": {
@@ -6185,7 +7001,9 @@
           "custom": {
             "lineWidth": 2,
             "fillOpacity": 8,
-            "spanNulls": true
+            "spanNulls": true,
+            "drawStyle": "line",
+            "showPoints": "never"
           },
           "unit": "s"
         },
@@ -6195,7 +7013,7 @@
         "h": 8,
         "w": 8,
         "x": 16,
-        "y": 327
+        "y": 330
       },
       "id": 418,
       "options": {
@@ -6264,7 +7082,9 @@
           "custom": {
             "lineWidth": 2,
             "fillOpacity": 8,
-            "spanNulls": true
+            "spanNulls": true,
+            "drawStyle": "line",
+            "showPoints": "never"
           },
           "unit": "Bps",
           "displayName": "${__series.name}"
@@ -6275,7 +7095,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 335
+        "y": 338
       },
       "id": 419,
       "options": {
@@ -6326,7 +7146,9 @@
           "custom": {
             "lineWidth": 2,
             "fillOpacity": 8,
-            "spanNulls": true
+            "spanNulls": true,
+            "drawStyle": "line",
+            "showPoints": "never"
           },
           "unit": "percentunit",
           "min": 0,
@@ -6338,7 +7160,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 335
+        "y": 338
       },
       "id": 420,
       "options": {
@@ -6370,7 +7192,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 343
+        "y": 346
       },
       "id": 421,
       "title": "Engine & Event Bus Health",
@@ -6385,31 +7207,34 @@
         "defaults": {
           "mappings": [
             {
+              "type": "value",
               "options": {
-                "0": {
-                  "text": "Active"
-                },
                 "1": {
-                  "text": "Sleeping"
+                  "text": "Awake",
+                  "color": "green"
+                },
+                "0": {
+                  "text": "Sleeping",
+                  "color": "yellow"
                 }
-              },
-              "type": "value"
+              }
             }
           ],
           "thresholds": {
             "mode": "absolute",
             "steps": [
               {
-                "color": "green",
+                "color": "yellow",
                 "value": null
               },
               {
-                "color": "yellow",
+                "color": "green",
                 "value": 1
               }
             ]
           },
-          "unit": "short"
+          "unit": "short",
+          "noValue": "Down"
         },
         "overrides": []
       },
@@ -6417,7 +7242,7 @@
         "h": 4,
         "w": 4,
         "x": 0,
-        "y": 344
+        "y": 347
       },
       "id": 422,
       "options": {
@@ -6435,9 +7260,10 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "vllm:engine_sleep_state",
-          "legendFormat": "Engine Sleep",
-          "refId": "A"
+          "expr": "max(vllm:engine_sleep_state{sleep_state=\"awake\"})",
+          "legendFormat": "Engine",
+          "refId": "A",
+          "instant": true
         }
       ],
       "title": "vLLM Engine State",
@@ -6458,7 +7284,7 @@
         "h": 4,
         "w": 6,
         "x": 4,
-        "y": 344
+        "y": 347
       },
       "id": 423,
       "options": {
@@ -6516,7 +7342,7 @@
         "h": 4,
         "w": 5,
         "x": 10,
-        "y": 344
+        "y": 347
       },
       "id": 424,
       "options": {
@@ -6570,7 +7396,7 @@
         "h": 4,
         "w": 5,
         "x": 15,
-        "y": 344
+        "y": 347
       },
       "id": 425,
       "options": {
@@ -6612,7 +7438,7 @@
         "h": 4,
         "w": 4,
         "x": 20,
-        "y": 344
+        "y": 347
       },
       "id": 426,
       "options": {
@@ -6644,7 +7470,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 348
+        "y": 351
       },
       "id": 427,
       "title": "GPU Activity (hsa-snoop)",
@@ -6659,7 +7485,9 @@
         "defaults": {
           "unit": "ops",
           "custom": {
-            "lineWidth": 1
+            "lineWidth": 1,
+            "drawStyle": "line",
+            "showPoints": "never"
           }
         },
         "overrides": []
@@ -6668,7 +7496,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 349
+        "y": 352
       },
       "id": 428,
       "options": {
@@ -6721,6 +7549,10 @@
                 "value": 90
               }
             ]
+          },
+          "custom": {
+            "drawStyle": "line",
+            "showPoints": "never"
           }
         },
         "overrides": []
@@ -6729,7 +7561,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 349
+        "y": 352
       },
       "id": 429,
       "options": {
@@ -6798,7 +7630,7 @@
         "h": 4,
         "w": 24,
         "x": 0,
-        "y": 80
+        "y": 83
       },
       "id": 435,
       "options": {
@@ -6834,7 +7666,7 @@
       "id": 9910,
       "gridPos": {
         "x": 0,
-        "y": 269,
+        "y": 272,
         "w": 12,
         "h": 8
       },
@@ -6866,7 +7698,11 @@
       ],
       "fieldConfig": {
         "defaults": {
-          "unit": "ops"
+          "unit": "ops",
+          "custom": {
+            "drawStyle": "line",
+            "showPoints": "never"
+          }
         },
         "overrides": []
       },
@@ -6887,7 +7723,7 @@
       "id": 9911,
       "gridPos": {
         "x": 12,
-        "y": 269,
+        "y": 272,
         "w": 12,
         "h": 8
       },
@@ -6919,7 +7755,11 @@
       ],
       "fieldConfig": {
         "defaults": {
-          "unit": "short"
+          "unit": "short",
+          "custom": {
+            "drawStyle": "line",
+            "showPoints": "never"
+          }
         },
         "overrides": []
       },
@@ -6940,7 +7780,7 @@
       "id": 9950,
       "gridPos": {
         "x": 0,
-        "y": 117,
+        "y": 120,
         "w": 12,
         "h": 8
       },
@@ -6982,7 +7822,11 @@
       ],
       "fieldConfig": {
         "defaults": {
-          "unit": "ops"
+          "unit": "ops",
+          "custom": {
+            "drawStyle": "line",
+            "showPoints": "never"
+          }
         },
         "overrides": []
       },
@@ -7014,7 +7858,9 @@
             "stacking": {
               "group": "A",
               "mode": "normal"
-            }
+            },
+            "drawStyle": "line",
+            "showPoints": "never"
           },
           "unit": "short",
           "min": 0
@@ -7023,7 +7869,7 @@
       },
       "gridPos": {
         "x": 12,
-        "y": 117,
+        "y": 120,
         "w": 12,
         "h": 8
       },
@@ -7097,7 +7943,9 @@
           "custom": {
             "lineWidth": 1,
             "fillOpacity": 10,
-            "spanNulls": true
+            "spanNulls": true,
+            "drawStyle": "line",
+            "showPoints": "never"
           },
           "unit": "percentunit",
           "min": 0,
@@ -7107,7 +7955,7 @@
       },
       "gridPos": {
         "x": 0,
-        "y": 125,
+        "y": 128,
         "w": 12,
         "h": 8
       },
@@ -7144,7 +7992,7 @@
       "id": 9951,
       "gridPos": {
         "x": 12,
-        "y": 125,
+        "y": 128,
         "w": 12,
         "h": 8
       },
@@ -7186,7 +8034,11 @@
       ],
       "fieldConfig": {
         "defaults": {
-          "unit": "ops"
+          "unit": "ops",
+          "custom": {
+            "drawStyle": "line",
+            "showPoints": "never"
+          }
         },
         "overrides": []
       },
@@ -7207,7 +8059,7 @@
       "id": 9952,
       "gridPos": {
         "x": 0,
-        "y": 261,
+        "y": 264,
         "w": 12,
         "h": 8
       },
@@ -7246,7 +8098,11 @@
       ],
       "fieldConfig": {
         "defaults": {
-          "unit": "bytes"
+          "unit": "bytes",
+          "custom": {
+            "drawStyle": "line",
+            "showPoints": "never"
+          }
         },
         "overrides": []
       },
@@ -7267,7 +8123,7 @@
       "id": 9953,
       "gridPos": {
         "x": 12,
-        "y": 261,
+        "y": 264,
         "w": 12,
         "h": 8
       },
@@ -7297,7 +8153,11 @@
       ],
       "fieldConfig": {
         "defaults": {
-          "unit": "short"
+          "unit": "short",
+          "custom": {
+            "drawStyle": "line",
+            "showPoints": "never"
+          }
         },
         "overrides": []
       },
@@ -7318,7 +8178,7 @@
       "id": 9954,
       "gridPos": {
         "x": 0,
-        "y": 277,
+        "y": 280,
         "w": 24,
         "h": 8
       },
@@ -7360,7 +8220,11 @@
       ],
       "fieldConfig": {
         "defaults": {
-          "unit": "GBs"
+          "unit": "GBs",
+          "custom": {
+            "drawStyle": "line",
+            "showPoints": "never"
+          }
         },
         "overrides": []
       },
@@ -7376,12 +8240,12 @@
     },
     {
       "type": "timeseries",
-      "title": "LMCache Lookup Duration p50/p95/p99 (ms)",
+      "title": "LMCache Lookup Duration p50/p95/p99",
       "description": "End-to-end LMCache lookup latency as seen by vLLM including ZMQ IPC overhead. High p99 indicates MQ congestion.",
       "id": 9955,
       "gridPos": {
         "x": 0,
-        "y": 215,
+        "y": 218,
         "w": 8,
         "h": 8
       },
@@ -7420,7 +8284,11 @@
       ],
       "fieldConfig": {
         "defaults": {
-          "unit": "ms"
+          "unit": "s",
+          "custom": {
+            "drawStyle": "line",
+            "showPoints": "never"
+          }
         },
         "overrides": []
       },
@@ -7441,7 +8309,7 @@
       "id": 9956,
       "gridPos": {
         "x": 8,
-        "y": 215,
+        "y": 218,
         "w": 8,
         "h": 8
       },
@@ -7480,7 +8348,11 @@
       ],
       "fieldConfig": {
         "defaults": {
-          "unit": "s"
+          "unit": "s",
+          "custom": {
+            "drawStyle": "line",
+            "showPoints": "never"
+          }
         },
         "overrides": []
       },
@@ -7501,7 +8373,7 @@
       "id": 9957,
       "gridPos": {
         "x": 16,
-        "y": 215,
+        "y": 218,
         "w": 8,
         "h": 8
       },
@@ -7540,7 +8412,11 @@
       ],
       "fieldConfig": {
         "defaults": {
-          "unit": "s"
+          "unit": "s",
+          "custom": {
+            "drawStyle": "line",
+            "showPoints": "never"
+          }
         },
         "overrides": []
       },
@@ -7556,12 +8432,12 @@
     },
     {
       "type": "stat",
-      "title": "Token Cache Hit %",
-      "description": "Fraction of requested tokens served from L1 or L2 cache (token-level, not key-level).",
+      "title": "LMCache Token Hit %",
+      "description": "Share of the tokens vLLM asked LMCache for that LMCache served from L1 or L2, over the selected time range. Low is normal while the GPU prefix cache still holds the prefixes.",
       "id": 9958,
       "gridPos": {
         "x": 0,
-        "y": 58,
+        "y": 61,
         "w": 4,
         "h": 4
       },
@@ -7571,13 +8447,14 @@
       },
       "targets": [
         {
-          "expr": "100 * lmcache_mp_lookup_hit_tokens_total / lmcache_mp_lookup_requested_tokens_total",
+          "expr": "100 * sum(increase(lmcache_mp_lookup_hit_tokens_total[$__range])) / (sum(increase(lmcache_mp_lookup_requested_tokens_total[$__range])) > 0)",
           "legendFormat": "",
           "refId": "A",
           "datasource": {
             "type": "prometheus",
             "uid": "${datasource}"
-          }
+          },
+          "instant": true
         }
       ],
       "options": {
@@ -7587,7 +8464,7 @@
           ]
         },
         "colorMode": "value",
-        "graphMode": "area"
+        "graphMode": "none"
       },
       "fieldConfig": {
         "defaults": {
@@ -7599,16 +8476,8 @@
             "mode": "absolute",
             "steps": [
               {
-                "color": "red",
+                "color": "blue",
                 "value": null
-              },
-              {
-                "color": "yellow",
-                "value": 50
-              },
-              {
-                "color": "green",
-                "value": 80
               }
             ]
           }
@@ -7623,7 +8492,7 @@
       "id": 9959,
       "gridPos": {
         "x": 4,
-        "y": 58,
+        "y": 61,
         "w": 4,
         "h": 4
       },
@@ -7633,13 +8502,14 @@
       },
       "targets": [
         {
-          "expr": "(lmcache_mp_lookup_early_exit_requests_total) or vector(0)",
+          "expr": "sum(increase(lmcache_mp_lookup_early_exit_requests_total[$__range])) or vector(0)",
           "legendFormat": "",
           "refId": "A",
           "datasource": {
             "type": "prometheus",
             "uid": "${datasource}"
-          }
+          },
+          "instant": true
         }
       ],
       "options": {
@@ -7669,7 +8539,8 @@
                 "value": 1
               }
             ]
-          }
+          },
+          "decimals": 0
         },
         "overrides": []
       }
@@ -7681,7 +8552,7 @@
       "id": 9960,
       "gridPos": {
         "x": 8,
-        "y": 58,
+        "y": 61,
         "w": 4,
         "h": 4
       },
@@ -7735,7 +8606,7 @@
       "id": 9961,
       "gridPos": {
         "x": 12,
-        "y": 58,
+        "y": 61,
         "w": 4,
         "h": 4
       },
@@ -7781,9 +8652,60 @@
         },
         "overrides": []
       }
+    },
+    {
+      "collapsed": true,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 360
+      },
+      "id": 436,
+      "panels": [
+        {
+          "datasource": {
+            "type": "loki",
+            "uid": "loki"
+          },
+          "gridPos": {
+            "h": 12,
+            "w": 24,
+            "x": 0,
+            "y": 361
+          },
+          "id": 434,
+          "options": {
+            "dedupStrategy": "none",
+            "enableLogDetails": true,
+            "prettifyLogMessage": false,
+            "showCommonLabels": false,
+            "showLabels": false,
+            "showTime": true,
+            "sortOrder": "Descending",
+            "wrapLogMessage": true
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "loki",
+                "uid": "loki"
+              },
+              "editorMode": "code",
+              "expr": "{job=\"aic_bench\"}",
+              "queryType": "range",
+              "refId": "A"
+            }
+          ],
+          "title": "Conversations \u2014 USER prompt + ASSISTANT response",
+          "type": "logs"
+        }
+      ],
+      "title": "Agent Conversations",
+      "type": "row"
     }
   ],
-  "refresh": "10s",
+  "refresh": "auto",
   "schemaVersion": 39,
   "tags": [
     "aic",

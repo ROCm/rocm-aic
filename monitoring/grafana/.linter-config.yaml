@@ -10,8 +10,8 @@ rules:
     disabled: true
   target-instance-rule:
     disabled: true
-  # Cumulative total stat panels intentionally show running totals via
-  # max_over_time rather than rate() — counter-agg rule is not applicable.
+  # Several panels subtract raw counters (live chunks = writes - evictions)
+  # or show a counter's current value — counter-agg rule is not applicable.
   target-counter-agg-rule:
     disabled: true
   # Panels have descriptive titles; adding descriptions to every panel is

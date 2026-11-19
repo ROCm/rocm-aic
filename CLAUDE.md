@@ -186,7 +186,7 @@ build (`AIC_ROCM_ARCH` default includes `gfx1201`). Key differences from CDNA:
     ROCM_ARCH=gfx1201 \
     VLLM_MODEL=Qwen/Qwen2.5-3B-Instruct \
     AIC_L2_BACKEND=nixl_posix \
-    NVME_DATA=/mnt/lmcache-nvme/aic-nvme \
+    NVME_DATA=<dir on the data NVMe> \
     VLM_LOAD_FORMAT=auto \
     LMCACHE_L1_SIZE_GB=2 \
     VLM_GPU_MEMORY_UTILIZATION=0.74
@@ -207,13 +207,23 @@ build (`AIC_ROCM_ARCH` default includes `gfx1201`). Key differences from CDNA:
   - `LMCACHE_L1_SIZE_GB=2` for this 16 GB node — default 20 GiB L1 prevents
     eviction to L2 in the reset test.
   - HF_TOKEN is picked up from the environment; no HF_TOKEN_FILE needed.
-  - Mount the 1.8 TB WD Black NVMe (`/dev/nvme1n1`) before running:
-    `sudo mount /dev/nvme1n1 /mnt/lmcache-nvme`. (On snoc-thinkstation as of
-    2026-11-18 that drive is mounted at `/mnt/kv-nvme` instead, and
-    `/mnt/lmcache-nvme/aic-nvme` is a directory on the root NVMe; the reset
-    test passes that way.)
-  - NVMe device names may shift after `modprobe -r/modprobe amdgpu` cycles;
-    verify with `lsblk` before mounting.
+  - **Locate the L2 NVMe; never assume a path.** `NVME_DATA` must be a
+    directory on a dedicated data NVMe, not on the root disk. Mount points and
+    device names differ per node and change (device names can shift after a
+    `modprobe -r/modprobe amdgpu` cycle), and a path that exists proves
+    nothing: the Makefile default `/mnt/lmcache-nvme` is created on the root
+    filesystem if nothing is mounted there, and the stack runs happily on it.
+    Before any command that takes `NVME_DATA`:
+    1. `lsblk -o NAME,SIZE,MODEL,MOUNTPOINT` to find the data drive (not the
+       one holding `/`) and where it is mounted; mount it if it is not.
+    2. `findmnt -no SOURCE,TARGET -T <dir>` to confirm the directory you are
+       about to pass resolves to that drive.
+    3. Use a subdirectory owned by the invoking user (the stack runs
+       non-root): `sudo install -d -o "$(id -u)" -g "$(id -g)" <mount>/aic-nvme`
+       when the mount point itself is root-owned.
+
+    On snoc-thinkstation as of 2026-11-18 the data drive is the 1.8 TB WD
+    Black SN850X, mounted at `/mnt/kv-nvme`, so `NVME_DATA=/mnt/kv-nvme/aic-nvme`.
 
 - **Profile capture** on a local gfx1201 node (no cluster required):
 

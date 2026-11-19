@@ -82,11 +82,12 @@ make endpoints   # → prints the Grafana URL to open
 [ENVIRONMENT.md](ENVIRONMENT.md#monitoring); `docker/docker-compose.yml` owns
 them.
 
-The **AIC Overview** dashboard covers eleven rows:
+The **AIC Overview** dashboard's main rows:
 
 | Row | Key panels |
 | --- | --- |
-| **Summary** | Cumulative token counters (input, output, computed, LMCache L1/L2 hits), TTFT/TPOT, total tokens/s, cache hit rates (any cache, LMCache L1, LMCache L2) |
+| **KV Offload Verdict** | Scrape-target health, share of prompt tokens from cache, LMCache hit ratio, stores / retrieves, lazy-offload pending, NIXL errors, free VRAM, tokens by source and tier, L2 throughput, NIXL latency |
+| **Summary** | Token counters over the selected time range (input, output, computed, LMCache L1/L2 hits), TTFT/TPOT, total tokens/s, cache hit rates (any cache, LMCache L1, LMCache L2) |
 | **GPU** | VRAM %, power, clocks, temperatures, GFX/UMC/MMA activity, PCIe / xGMI fabric speed |
 | **vLLM** | Throughput, TTFT/ITL/E2E latency p50+p95, prompt tokens by source, requests waiting on a KV fetch by stage, KV cache usage %, prefix cache hit rate, preemptions (rate and per finished request) |
 | **LMCache** | L1 usage gauge, L1/L2 chunk rates, token hit rate L1/L2, prompt tokens by cache tier (stacked), share of prompt tokens served from any cache, L0→L1 throughput, reuse gap, in-flight L2 stores |
