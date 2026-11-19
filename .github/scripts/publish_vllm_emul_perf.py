@@ -238,6 +238,7 @@ def _build_html(history: list[dict[str, Any]]) -> str:
       --accent: #58a6ff;
       --good: #3fb950;
       --bad: #f85149;
+      --warn: #d29922;
     }}
     * {{ box-sizing: border-box; }}
     body {{ margin: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: var(--bg); color: var(--text); padding: 2rem 1.25rem 4rem; }}
@@ -248,6 +249,12 @@ def _build_html(history: list[dict[str, Any]]) -> str:
     a {{ color: var(--accent); text-decoration: none; }}
     a:hover {{ text-decoration: underline; }}
     .lede {{ max-width: 820px; margin-bottom: 1.5rem; }}
+    .disclaimer {{
+      max-width: 820px; margin: 0 0 1.5rem; padding: 0.9rem 1.1rem;
+      border: 1px solid var(--warn); border-left-width: 4px; border-radius: 8px;
+      background: rgba(210, 153, 34, 0.1);
+    }}
+    .disclaimer p {{ margin: 0; color: var(--text); }}
     .meta {{ margin-bottom: 2rem; }}
     .cards {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 1rem; margin-bottom: 2rem; }}
     .card, .history-block, .config {{ background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 1.25rem; }}
@@ -272,6 +279,13 @@ def _build_html(history: list[dict[str, Any]]) -> str:
 <body>
   <main>
     <h1>vLLM Emul Performance</h1>
+    <aside class="disclaimer" role="note">
+      <p>
+        <strong>Emulated results.</strong> Every number on this page comes from the llm-emu emulator
+        replaying a profile pack on a CPU-only runner, not from vLLM on a GPU. They are not
+        representative performance numbers; use them only to track the emulator's behavior over time.
+      </p>
+    </aside>
     <p class="lede">
       Daily CPU-only replays of the current ROCm AIC llm-emu profile pack, published to GitHub Pages with durable history on <code>gh-pages</code>.
       Tracks the vLLM emulator (llm-emu) performance envelope as a baseline before dedicated hardware lanes are available.
