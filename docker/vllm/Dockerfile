@@ -238,11 +238,14 @@ RUN --mount=type=cache,target=/root/.cache/pip \
     elif _fa_arch="$(_gfx9_archs "${ROCM_ARCH}")"; [ -n "${_fa_arch}" ]; then \
         git clone --filter=blob:none --no-checkout "${FLASH_ATTN_GIT_URL}" . && \
         git checkout "${FLASH_ATTN_REF}" && \
-        git submodule update --init --recursive --depth 1 && \
+        git -c 'submodule.third_party/aiter.update=none' \
+            submodule update --init --recursive --depth 1 && \
+        sed -i 's/"-std=/"-Wno-deprecated-attributes",\0/' setup.py && \
         GPU_ARCHS="${_fa_arch}" \
             PYTORCH_ROCM_ARCH="${_fa_arch}" \
-            HIPFLAGS="-Wno-deprecated-attributes" \
-            CXXFLAGS="-Wno-deprecated-attributes" \
+            FLASH_ATTENTION_FORCE_BUILD=TRUE \
+            FLASH_ATTENTION_USE_SYSTEM_AITER=TRUE \
+            BUILD_TARGET=rocm \
             MAX_JOBS="${BUILD_JOBS:-$(nproc)}" \
             CCACHE_DIR=/root/.cache/ccache CCACHE_MAXSIZE=25G \
             python3 setup.py bdist_wheel --dist-dir=/wheels && \
