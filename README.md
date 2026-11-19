@@ -8,7 +8,7 @@
 [![vLLM](https://img.shields.io/badge/vLLM-v0.34.0-blue.svg)](https://github.com/vllm-project/vllm/tree/v0.34.0)
 [![LMCache](https://img.shields.io/badge/LMCache-v0.5.8rc1-blue.svg)](https://github.com/LMCache/LMCache/tree/v0.5.8rc1)
 [![NIXL](https://img.shields.io/badge/NIXL-v1.5.2-blue.svg)](https://github.com/ai-dynamo/nixl/tree/v1.5.2)
-[![HSA-Snoop](https://img.shields.io/badge/HSA--Snoop-8fd57e92-blue.svg)](https://github.com/sbates130272/hsa-snoop/tree/8fd57e92)
+[![HSA-Snoop](https://img.shields.io/badge/HSA--Snoop-aba6a306-blue.svg)](https://github.com/sbates130272/hsa-snoop/tree/aba6a306)
 [![Rocjitsu](https://img.shields.io/badge/Rocjitsu-98f6a72-blue.svg)](https://github.com/ROCm/rocm-systems/commit/98f6a72dcc49a5f809593deacbe5c9df89cde3b3)
 [![Qemu-Vfu](https://img.shields.io/badge/Qemu--Vfu-f91f120-blue.svg)](https://github.com/sbates130272/qemu/commit/f91f12068854848cdb248f2a4636ddfe41f3283b)
 [![Rocjitsu Guest](https://img.shields.io/badge/Rocjitsu_Guest-resolute%2Fc079195-blue.svg)](https://github.com/sbates130272/qemu-minimal/commit/c0791954aec508bfd3f26d11d6960f279d4b175a)
@@ -56,7 +56,7 @@ platform.
 | FlashAttention | `Dao-AILab/flash-attention` (source build) | `0e60e394` |
 | LMCache | `LMCache/LMCache` (upstream) | `v0.5.8rc1` + 6 AMD patches |
 | NIXL | `ai-dynamo/nixl` (upstream) | `v1.5.2` + `nixl-rocm-ais-mt.patch` |
-| HSA Snoop | `sbates130272/hsa-snoop` (source build) | `8fd57e92` |
+| HSA Snoop | `sbates130272/hsa-snoop` (source build) | `aba6a306` |
 
 `aic-vllm` runs OpenTelemetry 1.40.0, below the 1.45.1 that vLLM v0.34.0
 declares: LMCache v0.5.8rc1 caps it there, and the vLLM process loads the

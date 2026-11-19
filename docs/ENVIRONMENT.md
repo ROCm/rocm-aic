@@ -128,7 +128,7 @@ it), whose defaults a test keeps equal to bake's.
 | `NIXL_REF` | `v1.5.2` | `docker/docker-bake.hcl` | NIXL ref |
 | `CUPY_VERSION` | `14.2.0` | `docker/docker-bake.hcl` | `cupy-rocm-7-0` release installed into `aic-lmcache` and `aic-vllm` |
 | `UCX_REF` | `v1.22.0` | `docker/docker-bake.hcl` | UCX ref (NIXL's transport) source-built into the base image |
-| `HSA_SNOOP_REF` | `8fd57e92` | `docker/docker-bake.hcl` | hsa-snoop ref |
+| `HSA_SNOOP_REF` | `aba6a306` | `docker/docker-bake.hcl` | hsa-snoop ref |
 | `CLR_REF` | `release/therock-10.2` | `docker/docker-bake.hcl` | `ROCm/rocm-systems` ref the patched `libamdhip64` in the base image is built from; bump it together with `ROCM_VERSION` |
 | `TRITON_REF` | `release/internal/3.8.x` | `docker/docker-bake.hcl` | Triton ref source-built into the base image |
 | `NVME_EXPORTER_VERSION` | `3.0.0` | `docker/docker-bake.hcl` | `nvme_exporter` release packaged into the NVMe exporter image |

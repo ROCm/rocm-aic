@@ -65,7 +65,7 @@ variable "UCX_REF"           { default = "v1.22.0" }
 # Unreleased commit on feat/cpu-deload: v1.6.0 stalls its ring poller under
 # --mem-snoop and cannot read the queue rings of a ROCm 10.2 process.  Move to
 # the tag once cut.
-variable "HSA_SNOOP_REF"     { default = "8fd57e92" }
+variable "HSA_SNOOP_REF"     { default = "aba6a306" }
 
 # Base images.  ROCM_BASE_IMAGE is the full ROCm toolchain the source builds
 # run on; ROCM_RUNTIME_IMAGE is what the shipped images start from.
