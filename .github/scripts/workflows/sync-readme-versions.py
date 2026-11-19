@@ -33,6 +33,7 @@ REQUIRED_ARGS = (
     "LMCACHE_REF",
     "NIXL_REF",
     "HSA_SNOOP_REF",
+    "FLASH_ATTN_REF",
 )
 
 
@@ -158,6 +159,7 @@ def render_readme(readme_text: str) -> tuple[str, list[str]]:
     pytorch = f"{pytorch_series} ({pytorch_ref[:7]})"
     vllm = values["VLLM_REF"]
     aiter = values["AITER_REF"]
+    flash_attn = values["FLASH_ATTN_REF"]
     lmcache = values["LMCACHE_REF"]
     nixl = values["NIXL_REF"]
     hsa = values["HSA_SNOOP_REF"]
@@ -218,6 +220,11 @@ def render_readme(readme_text: str) -> tuple[str, list[str]]:
             "AITER row",
             r"^\| AITER \| `ROCm/aiter` \(source build\) \| `[^`]+` \(vLLM ROCm-validated\) \|$",
             f"| AITER | `ROCm/aiter` (source build) | `{aiter}` (vLLM ROCm-validated) |",
+        ),
+        (
+            "FlashAttention row",
+            r"^\| FlashAttention \| `Dao-AILab/flash-attention` \(source build\) \| `[^`]+`(?: \(vLLM ROCm-validated\))? \|$",
+            f"| FlashAttention | `Dao-AILab/flash-attention` (source build) | `{flash_attn}` |",
         ),
         (
             "LMCache row",
