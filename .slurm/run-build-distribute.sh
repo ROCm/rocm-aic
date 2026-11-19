@@ -70,7 +70,7 @@
 #           Build the CPU-only EMULATION image (Dockerfile `emulate` stage +
 #           VLLM_TARGET_DEVICE=empty): vLLM + the llm-emu plugin with no vLLM
 #           GPU kernels, on an aic-base the same job builds first.
-#           Tagged AIC_EMULATE_IMAGE (default rocm-aic:10.1-emulate) with its
+#           Tagged AIC_EMULATE_IMAGE (default rocm-aic:10.2-emulate) with its
 #           own tarball, so it never overwrites the real GPU image.
 #   emulate-test
 #           End-to-end serve check of that image on a CPU-ONLY node: brings up
@@ -288,7 +288,7 @@ AIC_VLLM_TARGET_DEVICE="${AIC_VLLM_TARGET_DEVICE:-}"
 # AIC_EMULATE_VLLM_DEVICE), so vLLM compiles no GPU kernels.  It still sits on
 # aic-base, whose PyTorch is built for the arch below; that build is cached per
 # arch, but the first one is not quick.  Nothing in this image runs on a GPU.
-AIC_EMULATE_IMAGE="${AIC_EMULATE_IMAGE:-${IMAGE_NAME:-rocm-aic}:${IMAGE_TAG_EMULATE:-10.1-emulate}}"
+AIC_EMULATE_IMAGE="${AIC_EMULATE_IMAGE:-${IMAGE_NAME:-rocm-aic}:${IMAGE_TAG_EMULATE:-10.2-emulate}}"
 AIC_EMULATE_ARCH="${AIC_EMULATE_ARCH:-gfx942}"
 AIC_EMULATE_VLLM_DEVICE="${AIC_EMULATE_VLLM_DEVICE:-}"
 AIC_EMULATE_MODEL="${AIC_EMULATE_MODEL:-Qwen/Qwen3-8B}"

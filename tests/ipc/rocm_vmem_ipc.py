@@ -519,8 +519,8 @@ class _FdReceiverServer:
             pass
         srv = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         srv.bind(self._path)
-        # Owner and group only: both containers run as the same user.
-        os.chmod(self._path, 0o660)
+        # Owner only: both containers run as the same user.
+        os.chmod(self._path, 0o600)
         srv.listen(8)
         self._srv = srv
 

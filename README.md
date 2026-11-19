@@ -2,13 +2,13 @@
 
 [![MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://github.com/ROCm/rocm-aic/blob/main/LICENSE.md)
 [![Platform](https://img.shields.io/badge/Platform-Linux-lightgrey.svg)](README.md)
-[![ROCm](https://img.shields.io/badge/ROCm-10.1-green.svg)](https://rocm.docs.amd.com/en/docs-10.1.0/)
+[![ROCm](https://img.shields.io/badge/ROCm-10.2-green.svg)](https://rocm.docs.amd.com/en/docs-10.2.0/)
 [![PyTorch](https://img.shields.io/badge/PyTorch-2.15-blue.svg)](https://github.com/ROCm/pytorch/tree/abecaa87238d2d43d2641a22d89a51de185779b2)
 [![AITER](https://img.shields.io/badge/AITER-v0.1.29.post1-blue.svg)](https://github.com/ROCm/aiter/tree/v0.1.29.post1)
 [![vLLM](https://img.shields.io/badge/vLLM-v0.34.0-blue.svg)](https://github.com/vllm-project/vllm/tree/v0.34.0)
 [![LMCache](https://img.shields.io/badge/LMCache-v0.5.8rc1-blue.svg)](https://github.com/LMCache/LMCache/tree/v0.5.8rc1)
 [![NIXL](https://img.shields.io/badge/NIXL-v1.5.2-blue.svg)](https://github.com/ai-dynamo/nixl/tree/v1.5.2)
-[![HSA-Snoop](https://img.shields.io/badge/HSA--Snoop-v1.6.0-blue.svg)](https://github.com/sbates130272/hsa-snoop/tree/v1.6.0)
+[![HSA-Snoop](https://img.shields.io/badge/HSA--Snoop-cef62f97-blue.svg)](https://github.com/sbates130272/hsa-snoop/tree/cef62f97)
 [![Rocjitsu](https://img.shields.io/badge/Rocjitsu-98f6a72-blue.svg)](https://github.com/ROCm/rocm-systems/commit/98f6a72dcc49a5f809593deacbe5c9df89cde3b3)
 [![Qemu-Vfu](https://img.shields.io/badge/Qemu--Vfu-f91f120-blue.svg)](https://github.com/sbates130272/qemu/commit/f91f12068854848cdb248f2a4636ddfe41f3283b)
 [![Rocjitsu Guest](https://img.shields.io/badge/Rocjitsu_Guest-resolute%2Fc079195-blue.svg)](https://github.com/sbates130272/qemu-minimal/commit/c0791954aec508bfd3f26d11d6960f279d4b175a)
@@ -48,7 +48,7 @@ platform.
 
 | Component | Source | Ref |
 | --- | --- | --- |
-| Base OS | `rocm/dev-ubuntu-26.04:10.1.0-full` | Ubuntu 26.04, ROCm 10.1, Python 3.14 |
+| Base OS | `rocm/dev-ubuntu-26.04:10.2.0-full` | Ubuntu 26.04, ROCm 10.2, Python 3.14 |
 | PyTorch | `ROCm/pytorch` (source build) | `2.15 (abecaa8)` |
 | Triton | `ROCm/triton` (source build) | `release/internal/3.8.x` (669b31ac, vLLM v0.34.0 validated) |
 | vLLM | `github.com/vllm-project/vllm` (source build) | `v0.34.0` + 2 AMD patches |
@@ -56,7 +56,7 @@ platform.
 | FlashAttention | `Dao-AILab/flash-attention` (source build) | `0e60e394` |
 | LMCache | `LMCache/LMCache` (upstream) | `v0.5.8rc1` + 6 AMD patches |
 | NIXL | `ai-dynamo/nixl` (upstream) | `v1.5.2` + `nixl-rocm-ais-mt.patch` |
-| HSA Snoop | `sbates130272/hsa-snoop` (source build) | `v1.6.0` |
+| HSA Snoop | `sbates130272/hsa-snoop` (source build) | `cef62f97` |
 
 `aic-vllm` runs OpenTelemetry 1.40.0, below the 1.45.1 that vLLM v0.34.0
 declares: LMCache v0.5.8rc1 caps it there, and the vLLM process loads the

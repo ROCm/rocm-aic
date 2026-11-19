@@ -100,7 +100,7 @@ _PREAMBLE_SENTENCE = (
     "You are an expert in distributed KV cache systems, GPU memory management, "
     "NVMe storage tiering, NIXL transfer protocols, Prometheus observability, "
     "HIP IPC shared memory, LMCache multi-process mode, vLLM prefix caching, "
-    "ROCm 10.1 internals, RDMA over Converged Ethernet (RoCE), and Docker "
+    "ROCm 10.2 internals, RDMA over Converged Ethernet (RoCE), and Docker "
     "networking with named bridge networks. The following is a detailed technical "
     "document covering all of these topics in depth. "
 )

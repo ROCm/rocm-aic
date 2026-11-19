@@ -63,7 +63,7 @@
 # http://aic-prometheus:9090.
 #
 # Emulation mode (profile-driven, no GPU required -- needs the `emulate` image):
-#   VLLM_IMAGE_REF=rocm-aic:10.1-emulate docker compose --profile emulate up vllm-emulator
+#   VLLM_IMAGE_REF=rocm-aic:10.2-emulate docker compose --profile emulate up vllm-emulator
 #
 # Emulation + the full LMCache MP recipe (still no GPU, but needs the production
 # images -- the `emulate` stage stops before LMCache; the defaults are those):
@@ -812,13 +812,17 @@ services:
     environment:
       - ROCR_VISIBLE_DEVICES=${AIC_ROCR_VISIBLE:-${GPU:-0}}
       - HIP_VISIBLE_DEVICES=${AIC_HIP_VISIBLE:-0}
+      # The default host label is the container id, which forks every series
+      # on each recreate.
+      - HSA_SNOOP_HOST_LABEL=aic-hsa-snoop
+      - HSA_SNOOP_ROCM_VERSION=${ROCM_VERSION:-unknown}
     devices:
       - /dev/kfd
       - /dev/dri
     volumes:
       - /sys/kernel/debug:/sys/kernel/debug
       - /sys/kernel/tracing:/sys/kernel/tracing
-    command: ["--all", "--prometheus", "--prometheus-port", "9488", "--mem-snoop"]
+    command: ["--all", "--prometheus", "--prometheus-port", "9488", "--mem-snoop", "--poll-us", "1000"]
     healthcheck:
       test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/9488"]
       interval: 30s
@@ -925,7 +929,7 @@ services:
   # The `emulate-mp` profile runs the SAME service with the full LMCache MP
   # recipe attached — see the KV_TRANSFER_ARG block below and `make
   # emulate-mp-test`.  That profile needs the production images (the defaults),
-  # NOT :10.1-emulate (whose build stops before LMCache):
+  # NOT :10.2-emulate (whose build stops before LMCache):
   #
   #   docker compose --profile emulate-mp up lmcache-emulator vllm-emulator
   # Name both services: the GPU `vllm` service has no profile (so the vram

@@ -41,7 +41,7 @@
 # standalone `docker buildx bake` and tests/test_aic_bake_env.py keeps it equal.
 variable "AIC_VERSION"   { default = "0.1.0" }
 
-variable "ROCM_VERSION"      { default = "10.1.0" }
+variable "ROCM_VERSION"      { default = "10.2.0" }
 # ROCm/pytorch publishes no tag for the 2.15 series, so a SHA is the only
 # reproducible ref.  abecaa8 is the head of release/2.15 as of 2026-11-17.
 variable "PYTORCH_REF"       { default = "abecaa87238d2d43d2641a22d89a51de185779b2" }
@@ -62,7 +62,9 @@ variable "CUPY_VERSION"      { default = "14.2.0" }
 # UCX is NIXL's transport.  v1.22.0 is the latest stable release; upstream NIXL
 # v1.5.2 CI builds against the pre-release v1.23.x branch.
 variable "UCX_REF"           { default = "v1.22.0" }
-variable "HSA_SNOOP_REF"     { default = "v1.6.0" }
+# Unreleased commit on feat/cpu-deload: v1.6.0 stalls its ring poller under
+# --mem-snoop and counts a few percent of launches.  Move to the tag once cut.
+variable "HSA_SNOOP_REF"     { default = "cef62f97" }
 
 # Base images.  ROCM_BASE_IMAGE is the full ROCm toolchain the source builds
 # run on; ROCM_RUNTIME_IMAGE is what the shipped images start from.
@@ -70,8 +72,8 @@ variable "ROCM_BASE_IMAGE"    { default = "rocm/dev-ubuntu-26.04:${ROCM_VERSION}
 variable "ROCM_RUNTIME_IMAGE" { default = "ubuntu:26.04" }
 
 # Source of the patched libamdhip64 built into aic-base.  A literal, not derived
-# from ROCM_VERSION: the 10.1 branch is release/therock-10.1, with no patch level.
-variable "CLR_REF"            { default = "release/therock-10.1" }
+# from ROCM_VERSION: the 10.2 branch is release/therock-10.2, with no patch level.
+variable "CLR_REF"            { default = "release/therock-10.2" }
 # Triton is source-built for aic-base; the ref follows vLLM's Dockerfile.rocm_base
 # (v0.34.0; branch head 669b31ac when pinned).
 variable "TRITON_REF"         { default = "release/internal/3.8.x" }

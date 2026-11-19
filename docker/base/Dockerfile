@@ -98,7 +98,7 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
         bpftrace \
     && update-ca-certificates && \
     # Ubuntu 26.04 packages its own ROCm 7.1 (pulled in by libucx0/libopenmpi40)
-    # with the same sonames as ROCm 10.1; it breaks hipIpcGetMemHandle.  Nothing
+    # with the same sonames as ROCm 10.x; it breaks hipIpcGetMemHandle.  Nothing
     # above pulls it in today; the purge guards against a future dependency.
     { DEBIAN_FRONTEND=noninteractive apt-get remove -y --purge \
         libhsa-runtime64-1 libhsakmt1 libamdhip64-7 libamd-comgr3 2>/dev/null || true; }
@@ -113,7 +113,7 @@ ENV PIP_ROOT_USER_ACTION=ignore \
 FROM base AS build_triton
 
 # =============================================================================
-# Triton source build — source pin matches the ROCm 10.1 / vLLM-validated ref.
+# Triton source build — source pin matches the vLLM-validated ref.
 # =============================================================================
 ARG ROCM_ARCH
 ARG TRITON_GIT_URL
@@ -640,7 +640,7 @@ RUN pip3 install --break-system-packages CppHeaderParser && \
 
 WORKDIR /app/rocm-systems
 RUN git sparse-checkout init --cone && \
-    git sparse-checkout set projects/clr projects/hip && \
+    git sparse-checkout set projects/clr projects/hip projects/hrr && \
     git checkout HEAD && \
     patch -p1 < /tmp/hip-ipc-signal-slot-index-fix.patch
 WORKDIR /
@@ -726,7 +726,7 @@ RUN --mount=type=secret,id=tls_cert,required=false \
 # Ubuntu 26.04.  Use ubuntu:26.04 as the base and add the
 # AMD apt repo using the signing key COPYed from the build-time base stage
 # (which already has it from the -full image — no network fetch needed).
-# Version-specific package names are computed from ROCM_VERSION (10.1.0 → "10.1").
+# Version-specific package names are computed from ROCM_VERSION (10.2.0 → "10.2").
 # hadolint ignore=DL3008
 # Step 1: ca-certificates must be installed before adding the HTTPS AMD repo,
 # otherwise apt-get update cannot verify the TLS connection and silently skips
@@ -944,7 +944,7 @@ COPY --from=build_nixl /opt/rocnixl-ucx/ /opt/rocnixl-ucx/
 
 # The AMD packages install to /opt/rocm/core-<major.minor>/ (not /opt/rocm/
 # directly).  The -full image creates symlinks; with explicit packages we must
-# use the versioned path, derived from ROCM_VERSION (10.1.0 -> core-10.1).
+# use the versioned path, derived from ROCM_VERSION (10.2.0 -> core-10.2).
 RUN _mm=$(echo "${ROCM_VERSION}" | cut -d. -f1-2) && \
     echo "/opt/rocm/core-${_mm}/lib" > /etc/ld.so.conf.d/rocm.conf && \
     ldconfig

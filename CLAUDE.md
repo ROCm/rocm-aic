@@ -23,14 +23,15 @@ that redundancy.
   were `crsuse2-m2m-NNN`)
 - Controllers are *not* compute nodes and never appear in `sinfo`
 
-## Current stack (2026-11-17)
+## Current stack (2026-11-19)
 
 `docker/docker-bake.hcl` owns every build pin (see `docs/ENVIRONMENT.md`); the
 Dockerfiles carry bare `ARG`s with no defaults. Current pins: base image
-`rocm/dev-ubuntu-26.04:10.1.0-full` (ROCm 10.1.0, Ubuntu 26.04, Python 3.14),
+`rocm/dev-ubuntu-26.04:10.2.0-full` (ROCm 10.2.0, Ubuntu 26.04, Python 3.14),
 PyTorch source-built from `ROCm/pytorch@release/2.15`, torchvision `v0.29.2`,
 Triton `release/internal/3.8.x`, vLLM `v0.34.0`, LMCache `v0.5.8rc1`, NIXL
-`v1.5.2` on UCX `v1.22.0`, AITER `v0.1.29.post1`, hsa-snoop `v1.6.0`. KVBench
+`v1.5.2` on UCX `v1.22.0`, AITER `v0.1.29.post1`, hsa-snoop `cef62f97`
+(unreleased, `feat/cpu-deload`). KVBench
 stays on LMCache 0.5.6. Validate changes on an MI355X before modifying the
 stack; as of this date the new stack has only been served on gfx1201.
 
@@ -173,7 +174,8 @@ build (`AIC_ROCM_ARCH` default includes `gfx1201`). Key differences from CDNA:
   and should share the PID namespace (`network_mode: container:aic-lmcache` +
   `pid: service:lmcache` — the compose defaults; no make override needed).
 
-  Validated 2026-11-17 on ROCm 10.1 with amdgpu-dkms 7.1.9: in the default
+  Validated 2026-11-17 on ROCm 10.1 and 2026-11-19 on ROCm 10.2, both with
+  amdgpu-dkms 7.1.9: in the default
   (non-legacy) mode with those shared namespaces, stock HIP memory-handle IPC
   registers, stores and retrieves KV across the two containers, so the AIC
   VMM/SCM_RIGHTS workaround was removed. Cross-process HIP *event* handles are

@@ -94,9 +94,9 @@ it), whose defaults a test keeps equal to bake's.
 | `AIC_BASE_IMAGE` | `aic-base:${IMAGE_TAG:-latest}` | `.slurm/run-build-distribute.sh` | Slurm scripts: `name:tag` the `bake` command stores the base image under |
 | `AIC_IMAGE` | `${AIC_IMAGE_NAME:-rocm-aic}:${_aic_tag:-latest}`; `rocm-aic:latest` (`monitoring/monitoring-lib.sh`) | `.slurm/run-build-distribute.sh` | Slurm scripts: a complete `name:tag` for the single-image paths, used verbatim; wins over `AIC_IMAGE_NAME`. The monitoring library runs its Prometheus queries from it |
 | `AIC_IMAGE_NAME` | `rocm-aic` | `.slurm/run-build-distribute.sh` | Slurm scripts: image name only; the version-derived tag is appended |
-| `AIC_EMULATE_IMAGE` | `${IMAGE_NAME:-rocm-aic}:${IMAGE_TAG_EMULATE:-10.1-emulate}` | `.slurm/run-build-distribute.sh` | `name:tag` of the CPU-only emulation image built by `make dist-build-emulate` |
+| `AIC_EMULATE_IMAGE` | `${IMAGE_NAME:-rocm-aic}:${IMAGE_TAG_EMULATE:-10.2-emulate}` | `.slurm/run-build-distribute.sh` | `name:tag` of the CPU-only emulation image built by `make dist-build-emulate` |
 | `IMAGE_NAME` | `rocm-aic` | `.slurm/run-build-distribute.sh` | Name part of the default `AIC_EMULATE_IMAGE` |
-| `IMAGE_TAG_EMULATE` | `10.1-emulate` | `.slurm/run-build-distribute.sh` | Tag part of the default `AIC_EMULATE_IMAGE` |
+| `IMAGE_TAG_EMULATE` | `10.2-emulate` | `.slurm/run-build-distribute.sh` | Tag part of the default `AIC_EMULATE_IMAGE` |
 <!-- END generated:image -->
 
 ### ROCm and GPU target
@@ -104,7 +104,7 @@ it), whose defaults a test keeps equal to bake's.
 <!-- BEGIN generated:rocm -->
 | Variable | Default | Owner | Description |
 | --- | --- | --- | --- |
-| `ROCM_VERSION` | `10.1.0` | `docker/docker-bake.hcl` | ROCm release the images are built on |
+| `ROCM_VERSION` | `10.2.0`; `unknown` (`docker/docker-compose.yml`) | `docker/docker-bake.hcl` | ROCm release the images are built on |
 | `ROCM_ARCH` | (empty); `gfx950` (`Makefile`, SPUR); `$(detect_gpu_arch)` (`.slurm/run-cliff.sbatch`) | `docker/docker-bake.hcl` | GPU arch of this host's stack: a `;`-, `,`- or space-separated `gfx` list. `make` fills it from `rocm_agent_enumerator` when unset and forces `gfx950` on SPUR; empty omits the arch suffix from the image tag |
 | `AIC_ROCM_ARCH` | `gfx90a;gfx942;gfx950;gfx1151;gfx1201` | `.slurm/run-build-distribute.sh` | Arch list a Slurm build compiles for and a Slurm test expects (`;`-separated). Separate from `ROCM_ARCH` on purpose: the default covers every supported arch, so one image runs on any of them |
 | `AIC_FAST_ARCH` | `gfx950` | `Makefile` | The single arch of the `-fast` make targets (`dist-build-fast`, `smoke-test-fast`, ...) |
@@ -128,8 +128,8 @@ it), whose defaults a test keeps equal to bake's.
 | `NIXL_REF` | `v1.5.2` | `docker/docker-bake.hcl` | NIXL ref |
 | `CUPY_VERSION` | `14.2.0` | `docker/docker-bake.hcl` | `cupy-rocm-7-0` release installed into `aic-lmcache` and `aic-vllm` |
 | `UCX_REF` | `v1.22.0` | `docker/docker-bake.hcl` | UCX ref (NIXL's transport) source-built into the base image |
-| `HSA_SNOOP_REF` | `v1.6.0` | `docker/docker-bake.hcl` | hsa-snoop ref |
-| `CLR_REF` | `release/therock-10.1` | `docker/docker-bake.hcl` | `ROCm/rocm-systems` ref the patched `libamdhip64` in the base image is built from; bump it together with `ROCM_VERSION` |
+| `HSA_SNOOP_REF` | `cef62f97` | `docker/docker-bake.hcl` | hsa-snoop ref |
+| `CLR_REF` | `release/therock-10.2` | `docker/docker-bake.hcl` | `ROCm/rocm-systems` ref the patched `libamdhip64` in the base image is built from; bump it together with `ROCM_VERSION` |
 | `TRITON_REF` | `release/internal/3.8.x` | `docker/docker-bake.hcl` | Triton ref source-built into the base image |
 | `NVME_EXPORTER_VERSION` | `3.0.0` | `docker/docker-bake.hcl` | `nvme_exporter` release packaged into the NVMe exporter image |
 | `RDMA_EXPORTER_VERSION` | `0.7.5` | `docker/docker-bake.hcl` | `rdma_exporter` release packaged into the RDMA exporter image |
