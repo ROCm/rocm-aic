@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>AIC Wheel Latency — 2026-11-18</title>
+  <title>AIC Wheel Latency — 2026-11-19</title>
   <style>
     body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
             background: #0d1117; color: #e6edf3; padding: 2rem 1.5rem; max-width: 900px; margin: auto; }
@@ -27,8 +27,8 @@
 <p class="meta">
   Model: <strong>Qwen/Qwen3-4B</strong> &nbsp;·&nbsp;
   Hardware: <strong>MI355X (gfx950)</strong> &nbsp;·&nbsp;
-  Wheels SHA: <a href="https://github.com/ROCm/rocm-aic/commit/55f8ff92f31023ddd56ed09596bbc9ac85bba88f">55f8ff92f310</a> &nbsp;·&nbsp;
-  Date: <strong>2026-11-18</strong> &nbsp;·&nbsp;
+  Wheels SHA: <a href="https://github.com/ROCm/rocm-aic/commit/525994d1833f25e892ba91a1a9bc908a80098631">525994d1833f</a> &nbsp;·&nbsp;
+  Date: <strong>2026-11-19</strong> &nbsp;·&nbsp;
   OSL: 64 tokens &nbsp;·&nbsp; Serial (1 request at a time)
 </p>
 
@@ -50,11 +50,11 @@
     </tr>
   </thead>
   <tbody>
-<tr><td><strong>1,100</strong></td><td>0.235s</td><td class="faster">0.214s <span class="delta">(−9%, −21 ms)</span></td><td class="faster">0.227s <span class="delta">(−3%, −8 ms)</span></td><td class="faster">0.225s <span class="delta">(−4%, −10 ms)</span></td></tr>
-<tr><td><strong>4,400</strong></td><td>0.302s</td><td class="faster">0.250s <span class="delta">(−17%, −52 ms)</span></td><td class="faster">0.282s <span class="delta">(−7%, −20 ms)</span></td><td class="faster">0.281s <span class="delta">(−7%, −21 ms)</span></td></tr>
-<tr><td><strong>8,800</strong></td><td>0.433s</td><td class="faster">0.287s <span class="delta">(−34%, −146 ms)</span></td><td class="faster">0.340s <span class="delta">(−21%, −93 ms)</span></td><td class="faster">0.341s <span class="delta">(−21%, −92 ms)</span></td></tr>
-<tr><td><strong>17,600</strong></td><td>0.808s</td><td class="faster">0.360s <span class="delta">(−55%, −448 ms)</span></td><td class="faster">0.460s <span class="delta">(−43%, −348 ms)</span></td><td class="faster">0.459s <span class="delta">(−43%, −349 ms)</span></td></tr>
-<tr><td><strong>35,200</strong></td><td>6.065s</td><td class="faster">0.512s <span class="delta">(−92%, −5553 ms)</span></td><td class="faster">1.184s <span class="delta">(−80%, −4881 ms)</span></td><td class="faster">1.180s <span class="delta">(−81%, −4885 ms)</span></td></tr>
+<tr><td><strong>1,100</strong></td><td>0.235s</td><td class="slower">2.054s <span class="delta">(+774%, +1819 ms)</span></td><td class="faster">0.225s <span class="delta">(−4%, −10 ms)</span></td><td class="faster">0.225s <span class="delta">(−4%, −10 ms)</span></td></tr>
+<tr><td><strong>4,400</strong></td><td>0.302s</td><td class="faster">0.251s <span class="delta">(−17%, −51 ms)</span></td><td class="faster">0.277s <span class="delta">(−8%, −25 ms)</span></td><td class="faster">0.277s <span class="delta">(−8%, −25 ms)</span></td></tr>
+<tr><td><strong>8,800</strong></td><td>0.432s</td><td class="faster">0.287s <span class="delta">(−34%, −145 ms)</span></td><td class="faster">0.337s <span class="delta">(−22%, −95 ms)</span></td><td class="faster">0.337s <span class="delta">(−22%, −95 ms)</span></td></tr>
+<tr><td><strong>17,600</strong></td><td>0.837s</td><td class="faster">0.359s <span class="delta">(−57%, −478 ms)</span></td><td class="faster">0.451s <span class="delta">(−46%, −386 ms)</span></td><td class="faster">0.452s <span class="delta">(−46%, −385 ms)</span></td></tr>
+<tr><td><strong>35,200</strong></td><td>2.312s</td><td class="faster">0.510s <span class="delta">(−78%, −1802 ms)</span></td><td class="faster">0.677s <span class="delta">(−71%, −1635 ms)</span></td><td class="faster">0.676s <span class="delta">(−71%, −1636 ms)</span></td></tr>
   </tbody>
 </table>
 
@@ -62,13 +62,13 @@
 <table>
   <thead><tr><th>Phase</th><th>Total</th></tr></thead>
   <tbody>
-<tr><td>cold</td><td>39.21s</td></tr>
-<tr><td>hot</td><td>8.12s</td></tr>
-<tr><td>L1-DRAM</td><td>12.47s</td></tr>
-<tr><td>L2-disk</td><td>12.44s</td></tr>
+<tr><td>cold</td><td>20.59s</td></tr>
+<tr><td>hot</td><td>17.30s</td></tr>
+<tr><td>L1-DRAM</td><td>9.84s</td></tr>
+<tr><td>L2-disk</td><td>9.84s</td></tr>
   </tbody>
 </table>
 
-<footer>Generated 2026-11-18 08:18 UTC · <a href="https://github.com/ROCm/rocm-aic" style="color:#484f58">ROCm/rocm-aic</a></footer>
+<footer>Generated 2026-11-19 09:09 UTC · <a href="https://github.com/ROCm/rocm-aic" style="color:#484f58">ROCm/rocm-aic</a></footer>
 </body>
 </html>
