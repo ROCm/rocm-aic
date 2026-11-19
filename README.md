@@ -52,7 +52,7 @@ platform.
 | PyTorch | `ROCm/pytorch` (source build) | `2.13 (ec5f3b1)` |
 | vLLM | `github.com/vllm-project/vllm` (source build) | `v0.29.0` + 3 AMD patches |
 | AITER | `ROCm/aiter` (source build) | `v0.1.22.post1` (vLLM ROCm-validated) |
-| FlashAttention | `Dao-AILab/flash-attention` (source build) | `0e60e394` (vLLM ROCm-validated) |
+| FlashAttention | `Dao-AILab/flash-attention` (source build) | `v2.8.3.post1` |
 | LMCache | `LMCache/LMCache` (upstream) | `v0.5.6` + 16 AMD patches |
 | NIXL | `ai-dynamo/nixl` (upstream) | `v1.4.1` + `nixl-rocm-ais-mt.patch` |
 | hsa-snoop | `sbates130272/hsa-snoop` (source build) | `v1.2.0` |

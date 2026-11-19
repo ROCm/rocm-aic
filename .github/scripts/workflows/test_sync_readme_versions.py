@@ -158,6 +158,7 @@ class ReadmeSyncTest(unittest.TestCase):
             "LMCACHE_REF": "v98.76.55-fixture",
             "NIXL_REF": "v98.76.56-fixture",
             "HSA_SNOOP_REF": "v98.76.57-fixture",
+            "FLASH_ATTN_REF": "v98.76.59-fixture",
         }
         for name, value in new_values.items():
             _, current = self.bake_default(name)
@@ -192,8 +193,13 @@ class ReadmeSyncTest(unittest.TestCase):
             f"(https://github.com/ROCm/aiter/tree/{new_values['AITER_REF']})",
             rendered,
         )
-        for name in ("AITER_REF", "LMCACHE_REF", "NIXL_REF", "HSA_SNOOP_REF"):
+        for name in ("AITER_REF", "LMCACHE_REF", "NIXL_REF", "HSA_SNOOP_REF", "FLASH_ATTN_REF"):
             self.assertIn(f"`{new_values[name]}`", rendered)
+        self.assertIn(
+            f"| FlashAttention | `Dao-AILab/flash-attention` (source build) | "
+            f"`{new_values['FLASH_ATTN_REF']}` |",
+            rendered,
+        )
         # PyTorch shows the readable series plus the short commit, and links
         # to the full immutable SHA.
         _pt = f"{new_values['PYTORCH_SERIES']} ({new_values['PYTORCH_REF'][:7]})"
@@ -234,6 +240,16 @@ class ReadmeSyncTest(unittest.TestCase):
         self.assert_write_fails_without_change(
             "must match the README Ubuntu 24.04/Python 3.12 contract"
         )
+
+    def test_flash_attn_write_updates_row(self) -> None:
+        self.set_bake_default("FLASH_ATTN_REF", "v9.9.9-fixture")
+        result = self.run_sync("--write")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(
+            "| FlashAttention | `Dao-AILab/flash-attention` (source build) | `v9.9.9-fixture` |",
+            self.readme.read_text(encoding="utf-8"),
+        )
+        self.assertEqual(self.run_sync("--check").returncode, 0)
 
     def test_ref_badge_value_is_escaped(self) -> None:
         cases = (
