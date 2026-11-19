@@ -435,8 +435,8 @@ RJ_LMCACHE_IMAGE_REF ?= $(word 3,$(_rj_bake))
 # Still hand-maintained against compose -- `docker compose --profile cache
 # --profile monitoring config --images` is the check when adding a service.
 #
-# hsa-snoop is the RJ_ROCJITSU_ARCH one, not the global HSA_SNOOP_IMAGE, which
-# carries the HOST's ROCM_ARCH; [6d] hands it to the guest's compose explicitly.
+# hsa-snoop's tag is its own ref, the same for every arch; [6d] hands it to the
+# guest's compose explicitly.
 RJ_HSA_SNOOP_IMAGE_REF ?= $(word 6,$(_rj_bake))
 RJ_LOCAL_IMAGES  = $(RJ_IMAGE_REF) $(RJ_LMCACHE_IMAGE_REF) \
                    $(wordlist 4,5,$(_rj_bake)) \

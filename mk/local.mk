@@ -58,7 +58,7 @@ build:
 	else \
 		echo "Layer cache: disabled (set AIC_CACHE_REF or AIC_CACHE_DIR to enable)"; \
 	fi
-	@echo "--- build: aic-base/vllm/lmcache/hsa-snoop:$(IMAGE_TAG) + nvme/rdma-exporter:local (ROCM_ARCH=$(ROCM_ARCH)) ---"
+	@echo "--- build: aic-base/vllm/lmcache:$(IMAGE_TAG) + $(HSA_SNOOP_IMAGE_REF) + nvme/rdma-exporter:local (ROCM_ARCH=$(ROCM_ARCH)) ---"
 	BUILDX_BAKE_ENTITLEMENTS_FS=0 \
 	    docker buildx bake \
 		--builder $(AIC_BUILDX_BUILDER) \
@@ -66,7 +66,7 @@ build:
 		$(BAKE_OUTPUT_FLAG) \
 		-f "$(REPO_ROOT)/docker/docker-bake.hcl" \
 		$(BAKE_TARGETS)
-	@echo "Built aic-base/aic-vllm/aic-lmcache/aic-hsa-snoop:$(IMAGE_TAG) (vllm/lmcache/hsa-snoop also tagged :latest)"
+	@echo "Built aic-base/aic-vllm/aic-lmcache:$(IMAGE_TAG) and $(HSA_SNOOP_IMAGE_REF) (vllm/lmcache/hsa-snoop also tagged :latest)"
 	@echo "Built aic-nvme-exporter:local, aic-rdma-exporter:local"
 
 # ---- Wheel export ------------------------------------------------------------

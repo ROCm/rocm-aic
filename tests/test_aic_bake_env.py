@@ -100,8 +100,11 @@ class AicBakeEnvTest(unittest.TestCase):
         targets = _bake_targets(*IMAGE_REFS.values())
         for ref, target in IMAGE_REFS.items():
             self.assertEqual(values[ref], targets[target]["tags"][0], ref)
-        for target in ("base", "vllm", "lmcache", "hsa-snoop", "emulate"):
+        for target in ("base", "vllm", "lmcache", "emulate"):
             self.assertTrue(values[_ref_of(target)].endswith(f":{values['IMAGE_TAG']}"), target)
+        snoop_tag = values["HSA_SNOOP_REF"].removeprefix("v")
+        self.assertEqual(values["HSA_SNOOP_IMAGE_REF"], f"aic-hsa-snoop:{snoop_tag}")
+        self.assertNotIn(snoop_tag, values["IMAGE_TAG"])
 
     def test_env_mode_matches_json(self) -> None:
         values = _values(**self.AWKWARD)

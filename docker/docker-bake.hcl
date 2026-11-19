@@ -176,7 +176,8 @@ function "tags" {
 }
 
 # Same, for images whose tag is a fixed string rather than the version tag
-# (the exporters' ":local", kvbench's pinned tag, agentx's aiperf version).
+# (the exporters' ":local", kvbench's pinned tag, agentx's aiperf version,
+# hsa-snoop's own ref).
 function "fixed_tags" {
   params = [name, tag]
   result = (AIC_IMAGE_PREFIX == ""
@@ -221,8 +222,10 @@ function "rocm_arch_list" {
 }
 
 # The version portion of the tag (arch-independent apart from fa inclusion).
+# hsa-snoop is not part of it: that image shares nothing with these, so its tag
+# is its own ref and a bump of either side leaves the other's tag alone.
 variable "_TAG_BASE" {
-  default = "${AIC_VERSION}-rocm${ROCM_VERSION}-pytorch${PYTORCH_SERIES}-vllm${trimprefix(VLLM_REF, "v")}-aiter${trimprefix(AITER_REF, "v")}${has_gfx9(ROCM_ARCH) ? "-fa${trimprefix(FLASH_ATTN_REF, "v")}" : ""}-lmcache${trimprefix(LMCACHE_REF, "v")}-nixl${trimprefix(NIXL_REF, "v")}-hsasnoop${trimprefix(HSA_SNOOP_REF, "v")}"
+  default = "${AIC_VERSION}-rocm${ROCM_VERSION}-pytorch${PYTORCH_SERIES}-vllm${trimprefix(VLLM_REF, "v")}-aiter${trimprefix(AITER_REF, "v")}${has_gfx9(ROCM_ARCH) ? "-fa${trimprefix(FLASH_ATTN_REF, "v")}" : ""}-lmcache${trimprefix(LMCACHE_REF, "v")}-nixl${trimprefix(NIXL_REF, "v")}"
 }
 
 # Full image tag.  The arch suffix is dropped when ROCM_ARCH is empty, and
@@ -465,7 +468,8 @@ target "wheels-emulate" {
 target "hsa-snoop" {
   context    = "."
   dockerfile = "docker/hsa-snoop/Dockerfile"
-  tags       = tags("aic-hsa-snoop", true)
+  tags       = concat(fixed_tags("aic-hsa-snoop", trimprefix(HSA_SNOOP_REF, "v")),
+                      AIC_IMAGE_PREFIX == "" ? ["aic-hsa-snoop:latest"] : [])
   args = {
     ROCM_VERSION       = ROCM_VERSION
     ROCM_BUILD_IMAGE   = ROCM_BASE_IMAGE
