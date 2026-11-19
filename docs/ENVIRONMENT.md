@@ -499,6 +499,7 @@ directly. They also read `BENCH_ENDPOINT`, `AIC_NETWORK`, `GPU`, `LOG`,
 | `AGENTX_SERVER_METRICS` | (empty) | `benchmarks/agentx/run_agentx.sh` | Space-separated Prometheus `/metrics` URLs `aiperf` records besides the endpoint's own. Empty means the stack's LMCache metrics port on the `aic` bridge, or nothing when `BENCH_ENDPOINT` is set; `none` disables it |
 | `AGENTX_EXTRA_ARGS` | (empty) | `benchmarks/agentx/run_agentx.sh` | Space-separated arguments appended to `aiperf profile` |
 | `AGENTX_ARGS` | (empty) | `mk/bench.mk` | Options `make agentx-run` and `make agentx-sweep` pass to `benchmarks/agentx/run_agentx.sh`, e.g. `--dry-run` |
+| `AGENT_SIMPLE_ARGS` | `s1 220 16 480` | `mk/bench.mk` | Arguments `make agent-simple-run` passes to `benchmarks/agent-simple/stress.py`: run id, documents, concurrency, seconds, optional maximum words per document |
 <!-- END generated:agentx -->
 
 ## Tests

@@ -284,6 +284,7 @@ AGENTX_SLICE_DURATION: Width of the time slices in the `aiperf` export, seconds
 AGENTX_SERVER_METRICS: Space-separated Prometheus `/metrics` URLs `aiperf` records besides the endpoint's own. Empty means the stack's LMCache metrics port on the `aic` bridge, or nothing when `BENCH_ENDPOINT` is set; `none` disables it
 AGENTX_EXTRA_ARGS: Space-separated arguments appended to `aiperf profile`
 AGENTX_ARGS: Options `make agentx-run` and `make agentx-sweep` pass to `benchmarks/agentx/run_agentx.sh`, e.g. `--dry-run`
+AGENT_SIMPLE_ARGS: Arguments `make agent-simple-run` passes to `benchmarks/agent-simple/stress.py`: run id, documents, concurrency, seconds, optional maximum words per document
 
 [cliff]
 AIC_CLIFF_ARMS: Comma list of arms to run: `vram`, `nvme`, `gds`. `make cliff-spur-l2` presets `nvme`

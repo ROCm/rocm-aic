@@ -10,7 +10,8 @@
 
 .PHONY: cliff plot kvbench-up kvbench-down \
         cliff-kvbench-local test-emulate-local capture-profile-local \
-        test-rocjitsu-local agentx-build agentx-corpus agentx-run agentx-sweep
+        test-rocjitsu-local agentx-build agentx-corpus agentx-run agentx-sweep \
+        agent-simple-run
 
 # Benchmarks run in aic-client (started by `make up`), on the aic bridge with
 # the repo at /repo and logs/ at /logs, so they reach vLLM by name.  Wait for
@@ -137,6 +138,20 @@ agentx-run:
 
 agentx-sweep:
 	@bash "$(CURDIR)/benchmarks/agentx/overnight_sweep.sh" $(AGENTX_ARGS)
+
+# ---- agent-simple (synthetic cache-tier stress) ------------------------------
+# benchmarks/agent-simple/stress.py from aic-client: deterministic documents
+# revisited at random by concurrent clients, reporting the share of prompt
+# tokens served from the GPU prefix cache, LMCache L1 and LMCache L2.
+#
+#   make agent-simple-run
+#   make agent-simple-run AGENT_SIMPLE_ARGS="s1 300 32 480"
+
+# <run-id> <documents> <concurrency> <seconds> [<max-words>]
+AGENT_SIMPLE_ARGS ?= s1 220 16 480
+
+agent-simple-run:
+	@bash "$(CURDIR)/benchmarks/agent-simple/run_stress.sh" $(AGENT_SIMPLE_ARGS)
 
 # ---- Emulate targets (local, no Slurm) ----------------------------------------
 
