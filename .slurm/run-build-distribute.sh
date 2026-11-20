@@ -2400,6 +2400,14 @@ if ! compose --profile cache up -d; then
     exit 1
 fi
 
+# The engine's own error sits far above the API server's traceback, which
+# alone fills an 80-line tail, so print the first error lines after it.
+vllm_failure_logs() {
+    compose logs --tail 80 --no-color vllm 2>&1 | sed 's/^/  [vllm] /'
+    echo "  --- first error lines in the vLLM log ---"
+    compose logs --no-color vllm 2>&1 | grep -E 'ERROR|CRITICAL|Error:|[Ee]rror ' | head -60 | sed 's/^/  [vllm] /' || true
+}
+
 # Wait for the vLLM endpoint (weights load + one-time model download).
 # vLLM is intentionally reachable only on the Compose network, so probe from
 # inside its container instead of the Slurm host's loopback interface.
@@ -2410,14 +2418,14 @@ for _i in \$(seq 1 ${AIC_TINY_READY_TIMEOUT}); do
     if [ "\${_vllm_state}" != "running" ]; then
         _vllm_exit="\$(docker inspect --format '{{.State.ExitCode}}' "\${VLLM_CONTAINER}" 2>/dev/null || echo unknown)"
         echo "[tiny-test] FAIL: vLLM exited before readiness (state=\${_vllm_state:-missing}, exit=\${_vllm_exit})" >&2
-        compose logs --tail 80 --no-color vllm 2>&1 | sed 's/^/  [vllm] /'
+        vllm_failure_logs
         exit 1
     fi
     sleep 5
 done
 if [ "\${ready}" != "1" ]; then
     echo "[tiny-test] FAIL: vLLM never became ready" >&2
-    compose logs --tail 80 --no-color vllm 2>&1 | sed 's/^/  [vllm] /'
+    vllm_failure_logs
     exit 1
 fi
 echo "[tiny-test] endpoint ready; sending one chat completion ..."
