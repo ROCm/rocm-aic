@@ -1,42 +1,42 @@
 # AIC Prometheus Metrics Reference
 
-**Generated:** 2026-11-20 17:55 UTC · **Total metrics:** 539 · **SHA:** `1f79e56`
+**Generated:** 2026-11-20 22:52 UTC · **Total metrics:** 545 · **SHA:** `d297737`
 
 ## Component Versions
 
 | Component | Version |
 |-----------|---------|
 | version | `0.1.0` |
-| rocm | `7.14.1` |
-| vllm | `v0.29.0` |
+| rocm | `10.2.0` |
+| vllm | `v0.34.0` |
 | llm-emu | `b71c602` |
-| aiter | `v0.1.22.post1` |
-| flash-attention | `v2.8.3.post1` |
-| lmcache | `v0.5.6` |
-| nixl | `v1.4.1` |
-| hipfile | `rocm-7.14.1` |
+| aiter | `v0.1.29.post1` |
+| flash-attention | `0e60e394` |
+| lmcache | `v0.5.8rc1` |
+| nixl | `v1.5.2` |
+| hipfile | `rocm-10.2.0` |
 
 ## Running Containers
 
 | Container | Image | Status |
 |-----------|-------|--------|
 | `aic-amdgpu-exporter` | `rocm/device-metrics-exporter:v1.5.2` | Up About a minute |
-| `aic-vllm-gpu0` | `aic-vllm:0.1.0-rocm7.14.1-pytorch2.13-vllm0.29.0-aiter0.1.22.post1-fa2.8.3.post1-lmcache0.5.6-nixl1.4.1-hsasnoop1.2.0` | Up About a minute (healthy) |
-| `aic-lmcache` | `aic-lmcache:0.1.0-rocm7.14.1-pytorch2.13-vllm0.29.0-aiter0.1.22.post1-fa2.8.3.post1-lmcache0.5.6-nixl1.4.1-hsasnoop1.2.0` | Up About a minute (healthy) |
+| `aic-vllm-gpu0` | `aic-vllm:0.1.0-rocm10.2.0-pytorch2.15-vllm0.34.0-aiter0.1.29.post1-fa0e60e394-lmcache0.5.8rc1-nixl1.5.2` | Up About a minute (healthy) |
+| `aic-lmcache` | `aic-lmcache:0.1.0-rocm10.2.0-pytorch2.15-vllm0.34.0-aiter0.1.29.post1-fa0e60e394-lmcache0.5.8rc1-nixl1.5.2` | Up About a minute (healthy) |
 | `aic-alloy` | `grafana/alloy:v1.8.3` | Up About a minute |
-| `aic-lmcache-coordinator` | `aic-lmcache:0.1.0-rocm7.14.1-pytorch2.13-vllm0.29.0-aiter0.1.22.post1-fa2.8.3.post1-lmcache0.5.6-nixl1.4.1-hsasnoop1.2.0` | Up About a minute (healthy) |
+| `aic-lmcache-coordinator` | `aic-lmcache:0.1.0-rocm10.2.0-pytorch2.15-vllm0.34.0-aiter0.1.29.post1-fa0e60e394-lmcache0.5.8rc1-nixl1.5.2` | Up About a minute (healthy) |
+| `aic-prometheus` | `prom/prometheus:v3.14.0` | Up About a minute |
 | `aic-client` | `python:3.12` | Up About a minute |
 | `aic-loki` | `grafana/loki:3.5.0` | Up About a minute |
-| `aic-prometheus` | `prom/prometheus:v3.14.0` | Up About a minute |
 | `aic-grafana` | `grafana/grafana:13.2.2` | Up About a minute |
 
 ## Metrics Sources
 
-- [vllm](#vllm) — 91 metrics
-- [lmcache](#lmcache) — 27 metrics
-- [nixl](#nixl) — 19 metrics
-- [lmcache_coordinator](#lmcache-coordinator) — 7 metrics
-- [amdgpu_exporter](#amdgpu-exporter) — 132 metrics
+- [vllm](#vllm) — 97 metrics
+- [lmcache](#lmcache) — 24 metrics
+- [nixl](#nixl) — 21 metrics
+- [lmcache_coordinator](#lmcache-coordinator) — 9 metrics
+- [amdgpu_exporter](#amdgpu-exporter) — 131 metrics
 - [prometheus](#prometheus) — 263 metrics
 
 ## vllm
@@ -59,6 +59,8 @@
 | `python_gc_objects_collected_total` | counter | Objects collected during gc |
 | `python_gc_objects_uncollectable_total` | counter | Uncollectable objects found during GC |
 | `python_info` | gauge | Python platform information |
+| `vllm:admission_rejections_created` | gauge | Number of admission attempts rejected by a queue limit, by reason. |
+| `vllm:admission_rejections_total` | counter | Number of admission attempts rejected by a queue limit, by reason. |
 | `vllm:cache_config_info` | gauge | Information of the LLMEngine CacheConfig |
 | `vllm:e2e_request_latency_seconds` | histogram | Histogram of e2e request latency in seconds. |
 | `vllm:e2e_request_latency_seconds_created` | gauge | Histogram of e2e request latency in seconds. |
@@ -92,9 +94,9 @@
 | `vllm:mm_cache_hits_total` | counter | Multi-modal cache hits, in terms of number of cached items. |
 | `vllm:mm_cache_queries_created` | gauge | Multi-modal cache queries, in terms of number of queried items. |
 | `vllm:mm_cache_queries_total` | counter | Multi-modal cache queries, in terms of number of queried items. |
-| `vllm:model_weights_memory_bytes` | gauge | GPU memory used by model weights in bytes (static after load). |
 | `vllm:num_preemptions_created` | gauge | Cumulative number of preemption from the engine. |
 | `vllm:num_preemptions_total` | counter | Cumulative number of preemption from the engine. |
+| `vllm:num_requests_kv_fetch_by_stage` | gauge | Number of waiting requests by async KV load stage. Stage labels: 'waiting_to_start' = needs an async KV load that has not started; 'in_progress' = load started and not yet reported finished; 'completed_waiting' = load finished, request not running yet. |
 | `vllm:num_requests_running` | gauge | Number of requests in model execution batches. |
 | `vllm:num_requests_waiting` | gauge | Number of requests waiting to be processed. |
 | `vllm:num_requests_waiting_by_reason` | gauge | Number of waiting requests by reason. Reason labels: 'capacity' = waiting for scheduling capacity; 'deferred' = deferred by transient constraints (LoRA budget, KV transfer, blocked status). Sum of all reasons equals vllm:num_requests_waiting. |
@@ -104,6 +106,8 @@
 | `vllm:prefix_cache_queries_total` | counter | Prefix cache queries, in terms of number of queried tokens. |
 | `vllm:prompt_tokens_by_source_created` | gauge | Number of prompt tokens by source. |
 | `vllm:prompt_tokens_by_source_total` | counter | Number of prompt tokens by source. |
+| `vllm:prompt_tokens_cached_by_source_created` | gauge | Prefix-cache hit tokens by the cache tier that supplied them: device (local HBM), host (offloaded to DRAM), disk, p2p (transferred from another vLLM instance) or external_unspecified. Counted at admission; sums to vllm:prefix_cache_hits + vllm:external_prefix_cache_hits. |
+| `vllm:prompt_tokens_cached_by_source_total` | counter | Prefix-cache hit tokens by the cache tier that supplied them: device (local HBM), host (offloaded to DRAM), disk, p2p (transferred from another vLLM instance) or external_unspecified. Counted at admission; sums to vllm:prefix_cache_hits + vllm:external_prefix_cache_hits. |
 | `vllm:prompt_tokens_cached_created` | gauge | Number of cached prompt tokens (local + external). |
 | `vllm:prompt_tokens_cached_total` | counter | Number of cached prompt tokens (local + external). |
 | `vllm:prompt_tokens_created` | gauge | Number of prefill tokens processed. |
@@ -116,6 +120,8 @@
 | `vllm:request_inference_time_seconds_created` | gauge | Histogram of time spent in RUNNING phase for request. |
 | `vllm:request_max_num_generation_tokens` | histogram | Histogram of maximum number of requested generation tokens. |
 | `vllm:request_max_num_generation_tokens_created` | gauge | Histogram of maximum number of requested generation tokens. |
+| `vllm:request_num_preemptions` | histogram | Histogram of the number of times a request was preempted. |
+| `vllm:request_num_preemptions_created` | gauge | Histogram of the number of times a request was preempted. |
 | `vllm:request_params_max_tokens` | histogram | Histogram of the max_tokens request parameter. |
 | `vllm:request_params_max_tokens_created` | gauge | Histogram of the max_tokens request parameter. |
 | `vllm:request_params_n` | histogram | Histogram of the n request parameter. |
@@ -152,9 +158,6 @@
 | `lmcache_mp_l2_prefetch_adapters` | gauge | Count of L2 adapters attached to the prefetch controller, tagged by ``state`` (active or draining). |
 | `lmcache_mp_l2_store_adapters` | gauge | Count of L2 adapters attached to the store controller, tagged by ``state`` (active or draining). |
 | `lmcache_mp_l2_usage_bytes` | gauge | Bytes currently held in each L2 adapter, tagged by ``l2_name`` (one observation per adapter). |
-| `lmcache_mp_prefetch_hit_chunks_total` | counter | Chunks served from cache by tier (l1=DRAM, l2=NVMe). |
-| `lmcache_mp_prefetch_miss_chunks_total` | counter | Chunks requested but not found in any cache tier. |
-| `lmcache_mp_prefetch_requests_total` | counter | Total completed prefetch lookup requests. |
 | `process_cpu_seconds_total` | counter | Total user and system CPU time spent in seconds. |
 | `process_max_fds` | gauge | Maximum number of open file descriptors. |
 | `process_open_fds` | gauge | Number of open file descriptors. |
@@ -185,8 +188,10 @@
 | `agent_tx_requests_num_total` | counter | Number of requests sent by the agent |
 | `agent_xfer_post_time` | gauge | Post time of the last request |
 | `agent_xfer_post_time_total` | counter | Cumulative sum of time from start to posting to the back-end |
+| `agent_xfer_post_time_us` | histogram | Distribution of time from start to posting to the back-end, in microseconds |
 | `agent_xfer_time` | gauge | Transfer time of the last request |
 | `agent_xfer_time_total` | counter | Cumulative sum of transfer time from start to completion |
+| `agent_xfer_time_us` | histogram | Distribution of transfer time from start to completion, in microseconds |
 | `exposer_request_latencies` | summary | Latencies of serving scrape requests, in microseconds |
 | `exposer_scrapes_total` | counter | Number of times metrics were scraped |
 | `exposer_transferred_bytes_total` | counter | Transferred bytes to metrics services |
@@ -198,6 +203,8 @@
 | `lmcache_coordinator_directory_keys_total` | gauge | Keys with at least one placement in the key directory |
 | `lmcache_coordinator_directory_placements_total` | gauge | Total placements across all tracked keys |
 | `lmcache_coordinator_instance_info` | gauge | Non-zero for each registered instance; labels carry metadata |
+| `lmcache_coordinator_instance_l1_keys` | gauge | L1 keys reported per instance |
+| `lmcache_coordinator_instance_seq_gap` | gauge | 1 while the coordinator knows it is missing part of this instance's event stream |
 | `lmcache_coordinator_instances_registered` | gauge | Number of MP servers currently registered with the coordinator |
 | `lmcache_coordinator_quota_usage_bytes_total` | gauge | Total L2 usage bytes tracked by coordinator |
 | `lmcache_coordinator_scrape_duration_seconds` | gauge | Time in seconds to scrape the LMCache coordinator REST API |
@@ -207,7 +214,6 @@
 
 | Metric | Type | Description |
 |--------|------|-------------|
-| `gpu_afid_errors` | gauge | Last Occurred RAS Event associated AMD Field Identifier list |
 | `gpu_clock` | gauge | List of current GPU clock frequencies in MHz |
 | `gpu_ecc_correct_athub` | gauge | Correctable error count in ATHUB block |
 | `gpu_ecc_correct_bif` | gauge | Correctable error count in BIF block |
