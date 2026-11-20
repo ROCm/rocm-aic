@@ -1,6 +1,9 @@
 # Quick Start
 
-All commands run from the repo root with `make <target>`.
+Build the images, start the stack, run the KV-cache cliff benchmark and plot
+the result. Run every command from the repository root, on a host that meets
+the [prerequisites](../README.md#prerequisites). `make help` lists all targets,
+and [ENVIRONMENT.md](ENVIRONMENT.md) documents every variable.
 
 ## 1. Build the images
 
@@ -8,156 +11,77 @@ All commands run from the repo root with `make <target>`.
 make build ROCM_ARCH=gfx942
 ```
 
-This builds three images in sequence: `aic-base` (PyTorch + torchvision), then
-`aic-vllm` and `aic-lmcache`, which both inherit from it.
+This builds `aic-base` (PyTorch and shared dependencies), then `aic-vllm` and
+`aic-lmcache`, which inherit from it. Set `ROCM_ARCH` to your GPU architecture;
+the build compiles kernels for exactly the architectures you list.
 
-> **Low on RAM?**
->
-> ```bash
-> make build ROCM_ARCH=gfx942 BUILD_JOBS=8
-> ```
->
-> **Rebuilding often?** Set `AIC_CACHE_DIR` to persist BuildKit layers across
-> `docker system prune`, so the expensive PyTorch stage is not recompiled:
->
-> ```bash
-> make build ROCM_ARCH=gfx942 AIC_CACHE_DIR=~/.cache/rocm-aic-buildx
-> ```
->
-> The build stages a multi-GB OCI copy of `aic-base` under `TMPDIR`; point
-> `TMPDIR` at a real filesystem if `/tmp` is a small tmpfs.
-
-## 2. Start the stack (standard mode: DRAM L1 + NVMe L2a + NFS L2b)
+## 2. Start the stack
 
 ```bash
 make up \
     HF_TOKEN=hf_... \
     NVME_DATA=/mnt/lmcache-nvme \
     NFS_DATA=/mnt/lmcache-nfs \
-    VLLM_MODEL=openai/gpt-oss-120b
+    VLLM_MODEL=Qwen/Qwen2.5-7B-Instruct
 ```
 
-## 3. Start in GDS L1 mode (hipFile NVMe slab as L1, no L2)
+This starts LMCache, vLLM and the monitoring stack, with DRAM as the first cache
+tier and NVMe and NFS as the second. `make up-batch` runs it in the background;
+`make logs` follows the logs, `make endpoints` prints the Grafana URL, and
+`make down` stops everything.
+
+The default NVMe tier uses hipFile peer-to-peer DMA. If LMCache exits at startup
+with a `hipFileBufRegister` error, your host does not support it; add
+`AIC_L2_BACKEND=nixl_posix` to use ordinary file I/O instead.
+
+To use a hipFile (GPUDirect Storage) NVMe slab as the first tier instead:
 
 ```bash
-make up-gds-l1 \
-    HF_TOKEN=hf_... \
-    GDS_SLAB_DATA=/mnt/lmcache-nvme \
-    VLLM_MODEL=openai/gpt-oss-120b
+make up-gds-l1 HF_TOKEN=hf_... GDS_SLAB_DATA=/mnt/lmcache-nvme VLLM_MODEL=Qwen/Qwen2.5-7B-Instruct
 ```
 
-## 4. Ports, and running LMCache without compose
+## 3. Run the cliff benchmark
 
-`make up` puts the containers on a private docker bridge (`aic`). The ports
-below are container ports there, reached by name from other containers on the
-bridge (`aic-client`, which `make up` starts); only Grafana is published, on
-`127.0.0.1` with a free port Docker picks (`make endpoints` prints it), so the
-stack never claims a fixed host port. If your environment offers only host
-networking (or you run `lmcache server` by hand), the processes share the host's
-port space and every port below must be chosen explicitly.
-
-| Port | Flag / variable | Compose default (container port) |
-| --- | --- | --- |
-| LMCache ZMQ (vLLM connector) | `--port`, `LMCACHE_PORT` | 6555 |
-| LMCache HTTP API | `--http-port` | 8080 |
-| LMCache Prometheus `/metrics` | `--prometheus-port` | 9091 |
-| NIXL telemetry (NIXL L2 only) | `NIXL_TELEMETRY_PROMETHEUS_PORT` | 19090 |
-| vLLM OpenAI API | `--port` | 8000 |
-
-> **Always pass `--prometheus-port`.** The AIC image patches LMCache to serve
-> `/metrics` from a dedicated listener on that port, and LMCache's own default
-> is **9090**. Leave it unset on a shared host and the server dies at startup
-> with `OSError: [Errno 98] Address already in use` from
-> `prometheus_client.start_http_server`, no matter what `--http-port` is.
-> `--disable-metrics` also avoids the error, but turns off every
-> `lmcache_mp_*` metric.
-
-> **Also pass `--http-host 0.0.0.0`** if anything outside the container needs
-> the HTTP API: LMCache binds it to `127.0.0.1` by default.
-
-A DRAM-only server with the same flags CI uses:
+The cliff benchmark compares a plain vLLM against vLLM with AIC as the number of
+concurrent long-context requests grows. Each arm needs its own stack, so stop
+one with `make down` before starting the next. The benchmark runs in the
+`aic-client` container and finds the running vLLM by itself.
 
 ```bash
-lmcache server \
-    --no-separate-object-groups \
-    --host 0.0.0.0 \
-    --http-host 0.0.0.0 \
-    --http-port 8080 \
-    --port 6555 \
-    --l1-size-gb 20 \
-    --eviction-policy LRU \
-    --max-gpu-workers 1 \
-    --worker-reap-timeout-seconds 3600 \
-    --prometheus-port 9091
+export HF_TOKEN=hf_... VLLM_MODEL=Qwen/Qwen2.5-7B-Instruct
+
+# AIC: the tiered stack from step 2
+make up-batch NVME_DATA=/mnt/lmcache-nvme NFS_DATA=/mnt/lmcache-nfs
+make cliff BENCH_ARM=kvd_v2
+make down
+
+# Baseline: vLLM with no LMCache
+make up-vllm-only
+make cliff BENCH_ARM=vram_only
+make down
+
+# KVBench: starts its own server
+make cliff-kvbench-local KVBENCH_MODEL=llama-3.1-8b
+make kvbench-down
 ```
 
-The flags for the L2 configurations (NVMe, NFS, `nixl_posix`) are in the
-`x-lmcache-command` block of `docker/docker-compose.yml`; copy from there rather
-than reconstructing them. Point vLLM at the ZMQ port with the `lmcache.mp.port`
-entry of its `--kv-transfer-config` (the `LMCacheMPConnector` JSON in the
-`Makefile`).
+Results land in `logs/manual/results/`, one CSV per run. `BENCH_CONCUR` sets the
+concurrency levels to sweep. The same `aic-client` container runs the other
+benchmarks: `make bench-list` lists them, and
+[`benchmarks/README.md`](../benchmarks/README.md) describes them.
 
-## 5. The benchmark client
-
-Every benchmark client runs from one image, `aic-client` (Python only, no
-ROCm), which holds the `benchmarks/` scripts, `agent-kv` and `aiperf` behind
-one command, `aic-bench`. `make up` starts it as the `aic-client` container on
-the `aic` bridge, with the repo at `/repo` and `logs/` at `/logs`; compose
-builds the image when it is missing.
+## 4. Plot the results
 
 ```bash
-make client-build                  # build (or rebuild) the image
-make bench-list                    # the aic-bench subcommands
-make bench BENCH=reset-test
-make bench BENCH=agent-kv BENCH_ARGS="run --num-books 2 --rounds 3"
-make bench BENCH=cliff BENCH_ARGS=--help    # the underlying tool's help
-```
-
-`make bench` gives `aic-bench` the endpoint of the running vLLM
-(`BENCH_ENDPOINT` overrides it); the model defaults to the one the endpoint
-serves, and results land under `logs/bench/<subcommand>/<UTC timestamp>/`.
-`make cliff`, `vllm-reset-test`, `agent-simple-run` and the AgentX targets go
-through the same image. See [`benchmarks/README.md`](../benchmarks/README.md).
-
-Only `make plot` runs on the host:
-
-```bash
-make venv
-source .venv/bin/activate
-```
-
-## 6. Run the cliff benchmark
-
-Run the baseline arm first, then the AIC arm against separate endpoints.
-`make cliff` runs in `aic-client` on the `aic` bridge, so `BENCH_ENDPOINT` is a
-container name there; it defaults to the running vLLM when you leave it out.
-
-```bash
-# Arm A: baseline (vram_only) — must be run against a plain vLLM endpoint,
-# e.g. the vllm-only compose service
-make cliff \
-    BENCH_ARM=vram_only \
-    BENCH_ENDPOINT=http://aic-vllm-only-gpu0:8000 \
-    BENCH_MODEL=openai/gpt-oss-120b
-
-# Arm B: AIC (kvd_v2) — run against the vllm-lmcache stack
-make cliff \
-    BENCH_ARM=kvd_v2 \
-    BENCH_MODEL=openai/gpt-oss-120b
-
-# Arm C: KVBench — build/start the compose KVBench container, then bench it
-# over the internal docker network (the cliff harness automatically skips
-# vLLM-only prefix-cache metrics for this arm)
-make cliff-kvbench-local \
-    KVBENCH_MODEL=llama-3.1-8b \
-    BENCH_CONCUR=1,2
-```
-
-## 7. Generate cliff charts
-
-```bash
+make venv    # once: creates .venv with the plotting dependencies
 make plot
-# → logs/manual/plots/cliff-throughput.png
-# → logs/manual/plots/cliff-latency-p50.png
-# → logs/manual/plots/cliff-latency-p95.png
 ```
+
+Charts are written to `logs/manual/plots/` (`cliff-throughput.png`,
+`cliff-latency-p50.png`, `cliff-latency-p95.png`).
+
+## Next steps
+
+- [SLURM_SPUR.md](SLURM_SPUR.md): full sweeps on a Slurm cluster.
+- [METRICS_TELEMETRY.md](METRICS_TELEMETRY.md): Prometheus metrics and dashboards.
+- [EMULATE.md](EMULATE.md): run without a GPU using the CPU emulator.
