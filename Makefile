@@ -54,7 +54,7 @@ endif
 # LLM_EMU_REF are the key version knobs.  hipFile ships in the ROCm base image.
 _FRAMEWORK_VERSION_ARGS := AIC_VERSION ROCM_VERSION PYTORCH_REF PYTORCH_SERIES TORCHVISION_REF VLLM_REF LLM_EMU_REF AITER_REF FLASH_ATTN_REF LMCACHE_REF NIXL_REF HSA_SNOOP_REF
 # Only the pins that shape the image tag are listed: make hands them to its own
-# bake query.  Every other bake variable (the *_GIT_URLs, UV_VERSION, ...)
+# bake query.  Every other bake variable (the *_GIT_URLs, CLR_REF, ...)
 # reaches bake and the Slurm script through the environment, as any variable set
 # on the command line, in the environment or in .env.<cluster> does.
 
@@ -81,7 +81,7 @@ _framework_version_env = $(call _shell_env,$(_FRAMEWORK_VERSION_ARGS))
 # stays visible so a genuine failure is not mistaken for "latest".
 _BAKE_INPUTS      := ROCM_ARCH IMAGE_TAG AIC_IMAGE_PREFIX KVBENCH_REF KVBENCH_IMAGE_TAG $(_FRAMEWORK_VERSION_ARGS)
 _BAKE_KEYS_STACK  := VLLM_IMAGE_REF LMCACHE_IMAGE_REF HSA_SNOOP_IMAGE_REF
-_BAKE_KEYS        := IMAGE_TAG ROCM_VERSION LMCACHE_REF KVBENCH_GIT_URL KVBENCH_REF KVBENCH_IMAGE_REF
+_BAKE_KEYS        := IMAGE_TAG ROCM_VERSION LMCACHE_REF KVBENCH_GIT_URL KVBENCH_REF KVBENCH_IMAGE_REF AGENTX_IMAGE_REF
 _IMAGE_TAG_ORIGIN := $(origin IMAGE_TAG)
 _AIC_BAKE_MK := $(shell $(call _shell_env,$(_BAKE_INPUTS)) \
     $(REPO_ROOT)/docker/scripts/aic-bake-env.sh --make | sed -n -E \
@@ -132,7 +132,13 @@ HF_TOKEN_FILE ?=
 # Make gives them none and does not re-export them: a value set on the command
 # line, in the environment or in .env.<cluster> reaches compose and the Slurm
 # scripts through the environment, and an unset one leaves compose's default in
-# force.  The few with a value are the ones a recipe expands itself.
+# force.  The few with a value are the ones a recipe expands itself, and
+# AIC_CONTAINER_USER, exported because compose's own default is root.
+# RENDER_GID is /dev/kfd's group, which a non-root container needs; render's
+# gid varies by host, and empty (no /dev/kfd) leaves compose's default.
+
+export AIC_CONTAINER_USER ?= $(shell id -u):$(shell id -g)
+export RENDER_GID ?= $(shell stat -c %g /dev/kfd 2>/dev/null)
 
 # ---- LMCache server --------------------------------------------------------
 LMCACHE_PORT            ?= 6555
@@ -236,7 +242,10 @@ COMPOSE_CACHE := $(COMPOSE) --profile cache
 
 # vLLM --kv-transfer-config for the MP connector.  Leave KV_TRANSFER_ARG empty
 # for a plain (baseline) vLLM.
-_MP_CONNECTOR_JSON := {"kv_connector":"LMCacheMPConnector","kv_role":"kv_both","kv_connector_extra_config":{"lmcache.mp.host":"tcp://localhost","lmcache.mp.port":$(LMCACHE_PORT),"lmcache.mp.lazy_offload":true,"lmcache.mp.lazy_offload_policy":"EVICTION_AWARE","lmcache.mp.lazy_offload_max_deferral_seconds":30.0,"lmcache.mp.save_decode_cache":true}}
+# lmcache.mp.use_vmm_api=false selects legacy HIP IPC.  Left unset, LMCache
+# >= 0.5.8 asks vLLM for fd-exported KV memory, which vLLM >= 0.34 refuses on
+# ROCm (and with --num-gpu-blocks-override) at engine-config time.
+_MP_CONNECTOR_JSON := {"kv_connector":"LMCacheMPConnector","kv_role":"kv_both","kv_connector_extra_config":{"lmcache.mp.host":"tcp://localhost","lmcache.mp.port":$(LMCACHE_PORT),"lmcache.mp.use_vmm_api":false,"lmcache.mp.lazy_offload":true,"lmcache.mp.lazy_offload_policy":"EVICTION_AWARE","lmcache.mp.lazy_offload_max_deferral_seconds":30.0,"lmcache.mp.save_decode_cache":true}}
 KV_TRANSFER_ARG    ?= --kv-transfer-config '$(_MP_CONNECTOR_JSON)'
 export KV_TRANSFER_ARG
 
@@ -252,7 +261,7 @@ export AIC_METRICS_DIR
 HSA_SNOOP_IMAGE       ?= $(HSA_SNOOP_IMAGE_REF)
 # What bake resolved, exported only when it did: an empty KVBENCH_REF in the
 # environment would replace bake's own default in a Slurm-side build.
-$(foreach _v,VLLM_IMAGE_REF LMCACHE_IMAGE_REF HSA_SNOOP_IMAGE KVBENCH_IMAGE_REF KVBENCH_GIT_URL KVBENCH_REF,\
+$(foreach _v,VLLM_IMAGE_REF LMCACHE_IMAGE_REF HSA_SNOOP_IMAGE KVBENCH_IMAGE_REF KVBENCH_GIT_URL KVBENCH_REF AGENTX_IMAGE_REF,\
     $(if $(strip $($(_v))),$(eval export $(_v))))
 
 PYTHON := $(if $(wildcard $(REPO_ROOT)/.venv/bin/python3),$(REPO_ROOT)/.venv/bin/python3,python3)
@@ -388,7 +397,11 @@ help:
 	    'make plot' 'Generate cliff PNG charts from BENCH_LOGDIR/results/ CSVs' \
 	    'make kvbench-up' 'Start KVBench + client on internal compose network' \
 	    'make kvbench-down' 'Stop the KVBench compose profile' \
-	    'make cliff-kvbench-local' 'Start KVBench, wait for readiness, run kvbench cliff arm'
+	    'make cliff-kvbench-local' 'Start KVBench, wait for readiness, run kvbench cliff arm' \
+	    'make agentx-build' 'Build the aic-agentx client image (aiperf)' \
+	    'make agentx-run' 'Run the AgentX agentic-trace benchmark against the running stack' \
+	    'make agentx-sweep' 'agentx-run at each concurrency in AGENTX_CONCURRENCIES' \
+	    'make agentx-corpus' 'Generate a token-scaled trace corpus (NOT the AgentX benchmark)'
 	@printf '\n$(_AIC_B)$(_AIC_X)EMULATE & PROFILE (local)$(_AIC_R)\n'
 	@printf '  $(_AIC_G)%-32s$(_AIC_R) %s\n' \
 	    'make test-emulate-local' 'Bring up vllm-emulator, assert completion + hook active' \
@@ -430,6 +443,7 @@ help:
 	    'make up-gds-l1 GDS_SLAB_DATA=/mnt/nvme HF_TOKEN=hf_...' \
 	    'make cliff BENCH_ARM=vram_only BENCH_MODEL=Qwen/Qwen2.5-7B-Instruct' \
 	    'make cliff-kvbench-local KVBENCH_MODEL=llama-3.1-8b BENCH_CONCUR=1,2' \
+	    'make agentx-run AGENTX_CORPUS_SCALE=8 AGENTX_CONCURRENCY=1   # 32k-context model' \
 	    'make dist-build dist-push smoke-test   # the nightly build chain'
 	@printf '\n'
 
@@ -513,6 +527,20 @@ list-vars:
 	    'BENCH_ENDPOINT' '$(or $(BENCH_ENDPOINT),<running vLLM via aic bridge>)' \
 	    'BENCH_MODEL' '$(or $(BENCH_MODEL),$(or $(VLLM_MODEL),<not set>))' \
 	    'BENCH_LOGDIR' '$(BENCH_LOGDIR)'
+	@printf '\n$(_AIC_B)$(_AIC_X)BENCHMARK (AgentX)$(_AIC_R)\n'
+	@printf '  $(_AIC_G)%-38s$(_AIC_R) %s\n' \
+	    'AGENTX_IMAGE_REF' '$(or $(AGENTX_IMAGE_REF),<run_agentx.sh default>)' \
+	    'AGENTX_MODEL' '$(or $(AGENTX_MODEL),$(VLLM_MODEL),<the model the endpoint serves>)' \
+	    'AGENTX_CONCURRENCY' '$(or $(AGENTX_CONCURRENCY),<run_agentx.sh default>)' \
+	    'AGENTX_CONCURRENCIES' '$(or $(AGENTX_CONCURRENCIES),<overnight_sweep.sh default>)' \
+	    'AGENTX_DURATION' '$(if $(AGENTX_DURATION),$(AGENTX_DURATION) s,<run_agentx.sh default>)' \
+	    'AGENTX_MAX_CONTEXT' '$(or $(AGENTX_MAX_CONTEXT),<max_model_len of the served model>)' \
+	    'AGENTX_DATASET' '$(or $(AGENTX_DATASET),<run_agentx.sh default>)' \
+	    'AGENTX_CORPUS' '$(or $(AGENTX_CORPUS),<empty: the public dataset>)' \
+	    'AGENTX_CORPUS_SCALE' '$(or $(AGENTX_CORPUS_SCALE),<empty: unscaled>)' \
+	    'AGENTX_CORPUS_CACHE' '$(or $(AGENTX_CORPUS_CACHE),<scaled_corpus.sh default>)' \
+	    'AGENTX_SERVER_METRICS' '$(or $(AGENTX_SERVER_METRICS),<LMCache metrics via aic bridge>)' \
+	    'AGENTX_ARGS' '$(or $(AGENTX_ARGS),<none>)'
 	@printf '\n$(_AIC_B)$(_AIC_X)EMULATE & PROFILE (local targets; the Slurm jobs have their own defaults)$(_AIC_R)\n'
 	@printf '  $(_AIC_G)%-38s$(_AIC_R) %s\n' \
 	    'AIC_EMULATE_MODEL' '$(AIC_EMULATE_MODEL)' \

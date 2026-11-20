@@ -121,9 +121,17 @@ RUN git clone --filter=blob:none --no-checkout "${LLM_EMU_GIT_URL}" /app/llm-emu
     done && \
     pip3 wheel --no-build-isolation --no-deps -w /wheels /app/llm-emu/ && \
     pip3 install --no-cache-dir --no-build-isolation --no-deps /app/llm-emu/ && \
+    pip3 install --no-cache-dir --no-deps /wheels/vllm-*.whl && \
     python3 -c "import vllm_emulator.hooks.executor_hook, vllm_emulator.oracle, \
 vllm_emulator.profile.loader, vllm_emulator.profiler.trace_profiler; \
 print('vllm_emulator subpackages import OK')" && \
+    VLLM_EMULATOR_ENABLE_ORACLE=1 python3 -c "import importlib.util as u, types; \
+from vllm_emulator.hooks.executor_hook import ExecutorEmulatorHook as H; \
+assert u.find_spec('vllm.v1.worker.gpu.model_runner') or u.find_spec('vllm.v1.worker.gpu_model_runner'), 'vLLM model-runner module moved'; \
+h = H.__new__(H); h._filler_token_id = 0; \
+o = h._create_fake_output(types.SimpleNamespace(num_scheduled_tokens={'r': 1}, scheduled_new_reqs=[])); \
+assert o.req_ids == ['r'] and o.sampled_token_ids == [[0]], o; \
+print('vllm_emulator fake ModelRunnerOutput OK')" && \
     rm -rf /app/llm-emu /app/patches
 
 # =============================================================================

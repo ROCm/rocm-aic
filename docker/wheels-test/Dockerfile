@@ -63,6 +63,15 @@ FROM ${AIC_BASE_IMAGE} AS vllm
 
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 
+# An aic-base published before pip replaced uv has no pip3; add it so this
+# harness does not depend on the tag having been republished.
+# hadolint ignore=DL3008
+RUN command -v pip3 > /dev/null || { \
+        apt-get update && \
+        DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends python3-pip && \
+        rm -f /usr/lib/python3.*/EXTERNALLY-MANAGED && \
+        rm -rf /var/lib/apt/lists/*; }
+
 # Fail loudly and early on an incomplete wheel set.  Without this the install
 # below "succeeds" against whatever pip can reach on PyPI -- which for `vllm` is
 # a CUDA build that imports fine and dies at the first kernel launch.  That is
@@ -96,17 +105,29 @@ RUN --mount=type=bind,from=wheels,target=/w \
 # Deliberately NOT --no-deps: vLLM's pure-Python requirements (msgspec, openai,
 # transformers, ...) are not in aic-base and the server does not start without
 # them.
+#
+# The uninstall drops the CUDA-flavoured packages the wheels' metadata may have
+# dragged in: aic-base supplies the ROCm NIXL at /opt/nixl, and a pip `nixl`
+# would shadow it.
+#
+# aic-base's packaging is Debian-owned (no RECORD), so pip cannot upgrade it in
+# place when a wheel needs a newer one; install a pip-owned copy first, as
+# docker/vllm/Dockerfile does.
 # hadolint ignore=SC2015
 RUN --mount=type=bind,from=wheels,target=/w \
-    --mount=type=cache,target=/root/.cache/uv \
+    --mount=type=cache,target=/root/.cache/pip \
+    pip3 install --ignore-installed packaging && \
     _tv="$(python3 -c 'import torch; print(torch.__version__)')" && \
     _tvv="$(python3 -c 'import torchvision; print(torchvision.__version__)' 2>/dev/null || true)" && \
     echo "pinning to aic-base torch=${_tv} torchvision=${_tvv:-<absent>}" && \
     printf 'torch==%s\n' "${_tv}" > /tmp/c.txt && \
     if [ -n "${_tvv}" ]; then printf 'torchvision==%s\n' "${_tvv}" >> /tmp/c.txt; fi && \
-    uv pip install --system --no-cache --constraint /tmp/c.txt \
+    pip3 install --constraint /tmp/c.txt \
         /w/vllm-*.whl /w/amd_aiter-*.whl /w/lmcache-*.whl && \
     rm -f /tmp/c.txt && \
+    pip3 uninstall -y \
+        nixl nixl-cu12 nixl-cu13 \
+        cupy-cuda12x cufile-python cuda-pathfinder && \
     _after="$(python3 -c 'import torch; print(torch.__version__)')" && \
     if [ "${_after}" != "${_tv}" ]; then \
         echo "ERROR: torch changed from ${_tv} to ${_after} during the wheel install." >&2; \
@@ -115,14 +136,8 @@ RUN --mount=type=bind,from=wheels,target=/w \
     fi && \
     echo "torch intact: ${_after}"
 
-# Drop the CUDA-flavoured packages the wheels' metadata may have dragged in.
-# aic-base supplies the ROCm NIXL at /opt/nixl; a pip `nixl` would shadow it.
-RUN { uv pip uninstall --system \
-        nixl nixl-cu12 nixl-cu13 \
-        cupy-cuda12x cufile-python cuda-pathfinder 2>/dev/null || true; }
-
 # Post-install patches applied to the lmcache CLIENT, mirroring
-# docker/vllm/Dockerfile's `vllm` stage.  vLLM is the producer on the store
+# docker/vllm/Dockerfile's `emulate` stage.  vLLM is the producer on the store
 # path, so its export_event must synchronize locally.
 COPY docker/lmcache/rocm_event_ipc_patch.py /tmp/rocm_event_ipc_patch.py
 RUN AIC_LMCACHE_SRC="$(python3 -c 'import lmcache, os; print(os.path.dirname(os.path.dirname(lmcache.__file__)))')" \
@@ -155,28 +170,30 @@ ENTRYPOINT ["python3", "-m", "vllm.entrypoints.openai.api_server"]
 # =============================================================================
 # lmcache — aic-base + the lmcache wheel and its non-wheel runtime deps.
 #
-# Mirrors docker/lmcache/Dockerfile's `runtime` stage, INCLUDING re-running
-# rocm_ipc_patch.py.  That last part is not optional, and the reason is subtle:
-# build_lmcache_wheel patches the source before `pip wheel`, so the wheel's
-# lmcache/v1/platform/base/ipc_wrapper.py DOES import `rocm_vmem_ipc` -- but
-# rocm_ipc_patch.py installs that module into SITE-PACKAGES, not into the
-# lmcache package ("so it survives the rm -rf /app/LMCache cleanup step", per
-# its own comment).  site-packages is not part of the wheel, so installing the
-# published wheel alone gives you a patched wrapper importing a module that
-# does not exist.  Verified by unzipping the published wheel: ipc_wrapper.py
-# mentions rocm_vmem_ipc, and there is no rocm_vmem_ipc.py member.
-#
-# Re-running the patcher against the installed package both installs the module
-# and no-ops the source edits it already finds applied ("SKIP (already
-# applied)").
+# Mirrors docker/lmcache/Dockerfile's `runtime` stage.  build_lmcache_wheel
+# runs rocm_event_ipc_patch.py on the source before `pip wheel`, so the
+# published wheel already carries the event-IPC edit and needs nothing beside
+# it in site-packages.  The patcher is re-run against the installed package
+# anyway: it reports "SKIP (already applied)" for a wheel built that way,
+# applies the edit to one that was not, and fails the build if it can do
+# neither.
 # =============================================================================
 # hadolint ignore=DL3006
 FROM ${AIC_BASE_IMAGE} AS lmcache
 
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 
+# An aic-base published before pip replaced uv has no pip3; add it so this
+# harness does not depend on the tag having been republished.
+# hadolint ignore=DL3008
+RUN command -v pip3 > /dev/null || { \
+        apt-get update && \
+        DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends python3-pip && \
+        rm -f /usr/lib/python3.*/EXTERNALLY-MANAGED && \
+        rm -rf /var/lib/apt/lists/*; }
+
 RUN --mount=type=bind,from=wheels,target=/w \
-    --mount=type=cache,target=/root/.cache/uv \
+    --mount=type=cache,target=/root/.cache/pip \
     shopt -s nullglob && \
     lmc=(/w/lmcache-*.whl) && \
     if [ "${#lmc[@]}" -ne 1 ]; then \
@@ -185,7 +202,8 @@ RUN --mount=type=bind,from=wheels,target=/w \
     fi && \
     _torch_ver="$(python3 -c 'import torch; print(torch.__version__)')" && \
     printf 'torch==%s\n' "${_torch_ver}" > /tmp/c.txt && \
-    uv pip install --system --no-cache --constraint /tmp/c.txt "${lmc[@]}" && \
+    pip3 install --ignore-installed packaging && \
+    pip3 install --constraint /tmp/c.txt "${lmc[@]}" && \
     rm -f /tmp/c.txt
 
 # The `lmcache` CLI imports every subcommand eagerly, so `lmcache server` dies
@@ -194,30 +212,26 @@ RUN --mount=type=bind,from=wheels,target=/w \
 # This is the same gap mk/bench.mk's [6b.1] hot-patch works around in the guest;
 # installing it here is what lets that hot-patch become a no-op.
 #
-# cupy-rocm-7-0 activates the CuPy GPU buffer allocator (LMCACHE_NIXL_USE_CUPY=1
-# below) so librocblas/libMIOpen are never dlopened in the lmcache process.
-RUN --mount=type=cache,target=/root/.cache/uv \
-    uv pip install --system --no-cache \
+# cupy-rocm-7-0: LMCache's MP server imports cupy.
+RUN --mount=type=cache,target=/root/.cache/pip \
+    pip3 install \
         openai "matplotlib>=3.8,<4" cupy-rocm-7-0 && \
-    { uv pip uninstall --system \
+    pip3 uninstall -y \
         nixl nixl-cu12 nixl-cu13 \
-        cupy-cuda12x cufile-python cuda-pathfinder 2>/dev/null || true; }
+        cupy-cuda12x cufile-python cuda-pathfinder
 
-# Install rocm_vmem_ipc into site-packages (see the stage comment above).
-COPY docker/lmcache/rocm_vmem_ipc.py /tmp/rocm_vmem_ipc.py
-COPY docker/lmcache/rocm_ipc_patch.py /tmp/rocm_ipc_patch.py
+# Confirm (or apply) the ROCm event-IPC edit; see the stage comment above.
+COPY docker/lmcache/rocm_event_ipc_patch.py /tmp/rocm_event_ipc_patch.py
 RUN AIC_LMCACHE_SRC="$(python3 -c 'import lmcache, os; print(os.path.dirname(os.path.dirname(lmcache.__file__)))')" \
-        python3 /tmp/rocm_ipc_patch.py && \
-    rm /tmp/rocm_ipc_patch.py /tmp/rocm_vmem_ipc.py && \
-    python3 -c 'import rocm_vmem_ipc; print("rocm_vmem_ipc installed:", rocm_vmem_ipc.__file__)'
+        python3 /tmp/rocm_event_ipc_patch.py && \
+    rm /tmp/rocm_event_ipc_patch.py
 
 # HSA_ENABLE_IPC_MODE_LEGACY is intentionally NOT set: aic-vllm leaves it unset
 # too, and the two must agree.
 ENV PYTHONUNBUFFERED=1 \
     PYTHONHASHSEED=0 \
     SAFETENSORS_FAST_GPU=1 \
-    HIP_FORCE_DEV_KERNARG=1 \
-    LMCACHE_NIXL_USE_CUPY=1
+    HIP_FORCE_DEV_KERNARG=1
 
 ARG AIC_VERSION
 ARG AIC_BASE_IMAGE

@@ -44,6 +44,7 @@ check-gds-slab:
 prep-dirs:
 	@mkdir -p "$(NVME_DATA)" "$(NFS_DATA)" \
 		"$(LOG)/lmcache" "$(LOG)/vllm" "$(LOG)/kvbench" \
+		"$(LOG)/vllm-emulator" "$(LOG)/lmcache-emulator" \
 		"$(HF_HOME)/hub" "$(HF_HOME)/datasets" "$(HF_HOME)/vllm" \
 		"$(HF_HOME)/vllm_config" "$(HF_HOME)/torch" "$(HF_HOME)/torch_inductor" \
 		"$(BENCH_LOGDIR)/results" "$(BENCH_LOGDIR)/plots"

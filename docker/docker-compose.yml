@@ -63,7 +63,7 @@
 # http://aic-prometheus:9090.
 #
 # Emulation mode (profile-driven, no GPU required -- needs the `emulate` image):
-#   VLLM_IMAGE_REF=rocm-aic:7.14-emulate docker compose --profile emulate up vllm-emulator
+#   VLLM_IMAGE_REF=rocm-aic:10.2-emulate docker compose --profile emulate up vllm-emulator
 #
 # Emulation + the full LMCache MP recipe (still no GPU, but needs the production
 # images -- the `emulate` stage stops before LMCache; the defaults are those):
@@ -108,12 +108,13 @@ x-lmcache-env: &lmcache-env
   HIPFILE_ALLOW_COMPAT_MODE: "false"
   HIPFILE_UNSUPPORTED_FILE_SYSTEMS: "true"
   # NIXL native Prometheus telemetry exporter (serves /metrics on :19090).
-  # Requires the prometheus-cpp plugin compiled into the image (build-nixl.sh);
+  # Requires the prometheus-cpp plugin compiled into the image (aic-base's build_nixl stage);
   # a no-op fallback if absent.  Set NIXL_TELEMETRY_ENABLE= to disable.
   NIXL_TELEMETRY_ENABLE: "${NIXL_TELEMETRY_ENABLE-y}"
   NIXL_TELEMETRY_EXPORTER: "${NIXL_TELEMETRY_EXPORTER:-prometheus}"
   NIXL_TELEMETRY_PROMETHEUS_PORT: "19090"
   PYTHONHASHSEED: "0"
+  PYTHONPYCACHEPREFIX: "/pyc"
   TZ: "${TZ:-America/Edmonton}"
 
 # The entrypoint script selects the L1/L2 topology from GDS_MODE +
@@ -305,6 +306,8 @@ services:
     # image that fails at runtime.
     image: ${LMCACHE_IMAGE_REF:-aic-lmcache:latest}
     container_name: aic-lmcache
+    user: "${AIC_CONTAINER_USER:-0:0}"
+    group_add: ["${RENDER_GID:-992}"]
     # Cross-container HIP IPC (LMCacheMPConnector registering vLLM's KV tensors)
     # uses LMCache's stock CudaIPCWrapper (hipIpcGetMemHandle) in ROCr's default,
     # non-legacy mode: the importer fetches the dmabuf fd from the exporting
@@ -314,8 +317,8 @@ services:
     # hipErrorInvalidDevicePointer.  Sharing the PID namespace too keeps the
     # <pid> in that name unique.  HSA_ENABLE_IPC_MODE_LEGACY must be the same in
     # both (AIC_HSA_IPC_LEGACY=1 for the KFD-handle mode, which needs DKMS amdgpu).
-    # AIC_LMCACHE_VMM_IPC=1 selects the HIP VMM wrapper (rocm_vmem_ipc.py), which
-    # copies the KV cache at registration.  GPU *event* IPC is skipped (rocm_ipc_patch.py).
+    # GPU *event* IPC is replaced by a producer-side sync in both images
+    # (docker/lmcache/rocm_event_ipc_patch.py).
     # lmcache owns the shareable IPC+PID namespaces; vllm joins them via
     # ipc/pid: service:lmcache.  pid:host would work but spur-authz blocks it.
     # Own network namespace, not host: on the host one, "@hsa<pid>" would be
@@ -350,7 +353,6 @@ services:
       - /dev/kfd
       - /dev/dri
     volumes:
-      - aic-ipc:/tmp/aic-ipc   # ROCm VMEM IPC sidecar socket (gfx1201)
       # L2a NVMe — AIS_MT pool files (standard mode)
       - ${NVME_DATA:-/mnt/lmcache-nvme}:/data/nvme
       # L2b NFS — POSIX pool files (standard mode)
@@ -368,6 +370,7 @@ services:
       # create a missing source under /sys.
       - /boot:/boot:ro
       - ${LOG:-../logs}/lmcache:/var/log/aic-lmcache
+      - aic-pyc:/pyc
     environment:
       <<: *lmcache-env
       # Must share the SAME GPU as the vllm service: LMCacheMPConnector registers
@@ -383,8 +386,9 @@ services:
       # deregisters against the coordinator so it can track which blocks are held.
       # Set LMCACHE_COORDINATOR_URL empty to run without coordinator (standalone mode).
       LMCACHE_COORDINATOR_URL: "${LMCACHE_COORDINATOR_URL-http://aic-lmcache-coordinator:9300}"
-      # ROCm VMEM IPC sidecar socket path (shared with vllm via aic-ipc volume)
-      AIC_IPC_SOCK: /tmp/aic-ipc/fds.sock
+      HOME: "${AIC_CONTAINER_HOME:-/tmp}"
+      USER: "${AIC_CONTAINER_USERNAME:-root}"
+      LOGNAME: "${AIC_CONTAINER_USERNAME:-root}"
     entrypoint: ["/bin/bash", "-o", "pipefail", "-c"]
     command: *lmcache-command
     depends_on:
@@ -410,7 +414,10 @@ services:
     container_name: aic-lmcache-coordinator
     networks: [aic-network]
     restart: unless-stopped
+    user: "${AIC_CONTAINER_USER:-0:0}"
     environment:
+      - HOME=${AIC_CONTAINER_HOME:-/tmp}
+      - PYTHONPYCACHEPREFIX=/tmp/.pyc
       - LMCACHE_DISABLE_BANNER=1
       - LMCACHE_COORDINATOR_PORT=9300
       - COORDINATOR_METRICS_PORT=9301
@@ -438,6 +445,8 @@ services:
     # `make build`, which supplies the torch-bearing `base` build-context.
     image: ${VLLM_IMAGE_REF:-aic-vllm:latest}
     container_name: aic-vllm-gpu${GPU:-0}
+    user: "${AIC_CONTAINER_USER:-0:0}"
+    group_add: ["${RENDER_GID:-992}"]
     # Joins lmcache's IPC, PID and network namespaces; cross-container HIP IPC KV
     # registration needs all three (see the lmcache service).  Override via
     # VLLM_IPC_MODE / VLLM_PID_MODE / VLLM_NETWORK_MODE.
@@ -459,16 +468,20 @@ services:
     volumes:
       - ${HF_HOME:-~/.cache/huggingface}:/hf
       - ${LOG:-../logs}/vllm:/var/log/aic-vllm
-      - aic-ipc:/tmp/aic-ipc   # ROCm VMEM IPC sidecar socket (gfx1201)
+      - aic-pyc:/pyc
     environment:
       - HF_TOKEN=${HF_TOKEN:-}
+      - HOME=${AIC_CONTAINER_HOME:-/tmp}
+      - USER=${AIC_CONTAINER_USERNAME:-root}
+      - LOGNAME=${AIC_CONTAINER_USERNAME:-root}
       - HF_HOME=/hf
       - HF_HUB_CACHE=/hf/hub
       - HF_DATASETS_CACHE=/hf/datasets
       - HF_HUB_OFFLINE=${HF_HUB_OFFLINE:-0}
-      - AIC_IPC_SOCK=/tmp/aic-ipc/fds.sock
+      - AITER_JIT_DIR=/hf/aiter
+      - TRITON_CACHE_DIR=/hf/triton
+      - NUMBA_CACHE_DIR=/hf/numba
       - HSA_ENABLE_IPC_MODE_LEGACY=${AIC_HSA_IPC_LEGACY:-}
-      - AIC_LMCACHE_VMM_IPC=${AIC_LMCACHE_VMM_IPC:-0}
       - TRANSFORMERS_OFFLINE=${TRANSFORMERS_OFFLINE:-0}
       - VLLM_CACHE_ROOT=/hf/vllm
       - VLLM_CONFIG_ROOT=/hf/vllm_config
@@ -484,7 +497,7 @@ services:
       - CUDA_VISIBLE_DEVICES=
       - AMDGCN_USE_BUFFER_OPS=0
       - MIOPEN_FIND_MODE=FAST
-      - MIOPEN_USER_DB_PATH=/app/miopen
+      - MIOPEN_USER_DB_PATH=/tmp/miopen
       # AITER unified attention: required so a KV connector (LMCache) can unify a
       # hybrid model's KV-cache specs.  Harmless for the plain baseline.
       - VLLM_ROCM_USE_AITER=${AIC_ROCM_USE_AITER:-1}
@@ -495,6 +508,7 @@ services:
       # "invalid device pointer" (hipErrorInvalidDevicePointer) and the engine hangs.
       - PYTORCH_HIP_ALLOC_CONF=${PYTORCH_HIP_ALLOC_CONF:-expandable_segments:False}
       - PYTHONHASHSEED=0
+      - PYTHONPYCACHEPREFIX=/pyc
       - TZ=${TZ:-America/Edmonton}
       # Set to DEBUG to enable "vLLM hit is: N" log lines in the connector
       # (lmcache_mp_connector.py:798) — useful for diagnosing ext_hit=0.
@@ -520,7 +534,7 @@ services:
         --load-format ${VLM_LOAD_FORMAT:-fastsafetensors}
         --block-size ${VLM_BLOCK_SIZE:-64}
         --enable-prefix-caching
-        --kv-cache-dtype ${VLM_KV_CACHE_DTYPE:-fp8}
+        --kv-cache-dtype ${VLM_KV_CACHE_DTYPE:-auto}
         --attention-backend ${VLM_ATTENTION_BACKEND:-TRITON_ATTN}
         --stream-interval 20
         --async-scheduling
@@ -775,33 +789,40 @@ services:
       GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
       GF_AUTH_DISABLE_LOGIN_FORM: "true"
       GF_SECURITY_ALLOW_EMBEDDING: "true"
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /etc/grafana/dashboards/aic-overview.json
     volumes:
       - ../monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
       - ../monitoring/grafana/dashboards:/etc/grafana/dashboards:ro
       - grafana-data:/var/lib/grafana
 
   # hsa-snoop: HSA AQL queue/dispatch snooper + Prometheus exporter on :9488.
-  # Runs privileged in the lmcache PID namespace so it sees both vLLM and LMCache
-  # GPU processes without needing host PID. Requires tracefs on the host.
+  # Runs privileged in the host PID namespace: the amdgpu kprobe reports host
+  # PIDs, and hsa-snoop reads each ring through /proc/<pid>, so in any other
+  # namespace it lists the queues but never sees a dispatch. Requires tracefs
+  # on the host.
   # ---------------------------------------------------------------------------
   hsa-snoop:
     profiles: [monitoring, exporters, exporters-safe]
     image: ${HSA_SNOOP_IMAGE:-aic-hsa-snoop:latest}
     container_name: aic-hsa-snoop
     networks: [aic-network]
-    pid: "${AIC_HSA_SNOOP_PID_MODE-service:lmcache}"
+    pid: "${AIC_HSA_SNOOP_PID_MODE-host}"
     privileged: true
     restart: unless-stopped
     environment:
       - ROCR_VISIBLE_DEVICES=${AIC_ROCR_VISIBLE:-${GPU:-0}}
       - HIP_VISIBLE_DEVICES=${AIC_HIP_VISIBLE:-0}
+      # The default host label is the container id, which forks every series
+      # on each recreate.
+      - HSA_SNOOP_HOST_LABEL=aic-hsa-snoop
+      - HSA_SNOOP_ROCM_VERSION=${ROCM_VERSION:-unknown}
     devices:
       - /dev/kfd
       - /dev/dri
     volumes:
       - /sys/kernel/debug:/sys/kernel/debug
       - /sys/kernel/tracing:/sys/kernel/tracing
-    command: ["--all", "--prometheus", "--prometheus-port", "9488", "--mem-snoop"]
+    command: ["--all", "--prometheus", "--prometheus-port", "9488", "--mem-snoop", "--poll-us", "1000"]
     healthcheck:
       test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/9488"]
       interval: 30s
@@ -838,6 +859,7 @@ services:
       - emulate-mp
     image: ${LMCACHE_IMAGE_REF:-aic-lmcache:latest}
     container_name: aic-lmcache-emulator
+    user: "${AIC_CONTAINER_USER:-0:0}"
     # On the aic bridge, like `lmcache`: vllm-emulator reaches ZMQ on
     # :${LMCACHE_PORT} by container name, and the aic-lmcache alias lets
     # prometheus scrape :9091/:19090 with the same targets as the GPU stack (run
@@ -879,6 +901,10 @@ services:
       # No GPUDirect on a CPU node — see the block comment above.
       AIC_L2_BACKEND: "${AIC_L2_BACKEND:-nixl_posix}"
       DEVICE_TYPE: "cpu"
+      HOME: "${AIC_CONTAINER_HOME:-/tmp}"
+      USER: "${AIC_CONTAINER_USERNAME:-root}"
+      LOGNAME: "${AIC_CONTAINER_USERNAME:-root}"
+      PYTHONPYCACHEPREFIX: "/data/nvme/.pyc"
     entrypoint: ["/bin/bash", "-o", "pipefail", "-c"]
     command: *lmcache-command
     healthcheck: *lmcache-healthcheck
@@ -903,7 +929,7 @@ services:
   # The `emulate-mp` profile runs the SAME service with the full LMCache MP
   # recipe attached — see the KV_TRANSFER_ARG block below and `make
   # emulate-mp-test`.  That profile needs the production images (the defaults),
-  # NOT :7.14-emulate (whose build stops before LMCache):
+  # NOT :10.2-emulate (whose build stops before LMCache):
   #
   #   docker compose --profile emulate-mp up lmcache-emulator vllm-emulator
   # Name both services: the GPU `vllm` service has no profile (so the vram
@@ -961,7 +987,7 @@ services:
       # An unmapped uid has no passwd entry, so getpwuid()/expanduser("~") would
       # fail or point at an unwritable /.  Everything cache-like is redirected
       # under /hf below, but HOME must still resolve somewhere writable.
-      - HOME=${AIC_CONTAINER_HOME:-/root}
+      - HOME=${AIC_CONTAINER_HOME:-/tmp}
       # getpass.getuser() tries LOGNAME/USER/LNAME/USERNAME and only THEN
       # pwd.getpwuid().  torch's _inductor.default_cache_dir() calls it during
       # import, so with an unmapped uid and none of these set the engine dies at
@@ -969,6 +995,7 @@ services:
       # wants -- nothing resolves it any further.
       - USER=${AIC_CONTAINER_USERNAME:-root}
       - LOGNAME=${AIC_CONTAINER_USERNAME:-root}
+      - PYTHONPYCACHEPREFIX=/hf/pyc
       - HF_HOME=/hf
       - HF_HUB_CACHE=/hf/hub
       - HF_HUB_OFFLINE=${HF_HUB_OFFLINE:-0}
@@ -982,7 +1009,7 @@ services:
       - PYTHONHASHSEED=0
       # llm-emu activation.  ENABLE_ORACLE switches on the platform plugin +
       # torch.cuda shims + model-load stubs; EXECUTOR_HOOK swaps the forward
-      # pass for the profile-pack latency draw (patches/vllm/03-*.patch).
+      # pass for the profile-pack latency draw (patches/vllm/04-*.patch).
       - VLLM_EMULATOR_ENABLE_ORACLE=1
       - VLLM_EMULATOR_EXECUTOR_HOOK=1
       - VLLM_EMULATOR_PROFILE_PACK=${VLLM_EMULATOR_PROFILE_PACK:-/opt/llm-emu/profiles/MI300X-Qwen3-8B.json}
@@ -1028,6 +1055,8 @@ services:
     #     create_transfer_context() dispatches on tensor.device.type and CPU
     #     tensors fall to engine_driven, which moves the copy into the vLLM
     #     worker and exercises less of the shipped stack.
+    #   (lmcache.mp.use_vmm_api=false is in both JSONs: unset, LMCache >= 0.5.8
+    #     asks for fd-exported KV memory, which vLLM refuses off CUDA/ROCm.)
     #   --enable-prefix-caching — matches the GPU service; the connector's
     #     hit accounting is defined against vLLM's APC.
     # Deliberately NOT --async-scheduling: v0.26.0's step_with_batch_queue()
@@ -1073,6 +1102,7 @@ services:
       - cpu-smoke
     image: ${VLLM_IMAGE_REF:-aic-vllm:latest}
     container_name: aic-vllm-emulator
+    user: "${AIC_CONTAINER_USER:-0:0}"
     # Bridge + aic-vllm alias, unpublished, as vllm-emulator above.
     networks:
       aic-network:
@@ -1082,8 +1112,12 @@ services:
       - ../monitoring/scripts/vllm_emulator_server.py:/app/vllm_emulator_server.py:ro
     environment:
       - VLLM_MODEL=${VLLM_CPU_MODEL:-facebook/opt-125m}
+      - HOME=${AIC_CONTAINER_HOME:-/tmp}
+      - USER=${AIC_CONTAINER_USERNAME:-root}
+      - LOGNAME=${AIC_CONTAINER_USERNAME:-root}
       - HF_HOME=/hf
       - HF_HUB_CACHE=/hf/hub
+      - PYTHONPYCACHEPREFIX=/hf/pyc
       - PYTHONUNBUFFERED=1
     entrypoint: ["python3", "/app/vllm_emulator_server.py"]
     healthcheck:
@@ -1096,5 +1130,5 @@ services:
 volumes:
   grafana-data:
   loki-data:
-  aic-ipc:   # ROCm VMEM IPC sidecar socket shared between vllm and lmcache
   aic-prom-textfile:  # shared between aic-l2-monitor (writer) and node-exporter (reader)
+  aic-pyc:            # bytecode cache shared between lmcache and vllm GPU services

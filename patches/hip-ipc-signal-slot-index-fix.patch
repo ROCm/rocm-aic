@@ -33,12 +33,11 @@ defects, not one:
 Upstream: ROCm/rocm-systems a3e8d96073 (PR #12230, "fix(clr): Adding
 %IPC_SIGNALS_PER_EVENT in IPCEventEmulated::streamWait", 2026-09-25) landed the
 step-1 one-liner; the ihipSignalSlot() refactor with steps 2 and 3 is on
-develop.  Neither is in any tagged ROCm release yet: release/therock-7.14
-(= therock-7.14.1, ca887ee), 10.0 and 10.1 are all still unpatched, and the
-oldest dated BKC carrying the fix is release/bkc/therock-10.2-20261013.  The
-PRs docker/base/Dockerfile cites, #11511 and #11749, were never merged (open
-and closed-unmerged respectively).  Drop this patch when the stack moves to a
-10.2+ base.
+develop.  release/therock-10.2 (43fa692) carries the step-1 modulo only, so
+this patch is rebased onto it and still adds steps 2 and 3; 10.0 and 10.1 have
+neither.  The PRs docker/base/Dockerfile cites, #11511 and #11749, were never
+merged (open and closed-unmerged respectively).  Drop this patch when a release
+branch carries ihipSignalSlot().
 
 Supersedes patches/hip-ipc-event-ring-fix.patch, which carried only the
 step-1 modulo; applying both conflicts.  Both aic-vllm and aic-lmcache must be
@@ -92,7 +91,7 @@ Apply from the rocm-systems checkout root (patch -p1), i.e. replace the
  // ================================================================================================
  hipError_t IPCEventEmulated::streamWait(hip::Stream* stream, uint flags) {
    std::scoped_lock lock(lock_);
--  const int offset = ipc_evt_.ipc_shmem_->read_index;
+-  const int offset = ipc_evt_.ipc_shmem_->read_index % IPC_SIGNALS_PER_EVENT;
 +  const int offset = ihipSignalSlot(ipc_evt_.ipc_shmem_->read_index);
    return ihipStreamOperation(
        reinterpret_cast<hipStream_t>(stream),

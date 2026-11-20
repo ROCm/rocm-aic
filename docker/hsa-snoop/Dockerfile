@@ -53,7 +53,7 @@
 # An unset image arg stops the build at its FROM:
 #   base name (${ROCM_BUILD_IMAGE}) should not be blank
 ARG ROCM_BUILD_IMAGE
-# AMD publishes no non-full rocm/dev-ubuntu-24.04 image for 7.14.x, so the
+# AMD publishes no non-full rocm/dev-ubuntu-26.04:${ROCM_VERSION} image, so the
 # runtime stage starts from plain ubuntu.  It stays plain: hsa-snoop needs no
 # ROCm userspace (see the stage notes above).
 ARG ROCM_RUNTIME_IMAGE
@@ -80,7 +80,8 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
         cmake ninja-build git ca-certificates
 
-RUN git clone --depth 1 --branch "${HSA_SNOOP_REF}" "${HSA_SNOOP_GIT_URL}" /app/hsa-snoop && \
+RUN git clone --filter=blob:none --no-checkout "${HSA_SNOOP_GIT_URL}" /app/hsa-snoop && \
+    git -C /app/hsa-snoop checkout "${HSA_SNOOP_REF}" && \
     cmake -S /app/hsa-snoop -B /app/hsa-snoop/build -G Ninja \
         -DCMAKE_BUILD_TYPE=Release -DHSA_SNOOP_PROMETHEUS=ON \
         -DCMAKE_DISABLE_FIND_PACKAGE_hip=ON && \
@@ -146,7 +147,7 @@ LABEL org.opencontainers.image.title="aic-hsa-snoop" \
 EXPOSE 9488
 
 ENTRYPOINT ["/usr/local/bin/hsa-snoop"]
-CMD ["--all", "--prometheus", "--prometheus-port", "9488", "--mem-snoop"]
+CMD ["--all", "--prometheus", "--prometheus-port", "9488", "--mem-snoop", "--poll-us", "1000"]
 
 # The runtime image has bash but neither curl nor python, so probe over
 # /dev/tcp.  TCP connect only: the exporter port accepting is the liveness

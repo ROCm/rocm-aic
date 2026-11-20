@@ -70,7 +70,7 @@
 #           Build the CPU-only EMULATION image (Dockerfile `emulate` stage +
 #           VLLM_TARGET_DEVICE=empty): vLLM + the llm-emu plugin with no vLLM
 #           GPU kernels, on an aic-base the same job builds first.
-#           Tagged AIC_EMULATE_IMAGE (default rocm-aic:7.14-emulate) with its
+#           Tagged AIC_EMULATE_IMAGE (default rocm-aic:10.2-emulate) with its
 #           own tarball, so it never overwrites the real GPU image.
 #   emulate-test
 #           End-to-end serve check of that image on a CPU-ONLY node: brings up
@@ -288,7 +288,7 @@ AIC_VLLM_TARGET_DEVICE="${AIC_VLLM_TARGET_DEVICE:-}"
 # AIC_EMULATE_VLLM_DEVICE), so vLLM compiles no GPU kernels.  It still sits on
 # aic-base, whose PyTorch is built for the arch below; that build is cached per
 # arch, but the first one is not quick.  Nothing in this image runs on a GPU.
-AIC_EMULATE_IMAGE="${AIC_EMULATE_IMAGE:-${IMAGE_NAME:-rocm-aic}:${IMAGE_TAG_EMULATE:-7.14-emulate}}"
+AIC_EMULATE_IMAGE="${AIC_EMULATE_IMAGE:-${IMAGE_NAME:-rocm-aic}:${IMAGE_TAG_EMULATE:-10.2-emulate}}"
 AIC_EMULATE_ARCH="${AIC_EMULATE_ARCH:-gfx942}"
 AIC_EMULATE_VLLM_DEVICE="${AIC_EMULATE_VLLM_DEVICE:-}"
 AIC_EMULATE_MODEL="${AIC_EMULATE_MODEL:-Qwen/Qwen3-8B}"
@@ -2362,8 +2362,9 @@ export AIC_L2_BACKEND=none
 export VLLM_IPC_MODE=service:lmcache
 export VLLM_PID_MODE=service:lmcache
 # vLLM shares lmcache's network namespace, so lmcache is on its loopback.
-export KV_TRANSFER_ARG="--kv-transfer-config '{\"kv_connector\":\"LMCacheMPConnector\",\"kv_role\":\"kv_both\",\"kv_connector_extra_config\":{\"lmcache.mp.host\":\"tcp://localhost\",\"lmcache.mp.port\":\${LMCACHE_PORT:-6555}}}'"
+export KV_TRANSFER_ARG="--kv-transfer-config '{\"kv_connector\":\"LMCacheMPConnector\",\"kv_role\":\"kv_both\",\"kv_connector_extra_config\":{\"lmcache.mp.host\":\"tcp://localhost\",\"lmcache.mp.port\":\${LMCACHE_PORT:-6555},\"lmcache.mp.use_vmm_api\":false}}'"
 mkdir -p "\${HF_HOME}" /tmp/aic-tiny-nvme /tmp/aic-tiny-nfs
+aic_container_identity "\${HF_HOME}" || exit 1
 
 compose() { docker compose -f '${AIC_DAY_DIR}/docker/docker-compose.yml' "\$@"; }
 cleanup() {
@@ -2400,6 +2401,14 @@ if ! compose --profile cache up -d; then
     exit 1
 fi
 
+# The engine's own error sits far above the API server's traceback, which
+# alone fills an 80-line tail, so print the first error lines after it.
+vllm_failure_logs() {
+    compose logs --tail 80 --no-color vllm 2>&1 | sed 's/^/  [vllm] /'
+    echo "  --- first error lines in the vLLM log ---"
+    compose logs --no-color vllm 2>&1 | grep -E 'ERROR|CRITICAL|Error:|[Ee]rror ' | head -60 | sed 's/^/  [vllm] /' || true
+}
+
 # Wait for the vLLM endpoint (weights load + one-time model download).
 # vLLM is intentionally reachable only on the Compose network, so probe from
 # inside its container instead of the Slurm host's loopback interface.
@@ -2410,14 +2419,14 @@ for _i in \$(seq 1 ${AIC_TINY_READY_TIMEOUT}); do
     if [ "\${_vllm_state}" != "running" ]; then
         _vllm_exit="\$(docker inspect --format '{{.State.ExitCode}}' "\${VLLM_CONTAINER}" 2>/dev/null || echo unknown)"
         echo "[tiny-test] FAIL: vLLM exited before readiness (state=\${_vllm_state:-missing}, exit=\${_vllm_exit})" >&2
-        compose logs --tail 80 --no-color vllm 2>&1 | sed 's/^/  [vllm] /'
+        vllm_failure_logs
         exit 1
     fi
     sleep 5
 done
 if [ "\${ready}" != "1" ]; then
     echo "[tiny-test] FAIL: vLLM never became ready" >&2
-    compose logs --tail 80 --no-color vllm 2>&1 | sed 's/^/  [vllm] /'
+    vllm_failure_logs
     exit 1
 fi
 echo "[tiny-test] endpoint ready; sending one chat completion ..."
@@ -2457,14 +2466,14 @@ echo "[tiny-test] response: \${resp}"
 _tiny_rc=1
 if grep -qE '"content"[[:space:]]*:[[:space:]]*"[^"]+' <<<"\${resp}"; then
     echo "[tiny-test] OK: got a non-empty completion"
-    # A completion also comes back when the connector skipped KV registration and
-    # LMCache is inert, so check that LMCache really holds vLLM's KV cache.
+    # A completion also comes back when LMCache holds none of vLLM's KV cache,
+    # so check that it really does.
     if docker exec -i "\${VLLM_CONTAINER}" python3 - '${AIC_TINY_MODEL}' \
             < '${AIC_DAY_DIR}/.slurm/tiny-kv-roundtrip.py'; then
         echo "[tiny-test] OK: KV round-trip through LMCacheMPConnector"
         _tiny_rc=0
     else
-        compose logs --no-color vllm 2>&1 | grep -E 'KV registration skipped|KV IPC unavailable|KV caches are not registered' \
+        compose logs --no-color vllm 2>&1 | grep -E 'KV caches are not registered' \
             | sed 's/^/  [vllm] /'
     fi
 else
@@ -2579,13 +2588,14 @@ export LMCACHE_NIXL_POSIX_POOL=128
 export LMCACHE_MAX_GPU_WORKERS=1
 export VLLM_IPC_MODE=service:lmcache
 export VLLM_PID_MODE=service:lmcache
-export KV_TRANSFER_ARG="--kv-transfer-config '{\"kv_connector\":\"LMCacheMPConnector\",\"kv_role\":\"kv_both\",\"kv_connector_extra_config\":{\"lmcache.mp.host\":\"tcp://localhost\",\"lmcache.mp.port\":\${LMCACHE_PORT:-6555}}}'"
+export KV_TRANSFER_ARG="--kv-transfer-config '{\"kv_connector\":\"LMCacheMPConnector\",\"kv_role\":\"kv_both\",\"kv_connector_extra_config\":{\"lmcache.mp.host\":\"tcp://localhost\",\"lmcache.mp.port\":\${LMCACHE_PORT:-6555},\"lmcache.mp.use_vmm_api\":false}}'"
 # hsa-snoop: use container PID namespace (SPUR authz blocks --pid=host).
 export AIC_HSA_SNOOP_PID_MODE=container:aic-lmcache
 # Monitoring metrics dir for Prometheus TSDB.
 export AIC_METRICS_DIR="\${_logdir}/prometheus"
 export PROM_UID="\$(id -u)" PROM_GID="\$(id -g)"
 mkdir -p "\${HF_HOME}" "\${AIC_METRICS_DIR}" /tmp/aic-prom-dump-nvme /tmp/aic-prom-dump-nfs
+aic_container_identity "\${HF_HOME}" || exit 1
 
 compose() { docker compose -f '${AIC_DAY_DIR}/docker/docker-compose.yml' "\$@"; }
 cleanup() {
@@ -2780,17 +2790,7 @@ mkdir -p "\${HF_HOME}" "\${_logdir}/vllm-emulator"
 # Containers default to root, and HF_HOME is very often a SHARED cluster cache
 # (Alola's /scratch/models).  Root-owned entries there cannot be refreshed or
 # deleted by anyone else, so run the emulator as the submitting user instead.
-# Resolved on the COMPUTE node -- id is what matters where the bind mount lives.
-# Docker drops supplementary groups, so a cache writable only through its group
-# (SPUR's /shared_nfs/huggingface grants allusers via a setgid dir + ACL) is
-# read-only to \$(id -u):\$(id -g).  Run with the cache's group instead -- but
-# only one the user is in, since docker never checks membership.
-_hf_gid="\$(stat -c %g "\${HF_HOME}")"
-case " \$(id -G) " in *" \${_hf_gid} "*) ;; *) _hf_gid="\$(id -g)" ;; esac
-export AIC_CONTAINER_USER="\$(id -u):\${_hf_gid}"
-export AIC_CONTAINER_USERNAME="\$(id -un)"
-export AIC_CONTAINER_HOME=/tmp
-echo "[emulate-test] container user \${AIC_CONTAINER_USER}, HF cache \${HF_HOME}"
+aic_container_identity "\${HF_HOME}" || exit 1
 
 # NB: \`timeout\` cannot run a shell function, so the calls below spell out
 # \`docker compose\` rather than wrapping the compose() helper.
@@ -2986,14 +2986,8 @@ export NVME_DATA='${AIC_EMULATE_MP_DATA}/nvme'
 export NFS_DATA='${AIC_EMULATE_MP_DATA}/nfs'
 mkdir -p "\${HF_HOME}" "\${_logdir}/vllm-emulator" "\${_logdir}/lmcache-emulator" \
     '${AIC_EMULATE_MP_DATA}/nvme' '${AIC_EMULATE_MP_DATA}/nfs'
-# Run the emulator as the submitting user with the HF cache's group -- see
-# cmd_emulate_test for why both halves matter.
-_hf_gid="\$(stat -c %g "\${HF_HOME}")"
-case " \$(id -G) " in *" \${_hf_gid} "*) ;; *) _hf_gid="\$(id -g)" ;; esac
-export AIC_CONTAINER_USER="\$(id -u):\${_hf_gid}"
-export AIC_CONTAINER_USERNAME="\$(id -un)"
-export AIC_CONTAINER_HOME=/tmp
-echo "[emulate-mp-test] container user \${AIC_CONTAINER_USER}, HF cache \${HF_HOME}"
+# Run the emulator as the submitting user with the HF cache's group.
+aic_container_identity "\${HF_HOME}" || exit 1
 
 # local_disk needs a native LocalDiskBackend config mounted at
 # /config/lmcache.yml; the compose service reads it only when
@@ -3021,7 +3015,7 @@ fi
 # tensor.device.type and host-memory KV falls to engine_driven, which moves the
 # copy into the vLLM worker.  lmcache_driven keeps the shipped topology (the
 # SERVER pulls from the registered buffers, here POSIX SHM instead of HIP IPC).
-export EMU_KV_TRANSFER_ARG="--kv-transfer-config '{\"kv_connector\":\"LMCacheMPConnector\",\"kv_role\":\"kv_both\",\"kv_connector_extra_config\":{\"lmcache.mp.host\":\"tcp://aic-lmcache-emulator\",\"lmcache.mp.port\":\${LMCACHE_PORT},\"lmcache.mp.mp_transfer_mode\":\"lmcache_driven\"}}'"
+export EMU_KV_TRANSFER_ARG="--kv-transfer-config '{\"kv_connector\":\"LMCacheMPConnector\",\"kv_role\":\"kv_both\",\"kv_connector_extra_config\":{\"lmcache.mp.host\":\"tcp://aic-lmcache-emulator\",\"lmcache.mp.port\":\${LMCACHE_PORT},\"lmcache.mp.use_vmm_api\":false,\"lmcache.mp.mp_transfer_mode\":\"lmcache_driven\"}}'"
 export VLLM_EXTRA_ARGS="--enable-prefix-caching"
 # One /dev/shm for both: the server opens the KV SHM segments by name.
 export EMU_IPC_MODE=container:aic-lmcache-emulator
@@ -3176,7 +3170,7 @@ if [ -n '${AIC_EMULATE_MP_BENCH}' ]; then
             /^lmcache_mp_lookup_requested_tokens_total/ {req=\$NF}
             /^lmcache_mp_lookup_hit_tokens_total/       {hit=\$NF}
             /^lmcache_mp_l1_read_chunks_total/          {l1r=\$NF}
-            /^lmcache_mp_l2_prefetch_hit_chunks_total/  {l2h=\$NF}
+            /^lmcache_mp_l2_prefetch_load_completed_chunks_total/  {l2h=\$NF}
             END {printf "[emulate-mp-test]   after %-6s cum: lookup %d/%d tokens hit, L1 reads %d, L2 prefetch hits %d\n", tag, hit, req, l1r, l2h}'
         docker exec aic-lmcache-emulator curl -fsS http://localhost:19090/metrics 2>/dev/null | awk -v tag="\${tag:-cold}" '
             /^agent_tx_bytes_total/ {tx=\$NF} /^agent_rx_bytes_total/ {rx=\$NF}
@@ -3370,7 +3364,7 @@ print(f"[emulate-mp-test]   L1          {g(lm, 'lmcache_mp_l1_write_chunks_total
       f"{g(lm, 'lmcache_mp_l1_eviction_loop_ticks_total'):.0f} eviction-loop ticks")
 print(f"[emulate-mp-test]   L2          {g(lm, 'lmcache_mp_l2_store_completed_objects_chunks_total'):.0f}/"
       f"{g(lm, 'lmcache_mp_l2_store_submitted_objects_chunks_total'):.0f} chunks stored (completed/submitted), "
-      f"{g(lm, 'lmcache_mp_l2_prefetch_hit_chunks_total'):.0f}/"
+      f"{g(lm, 'lmcache_mp_l2_prefetch_load_completed_chunks_total'):.0f}/"
       f"{g(lm, 'lmcache_mp_l2_prefetch_lookup_objects_chunks_total'):.0f} prefetch hits, "
       f"{mib(g(lm, 'lmcache_mp_l2_usage_bytes'))} on the backend")
 # All four throughput histograms exist; the LOAD pair is what a cache is judged
@@ -4081,7 +4075,7 @@ _bkd_cfg=""; [[ -f "${AIC_DAY_DIR}/docker/buildkitd.toml" ]] && _bkd_cfg="--conf
 # actually changed.  The old test was \`[[ -n "\${_bkd_cfg}" ]]\`, which is true
 # whenever docker/buildkitd.toml exists -- i.e. always -- so every bake tore the
 # builder down and built a new one.  That discards all of BuildKit's
-# \`--mount=type=cache\` state: ccache, the uv cache and the apt cache, which are
+# \`--mount=type=cache\` state: ccache, the pip cache and the apt cache, which are
 # exactly what makes a torch or AITER recompile cheap.  The config's hash is
 # recorded beside the builder so the comparison is against what it was really
 # created with, not against whether a file happens to exist.
@@ -4096,7 +4090,7 @@ if docker buildx inspect ${AIC_BUILDX_BUILDER} >/dev/null 2>&1; then
         echo "[bake] buildkitd config changed -- recreating builder (cache mounts will be cold)"
         docker buildx rm ${AIC_BUILDX_BUILDER} >/dev/null 2>&1 || true
     else
-        echo "[bake] reusing builder ${AIC_BUILDX_BUILDER} (ccache/uv/apt cache mounts preserved)"
+        echo "[bake] reusing builder ${AIC_BUILDX_BUILDER} (ccache/pip/apt cache mounts preserved)"
     fi
 fi
 if ! docker buildx inspect ${AIC_BUILDX_BUILDER} >/dev/null 2>&1; then

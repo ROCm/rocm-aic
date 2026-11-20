@@ -1,20 +1,21 @@
 # Keep every in-flight store for a request, not just the latest
 #
-# LMCacheMPWorkerAdapter.submit_store_request() tracked one store future and
-# one producer event per request id, and overwrote both when a request
-# submitted another store before its previous one had completed (decode
+# LMCacheMPWorkerAdapter.submit_store_request() tracks one store future and
+# one producer event per request id, and overwrites both when a request
+# submits another store before its previous one has completed (decode
 # crossing a chunk boundary, or a scheduler step while the server is behind).
 #
-# The overwritten event was the last reference to it, so it was destroyed while
-# the server still held its IPC handle.  On HIP an IPC event handle is only
+# The overwritten event was the last reference to it, so it is destroyed while
+# the server still holds its IPC handle.  On HIP an IPC event handle is only
 # importable while the exporting event is alive; importing it afterwards fails
-# with hipErrorInvalidValue, and patch 11 then skips the store ("Event.
-# from_ipc_handle failed; skipping store ...").  Reproduced on MI355X with a
+# with hipErrorInvalidValue and the store is lost.  Reproduced on MI355X with a
 # two-process probe: a live handle imports (twice, too); the same handle after
 # the producer drops its event fails every time.  So these failures are an
-# event-lifetime bug, not the platform bug patch 11's message assumes.
+# event-lifetime bug, not a platform bug.  (Where the AIC event-IPC edit in
+# docker/lmcache/rocm_event_ipc_patch.py is applied, the producer synchronizes its
+# event locally and exports no handle, so only the next paragraph applies.)
 #
-# Overwriting also let get_finished() report the request's stores finished
+# Overwriting also lets get_finished() report the request's stores finished
 # once the *latest* future completed, while an earlier store could still be
 # reading the request's KV blocks.
 #
@@ -26,15 +27,18 @@
 #
 # Fix: group a request's store futures (_StoreFutureGroup completes when all
 # of them have, and fails if any failed) and keep every producer event until
-# the request's stores are finished.
+# the request's stores are finished.  A store whose request failed
+# (REQUEST_FAILURES) counts as ended and fails the group, but does not report
+# the request finished while a sibling store is still in flight.
 #
-# Applies after patches 01-15.
+# Rebased onto LMCache v0.5.8rc1.  Applies after patches 07-16
+# (16-lmcache-standalone-prometheus-server).
 diff --git a/lmcache/integration/vllm/vllm_multi_process_adapter.py b/lmcache/integration/vllm/vllm_multi_process_adapter.py
-index 0000000..0000000 100644
+index 750ec207..99ca77f4 100644
 --- a/lmcache/integration/vllm/vllm_multi_process_adapter.py
 +++ b/lmcache/integration/vllm/vllm_multi_process_adapter.py
-@@ -240,6 +240,35 @@ class _IpcEvent(Protocol):
-     def wait(self, stream: Any = None) -> None: ...
+@@ -386,6 +386,65 @@ def _poll_transfer(request_id: str, future: Any) -> tuple[bool, Any]:
+         return True, False
  
  
 +class _StoreFutureGroup:
@@ -48,6 +52,10 @@ index 0000000..0000000 100644
 +    reports ``hipErrorInvalidValue`` and the server skips the store).  The
 +    request must also not be reported finished while an earlier store is
 +    still reading its blocks.
++
++    A store whose request failed (``REQUEST_FAILURES``) has ended: it counts
++    as done, and makes the group's result false, without hiding a sibling
++    store that is still in flight.
 +    """
 +
 +    def __init__(self, *futures: MessagingFuture["StoreResult"]) -> None:
@@ -57,20 +65,46 @@ index 0000000..0000000 100644
 +        self._futures.append(future)
 +
 +    def query(self) -> bool:
-+        return all(f.query() for f in self._futures)
++        done = True
++        for future in self._futures:
++            try:
++                if not future.query():
++                    done = False
++            except REQUEST_FAILURES:
++                continue
++        return done
 +
 +    def wait(self, timeout: float | None = None) -> bool:
-+        return all([f.wait(timeout) for f in self._futures])
++        deadline = None if timeout is None else time.monotonic() + timeout
++        done = True
++        for future in self._futures:
++            remaining = (
++                None if deadline is None else max(0.0, deadline - time.monotonic())
++            )
++            try:
++                if not future.wait(timeout=remaining):
++                    done = False
++            except REQUEST_FAILURES:
++                continue
++        return done
 +
 +    def result(self, timeout: float | None = None) -> "StoreResult":
-+        return all([f.result(timeout=timeout) for f in self._futures])
++        ok = True
++        for future in self._futures:
++            try:
++                if not future.result(timeout=timeout):
++                    ok = False
++            except REQUEST_FAILURES as exc:
++                logger.warning("One of a request's stores failed: %s", exc)
++                ok = False
++        return ok
 +
 +
  @dataclass
- class _LookupAck:
-     """LOOKUP requests whose server acknowledgement has not been observed yet.
-@@ -1425,14 +1454,17 @@ class LMCacheMPWorkerAdapter:
-         self.transfer_ctx: TransferContext | None = None
+ class ParallelStrategy:
+     vllm_world_size: int
+@@ -1353,14 +1412,17 @@ class LMCacheMPWorkerAdapter:
+         self._kv_caches_released = False
  
          # Request futures
 -        self.store_futures: dict[str, MessagingFuture[StoreResult]] = {}
@@ -89,7 +123,7 @@ index 0000000..0000000 100644
          self.retrieve_events: dict[str, _IpcEvent] = {}
  
          # Alternative error reports, drained together by either public getter.
-@@ -1850,19 +1882,27 @@ class LMCacheMPWorkerAdapter:
+@@ -1876,9 +1938,17 @@ class LMCacheMPWorkerAdapter:
              event,
              self.blocks_in_chunk,
          )
@@ -106,24 +140,14 @@ index 0000000..0000000 100644
          if event is not None:
 -            self.store_events[request_id] = event
 +            self.store_events.setdefault(request_id, []).append(event)
-         if self._kv_events_enabled and not self._kv_event_server_source:
-             # Own completion events are the fallback when the server's
-             # cache-event log is not the source. A successful store result
-             # only means the request completed without a fatal error: chunks
-             # the server could not reserve are skipped silently, so when the
-             # log is the source, its write-finished records announce exactly
-             # the chunks written.
-             self._pending_store_kv_events.setdefault(request_id, []).extend(
-                 self._build_store_kv_events(key)
-             )
  
      @_lmcache_nvtx_annotate
      def submit_retrieve_request(
 diff --git a/tests/v1/test_vllm_mp_adapter.py b/tests/v1/test_vllm_mp_adapter.py
-index d7ec75b..754fb29 100644
+index 1e0380c9..6be82707 100644
 --- a/tests/v1/test_vllm_mp_adapter.py
 +++ b/tests/v1/test_vllm_mp_adapter.py
-@@ -570,6 +570,62 @@ def test_store_keeps_event_until_future_finishes(fake_adapter):
+@@ -1214,6 +1214,95 @@ def test_store_keeps_event_until_future_finishes(fake_adapter):
      assert event_ref() is None
  
  
@@ -147,7 +171,9 @@ index d7ec75b..754fb29 100644
 +
 +    first_event = FakeCudaEvent()
 +    first_ref = weakref.ref(first_event)
-+    op = LoadStoreOp(token_ids=[1, 2], block_ids=[[7]], start=0, end=2)
++    op = LoadStoreOp(
++        token_bytes=pack_token_ids([1, 2]), block_ids=[[7]], start=0, end=2
++    )
 +    adapter.submit_store_request("req-1", op, first_event)
 +    adapter.submit_store_request("req-1", op, FakeCudaEvent())
 +    transfer_ctx.reset_mock()  # its call record also holds the events
@@ -176,14 +202,44 @@ index d7ec75b..754fb29 100644
 +    transfer_ctx = MagicMock()
 +    transfer_ctx.submit_store.side_effect = futures
 +    adapter.transfer_ctx = transfer_ctx
-+    op = LoadStoreOp(token_ids=[1, 2], block_ids=[[7]], start=0, end=2)
++    op = LoadStoreOp(
++        token_bytes=pack_token_ids([1, 2]), block_ids=[[7]], start=0, end=2
++    )
 +    adapter.submit_store_request("req-1", op, FakeCudaEvent())
 +    adapter.submit_store_request("req-1", op, FakeCudaEvent())
 +
 +    assert adapter.store_futures["req-1"].result() is False
 +
 +
++def test_failed_store_does_not_hide_a_pending_sibling(fake_adapter):
++    """A store whose request failed must not report the request finished
++    while another of its stores is still in flight."""
++    adapter, _send_mock, _future = fake_adapter
++    failed = MagicMock(name="failed")
++    failed.query.side_effect = TimeoutError("server gone")
++    failed.result.side_effect = TimeoutError("server gone")
++    pending = MagicMock(name="pending")
++    pending.query.return_value = False
++    pending.result.return_value = True
++    transfer_ctx = MagicMock()
++    transfer_ctx.submit_store.side_effect = [failed, pending]
++    adapter.transfer_ctx = transfer_ctx
++    op = LoadStoreOp(
++        token_bytes=pack_token_ids([1, 2]), block_ids=[[7]], start=0, end=2
++    )
++    adapter.submit_store_request("req-1", op, FakeCudaEvent())
++    adapter.submit_store_request("req-1", op, FakeCudaEvent())
++
++    finished_stores, _ = adapter.get_finished({"req-1"})
++    assert finished_stores == set()
++    assert len(adapter.store_events["req-1"]) == 2
++
++    pending.query.return_value = True
++    finished_stores, _ = adapter.get_finished(set())
++    assert finished_stores == {"req-1"}
++    assert "req-1" not in adapter.store_futures
++
++
  def test_retrieve_keeps_event_until_future_finishes(fake_adapter):
      """Retrieve requests keep the exported CUDA event alive while pending."""
      adapter, _send_mock, _future = fake_adapter
- 

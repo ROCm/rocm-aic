@@ -124,7 +124,7 @@ done
         echo "- **Built by:** ${GITHUB_SERVER_URL}/${REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
     fi
     echo "- **GPU arch set:** \`${GPU_ARCH}\`"
-    echo "- **Build base:** ${rocm_base_image} (ROCm ${rocm_version}, Python 3.12, x86_64)"
+    echo "- **Build base:** ${rocm_base_image} (ROCm ${rocm_version}, Python 3.14, x86_64)"
     echo "- **PyTorch (built against, not included):** ${pin[PYTORCH_GIT_URL]} @ \`${pin[PYTORCH_REF]}\` (${pin[PYTORCH_SERIES]} series, source build)"
     echo "- **vLLM:** ${pin[VLLM_GIT_URL]} @ \`${pin[VLLM_REF]}\` + AIC patches (source build)"
     echo "- **AITER:** ${pin[AITER_GIT_URL]} @ \`${pin[AITER_REF]}\`"
@@ -155,7 +155,7 @@ done
         echo '```'
         echo ""
     fi
-    echo "> These wheels are **not** manylinux: ROCm ${rocm_version} + Python 3.12 + x86_64 only,"
+    echo "> These wheels are **not** manylinux: ROCm ${rocm_version} + Python 3.14 + x86_64 only,"
     echo "> with GPU code for the arch set above.  Their C++ extensions link against the"
     echo "> PyTorch build named above, which is not published here."
     echo "> The \`nixl_rocm\` wheel needs the ROCm runtime (libamdhip64) and hipFile on the host."

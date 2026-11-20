@@ -10,7 +10,7 @@
 
 .PHONY: cliff plot kvbench-up kvbench-down \
         cliff-kvbench-local test-emulate-local capture-profile-local \
-        test-rocjitsu-local
+        test-rocjitsu-local agentx-build agentx-corpus agentx-run agentx-sweep
 
 # Benchmarks run in aic-client (started by `make up`), on the aic bridge with
 # the repo at /repo and logs/ at /logs, so they reach vLLM by name.  Wait for
@@ -95,6 +95,48 @@ cliff-kvbench-local: ensure-compose prep-kvbench-dirs
 	    --request-timeout 10 \
 	    --out "$$out"; \
 	echo "Results written to $${out#/logs/}"
+
+# ---- AgentX (aiperf agentic-trace replay) ------------------------------------
+# benchmarks/agentx/run_agentx.sh runs `aiperf profile --scenario
+# inferencex-agentx-mvp` from the aic-agentx image, as the invoking user, on the
+# aic bridge: by default against the running aic-vllm-gpu$(GPU), or against
+# BENCH_ENDPOINT.  It does not use aic-client (aiperf is its own image).
+#
+# The scripts own the defaults of the AGENTX_* knobs (docs/ENVIRONMENT.md), so
+# make gives them none: a value set on the command line, in the environment or
+# in .env.<cluster> reaches them through the environment.  AGENTX_IMAGE_REF is
+# the tag bake resolves (Makefile).
+#
+#   make agentx-build
+#   make agentx-run                             # needs a model with a large context
+#   make agentx-run AGENTX_CORPUS_SCALE=8       # scaled corpus, NOT the AgentX benchmark
+#   make agentx-run AGENTX_ARGS=--dry-run       # print the command only
+#   make agentx-sweep AGENTX_CONCURRENCIES="1 2 4"
+
+# Extra run_agentx.sh options for agentx-run and agentx-sweep.
+AGENTX_ARGS ?=
+
+# Not through _bake_preflight: the client image has no ROCM_ARCH.  The stack's
+# builder is used when it exists, else docker's default one.
+agentx-build:
+	_builder=""; \
+	if docker buildx inspect $(AIC_BUILDX_BUILDER) >/dev/null 2>&1; then _builder="--builder $(AIC_BUILDX_BUILDER)"; fi; \
+	docker buildx bake $$_builder \
+		--progress=$(BUILD_PROGRESS) \
+		--load \
+		-f "$(REPO_ROOT)/docker/docker-bake.hcl" \
+		agentx
+
+# Token-scaled copy of the public corpus for small-context models, under
+# AGENTX_CORPUS_CACHE.  A scaled corpus is NOT the AgentX benchmark.
+agentx-corpus:
+	@bash "$(CURDIR)/benchmarks/agentx/scaled_corpus.sh"
+
+agentx-run:
+	@bash "$(CURDIR)/benchmarks/agentx/run_agentx.sh" $(AGENTX_ARGS)
+
+agentx-sweep:
+	@bash "$(CURDIR)/benchmarks/agentx/overnight_sweep.sh" $(AGENTX_ARGS)
 
 # ---- Emulate targets (local, no Slurm) ----------------------------------------
 
@@ -246,6 +288,7 @@ capture-profile-local: prep-dirs
 	[ -s "$(AIC_CAPTURE_DIR)/$$trace_file" ] || { echo "FAIL: trace not written" >&2; exit 1; }; \
 	echo "Building profile pack ..."; \
 	docker run --rm \
+	    --user "$(shell id -u):$(shell id -g)" \
 	    -v "$(AIC_CAPTURE_DIR):/trace" \
 	    --entrypoint python3 "$(_CAPTURE_IMAGE)" \
 	    -m vllm_emulator.profile.build_serving_profile_filtered \
@@ -392,8 +435,8 @@ RJ_LMCACHE_IMAGE_REF ?= $(word 3,$(_rj_bake))
 # Still hand-maintained against compose -- `docker compose --profile cache
 # --profile monitoring config --images` is the check when adding a service.
 #
-# hsa-snoop is the RJ_ROCJITSU_ARCH one, not the global HSA_SNOOP_IMAGE, which
-# carries the HOST's ROCM_ARCH; [6d] hands it to the guest's compose explicitly.
+# hsa-snoop's tag is its own ref, the same for every arch; [6d] hands it to the
+# guest's compose explicitly.
 RJ_HSA_SNOOP_IMAGE_REF ?= $(word 6,$(_rj_bake))
 RJ_LOCAL_IMAGES  = $(RJ_IMAGE_REF) $(RJ_LMCACHE_IMAGE_REF) \
                    $(wordlist 4,5,$(_rj_bake)) \
@@ -663,7 +706,7 @@ test-rocjitsu-local: prep-dirs
 	ssh $$_ssh_flags "$$_vmuser@localhost" \
 	    "printf 'FROM %s\nRUN pip3 install openai -q\n' '$(RJ_LMCACHE_IMAGE_REF)' | \
 	         sudo docker build -q -t '$(RJ_LMCACHE_IMAGE_REF)' -f - /tmp 2>&1 && \
-	     printf 'FROM %s\nRUN pip3 install lmcache==$(patsubst v%,%,$(LMCACHE_REF)) -q\n' '$(RJ_IMAGE_REF)' | \
+	     printf 'FROM %s\nRUN pip3 install --no-deps lmcache==$(patsubst v%,%,$(LMCACHE_REF)) -q\n' '$(RJ_IMAGE_REF)' | \
 	         sudo docker build -q -t '$(RJ_IMAGE_REF)' -f - /tmp 2>&1" \
 	    2>&1 | sed 's/^/  [patch] /'; \
 	echo "  [6b.2] Pulling public monitoring images inside VM ..."; \

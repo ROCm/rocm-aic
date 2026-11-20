@@ -10,11 +10,10 @@ services:
       HSA_ENABLE_IPC_MODE_LEGACY: "${HSA_ENABLE_IPC_MODE_LEGACY:-}"
       HIP_VISIBLE_DEVICES: "0"
     devices: [/dev/kfd, /dev/dri]
-    group_add: ["${RENDER_GID:-993}"]
+    group_add: ["${RENDER_GID:-992}"]
     volumes:
       - ./ipc-vol:/ipc
       - .:/tests:ro
-      - ../../docker/lmcache:/vmem:ro
 
   mem-consumer:
     image: ${AIC_IMG:-aic-vllm:latest}
@@ -25,8 +24,7 @@ services:
       HSA_ENABLE_IPC_MODE_LEGACY: "${HSA_ENABLE_IPC_MODE_LEGACY:-}"
       HIP_VISIBLE_DEVICES: "0"
     devices: [/dev/kfd, /dev/dri]
-    group_add: ["${RENDER_GID:-993}"]
+    group_add: ["${RENDER_GID:-992}"]
     volumes:
       - ./ipc-vol:/ipc
       - .:/tests:ro
-      - ../../docker/lmcache:/vmem:ro

@@ -3,33 +3,44 @@
 
 With PREBUILD_KERNELS != 0, setup.py compiles the CK modules through
 
-    prebuid_thread_num = 5
-    max_jobs = os.environ.get("MAX_JOBS")
-    if max_jobs is not None and max_jobs.isdigit() and int(max_jobs) > 0:
-        prebuid_thread_num = min(prebuid_thread_num, int(max_jobs))
+    outer_workers, inner_workers = split_worker_budget(
+        get_worker_count(), len(all_opts_args_build)
+    )
     ...
-    with ThreadPoolExecutor(max_workers=prebuid_thread_num) as executor:
+    with (
+        worker_ceiling(inner_workers),
+        ThreadPoolExecutor(max_workers=outer_workers) as executor,
+    ):
 
-The literal 5 is a ceiling, not a default: `min()` means MAX_JOBS can only
-lower it.  On a 128-core build allocation that leaves the step running five
-modules wide -- measured at 61 minutes for ~107 modules on job 68147805, with
-the node's load average sitting at 113 of 384 cores.
+(v0.1.29.post1; up to v0.1.22.post1 the same thing was spelled
+`prebuid_thread_num = 5` clamped by MAX_JOBS.)  split_worker_budget() caps the
+outer pool at aiter_worker_limits.MAX_OUTER_MODULE_WORKERS = 5 and gives each
+module total // outer Ninja jobs.  The 5 is a ceiling, not a default: the
+worker budget can only lower it.  On a 128-core build allocation that leaves
+the step running five modules wide -- measured at 61 minutes for ~107 modules
+on job 68147805 (v0.1.22.post1), with the node's load average sitting at 113 of
+384 cores.
 
 Make the 5 a default that AITER_PREBUILD_THREADS can raise.  An explicit value
-is taken verbatim, deliberately skipping the MAX_JOBS clamp: MAX_JOBS is ninja
-width *within* a module, not how many run at once, so leaving the clamp in
-would pin the thread count down to the per-module width.
+is taken verbatim (bounded only by the number of modules), deliberately
+skipping the worker-budget clamp: that budget (MAX_JOBS, which setup.py adopts
+as AITER_MAX_JOBS, further limited by AITER to 80% of the CPUs and to available
+memory) is ninja width *within* a module, not how many run at once, so leaving
+the clamp in would pin the thread count down to the per-module width.
 
-Do NOT compensate by dividing MAX_JOBS by the thread count.  Modules consume
-the parallel work they have, not MAX_JOBS each: measured on job 68147805, five
-concurrent modules produced a load average of 113 and the three-module tail
-produced 98, both against MAX_JOBS=128.  That tail is three FlashAttention
-modules (libmha_fwd, module_mha_fwd, module_mha_varlen_fwd) that ran for over
-85 minutes as the sole critical path -- starving them of ninja width to protect
-against an oversubscription that does not occur would make the slowest part of
-the build dramatically slower.
+Do NOT compensate by dividing the budget by the thread count, which is what
+upstream's split now does on its own path.  Modules consume the parallel work
+they have, not MAX_JOBS each: measured on job 68147805, five concurrent modules
+produced a load average of 113 and the three-module tail produced 98, both
+against MAX_JOBS=128.  That tail is three FlashAttention modules (libmha_fwd,
+module_mha_fwd, module_mha_varlen_fwd) that ran for over 85 minutes as the sole
+critical path -- starving them of ninja width to protect against an
+oversubscription that does not occur would make the slowest part of the build
+dramatically slower.  So with AITER_PREBUILD_THREADS set, every module keeps
+the whole worker budget; without it, upstream's split is untouched.
 
 Edits the source tree, so it must run after the clone and before setup.py.
+Exits non-zero, leaving the tree untouched, when the block is not found.
 """
 import os
 import sys
@@ -43,46 +54,45 @@ if not os.path.isfile(target):
 
 src = open(target).read()
 
-old = """        prebuid_thread_num = 5
-        max_jobs = os.environ.get("MAX_JOBS")
-        if max_jobs is not None and max_jobs.isdigit() and int(max_jobs) > 0:
-            prebuid_thread_num = min(prebuid_thread_num, int(max_jobs))
-        else:
-            prebuid_thread_num = min(prebuid_thread_num, getMaxJobs())
+old = """        outer_workers, inner_workers = split_worker_budget(
+            get_worker_count(), len(all_opts_args_build)
+        )
 """
 
-# When AITER_PREBUILD_THREADS is set it is taken verbatim -- the MAX_JOBS clamp
-# is skipped on that path on purpose.  MAX_JOBS is per-module ninja width, and
-# the caller is expected to set it to roughly cores/threads; leaving the clamp
-# in would then silently pin the thread count back down to that small number.
+# When AITER_PREBUILD_THREADS is set it is taken verbatim -- the budget split
+# is skipped on that path on purpose.  The worker budget is per-module ninja
+# width; dividing it by the thread count would starve the long MHA tail.
 new = """        _aic_threads = os.environ.get("AITER_PREBUILD_THREADS", "").strip()
         if _aic_threads.isdigit() and int(_aic_threads) > 0:
-            # rocm-aic: explicit value wins, un-clamped by MAX_JOBS (which
-            # bounds ninja *within* a module, not how many run at once).
-            prebuid_thread_num = int(_aic_threads)
+            # rocm-aic: explicit value wins, not capped at
+            # MAX_OUTER_MODULE_WORKERS, and each module keeps the whole worker
+            # budget (it bounds ninja *within* a module, not how many run at
+            # once).
+            outer_workers = max(1, min(int(_aic_threads), len(all_opts_args_build)))
+            inner_workers = get_worker_count()
         else:
-            prebuid_thread_num = 5
-            max_jobs = os.environ.get("MAX_JOBS")
-            if max_jobs is not None and max_jobs.isdigit() and int(max_jobs) > 0:
-                prebuid_thread_num = min(prebuid_thread_num, int(max_jobs))
-            else:
-                prebuid_thread_num = min(prebuid_thread_num, getMaxJobs())
+            outer_workers, inner_workers = split_worker_budget(
+                get_worker_count(), len(all_opts_args_build)
+            )
         print(
-            f"[aiter] CK prebuild: {prebuid_thread_num} concurrent module builds",
+            f"[aiter] CK prebuild: {outer_workers} concurrent module builds, "
+            f"ninja -j{inner_workers} each",
             flush=True,
         )
 """
 
-if old not in src:
+if src.count(old) != 1 or "ThreadPoolExecutor(max_workers=outer_workers)" not in src:
     print(
-        "[aiter-patch] WARNING: prebuid_thread_num block not found — "
-        "check this AITER version; leaving setup.py unmodified"
+        "[aiter-patch] ERROR: split_worker_budget block not found exactly "
+        f"once in {target} — this AITER version needs the patch re-ported; "
+        "setup.py left unmodified",
+        file=sys.stderr,
     )
-    sys.exit(0)
+    sys.exit(1)
 
 src = src.replace(old, new, 1)
 open(target, "w").write(src)
 print(
     "[aiter-patch] CK prebuild thread count now honours AITER_PREBUILD_THREADS "
-    f"(was pinned at 5) in {target}"
+    f"(was capped at 5) in {target}"
 )

@@ -7,7 +7,9 @@ datasources:
     url: http://aic-prometheus:9090
     isDefault: true
     jsonData:
-      timeInterval: 5s
+      # The global scrape_interval in monitoring/prometheus/prometheus.yml.
+      # Smaller, and $__rate_interval (4x this) spans a single sample.
+      timeInterval: 15s
 
   - name: Loki
     type: loki

@@ -82,19 +82,20 @@ make endpoints   # → prints the Grafana URL to open
 [ENVIRONMENT.md](ENVIRONMENT.md#monitoring); `docker/docker-compose.yml` owns
 them.
 
-The **AIC Overview** dashboard covers eleven rows:
+The **AIC Overview** dashboard's main rows:
 
 | Row | Key panels |
 | --- | --- |
-| **Summary** | Cumulative token counters (input, output, computed, L1/L2 hits), TTFT/TPOT, total tokens/s, cache hit rates |
+| **KV Offload Verdict** | Scrape-target health, share of prompt tokens from cache, LMCache hit ratio, stores / retrieves, lazy-offload pending, NIXL errors, free VRAM, tokens by source and tier, L2 throughput, NIXL latency |
+| **Summary** | Token counters over the selected time range (input, output, computed, LMCache L1/L2 hits), TTFT/TPOT, total tokens/s, cache hit rates (any cache, LMCache L1, LMCache L2) |
 | **GPU** | VRAM %, power, clocks, temperatures, GFX/UMC/MMA activity, PCIe / xGMI fabric speed |
-| **vLLM** | Throughput, TTFT/ITL/E2E latency p50+p95, KV cache usage %, prefix cache hit rate, preemptions |
-| **LMCache** | L1 usage gauge, L1/L2 chunk rates, L0→L1 throughput, reuse gap, in-flight L2 stores |
+| **vLLM** | Throughput, TTFT/ITL/E2E latency p50+p95, prompt tokens by source, requests waiting on a KV fetch by stage, KV cache usage %, prefix cache hit rate, preemptions (rate and per finished request) |
+| **LMCache** | L1 usage gauge, L1/L2 chunk rates, token hit rate L1/L2, prompt tokens by cache tier (stacked), share of prompt tokens served from any cache, L0→L1 throughput, reuse gap, in-flight L2 stores |
 | **NIXL / L2** | TX/RX throughput (B/s), average transfer latency (µs/req) |
 | **NVMe** | Throughput, IOPS, latency, capacity used, IO pressure (PSI) |
 | **Node / RDMA** | CPU load, memory, filesystem space, IB/RoCE port throughput |
 | **hsa-snoop** | Kernel launch rate by kernel/process, duration histogram, SDMA throughput |
-| **LMCache Coordinator** | Up/down status, registered instances, key directory size, event stream gaps, L2 quota |
+| **LMCache Coordinator** | Up/down status, registered instances, event stream gaps, L1 keys per instance, key directory size, L2 quota |
 | **LMCache — Extended** | L0→L1 load throughput, L2 in-flight queue depth, chunk reuse gap, HTTP latency |
 | **LMCache — Adapter & Transport Health** | L2 adapter state (active/draining), NIXL transfer latency, L1 allocation failures |
 
@@ -217,6 +218,7 @@ LMCache uses OpenTelemetry with a Prometheus fallback at `--http-port`
 | `lmcache_mp_l1_read_chunks_total` | counter | *lazy* KV chunks read from L1 |
 | `lmcache_mp_l1_evicted_chunks_total` | counter | *lazy* L1 chunks evicted (to L2 or dropped) |
 | `lmcache_mp_l1_allocation_failure_chunks_total` | counter | *lazy* Chunks dropped because L1 was full and no L2 available |
+| `lmcache_mp_l1_read_failure_chunks_total` | counter | *lazy* L1 `reserve_read` failures after a lookup; `during`, `reason`, `model_name` labels. Absent in a healthy run |
 | `lmcache_mp_l1_eviction_loop_ticks_total` | counter | L1 LRU eviction loop iterations |
 | `lmcache_mp_l1_eviction_loop_triggered_total` | counter | *lazy* Times eviction fired above the watermark |
 | `lmcache_mp_l1_chunk_lifetime_seconds` | histogram | *lazy* Time a chunk spends in L1 |
@@ -256,21 +258,26 @@ LMCache uses OpenTelemetry with a Prometheus fallback at `--http-port`
 | `lmcache_mp_l2_prefetch_adapters` | gauge | L2 prefetch adapters by `state` |
 | `lmcache_mp_l2_prefetch_lookup_requests_total` | counter | *lazy* L2 prefetch lookups attempted |
 | `lmcache_mp_l2_prefetch_lookup_objects_chunks_total` | counter | *lazy* Chunks looked up in L2 |
-| `lmcache_mp_l2_prefetch_hit_chunks_total` | counter | *lazy* Chunks successfully retrieved from L2 |
 | `lmcache_mp_l2_prefetch_load_submitted_requests_total` | counter | *lazy* L2 load tasks submitted |
 | `lmcache_mp_l2_prefetch_load_submitted_objects_chunks_total` | counter | *lazy* Chunks submitted for load |
-| `lmcache_mp_l2_prefetch_load_completed_chunks_total` | counter | *lazy* Chunks successfully loaded from L2 |
+| `lmcache_mp_l2_prefetch_load_completed_chunks_total` | counter | *lazy* Chunks successfully loaded from L2 (the "prefetch hits"; there is no `l2_prefetch_hit` counter) |
+| `lmcache_mp_l2_prefetch_failure_chunks_total` | counter | *lazy* Chunks expected in L2 that failed to load into L1; `reason` (`l1_oom`, `l1_contended`, `not_found`) and `model_name` labels. Absent in a healthy run |
 | `lmcache_mp_l2_load_completed_requests_total` | counter | *lazy* L2 load requests completed |
 | `lmcache_mp_l2_load_throughput_GB_per_second` | histogram | *lazy* L2 load throughput (GB/s) |
 | `lmcache_mp_active_prefetch_jobs` | gauge | Active prefetch jobs |
 
-#### Prefetch hit/miss (combined L1+L2)
+#### Lookup hit/miss (combined L1+L2)
+
+Upstream counters, labelled `cache_salt` and `model_name`; sum across label
+sets. There is no miss counter: missed chunks are
+`(lmcache_mp_lookup_requested_tokens_total - lmcache_mp_lookup_hit_tokens_total)`
+divided by the chunk size (256).
 
 | Metric | Type | Description |
 | --- | --- | --- |
-| `lmcache_mp_prefetch_hit_chunks_total` | counter | *lazy* Cache hits by `tier` label (`l1` or `l2`) |
-| `lmcache_mp_prefetch_miss_chunks_total` | counter | *lazy* Cache misses |
-| `lmcache_mp_prefetch_requests_total` | counter | *lazy* Total prefetch lookup requests |
+| `lmcache_mp_lookup_hit_l1_keys_total` | counter | *lazy* Chunks a lookup found in L1 |
+| `lmcache_mp_lookup_hit_l2_keys_total` | counter | *lazy* Chunks a lookup found in L2 |
+| `lmcache_mp_lookups_requests_total` | counter | *lazy* Lookup requests, including those that start no prefetch |
 | `lmcache_mp_active_p2p_lookup_jobs` | gauge | Active P2P (cross-instance) lookup jobs |
 
 #### Reuse gap / effectiveness
@@ -284,10 +291,35 @@ LMCache uses OpenTelemetry with a Prometheus fallback at `--http-port`
 
 | Metric | Type | Description |
 | --- | --- | --- |
-| `lmcache_mp_lookup_requested_tokens_total` | counter | *lazy* Tokens requested from cache |
-| `lmcache_mp_lookup_hit_tokens_total` | counter | *lazy* Tokens served from cache |
+| `lmcache_mp_lookup_requested_tokens_total` | counter | *lazy* Tokens submitted for lookup: chunk-aligned, and excluding the prefix vLLM's GPU prefix cache already held |
+| `lmcache_mp_lookup_hit_tokens_total` | counter | *lazy* Of those, tokens LMCache found (L1 + L2, contiguous prefix only) |
+| `lmcache_mp_lookup_hit_l1_tokens_total` | counter | *lazy* Of `lookup_hit`: tokens L1 (DRAM) could serve on its own |
+| `lmcache_mp_lookup_hit_l2_tokens_total` | counter | *lazy* Of `lookup_hit`: tokens L2 added beyond the prefix L1 could serve; `l1 + l2 == lookup_hit` |
+| `lmcache_mp_lookup_prompt_tokens_total` | counter | *lazy* Whole prompt length of each looked-up request (request-level denominator) |
+| `lmcache_mp_lookup_request_hit_tokens_total` | counter | *lazy* Prefix of the prompt served by vLLM's GPU prefix cache or by LMCache, whichever reached further (request-level numerator) |
 | `lmcache_mp_num_chunks_loaded_total` | counter | *lazy* Total chunks loaded back to GPU |
 | `lmcache_mp_inflight_load_memory_usage_bytes` | gauge | Memory held by in-flight load operations |
+
+All six lookup token counters move on the same event (one per lookup), so
+they can be subtracted. The **Prompt Tokens by Cache Tier** panel stacks,
+as rates:
+
+| Series | Expression |
+| --- | --- |
+| LMCache L1 | `lookup_hit_l1_tokens` |
+| LMCache L2 | `lookup_hit_l2_tokens` |
+| vLLM GPU prefix cache | `lookup_request_hit_tokens − lookup_hit_tokens` |
+| Not cached (computed by prefill) | `lookup_prompt_tokens − lookup_request_hit_tokens` |
+
+Per event `lookup_hit ≤ lookup_request_hit ≤ lookup_prompt`, so no term is
+negative, and the four add up to the prompt token rate.
+`lookup_request_hit_tokens / lookup_prompt_tokens` is the share of prompt
+tokens served from any cache (**Prompt Tokens Served from Any Cache**), and
+`lookup_hit_l{1,2}_tokens / lookup_prompt_tokens` are the Summary row's
+**LMCache L1 / L2 Hit Rate**. LMCache counts whole 256-token chunks and
+credits itself with the chunk that straddles the end of vLLM's GPU hit, so
+its split differs from vLLM's `prompt_tokens_by_source` by up to one chunk
+per request.
 
 ### `lmcache_coordinator` — MP coordinator exporter (`:9301`)
 
@@ -301,8 +333,8 @@ metrics use `job="lmcache_coordinator"`.
 | `lmcache_coordinator_instance_info` | gauge | Per-instance metadata (labels: `instance_id`, `ip`, `http_port`) |
 | `lmcache_coordinator_directory_keys_total` | gauge | Unique KV chunk keys with at least one placement |
 | `lmcache_coordinator_directory_placements_total` | gauge | Total placements across all keys and backends |
-| `lmcache_coordinator_instance_l1_keys` | gauge | L1 keys reported per instance via event stream |
-| `lmcache_coordinator_instance_seq_gap` | gauge | 1 if a sequence gap was detected in the instance's event stream |
+| `lmcache_coordinator_instance_l1_keys` | gauge | L1 keys reported per instance via event stream (`/directory/stats` `l1_keys_by_instance`) |
+| `lmcache_coordinator_instance_seq_gap` | gauge | 1 while the coordinator knows it is missing part of the instance's event stream (`/status` `ingest.streams[].gap_detected`, LMCache ≥ v0.5.8); no series until the instance's first event batch, or when `/status` is unavailable |
 | `lmcache_coordinator_quota_usage_bytes_total` | gauge | Total L2 byte usage tracked across all cache salts |
 | `lmcache_coordinator_quota_usage_bytes` | gauge | L2 byte usage per `cache_salt` |
 | `lmcache_coordinator_quota_limit_bytes` | gauge | L2 quota limit per `cache_salt`; −1 = unlimited |
@@ -413,7 +445,9 @@ vLLM metrics use the `vllm:` prefix and `model_name` label.
 | `vllm:num_requests_running` | gauge | Requests in active model batches |
 | `vllm:num_requests_waiting` | gauge | Requests waiting to be scheduled |
 | `vllm:num_requests_waiting_by_reason` | gauge | Waiting requests by reason (`capacity`, …) |
+| `vllm:num_requests_kv_fetch_by_stage` | gauge | Waiting requests by async KV load `stage`: `waiting_to_start` (load from LMCache not started), `in_progress` (started, not reported finished), `completed_waiting` (KV loaded, not running yet). Sustained non-zero `in_progress` while LMCache retrieves have stopped means requests are stuck loading KV |
 | `vllm:num_preemptions_total` | counter | Preemption events |
+| `vllm:request_num_preemptions` | histogram | Times each finished request was preempted. The first bucket is `le="1"`, which mixes zero and one preemption, so use `_sum / _count` (mean preemptions per finished request), not a percentile |
 
 #### Token accounting
 
@@ -421,8 +455,27 @@ vLLM metrics use the `vllm:` prefix and `model_name` label.
 | --- | --- | --- |
 | `vllm:prompt_tokens_total` | counter | Prefill tokens processed |
 | `vllm:generation_tokens_total` | counter | Generation tokens produced |
-| `vllm:prompt_tokens_by_source_total` | counter | Prefill tokens by `source` label: `local_compute`, `local_cache_hit`, `external_kv_transfer` |
+| `vllm:prompt_tokens_by_source_total` | counter | Prompt tokens by `source` label (see below): `local_compute`, `local_cache_hit`, `external_kv_transfer` |
 | `vllm:prompt_tokens_cached_total` | counter | Cached prompt tokens (local + external) |
+| `vllm:prompt_tokens_cached_by_source_total` | counter | Cached prompt tokens by the tier that supplied them; `source` is `device`, `host`, `disk`, `p2p` or `external_unspecified` |
+
+What the `source` values of `vllm:prompt_tokens_by_source_total` mean:
+
+| `source` | Meaning | Equals |
+| --- | --- | --- |
+| `local_compute` | Computed by prefill on the GPU; no cache held them | |
+| `local_cache_hit` | vLLM's own GPU prefix cache (KV blocks still in VRAM). **Not** LMCache L1 | `vllm:prefix_cache_hits_total` |
+| `external_kv_transfer` | KV loaded from LMCache, L1 and L2 together. **Not** L2 alone | `vllm:external_prefix_cache_hits_total` |
+
+vLLM cannot see LMCache's tiers. The L1 / L2 split comes from LMCache's own
+`lmcache_mp_lookup_hit_l1_tokens_total` and
+`lmcache_mp_lookup_hit_l2_tokens_total` ([Token-level lookup](#token-level-lookup)),
+which is what the dashboard's L1 / L2 panels plot.
+
+`vllm:prompt_tokens_cached_by_source_total` has no panel: with LMCache every
+external hit lands in `source="external_unspecified"` and the GPU prefix
+cache in `source="device"`, so it repeats the two cache series of
+**Prompt Tokens by Source**.
 
 #### Latency histograms
 
@@ -463,7 +516,6 @@ vLLM metrics use the `vllm:` prefix and `model_name` label.
 | `vllm:estimated_flops_per_gpu_total` | counter | Estimated FLOPs per GPU (for MFU calculation) |
 | `vllm:estimated_read_bytes_per_gpu_total` | counter | Estimated memory read bytes per GPU |
 | `vllm:estimated_write_bytes_per_gpu_total` | counter | Estimated memory write bytes per GPU |
-| `vllm:model_weights_memory_bytes` | gauge | GPU memory used by model weights (static after load) |
 
 #### Misc
 
@@ -520,8 +572,8 @@ dispatch metrics and AIS P2P storage counters.
 
 | Mode | `AIC_HSA_SNOOP_PID_MODE` | When to use |
 | --- | --- | --- |
-| Container PID | `container:aic-lmcache` | **SPUR default** — vLLM uses `pid:service:lmcache` so lmcache's namespace contains both processes |
-| Host PID | `host` | Non-SPUR bare nodes where `--pid=host` is permitted |
+| Host PID | `host` | **Default.** The only mode that exports kernel-launch, duration and SDMA metrics: the amdgpu kprobe reports host PIDs and hsa-snoop reads each ring through `/proc/<pid>` |
+| Container PID | `container:aic-lmcache` | Where `--pid=host` is refused (the SPUR make default). Queues are listed (`hsa_queue_info`, `hsa_active_queues`) but no dispatch is ever counted |
 
 > **SPUR authz note:** the SPUR cluster's Docker authz plugin blocks `--pid=host`
 > and `privileged: true`, so hsa-snoop does not run on SPUR at all; the SPUR job

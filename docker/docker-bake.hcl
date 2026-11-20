@@ -41,38 +41,43 @@
 # standalone `docker buildx bake` and tests/test_aic_bake_env.py keeps it equal.
 variable "AIC_VERSION"   { default = "0.1.0" }
 
-variable "ROCM_VERSION"      { default = "7.14.1" }
-# ROCm/pytorch publishes no tag for the 2.13 series, so a SHA is the only
-# reproducible ref.  ec5f3b1 rather than the head of release/2.13 (8e0af7fa): a
-# later commit updated third_party/composable_kernel in a way that breaks
-# gfx1250 multi-arch builds (CK_BUFFER_RESOURCE_3RD_DWORD undeclared).  See
-# patches/pytorch/01-ck-gfx1250-*.
-variable "PYTORCH_REF"       { default = "ec5f3b1effb14f0e36b66bab4db1c9b49b278f82" }
+variable "ROCM_VERSION"      { default = "10.2.0" }
+# ROCm/pytorch publishes no tag for the 2.15 series, so a SHA is the only
+# reproducible ref.  abecaa8 is the head of release/2.15 as of 2026-11-17.
+variable "PYTORCH_REF"       { default = "abecaa87238d2d43d2641a22d89a51de185779b2" }
 # Display only: the torch series in the image tag, README and release notes (a
 # bare SHA says nothing about which torch this is), and the CPU torch the
 # emulate builds install.  Bump alongside PYTORCH_REF.
-variable "PYTORCH_SERIES"    { default = "2.13" }
-variable "TORCHVISION_REF"   { default = "v0.28.0" }
-variable "VLLM_REF"          { default = "v0.29.0" }
+variable "PYTORCH_SERIES"    { default = "2.15" }
+variable "TORCHVISION_REF"   { default = "v0.29.2" }
+variable "VLLM_REF"          { default = "v0.34.0" }
 variable "VLLM_TARGET_DEVICE" { default = "rocm" }
 variable "LLM_EMU_REF"       { default = "b71c602" }
-variable "AITER_REF"         { default = "v0.1.22.post1" }
-variable "FLASH_ATTN_REF"    { default = "v2.8.3.post1" }
-variable "LMCACHE_REF"       { default = "v0.5.6" }
-variable "NIXL_REF"          { default = "v1.4.1" }
-variable "HSA_SNOOP_REF"     { default = "v1.2.0" }
+variable "AITER_REF"         { default = "v0.1.29.post1" }
+variable "FLASH_ATTN_REF"    { default = "0e60e394" }
+variable "LMCACHE_REF"       { default = "v0.5.8rc1" }
+variable "NIXL_REF"          { default = "v1.5.2" }
+# cupy-rocm-7-0 on both ends of the HIP IPC path (aic-lmcache and aic-vllm).
+variable "CUPY_VERSION"      { default = "14.2.0" }
+# UCX is NIXL's transport.  v1.22.0 is the latest stable release; upstream NIXL
+# v1.5.2 CI builds against the pre-release v1.23.x branch.
+variable "UCX_REF"           { default = "v1.22.0" }
+# Unreleased commit on feat/cpu-deload: v1.6.0 stalls its ring poller under
+# --mem-snoop and cannot read the queue rings of a ROCm 10.2 process.  Move to
+# the tag once cut.
+variable "HSA_SNOOP_REF"     { default = "aba6a306" }
 
 # Base images.  ROCM_BASE_IMAGE is the full ROCm toolchain the source builds
 # run on; ROCM_RUNTIME_IMAGE is what the shipped images start from.
-variable "ROCM_BASE_IMAGE"    { default = "rocm/dev-ubuntu-24.04:${ROCM_VERSION}-full" }
-variable "ROCM_RUNTIME_IMAGE" { default = "ubuntu:24.04" }
+variable "ROCM_BASE_IMAGE"    { default = "rocm/dev-ubuntu-26.04:${ROCM_VERSION}-full" }
+variable "ROCM_RUNTIME_IMAGE" { default = "ubuntu:26.04" }
 
-variable "UV_VERSION"         { default = "0.12.15" }
-
-# Source of the patched libamdhip64 built into aic-base.
-variable "CLR_REF"            { default = "therock-${ROCM_VERSION}" }
-# Triton is source-built for aic-base; the ref follows vLLM's Dockerfile.rocm_base.
-variable "TRITON_REF"         { default = "release/internal/3.7.x" }
+# Source of the patched libamdhip64 built into aic-base.  A literal, not derived
+# from ROCM_VERSION: the 10.2 branch is release/therock-10.2, with no patch level.
+variable "CLR_REF"            { default = "release/therock-10.2" }
+# Triton is source-built for aic-base; the ref follows vLLM's Dockerfile.rocm_base
+# (v0.34.0; branch head 669b31ac when pinned).
+variable "TRITON_REF"         { default = "release/internal/3.8.x" }
 
 # Repository URLs — forwarded like the pins so a build can be pointed at a fork.
 variable "PYTORCH_GIT_URL"     { default = "https://github.com/ROCm/pytorch.git" }
@@ -83,6 +88,7 @@ variable "AITER_GIT_URL"       { default = "https://github.com/ROCm/aiter.git" }
 variable "FLASH_ATTN_GIT_URL"  { default = "https://github.com/Dao-AILab/flash-attention.git" }
 variable "LMCACHE_GIT_URL"     { default = "https://github.com/LMCache/LMCache.git" }
 variable "NIXL_GIT_URL"        { default = "https://github.com/ai-dynamo/nixl.git" }
+variable "UCX_GIT_URL"         { default = "https://github.com/openucx/ucx.git" }
 variable "HSA_SNOOP_GIT_URL"   { default = "https://github.com/sbates130272/hsa-snoop.git" }
 variable "CLR_GIT_URL"         { default = "https://github.com/ROCm/rocm-systems.git" }
 variable "TRITON_GIT_URL"      { default = "https://github.com/ROCm/triton.git" }
@@ -97,8 +103,9 @@ variable "KVBENCH_IMAGE_TAG"     { default = substr(KVBENCH_REF, 0, 7) }
 # removed lmcache.v1.cache_engine, so this does not follow LMCACHE_REF.
 variable "KVBENCH_LMCACHE_VERSION" { default = "0.5.6" }
 
-# AgentX benchmark client (aiperf-based, no ROCm dependency).
-variable "AIPERF_VERSION"        { default = "latest" }
+# AgentX benchmark client (aiperf, no ROCm dependency).  Pinned to the release
+# benchmarks/agentx/ was run against: its flags and record layout move.
+variable "AIPERF_VERSION"        { default = "0.13.0" }
 
 # ---- Build knobs (override via env) ------------------------------------------
 
@@ -170,7 +177,8 @@ function "tags" {
 }
 
 # Same, for images whose tag is a fixed string rather than the version tag
-# (the exporters' ":local", kvbench's pinned tag, agentx's aiperf version).
+# (the exporters' ":local", kvbench's pinned tag, agentx's aiperf version,
+# hsa-snoop's own ref).
 function "fixed_tags" {
   params = [name, tag]
   result = (AIC_IMAGE_PREFIX == ""
@@ -215,8 +223,10 @@ function "rocm_arch_list" {
 }
 
 # The version portion of the tag (arch-independent apart from fa inclusion).
+# hsa-snoop is not part of it: that image shares nothing with these, so its tag
+# is its own ref and a bump of either side leaves the other's tag alone.
 variable "_TAG_BASE" {
-  default = "${AIC_VERSION}-rocm${ROCM_VERSION}-pytorch${PYTORCH_SERIES}-vllm${trimprefix(VLLM_REF, "v")}-aiter${trimprefix(AITER_REF, "v")}${has_gfx9(ROCM_ARCH) ? "-fa${trimprefix(FLASH_ATTN_REF, "v")}" : ""}-lmcache${trimprefix(LMCACHE_REF, "v")}-nixl${trimprefix(NIXL_REF, "v")}-hsasnoop${trimprefix(HSA_SNOOP_REF, "v")}"
+  default = "${AIC_VERSION}-rocm${ROCM_VERSION}-pytorch${PYTORCH_SERIES}-vllm${trimprefix(VLLM_REF, "v")}-aiter${trimprefix(AITER_REF, "v")}${has_gfx9(ROCM_ARCH) ? "-fa${trimprefix(FLASH_ATTN_REF, "v")}" : ""}-lmcache${trimprefix(LMCACHE_REF, "v")}-nixl${trimprefix(NIXL_REF, "v")}"
 }
 
 # Full image tag.  The arch suffix is dropped when ROCM_ARCH is empty, and
@@ -311,7 +321,6 @@ target "base" {
     ROCM_VERSION        = ROCM_VERSION
     ROCM_BASE_IMAGE     = ROCM_BASE_IMAGE
     ROCM_RUNTIME_IMAGE  = ROCM_RUNTIME_IMAGE
-    UV_VERSION          = UV_VERSION
     BUILD_JOBS          = BUILD_JOBS
     AIC_UCX_FAST        = AIC_UCX_FAST
     PYTORCH_GIT_URL     = PYTORCH_GIT_URL
@@ -321,6 +330,8 @@ target "base" {
     TORCHVISION_REF     = TORCHVISION_REF
     NIXL_GIT_URL        = NIXL_GIT_URL
     NIXL_REF            = NIXL_REF
+    UCX_GIT_URL         = UCX_GIT_URL
+    UCX_REF             = UCX_REF
     CLR_GIT_URL         = CLR_GIT_URL
     CLR_REF             = CLR_REF
     TRITON_GIT_URL      = TRITON_GIT_URL
@@ -356,6 +367,7 @@ target "vllm" {
     LLM_EMU_GIT_URL    = LLM_EMU_GIT_URL
     LLM_EMU_REF        = LLM_EMU_REF
     LMCACHE_REF        = LMCACHE_REF
+    CUPY_VERSION       = CUPY_VERSION
     PYTORCH_SERIES     = PYTORCH_SERIES
   }
   cache-from = cache_from(ROCM_ARCH, "vllm")
@@ -376,6 +388,7 @@ target "lmcache" {
     AIC_VERSION     = AIC_VERSION
     LMCACHE_GIT_URL = LMCACHE_GIT_URL
     LMCACHE_REF     = LMCACHE_REF
+    CUPY_VERSION    = CUPY_VERSION
     NIXL_REF        = NIXL_REF
   }
   cache-from = cache_from(ROCM_ARCH, "lmcache")
@@ -456,7 +469,8 @@ target "wheels-emulate" {
 target "hsa-snoop" {
   context    = "."
   dockerfile = "docker/hsa-snoop/Dockerfile"
-  tags       = tags("aic-hsa-snoop", true)
+  tags       = concat(fixed_tags("aic-hsa-snoop", trimprefix(HSA_SNOOP_REF, "v")),
+                      AIC_IMAGE_PREFIX == "" ? ["aic-hsa-snoop:latest"] : [])
   args = {
     ROCM_VERSION       = ROCM_VERSION
     ROCM_BUILD_IMAGE   = ROCM_BASE_IMAGE
@@ -519,11 +533,11 @@ target "kvbench" {
 
 # AgentX aiperf benchmark client.  No ROCm dependency — pure benchmark driver.
 # Build: docker buildx bake -f docker/docker-bake.hcl agentx --load
-# Pin:   AIPERF_VERSION=0.5.0 docker buildx bake -f docker/docker-bake.hcl agentx --load
+# Other release: AIPERF_VERSION=<version> docker buildx bake -f docker/docker-bake.hcl agentx --load
 target "agentx" {
   context    = "."
   dockerfile = "docker/agentx/Dockerfile"
-  # :latest only locally, as in tags(); AIPERF_VERSION defaults to "latest".
+  # :latest only locally, as in tags().
   tags       = distinct(concat(fixed_tags("aic-agentx", AIPERF_VERSION),
                                AIC_IMAGE_PREFIX == "" ? ["aic-agentx:latest"] : []))
   args = {

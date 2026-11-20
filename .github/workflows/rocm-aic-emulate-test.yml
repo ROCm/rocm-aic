@@ -81,10 +81,10 @@ jobs:
           [[ -n "${args}" ]] || { echo "::error::bake resolved no args for emulate"; exit 1; }
           printf '%s\n' "${args}"
           { echo 'list<<EOF'; printf '%s\n' "${args}"; echo 'EOF'; } >> "${GITHUB_OUTPUT}"
-          # docker/emulate-base.Dockerfile stands in for aic-base: same torch series and uv.
-          { read -r series; read -r uv; } < <(docker/scripts/aic-bake-env.sh --get PYTORCH_SERIES UV_VERSION)
-          [[ -n "${series}" && -n "${uv}" ]] || { echo "::error::bake resolved no PYTORCH_SERIES/UV_VERSION"; exit 1; }
-          { echo 'base<<EOF'; echo "PYTORCH_SERIES=${series}"; echo "UV_VERSION=${uv}"; echo 'EOF'; } >> "${GITHUB_OUTPUT}"
+          # docker/emulate-base.Dockerfile stands in for aic-base: same torch series.
+          series="$(docker/scripts/aic-bake-env.sh --get PYTORCH_SERIES)"
+          [[ -n "${series}" ]] || { echo "::error::bake resolved no PYTORCH_SERIES"; exit 1; }
+          { echo 'base<<EOF'; echo "PYTORCH_SERIES=${series}"; echo 'EOF'; } >> "${GITHUB_OUTPUT}"
 
       - name: Write corp CA cert secret (AMD Zscaler proxy)
         id: cert

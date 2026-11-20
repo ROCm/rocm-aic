@@ -2,7 +2,7 @@
 """Cross-container HIP VMM memory-IPC — consumer. Receive the dmabuf fd via
 SCM_RIGHTS, import it, read the GPU memory back, and verify the 0xAB pattern."""
 import os, sys, ctypes, socket, time
-sys.path.insert(0, "/vmem")
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import rocm_vmem_ipc as R   # noqa: E402
 
 SIZE, D2H = 1 << 20, 2

@@ -1,4 +1,6 @@
-# vLLM v0.28.0: ROCm platform detection falls back to torch.version.hip
+# vLLM: ROCm platform detection falls back to torch.version.hip
+# (applies to v0.34.0; upstream's own torch.version.hip fallback there is
+# gated on in_wsl(), so it does not cover this case)
 #
 # amdsmi_get_processor_handles() returns 0 devices when torch has already
 # initialised the HIP runtime (which it does during import).  vLLM imports
@@ -7,7 +9,7 @@
 #
 # Fix: after the amdsmi finally block, if amdsmi found 0 handles but
 # torch.version.hip is set, accept that as confirmation of a ROCm build.
-# torch.version.hip is set at wheel build time ("7.14.60850" etc.) and is
+# torch.version.hip is set at wheel build time (a ROCm version string) and is
 # independent of runtime device state, so it is a reliable signal.
 #
 --- a/vllm/platforms/__init__.py

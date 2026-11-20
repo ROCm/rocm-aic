@@ -12,9 +12,10 @@
 # batched_allocate in 12 of 12 samples.  Everything else waited behind it:
 # lookups averaged 7-8 s, /metrics stopped answering within 15 s, and stores sat
 # pending for seconds -- long enough for the request's next store to overwrite
-# them (patch 16), or for heartbeat PINGs to miss their 10 s timeout so the vLLM
-# adapter entered degraded mode and dropped every producer event.  Either way
-# the server then imports a dead IPC event and patch 11 skips the store.
+# them (16-lmcache-store-futures-per-request), or for heartbeat PINGs to miss
+# their 10 s timeout so the vLLM adapter entered degraded mode and dropped every
+# producer event.  Either way the server was then handed a dead IPC event and
+# the store was lost.
 #
 # Same 256-request, 32-way burst, fresh stack each, before -> after:
 #   skipped stores 130 -> 0, store latency p50 0.41 s -> 0.001 s,
@@ -25,12 +26,17 @@
 # O(freed slots).  report_status() reads the free count through the pool's new
 # free_count() rather than reaching into its private list.
 #
-# Applies after patches 01-15.
+# Upstream LMCache/LMCache#6284 proposes the same O(k) pool (plus a failed-write
+# quarantine); it is still open and not in v0.5.8rc1.  Drop this patch once the
+# pinned ref contains it.
+#
+# Rebased onto LMCache v0.5.8rc1.  Applies after patches 07-16; its test hunk
+# sits on top of 07's.
 diff --git a/lmcache/v1/distributed/l2_adapters/nixl_store_l2_adapter.py b/lmcache/v1/distributed/l2_adapters/nixl_store_l2_adapter.py
-index 66d664b..10d54d5 100644
+index 7ade0371..0488da25 100644
 --- a/lmcache/v1/distributed/l2_adapters/nixl_store_l2_adapter.py
 +++ b/lmcache/v1/distributed/l2_adapters/nixl_store_l2_adapter.py
-@@ -75,15 +75,26 @@ class NixlStoreObj:
+@@ -78,15 +78,26 @@ class NixlStoreObj:
  
  
  class NixlObjPool:
@@ -59,7 +65,7 @@ index 66d664b..10d54d5 100644
          self._lock = threading.Lock()
  
      @property
-@@ -105,11 +116,15 @@ class NixlObjPool:
+@@ -108,11 +119,15 @@ class NixlObjPool:
              RuntimeError: If fewer than ``num_objs`` slots remain in the pool.
          """
          with self._lock:
@@ -78,7 +84,7 @@ index 66d664b..10d54d5 100644
              return allocated
  
      def batched_free(self, obj_indices: list[int]) -> None:
-@@ -120,7 +135,15 @@ class NixlObjPool:
+@@ -123,7 +138,15 @@ class NixlObjPool:
              obj_indices: Indices previously obtained from ``batched_allocate``.
          """
          with self._lock:
@@ -95,7 +101,7 @@ index 66d664b..10d54d5 100644
  
      def get_slot_usage(self) -> tuple[float, float]:
          """
-@@ -134,7 +157,7 @@ class NixlObjPool:
+@@ -137,7 +160,7 @@ class NixlObjPool:
          with self._lock:
              if self._total == 0:
                  return (0.0, 0.0)
@@ -104,22 +110,21 @@ index 66d664b..10d54d5 100644
              return (usage, usage)
  
  
-@@ -684,9 +707,7 @@ class NixlStoreL2Adapter(L2AdapterInterface):
-             pinned_object_count = sum(
+@@ -701,8 +724,7 @@ class NixlStoreL2Adapter(L2AdapterInterface):
                  1 for obj in self._memory_objects.values() if obj.pin_count > 0
              )
--        pool = self.nixl_agent.pool
+         pool = self.nixl_agent.pool
 -        with pool._lock:
 -            pool_free_slots = len(pool.indices)
-+        pool_free_slots = self.nixl_agent.pool.free_count()
++        pool_free_slots = pool.free_count()
          return {
              "is_healthy": self._loop_thread.is_alive(),
              "type": "NixlStoreL2Adapter",
 diff --git a/tests/v1/distributed/test_nixl_store_l2_adapter.py b/tests/v1/distributed/test_nixl_store_l2_adapter.py
-index 65f6ca8..8943048 100644
+index 04a29468..502a908d 100644
 --- a/tests/v1/distributed/test_nixl_store_l2_adapter.py
 +++ b/tests/v1/distributed/test_nixl_store_l2_adapter.py
-@@ -42,11 +42,43 @@ from lmcache.v1.distributed.internal_api import (  # noqa: E402
+@@ -41,11 +41,43 @@ from lmcache.v1.distributed.internal_api import (  # noqa: E402
  )
  from lmcache.v1.distributed.l2_adapters import create_l2_adapter  # noqa: E402
  from lmcache.v1.distributed.l2_adapters.nixl_store_l2_adapter import (  # noqa: E402

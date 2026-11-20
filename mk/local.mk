@@ -29,6 +29,7 @@ define _bake_preflight
 @if ! docker buildx inspect $(AIC_BUILDX_BUILDER) >/dev/null 2>&1; then \
 	echo "Creating buildx builder $(AIC_BUILDX_BUILDER) (docker-container driver)..."; \
 	docker buildx create --name $(AIC_BUILDX_BUILDER) --driver docker-container \
+		--buildkitd-config "$(REPO_ROOT)/docker/buildkitd.toml" \
 		--driver-opt env.BUILDKIT_STEP_LOG_MAX_SIZE=-1 \
 		--driver-opt env.BUILDKIT_STEP_LOG_MAX_SPEED=10485760 \
 		--bootstrap; \
@@ -57,7 +58,7 @@ build:
 	else \
 		echo "Layer cache: disabled (set AIC_CACHE_REF or AIC_CACHE_DIR to enable)"; \
 	fi
-	@echo "--- build: aic-base/vllm/lmcache/hsa-snoop:$(IMAGE_TAG) + nvme/rdma-exporter:local (ROCM_ARCH=$(ROCM_ARCH)) ---"
+	@echo "--- build: aic-base/vllm/lmcache:$(IMAGE_TAG) + $(HSA_SNOOP_IMAGE_REF) + nvme/rdma-exporter:local (ROCM_ARCH=$(ROCM_ARCH)) ---"
 	BUILDX_BAKE_ENTITLEMENTS_FS=0 \
 	    docker buildx bake \
 		--builder $(AIC_BUILDX_BUILDER) \
@@ -65,7 +66,7 @@ build:
 		$(BAKE_OUTPUT_FLAG) \
 		-f "$(REPO_ROOT)/docker/docker-bake.hcl" \
 		$(BAKE_TARGETS)
-	@echo "Built aic-base/aic-vllm/aic-lmcache/aic-hsa-snoop:$(IMAGE_TAG) (vllm/lmcache/hsa-snoop also tagged :latest)"
+	@echo "Built aic-base/aic-vllm/aic-lmcache:$(IMAGE_TAG) and $(HSA_SNOOP_IMAGE_REF) (vllm/lmcache/hsa-snoop also tagged :latest)"
 	@echo "Built aic-nvme-exporter:local, aic-rdma-exporter:local"
 
 # ---- Wheel export ------------------------------------------------------------
@@ -170,6 +171,15 @@ venv:
 # vllm-reset-test drives the stack from aic-client (the monitoring profile
 # starts it), on the aic bridge, so it needs no published port.
 # Its /logs is the repo's logs/.
+#
+# Lazy offload is off for this target only.  It defers a store until vLLM is
+# about to evict the blocks (or ~30 s pass and another request arrives), and
+# the test's POST /reset_prefix_cache drops whatever is still pending, so the
+# anchors never reach LMCache and step 4 finds 0 L2 hits.  Only the Makefile's
+# default connector is rewritten; a KV_TRANSFER_ARG the user set is used as is.
+ifeq ($(call _is_makefile_default,KV_TRANSFER_ARG),file)
+vllm-reset-test: export KV_TRANSFER_ARG := $(subst "lmcache.mp.lazy_offload":true,"lmcache.mp.lazy_offload":false,$(KV_TRANSFER_ARG))
+endif
 vllm-reset-test: check-hf-token prep-dirs
 	@echo "Starting LMCache L1+L2 retrieval test (L1=$(if $(LMCACHE_L1_SIZE_GB),$(LMCACHE_L1_SIZE_GB)GiB,compose default)) + NIXL POSIX L2..."
 	@mkdir -p "$(AIC_METRICS_DIR)"

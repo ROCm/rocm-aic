@@ -1,6 +1,6 @@
 Enable standalone Prometheus HTTP server on --prometheus-port in MP mode.
 
-lmcache v0.5.5 http_server.py calls init_observability with
+LMCache http_server.py (v0.5.5 through v0.5.8rc1) calls run_cache_server with
 start_prometheus_http_server=False, expecting uvicorn at :8080 to serve
 /metrics via FastAPI. Under load (concurrency >= 4) uvicorn is saturated
 with KV store/retrieve operations and accumulates CLOSE-WAIT connections,

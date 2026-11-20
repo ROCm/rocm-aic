@@ -100,8 +100,11 @@ class AicBakeEnvTest(unittest.TestCase):
         targets = _bake_targets(*IMAGE_REFS.values())
         for ref, target in IMAGE_REFS.items():
             self.assertEqual(values[ref], targets[target]["tags"][0], ref)
-        for target in ("base", "vllm", "lmcache", "hsa-snoop", "emulate"):
+        for target in ("base", "vllm", "lmcache", "emulate"):
             self.assertTrue(values[_ref_of(target)].endswith(f":{values['IMAGE_TAG']}"), target)
+        snoop_tag = values["HSA_SNOOP_REF"].removeprefix("v")
+        self.assertEqual(values["HSA_SNOOP_IMAGE_REF"], f"aic-hsa-snoop:{snoop_tag}")
+        self.assertNotIn(snoop_tag, values["IMAGE_TAG"])
 
     def test_env_mode_matches_json(self) -> None:
         values = _values(**self.AWKWARD)
@@ -203,7 +206,7 @@ class AicBakeEnvTest(unittest.TestCase):
         )
         self.assertEqual(values["VLLM_REF"], "v9.9.9")
         self.assertEqual(values["ROCM_ARCH"], "gfx942;gfx950")
-        self.assertEqual(values["ROCM_BASE_IMAGE"], "rocm/dev-ubuntu-24.04:9.8.7-full")
+        self.assertEqual(values["ROCM_BASE_IMAGE"], "rocm/dev-ubuntu-26.04:9.8.7-full")
         self.assertEqual(values["BUILD_JOBS"], "")
         self.assertIn("-rocm9.8.7-", values["IMAGE_TAG"])
         self.assertIn("-vllm9.9.9-", values["IMAGE_TAG"])
@@ -340,6 +343,19 @@ class DockerfileArgOwnershipTest(unittest.TestCase):
             declared = {arg for arg, _ in _args(REPO_ROOT / target["dockerfile"])}
             for arg in sorted(set(target.get("args", {})) - declared):
                 problems.append(f"bake target {name} passes {arg}; {target['dockerfile']} has no such ARG")
+        self.assertEqual(problems, [])
+
+    @unittest.skipUnless(_have_buildx(), "docker buildx is not available")
+    def test_bake_passes_every_arg_a_dockerfile_guards(self) -> None:
+        targets = _bake_targets(
+            "all", "wheels", "emulate-wheels", "emulate", "agentx", "lmcache-wheels"
+        )
+        problems = []
+        for name, target in sorted(targets.items()):
+            text = (REPO_ROOT / target["dockerfile"]).read_text(encoding="utf-8")
+            guarded = set(re.findall(r"\$\{([A-Z][A-Z0-9_]*):\?unset: build through", text))
+            for arg in sorted(guarded - set(target.get("args", {}))):
+                problems.append(f"{target['dockerfile']} guards {arg}; bake target {name} does not pass it")
         self.assertEqual(problems, [])
 
     @unittest.skipUnless(_have_buildx(), "docker buildx is not available")
