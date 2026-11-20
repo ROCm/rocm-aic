@@ -22,7 +22,7 @@ services:
       - /dev/kfd
       - /dev/dri
     group_add:
-      - "${RENDER_GID:-993}"
+      - "${RENDER_GID:-992}"
     volumes:
       - ./ipc-vol:/ipc
       - .:/tests:ro
@@ -40,7 +40,7 @@ services:
       - /dev/kfd
       - /dev/dri
     group_add:
-      - "${RENDER_GID:-993}"
+      - "${RENDER_GID:-992}"
     volumes:
       - ./ipc-vol:/ipc
       - .:/tests:ro

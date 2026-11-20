@@ -128,6 +128,36 @@ aic_docker_preflight() {
     log "docker preflight OK on ${host}"
 }
 
+# --- Container identity -------------------------------------------------------
+# Export the identity the compose services run as, resolved on the COMPUTE node
+# against the HF cache bind-mounted at /hf:
+#
+#   AIC_CONTAINER_USER      $(id -u):<the cache's group if the user is in it,
+#                           else the primary group>
+#   AIC_CONTAINER_USERNAME  $(id -un)
+#   AIC_CONTAINER_HOME      /tmp
+#   RENDER_GID              group of /dev/kfd, for compose's group_add
+#
+# Docker drops supplementary groups, so a cache writable only through its group
+# (SPUR's /shared_nfs/huggingface is root:allusers 2775) is read-only to
+# $(id -u):$(id -g): vLLM then dies creating /hf/aiter.  Docker never checks
+# membership, hence the id -G guard.  /dev/kfd's group varies by host; with a
+# wrong one AITER finds no GPU in rocminfo.
+aic_container_identity() {
+    local cache="$1" gid kfd_gid
+    [[ -d "${cache}" ]] \
+        || { printf 'aic_container_identity: HF cache %s is not a directory\n' "${cache}" >&2; return 1; }
+    gid="$(stat -c %g "${cache}")" || return 1
+    case " $(id -G) " in *" ${gid} "*) ;; *) gid="$(id -g)" ;; esac
+    AIC_CONTAINER_USER="$(id -u):${gid}"
+    AIC_CONTAINER_USERNAME="$(id -un)"
+    export AIC_CONTAINER_USER AIC_CONTAINER_USERNAME AIC_CONTAINER_HOME=/tmp
+    if kfd_gid="$(stat -c %g /dev/kfd 2>/dev/null)"; then
+        export RENDER_GID="${kfd_gid}"
+    fi
+    log "container user ${AIC_CONTAINER_USER}, render gid ${RENDER_GID:-<compose default>}, HF cache ${cache}"
+}
+
 have_compose() { docker compose version >/dev/null 2>&1; }
 
 # Ensure the `docker compose` (v2) plugin is available.  Docker checks

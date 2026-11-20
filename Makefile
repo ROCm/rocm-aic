@@ -134,8 +134,11 @@ HF_TOKEN_FILE ?=
 # scripts through the environment, and an unset one leaves compose's default in
 # force.  The few with a value are the ones a recipe expands itself, and
 # AIC_CONTAINER_USER, exported because compose's own default is root.
+# RENDER_GID is /dev/kfd's group, which a non-root container needs; render's
+# gid varies by host, and empty (no /dev/kfd) leaves compose's default.
 
 export AIC_CONTAINER_USER ?= $(shell id -u):$(shell id -g)
+export RENDER_GID ?= $(shell stat -c %g /dev/kfd 2>/dev/null)
 
 # ---- LMCache server --------------------------------------------------------
 LMCACHE_PORT            ?= 6555

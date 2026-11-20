@@ -608,6 +608,7 @@ aic_resolve_gpu_visibility \
   || die "could not resolve the SPUR GPU allocation (refusing to default to GPU 0)"
 export GPU="${AIC_ROCR_VISIBLE%%,*}"
 export HF_HOME NVME_DATA NFS_DATA GDS_SLAB_DATA
+aic_container_identity "${HF_HOME}" || die "could not resolve the container identity"
 export LOG="${LOGDIR}" # lmcache/vllm container logs land under the job dir
 export HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1
 export VLLM_MODEL VLM_MAX_MODEL_LEN

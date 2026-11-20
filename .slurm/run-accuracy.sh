@@ -253,6 +253,7 @@ _rm_pool() {
 # retry would compute POOL_BEFORE against the killed attempt's slot files.
 _rm_pool "${AIC_ACCURACY_POOL_ROOT}" || true
 mkdir -p "${NVME_DATA}" "${NFS_DATA}" "${HF_HOME}"
+aic_container_identity "${HF_HOME}" || exit 1
 
 # Namespacing stops runs colliding but on its own it turns one reused directory
 # into an unbounded set of abandoned ones, so reap what earlier kills left.  A

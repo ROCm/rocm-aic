@@ -2364,6 +2364,7 @@ export VLLM_PID_MODE=service:lmcache
 # vLLM shares lmcache's network namespace, so lmcache is on its loopback.
 export KV_TRANSFER_ARG="--kv-transfer-config '{\"kv_connector\":\"LMCacheMPConnector\",\"kv_role\":\"kv_both\",\"kv_connector_extra_config\":{\"lmcache.mp.host\":\"tcp://localhost\",\"lmcache.mp.port\":\${LMCACHE_PORT:-6555},\"lmcache.mp.use_vmm_api\":false}}'"
 mkdir -p "\${HF_HOME}" /tmp/aic-tiny-nvme /tmp/aic-tiny-nfs
+aic_container_identity "\${HF_HOME}" || exit 1
 
 compose() { docker compose -f '${AIC_DAY_DIR}/docker/docker-compose.yml' "\$@"; }
 cleanup() {
@@ -2594,6 +2595,7 @@ export AIC_HSA_SNOOP_PID_MODE=container:aic-lmcache
 export AIC_METRICS_DIR="\${_logdir}/prometheus"
 export PROM_UID="\$(id -u)" PROM_GID="\$(id -g)"
 mkdir -p "\${HF_HOME}" "\${AIC_METRICS_DIR}" /tmp/aic-prom-dump-nvme /tmp/aic-prom-dump-nfs
+aic_container_identity "\${HF_HOME}" || exit 1
 
 compose() { docker compose -f '${AIC_DAY_DIR}/docker/docker-compose.yml' "\$@"; }
 cleanup() {
@@ -2788,17 +2790,7 @@ mkdir -p "\${HF_HOME}" "\${_logdir}/vllm-emulator"
 # Containers default to root, and HF_HOME is very often a SHARED cluster cache
 # (Alola's /scratch/models).  Root-owned entries there cannot be refreshed or
 # deleted by anyone else, so run the emulator as the submitting user instead.
-# Resolved on the COMPUTE node -- id is what matters where the bind mount lives.
-# Docker drops supplementary groups, so a cache writable only through its group
-# (SPUR's /shared_nfs/huggingface grants allusers via a setgid dir + ACL) is
-# read-only to \$(id -u):\$(id -g).  Run with the cache's group instead -- but
-# only one the user is in, since docker never checks membership.
-_hf_gid="\$(stat -c %g "\${HF_HOME}")"
-case " \$(id -G) " in *" \${_hf_gid} "*) ;; *) _hf_gid="\$(id -g)" ;; esac
-export AIC_CONTAINER_USER="\$(id -u):\${_hf_gid}"
-export AIC_CONTAINER_USERNAME="\$(id -un)"
-export AIC_CONTAINER_HOME=/tmp
-echo "[emulate-test] container user \${AIC_CONTAINER_USER}, HF cache \${HF_HOME}"
+aic_container_identity "\${HF_HOME}" || exit 1
 
 # NB: \`timeout\` cannot run a shell function, so the calls below spell out
 # \`docker compose\` rather than wrapping the compose() helper.
@@ -2994,14 +2986,8 @@ export NVME_DATA='${AIC_EMULATE_MP_DATA}/nvme'
 export NFS_DATA='${AIC_EMULATE_MP_DATA}/nfs'
 mkdir -p "\${HF_HOME}" "\${_logdir}/vllm-emulator" "\${_logdir}/lmcache-emulator" \
     '${AIC_EMULATE_MP_DATA}/nvme' '${AIC_EMULATE_MP_DATA}/nfs'
-# Run the emulator as the submitting user with the HF cache's group -- see
-# cmd_emulate_test for why both halves matter.
-_hf_gid="\$(stat -c %g "\${HF_HOME}")"
-case " \$(id -G) " in *" \${_hf_gid} "*) ;; *) _hf_gid="\$(id -g)" ;; esac
-export AIC_CONTAINER_USER="\$(id -u):\${_hf_gid}"
-export AIC_CONTAINER_USERNAME="\$(id -un)"
-export AIC_CONTAINER_HOME=/tmp
-echo "[emulate-mp-test] container user \${AIC_CONTAINER_USER}, HF cache \${HF_HOME}"
+# Run the emulator as the submitting user with the HF cache's group.
+aic_container_identity "\${HF_HOME}" || exit 1
 
 # local_disk needs a native LocalDiskBackend config mounted at
 # /config/lmcache.yml; the compose service reads it only when
