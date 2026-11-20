@@ -1,6 +1,6 @@
 # AIC Prometheus Metrics Reference
 
-**Generated:** 2026-11-19 17:09 UTC · **Total metrics:** 538 · **SHA:** `525994d`
+**Generated:** 2026-11-20 09:21 UTC · **Total metrics:** 538 · **SHA:** `1f79e56`
 
 ## Component Versions
 
@@ -27,9 +27,8 @@
 | `aic-lmcache-coordinator` | `aic-lmcache:0.1.0-rocm7.14.1-pytorch2.13-vllm0.29.0-aiter0.1.22.post1-fa2.8.3.post1-lmcache0.5.6-nixl1.4.1-hsasnoop1.2.0` | Up About a minute (healthy) |
 | `aic-client` | `python:3.12` | Up About a minute |
 | `aic-prometheus` | `prom/prometheus:v3.14.0` | Up About a minute |
-| `aic-grafana` | `grafana/grafana:13.2.2` | Up About a minute |
 | `aic-loki` | `grafana/loki:3.5.0` | Up About a minute |
-| `jorgeb-registry` | `registry:3` | Up 37 minutes |
+| `aic-grafana` | `grafana/grafana:13.2.2` | Up About a minute |
 
 ## Metrics Sources
 
