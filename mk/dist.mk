@@ -49,10 +49,13 @@ endif
         accuracy-test accuracy-test-fast accuracy-test-very-fast \
         install-ci-scripts prometheus-dump \
         cliff-kvbench-submit cliff-submit cliff-kvd cliff-spur-l2 \
-        cliff-short cliff-short-fast
+        cliff-short cliff-short-fast cache-gc
 
 dist-build:
 	$(DIST_RUN) bake
+
+cache-gc:
+	$(DIST_RUN) cache-gc
 
 dist-build-fast:
 	@$(MAKE) --no-print-directory dist-build \

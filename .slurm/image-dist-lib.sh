@@ -23,20 +23,89 @@
 # jobs each run their own registry on the same storage: blobs are content-addressed
 # and every upload is staged in its own directory, so only a tag can race, and
 # consumers pull by digest, never by tag.
+#
+# Garbage collection (aic_registry_gc) deletes blobs, so it must never overlap
+# a job serving the storage: a push may just have been told a blob exists.
+# Every registry holds a shared lock on <storage>/aic-gc/lock while it runs,
+# and the collector holds it exclusively.  The lock is the NFS server's
+# (/shared_nfs is mounted local_lock=none), so it spans nodes.  Each registry
+# also records what its jobs used (<storage>/aic-gc/used), which is how the
+# collector tells a cache a build just reused from one nobody has touched.
 
 # aic_registry_start LOGTAG STORAGE
 # Serve STORAGE from a registry container on this node.  Sets AIC_REG_NAME,
 # AIC_REG_PORT and AIC_REG_STORAGE for aic_registry_stop / aic_image_store.
 aic_registry_start() {
-    local tag="$1" storage="$2" image="${AIC_REGISTRY_IMAGE:-registry:3.1.2}" ports _
-    AIC_REG_NAME="aic-registry-${SLURM_JOB_ID:-nojob}-$$-${RANDOM}"
-    AIC_REG_STORAGE="${storage}"
+    local tag="$1" storage="$2"
     mkdir -p "${storage}" \
         || { echo "[${tag}] FATAL: cannot create registry storage ${storage}" >&2; return 1; }
+    _aic_registry_lock "${tag}" "${storage}" s "${AIC_REGISTRY_LOCK_WAIT:-3600}" || return 1
+    _aic_registry_run "${tag}" "${storage}" || { _aic_registry_unlock "${tag}"; return 1; }
+}
+
+# _aic_registry_lock LOGTAG STORAGE s|x WAIT_SECONDS
+# Take STORAGE's lock shared (s) or exclusive (x), waiting up to WAIT_SECONDS.
+# Sets AIC_REG_LOCK_FD; the lock is held until _aic_registry_unlock.
+_aic_registry_lock() {
+    local tag="$1" storage="$2" mode="$3" wait="$4" lock="${2%/}/aic-gc/lock" fd
+    # Whoever can create it does; a user who can only read the storage still
+    # needs it to exist, since a missing lock would let a collection run under
+    # their pull.
+    if [[ ! -e "${lock}" ]] && ! { mkdir -p "${lock%/*}" && : >> "${lock}"; }; then
+        echo "[${tag}] FATAL: cannot create ${lock}; ask the owner of ${storage} to create it" >&2
+        return 1
+    fi
+    # An exclusive lock over NFS needs a descriptor open for writing.
+    if [[ "${mode}" == x ]]; then
+        exec {fd}<>"${lock}" || { echo "[${tag}] FATAL: cannot open ${lock} for writing" >&2; return 1; }
+    else
+        exec {fd}<"${lock}" || { echo "[${tag}] FATAL: cannot open ${lock}" >&2; return 1; }
+    fi
+    # 75 = held by someone else; any other failure is the locking itself (no
+    # working NFS lock service on this host), which waiting will not fix.
+    local rc=0
+    flock -n -E 75 "-${mode}" "${fd}" || rc=$?
+    if (( rc == 75 )); then
+        if [[ "${mode}" == x ]]; then
+            echo "[${tag}] ${storage} is in use; waiting up to ${wait}s for its jobs to finish"
+        else
+            echo "[${tag}] ${storage} is being garbage-collected; waiting up to ${wait}s"
+        fi
+        rc=0
+        flock -w "${wait}" -E 75 "-${mode}" "${fd}" || rc=$?
+    fi
+    if (( rc != 0 )); then
+        if (( rc == 75 )); then
+            echo "[${tag}] FATAL: no lock on ${lock} after ${wait}s" >&2
+        else
+            echo "[${tag}] FATAL: cannot lock ${lock} on $(hostname) (flock exit ${rc}); is NFS locking working here?" >&2
+        fi
+        exec {fd}<&-
+        return 1
+    fi
+    AIC_REG_LOCK_FD="${fd}"
+}
+
+# _aic_registry_unlock LOGTAG
+_aic_registry_unlock() {
+    local fd="${AIC_REG_LOCK_FD:-}"
+    [[ -n "${fd}" ]] || return 0
+    flock -u "${fd}" || echo "[$1] WARN: could not release the registry storage lock" >&2
+    exec {fd}<&-
+    AIC_REG_LOCK_FD=""
+}
+
+# _aic_registry_run LOGTAG STORAGE [DOCKER_RUN_ARG...]
+# Start the registry container; the caller holds the storage lock.
+_aic_registry_run() {
+    local tag="$1" storage="$2" image="${AIC_REGISTRY_IMAGE:-registry:3.1.2}" ports _
+    shift 2
+    AIC_REG_NAME="aic-registry-${SLURM_JOB_ID:-nojob}-$$-${RANDOM}"
+    AIC_REG_STORAGE="${storage}"
     _aic_registry_image "${tag}" "${storage}" "${image}" || return 1
     docker run -d --name "${AIC_REG_NAME}" --user "$(id -u):$(id -g)" \
         -p 127.0.0.1::5000 -v "${storage}:/var/lib/registry" \
-        -e REGISTRY_LOG_LEVEL=info "${image}" >/dev/null \
+        -e REGISTRY_LOG_LEVEL=info "$@" "${image}" >/dev/null \
         || { echo "[${tag}] FATAL: could not start a registry (${image}) on $(hostname)" >&2; return 1; }
     # Not `| head -1`: under the caller's pipefail, head's early exit can SIGPIPE
     # docker and fail the lookup.
@@ -49,7 +118,7 @@ aic_registry_start() {
     done
     if ! curl -sf "http://127.0.0.1:${AIC_REG_PORT}/v2/" >/dev/null; then
         echo "[${tag}] FATAL: registry ${AIC_REG_NAME} not answering on 127.0.0.1:${AIC_REG_PORT}" >&2
-        aic_registry_stop "${tag}" 1
+        _aic_registry_rm "${tag}" 1
         return 1
     fi
     echo "[${tag}] registry ${AIC_REG_NAME} on 127.0.0.1:${AIC_REG_PORT}, storage ${storage}"
@@ -83,8 +152,45 @@ _aic_registry_image() {
 
 # aic_registry_stop LOGTAG [SHOW_LOG]
 # Remove the registry aic_registry_start started, first printing the tail of its
-# log when SHOW_LOG is 1.
+# log when SHOW_LOG is 1, and release the storage.
 aic_registry_stop() {
+    if [[ -n "${AIC_REG_NAME:-}" ]]; then
+        _aic_registry_stamp "$1"
+        _aic_registry_rm "$@"
+    fi
+    _aic_registry_unlock "$1"
+}
+
+# _aic_registry_stamp LOGTAG
+# Record, for aic_registry_gc, every manifest the running registry served or
+# stored: one file per <repo>@<tag-or-digest> under <storage>/aic-gc/used, its
+# mtime the last use.  The registry's access log is the only record of a read.
+_aic_registry_stamp() {
+    local tag="$1" dir="${AIC_REG_STORAGE%/}/aic-gc/used" used ref name n=0
+    used="$(docker logs "${AIC_REG_NAME}" 2>/dev/null \
+        | sed -nE 's#.*"(GET|HEAD|PUT) /v2/([a-z0-9._/-]+)/manifests/([A-Za-z0-9_.:-]+) HTTP/[0-9.]+" 20[01] .*#\2@\3#p' \
+        | sort -u)" || {
+        echo "[${tag}] WARN: could not read registry ${AIC_REG_NAME}'s log; what this job used is not recorded for garbage collection" >&2
+        return 0
+    }
+    [[ -n "${used}" ]] || return 0
+    mkdir -p "${dir}" || { echo "[${tag}] WARN: cannot create ${dir}; usage not recorded" >&2; return 0; }
+    # The collector deletes nothing until usage has been recorded for its
+    # whole retention window.
+    [[ -e "${dir%/*}/stamping-since" ]] || : >> "${dir%/*}/stamping-since" \
+        || echo "[${tag}] WARN: cannot create ${dir%/*}/stamping-since" >&2
+    # Percent-encoded: a repo name holds '/', and SPUR's NFS server rejects ':'
+    # (sha256:...) in a file name with EINVAL.
+    while IFS= read -r ref; do
+        name="${ref//\//%2F}"
+        touch "${dir}/${name//:/%3A}" && n=$(( n + 1 )) \
+            || echo "[${tag}] WARN: cannot record use of ${ref} in ${dir}" >&2
+    done <<<"${used}"
+    echo "[${tag}] recorded use of ${n} manifest(s) in ${dir}"
+}
+
+# _aic_registry_rm LOGTAG [SHOW_LOG]
+_aic_registry_rm() {
     local tag="$1" show_log="${2:-0}" rc
     [[ -n "${AIC_REG_NAME:-}" ]] || return 0
     if [[ "${show_log}" == "1" ]]; then
@@ -97,6 +203,85 @@ aic_registry_stop() {
     docker rm -f "${AIC_REG_NAME}" >/dev/null \
         || echo "[${tag}] WARN: could not remove registry container ${AIC_REG_NAME}" >&2
     AIC_REG_NAME="" AIC_REG_PORT=""
+}
+
+# aic_registry_gc LOGTAG STORAGE RETAIN_DAYS DRY_RUN [REF_DIR...]
+# Delete what no job has used in RETAIN_DAYS from STORAGE (see
+# .slurm/registry-gc.py for what is kept), with the registry's own tools: the
+# manifests through its API, then the blobs nothing references with
+# `registry garbage-collect`.  DRY_RUN=1 only reports.  Holds the storage
+# exclusively throughout, waiting up to AIC_CACHE_GC_LOCK_WAIT seconds for the
+# jobs serving it to finish; jobs that start meanwhile wait for it.
+aic_registry_gc() {
+    local tag="$1" storage="$2" days="$3" dry="$4" d rc=0 out
+    local image="${AIC_REGISTRY_IMAGE:-registry:3.1.2}"
+    local py="${BASH_SOURCE[0]%/*}/registry-gc.py"
+    local -a refs=()
+    shift 4
+    for d in "$@"; do [[ -d "${d}" ]] && refs+=(--ref-dir "${d}"); done
+    if [[ ! -d "${storage%/}/docker/registry/v2" ]]; then
+        echo "[${tag}] ${storage} holds no registry; nothing to collect"
+        return 0
+    fi
+    # A dry run only reads, so it neither waits for jobs nor makes them wait.
+    if [[ "${dry}" == 1 ]]; then
+        echo "[${tag}] dry run over ${storage} (retain ${days} days)"
+        python3 -I "${py}" "${storage}" --retain-days "${days}" "${refs[@]}"
+        return
+    fi
+    # A subshell, so the EXIT trap is its own.  A container outlives a killed
+    # job, so the trap removes the ones that change the storage before the
+    # subshell's exit releases the lock.  Slurm sends SIGTERM seconds before
+    # SIGKILL; only a bare SIGKILL skips it.
+    (
+        gc_name=""
+        trap '[[ -z "${AIC_REG_NAME:-}" ]] || _aic_registry_rm "${tag}"
+              [[ -z "${gc_name}" ]] || docker rm -f "${gc_name}" >/dev/null \
+                  || echo "[${tag}] WARN: could not remove ${gc_name}" >&2' EXIT
+        _aic_registry_lock "${tag}" "${storage}" x "${AIC_CACHE_GC_LOCK_WAIT:-3600}" || exit 1
+        _aic_registry_gc_idle "${tag}" || exit 0
+        echo "[${tag}] collecting ${storage} (retain ${days} days)"
+        _aic_registry_run "${tag}" "${storage}" -e REGISTRY_STORAGE_DELETE_ENABLED=true || exit 1
+        python3 -I "${py}" "${storage}" --retain-days "${days}" "${refs[@]}" \
+            --registry "http://127.0.0.1:${AIC_REG_PORT}" || rc=$?
+        _aic_registry_rm "${tag}" "$(( rc != 0 ))"
+        (( rc == 0 )) || exit "${rc}"
+        gc_name="aic-registry-gc-${SLURM_JOB_ID:-nojob}-$$-${RANDOM}"
+        # Blob deletions are one line each; keep the summary.
+        out="$(docker run --rm --name "${gc_name}" --user "$(id -u):$(id -g)" \
+            -v "${storage}:/var/lib/registry" \
+            "${image}" garbage-collect /etc/distribution/config.yml 2>&1)" || rc=$?
+        gc_name=""
+        if (( rc == 0 )); then
+            grep -E 'blobs marked' <<<"${out}" | sed "s/^/[${tag}] /"
+        else
+            echo "[${tag}] ERROR: registry garbage-collect failed (exit ${rc}):" >&2
+            tail -n 20 <<<"${out}" | sed 's/^/    /' >&2
+        fi
+        exit "${rc}"
+    )
+}
+
+# _aic_registry_gc_idle LOGTAG
+# Non-zero, after saying why, while one of the caller's Slurm jobs named like
+# AIC_CACHE_GC_IDLE_JOBS (a glob; default aic-*) runs.  The storage lock already
+# excludes every job whose image-dist-lib.sh takes it; this covers jobs from
+# checkouts that predate the lock.  Empty AIC_CACHE_GC_IDLE_JOBS skips the check.
+_aic_registry_gc_idle() {
+    local tag="$1" pat="${AIC_CACHE_GC_IDLE_JOBS-aic-*}" q id name state busy=""
+    [[ -n "${pat}" ]] || return 0
+    command -v squeue >/dev/null 2>&1 || return 0
+    q="$(squeue --me -h -o '%i %j %T')" \
+        || { echo "[${tag}] squeue failed; not collecting, since a running job cannot be ruled out" >&2; return 1; }
+    while read -r id name state; do
+        [[ -n "${id}" && "${id}" != "${SLURM_JOB_ID:-}" ]] || continue
+        [[ "${state}" == RUNNING || "${state}" == COMPLETING ]] || continue
+        # shellcheck disable=SC2053  # pat is a glob
+        [[ "${name}" == ${pat} ]] && busy+=" ${id}(${name})"
+    done <<<"${q}"
+    [[ -z "${busy}" ]] && return 0
+    echo "[${tag}] skipped: running job(s)${busy} may use the storage without its lock"
+    return 1
 }
 
 # aic_metadata_digest FILE

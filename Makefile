@@ -388,7 +388,8 @@ help:
 	    'make dist-build-exporters' 'Build only nvme/rdma exporter images (no main rebuild)' \
 	    'make dist-build-monitoring' 'Pull + save Prometheus/amdgpu-exporter to AIC_IMAGE_DIR' \
 	    'make dist-wheels' 'Export pip wheels on a Slurm node (nightly wheels CI)' \
-	    'make dist-push' 'Tag + push images (needs AIC_VLLM_PUSH_REF + AIC_LMCACHE_PUSH_REF)'
+	    'make dist-push' 'Tag + push images (needs AIC_VLLM_PUSH_REF + AIC_LMCACHE_PUSH_REF)' \
+	    'make cache-gc' 'Delete cache + images unused for AIC_CACHE_GC_RETAIN_DAYS from the build registry'
 	@printf '\n$(_AIC_B)$(_AIC_X)STACK (local)$(_AIC_R)\n'
 	@printf '  $(_AIC_G)%-32s$(_AIC_R) %s\n' \
 	    'make up' 'Start lmcache + vllm + monitoring (foreground, DRAM L1)' \

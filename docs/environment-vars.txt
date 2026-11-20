@@ -97,9 +97,16 @@ AIC_CACHE_MODE: BuildKit `--cache-to` mode: `min` or `max`
 [slurm-build]
 AIC_IMAGE_DIR: Shared directory the built image artifacts (tarballs or registry refs) are stored in and loaded from. The first default applies on SPUR, the alternate elsewhere
 AIC_TARGETS: Comma-separated nodes the `load` and `all` commands load the images onto
-AIC_DIST_BACKEND: How a build hands its images to the jobs that run them: `tarball` (`docker save` into `AIC_IMAGE_DIR`) or `registry` (a registry's storage on shared NFS plus a digest ref, so layers are stored once and a node fetches only what it lacks). `registry` needs `AIC_BUILDX_DRIVER=docker` and is the default on SPUR with that driver; `tarball` elsewhere. Nothing removes the images finished runs leave behind: run `registry garbage-collect --delete-untagged` on the storage while no job uses it
+AIC_DIST_BACKEND: How a build hands its images to the jobs that run them: `tarball` (`docker save` into `AIC_IMAGE_DIR`) or `registry` (a registry's storage on shared NFS plus a digest ref, so layers are stored once and a node fetches only what it lacks). `registry` needs `AIC_BUILDX_DRIVER=docker` and is the default on SPUR with that driver; `tarball` elsewhere. `make cache-gc` deletes the images no job has used in `AIC_CACHE_GC_RETAIN_DAYS`
 AIC_REGISTRY_IMAGE: Image of the registry the jobs start for `AIC_DIST_BACKEND=registry` and `AIC_CACHE_BACKEND=registry`. A node without it loads `<storage>/aic-images/<image>.tar`, which the first job to pull it writes
-AIC_CACHE_BACKEND: Format `AIC_CACHE_DIR` is kept in: `local` (a BuildKit local cache) or `registry` (a registry's storage under `<dir>/registry`, served by a container the build job starts and removes). `registry` needs `AIC_BUILDX_DRIVER=docker` and is the default on SPUR with that driver; `local` elsewhere. Nothing removes superseded blobs from a registry: run `registry garbage-collect` while no build uses the directory
+AIC_CACHE_BACKEND: Format `AIC_CACHE_DIR` is kept in: `local` (a BuildKit local cache) or `registry` (a registry's storage under `<dir>/registry`, served by a container the build job starts and removes). `registry` needs `AIC_BUILDX_DRIVER=docker` and is the default on SPUR with that driver; `local` elsewhere. `make cache-gc` deletes the cache no job has used in `AIC_CACHE_GC_RETAIN_DAYS`
+AIC_CACHE_GC_RETAIN_DAYS: `make cache-gc` keeps every cache manifest and image a job pushed, pulled or read in this many days, and any image a `.ref` under `AIC_CACHE_GC_REF_DIRS` names; it deletes nothing until usage has been recorded for this long
+AIC_CACHE_GC_DRY_RUN: `1` makes `make cache-gc` report what it would delete and delete nothing
+AIC_CACHE_GC_LOCK_WAIT: Seconds `make cache-gc` waits for the jobs serving the registry storage to finish; must stay under `AIC_CACHE_GC_TIME`
+AIC_CACHE_GC_TIME: Slurm time limit of the `make cache-gc` job, including `AIC_CACHE_GC_LOCK_WAIT`
+AIC_CACHE_GC_REF_DIRS: Colon-separated trees `make cache-gc` searches for `.ref` files; an image one names is kept however old
+AIC_CACHE_GC_IDLE_JOBS: Glob of your Slurm job names: `make cache-gc` skips its run while one of them is running, since a checkout that predates the storage lock does not take it. Empty skips the check
+AIC_REGISTRY_LOCK_WAIT: Seconds a job waits for `make cache-gc` to finish with the registry storage before it fails
 AIC_CACHE_RESET: `1` passes `reset=true` to a local `--cache-to`, so superseded blobs are dropped; needs buildx 0.35.0 or newer
 AIC_CACHE_INSECURE: `1` when `AIC_CACHE_REF` presents a certificate the `docker-container` builder does not trust: it is told to skip verification
 AIC_BUILDX_DRIVER: `docker-container` (a builder the script creates on the build node) or `docker` (BuildKit inside the daemon, which needs the `containerd` image store). With `docker` no builder is created or pruned and `docker/buildkitd.toml` cannot be applied, so step logs are clipped. `docker` is the default on SPUR, where the privileged builder container is denied; `docker-container` elsewhere
@@ -512,6 +519,7 @@ AIC_EMULATE_MP_IMAGE: removed; the script only names it to reject it
 AIC_DAY_DIR: repo root, set by the submitting script
 AIC_LOG_DIR: job log directory, set by the submitting script
 AIC_REG_NAME: set by image-dist-lib.sh for its own cleanup
+AIC_REG_LOCK_FD: set by image-dist-lib.sh for its own cleanup
 AIC_REGISTRY_DIR: derived by run-build-distribute.sh from AIC_CACHE_DIR or AIC_IMAGE_DIR
 MON_DIR: set by the script that sources monitoring-lib.sh
 MON_COMPOSE: set by the script that sources monitoring-lib.sh
