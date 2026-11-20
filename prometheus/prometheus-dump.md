@@ -1,6 +1,6 @@
 # AIC Prometheus Metrics Reference
 
-**Generated:** 2026-11-20 09:21 UTC · **Total metrics:** 538 · **SHA:** `1f79e56`
+**Generated:** 2026-11-20 17:55 UTC · **Total metrics:** 539 · **SHA:** `1f79e56`
 
 ## Component Versions
 
@@ -26,8 +26,8 @@
 | `aic-alloy` | `grafana/alloy:v1.8.3` | Up About a minute |
 | `aic-lmcache-coordinator` | `aic-lmcache:0.1.0-rocm7.14.1-pytorch2.13-vllm0.29.0-aiter0.1.22.post1-fa2.8.3.post1-lmcache0.5.6-nixl1.4.1-hsasnoop1.2.0` | Up About a minute (healthy) |
 | `aic-client` | `python:3.12` | Up About a minute |
-| `aic-prometheus` | `prom/prometheus:v3.14.0` | Up About a minute |
 | `aic-loki` | `grafana/loki:3.5.0` | Up About a minute |
+| `aic-prometheus` | `prom/prometheus:v3.14.0` | Up About a minute |
 | `aic-grafana` | `grafana/grafana:13.2.2` | Up About a minute |
 
 ## Metrics Sources
@@ -36,7 +36,7 @@
 - [lmcache](#lmcache) — 27 metrics
 - [nixl](#nixl) — 19 metrics
 - [lmcache_coordinator](#lmcache-coordinator) — 7 metrics
-- [amdgpu_exporter](#amdgpu-exporter) — 131 metrics
+- [amdgpu_exporter](#amdgpu-exporter) — 132 metrics
 - [prometheus](#prometheus) — 263 metrics
 
 ## vllm
@@ -207,6 +207,7 @@
 
 | Metric | Type | Description |
 |--------|------|-------------|
+| `gpu_afid_errors` | gauge | Last Occurred RAS Event associated AMD Field Identifier list |
 | `gpu_clock` | gauge | List of current GPU clock frequencies in MHz |
 | `gpu_ecc_correct_athub` | gauge | Correctable error count in ATHUB block |
 | `gpu_ecc_correct_bif` | gauge | Correctable error count in BIF block |
