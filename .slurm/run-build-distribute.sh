@@ -2364,6 +2364,7 @@ export VLLM_PID_MODE=service:lmcache
 # vLLM shares lmcache's network namespace, so lmcache is on its loopback.
 export KV_TRANSFER_ARG="--kv-transfer-config '{\"kv_connector\":\"LMCacheMPConnector\",\"kv_role\":\"kv_both\",\"kv_connector_extra_config\":{\"lmcache.mp.host\":\"tcp://localhost\",\"lmcache.mp.port\":\${LMCACHE_PORT:-6555},\"lmcache.mp.use_vmm_api\":false}}'"
 mkdir -p "\${HF_HOME}" /tmp/aic-tiny-nvme /tmp/aic-tiny-nfs
+aic_container_identity "\${HF_HOME}" || exit 1
 
 compose() { docker compose -f '${AIC_DAY_DIR}/docker/docker-compose.yml' "\$@"; }
 cleanup() {
@@ -2594,6 +2595,7 @@ export AIC_HSA_SNOOP_PID_MODE=container:aic-lmcache
 export AIC_METRICS_DIR="\${_logdir}/prometheus"
 export PROM_UID="\$(id -u)" PROM_GID="\$(id -g)"
 mkdir -p "\${HF_HOME}" "\${AIC_METRICS_DIR}" /tmp/aic-prom-dump-nvme /tmp/aic-prom-dump-nfs
+aic_container_identity "\${HF_HOME}" || exit 1
 
 compose() { docker compose -f '${AIC_DAY_DIR}/docker/docker-compose.yml' "\$@"; }
 cleanup() {
