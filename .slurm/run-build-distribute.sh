@@ -113,6 +113,9 @@
 #           Results land in logs/<job-id>/ (AIC_CLIFF_*: see docs/ENVIRONMENT.md)
 #   bake    Build base, then vllm + lmcache in parallel (docker buildx bake) plus
 #           the fabric exporters on AIC_BUILD_NODE; store every image
+#   cache-gc  Delete from the registry storage (AIC_REGISTRY_DIR, which follows
+#           AIC_CACHE_DIR) the cache and images no job has used in
+#           AIC_CACHE_GC_RETAIN_DAYS, while no job serves it
 #   all     bake, build-exporters, then load   (default)
 #
 # Environment:
@@ -523,6 +526,15 @@ if [[ -n "${AIC_REGISTRY_DIR}" && "${AIC_REGISTRY_DIR}" != /* ]]; then
         "${AIC_REGISTRY_DIR}" >&2
     exit 1
 fi
+# cache-gc: what it keeps, and how long it waits.  See aic_registry_gc.
+AIC_CACHE_GC_RETAIN_DAYS="${AIC_CACHE_GC_RETAIN_DAYS:-7}"
+AIC_CACHE_GC_DRY_RUN="${AIC_CACHE_GC_DRY_RUN:-0}"
+# Must stay under AIC_CACHE_GC_TIME, which also covers the collection itself.
+AIC_CACHE_GC_LOCK_WAIT="${AIC_CACHE_GC_LOCK_WAIT:-3600}"
+AIC_CACHE_GC_TIME="${AIC_CACHE_GC_TIME:-02:00:00}"
+AIC_CACHE_GC_REF_DIRS="${AIC_CACHE_GC_REF_DIRS:-${AIC_IMAGE_DIR}}"
+# Empty is meaningful (no check), so not :-.
+AIC_CACHE_GC_IDLE_JOBS="${AIC_CACHE_GC_IDLE_JOBS-aic-*}"
 AIC_TEST_TIME="${AIC_TEST_TIME:-00:45:00}"
 AIC_TEST_CPUS="${AIC_TEST_CPUS:-8}"
 AIC_TEST_MEM="${AIC_TEST_MEM:-32G}"
@@ -4543,6 +4555,49 @@ REMOTE
 }
 
 # --- main --------------------------------------------------------------------
+# --- cache-gc: delete what no job still uses from the registry storage --------
+# The storage is AIC_REGISTRY_DIR, derived from AIC_CACHE_DIR (or AIC_IMAGE_DIR)
+# exactly as the builds derive it, so moving the cache moves the collection.
+# .slurm/image-dist-lib.sh (aic_registry_gc) does the work on a node with docker.
+cmd_cache_gc() {
+    if [[ -z "${AIC_REGISTRY_DIR}" ]]; then
+        log "no registry storage (AIC_CACHE_BACKEND=${AIC_CACHE_BACKEND}, AIC_DIST_BACKEND=${AIC_DIST_BACKEND}); nothing to collect"
+        return 0
+    fi
+    local -a _refdirs=()
+    IFS=: read -r -a _refdirs <<<"${AIC_CACHE_GC_REF_DIRS}"
+    local _dry=""
+    [[ "${AIC_CACHE_GC_DRY_RUN}" == 1 ]] && _dry=", dry run"
+    log "cache-gc: ${AIC_REGISTRY_DIR} (retain ${AIC_CACHE_GC_RETAIN_DAYS} days, .ref files under ${AIC_CACHE_GC_REF_DIRS:-<none>}${_dry})"
+
+    local remote_script
+    remote_script="$(cat <<REMOTE
+source '${AIC_DAY_DIR}/monitoring/monitoring-lib.sh'
+aic_docker_preflight || exit 1
+# shellcheck source=/dev/null
+source '${AIC_DAY_DIR}/.slurm/image-dist-lib.sh'
+AIC_REGISTRY_IMAGE='${AIC_REGISTRY_IMAGE}'
+AIC_CACHE_GC_LOCK_WAIT='${AIC_CACHE_GC_LOCK_WAIT}'
+AIC_CACHE_GC_IDLE_JOBS='${AIC_CACHE_GC_IDLE_JOBS}'
+aic_registry_gc cache-gc '${AIC_REGISTRY_DIR}' '${AIC_CACHE_GC_RETAIN_DAYS}' '${AIC_CACHE_GC_DRY_RUN}' $(printf '%q ' "${_refdirs[@]}")
+REMOTE
+)"
+
+    if [[ "${AIC_BUILD_LOCAL:-}" == "1" ]]; then
+        log "collecting locally on $(hostname) (AIC_BUILD_LOCAL=1)"
+        _aic_err_delegate bash -c "$(_aic_err_trap_src aic-cache-gc)
+${remote_script}"
+    else
+        local -a _sel=()
+        [[ -n "${AIC_BUILD_CONSTRAINT:-}" ]] && _sel+=(--constraint="${AIC_BUILD_CONSTRAINT}")
+        _sbatch_run aic-cache-gc cache-gc "${remote_script}" \
+            "${_sel[@]}" \
+            --nodes=1 --ntasks=1 --cpus-per-task=2 --mem=8G \
+            --time="${AIC_CACHE_GC_TIME}"
+    fi
+    log "cache-gc complete"
+}
+
 main() {
     local sub="${1:-all}"
     case "${sub}" in
@@ -4562,11 +4617,12 @@ main() {
         profile-capture) cmd_profile_capture ;;
         accuracy-test)   cmd_accuracy_test ;;
         cliff)           cmd_cliff ;;
+        cache-gc)        cmd_cache_gc ;;
         all)             cmd_bake; cmd_build_exporters; cmd_load ;;
         -h|--help|help)
             sed -n '2,70p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
             ;;
-        *) die "unknown command '${sub}' (use: build | bake | wheels | build-emulate | build-exporters | load | push | test | tiny-test | prometheus-dump | emulate-test | emulate-mp-test | emulate-validate | profile-capture | accuracy-test | cliff | all | help)" ;;
+        *) die "unknown command '${sub}' (use: build | bake | wheels | build-emulate | build-exporters | load | push | test | tiny-test | prometheus-dump | emulate-test | emulate-mp-test | emulate-validate | profile-capture | accuracy-test | cliff | cache-gc | all | help)" ;;
     esac
 }
 
