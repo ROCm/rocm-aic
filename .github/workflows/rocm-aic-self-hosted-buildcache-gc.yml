@@ -1,0 +1,38 @@
+# Deletes from the SPUR build registry (the BuildKit cache and the images CI
+# runs) what no job has pushed, pulled or read in AIC_CACHE_GC_RETAIN_DAYS,
+# while no job serves it.  See `make cache-gc` and .slurm/image-dist-lib.sh.
+name: rocm-aic - Self Hosted - Build Cache GC
+
+on:
+  schedule:
+    # 04:00 UTC: before the nightly wheels (06:37) and Dist Build (09:00), which
+    # share the cache; a job that starts during the collection waits for it.
+    - cron: '0 4 * * *'
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: Report what would be deleted; delete nothing
+        type: boolean
+        default: true
+
+permissions: {}
+
+concurrency:
+  group: rocm-aic-buildcache-gc
+  cancel-in-progress: false
+
+jobs:
+  cache-gc:
+    runs-on: [self-hosted, rocm-aic-cicd]
+    # AIC_CACHE_GC_TIME plus queueing.
+    timeout-minutes: 180
+    env:
+      AIC_SPUR_HOST: ${{ secrets.AIC_SPUR_HOST }}
+      AIC_SHARED_NFS: ${{ secrets.AIC_SHARED_NFS }}
+      AIC_CI_STORAGE_ROOT: ${{ secrets.AIC_SHARED_NFS }}/rocm-aic
+      AIC_BUILD_EXCLUDE_NODES: ${{ vars.AIC_BUILD_EXCLUDE_NODES }}
+      DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run && 'dry-run' || '' }}
+
+    steps:
+      - name: Collect the build registry on SPUR
+        run: bash /usr/local/lib/aic-ci/spur-buildcache-gc.sh "${{ github.sha }}" ${DRY_RUN:+"${DRY_RUN}"}
