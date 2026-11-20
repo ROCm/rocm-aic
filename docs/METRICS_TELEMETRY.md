@@ -9,13 +9,15 @@ live dashboarding via Grafana.
 
 The ports below are **container** ports, reachable by name on the `aic` bridge
 (for example `http://aic-lmcache:8080`). Nothing binds a fixed host port, and
-only Grafana is published to the host, on `127.0.0.1` with a free port Docker
-picks at `up`; `make endpoints` prints its URL. Pin it with `AIC_GRAFANA_PORT`,
-and bind beyond loopback with `AIC_PUBLISH_ADDR=0.0.0.0`. The ephemeral port
-changes when the container is recreated, so look it up again after a restart.
+only Grafana is published to the host, on `127.0.0.1`; `make endpoints` prints
+its URL. `make` gives it the lowest free port from 3000 and keeps that port
+across a down/up; a job that runs compose itself gets a free port Docker picks,
+which changes when the container is recreated. Pin it with `AIC_GRAFANA_PORT`,
+and bind beyond loopback with `AIC_PUBLISH_ADDR=0.0.0.0`.
 
 Everything else is reached from a container on the bridge: the `aic-client`
-container `make up` starts, or `aic_fetch`, which sends one request from a
+container `make up` starts (the benchmark client image, which has `curl`), or
+`aic_fetch`, which sends one request from a
 throwaway container on `aic`. vLLM shares `aic-lmcache`'s network namespace, so
 it answers as `aic-lmcache:8000`; `scripts/aic-endpoints.sh bridge-url
 <container> <port>` prints that name for any container. Prometheus can also be
@@ -68,8 +70,8 @@ needed (per-GPU override files or a generator script).
 
 ## Grafana dashboard
 
-Pre-provisioned, anonymous viewer, no login. The Grafana host port is ephemeral
-unless `AIC_GRAFANA_PORT` pins it.
+Pre-provisioned, anonymous viewer, no login. Under `make` the host port is 3000,
+or the next free port up to 3009; `AIC_GRAFANA_PORT` pins it.
 
 ```bash
 make up HF_TOKEN=hf_... NVME_DATA=/mnt/lmcache-nvme NFS_DATA=/mnt/lmcache-nfs \

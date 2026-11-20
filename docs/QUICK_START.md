@@ -97,10 +97,29 @@ than reconstructing them. Point vLLM at the ZMQ port with the `lmcache.mp.port`
 entry of its `--kv-transfer-config` (the `LMCacheMPConnector` JSON in the
 `Makefile`).
 
-## 5. Install host-side plotting dependencies
+## 5. The benchmark client
 
-The benchmarks themselves run in the `aic-client` container `make up` starts;
-only `make plot` runs on the host.
+Every benchmark client runs from one image, `aic-client` (Python only, no
+ROCm), which holds the `benchmarks/` scripts, `agent-kv` and `aiperf` behind
+one command, `aic-bench`. `make up` starts it as the `aic-client` container on
+the `aic` bridge, with the repo at `/repo` and `logs/` at `/logs`; compose
+builds the image when it is missing.
+
+```bash
+make client-build                  # build (or rebuild) the image
+make bench-list                    # the aic-bench subcommands
+make bench BENCH=reset-test
+make bench BENCH=agent-kv BENCH_ARGS="run --num-books 2 --rounds 3"
+make bench BENCH=cliff BENCH_ARGS=--help    # the underlying tool's help
+```
+
+`make bench` gives `aic-bench` the endpoint of the running vLLM
+(`BENCH_ENDPOINT` overrides it); the model defaults to the one the endpoint
+serves, and results land under `logs/bench/<subcommand>/<UTC timestamp>/`.
+`make cliff`, `vllm-reset-test`, `agent-simple-run` and the AgentX targets go
+through the same image. See [`benchmarks/README.md`](../benchmarks/README.md).
+
+Only `make plot` runs on the host:
 
 ```bash
 make venv

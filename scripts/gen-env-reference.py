@@ -61,6 +61,9 @@ SHELL_FILES = (
     "benchmarks/agentx/overnight_sweep.sh",
 )
 PYTHON_FILES = (
+    "benchmarks/common/kv_client.py",
+    "benchmarks/aic_bench_serve.py",
+    "benchmarks/aic_bench.py",
     "benchmarks/vllm_reset_test.py",
     "tests/accuracy/test_accuracy.py",
     "tests/accuracy/conftest.py",
@@ -327,7 +330,7 @@ def python_sites(root: Path, path: str) -> list[Site]:
     text = read(root, path)
     sites: list[Site] = []
     pattern = re.compile(
-        rf"""os\.(?:getenv|environ\.get)\(\s*["']({NAME})["']\s*(?:,\s*(["'])(.*?)\2\s*)?\)"""
+        rf"""os\.(?:getenv|environ\.get)\(\s*["']({NAME})["']\s*(?:,\s*(["'])(.*?)\2\s*,?\s*)?\)"""
         rf"""|os\.environ\[["']({NAME})["']\]""",
         re.S,
     )

@@ -7,11 +7,15 @@ conversation one turn at a time, waiting a random think-time between turns,
 and building the full message history (including actual model responses) so
 that LMCache can cache the growing prefix across turns.
 
-Usage:
-    python3 benchmarks/aic_bench_serve.py [options]
+Runs in aic-client on the aic bridge:
 
-Or via make:
-    make bench-serve VLLM_MODEL=Qwen/Qwen2.5-3B-Instruct BENCH_POOL_SIZE=50
+    aic-bench serve-sim [options]
+    aic-bench serve-sim --duration 10 --sessions 8 --pool-size 50
+
+The endpoint, model and output directory default to AIC_BENCH_ENDPOINT,
+AIC_BENCH_MODEL and <AIC_BENCH_OUT>/serve-sim; aic-bench passes them
+explicitly, the model being the first one the endpoint lists.  The ShareGPT
+dataset is downloaded once to AIC_BENCH_DATASET.
 """
 import argparse, json, os, random, sys, time, urllib.request, threading
 from concurrent.futures import ThreadPoolExecutor
@@ -30,6 +34,7 @@ DEFAULT_DATASET = os.getenv(
 def download_dataset(path: str) -> list:
     if not os.path.exists(path):
         print(f"Downloading ShareGPT dataset to {path}...")
+        os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
         urllib.request.urlretrieve(SHAREGPT_URL, path)
     with open(path) as f:
         data = json.load(f)
@@ -140,10 +145,12 @@ class Session:
 
 def main():
     ap = argparse.ArgumentParser(description="AIC multi-turn serving benchmark")
-    ap.add_argument("--base-url", default=os.getenv("AIC_TEST_VLLM_URL",
-                                                      "http://localhost:8000"))
-    ap.add_argument("--model", default=os.getenv("VLLM_MODEL",
-                                                   "Qwen/Qwen2.5-3B-Instruct"))
+    ap.add_argument("--base-url", default=os.getenv("AIC_BENCH_ENDPOINT",
+                                                      "http://aic-lmcache:8000"),
+                    help="Server base URL on the aic bridge, no /v1")
+    ap.add_argument("--model", default=os.getenv("AIC_BENCH_MODEL"),
+                    required=not os.getenv("AIC_BENCH_MODEL"),
+                    help="Served model (default: AIC_BENCH_MODEL)")
     ap.add_argument("--dataset", default=DEFAULT_DATASET)
     ap.add_argument("--duration", type=int, default=60,
                     help="Run duration in minutes")
@@ -159,16 +166,18 @@ def main():
                     help="Max think-time between turns (seconds)")
     ap.add_argument("--seed", type=int, default=42,
                     help="Random seed (0 = time-based, unique each run)")
-    ap.add_argument("--output", default="/tmp/aic-bench-results")
+    ap.add_argument("--output",
+                    default=os.path.join(os.getenv("AIC_BENCH_OUT", "/logs/bench"), "serve-sim"),
+                    help="Directory for the results JSON and the conversation log")
     args = ap.parse_args()
+    args.base_url = args.base_url.rstrip("/")
 
     seed = int(time.time()) if args.seed == 0 else args.seed
     random.seed(seed)
     print(f"Seed: {seed}{' (time-based)' if args.seed == 0 else ''}")
     os.makedirs(args.output, exist_ok=True)
 
-    CONV_LOG = "/tmp/aic-conversations.log"
-    conv_log = open(CONV_LOG, "a", buffering=1)
+    conv_log = open(os.path.join(args.output, "conversations.log"), "a", buffering=1)
 
     data = download_dataset(args.dataset)
     convs = [t for c in data if (t := extract_turns(c)) and len(t) >= 2]

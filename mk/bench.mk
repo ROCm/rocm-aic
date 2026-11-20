@@ -1,40 +1,79 @@
 # Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
-# Benchmark targets: cliff, kvbench, agentx, stress, plot, emulate, profile capture.
+# Benchmark targets: the aic-client image and aic-bench, cliff, kvbench, agentx,
+# agent-simple, plot, emulate, profile capture, rocjitsu.
 #
 # The `-local` suffix on several targets below means "runs entirely on one
 # machine", as opposed to the multi-node build in
 # .slurm/run-build-distribute.sh.  It says nothing about Slurm: these are
 # routinely run as single-node Slurm jobs via the wrappers in .slurm/.
 
-.PHONY: cliff plot kvbench-up kvbench-down \
+.PHONY: client-build bench bench-list cliff plot kvbench-up kvbench-down \
         cliff-kvbench-local test-emulate-local capture-profile-local \
-        test-rocjitsu-local agentx-build agentx-corpus agentx-run agentx-sweep \
-        agent-simple-run
+        test-rocjitsu-local agentx-corpus agentx-run agentx-sweep \
+        agent-simple-run agent-kv-nvme-sweep
 
-# Benchmarks run in aic-client (started by `make up`), on the aic bridge with
-# the repo at /repo and logs/ at /logs, so they reach vLLM by name.  Wait for
-# the benchmark deps it pip-installs at start.
+# ---- Client image and aic-bench ----------------------------------------------
+# Every benchmark client runs from one image, aic-client (docker/client/), and
+# one command in it, aic-bench (benchmarks/aic_bench.py, benchmarks/README.md).
+# `make up` starts the aic-client container on the aic bridge with the repo at
+# /repo and logs/ at /logs, so benchmarks reach vLLM by name and run from the
+# checkout.  Compose builds the image when it is missing.
+#
+#   make client-build
+#   make bench-list
+#   make bench BENCH=agent-kv BENCH_ARGS="run --num-books 2 --rounds 3"
+#   make bench BENCH=cliff BENCH_ARGS=--help
+
+# aic-bench subcommand and the arguments of the tool behind it.
+BENCH      ?= list
+BENCH_ARGS ?=
+
 define _wait_aic_client
-@docker inspect aic-client >/dev/null 2>&1 || { \
+@[ "$$(docker inspect -f '{{.State.Running}}' aic-client 2>/dev/null)" = true ] || { \
 	echo "ERROR: aic-client container not running — start with 'make up'" >&2; exit 1; }
-@for _i in $$(seq 1 120); do \
-	docker exec aic-client python3 -c 'import openai, httpx, transformers' >/dev/null 2>&1 && break; \
-	[ "$$_i" = 120 ] && { echo "ERROR: aic-client did not finish installing benchmark deps" >&2; exit 1; }; \
-	sleep 1; \
-done
 endef
+
+# The endpoint aic-bench is given: BENCH_ENDPOINT, else the running tiered vLLM.
+define _bench_endpoint
+_ep="$(BENCH_ENDPOINT)"; \
+[ -n "$$_ep" ] || _ep="$$($(call aic_bridge_url,aic-vllm-gpu$(GPU),8000))" || exit 1
+endef
+
+# Not through _bake_preflight: the client image has no ROCM_ARCH.  The stack's
+# builder is used when it exists, else docker's default one.
+client-build:
+	_builder=""; \
+	if docker buildx inspect $(AIC_BUILDX_BUILDER) >/dev/null 2>&1; then _builder="--builder $(AIC_BUILDX_BUILDER)"; fi; \
+	docker buildx bake $$_builder \
+		--progress=$(BUILD_PROGRESS) \
+		--load \
+		-f "$(REPO_ROOT)/docker/docker-bake.hcl" \
+		client
+
+# Subcommands that reach no server, so they run with no tiered vLLM up.
+_BENCH_OFFLINE := list plot cliff-report
+
+# The model is aic-bench's to find (the first one the endpoint lists) unless
+# BENCH_MODEL was given on the command line or in the environment.
+bench:
+	$(_wait_aic_client)
+	@$(if $(filter $(_BENCH_OFFLINE),$(BENCH)),_ep="$(BENCH_ENDPOINT)",$(_bench_endpoint)); \
+	docker exec aic-client aic-bench $${_ep:+--endpoint "$$_ep"} \
+		$(if $(filter command% environment%,$(origin BENCH_MODEL)),--model "$(BENCH_MODEL)") \
+		$(BENCH) $(BENCH_ARGS)
+
+bench-list:
+	$(_wait_aic_client)
+	@docker exec aic-client aic-bench list
 
 cliff: prep-dirs
 	@test -n "$(BENCH_MODEL)" || { \
 		echo "ERROR: set BENCH_MODEL or VLLM_MODEL to the served model name" >&2; exit 1; }
 	$(_wait_aic_client)
-	_ep="$(BENCH_ENDPOINT)"; \
-	[ -n "$$_ep" ] || _ep="$$($(call aic_bridge_url,aic-vllm-gpu$(GPU),8000))" || exit 1; \
-	docker exec aic-client python3 -u benchmarks/run_cliff.py \
-		--endpoint "$$_ep" \
-		--model "$(BENCH_MODEL)" \
+	$(_bench_endpoint); \
+	docker exec aic-client aic-bench --endpoint "$$_ep" --model "$(BENCH_MODEL)" cliff \
 		--arm "$(BENCH_ARM)" \
 		--isl "$(BENCH_ISL)" \
 		--shared-prefix-tokens "$(BENCH_SHARED_TOK)" \
@@ -72,21 +111,16 @@ cliff-kvbench-local: ensure-compose prep-kvbench-dirs
 	    $(COMPOSE) --profile kvbench down --remove-orphans >/dev/null 2>&1; \
 	    exit 1; \
 	fi; \
-	for _i in $$(seq 1 60); do \
-	    if docker exec aic-client python3 -c 'import openai' >/dev/null 2>&1; then break; fi; \
-	    if [ "$$_i" = "60" ]; then \
-	        echo "FAIL: aic-client did not finish installing benchmark deps" >&2; \
-	        $(COMPOSE) logs --tail 80 client; \
-	        $(COMPOSE) --profile kvbench down --remove-orphans >/dev/null 2>&1; \
-	        exit 1; \
-	    fi; \
-	    sleep 1; \
-	done; \
+	if [ "$$(docker inspect -f '{{.State.Running}}' aic-client 2>/dev/null)" != true ]; then \
+	    echo "FAIL: aic-client container not running" >&2; \
+	    $(COMPOSE) logs --tail 80 client; \
+	    $(COMPOSE) --profile kvbench down --remove-orphans >/dev/null 2>&1; \
+	    exit 1; \
+	fi; \
 	out="/logs/manual/results/cliff-kvbench-$$(date +%Y%m%d-%H%M%S).csv"; \
 	echo "Running cliff benchmark through the internal compose network -> $$out"; \
-	docker exec aic-client python3 -u benchmarks/run_cliff.py \
-	    --endpoint "http://aic-kvbench:$(KVBENCH_PORT)" \
-	    --model "$${BENCH_MODEL:-$(KVBENCH_MODEL)}" \
+	docker exec aic-client aic-bench --endpoint "http://aic-kvbench:$(KVBENCH_PORT)" \
+	    --model "$${BENCH_MODEL:-$(KVBENCH_MODEL)}" cliff \
 	    --arm kvbench \
 	    --isl "$(BENCH_ISL)" \
 	    --shared-prefix-tokens "$(BENCH_SHARED_TOK)" \
@@ -99,16 +133,17 @@ cliff-kvbench-local: ensure-compose prep-kvbench-dirs
 
 # ---- AgentX (aiperf agentic-trace replay) ------------------------------------
 # benchmarks/agentx/run_agentx.sh runs `aiperf profile --scenario
-# inferencex-agentx-mvp` from the aic-agentx image, as the invoking user, on the
+# inferencex-agentx-mvp` from the aic-client image, as the invoking user, on the
 # aic bridge: by default against the running aic-vllm-gpu$(GPU), or against
-# BENCH_ENDPOINT.  It does not use aic-client (aiperf is its own image).
+# BENCH_ENDPOINT.  Each run is a throwaway container with the corpus and the
+# run directory mounted, not the long-lived aic-client container.
 #
 # The scripts own the defaults of the AGENTX_* knobs (docs/ENVIRONMENT.md), so
 # make gives them none: a value set on the command line, in the environment or
-# in .env.<cluster> reaches them through the environment.  AGENTX_IMAGE_REF is
+# in .env.<cluster> reaches them through the environment.  AIC_CLIENT_IMAGE is
 # the tag bake resolves (Makefile).
 #
-#   make agentx-build
+#   make client-build
 #   make agentx-run                             # needs a model with a large context
 #   make agentx-run AGENTX_CORPUS_SCALE=8       # scaled corpus, NOT the AgentX benchmark
 #   make agentx-run AGENTX_ARGS=--dry-run       # print the command only
@@ -116,17 +151,6 @@ cliff-kvbench-local: ensure-compose prep-kvbench-dirs
 
 # Extra run_agentx.sh options for agentx-run and agentx-sweep.
 AGENTX_ARGS ?=
-
-# Not through _bake_preflight: the client image has no ROCM_ARCH.  The stack's
-# builder is used when it exists, else docker's default one.
-agentx-build:
-	_builder=""; \
-	if docker buildx inspect $(AIC_BUILDX_BUILDER) >/dev/null 2>&1; then _builder="--builder $(AIC_BUILDX_BUILDER)"; fi; \
-	docker buildx bake $$_builder \
-		--progress=$(BUILD_PROGRESS) \
-		--load \
-		-f "$(REPO_ROOT)/docker/docker-bake.hcl" \
-		agentx
 
 # Token-scaled copy of the public corpus for small-context models, under
 # AGENTX_CORPUS_CACHE.  A scaled corpus is NOT the AgentX benchmark.
@@ -140,7 +164,8 @@ agentx-sweep:
 	@bash "$(CURDIR)/benchmarks/agentx/overnight_sweep.sh" $(AGENTX_ARGS)
 
 # ---- agent-simple (synthetic cache-tier stress) ------------------------------
-# benchmarks/agent-simple/stress.py from aic-client: deterministic documents
+# `aic-bench agent-simple` (benchmarks/agent-simple/stress.py) in aic-client,
+# through run_stress.sh: deterministic documents
 # revisited at random by concurrent clients, reporting the share of prompt
 # tokens served from the GPU prefix cache, LMCache L1 and LMCache L2.
 #
@@ -152,6 +177,20 @@ AGENT_SIMPLE_ARGS ?= s1 220 16 480
 
 agent-simple-run:
 	@bash "$(CURDIR)/benchmarks/agent-simple/run_stress.sh" $(AGENT_SIMPLE_ARGS)
+
+# ---- agent-kv NVMe delay sweep -----------------------------------------------
+# `aic-bench agent-kv nvme-sweep` with read latency injected on the L2 device
+# by dm-delay.  benchmarks/agent-kv/nvme_delay_sweep.sh applies each delay on
+# the host (sudo dmsetup) for the unprivileged client.  Once, with the stack
+# down: benchmarks/agent-kv/dm_delay_setup.sh up <L2 mount point>.
+#
+#   make agent-kv-nvme-sweep NVME_DATA=<L2 dir>
+#   make agent-kv-nvme-sweep NVME_DATA=<L2 dir> AGENT_KV_SWEEP_ARGS="--delays 0,10,50 --num-books 4"
+
+AGENT_KV_SWEEP_ARGS ?=
+
+agent-kv-nvme-sweep:
+	@NVME_DATA="$(NVME_DATA)" LOG="$(LOG)" bash "$(CURDIR)/benchmarks/agent-kv/nvme_delay_sweep.sh" $(AGENT_KV_SWEEP_ARGS)
 
 # ---- Emulate targets (local, no Slurm) ----------------------------------------
 
@@ -430,8 +469,8 @@ RJ_TEST_FLOOD       ?= 6
 RJ_TEST_ANCHOR_REPS ?= 6
 RJ_TEST_MAX_TOKENS  ?= 4
 RJ_TEST_TIMEOUT     ?= 1800
-# What bake tags the stack for RJ_ROCJITSU_ARCH: the tag and the five image
-# refs, in the order of the --get below.  Asked of bake once, on first use, so
+# What bake tags the stack for RJ_ROCJITSU_ARCH: the tag, the five image refs
+# and the client image's, in the order of the --get below.  Asked of bake once, on first use, so
 # only the rocjitsu targets (and list-vars) pay for a second `bake --print`.
 # The host's IMAGE_TAG is dropped (it carries the HOST's ROCM_ARCH, and bake
 # would take it over its own derivation) and so is any registry prefix: these
@@ -439,13 +478,13 @@ RJ_TEST_TIMEOUT     ?= 1800
 _rj_bake = $(if $(_RJ_BAKE_DONE),,$(eval _RJ_BAKE := $(shell env -u IMAGE_TAG \
     $(_FRAMEWORK_VERSION_ENV) ROCM_ARCH=$(call _shell_quote,$(RJ_ROCJITSU_ARCH)) AIC_IMAGE_PREFIX= \
     $(REPO_ROOT)/docker/scripts/aic-bake-env.sh --get IMAGE_TAG VLLM_IMAGE_REF LMCACHE_IMAGE_REF \
-    NVME_EXPORTER_IMAGE_REF RDMA_EXPORTER_IMAGE_REF HSA_SNOOP_IMAGE_REF))$(eval _RJ_BAKE_DONE := 1))$(_RJ_BAKE)
+    NVME_EXPORTER_IMAGE_REF RDMA_EXPORTER_IMAGE_REF HSA_SNOOP_IMAGE_REF CLIENT_IMAGE_REF))$(eval _RJ_BAKE_DONE := 1))$(_RJ_BAKE)
 _RJ_IMAGE_TAG         = $(word 1,$(_rj_bake))
 RJ_IMAGE_REF         ?= $(word 2,$(_rj_bake))
 RJ_LMCACHE_IMAGE_REF ?= $(word 3,$(_rj_bake))
 
-# Every locally-built image the guest needs, in ONE place.  [2/6], [4b] and [6b]
-# all iterate this: they used to carry three hand-copied lists, and the hsa-snoop
+# Every locally-built image of the stack the guest needs, in ONE place.  [2/6]
+# iterates this, and [4b] and [6b] iterate it with the client image added: they used to carry three hand-copied lists, and the hsa-snoop
 # tag drifted between them (fixed in 519bfd9) because only two were updated.
 # Still hand-maintained against compose -- `docker compose --profile cache
 # --profile monitoring config --images` is the check when adding a service.
@@ -456,6 +495,13 @@ RJ_HSA_SNOOP_IMAGE_REF ?= $(word 6,$(_rj_bake))
 RJ_LOCAL_IMAGES  = $(RJ_IMAGE_REF) $(RJ_LMCACHE_IMAGE_REF) \
                    $(wordlist 4,5,$(_rj_bake)) \
                    $(RJ_HSA_SNOOP_IMAGE_REF)
+
+# aic-client, where the guest's vllm-reset-test runs.  It has no arch and is in
+# no registry, so it stays out of RJ_LOCAL_IMAGES (which [2/6] pulls or builds
+# as one set, and CI assembles by position): [2b] builds it when it is missing.
+# A probe-only run never reaches the reset test, so it leaves the image out.
+RJ_CLIENT_IMAGE_REF ?= $(word 7,$(_rj_bake))
+RJ_VM_IMAGES         = $(RJ_LOCAL_IMAGES) $(if $(filter 1,$(RJ_PROBE_ONLY)),,$(RJ_CLIENT_IMAGE_REF))
 
 # Pull the stack from a registry instead of building it, then retag to the bare
 # local names compose expects.  This is how CI avoids a 3-4 h cold build: the
@@ -530,6 +576,16 @@ test-rocjitsu-local: prep-dirs
 	    echo "[2/6] Building the $(RJ_ROCJITSU_ARCH) stack on the host ..."; \
 	    ROCM_ARCH=$(RJ_ROCJITSU_ARCH) $(MAKE) --no-print-directory build IMAGE_TAG="$(_RJ_IMAGE_TAG)"; \
 	fi
+	@if [ "$(RJ_PROBE_ONLY)" = "1" ]; then \
+	    echo "[2b/6] Client image skipped (RJ_PROBE_ONLY=1)"; \
+	elif [ -z "$(RJ_CLIENT_IMAGE_REF)" ]; then \
+	    echo "ERROR: could not resolve the client image ref (docker buildx bake --print failed)" >&2; exit 1; \
+	elif [ "$(RJ_FORCE_BUILD)" != "1" ] && docker image inspect "$(RJ_CLIENT_IMAGE_REF)" >/dev/null 2>&1; then \
+	    echo "[2b/6] Reusing existing $(RJ_CLIENT_IMAGE_REF)"; \
+	else \
+	    echo "[2b/6] Building $(RJ_CLIENT_IMAGE_REF) on the host ..."; \
+	    $(MAKE) --no-print-directory client-build AIC_IMAGE_PREFIX=; \
+	fi
 	@echo "[3/6] Extracting guest disk and credentials ..."
 	@mkdir -p "$(RJ_WORK_DIR)/vm" "$(RJ_WORK_DIR)/fw"
 	@if [ -f "$(RJ_WORK_DIR)/vm/vm-info.json" ]; then \
@@ -548,7 +604,7 @@ test-rocjitsu-local: prep-dirs
 	    2>&1 | sed 's/^/  [fw] /'
 	@mkdir -p "$(RJ_WORK_DIR)/shared/metrics" "$(RJ_WORK_DIR)/shared/images"
 	@echo "[4b/6] Pre-saving images to shared dir (runs in background while VM boots) ..."
-	@for _img in $(RJ_LOCAL_IMAGES); do \
+	@for _img in $(RJ_VM_IMAGES); do \
 	    _slug=$$(echo "$$_img" | tr '/: ' '___'); \
 	    _tar="$(RJ_WORK_DIR)/shared/images/$$_slug.tar"; \
 	    _local_id=$$(docker inspect --format '{{.ID}}' "$$_img" 2>/dev/null); \
@@ -696,7 +752,7 @@ test-rocjitsu-local: prep-dirs
 	    2>&1 | sed 's/^/  [nvme] /'; \
 	echo "  NVMe $$_nvme mounted at $(RJ_NVME_MOUNT)"; \
 	echo "  [6b] Loading images into VM (via 9p shared dir) ..."; \
-	for _img in $(RJ_LOCAL_IMAGES); do \
+	for _img in $(RJ_VM_IMAGES); do \
 	    _slug=$$(echo "$$_img" | tr '/: ' '___'); \
 	    _tar="$(RJ_WORK_DIR)/shared/images/$$_slug.tar"; \
 	    _rj_tar="/rj-share/images/$$_slug.tar"; \
@@ -728,7 +784,6 @@ test-rocjitsu-local: prep-dirs
 	_cd="$(CURDIR)/docker/scripts/aic-compose-default.sh"; \
 	_imgs="$$("$$_cd" AIC_PROM_IMAGE) $$("$$_cd" AIC_GRAFANA_IMAGE)"; \
 	_imgs="$$_imgs $$("$$_cd" AIC_NODE_EXPORTER_IMAGE) $$("$$_cd" AIC_AMDGPU_EXPORTER_IMAGE)"; \
-	_imgs="$$_imgs $$("$$_cd" AIC_CLIENT_IMAGE)"; \
 	ssh $$_ssh_flags "$$_vmuser@localhost" \
 	    "for img in $$_imgs \
 	                grafana/loki:3.5.0 grafana/alloy:v1.8.3 python:3.12-slim; do \
@@ -813,7 +868,7 @@ test-rocjitsu-local: prep-dirs
 	  '# Run it in an if so the real status is always reported.' \
 	  '# The image refs go on the command line: the guest make would otherwise' \
 	  '# ask its own docker buildx, and leaves compose on :latest without one.' \
-	  'if make -C /rj-share/repo vllm-reset-test VLM_READY_RETRIES=$(RJ_READY_RETRIES) VLLM_IMAGE_REF=$(RJ_IMAGE_REF) LMCACHE_IMAGE_REF=$(RJ_LMCACHE_IMAGE_REF) HSA_SNOOP_IMAGE=$(RJ_HSA_SNOOP_IMAGE_REF); then' \
+	  'if make -C /rj-share/repo vllm-reset-test VLM_READY_RETRIES=$(RJ_READY_RETRIES) VLLM_IMAGE_REF=$(RJ_IMAGE_REF) LMCACHE_IMAGE_REF=$(RJ_LMCACHE_IMAGE_REF) HSA_SNOOP_IMAGE=$(RJ_HSA_SNOOP_IMAGE_REF) AIC_CLIENT_IMAGE=$(RJ_CLIENT_IMAGE_REF); then' \
 	  '    echo vllm_reset_test_rc=0' \
 	  'else' \
 	  '    echo vllm_reset_test_rc=$$?' \

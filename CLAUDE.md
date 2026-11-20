@@ -124,11 +124,20 @@ status for each.
 ## Clients run on the bridge (only Grafana is published)
 
 SPUR nodes are multi-tenant, so no container binds a fixed host port, and only
-Grafana (for browsers) is published at all: `127.0.0.1` on a Docker-chosen port
-that `make endpoints` prints. Servers live on the `aic` bridge (or join a
+Grafana (for browsers) is published at all, on `127.0.0.1`: under `make` on the
+lowest free port from 3000, which it keeps across a down/up; from compose alone
+on a Docker-chosen port. `make endpoints` prints it. Servers live on the `aic` bridge (or join a
 bridged container's netns, as `vllm` joins `aic-lmcache`), and every client runs
 in a container there: `aic-client` for make targets, a throwaway
-`docker run --network aic` on SPUR. One-off requests from host code go through
+`docker run --network aic` on SPUR. `aic-client` is a built image
+(`docker/client/Dockerfile`, bake target `client`, `make client-build`; compose
+builds it when missing) holding every benchmark client: the `benchmarks/`
+scripts, `agent-kv` and `aiperf` (own venv), no ROCm, no `lm_eval`. One CLI
+drives them, `aic-bench <subcommand>` (`make bench BENCH=<subcommand>
+BENCH_ARGS='...'`, `make bench-list`); it runs the scripts from `/repo` when
+the checkout is mounted, so an edit needs no rebuild, and fills in
+`AIC_BENCH_ENDPOINT` / `AIC_BENCH_MODEL` / `AIC_BENCH_OUT`. See
+`benchmarks/README.md`. One-off requests from host code go through
 `aic_fetch <url> [<json-body>]` in `scripts/aic-endpoints.sh` (set
 `AIC_FETCH_IMAGE` to an image already on the node); never `curl localhost:<port>`.
 Address a stack by container name, not the shared `aic-vllm` alias, which two

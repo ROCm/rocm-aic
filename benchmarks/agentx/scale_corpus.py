@@ -21,7 +21,8 @@ cache footprint and the load on the server. A scaled corpus is NOT the AgentX
 benchmark and its results are not comparable with published AgentX or
 InferenceX numbers.
 
-Runs inside the aic-agentx image (it needs `aiperf` and `datasets`), as
+Runs with the aiperf interpreter of the aic-client image
+(/opt/aic/aiperf-venv/bin/python3: it needs `aiperf` and `datasets`), as
 benchmarks/agentx/scaled_corpus.sh does:
 
     python3 scale_corpus.py --dataset semianalysisai/cc-traces-weka-062126 \\

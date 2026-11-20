@@ -1,0 +1,33 @@
+#!/usr/bin/env bash
+# Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+# SPDX-License-Identifier: MIT
+#
+# Stands in for sudo inside aic-client during nvme_delay_sweep.sh.  agent-kv
+# sets the dm-delay read latency with `sudo dmsetup table|load|resume <dev>`,
+# which an unprivileged container cannot do; this hands the request to the
+# host side of nvme_delay_sweep.sh through the directory AIC_DM_CTL and waits
+# for it to be applied.  Anything else is refused.
+
+set -euo pipefail
+
+ctl="${AIC_DM_CTL:?unset: run through nvme_delay_sweep.sh}"
+[[ "${1:-}" == dmsetup && $# == 3 ]] || { echo "sudo shim: only 'dmsetup table|load|resume <dev>' is allowed" >&2; exit 1; }
+
+case "$2" in
+    table)
+        cat "${ctl}/table"
+        ;;
+    load)
+        cat > "${ctl}/request.tmp"
+        mv "${ctl}/request.tmp" "${ctl}/request"
+        ;;
+    resume)
+        for _ in $(seq 1 300); do
+            [[ -e "${ctl}/request" ]] || exit 0
+            sleep 0.1
+        done
+        echo "sudo shim: the host did not apply the dm-delay request" >&2
+        exit 1
+        ;;
+    *)  echo "sudo shim: dmsetup $2 is not allowed" >&2; exit 1 ;;
+esac

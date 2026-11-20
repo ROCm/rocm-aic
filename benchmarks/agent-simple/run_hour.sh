@@ -15,6 +15,7 @@
 # AIC_STRESS_MAKE_ARGS: the make variables this node needs for `make up-dev`
 #   (required; LMCACHE_L1_SIZE_GB is set per half and must not be in it).
 # AIC_STRESS_L1_SIZES: the two L1 sizes in GiB (default "2 8").
+# AIC_BENCH_ENDPOINT: passed on to run_stress.sh (default http://aic-lmcache:8000).
 set -euo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

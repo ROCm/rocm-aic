@@ -30,6 +30,7 @@ default), the tables show it next to the owner's.
 | Make | `Makefile`, `mk/*.mk` | Variables a make recipe expands itself (host paths, ports it probes, benchmark and test knobs of the local targets) |
 | Slurm | `.slurm/*`, `monitoring/monitoring-lib.sh` | Slurm resources (time, CPUs, memory, constraints) and the procedure of each job |
 | AgentX | `benchmarks/agentx/*.sh` | The `AGENTX_*` knobs of the AgentX benchmark; the scripts also run without make |
+| Client | `benchmarks/*.py` | The `AIC_BENCH_*` settings of `aic-bench`, each also a command-line option |
 | Site | `.env.<cluster>` (not tracked in git) | Values that differ per cluster: partition, constraint, image and cache directories |
 
 Precedence under `make`, highest first: the command line (`make VAR=value`),
@@ -71,8 +72,9 @@ only.
 
 Any variable of `docker/docker-bake.hcl` can be set in the environment of
 `make build`, `docker buildx bake`, or a Slurm build; the Dockerfiles hold no
-defaults of their own, except `docker/kvbench/Dockerfile` (compose also builds
-it), whose defaults a test keeps equal to bake's.
+defaults of their own, except `docker/kvbench/Dockerfile` and
+`docker/client/Dockerfile` (compose also builds them), whose defaults a test
+keeps equal to bake's.
 
 ### Image names and tags
 
@@ -135,7 +137,8 @@ it), whose defaults a test keeps equal to bake's.
 | `RDMA_EXPORTER_VERSION` | `0.7.5` | `docker/docker-bake.hcl` | `rdma_exporter` release packaged into the RDMA exporter image |
 | `KVBENCH_REF` | `177cf4e7c46ece8e03a701f89b60cd3a329f45fd` | `docker/docker-bake.hcl` | KVBench commit |
 | `KVBENCH_LMCACHE_VERSION` | `0.5.6` | `docker/docker-bake.hcl` | LMCache release (from `PyPI`) installed into the KVBench image. Not `LMCACHE_REF`: KVBench pins its own compatible range |
-| `AIPERF_VERSION` | `0.13.0` | `docker/docker-bake.hcl` | `aiperf` version installed into the AgentX client image |
+| `AIPERF_VERSION` | `0.13.0` | `docker/docker-bake.hcl` | `aiperf` release installed into the `aic-client` image, in its own virtualenv; `latest` takes whatever `PyPI` serves on the day of the build |
+| `AGENT_KV_REF` | `19fcc86be6e267839889567ce5d20dd0fed6bbaf` | `docker/docker-bake.hcl` | agent-kv commit installed into the `aic-client` image. A SHA, because agent-kv has no tags |
 <!-- END generated:pins -->
 
 ### Source repositories
@@ -156,6 +159,7 @@ it), whose defaults a test keeps equal to bake's.
 | `CLR_GIT_URL` | `https://github.com/ROCm/rocm-systems.git` | `docker/docker-bake.hcl` | Source repository of the patched `libamdhip64` |
 | `TRITON_GIT_URL` | `https://github.com/ROCm/triton.git` | `docker/docker-bake.hcl` | Source repository of Triton |
 | `KVBENCH_GIT_URL` | `https://github.com/wvaske/llm-kv-passthrough.git` | `docker/docker-bake.hcl` | KVBench source repository |
+| `AGENT_KV_GIT_URL` | `https://github.com/sbates130272/agent-kv` | `docker/docker-bake.hcl` | agent-kv source repository; the build fetches the commit as a tarball |
 <!-- END generated:repositories -->
 
 ### Build controls and layer cache
@@ -346,14 +350,15 @@ it), whose defaults a test keeps equal to bake's.
 ### Clients and published ports
 
 Only Grafana publishes a host port; every other service is reached by
-container name on the `aic` bridge.
+container name on the `aic` bridge, from the `aic-client` container (see
+[Client image and `aic-bench`](#client-image-and-aic-bench)).
 
 <!-- BEGIN generated:network -->
 | Variable | Default | Owner | Description |
 | --- | --- | --- | --- |
 | `AIC_PUBLISH_ADDR` | `127.0.0.1` | `docker/docker-compose.yml` | Host address the published Grafana port binds; `0.0.0.0` exposes it beyond loopback |
-| `AIC_GRAFANA_PORT` | (empty) | `docker/docker-compose.yml` | Pin the Grafana host port, the only published one. Empty lets Docker pick a free port; `make endpoints` prints the URL |
-| `AIC_CLIENT_IMAGE` | `python:3.12` | `docker/docker-compose.yml` | Image of the `aic-client` container make targets run their clients in |
+| `AIC_GRAFANA_PORT` | (empty) | `docker/docker-compose.yml` | Pin the Grafana host port, the only published one. Unset, `make` picks the lowest free port from 3000 and keeps it across a down/up; empty, or compose run without `make`, lets Docker pick a free port. `make endpoints` prints the URL |
+| `AIC_CLIENT_IMAGE` | `aic-client:latest` | `docker/docker-compose.yml` | Image of the `aic-client` container and of the throwaway AgentX containers. `make` sets it to the ref bake tags (`aic-client:<AIC_VERSION>`); compose builds it from `docker/client/Dockerfile` when it is missing |
 | `AIC_FETCH_IMAGE` | `curlimages/curl:8.23.0` | `scripts/aic-endpoints.sh` | Image `aic_fetch` runs `curl` from; scripts set it to an AIC image already on the node |
 | `AIC_FETCH_TIMEOUT` | `60` | `scripts/aic-endpoints.sh` | `aic_fetch` request timeout, seconds |
 | `AIC_NETWORK` | `aic` | `scripts/aic-endpoints.sh` | Docker network `aic_fetch` and the endpoint helpers attach to |
@@ -399,6 +404,37 @@ user-settable. The readers require them.
 | `LMCACHE_DISABLE_BANNER` | `1` | `monitoring/scripts/lmcache_coordinator_entrypoint.py` |
 
 ## Benchmarks
+
+### Client image and `aic-bench`
+
+Every benchmark client runs from one image, `aic-client`
+(`docker/client/Dockerfile`, bake target `client`, `make client-build`), and
+one command in it, `aic-bench <subcommand>`. `make bench BENCH=<subcommand>
+BENCH_ARGS='...'` runs it in the `aic-client` container; `make bench-list`
+lists the subcommands. See
+[`benchmarks/README.md`](../benchmarks/README.md).
+
+<!-- BEGIN generated:client -->
+| Variable | Default | Owner | Description |
+| --- | --- | --- | --- |
+| `BENCH` | `list` | `mk/bench.mk` | `aic-bench` subcommand `make bench` runs |
+| `BENCH_ARGS` | (empty) | `mk/bench.mk` | Arguments `make bench` passes to the tool behind the subcommand, unchanged |
+| `AIC_BENCH_ENDPOINT` | `http://aic-lmcache:8000` | `benchmarks/aic_bench_serve.py` | Server base URL on the `aic` bridge, without `/v1`; `aic-bench --endpoint`. `make bench` passes `BENCH_ENDPOINT`, or the running tiered vLLM |
+| `AIC_BENCH_MODEL` | (unset) | `benchmarks/common/kv_client.py` | Served model name; `aic-bench --model`. Empty takes the first model the endpoint lists |
+| `AIC_BENCH_OUT` | `/logs/bench` | `benchmarks/aic_bench_serve.py` | Results root in the container; `aic-bench --out`. A run writes to `<out>/<subcommand>/<UTC timestamp>/`, and `/logs` is `logs/` in the checkout |
+| `AIC_BENCH_DATASET` | `/tmp/ShareGPT_V3_unfiltered_cleaned_split.json` | `benchmarks/aic_bench_serve.py` | ShareGPT file `aic-bench serve-sim` replays. The `aic-client` container sets it to a path under the Hugging Face cache (`/hf_cache`); it is downloaded when missing |
+| `AIC_HSA_SNOOP_URL` | `http://aic-hsa-snoop:9488` | `benchmarks/common/kv_client.py` | hsa-snoop exporter `aic-bench fixed-load` scrapes |
+<!-- END generated:client -->
+
+`aic-bench` takes the services next to the endpoint from the endpoint's host.
+These name them instead; nothing sets them by default.
+
+| Variable | Default | Read by |
+| --- | --- | --- |
+| `AIC_BENCH_LMCACHE_HTTP_URL` | `http://<endpoint host>:8080` | `aic-bench reset-test`, `aic-bench agent-kv nvme-sweep` |
+| `AIC_BENCH_LMCACHE_METRICS_URL` | `http://<endpoint host>:9091` | `aic-bench agent-simple`, `aic-bench replay-hits` |
+| `AIC_BENCH_NIXL_METRICS_URL` | `http://<endpoint host>:19090` | `aic-bench agent-simple` |
+| `AIC_BENCH_ROOT` | `/repo/benchmarks` when it holds `aic_bench.py`, else `/opt/aic/benchmarks` | `aic-bench`: directory the benchmark scripts run from |
 
 ### Cliff benchmark (`make cliff`)
 
@@ -475,14 +511,13 @@ user-settable. The readers require them.
 
 `make agentx-run`, `agentx-sweep` and `agentx-corpus`; the scripts in
 `benchmarks/agentx/` own the defaults and read the same names when run
-directly. They also read `BENCH_ENDPOINT`, `AIC_NETWORK`, `GPU`, `LOG`,
-`HF_HOME` and `HF_TOKEN`. See
+directly. They also read `AIC_CLIENT_IMAGE` (the image `aiperf` runs from),
+`BENCH_ENDPOINT`, `AIC_NETWORK`, `GPU`, `LOG`, `HF_HOME` and `HF_TOKEN`. See
 [`benchmarks/agentx/README.md`](../benchmarks/agentx/README.md).
 
 <!-- BEGIN generated:agentx -->
 | Variable | Default | Owner | Description |
 | --- | --- | --- | --- |
-| `AGENTX_IMAGE_REF` | `aic-agentx:latest` | `benchmarks/agentx/run_agentx.sh` | Full `name:tag` of the `aiperf` client image. `make` exports the ref bake tags (`aic-agentx:<AIPERF_VERSION>`); the default is the `:latest` alias a local bake adds |
 | `AGENTX_MODEL` | `${VLLM_MODEL:-}` | `benchmarks/agentx/run_agentx.sh` | Served model name in the requests. Empty takes the model the endpoint reports |
 | `AGENTX_TOKENIZER` | (empty) | `benchmarks/agentx/run_agentx.sh` | Hugging Face tokenizer `aiperf` counts tokens with. Empty means the model |
 | `AGENTX_CONCURRENCY` | `2` | `benchmarks/agentx/run_agentx.sh` | Trajectories replayed at once by `make agentx-run`. Each is one recorded agent session, subagent fan-out included |
@@ -500,6 +535,7 @@ directly. They also read `BENCH_ENDPOINT`, `AIC_NETWORK`, `GPU`, `LOG`,
 | `AGENTX_EXTRA_ARGS` | (empty) | `benchmarks/agentx/run_agentx.sh` | Space-separated arguments appended to `aiperf profile` |
 | `AGENTX_ARGS` | (empty) | `mk/bench.mk` | Options `make agentx-run` and `make agentx-sweep` pass to `benchmarks/agentx/run_agentx.sh`, e.g. `--dry-run` |
 | `AGENT_SIMPLE_ARGS` | `s1 220 16 480` | `mk/bench.mk` | Arguments `make agent-simple-run` passes to `benchmarks/agent-simple/stress.py`: run id, documents, concurrency, seconds, optional maximum words per document |
+| `AGENT_KV_SWEEP_ARGS` | (empty) | `mk/bench.mk` | Extra `agent-kv nvme-sweep` options for `make agent-kv-nvme-sweep`, for example `--delays 0,10,50 --num-books 4` |
 <!-- END generated:agentx -->
 
 ## Tests
@@ -610,6 +646,7 @@ tolerance.
 | `RJ_IMAGE_REF` | `$(word 2,$(_rj_bake))` | `mk/bench.mk` | vLLM image for the emulated arch, as bake tags it |
 | `RJ_LMCACHE_IMAGE_REF` | `$(word 3,$(_rj_bake))` | `mk/bench.mk` | LMCache image for the emulated arch |
 | `RJ_HSA_SNOOP_IMAGE_REF` | `$(word 6,$(_rj_bake))` | `mk/bench.mk` | hsa-snoop image for the emulated arch |
+| `RJ_CLIENT_IMAGE_REF` | `$(word 7,$(_rj_bake))` | `mk/bench.mk` | `aic-client` image loaded into the guest, as bake tags it; built on the host when it is missing |
 | `RJ_NCCL_HEARTBEAT_S` | `3600` | `mk/bench.mk` | `NCCL` process-group heartbeat, seconds; long, because an emulated collective is slow |
 | `RJ_PROBE` | `0` | `mk/bench.mk` | `1` runs the kernel capability probe before vLLM |
 | `RJ_PROBE_ONLY` | `0` | `mk/bench.mk` | `1` stops after the probe |
@@ -654,7 +691,7 @@ See [EMULATE.md](EMULATE.md) for the workflow these belong to.
 | `EMU_IPC_MODE` | `shareable` | `docker/docker-compose.yml` | IPC mode of the emulator. `emulate-mp` needs `container:aic-lmcache-emulator` |
 | `DEVICE_TYPE` | `cpu` | `docker/docker-compose.yml` | LMCache device type in the `lmcache-emulator` service |
 | `VLLM_CPU_MODEL` | `facebook/opt-125m` | `docker/docker-compose.yml` | Model served by the `cpu-smoke-emulator` service |
-| `AIC_CONTAINER_USER` | `0:0`; `$(shell id -u):$(shell id -g)` (`Makefile`) | `docker/docker-compose.yml` | `uid:gid` containers run as (default: invoking user). Used by all GPU and emulator services |
+| `AIC_CONTAINER_USER` | `0:0`; `$(shell id -u):$(shell id -g)` (`Makefile`) | `docker/docker-compose.yml` | `uid:gid` containers run as (default: invoking user). Used by all GPU and emulator services and by the benchmark client (`aic-client`), which is root under plain `docker compose` |
 | `RENDER_GID` | `992`; `$(shell stat -c %g /dev/kfd 2>/dev/null)` (`Makefile`) | `docker/docker-compose.yml` | Group of `/dev/kfd`, added as a supplementary group to lmcache and vllm containers so a non-root container can open the GPU. make and the Slurm scripts read it from the node; set it yourself when running `docker compose` directly |
 | `AIC_CONTAINER_HOME` | `/tmp` | `docker/docker-compose.yml` | `HOME` inside that container |
 | `AIC_CONTAINER_USERNAME` | `root` | `docker/docker-compose.yml` | User name reported inside that container |

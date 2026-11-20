@@ -245,6 +245,8 @@ Slurm
 snoc
 SoC
 SPUR's
+subcommand
+subcommands
 subdirectory
 sublicense
 subpackage
@@ -280,6 +282,7 @@ UUID
 VCN
 venv
 VFIO
+virtualenv
 vllm
 vLLM
 vLLM's

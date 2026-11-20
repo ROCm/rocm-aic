@@ -4,8 +4,8 @@
 # SPDX-License-Identifier: MIT
 #
 # Run the AgentX benchmark (`aiperf profile --scenario inferencex-agentx-mvp`)
-# against the running AIC stack, from the aic-agentx container on the stack's
-# docker network.
+# against the running AIC stack, from a throwaway aic-client container on the
+# stack's docker network.
 #
 # Usage:
 #   ./benchmarks/agentx/run_agentx.sh [OPTIONS] [-- EXTRA_AIPERF_ARGS...]
@@ -37,7 +37,7 @@
 #                          `none` records only the endpoint's own /metrics
 #                          (default: the stack's LMCache metrics port)
 #   --output-dir DIR       Run directory (default: <LOG>/agentx/<timestamp>_c<N>)
-#   --image REF            aic-agentx image ref (default: aic-agentx:latest)
+#   --image REF            aic-client image ref (default: aic-client:latest)
 #   --dry-run              Print the command and exit; needs neither the image
 #                          nor a running stack
 #
@@ -48,7 +48,7 @@
 #   BENCH_ENDPOINT, AIC_NETWORK, AGENTX_MODEL, AGENTX_TOKENIZER,
 #   AGENTX_CONCURRENCY, AGENTX_DURATION, AGENTX_MAX_CONTEXT, AGENTX_DATASET,
 #   AGENTX_CORPUS, AGENTX_CORPUS_SCALE, AGENTX_SEED, AGENTX_SLICE_DURATION,
-#   AGENTX_SERVER_METRICS (space-separated), AGENTX_IMAGE_REF
+#   AGENTX_SERVER_METRICS (space-separated), AIC_CLIENT_IMAGE
 #                         the options above
 #   AGENTX_EXTRA_ARGS     Extra aiperf arguments, space-separated (for example
 #                         `--otel-url http://collector:4318`; the AIC
@@ -84,7 +84,7 @@ CORPUS_SCALE="${AGENTX_CORPUS_SCALE:-}"
 SEED="${AGENTX_SEED:-42}"
 SLICE_DURATION="${AGENTX_SLICE_DURATION:-30}"
 SERVER_METRICS="${AGENTX_SERVER_METRICS:-}"
-IMAGE="${AGENTX_IMAGE_REF:-aic-agentx:latest}"
+IMAGE="${AIC_CLIENT_IMAGE:-aic-client:latest}"
 OUTPUT_DIR=""
 DRY_RUN="false"
 HF_CACHE="${HF_HOME:-${HOME}/.cache/huggingface}"
@@ -199,7 +199,7 @@ if [[ "${DRY_RUN}" == "true" ]]; then
   [[ -n "${MAX_CONTEXT}" ]] || MAX_CONTEXT="<served-max_model_len>"
 else
   if ! docker image inspect "${IMAGE}" &>/dev/null; then
-    echo "ERROR: image ${IMAGE} not found. Build it with: make agentx-build" >&2
+    echo "ERROR: image ${IMAGE} not found. Build it with: make client-build" >&2
     exit 1
   fi
   echo "Checking ${ENDPOINT}/v1/models from ${NETWORK_ARGS[1]:-the default bridge} ..." >&2
@@ -240,9 +240,9 @@ fi
 UNSAFE_REASONS=()
 if [[ -n "${CORPUS_SCALE}" ]]; then
   if [[ "${DRY_RUN}" == "true" ]]; then
-    CORPUS="$(AGENTX_IMAGE_REF="${IMAGE}" bash "${SCRIPT_DIR}/scaled_corpus.sh" --scale "${CORPUS_SCALE}" --print-dir)"
+    CORPUS="$(AIC_CLIENT_IMAGE="${IMAGE}" bash "${SCRIPT_DIR}/scaled_corpus.sh" --scale "${CORPUS_SCALE}" --print-dir)"
   else
-    CORPUS="$(AGENTX_IMAGE_REF="${IMAGE}" bash "${SCRIPT_DIR}/scaled_corpus.sh" --scale "${CORPUS_SCALE}")"
+    CORPUS="$(AIC_CLIENT_IMAGE="${IMAGE}" bash "${SCRIPT_DIR}/scaled_corpus.sh" --scale "${CORPUS_SCALE}")"
   fi
   UNSAFE_REASONS+=("the corpus is scaled by 1/${CORPUS_SCALE}: an AgentX-shaped workload, NOT the AgentX benchmark; do not compare it with published AgentX or InferenceX numbers")
 elif [[ -n "${CORPUS}" ]]; then
@@ -325,6 +325,8 @@ DOCKER_CMD=(
     -v "${HF_CACHE}:/hf_cache"
     "${CORPUS_MOUNT[@]}"
     "${CA_MOUNTS[@]}"
+    -w /results
+    --entrypoint aiperf
     "${IMAGE}" "${AIPERF_ARGS[@]}"
 )
 

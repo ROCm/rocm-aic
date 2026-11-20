@@ -34,7 +34,7 @@ IMAGE_REFS = {
     "KVBENCH_IMAGE_REF": "kvbench",
     "NVME_EXPORTER_IMAGE_REF": "nvme-exporter",
     "RDMA_EXPORTER_IMAGE_REF": "rdma-exporter",
-    "AGENTX_IMAGE_REF": "agentx",
+    "CLIENT_IMAGE_REF": "client",
 }
 
 BAKE_VARIABLES = set(re.findall(r'^variable "([^"]+)"', BAKE_FILE.read_text(encoding="utf-8"), re.M))
@@ -294,9 +294,12 @@ class AicVersionLiteralTest(unittest.TestCase):
 
 ARG_LINE = re.compile(r"^[ \t]*ARG[ \t]+([A-Za-z_][A-Za-z0-9_]*)(?:=(.*?))?[ \t]*$", re.M)
 
-# Compose also builds this image (`up --build`) with args of its own, so its
-# ARG defaults stay; they must equal what bake passes.
-KEEPS_DEFAULTS = "docker/kvbench/Dockerfile"
+# Compose also builds these images with args of its own, so their ARG defaults
+# stay; they must equal what bake passes.  Keyed by bake target.
+KEEPS_DEFAULTS = {
+    "kvbench": "docker/kvbench/Dockerfile",
+    "client": "docker/client/Dockerfile",
+}
 
 
 def _dockerfiles() -> list[Path]:
@@ -325,7 +328,7 @@ class DockerfileArgOwnershipTest(unittest.TestCase):
         problems = [
             f"{dockerfile.relative_to(REPO_ROOT)}: ARG {name}={default}"
             for dockerfile in dockerfiles
-            if dockerfile.relative_to(REPO_ROOT).as_posix() != KEEPS_DEFAULTS
+            if dockerfile.relative_to(REPO_ROOT).as_posix() not in KEEPS_DEFAULTS.values()
             for name, default in _args(dockerfile)
             if default is not None and name in supplied
         ]
@@ -336,7 +339,7 @@ class DockerfileArgOwnershipTest(unittest.TestCase):
     @unittest.skipUnless(_have_buildx(), "docker buildx is not available")
     def test_dockerfiles_declare_every_arg_bake_passes(self) -> None:
         targets = _bake_targets(
-            "all", "wheels", "emulate-wheels", "emulate", "agentx", "lmcache-wheels"
+            "all", "wheels", "emulate-wheels", "emulate", "client", "lmcache-wheels"
         )
         problems = []
         for name, target in sorted(targets.items()):
@@ -348,7 +351,7 @@ class DockerfileArgOwnershipTest(unittest.TestCase):
     @unittest.skipUnless(_have_buildx(), "docker buildx is not available")
     def test_bake_passes_every_arg_a_dockerfile_guards(self) -> None:
         targets = _bake_targets(
-            "all", "wheels", "emulate-wheels", "emulate", "agentx", "lmcache-wheels"
+            "all", "wheels", "emulate-wheels", "emulate", "client", "lmcache-wheels"
         )
         problems = []
         for name, target in sorted(targets.items()):
@@ -360,13 +363,22 @@ class DockerfileArgOwnershipTest(unittest.TestCase):
 
     @unittest.skipUnless(_have_buildx(), "docker buildx is not available")
     def test_kept_defaults_equal_bake(self) -> None:
-        args = _bake_targets("kvbench")["kvbench"]["args"]
-        defaults = dict(_args(REPO_ROOT / KEEPS_DEFAULTS))
-        self.assertEqual(defaults, args)
-        # compose `up --build` passes its own, which override the ARG defaults.
         compose = (REPO_ROOT / "docker" / "docker-compose.yml").read_text(encoding="utf-8")
-        passed = dict(re.findall(r"^ {8}(KVBENCH_\w+): \$\{\1:-([^}]*)\}\s*$", compose, re.M))
-        self.assertEqual(passed, args)
+        targets = _bake_targets(*KEEPS_DEFAULTS)
+        for name, dockerfile in KEEPS_DEFAULTS.items():
+            with self.subTest(target=name):
+                args = targets[name]["args"]
+                self.assertEqual(dict(_args(REPO_ROOT / dockerfile)), args)
+                # A compose build passes its own, which override the ARG defaults.
+                build = re.search(
+                    rf"^ {{4}}build:\n {{6}}context: \.\.\n {{6}}dockerfile: {re.escape(dockerfile)}\n"
+                    r" {6}args:\n((?: {8}\S.*\n)+)",
+                    compose,
+                    re.M,
+                )
+                self.assertIsNotNone(build, f"compose has no build of {dockerfile}")
+                passed = dict(re.findall(r"^ {8}(\w+): \$\{\1:-([^}]*)\}$", build.group(1), re.M))
+                self.assertEqual(passed, args)
 
 
 @unittest.skipUnless(_have_buildx(), "docker buildx is not available")
@@ -377,7 +389,7 @@ class ComposeImageDefaultsTest(unittest.TestCase):
     LEGACY = ("IMAGE_REF", "IMAGE_NAME")
 
     def test_defaults_name_images_bake_tags(self) -> None:
-        tags = {tag for target in _bake_targets("all").values() for tag in target.get("tags", [])}
+        tags = {tag for target in _bake_targets("all", "client").values() for tag in target.get("tags", [])}
         text = self.COMPOSE_FILE.read_text(encoding="utf-8")
         defaults = re.findall(r"^\s*image:\s*\$\{(\w+):-(aic-[^}]+)\}\s*$", text, re.M)
         self.assertGreaterEqual(len(defaults), 9)
