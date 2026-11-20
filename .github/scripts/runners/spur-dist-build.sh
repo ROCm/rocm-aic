@@ -81,10 +81,8 @@ SHORT="${SHA:0:7}"
 WORKDIR="$HOME/Projects/rocm-aic.${SHORT}.${AIC_CI_RUN_KEY}"
 CI_STORAGE_ROOT="${AIC_CI_STORAGE_ROOT:-$HOME/Projects/rocm-aic-ci}"
 TARBALL_DIR="${CI_STORAGE_ROOT}/images/aic-ci-${SHORT}"
-# Build cache lives on shared NFS under the running user, never in $HOME (small
-# and quota'd on SPUR) and never in a path shared across users (not writable by
-# all of them).  Matches the AIC_SPUR_CLUSTER=1 default in the Makefile.
-CACHE_DIR="${AIC_SHARED_NFS%/}/${USER:-$(id -un)}/buildcache"
+# The build cache is the Makefile's AIC_SPUR_CLUSTER=1 default, so the build
+# and `make cache-gc` (spur-buildcache-gc.sh) resolve the same directory.
 CONTROL_PREFIX="${CI_STORAGE_ROOT}/control/${SHORT}.${AIC_CI_RUN_KEY}.${AIC_CI_STAGE}"
 PID_FILE="${CONTROL_PREFIX}.pid"
 JOB_FILE="${CONTROL_PREFIX}.job"
@@ -160,7 +158,6 @@ echo "=== Running ${AIC_DIST_BUILD_TARGET} (AIC_SPUR_CLUSTER=1, AIC_IMAGE_NAME=$
 AIC_SPUR_CLUSTER=1 \
     AIC_IMAGE_NAME="${AIC_IMAGE_NAME}" \
     AIC_IMAGE_DIR="${TARBALL_DIR}" \
-    AIC_CACHE_DIR="${CACHE_DIR}" \
     _err_delegate make "${AIC_DIST_BUILD_TARGET}"
 
 echo "=== ${AIC_DIST_BUILD_TARGET} complete — tarball in ${TARBALL_DIR} ==="

@@ -162,13 +162,13 @@ if [[ -n "${BUILT_IMAGE_DIR}" ]]; then
     echo "=== Building the gfx950 AIC images at ${SHORT} into ${BUILT_IMAGE_DIR} ==="
     mkdir -p "${BUILT_IMAGE_DIR}"
     # The test runs on gfx950 only, and dist-build compiles every vLLM arch:
-    # the fast build is the gfx950 one.  The build cache is spur-dist-build.sh's,
-    # so CI's earlier layers are reused.  The build's default allocation is
-    # four hours; capped at two, it and the one-hour test fit the job timeout.
+    # the fast build is the gfx950 one.  The build cache is the Makefile's SPUR
+    # default, as for spur-dist-build.sh, so CI's earlier layers are reused.  The
+    # build's default allocation is four hours; capped at two, it and the
+    # one-hour test fit the job timeout.
     (cd "${WORKDIR}" && AIC_SPUR_CLUSTER=1 \
         AIC_BUILD_TIME=02:00:00 \
         AIC_IMAGE_DIR="${BUILT_IMAGE_DIR}" \
-        AIC_CACHE_DIR="${AIC_SHARED_NFS%/}/${USER:-$(id -un)}/buildcache" \
         make dist-build-fast)
 else
     echo "=== Using the prebuilt images in ${AIC_IMAGE_DIR} ==="

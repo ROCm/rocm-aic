@@ -113,10 +113,8 @@ ROCM_ARCH_LIST="${ARCH_CSV//,/;}"
 WORKDIR="$HOME/Projects/rocm-aic.${SHORT}.${AIC_CI_RUN_KEY}.${GROUP}"
 CI_STORAGE_ROOT="${AIC_CI_STORAGE_ROOT:-$HOME/Projects/rocm-aic-ci}"
 WHEEL_DIR="${CI_STORAGE_ROOT}/wheels/${SHORT}.${AIC_CI_RUN_KEY}.${GROUP}"
-# Build cache lives on shared NFS under the running user, never in $HOME (small
-# and quota'd on SPUR).  Shared with the nightly dist-build on purpose: the
-# wheels come out of the same layers, so a warm image cache makes this cheap.
-CACHE_DIR="${AIC_SHARED_NFS%/}/${USER:-$(id -un)}/buildcache"
+# The build cache is the Makefile's AIC_SPUR_CLUSTER=1 default, shared with the
+# nightly dist-build on purpose: the wheels come out of the same layers.
 CONTROL_PREFIX="${CI_STORAGE_ROOT}/control/${SHORT}.${AIC_CI_RUN_KEY}.${AIC_CI_STAGE}"
 PID_FILE="${CONTROL_PREFIX}.pid"
 JOB_FILE="${CONTROL_PREFIX}.job"
@@ -166,7 +164,6 @@ echo "=== Running dist-wheels (arch=${ROCM_ARCH_LIST}, group=${GROUP}) ==="
 AIC_SPUR_CLUSTER=1 \
     AIC_ROCM_ARCH="${ROCM_ARCH_LIST}" \
     AIC_WHEEL_DIR="${WHEEL_DIR}" \
-    AIC_CACHE_DIR="${CACHE_DIR}" \
     _err_delegate make dist-wheels
 
 echo "=== dist-wheels complete — wheels in ${WHEEL_DIR} ==="
