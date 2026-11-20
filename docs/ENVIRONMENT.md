@@ -654,7 +654,7 @@ See [EMULATE.md](EMULATE.md) for the workflow these belong to.
 | `DEVICE_TYPE` | `cpu` | `docker/docker-compose.yml` | LMCache device type in the `lmcache-emulator` service |
 | `VLLM_CPU_MODEL` | `facebook/opt-125m` | `docker/docker-compose.yml` | Model served by the `cpu-smoke-emulator` service |
 | `AIC_CONTAINER_USER` | `0:0`; `$(shell id -u):$(shell id -g)` (`Makefile`) | `docker/docker-compose.yml` | `uid:gid` containers run as (default: invoking user). Used by all GPU and emulator services |
-| `RENDER_GID` | `993` | `docker/docker-compose.yml` | Host render group id added as a supplementary group to lmcache and vllm containers (default: 993) |
+| `RENDER_GID` | `992`; `$(shell stat -c %g /dev/kfd 2>/dev/null)` (`Makefile`) | `docker/docker-compose.yml` | Group of `/dev/kfd`, added as a supplementary group to lmcache and vllm containers so a non-root container can open the GPU. make and the Slurm scripts read it from the node; set it yourself when running `docker compose` directly |
 | `AIC_CONTAINER_HOME` | `/tmp` | `docker/docker-compose.yml` | `HOME` inside that container |
 | `AIC_CONTAINER_USERNAME` | `root` | `docker/docker-compose.yml` | User name reported inside that container |
 | `AIC_EMULATE_MODEL` | `Qwen/Qwen3-8B` | `mk/bench.mk` | Model the emulation tests serve |

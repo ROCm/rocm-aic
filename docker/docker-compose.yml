@@ -307,7 +307,7 @@ services:
     image: ${LMCACHE_IMAGE_REF:-aic-lmcache:latest}
     container_name: aic-lmcache
     user: "${AIC_CONTAINER_USER:-0:0}"
-    group_add: ["${RENDER_GID:-993}"]
+    group_add: ["${RENDER_GID:-992}"]
     # Cross-container HIP IPC (LMCacheMPConnector registering vLLM's KV tensors)
     # uses LMCache's stock CudaIPCWrapper (hipIpcGetMemHandle) in ROCr's default,
     # non-legacy mode: the importer fetches the dmabuf fd from the exporting
@@ -446,7 +446,7 @@ services:
     image: ${VLLM_IMAGE_REF:-aic-vllm:latest}
     container_name: aic-vllm-gpu${GPU:-0}
     user: "${AIC_CONTAINER_USER:-0:0}"
-    group_add: ["${RENDER_GID:-993}"]
+    group_add: ["${RENDER_GID:-992}"]
     # Joins lmcache's IPC, PID and network namespaces; cross-container HIP IPC KV
     # registration needs all three (see the lmcache service).  Override via
     # VLLM_IPC_MODE / VLLM_PID_MODE / VLLM_NETWORK_MODE.

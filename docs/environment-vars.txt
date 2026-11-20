@@ -370,7 +370,7 @@ EMU_IPC_MODE: IPC mode of the emulator. `emulate-mp` needs `container:aic-lmcach
 DEVICE_TYPE: LMCache device type in the `lmcache-emulator` service
 VLLM_CPU_MODEL: Model served by the `cpu-smoke-emulator` service
 AIC_CONTAINER_USER: `uid:gid` containers run as (default: invoking user). Used by all GPU and emulator services
-RENDER_GID: Host render group id added as a supplementary group to lmcache and vllm containers (default: 993)
+RENDER_GID: Group of `/dev/kfd`, added as a supplementary group to lmcache and vllm containers so a non-root container can open the GPU. make and the Slurm scripts read it from the node; set it yourself when running `docker compose` directly
 AIC_CONTAINER_HOME: `HOME` inside that container
 AIC_CONTAINER_USERNAME: User name reported inside that container
 AIC_EMULATE_MODEL: Model the emulation tests serve

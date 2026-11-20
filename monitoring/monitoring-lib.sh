@@ -141,8 +141,8 @@ aic_docker_preflight() {
 # Docker drops supplementary groups, so a cache writable only through its group
 # (SPUR's /shared_nfs/huggingface is root:allusers 2775) is read-only to
 # $(id -u):$(id -g): vLLM then dies creating /hf/aiter.  Docker never checks
-# membership, hence the id -G guard.  /dev/kfd's group is per node (992 on SPUR
-# vs compose's 993 default); without it AITER finds no GPU in rocminfo.
+# membership, hence the id -G guard.  /dev/kfd's group varies by host; with a
+# wrong one AITER finds no GPU in rocminfo.
 aic_container_identity() {
     local cache="$1" gid kfd_gid
     [[ -d "${cache}" ]] \
