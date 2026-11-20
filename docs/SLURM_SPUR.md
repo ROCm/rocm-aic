@@ -31,8 +31,8 @@ code). Tune with `AIC_SMOKE_EXPORTERS=0` (skip) and `AIC_SMOKE_SCRAPE_S=<secs>`
 
 ## SPUR cluster
 
-For SPUR-specific setup (controller address, partition name, storage paths)
-see [CLAUDE.md](../CLAUDE.md).
+The `AIC_SPUR_*` variables (partition, shared storage paths) are documented in
+[ENVIRONMENT.md](ENVIRONMENT.md).
 
 Set `AIC_SPUR_CLUSTER=1` to activate the SPUR-aware submission path:
 

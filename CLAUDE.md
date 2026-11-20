@@ -1,3 +1,5 @@
+@AGENTS.md
+
 # CLAUDE.md — AMD Infinity Context (AIC)
 
 ## SPUR Cluster Access
