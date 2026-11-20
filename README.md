@@ -32,17 +32,16 @@
 > production workloads is *not* recommended.
 
 ROCm(tm) AMD Infinity Context (AIC) is a disaggregated KV-cache inference stack
-for large language models on AMD Instinct GPUs. It combines an LLM serving
-framework with a KV Cache block manager to offload KV tensors across a tiered
-memory hierarchy. GPU VRAM, CPU DRAM, local NVMe and NFS-over-RDMA.
+for large language models on AMD GPUs. It combines an LLM serving framework
+(vLLM) with a KV-cache block manager (LMCache) to offload KV tensors across a
+tiered memory hierarchy: GPU VRAM, CPU DRAM, local NVMe and NFS-over-RDMA.
 
-It focuses on enabling a low-latency, shared level of KV Cache that can be
-accessed by O(1000) GPUs.
+It focuses on enabling a low-latency, shared level of KV cache that can be
+accessed by O(1000) GPUs, so long contexts can be served at scale without
+recomputation.
 
-ROCm AIC enables long-context serving at scale without recomputation. This
-repository provides a Docker image build and test harness, benchmarking
-harness, and Slurm/Spur automation used to validate and demonstrate the
-platform.
+This repository builds these components into one stack and tests them together
+under workloads that reflect real-world use.
 
 ## Stack Overview
 
@@ -70,27 +69,30 @@ fd-exported KV memory, which vLLM v0.34.0 refuses on ROCm at startup.
 ## Pip Nightly Wheels
 
 See [docs/PIP_WHEELS.md](docs/PIP_WHEELS.md) for installation instructions and
-compatibility notes. Wheels are rebuilt nightly from `main` and published to the
+compatibility notes. Wheels for CDNA GPUs are rebuilt nightly whenever `main` has
+changed and published to the
 [nightly release](https://github.com/ROCm/rocm-aic/releases/tag/nightly).
 
 ## Prerequisites
 
-- ROCm-capable host. Pass `ROCM_ARCH` as a `;`-separated list (e.g. `gfx90a;gfx942;gfx950`)
-  to build a multi-arch image, or a single arch (e.g. `ROCM_ARCH=gfx942`) for a faster build.
-  The vLLM source build compiles GPU kernels for exactly the archs specified.
-- Docker with BuildKit and the `docker compose` (v2) plugin (Docker 23+). On a
-  node that lacks it, `make ensure-compose` installs the plugin user-locally
-  (`~/.docker/cli-plugins`); the Slurm cliff / smoke / tiny-test jobs self-install
-  it automatically.
-- Host mounts: local NVMe (`NVME_DATA`) and NFS-over-RDMA (`NFS_DATA`) pre-mounted
-- HuggingFace token with access to the target model
-- Python 3.10+ for host-side benchmarks
+- A ROCm host. Set `ROCM_ARCH` to your GPU architecture (for example
+  `gfx942`), or a `;`-separated list for a multi-arch image.
+- Docker with BuildKit and the `docker compose` v2 plugin (2.24 or later);
+  `make ensure-compose` installs the plugin if it is missing.
+- A Hugging Face token with access to the model you want to serve.
+- Writable directories for the NVMe and NFS cache tiers (`NVME_DATA`,
+  `NFS_DATA`).
+- Python 3.10+ for the plotting tools.
 
 ## Quick Start
 
-See [docs/QUICK_START.md](docs/QUICK_START.md) for the full step-by-step guide
-(build, start, benchmark, plot). For Slurm / SPUR cluster usage see
-[docs/SLURM_SPUR.md](docs/SLURM_SPUR.md).
+```bash
+make build ROCM_ARCH=gfx942
+make up HF_TOKEN=hf_... NVME_DATA=/mnt/nvme VLLM_MODEL=Qwen/Qwen2.5-7B-Instruct
+```
+
+[docs/QUICK_START.md](docs/QUICK_START.md) covers the full flow: build, serve,
+benchmark and plot. For Slurm clusters see [docs/SLURM_SPUR.md](docs/SLURM_SPUR.md).
 
 ## Metrics & Observability
 
@@ -104,6 +106,12 @@ NFS caveats.
 each default, the file that owns it, and what it does. The tables there are
 generated from code (`make env-docs`); `make list-vars` prints the values a
 `make` run would use on this host.
+
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) and [AGENTS.md](AGENTS.md) for test
+commands and conventions, and [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for
+how the containers fit together.
 
 ## License
 
