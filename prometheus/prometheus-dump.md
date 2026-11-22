@@ -1,6 +1,6 @@
 # AIC Prometheus Metrics Reference
 
-**Generated:** 2026-11-21 09:19 UTC · **Total metrics:** 545 · **SHA:** `d297737`
+**Generated:** 2026-11-22 09:18 UTC · **Total metrics:** 545 · **SHA:** `d297737`
 
 ## Component Versions
 
@@ -24,12 +24,11 @@
 | `aic-vllm-gpu0` | `aic-vllm:0.1.0-rocm10.2.0-pytorch2.15-vllm0.34.0-aiter0.1.29.post1-fa0e60e394-lmcache0.5.8rc1-nixl1.5.2` | Up About a minute (healthy) |
 | `aic-lmcache` | `aic-lmcache:0.1.0-rocm10.2.0-pytorch2.15-vllm0.34.0-aiter0.1.29.post1-fa0e60e394-lmcache0.5.8rc1-nixl1.5.2` | Up About a minute (healthy) |
 | `aic-alloy` | `grafana/alloy:v1.8.3` | Up About a minute |
-| `aic-client` | `python:3.12` | Up About a minute |
 | `aic-lmcache-coordinator` | `aic-lmcache:0.1.0-rocm10.2.0-pytorch2.15-vllm0.34.0-aiter0.1.29.post1-fa0e60e394-lmcache0.5.8rc1-nixl1.5.2` | Up About a minute (healthy) |
 | `aic-prometheus` | `prom/prometheus:v3.14.0` | Up About a minute |
-| `aic-grafana` | `grafana/grafana:13.2.2` | Up About a minute |
 | `aic-loki` | `grafana/loki:3.5.0` | Up About a minute |
-| `crusoe-amd-exporter` | `rocm/device-metrics-exporter:v1.5.0` | Up 2 weeks (unhealthy) |
+| `aic-grafana` | `grafana/grafana:13.2.2` | Up About a minute |
+| `aic-client` | `python:3.12` | Up About a minute |
 
 ## Metrics Sources
 
