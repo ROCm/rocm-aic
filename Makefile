@@ -257,7 +257,10 @@ COMPOSE_CACHE := $(COMPOSE) --profile cache
 # that resets the GPU prefix cache needs that, since a reset drops deferred
 # stores before they reach LMCache.
 LMCACHE_LAZY_OFFLOAD ?= true
-_MP_CONNECTOR_JSON := {"kv_connector":"LMCacheMPConnector","kv_role":"kv_both","kv_connector_extra_config":{"lmcache.mp.host":"tcp://localhost","lmcache.mp.port":$(LMCACHE_PORT),"lmcache.mp.use_vmm_api":false,"lmcache.mp.lazy_offload":$(LMCACHE_LAZY_OFFLOAD),"lmcache.mp.lazy_offload_policy":"EVICTION_AWARE","lmcache.mp.lazy_offload_max_deferral_seconds":30.0,"lmcache.mp.save_decode_cache":true}}
+# LMCACHE_USE_VMM_API=true requires patches/vllm/02-vllm-rocm-extensible-kv-fd-exporter.patch
+# in the build; without it vLLM v0.34.0 refuses VMM IPC on ROCm at startup.
+LMCACHE_USE_VMM_API ?= false
+_MP_CONNECTOR_JSON := {"kv_connector":"LMCacheMPConnector","kv_role":"kv_both","kv_connector_extra_config":{"lmcache.mp.host":"tcp://localhost","lmcache.mp.port":$(LMCACHE_PORT),"lmcache.mp.use_vmm_api":$(LMCACHE_USE_VMM_API),"lmcache.mp.lazy_offload":$(LMCACHE_LAZY_OFFLOAD),"lmcache.mp.lazy_offload_policy":"EVICTION_AWARE","lmcache.mp.lazy_offload_max_deferral_seconds":30.0,"lmcache.mp.save_decode_cache":true}}
 KV_TRANSFER_ARG    ?= --kv-transfer-config '$(_MP_CONNECTOR_JSON)'
 export KV_TRANSFER_ARG
 

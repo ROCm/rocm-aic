@@ -27,10 +27,10 @@
 # free_count() rather than reaching into its private list.
 #
 # Upstream LMCache/LMCache#6284 proposes the same O(k) pool (plus a failed-write
-# quarantine); it is still open and not in v0.5.8rc1.  Drop this patch once the
+# quarantine); it is still open and not in v0.5.8.  Drop this patch once the
 # pinned ref contains it.
 #
-# Rebased onto LMCache v0.5.8rc1.  Applies after patches 07-16; its test hunk
+# Rebased onto LMCache v0.5.8.  Applies after patches 07-16; its test hunk
 # sits on top of 07's.
 diff --git a/lmcache/v1/distributed/l2_adapters/nixl_store_l2_adapter.py b/lmcache/v1/distributed/l2_adapters/nixl_store_l2_adapter.py
 index 7ade0371..0488da25 100644
@@ -124,7 +124,7 @@ diff --git a/tests/v1/distributed/test_nixl_store_l2_adapter.py b/tests/v1/distr
 index 04a29468..502a908d 100644
 --- a/tests/v1/distributed/test_nixl_store_l2_adapter.py
 +++ b/tests/v1/distributed/test_nixl_store_l2_adapter.py
-@@ -41,11 +41,43 @@ from lmcache.v1.distributed.internal_api import (  # noqa: E402
+@@ -41,12 +41,44 @@ from lmcache.v1.distributed.internal_api import (  # noqa: E402
  )
  from lmcache.v1.distributed.l2_adapters import create_l2_adapter  # noqa: E402
  from lmcache.v1.distributed.l2_adapters.nixl_store_l2_adapter import (  # noqa: E402
@@ -168,3 +168,4 @@ index 04a29468..502a908d 100644
  
  def test_nixl_store_adapter_requires_l1_memory_desc():
      config = NixlStoreL2AdapterConfig(
+         backend="AIS_MT",

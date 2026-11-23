@@ -316,8 +316,7 @@ services:
     # per network namespace, so vllm and lmcache MUST share one (vllm joins this
     # one); on separate ones hipIpcOpenMemHandle retries for 10 s and fails with
     # hipErrorInvalidDevicePointer.  Sharing the PID namespace too keeps the
-    # <pid> in that name unique.  HSA_ENABLE_IPC_MODE_LEGACY must be the same in
-    # both (AIC_HSA_IPC_LEGACY=1 for the KFD-handle mode, which needs DKMS amdgpu).
+    # <pid> in that name unique.
     # GPU *event* IPC is replaced by a producer-side sync in both images
     # (docker/lmcache/rocm_event_ipc_patch.py).
     # lmcache owns the shareable IPC+PID namespaces; vllm joins them via
@@ -379,8 +378,6 @@ services:
       # lmcache lands on a different device.  Mirror vllm's ROCR_VISIBLE_DEVICES.
       ROCR_VISIBLE_DEVICES: "${AIC_ROCR_VISIBLE:-${GPU:-0}}"
       HIP_VISIBLE_DEVICES: "${AIC_HIP_VISIBLE:-0}"
-      # Must match vllm's; see the IPC note above.
-      HSA_ENABLE_IPC_MODE_LEGACY: "${AIC_HSA_IPC_LEGACY:-}"
       PYTHONHASHSEED: "0"
       TZ: "${TZ:-America/Edmonton}"
       # Coordinator registration: the MP server registers, heartbeats, and
@@ -482,7 +479,6 @@ services:
       - AITER_JIT_DIR=/hf/aiter
       - TRITON_CACHE_DIR=/hf/triton
       - NUMBA_CACHE_DIR=/hf/numba
-      - HSA_ENABLE_IPC_MODE_LEGACY=${AIC_HSA_IPC_LEGACY:-}
       - TRANSFORMERS_OFFLINE=${TRANSFORMERS_OFFLINE:-0}
       - VLLM_CACHE_ROOT=/hf/vllm
       - VLLM_CONFIG_ROOT=/hf/vllm_config

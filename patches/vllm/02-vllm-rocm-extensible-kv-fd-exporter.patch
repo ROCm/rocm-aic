@@ -1,0 +1,63 @@
+# vLLM: keep extensible KV cache for ROCm fd-exporting connectors
+#
+# vllm-project/vllm#67577 — "[ROCm] Keep the extensible KV cache for
+# fd-exporting KV connectors" — merged to vLLM main 2026-11-14; not in
+# v0.34.0.
+#
+# _resolve_extensible_kv_cache() disabled the extensible KV cache on ROCm
+# for any connector whose kv_cache_access.needs_single_chunk() was true.
+# That includes LMCache's fd-exporting MP connector (POSIX fds, not UCX
+# registration), so the extensible cache was always off on ROCm even when
+# use_vmm_api=true was requested.
+#
+# The fix narrows the guard to connectors that need REGISTER access
+# (UCX/RDMA-style HSA pointer pinning), which is the actual blocker.
+# Fd-exporting connectors (LMCache VMM/SCM_RIGHTS path, lmcache#6626) do
+# not register memory and are unaffected by the HSA VMM limitation.
+#
+# Effect: with this patch and lmcache.mp.use_vmm_api=true, vLLM keeps the
+# extensible KV cache on ROCm and LMCache can use the VMM fd-export path.
+# Without it use_vmm_api must stay false (the repo default).
+#
+# Drop this patch once VLLM_REF is bumped to a tag that includes #67577.
+diff --git a/vllm/config/vllm.py b/vllm/config/vllm.py
+index 427aa4f3dc02..28f9fec19492 100644
+--- a/vllm/config/vllm.py
++++ b/vllm/config/vllm.py
+@@ -3256,7 +3256,7 @@ def _resolve_extensible_kv_cache(self) -> None:
+                 "custom_mem_pool allocates the KV cache from a connector's "
+                 "memory pool, which a driver-mapped cache cannot use"
+             )
+-        elif current_platform.is_rocm() and kv_cache_access.needs_single_chunk():
++        elif current_platform.is_rocm() and KVCacheAccess.REGISTERS in kv_cache_access:
+             # TODO: drop once UCX handles HSA_EXT_POINTER_TYPE_HSA_VMEM and
+             # hsa_amd_portable_export_dmabuf accepts VMM ranges.
+             unsupported = (
+diff --git a/tests/v1/engine/test_engine_args.py b/tests/v1/engine/test_engine_args.py
+index 891ab2554807..d4e42b22ca62 100644
+--- a/tests/v1/engine/test_engine_args.py
++++ b/tests/v1/engine/test_engine_args.py
+@@ -641,6 +641,23 @@ def test_extensible_kv_cache_off_for_rocm_registering_connector(
+     assert config.cache_config.enable_extensible_kv_cache is not rocm
+
+
++@pytest.mark.parametrize("requested", [None, True])
++def test_extensible_kv_cache_on_for_rocm_fd_exporting_connector(monkeypatch, requested):
++    """Exporting the KV cache to another process through POSIX file descriptors
++    involves no UCX or RDMA registration, so ROCm keeps the extensible cache."""
++    from vllm.config.vllm import VllmConfig
++
++    config = _nixl_config_for_extensible_kv_cache(
++        monkeypatch,
++        rocm=True,
++        requested=requested,
++        imex_channel=False,
++        transfer=KVTransferConfig(**_EXPORTS_FD_CONNECTOR),
++    )
++    VllmConfig._resolve_extensible_kv_cache(config)
++    assert config.cache_config.enable_extensible_kv_cache
++
++
+ @pytest.mark.parametrize(
+     "requested, imex_channel, enabled",
+     [(None, False, False), (True, False, True), (None, True, True)],

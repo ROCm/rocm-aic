@@ -1,13 +1,11 @@
 # Two-container HIP VMM memory-IPC micro-benchmark (dmabuf + SCM_RIGHTS).
-# Mirrors the LMCache cross-container memory path. Toggle HSA_ENABLE_IPC_MODE_LEGACY
-# to test whether LEGACY breaks cross-container memory IPC.
+# Mirrors the LMCache cross-container memory path.
 services:
   mem-producer:
     image: ${AIC_IMG:-aic-vllm:latest}
     entrypoint: ["python3", "/tests/mem_producer.py"]
     ipc: shareable
     environment:
-      HSA_ENABLE_IPC_MODE_LEGACY: "${HSA_ENABLE_IPC_MODE_LEGACY:-}"
       HIP_VISIBLE_DEVICES: "0"
     devices: [/dev/kfd, /dev/dri]
     group_add: ["${RENDER_GID:-992}"]
@@ -21,7 +19,6 @@ services:
     ipc: "service:mem-producer"
     depends_on: [mem-producer]
     environment:
-      HSA_ENABLE_IPC_MODE_LEGACY: "${HSA_ENABLE_IPC_MODE_LEGACY:-}"
       HIP_VISIBLE_DEVICES: "0"
     devices: [/dev/kfd, /dev/dri]
     group_add: ["${RENDER_GID:-992}"]

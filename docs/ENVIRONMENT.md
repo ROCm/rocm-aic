@@ -303,7 +303,6 @@ keeps equal to bake's.
 | `LMCACHE_CONFIG_FILE` | (empty) | `docker/docker-compose.yml` | In-container path of that config; set only when one is mounted |
 | `NIXL_TELEMETRY_ENABLE` | `y` (only when unset) | `docker/docker-compose.yml` | NIXL's own Prometheus exporter on `:19090`. Set it empty to disable |
 | `NIXL_TELEMETRY_EXPORTER` | `prometheus` | `docker/docker-compose.yml` | NIXL telemetry exporter type |
-| `AIC_HSA_IPC_LEGACY` | (empty) | `docker/docker-compose.yml` | `1` sets `HSA_ENABLE_IPC_MODE_LEGACY=1` in both containers: the KFD-handle IPC mode, which needs the DKMS `amdgpu` module |
 <!-- END generated:lmcache -->
 
 ### LMCache coordinator
