@@ -334,6 +334,7 @@ keeps equal to bake's.
 | `VLM_KV_CACHE_DTYPE` | `auto` | `docker/docker-compose.yml` | `--kv-cache-dtype`. `auto` stores KV in the model dtype; `fp8` roughly doubles KV capacity where the arch has native `fp8`, but gave repeated-token glitches with Qwen2.5-3B on gfx1201 |
 | `VLM_KV_CACHE_METRICS_SAMPLE` | `0.05` | `docker/docker-compose.yml` | Fraction of KV blocks sampled for the residency histograms |
 | `KV_TRANSFER_ARG` | (empty); `--kv-transfer-config '$(_MP_CONNECTOR_JSON)'` (`Makefile`) | `docker/docker-compose.yml` | vLLM `--kv-transfer-config` argument. `make` sets the `LMCacheMPConnector` JSON; empty is a plain vLLM (the cliff `vram` baseline). Single-quote the JSON |
+| `LMCACHE_LAZY_OFFLOAD` | `true` | `Makefile` | `lmcache.mp.lazy_offload` in the connector JSON `make` builds. `false` stores every block as it is computed, which `make agent-kv-nvme-sweep` needs: a `/reset_prefix_cache` drops deferred stores |
 | `VLLM_EXTRA_ARGS` | (empty) | `docker/docker-compose.yml` | Extra `vllm serve` arguments appended verbatim; single-quote embedded JSON |
 | `VLLM_LOGGING_LEVEL` | `INFO`; `WARNING` (`.slurm/run-cliff.sbatch`) | `docker/docker-compose.yml` | vLLM log level |
 | `VLLM_SERVER_DEV_MODE` | `1` | `docker/docker-compose.yml` | `1` enables vLLM's development endpoints, which the tests use to reset the GPU prefix cache |

@@ -12,12 +12,16 @@
 #
 # Before the first run, with the stack down:
 #   benchmarks/agent-kv/dm_delay_setup.sh up <L2 mount point>
+# and start the stack with LMCACHE_LAZY_OFFLOAD=false: the sweep resets the GPU
+# prefix cache, which drops stores that lazy offload has deferred, so nothing
+# would reach L2 and every measured request would be a recompute.
 #
 #   nvme_delay_sweep.sh [agent-kv nvme-sweep options]
 #   nvme_delay_sweep.sh --delays 0,10,50 --fill-fractions 0.5,1.0 --num-books 4
 #
 # Environment:
 #   NVME_DATA       host directory of the L2 tier (required; make passes it)
+#   GPU             index in the vLLM container name aic-vllm-gpu<N> (default: 0)
 #   AIC_DM_DEVICE   mapper name (default: kv-delay)
 #   LOG             host logs directory, /logs in aic-client (default: <repo>/logs)
 #   AIC_BENCH_ENDPOINT, AIC_BENCH_MODEL   passed to aic-bench when set
@@ -37,6 +41,12 @@ die() { echo "nvme_delay_sweep: $*" >&2; exit 1; }
     || die "${NVME_DATA} is not on /dev/mapper/${NAME}: run dm_delay_setup.sh up <mount point> with the stack down"
 [[ "$(docker inspect -f '{{.State.Running}}' aic-client 2>/dev/null)" == true ]] \
     || die "aic-client is not running: start the stack with 'make up'"
+vllm="aic-vllm-gpu${GPU:-0}"
+vllm_args="$(docker inspect -f '{{json .Config.Entrypoint}} {{json .Config.Cmd}}' "${vllm}" 2>/dev/null)" \
+    || die "${vllm} is not running"
+if grep -Eq 'lazy_offload[\\"]*: *true' <<< "${vllm_args}"; then
+    die "${vllm} runs with lazy offload: restart the stack with LMCACHE_LAZY_OFFLOAD=false"
+fi
 
 evict_l2() {
     sync -f "${NVME_DATA}"

@@ -85,6 +85,10 @@ read never reaches the device.
 # Once, with the stack down; `down` puts the plain device back.
 benchmarks/agent-kv/dm_delay_setup.sh up /mnt/<L2 mount point>
 
+# The sweep resets the GPU prefix cache, which drops stores that lazy offload
+# has deferred, so start the stack without it.
+make up LMCACHE_LAZY_OFFLOAD=false NVME_DATA=<L2 dir>
+
 make agent-kv-nvme-sweep NVME_DATA=<L2 dir> \
   AGENT_KV_SWEEP_ARGS="--delays 0,10,50 --fill-fractions 0.5,1.0 --num-books 4"
 ```

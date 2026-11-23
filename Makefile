@@ -253,7 +253,11 @@ COMPOSE_CACHE := $(COMPOSE) --profile cache
 # lmcache.mp.use_vmm_api=false selects legacy HIP IPC.  Left unset, LMCache
 # >= 0.5.8 asks vLLM for fd-exported KV memory, which vLLM >= 0.34 refuses on
 # ROCm (and with --num-gpu-blocks-override) at engine-config time.
-_MP_CONNECTOR_JSON := {"kv_connector":"LMCacheMPConnector","kv_role":"kv_both","kv_connector_extra_config":{"lmcache.mp.host":"tcp://localhost","lmcache.mp.port":$(LMCACHE_PORT),"lmcache.mp.use_vmm_api":false,"lmcache.mp.lazy_offload":true,"lmcache.mp.lazy_offload_policy":"EVICTION_AWARE","lmcache.mp.lazy_offload_max_deferral_seconds":30.0,"lmcache.mp.save_decode_cache":true}}
+# LMCACHE_LAZY_OFFLOAD=false stores every block as it is computed; a benchmark
+# that resets the GPU prefix cache needs that, since a reset drops deferred
+# stores before they reach LMCache.
+LMCACHE_LAZY_OFFLOAD ?= true
+_MP_CONNECTOR_JSON := {"kv_connector":"LMCacheMPConnector","kv_role":"kv_both","kv_connector_extra_config":{"lmcache.mp.host":"tcp://localhost","lmcache.mp.port":$(LMCACHE_PORT),"lmcache.mp.use_vmm_api":false,"lmcache.mp.lazy_offload":$(LMCACHE_LAZY_OFFLOAD),"lmcache.mp.lazy_offload_policy":"EVICTION_AWARE","lmcache.mp.lazy_offload_max_deferral_seconds":30.0,"lmcache.mp.save_decode_cache":true}}
 KV_TRANSFER_ARG    ?= --kv-transfer-config '$(_MP_CONNECTOR_JSON)'
 export KV_TRANSFER_ARG
 
