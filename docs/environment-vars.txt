@@ -184,7 +184,6 @@ LMCACHE_CONFIG_FILE_HOST: Host path of an LMCache config file to mount (`local_d
 LMCACHE_CONFIG_FILE: In-container path of that config; set only when one is mounted
 NIXL_TELEMETRY_ENABLE: NIXL's own Prometheus exporter on `:19090`. Set it empty to disable
 NIXL_TELEMETRY_EXPORTER: NIXL telemetry exporter type
-AIC_HSA_IPC_LEGACY: `1` sets `HSA_ENABLE_IPC_MODE_LEGACY=1` in both containers: the KFD-handle IPC mode, which needs the DKMS `amdgpu` module
 
 [coordinator]
 LMCACHE_COORDINATOR_URL: Base URL the MP server registers and heartbeats against. Set it empty to run without a coordinator
@@ -206,6 +205,7 @@ VLM_KV_CACHE_DTYPE: `--kv-cache-dtype`. `auto` stores KV in the model dtype; `fp
 VLM_KV_CACHE_METRICS_SAMPLE: Fraction of KV blocks sampled for the residency histograms
 KV_TRANSFER_ARG: vLLM `--kv-transfer-config` argument. `make` sets the `LMCacheMPConnector` JSON; empty is a plain vLLM (the cliff `vram` baseline). Single-quote the JSON
 LMCACHE_LAZY_OFFLOAD: `lmcache.mp.lazy_offload` in the connector JSON `make` builds. `false` stores every block as it is computed, which `make agent-kv-nvme-sweep` needs: a `/reset_prefix_cache` drops deferred stores
+LMCACHE_USE_VMM_API: `lmcache.mp.use_vmm_api` in the connector JSON `make` builds. `true` uses the ROCm VMM fd-export path; requires `patches/vllm/02-vllm-rocm-extensible-kv-fd-exporter.patch` in the build
 VLLM_EXTRA_ARGS: Extra `vllm serve` arguments appended verbatim; single-quote embedded JSON
 VLLM_LOGGING_LEVEL: vLLM log level
 VLLM_SERVER_DEV_MODE: `1` enables vLLM's development endpoints, which the tests use to reset the GPU prefix cache

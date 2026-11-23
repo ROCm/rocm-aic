@@ -126,7 +126,7 @@ keeps equal to bake's.
 | `LLM_EMU_REF` | `b71c602` | `docker/docker-bake.hcl` | llm-emu ref (the emulation plugin) |
 | `AITER_REF` | `v0.1.29.post1` | `docker/docker-bake.hcl` | ROCm AITER ref installed into every image; override only together with a validated `FLASH_ATTN_REF` |
 | `FLASH_ATTN_REF` | `0e60e394` | `docker/docker-bake.hcl` | FlashAttention ref, built for the CDNA (`gfx9*`) arches only |
-| `LMCACHE_REF` | `v0.5.8rc1` | `docker/docker-bake.hcl` | LMCache ref |
+| `LMCACHE_REF` | `v0.5.8` | `docker/docker-bake.hcl` | LMCache ref |
 | `NIXL_REF` | `v1.5.2` | `docker/docker-bake.hcl` | NIXL ref |
 | `CUPY_VERSION` | `14.2.0` | `docker/docker-bake.hcl` | `cupy-rocm-7-0` release installed into `aic-lmcache` and `aic-vllm` |
 | `UCX_REF` | `v1.22.0` | `docker/docker-bake.hcl` | UCX ref (NIXL's transport) source-built into the base image |
@@ -334,6 +334,7 @@ keeps equal to bake's.
 | `VLM_KV_CACHE_METRICS_SAMPLE` | `0.05` | `docker/docker-compose.yml` | Fraction of KV blocks sampled for the residency histograms |
 | `KV_TRANSFER_ARG` | (empty); `--kv-transfer-config '$(_MP_CONNECTOR_JSON)'` (`Makefile`) | `docker/docker-compose.yml` | vLLM `--kv-transfer-config` argument. `make` sets the `LMCacheMPConnector` JSON; empty is a plain vLLM (the cliff `vram` baseline). Single-quote the JSON |
 | `LMCACHE_LAZY_OFFLOAD` | `true` | `Makefile` | `lmcache.mp.lazy_offload` in the connector JSON `make` builds. `false` stores every block as it is computed, which `make agent-kv-nvme-sweep` needs: a `/reset_prefix_cache` drops deferred stores |
+| `LMCACHE_USE_VMM_API` | `false` | `Makefile` | `lmcache.mp.use_vmm_api` in the connector JSON `make` builds. `true` uses the ROCm VMM fd-export path; requires `patches/vllm/02-vllm-rocm-extensible-kv-fd-exporter.patch` in the build |
 | `VLLM_EXTRA_ARGS` | (empty) | `docker/docker-compose.yml` | Extra `vllm serve` arguments appended verbatim; single-quote embedded JSON |
 | `VLLM_LOGGING_LEVEL` | `INFO`; `WARNING` (`.slurm/run-cliff.sbatch`) | `docker/docker-compose.yml` | vLLM log level |
 | `VLLM_SERVER_DEV_MODE` | `1` | `docker/docker-compose.yml` | `1` enables vLLM's development endpoints, which the tests use to reset the GPU prefix cache |
