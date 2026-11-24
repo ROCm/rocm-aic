@@ -554,6 +554,13 @@ AIC_TINY_READY_TIMEOUT="${AIC_TINY_READY_TIMEOUT:-240}"   # x5s = 20 min; must s
 AIC_NVME_EXPORTER_IMAGE="${AIC_NVME_EXPORTER_IMAGE:-aic-nvme-exporter:latest}"
 AIC_RDMA_EXPORTER_IMAGE="${AIC_RDMA_EXPORTER_IMAGE:-aic-rdma-exporter:latest}"
 AIC_HSA_SNOOP_IMAGE="${AIC_HSA_SNOOP_IMAGE:-aic-hsa-snoop:latest}"
+
+# --- Benchmark client image (docker/client, bake target `client`) -----------
+# What the cliff's bench and plot containers run from.  Tagged as bake tags it,
+# by AIC_VERSION: its contents follow the aiperf/agent-kv pins and benchmarks/,
+# not the stack pins, so its artifact carries no arch either.  make passes the
+# same name (AIC_CLIENT_IMAGE, from bake's CLIENT_IMAGE_REF).
+AIC_CLIENT_IMAGE="${AIC_CLIENT_IMAGE:-aic-client:${AIC_VERSION}}"
 # The AIC_-prefixed version names are deprecated; accepted for one release.
 for _aic_new in NVME_EXPORTER_VERSION RDMA_EXPORTER_VERSION; do
     _aic_old="AIC_${_aic_new}"
@@ -1860,11 +1867,12 @@ cmd_load() {
     local fetches="" img et
     printf -v fetches 'aic_image_fetch load %q %q\n' \
         "${AIC_VLLM_IMAGE}" "${vllm_artifact}" "${AIC_LMCACHE_IMAGE}" "${lmcache_artifact}"
-    for img in "${AIC_NVME_EXPORTER_IMAGE}" "${AIC_RDMA_EXPORTER_IMAGE}" "${AIC_HSA_SNOOP_IMAGE}"; do
+    for img in "${AIC_NVME_EXPORTER_IMAGE}" "${AIC_RDMA_EXPORTER_IMAGE}" "${AIC_HSA_SNOOP_IMAGE}" \
+               "${AIC_CLIENT_IMAGE}"; do
         et="$(_exporter_artifact_path "${img}")"
         [[ -r "${et}" ]] || continue
         printf -v fetches '%saic_image_fetch load %q %q\n' "${fetches}" "${img}" "${et}"
-        log "  + exporter artifact: ${et}"
+        log "  + side artifact: ${et}"
     done
 
     local n; n="$(awk -F, '{print NF}' <<<"${AIC_TARGETS}")"
@@ -3967,9 +3975,12 @@ cmd_bake() {
     AIC_IMAGE="${AIC_LMCACHE_IMAGE}"
     local lmcache_art; lmcache_art="$(_artifact_path)"
     AIC_IMAGE="${saved_image}"
+    # Arch-independent, like the exporters (see AIC_CLIENT_IMAGE).
+    local client_art; client_art="$(_exporter_artifact_path "${AIC_CLIENT_IMAGE}")"
 
     local lmcache_before; lmcache_before="$(_artifact_stamp "${lmcache_art}")"
     local vllm_before; vllm_before="$(_artifact_stamp "${vllm_art}")"
+    local client_before; client_before="$(_artifact_stamp "${client_art}")"
 
     # For the plain `docker buildx build` calls (phases 1.5 and 2); bake (phase
     # 1) declares the secret itself from TLS_CERT.
@@ -3981,10 +3992,11 @@ cmd_bake() {
         ${AIC_BUILD_JOBS:+"BUILD_JOBS=${AIC_BUILD_JOBS}"} \
         ${AIC_AITER_PREBUILD_KERNELS:+"AITER_PREBUILD_KERNELS=${AIC_AITER_PREBUILD_KERNELS}"})"
 
-    log "bake targets   : base vllm lmcache (parallel after base)"
+    log "bake targets   : base vllm lmcache (parallel after base), client"
     log "artifacts      : ${base_art}"
     log "               : ${vllm_art}"
     log "               : ${lmcache_art}"
+    log "               : ${client_art}"
     [[ "${AIC_DIST_BACKEND}" == "registry" ]] && log "image registry : ${AIC_REGISTRY_DIR}"
     log "cache          : ${AIC_CACHE_DIR:+(dir) ${AIC_CACHE_DIR}}${AIC_CACHE_REF:+(registry) ${AIC_CACHE_REF}}"
 
@@ -4012,6 +4024,25 @@ cmd_bake() {
         _base_post="$(cat <<REMOTE
 mv -f "\${tmp_base}" "${base_art}"
 echo "[bake] base saved: \$(du -h "${base_art}" | cut -f1) -> ${base_art}"
+REMOTE
+)"
+    fi
+    # Phase 3 builds the client with bake too, so it takes the target's own
+    # cache_from/cache_to (<cache>/noarch/client).  The tags are set explicitly
+    # because AIC_CLIENT_IMAGE may be overridden.
+    local _client_out _client_pipe _client_post
+    if [[ "${AIC_DIST_BACKEND}" == "registry" ]]; then
+        # shellcheck disable=SC2016
+        local _client_meta='${TMPDIR}/aic-bake-client.${SLURM_JOB_ID:-$$}.meta.json'
+        _client_out="--set \"client.tags=$(_dist_push_ref "${AIC_CLIENT_IMAGE}")\" --set client.output=type=image,push=true --metadata-file \"${_client_meta}\""
+        _client_pipe=""
+        _client_post="$(_dist_store bake "${client_art}" "${AIC_CLIENT_IMAGE}" "${_client_meta}" "${AIC_CLIENT_IMAGE}")"
+    else
+        _client_out="--set \"client.tags=${AIC_CLIENT_IMAGE}\" --set \"client.output=type=docker,dest=-\""
+        _client_pipe="| ${COMPRESS_CMD} > \"\${tmp_client}\""
+        _client_post="$(cat <<REMOTE
+mv -f "\${tmp_client}" "${client_art}"
+echo "[bake] client saved: \$(du -h "${client_art}" | cut -f1) -> ${client_art}"
 REMOTE
 )"
     fi
@@ -4276,6 +4307,21 @@ wait "\${_lmcache_pid}" || _lmcache_rc=\$?
 rm -rf "\${_base_oci_dir}" "\${_base_wheels_dir}" "\${_lmc_wheels_dir}"
 (( _vllm_rc == 0 ))    || { echo "[bake] ERROR: vllm build/save failed (rc=\${_vllm_rc})" >&2; exit 1; }
 (( _lmcache_rc == 0 )) || { echo "[bake] ERROR: lmcache build/save failed (rc=\${_lmcache_rc})" >&2; exit 1; }
+
+# --- Phase 3: aic-client, the benchmark clients (no ROCm, no base) -----------
+echo "[bake] phase 3: building aic-client"
+tmp_client="${client_art}.partial.\${SLURM_JOB_ID:-\$\$}"
+${AIC_CACHE_DIR:+AIC_CACHE_DIR="${AIC_CACHE_DIR}"} \
+${AIC_CACHE_REF:+AIC_CACHE_REF="${AIC_CACHE_REF}"} \
+BUILDKIT_STEP_LOG_MAX_SIZE=-1 \
+AIC_CACHE_MODE="${AIC_CACHE_MODE:-max}" \
+docker buildx bake \
+    --builder ${AIC_BUILDX_BUILDER} \
+    --file "${AIC_DAY_DIR}/docker/docker-bake.hcl" \
+    --progress=plain \
+    ${_client_out} \
+    client ${_client_pipe}
+${_client_post}
 echo "[bake] all images saved."
 
 # AITER kernels used to be warmed here by loading the 11 GB tarball, running
@@ -4322,7 +4368,8 @@ REMOTE
         --time="${AIC_BUILD_TIME}"
     _verify_artifact "${lmcache_art}" "lmcache image" "${lmcache_before}"
     _verify_artifact "${vllm_art}" "vllm image" "${vllm_before}"
-    log "bake complete: base=${base_art} vllm=${vllm_art} lmcache=${lmcache_art}"
+    _verify_artifact "${client_art}" "client image" "${client_before}"
+    log "bake complete: base=${base_art} vllm=${vllm_art} lmcache=${lmcache_art} client=${client_art}"
 }
 
 # --- wheels: export the pip wheels the nightly release publishes -------------
