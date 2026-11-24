@@ -329,6 +329,7 @@ AIC_VLLM_READY_TIMEOUT: Seconds the cliff job waits for a vLLM endpoint; raise i
 LMCACHE_HEARTBEAT_INTERVAL: Seconds between the cliff job's LMCache status lines
 AIC_VLLM_ARTIFACT: Stored vLLM image artifact a job loads, when it is not the one derived from `AIC_VLLM_IMAGE` and `AIC_IMAGE_DIR`
 AIC_LMCACHE_ARTIFACT: Stored LMCache image artifact, likewise
+AIC_CLIENT_ARTIFACT: Stored `aic-client` image artifact the cliff job loads for its bench and plot containers, likewise
 
 [slurm-test]
 AIC_TEST_NODE: Pin the test node with `--nodelist`
