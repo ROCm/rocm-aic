@@ -251,6 +251,7 @@ subdirectory
 sublicense
 subpackage
 subpackages
+safetensors
 sudo
 SVG
 sysfs
@@ -323,6 +324,7 @@ bdist
 cmake
 deps
 submodules
+util
 uv
 ccache
 gcc
