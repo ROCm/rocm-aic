@@ -35,10 +35,13 @@ define _wait_aic_client
 	echo "ERROR: aic-client container not running — start with 'make up'" >&2; exit 1; }
 endef
 
-# The endpoint aic-bench is given: BENCH_ENDPOINT, else the running tiered vLLM.
+# The endpoint aic-bench is given: BENCH_ENDPOINT, else the running vLLM --
+# the plain one `make up-vllm-only` starts for the vram_only arm, the tiered
+# one otherwise.
+_bench_vllm = $(if $(filter vram_only,$(BENCH_ARM)),aic-vllm-only-gpu$(GPU),aic-vllm-gpu$(GPU))
 define _bench_endpoint
 _ep="$(BENCH_ENDPOINT)"; \
-[ -n "$$_ep" ] || _ep="$$($(call aic_bridge_url,aic-vllm-gpu$(GPU),8000))" || exit 1
+[ -n "$$_ep" ] || _ep="$$($(call aic_bridge_url,$(_bench_vllm),8000))" || exit 1
 endef
 
 # Not through _bake_preflight: the client image has no ROCM_ARCH.  The stack's

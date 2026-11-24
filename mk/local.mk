@@ -4,6 +4,7 @@
 # Local-dev targets: build, stack lifecycle, shells, logs, venv, reset test.
 
 .PHONY: ensure-compose build wheels up up-batch up-dev up-gds-l1 up-gds-l1-batch \
+        up-vllm-only \
         down logs logs-lmcache logs-vllm ps shell-lmcache shell-vllm \
         restart-vllm restart-lmcache venv vllm-reset-test
 
@@ -132,8 +133,15 @@ up-gds-l1-batch: ensure-compose check-hf-token check-gds-slab prep-dirs
 	@echo "Started (GDS L1 mode + monitoring). Use 'make logs' to follow or 'make down' to stop."
 	@echo "Started (GDS L1 mode). Use 'make logs' to follow or 'make down' to stop."
 
+# A plain vLLM with no LMCache (the cliff vram_only baseline): the vllm-only
+# compose service with an empty KV_TRANSFER_ARG, plus aic-client to drive it.
+# It uses the same GPU as `make up`, so stop that stack first.
+up-vllm-only: ensure-compose check-hf-token prep-dirs
+	KV_TRANSFER_ARG= $(COMPOSE) --profile vllm-only --profile client up -d vllm-only client
+	@echo "Started aic-vllm-only-gpu$(GPU). Use 'make down' to stop."
+
 down:
-	$(COMPOSE_CACHE) --profile monitoring down
+	$(COMPOSE_CACHE) --profile monitoring --profile vllm-only down
 
 logs:
 	$(COMPOSE_CACHE) logs -f
