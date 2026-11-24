@@ -318,6 +318,10 @@ endif
 ifeq ($(call _is_makefile_default,HF_HOME),file)
 export HF_HOME := $(AIC_SHARED_NFS)/huggingface
 endif
+# The node-local NVMe volume, world-writable (1777).  The cliff puts each job's
+# tiers in their own aic-cliff.<job-id> under it, created and removed by the
+# job's user; the NVME_DATA/GDS_SLAB_DATA defaults above are stripped for it.
+export AIC_NVME_MOUNT       ?= /mnt/m2m_nobackup
 export AIC_L2_BACKEND       ?= nixl_posix
 # spur-authz refuses pid:host, which the full exporter fleet and hsa-snoop's
 # host mode both need.
@@ -335,8 +339,9 @@ _HF_HOME_IS_DEFAULT ?= $(if $(call _is_makefile_default,HF_HOME),1,)
 
 # Strip Makefile-defaulted path vars before cliff sbatch so they don't clobber
 # the job's node-appropriate defaults.  User-set values (command-line /
-# environment / .env.<cluster>) are preserved, and so are the SPUR site
-# defaults above, which are the node-appropriate paths there.
+# environment / .env.<cluster>) are preserved, and so is the SPUR site HF_HOME.
+# The SPUR NVME_DATA/GDS_SLAB_DATA defaults are not: the cliff puts its tiers in
+# a per-job dir under AIC_NVME_MOUNT instead of a fixed path shared by every job.
 #
 # A recursive $(MAKE) (the *-fast targets) receives the parent's defaults as
 # environment values, so the top-level make settles the list and hands it down;
@@ -350,9 +355,9 @@ endif
 export _AIC_DEFAULTED
 _CLIFF_STRIP := env \
     $(if $(filter 0,$(AIC_SPUR_CLUSTER)),$(if $(filter HF_HOME,$(_AIC_DEFAULTED)),-u HF_HOME)) \
-    $(if $(filter 0,$(AIC_SPUR_CLUSTER)),$(if $(filter NVME_DATA,$(_AIC_DEFAULTED)),-u NVME_DATA)) \
+    $(if $(filter NVME_DATA,$(_AIC_DEFAULTED)),-u NVME_DATA) \
     $(if $(filter NFS_DATA,$(_AIC_DEFAULTED)),-u NFS_DATA) \
-    $(if $(filter 0,$(AIC_SPUR_CLUSTER)),$(if $(filter GDS_SLAB_DATA,$(_AIC_DEFAULTED)),-u GDS_SLAB_DATA)) \
+    $(if $(filter GDS_SLAB_DATA,$(_AIC_DEFAULTED)),-u GDS_SLAB_DATA) \
     $(if $(filter AIC_METRICS_DIR,$(_AIC_DEFAULTED)),-u AIC_METRICS_DIR) \
     $(_SLURM_TAG_ENV)
 
