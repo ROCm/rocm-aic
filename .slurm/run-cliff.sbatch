@@ -359,6 +359,24 @@ _detect_or_provision_nvme() {
   return 0
 }
 
+# Remove this user's aic-cliff.<job-id> dirs under $1 whose job is gone.  The
+# EXIT trap removes a job's own, but SPUR SIGKILLs a scancel'd job ~4 s after
+# its SIGTERM, which can cut that short and strand a 256 GB slab.  A dir is kept
+# whenever the scheduler cannot be asked: squeue exits 0 and prints nothing only
+# for a job that no longer exists.
+_reap_stale_job_dirs() {
+  local d id state
+  for d in "$1"/aic-cliff.*; do
+    [[ -d "${d}" && -O "${d}" ]] || continue
+    id="${d##*.}"
+    [[ "${id}" =~ ^[0-9]+$ && "${id}" != "${SLURM_JOB_ID:-}" ]] || continue
+    state="$(squeue -h -j "${id}" -o %T 2>/dev/null)" || continue
+    [[ -z "${state}" ]] || continue
+    log "storage: removing ${d} (job ${id} is gone)"
+    rm -rf "${d}" || log "storage: WARN: could not remove ${d}"
+  done
+}
+
 # Finalize AIC_LOCAL_ROOT and the NVME/NFS/slab tier paths.
 provision_storage() {
   if [[ -n "${_AIC_LOCAL_ROOT_PINNED}" || -n "${_AIC_NVME_DATA_PINNED}" ]]; then
@@ -367,7 +385,10 @@ provision_storage() {
     log "storage: AIC_NVME_AUTO=1 -- detecting a dedicated local NVMe"
     local base
     base="$(_detect_or_provision_nvme)"
-    [[ -n "${base}" ]] && AIC_LOCAL_ROOT="${base}/aic-cliff.${SLURM_JOB_ID:-manual}"
+    if [[ -n "${base}" ]]; then
+      _reap_stale_job_dirs "${base}"
+      AIC_LOCAL_ROOT="${base}/aic-cliff.${SLURM_JOB_ID:-manual}"
+    fi
   else
     log "storage: AIC_NVME_AUTO=0 -- using node-local /tmp on the root disk"
   fi
@@ -450,21 +471,25 @@ command -v docker >/dev/null 2>&1 || die "docker not found on $(hostname)"
 
 # Pre-create the compose log-mount dirs too, so docker doesn't auto-create them
 # as root under the per-job logs tree (the lmcache/vllm services bind-mount these).
-# The per-job log dirs are always under REPO (writable).  The NVMe/slab paths may
-# live under a shared LVM (e.g. SPUR /mnt/m2m_nobackup) owned by root -- try plain
-# mkdir first; fall back to sudo -n (passwordless) if that fails so the first job
-# on a freshly imaged node doesn't abort when the caller-pinned path doesn't exist.
-_mkdir_shared() {
+# The tier dirs are created here, as this user, for the same reason: lmcache runs
+# as AIC_CONTAINER_USER, and a bind source docker creates is root's.  Under
+# AIC_NVME_MOUNT they are this job's own; a caller-pinned path must already be
+# writable by this user, which is checked here rather than at lmcache's EACCES.
+_mkdir_tiers() {
     local d
     for d in "$@"; do
-        mkdir -p "${d}" 2>/dev/null && continue
-        sudo -n mkdir -p "${d}" 2>/dev/null \
-            && { sudo -n chown "$(id -u):$(id -g)" "${d}" 2>/dev/null || true; continue; }
-        log "WARN: could not create ${d} (mkdir failed; no passwordless sudo?)"
+        mkdir -p "${d}" || die "cannot create ${d} as $(id -un)"
+        [[ -w "${d}" ]] || die "${d} is not writable by $(id -un) (owner $(stat -c %U:%G "${d}")); lmcache runs as this user"
     done
 }
+# Removes the per-job tiers on any exit; the EXIT trap set once the stack exists
+# calls it after removing the containers.
+_rm_local_root() {
+    rm -rf "${AIC_LOCAL_ROOT}" || log "WARN: could not remove ${AIC_LOCAL_ROOT}"
+}
+trap _rm_local_root EXIT
 mkdir -p "${RESULTS}" "${PLOTS}" "${LOGDIR}/lmcache" "${LOGDIR}/vllm"
-_mkdir_shared "${NVME_DATA}" "${NVME_DATA}/lmcache" "${NFS_DATA}" "${GDS_SLAB_DATA}"
+_mkdir_tiers "${NVME_DATA}" "${NVME_DATA}/lmcache" "${NFS_DATA}" "${GDS_SLAB_DATA}"
 # Clean up leftover NIXL POSIX slot files from previous runs.  The NIXL POSIX
 # backend scans the directory on create_backend(); with tens of thousands of
 # stale .bin files from prior jobs the backend enters a bad state and
@@ -473,9 +498,8 @@ if [[ -d "${NVME_DATA}/lmcache" ]]; then
     _slot_count=$(ls "${NVME_DATA}/lmcache" 2>/dev/null | wc -l)
     if [[ "${_slot_count}" -gt 0 ]]; then
         log "cleaning ${_slot_count} leftover NIXL slot files from ${NVME_DATA}/lmcache"
-        sudo -n find "${NVME_DATA}/lmcache" -maxdepth 1 -name "*.bin" -delete 2>/dev/null \
-            || find "${NVME_DATA}/lmcache" -maxdepth 1 -name "*.bin" -delete 2>/dev/null \
-            || log "WARN: could not clean slot files (no write permission?)"
+        find "${NVME_DATA}/lmcache" -maxdepth 1 -name "*.bin" -delete \
+            || log "WARN: could not clean slot files from ${NVME_DATA}/lmcache"
     fi
 fi
 [[ -d "${HF_HOME}/hub" ]] || die "HF cache not found at ${HF_HOME}/hub"
@@ -853,7 +877,7 @@ ensure_compose || die "docker compose unavailable and could not be installed"
 # job ~4s after its SIGTERM (probe job 282335), too soon for stop_monitoring's
 # graceful `docker stop`, so this is one parallel `docker rm -f`.
 trap 'rm_containers "aic-vllm-only-gpu${GPU}" "aic-vllm-gpu${GPU}" aic-lmcache \
-  aic-lmcache-coordinator "${MON_CONTAINERS[@]}"' EXIT
+  aic-lmcache-coordinator "${MON_CONTAINERS[@]}"; _rm_local_root' EXIT
 
 # =============================================================================
 # Arm A — vram_only : plain vLLM baseline, no LMCache connector
@@ -1105,8 +1129,6 @@ if [[ ! -s "${KVD_NVME_CSV}" && ! -s "${KVD_GDS_CSV}" && -s "${VRAM_CSV}" ]]; th
   run_plot vram "" "${VRAM_CSV}"
 fi
 
-# --- Cleanup local NVMe scratch ---------------------------------------------
-rm -rf "${AIC_LOCAL_ROOT}" 2>/dev/null || true
 
 log "===================== SUMMARY ====================="
 for k in vram_only kvd_nvme kvd_gds; do log "  ${k}: ${STATUS[$k]:-?}"; done
