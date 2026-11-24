@@ -14,8 +14,8 @@ env-docs:
 env-docs-check:
 	@$(PYTHON) "$(CURDIR)/scripts/gen-env-reference.py" --check
 
-# Published host ports (only Grafana's) are ephemeral unless AIC_GRAFANA_PORT
-# pins it, so ask Docker where it landed.
+# Only Grafana's port is published, and not always on the port make picked
+# (Makefile), so ask Docker where it landed.
 endpoints:
 	@bash "$(CURDIR)/scripts/aic-endpoints.sh" list
 

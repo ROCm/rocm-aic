@@ -26,13 +26,13 @@
 #
 #   "${AIC_PUBLISH_ADDR:-127.0.0.1}:${AIC_GRAFANA_PORT:-}:3000"
 #
-# so its host port is ephemeral (Docker picks a free one) unless pinned.  Ask
-# Docker where it landed instead of assuming a number:
+# Unpinned, compose leaves the host port to Docker, which picks a new ephemeral
+# one whenever the container is recreated.  make pins it with aic_pick_port, to
+# the lowest free port from 3000, so the URL survives a down/up; a job that
+# calls compose itself keeps Docker's choice.  Either way, ask Docker where it
+# landed instead of assuming a number:
 #
 #   url="$(aic_url aic-grafana 3000)" || exit 1
-#
-# An ephemeral port changes whenever the publishing container is recreated, so
-# resolve after `up`/restart and never cache the result across one.
 
 # Print the container that owns <container>'s network namespace.  Fails, naming
 # the container, if it does not exist or is not running.
@@ -107,6 +107,33 @@ aic_bridge_url() {
     fi
     owner="$(_aic_netns_owner "$1")" || return 1
     printf 'http://%s:%s\n' "${owner}" "$2"
+}
+
+# aic_pick_port <container> <container-port> <first> <last>
+# Print the host port <container> should publish <container-port> on: the one
+# it already holds when that lies in <first>..<last>, else the lowest port of
+# the range that nothing listens on.  Prints nothing when the whole range is
+# taken, which leaves the choice to Docker.  A port range in the compose file
+# cannot do this: Docker walks a range round-robin, so the port would move on
+# every recreate.
+aic_pick_port() {
+    if (( $# != 4 )); then
+        echo "usage: aic_pick_port <container> <container-port> <first> <last>" >&2
+        return 2
+    fi
+    local addr="${AIC_PUBLISH_ADDR:-127.0.0.1}" held port
+    held="$(docker port "$1" "$2/tcp" 2>/dev/null | grep -v '^\[' | head -n1)" || true
+    held="${held##*:}"
+    if [[ "${held}" =~ ^[0-9]+$ ]] && (( held >= $3 && held <= $4 )); then
+        printf '%s\n' "${held}"
+        return 0
+    fi
+    for (( port = $3; port <= $4; port++ )); do
+        if ! (exec 3<>"/dev/tcp/${addr}/${port}") 2>/dev/null; then
+            printf '%s\n' "${port}"
+            return 0
+        fi
+    done
 }
 
 # aic_probe <container> <container-port> <path>
@@ -195,7 +222,8 @@ if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
         bridge-url) shift; aic_bridge_url "$@" ;;
         probe)      shift; aic_probe "$@" ;;
         fetch)      shift; aic_fetch "$@" ;;
+        pick-port)  shift; aic_pick_port "$@" ;;
         list)       aic_endpoints ;;
-        *)          echo "usage: ${0} url <container> <container-port> | bridge-url <container> <container-port> | probe <container> <container-port> <path> | fetch <url> [<json-body>] | list" >&2; exit 2 ;;
+        *)          echo "usage: ${0} url <container> <container-port> | bridge-url <container> <container-port> | probe <container> <container-port> <path> | fetch <url> [<json-body>] | pick-port <container> <container-port> <first> <last> | list" >&2; exit 2 ;;
     esac
 fi

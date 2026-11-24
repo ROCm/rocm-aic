@@ -56,8 +56,9 @@
 #
 # Ports: Grafana is the only published service, on AIC_PUBLISH_ADDR (loopback
 # by default) and AIC_GRAFANA_PORT.  Unset, Docker picks a free port, so it
-# cannot collide with another tenant on the node; `make endpoints` prints the
-# URL.  Everything else is reached by name on the aic bridge, from a container
+# cannot collide with another tenant on the node; make sets it to the lowest
+# free port from 3000 instead, which stays put across a down/up.  `make
+# endpoints` prints the URL.  Everything else is reached by name on the aic bridge, from a container
 # (aic-client, or scripts/aic-endpoints.sh's aic_fetch), e.g.
 # http://aic-lmcache:8000 for vLLM, :8080 for the lmcache HTTP API,
 # http://aic-prometheus:9090.
@@ -315,8 +316,7 @@ services:
     # per network namespace, so vllm and lmcache MUST share one (vllm joins this
     # one); on separate ones hipIpcOpenMemHandle retries for 10 s and fails with
     # hipErrorInvalidDevicePointer.  Sharing the PID namespace too keeps the
-    # <pid> in that name unique.  HSA_ENABLE_IPC_MODE_LEGACY must be the same in
-    # both (AIC_HSA_IPC_LEGACY=1 for the KFD-handle mode, which needs DKMS amdgpu).
+    # <pid> in that name unique.
     # GPU *event* IPC is replaced by a producer-side sync in both images
     # (docker/lmcache/rocm_event_ipc_patch.py).
     # lmcache owns the shareable IPC+PID namespaces; vllm joins them via
@@ -378,8 +378,6 @@ services:
       # lmcache lands on a different device.  Mirror vllm's ROCR_VISIBLE_DEVICES.
       ROCR_VISIBLE_DEVICES: "${AIC_ROCR_VISIBLE:-${GPU:-0}}"
       HIP_VISIBLE_DEVICES: "${AIC_HIP_VISIBLE:-0}"
-      # Must match vllm's; see the IPC note above.
-      HSA_ENABLE_IPC_MODE_LEGACY: "${AIC_HSA_IPC_LEGACY:-}"
       PYTHONHASHSEED: "0"
       TZ: "${TZ:-America/Edmonton}"
       # Coordinator registration: the MP server registers, heartbeats, and
@@ -481,7 +479,6 @@ services:
       - AITER_JIT_DIR=/hf/aiter
       - TRITON_CACHE_DIR=/hf/triton
       - NUMBA_CACHE_DIR=/hf/numba
-      - HSA_ENABLE_IPC_MODE_LEGACY=${AIC_HSA_IPC_LEGACY:-}
       - TRANSFORMERS_OFFLINE=${TRANSFORMERS_OFFLINE:-0}
       - VLLM_CACHE_ROOT=/hf/vllm
       - VLLM_CONFIG_ROOT=/hf/vllm_config
@@ -574,42 +571,34 @@ services:
     depends_on: !reset {}
 
   # ---------------------------------------------------------------------------
-  # client: Python + curl container on the aic network for ad-hoc testing and
-  # benchmarking.  The repo root is bind-mounted at /repo so run_cliff.py and
-  # other benchmarks are available without rebuilding the image.
+  # client: the benchmark clients (docker/client/Dockerfile) on the aic network,
+  # driven by `aic-bench <subcommand>`.  The repo root is bind-mounted at /repo,
+  # so the benchmarks run from the checkout and an edit needs no rebuild.
   # Use `docker exec -it aic-client bash` to get a shell, then hit
   # vllm/lmcache by container name (e.g. http://aic-lmcache:8000: vllm shares
-  # aic-lmcache's network namespace, so its own name does not resolve).  `make
-  # cliff`, `vllm-reset-test` and `bench-serve` run here.
-  # pip deps are pre-installed from an explicit list matching pyproject.toml [dev] at startup.
+  # aic-lmcache's network namespace, so its own name does not resolve).
   # ---------------------------------------------------------------------------
   client:
-    # Off the cache-only paths (tiny-test, accuracy): it would pull python:3.12
-    # and pip-install benchmark deps there for nothing.
+    # Off the cache-only paths (tiny-test, accuracy), which never use it.
     profiles: [client, monitoring, monitoring-base]
-    image: ${AIC_CLIENT_IMAGE:-python:3.12}
+    build:
+      context: ..
+      dockerfile: docker/client/Dockerfile
+      args:
+        AIPERF_VERSION: ${AIPERF_VERSION:-0.13.0}
+        AGENT_KV_GIT_URL: ${AGENT_KV_GIT_URL:-https://github.com/sbates130272/agent-kv}
+        AGENT_KV_REF: ${AGENT_KV_REF:-19fcc86be6e267839889567ce5d20dd0fed6bbaf}
+    image: ${AIC_CLIENT_IMAGE:-aic-client:latest}
     container_name: aic-client
     networks: [aic-network]
-    dns: ["8.8.8.8", "8.8.4.4"]
+    user: "${AIC_CONTAINER_USER:-0:0}"
     environment:
       HF_TOKEN: "${HF_TOKEN:-}"
-      HF_HOME: /root/.cache/huggingface
-      AIC_BENCH_DATASET: /root/.cache/huggingface/datasets/ShareGPT_V3_unfiltered_cleaned_split.json
-    entrypoint: ["/bin/bash", "-c"]
-    command:
-      - |
-        pip install --quiet \
-          --root-user-action=ignore \
-          --disable-pip-version-check \
-          openai httpx pyyaml tqdm \
-          transformers huggingface-hub \
-          prometheus-client aiohttp \
-          matplotlib pandas numpy && \
-        tail -f /dev/null
+      AIC_BENCH_DATASET: /hf_cache/datasets/ShareGPT_V3_unfiltered_cleaned_split.json
     volumes:
       - ..:/repo:ro
       - ../logs:/logs
-      - ${HF_HOME:-~/.cache/huggingface}:/root/.cache/huggingface
+      - ${HF_HOME:-~/.cache/huggingface}:/hf_cache
     working_dir: /repo
     restart: unless-stopped
 
@@ -774,7 +763,7 @@ services:
   # ---------------------------------------------------------------------------
   # grafana: pre-provisioned AIC dashboard, anonymous access, port 3000.
   # `make endpoints` prints its URL after `make up` (with --profile monitoring);
-  # the host port is ephemeral unless AIC_GRAFANA_PORT pins it.
+  # the host port is ephemeral unless AIC_GRAFANA_PORT pins it, as make does.
   # ---------------------------------------------------------------------------
   grafana:
     profiles: [monitoring, monitoring-base]

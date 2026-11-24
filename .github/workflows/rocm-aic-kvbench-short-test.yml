@@ -45,10 +45,10 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install '.[dev]'
 
-      - name: Run targeted cliff unit tests
+      - name: Run targeted benchmark unit tests
         run: |
           set -euo pipefail
-          python -m unittest tests.test_run_cliff
+          python -m unittest tests.test_run_cliff tests.test_aic_bench
 
       - name: Smoke-test the KVBench compose path via the local Makefile target
         run: |

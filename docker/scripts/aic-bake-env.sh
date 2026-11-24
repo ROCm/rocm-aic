@@ -40,7 +40,7 @@
 #
 # The map behind --env/--get/--json/--make holds:
 #   - every build arg of the image targets (base vllm lmcache hsa-snoop emulate
-#     kvbench nvme-exporter rdma-exporter agentx) merged by name.
+#     kvbench nvme-exporter rdma-exporter client) merged by name.
 #     BLAS_CACHE_BUST is left out (a cache key, not a pin), VLLM_TARGET_DEVICE is the vllm
 #     target's (emulate overrides it to "empty"), and ROCM_ARCH is bake's
 #     ';'-joined form.  Any other arg two targets disagree on is an error.
@@ -54,7 +54,7 @@
 #       KVBENCH_IMAGE_REF        kvbench
 #       NVME_EXPORTER_IMAGE_REF  nvme-exporter
 #       RDMA_EXPORTER_IMAGE_REF  rdma-exporter
-#       AGENTX_IMAGE_REF         agentx
+#       CLIENT_IMAGE_REF         client
 set -Eeuo pipefail
 # errexit exits without saying where; report it.  Only the line number and
 # function call stack are printed, never the command text, which can carry
@@ -119,7 +119,7 @@ if [[ "${mode}" == --variables ]]; then
   exit 0
 fi
 
-IMAGE_TARGETS=(base vllm lmcache hsa-snoop emulate kvbench nvme-exporter rdma-exporter agentx)
+IMAGE_TARGETS=(base vllm lmcache hsa-snoop emulate kvbench nvme-exporter rdma-exporter client)
 if [[ "${mode}" == --build-args ]]; then
   targets=("$1")
 else
@@ -166,7 +166,7 @@ IMAGE_REFS = {
     "KVBENCH_IMAGE_REF": "kvbench",
     "NVME_EXPORTER_IMAGE_REF": "nvme-exporter",
     "RDMA_EXPORTER_IMAGE_REF": "rdma-exporter",
-    "AGENTX_IMAGE_REF": "agentx",
+    "CLIENT_IMAGE_REF": "client",
 }
 
 values = {}

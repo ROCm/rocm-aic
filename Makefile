@@ -81,7 +81,7 @@ _framework_version_env = $(call _shell_env,$(_FRAMEWORK_VERSION_ARGS))
 # stays visible so a genuine failure is not mistaken for "latest".
 _BAKE_INPUTS      := ROCM_ARCH IMAGE_TAG AIC_IMAGE_PREFIX KVBENCH_REF KVBENCH_IMAGE_TAG $(_FRAMEWORK_VERSION_ARGS)
 _BAKE_KEYS_STACK  := VLLM_IMAGE_REF LMCACHE_IMAGE_REF HSA_SNOOP_IMAGE_REF
-_BAKE_KEYS        := IMAGE_TAG ROCM_VERSION LMCACHE_REF KVBENCH_GIT_URL KVBENCH_REF KVBENCH_IMAGE_REF AGENTX_IMAGE_REF
+_BAKE_KEYS        := IMAGE_TAG ROCM_VERSION LMCACHE_REF KVBENCH_GIT_URL KVBENCH_REF KVBENCH_IMAGE_REF CLIENT_IMAGE_REF
 _IMAGE_TAG_ORIGIN := $(origin IMAGE_TAG)
 _AIC_BAKE_MK := $(shell $(call _shell_env,$(_BAKE_INPUTS)) \
     $(REPO_ROOT)/docker/scripts/aic-bake-env.sh --make | sed -n -E \
@@ -139,6 +139,14 @@ HF_TOKEN_FILE ?=
 
 export AIC_CONTAINER_USER ?= $(shell id -u):$(shell id -g)
 export RENDER_GID ?= $(shell stat -c %g /dev/kfd 2>/dev/null)
+
+# Grafana's host port: the one aic-grafana already holds, else the lowest free
+# port from 3000, so the URL is the same after every down/up.  Left to compose,
+# Docker picks a new ephemeral port on each recreate.  Empty (3000-3009 all
+# taken) falls back to that.
+ifeq ($(origin AIC_GRAFANA_PORT),undefined)
+export AIC_GRAFANA_PORT := $(shell bash "$(CURDIR)/scripts/aic-endpoints.sh" pick-port aic-grafana 3000 3000 3009 2>/dev/null)
+endif
 
 # ---- LMCache server --------------------------------------------------------
 LMCACHE_PORT            ?= 6555
@@ -245,7 +253,14 @@ COMPOSE_CACHE := $(COMPOSE) --profile cache
 # lmcache.mp.use_vmm_api=false selects legacy HIP IPC.  Left unset, LMCache
 # >= 0.5.8 asks vLLM for fd-exported KV memory, which vLLM >= 0.34 refuses on
 # ROCm (and with --num-gpu-blocks-override) at engine-config time.
-_MP_CONNECTOR_JSON := {"kv_connector":"LMCacheMPConnector","kv_role":"kv_both","kv_connector_extra_config":{"lmcache.mp.host":"tcp://localhost","lmcache.mp.port":$(LMCACHE_PORT),"lmcache.mp.use_vmm_api":false,"lmcache.mp.lazy_offload":true,"lmcache.mp.lazy_offload_policy":"EVICTION_AWARE","lmcache.mp.lazy_offload_max_deferral_seconds":30.0,"lmcache.mp.save_decode_cache":true}}
+# LMCACHE_LAZY_OFFLOAD=false stores every block as it is computed; a benchmark
+# that resets the GPU prefix cache needs that, since a reset drops deferred
+# stores before they reach LMCache.
+LMCACHE_LAZY_OFFLOAD ?= true
+# LMCACHE_USE_VMM_API=true requires patches/vllm/02-vllm-rocm-extensible-kv-fd-exporter.patch
+# in the build; without it vLLM v0.34.0 refuses VMM IPC on ROCm at startup.
+LMCACHE_USE_VMM_API ?= false
+_MP_CONNECTOR_JSON := {"kv_connector":"LMCacheMPConnector","kv_role":"kv_both","kv_connector_extra_config":{"lmcache.mp.host":"tcp://localhost","lmcache.mp.port":$(LMCACHE_PORT),"lmcache.mp.use_vmm_api":$(LMCACHE_USE_VMM_API),"lmcache.mp.lazy_offload":$(LMCACHE_LAZY_OFFLOAD),"lmcache.mp.lazy_offload_policy":"EVICTION_AWARE","lmcache.mp.lazy_offload_max_deferral_seconds":30.0,"lmcache.mp.save_decode_cache":true}}
 KV_TRANSFER_ARG    ?= --kv-transfer-config '$(_MP_CONNECTOR_JSON)'
 export KV_TRANSFER_ARG
 
@@ -259,9 +274,10 @@ export AIC_METRICS_DIR
 # ---- Image refs for compose ------------------------------------------------
 # HSA_SNOOP_IMAGE is the name compose reads; bake's tag is its default.
 HSA_SNOOP_IMAGE       ?= $(HSA_SNOOP_IMAGE_REF)
+AIC_CLIENT_IMAGE      ?= $(CLIENT_IMAGE_REF)
 # What bake resolved, exported only when it did: an empty KVBENCH_REF in the
 # environment would replace bake's own default in a Slurm-side build.
-$(foreach _v,VLLM_IMAGE_REF LMCACHE_IMAGE_REF HSA_SNOOP_IMAGE KVBENCH_IMAGE_REF KVBENCH_GIT_URL KVBENCH_REF AGENTX_IMAGE_REF,\
+$(foreach _v,VLLM_IMAGE_REF LMCACHE_IMAGE_REF HSA_SNOOP_IMAGE KVBENCH_IMAGE_REF KVBENCH_GIT_URL KVBENCH_REF AIC_CLIENT_IMAGE,\
     $(if $(strip $($(_v))),$(eval export $(_v))))
 
 PYTHON := $(if $(wildcard $(REPO_ROOT)/.venv/bin/python3),$(REPO_ROOT)/.venv/bin/python3,python3)
@@ -392,13 +408,17 @@ help:
 	    'make restart-lmcache' 'Restart lmcache'
 	@printf '\n$(_AIC_B)$(_AIC_X)BENCHMARK (local)$(_AIC_R)\n'
 	@printf '  $(_AIC_G)%-32s$(_AIC_R) %s\n' \
+	    'make client-build' 'Build the aic-client image (every benchmark client, aic-bench)' \
+	    'make bench-list' 'List the aic-bench subcommands' \
+	    'make bench BENCH=<subcommand>' 'Run aic-bench <subcommand> with BENCH_ARGS in aic-client' \
 	    'make vllm-reset-test' 'Verify LMCache L1+L2 KV retrieval end-to-end' \
 	    'make cliff' 'Run KV-cache cliff benchmark, write CSV to BENCH_LOGDIR/results/' \
 	    'make plot' 'Generate cliff PNG charts from BENCH_LOGDIR/results/ CSVs' \
 	    'make kvbench-up' 'Start KVBench + client on internal compose network' \
 	    'make kvbench-down' 'Stop the KVBench compose profile' \
 	    'make cliff-kvbench-local' 'Start KVBench, wait for readiness, run kvbench cliff arm' \
-	    'make agentx-build' 'Build the aic-agentx client image (aiperf)' \
+	    'make agent-simple-run' 'Run the synthetic cache-tier stress (AGENT_SIMPLE_ARGS)' \
+	    'make agent-kv-nvme-sweep' 'agent-kv L2 hit TTFT against injected NVMe read delay (AGENT_KV_SWEEP_ARGS)' \
 	    'make agentx-run' 'Run the AgentX agentic-trace benchmark against the running stack' \
 	    'make agentx-sweep' 'agentx-run at each concurrency in AGENTX_CONCURRENCIES' \
 	    'make agentx-corpus' 'Generate a token-scaled trace corpus (NOT the AgentX benchmark)'
@@ -517,6 +537,14 @@ list-vars:
 	    'LMCACHE_NVME_SLOT_SIZE' '$(call _or_compose_default,LMCACHE_NVME_SLOT_SIZE)' \
 	    'LMCACHE_NFS_POOL' '$(call _or_compose_default,LMCACHE_NFS_POOL)' \
 	    'AIC_L2_BACKEND' '$(call _or_compose_default,AIC_L2_BACKEND)'
+	@printf '\n$(_AIC_B)$(_AIC_X)BENCHMARK (client image, aic-bench)$(_AIC_R)\n'
+	@printf '  $(_AIC_G)%-38s$(_AIC_R) %s\n' \
+	    'AIC_CLIENT_IMAGE' '$(call _or_compose_default,AIC_CLIENT_IMAGE)' \
+	    'AIPERF_VERSION' '$(or $(AIPERF_VERSION),<bake default>)' \
+	    'AGENT_KV_REF' '$(or $(AGENT_KV_REF),<bake default>)' \
+	    'BENCH' '$(BENCH)' \
+	    'BENCH_ARGS' '$(or $(BENCH_ARGS),<none>)' \
+	    'AGENT_SIMPLE_ARGS' '$(AGENT_SIMPLE_ARGS)'
 	@printf '\n$(_AIC_B)$(_AIC_X)BENCHMARK (cliff)$(_AIC_R)\n'
 	@printf '  $(_AIC_G)%-38s$(_AIC_R) %s\n' \
 	    'BENCH_ARM' '$(BENCH_ARM)' \
@@ -529,7 +557,6 @@ list-vars:
 	    'BENCH_LOGDIR' '$(BENCH_LOGDIR)'
 	@printf '\n$(_AIC_B)$(_AIC_X)BENCHMARK (AgentX)$(_AIC_R)\n'
 	@printf '  $(_AIC_G)%-38s$(_AIC_R) %s\n' \
-	    'AGENTX_IMAGE_REF' '$(or $(AGENTX_IMAGE_REF),<run_agentx.sh default>)' \
 	    'AGENTX_MODEL' '$(or $(AGENTX_MODEL),$(VLLM_MODEL),<the model the endpoint serves>)' \
 	    'AGENTX_CONCURRENCY' '$(or $(AGENTX_CONCURRENCY),<run_agentx.sh default>)' \
 	    'AGENTX_CONCURRENCIES' '$(or $(AGENTX_CONCURRENCIES),<overnight_sweep.sh default>)' \

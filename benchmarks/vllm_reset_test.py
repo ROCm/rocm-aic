@@ -20,10 +20,13 @@ Exit codes
   3  L2 hits not observed
   4  both L1 and L2 hits missing
 
-Usage (via make)
-----------------
+Usage
+-----
   make vllm-reset-test HF_TOKEN=... VLLM_MODEL=Qwen/Qwen2.5-3B-Instruct \
       NVME_DATA=/mnt/lmcache-nvme
+
+  aic-bench reset-test        # in aic-client, against a stack that is already up;
+                              # sets the two URLs and the model below unless given
 
 Env overrides (all optional)
 -----------------------------
@@ -52,6 +55,7 @@ FLOOD so L1 still overflows -- eviction to L2 is the property under test,
 and a preset that no longer evicts passes without testing anything.
 """
 
+import argparse
 import json
 import os
 import random
@@ -355,4 +359,7 @@ def main():
 
 
 if __name__ == "__main__":
+    # Configuration is by environment only; this gives the test a --help.
+    argparse.ArgumentParser(description=__doc__,
+                            formatter_class=argparse.RawDescriptionHelpFormatter).parse_args()
     main()

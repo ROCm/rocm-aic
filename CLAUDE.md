@@ -23,24 +23,37 @@ that redundancy.
   were `crsuse2-m2m-NNN`)
 - Controllers are *not* compute nodes and never appear in `sinfo`
 
-## Current stack (2026-11-19)
+## Current stack (2026-11-23)
 
 `docker/docker-bake.hcl` owns every build pin (see `docs/ENVIRONMENT.md`); the
 Dockerfiles carry bare `ARG`s with no defaults. Current pins: base image
 `rocm/dev-ubuntu-26.04:10.2.0-full` (ROCm 10.2.0, Ubuntu 26.04, Python 3.14),
 PyTorch source-built from `ROCm/pytorch@release/2.15`, torchvision `v0.29.2`,
-Triton `release/internal/3.8.x`, vLLM `v0.34.0`, LMCache `v0.5.8rc1`, NIXL
+Triton `release/internal/3.8.x`, vLLM `v0.34.0`, LMCache `v0.5.8`, NIXL
 `v1.5.2` on UCX `v1.22.0`, AITER `v0.1.29.post1`, hsa-snoop `aba6a306`
 (unreleased, `feat/cpu-deload`). KVBench
 stays on LMCache 0.5.6. Validate changes on an MI355X before modifying the
-stack; as of this date the new stack has only been served on gfx1201.
+stack; gfx1201 built 2026-11-23, MI355X unvalidated.
 
-- **The LMCache connector config must set `"lmcache.mp.use_vmm_api": false`.**
-  LMCache v0.5.8rc1 asks vLLM for fd-exported (VMM) KV memory by default, and
-  vLLM v0.34.0 refuses that on ROCm at startup (LMCache issue #6620). Every
-  connector JSON in the repo carries the key; a hand-written
-  `--kv-transfer-config` needs it too. Upstream's ROCm VMM path (LMCache #6626,
-  vLLM #67577) is not in these tags.
+- **The LMCache connector config must set `"lmcache.mp.use_vmm_api": false`
+  unless `patches/vllm/02-vllm-rocm-extensible-kv-fd-exporter.patch` is in
+  the build.** LMCache v0.5.8 asks vLLM for fd-exported (VMM) KV memory by
+  default, and vLLM v0.34.0 refuses that on ROCm at startup (LMCache issue
+  #6620). Every connector JSON in the repo carries `use_vmm_api: false`; a
+  hand-written `--kv-transfer-config` needs it too. The ROCm VMM path landed
+  in LMCache v0.5.8 (#6626) but requires vLLM PR #67577 (backported by patch
+  `02`) — that PR narrows the extensible-KV-cache ROCm guard from
+  `needs_single_chunk()` to `KVCacheAccess.REGISTERS in kv_cache_access` so
+  fd-exporting connectors keep the extensible cache. With patch `02` applied,
+  `use_vmm_api: true` works on gfx1201 (validated 2026-11-23) with
+  dma-buf IPC; 300s stress runs complete with zero errors.
+  The performance delta vs `use_vmm_api: false` is entirely from the smaller
+  extensible KV cache start size (832 blocks, 1.83 GiB on 16 GB gfx1201 at
+  0.74 utilization) — GPU hits drop ~33% → ~11%, computed rises ~33% → ~47%.
+  On SPUR with more VRAM the extensible cache self-sizes larger. Keep
+  `use_vmm_api: false` as the production default; use `LMCACHE_USE_VMM_API=true`
+  to test the VMM path. Drop this note once VLLM_REF is bumped to a tag
+  containing #67577.
 - **Judge KV offload by counters, not log wording.** Use prompts of several
   256-token chunks, restart only vLLM (`make restart-vllm`), and check
   `lmcache_mp_num_finished_stores_total` and
@@ -124,11 +137,20 @@ status for each.
 ## Clients run on the bridge (only Grafana is published)
 
 SPUR nodes are multi-tenant, so no container binds a fixed host port, and only
-Grafana (for browsers) is published at all: `127.0.0.1` on a Docker-chosen port
-that `make endpoints` prints. Servers live on the `aic` bridge (or join a
+Grafana (for browsers) is published at all, on `127.0.0.1`: under `make` on the
+lowest free port from 3000, which it keeps across a down/up; from compose alone
+on a Docker-chosen port. `make endpoints` prints it. Servers live on the `aic` bridge (or join a
 bridged container's netns, as `vllm` joins `aic-lmcache`), and every client runs
 in a container there: `aic-client` for make targets, a throwaway
-`docker run --network aic` on SPUR. One-off requests from host code go through
+`docker run --network aic` on SPUR. `aic-client` is a built image
+(`docker/client/Dockerfile`, bake target `client`, `make client-build`; compose
+builds it when missing) holding every benchmark client: the `benchmarks/`
+scripts, `agent-kv` and `aiperf` (own venv), no ROCm, no `lm_eval`. One CLI
+drives them, `aic-bench <subcommand>` (`make bench BENCH=<subcommand>
+BENCH_ARGS='...'`, `make bench-list`); it runs the scripts from `/repo` when
+the checkout is mounted, so an edit needs no rebuild, and fills in
+`AIC_BENCH_ENDPOINT` / `AIC_BENCH_MODEL` / `AIC_BENCH_OUT`. See
+`benchmarks/README.md`. One-off requests from host code go through
 `aic_fetch <url> [<json-body>]` in `scripts/aic-endpoints.sh` (set
 `AIC_FETCH_IMAGE` to an image already on the node); never `curl localhost:<port>`.
 Address a stack by container name, not the shared `aic-vllm` alias, which two
@@ -167,12 +189,11 @@ build (`AIC_ROCM_ARCH` default includes `gfx1201`). Key differences from CDNA:
   echo "0000:10:00.0" | sudo tee /sys/bus/pci/drivers/amdgpu/bind
   ```
 
-  Legacy GPU IPC (`AIC_HSA_IPC_LEGACY=1` → `HSA_ENABLE_IPC_MODE_LEGACY=1` in
-  both containers) uses those DKMS-only KFD IPC ioctls.  The default
-  (non-legacy) mode does not, but vllm and lmcache must share a network
-  namespace (ROCR passes the dmabuf fd over the abstract socket `@hsa<pid>`)
-  and should share the PID namespace (`network_mode: container:aic-lmcache` +
-  `pid: service:lmcache` — the compose defaults; no make override needed).
+  dma-buf IPC (the default) does not need the DKMS amdgpu ioctls, but vllm
+  and lmcache must share a network namespace (ROCR passes the dmabuf fd over
+  the abstract socket `@hsa<pid>`) and should share the PID namespace
+  (`network_mode: container:aic-lmcache` + `pid: service:lmcache` — the
+  compose defaults; no make override needed).
 
   Validated 2026-11-17 on ROCm 10.1 and 2026-11-19 on ROCm 10.2, both with
   amdgpu-dkms 7.1.9: in the default
@@ -195,16 +216,19 @@ build (`AIC_ROCM_ARCH` default includes `gfx1201`). Key differences from CDNA:
   ```
 
   Additional gfx1201 requirements:
-  - `VLM_GPU_MEMORY_UTILIZATION=0.74` on this 16 GB card — vLLM v0.34.0 holds
-    about 4 GiB before it measures free memory, so the default 0.90 fails at
-    startup with "Free memory on device ... is less than desired GPU memory
-    utilization". The reset test (which adds `--enforce-eager`) then gets a KV
-    cache of about 152,000 tokens; with CUDA graphs it is far smaller.
-    0.74 only holds for short prompts: prompts of several thousand tokens
-    (AgentX, 2026-11-18) ran the engine out of memory at 0.74, and with CUDA
-    graphs a 32,768-token context does not fit at all. For those use
+  - `VLM_GPU_MEMORY_UTILIZATION=0.74` on this 16 GB card — vLLM v0.34.0
+    introduced the extensible KV cache (on by default), which measures free
+    memory after warmup and defaults `gpu_memory_utilization` to 1.0. On a
+    16 GB card this still OOMs at startup if too much is pre-allocated, so
+    0.74 is still recommended. The reset test (which adds `--enforce-eager`)
+    then gets a KV cache of about 152,000 tokens; with CUDA graphs it is far
+    smaller. 0.74 only holds for short prompts: prompts of several thousand
+    tokens (AgentX, 2026-11-18) ran the engine out of memory at 0.74, and
+    with CUDA graphs a 32,768-token context does not fit at all. For those use
     `make up-dev` (eager) with `VLM_GPU_MEMORY_UTILIZATION=0.68`, which gives
-    a KV cache of about 124,000 tokens.
+    a KV cache of about 124,000 tokens. On a node with more VRAM (or on SPUR)
+    removing `VLM_GPU_MEMORY_UTILIZATION` lets the extensible KV cache size
+    itself and may increase throughput.
   - `VLM_LOAD_FORMAT=auto` — fastsafetensors GDS is CDNA-only.
   - `LMCACHE_L1_SIZE_GB=2` for this 16 GB node — default 20 GiB L1 prevents
     eviction to L2 in the reset test.

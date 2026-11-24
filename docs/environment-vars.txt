@@ -58,7 +58,8 @@ NVME_EXPORTER_VERSION: `nvme_exporter` release packaged into the NVMe exporter i
 RDMA_EXPORTER_VERSION: `rdma_exporter` release packaged into the RDMA exporter image
 KVBENCH_REF: KVBench commit
 KVBENCH_LMCACHE_VERSION: LMCache release (from `PyPI`) installed into the KVBench image. Not `LMCACHE_REF`: KVBench pins its own compatible range
-AIPERF_VERSION: `aiperf` version installed into the AgentX client image
+AIPERF_VERSION: `aiperf` release installed into the `aic-client` image, in its own virtualenv; `latest` takes whatever `PyPI` serves on the day of the build
+AGENT_KV_REF: agent-kv commit installed into the `aic-client` image. A SHA, because agent-kv has no tags
 
 [repositories]
 PYTORCH_GIT_URL: PyTorch source repository; override to build from a fork
@@ -74,6 +75,7 @@ HSA_SNOOP_GIT_URL: hsa-snoop source repository
 CLR_GIT_URL: Source repository of the patched `libamdhip64`
 TRITON_GIT_URL: Source repository of Triton
 KVBENCH_GIT_URL: KVBench source repository
+AGENT_KV_GIT_URL: agent-kv source repository; the build fetches the commit as a tarball
 
 [build]
 BUILD_JOBS: Cap on parallel compile jobs. Empty means `nproc`; a Slurm build defaults it to `AIC_BUILD_CPUS`
@@ -182,7 +184,6 @@ LMCACHE_CONFIG_FILE_HOST: Host path of an LMCache config file to mount (`local_d
 LMCACHE_CONFIG_FILE: In-container path of that config; set only when one is mounted
 NIXL_TELEMETRY_ENABLE: NIXL's own Prometheus exporter on `:19090`. Set it empty to disable
 NIXL_TELEMETRY_EXPORTER: NIXL telemetry exporter type
-AIC_HSA_IPC_LEGACY: `1` sets `HSA_ENABLE_IPC_MODE_LEGACY=1` in both containers: the KFD-handle IPC mode, which needs the DKMS `amdgpu` module
 
 [coordinator]
 LMCACHE_COORDINATOR_URL: Base URL the MP server registers and heartbeats against. Set it empty to run without a coordinator
@@ -203,6 +204,8 @@ VLM_ATTENTION_BACKEND: `--attention-backend`. `TRITON_ATTN` is the one that supp
 VLM_KV_CACHE_DTYPE: `--kv-cache-dtype`. `auto` stores KV in the model dtype; `fp8` roughly doubles KV capacity where the arch has native `fp8`, but gave repeated-token glitches with Qwen2.5-3B on gfx1201
 VLM_KV_CACHE_METRICS_SAMPLE: Fraction of KV blocks sampled for the residency histograms
 KV_TRANSFER_ARG: vLLM `--kv-transfer-config` argument. `make` sets the `LMCacheMPConnector` JSON; empty is a plain vLLM (the cliff `vram` baseline). Single-quote the JSON
+LMCACHE_LAZY_OFFLOAD: `lmcache.mp.lazy_offload` in the connector JSON `make` builds. `false` stores every block as it is computed, which `make agent-kv-nvme-sweep` needs: a `/reset_prefix_cache` drops deferred stores
+LMCACHE_USE_VMM_API: `lmcache.mp.use_vmm_api` in the connector JSON `make` builds. `true` uses the ROCm VMM fd-export path; requires `patches/vllm/02-vllm-rocm-extensible-kv-fd-exporter.patch` in the build
 VLLM_EXTRA_ARGS: Extra `vllm serve` arguments appended verbatim; single-quote embedded JSON
 VLLM_LOGGING_LEVEL: vLLM log level
 VLLM_SERVER_DEV_MODE: `1` enables vLLM's development endpoints, which the tests use to reset the GPU prefix cache
@@ -217,8 +220,8 @@ VLM_FAIL_LOG_LINES: `make vllm-reset-test`: container log lines printed when the
 
 [network]
 AIC_PUBLISH_ADDR: Host address the published Grafana port binds; `0.0.0.0` exposes it beyond loopback
-AIC_GRAFANA_PORT: Pin the Grafana host port, the only published one. Empty lets Docker pick a free port; `make endpoints` prints the URL
-AIC_CLIENT_IMAGE: Image of the `aic-client` container make targets run their clients in
+AIC_GRAFANA_PORT: Pin the Grafana host port, the only published one. Unset, `make` picks the lowest free port from 3000 and keeps it across a down/up; empty, or compose run without `make`, lets Docker pick a free port. `make endpoints` prints the URL
+AIC_CLIENT_IMAGE: Image of the `aic-client` container and of the throwaway AgentX containers. `make` sets it to the ref bake tags (`aic-client:<AIC_VERSION>`); compose builds it from `docker/client/Dockerfile` when it is missing
 AIC_FETCH_IMAGE: Image `aic_fetch` runs `curl` from; scripts set it to an AIC image already on the node
 AIC_FETCH_TIMEOUT: `aic_fetch` request timeout, seconds
 AIC_NETWORK: Docker network `aic_fetch` and the endpoint helpers attach to
@@ -255,6 +258,15 @@ BENCH_MODEL: Model name in the benchmark requests
 BENCH_PREFIX_MODE: Prefix sharing in the Slurm cliff job: `per_client` or `shared`. `make cliff-kvd` presets `shared`
 BENCH_LOGDIR: Where non-Slurm runs write results and plots
 
+[client]
+BENCH: `aic-bench` subcommand `make bench` runs
+BENCH_ARGS: Arguments `make bench` passes to the tool behind the subcommand, unchanged
+AIC_BENCH_ENDPOINT: Server base URL on the `aic` bridge, without `/v1`; `aic-bench --endpoint`. `make bench` passes `BENCH_ENDPOINT`, or the running tiered vLLM
+AIC_BENCH_MODEL: Served model name; `aic-bench --model`. Empty takes the first model the endpoint lists
+AIC_BENCH_OUT: Results root in the container; `aic-bench --out`. A run writes to `<out>/<subcommand>/<UTC timestamp>/`, and `/logs` is `logs/` in the checkout
+AIC_BENCH_DATASET: ShareGPT file `aic-bench serve-sim` replays. The `aic-client` container sets it to a path under the Hugging Face cache (`/hf_cache`); it is downloaded when missing
+AIC_HSA_SNOOP_URL: hsa-snoop exporter `aic-bench fixed-load` scrapes
+
 [kvbench]
 KVBENCH_MODEL: KVBench model profile
 KVBENCH_GPU_PROFILE: KVBench hardware timing profile
@@ -267,7 +279,6 @@ AIC_KVBENCH_CONSTRAINT: `make cliff-kvbench-submit`: Slurm `-C` expression (stan
 AIC_KVBENCH_TIME: `make cliff-kvbench-submit`: job time limit
 
 [agentx]
-AGENTX_IMAGE_REF: Full `name:tag` of the `aiperf` client image. `make` exports the ref bake tags (`aic-agentx:<AIPERF_VERSION>`); the default is the `:latest` alias a local bake adds
 AGENTX_MODEL: Served model name in the requests. Empty takes the model the endpoint reports
 AGENTX_TOKENIZER: Hugging Face tokenizer `aiperf` counts tokens with. Empty means the model
 AGENTX_CONCURRENCY: Trajectories replayed at once by `make agentx-run`. Each is one recorded agent session, subagent fan-out included
@@ -284,6 +295,8 @@ AGENTX_SLICE_DURATION: Width of the time slices in the `aiperf` export, seconds
 AGENTX_SERVER_METRICS: Space-separated Prometheus `/metrics` URLs `aiperf` records besides the endpoint's own. Empty means the stack's LMCache metrics port on the `aic` bridge, or nothing when `BENCH_ENDPOINT` is set; `none` disables it
 AGENTX_EXTRA_ARGS: Space-separated arguments appended to `aiperf profile`
 AGENTX_ARGS: Options `make agentx-run` and `make agentx-sweep` pass to `benchmarks/agentx/run_agentx.sh`, e.g. `--dry-run`
+AGENT_SIMPLE_ARGS: Arguments `make agent-simple-run` passes to `benchmarks/agent-simple/stress.py`: run id, documents, concurrency, seconds, optional maximum words per document
+AGENT_KV_SWEEP_ARGS: Extra `agent-kv nvme-sweep` options for `make agent-kv-nvme-sweep`, for example `--delays 0,10,50 --num-books 4`
 
 [cliff]
 AIC_CLIFF_ARMS: Comma list of arms to run: `vram`, `nvme`, `gds`. `make cliff-spur-l2` presets `nvme`
@@ -369,7 +382,7 @@ EMU_KV_TRANSFER_ARG: `--kv-transfer-config` for the emulator. Not `KV_TRANSFER_A
 EMU_IPC_MODE: IPC mode of the emulator. `emulate-mp` needs `container:aic-lmcache-emulator`
 DEVICE_TYPE: LMCache device type in the `lmcache-emulator` service
 VLLM_CPU_MODEL: Model served by the `cpu-smoke-emulator` service
-AIC_CONTAINER_USER: `uid:gid` containers run as (default: invoking user). Used by all GPU and emulator services
+AIC_CONTAINER_USER: `uid:gid` containers run as (default: invoking user). Used by all GPU and emulator services and by the benchmark client (`aic-client`), which is root under plain `docker compose`
 RENDER_GID: Group of `/dev/kfd`, added as a supplementary group to lmcache and vllm containers so a non-root container can open the GPU. make and the Slurm scripts read it from the node; set it yourself when running `docker compose` directly
 AIC_CONTAINER_HOME: `HOME` inside that container
 AIC_CONTAINER_USERNAME: User name reported inside that container
@@ -450,6 +463,7 @@ RJ_IMAGE_ALIAS: Short alias the images were pushed under
 RJ_IMAGE_REF: vLLM image for the emulated arch, as bake tags it
 RJ_LMCACHE_IMAGE_REF: LMCache image for the emulated arch
 RJ_HSA_SNOOP_IMAGE_REF: hsa-snoop image for the emulated arch
+RJ_CLIENT_IMAGE_REF: `aic-client` image loaded into the guest, as bake tags it; built on the host when it is missing
 RJ_NCCL_HEARTBEAT_S: `NCCL` process-group heartbeat, seconds; long, because an emulated collective is slow
 RJ_PROBE: `1` runs the kernel capability probe before vLLM
 RJ_PROBE_ONLY: `1` stops after the probe

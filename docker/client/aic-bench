@@ -1,0 +1,14 @@
+#!/bin/sh
+# Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+#
+# Run benchmarks/aic_bench.py from the first place that has it: a live checkout
+# before the copy baked into the image, so an edit needs no rebuild.
+for root in "${AIC_BENCH_ROOT:-}" /repo/benchmarks /opt/aic/benchmarks; do
+  if [ -n "${root}" ] && [ -f "${root}/aic_bench.py" ]; then
+    exec /opt/aic/venv/bin/python3 "${root}/aic_bench.py" "$@"
+  fi
+done
+echo "aic-bench: no aic_bench.py under \${AIC_BENCH_ROOT}, /repo/benchmarks or /opt/aic/benchmarks" >&2
+exit 127

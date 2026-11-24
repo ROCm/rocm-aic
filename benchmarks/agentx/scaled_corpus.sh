@@ -18,7 +18,7 @@
 #   --dataset REPO   Hugging Face dataset repo to scale
 #                    (default: semianalysisai/cc-traces-weka-062126)
 #   --cache-dir DIR  Where corpora are kept (default: ~/.cache/aic-agentx)
-#   --image REF      aic-agentx image ref (default: aic-agentx:latest)
+#   --image REF      aic-client image ref (default: aic-client:latest)
 #   --force          Regenerate a corpus that already exists
 #   --print-dir      Only print the directory the corpus has or would have
 #
@@ -29,7 +29,7 @@
 #
 # Environment:
 #   AGENTX_CORPUS_SCALE, AGENTX_CORPUS_DATASET, AGENTX_CORPUS_CACHE,
-#   AGENTX_IMAGE_REF   the options above
+#   AIC_CLIENT_IMAGE   the options above
 #   HF_HOME            Host Hugging Face cache (default: ~/.cache/huggingface);
 #                      the dataset is downloaded there once
 #   HF_TOKEN           Passed through when set (the default dataset is public)
@@ -41,7 +41,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SCALE="${AGENTX_CORPUS_SCALE:-8}"
 DATASET="${AGENTX_CORPUS_DATASET:-semianalysisai/cc-traces-weka-062126}"
 CACHE_DIR="${AGENTX_CORPUS_CACHE:-${HOME}/.cache/aic-agentx}"
-IMAGE="${AGENTX_IMAGE_REF:-aic-agentx:latest}"
+IMAGE="${AIC_CLIENT_IMAGE:-aic-client:latest}"
 HF_CACHE="${HF_HOME:-${HOME}/.cache/huggingface}"
 FORCE="false"
 PRINT_DIR="false"
@@ -84,7 +84,7 @@ if [[ -f "${OUT}/SCALED-CORPUS.txt" && "${FORCE}" != "true" ]]; then
 fi
 
 if ! docker image inspect "${IMAGE}" &>/dev/null; then
-  echo "ERROR: image ${IMAGE} not found. Build it with: make agentx-build" >&2
+  echo "ERROR: image ${IMAGE} not found. Build it with: make client-build" >&2
   exit 1
 fi
 
@@ -105,7 +105,7 @@ docker run --rm \
   -v "${HF_CACHE}:/hf_cache" \
   -v "${SCRIPT_DIR}/scale_corpus.py:/aic/scale_corpus.py:ro" \
   -v "${TMP}:/out" \
-  --entrypoint python3 \
+  --entrypoint /opt/aic/aiperf-venv/bin/python3 \
   "${IMAGE}" /aic/scale_corpus.py \
     --dataset "${DATASET}" --divisor "${SCALE}" --output /out >&2
 

@@ -205,8 +205,7 @@ vllm-reset-test: check-hf-token prep-dirs
 	    [ "$$i" = "$(VLM_READY_RETRIES)" ] && echo "ERROR: vLLM not healthy after vllm_reset_test timeout" >&2 && exit 1; \
 	    sleep 5; \
 	done
-	@docker inspect aic-client >/dev/null 2>&1 || { \
-	    echo "ERROR: aic-client container not running" >&2; exit 1; }
+	$(_wait_aic_client)
 	@_v="$$($(call aic_bridge_url,aic-vllm-gpu$(GPU),8000))" && _l="$$($(call aic_bridge_url,aic-lmcache,8080))" || exit 1; \
 	echo "Clearing vLLM GPU prefix cache..."; \
 	docker exec aic-client curl -s -X POST "$$_v/reset_prefix_cache" \
@@ -223,5 +222,5 @@ vllm-reset-test: check-hf-token prep-dirs
 	    -e AIC_TEST_MODEL -e AIC_TEST_ANCHORS -e AIC_TEST_FLOOD \
 	    -e AIC_TEST_TIMEOUT -e AIC_TEST_SEED \
 	    -e AIC_TEST_ANCHOR_REPS -e AIC_TEST_MAX_TOKENS \
-	    aic-client python3 -u benchmarks/vllm_reset_test.py
+	    aic-client aic-bench --endpoint "$$_v" reset-test
 	@echo "Test complete. Run 'make down' to stop the stack."

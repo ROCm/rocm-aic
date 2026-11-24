@@ -66,8 +66,8 @@ that name itself, checks `/v1/models` from the same network, and runs
 `aiperf` as the invoking user.
 
 ```bash
-# Build the client image (once): aic-agentx, python:3.12-slim + aiperf
-make agentx-build
+# Build the client image (once): aic-client, which carries aiperf
+make client-build
 
 # With the stack up (make up / make up-batch), against a large-context model
 make agentx-run
@@ -92,10 +92,10 @@ directly (see the header of each).
 
 | File | Purpose |
 | --- | --- |
-| `run_agentx.sh` | One run, from the `aic-agentx` container |
+| `run_agentx.sh` | One run, from a throwaway `aic-client` container |
 | `overnight_sweep.sh` | One run per concurrency level |
 | `scaled_corpus.sh` | Generate (or reuse) a scaled corpus and print its directory |
-| `scale_corpus.py` | The scaling itself; runs inside the `aic-agentx` image |
+| `scale_corpus.py` | The scaling itself; runs inside the `aic-client` image |
 | `turn_visualizer.py` | HTML turn timeline from a run's `profile_export.jsonl` |
 
 ## Results
@@ -159,19 +159,23 @@ make agentx-run AGENTX_CORPUS_SCALE=8 AGENTX_CONCURRENCY=1
 
 ## The image
 
-`aic-agentx` is `python:3.12-slim` with `aiperf` installed and `aiperf` as
-its entry point; it has no ROCm runtime. `docker/docker-bake.hcl` pins
-`AIPERF_VERSION` to the release these scripts were run against, because the
-flags and the record layout change between releases.
+`aiperf` comes from `aic-client`, the one benchmark client image
+(`docker/client/Dockerfile`, no ROCm runtime). It lives in its own virtualenv,
+`/opt/aic/aiperf-venv`, so its dependency pins cannot clash with the other
+clients, and is on `PATH` as `aiperf`. The image has no entry point: the
+scripts here pass `--entrypoint aiperf`, or
+`--entrypoint /opt/aic/aiperf-venv/bin/python3` for `scale_corpus.py`, which
+imports `aiperf` and `datasets`. `docker/docker-bake.hcl` pins `AIPERF_VERSION`
+to the release these scripts were run against, because the flags and the record
+layout change between releases.
+
+`AIC_CLIENT_IMAGE` (or `--image`) names the image; `make` exports the ref bake
+tags, and the scripts default to `aic-client:latest`.
 
 ```bash
-# What make agentx-build runs:
-docker buildx bake -f docker/docker-bake.hcl agentx --load
-
-# Raw build with the args bake resolves (the Dockerfile has no defaults):
-mapfile -t args < <(docker/scripts/aic-bake-env.sh --build-args agentx)
-docker buildx build "${args[@]}" \
-  -f docker/agentx/Dockerfile \
-  -t aic-agentx:latest \
-  .
+# What make client-build runs:
+docker buildx bake -f docker/docker-bake.hcl client --load
 ```
+
+In the long-lived `aic-client` container the same binary is
+`aic-bench aiperf <args>`; see [`../README.md`](../README.md).

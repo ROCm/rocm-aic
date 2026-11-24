@@ -22,9 +22,9 @@
 # Dockerfile is built through bake or with bake's resolved args:
 #   mapfile -t args < <(docker/scripts/aic-bake-env.sh --build-args <target>)
 #   docker buildx build "${args[@]}" -f docker/<dir>/Dockerfile ...
-# tests/test_aic_bake_env.py fails when a default reappears.  The one exception
-# is docker/kvbench/Dockerfile, which compose also builds; the same test keeps
-# its defaults equal to the values here.
+# tests/test_aic_bake_env.py fails when a default reappears.  The exceptions
+# are docker/kvbench/Dockerfile and docker/client/Dockerfile, which compose
+# also builds; the same test keeps their defaults equal to the values here.
 #
 # Run bake from the repo root: every target uses `context = "."`, which bake
 # resolves against the invoking directory, not against this file.
@@ -55,7 +55,7 @@ variable "VLLM_TARGET_DEVICE" { default = "rocm" }
 variable "LLM_EMU_REF"       { default = "b71c602" }
 variable "AITER_REF"         { default = "v0.1.29.post1" }
 variable "FLASH_ATTN_REF"    { default = "0e60e394" }
-variable "LMCACHE_REF"       { default = "v0.5.8rc1" }
+variable "LMCACHE_REF"       { default = "v0.5.8" }
 variable "NIXL_REF"          { default = "v1.5.2" }
 # cupy-rocm-7-0 on both ends of the HIP IPC path (aic-lmcache and aic-vllm).
 variable "CUPY_VERSION"      { default = "14.2.0" }
@@ -103,9 +103,12 @@ variable "KVBENCH_IMAGE_TAG"     { default = substr(KVBENCH_REF, 0, 7) }
 # removed lmcache.v1.cache_engine, so this does not follow LMCACHE_REF.
 variable "KVBENCH_LMCACHE_VERSION" { default = "0.5.6" }
 
-# AgentX benchmark client (aiperf, no ROCm dependency).  Pinned to the release
+# Benchmark client image (no ROCm dependency).  aiperf is pinned to the release
 # benchmarks/agentx/ was run against: its flags and record layout move.
 variable "AIPERF_VERSION"        { default = "0.13.0" }
+# A commit: agent-kv has no tags.
+variable "AGENT_KV_GIT_URL"      { default = "https://github.com/sbates130272/agent-kv" }
+variable "AGENT_KV_REF"          { default = "19fcc86be6e267839889567ce5d20dd0fed6bbaf" }
 
 # ---- Build knobs (override via env) ------------------------------------------
 
@@ -177,7 +180,7 @@ function "tags" {
 }
 
 # Same, for images whose tag is a fixed string rather than the version tag
-# (the exporters' ":local", kvbench's pinned tag, agentx's aiperf version,
+# (the exporters' ":local", kvbench's pinned tag, the client's AIC version,
 # hsa-snoop's own ref).
 function "fixed_tags" {
   params = [name, tag]
@@ -531,18 +534,21 @@ target "kvbench" {
   cache-to   = cache_to("noarch", "kvbench")
 }
 
-# AgentX aiperf benchmark client.  No ROCm dependency — pure benchmark driver.
-# Build: docker buildx bake -f docker/docker-bake.hcl agentx --load
-# Other release: AIPERF_VERSION=<version> docker buildx bake -f docker/docker-bake.hcl agentx --load
-target "agentx" {
+# Benchmark client: the benchmarks/ scripts, agent-kv and aiperf behind
+# `aic-bench`.  No ROCm dependency.
+# Build: docker buildx bake -f docker/docker-bake.hcl client --load
+# Other aiperf release: AIPERF_VERSION=<version> docker buildx bake -f docker/docker-bake.hcl client --load
+target "client" {
   context    = "."
-  dockerfile = "docker/agentx/Dockerfile"
+  dockerfile = "docker/client/Dockerfile"
   # :latest only locally, as in tags().
-  tags       = distinct(concat(fixed_tags("aic-agentx", AIPERF_VERSION),
-                               AIC_IMAGE_PREFIX == "" ? ["aic-agentx:latest"] : []))
+  tags       = concat(fixed_tags("aic-client", AIC_VERSION),
+                      AIC_IMAGE_PREFIX == "" ? ["aic-client:latest"] : [])
   args = {
-    AIPERF_VERSION = AIPERF_VERSION
+    AIPERF_VERSION   = AIPERF_VERSION
+    AGENT_KV_GIT_URL = AGENT_KV_GIT_URL
+    AGENT_KV_REF     = AGENT_KV_REF
   }
-  cache-from = cache_from("noarch", "agentx")
-  cache-to   = cache_to("noarch", "agentx")
+  cache-from = cache_from("noarch", "client")
+  cache-to   = cache_to("noarch", "client")
 }

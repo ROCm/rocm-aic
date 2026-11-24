@@ -2,13 +2,9 @@
 #
 # Producer owns a shareable IPC namespace; consumer joins it (same as the aic
 # vllm<->lmcache setup). Both get the GPU and a shared /ipc volume for the
-# handle hand-off. Toggle HSA_ENABLE_IPC_MODE_LEGACY to compare modes:
+# handle hand-off.
 #
-#   # non-LEGACY:
 #   AIC_IMG=aic-vllm:latest RENDER_GID=$(getent group render | cut -d: -f3) \
-#     docker compose -f tests/ipc/event-compose.yaml up --abort-on-container-exit
-#   # LEGACY:
-#   HSA_ENABLE_IPC_MODE_LEGACY=1 AIC_IMG=aic-vllm:latest RENDER_GID=... \
 #     docker compose -f tests/ipc/event-compose.yaml up --abort-on-container-exit
 services:
   producer:
@@ -16,7 +12,6 @@ services:
     entrypoint: ["python3", "/tests/event_producer.py"]
     ipc: shareable
     environment:
-      HSA_ENABLE_IPC_MODE_LEGACY: "${HSA_ENABLE_IPC_MODE_LEGACY:-}"
       HIP_VISIBLE_DEVICES: "0"
     devices:
       - /dev/kfd
@@ -34,7 +29,6 @@ services:
     depends_on:
       - producer
     environment:
-      HSA_ENABLE_IPC_MODE_LEGACY: "${HSA_ENABLE_IPC_MODE_LEGACY:-}"
       HIP_VISIBLE_DEVICES: "0"
     devices:
       - /dev/kfd
