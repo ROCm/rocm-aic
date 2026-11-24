@@ -43,7 +43,7 @@ accuracy = [
     "transformers>=5.16",
     "pytest>=9",
 ]
-dev = ["rocm-aic[bench,plot,accuracy]"]
+dev = ["rocm-aic[bench,plot,accuracy]", "pre-commit>=3.5"]
 
 [tool.setuptools.packages.find]
 where = ["."]
