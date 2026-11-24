@@ -20,6 +20,11 @@ set -euo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo="$(cd "${here}/../.." && pwd)"
+# AIC_STACK, exported so `make` drives the same stack these names point at.
+# shellcheck source=scripts/aic-endpoints.sh
+source "${repo}/scripts/aic-endpoints.sh"
+vllm="${AIC_STACK}-vllm-gpu0"
+lmcache="${AIC_STACK}-lmcache"
 log="${1:-/tmp/aic-agent-simple-hour.log}"
 read -r -a make_args <<< "${AIC_STRESS_MAKE_ARGS:?set AIC_STRESS_MAKE_ARGS to the make variables for make up-dev}"
 read -r -a l1_sizes <<< "${AIC_STRESS_L1_SIZES:-2 8}"
@@ -32,10 +37,10 @@ up() {
     make -C "${repo}" up-dev "${make_args[@]}" "LMCACHE_L1_SIZE_GB=$1" >/dev/null 2>&1 \
         || { say "ERROR make up-dev failed"; return 1; }
     for _ in $(seq 1 60); do
-        [[ "$(docker inspect aic-vllm-gpu0 --format '{{.State.Health.Status}}' 2>/dev/null)" == healthy ]] && break
+        [[ "$(docker inspect "${vllm}" --format '{{.State.Health.Status}}' 2>/dev/null)" == healthy ]] && break
         sleep 5
     done
-    say "stack: vllm=$(docker inspect aic-vllm-gpu0 --format '{{.State.Health.Status}}' 2>&1)"
+    say "stack: vllm=$(docker inspect "${vllm}" --format '{{.State.Health.Status}}' 2>&1)"
 }
 
 count() { docker logs --since 15m "$1" 2>&1 | grep -ci -- "$2" || true; }
@@ -44,13 +49,13 @@ run() {  # run-id documents concurrency seconds max-words
     say "RUN $1 docs=$2 concurrency=$3 seconds=$4 max_words=$5"
     "${here}/run_stress.sh" "$@" 2>&1 | grep --line-buffered -v '^t+' | sed -u "s/^/  [$1] /" | tee -a "${log}" || true
     local lazy
-    lazy="$(docker logs --since 15m aic-vllm-gpu0 2>&1 | grep -o 'Lazy offload counters.*' | tail -1 \
+    lazy="$(docker logs --since 15m "${vllm}" 2>&1 | grep -o 'Lazy offload counters.*' | tail -1 \
         | grep -o 'admitted=[0-9]* emitted=[0-9]*\|dropped_evicted=[0-9]*\|pending=[0-9]*' | tr '\n' ' ' || true)"
-    say "HEALTH $1 vllm=$(docker inspect aic-vllm-gpu0 --format '{{.State.Status}}/{{.State.Health.Status}}' 2>&1)" \
-        "lmcache=$(docker inspect aic-lmcache --format '{{.State.Status}}' 2>&1)" \
-        "allocfail=$(count aic-lmcache 'Failed to batched allocate')" \
-        "vllmErr=$(count aic-vllm-gpu0 'traceback\|out of memory\| ERROR ')" \
-        "lmcErr=$(count aic-lmcache 'traceback\| ERROR')" \
+    say "HEALTH $1 vllm=$(docker inspect "${vllm}" --format '{{.State.Status}}/{{.State.Health.Status}}' 2>&1)" \
+        "lmcache=$(docker inspect "${lmcache}" --format '{{.State.Status}}' 2>&1)" \
+        "allocfail=$(count "${lmcache}" 'Failed to batched allocate')" \
+        "vllmErr=$(count "${vllm}" 'traceback\|out of memory\| ERROR ')" \
+        "lmcErr=$(count "${lmcache}" 'traceback\| ERROR')" \
         "lazy=${lazy}" \
         "swapUsedMB=$(free -m | awk '/Swap/{print $3}') memAvailGB=$(free -g | awk '/Mem/{print $7}')"
 }
