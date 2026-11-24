@@ -1,0 +1,35 @@
+# Local copies of the fast CI lint gates (.github/workflows/rocm-aic-lint-check.yml).
+# Install once with `make venv && .venv/bin/pre-commit install`.
+# Tool versions match the CI runners: shellcheck 0.9.0 (ubuntu-24.04 apt) and
+# hadolint 2.12.0 (hadolint-action v3.5.0).
+repos:
+  - repo: https://github.com/shellcheck-py/shellcheck-py
+    rev: v0.9.0.6
+    hooks:
+      - id: shellcheck
+        args: [-x]
+
+  - repo: https://github.com/AleksaC/hadolint-py
+    rev: v2.12.0.3
+    hooks:
+      - id: hadolint
+        files: (^|/)Dockerfile[^/]*$
+        exclude: \.dockerignore$
+
+  - repo: local
+    hooks:
+      # Regenerates docs/ENVIRONMENT.md's tables from the files that own the
+      # defaults (`make env-docs`).
+      - id: env-docs
+        name: docs/ENVIRONMENT.md variable tables
+        entry: python3 scripts/gen-env-reference.py --write
+        language: system
+        pass_filenames: false
+        always_run: true
+      # Rewrites the README badges and stack table from docker/docker-bake.hcl.
+      - id: readme-versions
+        name: README versions match docker-bake.hcl
+        entry: python3 .github/scripts/workflows/sync-readme-versions.py --write
+        language: system
+        pass_filenames: false
+        files: ^(README\.md|docker/docker-bake\.hcl)$
