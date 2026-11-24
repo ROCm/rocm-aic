@@ -174,8 +174,8 @@ BENCH_ISL         ?= 20000
 BENCH_SHARED_TOK  ?= 18000
 BENCH_CONCUR      ?= 1,2,4,8,16,32,48,64,80,100,128,160,200,250
 BENCH_ITERS       ?= 3
-# Empty = the running tiered vLLM, by name on the aic bridge (`make cliff` runs
-# in aic-client); e.g. http://aic-vllm-only-gpu0:8000 for the vram_only arm.
+# Empty = the running vLLM, by name on the aic bridge (`make cliff` runs in
+# aic-client): aic-vllm-only-gpu$(GPU) for the vram_only arm, else the tiered one.
 BENCH_ENDPOINT    ?=
 BENCH_MODEL       ?= $(VLLM_MODEL)
 
@@ -402,6 +402,7 @@ help:
 	    'make up-dev' 'Start in --enforce-eager mode (~60 s faster, ~10% slower inference)' \
 	    'make up-gds-l1' 'Start with hipFile GDS NVMe slab as L1 (foreground)' \
 	    'make up-gds-l1-batch' 'Start with hipFile GDS NVMe slab as L1 (background)' \
+	    'make up-vllm-only' 'Start a plain vLLM with no LMCache (cliff vram_only baseline)' \
 	    'make down' 'Stop and remove all containers' \
 	    'make logs' 'Follow logs from all containers' \
 	    'make logs-lmcache' 'Follow lmcache logs only' \
