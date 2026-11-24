@@ -87,11 +87,11 @@ _aic_tag="$(bash "${REPO}/docker/scripts/aic-image-tag.sh" 2>/dev/null || true)"
 AIC_VLLM_IMAGE="${AIC_VLLM_IMAGE:-aic-vllm:${_aic_tag:-latest}}"
 AIC_LMCACHE_IMAGE="${AIC_LMCACHE_IMAGE:-aic-lmcache:${_aic_tag:-latest}}"
 # Image the host-side clients run from: the bench and plot containers and
-# monitoring-lib.sh's Prometheus query.  aic-lmcache is the one that carries what
-# they import -- matplotlib (only docker/lmcache/Dockerfile installs it) and
-# httpx (pulled in by the openai package from LMCache's cli.txt) -- and it is
-# already loaded for the kvd arms, so no third image is needed.
-AIC_IMAGE="${AIC_LMCACHE_IMAGE}"
+# monitoring-lib.sh's Prometheus query.  aic-client (docker/client) owns what
+# they import (transformers, httpx, matplotlib) and curl; the stack images do
+# not carry them.  Tagged by AIC_VERSION, as run-build-distribute.sh names it.
+AIC_CLIENT_IMAGE="${AIC_CLIENT_IMAGE:-aic-client:$(<"${REPO}/VERSION")}"
+AIC_IMAGE="${AIC_CLIENT_IMAGE}"
 AIC_IMAGE_DIR="${AIC_IMAGE_DIR:-/scratch/${USER}/images}"
 # Model selection.  Leave VLLM_MODEL empty to auto-pick a default from the node's
 # detected GPU arch (select_default_model(), below): gpt-oss-120b (~60 GB MXFP4)
@@ -526,6 +526,14 @@ _load_stack_image() { # $1=image name:tag  $2=exact artifact, or empty
 }
 _load_stack_image "${AIC_VLLM_IMAGE}" "${AIC_VLLM_ARTIFACT:-}"
 _load_stack_image "${AIC_LMCACHE_IMAGE}" "${AIC_LMCACHE_ARTIFACT:-}"
+# The client is required too (every arm runs the bench).  Its artifact is
+# arch-less, so the manual-run fallback looks for exactly <name>-<tag>.
+if [[ -n "${AIC_CLIENT_ARTIFACT:-}" ]]; then
+  aic_image_fetch cliff "${AIC_CLIENT_IMAGE}" "${AIC_CLIENT_ARTIFACT}" \
+    || die "could not load ${AIC_CLIENT_IMAGE} from ${AIC_CLIENT_ARTIFACT}"
+else
+  load_image_if_needed "${AIC_CLIENT_IMAGE}" "" required
+fi
 
 # Monitoring sidecar images.  Load from the shared NFS tarball when present so
 # compose never needs Docker Hub egress on a cold node.  Applies for all non-zero
@@ -678,7 +686,9 @@ run_bench() { # $1=arm $2=vLLM container $3=out_csv $4=extra args...
   [[ -n "${BENCH_ITERS}" ]] && shape+=(--iters "${BENCH_ITERS}")
   # --init: python as PID 1 ignores the SIGTERM docker run forwards, so on
   # scancel this would block the EXIT trap until SPUR's SIGKILL (job 282399).
-  docker run --rm --init --network aic \
+  # As the stack's own identity: the CSV lands in this job's log tree as the
+  # submitting user, and the HF cache is read through its group.
+  docker run --rm --init --network aic --user "${AIC_CONTAINER_USER}" \
     -v "${REPO}":/work -w /work \
     -v "${HF_HOME}":/hf "${HF_ENV[@]}" \
     --entrypoint python3 "${AIC_IMAGE}" \
@@ -1073,7 +1083,8 @@ run_plot() { # $1=out_subdir  $2=kvd_v2 legend label  $3..=candidate CSV paths (
     return
   }
   mkdir -p "${PLOTS}/${sub}"
-  docker run --rm --init --network none -v "${REPO}":/work -w /work \
+  docker run --rm --init --network none --user "${AIC_CONTAINER_USER}" \
+    -v "${REPO}":/work -w /work \
     --entrypoint python3 "${AIC_IMAGE}" \
     benchmarks/plot_cliff.py \
     --input "${inputs[@]}" \

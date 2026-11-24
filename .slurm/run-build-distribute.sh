@@ -4552,11 +4552,13 @@ cmd_cliff() {
     # missing.  Globbing <name>-* in the job would, in a directory holding several
     # arches, pick one by mtime.
     _pick_compress
-    local _vllm_art _lmcache_art
+    local _vllm_art _lmcache_art _client_art
     AIC_IMAGE="${AIC_VLLM_IMAGE}"    _vllm_art="$(_artifact_path)"
     AIC_IMAGE="${AIC_LMCACHE_IMAGE}" _lmcache_art="$(_artifact_path)"
+    _client_art="$(_exporter_artifact_path "${AIC_CLIENT_IMAGE}")"
     _require_artifact vllm "${_vllm_art}" "run 'bake' first; the name carries AIC_ROCM_ARCH='${AIC_ROCM_ARCH}', so it must match the build's arch"
     _require_artifact lmcache "${_lmcache_art}" "run 'bake' first; the name carries AIC_ROCM_ARCH='${AIC_ROCM_ARCH}', so it must match the build's arch"
+    _require_artifact client "${_client_art}" "run 'bake' first"
 
     local -a _sel=() _gpu_request
     local _where=""
@@ -4573,7 +4575,7 @@ cmd_cliff() {
         _gpu_request=(--gres="gpu:${AIC_CLIFF_GPUS}")
     fi
     log "cliff via sbatch (partition ${AIC_BUILD_PARTITION}${_where})"
-    log "vllm: ${AIC_VLLM_IMAGE}  lmcache: ${AIC_LMCACHE_IMAGE}  images: ${AIC_IMAGE_DIR}"
+    log "vllm: ${AIC_VLLM_IMAGE}  lmcache: ${AIC_LMCACHE_IMAGE}  client: ${AIC_CLIENT_IMAGE}  images: ${AIC_IMAGE_DIR}"
 
     # SLURM_SUBMIT_DIR is how run-cliff.sbatch finds the tree (logs/<job-id>, and
     # the /work bind-mount of benchmarks/); pin it rather than trust the cwd the
@@ -4586,6 +4588,8 @@ export AIC_VLLM_IMAGE='${AIC_VLLM_IMAGE}'
 export AIC_LMCACHE_IMAGE='${AIC_LMCACHE_IMAGE}'
 export AIC_VLLM_ARTIFACT='${_vllm_art}'
 export AIC_LMCACHE_ARTIFACT='${_lmcache_art}'
+export AIC_CLIENT_IMAGE='${AIC_CLIENT_IMAGE}'
+export AIC_CLIENT_ARTIFACT='${_client_art}'
 export AIC_IMAGE_DIR='${AIC_IMAGE_DIR}'
 export AIC_FORCE_LOAD='${AIC_FORCE_LOAD:-0}'
 exec bash '${AIC_DAY_DIR}/.slurm/run-cliff.sbatch'
