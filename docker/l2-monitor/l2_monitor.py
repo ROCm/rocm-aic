@@ -12,44 +12,46 @@ Metrics emitted:
   aic_l2_dynamic_read_count_bucket - histogram: distribution of per-file
                                      read counts across all L2 files
 """
-import os, sys, time, threading, collections, struct, fcntl, ctypes
+import os, sys, time, threading, collections, struct, ctypes
 
 L2_DIR      = os.environ["AIC_L2_DIR"]
 PROM_FILE   = os.environ["AIC_PROM_FILE"]
 INTERVAL    = int(os.environ["AIC_PROM_INTERVAL"])
 
-# Per-file read counters (filename → count)
-_read_counts: dict[str, int] = collections.defaultdict(int)
 _lock = threading.Lock()
-_total_reads = 0
 
-# ── inotify constants ─────────────────────────────────────────────────────────
-IN_OPEN        = 0x00000020
-IN_CREATE      = 0x00000100
-IN_DELETE      = 0x00000200
-IN_MOVED_TO    = 0x00000080
+# Per-file read counters (filename → count), updated by inotify IN_OPEN events
+_read_counts: dict[str, int] = collections.defaultdict(int)
+_total_reads: int = 0
+
+# File count and byte total maintained incrementally; initialised by _initial_scan()
+_file_sizes: dict[str, int] = {}  # fname → size in bytes
+_file_count: int = 0
+_total_bytes: int = 0
+
+# inotify constants
+IN_OPEN       = 0x00000020
+IN_CREATE     = 0x00000100
+IN_DELETE     = 0x00000200
+IN_MOVED_FROM = 0x00000040
+IN_MOVED_TO   = 0x00000080
 _INOTIFY_EVENT = struct.Struct("iIII")
 
-def _inotify_init():
-    return ctypes.CDLL("libc.so.6", use_errno=True).inotify_init()
+_libc = ctypes.CDLL("libc.so.6", use_errno=True)
 
-def _inotify_add_watch(fd, path, mask):
-    return ctypes.CDLL("libc.so.6", use_errno=True).inotify_add_watch(
-        fd, path.encode(), mask)
 
 def _inotify_watcher():
-    global _total_reads
-    fd = _inotify_init()
+    global _total_reads, _file_count, _total_bytes
+    fd = _libc.inotify_init()
     if fd < 0:
-        print("inotify_init failed — file read tracking unavailable", file=sys.stderr)
+        print("inotify_init failed", file=sys.stderr)
         return
-    mask = IN_OPEN | IN_CREATE | IN_DELETE | IN_MOVED_TO
-    wd = _inotify_add_watch(fd, L2_DIR, mask)
-    if wd < 0:
+    mask = IN_OPEN | IN_CREATE | IN_DELETE | IN_MOVED_FROM | IN_MOVED_TO
+    if _libc.inotify_add_watch(fd, L2_DIR.encode(), mask) < 0:
         print(f"inotify_add_watch failed on {L2_DIR}", file=sys.stderr)
         return
 
-    buf = bytearray(4096)
+    buf = bytearray(65536)
     while True:
         try:
             n = os.read(fd, len(buf))
@@ -59,34 +61,67 @@ def _inotify_watcher():
         while offset < len(n):
             ev_wd, ev_mask, ev_cookie, ev_len = _INOTIFY_EVENT.unpack_from(n, offset)
             offset += _INOTIFY_EVENT.size
-            name = b""
+            fname = ""
             if ev_len > 0:
-                name = bytes(n[offset:offset + ev_len]).rstrip(b"\x00")
+                fname = bytes(n[offset:offset + ev_len]).rstrip(b"\x00").decode(errors="replace")
                 offset += ev_len
-            fname = name.decode(errors="replace")
-            if ev_mask & IN_OPEN and fname.endswith(".bin"):
+            if not fname.endswith(".bin"):
+                continue
+            if ev_mask & IN_OPEN:
                 with _lock:
                     _read_counts[fname] += 1
                     _total_reads += 1
+            elif ev_mask & (IN_CREATE | IN_MOVED_TO):
+                # stat outside the lock to avoid blocking the watcher
+                try:
+                    sz = os.path.getsize(os.path.join(L2_DIR, fname))
+                except OSError:
+                    sz = 0
+                with _lock:
+                    if fname not in _file_sizes:
+                        _file_count += 1
+                    else:
+                        _total_bytes -= _file_sizes[fname]
+                    _file_sizes[fname] = sz
+                    _total_bytes += sz
+            elif ev_mask & (IN_DELETE | IN_MOVED_FROM):
+                with _lock:
+                    if fname in _file_sizes:
+                        _total_bytes -= _file_sizes.pop(fname)
+                        _file_count -= 1
+
+
+def _initial_scan():
+    """One-time scan at startup. Inotify watch must be armed first so no
+    events are missed during the scan. Uses scandir for a single syscall
+    per entry rather than listdir + getsize per file."""
+    global _file_count, _total_bytes
+    try:
+        with os.scandir(L2_DIR) as it:
+            entries = [(e.name, e.stat().st_size) for e in it if e.name.endswith(".bin")]
+    except OSError as e:
+        print(f"initial scan failed: {e}", file=sys.stderr)
+        return
+    with _lock:
+        for name, sz in entries:
+            if name not in _file_sizes:  # skip files inotify already registered
+                _file_sizes[name] = sz
+                _total_bytes += sz
+        _file_count = len(_file_sizes)
+    print(f"initial scan: {_file_count} files, {_total_bytes >> 20} MiB", file=sys.stderr)
+
 
 def _write_prom():
     while True:
         time.sleep(INTERVAL)
         try:
-            # File/size stats
-            files = [f for f in os.listdir(L2_DIR) if f.endswith(".bin")]
-            total_files = len(files)
-            total_bytes = sum(
-                os.path.getsize(os.path.join(L2_DIR, f))
-                for f in files
-                if os.path.exists(os.path.join(L2_DIR, f))
-            )
-
             with _lock:
+                total_files = _file_count
+                total_bytes = _total_bytes
                 counts = dict(_read_counts)
                 total_r = _total_reads
 
-            # Build histogram of per-file read counts
+            # Build histogram of per-file read counts (pure in-memory, no I/O)
             buckets = [0, 1, 2, 5, 10, 20, 50, 100, float("inf")]
             hist = collections.Counter()
             for v in counts.values():
@@ -94,11 +129,8 @@ def _write_prom():
                     if v <= b:
                         hist[b] += 1
                         break
-            # Files never opened → not in counts dict
             never_read = total_files - len(counts)
 
-            # Non-cumulative per-bucket counts: how many files have been read
-            # exactly in this range (not ≤N). Easier to read as a bar chart.
             bucket_labels = ["0", "1", "2", "5", "10", "20", "50", "100", ">100"]
             bucket_counts = [never_read] + [hist.get(b, 0) for b in buckets[1:-1]] + [hist.get(float("inf"), 0)]
 
@@ -127,8 +159,11 @@ def _write_prom():
         except Exception as e:
             print(f"prom write error: {e}", file=sys.stderr)
 
+
 if __name__ == "__main__":
     os.makedirs(L2_DIR, exist_ok=True)
-    print(f"Monitoring {L2_DIR} → {PROM_FILE} (interval={INTERVAL}s)")
+    print(f"Monitoring {L2_DIR} → {PROM_FILE} (interval={INTERVAL}s)", file=sys.stderr)
+    # Arm inotify before scanning so events during the scan are not lost
     threading.Thread(target=_inotify_watcher, daemon=True).start()
+    _initial_scan()
     _write_prom()  # blocks forever

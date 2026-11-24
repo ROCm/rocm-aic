@@ -411,7 +411,7 @@ services:
     image: ${LMCACHE_IMAGE_REF:-aic-lmcache:latest}
     container_name: aic-lmcache-coordinator
     networks: [aic-network]
-    restart: unless-stopped
+    restart: "no"
     user: "${AIC_CONTAINER_USER:-0:0}"
     environment:
       - HOME=${AIC_CONTAINER_HOME:-/tmp}
@@ -600,7 +600,7 @@ services:
       - ../logs:/logs
       - ${HF_HOME:-~/.cache/huggingface}:/hf_cache
     working_dir: /repo
-    restart: unless-stopped
+    restart: "no"
 
   # ---------------------------------------------------------------------------
   # loki: log aggregation store for Docker container logs.
@@ -614,7 +614,7 @@ services:
     volumes:
       - ../monitoring/loki/loki.yml:/etc/loki/loki.yml:ro
       - loki-data:/loki
-    restart: unless-stopped
+    restart: "no"
 
   alloy:
     profiles: [monitoring, monitoring-base]
@@ -626,7 +626,7 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock:ro
       - /tmp:/tmp:ro
     command: run --server.http.listen-addr=0.0.0.0:12345 /etc/alloy/config.alloy
-    restart: unless-stopped
+    restart: "no"
     depends_on: [loki]
 
   # prometheus: scrapes all stack targets by container name via the aic network.
@@ -645,7 +645,7 @@ services:
     extra_hosts:
       - "host-gateway:host-gateway"
     user: "${PROM_UID:-65534}:${PROM_GID:-65534}"
-    restart: unless-stopped
+    restart: "no"
     volumes:
       - ../monitoring/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
       - ../monitoring/prometheus/rules:/etc/prometheus/rules:ro
@@ -668,7 +668,7 @@ services:
     image: python:3.12-slim
     container_name: aic-l2-monitor
     networks: [aic-network]
-    restart: unless-stopped
+    restart: "no"
     environment:
       AIC_L2_DIR: /data/nvme/lmcache
       AIC_PROM_FILE: /prom/aic_l2_monitor.prom
@@ -690,7 +690,7 @@ services:
     container_name: aic-node-exporter
     networks: [aic-network]
     pid: "${NODEX_PID_MODE:-}"
-    restart: unless-stopped
+    restart: "no"
     volumes:
       - /:/host:ro,rslave
       - aic-prom-textfile:/prom:ro
@@ -711,7 +711,7 @@ services:
     image: ${AIC_AMDGPU_EXPORTER_IMAGE:-rocm/device-metrics-exporter:v1.5.2}
     container_name: aic-amdgpu-exporter
     networks: [aic-network]
-    restart: unless-stopped
+    restart: "no"
     environment:
       - ROCR_VISIBLE_DEVICES=${AIC_ROCR_VISIBLE:-${GPU:-0}}
       - HIP_VISIBLE_DEVICES=${AIC_HIP_VISIBLE:-0}
@@ -735,7 +735,7 @@ services:
     networks: [aic-network]
     cap_add:
       - SYS_ADMIN
-    restart: unless-stopped
+    restart: "no"
     volumes:
       - /dev:/dev
       - /sys:/sys:ro
@@ -751,7 +751,7 @@ services:
     image: ${AIC_RDMA_EXPORTER_IMAGE:-aic-rdma-exporter:local}
     container_name: aic-rdma-exporter
     networks: [aic-network]
-    restart: unless-stopped
+    restart: "no"
     volumes:
       - /sys:/sys:ro
     command:
@@ -772,7 +772,7 @@ services:
     networks: [aic-network]
     ports:
       - "${AIC_PUBLISH_ADDR:-127.0.0.1}:${AIC_GRAFANA_PORT:-}:3000"
-    restart: unless-stopped
+    restart: "no"
     environment:
       GF_AUTH_ANONYMOUS_ENABLED: "true"
       GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
@@ -797,7 +797,7 @@ services:
     networks: [aic-network]
     pid: "${AIC_HSA_SNOOP_PID_MODE-host}"
     privileged: true
-    restart: unless-stopped
+    restart: "no"
     environment:
       - ROCR_VISIBLE_DEVICES=${AIC_ROCR_VISIBLE:-${GPU:-0}}
       - HIP_VISIBLE_DEVICES=${AIC_HIP_VISIBLE:-0}
