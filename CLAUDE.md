@@ -229,7 +229,10 @@ build (`AIC_ROCM_ARCH` default includes `gfx1201`). Key differences from CDNA:
     a KV cache of about 124,000 tokens. On a node with more VRAM (or on SPUR)
     removing `VLM_GPU_MEMORY_UTILIZATION` lets the extensible KV cache size
     itself and may increase throughput.
-  - `VLM_LOAD_FORMAT=auto` — fastsafetensors GDS is CDNA-only.
+  - `VLM_LOAD_FORMAT=auto` — fastsafetensors GDS is CDNA-only. **Always pass
+    this on fresh starts on gfx1201:** without it, fastsafetensors allocates a
+    ~600 MiB temporary tensor clone during weight loading that OOMs the 16 GB
+    card at 0.74 util; `auto` (safetensors) does not have this overhead.
   - `LMCACHE_L1_SIZE_GB=2` for this 16 GB node — default 20 GiB L1 prevents
     eviction to L2 in the reset test.
   - HF_TOKEN is picked up from the environment; no HF_TOKEN_FILE needed.
