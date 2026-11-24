@@ -366,7 +366,7 @@ container name on the `aic` bridge, from the `aic-client` container (see
 | --- | --- | --- | --- |
 | `AIC_PUBLISH_ADDR` | `127.0.0.1` | `docker/docker-compose.yml` | Host address the published Grafana port binds; `0.0.0.0` exposes it beyond loopback |
 | `AIC_GRAFANA_PORT` | (empty) | `docker/docker-compose.yml` | Pin the Grafana host port, the only published one. Unset, `make` picks the lowest free port from 3000 and keeps it across a down/up; empty, or compose run without `make`, lets Docker pick a free port. `make endpoints` prints the URL |
-| `AIC_CLIENT_IMAGE` | `aic-client:latest` | `docker/docker-compose.yml` | Image of the `aic-client` container and of the throwaway AgentX containers. `make` sets it to the ref bake tags (`aic-client:<AIC_VERSION>`); compose builds it from `docker/client/Dockerfile` when it is missing |
+| `AIC_CLIENT_IMAGE` | `aic-client:latest`; `aic-client:${AIC_VERSION}` (`.slurm/run-build-distribute.sh`); `aic-client:$(<"${REPO}/VERSION")` (`.slurm/run-cliff.sbatch`) | `docker/docker-compose.yml` | Image of the `aic-client` container and of the throwaway AgentX containers. `make` sets it to the ref bake tags (`aic-client:<AIC_VERSION>`); compose builds it from `docker/client/Dockerfile` when it is missing |
 | `AIC_FETCH_IMAGE` | `curlimages/curl:8.23.0` | `scripts/aic-endpoints.sh` | Image `aic_fetch` runs `curl` from; scripts set it to an AIC image already on the node |
 | `AIC_FETCH_TIMEOUT` | `60` | `scripts/aic-endpoints.sh` | `aic_fetch` request timeout, seconds |
 | `AIC_NETWORK` | `aic` | `scripts/aic-endpoints.sh` | Docker network `aic_fetch` and the endpoint helpers attach to |
@@ -495,7 +495,7 @@ These name them instead; nothing sets them by default.
 | `AIC_MODEL_BIG` | `openai/gpt-oss-120b` | `.slurm/run-cliff.sbatch` | Model the cliff job serves on the large-memory CDNA arches when `VLLM_MODEL` is empty. Must already be in `HF_HOME` |
 | `AIC_MODEL_SMALL` | `Qwen/Qwen2.5-3B-Instruct` | `.slurm/run-cliff.sbatch` | Model it serves on every other arch |
 | `AIC_NVME_AUTO` | `1` | `.slurm/run-cliff.sbatch` | `1` finds a dedicated local NVMe for the LMCache tiers: a mounted `aic-lmcache` volume, else a raw spare it formats and mounts, else a mounted non-root NVMe, else node-local `/tmp`. `0` forces `/tmp`. Formatting needs passwordless `sudo` |
-| `AIC_NVME_MOUNT` | `/mnt/aic-lmcache` | `.slurm/run-cliff.sbatch` | Mount point used when a spare NVMe is provisioned; left mounted for reuse |
+| `AIC_NVME_MOUNT` | `/mnt/aic-lmcache`; `/mnt/m2m_nobackup` (`Makefile`, SPUR) | `.slurm/run-cliff.sbatch` | Mount point used when a spare NVMe is provisioned; left mounted for reuse |
 | `AIC_NVME_LABEL` | `aic-lmcache` | `.slurm/run-cliff.sbatch` | Label of the filesystem that marks a volume as provisioned by the cliff job |
 | `AIC_LOCAL_ROOT` | `/tmp/aic-cliff.${SLURM_JOB_ID:-manual}` | `.slurm/run-cliff.sbatch` | Node-local root of the tier directories when `NVME_DATA`, `NFS_DATA` and `GDS_SLAB_DATA` are not set |
 | `AIC_LOCAL_CPU` | `false` | `.slurm/run-cliff.sbatch` | `true` puts an LMCache DRAM L1 in front of the NVMe L2 in the `nvme` arm |
@@ -513,6 +513,7 @@ These name them instead; nothing sets them by default.
 | `LMCACHE_HEARTBEAT_INTERVAL` | `900` | `.slurm/run-cliff.sbatch` | Seconds between the cliff job's LMCache status lines |
 | `AIC_VLLM_ARTIFACT` | (empty) | `.slurm/run-cliff.sbatch` | Stored vLLM image artifact a job loads, when it is not the one derived from `AIC_VLLM_IMAGE` and `AIC_IMAGE_DIR` |
 | `AIC_LMCACHE_ARTIFACT` | (empty) | `.slurm/run-cliff.sbatch` | Stored LMCache image artifact, likewise |
+| `AIC_CLIENT_ARTIFACT` | (empty) | `.slurm/run-cliff.sbatch` | Stored `aic-client` image artifact the cliff job loads for its bench and plot containers, likewise |
 <!-- END generated:cliff -->
 
 ### AgentX
