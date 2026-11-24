@@ -21,7 +21,8 @@
 #
 # Environment:
 #   NVME_DATA       host directory of the L2 tier (required; make passes it)
-#   GPU             index in the vLLM container name aic-vllm-gpu<N> (default: 0)
+#   GPU             index in the vLLM container name <stack>-vllm-gpu<N> (default: 0)
+#   AIC_STACK       the stack to drive (scripts/aic-endpoints.sh)
 #   AIC_DM_DEVICE   mapper name (default: kv-delay)
 #   LOG             host logs directory, /logs in aic-client (default: <repo>/logs)
 #   AIC_BENCH_ENDPOINT, AIC_BENCH_MODEL   passed to aic-bench when set
@@ -29,6 +30,9 @@
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+# shellcheck source=scripts/aic-endpoints.sh
+source "${REPO_ROOT}/scripts/aic-endpoints.sh"
+CLIENT="${AIC_STACK}-client"
 NAME="${AIC_DM_DEVICE:-kv-delay}"
 LOG_DIR="${LOG:-${REPO_ROOT}/logs}"
 CTL_HOST="${LOG_DIR}/bench/agent-kv/dm-ctl"
@@ -39,9 +43,9 @@ die() { echo "nvme_delay_sweep: $*" >&2; exit 1; }
 [[ -n "${NVME_DATA:-}" ]] || die "set NVME_DATA to the L2 directory the stack was started with"
 [[ "$(findmnt -no SOURCE -T "${NVME_DATA}")" == "/dev/mapper/${NAME}" ]] \
     || die "${NVME_DATA} is not on /dev/mapper/${NAME}: run dm_delay_setup.sh up <mount point> with the stack down"
-[[ "$(docker inspect -f '{{.State.Running}}' aic-client 2>/dev/null)" == true ]] \
-    || die "aic-client is not running: start the stack with 'make up'"
-vllm="aic-vllm-gpu${GPU:-0}"
+[[ "$(docker inspect -f '{{.State.Running}}' "${CLIENT}" 2>/dev/null)" == true ]] \
+    || die "${CLIENT} is not running: start the stack with 'make up'"
+vllm="${AIC_STACK}-vllm-gpu${GPU:-0}"
 vllm_args="$(docker inspect -f '{{json .Config.Entrypoint}} {{json .Config.Cmd}}' "${vllm}" 2>/dev/null)" \
     || die "${vllm} is not running"
 if grep -Eq 'lazy_offload[\\"]*: *true' <<< "${vllm_args}"; then
@@ -106,10 +110,10 @@ restore() {
 }
 trap restore EXIT
 
-client_path="$(docker exec aic-client printenv PATH)"
+client_path="$(docker exec "${CLIENT}" printenv PATH)"
 env_args=(-e "AIC_DM_CTL=${CTL_CLIENT}" -e "PATH=/repo/benchmarks/agent-kv/shim:${client_path}")
 for _var in AIC_BENCH_ENDPOINT AIC_BENCH_MODEL; do
     [[ -z "${!_var:-}" ]] || env_args+=(-e "${_var}=${!_var}")
 done
 
-docker exec "${env_args[@]}" aic-client aic-bench agent-kv nvme-sweep --dm-device "${NAME}" "$@"
+docker exec "${env_args[@]}" "${CLIENT}" aic-bench agent-kv nvme-sweep --dm-device "${NAME}" "$@"
