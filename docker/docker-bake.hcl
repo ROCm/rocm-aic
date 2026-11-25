@@ -72,6 +72,12 @@ variable "HSA_SNOOP_REF"     { default = "aba6a306" }
 variable "ROCM_BASE_IMAGE"    { default = "rocm/dev-ubuntu-26.04:${ROCM_VERSION}-full" }
 variable "ROCM_RUNTIME_IMAGE" { default = "ubuntu:26.04" }
 
+# The apt repository of the ROCm runtime packages (for ROCM_RUNTIME_IMAGE's
+# Ubuntu release) and the key that signs it.  Only base-from-wheels reads
+# them: a source build copies both out of ROCM_BASE_IMAGE.
+variable "ROCM_APT_REPO_URL"    { default = "https://stable.repo.amd.com/rocm/core/packages/ubuntu2604" }
+variable "ROCM_APT_KEYRING_URL" { default = "https://repo.amd.com/rocm/packages/gpg/rocm.gpg" }
+
 # Source of the patched libamdhip64 built into aic-base.  A literal, not derived
 # from ROCM_VERSION: the 10.2 branch is release/therock-10.2, with no patch level.
 variable "CLR_REF"            { default = "release/therock-10.2" }
@@ -153,6 +159,11 @@ variable "TLS_CERT"       { default = "" }
 # pointed at one directory would overwrite each other's export.  `make wheels`
 # flattens them back into one directory.
 variable "WHEELS_DIR"     { default = "wheels-out" }
+
+# Where the `from-wheels` group reads a PUBLISHED wheel set from: the .whl
+# assets of one release, as `make build-from-wheels` downloads them.  Relative
+# to the directory bake runs in.
+variable "AIC_WHEELS_SRC" { default = "wheels-release/nightly" }
 
 # Registry prefix for every image tag, e.g. "ghcr.io/rocm/rocm-aic/".  Empty
 # (the default) keeps the bare local names a developer expects from `--load`.
@@ -313,6 +324,16 @@ group "emulate-wheels" {
   targets = ["wheels-emulate"]
 }
 
+# The `default` stack with aic-vllm and aic-lmcache assembled from a published
+# wheel set (AIC_WHEELS_SRC) instead of compiled; see `make build-from-wheels`.
+# The images carry the tags `default` gives them, so `make up` runs either.
+# No wheel holds the sidecars.  The exporters build as in `default`.  hsa-snoop
+# is not here: it compiles on ROCM_BASE_IMAGE, which nothing else in this group
+# pulls, so `make build-from-wheels` pulls the published image instead.
+group "from-wheels" {
+  targets = ["vllm-from-wheels", "lmcache-from-wheels", "nvme-exporter", "rdma-exporter"]
+}
+
 # ---- Targets -----------------------------------------------------------------
 
 target "base" {
@@ -340,6 +361,10 @@ target "base" {
     TRITON_GIT_URL      = TRITON_GIT_URL
     TRITON_REF          = TRITON_REF
     BLAS_CACHE_BUST     = BLAS_CACHE_BUST
+    # The ROCm apt key comes out of ROCM_BASE_IMAGE; see the rocm-apt stage.
+    ROCM_APT_FROM        = "base"
+    ROCM_APT_KEYRING_URL = ROCM_APT_KEYRING_URL
+    ROCM_APT_REPO_URL    = ROCM_APT_REPO_URL
   }
   cache-from = cache_from(ROCM_ARCH, "base")
   cache-to   = cache_to(ROCM_ARCH, "base")
@@ -413,6 +438,52 @@ target "base-wheels" {
   target   = "wheels"
   tags     = []
   cache-to = []
+}
+
+# ---- Images from published wheels (the `from-wheels` group) ------------------
+# base-from-wheels is docker/base/Dockerfile's runtime-from-wheels stage.  Of
+# that file it builds only runtime-os and rocm-apt-fetch: no compile stage,
+# and ROCM_BASE_IMAGE is never pulled.  The other two are
+# docker/wheels-test/Dockerfile's stages with that image as their `base`.
+target "base-from-wheels" {
+  inherits   = ["base"]
+  target     = "runtime-from-wheels"
+  contexts   = { "pip-wheels" = AIC_WHEELS_SRC }
+  args       = { ROCM_APT_FROM = "rocm-apt-fetch" }
+  cache-from = cache_from(ROCM_ARCH, "base-from-wheels")
+  cache-to   = cache_to(ROCM_ARCH, "base-from-wheels")
+}
+
+target "vllm-from-wheels" {
+  context    = "."
+  dockerfile = "docker/wheels-test/Dockerfile"
+  target     = "vllm"
+  contexts   = { base = "target:base-from-wheels", wheels = AIC_WHEELS_SRC }
+  tags       = tags("aic-vllm", true)
+  args = {
+    AIC_VERSION   = AIC_VERSION
+    AIC_BASE_NAME = "aic-base:${IMAGE_TAG}"
+    ROCM_ARCH     = rocm_arch_list(ROCM_ARCH)
+    ROCM_VERSION  = ROCM_VERSION
+    CUPY_VERSION  = CUPY_VERSION
+  }
+  cache-from = cache_from(ROCM_ARCH, "vllm-from-wheels")
+  cache-to   = cache_to(ROCM_ARCH, "vllm-from-wheels")
+}
+
+target "lmcache-from-wheels" {
+  context    = "."
+  dockerfile = "docker/wheels-test/Dockerfile"
+  target     = "lmcache"
+  contexts   = { base = "target:base-from-wheels", wheels = AIC_WHEELS_SRC }
+  tags       = tags("aic-lmcache", true)
+  args = {
+    AIC_VERSION   = AIC_VERSION
+    AIC_BASE_NAME = "aic-base:${IMAGE_TAG}"
+    CUPY_VERSION  = CUPY_VERSION
+  }
+  cache-from = cache_from(ROCM_ARCH, "lmcache-from-wheels")
+  cache-to   = cache_to(ROCM_ARCH, "lmcache-from-wheels")
 }
 
 # ---- Published wheel exports (the `wheels` group) ----------------------------

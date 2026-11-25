@@ -339,7 +339,7 @@ class DockerfileArgOwnershipTest(unittest.TestCase):
     @unittest.skipUnless(_have_buildx(), "docker buildx is not available")
     def test_dockerfiles_declare_every_arg_bake_passes(self) -> None:
         targets = _bake_targets(
-            "all", "wheels", "emulate-wheels", "emulate", "client", "lmcache-wheels"
+            "all", "wheels", "emulate-wheels", "emulate", "client", "lmcache-wheels", "from-wheels"
         )
         problems = []
         for name, target in sorted(targets.items()):
@@ -351,7 +351,7 @@ class DockerfileArgOwnershipTest(unittest.TestCase):
     @unittest.skipUnless(_have_buildx(), "docker buildx is not available")
     def test_bake_passes_every_arg_a_dockerfile_guards(self) -> None:
         targets = _bake_targets(
-            "all", "wheels", "emulate-wheels", "emulate", "client", "lmcache-wheels"
+            "all", "wheels", "emulate-wheels", "emulate", "client", "lmcache-wheels", "from-wheels"
         )
         problems = []
         for name, target in sorted(targets.items()):

@@ -382,9 +382,11 @@ help:
 	@printf '\n$(_AIC_B)$(_AIC_X)BUILD (local)$(_AIC_R)\n'
 	@printf '  $(_AIC_G)%-32s$(_AIC_R) %s\n' \
 	    'make build' 'Build aic-base → aic-vllm + aic-lmcache  (docker buildx bake)' \
+	    'make build-from-wheels' 'Same images from published wheels, nothing compiled (WHEELS_RELEASE)' \
 	    'make wheels' 'Export pip wheels (nixl, vllm, amd_aiter, lmcache) → WHEELS_DIR' \
 	    'make venv' 'Create/update .venv with bench+plot deps' \
-	    'make ensure-compose' 'Install docker compose v2 plugin if missing'
+	    'make ensure-compose' 'Install docker compose v2 plugin if missing' \
+	    'make ensure-buildx' 'Install docker buildx plugin if missing'
 	@printf '\n$(_AIC_B)$(_AIC_X)BUILD (Slurm/Spur)$(_AIC_R)\n'
 	@printf '  $(_AIC_G)%-32s$(_AIC_R) %s\n' \
 	    'make dist-build' 'Build aic-base then vllm + lmcache in parallel, save tarballs' \
@@ -496,7 +498,9 @@ list-vars:
 	    'BAKE_TARGETS' '$(BAKE_TARGETS)' \
 	    'BAKE_OUTPUT_FLAG' '$(BAKE_OUTPUT_FLAG)' \
 	    'AIC_FAST_ARCH' '$(AIC_FAST_ARCH)' \
-	    'WHEELS_DIR' '$(WHEELS_DIR)'
+	    'WHEELS_DIR' '$(WHEELS_DIR)' \
+	    'WHEELS_RELEASE' '$(or $(WHEELS_RELEASE),<empty: no download>)' \
+	    'AIC_WHEELS_SRC' '$(AIC_WHEELS_SRC)'
 	@printf '\n$(_AIC_B)$(_AIC_X)LAYER CACHE$(_AIC_R)\n'
 	@printf '  $(_AIC_G)%-38s$(_AIC_R) %s\n' \
 	    'AIC_BUILDX_BUILDER' '$(AIC_BUILDX_BUILDER)' \

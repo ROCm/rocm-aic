@@ -14,14 +14,20 @@
 # build_torchvision stages at build time (--mount=type=bind,from=build_pytorch,...).
 #
 # Stages:
-#   pip-wheels        scratch stub for --build-context pip-wheels override
+#   pip-wheels        scratch stub; --build-context pip-wheels=<dir> supplies the
+#                     published wheel set that runtime-from-wheels installs
 #   base              ROCm-full base + system deps                    (sections 0-1)
 #   build_pytorch     PyTorch built from source                       (section 2b)
 #   build_torchvision torchvision built from source                   (section 2c)
 #   build_nixl        NIXL built from source (uses ROCm headers)      (section 2d)
 #   wheels            scratch image holding just the nixl_rocm wheel (--target wheels)
 #   build_clr_patch   patched libamdhip64.so (IPC event ring fix)     (section 2e)
-#   runtime           Ubuntu 26.04 + 13 ROCm runtime pkgs + torch + NIXL (section 3)
+#   rocm-apt-fetch    the ROCm apt key and source list, downloaded
+#   rocm-apt          those two files: from base, or from rocm-apt-fetch
+#   runtime-os        Ubuntu 26.04 + 13 ROCm runtime pkgs             (section 3)
+#   runtime-from-wheels  runtime-os + torch + NIXL from published wheels, nothing
+#                     compiled (`make build-from-wheels`)
+#   runtime           runtime-os + torch + NIXL from the build stages (default)
 #
 # Build args: docker/docker-bake.hcl is the only owner of every pin, URL and
 # base image, so no ARG here has a default and each consuming stage stops when
@@ -45,9 +51,13 @@ ARG ROCM_BASE_IMAGE
 # stage starts from Ubuntu instead; the AMD apt signing key is COPYed from the
 # base stage.
 ARG ROCM_RUNTIME_IMAGE
+# The stage runtime-os copies that key from: `base`, or `rocm-apt-fetch` for a
+# build that compiles nothing and so has no other use for the full image.
+ARG ROCM_APT_FROM
 
-# Empty default for the `pip-wheels` build context.  A caller that passes
-# --build-context pip-wheels=<dir> overrides this stage exactly as before.
+# Empty default for the `pip-wheels` build context, which only the
+# runtime-from-wheels stage reads.  A caller that passes
+# --build-context pip-wheels=<dir> overrides this stage.
 FROM scratch AS pip-wheels
 
 # hadolint ignore=DL3006
@@ -671,6 +681,54 @@ RUN cmake -G Ninja \
     echo "libamdhip64.so built OK"
 
 # =============================================================================
+# rocm-apt — the ROCm apt signing key and source list runtime-os installs from.
+#
+# ROCM_APT_FROM names the stage they come from:
+#   base            the full ROCm image.  A source build has it anyway, and the
+#                   repo URL then follows that image (ROCm 10.0 moved it).
+#   rocm-apt-fetch  AMD's published key and ROCM_APT_REPO_URL.  For
+#                   runtime-from-wheels, which needs nothing else from the full
+#                   image: ~10 GB is too much to pull for two small files.
+# =============================================================================
+# hadolint ignore=DL3006
+FROM ${ROCM_RUNTIME_IMAGE} AS rocm-apt-fetch
+
+ARG ROCM_APT_KEYRING_URL
+ARG ROCM_APT_REPO_URL
+
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
+
+RUN : "${ROCM_APT_KEYRING_URL:?unset: build through docker/docker-bake.hcl}" \
+      "${ROCM_APT_REPO_URL:?unset: build through docker/docker-bake.hcl}"
+
+# The key is published ASCII-armored and apt wants a binary keyring under a
+# .gpg name.  The armor body is base64, so it is decoded here without
+# installing gnupg; a key that is already binary is taken as is.  apt verifies
+# the result when runtime-os runs `apt-get update`.
+# hadolint ignore=DL3008
+RUN --mount=type=secret,id=tls_cert,required=false \
+    apt-get update && \
+    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends ca-certificates curl && \
+    if [ -s /run/secrets/tls_cert ]; then \
+        cp /run/secrets/tls_cert /usr/local/share/ca-certificates/corp-ca.crt && \
+        update-ca-certificates; \
+    fi && \
+    mkdir -p /etc/apt/keyrings && \
+    curl -fsSL --retry 3 -o /tmp/rocm.key "${ROCM_APT_KEYRING_URL}" && \
+    if grep -q '^-----BEGIN PGP PUBLIC KEY BLOCK-----' /tmp/rocm.key; then \
+        awk '/^-----BEGIN /{body=1; next} /^-----END /{body=0} body && NF && !/:/ && !/^=/' /tmp/rocm.key \
+            | base64 -d > /etc/apt/keyrings/amdrocm.gpg; \
+    else \
+        cp /tmp/rocm.key /etc/apt/keyrings/amdrocm.gpg; \
+    fi && \
+    test -s /etc/apt/keyrings/amdrocm.gpg && \
+    printf 'deb [arch=amd64 signed-by=/etc/apt/keyrings/amdrocm.gpg] %s stable main\n' "${ROCM_APT_REPO_URL}" \
+        > /etc/apt/sources.list.d/rocm.list
+
+# hadolint ignore=DL3006
+FROM ${ROCM_APT_FROM} AS rocm-apt
+
+# =============================================================================
 # runtime — plain ROCm image + 13 ROCm runtime packages + torch + NIXL.
 #
 # Starts FROM ubuntu:26.04 instead of the -full ROCm image (~18 GB).  AMD
@@ -700,9 +758,13 @@ RUN cmake -G Ninja \
 #
 # Downstream Dockerfiles (docker/vllm, docker/lmcache) use this stage via
 # --build-context base=oci-layout://... so they get a fully working torch env.
+#
+# Two stages: runtime-os is everything below the Python stack, and `runtime`
+# (the last stage, so the default target) adds the Python stack from the build
+# stages.  runtime-from-wheels sits on the same runtime-os.
 # =============================================================================
 # hadolint ignore=DL3006
-FROM ${ROCM_RUNTIME_IMAGE} AS runtime
+FROM ${ROCM_RUNTIME_IMAGE} AS runtime-os
 
 ARG ROCM_VERSION
 ARG ROCM_BASE_IMAGE
@@ -752,8 +814,9 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
 #   python3-pip   the one pip for the stack: aic-vllm and aic-lmcache inherit it
 #                 for their own installs, and it stays in the images (the
 #                 rocjitsu VM test and the accuracy job pip-install in them)
-# Key and sources list copied from the build-time base stage so that the repo
-# URL tracks the base image automatically (ROCm 10.0 changed the URL).
+# Key and sources list copied from the rocm-apt stage, which a source build
+# points at the build-time base stage so that the repo URL tracks the base
+# image automatically (ROCm 10.0 changed the URL).
 #
 # amdrocm-runtime-dev carries the HIP development headers AITER's JIT needs
 # (hip/hip_runtime.h and friends), but Depends on amdrocm-llvm-dev: 2 GB of
@@ -778,8 +841,8 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
 #   - the packaged libamdhip64 is emptied: the patched build is copied over it
 #     in a RUN of its own below, so this layer need not carry the original and
 #     a CLR_REF or patch change does not re-run this RUN.
-COPY --from=base /etc/apt/keyrings/amdrocm.gpg /etc/apt/keyrings/amdrocm.gpg
-COPY --from=base /etc/apt/sources.list.d/rocm.list /etc/apt/sources.list.d/amdrocm.list
+COPY --from=rocm-apt /etc/apt/keyrings/amdrocm.gpg /etc/apt/keyrings/amdrocm.gpg
+COPY --from=rocm-apt /etc/apt/sources.list.d/rocm.list /etc/apt/sources.list.d/amdrocm.list
 # hadolint ignore=SC2046,SC2086,DL3008
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
@@ -894,6 +957,131 @@ RUN ln -sfn "/opt/rocm/core/lib/llvm/bin/clang++" /usr/local/bin/c++ && \
 
 ENV PIP_ROOT_USER_ACTION=ignore \
     PIP_BREAK_SYSTEM_PACKAGES=1
+
+# =============================================================================
+# runtime-from-wheels — aic-base assembled from PUBLISHED wheels: nothing is
+# compiled.  `make build-from-wheels` builds it (bake target base-from-wheels)
+# with one release's wheel set as the `pip-wheels` build context, for a node
+# that should run the stack without the source builds above.
+#
+# It differs from `runtime` in what no wheel carries:
+#   - libamdhip64 is the packaged one, not build_clr_patch's.  The patch fixes
+#     the signal ring of cross-process GPU events, which both images replace
+#     with a producer-side sync (docker/lmcache/rocm_event_ipc_patch.py).
+#   - NIXL is the nixl_rocm wheel rather than the /opt/nixl install, and there
+#     is no UCX: the POSIX and AIS_MT plugins load, the UCX one does not.
+# =============================================================================
+FROM runtime-os AS runtime-from-wheels
+
+ARG ROCM_VERSION
+ARG ROCM_ARCH
+
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
+
+# The released torch, torchvision, triton and nixl_rocm, with the pins and the
+# cleanup of `runtime`.  Exactly one of each: with one missing, pip would
+# resolve the requirement from PyPI, where torch is a CUDA build.
+# hadolint ignore=SC2015,SC2206
+RUN --mount=type=cache,target=/root/.cache/pip \
+    --mount=type=bind,from=pip-wheels,target=/w \
+    shopt -s nullglob && \
+    for pat in 'torch-*.whl' 'torchvision-*.whl' 'triton-*.whl' 'nixl*rocm*.whl'; do \
+        hits=(/w/${pat}); \
+        if [ "${#hits[@]}" -ne 1 ]; then \
+            echo "ERROR: expected exactly one ${pat} in the pip-wheels build context, found ${#hits[@]}" >&2; \
+            ls -l /w >&2; exit 1; \
+        fi; \
+    done && \
+    pip3 install --no-compile \
+        /w/torch-*.whl /w/torchvision-*.whl /w/triton-*.whl /w/nixl*rocm*.whl \
+        'numpy<2.5' 'setuptools>=78.1.1,<80' && \
+    pip3 uninstall -y \
+        nixl nixl-cu12 nixl-cu13 \
+        cupy-cuda12x cufile-python cuda-pathfinder && \
+    _tl=$(python3 -c 'import sysconfig; print(sysconfig.get_path("platlib"))')/torch/lib && \
+    for f in "${_tl}"/libaotriton_v2.so.*; do \
+        if [ -f "${f}" ] && [ ! -L "${_tl}/libaotriton_v2.so" ] && cmp -s "${f}" "${_tl}/libaotriton_v2.so"; then \
+            ln -sf "$(basename "${f}")" "${_tl}/libaotriton_v2.so"; \
+        fi; \
+    done && \
+    { find /usr/local/lib/python3.* -name '__pycache__' -type d \
+         -exec rm -rf {} + || \
+      echo "WARNING: __pycache__ cleanup failed; see find's error above" >&2; }
+
+# runtime-os emptied the packaged libamdhip64 for `runtime` to fill with the
+# patched build.  Put the packaged file back.
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
+    _mm=$(echo "${ROCM_VERSION}" | cut -d. -f1-2) && \
+    _lib=$(readlink -f "/opt/rocm/core-${_mm}/lib/libamdhip64.so") && \
+    _pkg=$(dpkg -S "${_lib}" | cut -d: -f1) && \
+    apt-get update && \
+    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends --reinstall "${_pkg}" && \
+    test -s "${_lib}"
+
+# NIXL from the wheel, laid out where `runtime` keeps it, so the ENV below is
+# the same: the `nixl` shim on PYTHONPATH (off dist-packages, where a pip
+# `nixl` cannot replace it), and the wheel's libraries, with plugins/ beside
+# them, at /opt/nixl/lib/x86_64-linux-gnu.
+#
+# The libraries have to be on the loader path, not just the plugins at
+# NIXL_PLUGIN_DIR: the telemetry exporters link prometheus-cpp (libcore,
+# libpull), which nothing else has loaded by then.  And a wheel cannot hold a
+# symlink, so it ships libcore.so.1.3.0 with no libcore.so.1.3 for the loader
+# to find; ldconfig -n adds those soname links.  Without both, creating a NIXL
+# agent under NIXL_TELEMETRY_ENABLE=y (compose's default) fails with "Failed
+# to load telemetry plugin", and the lmcache server with it.
+COPY docker/base/nixl_rocm_shim.py /opt/nixl/lib/python3/dist-packages/nixl/__init__.py
+RUN _libs=$(python3 -c 'import sysconfig; print(sysconfig.get_path("platlib"))')/.nixl_rocm.mesonpy.libs && \
+    test -f "${_libs}/plugins/libplugin_POSIX.so" && \
+    ldconfig -n "${_libs}" && \
+    ln -sfn "${_libs}" /opt/nixl/lib/x86_64-linux-gnu
+
+RUN _mm=$(echo "${ROCM_VERSION}" | cut -d. -f1-2) && \
+    echo "/opt/rocm/core-${_mm}/lib" > /etc/ld.so.conf.d/rocm.conf && \
+    ldconfig
+
+ENV NIXL_PLUGIN_DIR=/opt/nixl/lib/x86_64-linux-gnu/plugins \
+    PYTHONPATH=/opt/rocm/core/share/amd_smi:/opt/nixl/lib/python3/dist-packages \
+    LD_LIBRARY_PATH=/opt/nixl/lib/x86_64-linux-gnu:/opt/nixl/lib:/opt/rocnixl-ucx/lib:/opt/rocm/core/lib \
+    ROCM_PATH=/opt/rocm/core \
+    PATH=/opt/rocm/core/bin:/opt/rocm/core/lib/llvm/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+# The checks `runtime` ends on, plus what this stage put in place by hand: the
+# HIP runtime loads, every NIXL plugin but UCX resolves its libraries, and an
+# agent comes up the way the lmcache server creates one, telemetry included.
+RUN _arch=$(echo "${ROCM_ARCH}" | tr ',;' '  ' | awk '{print $1}') && \
+    printf '#include <hip/hip_runtime.h>\n__global__ void k(float* a, int n) { int i = blockIdx.x * blockDim.x + threadIdx.x; if (i < n) a[i] += 1.0f; }\n' > /tmp/k.hip && \
+    hipcc -x hip ${_arch:+--offload-arch="${_arch}"} -O3 -fPIC -shared /tmp/k.hip -o /tmp/k.so && \
+    rm -f /tmp/k.hip /tmp/k.so && \
+    PYTHONDONTWRITEBYTECODE=1 python3 -c 'import ctypes, nixl, numpy, setuptools, torch, torchvision, triton; \
+    ctypes.CDLL("libamdhip64.so"); \
+    assert torch.version.hip, "torch is not a ROCm build"; \
+    print("torch", torch.__version__, "hip", torch.version.hip, "torchvision", torchvision.__version__, "triton", triton.__version__, "numpy", numpy.__version__, "setuptools", setuptools.__version__)' && \
+    for _p in "${NIXL_PLUGIN_DIR}"/*.so; do \
+        if [ "${_p##*/}" != libplugin_UCX.so ] && ldd "${_p}" | grep 'not found'; then \
+            echo "ERROR: ${_p} does not resolve the libraries above" >&2; exit 1; \
+        fi; \
+    done && \
+    NIXL_TELEMETRY_ENABLE=y NIXL_TELEMETRY_EXPORTER=prometheus NIXL_TELEMETRY_PROMETHEUS_PORT=19090 \
+        PYTHONDONTWRITEBYTECODE=1 python3 -c 'from nixl._api import nixl_agent, nixl_agent_config; \
+    a = nixl_agent("build-check", nixl_agent_config(backends=[])); a.create_backend("POSIX"); \
+    assert "POSIX" in a.backends, a.backends; print("NIXL agent OK:", sorted(a.backends), "of", a.get_plugin_list())' && \
+    pip3 --version
+
+# Build parent, not a service: downstream images define their own checks.
+HEALTHCHECK NONE
+
+# =============================================================================
+# runtime — runtime-os + the Python stack from the build stages.  Last, so it
+# is what a build with no --target produces.
+# =============================================================================
+FROM runtime-os AS runtime
+
+ARG ROCM_VERSION
+ARG ROCM_ARCH
+
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 
 # torch, torchvision, triton and nixl-rocm with their dependencies.  numpy and
 # setuptools are capped to what vLLM resolves to (numba needs numpy < 2.5, vLLM

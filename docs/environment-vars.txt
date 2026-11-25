@@ -38,6 +38,8 @@ AIC_ROCM_ARCH: Arch list a Slurm build compiles for and a Slurm test expects (`;
 AIC_FAST_ARCH: The single arch of the `-fast` make targets (`dist-build-fast`, `smoke-test-fast`, ...)
 ROCM_BASE_IMAGE: Full ROCm development image the source builds run on
 ROCM_RUNTIME_IMAGE: Image the shipped images start from
+ROCM_APT_REPO_URL: apt repository of the ROCm runtime packages, for a build from published wheels. A source build takes it from `ROCM_BASE_IMAGE`
+ROCM_APT_KEYRING_URL: Signing key of that repository, for a build from published wheels
 
 [pins]
 PYTORCH_REF: `ROCm/pytorch` commit built from source. A SHA, because the 2.15 series has no tag
@@ -83,6 +85,11 @@ BUILD_PROGRESS: `docker buildx bake --progress` mode for `make build` (`auto`, `
 BAKE_TARGETS: Bake targets `make build` builds
 BAKE_OUTPUT_FLAG: Output flag `make build` passes to bake (`--load`, `--push`)
 WHEELS_DIR: Where the `wheels` bake group writes the pip wheels, one directory per wheel target; `make wheels` flattens them
+WHEELS_REPO: GitHub repository `make build-from-wheels` downloads the wheels from
+WHEELS_RELEASE: Release tag `make build-from-wheels` downloads the wheels of. Empty skips the download and builds from what `AIC_WHEELS_SRC` holds
+AIC_WHEELS_SRC: Directory of published wheels the `from-wheels` bake group installs. `make build-from-wheels` downloads into it and removes wheels the release no longer lists
+AIC_PUBLISHED_PREFIX: Registry `make build-from-wheels` pulls `aic-hsa-snoop` from, with the trailing `/`. The image is built instead when its tag is not published there
+BUILDX_PLUGIN_VERSION: `docker buildx` plugin version `make ensure-buildx` installs when the plugin is missing
 VLLM_TARGET_DEVICE: vLLM build target: `rocm` compiles the GPU kernels, `empty` compiles none (the emulation image)
 AIC_UCX_FAST: `1` builds a minimal UCX; `make dist-build-fast` sets it
 BLAS_CACHE_BUST: Cache key of the ROCm runtime-package layer in the base image. Change it to reinstall those packages, e.g. `BLAS_CACHE_BUST=$(date +%s) make build`

@@ -41,6 +41,51 @@ There is a single `nixl_rocm` wheel, not one per image. NIXL is built once in
 `aic-lmcache` inherit that one build, so the wheel the release publishes is the
 same artifact both images run.
 
+## Docker images from the wheels
+
+`make build-from-wheels` assembles `aic-vllm` and `aic-lmcache` from a release's
+wheels instead of compiling them, for a node that should run the stack without
+the source builds. It takes minutes, and the images carry the tags `make build`
+gives them, so `make up` runs either.
+
+```bash
+make ensure-buildx                        # once, if docker has no buildx plugin
+make build-from-wheels ROCM_ARCH=gfx950   # the nightly release
+```
+
+It downloads the release's wheels to `wheels-release/<tag>/`, checks that they
+carry GPU code for `ROCM_ARCH`, and bakes the `from-wheels` group: an `aic-base`
+from the `torch`, `torchvision`, `triton` and `nixl_rocm` wheels on the same
+ROCm runtime packages as the source build, then the two images on top of it.
+The full ROCm image is not pulled: the apt key of the runtime packages is
+downloaded from AMD instead. No wheel holds the sidecars. The two exporters
+build as in `make build`; `aic-hsa-snoop`, which compiles on the full image,
+is pulled from `AIC_PUBLISHED_PREFIX` and built only if its tag is not there.
+
+| Variable | Default | |
+| --- | --- | --- |
+| `WHEELS_RELEASE` | `nightly` | Release tag to download; pick the one that covers your GPU (table above). Empty skips the download |
+| `WHEELS_REPO` | `ROCm/rocm-aic` | Repository of the release |
+| `AIC_WHEELS_SRC` | `wheels-release/<tag>` | Directory the wheels are downloaded to and installed from |
+
+To build from wheels you already have (the run artifact of a PR, or `make wheels`):
+
+```bash
+make build-from-wheels WHEELS_RELEASE= AIC_WHEELS_SRC=$PWD/wheels-out
+```
+
+An image built this way is not the source-built one:
+
+- `libamdhip64` is the packaged library, not the patched build that fixes the
+  signal ring of cross-process GPU events. Both images replace those events
+  with a producer-side sync, so the stack does not use the ring.
+- NIXL is the `nixl_rocm` wheel, without UCX. The POSIX and AIS_MT backends
+  load; the UCX backend does not. The image adds the library links and loader
+  path the wheel's telemetry exporters need; a plain `pip install` of the
+  wheel does not have them, and a NIXL agent fails to start there with
+  `NIXL_TELEMETRY_ENABLE=y`.
+- AITER kernels are compiled on first use, as in a default `make build`.
+
 ## Compatibility — read before installing
 
 These are **not** manylinux wheels:

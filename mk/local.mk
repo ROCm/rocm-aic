@@ -3,7 +3,8 @@
 #
 # Local-dev targets: build, stack lifecycle, shells, logs, venv, reset test.
 
-.PHONY: ensure-compose build wheels up up-batch up-dev up-gds-l1 up-gds-l1-batch \
+.PHONY: ensure-compose ensure-buildx build build-from-wheels wheels \
+        up up-batch up-dev up-gds-l1 up-gds-l1-batch \
         up-vllm-only \
         down logs logs-lmcache logs-vllm ps shell-lmcache shell-vllm \
         restart-vllm restart-lmcache venv vllm-reset-test
@@ -104,6 +105,91 @@ wheels:
 	find "$(WHEELS_DIR)" -mindepth 2 -name '*.whl' -exec mv -t "$(WHEELS_DIR)" {} + ; \
 	find "$(WHEELS_DIR)" -mindepth 1 -maxdepth 1 -type d -exec rm -rf {} + ; \
 	bash "$(REPO_ROOT)/.github/scripts/workflows/check-wheels.sh" "$(WHEELS_DIR)" "$(ROCM_ARCH)"
+
+# ---- Images from published wheels --------------------------------------------
+# `make build` without the compiling: aic-base, aic-vllm and aic-lmcache are
+# assembled from one release's wheels (the bake `from-wheels` group) and tagged
+# as `make build` tags them, so `make up` runs either.  Minutes, not hours.
+# docs/PIP_WHEELS.md says what such an image lacks.
+#
+# The wheels are downloaded to AIC_WHEELS_SRC first.  An empty WHEELS_RELEASE
+# skips the download and builds from what AIC_WHEELS_SRC already holds:
+#   make build-from-wheels WHEELS_RELEASE= AIC_WHEELS_SRC=$PWD/wheels-out
+# The release must cover ROCM_ARCH (the table in docs/PIP_WHEELS.md); the arch
+# check stops a set that does not, before anything is built.
+WHEELS_REPO    ?= ROCm/rocm-aic
+WHEELS_RELEASE ?= nightly
+AIC_WHEELS_SRC ?= $(REPO_ROOT)/wheels-release/$(or $(strip $(WHEELS_RELEASE)),local)
+
+# Registry the sidecar no wheel holds (aic-hsa-snoop) is pulled from, under the
+# tag bake gives it.  With the trailing '/'.
+AIC_PUBLISHED_PREFIX ?= ghcr.io/rocm/rocm-aic/
+
+# buildx is a CLI plugin that a distribution's docker package can leave out.
+# Docker looks in $HOME/.docker/cli-plugins first, so this needs no root.
+BUILDX_PLUGIN_VERSION ?= v0.39.1
+
+ensure-buildx:
+	@if docker buildx version >/dev/null 2>&1; then \
+		echo "docker buildx present: $$(docker buildx version | awk '{print $$2}')"; \
+	else \
+		case "$$(uname -m)" in x86_64) _arch=amd64 ;; aarch64) _arch=arm64 ;; *) _arch="$$(uname -m)" ;; esac; \
+		echo "docker buildx plugin missing; installing $(BUILDX_PLUGIN_VERSION) -> ~/.docker/cli-plugins"; \
+		mkdir -p "$$HOME/.docker/cli-plugins" && \
+		curl -fsSL "https://github.com/docker/buildx/releases/download/$(BUILDX_PLUGIN_VERSION)/buildx-$(BUILDX_PLUGIN_VERSION).linux-$$_arch" \
+			-o "$$HOME/.docker/cli-plugins/docker-buildx" && \
+		chmod +x "$$HOME/.docker/cli-plugins/docker-buildx" && \
+		docker buildx version >/dev/null 2>&1 || { \
+			echo "ERROR: docker buildx unavailable and could not be installed" >&2; exit 1; }; \
+		echo "docker buildx installed: $$(docker buildx version | awk '{print $$2}')"; \
+	fi
+
+# The first check is on what make resolved when it started, not on buildx now:
+# make asks bake for the image tag while it parses, and without buildx it falls
+# back to `latest`, which `make up` would then not find.
+build-from-wheels:
+	@test -n "$(strip $(VLLM_IMAGE_REF))" || { \
+		echo "ERROR: docker buildx bake was not available when make started." >&2; \
+		echo "       Run 'make ensure-buildx', then this target in a new make." >&2; exit 1; }
+	$(_bake_preflight)
+	@if [ -n "$(strip $(WHEELS_RELEASE))" ]; then \
+		bash "$(REPO_ROOT)/docker/scripts/aic-fetch-wheels.sh" \
+			"$(WHEELS_REPO)" "$(WHEELS_RELEASE)" "$(AIC_WHEELS_SRC)"; \
+	fi
+	@set -e; \
+	ls "$(AIC_WHEELS_SRC)"/*.whl >/dev/null 2>&1 || { \
+		echo "ERROR: no wheels in $(AIC_WHEELS_SRC)" >&2; exit 1; }; \
+	for _a in $(subst ;, ,$(subst $(comma), ,$(ROCM_ARCH))); do \
+		set --; \
+		for _w in "$(AIC_WHEELS_SRC)"/*.whl; do \
+			case "$$_a:$${_w##*/}" in gfx9*:*) ;; *:flash_attn-*) continue ;; esac; \
+			set -- "$$@" "$$_w"; \
+		done; \
+		python3 -I "$(REPO_ROOT)/tools/check-wheel-arch.py" "$$@" --expect "$$_a"; \
+	done
+	@echo "--- build-from-wheels: aic-vllm/lmcache:$(IMAGE_TAG) from $(AIC_WHEELS_SRC) (ROCM_ARCH=$(ROCM_ARCH)) ---"
+	BUILDX_BAKE_ENTITLEMENTS_FS=0 \
+	    AIC_WHEELS_SRC="$(AIC_WHEELS_SRC)" \
+	    docker buildx bake \
+		--builder $(AIC_BUILDX_BUILDER) \
+		--progress=$(BUILD_PROGRESS) \
+		$(BAKE_OUTPUT_FLAG) \
+		-f "$(REPO_ROOT)/docker/docker-bake.hcl" \
+		from-wheels
+	@echo "Built aic-vllm/aic-lmcache:$(IMAGE_TAG) from wheels (also tagged :latest)"
+	@echo "Built aic-nvme-exporter:local, aic-rdma-exporter:local"
+	@if docker image inspect "$(HSA_SNOOP_IMAGE_REF)" >/dev/null 2>&1; then \
+		echo "$(HSA_SNOOP_IMAGE_REF) already present"; \
+	elif docker pull -q "$(AIC_PUBLISHED_PREFIX)$(HSA_SNOOP_IMAGE_REF)" >/dev/null 2>&1; then \
+		docker tag "$(AIC_PUBLISHED_PREFIX)$(HSA_SNOOP_IMAGE_REF)" "$(HSA_SNOOP_IMAGE_REF)" && \
+		docker tag "$(AIC_PUBLISHED_PREFIX)$(HSA_SNOOP_IMAGE_REF)" aic-hsa-snoop:latest && \
+		echo "Pulled $(HSA_SNOOP_IMAGE_REF) from $(AIC_PUBLISHED_PREFIX)"; \
+	else \
+		echo "$(AIC_PUBLISHED_PREFIX)$(HSA_SNOOP_IMAGE_REF) is not published: building it, which pulls the full ROCm image"; \
+		BUILDX_BAKE_ENTITLEMENTS_FS=0 docker buildx bake \
+			--builder $(AIC_BUILDX_BUILDER) --progress=$(BUILD_PROGRESS) $(BAKE_OUTPUT_FLAG) \
+			-f "$(REPO_ROOT)/docker/docker-bake.hcl" hsa-snoop; \
+	fi
 
 up: ensure-compose check-hf-token prep-dirs
 	@mkdir -p "$(AIC_METRICS_DIR)"

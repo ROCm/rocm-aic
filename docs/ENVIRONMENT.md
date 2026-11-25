@@ -112,6 +112,8 @@ keeps equal to bake's.
 | `AIC_FAST_ARCH` | `gfx950` | `Makefile` | The single arch of the `-fast` make targets (`dist-build-fast`, `smoke-test-fast`, ...) |
 | `ROCM_BASE_IMAGE` | `rocm/dev-ubuntu-26.04:${ROCM_VERSION}-full` | `docker/docker-bake.hcl` | Full ROCm development image the source builds run on |
 | `ROCM_RUNTIME_IMAGE` | `ubuntu:26.04` | `docker/docker-bake.hcl` | Image the shipped images start from |
+| `ROCM_APT_REPO_URL` | `https://stable.repo.amd.com/rocm/core/packages/ubuntu2604` | `docker/docker-bake.hcl` | apt repository of the ROCm runtime packages, for a build from published wheels. A source build takes it from `ROCM_BASE_IMAGE` |
+| `ROCM_APT_KEYRING_URL` | `https://repo.amd.com/rocm/packages/gpg/rocm.gpg` | `docker/docker-bake.hcl` | Signing key of that repository, for a build from published wheels |
 <!-- END generated:rocm -->
 
 ### Version pins
@@ -172,6 +174,11 @@ keeps equal to bake's.
 | `BAKE_TARGETS` | `default` | `mk/local.mk` | Bake targets `make build` builds |
 | `BAKE_OUTPUT_FLAG` | `--load` | `mk/local.mk` | Output flag `make build` passes to bake (`--load`, `--push`) |
 | `WHEELS_DIR` | `wheels-out`; `$(REPO_ROOT)/wheels-out` (`mk/local.mk`) | `docker/docker-bake.hcl` | Where the `wheels` bake group writes the pip wheels, one directory per wheel target; `make wheels` flattens them |
+| `WHEELS_REPO` | `ROCm/rocm-aic` | `mk/local.mk` | GitHub repository `make build-from-wheels` downloads the wheels from |
+| `WHEELS_RELEASE` | `nightly` | `mk/local.mk` | Release tag `make build-from-wheels` downloads the wheels of. Empty skips the download and builds from what `AIC_WHEELS_SRC` holds |
+| `AIC_WHEELS_SRC` | `wheels-release/nightly`; `$(REPO_ROOT)/wheels-release/$(or $(strip $(WHEELS_RELEASE)),local)` (`mk/local.mk`) | `docker/docker-bake.hcl` | Directory of published wheels the `from-wheels` bake group installs. `make build-from-wheels` downloads into it and removes wheels the release no longer lists |
+| `AIC_PUBLISHED_PREFIX` | `ghcr.io/rocm/rocm-aic/` | `mk/local.mk` | Registry `make build-from-wheels` pulls `aic-hsa-snoop` from, with the trailing `/`. The image is built instead when its tag is not published there |
+| `BUILDX_PLUGIN_VERSION` | `v0.39.1` | `mk/local.mk` | `docker buildx` plugin version `make ensure-buildx` installs when the plugin is missing |
 | `VLLM_TARGET_DEVICE` | `rocm` | `docker/docker-bake.hcl` | vLLM build target: `rocm` compiles the GPU kernels, `empty` compiles none (the emulation image) |
 | `AIC_UCX_FAST` | (empty) | `docker/docker-bake.hcl` | `1` builds a minimal UCX; `make dist-build-fast` sets it |
 | `BLAS_CACHE_BUST` | (empty) | `docker/docker-bake.hcl` | Cache key of the ROCm runtime-package layer in the base image. Change it to reinstall those packages, e.g. `BLAS_CACHE_BUST=$(date +%s) make build` |
