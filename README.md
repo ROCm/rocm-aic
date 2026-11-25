@@ -34,7 +34,8 @@
 ROCm(tm) AMD Infinity Context (AIC) is a disaggregated KV-cache inference stack
 for large language models on AMD GPUs. It combines an LLM serving framework
 (vLLM) with a KV-cache block manager (LMCache) to offload KV tensors across a
-tiered memory hierarchy: GPU VRAM, CPU DRAM, local NVMe and NFS-over-RDMA.
+tiered memory hierarchy: GPU VRAM, CPU DRAM, local NVMe and RDMA-based
+filesystems.
 
 It focuses on enabling a low-latency, shared level of KV cache that can be
 accessed by O(1000) GPUs, so long contexts can be served at scale without
