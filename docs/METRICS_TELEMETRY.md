@@ -9,8 +9,8 @@ live dashboarding via Grafana.
 
 The ports below are **container** ports, reachable by name on the stack's
 bridge (for example `http://aic-lmcache:8080`). The bridge network and every
-container name carry the stack's `AIC_STACK` (`aic` by default, `aic-<job id>`
-in a Slurm job): container `${AIC_STACK}-lmcache` answers to `aic-lmcache` on
+container name carry the stack's `AIC_STACK` (`aic-<job id>` in a Slurm job,
+else a generated `aic-<id>`, one per checkout): container `${AIC_STACK}-lmcache` answers to `aic-lmcache` on
 its own stack's network, and only there. Nothing binds a fixed host port, and
 only Grafana is published to the host, on `127.0.0.1`; `make endpoints` prints
 its URL. `make` gives it the lowest free port from 3000 and keeps that port

@@ -5,6 +5,10 @@ __pycache__/
 *.pyc
 *.egg-info/
 
+# This checkout's generated stack name (scripts/aic-endpoints.sh)
+/.aic-stack
+/.aic-stack.*
+
 # VSCode
 .vscode/
 

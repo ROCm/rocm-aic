@@ -119,13 +119,15 @@ GPU ?= 0
 
 # ---- Stack name ------------------------------------------------------------
 # Compose project, bridge network and container-name prefix of the stack these
-# targets drive ($(AIC_STACK)-lmcache, ...).  The default is the one in
-# scripts/aic-endpoints.sh: aic-$(SLURM_JOB_ID) inside a Slurm job, aic
-# elsewhere, recomputed while AIC_STACK_DERIVED says it is a default, so a job
-# submitted from here derives its own instead of inheriting this one.
-ifeq ($(AIC_STACK),$(AIC_STACK_DERIVED))
-AIC_STACK := aic$(if $(SLURM_JOB_ID),-$(SLURM_JOB_ID))
-AIC_STACK_DERIVED := $(AIC_STACK)
+# targets drive ($(AIC_STACK)-lmcache, ...).  scripts/aic-endpoints.sh owns the
+# default: aic-$(SLURM_JOB_ID) inside a Slurm job, else the aic-<id> generated
+# for this checkout and kept in .aic-stack.  A command-line AIC_STACK overrides
+# the assignment below.
+_AIC_STACK_INFO := $(shell bash "$(CURDIR)/scripts/aic-endpoints.sh" stack)
+AIC_STACK := $(word 1,$(_AIC_STACK_INFO))
+AIC_STACK_DERIVED := $(word 2,$(_AIC_STACK_INFO))
+ifeq ($(AIC_STACK),)
+$(error scripts/aic-endpoints.sh stack printed no stack name)
 endif
 export AIC_STACK AIC_STACK_DERIVED
 

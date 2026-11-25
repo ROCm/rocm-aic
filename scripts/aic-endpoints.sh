@@ -14,6 +14,7 @@
 #   scripts/aic-endpoints.sh fetch <url> [<json-body>]
 #   scripts/aic-endpoints.sh list
 #   scripts/aic-endpoints.sh check-stack <compose-project-dir>
+#   scripts/aic-endpoints.sh stack
 #
 # Clients reach the stack from its bridge (the network named ${AIC_STACK}, see
 # below), by container name: aic_fetch for a single request, aic_bridge_url for
@@ -42,16 +43,43 @@
 # containers also answer to their fixed aic-* aliases, which is all a client on
 # the bridge (aic_fetch, a benchmark) needs.  Exported because compose reads it.
 #
-# It defaults to aic-$SLURM_JOB_ID inside a Slurm (or SPUR) job, so two jobs on
-# one node never share a name, and to aic elsewhere; set it to run a second
-# stack by hand.  AIC_STACK_DERIVED records a value this default produced, so
-# one inherited from elsewhere -- the login-node shell whose environment sbatch
-# passes on -- is recomputed for this job instead of reused.  The Makefile
-# applies the same rule.
-if [[ -z "${AIC_STACK:-}" || "${AIC_STACK}" == "${AIC_STACK_DERIVED:-}" ]]; then
-    AIC_STACK="aic${SLURM_JOB_ID:+-${SLURM_JOB_ID}}"
-    AIC_STACK_DERIVED="${AIC_STACK}"
-fi
+# It defaults to a name no other stack on the host has, which every process
+# that needs it can derive on its own:
+#   - inside a Slurm (or SPUR) job, aic-$SLURM_JOB_ID, so jobs sharing a node
+#     never meet;
+#   - elsewhere, aic-<id>, <id> the first 8 hex digits of a random UUID made
+#     once per checkout and kept in <checkout>/.aic-stack, so checkouts and
+#     users sharing a workstation never meet, and every later make target and
+#     script run from the checkout reaches the same stack.
+# AIC_STACK_DERIVED records a value this default produced, so one inherited from
+# elsewhere -- the login-node shell whose environment sbatch passes on -- is
+# derived again here instead of reused, while a value the user set is kept.
+# The Makefile takes its value from `aic-endpoints.sh stack`.
+aic_stack_default() {
+    local file tmp uuid name
+    if [[ -n "${AIC_STACK:-}" && "${AIC_STACK}" != "${AIC_STACK_DERIVED:-}" ]]; then
+        return 0
+    fi
+    if [[ -n "${SLURM_JOB_ID:-}" ]]; then
+        name="aic-${SLURM_JOB_ID}"
+    else
+        file="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/.aic-stack"
+        # ln, not a plain write: of two first runs racing, one id wins for both.
+        if [[ ! -s "${file}" ]] && tmp="$(mktemp "${file}.XXXXXX" 2>/dev/null)"; then
+            uuid="$(cat /proc/sys/kernel/random/uuid)" \
+                && echo "aic-${uuid:0:8}" > "${tmp}" && ln "${tmp}" "${file}" 2>/dev/null
+            rm -f "${tmp}"
+        fi
+        name="$(cat "${file}" 2>/dev/null)"
+        if [[ -z "${name}" ]]; then
+            echo "aic-endpoints: cannot create ${file}; using stack aic (set AIC_STACK to choose one)" >&2
+            name=aic
+        fi
+    fi
+    AIC_STACK="${name}" AIC_STACK_DERIVED="${name}"
+}
+
+aic_stack_default
 export AIC_STACK AIC_STACK_DERIVED
 
 # Print the container that owns <container>'s network namespace.  Fails, naming
@@ -242,13 +270,13 @@ _aic_stack_dirs() {
 }
 
 # aic_stack_check <compose-project-dir>
-# Fail, suggesting a free name, if AIC_STACK names a stack started from another
-# checkout.  Compose would adopt that stack's containers as this one's and
-# recreate or remove them; a Slurm job never gets here with a name in use, but
-# two checkouts on one workstation both default to aic.  Restarting this
-# checkout's own stack is fine.
+# Fail if AIC_STACK names a stack started from another checkout.  Compose would
+# adopt that stack's containers as this one's and recreate or remove them.  The
+# default never collides, so this catches a chosen name in use, or a checkout
+# copied along with its .aic-stack.  Restarting this checkout's own stack is
+# fine.
 aic_stack_check() {
-    local dir="${1:-}" dirs user name n=1
+    local dir="${1:-}" dirs
     if (( $# != 1 )); then
         echo "usage: aic_stack_check <compose-project-dir>" >&2
         return 2
@@ -258,15 +286,12 @@ aic_stack_check() {
         return 1
     }
     [[ -z "${dirs}" || "${dirs}" == "${dir}" ]] && return 0
-    # Compose project names are lower case.
-    user="$(id -un)"; user="${user,,}"
-    name="${AIC_STACK}-${user}"
-    while [[ -n "$(_aic_stack_dirs "${name}")" ]]; do
-        name="${AIC_STACK}-${user}$(( ++n ))"
-    done
     echo "AIC_STACK=${AIC_STACK} is already in use by the stack started from ${dirs//$'\n'/, }." >&2
-    echo "Run this one under its own name, e.g. AIC_STACK=${name}, and pass the same" >&2
-    echo "AIC_STACK to every later command that should reach it." >&2
+    if [[ "${AIC_STACK}" == "${AIC_STACK_DERIVED:-}" && -z "${SLURM_JOB_ID:-}" ]]; then
+        echo "This checkout's .aic-stack was copied from that one; delete it to generate a new name." >&2
+    else
+        echo "Choose another AIC_STACK, or unset it to use this checkout's generated name." >&2
+    fi
     return 1
 }
 
@@ -280,6 +305,8 @@ if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
         pick-port)   shift; aic_pick_port "$@" ;;
         list)        aic_endpoints ;;
         check-stack) shift; aic_stack_check "$@" ;;
-        *)           echo "usage: ${0} url <container> <container-port> | bridge-url <container> <container-port> | probe <container> <container-port> <path> | fetch <url> [<json-body>] | pick-port <container> <container-port> <first> <last> | list | check-stack <compose-project-dir>" >&2; exit 2 ;;
+        # AIC_STACK and AIC_STACK_DERIVED ("-" for empty), for the Makefile.
+        stack)       echo "${AIC_STACK} ${AIC_STACK_DERIVED:--}" ;;
+        *)           echo "usage: ${0} url <container> <container-port> | bridge-url <container> <container-port> | probe <container> <container-port> <path> | fetch <url> [<json-body>] | pick-port <container> <container-port> <first> <last> | list | check-stack <compose-project-dir> | stack" >&2; exit 2 ;;
     esac
 fi

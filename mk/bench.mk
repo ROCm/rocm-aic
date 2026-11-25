@@ -871,7 +871,7 @@ test-rocjitsu-local: prep-dirs
 	  '# Run it in an if so the real status is always reported.' \
 	  '# The image refs go on the command line: the guest make would otherwise' \
 	  '# ask its own docker buildx, and leaves compose on :latest without one.' \
-	  'if make -C /rj-share/repo vllm-reset-test VLM_READY_RETRIES=$(RJ_READY_RETRIES) VLLM_IMAGE_REF=$(RJ_IMAGE_REF) LMCACHE_IMAGE_REF=$(RJ_LMCACHE_IMAGE_REF) HSA_SNOOP_IMAGE=$(RJ_HSA_SNOOP_IMAGE_REF) AIC_CLIENT_IMAGE=$(RJ_CLIENT_IMAGE_REF); then' \
+	  'if make -C /rj-share/repo vllm-reset-test AIC_STACK=$(AIC_STACK) VLM_READY_RETRIES=$(RJ_READY_RETRIES) VLLM_IMAGE_REF=$(RJ_IMAGE_REF) LMCACHE_IMAGE_REF=$(RJ_LMCACHE_IMAGE_REF) HSA_SNOOP_IMAGE=$(RJ_HSA_SNOOP_IMAGE_REF) AIC_CLIENT_IMAGE=$(RJ_CLIENT_IMAGE_REF); then' \
 	  '    echo vllm_reset_test_rc=0' \
 	  'else' \
 	  '    echo vllm_reset_test_rc=$$?' \
@@ -888,11 +888,11 @@ test-rocjitsu-local: prep-dirs
 	    echo "FAIL: vllm-reset-test failed inside VM (rc=$${_make_rc:-?})" >&2; \
 	    echo "  --- lmcache logs ---"; \
 	    ssh $$_ssh_flags "$$_vmuser@localhost" \
-	        "sudo docker logs aic-lmcache 2>&1 | tail -30" \
+	        "sudo docker logs $(AIC_STACK)-lmcache 2>&1 | tail -30" \
 	        2>&1 | sed 's/^/  [lmcache] /'; \
 	    echo "  --- vllm logs ---"; \
 	    ssh $$_ssh_flags "$$_vmuser@localhost" \
-	        "sudo docker logs aic-vllm-gpu0 2>&1 | tail -250" \
+	        "sudo docker logs $(AIC_STACK)-vllm-gpu0 2>&1 | tail -250" \
 	        2>&1 | sed 's/^/  [vllm] /'; \
 	    echo "  --- rocjitsu emulator log ---"; \
 	    docker logs --tail 40 aic-rj-rocjitsu 2>&1 | sed 's/^/  [rocjitsu] /'; \
@@ -901,7 +901,7 @@ test-rocjitsu-local: prep-dirs
 	fi; \
 	echo "  Cleaning up compose stack ...";\
 	ssh $$_ssh_flags "$$_vmuser@localhost" \
-	    "make -C /rj-share/repo down LOG=/tmp/aic-logs \
+	    "make -C /rj-share/repo down AIC_STACK=$(AIC_STACK) LOG=/tmp/aic-logs \
 	      BENCH_LOGDIR=/tmp/aic-logs/manual 2>/dev/null" \
 	    2>/dev/null || true; \
 	echo "  Cleaning up containers ..."; \

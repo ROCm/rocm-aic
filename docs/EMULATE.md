@@ -390,6 +390,7 @@ make emulate-mp-test
 By hand:
 
 ```bash
+source scripts/aic-endpoints.sh   # sets AIC_STACK, this checkout's stack
 KV_CFG='{"kv_connector":"LMCacheMPConnector","kv_role":"kv_both",'
 KV_CFG+='"kv_connector_extra_config":{'
 KV_CFG+='"lmcache.mp.host":"tcp://aic-lmcache-emulator","lmcache.mp.port":6555,'
@@ -397,7 +398,7 @@ KV_CFG+='"lmcache.mp.use_vmm_api":false,'
 KV_CFG+='"lmcache.mp.mp_transfer_mode":"lmcache_driven"}}'
 VLLM_IMAGE_REF=aic-vllm:latest LMCACHE_IMAGE_REF=aic-lmcache:latest DEVICE_TYPE=cpu \
   VLLM_EMULATOR_MEMORY=$((8 * 1024**3)) \
-  EMU_IPC_MODE="container:${AIC_STACK:-aic}-lmcache-emulator" \
+  EMU_IPC_MODE="container:${AIC_STACK}-lmcache-emulator" \
   EMU_KV_TRANSFER_ARG="--kv-transfer-config '${KV_CFG}'" \
   docker compose -f docker/docker-compose.yml --profile emulate-mp \
   up lmcache-emulator vllm-emulator
