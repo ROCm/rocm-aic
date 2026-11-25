@@ -76,8 +76,8 @@ changed and published to the
 
 ## Prerequisites
 
-- A ROCm host. Set `ROCM_ARCH` to your GPU architecture (for example
-  `gfx942`), or a `;`-separated list for a multi-arch image.
+- A ROCm host. Set `ROCM_ARCH` to your GPU architecture (`gfx950` for MI350X,
+  MI355X and MI350P), or a `;`-separated list for a multi-arch image.
 - Docker with BuildKit and the `docker compose` v2 plugin (2.24 or later);
   `make ensure-compose` installs the plugin if it is missing.
 - A Hugging Face token with access to the model you want to serve.
@@ -88,7 +88,7 @@ changed and published to the
 ## Quick Start
 
 ```bash
-make build ROCM_ARCH=gfx942
+make build ROCM_ARCH=gfx950
 make up HF_TOKEN=hf_... NVME_DATA=/mnt/nvme VLLM_MODEL=Qwen/Qwen2.5-7B-Instruct
 ```
 
