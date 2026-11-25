@@ -135,7 +135,7 @@ jobs:
       - name: Lint AIC Overview dashboard
         run: |
           set -euo pipefail
-          # Rules disabled in .linter-config.yaml:
+          # Rules disabled in .linter-config.yml:
           #   template-job-rule / target-job-rule: fixed job names per scrape
           #     target; a $job dropdown would break all panel queries.
           #   template-instance-rule / target-instance-rule: same — AIC-specific.
@@ -147,7 +147,7 @@ jobs:
           # dashboard-linter v0.2.0 does not honour 'disabled: true' for all
           # rules in --strict mode, so we filter the output manually.
           out=$(dashboard-linter lint \
-            --config monitoring/grafana/.linter-config.yaml \
+            --config monitoring/grafana/.linter-config.yml \
             monitoring/grafana/dashboards/aic-overview.json 2>&1)
           echo "$out"
           # Fail if any ❌ lines remain after removing excluded rule output.
