@@ -233,7 +233,8 @@ x-lmcache-healthcheck: &lmcache-healthcheck
   retries: 18
   start_period: 30s
 
-# One stack per AIC_STACK (default aic): it names the compose project, the
+# One stack per AIC_STACK (make picks aic-<job id> or a generated aic-<id>;
+# plain compose falls back to aic): it names the compose project, the
 # bridge network and every container (${AIC_STACK}-lmcache, ...), so stacks with
 # different names share a Docker host without touching each other's containers,
 # DNS names or volumes.  On its own network each container also answers to its

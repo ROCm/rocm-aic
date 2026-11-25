@@ -85,7 +85,11 @@ jobs:
 
       - name: Dump compose logs on failure
         if: failure()
-        run: docker compose -f /home/runner/work/rocm-aic/rocm-aic/docker/docker-compose.yml --profile kvbench logs --no-color kvbench client
+        # aic-endpoints.sh supplies the AIC_STACK make generated for this checkout.
+        run: |
+          # shellcheck source=scripts/aic-endpoints.sh
+          source /home/runner/work/rocm-aic/rocm-aic/scripts/aic-endpoints.sh
+          docker compose -f /home/runner/work/rocm-aic/rocm-aic/docker/docker-compose.yml --profile kvbench logs --no-color kvbench client
 
       - name: Tear down KVBench compose profile
         if: always()

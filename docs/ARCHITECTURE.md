@@ -35,7 +35,8 @@ abstract socket that only works inside one network namespace. A
 
 ## Networking
 
-Each stack has a name, `AIC_STACK` (`aic-<job id>` in a Slurm job): it names
+Each stack has a name, `AIC_STACK` (`aic-<job id>` in a Slurm job, else a
+`aic-<id>` generated once per checkout): it names
 the compose project, a private Docker bridge of the same name, and prefixes
 every container (`<stack>-lmcache`, ...). On its own bridge each container also
 answers to its name in the table above, except `vllm`, which shares lmcache's

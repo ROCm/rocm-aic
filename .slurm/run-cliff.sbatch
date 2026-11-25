@@ -758,7 +758,8 @@ stop_stack() { # $1=arm  $2...=the services the arm started
   sleep 2
   timeout 60 docker compose -f "${COMPOSE_FILE}" --profile cache --profile vllm-only \
       down --remove-orphans --timeout 5 >/dev/null 2>&1 || true
-  for c in "${AIC_STACK}-vllm-only-gpu${GPU}" "${AIC_STACK}-vllm-gpu${GPU}" "${AIC_STACK}-lmcache"; do timeout 30 docker rm -f "${c}" >/dev/null 2>&1 || true; done
+  for c in "${AIC_STACK}-vllm-only-gpu${GPU}" "${AIC_STACK}-vllm-gpu${GPU}" "${AIC_STACK}-lmcache"; do
+    timeout 30 docker rm -f "${c}" >/dev/null 2>&1 || true; done
 }
 
 # --- Run record (logs/<job-id>/run-config.json) ------------------------------

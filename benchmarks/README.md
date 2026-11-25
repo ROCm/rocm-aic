@@ -2,15 +2,16 @@
 
 Every benchmark client runs from one image, `aic-client`
 (`docker/client/Dockerfile`: Python only, no ROCm), through one command,
-`aic-bench`. The stack starts a long-lived `aic-client` container on the `aic`
+`aic-bench`. The stack starts a long-lived `<stack>-client` container on its
 bridge with the repo at `/repo` and the logs at `/logs`.
 
 ```bash
 make client-build                          # build the image (once)
 make bench-list                            # the subcommands
 make bench BENCH=agent-simple BENCH_ARGS="s1 220 16 480"
-docker exec aic-client aic-bench cliff --arm kvd_v2 --concurrencies 1,2,4
-docker exec aic-client aic-bench cliff --help   # the underlying tool's help
+source scripts/aic-endpoints.sh            # sets AIC_STACK, this checkout's stack
+docker exec "${AIC_STACK}-client" aic-bench cliff --arm kvd_v2 --concurrencies 1,2,4
+docker exec "${AIC_STACK}-client" aic-bench cliff --help   # the underlying tool's help
 ```
 
 ## aic-bench

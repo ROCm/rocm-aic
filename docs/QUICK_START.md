@@ -31,11 +31,15 @@ tier and NVMe and NFS as the second. `make up-batch` runs it in the background;
 `make down` stops everything.
 
 `AIC_STACK` names the stack: the compose project, its private Docker bridge and
-the prefix of every container name (`<stack>-lmcache`, ...). Inside a Slurm job
-it defaults to `aic-<job id>`, so jobs sharing a node never meet. To run a
-second stack on one host by hand, give it its own name and keep passing it,
-e.g. `make up AIC_STACK=aic-mine` and later `make down AIC_STACK=aic-mine`;
-`make up` refuses a name another checkout's stack is already using.
+the prefix of every container name (`<stack>-lmcache`, ...). `make` generates it
+the first time it runs in a checkout, `aic-` and eight hex digits kept in
+`.aic-stack`, so stacks started from different checkouts or by different users
+on one host never meet; inside a Slurm job it is `aic-<job id>`. `make
+list-vars` prints it, and `make logs`, `make shell-vllm` and `make down` find
+the stack without being told. To choose the name yourself, pass it to every
+command, e.g. `make up AIC_STACK=aic-mine` and later `make down
+AIC_STACK=aic-mine`; `make up` refuses a name another checkout's stack is
+already using.
 
 The default NVMe tier uses
 [AMD Infinity Storage (AIS)](https://rocm.blogs.amd.com/ecosystems-and-partners/rocm-10.1-blog/README.html),

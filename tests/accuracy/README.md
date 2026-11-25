@@ -41,7 +41,7 @@ service, the tiered arm `vllm`, which sits in lmcache's network namespace;
 `aic_bridge_url` names the container that answers for each:
 
 ```bash
-source scripts/aic-endpoints.sh   # sets AIC_STACK (aic outside Slurm)
+source scripts/aic-endpoints.sh   # sets AIC_STACK (this checkout's outside Slurm)
 BASELINE_URL="$(aic_bridge_url "${AIC_STACK}-vllm-only-gpu0" 8000)"   # http://<stack>-vllm-only-gpu0:8000
 TIERED_URL="$(aic_bridge_url "${AIC_STACK}-vllm-gpu0" 8000)"          # http://<stack>-lmcache:8000
 AIC_FETCH_IMAGE="${VLLM_IMAGE_REF}" aic_fetch "${TIERED_URL}/v1/models"
