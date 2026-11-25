@@ -10,7 +10,7 @@ see [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 Run from the repository root. `make help` lists every target.
 
 ```bash
-make build ROCM_ARCH=gfx942
+make build ROCM_ARCH=gfx950
 make up HF_TOKEN=hf_... NVME_DATA=/path/to/nvme VLLM_MODEL=<model>
 make down
 make venv                            # host-side Python environment (.venv)
