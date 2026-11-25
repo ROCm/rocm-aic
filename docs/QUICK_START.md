@@ -8,7 +8,7 @@ and [ENVIRONMENT.md](ENVIRONMENT.md) documents every variable.
 ## 1. Build the images
 
 ```bash
-make build ROCM_ARCH=gfx942
+make build ROCM_ARCH=gfx950
 ```
 
 This builds `aic-base` (PyTorch and shared dependencies), then `aic-vllm` and
