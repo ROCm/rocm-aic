@@ -38,6 +38,8 @@ python3 -m unittest -v tests.test_aic_bake_env tests.test_gen_env_reference test
   (after `make venv`). They run `shellcheck`, `hadolint`, and regenerate the
   README versions and [docs/ENVIRONMENT.md](docs/ENVIRONMENT.md).
 - **After adding or changing a build or runtime variable**, run `make env-docs`.
+- **YAML files end in `.yml`**, except `.pre-commit-config.yaml`, the only
+  name pre-commit looks for.
 - **Spelling is checked** on Markdown. Add legitimate new terms to `.wordlist.txt`.
 - **Commits** follow Conventional Commits: `type(scope): subject`, imperative,
   50 characters or fewer.

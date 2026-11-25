@@ -5,7 +5,7 @@
 # handle hand-off.
 #
 #   AIC_IMG=aic-vllm:latest RENDER_GID=$(getent group render | cut -d: -f3) \
-#     docker compose -f tests/ipc/event-compose.yaml up --abort-on-container-exit
+#     docker compose -f tests/ipc/event-compose.yml up --abort-on-container-exit
 services:
   producer:
     image: ${AIC_IMG:-aic-vllm:latest}

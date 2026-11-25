@@ -6,7 +6,7 @@ IPC handle, and writes the handle bytes to the shared /ipc volume so the
 consumer (a separate container) can import it. Stays alive holding the event
 until the consumer signals done.
 
-Run via tests/ipc/event-compose.yaml in both HSA_ENABLE_IPC_MODE_LEGACY=1 and
+Run via tests/ipc/event-compose.yml in both HSA_ENABLE_IPC_MODE_LEGACY=1 and
 unset to compare. Isolates the HIP event-IPC path from all of LMCache.
 """
 import os, sys, time, torch
