@@ -30,11 +30,14 @@ tier and NVMe and NFS as the second. `make up-batch` runs it in the background;
 `make logs` follows the logs, `make endpoints` prints the Grafana URL, and
 `make down` stops everything.
 
-The default NVMe tier uses hipFile peer-to-peer DMA. If LMCache exits at startup
-with a `hipFileBufRegister` error, your host does not support it; add
-`AIC_L2_BACKEND=nixl_posix` to use ordinary file I/O instead.
+The default NVMe tier uses
+[AMD Infinity Storage (AIS)](https://rocm.blogs.amd.com/ecosystems-and-partners/rocm-10.1-blog/README.html),
+peer-to-peer DMA between NVMe and the GPU through the
+[hipFile](https://rocm.docs.amd.com/projects/hipFile/en/latest/) library. If
+LMCache exits at startup with a `hipFileBufRegister` error, your host does not
+support it; add `AIC_L2_BACKEND=nixl_posix` to use ordinary file I/O instead.
 
-To use a hipFile (GPUDirect Storage) NVMe slab as the first tier instead:
+To use an AIS NVMe slab as the first tier instead:
 
 ```bash
 make up-gds-l1 HF_TOKEN=hf_... GDS_SLAB_DATA=/mnt/lmcache-nvme VLLM_MODEL=Qwen/Qwen2.5-7B-Instruct
