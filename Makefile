@@ -382,7 +382,7 @@ help:
 	@printf '\n$(_AIC_B)$(_AIC_X)BUILD (local)$(_AIC_R)\n'
 	@printf '  $(_AIC_G)%-32s$(_AIC_R) %s\n' \
 	    'make build' 'Build aic-base → aic-vllm + aic-lmcache  (docker buildx bake)' \
-	    'make build-from-wheels' 'Same images from published wheels, nothing compiled (WHEELS_RELEASE)' \
+	    'make build-from-wheels' 'Same images from published wheels; only the sidecars compile (WHEELS_RELEASE)' \
 	    'make wheels' 'Export pip wheels (nixl, vllm, amd_aiter, lmcache) → WHEELS_DIR' \
 	    'make venv' 'Create/update .venv with bench+plot deps' \
 	    'make ensure-compose' 'Install docker compose v2 plugin if missing' \

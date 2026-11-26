@@ -112,7 +112,8 @@ scrape_configs:
 
   # hsa-snoop: HSA AQL queue/dispatch telemetry (hsa_kernel_launches_total,
   # hsa_kernel_duration_seconds, hsa_active_queues, hsa_snoop_up, ...) and AIS
-  # (AMD Infinity Storage) P2P storage telemetry (ais_rx_ops_total,
+  # (AMD Infinity Storage) P2P storage telemetry, which needs --ais-snoop and so
+  # is not exported by the compose command (ais_rx_ops_total,
   # ais_tx_ops_total, ais_rx_bytes_total, ais_tx_bytes_total,
   # ais_rx_errors_total, ais_tx_errors_total, ais_rx_latency_seconds,
   # ais_tx_latency_seconds, ais_rx_io_size_bytes, ais_tx_io_size_bytes) --

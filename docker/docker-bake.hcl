@@ -62,10 +62,9 @@ variable "CUPY_VERSION"      { default = "14.2.0" }
 # UCX is NIXL's transport.  v1.22.0 is the latest stable release; upstream NIXL
 # v1.5.2 CI builds against the pre-release v1.23.x branch.
 variable "UCX_REF"           { default = "v1.22.0" }
-# Unreleased commit on feat/cpu-deload: v1.6.0 stalls its ring poller under
-# --mem-snoop and cannot read the queue rings of a ROCm 10.2 process.  Move to
-# the tag once cut.
-variable "HSA_SNOOP_REF"     { default = "aba6a306" }
+# Not below v1.7.0: earlier releases stall their ring poller under --mem-snoop
+# and cannot read the queue rings of a ROCm 10.2 process.
+variable "HSA_SNOOP_REF"     { default = "v1.10.1" }
 
 # Base images.  ROCM_BASE_IMAGE is the full ROCm toolchain the source builds
 # run on; ROCM_RUNTIME_IMAGE is what the shipped images start from.
@@ -327,11 +326,10 @@ group "emulate-wheels" {
 # The `default` stack with aic-vllm and aic-lmcache assembled from a published
 # wheel set (AIC_WHEELS_SRC) instead of compiled; see `make build-from-wheels`.
 # The images carry the tags `default` gives them, so `make up` runs either.
-# No wheel holds the sidecars.  The exporters build as in `default`.  hsa-snoop
-# is not here: it compiles on ROCM_BASE_IMAGE, which nothing else in this group
-# pulls, so `make build-from-wheels` pulls the published image instead.
+# No wheel holds the sidecars, which build as in `default`.  Nothing in the
+# group pulls ROCM_BASE_IMAGE.
 group "from-wheels" {
-  targets = ["vllm-from-wheels", "lmcache-from-wheels", "nvme-exporter", "rdma-exporter"]
+  targets = ["vllm-from-wheels", "lmcache-from-wheels", "hsa-snoop", "nvme-exporter", "rdma-exporter"]
 }
 
 # ---- Targets -----------------------------------------------------------------
@@ -547,7 +545,6 @@ target "hsa-snoop" {
                       AIC_IMAGE_PREFIX == "" ? ["aic-hsa-snoop:latest"] : [])
   args = {
     ROCM_VERSION       = ROCM_VERSION
-    ROCM_BUILD_IMAGE   = ROCM_BASE_IMAGE
     ROCM_RUNTIME_IMAGE = ROCM_RUNTIME_IMAGE
     BUILD_JOBS         = BUILD_JOBS
     HSA_SNOOP_GIT_URL  = HSA_SNOOP_GIT_URL

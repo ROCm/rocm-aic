@@ -9,6 +9,9 @@ steps per request) and reports how many kernel launches and durations hsa-snoop
 counted for them, per engine step.  Run it once per configuration; the workload
 is the same every time apart from the run id, which keeps the prompts uncached.
 
+Launch counts are not comparable with runs recorded before hsa-snoop 1.8.0,
+which stopped counting vendor packets in the launch counter.
+
     aic-bench fixed-load <run-id> <requests> [<words>]
     aic-bench fixed-load base 12
 """
@@ -17,7 +20,11 @@ import time
 
 import kv_client as kv
 
-HSA = ["hsa_kernel_launches_total", "hsa_kernel_duration_seconds_count", "hsa_dispatches_missed_total"]
+# Per-GPU totals, not the pid-labelled counters: hsa-snoop drops a process's
+# series --series-retain-sec (300 s) after its last queue goes away, so a bare
+# sum() over those can fall between the two scrapes.  hsa_kernel_duration_
+# seconds_count has no pid label and is safe.
+HSA = ["hsa_gpu_kernel_launches_total", "hsa_kernel_duration_seconds_count", "hsa_gpu_dispatches_missed_total"]
 STEPS = "vllm:iteration_tokens_total_count"
 
 

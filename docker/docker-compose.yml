@@ -109,9 +109,11 @@ x-lmcache-env: &lmcache-env
   HIPFILE_ALLOW_COMPAT_MODE: "false"
   HIPFILE_UNSUPPORTED_FILE_SYSTEMS: "true"
   # NIXL native Prometheus telemetry exporter (serves /metrics on :19090).
-  # Requires the prometheus-cpp plugin compiled into the image (aic-base's build_nixl stage);
-  # a no-op fallback if absent.  Set NIXL_TELEMETRY_ENABLE= to disable.
-  NIXL_TELEMETRY_ENABLE: "${NIXL_TELEMETRY_ENABLE-y}"
+  # Requires the prometheus-cpp plugin compiled into the image (aic-base's build_nixl stage):
+  # with the plugin absent or unloadable, creating a NIXL agent fails and the lmcache
+  # server does not start.  Set NIXL_TELEMETRY_ENABLE=n to disable; NIXL rejects an
+  # empty value, so empty means the default here.
+  NIXL_TELEMETRY_ENABLE: "${NIXL_TELEMETRY_ENABLE:-y}"
   NIXL_TELEMETRY_EXPORTER: "${NIXL_TELEMETRY_EXPORTER:-prometheus}"
   NIXL_TELEMETRY_PROMETHEUS_PORT: "19090"
   PYTHONHASHSEED: "0"
@@ -786,9 +788,10 @@ services:
 
   # hsa-snoop: HSA AQL queue/dispatch snooper + Prometheus exporter on :9488.
   # Runs privileged in the host PID namespace: the amdgpu kprobe reports host
-  # PIDs, and hsa-snoop reads each ring through /proc/<pid>, so in any other
-  # namespace it lists the queues but never sees a dispatch. Requires tracefs
-  # on the host.
+  # PIDs, and hsa-snoop reads each ring through /proc/<pid>.  In any other
+  # namespace those reads fail, and since v1.10.1 a queue whose pid is invisible
+  # is dropped at its first unreadable poll, so nothing per-process survives.
+  # Requires tracefs on the host.
   # ---------------------------------------------------------------------------
   hsa-snoop:
     profiles: [monitoring, exporters, exporters-safe]
@@ -811,6 +814,11 @@ services:
     volumes:
       - /sys/kernel/debug:/sys/kernel/debug
       - /sys/kernel/tracing:/sys/kernel/tracing
+    # --poll-us 1000 (upstream default is 20) keeps the cost down at the price of
+    # coverage: on an 8-rank TP run about 12% of AQL packets are decoded and the
+    # rest counted in hsa_dispatches_missed_total.  --poll-threads is left at its
+    # v1.10.1 default (min(4, cores)), which costs ~4 cores while queues are busy
+    # and ~0.1 idle; raising it buys coverage at a proportional CPU cost.
     command: ["--all", "--prometheus", "--prometheus-port", "9488", "--mem-snoop", "--poll-us", "1000"]
     healthcheck:
       test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/9488"]

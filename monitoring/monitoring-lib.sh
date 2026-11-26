@@ -23,7 +23,9 @@
 # bare source harmless and the linter quiet):
 #   log()             -- logger; a no-op '[monitoring] ...' printer is provided
 #                        if the caller has not defined one.
-#   AIC_IMAGE         -- AIC image tag (hsa-snoop runs from it).
+#   AIC_IMAGE         -- AIC image tag, used for aic_fetch scrapes.
+#   HSA_SNOOP_IMAGE   -- hsa-snoop sidecar image (its own image since the
+#                        hsa-snoop build was split out of the AIC image).
 #   MON_DIR           -- path to the monitoring/ dir (prometheus.yml, configs).
 #   AIC_METRICS_DIR   -- Prometheus TSDB dir (bind-mounted into the container).
 #   MON_COMPOSE       -- optional compose file; used when the plugin is present.

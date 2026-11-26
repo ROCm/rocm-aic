@@ -121,10 +121,6 @@ WHEELS_REPO    ?= ROCm/rocm-aic
 WHEELS_RELEASE ?= nightly
 AIC_WHEELS_SRC ?= $(REPO_ROOT)/wheels-release/$(or $(strip $(WHEELS_RELEASE)),local)
 
-# Registry the sidecar no wheel holds (aic-hsa-snoop) is pulled from, under the
-# tag bake gives it.  With the trailing '/'.
-AIC_PUBLISHED_PREFIX ?= ghcr.io/rocm/rocm-aic/
-
 # buildx is a CLI plugin that a distribution's docker package can leave out.
 # Docker looks in $HOME/.docker/cli-plugins first, so this needs no root.
 BUILDX_PLUGIN_VERSION ?= v0.39.1
@@ -176,20 +172,8 @@ build-from-wheels:
 		$(BAKE_OUTPUT_FLAG) \
 		-f "$(REPO_ROOT)/docker/docker-bake.hcl" \
 		from-wheels
-	@echo "Built aic-vllm/aic-lmcache:$(IMAGE_TAG) from wheels (also tagged :latest)"
+	@echo "Built aic-vllm/aic-lmcache:$(IMAGE_TAG) from wheels, and $(HSA_SNOOP_IMAGE_REF) (vllm/lmcache/hsa-snoop also tagged :latest)"
 	@echo "Built aic-nvme-exporter:local, aic-rdma-exporter:local"
-	@if docker image inspect "$(HSA_SNOOP_IMAGE_REF)" >/dev/null 2>&1; then \
-		echo "$(HSA_SNOOP_IMAGE_REF) already present"; \
-	elif docker pull -q "$(AIC_PUBLISHED_PREFIX)$(HSA_SNOOP_IMAGE_REF)" >/dev/null 2>&1; then \
-		docker tag "$(AIC_PUBLISHED_PREFIX)$(HSA_SNOOP_IMAGE_REF)" "$(HSA_SNOOP_IMAGE_REF)" && \
-		docker tag "$(AIC_PUBLISHED_PREFIX)$(HSA_SNOOP_IMAGE_REF)" aic-hsa-snoop:latest && \
-		echo "Pulled $(HSA_SNOOP_IMAGE_REF) from $(AIC_PUBLISHED_PREFIX)"; \
-	else \
-		echo "$(AIC_PUBLISHED_PREFIX)$(HSA_SNOOP_IMAGE_REF) is not published: building it, which pulls the full ROCm image"; \
-		BUILDX_BAKE_ENTITLEMENTS_FS=0 docker buildx bake \
-			--builder $(AIC_BUILDX_BUILDER) --progress=$(BUILD_PROGRESS) $(BAKE_OUTPUT_FLAG) \
-			-f "$(REPO_ROOT)/docker/docker-bake.hcl" hsa-snoop; \
-	fi
 
 up: ensure-compose check-hf-token prep-dirs
 	@mkdir -p "$(AIC_METRICS_DIR)"

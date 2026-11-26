@@ -132,7 +132,7 @@ keeps equal to bake's.
 | `NIXL_REF` | `v1.5.2` | `docker/docker-bake.hcl` | NIXL ref |
 | `CUPY_VERSION` | `14.2.0` | `docker/docker-bake.hcl` | `cupy-rocm-7-0` release installed into `aic-lmcache` and `aic-vllm` |
 | `UCX_REF` | `v1.22.0` | `docker/docker-bake.hcl` | UCX ref (NIXL's transport) source-built into the base image |
-| `HSA_SNOOP_REF` | `aba6a306` | `docker/docker-bake.hcl` | hsa-snoop ref |
+| `HSA_SNOOP_REF` | `v1.10.1` | `docker/docker-bake.hcl` | hsa-snoop ref |
 | `CLR_REF` | `release/therock-10.2` | `docker/docker-bake.hcl` | `ROCm/rocm-systems` ref the patched `libamdhip64` in the base image is built from; bump it together with `ROCM_VERSION` |
 | `TRITON_REF` | `release/internal/3.8.x` | `docker/docker-bake.hcl` | Triton ref source-built into the base image |
 | `NVME_EXPORTER_VERSION` | `3.0.0` | `docker/docker-bake.hcl` | `nvme_exporter` release packaged into the NVMe exporter image |
@@ -177,7 +177,6 @@ keeps equal to bake's.
 | `WHEELS_REPO` | `ROCm/rocm-aic` | `mk/local.mk` | GitHub repository `make build-from-wheels` downloads the wheels from |
 | `WHEELS_RELEASE` | `nightly` | `mk/local.mk` | Release tag `make build-from-wheels` downloads the wheels of. Empty skips the download and builds from what `AIC_WHEELS_SRC` holds |
 | `AIC_WHEELS_SRC` | `wheels-release/nightly`; `$(REPO_ROOT)/wheels-release/$(or $(strip $(WHEELS_RELEASE)),local)` (`mk/local.mk`) | `docker/docker-bake.hcl` | Directory of published wheels the `from-wheels` bake group installs. `make build-from-wheels` downloads into it and removes wheels the release no longer lists |
-| `AIC_PUBLISHED_PREFIX` | `ghcr.io/rocm/rocm-aic/` | `mk/local.mk` | Registry `make build-from-wheels` pulls `aic-hsa-snoop` from, with the trailing `/`. The image is built instead when its tag is not published there |
 | `BUILDX_PLUGIN_VERSION` | `v0.39.1` | `mk/local.mk` | `docker buildx` plugin version `make ensure-buildx` installs when the plugin is missing |
 | `VLLM_TARGET_DEVICE` | `rocm` | `docker/docker-bake.hcl` | vLLM build target: `rocm` compiles the GPU kernels, `empty` compiles none (the emulation image) |
 | `AIC_UCX_FAST` | (empty) | `docker/docker-bake.hcl` | `1` builds a minimal UCX; `make dist-build-fast` sets it |
@@ -315,7 +314,7 @@ keeps equal to bake's.
 | `LMCACHE_CHUNK_SIZE` | `256` | `docker/docker-compose.yml` | Tokens per KV chunk; the MP server and the coordinator must agree |
 | `LMCACHE_CONFIG_FILE_HOST` | `/dev/null` | `docker/docker-compose.yml` | Host path of an LMCache config file to mount (`local_disk` and advanced tuning) |
 | `LMCACHE_CONFIG_FILE` | (empty) | `docker/docker-compose.yml` | In-container path of that config; set only when one is mounted |
-| `NIXL_TELEMETRY_ENABLE` | `y` (only when unset) | `docker/docker-compose.yml` | NIXL's own Prometheus exporter on `:19090`. Set it empty to disable |
+| `NIXL_TELEMETRY_ENABLE` | `y` | `docker/docker-compose.yml` | NIXL's own Prometheus exporter on `:19090`. Set it to `n` to disable |
 | `NIXL_TELEMETRY_EXPORTER` | `prometheus` | `docker/docker-compose.yml` | NIXL telemetry exporter type |
 <!-- END generated:lmcache -->
 
@@ -398,7 +397,7 @@ See [METRICS_TELEMETRY.md](METRICS_TELEMETRY.md).
 | `AIC_AMDGPU_EXPORTER_IMAGE` | `rocm/device-metrics-exporter:v1.5.2` | `docker/docker-compose.yml` | AMD GPU metrics exporter image |
 | `AIC_NVME_EXPORTER_IMAGE` | `aic-nvme-exporter:local`; `aic-nvme-exporter:latest` (`.slurm/run-build-distribute.sh`) | `docker/docker-compose.yml` | NVMe exporter image. A local bake tags it `:local`; the Slurm build stores it as `:latest` |
 | `AIC_RDMA_EXPORTER_IMAGE` | `aic-rdma-exporter:local`; `aic-rdma-exporter:latest` (`.slurm/run-build-distribute.sh`) | `docker/docker-compose.yml` | RDMA exporter image; tagged like the NVMe one |
-| `AIC_HSA_SNOOP_PID_MODE` | `host` (only when unset); `container:aic-lmcache` (`Makefile`, SPUR) | `docker/docker-compose.yml` | PID namespace of the hsa-snoop container. Empty means private. Only `host` yields kernel-launch and SDMA metrics, because the kprobe reports host PIDs; SPUR refuses that, so make sets `container:aic-lmcache` there, which exports queue counts only |
+| `AIC_HSA_SNOOP_PID_MODE` | `host` (only when unset); `container:aic-lmcache` (`Makefile`, SPUR) | `docker/docker-compose.yml` | PID namespace of the hsa-snoop container. Empty means private. Only `host` yields per-process metrics at all, because the kprobe reports host PIDs and a queue whose pid is invisible is dropped at its first unreadable poll; SPUR refuses that, so make sets `container:aic-lmcache` there, which exports queue counts only |
 | `NODEX_PID_MODE` | (empty) | `docker/docker-compose.yml` | PID namespace of the node exporter; `host` gives per-process CPU statistics where the site permits it |
 | `AIC_CPU_SMOKE` | `0` | `monitoring/monitoring-lib.sh` | `1` starts the CPU-only exporter subset (the monitoring smoke test on a node with no GPU) |
 | `AIC_MON_SKIP_SERVICES` | (empty) | `monitoring/monitoring-lib.sh` | Space-separated compose services the monitoring library leaves out |

@@ -6,15 +6,22 @@
 # SPDX-License-Identifier: MIT
 #
 # aic-hsa-snoop sidecar image: HSA AQL queue/dispatch snooper + Prometheus
-# exporter (includes AIS GPU metrics).
+# exporter (AIS GPU metrics too, with --ais-snoop, which compose does not pass).
 #
-# Runs as a privileged sidecar in the PID namespace of the lmcache container
-# so it can observe both vLLM and LMCache GPU dispatches without needing
-# host PID. Requires tracefs mounted from the host (compose handles this).
+# Runs as a privileged sidecar in the host PID namespace (the compose default):
+# the amdgpu kprobe reports host PIDs and each ring is read through /proc/<pid>.
+# container:aic-lmcache only where --pid=host is refused, and since v1.10.1 that
+# costs every per-process series, not just the dispatch counts.  Requires
+# tracefs mounted from the host (compose handles this).
 #
 # Stages:
-#   build    compile hsa-snoop from source against ROCm HSA headers
+#   build    plain ubuntu + a C++ toolchain: compile hsa-snoop from source
 #   runtime  plain ubuntu + the hsa-snoop binary -- no ROCm userspace at all
+#
+# Neither stage needs ROCm.  No source of the binary includes a ROCm header:
+# only the HSA_TOOLS_LIB profiler shim does, and this image does not ship it.
+# So the build stage starts from plain ubuntu too, not from the multi-GB ROCm
+# development image, which would be pulled for nothing but its compiler.
 #
 # The runtime stage deliberately installs NO ROCm packages.  hsa-snoop reads
 # kernel interfaces (ftrace, KFD debugfs) rather than calling into the ROCm
@@ -27,14 +34,15 @@
 # Installing "amdrocm-runtime${MM}" here used to cost 965 MB of /opt/rocm, of
 # which 843 MB was LLVM/Clang/Flang (libMLIR 170 MB, libLLVM 128 MB,
 # libclang-cpp 86 MB, flang-23 83 MB, bbc 73 MB ...) -- a Fortran compiler in a
-# metrics sidecar.  Image: ~1.19 GB -> ~80 MB.
+# metrics sidecar.  Image: ~1.19 GB -> ~160 MB on disk, ~43 MB of layers
+# (almost all of it the ubuntu base; the binary is ~1 MB).
 #
 # Nothing working was lost.  hsa-snoop opportunistically popen()s
 # /opt/rocm/bin/rocminfo for GPU metric labels and reads /opt/rocm/.info/version
 # for a version label, but neither file was present even with the package
 # installed (it ships no rocminfo), so both paths already took their
-# fall-backs.  To get those labels, COPY rocminfo and its ldd closure from the
-# build stage -- tens of MB -- rather than reinstating the package.
+# fall-backs.  To get those labels, COPY rocminfo and its ldd closure from a
+# ROCm image -- tens of MB -- rather than reinstating the package.
 #
 # Build args: docker/docker-bake.hcl is the only owner of every pin, URL and
 # base image, so no ARG here has a default and each stage stops when one is
@@ -48,21 +56,20 @@
 #
 # Or via make:
 #   make build                  (bake's hsa-snoop target; tags aic-hsa-snoop:latest)
+#   make build-from-wheels      (the from-wheels group builds this sidecar too)
 #   make dist-build-exporters   (Slurm)
 
 # An unset image arg stops the build at its FROM:
-#   base name (${ROCM_BUILD_IMAGE}) should not be blank
-ARG ROCM_BUILD_IMAGE
-# AMD publishes no non-full rocm/dev-ubuntu-26.04:${ROCM_VERSION} image, so the
-# runtime stage starts from plain ubuntu.  It stays plain: hsa-snoop needs no
-# ROCm userspace (see the stage notes above).
+#   base name (${ROCM_RUNTIME_IMAGE}) should not be blank
+# Both stages start from this plain ubuntu image: hsa-snoop needs no ROCm to
+# build or to run (see the stage notes above).
 ARG ROCM_RUNTIME_IMAGE
 
 # =============================================================================
-# Build stage — needs ROCm HSA headers and cmake/ninja
+# Build stage — a C++ toolchain and cmake/ninja on plain ubuntu
 # =============================================================================
 # hadolint ignore=DL3006
-FROM ${ROCM_BUILD_IMAGE} AS build
+FROM ${ROCM_RUNTIME_IMAGE} AS build
 
 ARG HSA_SNOOP_GIT_URL
 ARG HSA_SNOOP_REF
@@ -78,12 +85,16 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
     apt-get update && \
     DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-        cmake ninja-build git ca-certificates
+        build-essential cmake ninja-build git ca-certificates
 
+# The unit tests, the profiler shim and the HIP examples are all skipped: the
+# last two are the parts that need ROCm.  (deploy/examples/ais-test still
+# compiles -- it uses raw KFD ioctls and no HIP -- but is not installed.)
 RUN git clone --filter=blob:none --no-checkout "${HSA_SNOOP_GIT_URL}" /app/hsa-snoop && \
     git -C /app/hsa-snoop checkout "${HSA_SNOOP_REF}" && \
     cmake -S /app/hsa-snoop -B /app/hsa-snoop/build -G Ninja \
         -DCMAKE_BUILD_TYPE=Release -DHSA_SNOOP_PROMETHEUS=ON \
+        -DBUILD_TESTING=OFF -DHSA_SNOOP_PROFILER_SHIM=OFF \
         -DCMAKE_DISABLE_FIND_PACKAGE_hip=ON && \
     cmake --build /app/hsa-snoop/build --parallel "${BUILD_JOBS:-$(nproc)}" && \
     cmake --install /app/hsa-snoop/build --prefix /usr/local && \
@@ -94,7 +105,7 @@ RUN git clone --filter=blob:none --no-checkout "${HSA_SNOOP_GIT_URL}" /app/hsa-s
     strip --strip-debug /usr/local/bin/hsa-snoop
 
 # =============================================================================
-# Runtime stage — plain ubuntu + the binary (~80 MB vs ~1.19 GB)
+# Runtime stage — plain ubuntu + the binary (~160 MB vs ~1.19 GB)
 # =============================================================================
 # hadolint ignore=DL3006
 FROM ${ROCM_RUNTIME_IMAGE} AS runtime

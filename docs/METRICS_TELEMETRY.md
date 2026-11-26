@@ -182,6 +182,11 @@ OTel exporter on first observation.
 | `hsa_sdma_bytes_total` | counter | SDMA DMA bytes transferred |
 | `hsa_sdma_copies_total` | counter | SDMA copy operations |
 | `hsa_sdma_packets_total` | counter | SDMA packets |
+| `hsa_dispatches_missed_total` | counter | AQL packets not decoded; `reason` label (`overwritten` when the ring wrapped before a poll read them) |
+| `hsa_gpu_kernel_launches_total`, `hsa_gpu_dispatches_missed_total`, `hsa_gpu_sdma_bytes_total`, ... | counter | Per-GPU totals of the counters above, never removed |
+| `hsa_poller_stalled_seconds_total` | counter | Time a poll thread was held up with queues overdue; `thread` label |
+| `hsa_queues_unobserved_tail_total` | counter | Queues that went away too long after their last successful poll |
+| `hsa_kernel_gpu_duration_seconds` | histogram | Kernel time from GPU timestamps; only for a workload run with queue profiling on |
 | `ais_active` | gauge | 1 if AIS P2P I/O has been observed (latches high) |
 | `ais_rx_ops_total` | counter | AIS receive operations |
 | `ais_tx_ops_total` | counter | AIS transmit operations |
@@ -191,6 +196,20 @@ OTel exporter on first observation.
 | `ais_tx_errors_total` | counter | AIS transmit errors |
 | `ais_rx_latency_seconds` | histogram | AIS receive latency |
 | `ais_tx_latency_seconds` | histogram | AIS transmit latency |
+
+The counters with a `pid` label are per process. hsa-snoop removes a process's
+series 300 s after its last queue goes away (`--series-retain-sec`), so read
+them through `rate()` or `increase()`, and use the `hsa_gpu_*` totals where a
+counter has to stay monotonic across a vLLM restart.
+
+The `ais_*` rows need `--ais-snoop`, which the compose command does not pass:
+without it only `ais_active` is exported, latched at 0.
+
+`hsa_kernel_launches_total` is a sample, not the dispatch rate. Its coverage is
+`launches / (launches + hsa_dispatches_missed_total)` -- about 12% on an 8-rank
+tensor-parallel run at the shipped `--poll-us 1000` (upstream default is 20 us),
+the rest booked as `reason="overwritten"`. Quote the ratio beside any launch
+rate, and read the Grafana dispatch-rate panels as a lower bound.
 
 > hsa-snoop holds tracefs exclusively on the host. It runs via the
 > `exporters` monitoring compose profile, reading tracefs through bind
@@ -566,16 +585,17 @@ make down     # stop stack and monitoring (TSDB retained)
 
 ## hsa-snoop (`:9488`)
 
-[sbates130272/hsa-snoop](https://github.com/sbates130272/hsa-snoop) is compiled
-into the `rocm-aic` image (`-DHSA_SNOOP_PROMETHEUS=ON`). It exports HSA AQL
-dispatch metrics and AIS P2P storage counters.
+[sbates130272/hsa-snoop](https://github.com/sbates130272/hsa-snoop) is built as
+the `aic-hsa-snoop` sidecar image (`-DHSA_SNOOP_PROMETHEUS=ON`). It exports HSA
+AQL dispatch metrics, and AIS P2P storage counters when run with `--ais-snoop`,
+which the compose command does not pass.
 
 **PID namespace modes:**
 
 | Mode | `AIC_HSA_SNOOP_PID_MODE` | When to use |
 | --- | --- | --- |
 | Host PID | `host` | **Default.** The only mode that exports kernel-launch, duration and SDMA metrics: the amdgpu kprobe reports host PIDs and hsa-snoop reads each ring through `/proc/<pid>` |
-| Container PID | `container:aic-lmcache` | Where `--pid=host` is refused (the SPUR make default). Queues are listed (`hsa_queue_info`, `hsa_active_queues`) but no dispatch is ever counted |
+| Container PID | `container:aic-lmcache` | Where `--pid=host` is refused (the SPUR make default). Since v1.10.1 a queue whose pid is invisible in the joined namespace is dropped at its first unreadable poll, so `hsa_active_queues` settles back to 0 and no `hsa_queue_info` survives: no usable per-process series at all |
 
 > **SPUR authz note:** the SPUR cluster's Docker authz plugin blocks `--pid=host`
 > and `privileged: true`, so hsa-snoop does not run on SPUR at all; the SPUR job
@@ -584,6 +604,12 @@ dispatch metrics and AIS P2P storage counters.
 hsa-snoop reads the host's tracefs through bind mounts but is itself on the
 `aic` bridge, so Prometheus scrapes it by container name
 (`aic-hsa-snoop:9488`) like every other exporter.
+
+Starting the sidecar with `--all` scans for queues that already exist, which
+briefly `ptrace`-stops every process on the node holding KFD queues -- other
+tenants' included -- and can make a blocking system call in one of them return
+`EINTR`. `--no-scan` skips it, at the cost of never seeing queues created before
+the sidecar started. Prefer not to recreate the sidecar under a live workload.
 
 ---
 

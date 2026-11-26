@@ -40,3 +40,29 @@ groups:
               "k", "@", "instance", "device", "port"
             ) * 0 + 1
           )
+
+      # hsa-snoop decodes AQL packets by polling queue rings, so its launch
+      # counters are a sample.  This is the share it actually decoded; the rest
+      # is in hsa_gpu_dispatches_missed_total, mostly reason="overwritten".
+      # Quote it beside any dispatch rate -- at --poll-us 1000 on an 8-rank
+      # tensor-parallel run it sits near 0.12.  The per-GPU totals are used
+      # because the pid-labelled ones are dropped 300 s after a process ends.
+      # An idle window divides 0 by 0, which is NaN and renders as a gap -- that
+      # is wanted, since a ratio of 0 would read as "decoded nothing".
+      - record: aic:hsa_snoop:capture_ratio
+        expr: |
+          sum(rate(hsa_gpu_kernel_launches_total{job="hsa_snoop"}[5m]))
+          /
+          (
+            sum(rate(hsa_gpu_kernel_launches_total{job="hsa_snoop"}[5m]))
+            + sum(rate(hsa_gpu_dispatches_missed_total{job="hsa_snoop"}[5m]))
+          )
+
+      # Poller health (hsa-snoop >= 1.10.0): both stay at 0 while it keeps up.
+      # A sustained stall rate means ring reads are blocking in the kernel; an
+      # unobserved tail means a queue went away before it could be read, and
+      # what it did is in no counter at all.
+      - record: aic:hsa_snoop:poller_stalled_rate
+        expr: sum(rate(hsa_poller_stalled_seconds_total{job="hsa_snoop"}[5m]))
+      - record: aic:hsa_snoop:queues_unobserved_rate
+        expr: sum(increase(hsa_queues_unobserved_tail_total{job="hsa_snoop"}[10m]))

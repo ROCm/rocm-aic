@@ -88,7 +88,6 @@ WHEELS_DIR: Where the `wheels` bake group writes the pip wheels, one directory p
 WHEELS_REPO: GitHub repository `make build-from-wheels` downloads the wheels from
 WHEELS_RELEASE: Release tag `make build-from-wheels` downloads the wheels of. Empty skips the download and builds from what `AIC_WHEELS_SRC` holds
 AIC_WHEELS_SRC: Directory of published wheels the `from-wheels` bake group installs. `make build-from-wheels` downloads into it and removes wheels the release no longer lists
-AIC_PUBLISHED_PREFIX: Registry `make build-from-wheels` pulls `aic-hsa-snoop` from, with the trailing `/`. The image is built instead when its tag is not published there
 BUILDX_PLUGIN_VERSION: `docker buildx` plugin version `make ensure-buildx` installs when the plugin is missing
 VLLM_TARGET_DEVICE: vLLM build target: `rocm` compiles the GPU kernels, `empty` compiles none (the emulation image)
 AIC_UCX_FAST: `1` builds a minimal UCX; `make dist-build-fast` sets it
@@ -196,7 +195,7 @@ LMCACHE_L2_PREFETCH_MAX_IN_FLIGHT: `--l2-prefetch-max-in-flight`, concurrent L2 
 LMCACHE_CHUNK_SIZE: Tokens per KV chunk; the MP server and the coordinator must agree
 LMCACHE_CONFIG_FILE_HOST: Host path of an LMCache config file to mount (`local_disk` and advanced tuning)
 LMCACHE_CONFIG_FILE: In-container path of that config; set only when one is mounted
-NIXL_TELEMETRY_ENABLE: NIXL's own Prometheus exporter on `:19090`. Set it empty to disable
+NIXL_TELEMETRY_ENABLE: NIXL's own Prometheus exporter on `:19090`. Set it to `n` to disable
 NIXL_TELEMETRY_EXPORTER: NIXL telemetry exporter type
 
 [coordinator]
@@ -253,7 +252,7 @@ AIC_NODE_EXPORTER_IMAGE: Node exporter image
 AIC_AMDGPU_EXPORTER_IMAGE: AMD GPU metrics exporter image
 AIC_NVME_EXPORTER_IMAGE: NVMe exporter image. A local bake tags it `:local`; the Slurm build stores it as `:latest`
 AIC_RDMA_EXPORTER_IMAGE: RDMA exporter image; tagged like the NVMe one
-AIC_HSA_SNOOP_PID_MODE: PID namespace of the hsa-snoop container. Empty means private. Only `host` yields kernel-launch and SDMA metrics, because the kprobe reports host PIDs; SPUR refuses that, so make sets `container:aic-lmcache` there, which exports queue counts only
+AIC_HSA_SNOOP_PID_MODE: PID namespace of the hsa-snoop container. Empty means private. Only `host` yields per-process metrics at all, because the kprobe reports host PIDs and a queue whose pid is invisible is dropped at its first unreadable poll; SPUR refuses that, so make sets `container:aic-lmcache` there, which exports queue counts only
 NODEX_PID_MODE: PID namespace of the node exporter; `host` gives per-process CPU statistics where the site permits it
 AIC_CPU_SMOKE: `1` starts the CPU-only exporter subset (the monitoring smoke test on a node with no GPU)
 AIC_MON_SKIP_SERVICES: Space-separated compose services the monitoring library leaves out

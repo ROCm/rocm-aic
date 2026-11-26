@@ -322,7 +322,7 @@ class DockerfileArgOwnershipTest(unittest.TestCase):
         hcl = BAKE_FILE.read_text(encoding="utf-8")
         # Every variable, plus every key of a target's `args` block.
         supplied = BAKE_VARIABLES | set(re.findall(r"^[ \t]+([A-Z][A-Z0-9_]*)[ \t]*=", hcl, re.M))
-        self.assertIn("ROCM_BUILD_IMAGE", supplied)
+        self.assertIn("ROCM_APT_FROM", supplied)
         dockerfiles = _dockerfiles()
         self.assertGreaterEqual(len(dockerfiles), 11)
         problems = [
