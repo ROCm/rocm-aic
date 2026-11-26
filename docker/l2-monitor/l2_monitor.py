@@ -12,7 +12,7 @@ Metrics emitted:
   aic_l2_dynamic_read_count_bucket - histogram: distribution of per-file
                                      read counts across all L2 files
 """
-import os, sys, time, threading, collections, struct, ctypes
+import os, signal, sys, time, threading, collections, struct, ctypes
 
 L2_DIR      = os.environ["AIC_L2_DIR"]
 PROM_FILE   = os.environ["AIC_PROM_FILE"]
@@ -160,8 +160,32 @@ def _write_prom():
             print(f"prom write error: {e}", file=sys.stderr)
 
 
+def _wait_for_l2_dir():
+    """Block until the L2 directory exists.
+
+    The lmcache server creates it when it sets up its L2 pool, which on a
+    fresh pool is after this monitor starts.  It is not created here: the
+    pool is mounted read-only, so makedirs raised EROFS and the monitor
+    exited for the life of the stack.  With no L2 configured the directory
+    never appears and the monitor reports nothing."""
+    if os.path.isdir(L2_DIR):
+        return
+    print(f"waiting for {L2_DIR} to be created", file=sys.stderr)
+    # The textfile volume outlives the stack: without this, node-exporter
+    # serves the previous run's numbers for as long as the wait lasts.
+    try:
+        os.remove(PROM_FILE)
+    except OSError:
+        pass
+    while not os.path.isdir(L2_DIR):
+        time.sleep(1)
+
+
 if __name__ == "__main__":
-    os.makedirs(L2_DIR, exist_ok=True)
+    # PID 1 ignores SIGTERM unless it handles it: `docker stop` would wait out
+    # its 10 s grace period, which the wait below can now last forever.
+    signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
+    _wait_for_l2_dir()
     print(f"Monitoring {L2_DIR} → {PROM_FILE} (interval={INTERVAL}s)", file=sys.stderr)
     # Arm inotify before scanning so events during the scan are not lost
     threading.Thread(target=_inotify_watcher, daemon=True).start()
