@@ -18,6 +18,8 @@ AIC_IMAGE_PREFIX: Registry prefix for every image tag, with its trailing `/` (e.
 AIC_IMAGE_EXTRA_TAG: Short alias pushed next to the version tag (e.g. `gfx1250`); only used with `AIC_IMAGE_PREFIX`
 VLLM_IMAGE_REF: Full `name:tag` of the vLLM image compose starts. `make` exports the version-tagged ref bake resolves; the default is the `:latest` alias a local bake adds
 LMCACHE_IMAGE_REF: Full `name:tag` of the LMCache image compose starts; resolved the same way as `VLLM_IMAGE_REF`
+MORI_UMBP_IMAGE_REF: Full `name:tag` of the image the `mori-umbp` service runs (bake target `mori-umbp-server`); resolved the same way as `VLLM_IMAGE_REF`
+MORI_UMBP_MASTER_IMAGE_REF: Full `name:tag` of the image the `mori-umbp-master` service runs (bake target `mori-umbp-master`); resolved the same way as `VLLM_IMAGE_REF`
 HSA_SNOOP_IMAGE: Full `name:tag` of the hsa-snoop image compose starts
 KVBENCH_IMAGE_REF: Full `name:tag` of the KVBench image; bake tags it `aic-kvbench:<KVBENCH_IMAGE_TAG>`
 KVBENCH_IMAGE_TAG: Tag of the KVBench image, the short `KVBENCH_REF`
@@ -129,8 +131,8 @@ AIC_BUILD_TARGET: Dockerfile stage the single-image `build` command stops at (`e
 AIC_BUILD_DOCKERFILE: Dockerfile (relative to `docker/`) the single-image `build` command builds
 AIC_BUILD_CONTEXT_BASE: Pre-built base image handed to that build as its `base` stage
 AIC_BUILD_BASE_FIRST: `1` builds the base image first, in the same job, instead
-AIC_BUILD_CONTEXT_BASE_WHEELS: Directory of exported base wheels handed to that build as its `base-wheels` context
-AIC_BUILD_CONTEXT_LMCACHE_WHEELS: Directory of exported LMCache wheels handed to that build as its `lmcache-wheels` context
+AIC_BUILD_CONTEXT_BASE_WHEELS: Directory of exported base wheels handed to that build as its `wheels-base` context
+AIC_BUILD_CONTEXT_LMCACHE_WHEELS: Directory of exported LMCache wheels handed to that build as its `wheels-lmcache` context
 AIC_VLLM_TARGET_DEVICE: Slurm name for bake's `VLLM_TARGET_DEVICE` in the single-image build
 AIC_EMULATE_VLLM_DEVICE: `VLLM_TARGET_DEVICE` for `build-emulate`; empty takes the emulate target's `empty`
 AIC_AITER_PREBUILD_KERNELS: Slurm name for bake's `AITER_PREBUILD_KERNELS`; needs a single-arch `AIC_ROCM_ARCH`
@@ -201,13 +203,13 @@ LMCACHE_COORDINATOR_HEALTH_INTERVAL: Seconds between heartbeat sweeps
 LMCACHE_COORDINATOR_EVICTION_INTERVAL: Seconds between L2 eviction checks
 LMCACHE_COORDINATOR_KEEPALIVE: HTTP keep-alive timeout, seconds
 
-[umbp]
-AIC_KV_BACKEND: KV cache backend `make` starts and points vLLM at: `lmcache` (`LMCacheMPConnector`, the `lmcache` service) or `mori` (`UMBPStoreConnector` in standalone mode, the `umbp` service). It selects the compose profile, the connector JSON and the namespaces vLLM joins, so vLLM is `aic-umbp:8000` on the bridge under `mori`. The LMCache-only targets (`vllm-reset-test`, `up-gds-l1`) refuse `mori`
-UMBP_DRAM_CAPACITY: Size of the `umbp` server's DRAM pool, bytes (20 GiB). The pool is the server's: vLLM rejects a capacity in the connector JSON in standalone mode
-MORI_UMBP_LOG_LEVEL: Log level of `umbp` and `umbp-master`. MORI's own default prints errors only
-AIC_UMBP_MASTER: `1` starts `umbp-master` (the `mori-master` profile) and registers the `umbp` server with it. Needs `UMBP_IO_ENGINE_HOST`
-UMBP_MASTER_ADDRESS: `host:port` of the `umbp_master` the server registers with; empty runs it without one. `AIC_UMBP_MASTER=1` sets the local `aic-umbp-master:50051`; set it yourself, with `AIC_UMBP_MASTER=0`, to join a master on another node
-UMBP_NODE_ADDRESS: Address peers and the master reach this node's server at. Required with a master; `make` then sets `aic-umbp`, which only resolves on this node's bridge
+[mori-umbp]
+AIC_KV_BACKEND: KV cache backend `make` starts and points vLLM at: `lmcache` (`LMCacheMPConnector`, the `lmcache` service) or `mori` (`UMBPStoreConnector` in standalone mode, the `mori-umbp` service). It selects the compose profile, the connector JSON and the namespaces vLLM joins, so vLLM is `aic-mori-umbp:8000` on the bridge under `mori`. The LMCache-only targets (`vllm-reset-test`, `up-gds-l1`) refuse `mori`
+UMBP_DRAM_CAPACITY: Size of the `mori-umbp` server's DRAM pool, bytes (20 GiB). The pool is the server's: vLLM rejects a capacity in the connector JSON in standalone mode
+MORI_UMBP_LOG_LEVEL: Log level of `mori-umbp` and `mori-umbp-master`. MORI's own default prints errors only
+AIC_MORI_UMBP_MASTER: `1` starts `mori-umbp-master` (the `mori-master` profile) and registers the `mori-umbp` server with it. Needs `UMBP_IO_ENGINE_HOST`
+UMBP_MASTER_ADDRESS: `host:port` of the `umbp_master` the server registers with; empty runs it without one. `AIC_MORI_UMBP_MASTER=1` sets the local `aic-mori-umbp-master:50051`; set it yourself, with `AIC_MORI_UMBP_MASTER=0`, to join a master on another node
+UMBP_NODE_ADDRESS: Address peers and the master reach this node's server at. Required with a master; `make` then sets `aic-mori-umbp`, which only resolves on this node's bridge
 UMBP_NODE_ID: Identity the master knows this node by. Required with a master; `make` then sets the short hostname
 UMBP_IO_ENGINE_HOST: Address of this node's RDMA interface, for the MORI-IO engine that moves blocks between nodes. Required with a master, and has no default
 UMBP_IO_ENGINE_PORT: MORI-IO engine port. Empty leaves MORI's default
@@ -500,6 +502,8 @@ RJ_TEST_FLOOD: `AIC_TEST_FLOOD` of the cut-down reset test
 RJ_TEST_ANCHOR_REPS: `AIC_TEST_ANCHOR_REPS` of the cut-down reset test; at least 6, so a prompt spans two chunks
 RJ_TEST_MAX_TOKENS: `AIC_TEST_MAX_TOKENS` of the cut-down reset test
 RJ_TEST_TIMEOUT: `AIC_TEST_TIMEOUT` of the cut-down reset test
+RJ_TEST_TARGET: Make target the guest runs: `vllm-reset-test`, or `kv-reset-test` under `AIC_KV_BACKEND=mori`
+RJ_UMBP_DRAM_CAPACITY: `UMBP_DRAM_CAPACITY` in the guest, bytes (256 MiB)
 
 [reset-test]
 AIC_TEST_VLLM_URL: vLLM base URL, as seen from the `aic` bridge
@@ -511,6 +515,7 @@ AIC_TEST_ANCHOR_REPS: Repetitions of the preamble sentence per anchor; sets the 
 AIC_TEST_MAX_TOKENS: Tokens generated per request
 AIC_TEST_TIMEOUT: Per-request timeout, seconds
 AIC_TEST_SEED: Random seed of the prompt set
+AIC_TEST_SETTLE_S: `make kv-reset-test` only: seconds to wait after the anchors, for their stores to land, before the GPU prefix cache is reset
 
 [slurm-other]
 NIGHTLY_TAG: `.slurm/test-nightly-wheels.sbatch`: release tag of the wheels under test

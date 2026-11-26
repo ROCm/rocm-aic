@@ -5,8 +5,8 @@
 
 .PHONY: ensure-compose build wheels up up-batch up-dev up-gds-l1 up-gds-l1-batch \
         up-vllm-only \
-        down logs logs-lmcache logs-umbp logs-vllm ps shell-lmcache shell-umbp \
-        shell-vllm restart-vllm restart-lmcache restart-umbp venv vllm-reset-test
+        down logs logs-lmcache logs-mori-umbp logs-vllm ps shell-lmcache \
+        shell-mori-umbp shell-vllm restart-vllm restart-lmcache restart-mori-umbp venv vllm-reset-test kv-reset-test
 
 ensure-compose:
 	@bash -c 'source "$(CURDIR)/monitoring/monitoring-lib.sh" && ensure_compose' || { \
@@ -150,8 +150,8 @@ logs:
 logs-lmcache:
 	$(COMPOSE_CACHE) logs -f lmcache
 
-logs-umbp:
-	$(COMPOSE_CACHE) logs -f umbp
+logs-mori-umbp:
+	$(COMPOSE_CACHE) logs -f mori-umbp
 
 logs-vllm:
 	$(COMPOSE_CACHE) logs -f vllm
@@ -162,8 +162,8 @@ ps:
 shell-lmcache:
 	docker exec -it $(AIC_STACK)-lmcache bash -l
 
-shell-umbp:
-	docker exec -it $(AIC_STACK)-umbp bash -l
+shell-mori-umbp:
+	docker exec -it $(AIC_STACK)-mori-umbp bash -l
 
 shell-vllm:
 	docker exec -it $(AIC_STACK)-vllm-gpu$(GPU) bash -l
@@ -175,8 +175,8 @@ restart-lmcache:
 	$(COMPOSE_CACHE) restart lmcache
 
 # vllm must be restarted too: its workers' GPU registrations die with the server.
-restart-umbp:
-	$(COMPOSE_CACHE) restart umbp vllm
+restart-mori-umbp:
+	$(COMPOSE_CACHE) restart mori-umbp vllm
 
 venv:
 	@if [ ! -d "$(REPO_ROOT)/.venv" ]; then \
@@ -206,24 +206,7 @@ vllm-reset-test: require-lmcache check-hf-token check-stack prep-dirs
 	    VLLM_EXTRA_ARGS="--enforce-eager $${VLLM_EXTRA_ARGS}" \
 	    AIC_L2_BACKEND=$(AIC_L2_BACKEND) \
 	    $(COMPOSE_CACHE) --profile monitoring up -d
-	@echo "Waiting for vLLM to be healthy..."
-	@_vc="$(AIC_STACK)-vllm-gpu$(GPU)"; \
-	for i in $$(seq 1 $(VLM_READY_RETRIES)); do \
-	    if $(call aic_probe,"$$_vc",8000,/health); then echo "vLLM healthy after $${i} polls"; break; fi; \
-	    if ! docker ps --format '{{.Names}}' 2>/dev/null | grep -qx "$$_vc"; then \
-	        echo "ERROR: $$_vc exited after $${i} polls — not waiting out the timeout" >&2; \
-	        echo "  --- last $(VLM_FAIL_LOG_LINES) lines of $$_vc ---" >&2; \
-	        docker logs --tail $(VLM_FAIL_LOG_LINES) "$$_vc" 2>&1 \
-	            | sed 's/^/  [vllm] /' >&2; \
-	        echo "  --- engine-core errors (the 'root cause above') ---" >&2; \
-	        docker logs "$$_vc" 2>&1 \
-	            | grep -aiE 'EngineCore|ERROR|Error:|Exception|not supported|no kernel' \
-	            | grep -av 'APIServer' | tail -25 | sed 's/^/  [cause] /' >&2; \
-	        exit 1; \
-	    fi; \
-	    [ "$$i" = "$(VLM_READY_RETRIES)" ] && echo "ERROR: vLLM not healthy after vllm_reset_test timeout" >&2 && exit 1; \
-	    sleep 5; \
-	done
+	$(_wait_vllm_healthy)
 	$(_wait_aic_client)
 	@_v="$$($(call aic_bridge_url,$(AIC_STACK)-vllm-gpu$(GPU),8000))" && _l="$$($(call aic_bridge_url,$(AIC_STACK)-lmcache,8080))" || exit 1; \
 	echo "Clearing vLLM GPU prefix cache..."; \
@@ -243,3 +226,49 @@ vllm-reset-test: require-lmcache check-hf-token check-stack prep-dirs
 	    -e AIC_TEST_ANCHOR_REPS -e AIC_TEST_MAX_TOKENS \
 	    $(AIC_STACK)-client aic-bench --endpoint "$$_v" reset-test
 	@echo "Test complete. Run 'make down' to stop the stack."
+
+# kv-reset-test: the connector-agnostic counterpart of vllm-reset-test, for
+# either AIC_KV_BACKEND.  It asks only vLLM whether blocks came back from the
+# external cache after a GPU prefix cache reset, so it does not check tiers.
+# Lazy offload is off for the same reason as above (LMCache only: UMBP stores
+# after every step).
+ifeq ($(call _is_makefile_default,KV_TRANSFER_ARG),file)
+kv-reset-test: export KV_TRANSFER_ARG := $(subst "lmcache.mp.lazy_offload":true,"lmcache.mp.lazy_offload":false,$(KV_TRANSFER_ARG))
+endif
+kv-reset-test: check-hf-token check-kv-backend check-stack prep-dirs
+	@echo "Starting external KV cache retrieval test (AIC_KV_BACKEND=$(AIC_KV_BACKEND)) ..."
+	@mkdir -p "$(AIC_METRICS_DIR)"
+	PROM_UID="$$(id -u)" PROM_GID="$$(id -g)" \
+	    VLLM_EXTRA_ARGS="--enforce-eager $${VLLM_EXTRA_ARGS}" \
+	    $(COMPOSE_CACHE) --profile monitoring up -d
+	$(_wait_vllm_healthy)
+	$(_wait_aic_client)
+	@_v="$$($(call aic_bridge_url,$(AIC_STACK)-vllm-gpu$(GPU),8000))" || exit 1; \
+	docker exec -e AIC_TEST_VLLM_URL="$$_v" \
+	    -e AIC_TEST_MODEL -e AIC_TEST_ANCHORS -e AIC_TEST_TIMEOUT -e AIC_TEST_SEED \
+	    -e AIC_TEST_ANCHOR_REPS -e AIC_TEST_MAX_TOKENS -e AIC_TEST_SETTLE_S \
+	    $(AIC_STACK)-client aic-bench --endpoint "$$_v" kv-reset-test
+	@echo "Test complete. Run 'make down' to stop the stack."
+
+# Poll vLLM's /health until it answers; give up early, with its log, when the
+# container has exited.
+define _wait_vllm_healthy
+@echo "Waiting for vLLM to be healthy..."
+@_vc="$(AIC_STACK)-vllm-gpu$(GPU)"; \
+	for i in $$(seq 1 $(VLM_READY_RETRIES)); do \
+	    if $(call aic_probe,"$$_vc",8000,/health); then echo "vLLM healthy after $${i} polls"; break; fi; \
+	    if ! docker ps --format '{{.Names}}' 2>/dev/null | grep -qx "$$_vc"; then \
+	        echo "ERROR: $$_vc exited after $${i} polls — not waiting out the timeout" >&2; \
+	        echo "  --- last $(VLM_FAIL_LOG_LINES) lines of $$_vc ---" >&2; \
+	        docker logs --tail $(VLM_FAIL_LOG_LINES) "$$_vc" 2>&1 \
+	            | sed 's/^/  [vllm] /' >&2; \
+	        echo "  --- engine-core errors (the 'root cause above') ---" >&2; \
+	        docker logs "$$_vc" 2>&1 \
+	            | grep -aiE 'EngineCore|ERROR|Error:|Exception|not supported|no kernel' \
+	            | grep -av 'APIServer' | tail -25 | sed 's/^/  [cause] /' >&2; \
+	        exit 1; \
+	    fi; \
+	    [ "$$i" = "$(VLM_READY_RETRIES)" ] && echo "ERROR: vLLM not healthy within the readiness timeout" >&2 && exit 1; \
+	    sleep 5; \
+	done
+endef

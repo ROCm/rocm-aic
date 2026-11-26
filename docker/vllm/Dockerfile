@@ -12,7 +12,9 @@
 # its default target needs aic-lmcache's wheels, so build aic-lmcache first.
 #
 # Stages:
+#   base-build  fallback for the `base-build` context (raw builds only)
 #   build_mori  MORI wheel with UMBP, installed by `runtime` only
+#   wheels-mori scratch image holding that amd_mori .whl
 #   vllm      AITER + FlashAttention + vLLM source build + llm-emu  (sections 3-3b)
 #   wheels    scratch image holding vllm/amd_aiter/flash_attn .whl  (section 3c)
 #   emulate   CPU-only runtime + the PyPI lmcache client           (section 3d)
@@ -34,14 +36,14 @@
 #   mapfile -t lmc_args < <(docker/scripts/aic-bake-env.sh --build-args lmcache-wheels)
 #   docker buildx build "${lmc_args[@]}" \
 #     --build-context base=docker-image://aic-base:<tag> \
-#     --build-context base-wheels=/tmp/aic-base-wheels \
+#     --build-context wheels-base=/tmp/aic-base-wheels \
 #     -f docker/lmcache/Dockerfile --target wheels \
 #     --output type=local,dest=/tmp/aic-lmcache-wheels .
 #   mapfile -t args < <(docker/scripts/aic-bake-env.sh --build-args vllm)
 #   docker buildx build "${args[@]}" \
 #     --build-context base=docker-image://aic-base:<tag> \
-#     --build-context base-wheels=/tmp/aic-base-wheels \
-#     --build-context lmcache-wheels=/tmp/aic-lmcache-wheels \
+#     --build-context wheels-base=/tmp/aic-base-wheels \
+#     --build-context wheels-lmcache=/tmp/aic-lmcache-wheels \
 #     -f docker/vllm/Dockerfile -t aic-vllm:dev .
 # (`--build-args emulate` plus `--target emulate` for the CPU-only image.)
 #
@@ -52,19 +54,55 @@
 # Fallback base stage: used when no --build-context base= is provided.  When
 # --build-context base=docker-image://aic-base:<TAG> IS supplied, BuildKit
 # overrides this stage with the pre-built image and skips this FROM entirely.
-# build_vllm always starts from ROCM_BASE_IMAGE.  Unset, the build stops at the
+# Unset, the build stops at the
 # FROM: base name (${ROCM_BASE_IMAGE}) should not be blank
 ARG ROCM_BASE_IMAGE
 # hadolint ignore=DL3006
 FROM ${ROCM_BASE_IMAGE} AS base
 
-# Empty default for the `lmcache-wheels` build context (the --target wheels
+# Empty default for the `wheels-lmcache` build context (the --target wheels
 # export of docker/lmcache/Dockerfile).  Only `runtime` reads it, and fails on
 # an empty one, so a build that forgot the context stops instead of shipping a
 # vLLM that cannot load LMCacheMPConnector.  `emulate` never reads it.
-FROM scratch AS lmcache-wheels
+FROM scratch AS wheels-lmcache
 
-FROM scratch AS base-wheels
+# Empty default for the `wheels-base` build context (the --target wheels export
+# of docker/base/Dockerfile).
+FROM scratch AS wheels-base
+
+# =============================================================================
+# base-build — what build_mori and build_vllm start from: the full ROCm
+# toolchain plus the system build packages.  Bake replaces this stage with
+# docker/base/Dockerfile's `base` stage (the `base-build` context), so every
+# build stage in the stack shares one package layer.  A raw build that passes
+# no such context runs this fallback instead; keep its packages a subset of
+# that stage's.
+# =============================================================================
+# hadolint ignore=DL3006
+FROM ${ROCM_BASE_IMAGE} AS base-build
+
+# hadolint ignore=DL4006
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
+
+RUN --mount=type=secret,id=tls_cert,required=false \
+    if [ -f /run/secrets/tls_cert ] && [ -s /run/secrets/tls_cert ]; then \
+        cp /run/secrets/tls_cert /usr/local/share/ca-certificates/corp-ca.crt && \
+        update-ca-certificates; \
+    fi
+
+# hadolint ignore=DL3008
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
+    apt-get update && \
+    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+        ca-certificates \
+        cmake \
+        git \
+        libibverbs-dev \
+        ninja-build \
+        python3-dev && \
+    update-ca-certificates && \
+    rm -f /usr/lib/python3.*/EXTERNALLY-MANAGED
 
 # =============================================================================
 # build_mori — MORI wheel with UMBP, for the `runtime` stage only (`emulate`
@@ -77,7 +115,7 @@ FROM scratch AS base-wheels
 # Protobuf is missing, hence the check that the server is in the wheel.
 # BUILD_TORCH_SYMM=OFF: that extension is MORI-CCO's, and this stage has no torch.
 # =============================================================================
-FROM ${ROCM_BASE_IMAGE} AS build_mori
+FROM base-build AS build_mori
 
 # hadolint ignore=DL4006
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
@@ -87,24 +125,19 @@ ARG MORI_REF
 RUN : "${MORI_GIT_URL:?unset: build through docker/docker-bake.hcl}" \
       "${MORI_REF:?unset: build through docker/docker-bake.hcl}"
 
+# What MORI needs beyond base-build: gRPC and Protobuf for UMBP, numa and pci.
+# hadolint ignore=DL3008
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
     apt-get update && \
     DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-        ca-certificates \
-        cmake \
-        git \
         libgrpc++-dev \
         libgrpc-dev \
-        libibverbs-dev \
         libnuma-dev \
         libpci-dev \
         libprotobuf-dev \
-        ninja-build \
         protobuf-compiler \
-        protobuf-compiler-grpc \
-        python3-dev \
-        python3-pip
+        protobuf-compiler-grpc
 
 WORKDIR /app/mori
 RUN --mount=type=cache,target=/root/.cache/pip \
@@ -123,12 +156,19 @@ RUN --mount=type=cache,target=/root/.cache/pip \
     rm /tmp/mori-wheel.txt
 WORKDIR /
 
+# Just the MORI wheel, for the `wheels-mori` context of
+# docker/mori-umbp/Dockerfile and docker/wheels-test/Dockerfile.  Not in the
+# published `wheels` set.
+#   docker buildx bake -f docker/docker-bake.hcl wheels-mori
+FROM scratch AS wheels-mori
+COPY --from=build_mori /wheels /
+
 # =============================================================================
 # build_vllm — compile AITER, FlashAttention, and vLLM against the full ROCm
 # image (which has hipcc + HIP CMake files).  Torch is COPYed in from aic-base
 # so the built wheels are compatible with the slim runtime stage.
 # =============================================================================
-FROM ${ROCM_BASE_IMAGE} AS build_vllm
+FROM base-build AS build_vllm
 
 # hadolint ignore=DL4006
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
@@ -173,28 +213,14 @@ RUN : "${VLLM_GIT_URL:?unset: build through docker/docker-bake.hcl}" \
       "${FLASH_ATTN_REF:?unset: build through docker/docker-bake.hcl}" \
       "${AITER_PREBUILD_KERNELS:?unset: build through docker/docker-bake.hcl}"
 
-# git and ca-certificates are not in the -full image; install before cloning.
-RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
-    --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
-    apt-get update && \
-    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-        ca-certificates \
-        cmake \
-        git \
-        ninja-build \
-        python3-dev \
-        python3-pip
-
 # Bring torch + Python packages from aic-base so wheels link against the same torch.
-# Note that `emulate` has no base-wheels context
+# Note that `emulate` has no wheels-base context
 # The Debian-installed packaging has no RECORD, so pip cannot upgrade it in
 # place when the wheels need a newer one; install a pip-owned copy first.
 RUN --mount=type=cache,target=/root/.cache/pip \
-    --mount=type=bind,from=base-wheels,source=/,target=/base-wheels \
+    --mount=type=bind,from=wheels-base,source=/,target=/base-wheels \
     pip3 install --break-system-packages --ignore-installed packaging && \
     find /base-wheels -type f -name "*.whl" -exec pip3 install --break-system-packages {} +
-
-RUN rm -f /usr/lib/python3.*/EXTERNALLY-MANAGED
 
 COPY patches/vllm/ /app/patches/vllm/
 COPY patches/llm-emu/ /app/patches/llm-emu/
@@ -220,7 +246,7 @@ COPY patches/aiter/ /app/patches/aiter/
 # memory.
 #
 # AITER_USE_SYSTEM_TRITON=1: without it AITER's setup.py uninstalls the
-# source-built Triton from base-wheels and pip-installs triton==3.8.0 from
+# source-built Triton from wheels-base and pip-installs triton==3.8.0 from
 # pypi.amd.com (and swallows a failed install, leaving no Triton at all).  It
 # only takes effect when a triton dist is installed, hence the check before it.
 #
@@ -498,7 +524,7 @@ FROM base AS vllm
 # module needs a GPU to import.
 RUN --mount=type=cache,target=/root/.cache/pip \
     --mount=type=bind,from=build_vllm,source=/wheels/,target=/wheels-vllm \
-    --mount=type=bind,from=base-wheels,source=/,target=/base-wheels \
+    --mount=type=bind,from=wheels-base,source=/,target=/base-wheels \
     pip3 install --break-system-packages --no-compile --ignore-installed packaging && \
     find /base-wheels /wheels-vllm -type f -name "*.whl" -exec pip3 install --break-system-packages --no-compile {} + && \
     pip3 uninstall -y --break-system-packages \
@@ -669,13 +695,13 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
 
 # hadolint ignore=SC3054,SC3044
 RUN --mount=type=cache,target=/root/.cache/pip \
-    --mount=type=bind,from=lmcache-wheels,target=/aic-wheels \
+    --mount=type=bind,from=wheels-lmcache,target=/aic-wheels \
     shopt -s nullglob && \
     lmc=(/aic-wheels/lmcache-*.whl) && \
     if [ "${#lmc[@]}" -ne 1 ]; then \
-        echo "ERROR: expected one lmcache wheel in the lmcache-wheels build context, found:" >&2; \
+        echo "ERROR: expected one lmcache wheel in the wheels-lmcache build context, found:" >&2; \
         ls -l /aic-wheels >&2; \
-        echo "Pass --build-context lmcache-wheels=DIR, exported by: docker buildx build -f docker/lmcache/Dockerfile --target wheels --output type=local,dest=DIR ." >&2; \
+        echo "Pass --build-context wheels-lmcache=DIR, exported by: docker buildx build -f docker/lmcache/Dockerfile --target wheels --output type=local,dest=DIR ." >&2; \
         exit 1; \
     fi && \
     export PYTHONDONTWRITEBYTECODE=1 && \
@@ -721,8 +747,9 @@ ENV LD_LIBRARY_PATH=/opt/rocm/lib${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}
 RUN PYTHONDONTWRITEBYTECODE=1 python3 -c 'import ctypes; ctypes.CDLL("libamdhip64.so")'
 
 # ----- MORI / UMBP (AIC_KV_BACKEND=mori) --------------------------------------
-# The `umbp` and `umbp-master` compose services run this image too, so the two
-# binaries are linked onto PATH.  `import mori` is left to the smoke test: like
+# The `mori-umbp` and `mori-umbp-master` compose services run their own images
+# (docker/mori-umbp/Dockerfile); the two binaries are linked onto PATH here as
+# well, for a server started by hand in this container.  `import mori` is left to the smoke test: like
 # vLLM's ROCm platform module it may need a GPU.  The ldd check is what catches
 # a runtime library missing from the list below.
 # /run/umbp holds the server's sockets; world-writable so the named volume

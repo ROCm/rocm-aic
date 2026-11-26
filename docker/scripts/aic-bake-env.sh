@@ -55,6 +55,8 @@
 #       NVME_EXPORTER_IMAGE_REF  nvme-exporter
 #       RDMA_EXPORTER_IMAGE_REF  rdma-exporter
 #       CLIENT_IMAGE_REF         client
+#       MORI_UMBP_IMAGE_REF         mori-umbp-server
+#       MORI_UMBP_MASTER_IMAGE_REF  mori-umbp-master
 set -Eeuo pipefail
 # errexit exits without saying where; report it.  Only the line number and
 # function call stack are printed, never the command text, which can carry
@@ -119,7 +121,7 @@ if [[ "${mode}" == --variables ]]; then
   exit 0
 fi
 
-IMAGE_TARGETS=(base vllm lmcache hsa-snoop emulate kvbench nvme-exporter rdma-exporter client)
+IMAGE_TARGETS=(base vllm lmcache hsa-snoop emulate kvbench nvme-exporter rdma-exporter client mori-umbp-server mori-umbp-master)
 if [[ "${mode}" == --build-args ]]; then
   targets=("$1")
 else
@@ -167,6 +169,8 @@ IMAGE_REFS = {
     "NVME_EXPORTER_IMAGE_REF": "nvme-exporter",
     "RDMA_EXPORTER_IMAGE_REF": "rdma-exporter",
     "CLIENT_IMAGE_REF": "client",
+    "MORI_UMBP_IMAGE_REF": "mori-umbp-server",
+    "MORI_UMBP_MASTER_IMAGE_REF": "mori-umbp-master",
 }
 
 values = {}

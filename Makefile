@@ -80,7 +80,7 @@ _framework_version_env = $(call _shell_env,$(_FRAMEWORK_VERSION_ARGS))
 # unquoted ';'-list in ROCM_ARCH would end the command mid-assignment.  stderr
 # stays visible so a genuine failure is not mistaken for "latest".
 _BAKE_INPUTS      := ROCM_ARCH IMAGE_TAG AIC_IMAGE_PREFIX KVBENCH_REF KVBENCH_IMAGE_TAG $(_FRAMEWORK_VERSION_ARGS)
-_BAKE_KEYS_STACK  := VLLM_IMAGE_REF LMCACHE_IMAGE_REF HSA_SNOOP_IMAGE_REF
+_BAKE_KEYS_STACK  := VLLM_IMAGE_REF LMCACHE_IMAGE_REF HSA_SNOOP_IMAGE_REF MORI_UMBP_IMAGE_REF MORI_UMBP_MASTER_IMAGE_REF
 _BAKE_KEYS        := IMAGE_TAG ROCM_VERSION LMCACHE_REF KVBENCH_GIT_URL KVBENCH_REF KVBENCH_IMAGE_REF CLIENT_IMAGE_REF
 _IMAGE_TAG_ORIGIN := $(origin IMAGE_TAG)
 _AIC_BAKE_MK := $(shell $(call _shell_env,$(_BAKE_INPUTS)) \
@@ -263,29 +263,29 @@ _COMPOSE_BIN := docker compose
 # What vLLM offloads KV blocks to, and the fleet-level service that tracks them:
 #   lmcache  LMCacheMPConnector -> lmcache server, with lmcache-coordinator
 #   mori     UMBPStoreConnector -> MORI umbp_standalone_server (DRAM pool), with
-#            umbp_master when AIC_UMBP_MASTER=1
+#            umbp_master when AIC_MORI_UMBP_MASTER=1
 # The server owns the namespaces vllm joins, so the choice also moves vLLM's
-# bridge address: aic-lmcache:8000 or aic-umbp:8000 (aic-vllm:8000 is either).
+# bridge address: aic-lmcache:8000 or aic-mori-umbp:8000 (aic-vllm:8000 is either).
 AIC_KV_BACKEND  ?= lmcache
-AIC_UMBP_MASTER ?= 0
+AIC_MORI_UMBP_MASTER ?= 0
 ifeq ($(AIC_KV_BACKEND),lmcache)
 _KV_SERVICE    := lmcache
 _KV_PROFILES   := --profile cache
 else ifeq ($(AIC_KV_BACKEND),mori)
-_KV_SERVICE    := umbp
-_KV_PROFILES   := --profile mori $(if $(filter 1,$(AIC_UMBP_MASTER)),--profile mori-master)
-export VLLM_NETWORK_MODE ?= container:$(AIC_STACK)-umbp
-export VLLM_IPC_MODE     ?= service:umbp
-export VLLM_PID_MODE     ?= service:umbp
+_KV_SERVICE    := mori-umbp
+_KV_PROFILES   := --profile mori $(if $(filter 1,$(AIC_MORI_UMBP_MASTER)),--profile mori-master)
+export VLLM_NETWORK_MODE ?= container:$(AIC_STACK)-mori-umbp
+export VLLM_IPC_MODE     ?= service:mori-umbp
+export VLLM_PID_MODE     ?= service:mori-umbp
 # A server with a master is a cluster member and needs an address peers can
 # dial, an identity, and UMBP_IO_ENGINE_HOST: the address of this node's RDMA
 # interface, which has no default.  Point UMBP_MASTER_ADDRESS at another node
-# (and leave AIC_UMBP_MASTER=0) to join a master that runs elsewhere.
-ifeq ($(AIC_UMBP_MASTER),1)
-export UMBP_MASTER_ADDRESS ?= aic-umbp-master:50051
+# (and leave AIC_MORI_UMBP_MASTER=0) to join a master that runs elsewhere.
+ifeq ($(AIC_MORI_UMBP_MASTER),1)
+export UMBP_MASTER_ADDRESS ?= aic-mori-umbp-master:50051
 endif
 ifneq ($(strip $(UMBP_MASTER_ADDRESS)),)
-export UMBP_NODE_ADDRESS ?= aic-umbp
+export UMBP_NODE_ADDRESS ?= aic-mori-umbp
 export UMBP_NODE_ID      ?= $(shell hostname -s)
 endif
 else
@@ -317,9 +317,9 @@ LMCACHE_LAZY_OFFLOAD ?= true
 # in the build; without it vLLM v0.34.0 refuses VMM IPC on ROCm at startup.
 LMCACHE_USE_VMM_API ?= false
 _MP_CONNECTOR_JSON := {"kv_connector":"LMCacheMPConnector","kv_role":"kv_both","kv_connector_extra_config":{"lmcache.mp.host":"tcp://localhost","lmcache.mp.port":$(LMCACHE_PORT),"lmcache.mp.use_vmm_api":$(LMCACHE_USE_VMM_API),"lmcache.mp.lazy_offload":$(LMCACHE_LAZY_OFFLOAD),"lmcache.mp.lazy_offload_policy":"EVICTION_AWARE","lmcache.mp.lazy_offload_max_deferral_seconds":30.0,"lmcache.mp.save_decode_cache":true}}
-# UMBPStoreConnector in standalone mode: the pool is the umbp service's, sized
+# UMBPStoreConnector in standalone mode: the pool is the mori-umbp service's, sized
 # by UMBP_DRAM_CAPACITY there, so no capacity is given here (vLLM rejects one).
-# The endpoint is the socket in the aic-umbp-run volume both services mount.
+# The endpoint is the socket in the aic-mori-umbp-run volume both services mount.
 # "recompute" turns a failed load (server gone, block evicted) into a cache
 # miss instead of a failed request.  save_decode_cache matches the LMCache arm.
 _UMBP_CONNECTOR_JSON := {"kv_connector":"UMBPStoreConnector","kv_role":"kv_both","kv_load_failure_policy":"recompute","kv_connector_extra_config":{"mode":"standalone","endpoint":"/run/umbp/node.grpc.sock","save_decode_cache":true}}
@@ -461,7 +461,7 @@ help:
 	@printf '\n$(_AIC_B)$(_AIC_X)STACK (local)$(_AIC_R)\n'
 	@printf '  $(_AIC_G)%-32s$(_AIC_R) %s\n' \
 	    'make up' 'Start lmcache + vllm + monitoring (foreground, DRAM L1)' \
-	    'make up AIC_KV_BACKEND=mori' 'Same, with MORI UMBP in place of lmcache (AIC_UMBP_MASTER=1 adds umbp_master)' \
+	    'make up AIC_KV_BACKEND=mori' 'Same, with MORI UMBP in place of lmcache (AIC_MORI_UMBP_MASTER=1 adds umbp_master)' \
 	    'make up-batch' 'Start lmcache + vllm + monitoring (background)' \
 	    'make up-dev' 'Start in --enforce-eager mode (~60 s faster, ~10% slower inference)' \
 	    'make up-gds-l1' 'Start with hipFile GDS NVMe slab as L1 (foreground)' \
@@ -470,16 +470,16 @@ help:
 	    'make down' 'Stop and remove all containers' \
 	    'make logs' 'Follow logs from all containers' \
 	    'make logs-lmcache' 'Follow lmcache logs only' \
-	    'make logs-umbp' 'Follow umbp logs only (AIC_KV_BACKEND=mori)' \
+	    'make logs-mori-umbp' 'Follow mori-umbp logs only (AIC_KV_BACKEND=mori)' \
 	    'make logs-vllm' 'Follow vllm logs only' \
 	    'make ps' 'Show container status' \
 	    'make endpoints' 'Print host URL of every published service (Grafana only)' \
 	    'make shell-lmcache' 'Exec bash into $(AIC_STACK)-lmcache container' \
-	    'make shell-umbp' 'Exec bash into $(AIC_STACK)-umbp container' \
+	    'make shell-mori-umbp' 'Exec bash into $(AIC_STACK)-mori-umbp container' \
 	    'make shell-vllm' 'Exec bash into $(AIC_STACK)-vllm-gpu$(GPU) container' \
 	    'make restart-vllm' 'Restart vllm only (lmcache + warm KV cache preserved)' \
 	    'make restart-lmcache' 'Restart lmcache' \
-	    'make restart-umbp' 'Restart umbp, and vllm with it (the pool is lost)'
+	    'make restart-mori-umbp' 'Restart mori-umbp, and vllm with it (the pool is lost)'
 	@printf '\n$(_AIC_B)$(_AIC_X)BENCHMARK (local)$(_AIC_R)\n'
 	@printf '  $(_AIC_G)%-32s$(_AIC_R) %s\n' \
 	    'make client-build' 'Build the aic-client image (every benchmark client, aic-bench)' \
@@ -554,6 +554,8 @@ list-vars:
 	    'IMAGE_TAG' '$(IMAGE_TAG)' \
 	    'VLLM_IMAGE_REF' '$(call _or_compose_default,VLLM_IMAGE_REF)' \
 	    'LMCACHE_IMAGE_REF' '$(call _or_compose_default,LMCACHE_IMAGE_REF)' \
+	    'MORI_UMBP_IMAGE_REF' '$(call _or_compose_default,MORI_UMBP_IMAGE_REF)' \
+	    'MORI_UMBP_MASTER_IMAGE_REF' '$(call _or_compose_default,MORI_UMBP_MASTER_IMAGE_REF)' \
 	    'HSA_SNOOP_IMAGE' '$(call _or_compose_default,HSA_SNOOP_IMAGE)' \
 	    'ROCM_ARCH' '$(or $(ROCM_ARCH),<not detected>)' \
 	    'ROCM_VERSION' '$(ROCM_VERSION)' \
@@ -617,7 +619,7 @@ list-vars:
 	    'AIC_KV_BACKEND' '$(AIC_KV_BACKEND)' \
 	    'MORI_REF' '$(or $(MORI_REF),<bake default>)' \
 	    'UMBP_DRAM_CAPACITY' '$(call _or_compose_default,UMBP_DRAM_CAPACITY) bytes' \
-	    'AIC_UMBP_MASTER' '$(AIC_UMBP_MASTER)' \
+	    'AIC_MORI_UMBP_MASTER' '$(AIC_MORI_UMBP_MASTER)' \
 	    'UMBP_MASTER_ADDRESS' '$(or $(UMBP_MASTER_ADDRESS),<empty: no master>)' \
 	    'UMBP_IO_ENGINE_HOST' '$(or $(UMBP_IO_ENGINE_HOST),<empty>)'
 	@printf '\n$(_AIC_B)$(_AIC_X)BENCHMARK (client image, aic-bench)$(_AIC_R)\n'

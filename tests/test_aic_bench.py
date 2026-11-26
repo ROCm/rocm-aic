@@ -49,7 +49,7 @@ class TableTest(unittest.TestCase):
     def test_subcommand_names(self) -> None:
         self.assertEqual(
             [b.name for b in aic_bench.BENCHES],
-            ["list", "env", "cliff", "plot", "cliff-report", "reset-test", "agent-simple",
+            ["list", "env", "cliff", "plot", "cliff-report", "reset-test", "kv-reset-test", "agent-simple",
              "replay-hits", "fixed-load", "serve-sim", "agent-kv", "aiperf"])
 
     def test_every_subcommand_has_a_target(self) -> None:

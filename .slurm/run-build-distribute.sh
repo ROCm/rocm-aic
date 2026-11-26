@@ -1368,7 +1368,7 @@ cmd_build() {
     # - aic-base's wheels from a `docker/base/Dockerfile --target wheels` export directory.
     local _base_wheels_arg=""
     [[ -n "${AIC_BUILD_CONTEXT_BASE_WHEELS:-}" ]] && \
-        _base_wheels_arg="--build-context base-wheels=${AIC_BUILD_CONTEXT_BASE_WHEELS}"
+        _base_wheels_arg="--build-context wheels-base=${AIC_BUILD_CONTEXT_BASE_WHEELS}"
     case "${_bake_target}" in
         vllm|lmcache)
             [[ -n "${AIC_BUILD_CONTEXT_BASE_WHEELS:-}" ]] || \
@@ -1376,7 +1376,7 @@ cmd_build() {
     esac
     local _lmc_wheels_arg=""
     [[ -n "${AIC_BUILD_CONTEXT_LMCACHE_WHEELS:-}" ]] && \
-        _lmc_wheels_arg="--build-context lmcache-wheels=${AIC_BUILD_CONTEXT_LMCACHE_WHEELS}"
+        _lmc_wheels_arg="--build-context wheels-lmcache=${AIC_BUILD_CONTEXT_LMCACHE_WHEELS}"
 
     # --- Build program: plain `docker build`, or `docker buildx` with a shared
     #     registry cache when AIC_CACHE_REF is set.  The registry cache pushes each
@@ -4226,7 +4226,7 @@ rm -f "\${_base_oci_tar}"
 echo "[bake] base OCI dir: \${_base_oci_dir}"
 
 # --- Phase 1.5: build lmcache wheels stage so vllm can consume them -----------
-# vllm/Dockerfile mounts --build-context lmcache-wheels=DIR expecting one
+# vllm/Dockerfile mounts --build-context wheels-lmcache=DIR expecting one
 # lmcache-*.whl.  Build the lmcache --target wheels stage first; export to a
 # local dir; pass it as a named context to vllm in phase 2.
 echo "[bake] phase 1.5: building lmcache wheels for vllm context"
@@ -4260,7 +4260,7 @@ BUILDKIT_STEP_LOG_MAX_SIZE=-1 \
 docker buildx build --builder ${AIC_BUILDX_BUILDER} --progress=plain \
     --output "type=local,dest=\${_lmc_wheels_dir}" \
     --build-context "base=oci-layout://\${_base_oci_dir}" \
-    --build-context "base-wheels=\${_base_wheels_dir}" \
+    --build-context "wheels-base=\${_base_wheels_dir}" \
     "\${_lmcw_args[@]}" \
     \${_lmcw_cache_args:+\${_lmcw_cache_args}} \
     ${_secret_arg:+${_secret_arg}} \
@@ -4284,8 +4284,8 @@ BUILDKIT_STEP_LOG_MAX_SIZE=-1 \
 docker buildx build --builder ${AIC_BUILDX_BUILDER} --progress=plain \
     ${_vllm_out} \
     --build-context "base=oci-layout://\${_base_oci_dir}" \
-    --build-context "base-wheels=\${_base_wheels_dir}" \
-    --build-context "lmcache-wheels=\${_lmc_wheels_dir}" \
+    --build-context "wheels-base=\${_base_wheels_dir}" \
+    --build-context "wheels-lmcache=\${_lmc_wheels_dir}" \
     "\${_vllm_args[@]}" \
     \${_cache_args:+\${_cache_args}} \
     ${_secret_arg:+${_secret_arg}} \
@@ -4304,7 +4304,7 @@ BUILDKIT_STEP_LOG_MAX_SIZE=-1 \
 docker buildx build --builder ${AIC_BUILDX_BUILDER} --progress=plain \
     ${_lmc_out} \
     --build-context "base=oci-layout://\${_base_oci_dir}" \
-    --build-context "base-wheels=\${_base_wheels_dir}" \
+    --build-context "wheels-base=\${_base_wheels_dir}" \
     "\${_lmc_args[@]}" \
     \${_lm_cache_args:+\${_lm_cache_args}} \
     ${_secret_arg:+${_secret_arg}} \

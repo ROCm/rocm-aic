@@ -87,6 +87,8 @@ keeps equal to bake's.
 | `AIC_IMAGE_EXTRA_TAG` | (empty) | `docker/docker-bake.hcl` | Short alias pushed next to the version tag (e.g. `gfx1250`); only used with `AIC_IMAGE_PREFIX` |
 | `VLLM_IMAGE_REF` | `aic-vllm:latest` | `docker/docker-compose.yml` | Full `name:tag` of the vLLM image compose starts. `make` exports the version-tagged ref bake resolves; the default is the `:latest` alias a local bake adds |
 | `LMCACHE_IMAGE_REF` | `aic-lmcache:latest` | `docker/docker-compose.yml` | Full `name:tag` of the LMCache image compose starts; resolved the same way as `VLLM_IMAGE_REF` |
+| `MORI_UMBP_IMAGE_REF` | `aic-mori-umbp:latest` | `docker/docker-compose.yml` | Full `name:tag` of the image the `mori-umbp` service runs (bake target `mori-umbp-server`); resolved the same way as `VLLM_IMAGE_REF` |
+| `MORI_UMBP_MASTER_IMAGE_REF` | `aic-mori-umbp-master:latest` | `docker/docker-compose.yml` | Full `name:tag` of the image the `mori-umbp-master` service runs (bake target `mori-umbp-master`); resolved the same way as `VLLM_IMAGE_REF` |
 | `HSA_SNOOP_IMAGE` | `aic-hsa-snoop:latest` | `docker/docker-compose.yml` | Full `name:tag` of the hsa-snoop image compose starts |
 | `KVBENCH_IMAGE_REF` | `aic-kvbench:177cf4e` | `docker/docker-compose.yml` | Full `name:tag` of the KVBench image; bake tags it `aic-kvbench:<KVBENCH_IMAGE_TAG>` |
 | `KVBENCH_IMAGE_TAG` | `substr(KVBENCH_REF, 0, 7)` | `docker/docker-bake.hcl` | Tag of the KVBench image, the short `KVBENCH_REF` |
@@ -226,8 +228,8 @@ keeps equal to bake's.
 | `AIC_BUILD_DOCKERFILE` | `lmcache/Dockerfile` | `.slurm/run-build-distribute.sh` | Dockerfile (relative to `docker/`) the single-image `build` command builds |
 | `AIC_BUILD_CONTEXT_BASE` | (empty) | `.slurm/run-build-distribute.sh` | Pre-built base image handed to that build as its `base` stage |
 | `AIC_BUILD_BASE_FIRST` | (empty) | `.slurm/run-build-distribute.sh` | `1` builds the base image first, in the same job, instead |
-| `AIC_BUILD_CONTEXT_BASE_WHEELS` | (empty) | `.slurm/run-build-distribute.sh` | Directory of exported base wheels handed to that build as its `base-wheels` context |
-| `AIC_BUILD_CONTEXT_LMCACHE_WHEELS` | (empty) | `.slurm/run-build-distribute.sh` | Directory of exported LMCache wheels handed to that build as its `lmcache-wheels` context |
+| `AIC_BUILD_CONTEXT_BASE_WHEELS` | (empty) | `.slurm/run-build-distribute.sh` | Directory of exported base wheels handed to that build as its `wheels-base` context |
+| `AIC_BUILD_CONTEXT_LMCACHE_WHEELS` | (empty) | `.slurm/run-build-distribute.sh` | Directory of exported LMCache wheels handed to that build as its `wheels-lmcache` context |
 | `AIC_VLLM_TARGET_DEVICE` | (empty) | `.slurm/run-build-distribute.sh` | Slurm name for bake's `VLLM_TARGET_DEVICE` in the single-image build |
 | `AIC_EMULATE_VLLM_DEVICE` | (empty) | `.slurm/run-build-distribute.sh` | `VLLM_TARGET_DEVICE` for `build-emulate`; empty takes the emulate target's `empty` |
 | `AIC_AITER_PREBUILD_KERNELS` | (empty) | `.slurm/run-build-distribute.sh` | Slurm name for bake's `AITER_PREBUILD_KERNELS`; needs a single-arch `AIC_ROCM_ARCH` |
@@ -328,20 +330,20 @@ keeps equal to bake's.
 
 ### MORI UMBP
 
-<!-- BEGIN generated:umbp -->
+<!-- BEGIN generated:mori-umbp -->
 | Variable | Default | Owner | Description |
 | --- | --- | --- | --- |
-| `AIC_KV_BACKEND` | `lmcache` | `Makefile` | KV cache backend `make` starts and points vLLM at: `lmcache` (`LMCacheMPConnector`, the `lmcache` service) or `mori` (`UMBPStoreConnector` in standalone mode, the `umbp` service). It selects the compose profile, the connector JSON and the namespaces vLLM joins, so vLLM is `aic-umbp:8000` on the bridge under `mori`. The LMCache-only targets (`vllm-reset-test`, `up-gds-l1`) refuse `mori` |
-| `UMBP_DRAM_CAPACITY` | `21474836480` | `docker/docker-compose.yml` | Size of the `umbp` server's DRAM pool, bytes (20 GiB). The pool is the server's: vLLM rejects a capacity in the connector JSON in standalone mode |
-| `MORI_UMBP_LOG_LEVEL` | `info` | `docker/docker-compose.yml` | Log level of `umbp` and `umbp-master`. MORI's own default prints errors only |
-| `AIC_UMBP_MASTER` | `0` | `Makefile` | `1` starts `umbp-master` (the `mori-master` profile) and registers the `umbp` server with it. Needs `UMBP_IO_ENGINE_HOST` |
-| `UMBP_MASTER_ADDRESS` | (empty); `aic-umbp-master:50051` (`Makefile`, conditional) | `docker/docker-compose.yml` | `host:port` of the `umbp_master` the server registers with; empty runs it without one. `AIC_UMBP_MASTER=1` sets the local `aic-umbp-master:50051`; set it yourself, with `AIC_UMBP_MASTER=0`, to join a master on another node |
-| `UMBP_NODE_ADDRESS` | (empty); `aic-umbp` (`Makefile`, conditional) | `docker/docker-compose.yml` | Address peers and the master reach this node's server at. Required with a master; `make` then sets `aic-umbp`, which only resolves on this node's bridge |
+| `AIC_KV_BACKEND` | `lmcache` | `Makefile` | KV cache backend `make` starts and points vLLM at: `lmcache` (`LMCacheMPConnector`, the `lmcache` service) or `mori` (`UMBPStoreConnector` in standalone mode, the `mori-umbp` service). It selects the compose profile, the connector JSON and the namespaces vLLM joins, so vLLM is `aic-mori-umbp:8000` on the bridge under `mori`. The LMCache-only targets (`vllm-reset-test`, `up-gds-l1`) refuse `mori` |
+| `UMBP_DRAM_CAPACITY` | `21474836480` | `docker/docker-compose.yml` | Size of the `mori-umbp` server's DRAM pool, bytes (20 GiB). The pool is the server's: vLLM rejects a capacity in the connector JSON in standalone mode |
+| `MORI_UMBP_LOG_LEVEL` | `info` | `docker/docker-compose.yml` | Log level of `mori-umbp` and `mori-umbp-master`. MORI's own default prints errors only |
+| `AIC_MORI_UMBP_MASTER` | `0` | `Makefile` | `1` starts `mori-umbp-master` (the `mori-master` profile) and registers the `mori-umbp` server with it. Needs `UMBP_IO_ENGINE_HOST` |
+| `UMBP_MASTER_ADDRESS` | (empty); `aic-mori-umbp-master:50051` (`Makefile`, conditional) | `docker/docker-compose.yml` | `host:port` of the `umbp_master` the server registers with; empty runs it without one. `AIC_MORI_UMBP_MASTER=1` sets the local `aic-mori-umbp-master:50051`; set it yourself, with `AIC_MORI_UMBP_MASTER=0`, to join a master on another node |
+| `UMBP_NODE_ADDRESS` | (empty); `aic-mori-umbp` (`Makefile`, conditional) | `docker/docker-compose.yml` | Address peers and the master reach this node's server at. Required with a master; `make` then sets `aic-mori-umbp`, which only resolves on this node's bridge |
 | `UMBP_NODE_ID` | (empty); `$(shell hostname -s)` (`Makefile`, conditional) | `docker/docker-compose.yml` | Identity the master knows this node by. Required with a master; `make` then sets the short hostname |
 | `UMBP_IO_ENGINE_HOST` | (empty) | `docker/docker-compose.yml` | Address of this node's RDMA interface, for the MORI-IO engine that moves blocks between nodes. Required with a master, and has no default |
 | `UMBP_IO_ENGINE_PORT` | (empty) | `docker/docker-compose.yml` | MORI-IO engine port. Empty leaves MORI's default |
 | `UMBP_PEER_SERVICE_PORT` | (empty) | `docker/docker-compose.yml` | Port of the server's peer gRPC service. Empty leaves MORI's default |
-<!-- END generated:umbp -->
+<!-- END generated:mori-umbp -->
 
 ### vLLM serving
 
@@ -367,9 +369,9 @@ keeps equal to bake's.
 | `AIC_ROCM_USE_AITER` | `1` | `docker/docker-compose.yml` | `VLLM_ROCM_USE_AITER`: the AITER unified attention a KV connector needs. `0` for arches without AITER support |
 | `PYTORCH_ALLOC_CONF` | `expandable_segments:False` | `docker/docker-compose.yml` | Passed through to vLLM. A no-op on ROCm; see `PYTORCH_HIP_ALLOC_CONF` |
 | `PYTORCH_HIP_ALLOC_CONF` | `expandable_segments:False` | `docker/docker-compose.yml` | PyTorch HIP allocator configuration for vLLM |
-| `VLLM_IPC_MODE` | `service:lmcache`; `service:umbp` (`Makefile`, conditional) | `docker/docker-compose.yml` | IPC namespace of the `vllm` service. It joins LMCache's; to run vLLM alone start the `vllm-only` service rather than overriding this |
-| `VLLM_PID_MODE` | `service:lmcache` (only when unset); `service:umbp` (`Makefile`, conditional) | `docker/docker-compose.yml` | PID namespace of the `vllm` service. Empty means a private namespace |
-| `VLLM_NETWORK_MODE` | `container:${AIC_STACK:-aic}-lmcache`; `container:$(AIC_STACK)-umbp` (`Makefile`, conditional) | `docker/docker-compose.yml` | Network namespace of the `vllm` service. ROCR passes IPC handles over an abstract socket, so vLLM and LMCache must share one |
+| `VLLM_IPC_MODE` | `service:lmcache`; `service:mori-umbp` (`Makefile`, conditional) | `docker/docker-compose.yml` | IPC namespace of the `vllm` service. It joins LMCache's; to run vLLM alone start the `vllm-only` service rather than overriding this |
+| `VLLM_PID_MODE` | `service:lmcache` (only when unset); `service:mori-umbp` (`Makefile`, conditional) | `docker/docker-compose.yml` | PID namespace of the `vllm` service. Empty means a private namespace |
+| `VLLM_NETWORK_MODE` | `container:${AIC_STACK:-aic}-lmcache`; `container:$(AIC_STACK)-mori-umbp` (`Makefile`, conditional) | `docker/docker-compose.yml` | Network namespace of the `vllm` service. ROCR passes IPC handles over an abstract socket, so vLLM and LMCache must share one |
 | `VLM_READY_RETRIES` | `60` | `Makefile` | `make vllm-reset-test`: readiness polls, 5 s apart |
 | `VLM_FAIL_LOG_LINES` | `250` | `Makefile` | `make vllm-reset-test`: container log lines printed when the vLLM container exits before becoming ready |
 <!-- END generated:vllm -->
@@ -611,6 +613,7 @@ directly. They also read `AIC_CLIENT_IMAGE` (the image `aiperf` runs from),
 | `AIC_TEST_MAX_TOKENS` | `20` | `benchmarks/vllm_reset_test.py` | Tokens generated per request |
 | `AIC_TEST_TIMEOUT` | `120` | `benchmarks/vllm_reset_test.py` | Per-request timeout, seconds |
 | `AIC_TEST_SEED` | `42` | `benchmarks/vllm_reset_test.py` | Random seed of the prompt set |
+| `AIC_TEST_SETTLE_S` | (unset) | `mk/local.mk` | `make kv-reset-test` only: seconds to wait after the anchors, for their stores to land, before the GPU prefix cache is reset |
 <!-- END generated:reset-test -->
 
 ### Accuracy test (`make accuracy-test`)
@@ -689,6 +692,8 @@ tolerance.
 | `RJ_TEST_ANCHOR_REPS` | `6` | `mk/bench.mk` | `AIC_TEST_ANCHOR_REPS` of the cut-down reset test; at least 6, so a prompt spans two chunks |
 | `RJ_TEST_MAX_TOKENS` | `4` | `mk/bench.mk` | `AIC_TEST_MAX_TOKENS` of the cut-down reset test |
 | `RJ_TEST_TIMEOUT` | `1800` | `mk/bench.mk` | `AIC_TEST_TIMEOUT` of the cut-down reset test |
+| `RJ_TEST_TARGET` | `$(if $(filter mori,$(AIC_KV_BACKEND)),kv-reset-test,vllm-reset-test)` | `mk/bench.mk` | Make target the guest runs: `vllm-reset-test`, or `kv-reset-test` under `AIC_KV_BACKEND=mori` |
+| `RJ_UMBP_DRAM_CAPACITY` | `268435456` | `mk/bench.mk` | `UMBP_DRAM_CAPACITY` in the guest, bytes (256 MiB) |
 <!-- END generated:rocjitsu -->
 
 ### Other Slurm jobs

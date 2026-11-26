@@ -472,6 +472,12 @@ RJ_TEST_FLOOD       ?= 6
 RJ_TEST_ANCHOR_REPS ?= 6
 RJ_TEST_MAX_TOKENS  ?= 4
 RJ_TEST_TIMEOUT     ?= 1800
+# The test the guest runs.  vllm-reset-test reads LMCache's own metrics, so the
+# mori backend gets the connector-agnostic kv-reset-test.
+RJ_TEST_TARGET      ?= $(if $(filter mori,$(AIC_KV_BACKEND)),kv-reset-test,vllm-reset-test)
+# The mori-umbp server's DRAM pool in the guest, bytes (256 MiB).  The compose
+# default of 20 GiB is more than the VM has.
+RJ_UMBP_DRAM_CAPACITY ?= 268435456
 # What bake tags the stack for RJ_ROCJITSU_ARCH: the tag, the five image refs
 # and the client image's, in the order of the --get below.  Asked of bake once, on first use, so
 # only the rocjitsu targets (and list-vars) pay for a second `bake --print`.
@@ -832,7 +838,7 @@ test-rocjitsu-local: prep-dirs
 	if [ "$(RJ_PROBE_ONLY)" = "1" ]; then \
 	    echo "  [6d] skipped (RJ_PROBE_ONLY=1)"; \
 	else \
-	echo "  [6d] Mounting shared dir via 9p and running make vllm-reset-test ..."; \
+	echo "  [6d] Mounting shared dir via 9p and running make $(RJ_TEST_TARGET) (AIC_KV_BACKEND=$(AIC_KV_BACKEND)) ..."; \
 	ssh $$_ssh_flags "$$_vmuser@localhost" \
 	    "sudo chmod 1777 /rj-share/metrics" \
 	    2>&1 | sed 's/^/  [mount] /'; \
@@ -855,6 +861,7 @@ test-rocjitsu-local: prep-dirs
 	  'export VLLM_EXTRA_ARGS="--num-gpu-blocks-override 50 --kernel-config $$_KC"' \
 	  'export ROCM_ARCH=$(RJ_ROCJITSU_ARCH) LMCACHE_L1_SIZE_GB=$(RJ_LMCACHE_L1_SIZE_GB)' \
 	  'export AIC_L2_BACKEND=none NVME_DATA=$(RJ_NVME_MOUNT) NFS_DATA=/tmp/lmcache-nfs' \
+	  'export UMBP_DRAM_CAPACITY=$(RJ_UMBP_DRAM_CAPACITY)' \
 	  'export AIC_METRICS_DIR=/rj-share/metrics AIC_EXPORTERS=0 HF_HOME=/tmp/hf-home' \
 	  'export LOG=/tmp/aic-logs BENCH_LOGDIR=/tmp/aic-logs/manual HF_TOKEN=$(HF_TOKEN)' \
 	  '# rocjitsu emulates the GPU in software, so a collective that takes' \
@@ -871,7 +878,7 @@ test-rocjitsu-local: prep-dirs
 	  '# Run it in an if so the real status is always reported.' \
 	  '# The image refs go on the command line: the guest make would otherwise' \
 	  '# ask its own docker buildx, and leaves compose on :latest without one.' \
-	  'if make -C /rj-share/repo vllm-reset-test AIC_STACK=$(AIC_STACK) VLM_READY_RETRIES=$(RJ_READY_RETRIES) VLLM_IMAGE_REF=$(RJ_IMAGE_REF) LMCACHE_IMAGE_REF=$(RJ_LMCACHE_IMAGE_REF) HSA_SNOOP_IMAGE=$(RJ_HSA_SNOOP_IMAGE_REF) AIC_CLIENT_IMAGE=$(RJ_CLIENT_IMAGE_REF); then' \
+	  'if make -C /rj-share/repo $(RJ_TEST_TARGET) AIC_STACK=$(AIC_STACK) AIC_KV_BACKEND=$(AIC_KV_BACKEND) VLM_READY_RETRIES=$(RJ_READY_RETRIES) VLLM_IMAGE_REF=$(RJ_IMAGE_REF) LMCACHE_IMAGE_REF=$(RJ_LMCACHE_IMAGE_REF) HSA_SNOOP_IMAGE=$(RJ_HSA_SNOOP_IMAGE_REF) AIC_CLIENT_IMAGE=$(RJ_CLIENT_IMAGE_REF); then' \
 	  '    echo vllm_reset_test_rc=0' \
 	  'else' \
 	  '    echo vllm_reset_test_rc=$$?' \
@@ -885,11 +892,11 @@ test-rocjitsu-local: prep-dirs
 	    | tee /tmp/aic-rj-make.log | sed 's/^/  [make] /'; \
 	_make_rc=$$(grep -o 'vllm_reset_test_rc=[0-9]*' /tmp/aic-rj-make.log | cut -d= -f2); \
 	if [ "$${_make_rc:-1}" != "0" ]; then \
-	    echo "FAIL: vllm-reset-test failed inside VM (rc=$${_make_rc:-?})" >&2; \
-	    echo "  --- lmcache logs ---"; \
+	    echo "FAIL: $(RJ_TEST_TARGET) failed inside VM (rc=$${_make_rc:-?})" >&2; \
+	    echo "  --- $(_KV_SERVICE) logs ---"; \
 	    ssh $$_ssh_flags "$$_vmuser@localhost" \
-	        "sudo docker logs $(AIC_STACK)-lmcache 2>&1 | tail -30" \
-	        2>&1 | sed 's/^/  [lmcache] /'; \
+	        "sudo docker logs $(_KV_CONTAINER) 2>&1 | tail -30" \
+	        2>&1 | sed 's/^/  [$(_KV_SERVICE)] /'; \
 	    echo "  --- vllm logs ---"; \
 	    ssh $$_ssh_flags "$$_vmuser@localhost" \
 	        "sudo docker logs $(AIC_STACK)-vllm-gpu0 2>&1 | tail -250" \

@@ -10,15 +10,15 @@
 # buildx steps.  The hand-rolled version could not succeed, for two independent
 # reasons, and both are structural rather than typos:
 #
-#   * It forwarded no `lmcache-wheels` build context to docker/vllm/Dockerfile.
+#   * It forwarded no `wheels-lmcache` build context to docker/vllm/Dockerfile.
 #     That Dockerfile defaults the context to `FROM scratch` and its runtime
-#     stage then aborts with "expected one lmcache wheel in the lmcache-wheels
+#     stage then aborts with "expected one lmcache wheel in the wheels-lmcache
 #     build context", so aic-vllm could never be pushed.
 #   * It re-declared the version pins by grepping the Dockerfiles, which drifts
 #     from docker/docker-bake.hcl -- the actual single source of truth.
 #
 # Both disappear when bake owns the graph: the HCL already wires
-# `lmcache-wheels = target:lmcache-wheels` and holds every pin.
+# `wheels-lmcache = target:lmcache-wheels` and holds every pin.
 #
 # It also publishes the WHOLE stack, not just aic-vllm.  The rocjitsu test
 # loads five images into the guest (vllm, lmcache, hsa-snoop and the two fabric

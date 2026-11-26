@@ -288,9 +288,11 @@ function "tls_secret" {
 # `make build` bakes this group: the full local stack including the fabric
 # exporters, so a fresh build can run the monitored compose stack
 # (`make up` / `vllm-reset-test`) without a separate exporter build.  kvbench is
-# a standalone benchmarking tool and stays out (see the `all` group).
+# a standalone benchmarking tool and stays out (see the `all` group).  The
+# mori-umbp images are in, so `make up AIC_KV_BACKEND=mori` works off the same
+# build; their MORI wheel is the one aic-vllm already builds.
 group "default" {
-  targets = ["base", "vllm", "lmcache", "hsa-snoop", "nvme-exporter", "rdma-exporter"]
+  targets = ["base", "vllm", "lmcache", "mori-umbp-server", "mori-umbp-master", "hsa-snoop", "nvme-exporter", "rdma-exporter"]
 }
 
 group "exporters" {
@@ -298,7 +300,7 @@ group "exporters" {
 }
 
 group "all" {
-  targets = ["base", "vllm", "lmcache", "hsa-snoop", "nvme-exporter", "rdma-exporter", "kvbench"]
+  targets = ["base", "vllm", "lmcache", "mori-umbp-server", "mori-umbp-master", "hsa-snoop", "nvme-exporter", "rdma-exporter", "kvbench"]
 }
 
 # Everything the nightly wheels release publishes.  Exports .whl files to
@@ -354,8 +356,13 @@ target "vllm" {
   context    = "."
   dockerfile = "docker/vllm/Dockerfile"
   # The default (runtime) stage installs aic-lmcache's wheel from the
-  # lmcache-wheels context and stops without one.
-  contexts   = { base = "target:base", "lmcache-wheels" = "target:lmcache-wheels", "base-wheels":  "target:base-wheels" }
+  # wheels-lmcache context and stops without one.
+  contexts = {
+    "base"           = "target:base"
+    "base-build"     = "target:base-build"
+    "wheels-base"    = "target:base-wheels"
+    "wheels-lmcache" = "target:lmcache-wheels"
+  }
   tags       = tags("aic-vllm", true)
   args = {
     ROCM_ARCH          = rocm_arch_list(ROCM_ARCH)
@@ -387,7 +394,11 @@ target "vllm" {
 target "lmcache" {
   context    = "."
   dockerfile = "docker/lmcache/Dockerfile"
-  contexts   = { base = "target:base", "base-wheels":  "target:base-wheels" }
+  contexts = {
+    "base"        = "target:base"
+    "base-build"  = "target:base-build"
+    "wheels-base" = "target:base-wheels"
+  }
   tags       = tags("aic-lmcache", true)
   args = {
     ROCM_ARCH       = rocm_arch_list(ROCM_ARCH)
@@ -417,6 +428,18 @@ target "lmcache-wheels" {
 target "base-wheels" {
   inherits = ["base"]
   target   = "wheels"
+  tags     = []
+  cache-to = []
+}
+
+# docker/base/Dockerfile's `base` stage alone: the ROCm toolchain image plus the
+# system build packages, the corporate CA and the pip settings, with nothing
+# compiled.  Every build_* stage outside that Dockerfile starts from it (the
+# `base-build` context), so they share one package layer and still run in
+# parallel with aic-base's source builds.  Output-less, like base-wheels.
+target "base-build" {
+  inherits = ["base"]
+  target   = "base"
   tags     = []
   cache-to = []
 }
@@ -454,6 +477,59 @@ target "wheels-vllm" {
   output     = ["type=local,dest=${WHEELS_DIR}/vllm"]
   cache-from = distinct(concat(cache_from(ROCM_ARCH, "vllm"), cache_from(ROCM_ARCH, "wheels-vllm")))
   cache-to   = cache_to(ROCM_ARCH, "wheels-vllm")
+}
+
+# The MORI wheel alone, as the `wheels-mori` context of the mori-umbp images.
+# Output-less, like lmcache-wheels; wheels-mori is the export.  Its own target
+# rather than `inherits = ["vllm"]`, whose contexts would drag in aic-base; it
+# takes that target's args, as every target of one Dockerfile passes the same.
+target "mori-wheels" {
+  context    = "."
+  dockerfile = "docker/vllm/Dockerfile"
+  target     = "wheels-mori"
+  contexts   = { "base-build" = "target:base-build" }
+  tags       = []
+  args       = target.vllm.args
+  cache-from = cache_from(ROCM_ARCH, "wheels-mori")
+  cache-to   = cache_to(ROCM_ARCH, "wheels-mori")
+  secret     = tls_secret()
+}
+
+# mori-wheels with an output, for docker/wheels-test/Dockerfile's `wheels-mori`
+# context.  Not in the `wheels` group: the release does not publish it.
+target "wheels-mori" {
+  inherits = ["mori-wheels"]
+  output   = ["type=local,dest=${WHEELS_DIR}/mori"]
+}
+
+# MORI UMBP standalone server: ROCm HIP runtime + grpc/ibverbs/numa +
+# umbp_standalone_server binary extracted from the MORI wheel.
+target "mori-umbp-server" {
+  context    = "."
+  dockerfile = "docker/mori-umbp/Dockerfile"
+  target     = "mori-umbp-server"
+  contexts   = { "wheels-mori" = "target:mori-wheels" }
+  tags       = tags("aic-mori-umbp", true)
+  args = {
+    ROCM_VERSION       = ROCM_VERSION
+    ROCM_BASE_IMAGE    = ROCM_BASE_IMAGE
+    ROCM_RUNTIME_IMAGE = ROCM_RUNTIME_IMAGE
+    AIC_VERSION        = AIC_VERSION
+    BLAS_CACHE_BUST    = BLAS_CACHE_BUST
+  }
+  cache-from = cache_from(ROCM_ARCH, "mori-umbp-server")
+  cache-to   = cache_to(ROCM_ARCH, "mori-umbp-server")
+  secret     = tls_secret()
+}
+
+# MORI UMBP fleet GlobalBlockIndex coordinator: ubuntu:26.04 + grpc/protobuf +
+# umbp_master binary extracted from the MORI wheel.  No GPU; no ROCm.
+target "mori-umbp-master" {
+  inherits   = ["mori-umbp-server"]
+  target     = "mori-umbp-master"
+  tags       = tags("aic-mori-umbp-master", true)
+  cache-from = cache_from(ROCM_ARCH, "mori-umbp-master")
+  cache-to   = cache_to(ROCM_ARCH, "mori-umbp-master")
 }
 
 target "wheels-emulate" {

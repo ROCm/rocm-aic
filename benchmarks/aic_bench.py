@@ -168,6 +168,18 @@ def _reset_test(run: Run, args: list[str]) -> list[str]:
     return args
 
 
+def _kv_reset_test(run: Run, args: list[str]) -> list[str]:
+    ambient = run.environ.get("AIC_TEST_VLLM_URL")
+    if ambient and "endpoint" not in run.explicit:
+        run.endpoint = checked_endpoint(ambient)
+    run.env["AIC_TEST_VLLM_URL"] = run.endpoint
+    if "model" in run.explicit:
+        run.env["AIC_TEST_MODEL"] = run.model_id
+    else:
+        run.setenv("AIC_TEST_MODEL", run.model)
+    return args
+
+
 def _serve_sim(run: Run, args: list[str]) -> list[str]:
     args = fill(args, "--base-url", run.endpoint)
     args = fill(args, "--model", run.model)
@@ -209,6 +221,8 @@ BENCHES = (
           script="cliff_to_html.py", prepare=_output_dir),
     Bench("reset-test", "L1 and L2 retrieval test using /reset_prefix_cache (vllm_reset_test.py)",
           script="vllm_reset_test.py", prepare=_reset_test),
+    Bench("kv-reset-test", "External KV cache retrieval after /reset_prefix_cache, any connector (kv_reset_test.py)",
+          script="kv_reset_test.py", prepare=_kv_reset_test),
     Bench("agent-simple", "Synthetic mixed-size cache-tier stress (agent-simple/stress.py)",
           script="agent-simple/stress.py"),
     Bench("replay-hits", "Evict prompts from the GPU cache, replay them for L1/L2 hits (common/replay_hits.py)",

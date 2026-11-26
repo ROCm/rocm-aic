@@ -47,6 +47,11 @@ ARG AIC_BASE_IMAGE=ghcr.io/rocm/rocm-aic/aic-base:gfx1250
 # The wheel set downloaded from the release, as a build context.
 FROM scratch AS wheels
 
+# Optional: a directory holding the amd_mori wheel (bake target `wheels-mori`),
+# for a stack run with AIC_KV_BACKEND=mori.  The release does not publish that
+# wheel, so the default is empty and the `vllm` target then carries no MORI.
+FROM scratch AS wheels-mori
+
 # =============================================================================
 # vllm — aic-base + the vllm / amd_aiter / lmcache wheels.
 #
@@ -155,6 +160,31 @@ ENV PYTHONUNBUFFERED=1 \
 ENV LD_LIBRARY_PATH=/opt/rocm/lib${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}
 
 RUN python3 -c 'import ctypes; ctypes.CDLL("libamdhip64.so")'
+
+# MORI / UMBP, mirroring the end of docker/vllm/Dockerfile's `runtime` stage;
+# skipped when the wheels-mori context holds no wheel.
+# hadolint ignore=DL3008,SC3054,SC3044
+RUN --mount=type=bind,from=wheels-mori,target=/m \
+    --mount=type=cache,target=/root/.cache/pip \
+    shopt -s nullglob && \
+    mori=(/m/amd_mori-*.whl) && \
+    if [ "${#mori[@]}" -eq 0 ]; then \
+        echo "no amd_mori wheel in the wheels-mori context: image built without MORI"; \
+    else \
+        apt-get update && \
+        DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            ibverbs-providers libgrpc++1.51t64 libibverbs1 libnuma1 libpci3 libprotobuf32t64 && \
+        rm -rf /var/lib/apt/lists/* && \
+        pip3 install --no-deps "${mori[@]}" && \
+        _pkg="$(python3 -c 'import importlib.util as u; print(next(iter(u.find_spec("mori").submodule_search_locations)))')" && \
+        for _bin in umbp_standalone_server umbp_master; do \
+            test -x "${_pkg}/${_bin}" || { echo "ERROR: ${_pkg}/${_bin} missing" >&2; exit 1; }; \
+            _missing="$(ldd "${_pkg}/${_bin}" | grep 'not found' || true)"; \
+            [ -z "${_missing}" ] || { echo "ERROR: ${_bin} has unresolved libraries:" >&2; echo "${_missing}" >&2; exit 1; }; \
+            ln -s "${_pkg}/${_bin}" "/usr/local/bin/${_bin}"; \
+        done && \
+        mkdir -p /run/umbp && chmod 1777 /run/umbp; \
+    fi
 
 ARG AIC_VERSION
 ARG AIC_BASE_IMAGE

@@ -35,11 +35,11 @@
 #   ROCM_ARCH=gfx950 docker buildx bake -f docker/docker-bake.hcl lmcache --load
 #
 # or hand bake's resolved args to a raw build against an aic-base built earlier
-# (base-wheels is the `--target wheels` export of docker/base/Dockerfile):
+# (wheels-base is the `--target wheels` export of docker/base/Dockerfile):
 #   mapfile -t args < <(ROCM_ARCH=gfx950 docker/scripts/aic-bake-env.sh --build-args lmcache)
 #   docker buildx build "${args[@]}" \
 #     --build-context base=docker-image://aic-base:<tag> \
-#     --build-context base-wheels=/tmp/aic-base-wheels \
+#     --build-context wheels-base=/tmp/aic-base-wheels \
 #     -f docker/lmcache/Dockerfile -t aic-lmcache:dev .
 #
 # Or via make:
@@ -50,24 +50,56 @@
 # Fallback base stage: used when no --build-context base= is provided.  When
 # --build-context base=docker-image://aic-base:<TAG> IS supplied, BuildKit
 # overrides this stage with the pre-built image and skips this FROM entirely.
-# build_lmcache_wheel always starts from ROCM_BASE_IMAGE.  Unset, the build
+# Unset, the build
 # stops at the FROM: base name (${ROCM_BASE_IMAGE}) should not be blank
 ARG ROCM_BASE_IMAGE
 # hadolint ignore=DL3006
 FROM ${ROCM_BASE_IMAGE} AS base
 
-FROM scratch AS base-wheels
+# Empty default for the `wheels-base` build context (the --target wheels export
+# of docker/base/Dockerfile).
+FROM scratch AS wheels-base
+
+# =============================================================================
+# base-build — what build_lmcache_wheel starts from: the full ROCm toolchain
+# plus the system build packages.  Bake replaces this stage with
+# docker/base/Dockerfile's `base` stage (the `base-build` context), so every
+# build stage in the stack shares one package layer.  A raw build that passes
+# no such context runs this fallback instead; keep its packages a subset of
+# that stage's.
+# =============================================================================
+# hadolint ignore=DL3006
+FROM ${ROCM_BASE_IMAGE} AS base-build
+
+# hadolint ignore=DL4006
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
+
+RUN --mount=type=secret,id=tls_cert,required=false \
+    if [ -f /run/secrets/tls_cert ] && [ -s /run/secrets/tls_cert ]; then \
+        cp /run/secrets/tls_cert /usr/local/share/ca-certificates/corp-ca.crt && \
+        update-ca-certificates; \
+    fi
+
+# hadolint ignore=DL3008
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
+    apt-get update && \
+    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+        ca-certificates \
+        git \
+        python3-dev && \
+    update-ca-certificates && \
+    rm -f /usr/lib/python3.*/EXTERNALLY-MANAGED
 
 # =============================================================================
 # build_lmcache_wheel — compile the LMCache HIP extension with the FULL ROCm
-# toolchain (ROCM_BASE_IMAGE = -full, not the slim aic-base runtime).
+# toolchain (base-build, not the slim aic-base runtime).
 # This stage is NOT replaced by --build-context base=oci-layout://...
 # because only the stage named "base" is overridden by that flag.
 # torch is COPYed from aic-base (which has it) into this full-ROCm stage.
 # The compiled wheel is COPYed into the runtime build stage below.
 # =============================================================================
-# hadolint ignore=DL3006
-FROM ${ROCM_BASE_IMAGE} AS build_lmcache_wheel
+FROM base-build AS build_lmcache_wheel
 
 ARG ROCM_ARCH
 ARG BUILD_JOBS
@@ -79,18 +111,12 @@ SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 RUN : "${LMCACHE_GIT_URL:?unset: build through docker/docker-bake.hcl}" \
       "${LMCACHE_REF:?unset: build through docker/docker-bake.hcl}"
 
-# Install git + minimal build tools (the -full ROCm image does not include them).
+# hadolint ignore=DL3008
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
     apt-get update && \
     DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-        ca-certificates \
-        git \
-        libnuma1 \
-        python3-dev \
-        python3-pip
-
-RUN rm -f /usr/lib/python3.*/EXTERNALLY-MANAGED
+        libnuma1
 
 RUN --mount=type=cache,target=/root/.cache/pip \
       pip3 install --break-system-packages build
@@ -140,7 +166,7 @@ RUN AIC_LMCACHE_SRC=/app/LMCache python3 /tmp/rocm_event_ipc_patch.py && \
 # base image's torch wheel can be satisfied.
 WORKDIR /app/LMCache
 RUN --mount=type=cache,target=/root/.cache/pip \
-    --mount=type=bind,from=base-wheels,source=/,target=/base-wheels \
+    --mount=type=bind,from=wheels-base,source=/,target=/base-wheels \
     mkdir -p /wheels && \
     printf '%s\n' "${ROCM_ARCH%%;*}" > /etc/rocm_target.lst && \
     (shopt -s nullglob; for f in /base-wheels/torch-*.whl; do \
