@@ -577,7 +577,7 @@ RUN --mount=type=cache,target=/root/.cache/pip \
         -exec sh -c '/opt/rocm/core/lib/llvm/bin/llvm-strip --strip-unneeded "$1" 2>/dev/null || true' _ {} \; ; \
     # Wheel: same meson args minus --prefix, which meson-python manages.  It is
     # named nixl-rocm (upstream's pyproject defaults to nixl-cu12) and bundles
-    # libnixl + the NIXL plugins/UCX libs; the ROCm runtime stays external.
+    # libnixl and the NIXL plugins; UCX and the ROCm runtime stay external.
     # CXX must not be hipcc here: meson would use it as the host C++ compiler
     # and hipcc fails meson's compiler sanity check.
     if [ -x contrib/tomlutil.py ]; then \
@@ -595,6 +595,50 @@ RUN --mount=type=cache,target=/root/.cache/pip \
     fi; \
     echo "PASS: NIXL wheel built -> ${nixl_whl}"; \
     rm -rf /tmp/nixl
+
+# meson-python installs a versioned library without the soname link the loader
+# asks for (a wheel cannot hold a symlink).  The wheel then carries
+# prometheus-cpp as libcore.so.1.3.0 and libpull.so.1.3.0 while the Prometheus
+# telemetry exporters need libcore.so.1.3 and libpull.so.1.3: from a pip install
+# they do not load, and creating an agent fails once
+# NIXL_TELEMETRY_EXPORTER=prometheus selects one.  Store each such library
+# under its soname; nothing refers to the full name.  /opt/nixl is unaffected:
+# `ninja install` made the links there.
+#
+# The check installs the result on its own and creates an agent the way the
+# lmcache server does.  LD_LIBRARY_PATH is emptied and NIXL_PLUGIN_DIR points
+# into the wheel, so its libraries are the only ones on offer; the assert on
+# /proc/self/maps fails the build should one come from /opt/nixl all the same.
+#
+# In its own layer so that a change here does not rebuild NIXL.
+RUN --mount=type=cache,target=/root/.cache/pip \
+    set -eu; \
+    nixl_whl="$(find /app/nixl/dist -maxdepth 1 -name 'nixl*rocm*.whl' -print -quit)"; \
+    python3 -m pip install wheel; \
+    python3 -m wheel unpack -d /tmp/nixl-wheel "${nixl_whl}"; \
+    find /tmp/nixl-wheel -type f -name '*.so.*' | while read -r lib; do \
+        soname="$(patchelf --print-soname "${lib}")" || { \
+            echo "ERROR: ${lib} is not an ELF library" >&2; exit 1; }; \
+        if [ -n "${soname}" ] && [ "${soname}" != "$(basename "${lib}")" ]; then \
+            mv "${lib}" "$(dirname "${lib}")/${soname}"; \
+            echo "nixl wheel: $(basename "${lib}") stored as ${soname}"; \
+        fi; \
+    done; \
+    rm "${nixl_whl}"; \
+    python3 -m wheel pack -d /app/nixl/dist /tmp/nixl-wheel/*; \
+    rm -rf /tmp/nixl-wheel; \
+    test -f "${nixl_whl}"; \
+    python3 -m pip install --no-deps --no-compile --target /tmp/nixl-wheel-check "${nixl_whl}"; \
+    env LD_LIBRARY_PATH= PYTHONPATH=/tmp/nixl-wheel-check \
+        NIXL_PLUGIN_DIR=/tmp/nixl-wheel-check/.nixl_rocm.mesonpy.libs/plugins \
+        NIXL_TELEMETRY_ENABLE=y NIXL_TELEMETRY_EXPORTER=prometheus NIXL_TELEMETRY_PROMETHEUS_PORT=19090 \
+        python3 -c 'import nixl_rocm; from nixl_rocm._api import nixl_agent, nixl_agent_config; \
+    assert nixl_rocm.__file__.startswith("/tmp/nixl-wheel-check/"), nixl_rocm.__file__; \
+    a = nixl_agent("wheel-check", nixl_agent_config(backends=[])); a.create_backend("POSIX"); \
+    stray = sorted({line.split()[-1] for line in open("/proc/self/maps") if "/opt/nixl/" in line}); \
+    assert not stray, f"loaded from /opt/nixl, not from the wheel: {stray}"; \
+    print("PASS: the nixl_rocm wheel stands alone:", sorted(a.backends))'; \
+    rm -rf /tmp/nixl-wheel-check
 
 COPY docker/base/nixl_rocm_shim.py /opt/nixl/lib/python3/dist-packages/nixl/__init__.py
 RUN PYTHONPATH=/opt/nixl/lib/python3/dist-packages \
@@ -1024,13 +1068,14 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
 # `nixl` cannot replace it), and the wheel's libraries, with plugins/ beside
 # them, at /opt/nixl/lib/x86_64-linux-gnu.
 #
-# The libraries have to be on the loader path, not just the plugins at
-# NIXL_PLUGIN_DIR: the telemetry exporters link prometheus-cpp (libcore,
-# libpull), which nothing else has loaded by then.  And a wheel cannot hold a
-# symlink, so it ships libcore.so.1.3.0 with no libcore.so.1.3 for the loader
-# to find; ldconfig -n adds those soname links.  Without both, creating a NIXL
-# agent under NIXL_TELEMETRY_ENABLE=y (compose's default) fails with "Failed
-# to load telemetry plugin", and the lmcache server with it.
+# ldconfig -n is for wheels built before build_nixl stored versioned
+# libraries under their sonames.  Those carry prometheus-cpp as
+# libcore.so.1.3.0 and libpull.so.1.3.0 with no libcore.so.1.3 or
+# libpull.so.1.3 beside them, which is what the telemetry exporters ask the
+# loader for (the directory itself they reach through their own RUNPATH).
+# Without the links, creating a NIXL agent with the Prometheus exporter that
+# compose selects fails with "Failed to load telemetry plugin", and the
+# lmcache server with it.  On a repaired wheel it changes nothing.
 COPY docker/base/nixl_rocm_shim.py /opt/nixl/lib/python3/dist-packages/nixl/__init__.py
 RUN _libs=$(python3 -c 'import sysconfig; print(sysconfig.get_path("platlib"))')/.nixl_rocm.mesonpy.libs && \
     test -f "${_libs}/plugins/libplugin_POSIX.so" && \

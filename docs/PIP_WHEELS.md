@@ -58,9 +58,9 @@ carry GPU code for `ROCM_ARCH`, and bakes the `from-wheels` group: an `aic-base`
 from the `torch`, `torchvision`, `triton` and `nixl_rocm` wheels on the same
 ROCm runtime packages as the source build, then the two images on top of it.
 The full ROCm image is not pulled: the apt key of the runtime packages is
-downloaded from AMD instead. No wheel holds the sidecars. The two exporters
-build as in `make build`; `aic-hsa-snoop`, which compiles on the full image,
-is pulled from `AIC_PUBLISHED_PREFIX` and built only if its tag is not there.
+downloaded from AMD instead. No wheel holds the sidecars (`aic-hsa-snoop` and
+the two exporters), which build as in `make build`, on plain Ubuntu and
+Debian.
 
 | Variable | Default | |
 | --- | --- | --- |
@@ -80,10 +80,7 @@ An image built this way is not the source-built one:
   signal ring of cross-process GPU events. Both images replace those events
   with a producer-side sync, so the stack does not use the ring.
 - NIXL is the `nixl_rocm` wheel, without UCX. The POSIX and AIS_MT backends
-  load; the UCX backend does not. The image adds the library links and loader
-  path the wheel's telemetry exporters need; a plain `pip install` of the
-  wheel does not have them, and a NIXL agent fails to start there with
-  `NIXL_TELEMETRY_ENABLE=y`.
+  load; the UCX backend does not.
 - AITER kernels are compiled on first use, as in a default `make build`.
 
 ## Compatibility — read before installing
@@ -100,10 +97,26 @@ These are **not** manylinux wheels:
   `nightly-rdna` does not; vLLM falls back to Triton attention where it is absent
   or the GPU is not gfx9.
 - The `nixl_rocm` wheel bundles `libnixl` + the NIXL/UCX plugin `.so`s,
-  but the **ROCm runtime (`libamdhip64`) and hipFile are external
-  dependencies** — they must already be present on the host (they are,
-  inside this image). It installs the `nixl_rocm` import package; the
-  `nixl` compatibility shim is applied only inside the image.
+  but the **ROCm runtime (`libamdhip64`), hipFile and UCX are external
+  dependencies** — they must already be on the loader path of the host.
+  The source-built image has all three; an image from
+  `make build-from-wheels` has no UCX. The POSIX plugin also needs
+  `liburing2` and `libaio1t64`. It installs the `nixl_rocm` import package;
+  the `nixl` compatibility shim is applied only inside the image.
+- The UCX plugin needs `libucp.so.0` and `libucs.so.0` on the loader path or
+  in `/opt/rocnixl-ucx/lib`, where the source-built image keeps them. Where
+  they are not found, creating an agent with the default configuration fails
+  with `NIXL_ERR_NOT_FOUND`, because `backends` defaults to `["UCX"]`: pass
+  `nixl_agent_config(backends=[])` and create the POSIX or AIS_MT backend
+  explicitly.
+- An older wheel cannot load its Prometheus telemetry exporters. If the
+  installed wheel carries `libcore.so.1.3.0` rather than `libcore.so.1.3`,
+  creating an agent fails when `NIXL_TELEMETRY_EXPORTER` is `prometheus` or
+  `prometheus_mp`. Leave that exporter unset with such a wheel, reinstall the
+  current wheel with `pip install --force-reinstall --no-deps` (the version
+  is the same, so a plain install keeps the old copy), or use
+  `make build-from-wheels`, whose image adds the library names the exporters
+  look for.
 
 These wheels are a convenience for reproducing the stack outside the
 container; the supported deployment is still the Docker image.

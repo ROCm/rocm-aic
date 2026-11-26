@@ -223,6 +223,17 @@ import lmcache
 print('lmcache', getattr(lmcache, '__version__', '?'))
 "
 check "import nixl_rocm" python3 -c "import nixl_rocm; print('nixl_rocm OK')"
+# An agent the way the lmcache server creates one: no default backend, POSIX
+# added, telemetry on.  The exporter plugins link libraries the wheel bundles,
+# which the import above never loads.
+check "nixl_rocm agent with telemetry" env \
+    NIXL_TELEMETRY_ENABLE=y NIXL_TELEMETRY_EXPORTER=prometheus NIXL_TELEMETRY_PROMETHEUS_PORT=19090 \
+    python3 -c "
+from nixl_rocm._api import nixl_agent, nixl_agent_config
+agent = nixl_agent('wheel-test', nixl_agent_config(backends=[]))
+agent.create_backend('POSIX')
+print('nixl_rocm agent OK:', sorted(agent.backends), 'of', agent.get_plugin_list())
+"
 check "import aiter" python3 -c "import aiter; print('aiter OK')"
 check "import vllm_emulator" python3 -c "
 import vllm_emulator
