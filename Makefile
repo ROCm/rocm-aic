@@ -259,16 +259,50 @@ _AIC_G := \033[32m
 _AIC_D := \033[90m
 _AIC_R := \033[0m
 _COMPOSE_BIN := docker compose
+# ---- KV cache backend ------------------------------------------------------
+# What vLLM offloads KV blocks to, and the fleet-level service that tracks them:
+#   lmcache  LMCacheMPConnector -> lmcache server, with lmcache-coordinator
+#   mori     UMBPStoreConnector -> MORI umbp_standalone_server (DRAM pool), with
+#            umbp_master when AIC_UMBP_MASTER=1
+# The server owns the namespaces vllm joins, so the choice also moves vLLM's
+# bridge address: aic-lmcache:8000 or aic-umbp:8000 (aic-vllm:8000 is either).
+AIC_KV_BACKEND  ?= lmcache
+AIC_UMBP_MASTER ?= 0
+ifeq ($(AIC_KV_BACKEND),lmcache)
+_KV_SERVICE    := lmcache
+_KV_PROFILES   := --profile cache
+else ifeq ($(AIC_KV_BACKEND),mori)
+_KV_SERVICE    := umbp
+_KV_PROFILES   := --profile mori $(if $(filter 1,$(AIC_UMBP_MASTER)),--profile mori-master)
+export VLLM_NETWORK_MODE ?= container:$(AIC_STACK)-umbp
+export VLLM_IPC_MODE     ?= service:umbp
+export VLLM_PID_MODE     ?= service:umbp
+# A server with a master is a cluster member and needs an address peers can
+# dial, an identity, and UMBP_IO_ENGINE_HOST: the address of this node's RDMA
+# interface, which has no default.  Point UMBP_MASTER_ADDRESS at another node
+# (and leave AIC_UMBP_MASTER=0) to join a master that runs elsewhere.
+ifeq ($(AIC_UMBP_MASTER),1)
+export UMBP_MASTER_ADDRESS ?= aic-umbp-master:50051
+endif
+ifneq ($(strip $(UMBP_MASTER_ADDRESS)),)
+export UMBP_NODE_ADDRESS ?= aic-umbp
+export UMBP_NODE_ID      ?= $(shell hostname -s)
+endif
+else
+$(error AIC_KV_BACKEND=$(AIC_KV_BACKEND): expected lmcache or mori)
+endif
+_KV_CONTAINER := $(AIC_STACK)-$(_KV_SERVICE)
+
 # spur-authz refuses compose's default hsa-snoop PID mode, pid:host, so on SPUR
-# hsa-snoop joins this stack's lmcache namespace (vllm shares it).  Set per call,
-# not exported: it names this stack's container, and a job make submits runs a
-# stack of its own (monitoring-lib.sh picks the same default there).  `-`, not
-# `:-`: an explicitly empty value means a private namespace.
+# hsa-snoop joins the namespace of this stack's KV server (vllm shares it).  Set
+# per call, not exported: it names this stack's container, and a job make
+# submits runs a stack of its own (monitoring-lib.sh picks the same default
+# there).  `-`, not `:-`: an explicitly empty value means a private namespace.
 ifeq ($(AIC_SPUR_CLUSTER),1)
-_HSA_SNOOP_PID_ENV := AIC_HSA_SNOOP_PID_MODE="$${AIC_HSA_SNOOP_PID_MODE-container:$(AIC_STACK)-lmcache}"
+_HSA_SNOOP_PID_ENV := AIC_HSA_SNOOP_PID_MODE="$${AIC_HSA_SNOOP_PID_MODE-container:$(_KV_CONTAINER)}"
 endif
 COMPOSE      := $(_FRAMEWORK_VERSION_ENV) $(_HSA_SNOOP_PID_ENV) DOCKER_BUILDKIT=1 $(_COMPOSE_BIN) -f "$(CURDIR)/docker/docker-compose.yml"
-COMPOSE_CACHE := $(COMPOSE) --profile cache
+COMPOSE_CACHE := $(COMPOSE) $(_KV_PROFILES)
 
 # vLLM --kv-transfer-config for the MP connector.  Leave KV_TRANSFER_ARG empty
 # for a plain (baseline) vLLM.
@@ -283,7 +317,14 @@ LMCACHE_LAZY_OFFLOAD ?= true
 # in the build; without it vLLM v0.34.0 refuses VMM IPC on ROCm at startup.
 LMCACHE_USE_VMM_API ?= false
 _MP_CONNECTOR_JSON := {"kv_connector":"LMCacheMPConnector","kv_role":"kv_both","kv_connector_extra_config":{"lmcache.mp.host":"tcp://localhost","lmcache.mp.port":$(LMCACHE_PORT),"lmcache.mp.use_vmm_api":$(LMCACHE_USE_VMM_API),"lmcache.mp.lazy_offload":$(LMCACHE_LAZY_OFFLOAD),"lmcache.mp.lazy_offload_policy":"EVICTION_AWARE","lmcache.mp.lazy_offload_max_deferral_seconds":30.0,"lmcache.mp.save_decode_cache":true}}
-KV_TRANSFER_ARG    ?= --kv-transfer-config '$(_MP_CONNECTOR_JSON)'
+# UMBPStoreConnector in standalone mode: the pool is the umbp service's, sized
+# by UMBP_DRAM_CAPACITY there, so no capacity is given here (vLLM rejects one).
+# The endpoint is the socket in the aic-umbp-run volume both services mount.
+# "recompute" turns a failed load (server gone, block evicted) into a cache
+# miss instead of a failed request.  save_decode_cache matches the LMCache arm.
+_UMBP_CONNECTOR_JSON := {"kv_connector":"UMBPStoreConnector","kv_role":"kv_both","kv_load_failure_policy":"recompute","kv_connector_extra_config":{"mode":"standalone","endpoint":"/run/umbp/node.grpc.sock","save_decode_cache":true}}
+_KV_CONNECTOR_JSON := $(if $(filter mori,$(AIC_KV_BACKEND)),$(_UMBP_CONNECTOR_JSON),$(_MP_CONNECTOR_JSON))
+KV_TRANSFER_ARG    ?= --kv-transfer-config '$(_KV_CONNECTOR_JSON)'
 export KV_TRANSFER_ARG
 
 # ---- Metrics capture (Prometheus sidecar) ----------------------------------
@@ -420,6 +461,7 @@ help:
 	@printf '\n$(_AIC_B)$(_AIC_X)STACK (local)$(_AIC_R)\n'
 	@printf '  $(_AIC_G)%-32s$(_AIC_R) %s\n' \
 	    'make up' 'Start lmcache + vllm + monitoring (foreground, DRAM L1)' \
+	    'make up AIC_KV_BACKEND=mori' 'Same, with MORI UMBP in place of lmcache (AIC_UMBP_MASTER=1 adds umbp_master)' \
 	    'make up-batch' 'Start lmcache + vllm + monitoring (background)' \
 	    'make up-dev' 'Start in --enforce-eager mode (~60 s faster, ~10% slower inference)' \
 	    'make up-gds-l1' 'Start with hipFile GDS NVMe slab as L1 (foreground)' \
@@ -428,13 +470,16 @@ help:
 	    'make down' 'Stop and remove all containers' \
 	    'make logs' 'Follow logs from all containers' \
 	    'make logs-lmcache' 'Follow lmcache logs only' \
+	    'make logs-umbp' 'Follow umbp logs only (AIC_KV_BACKEND=mori)' \
 	    'make logs-vllm' 'Follow vllm logs only' \
 	    'make ps' 'Show container status' \
 	    'make endpoints' 'Print host URL of every published service (Grafana only)' \
 	    'make shell-lmcache' 'Exec bash into $(AIC_STACK)-lmcache container' \
+	    'make shell-umbp' 'Exec bash into $(AIC_STACK)-umbp container' \
 	    'make shell-vllm' 'Exec bash into $(AIC_STACK)-vllm-gpu$(GPU) container' \
 	    'make restart-vllm' 'Restart vllm only (lmcache + warm KV cache preserved)' \
-	    'make restart-lmcache' 'Restart lmcache'
+	    'make restart-lmcache' 'Restart lmcache' \
+	    'make restart-umbp' 'Restart umbp, and vllm with it (the pool is lost)'
 	@printf '\n$(_AIC_B)$(_AIC_X)BENCHMARK (local)$(_AIC_R)\n'
 	@printf '  $(_AIC_G)%-32s$(_AIC_R) %s\n' \
 	    'make client-build' 'Build the aic-client image (every benchmark client, aic-bench)' \
@@ -567,6 +612,14 @@ list-vars:
 	    'LMCACHE_NVME_SLOT_SIZE' '$(call _or_compose_default,LMCACHE_NVME_SLOT_SIZE)' \
 	    'LMCACHE_NFS_POOL' '$(call _or_compose_default,LMCACHE_NFS_POOL)' \
 	    'AIC_L2_BACKEND' '$(call _or_compose_default,AIC_L2_BACKEND)'
+	@printf '\n$(_AIC_B)$(_AIC_X)KV BACKEND$(_AIC_R)\n'
+	@printf '  $(_AIC_G)%-38s$(_AIC_R) %s\n' \
+	    'AIC_KV_BACKEND' '$(AIC_KV_BACKEND)' \
+	    'MORI_REF' '$(or $(MORI_REF),<bake default>)' \
+	    'UMBP_DRAM_CAPACITY' '$(call _or_compose_default,UMBP_DRAM_CAPACITY) bytes' \
+	    'AIC_UMBP_MASTER' '$(AIC_UMBP_MASTER)' \
+	    'UMBP_MASTER_ADDRESS' '$(or $(UMBP_MASTER_ADDRESS),<empty: no master>)' \
+	    'UMBP_IO_ENGINE_HOST' '$(or $(UMBP_IO_ENGINE_HOST),<empty>)'
 	@printf '\n$(_AIC_B)$(_AIC_X)BENCHMARK (client image, aic-bench)$(_AIC_R)\n'
 	@printf '  $(_AIC_G)%-38s$(_AIC_R) %s\n' \
 	    'AIC_CLIENT_IMAGE' '$(call _or_compose_default,AIC_CLIENT_IMAGE)' \

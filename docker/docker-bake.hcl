@@ -57,6 +57,9 @@ variable "AITER_REF"         { default = "v0.1.29.post1" }
 variable "FLASH_ATTN_REF"    { default = "0e60e394" }
 variable "LMCACHE_REF"       { default = "v0.5.8" }
 variable "NIXL_REF"          { default = "v1.5.2" }
+# MORI supplies UMBP: vLLM's UMBPStoreConnector, umbp_standalone_server and
+# umbp_master.  The ref follows vLLM's Dockerfile.rocm_base (v0.34.0).
+variable "MORI_REF"          { default = "v1.2.3.post1" }
 # cupy-rocm-7-0 on both ends of the HIP IPC path (aic-lmcache and aic-vllm).
 variable "CUPY_VERSION"      { default = "14.2.0" }
 # UCX is NIXL's transport.  v1.22.0 is the latest stable release; upstream NIXL
@@ -88,6 +91,7 @@ variable "AITER_GIT_URL"       { default = "https://github.com/ROCm/aiter.git" }
 variable "FLASH_ATTN_GIT_URL"  { default = "https://github.com/Dao-AILab/flash-attention.git" }
 variable "LMCACHE_GIT_URL"     { default = "https://github.com/LMCache/LMCache.git" }
 variable "NIXL_GIT_URL"        { default = "https://github.com/ai-dynamo/nixl.git" }
+variable "MORI_GIT_URL"        { default = "https://github.com/ROCm/mori.git" }
 variable "UCX_GIT_URL"         { default = "https://github.com/openucx/ucx.git" }
 variable "HSA_SNOOP_GIT_URL"   { default = "https://github.com/sbates130272/hsa-snoop.git" }
 variable "CLR_GIT_URL"         { default = "https://github.com/ROCm/rocm-systems.git" }
@@ -370,6 +374,8 @@ target "vllm" {
     LLM_EMU_GIT_URL    = LLM_EMU_GIT_URL
     LLM_EMU_REF        = LLM_EMU_REF
     LMCACHE_REF        = LMCACHE_REF
+    MORI_GIT_URL       = MORI_GIT_URL
+    MORI_REF           = MORI_REF
     CUPY_VERSION       = CUPY_VERSION
     PYTORCH_SERIES     = PYTORCH_SERIES
   }

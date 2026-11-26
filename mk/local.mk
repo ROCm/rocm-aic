@@ -5,8 +5,8 @@
 
 .PHONY: ensure-compose build wheels up up-batch up-dev up-gds-l1 up-gds-l1-batch \
         up-vllm-only \
-        down logs logs-lmcache logs-vllm ps shell-lmcache shell-vllm \
-        restart-vllm restart-lmcache venv vllm-reset-test
+        down logs logs-lmcache logs-umbp logs-vllm ps shell-lmcache shell-umbp \
+        shell-vllm restart-vllm restart-lmcache restart-umbp venv vllm-reset-test
 
 ensure-compose:
 	@bash -c 'source "$(CURDIR)/monitoring/monitoring-lib.sh" && ensure_compose' || { \
@@ -105,29 +105,29 @@ wheels:
 	find "$(WHEELS_DIR)" -mindepth 1 -maxdepth 1 -type d -exec rm -rf {} + ; \
 	bash "$(REPO_ROOT)/.github/scripts/workflows/check-wheels.sh" "$(WHEELS_DIR)" "$(ROCM_ARCH)"
 
-up: ensure-compose check-hf-token check-stack prep-dirs
+up: ensure-compose check-hf-token check-kv-backend check-stack prep-dirs
 	@mkdir -p "$(AIC_METRICS_DIR)"
 	PROM_UID="$$(id -u)" PROM_GID="$$(id -g)" \
 	    $(COMPOSE_CACHE) --profile monitoring up
 
-up-batch: ensure-compose check-hf-token check-stack prep-dirs
+up-batch: ensure-compose check-hf-token check-kv-backend check-stack prep-dirs
 	@mkdir -p "$(AIC_METRICS_DIR)"
 	PROM_UID="$$(id -u)" PROM_GID="$$(id -g)" \
 	    $(COMPOSE_CACHE) --profile monitoring up -d
 	@echo "Started. Use 'make logs' to follow or 'make down' to stop."
 
-up-dev: ensure-compose check-hf-token check-stack prep-dirs
+up-dev: ensure-compose check-hf-token check-kv-backend check-stack prep-dirs
 	@mkdir -p "$(AIC_METRICS_DIR)"
 	PROM_UID="$$(id -u)" PROM_GID="$$(id -g)" \
 	    VLLM_EXTRA_ARGS="--enforce-eager $${VLLM_EXTRA_ARGS}" \
 	    $(COMPOSE_CACHE) --profile monitoring up -d
 	@echo "Started in dev mode (enforce-eager, no CUDA graphs). Use 'make logs' to follow."
 
-up-gds-l1: ensure-compose check-hf-token check-gds-slab check-stack prep-dirs
+up-gds-l1: require-lmcache ensure-compose check-hf-token check-gds-slab check-stack prep-dirs
 	@mkdir -p "$(AIC_METRICS_DIR)"
 	PROM_UID="$$(id -u)" PROM_GID="$$(id -g)" GDS_MODE=1 $(COMPOSE_CACHE) --profile monitoring up
 
-up-gds-l1-batch: ensure-compose check-hf-token check-gds-slab check-stack prep-dirs
+up-gds-l1-batch: require-lmcache ensure-compose check-hf-token check-gds-slab check-stack prep-dirs
 	@mkdir -p "$(AIC_METRICS_DIR)"
 	PROM_UID="$$(id -u)" PROM_GID="$$(id -g)" GDS_MODE=1 $(COMPOSE_CACHE) --profile monitoring up -d
 	@echo "Started (GDS L1 mode + monitoring). Use 'make logs' to follow or 'make down' to stop."
@@ -140,14 +140,18 @@ up-vllm-only: ensure-compose check-hf-token prep-dirs
 	KV_TRANSFER_ARG= $(COMPOSE) --profile vllm-only --profile client up -d vllm-only client
 	@echo "Started $(AIC_STACK)-vllm-only-gpu$(GPU). Use 'make down' to stop."
 
+# Every backend's profile, so a stack started with another AIC_KV_BACKEND goes too.
 down:
-	$(COMPOSE_CACHE) --profile monitoring --profile vllm-only down
+	$(COMPOSE) --profile cache --profile mori --profile mori-master --profile monitoring --profile vllm-only down
 
 logs:
 	$(COMPOSE_CACHE) logs -f
 
 logs-lmcache:
 	$(COMPOSE_CACHE) logs -f lmcache
+
+logs-umbp:
+	$(COMPOSE_CACHE) logs -f umbp
 
 logs-vllm:
 	$(COMPOSE_CACHE) logs -f vllm
@@ -158,6 +162,9 @@ ps:
 shell-lmcache:
 	docker exec -it $(AIC_STACK)-lmcache bash -l
 
+shell-umbp:
+	docker exec -it $(AIC_STACK)-umbp bash -l
+
 shell-vllm:
 	docker exec -it $(AIC_STACK)-vllm-gpu$(GPU) bash -l
 
@@ -166,6 +173,10 @@ restart-vllm:
 
 restart-lmcache:
 	$(COMPOSE_CACHE) restart lmcache
+
+# vllm must be restarted too: its workers' GPU registrations die with the server.
+restart-umbp:
+	$(COMPOSE_CACHE) restart umbp vllm
 
 venv:
 	@if [ ! -d "$(REPO_ROOT)/.venv" ]; then \
@@ -188,7 +199,7 @@ venv:
 ifeq ($(call _is_makefile_default,KV_TRANSFER_ARG),file)
 vllm-reset-test: export KV_TRANSFER_ARG := $(subst "lmcache.mp.lazy_offload":true,"lmcache.mp.lazy_offload":false,$(KV_TRANSFER_ARG))
 endif
-vllm-reset-test: check-hf-token check-stack prep-dirs
+vllm-reset-test: require-lmcache check-hf-token check-stack prep-dirs
 	@echo "Starting LMCache L1+L2 retrieval test (L1=$(if $(LMCACHE_L1_SIZE_GB),$(LMCACHE_L1_SIZE_GB)GiB,compose default)) + NIXL POSIX L2..."
 	@mkdir -p "$(AIC_METRICS_DIR)"
 	PROM_UID="$$(id -u)" PROM_GID="$$(id -g)" \

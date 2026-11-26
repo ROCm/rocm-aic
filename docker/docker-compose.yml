@@ -14,6 +14,11 @@
 #               local_disk L2 (AIC_L2_BACKEND=local_disk):
 #                 L1:  DRAM (--l1-size-gb) + native LocalDiskBackend L2 via LMCACHE_CONFIG_FILE
 #
+#   umbp    — MORI umbp_standalone_server (`mori` profile), the alternative to
+#               lmcache: one node-wide DRAM pool for vLLM's UMBPStoreConnector,
+#               optionally registered with umbp-master (`mori-master` profile).
+#               `make up AIC_KV_BACKEND=mori` selects it and points vllm at it.
+#
 #   vllm    — vllm serve, optionally with LMCacheMPConnector
 #               KV_TRANSFER_ARG selects the connector.  Set it to the
 #               LMCacheMPConnector JSON (default via `make up`) to connect to the
@@ -450,7 +455,125 @@ services:
       start_period: 30s
 
   # ---------------------------------------------------------------------------
-  # vllm: vLLM serve, optionally with LMCacheMPConnector (via KV_TRANSFER_ARG)
+  # umbp: MORI's umbp_standalone_server, the node-wide KV pool vLLM's
+  # UMBPStoreConnector attaches to in standalone mode.  The alternative to
+  # lmcache, behind the `mori` profile (`make up AIC_KV_BACKEND=mori`); run one
+  # or the other, since both carry the aic-vllm alias and vllm joins the
+  # namespaces of whichever it is pointed at.
+  #
+  # It takes lmcache's place in the namespace layout, for the same reason: the
+  # workers hand their KV allocations over with hipIpcGetMemHandle and the
+  # server opens them with hipIpcOpenMemHandle, so vllm must share this
+  # container's network and PID namespaces (see the lmcache service).  The
+  # control plane is gRPC on a unix socket, with host-memory fds passed on a
+  # second one beside it (<socket>.fd.sock); both live in the aic-umbp-run
+  # volume the vllm service also mounts.  There is no TCP transport.
+  #
+  # Runs the vllm image: MORI is installed there for the in-process connector,
+  # and the wheel carries the server.  It must see the same GPUs as vllm -- a
+  # worker on a GPU the server cannot see takes the server down with a GPU
+  # memory fault, and the pool with it.
+  #
+  # DRAM only by default.  UMBP_MASTER_ADDRESS (set by AIC_UMBP_MASTER=1 in make)
+  # makes it a cluster member: it registers with umbp-master and serves its tier
+  # to peers over MORI-IO RDMA, for which the server refuses to start without
+  # UMBP_NODE_ADDRESS, UMBP_NODE_ID and UMBP_IO_ENGINE_HOST.  Every UMBP_*
+  # variable left empty is unset as far as the server is concerned.
+  # ---------------------------------------------------------------------------
+  umbp:
+    profiles:
+      - mori
+    image: ${VLLM_IMAGE_REF:-aic-vllm:latest}
+    container_name: ${AIC_STACK:-aic}-umbp
+    user: "${AIC_CONTAINER_USER:-0:0}"
+    group_add: ["${RENDER_GID:-992}"]
+    networks:
+      aic-network:
+        aliases: [aic-umbp, aic-vllm]
+    ipc: shareable
+    shm_size: "${AIC_SHM_SIZE:-64gb}"
+    cap_add:
+      - SYS_PTRACE
+      - IPC_LOCK
+    security_opt:
+      - seccomp:unconfined
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+    devices:
+      - /dev/kfd
+      - /dev/dri
+    volumes:
+      - aic-umbp-run:/run/umbp
+    environment:
+      ROCR_VISIBLE_DEVICES: "${AIC_ROCR_VISIBLE:-${GPU:-0}}"
+      HIP_VISIBLE_DEVICES: "${AIC_HIP_VISIBLE:-0}"
+      UMBP_STANDALONE_ADDRESS: "unix:///run/umbp/node.grpc.sock"
+      # Bytes.  MORI's own default is 4 GiB; this matches LMCACHE_L1_SIZE_GB.
+      UMBP_DRAM_CAPACITY: "${UMBP_DRAM_CAPACITY:-21474836480}"
+      # UMBP logs errors only by default; info shows the startup line.
+      MORI_UMBP_LOG_LEVEL: "${MORI_UMBP_LOG_LEVEL:-info}"
+      UMBP_MASTER_ADDRESS: "${UMBP_MASTER_ADDRESS:-}"
+      UMBP_NODE_ADDRESS: "${UMBP_NODE_ADDRESS:-}"
+      UMBP_NODE_ID: "${UMBP_NODE_ID:-}"
+      # Address of this node's RDMA interface, for the MORI-IO engine.
+      UMBP_IO_ENGINE_HOST: "${UMBP_IO_ENGINE_HOST:-}"
+      UMBP_IO_ENGINE_PORT: "${UMBP_IO_ENGINE_PORT:-}"
+      UMBP_PEER_SERVICE_PORT: "${UMBP_PEER_SERVICE_PORT:-}"
+      HOME: "${AIC_CONTAINER_HOME:-/tmp}"
+      USER: "${AIC_CONTAINER_USERNAME:-root}"
+      LOGNAME: "${AIC_CONTAINER_USERNAME:-root}"
+      TZ: "${TZ:-America/Edmonton}"
+    entrypoint: ["umbp_standalone_server"]
+    depends_on:
+      umbp-master:
+        condition: service_healthy
+        required: false
+    # MORI at this pin serves no metrics or health endpoint from the standalone
+    # server; the socket appears once it is listening.
+    healthcheck:
+      test: ["CMD", "test", "-S", "/run/umbp/node.grpc.sock"]
+      interval: 5s
+      timeout: 3s
+      retries: 24
+      start_period: 10s
+
+  # ---------------------------------------------------------------------------
+  # umbp-master: MORI's umbp_master, the fleet-level index of which node and
+  # tier holds which KV block; it routes a get or put to the node, and the nodes
+  # then move the bytes between themselves.  The counterpart of
+  # lmcache-coordinator, but opt-in (`mori-master` profile, AIC_UMBP_MASTER=1):
+  # a server pointed at it needs an RDMA interface to start.  One per fleet, so
+  # on every node but the one hosting it set UMBP_MASTER_ADDRESS to that node
+  # and leave this profile off.
+  # gRPC on :50051; /metrics (Prometheus) on :9091.  No GPU.
+  # ---------------------------------------------------------------------------
+  umbp-master:
+    profiles:
+      - mori-master
+    image: ${VLLM_IMAGE_REF:-aic-vllm:latest}
+    container_name: ${AIC_STACK:-aic}-umbp-master
+    networks:
+      aic-network:
+        aliases: [aic-umbp-master]
+    restart: "no"
+    user: "${AIC_CONTAINER_USER:-0:0}"
+    environment:
+      MORI_UMBP_LOG_LEVEL: "${MORI_UMBP_LOG_LEVEL:-info}"
+      HOME: "${AIC_CONTAINER_HOME:-/tmp}"
+      TZ: "${TZ:-America/Edmonton}"
+    entrypoint: ["umbp_master", "0.0.0.0:50051", "9091"]
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "--noproxy", "*", "--max-time", "2", "-o", "/dev/null", "http://127.0.0.1:9091/metrics"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+
+  # ---------------------------------------------------------------------------
+  # vllm: vLLM serve, optionally with a KV connector (via KV_TRANSFER_ARG):
+  # LMCacheMPConnector against lmcache, or UMBPStoreConnector against umbp.
   # ---------------------------------------------------------------------------
   vllm:
     # No `build:` stanza on purpose — see the lmcache service above.  Build with
@@ -481,6 +604,8 @@ services:
       - ${HF_HOME:-~/.cache/huggingface}:/hf
       - ${LOG:-../logs}/vllm:/var/log/aic-vllm
       - aic-pyc:/pyc
+      # The umbp server's sockets; unused unless KV_TRANSFER_ARG names them.
+      - aic-umbp-run:/run/umbp
     environment:
       - HF_TOKEN=${HF_TOKEN:-}
       - HOME=${AIC_CONTAINER_HOME:-/tmp}
@@ -560,6 +685,9 @@ services:
         condition: service_healthy
         # required:false lets the plain baseline run `vllm` alone (lmcache not in
         # the active profile) without a dependency error (needs Compose v2.20+).
+        required: false
+      umbp:
+        condition: service_healthy
         required: false
 
   # ---------------------------------------------------------------------------
@@ -1160,3 +1288,4 @@ volumes:
   loki-data:
   aic-prom-textfile:  # shared between aic-l2-monitor (writer) and node-exporter (reader)
   aic-pyc:            # bytecode cache shared between lmcache and vllm GPU services
+  aic-umbp-run:       # umbp_standalone_server's unix sockets, shared with vllm

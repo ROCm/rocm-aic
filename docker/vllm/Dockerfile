@@ -12,6 +12,7 @@
 # its default target needs aic-lmcache's wheels, so build aic-lmcache first.
 #
 # Stages:
+#   build_mori  MORI wheel with UMBP, installed by `runtime` only
 #   vllm      AITER + FlashAttention + vLLM source build + llm-emu  (sections 3-3b)
 #   wheels    scratch image holding vllm/amd_aiter/flash_attn .whl  (section 3c)
 #   emulate   CPU-only runtime + the PyPI lmcache client           (section 3d)
@@ -64,6 +65,63 @@ FROM ${ROCM_BASE_IMAGE} AS base
 FROM scratch AS lmcache-wheels
 
 FROM scratch AS base-wheels
+
+# =============================================================================
+# build_mori — MORI wheel with UMBP, for the `runtime` stage only (`emulate`
+# never references it, so a CPU-only build skips it).  The wheel carries the
+# `mori` package vLLM's UMBPStoreConnector imports plus the
+# umbp_standalone_server and umbp_master binaries.
+#
+# MORI versions itself from its git tag (setuptools_scm), so MORI_REF must be a
+# tag or branch.  Its setup.py drops UMBP with only a warning when gRPC or
+# Protobuf is missing, hence the check that the server is in the wheel.
+# BUILD_TORCH_SYMM=OFF: that extension is MORI-CCO's, and this stage has no torch.
+# =============================================================================
+FROM ${ROCM_BASE_IMAGE} AS build_mori
+
+# hadolint ignore=DL4006
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
+
+ARG MORI_GIT_URL
+ARG MORI_REF
+RUN : "${MORI_GIT_URL:?unset: build through docker/docker-bake.hcl}" \
+      "${MORI_REF:?unset: build through docker/docker-bake.hcl}"
+
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
+    apt-get update && \
+    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+        ca-certificates \
+        cmake \
+        git \
+        libgrpc++-dev \
+        libgrpc-dev \
+        libibverbs-dev \
+        libnuma-dev \
+        libpci-dev \
+        libprotobuf-dev \
+        ninja-build \
+        protobuf-compiler \
+        protobuf-compiler-grpc \
+        python3-dev \
+        python3-pip
+
+WORKDIR /app/mori
+RUN --mount=type=cache,target=/root/.cache/pip \
+    git clone --depth 1 --branch "${MORI_REF}" --recurse-submodules --shallow-submodules \
+        "${MORI_GIT_URL}" . && \
+    _rocm="${ROCM_PATH:-/opt/rocm}" && \
+    CMAKE_PREFIX_PATH="${_rocm}:${_rocm}/lib/rocm_sysdeps" \
+        BUILD_UMBP=ON \
+        BUILD_TORCH_SYMM=OFF \
+        pip3 wheel --no-deps -w /wheels . && \
+    python3 -m zipfile -l /wheels/amd_mori-*.whl > /tmp/mori-wheel.txt && \
+    for _bin in umbp_standalone_server umbp_master; do \
+        grep -q "mori/${_bin}\$" /tmp/mori-wheel.txt || \
+            { echo "ERROR: MORI wheel has no ${_bin}: UMBP was not built" >&2; exit 1; }; \
+    done && \
+    rm /tmp/mori-wheel.txt
+WORKDIR /
 
 # =============================================================================
 # build_vllm — compile AITER, FlashAttention, and vLLM against the full ROCm
@@ -661,6 +719,40 @@ RUN --mount=type=cache,target=/root/.cache/pip \
 # aic-base's NIXL/UCX entries survive.
 ENV LD_LIBRARY_PATH=/opt/rocm/lib${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}
 RUN PYTHONDONTWRITEBYTECODE=1 python3 -c 'import ctypes; ctypes.CDLL("libamdhip64.so")'
+
+# ----- MORI / UMBP (AIC_KV_BACKEND=mori) --------------------------------------
+# The `umbp` and `umbp-master` compose services run this image too, so the two
+# binaries are linked onto PATH.  `import mori` is left to the smoke test: like
+# vLLM's ROCm platform module it may need a GPU.  The ldd check is what catches
+# a runtime library missing from the list below.
+# /run/umbp holds the server's sockets; world-writable so the named volume
+# compose mounts there takes that mode and a non-root container can bind.
+ARG MORI_REF
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
+    apt-get update && \
+    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+        ibverbs-providers \
+        libgrpc++1.51t64 \
+        libibverbs1 \
+        libnuma1 \
+        libpci3 \
+        libprotobuf32t64
+
+# hadolint ignore=SC3054,SC3044
+RUN --mount=type=cache,target=/root/.cache/pip \
+    --mount=type=bind,from=build_mori,source=/wheels,target=/wheels-mori \
+    : "${MORI_REF:?unset: build through docker/docker-bake.hcl}" && \
+    pip3 install --break-system-packages --no-compile --no-deps /wheels-mori/amd_mori-*.whl && \
+    _pkg="$(PYTHONDONTWRITEBYTECODE=1 python3 -c 'import importlib.util as u; print(next(iter(u.find_spec("mori").submodule_search_locations)))')" && \
+    for _bin in umbp_standalone_server umbp_master; do \
+        test -x "${_pkg}/${_bin}" || { echo "ERROR: ${_pkg}/${_bin} missing" >&2; exit 1; }; \
+        _missing="$(ldd "${_pkg}/${_bin}" | grep 'not found' || true)"; \
+        [ -z "${_missing}" ] || { echo "ERROR: ${_bin} has unresolved libraries:" >&2; echo "${_missing}" >&2; exit 1; }; \
+        ln -s "${_pkg}/${_bin}" "/usr/local/bin/${_bin}"; \
+    done && \
+    mkdir -p /run/umbp && chmod 1777 /run/umbp
+LABEL ai.amd.aic.mori="${MORI_REF}"
 
 # Same probe as emulate.  start-period is sized for loading and compiling a
 # large model (gpt-oss-120b); the first success marks the container healthy

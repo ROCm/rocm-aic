@@ -128,6 +128,7 @@ keeps equal to bake's.
 | `FLASH_ATTN_REF` | `0e60e394` | `docker/docker-bake.hcl` | FlashAttention ref, built for the CDNA (`gfx9*`) arches only |
 | `LMCACHE_REF` | `v0.5.8` | `docker/docker-bake.hcl` | LMCache ref |
 | `NIXL_REF` | `v1.5.2` | `docker/docker-bake.hcl` | NIXL ref |
+| `MORI_REF` | `v1.2.3.post1` | `docker/docker-bake.hcl` | MORI ref built into `aic-vllm` with UMBP. A tag or branch (MORI versions itself from its git tag); it follows vLLM's own `Dockerfile.rocm_base`, which is what the `UMBPStoreConnector` of `VLLM_REF` was built against |
 | `CUPY_VERSION` | `14.2.0` | `docker/docker-bake.hcl` | `cupy-rocm-7-0` release installed into `aic-lmcache` and `aic-vllm` |
 | `UCX_REF` | `v1.22.0` | `docker/docker-bake.hcl` | UCX ref (NIXL's transport) source-built into the base image |
 | `HSA_SNOOP_REF` | `aba6a306` | `docker/docker-bake.hcl` | hsa-snoop ref |
@@ -154,6 +155,7 @@ keeps equal to bake's.
 | `FLASH_ATTN_GIT_URL` | `https://github.com/Dao-AILab/flash-attention.git` | `docker/docker-bake.hcl` | FlashAttention source repository |
 | `LMCACHE_GIT_URL` | `https://github.com/LMCache/LMCache.git` | `docker/docker-bake.hcl` | LMCache source repository |
 | `NIXL_GIT_URL` | `https://github.com/ai-dynamo/nixl.git` | `docker/docker-bake.hcl` | NIXL source repository |
+| `MORI_GIT_URL` | `https://github.com/ROCm/mori.git` | `docker/docker-bake.hcl` | MORI source repository |
 | `UCX_GIT_URL` | `https://github.com/openucx/ucx.git` | `docker/docker-bake.hcl` | UCX source repository |
 | `HSA_SNOOP_GIT_URL` | `https://github.com/sbates130272/hsa-snoop.git` | `docker/docker-bake.hcl` | hsa-snoop source repository |
 | `CLR_GIT_URL` | `https://github.com/ROCm/rocm-systems.git` | `docker/docker-bake.hcl` | Source repository of the patched `libamdhip64` |
@@ -324,6 +326,23 @@ keeps equal to bake's.
 | `LMCACHE_COORDINATOR_KEEPALIVE` | `65` | `docker/docker-compose.yml` | HTTP keep-alive timeout, seconds |
 <!-- END generated:coordinator -->
 
+### MORI UMBP
+
+<!-- BEGIN generated:umbp -->
+| Variable | Default | Owner | Description |
+| --- | --- | --- | --- |
+| `AIC_KV_BACKEND` | `lmcache` | `Makefile` | KV cache backend `make` starts and points vLLM at: `lmcache` (`LMCacheMPConnector`, the `lmcache` service) or `mori` (`UMBPStoreConnector` in standalone mode, the `umbp` service). It selects the compose profile, the connector JSON and the namespaces vLLM joins, so vLLM is `aic-umbp:8000` on the bridge under `mori`. The LMCache-only targets (`vllm-reset-test`, `up-gds-l1`) refuse `mori` |
+| `UMBP_DRAM_CAPACITY` | `21474836480` | `docker/docker-compose.yml` | Size of the `umbp` server's DRAM pool, bytes (20 GiB). The pool is the server's: vLLM rejects a capacity in the connector JSON in standalone mode |
+| `MORI_UMBP_LOG_LEVEL` | `info` | `docker/docker-compose.yml` | Log level of `umbp` and `umbp-master`. MORI's own default prints errors only |
+| `AIC_UMBP_MASTER` | `0` | `Makefile` | `1` starts `umbp-master` (the `mori-master` profile) and registers the `umbp` server with it. Needs `UMBP_IO_ENGINE_HOST` |
+| `UMBP_MASTER_ADDRESS` | (empty); `aic-umbp-master:50051` (`Makefile`, conditional) | `docker/docker-compose.yml` | `host:port` of the `umbp_master` the server registers with; empty runs it without one. `AIC_UMBP_MASTER=1` sets the local `aic-umbp-master:50051`; set it yourself, with `AIC_UMBP_MASTER=0`, to join a master on another node |
+| `UMBP_NODE_ADDRESS` | (empty); `aic-umbp` (`Makefile`, conditional) | `docker/docker-compose.yml` | Address peers and the master reach this node's server at. Required with a master; `make` then sets `aic-umbp`, which only resolves on this node's bridge |
+| `UMBP_NODE_ID` | (empty); `$(shell hostname -s)` (`Makefile`, conditional) | `docker/docker-compose.yml` | Identity the master knows this node by. Required with a master; `make` then sets the short hostname |
+| `UMBP_IO_ENGINE_HOST` | (empty) | `docker/docker-compose.yml` | Address of this node's RDMA interface, for the MORI-IO engine that moves blocks between nodes. Required with a master, and has no default |
+| `UMBP_IO_ENGINE_PORT` | (empty) | `docker/docker-compose.yml` | MORI-IO engine port. Empty leaves MORI's default |
+| `UMBP_PEER_SERVICE_PORT` | (empty) | `docker/docker-compose.yml` | Port of the server's peer gRPC service. Empty leaves MORI's default |
+<!-- END generated:umbp -->
+
 ### vLLM serving
 
 <!-- BEGIN generated:vllm -->
@@ -339,7 +358,7 @@ keeps equal to bake's.
 | `VLM_ATTENTION_BACKEND` | `TRITON_ATTN` | `docker/docker-compose.yml` | `--attention-backend`. `TRITON_ATTN` is the one that supports KV connectors |
 | `VLM_KV_CACHE_DTYPE` | `auto` | `docker/docker-compose.yml` | `--kv-cache-dtype`. `auto` stores KV in the model dtype; `fp8` roughly doubles KV capacity where the arch has native `fp8`, but gave repeated-token glitches with Qwen2.5-3B on gfx1201 |
 | `VLM_KV_CACHE_METRICS_SAMPLE` | `0.05` | `docker/docker-compose.yml` | Fraction of KV blocks sampled for the residency histograms |
-| `KV_TRANSFER_ARG` | (empty); `--kv-transfer-config '$(_MP_CONNECTOR_JSON)'` (`Makefile`) | `docker/docker-compose.yml` | vLLM `--kv-transfer-config` argument. `make` sets the `LMCacheMPConnector` JSON; empty is a plain vLLM (the cliff `vram` baseline). Single-quote the JSON |
+| `KV_TRANSFER_ARG` | (empty); `--kv-transfer-config '$(_KV_CONNECTOR_JSON)'` (`Makefile`) | `docker/docker-compose.yml` | vLLM `--kv-transfer-config` argument. `make` sets the `LMCacheMPConnector` JSON, or the `UMBPStoreConnector` one under `AIC_KV_BACKEND=mori`; empty is a plain vLLM (the cliff `vram` baseline). Single-quote the JSON |
 | `LMCACHE_LAZY_OFFLOAD` | `true` | `Makefile` | `lmcache.mp.lazy_offload` in the connector JSON `make` builds. `false` stores every block as it is computed, which `make agent-kv-nvme-sweep` needs: a `/reset_prefix_cache` drops deferred stores |
 | `LMCACHE_USE_VMM_API` | `false` | `Makefile` | `lmcache.mp.use_vmm_api` in the connector JSON `make` builds. `true` uses the ROCm VMM fd-export path; requires `patches/vllm/02-vllm-rocm-extensible-kv-fd-exporter.patch` in the build |
 | `VLLM_EXTRA_ARGS` | (empty) | `docker/docker-compose.yml` | Extra `vllm serve` arguments appended verbatim; single-quote embedded JSON |
@@ -348,9 +367,9 @@ keeps equal to bake's.
 | `AIC_ROCM_USE_AITER` | `1` | `docker/docker-compose.yml` | `VLLM_ROCM_USE_AITER`: the AITER unified attention a KV connector needs. `0` for arches without AITER support |
 | `PYTORCH_ALLOC_CONF` | `expandable_segments:False` | `docker/docker-compose.yml` | Passed through to vLLM. A no-op on ROCm; see `PYTORCH_HIP_ALLOC_CONF` |
 | `PYTORCH_HIP_ALLOC_CONF` | `expandable_segments:False` | `docker/docker-compose.yml` | PyTorch HIP allocator configuration for vLLM |
-| `VLLM_IPC_MODE` | `service:lmcache` | `docker/docker-compose.yml` | IPC namespace of the `vllm` service. It joins LMCache's; to run vLLM alone start the `vllm-only` service rather than overriding this |
-| `VLLM_PID_MODE` | `service:lmcache` (only when unset) | `docker/docker-compose.yml` | PID namespace of the `vllm` service. Empty means a private namespace |
-| `VLLM_NETWORK_MODE` | `container:${AIC_STACK:-aic}-lmcache` | `docker/docker-compose.yml` | Network namespace of the `vllm` service. ROCR passes IPC handles over an abstract socket, so vLLM and LMCache must share one |
+| `VLLM_IPC_MODE` | `service:lmcache`; `service:umbp` (`Makefile`, conditional) | `docker/docker-compose.yml` | IPC namespace of the `vllm` service. It joins LMCache's; to run vLLM alone start the `vllm-only` service rather than overriding this |
+| `VLLM_PID_MODE` | `service:lmcache` (only when unset); `service:umbp` (`Makefile`, conditional) | `docker/docker-compose.yml` | PID namespace of the `vllm` service. Empty means a private namespace |
+| `VLLM_NETWORK_MODE` | `container:${AIC_STACK:-aic}-lmcache`; `container:$(AIC_STACK)-umbp` (`Makefile`, conditional) | `docker/docker-compose.yml` | Network namespace of the `vllm` service. ROCR passes IPC handles over an abstract socket, so vLLM and LMCache must share one |
 | `VLM_READY_RETRIES` | `60` | `Makefile` | `make vllm-reset-test`: readiness polls, 5 s apart |
 | `VLM_FAIL_LOG_LINES` | `250` | `Makefile` | `make vllm-reset-test`: container log lines printed when the vLLM container exits before becoming ready |
 <!-- END generated:vllm -->

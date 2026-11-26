@@ -4,7 +4,8 @@
 # Infrastructure targets: monitoring, export tarball, internal helpers.
 
 .PHONY: endpoints env-docs env-docs-check \
-        export check-hf-token check-gds-slab check-stack prep-dirs prep-kvbench-dirs
+        export check-hf-token check-gds-slab check-stack require-lmcache \
+        check-kv-backend prep-dirs prep-kvbench-dirs
 
 # docs/ENVIRONMENT.md's tables are generated from the files that own the
 # defaults; descriptions live in docs/environment-vars.txt.
@@ -44,6 +45,20 @@ check-gds-slab:
 # Refuse to bring up a stack whose AIC_STACK another checkout's stack is using.
 check-stack:
 	@bash "$(CURDIR)/scripts/aic-endpoints.sh" check-stack "$(CURDIR)/docker"
+
+# For targets that drive LMCache itself (its HTTP API, the GDS slab L1).
+require-lmcache:
+	@if [ "$(AIC_KV_BACKEND)" != "lmcache" ]; then \
+		echo "ERROR: this target needs AIC_KV_BACKEND=lmcache (got $(AIC_KV_BACKEND))" >&2; exit 1; \
+	fi
+
+# umbp_standalone_server exits at startup when it has a master but no RDMA
+# engine address; say so before the stack is half up.
+check-kv-backend:
+	@if [ "$(AIC_KV_BACKEND)" = "mori" ] && [ -n "$(strip $(UMBP_MASTER_ADDRESS))" ] \
+	    && [ -z "$(strip $(UMBP_IO_ENGINE_HOST))" ]; then \
+		echo "ERROR: UMBP_MASTER_ADDRESS=$(UMBP_MASTER_ADDRESS) needs UMBP_IO_ENGINE_HOST (the address of this node's RDMA interface)" >&2; exit 1; \
+	fi
 
 prep-dirs:
 	@mkdir -p "$(NVME_DATA)" "$(NFS_DATA)" \
