@@ -139,7 +139,7 @@ RUN --mount=type=bind,from=wheels,target=/w \
 # flash_attn goes in when ROCM_ARCH names a gfx9 arch, llm_emu when the wheel
 # set has it.  vLLM's ROCm platform needs a GPU to import, so the import checks
 # at the end run on llm_emu's CPU platform, and are skipped without that wheel.
-# hadolint ignore=SC2015
+# hadolint ignore=SC2015,SC3054
 RUN --mount=type=bind,from=wheels,target=/w \
     --mount=type=cache,target=/root/.cache/pip \
     export PYTHONDONTWRITEBYTECODE=1 && \
@@ -277,6 +277,7 @@ RUN command -v pip3 > /dev/null || { \
         rm -f /usr/lib/python3.*/EXTERNALLY-MANAGED && \
         rm -rf /var/lib/apt/lists/*; }
 
+# hadolint ignore=SC3054
 RUN --mount=type=bind,from=wheels,target=/w \
     --mount=type=cache,target=/root/.cache/pip \
     shopt -s nullglob && \
