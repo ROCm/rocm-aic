@@ -120,6 +120,7 @@ FROM base-build AS build_mori
 # hadolint ignore=DL4006
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 
+ARG ROCM_ARCH
 ARG MORI_GIT_URL
 ARG MORI_REF
 RUN : "${MORI_GIT_URL:?unset: build through docker/docker-bake.hcl}" \
@@ -139,18 +140,22 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
         protobuf-compiler \
         protobuf-compiler-grpc
 
+# MORI_GPU_ARCHS: left unset, MORI compiles its device kernels for a default
+# arch list, and on any other GPU the server's gather kernel fails to launch
+# ("device kernel image is invalid").
 WORKDIR /app/mori
 RUN --mount=type=cache,target=/root/.cache/pip \
     git clone --depth 1 --branch "${MORI_REF}" --recurse-submodules --shallow-submodules \
         "${MORI_GIT_URL}" . && \
     _rocm="${ROCM_PATH:-/opt/rocm}" && \
     CMAKE_PREFIX_PATH="${_rocm}:${_rocm}/lib/rocm_sysdeps" \
+        MORI_GPU_ARCHS="${ROCM_ARCH}" \
         BUILD_UMBP=ON \
         BUILD_TORCH_SYMM=OFF \
         pip3 wheel --no-deps -w /wheels . && \
     python3 -m zipfile -l /wheels/amd_mori-*.whl > /tmp/mori-wheel.txt && \
     for _bin in umbp_standalone_server umbp_master; do \
-        grep -q "mori/${_bin}\$" /tmp/mori-wheel.txt || \
+        grep -Eq "^mori/${_bin}[[:space:]]" /tmp/mori-wheel.txt || \
             { echo "ERROR: MORI wheel has no ${_bin}: UMBP was not built" >&2; exit 1; }; \
     done && \
     rm /tmp/mori-wheel.txt
@@ -749,17 +754,23 @@ RUN PYTHONDONTWRITEBYTECODE=1 python3 -c 'import ctypes; ctypes.CDLL("libamdhip6
 # ----- MORI / UMBP (AIC_KV_BACKEND=mori) --------------------------------------
 # The `mori-umbp` and `mori-umbp-master` compose services run their own images
 # (docker/mori-umbp/Dockerfile); the two binaries are linked onto PATH here as
-# well, for a server started by hand in this container.  `import mori` is left to the smoke test: like
-# vLLM's ROCm platform module it may need a GPU.  The ldd check is what catches
-# a runtime library missing from the list below.
+# well, for a server started by hand in this container.  `import mori` is left
+# to the smoke test: like vLLM's ROCm platform module it may need a GPU.  The
+# ldd check is what catches a runtime library missing from the list below.
+# The binaries also link ROCm's bundled zlib and numa, which live in the
+# sysdeps directory beside copies of common system libraries; the wrappers put
+# that directory on the loader path of these two programs only.
 # /run/umbp holds the server's sockets; world-writable so the named volume
 # compose mounts there takes that mode and a non-root container can bind.
 ARG MORI_REF
+# hadolint ignore=DL3008
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
     apt-get update && \
     DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
         ibverbs-providers \
+        libdrm-amdgpu1 \
+        libdrm2 \
         libgrpc++1.51t64 \
         libibverbs1 \
         libnuma1 \
@@ -772,11 +783,14 @@ RUN --mount=type=cache,target=/root/.cache/pip \
     : "${MORI_REF:?unset: build through docker/docker-bake.hcl}" && \
     pip3 install --break-system-packages --no-compile --no-deps /wheels-mori/amd_mori-*.whl && \
     _pkg="$(PYTHONDONTWRITEBYTECODE=1 python3 -c 'import importlib.util as u; print(next(iter(u.find_spec("mori").submodule_search_locations)))')" && \
+    _sys=/opt/rocm/core/lib/rocm_sysdeps/lib && test -d "${_sys}" && \
     for _bin in umbp_standalone_server umbp_master; do \
         test -x "${_pkg}/${_bin}" || { echo "ERROR: ${_pkg}/${_bin} missing" >&2; exit 1; }; \
-        _missing="$(ldd "${_pkg}/${_bin}" | grep 'not found' || true)"; \
+        _missing="$(LD_LIBRARY_PATH="${_sys}:${LD_LIBRARY_PATH}" ldd "${_pkg}/${_bin}" | grep 'not found' || true)"; \
         [ -z "${_missing}" ] || { echo "ERROR: ${_bin} has unresolved libraries:" >&2; echo "${_missing}" >&2; exit 1; }; \
-        ln -s "${_pkg}/${_bin}" "/usr/local/bin/${_bin}"; \
+        printf '#!/bin/sh\nLD_LIBRARY_PATH="%s${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" exec "%s" "$@"\n' \
+            "${_sys}" "${_pkg}/${_bin}" > "/usr/local/bin/${_bin}" && \
+        chmod 0755 "/usr/local/bin/${_bin}"; \
     done && \
     mkdir -p /run/umbp && chmod 1777 /run/umbp
 LABEL ai.amd.aic.mori="${MORI_REF}"

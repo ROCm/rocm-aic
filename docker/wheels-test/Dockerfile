@@ -173,15 +173,18 @@ RUN --mount=type=bind,from=wheels-mori,target=/m \
     else \
         apt-get update && \
         DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-            ibverbs-providers libgrpc++1.51t64 libibverbs1 libnuma1 libpci3 libprotobuf32t64 && \
+            ibverbs-providers libdrm-amdgpu1 libdrm2 libgrpc++1.51t64 libibverbs1 libnuma1 libpci3 libprotobuf32t64 && \
         rm -rf /var/lib/apt/lists/* && \
         pip3 install --no-deps "${mori[@]}" && \
         _pkg="$(python3 -c 'import importlib.util as u; print(next(iter(u.find_spec("mori").submodule_search_locations)))')" && \
+        _sys=/opt/rocm/core/lib/rocm_sysdeps/lib && test -d "${_sys}" && \
         for _bin in umbp_standalone_server umbp_master; do \
             test -x "${_pkg}/${_bin}" || { echo "ERROR: ${_pkg}/${_bin} missing" >&2; exit 1; }; \
-            _missing="$(ldd "${_pkg}/${_bin}" | grep 'not found' || true)"; \
+            _missing="$(LD_LIBRARY_PATH="${_sys}:${LD_LIBRARY_PATH}" ldd "${_pkg}/${_bin}" | grep 'not found' || true)"; \
             [ -z "${_missing}" ] || { echo "ERROR: ${_bin} has unresolved libraries:" >&2; echo "${_missing}" >&2; exit 1; }; \
-            ln -s "${_pkg}/${_bin}" "/usr/local/bin/${_bin}"; \
+            printf '#!/bin/sh\nLD_LIBRARY_PATH="%s${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" exec "%s" "$@"\n' \
+                "${_sys}" "${_pkg}/${_bin}" > "/usr/local/bin/${_bin}" && \
+            chmod 0755 "/usr/local/bin/${_bin}"; \
         done && \
         mkdir -p /run/umbp && chmod 1777 /run/umbp; \
     fi

@@ -522,8 +522,9 @@ target "mori-umbp-server" {
   secret     = tls_secret()
 }
 
-# MORI UMBP fleet GlobalBlockIndex coordinator: ubuntu:26.04 + grpc/protobuf +
-# umbp_master binary extracted from the MORI wheel.  No GPU; no ROCm.
+# MORI UMBP fleet GlobalBlockIndex coordinator: the same layers as
+# mori-umbp-server (umbp_master links the HIP runtime too, though it uses no
+# GPU) with umbp_master as the entrypoint.
 target "mori-umbp-master" {
   inherits   = ["mori-umbp-server"]
   target     = "mori-umbp-master"
