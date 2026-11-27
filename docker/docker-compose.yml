@@ -106,6 +106,10 @@ x-lmcache-env: &lmcache-env
   LMCACHE_L2_PREFETCH_MAX_IN_FLIGHT: "${LMCACHE_L2_PREFETCH_MAX_IN_FLIGHT:-4}"
   # Only set when a real config file is mounted (local_disk / advanced tuning).
   LMCACHE_CONFIG_FILE: "${LMCACHE_CONFIG_FILE:-}"
+  # Out-of-tree L2 adapter plugins (AIC_L2_BACKEND=plugin).  Both are empty
+  # unless a plugin is in use; the command only acts on them when non-empty.
+  LMCACHE_PLUGIN_PATH: "${LMCACHE_PLUGIN_PATH:-}"
+  LMCACHE_L2_ADAPTER_JSON: "${LMCACHE_L2_ADAPTER_JSON:-}"
   HIPFILE_ALLOW_COMPAT_MODE: "false"
   HIPFILE_UNSUPPORTED_FILE_SYSTEMS: "true"
   # NIXL native Prometheus telemetry exporter (serves /metrics on :19090).
@@ -128,7 +132,29 @@ x-lmcache-env: &lmcache-env
 x-lmcache-command: &lmcache-command
   - |
     # Build coordinator flags once; empty when LMCACHE_COORDINATOR_URL is empty.
+    # Out-of-image L2 adapter plugins: LMCache's `plugin` adapter type imports
+    # a class from a dotted module path, which has to be on sys.path.  Point
+    # LMCACHE_PLUGIN_PATH at a directory inside the container (for example a
+    # pip --target install under the NVMe mount) to load one without
+    # rebuilding the image.  Exported only when set, so an unset or empty
+    # value never puts the working directory on sys.path.
+    if [ -n "$${LMCACHE_PLUGIN_PATH:-}" ]; then
+      export PYTHONPATH="$${LMCACHE_PLUGIN_PATH}$${PYTHONPATH:+:$${PYTHONPATH}}"
+      echo "lmcache: PYTHONPATH=$$PYTHONPATH" >&2
+    fi
     _COORD_FLAGS=""
+    # Optional L2 eviction, appended to the adapter JSON.  Both NIXL adapters
+    # declare a capacity (pool_size x file_size, or max_capacity_gb), so the
+    # base config's "eviction" key applies to either.  Without it a full L2
+    # fails every later store and keeps only the oldest data; with it the LRU
+    # objects are dropped instead.  Off by default: behaviour is unchanged
+    # unless LMCACHE_L2_EVICTION_WATERMARK is set.
+    _L2_EVICT=""
+    if [ -n "$${LMCACHE_L2_EVICTION_WATERMARK:-}" ]; then
+      _L2_EVICT=",\"eviction\":{\"eviction_policy\":\"$${LMCACHE_L2_EVICTION_POLICY:-LRU}\""
+      _L2_EVICT="$$_L2_EVICT,\"trigger_watermark\":$${LMCACHE_L2_EVICTION_WATERMARK}"
+      _L2_EVICT="$$_L2_EVICT,\"eviction_ratio\":$${LMCACHE_L2_EVICTION_RATIO:-0.2}}"
+    fi
     if [ -n "$${LMCACHE_COORDINATOR_URL:-}" ]; then
       _COORD_FLAGS="--coordinator-url $$LMCACHE_COORDINATOR_URL --coordinator-event-reporting"
     fi
@@ -162,6 +188,31 @@ x-lmcache-command: &lmcache-command
         --worker-reap-timeout-seconds "$$LMCACHE_WORKER_REAP_TIMEOUT" \
         --prometheus-port 9091 \
         $$_COORD_FLAGS
+    elif [ "$$AIC_L2_BACKEND" = "plugin" ]; then
+      # Out-of-tree L2 adapter.  LMCACHE_L2_ADAPTER_JSON is the complete
+      # --l2-adapter spec, normally {"type":"plugin","module_path":...,
+      # "class_name":...,"adapter_params":{...}}; an "eviction" block goes at
+      # its outermost level, not inside adapter_params.  Point
+      # LMCACHE_PLUGIN_PATH at a directory holding the module (a pip --target
+      # install under one of the mounts works) so it can be imported without
+      # rebuilding the image.
+      if [ -z "$${LMCACHE_L2_ADAPTER_JSON:-}" ]; then
+        echo "ERROR: AIC_L2_BACKEND=plugin needs LMCACHE_L2_ADAPTER_JSON" >&2
+        exit 1
+      fi
+      exec lmcache server \
+        --host 0.0.0.0 \
+        --http-host 0.0.0.0 \
+        --http-port 8080 \
+        --port "$$LMCACHE_PORT" \
+        --l1-size-gb "$$LMCACHE_L1_SIZE_GB" \
+        --eviction-policy LRU \
+        --max-gpu-workers "$$LMCACHE_MAX_GPU_WORKERS" \
+        --l2-prefetch-max-in-flight "$$LMCACHE_L2_PREFETCH_MAX_IN_FLIGHT" \
+        --worker-reap-timeout-seconds "$$LMCACHE_WORKER_REAP_TIMEOUT" \
+        --prometheus-port 9091 \
+        --l2-adapter "$$LMCACHE_L2_ADAPTER_JSON" \
+        $$_COORD_FLAGS
     elif [ "$$AIC_L2_BACKEND" = "nixl_posix_dynamic" ]; then
       # nixl_store_dynamic POSIX: same POSIX/buffered-IO path as nixl_posix but
       # uses the dynamic-file adapter (one file per KV chunk, atomic rename on
@@ -179,7 +230,7 @@ x-lmcache-command: &lmcache-command
         --l2-prefetch-max-in-flight "$$LMCACHE_L2_PREFETCH_MAX_IN_FLIGHT" \
         --worker-reap-timeout-seconds "$$LMCACHE_WORKER_REAP_TIMEOUT" \
         --prometheus-port 9091 \
-        --l2-adapter "{\"type\":\"nixl_store_dynamic\",\"backend\":\"POSIX\",\"backend_params\":{\"file_path\":\"/data/nvme/lmcache\",\"use_direct_io\":\"${LMCACHE_NIXL_DYNAMIC_DIRECT_IO:-false}\",\"max_capacity_gb\":\"${LMCACHE_NIXL_DYNAMIC_MAX_GB:-100}\"}}" \
+        --l2-adapter "{\"type\":\"nixl_store_dynamic\",\"backend\":\"POSIX\",\"backend_params\":{\"file_path\":\"/data/nvme/lmcache\",\"use_direct_io\":\"${LMCACHE_NIXL_DYNAMIC_DIRECT_IO:-false}\",\"max_capacity_gb\":\"${LMCACHE_NIXL_DYNAMIC_MAX_GB:-100}\"}$$_L2_EVICT}" \
         $$_COORD_FLAGS
     elif [ "$$AIC_NIXL_BACKEND" = "POSIX" ] || [ "$$AIC_L2_BACKEND" = "nixl_posix" ]; then
       # NIXL first-class POSIX plugin (cpu staging buffer, no hipFileBufRegister).
@@ -201,7 +252,7 @@ x-lmcache-command: &lmcache-command
         --l2-prefetch-max-in-flight "$$LMCACHE_L2_PREFETCH_MAX_IN_FLIGHT" \
         --worker-reap-timeout-seconds "$$LMCACHE_WORKER_REAP_TIMEOUT" \
         --prometheus-port 9091 \
-        --l2-adapter "{\"type\":\"nixl_store\",\"backend\":\"POSIX\",\"backend_params\":{\"file_path\":\"/data/nvme/lmcache\",\"use_direct_io\":\"false\",\"file_size\":\"$$LMCACHE_NIXL_POSIX_SLOT_SIZE\"},\"pool_size\":$$LMCACHE_NIXL_POSIX_POOL}" \
+        --l2-adapter "{\"type\":\"nixl_store\",\"backend\":\"POSIX\",\"backend_params\":{\"file_path\":\"/data/nvme/lmcache\",\"use_direct_io\":\"${LMCACHE_NIXL_POSIX_DIRECT_IO:-false}\",\"file_size\":\"$$LMCACHE_NIXL_POSIX_SLOT_SIZE\"},\"pool_size\":$$LMCACHE_NIXL_POSIX_POOL$$_L2_EVICT}" \
         $$_COORD_FLAGS
     else
       # nixl AIS_MT NVMe L2a + POSIX NFS L2b.  Both are file-based nixl_store

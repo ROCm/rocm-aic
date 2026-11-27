@@ -306,14 +306,20 @@ keeps equal to bake's.
 | `LMCACHE_NFS_POOL` | `1024` | `docker/docker-compose.yml` | NIXL pool slots of the NFS adapter |
 | `LMCACHE_NIXL_POSIX_SLOT_SIZE` | `16777216` | `docker/docker-compose.yml` | Size of each POSIX pool file, bytes (16 MiB). L2 capacity is pool x this size; a multiple of 4 KiB |
 | `LMCACHE_NIXL_POSIX_POOL` | `32768` | `docker/docker-compose.yml` | Pool slots of the POSIX backend |
+| `LMCACHE_NIXL_POSIX_DIRECT_IO` | `false` | `docker/docker-compose.yml` | `O_DIRECT` for `nixl_posix`. Buffered I/O (the default) lets the host page cache absorb L2 traffic, which flatters L2 read figures on a node with spare RAM; `true` measures the device |
 | `LMCACHE_NIXL_DYNAMIC_MAX_GB` | `100` | `docker/docker-compose.yml` | NVMe capacity cap in GB for `nixl_posix_dynamic` |
-| `LMCACHE_NIXL_DYNAMIC_DIRECT_IO` | `false` | `docker/docker-compose.yml` | `O_DIRECT` for `nixl_posix_dynamic` |
+| `LMCACHE_NIXL_DYNAMIC_DIRECT_IO` | `false` | `docker/docker-compose.yml` | `O_DIRECT` for `nixl_posix_dynamic`, as `LMCACHE_NIXL_POSIX_DIRECT_IO` is for the static pool |
+| `LMCACHE_L2_EVICTION_WATERMARK` | (unset) | `docker/docker-compose.yml` | Fraction of L2 capacity that triggers eviction, e.g. `0.85`. Unset means no L2 eviction: a full L2 keeps the oldest data and fails every later store. Applies to both NIXL adapters |
+| `LMCACHE_L2_EVICTION_POLICY` | (unset) | `docker/docker-compose.yml` | L2 eviction policy when the watermark is set |
+| `LMCACHE_L2_EVICTION_RATIO` | (unset) | `docker/docker-compose.yml` | Fraction of L2 dropped each time the watermark is crossed |
 | `LMCACHE_MAX_GPU_WORKERS` | `4` | `docker/docker-compose.yml` | `--max-gpu-workers`, the parallel store and retrieve workers. `1` puts every client on one thread and backs stores up under concurrent load; use it only for a single-client run, to save GPU memory |
 | `LMCACHE_WORKER_REAP_TIMEOUT` | `3600` | `docker/docker-compose.yml` | `--worker-reap-timeout-seconds` |
 | `LMCACHE_L2_PREFETCH_MAX_IN_FLIGHT` | `4`; `32` (`.slurm/run-cliff.sbatch`) | `docker/docker-compose.yml` | `--l2-prefetch-max-in-flight`, concurrent L2 load tasks. The cliff job raises it |
 | `LMCACHE_CHUNK_SIZE` | `256` | `docker/docker-compose.yml` | Tokens per KV chunk; the MP server and the coordinator must agree |
 | `LMCACHE_CONFIG_FILE_HOST` | `/dev/null` | `docker/docker-compose.yml` | Host path of an LMCache config file to mount (`local_disk` and advanced tuning) |
 | `LMCACHE_CONFIG_FILE` | (empty) | `docker/docker-compose.yml` | In-container path of that config; set only when one is mounted |
+| `LMCACHE_PLUGIN_PATH` | (empty) | `docker/docker-compose.yml` | In-container directory prepended to `PYTHONPATH` for the lmcache server, so an out-of-image L2 adapter plugin can be imported without rebuilding. Unset means unchanged |
+| `LMCACHE_L2_ADAPTER_JSON` | (empty) | `docker/docker-compose.yml` | Complete `--l2-adapter` spec, used when `AIC_L2_BACKEND=plugin`. Lets an out-of-tree adapter run without a compose change; an `eviction` block belongs at its outermost level |
 | `NIXL_TELEMETRY_ENABLE` | `y` | `docker/docker-compose.yml` | NIXL's own Prometheus exporter on `:19090`. Set it to `n` to disable |
 | `NIXL_TELEMETRY_EXPORTER` | `prometheus` | `docker/docker-compose.yml` | NIXL telemetry exporter type |
 <!-- END generated:lmcache -->
